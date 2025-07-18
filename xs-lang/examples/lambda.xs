@@ -1,0 +1,1 @@
+((lambda (x : Int y : Int) (+ x y)) 10 20)
