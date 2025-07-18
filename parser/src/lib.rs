@@ -73,6 +73,7 @@ impl<'a> Parser<'a> {
 
         match &self.current_token {
             Some((Token::Let, _)) => self.parse_let(start_span.start),
+            Some((Token::LetRec, _)) => self.parse_let_rec(start_span.start),
             Some((Token::Lambda, _)) => self.parse_lambda(start_span.start),
             Some((Token::If, _)) => self.parse_if(start_span.start),
             Some((Token::List, _)) => self.parse_list_literal(start_span.start),
@@ -118,6 +119,50 @@ impl<'a> Parser<'a> {
         };
 
         Ok(Expr::Let {
+            name,
+            type_ann,
+            value,
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_let_rec(&mut self, start: usize) -> Result<Expr, XsError> {
+        self.advance()?; // consume 'let-rec'
+
+        let name = match &self.current_token {
+            Some((Token::Symbol(s), _)) => {
+                let ident = Ident(s.clone());
+                self.advance()?;
+                ident
+            }
+            _ => return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected variable name after 'let-rec'".to_string(),
+            )),
+        };
+
+        let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
+            self.advance()?;
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let value = Box::new(self.parse_expr()?);
+
+        let end = match &self.current_token {
+            Some((Token::RightParen, span)) => {
+                let end = span.end;
+                self.advance()?;
+                end
+            }
+            _ => return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected ')' after let-rec expression".to_string(),
+            )),
+        };
+
+        Ok(Expr::LetRec {
             name,
             type_ann,
             value,
@@ -493,6 +538,22 @@ mod tests {
                 assert_eq!(elems.len(), 0);
             },
             _ => panic!("Expected empty list"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_rec() {
+        let expr = parse("(let-rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))").unwrap();
+        match expr {
+            Expr::LetRec { name, type_ann, value, .. } => {
+                assert_eq!(name.0, "fact");
+                assert_eq!(type_ann, None);
+                match value.as_ref() {
+                    Expr::Lambda { .. } => {},
+                    _ => panic!("Expected Lambda in let-rec binding"),
+                }
+            },
+            _ => panic!("Expected let-rec expression"),
         }
     }
 

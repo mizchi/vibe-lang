@@ -43,6 +43,12 @@ pub enum Expr {
         value: Box<Expr>,
         span: Span,
     },
+    LetRec {
+        name: Ident,
+        type_ann: Option<Type>,
+        value: Box<Expr>,
+        span: Span,
+    },
     Lambda {
         params: Vec<(Ident, Option<Type>)>,
         body: Box<Expr>,
@@ -68,6 +74,7 @@ impl Expr {
             Expr::Ident(_, span) => span,
             Expr::List(_, span) => span,
             Expr::Let { span, .. } => span,
+            Expr::LetRec { span, .. } => span,
             Expr::Lambda { span, .. } => span,
             Expr::If { span, .. } => span,
             Expr::Apply { span, .. } => span,

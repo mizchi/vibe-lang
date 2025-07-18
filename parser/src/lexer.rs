@@ -11,6 +11,7 @@ pub enum Token {
     String(String),
     Symbol(String),
     Let,
+    LetRec,
     Lambda,
     If,
     List,
@@ -192,6 +193,7 @@ impl<'a> Lexer<'a> {
         
         let token = match value.as_str() {
             "let" => Token::Let,
+            "let-rec" => Token::LetRec,
             "lambda" => Token::Lambda,
             "if" => Token::If,
             "list" => Token::List,

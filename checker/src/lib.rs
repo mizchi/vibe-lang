@@ -195,6 +195,26 @@ impl TypeChecker {
                 Ok(value_type)
             }
             
+            Expr::LetRec { name, type_ann, value, span } => {
+                // For recursive bindings, we need to add the name to the environment
+                // before inferring the value type
+                let rec_type = type_ann.clone().unwrap_or_else(|| self.fresh_var());
+                env.extend(name.0.clone(), TypeScheme::mono(rec_type.clone()));
+                
+                let value_type = self.infer(value, env)?;
+                
+                self.constraints.push(Constraint {
+                    left: value_type.clone(),
+                    right: rec_type.clone(),
+                    span: span.clone(),
+                });
+                
+                let scheme = self.generalize(&rec_type, env);
+                env.extend(name.0.clone(), scheme);
+                
+                Ok(rec_type)
+            }
+            
             Expr::Lambda { params, body, .. } => {
                 env.push_scope();
                 
@@ -466,6 +486,34 @@ mod tests {
         let program = "(let x 1 (let y 2 (+ x y)))";
         let result = parse(program);
         assert!(result.is_err()); // This syntax is not supported yet
+    }
+
+    #[test]
+    fn test_let_rec() {
+        // Simple recursive function
+        let program = "(let-rec fact : (-> Int Int) (lambda (n : Int) (if (= n 0) 1 (* n (fact (- n 1))))))";
+        let typ = type_check(&parse(program).unwrap()).unwrap();
+        match typ {
+            Type::Function(from, to) => {
+                assert_eq!(*from, Type::Int);
+                assert_eq!(*to, Type::Int);
+            },
+            _ => panic!("Expected Function type"),
+        }
+    }
+
+    #[test]
+    fn test_let_rec_no_annotation() {
+        // Recursive function without type annotation
+        let program = "(let-rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))";
+        let typ = type_check(&parse(program).unwrap()).unwrap();
+        match typ {
+            Type::Function(from, to) => {
+                assert_eq!(*from, Type::Int);
+                assert_eq!(*to, Type::Int);
+            },
+            _ => panic!("Expected Function type"),
+        }
     }
 
     #[test]

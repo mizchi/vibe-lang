@@ -38,6 +38,39 @@ impl Interpreter {
                 Ok(val)
             }
 
+            Expr::LetRec { name, value, .. } => {
+                // For recursive bindings, we need to create a placeholder environment
+                // where the function can refer to itself
+                match value.as_ref() {
+                    Expr::Lambda { params, body, .. } => {
+                        // Create a closure that includes itself in the environment
+                        let rec_closure = Value::Closure {
+                            params: params.iter().map(|(name, _)| name.clone()).collect(),
+                            body: (**body).clone(),
+                            env: env.clone(), // This will be updated with the recursive binding
+                        };
+                        
+                        // Extend the environment with the recursive binding
+                        let new_env = env.extend(name.clone(), rec_closure.clone());
+                        
+                        // Re-create the closure with the updated environment
+                        let final_closure = Value::Closure {
+                            params: params.iter().map(|(name, _)| name.clone()).collect(),
+                            body: (**body).clone(),
+                            env: new_env,
+                        };
+                        
+                        Ok(final_closure)
+                    }
+                    _ => {
+                        // For non-lambda expressions, just evaluate normally
+                        // (though this shouldn't happen with proper type checking)
+                        let val = self.eval(value, env)?;
+                        Ok(val)
+                    }
+                }
+            }
+
             Expr::Lambda { params, body, .. } => {
                 Ok(Value::Closure {
                     params: params.iter().map(|(name, _)| name.clone()).collect(),
@@ -310,6 +343,32 @@ mod tests {
     fn test_division_by_zero() {
         let result = check_and_eval("(/ 10 0)");
         assert!(matches!(result, Err(XsError::RuntimeError(_, _))));
+    }
+
+    #[test]
+    fn test_let_rec_factorial() {
+        let program = "(let-rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))";
+        let result = check_and_eval(program).unwrap();
+        match result {
+            Value::Closure { .. } => {},
+            _ => panic!("Expected closure"),
+        }
+        
+        // Test applying the factorial function
+        let program = "((let-rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1)))))) 5)";
+        assert_eq!(check_and_eval(program).unwrap(), Value::Int(120));
+    }
+
+    #[test]
+    fn test_let_rec_fibonacci() {
+        let program = r#"
+            ((let-rec fib (lambda (n)
+                (if (< n 2)
+                    n
+                    (+ (fib (- n 1)) (fib (- n 2))))))
+             6)
+        "#;
+        assert_eq!(check_and_eval(program).unwrap(), Value::Int(8));
     }
 
     #[test]
