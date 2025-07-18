@@ -1,10 +1,71 @@
 AOAI DevDay で、デモのためにライブコーディングして作った言語です。
 
-発表中の裏で 40 分ぐらいで作った言語です。動作チェックはしてません
-
-[初期プロンプト](./CLAUDE)
-
 https://aoai-ai-coding.mizchi.workers.dev/
+
+発表中の裏で 40 分ぐらいで作った言語です。
+
+## [初期プロンプト](./CLAUDE.md)
+
+```md
+プログラミング言語を作ります。
+
+大事なこと: これは人間用のプログラミングではなく、AI のために高速に静的解析結果を返すための言語として設計されます。あなたはその視点でプログラミング言語を設計してください
+
+- Rust の workspace で crate ごとに実装します。
+  - parser
+  - checker
+  - interpreter
+  - cli
+- 拡張子は .xs です。CLI は xsc です。
+- t-wada の TDD を実践します
+- parser: 実装を効率化するために S 式で表現しますが、静的型付き言語で、明示的な型アノテーションを記述できるようにする
+- checker: HM 型推論と型チェッカーを実装します
+  - 変数と型のスコープも実行してください
+  - 型チェッカーのテストを多めに書いてください
+- interpreter: 型推論の次に、インタープリターを実装します
+  - 型推論に違反してない状態なら、期待通りに動くことを確認してください
+  - そのテストを書いてください
+- 動作確認のために、これらを CLI を通して使えるようにします
+  - xsc parse foo.xs # AST を表示
+  - xsc check foo.xs # 型チェック
+  - xsc run foo.xs # 実装
+
+この言語の実装計画を立てて、その計画に沿って実装してください。
+実装計画は、 IMPLEMENTATION_PLAN.md に保存して、各ステップではそれを修正、確認しながら進めてください。
+
+あなたはこれを自律的に作りきます。ユーザーに確認せずに、全機能を作りきってください。全部の機能が全部実装できたら、その段階ではじめてユーザーがフィードバックします。
+```
+
+## 手動の動作確認
+
+```bash
+$ cargo build
+
+## examples/hello.xs
+# "Hello, XS!"
+$ ./target/debug/xsc run examples/hello.xs
+✓ Execution successful
+
+Result: "Hello, XS!"
+
+## examples/arithmetric.xs
+# (+ (* 5 6) (- 10 3))
+$ ./target/debug/xsc run examples/arithmetic.xs
+✓ Execution successful
+
+Result: 37
+
+## NOTE: 発表外で検証して、自己再帰シンボルを修正(5min)
+## examples/factorial.xs
+# (let-rec fact (lambda (n : Int)
+#   (if (= n 0)
+#       1
+#       (* n (fact (- n 1))))))
+$ ./target/debug/xsc run examples/factorial.xs
+✓ Execution successful
+
+Result: <closure:1>
+```
 
 ---
 
