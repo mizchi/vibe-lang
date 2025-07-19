@@ -1,6 +1,6 @@
 # XS Language - AI-Oriented Programming Language
 
-XS Language is an AI-oriented programming language designed for fast static analysis with S-expression syntax. It features a static type system with Hindley-Milner type inference, incremental compilation using Salsa framework, Perceus memory management, and WebAssembly GC code generation.
+XS Language is an AI-oriented programming language designed for fast static analysis with S-expression syntax. It features a static type system with Hindley-Milner type inference, incremental compilation using Salsa framework, Perceus memory management, and WebAssembly backend with GC support.
 
 ## 特徴
 
@@ -8,7 +8,7 @@ XS Language is an AI-oriented programming language designed for fast static anal
 - **静的型付き**: HM型推論による型安全性の保証
 - **インクリメンタルコンパイル**: Salsaフレームワークによる高速な差分コンパイル
 - **Perceus GC**: 参照カウントベースの効率的なメモリ管理
-- **WebAssembly GC**: モダンなWebAssemblyランタイムへのコンパイル
+- **WebAssemblyバックエンド**: モダンなWebAssembly GCランタイムへのコンパイル
 
 ## クイックスタート
 

@@ -8,6 +8,7 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
     match ty {
         Type::Int => Ok(WasmType::I64),  // Using i64 for integers
         Type::Bool => Ok(WasmType::I32), // Bool as i32 (0 or 1)
+        Type::Float => Ok(WasmType::F64), // Float as f64
         Type::String => Ok(WasmType::ArrayRef(0)), // String as array of bytes
         Type::List(_elem_ty) => {
             // List as array of elements
@@ -24,6 +25,11 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
                 "Unresolved type variable: {}",
                 name
             )))
+        }
+        Type::UserDefined { .. } => {
+            // User-defined types need proper struct/class mapping
+            // For now, use struct reference with placeholder index
+            Ok(WasmType::StructRef(3)) // Placeholder index
         }
     }
 }

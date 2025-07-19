@@ -1,4 +1,4 @@
-//! WebAssembly GC code generation for XS language
+//! WebAssembly backend for XS language
 //! 
 //! This module implements code generation targeting WebAssembly with Garbage Collection support.
 //! It converts IR expressions into WebAssembly GC instructions, leveraging the native GC

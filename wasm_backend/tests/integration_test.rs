@@ -1,6 +1,6 @@
-//! Integration tests for WebAssembly GC code generation
+//! Integration tests for WebAssembly backend
 
-use wasm_gc::{generate_module, WasmInstr, WasmType};
+use wasm_backend::{generate_module, WasmInstr, WasmType};
 use xs_core::ir::IrExpr;
 use xs_core::Literal;
 

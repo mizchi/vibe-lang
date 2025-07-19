@@ -101,6 +101,10 @@ impl CodeGenerator {
                 self.emit(WasmInstr::RefNull(WasmType::ArrayRef(0)));
                 Ok(())
             }
+            Literal::Float(f) => {
+                self.emit(WasmInstr::F64Const(*f));
+                Ok(())
+            }
         }
     }
     
