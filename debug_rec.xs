@@ -1,1 +1,0 @@
-(rec fact (n : Int) : Int (if (= n 0) 1 (* n (fact (- n 1)))))
