@@ -2,6 +2,9 @@ use ordered_float::OrderedFloat;
 use std::collections::{HashMap, HashSet};
 use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError};
 
+mod improved_errors;
+use improved_errors::TypeErrorHelper;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
     pub vars: Vec<String>,

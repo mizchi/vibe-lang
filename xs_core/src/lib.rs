@@ -10,6 +10,7 @@ pub mod builtins;
 pub mod curry;
 pub mod metadata;
 pub mod pretty_print;
+pub mod error_context;
 
 // Re-export builtins for convenience
 pub use builtins::{BuiltinFunction, BuiltinRegistry};
@@ -301,4 +302,41 @@ pub enum XsError {
     
     #[error("Type mismatch: expected {expected}, found {found}")]
     TypeMismatch { expected: Type, found: Type },
+}
+
+impl XsError {
+    /// Convert to rich error context for AI-friendly error reporting
+    pub fn to_error_context(&self, source: Option<&str>) -> error_context::ErrorContext {
+        use error_context::{ErrorBuilder, ErrorCategory};
+        
+        match self {
+            XsError::ParseError(pos, msg) => {
+                let mut builder = ErrorBuilder::new(ErrorCategory::Syntax, msg.clone());
+                if let Some(src) = source {
+                    builder = builder.with_snippet(src, Span::new(*pos, *pos + 1));
+                }
+                builder.build()
+            }
+            XsError::TypeError(span, msg) => {
+                let mut builder = ErrorBuilder::new(ErrorCategory::Type, msg.clone());
+                if let Some(src) = source {
+                    builder = builder.with_snippet(src, span.clone());
+                }
+                builder.build()
+            }
+            XsError::RuntimeError(span, msg) => {
+                let mut builder = ErrorBuilder::new(ErrorCategory::Runtime, msg.clone());
+                if let Some(src) = source {
+                    builder = builder.with_snippet(src, span.clone());
+                }
+                builder.build()
+            }
+            XsError::UndefinedVariable(ident) => {
+                ErrorBuilder::undefined_variable(&ident.0).build()
+            }
+            XsError::TypeMismatch { expected, found } => {
+                ErrorBuilder::type_mismatch(expected.clone(), found.clone()).build()
+            }
+        }
+    }
 }

@@ -3,23 +3,23 @@
 大事なこと: これは人間用のプログラミングではなく、AI のために高速に静的解析結果を返すための言語として設計されます。あなたはその視点でプログラミング言語を設計してください
 
 - Rust の workspace で crate ごとに実装します。
-  - parser: S式パーサー
-  - checker: HM型推論エンジン
+  - parser: S 式パーサー
+  - checker: HM 型推論エンジン
   - interpreter: インタープリター
   - cli: コマンドラインツール
-  - xs_core: 共通型定義とIR、ビルトイン関数
+  - xs_core: 共通型定義と IR、ビルトイン関数
   - xs_salsa: インクリメンタルコンパイル
-  - perceus: Perceus GC変換
-  - wasm_backend: WebAssembly GCコード生成
+  - perceus: Perceus GC 変換
+  - wasm_backend: WebAssembly GC コード生成
   - runtime: 統一ランタイムインターフェース
-  - codebase: Unison風構造化コードベース
+  - codebase: Unison 風構造化コードベース
 - 拡張子は .xs です。CLI は xsc です。
 - t-wada の TDD を実践します
 - parser: 実装を効率化するために S 式で表現しますが、静的型付き言語で、明示的な型アノテーションを記述できるようにする
 - checker: HM 型推論と型チェッカーを実装します
   - 変数と型のスコープも実行してください
   - 型チェッカーのテストを多めに書いてください
-  - rec/let-rec構文の完全な型推論サポート
+  - rec/let-rec 構文の完全な型推論サポート
 - interpreter: 型推論の次に、インタープリターを実装します
   - 型推論に違反してない状態なら、期待通りに動くことを確認してください
   - そのテストを書いてください
@@ -31,40 +31,43 @@
 
 ## 実装済み機能
 
-- ✅ S式パーサー
-- ✅ HM型推論（完全な型推論サポート）
+- ✅ S 式パーサー
+- ✅ HM 型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
-- ✅ CLIツール
-- ✅ Salsaインクリメンタルコンパイル
-- ✅ Perceus IR変換
-- ✅ WebAssembly GC基本実装
-- ✅ rec/let-rec構文（型推論対応）
+- ✅ CLI ツール
+- ✅ Salsa インクリメンタルコンパイル
+- ✅ Perceus IR 変換
+- ✅ WebAssembly GC 基本実装
+- ✅ rec/let-rec 構文（型推論対応）
 - ✅ 代数的データ型
 - ✅ パターンマッチング
 - ✅ モジュールシステム（基本実装）
 - ✅ 統一ランタイムインターフェース（Backend trait）
-- ✅ Unison風構造化コードベース
+- ✅ Unison 風構造化コードベース
 - ✅ 包括的なテストカバレッジ（76.63%）
 - ✅ 型チェッカーパフォーマンスベンチマーク
 
 ## アーキテクチャ概要
 
 ### 統一ランタイムアーキテクチャ
+
 - TypedIrExpr: 型情報を含む中間表現
-- Backend trait: インタープリターとWebAssemblyの統一インターフェース
+- Backend trait: インタープリターと WebAssembly の統一インターフェース
 - BuiltinFunction trait: ビルトイン関数の統一定義
 - BuiltinRegistry: ビルトイン関数の登録と管理
 
-### Unison風構造化コードベース
-- コンテンツアドレス型ストレージ（SHA256ハッシュ）
+### Unison 風構造化コードベース
+
+- コンテンツアドレス型ストレージ（SHA256 ハッシュ）
 - 関数レベルの依存関係追跡
-- UCM風のedit/update機能
-- Patchによるインクリメンタル更新
+- UCM 風の edit/update 機能
+- Patch によるインクリメンタル更新
 
 ### パフォーマンス最適化
-- Salsaによるインクリメンタルコンパイル
+
+- Salsa によるインクリメンタルコンパイル
 - 型チェッカーの包括的なベンチマーク
-- Perceus GCによる効率的なメモリ管理
+- Perceus GC による効率的なメモリ管理
 
 この言語の実装計画を立てて、その計画に沿って実装してください。
 実装計画は、 IMPLEMENTATION_PLAN.md に保存して、各ステップではそれを修正、確認しながら進めてください。

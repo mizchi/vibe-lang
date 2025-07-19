@@ -47,18 +47,18 @@ impl<'a> PrettyPrinter<'a> {
         // 式本体をフォーマット
         let expr_str = match expr {
             Expr::Literal(lit, _) => self.format_literal(lit),
-            Expr::Variable(ident, _) => ident.0.clone(),
+            Expr::Ident(ident, _) => ident.0.clone(),
             Expr::Lambda { params, body, .. } => {
                 self.format_lambda(params, body)
             }
-            Expr::Application { func, args, .. } => {
+            Expr::Apply { func, args, .. } => {
                 self.format_application(func, args)
             }
             Expr::Let { name, value, .. } => {
                 self.format_let(name, value)
             }
-            Expr::LetRec { name, params, body, .. } => {
-                self.format_let_rec(name, params, body)
+            Expr::LetRec { name, value, .. } => {
+                self.format_let(name, value)
             }
             Expr::If { cond, then_expr, else_expr, .. } => {
                 self.format_if(cond, then_expr, else_expr)
@@ -66,17 +66,16 @@ impl<'a> PrettyPrinter<'a> {
             Expr::List(items, _) => {
                 self.format_list(items)
             }
-            Expr::Cons { head, tail, .. } => {
-                self.format_cons(head, tail)
-            }
+            // Cons is not a variant in current Expr
+            // Lists are handled by Expr::List
             Expr::Match { expr, cases, .. } => {
                 self.format_match(expr, cases)
             }
             Expr::Rec { name, params, body, .. } => {
                 self.format_rec(name, params, body)
             }
-            Expr::TypeDef(typedef) => {
-                self.format_type_def(typedef)
+            Expr::TypeDef { definition, .. } => {
+                self.format_type_def(definition)
             }
             Expr::Constructor { name, args, .. } => {
                 self.format_constructor(name, args)
@@ -84,10 +83,10 @@ impl<'a> PrettyPrinter<'a> {
             Expr::Module { name, exports, body, .. } => {
                 self.format_module(name, exports, body)
             }
-            Expr::Import { module_name, alias, .. } => {
-                self.format_import(module_name, alias)
+            Expr::Import { module_name, .. } => {
+                format!("(import {})", module_name.0)
             }
-            Expr::QualifiedName { module_name, name, .. } => {
+            Expr::QualifiedIdent { module_name, name, .. } => {
                 format!("{}.{}", module_name.0, name.0)
             }
         };
@@ -189,10 +188,10 @@ impl<'a> PrettyPrinter<'a> {
 
     fn format_pattern(&self, pattern: &Pattern) -> String {
         match pattern {
-            Pattern::Variable(ident) => ident.0.clone(),
-            Pattern::Wildcard => "_".to_string(),
-            Pattern::Literal(lit) => self.format_literal(lit),
-            Pattern::List(patterns) => {
+            Pattern::Variable(ident, _) => ident.0.clone(),
+            Pattern::Wildcard(_) => "_".to_string(),
+            Pattern::Literal(lit, _) => self.format_literal(lit),
+            Pattern::List { patterns, .. } => {
                 if patterns.is_empty() {
                     "(list)".to_string()
                 } else {
@@ -203,7 +202,7 @@ impl<'a> PrettyPrinter<'a> {
                     format!("(list {})", patterns_str)
                 }
             }
-            Pattern::Constructor(name, patterns) => {
+            Pattern::Constructor { name, patterns, .. } => {
                 let patterns_str = patterns.iter()
                     .map(|p| self.format_pattern(p))
                     .collect::<Vec<_>>()
@@ -233,18 +232,18 @@ impl<'a> PrettyPrinter<'a> {
             .collect::<Vec<_>>()
             .join(" ");
         
-        format!("(type {}{} {})", typedef.name.0, type_params, constructors)
+        format!("(type {}{} {})", typedef.name, type_params, constructors)
     }
 
     fn format_constructor_def(&self, constructor: &Constructor) -> String {
         if constructor.fields.is_empty() {
-            format!("({})", constructor.name.0)
+            format!("({})", constructor.name)
         } else {
             let fields = constructor.fields.iter()
                 .map(|t| format!("{:?}", t)) // TODO: Proper type formatting
                 .collect::<Vec<_>>()
                 .join(" ");
-            format!("({} {})", constructor.name.0, fields)
+            format!("({} {})", constructor.name, fields)
         }
     }
 
