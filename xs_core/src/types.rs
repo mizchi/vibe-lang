@@ -16,6 +16,13 @@ impl Type {
                 vars.insert(v.clone());
                 vars
             }
+            Type::UserDefined { type_params, .. } => {
+                let mut vars = HashSet::new();
+                for param in type_params {
+                    vars.extend(param.free_vars());
+                }
+                vars
+            }
         }
     }
 
@@ -28,6 +35,10 @@ impl Type {
                 Box::new(to.apply_subst(subst)),
             ),
             Type::Var(v) => subst.get(v).cloned().unwrap_or_else(|| self.clone()),
+            Type::UserDefined { name, type_params } => Type::UserDefined {
+                name: name.clone(),
+                type_params: type_params.iter().map(|t| t.apply_subst(subst)).collect(),
+            },
         }
     }
 }

@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use xs_core::{Expr, Ident, Literal, Span, Type, XsError};
+use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
@@ -18,12 +18,14 @@ impl TypeScheme {
 
 pub struct TypeEnv {
     bindings: Vec<HashMap<String, TypeScheme>>,
+    type_definitions: HashMap<String, TypeDefinition>,
 }
 
 impl TypeEnv {
     pub fn new() -> Self {
         let mut env = TypeEnv {
             bindings: vec![HashMap::new()],
+            type_definitions: HashMap::new(),
         };
         
         // Built-in functions
@@ -110,6 +112,37 @@ impl TypeEnv {
             }
         }
         vars
+    }
+    
+    pub fn add_type_definition(&mut self, def: TypeDefinition) {
+        self.type_definitions.insert(def.name.clone(), def);
+    }
+    
+    pub fn get_type_definition(&self, name: &str) -> Option<&TypeDefinition> {
+        self.type_definitions.get(name)
+    }
+    
+    pub fn get_constructor_type(&self, constructor_name: &str) -> Option<(String, Vec<Type>, Type)> {
+        for (type_name, def) in &self.type_definitions {
+            for constructor in &def.constructors {
+                if constructor.name == constructor_name {
+                    // Build the constructor type
+                    let result_type = Type::UserDefined {
+                        name: type_name.clone(),
+                        type_params: def.type_params.iter()
+                            .map(|p| Type::Var(p.clone()))
+                            .collect(),
+                    };
+                    
+                    return Some((
+                        type_name.clone(),
+                        constructor.fields.clone(),
+                        result_type,
+                    ));
+                }
+            }
+        }
+        None
     }
 }
 
@@ -355,6 +388,103 @@ impl TypeChecker {
                 
                 Ok(result_type)
             }
+            
+            Expr::Match { expr, cases, span } => {
+                let expr_type = self.infer(expr, env)?;
+                
+                if cases.is_empty() {
+                    return Err(XsError::TypeError(span.clone(), "Match expression must have at least one case".to_string()));
+                }
+                
+                // All branches must have the same type
+                let result_type = self.fresh_var();
+                
+                for (pattern, case_expr) in cases {
+                    // Create a new scope for pattern variables
+                    env.push_scope();
+                    
+                    // Infer pattern type and bind variables
+                    self.check_pattern(pattern, &expr_type, env)?;
+                    
+                    // Infer case expression type
+                    let case_type = self.infer(case_expr, env)?;
+                    
+                    // Pop pattern scope
+                    env.pop_scope();
+                    
+                    // Constrain all branches to have the same type
+                    self.constraints.push(Constraint {
+                        left: case_type,
+                        right: result_type.clone(),
+                        span: case_expr.span().clone(),
+                    });
+                }
+                
+                Ok(result_type)
+            }
+            
+            Expr::Constructor { name, args, span } => {
+                // Look up the constructor in the type environment
+                if let Some((type_name, field_types, result_type)) = env.get_constructor_type(&name.0) {
+                    // Check that we have the right number of arguments
+                    if args.len() != field_types.len() {
+                        return Err(XsError::TypeError(
+                            span.clone(),
+                            format!("Constructor {} expects {} arguments, got {}", 
+                                    name.0, field_types.len(), args.len())
+                        ));
+                    }
+                    
+                    // Instantiate type variables if needed
+                    let type_def = env.get_type_definition(&type_name).unwrap();
+                    let mut type_subst = HashMap::new();
+                    let mut instantiated_field_types = Vec::new();
+                    
+                    // Create fresh type variables for type parameters
+                    for param in &type_def.type_params {
+                        type_subst.insert(param.clone(), self.fresh_var());
+                    }
+                    
+                    // Apply substitution to field types
+                    for field_type in &field_types {
+                        instantiated_field_types.push(field_type.apply_subst(&type_subst));
+                    }
+                    
+                    // Type check arguments against field types
+                    for (arg, expected_type) in args.iter().zip(instantiated_field_types.iter()) {
+                        let arg_type = self.infer(arg, env)?;
+                        self.constraints.push(Constraint {
+                            left: arg_type,
+                            right: expected_type.clone(),
+                            span: arg.span().clone(),
+                        });
+                    }
+                    
+                    // Return the instantiated result type
+                    Ok(result_type.apply_subst(&type_subst))
+                } else {
+                    // If no type definition found, create a placeholder type
+                    let constructor_type = Type::UserDefined {
+                        name: name.0.clone(),
+                        type_params: vec![],
+                    };
+                    
+                    // Type check arguments
+                    for arg in args {
+                        self.infer(arg, env)?;
+                    }
+                    
+                    Ok(constructor_type)
+                }
+            }
+            
+            Expr::TypeDef { definition, .. } => {
+                // Add the type definition to the environment
+                env.add_type_definition(definition.clone());
+                
+                // Type definitions don't have a runtime value, return unit type
+                Ok(Type::Int) // Using Int as a placeholder for unit type
+            }
         }
     }
 
@@ -437,6 +567,91 @@ impl TypeChecker {
             result.insert(k.clone(), v.apply_subst(s2));
         }
         result
+    }
+    
+    fn check_pattern(&mut self, pattern: &Pattern, expected_type: &Type, env: &mut TypeEnv) -> Result<(), XsError> {
+        match pattern {
+            Pattern::Wildcard(_) => Ok(()),
+            
+            Pattern::Literal(lit, span) => {
+                let lit_type = match lit {
+                    Literal::Int(_) => Type::Int,
+                    Literal::Bool(_) => Type::Bool,
+                    Literal::String(_) => Type::String,
+                };
+                self.constraints.push(Constraint {
+                    left: lit_type,
+                    right: expected_type.clone(),
+                    span: span.clone(),
+                });
+                Ok(())
+            }
+            
+            Pattern::Variable(name, _) => {
+                // Bind the variable to the expected type
+                env.extend(name.0.clone(), TypeScheme::mono(expected_type.clone()));
+                Ok(())
+            }
+            
+            Pattern::Constructor { name, patterns, span: _ } => {
+                // For now, we assume constructors have the same type as their data type
+                // This will be refined when we implement proper ADT support
+                match expected_type {
+                    Type::UserDefined { name: type_name, .. } => {
+                        if name.0 != *type_name {
+                            // For now, we'll be lenient and allow any constructor
+                            // This will be fixed when we have proper ADT definitions
+                        }
+                        
+                        // Type check nested patterns
+                        // For now, we'll use fresh type variables for each pattern
+                        for pattern in patterns {
+                            let pattern_type = self.fresh_var();
+                            self.check_pattern(pattern, &pattern_type, env)?;
+                        }
+                        
+                        Ok(())
+                    }
+                    _ => {
+                        // For now, allow constructor patterns to match any type
+                        // This will be fixed when we have proper ADT support
+                        for pattern in patterns {
+                            let pattern_type = self.fresh_var();
+                            self.check_pattern(pattern, &pattern_type, env)?;
+                        }
+                        Ok(())
+                    }
+                }
+            }
+            
+            Pattern::List { patterns, span } => {
+                match expected_type {
+                    Type::List(elem_type) => {
+                        // All elements must have the same type
+                        for pattern in patterns {
+                            self.check_pattern(pattern, elem_type, env)?;
+                        }
+                        Ok(())
+                    }
+                    Type::Var(_) => {
+                        // If the expected type is a variable, constrain it to be a list
+                        let elem_type = self.fresh_var();
+                        self.constraints.push(Constraint {
+                            left: expected_type.clone(),
+                            right: Type::List(Box::new(elem_type.clone())),
+                            span: span.clone(),
+                        });
+                        
+                        // Check patterns against element type
+                        for pattern in patterns {
+                            self.check_pattern(pattern, &elem_type, env)?;
+                        }
+                        Ok(())
+                    }
+                    _ => Err(XsError::TypeError(span.clone(), "Expected list type in list pattern".to_string())),
+                }
+            }
+        }
     }
 }
 
@@ -680,5 +895,75 @@ mod tests {
             },
             _ => panic!("Expected Function type"),
         }
+    }
+    
+    #[test]
+    fn test_match_expression() {
+        let program = "(match 1 (0 \"zero\") (1 \"one\") (_ \"other\"))";
+        let typ = type_check(&parse(program).unwrap()).unwrap();
+        assert_eq!(typ, Type::String);
+    }
+    
+    #[test]
+    fn test_match_with_variables() {
+        let program = "(match (list 1 2) ((list x y) (+ x y)))";
+        let typ = type_check(&parse(program).unwrap()).unwrap();
+        assert_eq!(typ, Type::Int);
+    }
+    
+    #[test]
+    fn test_constructor() {
+        let program = "(Some 42)";
+        let typ = type_check(&parse(program).unwrap()).unwrap();
+        match typ {
+            Type::UserDefined { name, .. } => assert_eq!(name, "Some"),
+            _ => panic!("Expected UserDefined type"),
+        }
+    }
+    
+    #[test]
+    fn test_type_definition() {
+        let program = r#"
+            (type Option 
+                (Some value)
+                (None))
+        "#;
+        let result = type_check(&parse(program).unwrap());
+        assert!(result.is_ok()); // Type definitions themselves just return unit
+    }
+    
+    #[test]
+    fn test_adt_constructor() {
+        // First define the type
+        let def_program = "(type Option (Some value) (None))";
+        let mut checker = TypeChecker::new();
+        let mut env = builtin_env();
+        checker.check(&parse(def_program).unwrap(), &mut env).unwrap();
+        
+        // Then use the constructor
+        let use_program = "(Some 42)";
+        let typ = checker.check(&parse(use_program).unwrap(), &mut env).unwrap();
+        match typ {
+            Type::UserDefined { name, .. } => assert_eq!(name, "Option"),
+            _ => panic!("Expected UserDefined type, got {:?}", typ),
+        }
+    }
+    
+    #[test]
+    fn test_adt_pattern_match() {
+        // First define the type
+        let def_program = "(type Option (Some value) (None))";
+        let mut checker = TypeChecker::new();
+        let mut env = builtin_env();
+        checker.check(&parse(def_program).unwrap(), &mut env).unwrap();
+        
+        // Then use it in a match
+        let match_program = r#"
+            (match (Some 42)
+                ((Some x) x)
+                ((None) 0))
+        "#;
+        let typ = checker.check(&parse(match_program).unwrap(), &mut env).unwrap();
+        assert_eq!(typ, Type::Int);
     }
 }

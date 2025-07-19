@@ -19,6 +19,9 @@ pub enum Token {
     Colon,
     Arrow,
     Rec,
+    Match,
+    Type,
+    Underscore,
 }
 
 pub struct Lexer<'a> {
@@ -65,6 +68,10 @@ impl<'a> Lexer<'a> {
                         self.read_number()
                     },
                     '0'..='9' => self.read_number(),
+                    '_' => {
+                        self.advance();
+                        Ok(Some((Token::Underscore, Span::new(start, self.position))))
+                    },
                     _ if ch.is_alphabetic() || ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '<' || ch == '>' || ch == '=' => {
                         self.read_symbol()
                     },
@@ -202,6 +209,9 @@ impl<'a> Lexer<'a> {
             "true" => Token::Bool(true),
             "false" => Token::Bool(false),
             "rec" => Token::Rec,
+            "match" => Token::Match,
+            "type" => Token::Type,
+            "_" => Token::Underscore,
             _ => Token::Symbol(value),
         };
         

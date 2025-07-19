@@ -1,13 +1,18 @@
-use xs_core::{Environment, Expr, Ident, Literal, Value, XsError};
+use xs_core::{Environment, Expr, Ident, Literal, Pattern, TypeDefinition, Value, XsError};
+use std::collections::HashMap;
 
-pub struct Interpreter;
+pub struct Interpreter {
+    type_definitions: HashMap<String, TypeDefinition>,
+}
 
 impl Interpreter {
     pub fn new() -> Self {
-        Interpreter
+        Interpreter {
+            type_definitions: HashMap::new(),
+        }
     }
 
-    pub fn eval(&self, expr: &Expr, env: &Environment) -> Result<Value, XsError> {
+    pub fn eval(&mut self, expr: &Expr, env: &Environment) -> Result<Value, XsError> {
         match expr {
             Expr::Literal(lit, _) => Ok(match lit {
                 Literal::Int(n) => Value::Int(*n),
@@ -149,10 +154,48 @@ impl Interpreter {
                     )),
                 }
             }
+            
+            Expr::Match { expr, cases, span } => {
+                let value = self.eval(expr, env)?;
+                
+                for (pattern, case_expr) in cases {
+                    if let Some(bindings) = self.match_pattern(pattern, &value)? {
+                        // Create new environment with pattern bindings
+                        let mut new_env = env.clone();
+                        for (name, val) in bindings {
+                            new_env = new_env.extend(name, val);
+                        }
+                        return self.eval(case_expr, &new_env);
+                    }
+                }
+                
+                Err(XsError::RuntimeError(
+                    span.clone(),
+                    "No matching pattern in match expression".to_string(),
+                ))
+            }
+            
+            Expr::Constructor { name, args, .. } => {
+                let mut values = Vec::new();
+                for arg in args {
+                    values.push(self.eval(arg, env)?);
+                }
+                Ok(Value::Constructor {
+                    name: name.clone(),
+                    values,
+                })
+            }
+            
+            Expr::TypeDef { definition, .. } => {
+                // Store the type definition
+                self.type_definitions.insert(definition.name.clone(), definition.clone());
+                // Type definitions don't have a runtime value, return a placeholder
+                Ok(Value::Int(0)) // Using 0 as unit value
+            }
         }
     }
 
-    fn apply_builtin(&self, name: &str, args: &[Expr], env: &Environment, span: &xs_core::Span) -> Result<Option<Value>, XsError> {
+    fn apply_builtin(&mut self, name: &str, args: &[Expr], env: &Environment, span: &xs_core::Span) -> Result<Option<Value>, XsError> {
         match name {
             "+" => {
                 if args.len() != 2 {
@@ -277,10 +320,71 @@ impl Interpreter {
             _ => Ok(None),
         }
     }
+    
+    fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Result<Option<Vec<(Ident, Value)>>, XsError> {
+        match (pattern, value) {
+            (Pattern::Wildcard(_), _) => Ok(Some(vec![])),
+            
+            (Pattern::Literal(lit, _), _) => {
+                let matches = match (lit, value) {
+                    (Literal::Int(n), Value::Int(v)) => n == v,
+                    (Literal::Bool(b), Value::Bool(v)) => b == v,
+                    (Literal::String(s), Value::String(v)) => s == v,
+                    _ => false,
+                };
+                if matches {
+                    Ok(Some(vec![]))
+                } else {
+                    Ok(None)
+                }
+            }
+            
+            (Pattern::Variable(name, _), _) => {
+                Ok(Some(vec![(name.clone(), value.clone())]))
+            }
+            
+            (Pattern::Constructor { name, patterns, .. }, Value::Constructor { name: val_name, values }) => {
+                if name != val_name {
+                    return Ok(None);
+                }
+                if patterns.len() != values.len() {
+                    return Ok(None);
+                }
+                
+                let mut bindings = vec![];
+                for (pattern, value) in patterns.iter().zip(values.iter()) {
+                    if let Some(mut pattern_bindings) = self.match_pattern(pattern, value)? {
+                        bindings.append(&mut pattern_bindings);
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(bindings))
+            }
+            
+            (Pattern::List { patterns, .. }, Value::List(values)) => {
+                if patterns.len() != values.len() {
+                    return Ok(None);
+                }
+                
+                let mut bindings = vec![];
+                for (pattern, value) in patterns.iter().zip(values.iter()) {
+                    if let Some(mut pattern_bindings) = self.match_pattern(pattern, value)? {
+                        bindings.append(&mut pattern_bindings);
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(bindings))
+            }
+            
+            _ => Ok(None),
+        }
+    }
 }
 
 pub fn eval(expr: &Expr) -> Result<Value, XsError> {
-    let interpreter = Interpreter::new();
+    let mut interpreter = Interpreter::new();
     let env = Environment::new();
     interpreter.eval(expr, &env)
 }
@@ -467,5 +571,104 @@ mod tests {
         let result = check_and_eval("x");
         // This should fail during type checking
         assert!(matches!(result, Err(XsError::UndefinedVariable(_))));
+    }
+    
+    #[test]
+    fn test_match_literal() {
+        let program = "(match 1 (0 \"zero\") (1 \"one\") (_ \"other\"))";
+        assert_eq!(check_and_eval(program).unwrap(), Value::String("one".to_string()));
+    }
+    
+    #[test]
+    fn test_match_variable() {
+        let program = "(match 42 (x x))";
+        assert_eq!(check_and_eval(program).unwrap(), Value::Int(42));
+    }
+    
+    #[test]
+    fn test_match_constructor() {
+        let program = "(match (Some 42) ((Some x) x) ((None) 0))";
+        assert_eq!(check_and_eval(program).unwrap(), Value::Int(42));
+    }
+    
+    #[test]
+    fn test_match_list() {
+        let program = "(match (list 1 2) ((list x y) (+ x y)))";
+        assert_eq!(check_and_eval(program).unwrap(), Value::Int(3));
+    }
+    
+    #[test]
+    fn test_match_wildcard() {
+        let program = "(match 99 (0 \"zero\") (_ \"not zero\"))";
+        assert_eq!(check_and_eval(program).unwrap(), Value::String("not zero".to_string()));
+    }
+    
+    #[test]
+    fn test_constructor() {
+        let program = "(Some 42)";
+        let result = check_and_eval(program).unwrap();
+        match result {
+            Value::Constructor { name, values } => {
+                assert_eq!(name.0, "Some");
+                assert_eq!(values.len(), 1);
+                assert_eq!(values[0], Value::Int(42));
+            },
+            _ => panic!("Expected constructor value"),
+        }
+    }
+    
+    #[test]
+    fn test_adt_with_match() {
+        // Create a shared interpreter
+        let mut interpreter = Interpreter::new();
+        let env = Environment::new();
+        
+        // First define the type
+        let def_program = r#"(type Option (Some value) (None))"#;
+        let def_expr = parse(def_program).unwrap();
+        interpreter.eval(&def_expr, &env).unwrap();
+        
+        // Now test with Some
+        let some_program = r#"
+            (match (Some 42)
+                ((Some x) (+ x 10))
+                ((None) 0))
+        "#;
+        let some_expr = parse(some_program).unwrap();
+        assert_eq!(interpreter.eval(&some_expr, &env).unwrap(), Value::Int(52));
+        
+        // Test with None
+        let none_program = r#"
+            (match (None)
+                ((Some x) x)
+                ((None) 99))
+        "#;
+        let none_expr = parse(none_program).unwrap();
+        assert_eq!(interpreter.eval(&none_expr, &env).unwrap(), Value::Int(99));
+    }
+    
+    #[test]
+    fn test_nested_adt() {
+        // Create a shared interpreter
+        let mut interpreter = Interpreter::new();
+        let env = Environment::new();
+        
+        // Define Result type
+        let result_def = r#"(type Result (Ok value) (Err error))"#;
+        interpreter.eval(&parse(result_def).unwrap(), &env).unwrap();
+        
+        // Define Option type
+        let option_def = r#"(type Option (Some value) (None))"#;
+        interpreter.eval(&parse(option_def).unwrap(), &env).unwrap();
+        
+        // Test nested pattern matching
+        let match_program = r#"
+            (match (Ok (Some 42))
+                ((Ok (Some x)) x)
+                ((Ok (None)) 0)
+                ((Err e) -1))
+        "#;
+        let match_expr = parse(match_program).unwrap();
+        assert_eq!(interpreter.eval(&match_expr, &env).unwrap(), Value::Int(42));
     }
 }

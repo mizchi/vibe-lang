@@ -139,6 +139,17 @@ fn format_type(typ: &Type) -> String {
             format!("({} -> {})", format_type(from), format_type(to)).cyan().to_string()
         }
         Type::Var(name) => format!("'{}", name).yellow().to_string(),
+        Type::UserDefined { name, type_params } => {
+            if type_params.is_empty() {
+                name.cyan().to_string()
+            } else {
+                let params = type_params.iter()
+                    .map(|t| format_type(t))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("({} {})", name, params).cyan().to_string()
+            }
+        }
     }
 }
 
@@ -156,6 +167,14 @@ fn format_value(value: &Value) -> String {
         }
         Value::RecClosure { name, params, .. } => {
             format!("<rec-closure:{}:{}>", name.0, params.len()).yellow().to_string()
+        }
+        Value::Constructor { name, values } => {
+            let formatted_values: Vec<String> = values.iter().map(format_value).collect();
+            if formatted_values.is_empty() {
+                name.0.magenta().to_string()
+            } else {
+                format!("({} {})", name.0, formatted_values.join(" ")).magenta().to_string()
+            }
         }
     }
 }

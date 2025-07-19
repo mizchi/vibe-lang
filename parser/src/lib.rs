@@ -1,7 +1,7 @@
 mod lexer;
 
 use lexer::{Lexer, Token};
-use xs_core::{Expr, Ident, Literal, Span, Type, XsError};
+use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, XsError};
 
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
@@ -79,6 +79,8 @@ impl<'a> Parser<'a> {
             Some((Token::List, _)) => self.parse_list_literal(start_span.start),
             Some((Token::Cons, _)) => self.parse_cons(start_span.start),
             Some((Token::Rec, _)) => self.parse_rec(start_span.start),
+            Some((Token::Match, _)) => self.parse_match(start_span.start),
+            Some((Token::Type, _)) => self.parse_type_definition(start_span.start),
             _ => self.parse_application(start_span.start),
         }
     }
@@ -390,7 +392,43 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_application(&mut self, start: usize) -> Result<Expr, XsError> {
-        let func = Box::new(self.parse_expr()?);
+        let first_expr = self.parse_expr()?;
+        
+        // Check if it's a constructor (starts with uppercase)
+        if let Expr::Ident(Ident(name), _) = &first_expr {
+            if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                // Parse as constructor
+                let mut args = Vec::new();
+                
+                while let Some((token, _)) = &self.current_token {
+                    if matches!(token, Token::RightParen) {
+                        break;
+                    }
+                    args.push(self.parse_expr()?);
+                }
+                
+                let end = match &self.current_token {
+                    Some((Token::RightParen, span)) => {
+                        let end = span.end;
+                        self.advance()?;
+                        end
+                    }
+                    _ => return Err(XsError::ParseError(
+                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        "Expected ')' after constructor".to_string(),
+                    )),
+                };
+                
+                return Ok(Expr::Constructor {
+                    name: Ident(name.clone()),
+                    args,
+                    span: Span::new(start, end),
+                });
+            }
+        }
+        
+        // Otherwise, parse as regular application
+        let func = Box::new(first_expr);
         let mut args = Vec::new();
 
         while let Some((token, _)) = &self.current_token {
@@ -415,6 +453,280 @@ impl<'a> Parser<'a> {
         Ok(Expr::Apply {
             func,
             args,
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_match(&mut self, start: usize) -> Result<Expr, XsError> {
+        self.advance()?; // consume 'match'
+        
+        // Parse the expression to match
+        let expr = Box::new(self.parse_expr()?);
+        
+        // Parse cases
+        let mut cases = Vec::new();
+        
+        while let Some((token, _)) = &self.current_token {
+            if matches!(token, Token::RightParen) {
+                break;
+            }
+            
+            // Each case should be (pattern expr)
+            if let Some((Token::LeftParen, _)) = &self.current_token {
+                self.advance()?;
+                
+                let pattern = self.parse_pattern()?;
+                let case_expr = self.parse_expr()?;
+                
+                if let Some((Token::RightParen, _)) = &self.current_token {
+                    self.advance()?;
+                } else {
+                    return Err(XsError::ParseError(
+                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        "Expected ')' after match case".to_string(),
+                    ));
+                }
+                
+                cases.push((pattern, case_expr));
+            } else {
+                return Err(XsError::ParseError(
+                    self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                    "Expected '(' for match case".to_string(),
+                ));
+            }
+        }
+        
+        let end = match &self.current_token {
+            Some((Token::RightParen, span)) => {
+                let end = span.end;
+                self.advance()?;
+                end
+            }
+            _ => return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected ')' after match expression".to_string(),
+            )),
+        };
+        
+        Ok(Expr::Match {
+            expr,
+            cases,
+            span: Span::new(start, end),
+        })
+    }
+    
+    fn parse_pattern(&mut self) -> Result<Pattern, XsError> {
+        match &self.current_token {
+            Some((Token::Underscore, span)) => {
+                let pattern = Pattern::Wildcard(span.clone());
+                self.advance()?;
+                Ok(pattern)
+            }
+            Some((Token::Int(n), span)) => {
+                let pattern = Pattern::Literal(Literal::Int(*n), span.clone());
+                self.advance()?;
+                Ok(pattern)
+            }
+            Some((Token::Bool(b), span)) => {
+                let pattern = Pattern::Literal(Literal::Bool(*b), span.clone());
+                self.advance()?;
+                Ok(pattern)
+            }
+            Some((Token::String(s), span)) => {
+                let pattern = Pattern::Literal(Literal::String(s.clone()), span.clone());
+                self.advance()?;
+                Ok(pattern)
+            }
+            Some((Token::LeftParen, _)) => {
+                self.advance()?;
+                
+                // Check if it's a constructor pattern or list pattern
+                if let Some((Token::Symbol(name), name_span)) = &self.current_token {
+                    let constructor_name = Ident(name.clone());
+                    let constructor_span = name_span.clone();
+                    self.advance()?;
+                    
+                    let mut patterns = Vec::new();
+                    while let Some((token, _)) = &self.current_token {
+                        if matches!(token, Token::RightParen) {
+                            break;
+                        }
+                        patterns.push(self.parse_pattern()?);
+                    }
+                    
+                    let end = match &self.current_token {
+                        Some((Token::RightParen, span)) => {
+                            let end = span.end;
+                            self.advance()?;
+                            end
+                        }
+                        _ => return Err(XsError::ParseError(
+                            self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                            "Expected ')' after constructor pattern".to_string(),
+                        )),
+                    };
+                    
+                    Ok(Pattern::Constructor {
+                        name: constructor_name,
+                        patterns,
+                        span: Span::new(constructor_span.start, end),
+                    })
+                } else if let Some((Token::List, _)) = &self.current_token {
+                    self.advance()?;
+                    
+                    let mut patterns = Vec::new();
+                    while let Some((token, _)) = &self.current_token {
+                        if matches!(token, Token::RightParen) {
+                            break;
+                        }
+                        patterns.push(self.parse_pattern()?);
+                    }
+                    
+                    let end = match &self.current_token {
+                        Some((Token::RightParen, span)) => {
+                            let end = span.end;
+                            self.advance()?;
+                            end
+                        }
+                        _ => return Err(XsError::ParseError(
+                            self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                            "Expected ')' after list pattern".to_string(),
+                        )),
+                    };
+                    
+                    Ok(Pattern::List {
+                        patterns,
+                        span: Span::new(0, end), // TODO: proper span
+                    })
+                } else {
+                    Err(XsError::ParseError(
+                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        "Expected constructor name or 'list' in pattern".to_string(),
+                    ))
+                }
+            }
+            Some((Token::Symbol(name), span)) => {
+                // Variable pattern
+                let pattern = Pattern::Variable(Ident(name.clone()), span.clone());
+                self.advance()?;
+                Ok(pattern)
+            }
+            _ => Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected pattern".to_string(),
+            )),
+        }
+    }
+    
+    fn parse_type_definition(&mut self, start: usize) -> Result<Expr, XsError> {
+        use xs_core::{TypeDefinition, Constructor};
+        
+        self.advance()?; // consume 'type'
+        
+        // Parse type name
+        let type_name = match &self.current_token {
+            Some((Token::Symbol(name), _)) => {
+                let name = name.clone();
+                self.advance()?;
+                name
+            }
+            _ => return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected type name after 'type'".to_string(),
+            )),
+        };
+        
+        // Parse type parameters (optional)
+        let mut type_params = Vec::new();
+        while let Some((Token::Symbol(param), _)) = &self.current_token {
+            if param.chars().next().map_or(false, |c| c.is_lowercase()) {
+                type_params.push(param.clone());
+                self.advance()?;
+            } else {
+                break;
+            }
+        }
+        
+        // Parse constructors
+        let mut constructors = Vec::new();
+        
+        while let Some((token, _)) = &self.current_token {
+            if matches!(token, Token::RightParen) {
+                break;
+            }
+            
+            // Each constructor should be (Name field1 field2 ...)
+            if let Some((Token::LeftParen, _)) = &self.current_token {
+                self.advance()?;
+                
+                let constructor_name = match &self.current_token {
+                    Some((Token::Symbol(name), _)) => {
+                        if !name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                            return Err(XsError::ParseError(
+                                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                                "Constructor name must start with uppercase letter".to_string(),
+                            ));
+                        }
+                        let name = name.clone();
+                        self.advance()?;
+                        name
+                    }
+                    _ => return Err(XsError::ParseError(
+                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        "Expected constructor name".to_string(),
+                    )),
+                };
+                
+                // Parse constructor fields
+                let mut fields = Vec::new();
+                while let Some((token, _)) = &self.current_token {
+                    if matches!(token, Token::RightParen) {
+                        break;
+                    }
+                    fields.push(self.parse_type()?);
+                }
+                
+                if let Some((Token::RightParen, _)) = &self.current_token {
+                    self.advance()?;
+                } else {
+                    return Err(XsError::ParseError(
+                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        "Expected ')' after constructor".to_string(),
+                    ));
+                }
+                
+                constructors.push(Constructor {
+                    name: constructor_name,
+                    fields,
+                });
+            } else {
+                return Err(XsError::ParseError(
+                    self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                    "Expected '(' for constructor definition".to_string(),
+                ));
+            }
+        }
+        
+        let end = match &self.current_token {
+            Some((Token::RightParen, span)) => {
+                let end = span.end;
+                self.advance()?;
+                end
+            }
+            _ => return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected ')' after type definition".to_string(),
+            )),
+        };
+        
+        let definition = TypeDefinition {
+            name: type_name,
+            type_params,
+            constructors,
+        };
+        
+        Ok(Expr::TypeDef {
+            definition,
             span: Span::new(start, end),
         })
     }
@@ -505,7 +817,7 @@ mod tests {
         // Test with type annotations
         let expr = parse("(rec add (x : Int y : Int) : Int (+ x y))").unwrap();
         match expr {
-            Expr::Rec { name, params, return_type, body, .. } => {
+            Expr::Rec { name, params, return_type, .. } => {
                 assert_eq!(name.0, "add");
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].0.0, "x");
@@ -697,6 +1009,93 @@ mod tests {
                 assert_eq!(*elem, Type::Int);
             },
             _ => panic!("Expected list type"),
+        }
+    }
+    
+    #[test]
+    fn test_parse_match() {
+        let expr = parse("(match x (0 \"zero\") (1 \"one\") (_ \"other\"))").unwrap();
+        match expr {
+            Expr::Match { cases, .. } => {
+                assert_eq!(cases.len(), 3);
+                // Check first case
+                match &cases[0].0 {
+                    Pattern::Literal(Literal::Int(0), _) => {},
+                    _ => panic!("Expected literal 0 pattern"),
+                }
+                // Check last case
+                match &cases[2].0 {
+                    Pattern::Wildcard(_) => {},
+                    _ => panic!("Expected wildcard pattern"),
+                }
+            },
+            _ => panic!("Expected Match expression"),
+        }
+    }
+    
+    #[test]
+    fn test_parse_constructor() {
+        let expr = parse("(Some 42)").unwrap();
+        match expr {
+            Expr::Constructor { name, args, .. } => {
+                assert_eq!(name.0, "Some");
+                assert_eq!(args.len(), 1);
+            },
+            _ => panic!("Expected Constructor expression"),
+        }
+    }
+    
+    #[test]
+    fn test_parse_pattern() {
+        // Test parsing a pattern directly within a match expression
+        let expr = parse("(match x ((Some y) y))").unwrap();
+        match expr {
+            Expr::Match { cases, .. } => {
+                assert_eq!(cases.len(), 1);
+                match &cases[0].0 {
+                    Pattern::Constructor { name, patterns, .. } => {
+                        assert_eq!(name.0, "Some");
+                        assert_eq!(patterns.len(), 1);
+                        match &patterns[0] {
+                            Pattern::Variable(Ident(v), _) => assert_eq!(v, "y"),
+                            _ => panic!("Expected variable pattern"),
+                        }
+                    },
+                    _ => panic!("Expected constructor pattern"),
+                }
+            },
+            _ => panic!("Expected Match expression"),
+        }
+    }
+    
+    #[test]
+    fn test_parse_type_definition() {
+        // Simple type without parameters
+        let expr = parse("(type Option (Some value) (None))").unwrap();
+        match expr {
+            Expr::TypeDef { definition, .. } => {
+                assert_eq!(definition.name, "Option");
+                assert_eq!(definition.type_params.len(), 0);
+                assert_eq!(definition.constructors.len(), 2);
+                assert_eq!(definition.constructors[0].name, "Some");
+                assert_eq!(definition.constructors[0].fields.len(), 1);
+                assert_eq!(definition.constructors[1].name, "None");
+                assert_eq!(definition.constructors[1].fields.len(), 0);
+            },
+            _ => panic!("Expected TypeDef expression"),
+        }
+        
+        // Type with type parameters
+        let expr = parse("(type Result a b (Ok a) (Err b))").unwrap();
+        match expr {
+            Expr::TypeDef { definition, .. } => {
+                assert_eq!(definition.name, "Result");
+                assert_eq!(definition.type_params, vec!["a", "b"]);
+                assert_eq!(definition.constructors.len(), 2);
+                assert_eq!(definition.constructors[0].fields.len(), 1);
+                assert_eq!(definition.constructors[1].fields.len(), 1);
+            },
+            _ => panic!("Expected TypeDef expression"),
         }
     }
 }

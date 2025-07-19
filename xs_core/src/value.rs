@@ -20,6 +20,13 @@ impl fmt::Display for Value {
             Value::RecClosure { name, params, .. } => {
                 write!(f, "<rec-closure:{}:{}>", name.0, params.len())
             }
+            Value::Constructor { name, values } => {
+                write!(f, "({}", name.0)?;
+                for value in values {
+                    write!(f, " {}", value)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

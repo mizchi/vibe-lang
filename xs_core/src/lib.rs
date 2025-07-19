@@ -73,6 +73,36 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    Match {
+        expr: Box<Expr>,
+        cases: Vec<(Pattern, Expr)>,
+        span: Span,
+    },
+    Constructor {
+        name: Ident,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    TypeDef {
+        definition: TypeDefinition,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    Wildcard(Span),
+    Literal(Literal, Span),
+    Variable(Ident, Span),
+    Constructor {
+        name: Ident,
+        patterns: Vec<Pattern>,
+        span: Span,
+    },
+    List {
+        patterns: Vec<Pattern>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -87,6 +117,9 @@ impl Expr {
             Expr::Lambda { span, .. } => span,
             Expr::If { span, .. } => span,
             Expr::Apply { span, .. } => span,
+            Expr::Match { span, .. } => span,
+            Expr::Constructor { span, .. } => span,
+            Expr::TypeDef { span, .. } => span,
         }
     }
 }
@@ -105,6 +138,23 @@ pub enum Type {
     List(Box<Type>),
     Function(Box<Type>, Box<Type>),
     Var(String),
+    UserDefined {
+        name: String,
+        type_params: Vec<Type>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDefinition {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub constructors: Vec<Constructor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constructor {
+    pub name: String,
+    pub fields: Vec<Type>,
 }
 
 impl fmt::Display for Type {
@@ -116,6 +166,17 @@ impl fmt::Display for Type {
             Type::List(t) => write!(f, "(List {})", t),
             Type::Function(from, to) => write!(f, "(-> {} {})", from, to),
             Type::Var(name) => write!(f, "{}", name),
+            Type::UserDefined { name, type_params } => {
+                if type_params.is_empty() {
+                    write!(f, "{}", name)
+                } else {
+                    write!(f, "({}", name)?;
+                    for param in type_params {
+                        write!(f, " {}", param)?;
+                    }
+                    write!(f, ")")
+                }
+            }
         }
     }
 }
@@ -136,6 +197,10 @@ pub enum Value {
         params: Vec<Ident>,
         body: Expr,
         env: Environment,
+    },
+    Constructor {
+        name: Ident,
+        values: Vec<Value>,
     },
 }
 
