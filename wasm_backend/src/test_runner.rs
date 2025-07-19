@@ -6,7 +6,7 @@
 use crate::runner::{WasmTestRunner, RunResult};
 use crate::generate_module;
 use parser::parse;
-use checker::type_check;
+use checker::TypeChecker;
 use perceus::transform_to_ir;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,7 +24,7 @@ pub struct XsTest {
 }
 
 /// Expected test result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TestExpectation {
     /// Expect the test to return a specific value (stored as i32/i64/f64)
     ValueI32(i32),
@@ -147,7 +147,9 @@ impl XsTestRunner {
         };
         
         // Type check
-        match type_check(&ast) {
+        let mut type_checker = TypeChecker::new();
+        let mut env = checker::TypeEnv::new();
+        match type_checker.check(&ast, &mut env) {
             Ok(_) => {},
             Err(e) => {
                 if let Some(TestExpectation::TypeError(expected)) = &test.expected {
@@ -317,3 +319,7 @@ impl TestSuiteResult {
         self.failed == 0 && self.errors == 0
     }
 }
+
+#[cfg(test)]
+#[path = "test_runner_tests.rs"]
+mod test_runner_tests;

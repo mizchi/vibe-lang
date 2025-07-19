@@ -443,3 +443,129 @@ impl Default for BuiltinRegistry {
 
 // Re-export for convenience
 pub use crate::ir::{TypedIrExpr, TypedPattern};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_add_int() {
+        let add = AddInt;
+        assert_eq!(add.name(), "+");
+        
+        // Test successful addition
+        let result = add.interpret(&[Value::Int(2), Value::Int(3)]).unwrap();
+        assert_eq!(result, Value::Int(5));
+        
+        // Test error case
+        let result = add.interpret(&[Value::Bool(true), Value::Int(3)]);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_division_by_zero() {
+        let div = DivInt;
+        
+        // Test normal division
+        let result = div.interpret(&[Value::Int(10), Value::Int(2)]).unwrap();
+        assert_eq!(result, Value::Int(5));
+        
+        // Test division by zero
+        let result = div.interpret(&[Value::Int(10), Value::Int(0)]);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_comparisons() {
+        let lt = LessThan;
+        assert_eq!(lt.interpret(&[Value::Int(1), Value::Int(2)]).unwrap(), Value::Bool(true));
+        assert_eq!(lt.interpret(&[Value::Int(2), Value::Int(1)]).unwrap(), Value::Bool(false));
+        
+        let eq = Equal;
+        assert_eq!(eq.interpret(&[Value::Int(2), Value::Int(2)]).unwrap(), Value::Bool(true));
+        assert_eq!(eq.interpret(&[Value::Int(2), Value::Int(3)]).unwrap(), Value::Bool(false));
+    }
+    
+    #[test]
+    fn test_cons() {
+        let cons = Cons;
+        let result = cons.interpret(&[
+            Value::Int(1),
+            Value::List(vec![Value::Int(2), Value::Int(3)])
+        ]).unwrap();
+        
+        match result {
+            Value::List(elems) => {
+                assert_eq!(elems.len(), 3);
+                assert_eq!(elems[0], Value::Int(1));
+                assert_eq!(elems[1], Value::Int(2));
+                assert_eq!(elems[2], Value::Int(3));
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+    
+    #[test]
+    fn test_float_addition() {
+        let add_float = AddFloat;
+        let result = add_float.interpret(&[Value::Float(1.5), Value::Float(2.5)]).unwrap();
+        assert_eq!(result, Value::Float(4.0));
+    }
+    
+    #[test]
+    fn test_builtin_registry() {
+        let registry = BuiltinRegistry::new();
+        
+        // Test finding builtins
+        assert!(registry.get("+").is_some());
+        assert!(registry.get("-").is_some());
+        assert!(registry.get("*").is_some());
+        assert!(registry.get("/").is_some());
+        assert!(registry.get("<").is_some());
+        assert!(registry.get("cons").is_some());
+        assert!(registry.get("+.").is_some());
+        assert!(registry.get("unknown").is_none());
+        
+        // Test all() method
+        assert!(registry.all().len() > 0);
+    }
+    
+    #[test]
+    fn test_type_signatures() {
+        let add = AddInt;
+        match add.type_signature() {
+            Type::Function(from, to) => {
+                assert_eq!(*from, Type::Int);
+                match to.as_ref() {
+                    Type::Function(from2, to2) => {
+                        assert_eq!(**from2, Type::Int);
+                        assert_eq!(**to2, Type::Int);
+                    }
+                    _ => panic!("Expected curried function"),
+                }
+            }
+            _ => panic!("Expected function type"),
+        }
+    }
+    
+    #[test]
+    fn test_wasm_compilation() {
+        let add = AddInt;
+        match add.compile_to_wasm() {
+            WasmBuiltin::Instructions(instrs) => {
+                assert_eq!(instrs.len(), 1);
+                match &instrs[0] {
+                    WasmInstrPattern::Binary(BinaryOp::I64Add) => {},
+                    _ => panic!("Expected I64Add"),
+                }
+            }
+            _ => panic!("Expected Instructions"),
+        }
+        
+        let cons = Cons;
+        match cons.compile_to_wasm() {
+            WasmBuiltin::Complex(name) => assert_eq!(name, "cons"),
+            _ => panic!("Expected Complex"),
+        }
+    }
+}

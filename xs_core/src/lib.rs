@@ -1,6 +1,7 @@
 use std::fmt;
 use thiserror::Error;
 use ordered_float::OrderedFloat;
+use serde::{Serialize, Deserialize};
 
 mod types;
 mod value;
@@ -10,7 +11,7 @@ pub mod builtins;
 // Re-export builtins for convenience
 pub use builtins::{BuiltinFunction, BuiltinRegistry};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -22,7 +23,7 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Literal {
     Int(i64),
     Float(OrderedFloat<f64>),
@@ -30,7 +31,7 @@ pub enum Literal {
     String(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ident(pub String);
 
 impl fmt::Display for Ident {
@@ -39,7 +40,7 @@ impl fmt::Display for Ident {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expr {
     Literal(Literal, Span),
     Ident(Ident, Span),
@@ -112,7 +113,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pattern {
     Wildcard(Span),
     Literal(Literal, Span),
@@ -156,7 +157,7 @@ impl Default for Expr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Type {
     Int,
     Float,
@@ -171,14 +172,14 @@ pub enum Type {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeDefinition {
     pub name: String,
     pub type_params: Vec<String>,
     pub constructors: Vec<Constructor>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Constructor {
     pub name: String,
     pub fields: Vec<Type>,

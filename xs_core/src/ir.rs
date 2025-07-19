@@ -376,6 +376,7 @@ impl TypedIrExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ordered_float::OrderedFloat;
     
     #[test]
     fn test_count_uses() {
@@ -397,6 +398,103 @@ mod tests {
     }
     
     #[test]
+    fn test_count_uses_shadowing() {
+        let expr = IrExpr::Lambda {
+            params: vec!["x".to_string()],
+            body: Box::new(IrExpr::Var("x".to_string())),
+        };
+        
+        // x is shadowed inside lambda, so outer x has 0 uses
+        assert_eq!(expr.count_uses("x"), 0);
+    }
+    
+    #[test]
+    fn test_count_uses_if() {
+        let expr = IrExpr::If {
+            cond: Box::new(IrExpr::Var("x".to_string())),
+            then_expr: Box::new(IrExpr::Var("x".to_string())),
+            else_expr: Box::new(IrExpr::Var("y".to_string())),
+        };
+        
+        assert_eq!(expr.count_uses("x"), 2);
+        assert_eq!(expr.count_uses("y"), 1);
+    }
+    
+    #[test]
+    fn test_count_uses_list() {
+        let expr = IrExpr::List(vec![
+            IrExpr::Var("x".to_string()),
+            IrExpr::Var("x".to_string()),
+            IrExpr::Var("y".to_string()),
+        ]);
+        
+        assert_eq!(expr.count_uses("x"), 2);
+        assert_eq!(expr.count_uses("y"), 1);
+    }
+    
+    #[test]
+    fn test_count_uses_cons() {
+        let expr = IrExpr::Cons {
+            head: Box::new(IrExpr::Var("x".to_string())),
+            tail: Box::new(IrExpr::Var("xs".to_string())),
+        };
+        
+        assert_eq!(expr.count_uses("x"), 1);
+        assert_eq!(expr.count_uses("xs"), 1);
+    }
+    
+    #[test]
+    fn test_count_uses_sequence() {
+        let expr = IrExpr::Sequence(vec![
+            IrExpr::Var("x".to_string()),
+            IrExpr::Var("x".to_string()),
+            IrExpr::Var("y".to_string()),
+        ]);
+        
+        assert_eq!(expr.count_uses("x"), 2);
+        assert_eq!(expr.count_uses("y"), 1);
+    }
+    
+    #[test]
+    fn test_count_uses_memory_ops() {
+        let expr1 = IrExpr::Drop("x".to_string());
+        assert_eq!(expr1.count_uses("x"), 1);
+        
+        let expr2 = IrExpr::Dup("y".to_string());
+        assert_eq!(expr2.count_uses("y"), 1);
+        assert_eq!(expr2.count_uses("x"), 0);
+    }
+    
+    #[test]
+    fn test_count_uses_reuse_check() {
+        let expr = IrExpr::ReuseCheck {
+            var: "x".to_string(),
+            reuse_expr: Box::new(IrExpr::Var("x".to_string())),
+            fallback_expr: Box::new(IrExpr::Var("y".to_string())),
+        };
+        
+        assert_eq!(expr.count_uses("x"), 2); // 1 for var + 1 in reuse_expr
+        assert_eq!(expr.count_uses("y"), 1);
+    }
+    
+    #[test]
+    fn test_count_uses_let_rec() {
+        let expr = IrExpr::LetRec {
+            name: "f".to_string(),
+            value: Box::new(IrExpr::Lambda {
+                params: vec!["x".to_string()],
+                body: Box::new(IrExpr::Apply {
+                    func: Box::new(IrExpr::Var("f".to_string())),
+                    args: vec![IrExpr::Var("x".to_string())],
+                }),
+            }),
+            body: Box::new(IrExpr::Var("f".to_string())),
+        };
+        
+        assert_eq!(expr.count_uses("f"), 2); // 1 in value + 1 in body
+    }
+    
+    #[test]
     fn test_free_vars() {
         let expr = IrExpr::Lambda {
             params: vec!["x".to_string()],
@@ -408,5 +506,446 @@ mod tests {
         
         let free = expr.free_vars();
         assert_eq!(free, vec!["f"]);
+    }
+    
+    #[test]
+    fn test_free_vars_let() {
+        let expr = IrExpr::Let {
+            name: "x".to_string(),
+            value: Box::new(IrExpr::Var("y".to_string())),
+            body: Box::new(IrExpr::Apply {
+                func: Box::new(IrExpr::Var("f".to_string())),
+                args: vec![IrExpr::Var("x".to_string())],
+            }),
+        };
+        
+        let free = expr.free_vars();
+        assert!(free.contains(&"y".to_string()));
+        assert!(free.contains(&"f".to_string()));
+        assert!(!free.contains(&"x".to_string())); // x is bound
+    }
+    
+    #[test]
+    fn test_free_vars_let_rec() {
+        let expr = IrExpr::LetRec {
+            name: "f".to_string(),
+            value: Box::new(IrExpr::Lambda {
+                params: vec!["x".to_string()],
+                body: Box::new(IrExpr::Apply {
+                    func: Box::new(IrExpr::Var("f".to_string())),
+                    args: vec![
+                        IrExpr::Var("x".to_string()),
+                        IrExpr::Var("g".to_string()),
+                    ],
+                }),
+            }),
+            body: Box::new(IrExpr::Var("f".to_string())),
+        };
+        
+        let free = expr.free_vars();
+        assert!(free.contains(&"g".to_string()));
+        assert!(!free.contains(&"f".to_string())); // f is bound
+        assert!(!free.contains(&"x".to_string())); // x is bound
+    }
+    
+    #[test]
+    fn test_free_vars_if() {
+        let expr = IrExpr::If {
+            cond: Box::new(IrExpr::Var("x".to_string())),
+            then_expr: Box::new(IrExpr::Var("y".to_string())),
+            else_expr: Box::new(IrExpr::Var("z".to_string())),
+        };
+        
+        let free = expr.free_vars();
+        assert!(free.contains(&"x".to_string()));
+        assert!(free.contains(&"y".to_string()));
+        assert!(free.contains(&"z".to_string()));
+    }
+    
+    #[test]
+    fn test_free_vars_literal() {
+        let expr = IrExpr::Literal(Literal::Int(42));
+        let free = expr.free_vars();
+        assert!(free.is_empty());
+    }
+    
+    #[test]
+    fn test_ownership_types() {
+        let owned = Ownership::Owned;
+        let borrowed = Ownership::Borrowed;
+        let shared = Ownership::Shared;
+        
+        assert_eq!(owned, Ownership::Owned);
+        assert_ne!(owned, borrowed);
+        assert_ne!(borrowed, shared);
+    }
+    
+    #[test]
+    fn test_usage_info() {
+        let info = UsageInfo {
+            name: "x".to_string(),
+            use_count: 2,
+            ownership: Ownership::Shared,
+        };
+        
+        assert_eq!(info.name, "x");
+        assert_eq!(info.use_count, 2);
+        assert_eq!(info.ownership, Ownership::Shared);
+    }
+    
+    #[test]
+    fn test_typed_ir_get_type() {
+        let expr = TypedIrExpr::Literal {
+            value: Literal::Int(42),
+            ty: Type::Int,
+        };
+        assert_eq!(expr.get_type(), &Type::Int);
+        
+        let expr = TypedIrExpr::Var {
+            name: "x".to_string(),
+            ty: Type::Bool,
+        };
+        assert_eq!(expr.get_type(), &Type::Bool);
+        
+        let expr = TypedIrExpr::Lambda {
+            params: vec![("x".to_string(), Type::Int)],
+            body: Box::new(TypedIrExpr::Var {
+                name: "x".to_string(),
+                ty: Type::Int,
+            }),
+            ty: Type::Function(Box::new(Type::Int), Box::new(Type::Int)),
+        };
+        assert_eq!(
+            expr.get_type(),
+            &Type::Function(Box::new(Type::Int), Box::new(Type::Int))
+        );
+    }
+    
+    #[test]
+    fn test_typed_ir_let() {
+        let expr = TypedIrExpr::Let {
+            name: "x".to_string(),
+            value: Box::new(TypedIrExpr::Literal {
+                value: Literal::Int(42),
+                ty: Type::Int,
+            }),
+            body: Box::new(TypedIrExpr::Var {
+                name: "x".to_string(),
+                ty: Type::Int,
+            }),
+            ty: Type::Int,
+        };
+        assert_eq!(expr.get_type(), &Type::Int);
+    }
+    
+    #[test]
+    fn test_typed_ir_if() {
+        let expr = TypedIrExpr::If {
+            cond: Box::new(TypedIrExpr::Literal {
+                value: Literal::Bool(true),
+                ty: Type::Bool,
+            }),
+            then_expr: Box::new(TypedIrExpr::Literal {
+                value: Literal::Int(1),
+                ty: Type::Int,
+            }),
+            else_expr: Box::new(TypedIrExpr::Literal {
+                value: Literal::Int(2),
+                ty: Type::Int,
+            }),
+            ty: Type::Int,
+        };
+        assert_eq!(expr.get_type(), &Type::Int);
+    }
+    
+    #[test]
+    fn test_typed_ir_list() {
+        let expr = TypedIrExpr::List {
+            elements: vec![
+                TypedIrExpr::Literal {
+                    value: Literal::Int(1),
+                    ty: Type::Int,
+                },
+                TypedIrExpr::Literal {
+                    value: Literal::Int(2),
+                    ty: Type::Int,
+                },
+            ],
+            elem_ty: Type::Int,
+            ty: Type::List(Box::new(Type::Int)),
+        };
+        assert_eq!(expr.get_type(), &Type::List(Box::new(Type::Int)));
+    }
+    
+    #[test]
+    fn test_typed_ir_constructor() {
+        let expr = TypedIrExpr::Constructor {
+            name: "Some".to_string(),
+            args: vec![TypedIrExpr::Literal {
+                value: Literal::Int(42),
+                ty: Type::Int,
+            }],
+            ty: Type::UserDefined {
+                name: "Option".to_string(),
+                type_params: vec![Type::Int],
+            },
+        };
+        assert_eq!(
+            expr.get_type(),
+            &Type::UserDefined {
+                name: "Option".to_string(),
+                type_params: vec![Type::Int],
+            }
+        );
+    }
+    
+    #[test]
+    fn test_typed_ir_memory_ops() {
+        let inner = TypedIrExpr::Literal {
+            value: Literal::Int(42),
+            ty: Type::Int,
+        };
+        
+        let drop_expr = TypedIrExpr::Drop {
+            name: "x".to_string(),
+            value: Box::new(inner.clone()),
+        };
+        assert_eq!(drop_expr.get_type(), &Type::Int);
+        
+        let dup_expr = TypedIrExpr::Dup {
+            name: "x".to_string(),
+            value: Box::new(inner),
+        };
+        assert_eq!(dup_expr.get_type(), &Type::Int);
+    }
+    
+    #[test]
+    fn test_typed_pattern() {
+        let wildcard = TypedPattern::Wildcard;
+        assert_eq!(wildcard, TypedPattern::Wildcard);
+        
+        let var_pat = TypedPattern::Variable("x".to_string(), Type::Int);
+        match &var_pat {
+            TypedPattern::Variable(name, ty) => {
+                assert_eq!(name, "x");
+                assert_eq!(ty, &Type::Int);
+            }
+            _ => panic!("Expected Variable pattern"),
+        }
+        
+        let lit_pat = TypedPattern::Literal(Literal::Bool(true));
+        match &lit_pat {
+            TypedPattern::Literal(lit) => {
+                assert_eq!(lit, &Literal::Bool(true));
+            }
+            _ => panic!("Expected Literal pattern"),
+        }
+    }
+    
+    #[test]
+    fn test_typed_pattern_constructor() {
+        let pat = TypedPattern::Constructor {
+            name: "Some".to_string(),
+            patterns: vec![TypedPattern::Variable("x".to_string(), Type::Int)],
+            ty: Type::UserDefined {
+                name: "Option".to_string(),
+                type_params: vec![Type::Int],
+            },
+        };
+        
+        match &pat {
+            TypedPattern::Constructor { name, patterns, ty } => {
+                assert_eq!(name, "Some");
+                assert_eq!(patterns.len(), 1);
+                assert_eq!(
+                    ty,
+                    &Type::UserDefined {
+                        name: "Option".to_string(),
+                        type_params: vec![Type::Int],
+                    }
+                );
+            }
+            _ => panic!("Expected Constructor pattern"),
+        }
+    }
+    
+    #[test]
+    fn test_typed_pattern_list() {
+        let pat = TypedPattern::List {
+            patterns: vec![
+                TypedPattern::Literal(Literal::Int(1)),
+                TypedPattern::Variable("xs".to_string(), Type::List(Box::new(Type::Int))),
+            ],
+            elem_ty: Type::Int,
+        };
+        
+        match &pat {
+            TypedPattern::List { patterns, elem_ty } => {
+                assert_eq!(patterns.len(), 2);
+                assert_eq!(elem_ty, &Type::Int);
+            }
+            _ => panic!("Expected List pattern"),
+        }
+    }
+    
+    #[test]
+    fn test_typed_ir_match() {
+        let expr = TypedIrExpr::Match {
+            expr: Box::new(TypedIrExpr::Var {
+                name: "x".to_string(),
+                ty: Type::UserDefined {
+                    name: "Option".to_string(),
+                    type_params: vec![Type::Int],
+                },
+            }),
+            cases: vec![
+                (
+                    TypedPattern::Constructor {
+                        name: "Some".to_string(),
+                        patterns: vec![TypedPattern::Variable("v".to_string(), Type::Int)],
+                        ty: Type::UserDefined {
+                            name: "Option".to_string(),
+                            type_params: vec![Type::Int],
+                        },
+                    },
+                    TypedIrExpr::Var {
+                        name: "v".to_string(),
+                        ty: Type::Int,
+                    },
+                ),
+                (
+                    TypedPattern::Constructor {
+                        name: "None".to_string(),
+                        patterns: vec![],
+                        ty: Type::UserDefined {
+                            name: "Option".to_string(),
+                            type_params: vec![Type::Int],
+                        },
+                    },
+                    TypedIrExpr::Literal {
+                        value: Literal::Int(0),
+                        ty: Type::Int,
+                    },
+                ),
+            ],
+            ty: Type::Int,
+        };
+        
+        assert_eq!(expr.get_type(), &Type::Int);
+    }
+    
+    #[test]
+    fn test_typed_ir_sequence() {
+        let expr = TypedIrExpr::Sequence {
+            exprs: vec![
+                TypedIrExpr::Literal {
+                    value: Literal::String("hello".to_string()),
+                    ty: Type::String,
+                },
+                TypedIrExpr::Literal {
+                    value: Literal::Int(42),
+                    ty: Type::Int,
+                },
+            ],
+            ty: Type::Int,
+        };
+        assert_eq!(expr.get_type(), &Type::Int);
+    }
+    
+    #[test]
+    fn test_typed_ir_reuse_check() {
+        let expr = TypedIrExpr::ReuseCheck {
+            var: "x".to_string(),
+            reuse_expr: Box::new(TypedIrExpr::Literal {
+                value: Literal::Int(1),
+                ty: Type::Int,
+            }),
+            fallback_expr: Box::new(TypedIrExpr::Literal {
+                value: Literal::Int(2),
+                ty: Type::Int,
+            }),
+            ty: Type::Int,
+        };
+        assert_eq!(expr.get_type(), &Type::Int);
+    }
+    
+    #[test]
+    fn test_typed_ir_apply() {
+        let expr = TypedIrExpr::Apply {
+            func: Box::new(TypedIrExpr::Var {
+                name: "add".to_string(),
+                ty: Type::Function(
+                    Box::new(Type::Int),
+                    Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
+                ),
+            }),
+            args: vec![
+                TypedIrExpr::Literal {
+                    value: Literal::Int(1),
+                    ty: Type::Int,
+                },
+                TypedIrExpr::Literal {
+                    value: Literal::Int(2),
+                    ty: Type::Int,
+                },
+            ],
+            ty: Type::Int,
+        };
+        assert_eq!(expr.get_type(), &Type::Int);
+    }
+    
+    #[test]
+    fn test_typed_ir_cons() {
+        let expr = TypedIrExpr::Cons {
+            head: Box::new(TypedIrExpr::Literal {
+                value: Literal::Int(1),
+                ty: Type::Int,
+            }),
+            tail: Box::new(TypedIrExpr::List {
+                elements: vec![],
+                elem_ty: Type::Int,
+                ty: Type::List(Box::new(Type::Int)),
+            }),
+            ty: Type::List(Box::new(Type::Int)),
+        };
+        assert_eq!(expr.get_type(), &Type::List(Box::new(Type::Int)));
+    }
+    
+    #[test]
+    fn test_typed_ir_let_rec() {
+        let expr = TypedIrExpr::LetRec {
+            name: "fact".to_string(),
+            value: Box::new(TypedIrExpr::Lambda {
+                params: vec![("n".to_string(), Type::Int)],
+                body: Box::new(TypedIrExpr::Literal {
+                    value: Literal::Int(1),
+                    ty: Type::Int,
+                }),
+                ty: Type::Function(Box::new(Type::Int), Box::new(Type::Int)),
+            }),
+            body: Box::new(TypedIrExpr::Var {
+                name: "fact".to_string(),
+                ty: Type::Function(Box::new(Type::Int), Box::new(Type::Int)),
+            }),
+            ty: Type::Function(Box::new(Type::Int), Box::new(Type::Int)),
+        };
+        assert_eq!(
+            expr.get_type(),
+            &Type::Function(Box::new(Type::Int), Box::new(Type::Int))
+        );
+    }
+    
+    #[test]
+    fn test_literal_types() {
+        let int_lit = Literal::Int(42);
+        let float_lit = Literal::Float(OrderedFloat(3.14));
+        let bool_lit = Literal::Bool(true);
+        let string_lit = Literal::String("hello".to_string());
+        
+        // Test Debug trait
+        assert!(format!("{:?}", int_lit).contains("Int"));
+        assert!(format!("{:?}", float_lit).contains("Float"));
+        assert!(format!("{:?}", bool_lit).contains("Bool"));
+        assert!(format!("{:?}", string_lit).contains("String"));
     }
 }
