@@ -1,75 +1,217 @@
-プログラミング言語を作ります。
+# XS Language - AI向け高速静的解析言語
 
-大事なこと: これは人間用のプログラミングではなく、AI のために高速に静的解析結果を返すための言語として設計されます。あなたはその視点でプログラミング言語を設計してください
+## 概要
+XS言語は、AIが理解・解析しやすいように設計された静的型付き関数型プログラミング言語です。コンテンツアドレス型のコード管理、純粋関数型設計、そしてAIフレンドリーなエラーメッセージにより、AIによるコード理解と生成を最適化します。
 
-- Rust の workspace で crate ごとに実装します。
-  - parser: S 式パーサー
-  - checker: HM 型推論エンジン
-  - interpreter: インタープリター
-  - cli: コマンドラインツール
-  - xs_core: 共通型定義と IR、ビルトイン関数
-  - xs_salsa: インクリメンタルコンパイル
-  - perceus: Perceus GC 変換
-  - wasm_backend: WebAssembly GC コード生成
-  - runtime: 統一ランタイムインターフェース
-  - codebase: Unison 風構造化コードベース
-- 拡張子は .xs です。CLI は xsc です。
-- t-wada の TDD を実践します
-- parser: 実装を効率化するために S 式で表現しますが、静的型付き言語で、明示的な型アノテーションを記述できるようにする
-- checker: HM 型推論と型チェッカーを実装します
-  - 変数と型のスコープも実行してください
-  - 型チェッカーのテストを多めに書いてください
-  - rec/let-rec 構文の完全な型推論サポート
-- interpreter: 型推論の次に、インタープリターを実装します
-  - 型推論に違反してない状態なら、期待通りに動くことを確認してください
-  - そのテストを書いてください
-- 動作確認のために、これらを CLI を通して使えるようにします
-  - xsc parse foo.xs # AST を表示
-  - xsc check foo.xs # 型チェック
-  - xsc run foo.xs # 実行
-  - xsc bench # ベンチマーク実行
+## 言語の特徴
 
-## 実装済み機能
+### 1. コンテンツアドレス型コードベース（Unison風）
+- すべての式がSHA256ハッシュで一意に識別される
+- 同じコードは常に同じハッシュを生成（決定論的）
+- 変更の追跡が容易で、AIが差分を効率的に理解できる
+- UCM（Unison Codebase Manager）風のedit/update機能
 
-- ✅ S 式パーサー
-- ✅ HM 型推論（完全な型推論サポート）
+### 2. 純粋関数型プログラミング
+- 副作用のない純粋関数のみ
+- 自動カリー化による部分適用
+- 参照透過性により、AIが関数の振る舞いを確実に予測可能
+- Perceus参照カウントによる効率的なメモリ管理
+
+### 3. S式ベースの構文
+- パーサー実装の効率化
+- ASTの構造が明確で、AIが解析しやすい
+- LISPファミリーの単純で一貫した構文
+
+### 4. Hindley-Milner型推論
+- 明示的な型注釈を最小限に
+- 完全な型推論により、AIが型情報を活用しやすい
+- Let多相による柔軟な型システム
+
+### 5. AIフレンドリーなエラーメッセージ
+- 構造化されたエラー情報（カテゴリー、提案、メタデータ）
+- 型変換の自動提案
+- レーベンシュタイン距離による類似変数名の提案
+- トークン効率的な英語メッセージ（将来的に多言語化予定）
+
+## アーキテクチャ
+
+### crateの構成
+- **xs_core**: 共通型定義、IR、ビルトイン関数、エラーコンテキスト
+- **parser**: S式パーサー、メタデータ保持パーサー
+- **checker**: HM型推論エンジン、改善されたエラーメッセージ
+- **interpreter**: インタープリター実装
+- **cli**: コマンドラインツール (xsc)
+- **shell**: REPL実装、UCM風のコード管理
+- **codebase**: Unison風構造化コードベース
+- **xs_salsa**: インクリメンタルコンパイル
+- **perceus**: Perceus GC変換
+- **wasm_backend**: WebAssembly GCコード生成
+- **runtime**: 統一ランタイムインターフェース
+
+### メタデータ管理
+- ASTとは別にコメントや一時変数ラベルを管理
+- NodeIdによる一意な識別
+- コード展開時にメタデータを考慮した整形
+
+## 基本構文
+
+```lisp
+; 変数定義
+(let x 42)
+(let y: Int 10)  ; 型注釈（オプション）
+
+; 関数定義（自動カリー化）
+(let add (lambda (x y) (+ x y)))
+(let inc (add 1))  ; 部分適用
+
+; 再帰関数
+(rec factorial (n)
+  (if (= n 0)
+      1
+      (* n (factorial (- n 1)))))
+
+; let-rec（相互再帰対応）
+(let-rec even (n) (if (= n 0) true (odd (- n 1))))
+(let-rec odd (n) (if (= n 0) false (even (- n 1))))
+
+; パターンマッチング
+(match xs
+  ((list) 0)           ; 空リスト
+  ((list h t) (+ 1 (length t))))  ; cons パターン
+
+; 代数的データ型
+(type Option a
+  (None)
+  (Some a))
+
+(type Result e a
+  (Error e)
+  (Ok a))
+
+; モジュール
+(module Math
+  (export add multiply factorial)
+  (let add (lambda (x y) (+ x y)))
+  ...)
+
+; インポート
+(import Math)
+(import List as L)
+```
+
+## 標準ライブラリ
+
+### core.xs
+- 基本的な関数合成、恒等関数、定数関数
+- Maybe/Either型と関連関数
+- ブーリアン演算、数値ヘルパー
+
+### list.xs
+- リスト操作: map, filter, fold-left, fold-right
+- リスト生成: range, replicate
+- リスト検索: find, elem, all, any
+
+### math.xs
+- 数学関数: pow, factorial, gcd, lcm
+- 数値述語: even, odd, positive, negative
+- 統計関数: sum, product, average
+
+### string.xs
+- 文字列操作: concat, join, repeat
+- 文字列比較: str-eq, str-neq
+
+## XS Shell (REPL)
+
+### 基本コマンド
+- `help` - ヘルプ表示
+- `history [n]` - 評価履歴表示
+- `ls` - 名前付き式の一覧
+- `name <hash> <name>` - ハッシュプレフィックスで式に名前を付ける
+- `update` - 変更をコードベースにコミット
+- `edits` - 保留中の編集を表示
+
+### 使用例
+```
+xs> (let double (lambda (x) (* x 2)))
+double : (-> Int Int) = <closure>
+  [bac2c0f3]
+
+xs> (double 21)
+42 : Int
+  [af3d2e89]
+
+xs> name bac2 double_fn
+Named double_fn : (-> Int Int) = <closure> [bac2c0f3]
+
+xs> update
+Updated 1 definitions:
++ double_fn
+```
+
+## エラーメッセージの設計
+
+### エラーカテゴリー
+- **SYNTAX**: 構文エラー
+- **TYPE**: 型エラー
+- **SCOPE**: スコープエラー（未定義変数など）
+- **PATTERN**: パターンマッチエラー
+- **MODULE**: モジュール関連エラー
+- **RUNTIME**: 実行時エラー
+
+### エラー構造
+```
+ERROR[TYPE]: Type mismatch: expected type 'Int', but found type 'String'
+Location: line 3, column 5
+Code: (+ x y)
+Type mismatch: expected Int, found String
+Suggestions:
+  1. Convert string to integer using 'int_of_string'
+     Replace with: (int_of_string y)
+```
+
+## 実装状況
+
+### 完了済み機能
+- ✅ S式パーサー（コメント保持対応）
+- ✅ HM型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
-- ✅ CLI ツール
-- ✅ Salsa インクリメンタルコンパイル
-- ✅ Perceus IR 変換
-- ✅ WebAssembly GC 基本実装
-- ✅ rec/let-rec 構文（型推論対応）
-- ✅ 代数的データ型
+- ✅ CLIツール (xsc parse/check/run/bench)
+- ✅ REPL (XS Shell)
+- ✅ コンテンツアドレス型コードベース
+- ✅ 自動カリー化と部分適用
+- ✅ 標準ライブラリ（core, list, math, string）
 - ✅ パターンマッチング
+- ✅ 代数的データ型
 - ✅ モジュールシステム（基本実装）
-- ✅ 統一ランタイムインターフェース（Backend trait）
-- ✅ Unison 風構造化コードベース
-- ✅ 包括的なテストカバレッジ（76.63%）
-- ✅ 型チェッカーパフォーマンスベンチマーク
+- ✅ ASTメタデータ管理
+- ✅ AIフレンドリーなエラーメッセージ
 
-## アーキテクチャ概要
+### 開発中/計画中
+- 🚧 rec内部定義の修正
+- 📋 Unison風テスト結果キャッシュシステム
+- 📋 Effect System
+- 📋 WASIサンドボックス
+- 📋 並列実行サポート
+- 📋 より高度な型システム（GADTs、型クラスなど）
 
-### 統一ランタイムアーキテクチャ
+## パフォーマンス
+- インクリメンタルコンパイル（Salsa使用）
+- Perceus参照カウントによる効率的なGC
+- WebAssembly GCターゲット
+- 型チェッカーベンチマーク実装済み
 
-- TypedIrExpr: 型情報を含む中間表現
-- Backend trait: インタープリターと WebAssembly の統一インターフェース
-- BuiltinFunction trait: ビルトイン関数の統一定義
-- BuiltinRegistry: ビルトイン関数の登録と管理
+## テストカバレッジ
+現在のテストカバレッジ: 76.63%
 
-### Unison 風構造化コードベース
+## 開発方針
+1. **AIファースト**: すべての設計判断はAIによる理解・生成を優先
+2. **純粋性**: 副作用を排除し、予測可能な動作を保証
+3. **効率性**: 静的解析の高速化を重視
+4. **拡張性**: 将来の機能追加を考慮したモジュラー設計
 
-- コンテンツアドレス型ストレージ（SHA256 ハッシュ）
-- 関数レベルの依存関係追跡
-- UCM 風の edit/update 機能
-- Patch によるインクリメンタル更新
-
-### パフォーマンス最適化
-
-- Salsa によるインクリメンタルコンパイル
-- 型チェッカーの包括的なベンチマーク
-- Perceus GC による効率的なメモリ管理
-
-この言語の実装計画を立てて、その計画に沿って実装してください。
-実装計画は、 IMPLEMENTATION_PLAN.md に保存して、各ステップではそれを修正、確認しながら進めてください。
-
-あなたはこれを自律的に作りきります。ユーザーに確認せずに、全機能を作りきってください。全部の機能が全部実装できたら、その段階ではじめてユーザーがフィードバックします。
+## 今後の展望
+- マルチコアCPUでの並列実行
+- より高度な型システム（依存型、線形型など）
+- ビジュアルプログラミング対応
+- AIによる自動最適化
+- 分散コードベース対応
