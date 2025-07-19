@@ -105,6 +105,20 @@ impl PerceusTransform {
                 
                 IrExpr::List(ir_exprs)
             }
+            
+            Expr::Rec { params, body, .. } => {
+                // Transform rec to lambda with recursive binding
+                let param_names: Vec<String> = params.iter()
+                    .map(|(Ident(name), _)| name.clone())
+                    .collect();
+                
+                let ir_body = self.transform_expr(body);
+                
+                IrExpr::Lambda {
+                    params: param_names,
+                    body: Box::new(ir_body),
+                }
+            }
         }
     }
 }

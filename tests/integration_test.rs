@@ -6,7 +6,7 @@ use std::fs;
 /// Helper function to run xsc command
 fn run_xsc(args: &[&str]) -> (String, String, bool) {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "xsc", "--"])
+        .args(&["run", "-p", "cli", "--bin", "xsc", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");

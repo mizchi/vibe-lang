@@ -155,9 +155,40 @@ impl TypeChecker {
             }),
             
             Expr::Ident(Ident(name), _span) => {
-                match env.lookup(name) {
-                    Some(scheme) => Ok(self.instantiate(scheme)),
-                    None => Err(XsError::UndefinedVariable(Ident(name.clone()))),
+                // Check for built-in functions first
+                let builtin_type = match name.as_str() {
+                    "+" | "-" | "*" | "/" => Some(Type::Function(
+                        Box::new(Type::Int),
+                        Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
+                    )),
+                    "<" | ">" | "<=" | ">=" | "=" => Some(Type::Function(
+                        Box::new(Type::Int),
+                        Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool)))
+                    )),
+                    "cons" => {
+                        let a = self.fresh_var();
+                        Some(Type::Function(
+                            Box::new(a.clone()),
+                            Box::new(Type::Function(
+                                Box::new(Type::List(Box::new(a.clone()))),
+                                Box::new(Type::List(Box::new(a)))
+                            ))
+                        ))
+                    },
+                    "list" => {
+                        // list is variadic, but we'll handle it specially in Apply
+                        let a = self.fresh_var();
+                        Some(Type::List(Box::new(a)))
+                    },
+                    _ => None,
+                };
+                
+                match builtin_type {
+                    Some(typ) => Ok(typ),
+                    None => match env.lookup(name) {
+                        Some(scheme) => Ok(self.instantiate(scheme)),
+                        None => Err(XsError::UndefinedVariable(Ident(name.clone()))),
+                    }
                 }
             }
             
@@ -214,6 +245,45 @@ impl TypeChecker {
                 env.extend(name.0.clone(), scheme);
                 
                 Ok(value_type)
+            }
+            
+            Expr::Rec { name, params, return_type, body, span } => {
+                // For rec, we add the function name to the environment first
+                let mut param_types = Vec::new();
+                for (_, type_ann) in params {
+                    let param_type = type_ann.clone().unwrap_or_else(|| self.fresh_var());
+                    param_types.push(param_type);
+                }
+                
+                let inferred_return_type = return_type.clone().unwrap_or_else(|| self.fresh_var());
+                
+                // Build the function type
+                let mut func_type = inferred_return_type.clone();
+                for param_type in param_types.iter().rev() {
+                    func_type = Type::Function(Box::new(param_type.clone()), Box::new(func_type));
+                }
+                
+                // Add function to environment before checking body
+                env.push_scope();
+                env.extend(name.0.clone(), TypeScheme::mono(func_type.clone()));
+                
+                // Add parameters to environment
+                for ((param, _type_ann), param_type) in params.iter().zip(param_types.iter()) {
+                    env.extend(param.0.clone(), TypeScheme::mono(param_type.clone()));
+                }
+                
+                // Type check body
+                let body_type = self.infer(body, env)?;
+                env.pop_scope();
+                
+                // Constrain body type to match return type
+                self.constraints.push(Constraint {
+                    left: body_type,
+                    right: inferred_return_type,
+                    span: span.clone(),
+                });
+                
+                Ok(func_type)
             }
             
             Expr::Lambda { params, body, .. } => {
@@ -456,6 +526,35 @@ mod tests {
     fn test_let_type_mismatch() {
         let result = type_check(&parse("(let x : Bool 42)").unwrap());
         assert!(matches!(result, Err(XsError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn test_rec_types() {
+        // Basic recursive function
+        let typ = type_check(&parse("(rec factorial (n : Int) : Int (if (= n 0) 1 (* n (factorial (- n 1)))))").unwrap()).unwrap();
+        match &typ {
+            Type::Function(from, to) => {
+                // Should be Int -> Int
+                assert!(matches!(from.as_ref(), Type::Int));
+                assert!(matches!(to.as_ref(), Type::Int));
+            },
+            _ => panic!("Expected function type for factorial, got {:?}", typ),
+        }
+
+        // With type annotations
+        let typ = type_check(&parse("(rec add (x : Int y : Int) : Int (+ x y))").unwrap()).unwrap();
+        match &typ {
+            Type::Function(from, to) => {
+                match (from.as_ref(), to.as_ref()) {
+                    (Type::Int, Type::Function(from2, to2)) => {
+                        assert!(matches!(from2.as_ref(), Type::Int));
+                        assert!(matches!(to2.as_ref(), Type::Int));
+                    },
+                    _ => panic!("Expected Int -> Int -> Int for add"),
+                }
+            },
+            _ => panic!("Expected function type for add"),
+        }
     }
 
     #[test]

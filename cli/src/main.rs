@@ -154,5 +154,8 @@ fn format_value(value: &Value) -> String {
         Value::Closure { params, .. } => {
             format!("<closure:{}>", params.len()).yellow().to_string()
         }
+        Value::RecClosure { name, params, .. } => {
+            format!("<rec-closure:{}:{}>", name.0, params.len()).yellow().to_string()
+        }
     }
 }

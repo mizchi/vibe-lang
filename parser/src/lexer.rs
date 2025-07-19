@@ -18,6 +18,7 @@ pub enum Token {
     Cons,
     Colon,
     Arrow,
+    Rec,
 }
 
 pub struct Lexer<'a> {
@@ -200,6 +201,7 @@ impl<'a> Lexer<'a> {
             "cons" => Token::Cons,
             "true" => Token::Bool(true),
             "false" => Token::Bool(false),
+            "rec" => Token::Rec,
             _ => Token::Symbol(value),
         };
         

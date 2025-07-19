@@ -43,24 +43,15 @@ impl Interpreter {
                 // where the function can refer to itself
                 match value.as_ref() {
                     Expr::Lambda { params, body, .. } => {
-                        // Create a closure that includes itself in the environment
-                        let rec_closure = Value::Closure {
+                        // Create a recursive closure
+                        let rec_closure = Value::RecClosure {
+                            name: name.clone(),
                             params: params.iter().map(|(name, _)| name.clone()).collect(),
                             body: (**body).clone(),
-                            env: env.clone(), // This will be updated with the recursive binding
+                            env: env.clone(),
                         };
                         
-                        // Extend the environment with the recursive binding
-                        let new_env = env.extend(name.clone(), rec_closure.clone());
-                        
-                        // Re-create the closure with the updated environment
-                        let final_closure = Value::Closure {
-                            params: params.iter().map(|(name, _)| name.clone()).collect(),
-                            body: (**body).clone(),
-                            env: new_env,
-                        };
-                        
-                        Ok(final_closure)
+                        Ok(rec_closure)
                     }
                     _ => {
                         // For non-lambda expressions, just evaluate normally
@@ -69,6 +60,21 @@ impl Interpreter {
                         Ok(val)
                     }
                 }
+            }
+
+            Expr::Rec { name, params, body, .. } => {
+                // rec creates a special recursive closure
+                let param_names: Vec<Ident> = params.iter().map(|(name, _)| name.clone()).collect();
+                
+                // Create a recursive closure that knows its own name
+                let rec_closure = Value::RecClosure {
+                    name: name.clone(),
+                    params: param_names,
+                    body: (**body).clone(),
+                    env: env.clone(),
+                };
+                
+                Ok(rec_closure)
             }
 
             Expr::Lambda { params, body, .. } => {
@@ -101,7 +107,7 @@ impl Interpreter {
                 
                 // Handle user-defined functions
                 let func_val = self.eval(func, env)?;
-                match func_val {
+                match &func_val {
                     Value::Closure { params, body, env: closure_env } => {
                         if params.len() != args.len() {
                             return Err(XsError::RuntimeError(
@@ -116,7 +122,26 @@ impl Interpreter {
                             new_env = new_env.extend(param.clone(), arg_val);
                         }
                         
-                        self.eval(&body, &new_env)
+                        self.eval(body, &new_env)
+                    }
+                    Value::RecClosure { name, params, body, env: closure_env } => {
+                        if params.len() != args.len() {
+                            return Err(XsError::RuntimeError(
+                                span.clone(),
+                                format!("Function expects {} arguments, got {}", params.len(), args.len()),
+                            ));
+                        }
+                        
+                        // For recursive closures, add the function itself to the environment
+                        let mut new_env = closure_env.clone();
+                        new_env = new_env.extend(name.clone(), func_val.clone());
+                        
+                        for (param, arg) in params.iter().zip(args.iter()) {
+                            let arg_val = self.eval(arg, env)?;
+                            new_env = new_env.extend(param.clone(), arg_val);
+                        }
+                        
+                        self.eval(body, &new_env)
                     }
                     _ => Err(XsError::RuntimeError(
                         span.clone(),
@@ -199,6 +224,28 @@ impl Interpreter {
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Bool(x > y))),
                     _ => Err(XsError::RuntimeError(span.clone(), "> requires integer arguments".to_string())),
+                }
+            }
+            "<=" => {
+                if args.len() != 2 {
+                    return Err(XsError::RuntimeError(span.clone(), "<= requires exactly 2 arguments".to_string()));
+                }
+                let a = self.eval(&args[0], env)?;
+                let b = self.eval(&args[1], env)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Bool(x <= y))),
+                    _ => Err(XsError::RuntimeError(span.clone(), "<= requires integer arguments".to_string())),
+                }
+            }
+            ">=" => {
+                if args.len() != 2 {
+                    return Err(XsError::RuntimeError(span.clone(), ">= requires exactly 2 arguments".to_string()));
+                }
+                let a = self.eval(&args[0], env)?;
+                let b = self.eval(&args[1], env)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Bool(x >= y))),
+                    _ => Err(XsError::RuntimeError(span.clone(), ">= requires integer arguments".to_string())),
                 }
             }
             "=" => {
@@ -346,11 +393,55 @@ mod tests {
     }
 
     #[test]
+    fn test_rec_minimal() {
+        // Test that rec creates a closure
+        let program = "(rec f (x) x)";
+        let result = check_and_eval(program).unwrap();
+        match result {
+            Value::Closure { .. } | Value::RecClosure { .. } => {},
+            _ => panic!("Expected closure from rec"),
+        }
+        
+        // Test applying a non-recursive rec
+        let result = check_and_eval("((rec f (x) x) 42)").unwrap();
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_rec_factorial() {
+        // rec returns a closure, so we need to apply it
+        let program = "(rec factorial (n : Int) : Int (if (<= n 1) 1 (* n (factorial (- n 1)))))";
+        let result = check_and_eval(program).unwrap();
+        // Should return a closure
+        match result {
+            Value::Closure { .. } | Value::RecClosure { .. } => {},
+            _ => panic!("Expected closure from rec"),
+        }
+        
+        // Now test applying it
+        let result = check_and_eval("((rec factorial (n : Int) : Int (if (<= n 1) 1 (* n (factorial (- n 1))))) 5)").unwrap();
+        assert_eq!(result, Value::Int(120)); // 5! = 120
+    }
+
+    #[test]
+    fn test_rec_fibonacci() {
+        let result = check_and_eval("((rec fib (n : Int) : Int (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) 6)").unwrap();
+        assert_eq!(result, Value::Int(8)); // fib(6) = 8
+    }
+
+    #[test]
+    fn test_rec_no_type_annotation() {
+        // Should work without type annotations due to type inference
+        let result = check_and_eval("((rec double (x) (* x 2)) 21)").unwrap();
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
     fn test_let_rec_factorial() {
         let program = "(let-rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))";
         let result = check_and_eval(program).unwrap();
         match result {
-            Value::Closure { .. } => {},
+            Value::Closure { .. } | Value::RecClosure { .. } => {},
             _ => panic!("Expected closure"),
         }
         

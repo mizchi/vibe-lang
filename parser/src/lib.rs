@@ -78,6 +78,7 @@ impl<'a> Parser<'a> {
             Some((Token::If, _)) => self.parse_if(start_span.start),
             Some((Token::List, _)) => self.parse_list_literal(start_span.start),
             Some((Token::Cons, _)) => self.parse_cons(start_span.start),
+            Some((Token::Rec, _)) => self.parse_rec(start_span.start),
             _ => self.parse_application(start_span.start),
         }
     }
@@ -166,6 +167,88 @@ impl<'a> Parser<'a> {
             name,
             type_ann,
             value,
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_rec(&mut self, start: usize) -> Result<Expr, XsError> {
+        self.advance()?; // consume 'rec'
+
+        // Parse function name
+        let name = match &self.current_token {
+            Some((Token::Symbol(s), _)) => {
+                let ident = Ident(s.clone());
+                self.advance()?;
+                ident
+            }
+            _ => return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected function name after 'rec'".to_string(),
+            )),
+        };
+
+        // Parse parameter list
+        if let Some((Token::LeftParen, _)) = &self.current_token {
+            self.advance()?;
+        } else {
+            return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected '(' after function name".to_string(),
+            ));
+        }
+
+        let mut params = Vec::new();
+        while let Some((Token::Symbol(param_name), _)) = &self.current_token {
+            let ident = Ident(param_name.clone());
+            self.advance()?;
+
+            let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
+                self.advance()?;
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+
+            params.push((ident, type_ann));
+        }
+
+        if let Some((Token::RightParen, _)) = &self.current_token {
+            self.advance()?;
+        } else {
+            return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected ')' after parameters".to_string(),
+            ));
+        }
+
+        // Parse optional return type
+        let return_type = if let Some((Token::Colon, _)) = &self.current_token {
+            self.advance()?;
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        // Parse body
+        let body = Box::new(self.parse_expr()?);
+
+        let end = match &self.current_token {
+            Some((Token::RightParen, span)) => {
+                let end = span.end;
+                self.advance()?;
+                end
+            }
+            _ => return Err(XsError::ParseError(
+                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                "Expected ')' after rec body".to_string(),
+            )),
+        };
+
+        Ok(Expr::Rec {
+            name,
+            params,
+            return_type,
+            body,
             span: Span::new(start, end),
         })
     }
@@ -400,6 +483,40 @@ pub fn parse(input: &str) -> Result<Expr, XsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_rec() {
+        let expr = parse("(rec factorial (n) (* n 2))").unwrap();
+        match expr {
+            Expr::Rec { name, params, return_type, body, .. } => {
+                assert_eq!(name.0, "factorial");
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].0.0, "n");
+                assert!(return_type.is_none());
+                // body should be (* n 2)
+                match body.as_ref() {
+                    Expr::Apply { .. } => {},
+                    _ => panic!("Expected apply in body"),
+                }
+            },
+            _ => panic!("Expected Rec expression"),
+        }
+
+        // Test with type annotations
+        let expr = parse("(rec add (x : Int y : Int) : Int (+ x y))").unwrap();
+        match expr {
+            Expr::Rec { name, params, return_type, body, .. } => {
+                assert_eq!(name.0, "add");
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].0.0, "x");
+                assert_eq!(params[1].0.0, "y");
+                assert!(params[0].1.is_some());
+                assert!(params[1].1.is_some());
+                assert_eq!(return_type, Some(Type::Int));
+            },
+            _ => panic!("Expected Rec expression"),
+        }
+    }
 
     #[test]
     fn test_parse_literals() {

@@ -50,6 +50,13 @@ pub enum Expr {
         value: Box<Expr>,
         span: Span,
     },
+    Rec {
+        name: Ident,
+        params: Vec<(Ident, Option<Type>)>,
+        return_type: Option<Type>,
+        body: Box<Expr>,
+        span: Span,
+    },
     Lambda {
         params: Vec<(Ident, Option<Type>)>,
         body: Box<Expr>,
@@ -76,6 +83,7 @@ impl Expr {
             Expr::List(_, span) => span,
             Expr::Let { span, .. } => span,
             Expr::LetRec { span, .. } => span,
+            Expr::Rec { span, .. } => span,
             Expr::Lambda { span, .. } => span,
             Expr::If { span, .. } => span,
             Expr::Apply { span, .. } => span,
@@ -123,6 +131,12 @@ pub enum Value {
         body: Expr,
         env: Environment,
     },
+    RecClosure {
+        name: Ident,
+        params: Vec<Ident>,
+        body: Expr,
+        env: Environment,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +163,18 @@ impl Environment {
             .rev()
             .find(|(n, _)| n == name)
             .map(|(_, v)| v)
+    }
+    
+    pub fn contains(&self, name: &Ident) -> bool {
+        self.bindings.iter().any(|(n, _)| n == name)
+    }
+    
+    pub fn len(&self) -> usize {
+        self.bindings.len()
+    }
+    
+    pub fn debug_bindings(&self) -> Vec<String> {
+        self.bindings.iter().map(|(name, _)| name.0.clone()).collect()
     }
 }
 
