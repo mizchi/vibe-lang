@@ -134,3 +134,110 @@ fn test_full_pipeline() {
     // Clean up
     fs::remove_file("test_pipeline.xs").ok();
 }
+
+// Tests for new language features
+#[test]
+fn test_pattern_matching() {
+    let (stdout, stderr, success) = run_xsc(&["run", "examples/test-pattern.xs"]);
+    assert!(success, "Run failed: {}", stderr);
+    assert!(stdout.contains("\"two\""));
+}
+
+#[test]
+fn test_recursive_function() {
+    let (stdout, stderr, success) = run_xsc(&["run", "examples/test-recursion.xs"]);
+    assert!(success, "Run failed: {}", stderr);
+    assert!(stdout.contains("120")); // 5! = 120
+}
+
+#[test]
+fn test_list_cons() {
+    let (stdout, stderr, success) = run_xsc(&["run", "examples/test-list.xs"]);
+    assert!(success, "Run failed: {}", stderr);
+    assert!(stdout.contains("(list 0 1 2 3)"));
+}
+
+#[test]
+fn test_lambda_application() {
+    let (stdout, stderr, success) = run_xsc(&["run", "examples/test-function.xs"]);
+    assert!(success, "Run failed: {}", stderr);
+    assert!(stdout.contains("30"));
+}
+
+#[test]
+fn test_module_parsing() {
+    let (stdout, stderr, success) = run_xsc(&["parse", "examples/module.xs"]);
+    assert!(success, "Parse failed: {}", stderr);
+    assert!(stdout.contains("Module"));
+    assert!(stdout.contains("exports"));
+}
+
+#[test]
+fn test_adt_type_checking() {
+    let (stdout, stderr, success) = run_xsc(&["check", "examples/test-adt.xs"]);
+    assert!(success, "Type check failed: {}", stderr);
+    assert!(stdout.contains("Int"));
+}
+
+#[test]
+fn test_float_parsing() {
+    let float_code = r#"3.14159"#;
+    fs::write("test_float_parse.xs", float_code).unwrap();
+    
+    let (stdout, stderr, success) = run_xsc(&["parse", "test_float_parse.xs"]);
+    assert!(success, "Parse failed: {}", stderr);
+    assert!(stdout.contains("Float"));
+    assert!(stdout.contains("3.14159"));
+    
+    // Clean up
+    fs::remove_file("test_float_parse.xs").ok();
+}
+
+#[test]
+fn test_pattern_matching_exhaustive() {
+    let pattern_code = r#"
+(match (list 1 2 3)
+  ((list) 0)
+  ((list x) x)
+  ((list x y) (+ x y))
+  ((list x y z) (+ x (+ y z))))
+"#;
+    fs::write("test_pattern_list.xs", pattern_code).unwrap();
+    
+    let (stdout, stderr, success) = run_xsc(&["run", "test_pattern_list.xs"]);
+    assert!(success, "Run failed: {}", stderr);
+    assert!(stdout.contains("6")); // 1 + 2 + 3
+    
+    // Clean up
+    fs::remove_file("test_pattern_list.xs").ok();
+}
+
+#[test]
+fn test_nested_functions() {
+    let nested_code = r#"
+((lambda (x)
+  ((lambda (y) (+ x y)) 20))
+ 10)
+"#;
+    fs::write("test_nested.xs", nested_code).unwrap();
+    
+    let (stdout, stderr, success) = run_xsc(&["run", "test_nested.xs"]);
+    assert!(success, "Run failed: {}", stderr);
+    assert!(stdout.contains("30"));
+    
+    // Clean up
+    fs::remove_file("test_nested.xs").ok();
+}
+
+#[test]
+fn test_type_annotation() {
+    let annotated_code = r#"(lambda (x : Int y : Bool) (if y x 0))"#;
+    fs::write("test_annotation.xs", annotated_code).unwrap();
+    
+    let (stdout, stderr, success) = run_xsc(&["check", "test_annotation.xs"]);
+    assert!(success, "Type check failed: {}", stderr);
+    assert!(stdout.contains("Int") && stdout.contains("Bool"));
+    
+    // Clean up
+    fs::remove_file("test_annotation.xs").ok();
+}
