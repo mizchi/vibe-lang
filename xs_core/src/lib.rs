@@ -187,16 +187,16 @@ impl fmt::Display for Type {
             Type::Float => write!(f, "Float"),
             Type::Bool => write!(f, "Bool"),
             Type::String => write!(f, "String"),
-            Type::List(t) => write!(f, "(List {})", t),
-            Type::Function(from, to) => write!(f, "(-> {} {})", from, to),
-            Type::Var(name) => write!(f, "{}", name),
+            Type::List(t) => write!(f, "(List {t})"),
+            Type::Function(from, to) => write!(f, "(-> {from} {to})"),
+            Type::Var(name) => write!(f, "{name}"),
             Type::UserDefined { name, type_params } => {
                 if type_params.is_empty() {
-                    write!(f, "{}", name)
+                    write!(f, "{name}")
                 } else {
-                    write!(f, "({}", name)?;
+                    write!(f, "({name}")?;
                     for param in type_params {
-                        write!(f, " {}", param)?;
+                        write!(f, " {param}")?;
                     }
                     write!(f, ")")
                 }
@@ -230,15 +230,15 @@ pub enum Value {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub struct Environment {
     bindings: Vec<(Ident, Value)>,
 }
 
+
 impl Environment {
     pub fn new() -> Self {
-        Environment {
-            bindings: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn extend(&self, name: Ident, value: Value) -> Self {
@@ -261,6 +261,10 @@ impl Environment {
     
     pub fn len(&self) -> usize {
         self.bindings.len()
+    }
+    
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
     }
     
     pub fn debug_bindings(&self) -> Vec<String> {

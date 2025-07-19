@@ -6,7 +6,7 @@ use std::fs;
 /// Helper function to run xsc command
 fn run_xsc(args: &[&str]) -> (String, String, bool) {
     let output = Command::new("cargo")
-        .args(&["run", "-p", "cli", "--bin", "xsc", "--"])
+        .args(["run", "-p", "cli", "--bin", "xsc", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");
@@ -21,7 +21,7 @@ fn run_xsc(args: &[&str]) -> (String, String, bool) {
 fn test_parse_simple_expression() {
     let (stdout, stderr, success) = run_xsc(&["parse", "examples/arithmetic.xs"]);
     
-    assert!(success, "Parse failed: {}", stderr);
+    assert!(success, "Parse failed: {stderr}");
     assert!(stdout.contains("Literal"));
     // arithmetic.xs contains (+ (* 5 6) (- 10 3)), which has 5, 6, 10, 3
     assert!(stdout.contains("5") || stdout.contains("6") || stdout.contains("10") || stdout.contains("3"));
@@ -31,7 +31,7 @@ fn test_parse_simple_expression() {
 fn test_check_type_inference() {
     let (stdout, stderr, success) = run_xsc(&["check", "examples/identity.xs"]);
     
-    assert!(success, "Type check failed: {}", stderr);
+    assert!(success, "Type check failed: {stderr}");
     assert!(stdout.contains("Type:"));
     assert!(stdout.contains("->"));
 }
@@ -40,7 +40,7 @@ fn test_check_type_inference() {
 fn test_run_arithmetic() {
     let (stdout, stderr, success) = run_xsc(&["run", "examples/arithmetic.xs"]);
     
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("37"));
 }
 
@@ -48,7 +48,7 @@ fn test_run_arithmetic() {
 fn test_run_list_operations() {
     let (stdout, stderr, success) = run_xsc(&["run", "examples/list.xs"]);
     
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("list"));
 }
 
@@ -56,7 +56,7 @@ fn test_run_list_operations() {
 fn test_run_lambda() {
     let (stdout, stderr, success) = run_xsc(&["run", "examples/lambda.xs"]);
     
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("30")); // (lambda (x y) (+ x y)) applied to 10 20
 }
 
@@ -118,17 +118,17 @@ fn test_full_pipeline() {
     
     // Test parsing
     let (stdout, stderr, success) = run_xsc(&["parse", "test_pipeline.xs"]);
-    assert!(success, "Parse failed: {}", stderr);
+    assert!(success, "Parse failed: {stderr}");
     assert!(stdout.contains("Let"));
     
     // Test type checking
     let (stdout, stderr, success) = run_xsc(&["check", "test_pipeline.xs"]);
-    assert!(success, "Type check failed: {}", stderr);
+    assert!(success, "Type check failed: {stderr}");
     assert!(stdout.contains("Int"));
     
     // Test running
     let (stdout, stderr, success) = run_xsc(&["run", "test_pipeline.xs"]);
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("closure")); // let returns a closure
     
     // Clean up
@@ -139,35 +139,35 @@ fn test_full_pipeline() {
 #[test]
 fn test_pattern_matching() {
     let (stdout, stderr, success) = run_xsc(&["run", "examples/test-pattern.xs"]);
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("\"two\""));
 }
 
 #[test]
 fn test_recursive_function() {
     let (stdout, stderr, success) = run_xsc(&["run", "examples/test-recursion.xs"]);
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("120")); // 5! = 120
 }
 
 #[test]
 fn test_list_cons() {
     let (stdout, stderr, success) = run_xsc(&["run", "examples/test-list.xs"]);
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("(list 0 1 2 3)"));
 }
 
 #[test]
 fn test_lambda_application() {
     let (stdout, stderr, success) = run_xsc(&["run", "examples/test-function.xs"]);
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("30"));
 }
 
 #[test]
 fn test_module_parsing() {
     let (stdout, stderr, success) = run_xsc(&["parse", "examples/module.xs"]);
-    assert!(success, "Parse failed: {}", stderr);
+    assert!(success, "Parse failed: {stderr}");
     assert!(stdout.contains("Module"));
     assert!(stdout.contains("exports"));
 }
@@ -175,7 +175,7 @@ fn test_module_parsing() {
 #[test]
 fn test_adt_type_checking() {
     let (stdout, stderr, success) = run_xsc(&["check", "examples/test-adt.xs"]);
-    assert!(success, "Type check failed: {}", stderr);
+    assert!(success, "Type check failed: {stderr}");
     assert!(stdout.contains("Int"));
 }
 
@@ -185,7 +185,7 @@ fn test_float_parsing() {
     fs::write("test_float_parse.xs", float_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["parse", "test_float_parse.xs"]);
-    assert!(success, "Parse failed: {}", stderr);
+    assert!(success, "Parse failed: {stderr}");
     assert!(stdout.contains("Float"));
     assert!(stdout.contains("3.14159"));
     
@@ -205,7 +205,7 @@ fn test_pattern_matching_exhaustive() {
     fs::write("test_pattern_list.xs", pattern_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_pattern_list.xs"]);
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("6")); // 1 + 2 + 3
     
     // Clean up
@@ -222,7 +222,7 @@ fn test_nested_functions() {
     fs::write("test_nested.xs", nested_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_nested.xs"]);
-    assert!(success, "Run failed: {}", stderr);
+    assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("30"));
     
     // Clean up
@@ -235,7 +235,7 @@ fn test_type_annotation() {
     fs::write("test_annotation.xs", annotated_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["check", "test_annotation.xs"]);
-    assert!(success, "Type check failed: {}", stderr);
+    assert!(success, "Type check failed: {stderr}");
     assert!(stdout.contains("Int") && stdout.contains("Bool"));
     
     // Clean up

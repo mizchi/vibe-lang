@@ -22,8 +22,8 @@ pub struct TypeEnv {
     type_definitions: HashMap<String, TypeDefinition>,
 }
 
-impl TypeEnv {
-    pub fn new() -> Self {
+impl Default for TypeEnv {
+    fn default() -> Self {
         let mut env = TypeEnv {
             bindings: vec![HashMap::new()],
             type_definitions: HashMap::new(),
@@ -67,6 +67,12 @@ impl TypeEnv {
         ));
         
         env
+    }
+}
+
+impl TypeEnv {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     fn add_builtin(&mut self, name: &str, typ: Type) {
@@ -155,17 +161,16 @@ pub struct Constraint {
     pub span: Span,
 }
 
+#[derive(Default)]
 pub struct TypeChecker {
     next_var: usize,
     constraints: Vec<Constraint>,
 }
 
+
 impl TypeChecker {
     pub fn new() -> Self {
-        TypeChecker {
-            next_var: 0,
-            constraints: Vec::new(),
-        }
+        Self::default()
     }
 
     fn fresh_var(&mut self) -> Type {
@@ -780,7 +785,7 @@ mod tests {
                 assert!(matches!(from.as_ref(), Type::Int));
                 assert!(matches!(to.as_ref(), Type::Int));
             },
-            _ => panic!("Expected function type for factorial, got {:?}", typ),
+            _ => panic!("Expected function type for factorial, got {typ:?}"),
         }
 
         // With type annotations
@@ -972,7 +977,7 @@ mod tests {
         let typ = checker.check(&parse(use_program).unwrap(), &mut env).unwrap();
         match typ {
             Type::UserDefined { name, .. } => assert_eq!(name, "Option"),
-            _ => panic!("Expected UserDefined type, got {:?}", typ),
+            _ => panic!("Expected UserDefined type, got {typ:?}"),
         }
     }
     

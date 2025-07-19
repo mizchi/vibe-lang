@@ -7,7 +7,7 @@ use std::fs;
 /// Helper function to run xsc command
 fn run_xsc(args: &[&str]) -> (String, String, bool) {
     let output = Command::new("cargo")
-        .args(&["run", "-p", "cli", "--bin", "xsc", "--"])
+        .args(["run", "-p", "cli", "--bin", "xsc", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");
@@ -20,7 +20,7 @@ fn run_xsc(args: &[&str]) -> (String, String, bool) {
 
 /// Helper to create temp file, run test, and clean up
 fn test_with_file(name: &str, code: &str, test_fn: impl Fn(&str, &str, bool)) {
-    let filename = format!("test_{}.xs", name);
+    let filename = format!("test_{name}.xs");
     fs::write(&filename, code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", &filename]);
@@ -64,7 +64,7 @@ mod rec_syntax_tests {
         fs::write(filename, code).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["parse", filename]);
-        assert!(success, "Parse failed: {}", stderr);
+        assert!(success, "Parse failed: {stderr}");
         assert!(stdout.contains("Rec"));
         
         fs::remove_file(filename).ok();
@@ -94,7 +94,7 @@ mod rec_syntax_tests {
         fs::write(filename, code).unwrap();
         
         let (_stdout, stderr, success) = run_xsc(&["check", filename]);
-        assert!(success, "Type check failed: {}", stderr);
+        assert!(success, "Type check failed: {stderr}");
         
         fs::remove_file(filename).ok();
     }
@@ -131,7 +131,7 @@ mod factorial_tests {
         fs::write(filename, code).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["check", filename]);
-        assert!(success, "Type check failed: {}", stderr);
+        assert!(success, "Type check failed: {stderr}");
         assert!(stdout.contains("Int"));
         
         fs::remove_file(filename).ok();
@@ -211,7 +211,7 @@ mod edge_case_tests {
         
         // We expect this to timeout or fail gracefully
         let output = Command::new("cargo")
-            .args(&["run", "-p", "cli", "--bin", "xsc", "--", "run", filename])
+            .args(["run", "-p", "cli", "--bin", "xsc", "--", "run", filename])
             .output();
         
         // The test passes if the program doesn't crash the test runner
@@ -234,7 +234,7 @@ mod type_checking_tests {
         fs::write(filename, code).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["check", filename]);
-        assert!(success, "Type check failed: {}", stderr);
+        assert!(success, "Type check failed: {stderr}");
         assert!(stdout.contains("->"));
         
         fs::remove_file(filename).ok();
@@ -250,7 +250,7 @@ mod type_checking_tests {
         fs::write(filename, code).unwrap();
         
         let (_stdout, stderr, success) = run_xsc(&["check", filename]);
-        assert!(success, "Type check failed: {}", stderr);
+        assert!(success, "Type check failed: {stderr}");
         
         fs::remove_file(filename).ok();
     }

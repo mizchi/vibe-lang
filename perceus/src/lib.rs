@@ -3,27 +3,20 @@
 //! This module implements the Perceus memory management transformation,
 //! converting high-level expressions into IR with explicit drop/dup instructions.
 
-use std::collections::{HashMap, HashSet};
 use xs_core::{Expr, Ident, Literal};
-use xs_core::ir::{IrExpr, Ownership};
+use xs_core::ir::IrExpr;
 
 /// Perceus transformer that converts AST to IR with memory management
+#[derive(Default)]
 pub struct PerceusTransform {
-    /// Track variable usage counts
-    usage_counts: HashMap<String, usize>,
-    /// Track live variables at each program point
-    live_vars: HashSet<String>,
-    /// Track ownership information
-    ownership_map: HashMap<String, Ownership>,
+    // Future fields will be added as the Perceus algorithm is implemented
+    // For now, this is a placeholder for the transformation pass
 }
+
 
 impl PerceusTransform {
     pub fn new() -> Self {
-        Self {
-            usage_counts: HashMap::new(),
-            live_vars: HashSet::new(),
-            ownership_map: HashMap::new(),
-        }
+        Self::default()
     }
     
     /// Transform an AST expression into IR with Perceus memory management

@@ -427,7 +427,7 @@ impl<'a> Parser<'a> {
         
         // Check if it's a constructor (starts with uppercase)
         if let Expr::Ident(Ident(name), _) = &first_expr {
-            if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+            if name.chars().next().is_some_and(|c| c.is_uppercase()) {
                 // Parse as constructor
                 let mut args = Vec::new();
                 
@@ -670,7 +670,7 @@ impl<'a> Parser<'a> {
         // Parse type parameters (optional)
         let mut type_params = Vec::new();
         while let Some((Token::Symbol(param), _)) = &self.current_token {
-            if param.chars().next().map_or(false, |c| c.is_lowercase()) {
+            if param.chars().next().is_some_and(|c| c.is_lowercase()) {
                 type_params.push(param.clone());
                 self.advance()?;
             } else {
@@ -692,7 +692,7 @@ impl<'a> Parser<'a> {
                 
                 let constructor_name = match &self.current_token {
                     Some((Token::Symbol(name), _)) => {
-                        if !name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        if !name.chars().next().is_some_and(|c| c.is_uppercase()) {
                             return Err(XsError::ParseError(
                                 self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
                                 "Constructor name must start with uppercase letter".to_string(),

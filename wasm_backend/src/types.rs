@@ -22,8 +22,7 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
         Type::Var(name) => {
             // Type variables should be resolved before code generation
             Err(CodeGenError::TypeError(format!(
-                "Unresolved type variable: {}",
-                name
+                "Unresolved type variable: {name}"
             )))
         }
         Type::UserDefined { .. } => {
@@ -38,6 +37,12 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
 pub struct TypeIndexAllocator {
     next_index: u32,
     type_map: std::collections::HashMap<String, u32>,
+}
+
+impl Default for TypeIndexAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TypeIndexAllocator {

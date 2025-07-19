@@ -127,7 +127,7 @@ impl XsTestRunner {
         // Read test file
         let content = match fs::read_to_string(&test.path) {
             Ok(c) => c,
-            Err(e) => return TestResult::Error(format!("Failed to read file: {}", e)),
+            Err(e) => return TestResult::Error(format!("Failed to read file: {e}")),
         };
         
         // Parse
@@ -139,10 +139,10 @@ impl XsTestRunner {
                         return TestResult::Pass;
                     }
                     return TestResult::Fail(format!(
-                        "Expected parse error '{}', got '{}'", expected, e
+                        "Expected parse error '{expected}', got '{e}'"
                     ));
                 }
-                return TestResult::Error(format!("Parse error: {}", e));
+                return TestResult::Error(format!("Parse error: {e}"));
             }
         };
         
@@ -155,10 +155,10 @@ impl XsTestRunner {
                         return TestResult::Pass;
                     }
                     return TestResult::Fail(format!(
-                        "Expected type error '{}', got '{}'", expected, e
+                        "Expected type error '{expected}', got '{e}'"
                     ));
                 }
-                return TestResult::Error(format!("Type error: {}", e));
+                return TestResult::Error(format!("Type error: {e}"));
             }
         }
         
@@ -168,13 +168,13 @@ impl XsTestRunner {
         // Generate WebAssembly
         let module = match generate_module(&ir) {
             Ok(m) => m,
-            Err(e) => return TestResult::Error(format!("Code generation error: {}", e)),
+            Err(e) => return TestResult::Error(format!("Code generation error: {e}")),
         };
         
         // Run the module
         let result = match self.wasm_runner.run_module(&module) {
             Ok(r) => r,
-            Err(e) => return TestResult::Error(format!("Execution error: {}", e)),
+            Err(e) => return TestResult::Error(format!("Execution error: {e}")),
         };
         
         // Check expectation
@@ -185,21 +185,21 @@ impl XsTestRunner {
                 if expected == actual {
                     TestResult::Pass
                 } else {
-                    TestResult::Fail(format!("Expected {}, got {}", expected, actual))
+                    TestResult::Fail(format!("Expected {expected}, got {actual}"))
                 }
             }
             (Some(TestExpectation::ValueI64(expected)), RunResult::Success(Val::I64(actual))) => {
                 if expected == actual {
                     TestResult::Pass
                 } else {
-                    TestResult::Fail(format!("Expected {}, got {}", expected, actual))
+                    TestResult::Fail(format!("Expected {expected}, got {actual}"))
                 }
             }
             (Some(TestExpectation::ValueF64(expected)), RunResult::Success(Val::F64(actual))) => {
                 if expected == actual {
                     TestResult::Pass
                 } else {
-                    TestResult::Fail(format!("Expected {:?}, got {:?}", expected, actual))
+                    TestResult::Fail(format!("Expected {expected:?}, got {actual:?}"))
                 }
             }
             (Some(TestExpectation::Error(expected)), RunResult::Error(actual)) => {
@@ -207,7 +207,7 @@ impl XsTestRunner {
                     TestResult::Pass
                 } else {
                     TestResult::Fail(format!(
-                        "Expected error '{}', got '{}'", expected, actual
+                        "Expected error '{expected}', got '{actual}'"
                     ))
                 }
             }
@@ -224,14 +224,14 @@ impl XsTestRunner {
         let entries = match fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("Failed to read directory: {}", e);
+                eprintln!("Failed to read directory: {e}");
                 return results;
             }
         };
         
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "xs") {
+            if path.extension().is_some_and(|ext| ext == "xs") {
                 match XsTest::from_file(&path) {
                     Ok(test) => {
                         let result = self.run_test(&test);
@@ -291,7 +291,7 @@ impl TestSuiteResult {
         
         println!("\nTest Summary:");
         println!("============");
-        println!("Total:   {}", total);
+        println!("Total:   {total}");
         println!("Passed:  {} ✓", self.passed);
         println!("Failed:  {} ✗", self.failed);
         println!("Errors:  {} ⚠", self.errors);
@@ -301,8 +301,8 @@ impl TestSuiteResult {
             println!("\nFailures and Errors:");
             for (name, result) in &self.tests {
                 match result {
-                    TestResult::Fail(msg) => println!("  {} ✗ {}", name, msg),
-                    TestResult::Error(msg) => println!("  {} ⚠ {}", name, msg),
+                    TestResult::Fail(msg) => println!("  {name} ✗ {msg}"),
+                    TestResult::Error(msg) => println!("  {name} ⚠ {msg}"),
                     _ => {}
                 }
             }

@@ -6,7 +6,7 @@ use std::fs;
 /// Helper function to run xsc command
 fn run_xsc(args: &[&str]) -> (String, String, bool) {
     let output = Command::new("cargo")
-        .args(&["run", "-p", "cli", "--bin", "xsc", "--"])
+        .args(["run", "-p", "cli", "--bin", "xsc", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");
@@ -19,7 +19,7 @@ fn run_xsc(args: &[&str]) -> (String, String, bool) {
 
 /// Helper to create temp file, run test, and clean up
 fn test_with_file(name: &str, code: &str, test_fn: impl Fn(&str, &str, bool)) {
-    let filename = format!("test_{}.xs", name);
+    let filename = format!("test_{name}.xs");
     fs::write(&filename, code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", &filename]);
@@ -78,7 +78,7 @@ mod algebraic_data_types {
         fs::write(filename, r#"(type Bool (True) (False))"#).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["parse", filename]);
-        assert!(success, "Parse failed: {}", stderr);
+        assert!(success, "Parse failed: {stderr}");
         assert!(stdout.contains("TypeDef"));
         
         fs::remove_file(filename).ok();
@@ -94,7 +94,7 @@ mod algebraic_data_types {
 "#).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["parse", filename]);
-        assert!(success, "Parse failed: {}", stderr);
+        assert!(success, "Parse failed: {stderr}");
         assert!(stdout.contains("TypeDef"));
         assert!(stdout.contains("type_params"));
         
@@ -147,7 +147,7 @@ mod type_inference {
 "#).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["check", filename]);
-        assert!(success, "Type check failed: {}", stderr);
+        assert!(success, "Type check failed: {stderr}");
         assert!(stdout.contains("->"));
         
         fs::remove_file(filename).ok();
@@ -248,7 +248,7 @@ mod module_system {
 "#).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["parse", filename]);
-        assert!(success, "Parse failed: {}", stderr);
+        assert!(success, "Parse failed: {stderr}");
         assert!(stdout.contains("Module"));
         assert!(stdout.contains("export"));
         assert!(stdout.contains("Define") || stdout.contains("Let")); // define becomes Let in AST
@@ -264,7 +264,7 @@ mod module_system {
 "#).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["parse", filename]);
-        assert!(success, "Parse failed: {}", stderr);
+        assert!(success, "Parse failed: {stderr}");
         assert!(stdout.contains("Import"));
         assert!(stdout.contains("Math"));
         
@@ -277,7 +277,7 @@ mod module_system {
         fs::write(filename, r#"Math.PI"#).unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["parse", filename]);
-        assert!(success, "Parse failed: {}", stderr);
+        assert!(success, "Parse failed: {stderr}");
         assert!(stdout.contains("QualifiedIdent"));
         assert!(stdout.contains("Math"));
         assert!(stdout.contains("PI"));
@@ -311,7 +311,7 @@ mod floating_point {
         fs::write(filename, "1.0").unwrap();
         
         let (stdout, stderr, success) = run_xsc(&["check", filename]);
-        assert!(success, "Type check failed: {}", stderr);
+        assert!(success, "Type check failed: {stderr}");
         assert!(stdout.contains("Float"));
         
         fs::remove_file(filename).ok();

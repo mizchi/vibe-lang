@@ -5,19 +5,13 @@ use xs_core::{Expr, Type, XsError};
 
 // Define the Salsa database struct
 #[salsa::database(SourceProgramsStorage, CompilerQueriesStorage)]
+#[derive(Default)]
 pub struct XsDatabase {
     storage: salsa::Storage<Self>,
 }
 
 impl salsa::Database for XsDatabase {}
 
-impl Default for XsDatabase {
-    fn default() -> Self {
-        Self {
-            storage: Default::default(),
-        }
-    }
-}
 
 impl XsDatabase {
     pub fn new() -> Self {

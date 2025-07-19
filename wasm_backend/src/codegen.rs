@@ -2,7 +2,6 @@
 
 use crate::{
     WasmModule, WasmFunction, WasmType, WasmInstr, CodeGenError,
-    types::{TypeIndexAllocator, StandardTypes},
 };
 // ordered_float is re-exported from xs_core
 use xs_core::ir::IrExpr;
@@ -17,29 +16,27 @@ pub struct CodeGenerator {
     locals: HashMap<String, u32>,
     /// Next local index
     next_local: u32,
-    /// Type allocator
-    type_allocator: TypeIndexAllocator,
-    /// Standard types
-    std_types: Option<StandardTypes>,
     /// Generated functions
     functions: Vec<WasmFunction>,
-    /// Function indices
-    function_indices: HashMap<String, u32>,
+    // TODO: The following fields will be used when implementing WebAssembly GC features:
+    // - type_allocator: TypeIndexAllocator - for managing GC type indices
+    // - std_types: StandardTypes - standard GC types (structs, arrays)
+    // - function_indices: HashMap<String, u32> - for function table management
+}
+
+impl Default for CodeGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CodeGenerator {
     pub fn new() -> Self {
-        let mut type_allocator = TypeIndexAllocator::new();
-        let std_types = StandardTypes::new(&mut type_allocator);
-        
         Self {
             current_function: None,
             locals: HashMap::new(),
             next_local: 0,
-            type_allocator,
-            std_types: Some(std_types),
             functions: Vec::new(),
-            function_indices: HashMap::new(),
         }
     }
     
@@ -85,7 +82,7 @@ impl CodeGenerator {
             IrExpr::List(exprs) => self.generate_list(exprs),
             IrExpr::Drop(name) => self.generate_drop(name),
             IrExpr::Dup(name) => self.generate_dup(name),
-            _ => Err(CodeGenError::UnsupportedExpr(format!("{:?}", expr))),
+            _ => Err(CodeGenError::UnsupportedExpr(format!("{expr:?}"))),
         }
     }
     

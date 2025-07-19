@@ -1,15 +1,15 @@
 use xs_core::{Environment, Expr, Ident, Literal, Pattern, TypeDefinition, Value, XsError};
 use std::collections::HashMap;
 
+#[derive(Default)]
 pub struct Interpreter {
     type_definitions: HashMap<String, TypeDefinition>,
 }
 
+
 impl Interpreter {
     pub fn new() -> Self {
-        Interpreter {
-            type_definitions: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn eval(&mut self, expr: &Expr, env: &Environment) -> Result<Value, XsError> {
@@ -26,7 +26,7 @@ impl Interpreter {
                     .cloned()
                     .ok_or_else(|| XsError::RuntimeError(
                         span.clone(),
-                        format!("Undefined variable: {}", name),
+                        format!("Undefined variable: {name}"),
                     ))
             }
 

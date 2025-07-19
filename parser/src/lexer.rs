@@ -88,7 +88,7 @@ impl<'a> Lexer<'a> {
                     },
                     _ => Err(XsError::ParseError(
                         self.position,
-                        format!("Unexpected character: {}", ch)
+                        format!("Unexpected character: {ch}")
                     ))
                 }
             }
@@ -212,7 +212,7 @@ impl<'a> Lexer<'a> {
                         Ok(f) => return Ok(Some((Token::Float(f), Span::new(start, self.position)))),
                         Err(_) => return Err(XsError::ParseError(
                             start,
-                            format!("Invalid float: {}", value)
+                            format!("Invalid float: {value}")
                         ))
                     }
                 }
@@ -224,7 +224,7 @@ impl<'a> Lexer<'a> {
             Ok(n) => Ok(Some((Token::Int(n), Span::new(start, self.position)))),
             Err(_) => Err(XsError::ParseError(
                 start,
-                format!("Invalid number: {}", value)
+                format!("Invalid number: {value}")
             ))
         }
     }

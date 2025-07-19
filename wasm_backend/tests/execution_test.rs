@@ -225,17 +225,11 @@ fn test_conditional() {
     assert_eq!(result, RunResult::Success(Val::I32(42)));
 }
 
-/// Helper function to create a full pipeline test
-/// This would parse XS -> check types -> generate IR -> compile to WASM -> execute
-#[allow(dead_code)]
-fn full_pipeline_test(xs_code: &str, _expected: RunResult) {
-    // TODO: Implement full pipeline when all components are ready
-    // 1. Parse XS code
-    // 2. Type check
-    // 3. Generate IR
-    // 4. Compile to WebAssembly
-    // 5. Execute and verify result
-    
-    // For now, this is a placeholder
-    println!("Full pipeline test for: {}", xs_code);
-}
+// TODO: Implement full pipeline test when all components are ready
+// This would parse XS -> check types -> generate IR -> compile to WASM -> execute
+// Pipeline steps:
+// 1. Parse XS code using parser::parse
+// 2. Type check using checker::type_check
+// 3. Generate IR using perceus::transform
+// 4. Compile to WebAssembly using wasm_backend::generate_module
+// 5. Execute and verify result using WasmTestRunner

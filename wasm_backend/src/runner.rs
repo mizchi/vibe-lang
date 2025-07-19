@@ -66,7 +66,7 @@ impl WasmTestRunner {
         
         // For debugging, print the WAT
         #[cfg(debug_assertions)]
-        eprintln!("Generated WAT:\n{}", wat);
+        eprintln!("Generated WAT:\n{wat}");
         
         // Compile WAT to WASM
         let wasm_bytes = wat::parse_str(&wat)?;
@@ -88,7 +88,7 @@ impl WasmTestRunner {
         // Call the main function
         let mut results = vec![Val::I32(0)]; // Assume main returns i32
         match main_func.call(&mut store, &[], &mut results) {
-            Ok(_) => Ok(RunResult::Success(results[0].clone())),
+            Ok(_) => Ok(RunResult::Success(results[0])),
             Err(e) => Ok(RunResult::Error(e.to_string())),
         }
     }
@@ -118,7 +118,7 @@ impl WasmTestRunner {
         match self.run_module(&module)? {
             RunResult::Success(Val::I64(n)) => Ok(n),
             RunResult::Success(_) => Err("Expected i64 result".into()),
-            RunResult::Error(e) => Err(format!("Execution error: {}", e).into()),
+            RunResult::Error(e) => Err(format!("Execution error: {e}").into()),
         }
     }
 }
@@ -168,7 +168,7 @@ impl TestSuite {
                     } else {
                         println!("  ✗ FAILED");
                         println!("    Expected: {:?}", test.expected);
-                        println!("    Actual:   {:?}", actual);
+                        println!("    Actual:   {actual:?}");
                         results.failed += 1;
                         results.failures.push((test.name.clone(), format!(
                             "Expected {:?}, got {:?}", test.expected, actual
@@ -176,7 +176,7 @@ impl TestSuite {
                     }
                 }
                 Err(e) => {
-                    println!("  ✗ ERROR: {}", e);
+                    println!("  ✗ ERROR: {e}");
                     results.errors += 1;
                     results.failures.push((test.name.clone(), e.to_string()));
                 }
@@ -221,7 +221,7 @@ impl TestResults {
         if !self.failures.is_empty() {
             println!("\nFailures:");
             for (name, reason) in &self.failures {
-                println!("  - {}: {}", name, reason);
+                println!("  - {name}: {reason}");
             }
         }
     }

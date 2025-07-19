@@ -34,7 +34,7 @@ pub fn emit_wat(module: &WasmModule) -> Result<String, std::fmt::Error> {
     
     // Emit start function if present
     if let Some(start_idx) = module.start {
-        writeln!(output, "  (start $func{})", start_idx)?;
+        writeln!(output, "  (start $func{start_idx})")?;
     }
     
     // Export main function (only if not already exported in function definition)
@@ -82,7 +82,7 @@ fn emit_function(output: &mut String, func: &WasmFunction, idx: u32) -> Result<(
     
     // Emit parameters
     for (i, param) in func.params.iter().enumerate() {
-        write!(output, " (param $p{} ", i)?;
+        write!(output, " (param $p{i} ")?;
         emit_type(output, param)?;
         write!(output, ")")?;
     }
@@ -98,7 +98,7 @@ fn emit_function(output: &mut String, func: &WasmFunction, idx: u32) -> Result<(
     
     // Emit locals
     for (i, local) in func.locals.iter().enumerate() {
-        write!(output, "    (local $l{} ", i)?;
+        write!(output, "    (local $l{i} ")?;
         emit_type(output, local)?;
         writeln!(output, ")")?;
     }
@@ -121,9 +121,9 @@ fn emit_type(output: &mut String, ty: &WasmType) -> Result<(), std::fmt::Error> 
         WasmType::I64 => write!(output, "i64"),
         WasmType::F32 => write!(output, "f32"),
         WasmType::F64 => write!(output, "f64"),
-        WasmType::StructRef(idx) => write!(output, "(ref $struct{})", idx),
-        WasmType::ArrayRef(idx) => write!(output, "(ref $array{})", idx),
-        WasmType::FuncRef(idx) => write!(output, "(ref $func{})", idx),
+        WasmType::StructRef(idx) => write!(output, "(ref $struct{idx})"),
+        WasmType::ArrayRef(idx) => write!(output, "(ref $array{idx})"),
+        WasmType::FuncRef(idx) => write!(output, "(ref $func{idx})"),
         WasmType::AnyRef => write!(output, "anyref"),
         WasmType::Ref(inner) => {
             write!(output, "(ref ")?;
@@ -137,19 +137,19 @@ fn emit_type(output: &mut String, ty: &WasmType) -> Result<(), std::fmt::Error> 
 fn emit_instruction(output: &mut String, instr: &WasmInstr, indent: usize) -> Result<(), std::fmt::Error> {
     match instr {
         // Constants
-        WasmInstr::I32Const(n) => write!(output, "i32.const {}", n),
-        WasmInstr::I64Const(n) => write!(output, "i64.const {}", n),
-        WasmInstr::F32Const(f) => write!(output, "f32.const {}", f),
-        WasmInstr::F64Const(f) => write!(output, "f64.const {}", f),
+        WasmInstr::I32Const(n) => write!(output, "i32.const {n}"),
+        WasmInstr::I64Const(n) => write!(output, "i64.const {n}"),
+        WasmInstr::F32Const(f) => write!(output, "f32.const {f}"),
+        WasmInstr::F64Const(f) => write!(output, "f64.const {f}"),
         
         // Local operations
-        WasmInstr::LocalGet(idx) => write!(output, "local.get $l{}", idx),
-        WasmInstr::LocalSet(idx) => write!(output, "local.set $l{}", idx),
-        WasmInstr::LocalTee(idx) => write!(output, "local.tee $l{}", idx),
+        WasmInstr::LocalGet(idx) => write!(output, "local.get $l{idx}"),
+        WasmInstr::LocalSet(idx) => write!(output, "local.set $l{idx}"),
+        WasmInstr::LocalTee(idx) => write!(output, "local.tee $l{idx}"),
         
         // Global operations
-        WasmInstr::GlobalGet(idx) => write!(output, "global.get {}", idx),
-        WasmInstr::GlobalSet(idx) => write!(output, "global.set {}", idx),
+        WasmInstr::GlobalGet(idx) => write!(output, "global.get {idx}"),
+        WasmInstr::GlobalSet(idx) => write!(output, "global.set {idx}"),
         
         // Control flow
         WasmInstr::Block(instrs) => {
@@ -199,11 +199,11 @@ fn emit_instruction(output: &mut String, instr: &WasmInstr, indent: usize) -> Re
             }
             write!(output, "end")
         }
-        WasmInstr::Br(label) => write!(output, "br {}", label),
-        WasmInstr::BrIf(label) => write!(output, "br_if {}", label),
+        WasmInstr::Br(label) => write!(output, "br {label}"),
+        WasmInstr::BrIf(label) => write!(output, "br_if {label}"),
         WasmInstr::Return => write!(output, "return"),
-        WasmInstr::Call(idx) => write!(output, "call $func{}", idx),
-        WasmInstr::CallIndirect(idx) => write!(output, "call_indirect {}", idx),
+        WasmInstr::Call(idx) => write!(output, "call $func{idx}"),
+        WasmInstr::CallIndirect(idx) => write!(output, "call_indirect {idx}"),
         
         // Memory operations
         WasmInstr::I32Load => write!(output, "i32.load"),
@@ -236,12 +236,12 @@ fn emit_instruction(output: &mut String, instr: &WasmInstr, indent: usize) -> Re
         WasmInstr::Dup => write!(output, "unreachable"), // No direct dup in wasm
         
         // GC operations (not yet in standard WAT)
-        WasmInstr::StructNew(idx) => write!(output, "struct.new {}", idx),
-        WasmInstr::StructGet(type_idx, field_idx) => write!(output, "struct.get {} {}", type_idx, field_idx),
-        WasmInstr::StructSet(type_idx, field_idx) => write!(output, "struct.set {} {}", type_idx, field_idx),
-        WasmInstr::ArrayNew(idx) => write!(output, "array.new {}", idx),
-        WasmInstr::ArrayGet(idx) => write!(output, "array.get {}", idx),
-        WasmInstr::ArraySet(idx) => write!(output, "array.set {}", idx),
+        WasmInstr::StructNew(idx) => write!(output, "struct.new {idx}"),
+        WasmInstr::StructGet(type_idx, field_idx) => write!(output, "struct.get {type_idx} {field_idx}"),
+        WasmInstr::StructSet(type_idx, field_idx) => write!(output, "struct.set {type_idx} {field_idx}"),
+        WasmInstr::ArrayNew(idx) => write!(output, "array.new {idx}"),
+        WasmInstr::ArrayGet(idx) => write!(output, "array.get {idx}"),
+        WasmInstr::ArraySet(idx) => write!(output, "array.set {idx}"),
         WasmInstr::ArrayLen => write!(output, "array.len"),
         WasmInstr::RefNull(ty) => {
             write!(output, "ref.null ")?;

@@ -66,12 +66,12 @@ fn parse_file(path: &PathBuf) -> Result<()> {
         Ok(expr) => {
             println!("{}", "✓ Parse successful".green());
             println!("\n{}", "AST:".bold());
-            println!("{:#?}", expr);
+            println!("{expr:#?}");
             Ok(())
         }
         Err(e) => {
             eprintln!("{}", "✗ Parse error".red());
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
@@ -85,7 +85,7 @@ fn check_file(path: &PathBuf) -> Result<()> {
         Ok(expr) => expr,
         Err(e) => {
             eprintln!("{}", "✗ Parse error".red());
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -98,7 +98,7 @@ fn check_file(path: &PathBuf) -> Result<()> {
         }
         Err(e) => {
             eprintln!("{}", "✗ Type error".red());
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
@@ -112,7 +112,7 @@ fn run_file(path: &PathBuf) -> Result<()> {
         Ok(expr) => expr,
         Err(e) => {
             eprintln!("{}", "✗ Parse error".red());
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
@@ -121,7 +121,7 @@ fn run_file(path: &PathBuf) -> Result<()> {
         Ok(_) => {},
         Err(e) => {
             eprintln!("{}", "✗ Type error".red());
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
@@ -134,7 +134,7 @@ fn run_file(path: &PathBuf) -> Result<()> {
         }
         Err(e) => {
             eprintln!("{}", "✗ Runtime error".red());
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
@@ -150,16 +150,16 @@ fn format_type(typ: &Type) -> String {
         Type::Function(from, to) => {
             format!("({} -> {})", format_type(from), format_type(to)).cyan().to_string()
         }
-        Type::Var(name) => format!("'{}", name).yellow().to_string(),
+        Type::Var(name) => format!("'{name}").yellow().to_string(),
         Type::UserDefined { name, type_params } => {
             if type_params.is_empty() {
                 name.cyan().to_string()
             } else {
                 let params = type_params.iter()
-                    .map(|t| format_type(t))
+                    .map(format_type)
                     .collect::<Vec<_>>()
                     .join(" ");
-                format!("({} {})", name, params).cyan().to_string()
+                format!("({name} {params})").cyan().to_string()
             }
         }
     }
@@ -170,7 +170,7 @@ fn format_value(value: &Value) -> String {
         Value::Int(n) => n.to_string().blue().to_string(),
         Value::Float(f) => f.to_string().blue().to_string(),
         Value::Bool(b) => b.to_string().magenta().to_string(),
-        Value::String(s) => format!("{:?}", s).green().to_string(),
+        Value::String(s) => format!("{s:?}").green().to_string(),
         Value::List(elems) => {
             let formatted_elems: Vec<String> = elems.iter().map(format_value).collect();
             format!("(list {})", formatted_elems.join(" "))
@@ -199,7 +199,7 @@ fn run_tests(path: Option<PathBuf>, verbose: bool) -> Result<()> {
     
     println!("{}", "Running tests...".yellow());
     println!("Test path: {}", test_path.display());
-    println!("Verbose: {}", verbose);
+    println!("Verbose: {verbose}");
     
     // Simple test runner using the interpreter
     if test_path.is_file() {
@@ -213,7 +213,7 @@ fn run_tests(path: Option<PathBuf>, verbose: bool) -> Result<()> {
         for entry in fs::read_dir(&test_path)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "xs") {
+            if path.extension().is_some_and(|ext| ext == "xs") {
                 print!("Testing {}... ", path.file_name().unwrap().to_string_lossy());
                 match run_test_file(&path) {
                     Ok(_) => {
@@ -223,7 +223,7 @@ fn run_tests(path: Option<PathBuf>, verbose: bool) -> Result<()> {
                     Err(e) => {
                         println!("{}", "FAIL".red());
                         if verbose {
-                            eprintln!("  {}", e);
+                            eprintln!("  {e}");
                         }
                         failed += 1;
                     }
