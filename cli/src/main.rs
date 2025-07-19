@@ -189,6 +189,13 @@ fn format_value(value: &Value) -> String {
                 format!("({} {})", name.0, formatted_values.join(" ")).magenta().to_string()
             }
         }
+        Value::BuiltinFunction { name, arity, applied_args } => {
+            if applied_args.is_empty() {
+                format!("<builtin:{}:{}>", name, arity).yellow().to_string()
+            } else {
+                format!("<builtin:{}:{}/{}>", name, arity, applied_args.len()).yellow().to_string()
+            }
+        }
     }
 }
 

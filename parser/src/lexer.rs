@@ -29,11 +29,13 @@ pub enum Token {
     As,
     Dot,
     Define,
+    Comment(String),  // コメントトークンを追加
 }
 
 pub struct Lexer<'a> {
     chars: Peekable<Chars<'a>>,
     position: usize,
+    skip_comments: bool,  // コメントをスキップするかどうか
 }
 
 impl<'a> Lexer<'a> {
@@ -41,11 +43,20 @@ impl<'a> Lexer<'a> {
         Lexer {
             chars: input.chars().peekable(),
             position: 0,
+            skip_comments: true,  // デフォルトではコメントをスキップ
+        }
+    }
+
+    pub fn with_comments(input: &'a str) -> Self {
+        Lexer {
+            chars: input.chars().peekable(),
+            position: 0,
+            skip_comments: false,  // コメントを保持
         }
     }
 
     pub fn next_token(&mut self) -> Result<Option<(Token, Span)>, XsError> {
-        self.skip_whitespace();
+        self.skip_whitespace_and_maybe_comments();
         
         let start = self.position;
         
@@ -53,6 +64,10 @@ impl<'a> Lexer<'a> {
             None => Ok(None),
             Some(&ch) => {
                 match ch {
+                    ';' if !self.skip_comments => {
+                        // コメントをトークンとして読み取る
+                        self.read_comment()
+                    },
                     '(' => {
                         self.advance();
                         Ok(Some((Token::LeftParen, Span::new(start, self.position))))
@@ -83,7 +98,7 @@ impl<'a> Lexer<'a> {
                         self.advance();
                         Ok(Some((Token::Dot, Span::new(start, self.position))))
                     },
-                    _ if ch.is_alphabetic() || ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '<' || ch == '>' || ch == '=' => {
+                    _ if ch.is_alphabetic() || ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' || ch == '<' || ch == '>' || ch == '=' => {
                         self.read_symbol()
                     },
                     _ => Err(XsError::ParseError(
@@ -109,23 +124,38 @@ impl<'a> Lexer<'a> {
         iter.peek().copied()
     }
 
-    fn skip_whitespace(&mut self) {
+    fn skip_whitespace_and_maybe_comments(&mut self) {
         while let Some(&ch) = self.chars.peek() {
-            if ch.is_whitespace() || ch == ';' {
-                if ch == ';' {
-                    while let Some(&ch) = self.chars.peek() {
-                        self.advance();
-                        if ch == '\n' {
-                            break;
-                        }
-                    }
-                } else {
+            if ch.is_whitespace() {
+                self.advance();
+            } else if ch == ';' && self.skip_comments {
+                // コメントをスキップ
+                while let Some(&ch) = self.chars.peek() {
                     self.advance();
+                    if ch == '\n' {
+                        break;
+                    }
                 }
             } else {
                 break;
             }
         }
+    }
+
+    fn read_comment(&mut self) -> Result<Option<(Token, Span)>, XsError> {
+        let start = self.position;
+        self.advance(); // Skip ';'
+        
+        let mut comment = String::new();
+        while let Some(&ch) = self.chars.peek() {
+            if ch == '\n' {
+                break;
+            }
+            comment.push(ch);
+            self.advance();
+        }
+        
+        Ok(Some((Token::Comment(comment.trim().to_string()), Span::new(start, self.position))))
     }
 
     fn read_string(&mut self) -> Result<Option<(Token, Span)>, XsError> {
@@ -234,7 +264,7 @@ impl<'a> Lexer<'a> {
         let mut value = String::new();
         
         while let Some(&ch) = self.chars.peek() {
-            if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == '+' || ch == '*' || ch == '/' || ch == '<' || ch == '>' || ch == '=' || ch == '?' || ch == '!' {
+            if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == '+' || ch == '*' || ch == '/' || ch == '%' || ch == '<' || ch == '>' || ch == '=' || ch == '?' || ch == '!' {
                 value.push(ch);
                 self.advance();
             } else {

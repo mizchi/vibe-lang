@@ -4,7 +4,7 @@ use std::path::Path;
 use parser::parse;
 use checker::type_check;
 use interpreter::eval;
-use xs_core::Type;
+use xs_core::{Type, Value};
 
 #[test]
 fn test_example_files() {
@@ -43,11 +43,19 @@ fn test_type_errors() {
     let expr = parse(bad_app).unwrap();
     assert!(type_check(&expr).is_err());
     
-    // Wrong number of arguments
-    let bad_args = "(+ 1)";
-    let expr = parse(bad_args).unwrap();
+    // Wrong number of arguments - now returns partial application
+    let partial_app = "(+ 1)";
+    let expr = parse(partial_app).unwrap();
     type_check(&expr).unwrap(); // Type check passes
-    assert!(eval(&expr).is_err()); // But runtime fails
+    let result = eval(&expr).unwrap();
+    match result {
+        Value::BuiltinFunction { name, arity, applied_args } => {
+            assert_eq!(name, "+");
+            assert_eq!(arity, 2);
+            assert_eq!(applied_args.len(), 1);
+        }
+        _ => panic!("Expected partial application of builtin"),
+    }
 }
 
 #[test]

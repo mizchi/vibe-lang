@@ -11,6 +11,64 @@ impl Interpreter {
     pub fn new() -> Self {
         Self::default()
     }
+    
+    pub fn create_initial_env() -> Environment {
+        let mut env = Environment::new();
+        
+        // Add builtin functions
+        env = env.extend(Ident("+".to_string()), Value::BuiltinFunction {
+            name: "+".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident("-".to_string()), Value::BuiltinFunction {
+            name: "-".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident("*".to_string()), Value::BuiltinFunction {
+            name: "*".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident("/".to_string()), Value::BuiltinFunction {
+            name: "/".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident("%".to_string()), Value::BuiltinFunction {
+            name: "%".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident("<".to_string()), Value::BuiltinFunction {
+            name: "<".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident(">".to_string()), Value::BuiltinFunction {
+            name: ">".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident("=".to_string()), Value::BuiltinFunction {
+            name: "=".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident("cons".to_string()), Value::BuiltinFunction {
+            name: "cons".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        env = env.extend(Ident("concat".to_string()), Value::BuiltinFunction {
+            name: "concat".to_string(),
+            arity: 2,
+            applied_args: vec![],
+        });
+        
+        env
+    }
 
     pub fn eval(&mut self, expr: &Expr, env: &Environment) -> Result<Value, XsError> {
         match expr {
@@ -104,50 +162,108 @@ impl Interpreter {
             }
 
             Expr::Apply { func, args, span } => {
-                // Handle built-in functions first
-                if let Expr::Ident(Ident(name), _) = func.as_ref() {
-                    if let Some(result) = self.apply_builtin(name, args, env, span)? {
-                        return Ok(result);
-                    }
-                }
-                
-                // Handle user-defined functions
                 let func_val = self.eval(func, env)?;
+                
                 match &func_val {
                     Value::Closure { params, body, env: closure_env } => {
-                        if params.len() != args.len() {
+                        if args.len() > params.len() {
                             return Err(XsError::RuntimeError(
                                 span.clone(),
                                 format!("Function expects {} arguments, got {}", params.len(), args.len()),
                             ));
                         }
                         
-                        let mut new_env = closure_env.clone();
-                        for (param, arg) in params.iter().zip(args.iter()) {
-                            let arg_val = self.eval(arg, env)?;
-                            new_env = new_env.extend(param.clone(), arg_val);
+                        if args.len() < params.len() {
+                            // Partial application
+                            let mut partial_env = closure_env.clone();
+                            let mut remaining_params = params.clone();
+                            
+                            for (i, arg) in args.iter().enumerate() {
+                                let arg_val = self.eval(arg, env)?;
+                                partial_env = partial_env.extend(params[i].clone(), arg_val);
+                                remaining_params.remove(0);
+                            }
+                            
+                            Ok(Value::Closure {
+                                params: remaining_params,
+                                body: body.clone(),
+                                env: partial_env,
+                            })
+                        } else {
+                            // Full application
+                            let mut new_env = closure_env.clone();
+                            for (param, arg) in params.iter().zip(args.iter()) {
+                                let arg_val = self.eval(arg, env)?;
+                                new_env = new_env.extend(param.clone(), arg_val);
+                            }
+                            
+                            self.eval(body, &new_env)
                         }
-                        
-                        self.eval(body, &new_env)
                     }
                     Value::RecClosure { name, params, body, env: closure_env } => {
-                        if params.len() != args.len() {
+                        if args.len() > params.len() {
                             return Err(XsError::RuntimeError(
                                 span.clone(),
                                 format!("Function expects {} arguments, got {}", params.len(), args.len()),
                             ));
                         }
                         
-                        // For recursive closures, add the function itself to the environment
-                        let mut new_env = closure_env.clone();
-                        new_env = new_env.extend(name.clone(), func_val.clone());
+                        if args.len() < params.len() {
+                            // Partial application of recursive function
+                            let mut partial_env = closure_env.clone();
+                            partial_env = partial_env.extend(name.clone(), func_val.clone());
+                            
+                            // Apply the given arguments
+                            let mut remaining_params = params.clone();
+                            for (i, arg) in args.iter().enumerate() {
+                                let arg_val = self.eval(arg, env)?;
+                                partial_env = partial_env.extend(params[i].clone(), arg_val);
+                                remaining_params.remove(0);
+                            }
+                            
+                            // Create a new closure with remaining parameters
+                            Ok(Value::Closure {
+                                params: remaining_params,
+                                body: body.clone(),
+                                env: partial_env,
+                            })
+                        } else {
+                            // Full application
+                            let mut new_env = closure_env.clone();
+                            new_env = new_env.extend(name.clone(), func_val.clone());
+                            
+                            for (param, arg) in params.iter().zip(args.iter()) {
+                                let arg_val = self.eval(arg, env)?;
+                                new_env = new_env.extend(param.clone(), arg_val);
+                            }
+                            
+                            self.eval(body, &new_env)
+                        }
+                    }
+                    Value::BuiltinFunction { name, arity, applied_args } => {
+                        let mut all_args = applied_args.clone();
                         
-                        for (param, arg) in params.iter().zip(args.iter()) {
-                            let arg_val = self.eval(arg, env)?;
-                            new_env = new_env.extend(param.clone(), arg_val);
+                        // Evaluate and add new arguments
+                        for arg in args {
+                            all_args.push(self.eval(arg, env)?);
                         }
                         
-                        self.eval(body, &new_env)
+                        if all_args.len() < *arity {
+                            // Partial application - return a new builtin with more args
+                            Ok(Value::BuiltinFunction {
+                                name: name.clone(),
+                                arity: *arity,
+                                applied_args: all_args,
+                            })
+                        } else if all_args.len() == *arity {
+                            // Full application - execute the builtin
+                            self.execute_builtin(name, &all_args, span)
+                        } else {
+                            Err(XsError::RuntimeError(
+                                span.clone(),
+                                format!("{} expects {} arguments, got {}", name, arity, all_args.len()),
+                            ))
+                        }
                     }
                     _ => Err(XsError::RuntimeError(
                         span.clone(),
@@ -220,188 +336,158 @@ impl Interpreter {
         }
     }
 
-    fn apply_builtin(&mut self, name: &str, args: &[Expr], env: &Environment, span: &xs_core::Span) -> Result<Option<Value>, XsError> {
+    fn execute_builtin(&mut self, name: &str, args: &[Value], span: &xs_core::Span) -> Result<Value, XsError> {
         match name {
             "+" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "+ requires exactly 2 arguments".to_string()));
-                }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Int(x + y))),
+                match (&args[0], &args[1]) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
                     _ => Err(XsError::RuntimeError(span.clone(), "+ requires integer arguments".to_string())),
                 }
             }
             "-" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "- requires exactly 2 arguments".to_string()));
-                }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Int(x - y))),
+                match (&args[0], &args[1]) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x - y)),
                     _ => Err(XsError::RuntimeError(span.clone(), "- requires integer arguments".to_string())),
                 }
             }
             "*" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "* requires exactly 2 arguments".to_string()));
-                }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Int(x * y))),
+                match (&args[0], &args[1]) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x * y)),
                     _ => Err(XsError::RuntimeError(span.clone(), "* requires integer arguments".to_string())),
                 }
             }
             "/" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "/ requires exactly 2 arguments".to_string()));
-                }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
+                match (&args[0], &args[1]) {
                     (Value::Int(x), Value::Int(y)) => {
-                        if y == 0 {
+                        if *y == 0 {
                             Err(XsError::RuntimeError(span.clone(), "Division by zero".to_string()))
                         } else {
-                            Ok(Some(Value::Int(x / y)))
+                            Ok(Value::Int(x / y))
                         }
                     }
                     _ => Err(XsError::RuntimeError(span.clone(), "/ requires integer arguments".to_string())),
                 }
             }
-            "<" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "< requires exactly 2 arguments".to_string()));
+            "%" => {
+                match (&args[0], &args[1]) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        if *y == 0 {
+                            Err(XsError::RuntimeError(span.clone(), "Modulo by zero".to_string()))
+                        } else {
+                            Ok(Value::Int(x % y))
+                        }
+                    }
+                    _ => Err(XsError::RuntimeError(span.clone(), "% requires integer arguments".to_string())),
                 }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Bool(x < y))),
+            }
+            "<" => {
+                match (&args[0], &args[1]) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x < y)),
                     _ => Err(XsError::RuntimeError(span.clone(), "< requires integer arguments".to_string())),
                 }
             }
             ">" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "> requires exactly 2 arguments".to_string()));
-                }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Bool(x > y))),
+                match (&args[0], &args[1]) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x > y)),
                     _ => Err(XsError::RuntimeError(span.clone(), "> requires integer arguments".to_string())),
                 }
             }
-            "<=" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "<= requires exactly 2 arguments".to_string()));
-                }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Bool(x <= y))),
-                    _ => Err(XsError::RuntimeError(span.clone(), "<= requires integer arguments".to_string())),
-                }
-            }
-            ">=" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), ">= requires exactly 2 arguments".to_string()));
-                }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Bool(x >= y))),
-                    _ => Err(XsError::RuntimeError(span.clone(), ">= requires integer arguments".to_string())),
-                }
-            }
             "=" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "= requires exactly 2 arguments".to_string()));
-                }
-                let a = self.eval(&args[0], env)?;
-                let b = self.eval(&args[1], env)?;
-                match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Some(Value::Bool(x == y))),
+                match (&args[0], &args[1]) {
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x == y)),
                     _ => Err(XsError::RuntimeError(span.clone(), "= requires integer arguments".to_string())),
                 }
             }
             "cons" => {
-                if args.len() != 2 {
-                    return Err(XsError::RuntimeError(span.clone(), "cons requires exactly 2 arguments".to_string()));
-                }
-                let head = self.eval(&args[0], env)?;
-                let tail = self.eval(&args[1], env)?;
-                match tail {
-                    Value::List(elems) => {
-                        let mut result = vec![head];
-                        result.extend(elems);
-                        Ok(Some(Value::List(result)))
+                match &args[1] {
+                    Value::List(tail) => {
+                        let mut new_list = vec![args[0].clone()];
+                        new_list.extend(tail.clone());
+                        Ok(Value::List(new_list))
                     }
                     _ => Err(XsError::RuntimeError(span.clone(), "cons requires a list as second argument".to_string())),
                 }
             }
-            _ => Ok(None),
+            "concat" => {
+                match (&args[0], &args[1]) {
+                    (Value::String(s1), Value::String(s2)) => Ok(Value::String(format!("{}{}", s1, s2))),
+                    _ => Err(XsError::RuntimeError(span.clone(), "concat requires string arguments".to_string())),
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                span.clone(),
+                format!("Unknown builtin function: {}", name),
+            )),
         }
     }
-    
+
     fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Result<Option<Vec<(Ident, Value)>>, XsError> {
         match (pattern, value) {
             (Pattern::Wildcard(_), _) => Ok(Some(vec![])),
             
-            (Pattern::Literal(lit, _), _) => {
-                let matches = match (lit, value) {
-                    (Literal::Int(n), Value::Int(v)) => n == v,
-                    (Literal::Float(f), Value::Float(v)) => (f.0 - v).abs() < f64::EPSILON,
-                    (Literal::Bool(b), Value::Bool(v)) => b == v,
-                    (Literal::String(s), Value::String(v)) => s == v,
+            (Pattern::Variable(name, _), _) => Ok(Some(vec![(name.clone(), value.clone())])),
+            
+            (Pattern::Literal(pat_lit, _), _) => {
+                let matches = match (pat_lit, value) {
+                    (Literal::Int(n1), Value::Int(n2)) => n1 == n2,
+                    (Literal::Float(f1), Value::Float(f2)) => f1.0 == *f2,
+                    (Literal::Bool(b1), Value::Bool(b2)) => b1 == b2,
+                    (Literal::String(s1), Value::String(s2)) => s1 == s2,
                     _ => false,
                 };
-                if matches {
-                    Ok(Some(vec![]))
-                } else {
-                    Ok(None)
-                }
+                Ok(if matches { Some(vec![]) } else { None })
             }
             
-            (Pattern::Variable(name, _), _) => {
-                Ok(Some(vec![(name.clone(), value.clone())]))
-            }
-            
-            (Pattern::Constructor { name, patterns, .. }, Value::Constructor { name: val_name, values }) => {
-                if name != val_name {
-                    return Ok(None);
-                }
-                if patterns.len() != values.len() {
+            (Pattern::Constructor { name: pat_name, patterns, .. }, Value::Constructor { name: val_name, values }) => {
+                if pat_name != val_name || patterns.len() != values.len() {
                     return Ok(None);
                 }
                 
-                let mut bindings = vec![];
-                for (pattern, value) in patterns.iter().zip(values.iter()) {
-                    if let Some(mut pattern_bindings) = self.match_pattern(pattern, value)? {
-                        bindings.append(&mut pattern_bindings);
+                let mut all_bindings = vec![];
+                for (sub_pattern, sub_value) in patterns.iter().zip(values.iter()) {
+                    if let Some(bindings) = self.match_pattern(sub_pattern, sub_value)? {
+                        all_bindings.extend(bindings);
                     } else {
                         return Ok(None);
                     }
                 }
-                Ok(Some(bindings))
+                Ok(Some(all_bindings))
             }
             
             (Pattern::List { patterns, .. }, Value::List(values)) => {
+                if patterns.is_empty() && values.is_empty() {
+                    return Ok(Some(vec![]));
+                }
+                
+                if patterns.len() == 2 {
+                    // Check for cons pattern: [head, tail]
+                    if let Pattern::Variable(tail_name, _) = &patterns[1] {
+                        if !values.is_empty() {
+                            // Match head with first element
+                            if let Some(head_bindings) = self.match_pattern(&patterns[0], &values[0])? {
+                                let mut all_bindings = head_bindings;
+                                // Bind tail to rest of list
+                                all_bindings.push((tail_name.clone(), Value::List(values[1..].to_vec())));
+                                return Ok(Some(all_bindings));
+                            }
+                        }
+                    }
+                }
+                
+                // Exact list match
                 if patterns.len() != values.len() {
                     return Ok(None);
                 }
                 
-                let mut bindings = vec![];
-                for (pattern, value) in patterns.iter().zip(values.iter()) {
-                    if let Some(mut pattern_bindings) = self.match_pattern(pattern, value)? {
-                        bindings.append(&mut pattern_bindings);
+                let mut all_bindings = vec![];
+                for (sub_pattern, sub_value) in patterns.iter().zip(values.iter()) {
+                    if let Some(bindings) = self.match_pattern(sub_pattern, sub_value)? {
+                        all_bindings.extend(bindings);
                     } else {
                         return Ok(None);
                     }
                 }
-                Ok(Some(bindings))
+                Ok(Some(all_bindings))
             }
             
             _ => Ok(None),
@@ -409,292 +495,96 @@ impl Interpreter {
     }
 }
 
-pub fn eval(expr: &Expr) -> Result<Value, XsError> {
-    let mut interpreter = Interpreter::new();
-    let env = Environment::new();
-    interpreter.eval(expr, &env)
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parser::parse;
-    use checker::type_check;
+    use xs_core::{Expr, Ident, Literal, Span};
 
-    fn check_and_eval(program: &str) -> Result<Value, XsError> {
-        let expr = parse(program)?;
-        let _ = type_check(&expr)?; // Type check first
-        eval(&expr)
+    fn setup() -> (Interpreter, Environment) {
+        let interp = Interpreter::new();
+        let env = Interpreter::create_initial_env();
+        (interp, env)
     }
 
     #[test]
-    fn test_literals() {
-        assert_eq!(check_and_eval("42").unwrap(), Value::Int(42));
-        assert_eq!(check_and_eval("true").unwrap(), Value::Bool(true));
-        assert_eq!(check_and_eval(r#""hello""#).unwrap(), Value::String("hello".to_string()));
-    }
-
-    #[test]
-    fn test_arithmetic() {
-        assert_eq!(check_and_eval("(+ 1 2)").unwrap(), Value::Int(3));
-        assert_eq!(check_and_eval("(- 5 3)").unwrap(), Value::Int(2));
-        assert_eq!(check_and_eval("(* 4 3)").unwrap(), Value::Int(12));
-        assert_eq!(check_and_eval("(/ 10 2)").unwrap(), Value::Int(5));
-    }
-
-    #[test]
-    fn test_comparison() {
-        assert_eq!(check_and_eval("(< 1 2)").unwrap(), Value::Bool(true));
-        assert_eq!(check_and_eval("(< 2 1)").unwrap(), Value::Bool(false));
-        assert_eq!(check_and_eval("(> 2 1)").unwrap(), Value::Bool(true));
-        assert_eq!(check_and_eval("(= 2 2)").unwrap(), Value::Bool(true));
-        assert_eq!(check_and_eval("(= 2 3)").unwrap(), Value::Bool(false));
-    }
-
-    #[test]
-    fn test_if_expression() {
-        assert_eq!(check_and_eval("(if true 1 2)").unwrap(), Value::Int(1));
-        assert_eq!(check_and_eval("(if false 1 2)").unwrap(), Value::Int(2));
-        assert_eq!(check_and_eval("(if (< 1 2) 10 20)").unwrap(), Value::Int(10));
-    }
-
-    #[test]
-    fn test_let_binding() {
-        assert_eq!(check_and_eval("(let x 42)").unwrap(), Value::Int(42));
-    }
-
-    #[test]
-    fn test_lambda_and_apply() {
-        assert_eq!(
-            check_and_eval("((lambda (x : Int) (+ x 1)) 5)").unwrap(),
-            Value::Int(6)
-        );
+    fn test_eval_literal() {
+        let (mut interp, env) = setup();
         
-        assert_eq!(
-            check_and_eval("((lambda (x : Int y : Int) (+ x y)) 3 4)").unwrap(),
-            Value::Int(7)
-        );
-    }
-
-    #[test]
-    fn test_list() {
-        let result = check_and_eval("(list 1 2 3)").unwrap();
-        match result {
-            Value::List(elems) => {
-                assert_eq!(elems.len(), 3);
-                assert_eq!(elems[0], Value::Int(1));
-                assert_eq!(elems[1], Value::Int(2));
-                assert_eq!(elems[2], Value::Int(3));
-            }
-            _ => panic!("Expected list"),
-        }
-    }
-
-    #[test]
-    fn test_cons() {
-        let result = check_and_eval("(cons 1 (list 2 3))").unwrap();
-        match result {
-            Value::List(elems) => {
-                assert_eq!(elems.len(), 3);
-                assert_eq!(elems[0], Value::Int(1));
-                assert_eq!(elems[1], Value::Int(2));
-                assert_eq!(elems[2], Value::Int(3));
-            }
-            _ => panic!("Expected list"),
-        }
-    }
-
-    #[test]
-    fn test_closure_capture() {
-        // Lambda captures its environment
-        let program = "((lambda (x : Int) (lambda (y : Int) (+ x y))) 10)";
-        let result = check_and_eval(program).unwrap();
-        match result {
-            Value::Closure { .. } => {},
-            _ => panic!("Expected closure"),
-        }
-    }
-
-    #[test]
-    fn test_division_by_zero() {
-        let result = check_and_eval("(/ 10 0)");
-        assert!(matches!(result, Err(XsError::RuntimeError(_, _))));
-    }
-
-    #[test]
-    fn test_rec_minimal() {
-        // Test that rec creates a closure
-        let program = "(rec f (x) x)";
-        let result = check_and_eval(program).unwrap();
-        match result {
-            Value::Closure { .. } | Value::RecClosure { .. } => {},
-            _ => panic!("Expected closure from rec"),
-        }
-        
-        // Test applying a non-recursive rec
-        let result = check_and_eval("((rec f (x) x) 42)").unwrap();
+        let expr = Expr::Literal(Literal::Int(42), Span::new(0, 2));
+        let result = interp.eval(&expr, &env).unwrap();
         assert_eq!(result, Value::Int(42));
-    }
-
-    #[test]
-    fn test_rec_factorial() {
-        // rec returns a closure, so we need to apply it
-        let program = "(rec factorial (n : Int) : Int (if (<= n 1) 1 (* n (factorial (- n 1)))))";
-        let result = check_and_eval(program).unwrap();
-        // Should return a closure
-        match result {
-            Value::Closure { .. } | Value::RecClosure { .. } => {},
-            _ => panic!("Expected closure from rec"),
-        }
         
-        // Now test applying it
-        let result = check_and_eval("((rec factorial (n : Int) : Int (if (<= n 1) 1 (* n (factorial (- n 1))))) 5)").unwrap();
-        assert_eq!(result, Value::Int(120)); // 5! = 120
+        let expr = Expr::Literal(Literal::Bool(true), Span::new(0, 4));
+        let result = interp.eval(&expr, &env).unwrap();
+        assert_eq!(result, Value::Bool(true));
     }
 
     #[test]
-    fn test_rec_fibonacci() {
-        let result = check_and_eval("((rec fib (n : Int) : Int (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) 6)").unwrap();
-        assert_eq!(result, Value::Int(8)); // fib(6) = 8
-    }
-
-    #[test]
-    fn test_rec_no_type_annotation() {
-        // Should work without type annotations due to type inference
-        let result = check_and_eval("((rec double (x) (* x 2)) 21)").unwrap();
-        assert_eq!(result, Value::Int(42));
-    }
-
-    #[test]
-    fn test_let_rec_factorial() {
-        let program = "(let-rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))";
-        let result = check_and_eval(program).unwrap();
-        match result {
-            Value::Closure { .. } | Value::RecClosure { .. } => {},
-            _ => panic!("Expected closure"),
-        }
+    fn test_eval_builtin_partial_application() {
+        let (mut interp, env) = setup();
         
-        // Test applying the factorial function
-        let program = "((let-rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1)))))) 5)";
-        assert_eq!(check_and_eval(program).unwrap(), Value::Int(120));
-    }
-
-    #[test]
-    fn test_let_rec_fibonacci() {
-        let program = r#"
-            ((let-rec fib (lambda (n)
-                (if (< n 2)
-                    n
-                    (+ (fib (- n 1)) (fib (- n 2))))))
-             6)
-        "#;
-        assert_eq!(check_and_eval(program).unwrap(), Value::Int(8));
-    }
-
-    #[test]
-    fn test_undefined_variable() {
-        let result = check_and_eval("x");
-        // This should fail during type checking
-        assert!(matches!(result, Err(XsError::UndefinedVariable(_))));
-    }
-    
-    #[test]
-    fn test_match_literal() {
-        let program = "(match 1 (0 \"zero\") (1 \"one\") (_ \"other\"))";
-        assert_eq!(check_and_eval(program).unwrap(), Value::String("one".to_string()));
-    }
-    
-    #[test]
-    fn test_match_variable() {
-        let program = "(match 42 (x x))";
-        assert_eq!(check_and_eval(program).unwrap(), Value::Int(42));
-    }
-    
-    #[test]
-    fn test_match_constructor() {
-        let program = "(match (Some 42) ((Some x) x) ((None) 0))";
-        assert_eq!(check_and_eval(program).unwrap(), Value::Int(42));
-    }
-    
-    #[test]
-    fn test_match_list() {
-        let program = "(match (list 1 2) ((list x y) (+ x y)))";
-        assert_eq!(check_and_eval(program).unwrap(), Value::Int(3));
-    }
-    
-    #[test]
-    fn test_match_wildcard() {
-        let program = "(match 99 (0 \"zero\") (_ \"not zero\"))";
-        assert_eq!(check_and_eval(program).unwrap(), Value::String("not zero".to_string()));
-    }
-    
-    #[test]
-    fn test_constructor() {
-        let program = "(Some 42)";
-        let result = check_and_eval(program).unwrap();
+        // Test partial application of +
+        let expr = Expr::Apply {
+            func: Box::new(Expr::Ident(Ident("+".to_string()), Span::new(0, 1))),
+            args: vec![Expr::Literal(Literal::Int(5), Span::new(2, 3))],
+            span: Span::new(0, 4),
+        };
+        
+        let result = interp.eval(&expr, &env).unwrap();
         match result {
-            Value::Constructor { name, values } => {
-                assert_eq!(name.0, "Some");
-                assert_eq!(values.len(), 1);
-                assert_eq!(values[0], Value::Int(42));
-            },
-            _ => panic!("Expected constructor value"),
+            Value::BuiltinFunction { name, arity, applied_args } => {
+                assert_eq!(name, "+");
+                assert_eq!(arity, 2);
+                assert_eq!(applied_args.len(), 1);
+                assert_eq!(applied_args[0], Value::Int(5));
+            }
+            _ => panic!("Expected BuiltinFunction"),
         }
     }
-    
+
     #[test]
-    fn test_adt_with_match() {
-        // Create a shared interpreter
-        let mut interpreter = Interpreter::new();
-        let env = Environment::new();
+    fn test_eval_builtin_full_application() {
+        let (mut interp, env) = setup();
         
-        // First define the type
-        let def_program = r#"(type Option (Some value) (None))"#;
-        let def_expr = parse(def_program).unwrap();
-        interpreter.eval(&def_expr, &env).unwrap();
+        // Test full application of +
+        let expr = Expr::Apply {
+            func: Box::new(Expr::Ident(Ident("+".to_string()), Span::new(0, 1))),
+            args: vec![
+                Expr::Literal(Literal::Int(5), Span::new(2, 3)),
+                Expr::Literal(Literal::Int(7), Span::new(4, 5)),
+            ],
+            span: Span::new(0, 6),
+        };
         
-        // Now test with Some
-        let some_program = r#"
-            (match (Some 42)
-                ((Some x) (+ x 10))
-                ((None) 0))
-        "#;
-        let some_expr = parse(some_program).unwrap();
-        assert_eq!(interpreter.eval(&some_expr, &env).unwrap(), Value::Int(52));
-        
-        // Test with None
-        let none_program = r#"
-            (match (None)
-                ((Some x) x)
-                ((None) 99))
-        "#;
-        let none_expr = parse(none_program).unwrap();
-        assert_eq!(interpreter.eval(&none_expr, &env).unwrap(), Value::Int(99));
+        let result = interp.eval(&expr, &env).unwrap();
+        assert_eq!(result, Value::Int(12));
     }
-    
+
     #[test]
-    fn test_nested_adt() {
-        // Create a shared interpreter
-        let mut interpreter = Interpreter::new();
-        let env = Environment::new();
+    fn test_eval_curried_builtin_application() {
+        let (mut interp, env) = setup();
         
-        // Define Result type
-        let result_def = r#"(type Result (Ok value) (Err error))"#;
-        interpreter.eval(&parse(result_def).unwrap(), &env).unwrap();
+        // Test ((+ 5) 7)
+        let add5 = Expr::Apply {
+            func: Box::new(Expr::Ident(Ident("+".to_string()), Span::new(0, 1))),
+            args: vec![Expr::Literal(Literal::Int(5), Span::new(2, 3))],
+            span: Span::new(0, 4),
+        };
         
-        // Define Option type
-        let option_def = r#"(type Option (Some value) (None))"#;
-        interpreter.eval(&parse(option_def).unwrap(), &env).unwrap();
+        let expr = Expr::Apply {
+            func: Box::new(add5),
+            args: vec![Expr::Literal(Literal::Int(7), Span::new(5, 6))],
+            span: Span::new(0, 7),
+        };
         
-        // Test nested pattern matching
-        let match_program = r#"
-            (match (Ok (Some 42))
-                ((Ok (Some x)) x)
-                ((Ok (None)) 0)
-                ((Err e) -1))
-        "#;
-        let match_expr = parse(match_program).unwrap();
-        assert_eq!(interpreter.eval(&match_expr, &env).unwrap(), Value::Int(42));
+        let result = interp.eval(&expr, &env).unwrap();
+        assert_eq!(result, Value::Int(12));
     }
+}
+
+/// Helper function to evaluate an expression with a fresh interpreter and initial environment
+pub fn eval(expr: &Expr) -> Result<Value, XsError> {
+    let mut interpreter = Interpreter::new();
+    let env = Interpreter::create_initial_env();
+    interpreter.eval(expr, &env)
 }

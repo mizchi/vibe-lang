@@ -106,10 +106,10 @@ fn test_list_operations() {
 #[test]
 fn test_recursive_function() {
     // Test recursive function using rec
-    let code = r#"(rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))"#;
+    let code = r#"(rec fact (n) (if (= n 0) 1 (* n (fact (- n 1)))))"#;
     fs::write("test_rec.xs", code).unwrap();
     
-    let (stdout, stderr, success) = run_xsc(&["check", "test_rec.xs"]);
+    let (_stdout, stderr, success) = run_xsc(&["check", "test_rec.xs"]);
     assert!(success, "Type check failed: {stderr}");
     
     fs::remove_file("test_rec.xs").ok();
@@ -144,7 +144,7 @@ fn test_type_definition() {
 #[test]
 fn test_pattern_matching() {
     // Test pattern matching
-    let code = r#"(match (list 1) ((list) 0) ((cons x xs) x))"#;
+    let code = r#"(match (list 1 2) ((list) 0) ((list x _) x))"#;
     fs::write("test_pattern.xs", code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_pattern.xs"]);

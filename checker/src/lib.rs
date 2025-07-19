@@ -46,6 +46,10 @@ impl Default for TypeEnv {
             Box::new(Type::Int),
             Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
         ));
+        env.add_builtin("%", Type::Function(
+            Box::new(Type::Int),
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
+        ));
         env.add_builtin("<", Type::Function(
             Box::new(Type::Int),
             Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool)))
@@ -64,6 +68,10 @@ impl Default for TypeEnv {
                 Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
                 Box::new(Type::List(Box::new(Type::Var("a".to_string()))))
             ))
+        ));
+        env.add_builtin("concat", Type::Function(
+            Box::new(Type::String),
+            Box::new(Type::Function(Box::new(Type::String), Box::new(Type::String)))
         ));
         
         env
@@ -659,9 +667,17 @@ impl TypeChecker {
             Pattern::List { patterns, span } => {
                 match expected_type {
                     Type::List(elem_type) => {
-                        // All elements must have the same type
-                        for pattern in patterns {
-                            self.check_pattern(pattern, elem_type, env)?;
+                        if patterns.len() == 2 {
+                            // Check for cons pattern: [head, tail]
+                            // where tail should bind to the rest of the list
+                            self.check_pattern(&patterns[0], elem_type, env)?;
+                            // The second element should be a list of the same type
+                            self.check_pattern(&patterns[1], expected_type, env)?;
+                        } else {
+                            // All elements must have the same type
+                            for pattern in patterns {
+                                self.check_pattern(pattern, elem_type, env)?;
+                            }
                         }
                         Ok(())
                     }
@@ -674,9 +690,15 @@ impl TypeChecker {
                             span: span.clone(),
                         });
                         
-                        // Check patterns against element type
-                        for pattern in patterns {
-                            self.check_pattern(pattern, &elem_type, env)?;
+                        if patterns.len() == 2 {
+                            // Check for cons pattern
+                            self.check_pattern(&patterns[0], &elem_type, env)?;
+                            self.check_pattern(&patterns[1], expected_type, env)?;
+                        } else {
+                            // Check patterns against element type
+                            for pattern in patterns {
+                                self.check_pattern(pattern, &elem_type, env)?;
+                            }
                         }
                         Ok(())
                     }
@@ -938,7 +960,7 @@ mod tests {
     
     #[test]
     fn test_match_with_variables() {
-        let program = "(match (list 1 2) ((list x y) (+ x y)))";
+        let program = "(match (list 1 2 3) ((list x y z) (+ x z)))";
         let typ = type_check(&parse(program).unwrap()).unwrap();
         assert_eq!(typ, Type::Int);
     }

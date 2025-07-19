@@ -7,6 +7,9 @@ mod types;
 mod value;
 pub mod ir;
 pub mod builtins;
+pub mod curry;
+pub mod metadata;
+pub mod pretty_print;
 
 // Re-export builtins for convenience
 pub use builtins::{BuiltinFunction, BuiltinRegistry};
@@ -231,6 +234,11 @@ pub enum Value {
     Constructor {
         name: Ident,
         values: Vec<Value>,
+    },
+    BuiltinFunction {
+        name: String,
+        arity: usize,
+        applied_args: Vec<Value>,
     },
 }
 

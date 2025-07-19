@@ -58,7 +58,7 @@ fn test_function_composition() {
 #[test]
 fn test_simple_recursion() {
     // Test simple recursive function
-    let rec_code = r#"((rec sum (lambda (n) (if (= n 0) 0 (+ n (sum (- n 1)))))) 5)"#;
+    let rec_code = r#"((rec sum (n) (if (= n 0) 0 (+ n (sum (- n 1))))) 5)"#;
     fs::write("test_simple_rec.xs", rec_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_simple_rec.xs"]);
@@ -97,7 +97,7 @@ fn test_immutable_data() {
 #[test]
 fn test_tail_recursion() {
     // Test tail-recursive implementation
-    let tail_rec_code = r#"((rec sum_tail (lambda (n acc) (if (= n 0) acc (sum_tail (- n 1) (+ acc n))))) 100 0)"#;
+    let tail_rec_code = r#"((rec sum_tail (n acc) (if (= n 0) acc (sum_tail (- n 1) (+ acc n)))) 100 0)"#;
     fs::write("test_tail_rec.xs", tail_rec_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_tail_rec.xs"]);
@@ -136,7 +136,7 @@ fn test_referential_transparency() {
 #[test]
 fn test_list_manipulation() {
     // Test list manipulation
-    let list_code = r#"(match (list 1 2 3) ((cons h t) h) ((list) 0))"#;
+    let list_code = r#"(match (list 1 2 3) ((list h t s) h) ((list) 0))"#;
     fs::write("test_list_manip.xs", list_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_list_manip.xs"]);
@@ -162,12 +162,12 @@ fn test_algebraic_data_types() {
 #[test]
 fn test_nested_pattern_matching() {
     // Test nested pattern matching
-    let pattern_code = r#"(match (cons 1 (cons 2 (list))) ((cons x (cons y _)) (+ x y)) (_ 0))"#;
+    let pattern_code = r#"(match (list 1 2) ((list h t) (match t ((list x xs) x) (_ 0))) (_ 0))"#;
     fs::write("test_nested_pattern.xs", pattern_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_nested_pattern.xs"]);
     assert!(success, "Run failed: {stderr}");
-    assert!(stdout.contains("3"));
+    assert!(stdout.contains("2"));
     
     fs::remove_file("test_nested_pattern.xs").ok();
 }

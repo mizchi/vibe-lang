@@ -1,8 +1,11 @@
 mod lexer;
+mod metadata_parser;
 
 use lexer::{Lexer, Token};
+pub use metadata_parser::{parse_with_metadata, MetadataParser};
 use ordered_float::OrderedFloat;
 use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, XsError};
+use xs_core::curry::{curry_lambda, curry_apply};
 
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
@@ -337,11 +340,7 @@ impl<'a> Parser<'a> {
             )),
         };
 
-        Ok(Expr::Lambda {
-            params,
-            body,
-            span: Span::new(start, end),
-        })
+        Ok(curry_lambda(params, body, Span::new(start, end)))
     }
 
     fn parse_if(&mut self, start: usize) -> Result<Expr, XsError> {
@@ -415,11 +414,11 @@ impl<'a> Parser<'a> {
             )),
         };
         
-        Ok(Expr::Apply {
-            func: Box::new(Expr::Ident(Ident("cons".to_string()), Span::new(start + 1, start + 5))),
+        Ok(curry_apply(
+            Box::new(Expr::Ident(Ident("cons".to_string()), Span::new(start + 1, start + 5))),
             args,
-            span: Span::new(start, end),
-        })
+            Span::new(start, end),
+        ))
     }
 
     fn parse_application(&mut self, start: usize) -> Result<Expr, XsError> {
@@ -481,11 +480,7 @@ impl<'a> Parser<'a> {
             )),
         };
 
-        Ok(Expr::Apply {
-            func,
-            args,
-            span: Span::new(start, end),
-        })
+        Ok(curry_apply(func, args, Span::new(start, end)))
     }
 
     fn parse_match(&mut self, start: usize) -> Result<Expr, XsError> {
@@ -1157,13 +1152,22 @@ mod tests {
         }
 
         let expr = parse("(lambda (x : Int y : Bool) (+ x 1))").unwrap();
+        // With currying, this becomes nested lambdas
         match expr {
-            Expr::Lambda { params, .. } => {
-                assert_eq!(params.len(), 2);
+            Expr::Lambda { params, body, .. } => {
+                assert_eq!(params.len(), 1);
                 assert_eq!(params[0].0.0, "x");
                 assert_eq!(params[0].1, Some(Type::Int));
-                assert_eq!(params[1].0.0, "y");
-                assert_eq!(params[1].1, Some(Type::Bool));
+                
+                // Check nested lambda
+                match body.as_ref() {
+                    Expr::Lambda { params: inner_params, .. } => {
+                        assert_eq!(inner_params.len(), 1);
+                        assert_eq!(inner_params[0].0.0, "y");
+                        assert_eq!(inner_params[0].1, Some(Type::Bool));
+                    }
+                    _ => panic!("Expected nested lambda"),
+                }
             },
             _ => panic!("Expected lambda expression with typed parameters"),
         }
@@ -1194,13 +1198,20 @@ mod tests {
     #[test]
     fn test_parse_application() {
         let expr = parse("(+ 1 2)").unwrap();
+        // With currying, (+ 1 2) becomes ((+ 1) 2)
         match expr {
             Expr::Apply { func, args, .. } => {
+                assert_eq!(args.len(), 1); // Only one arg at outer level
                 match func.as_ref() {
-                    Expr::Ident(Ident(name), _) if name == "+" => {},
-                    _ => panic!("Expected + function"),
+                    Expr::Apply { func: inner_func, args: inner_args, .. } => {
+                        match inner_func.as_ref() {
+                            Expr::Ident(Ident(name), _) if name == "+" => {},
+                            _ => panic!("Expected + function"),
+                        }
+                        assert_eq!(inner_args.len(), 1);
+                    }
+                    _ => panic!("Expected nested application"),
                 }
-                assert_eq!(args.len(), 2);
             },
             _ => panic!("Expected application"),
         }

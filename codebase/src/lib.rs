@@ -358,6 +358,118 @@ impl Default for Codebase {
     }
 }
 
+/// Branch in the codebase
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Branch {
+    pub name: String,
+    pub hash: String,
+    pub patches: Vec<Patch>,
+}
+
+/// Edit action for session
+#[derive(Debug, Clone)]
+pub enum EditAction {
+    AddDefinition { name: String, expr: Expr },
+    UpdateDefinition { name: String, expr: Expr },
+    DeleteDefinition { name: String },
+}
+
+/// Edit session for accumulating changes
+#[derive(Debug, Clone)]
+pub struct EditSession {
+    pub branch_hash: String,
+    pub edits: Vec<EditAction>,
+}
+
+impl EditSession {
+    pub fn new(branch_hash: String) -> Self {
+        Self {
+            branch_hash,
+            edits: Vec::new(),
+        }
+    }
+    
+    pub fn add_definition(&mut self, name: String, expr: Expr) -> Result<String, CodebaseError> {
+        self.edits.push(EditAction::AddDefinition { name, expr: expr.clone() });
+        let serialized = bincode::serialize(&expr)?;
+        Ok(Hash::new(&serialized).to_hex())
+    }
+}
+
+/// Codebase manager for branch management
+pub struct CodebaseManager {
+    codebase: Codebase,
+    branches: HashMap<String, Branch>,
+    storage_path: std::path::PathBuf,
+}
+
+impl CodebaseManager {
+    pub fn new(storage_path: std::path::PathBuf) -> Result<Self, CodebaseError> {
+        std::fs::create_dir_all(&storage_path)?;
+        Ok(Self {
+            codebase: Codebase::new(),
+            branches: HashMap::new(),
+            storage_path,
+        })
+    }
+    
+    pub fn create_branch(&mut self, name: String) -> Result<&Branch, CodebaseError> {
+        let branch = Branch {
+            name: name.clone(),
+            hash: "initial".to_string(),
+            patches: Vec::new(),
+        };
+        self.branches.insert(name.clone(), branch);
+        self.branches.get(&name).ok_or_else(|| CodebaseError::TermNotFound(name))
+    }
+    
+    pub fn get_branch(&self, name: &str) -> Result<&Branch, CodebaseError> {
+        self.branches.get(name)
+            .ok_or_else(|| CodebaseError::TermNotFound(name.to_string()))
+    }
+    
+    pub fn hash_expr(&self, expr: &Expr) -> String {
+        let serialized = bincode::serialize(&expr).unwrap_or_default();
+        Hash::new(&serialized).to_hex()
+    }
+    
+    pub fn create_patch_from_session(&self, session: &EditSession) -> Result<Patch, CodebaseError> {
+        let mut patch = Patch::new();
+        for edit in &session.edits {
+            match edit {
+                EditAction::AddDefinition { name, expr } => {
+                    // TODO: Infer type here
+                    let ty = Type::Int; // Placeholder
+                    patch.add_term(Some(name.clone()), expr.clone(), ty);
+                }
+                EditAction::UpdateDefinition { name, expr } => {
+                    // Convert expr to string representation
+                    let expr_str = format!("{:?}", expr); // TODO: Proper formatting
+                    patch.update_term(name.clone(), expr_str);
+                }
+                EditAction::DeleteDefinition { name } => {
+                    // Find hash by name
+                    if let Some(term) = self.codebase.get_term_by_name(name) {
+                        patch.remove_term(term.hash.clone());
+                    }
+                }
+            }
+        }
+        Ok(patch)
+    }
+    
+    pub fn apply_patch(&mut self, branch_name: &str, patch: &Patch) -> Result<(), CodebaseError> {
+        patch.apply(&mut self.codebase)?;
+        if let Some(branch) = self.branches.get_mut(branch_name) {
+            branch.patches.push(patch.clone());
+            // Update branch hash
+            let serialized = bincode::serialize(&branch.patches)?;
+            branch.hash = Hash::new(&serialized).to_hex();
+        }
+        Ok(())
+    }
+}
+
 /// Patch representation for incremental updates
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Patch {

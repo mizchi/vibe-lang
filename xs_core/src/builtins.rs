@@ -47,6 +47,7 @@ pub enum BinaryOp {
     I64Sub,
     I64Mul,
     I64DivS,
+    I64RemS,
     I64LtS,
     I64GtS,
     I64LeS,
@@ -183,6 +184,43 @@ impl BuiltinFunction for DivInt {
     fn compile_to_wasm(&self) -> WasmBuiltin {
         WasmBuiltin::Instructions(vec![
             WasmInstrPattern::Binary(BinaryOp::I64DivS)
+        ])
+    }
+}
+
+pub struct ModInt;
+impl BuiltinFunction for ModInt {
+    fn name(&self) -> &str { "%" }
+    
+    fn type_signature(&self) -> Type {
+        Type::Function(
+            Box::new(Type::Int),
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
+        )
+    }
+    
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::Int(a), Value::Int(b)] => {
+                if *b == 0 {
+                    Err(XsError::RuntimeError(
+                        crate::Span::new(0, 0),
+                        "Modulo by zero".to_string()
+                    ))
+                } else {
+                    Ok(Value::Int(a % b))
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "% requires two integer arguments".to_string()
+            )),
+        }
+    }
+    
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Instructions(vec![
+            WasmInstrPattern::Binary(BinaryOp::I64RemS)
         ])
     }
 }
@@ -366,6 +404,34 @@ impl BuiltinFunction for Cons {
     }
 }
 
+// String operations
+
+pub struct Concat;
+impl BuiltinFunction for Concat {
+    fn name(&self) -> &str { "concat" }
+    
+    fn type_signature(&self) -> Type {
+        Type::Function(
+            Box::new(Type::String),
+            Box::new(Type::Function(Box::new(Type::String), Box::new(Type::String)))
+        )
+    }
+    
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::String(a), Value::String(b)] => Ok(Value::String(format!("{}{}", a, b))),
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "concat requires two string arguments".to_string()
+            )),
+        }
+    }
+    
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("concat".to_string())
+    }
+}
+
 // Floating point operations
 
 pub struct AddFloat;
@@ -409,6 +475,7 @@ impl BuiltinRegistry {
             Box::new(SubInt),
             Box::new(MulInt),
             Box::new(DivInt),
+            Box::new(ModInt),
             // Comparisons
             Box::new(LessThan),
             Box::new(GreaterThan),
@@ -417,6 +484,8 @@ impl BuiltinRegistry {
             Box::new(Equal),
             // List operations
             Box::new(Cons),
+            // String operations
+            Box::new(Concat),
             // Float operations
             Box::new(AddFloat),
         ];

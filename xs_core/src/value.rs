@@ -28,6 +28,13 @@ impl fmt::Display for Value {
                 }
                 write!(f, ")")
             }
+            Value::BuiltinFunction { name, arity, applied_args } => {
+                if applied_args.is_empty() {
+                    write!(f, "<builtin:{}:{}>", name, arity)
+                } else {
+                    write!(f, "<builtin:{}:{}/{}>", name, arity, applied_args.len())
+                }
+            }
         }
     }
 }

@@ -48,13 +48,13 @@ fn test_io_effect_placeholder() {
 #[test]
 fn test_state_effect_simulation() {
     // Simulate state effects with explicit state passing
-    let state_code = r#"((lambda (state) (cons (+ state 1) (+ state 1))) 0)"#;
+    let state_code = r#"((lambda (state) (list (+ state 1) (+ state 1))) 0)"#;
     
     fs::write("test_state_effect.xs", state_code).unwrap();
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_state_effect.xs"]);
     assert!(success, "Run failed: {stderr}");
-    assert!(stdout.contains("1"));
+    assert!(stdout.contains("(list 1 1)"));
     
     fs::remove_file("test_state_effect.xs").ok();
 }
@@ -123,7 +123,7 @@ fn test_effect_handlers_preparation() {
     
     let (stdout, stderr, success) = run_xsc(&["run", "test_handlers.xs"]);
     assert!(success, "Run failed: {stderr}");
-    assert!(stdout.contains("closure"));
+    assert!(stdout.contains("42"));
     
     fs::remove_file("test_handlers.xs").ok();
 }
@@ -145,7 +145,7 @@ fn test_resource_effect_simulation() {
 #[test]
 fn test_nondeterminism_effect() {
     // Test nondeterministic computation simulation
-    let nondet_code = r#"(match (list 1 2 3) ((list) (list)) ((cons x xs) (cons x xs)))"#;
+    let nondet_code = r#"(match (list 1 2 3) ((list) (list)) ((list x y z) (list x y z)))"#;
     
     fs::write("test_nondet.xs", nondet_code).unwrap();
     
