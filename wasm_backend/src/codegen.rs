@@ -4,6 +4,7 @@ use crate::{
     WasmModule, WasmFunction, WasmType, WasmInstr, CodeGenError,
     types::{TypeIndexAllocator, StandardTypes},
 };
+// ordered_float is re-exported from xs_core
 use xs_core::ir::IrExpr;
 use xs_core::Literal;
 use std::collections::HashMap;
@@ -45,10 +46,14 @@ impl CodeGenerator {
     /// Generate WebAssembly module from IR
     pub fn generate(&mut self, ir: &IrExpr) -> Result<WasmModule, CodeGenError> {
         // Start with main function
+        // For now, we'll return i32 as the exit code (0 for success)
         self.start_function("main", vec![], vec![WasmType::I32]);
         
         // Generate code for the expression
         self.generate_expr(ir)?;
+        
+        // Drop the expression result (whatever type it is)
+        self.emit(WasmInstr::Drop);
         
         // Add return value (0 for success)
         self.emit(WasmInstr::I32Const(0));
@@ -62,7 +67,7 @@ impl CodeGenerator {
             types: vec![], // TODO: Generate type definitions
             globals: vec![],
             memory: None,
-            start: Some(0), // Main function is at index 0
+            start: None, // Don't automatically start main
         })
     }
     
@@ -102,7 +107,7 @@ impl CodeGenerator {
                 Ok(())
             }
             Literal::Float(f) => {
-                self.emit(WasmInstr::F64Const(*f));
+                self.emit(WasmInstr::F64Const(f.0));
                 Ok(())
             }
         }
@@ -197,7 +202,11 @@ impl CodeGenerator {
         // Restore instructions and add if
         if let Some(ref mut func) = self.current_function {
             func.body = saved_instrs.unwrap_or_default();
-            func.body.push(WasmInstr::If { then_instrs, else_instrs });
+            func.body.push(WasmInstr::If { 
+                result_type: None, // TODO: Determine result type
+                then_instrs, 
+                else_instrs 
+            });
         }
         
         Ok(())

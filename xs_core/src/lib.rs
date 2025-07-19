@@ -1,5 +1,6 @@
 use std::fmt;
 use thiserror::Error;
+use ordered_float::OrderedFloat;
 
 mod types;
 mod value;
@@ -17,10 +18,10 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
     Int(i64),
-    Float(f64),
+    Float(OrderedFloat<f64>),
     Bool(bool),
     String(String),
 }
@@ -34,7 +35,7 @@ impl fmt::Display for Ident {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Literal(Literal, Span),
     Ident(Ident, Span),
@@ -107,7 +108,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pattern {
     Wildcard(Span),
     Literal(Literal, Span),

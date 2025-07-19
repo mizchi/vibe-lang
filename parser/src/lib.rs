@@ -1,6 +1,7 @@
 mod lexer;
 
 use lexer::{Lexer, Token};
+use ordered_float::OrderedFloat;
 use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, XsError};
 
 pub struct Parser<'a> {
@@ -36,7 +37,7 @@ impl<'a> Parser<'a> {
                 Ok(expr)
             }
             Some((Token::Float(f), span)) => {
-                let expr = Expr::Literal(Literal::Float(*f), span.clone());
+                let expr = Expr::Literal(Literal::Float(OrderedFloat(*f)), span.clone());
                 self.advance()?;
                 Ok(expr)
             }

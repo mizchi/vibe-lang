@@ -16,7 +16,7 @@ impl Interpreter {
         match expr {
             Expr::Literal(lit, _) => Ok(match lit {
                 Literal::Int(n) => Value::Int(*n),
-                Literal::Float(f) => Value::Float(*f),
+                Literal::Float(f) => Value::Float(f.0),
                 Literal::Bool(b) => Value::Bool(*b),
                 Literal::String(s) => Value::String(s.clone()),
             }),
@@ -353,7 +353,7 @@ impl Interpreter {
             (Pattern::Literal(lit, _), _) => {
                 let matches = match (lit, value) {
                     (Literal::Int(n), Value::Int(v)) => n == v,
-                    (Literal::Float(f), Value::Float(v)) => (f - v).abs() < f64::EPSILON,
+                    (Literal::Float(f), Value::Float(v)) => (f.0 - v).abs() < f64::EPSILON,
                     (Literal::Bool(b), Value::Bool(v)) => b == v,
                     (Literal::String(s), Value::String(v)) => s == v,
                     _ => false,

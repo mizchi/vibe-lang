@@ -119,6 +119,37 @@ impl PerceusTransform {
                     body: Box::new(ir_body),
                 }
             }
+            
+            // Patterns not yet supported in IR
+            Expr::Match { .. } => {
+                // TODO: Implement pattern matching transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
+            
+            Expr::Constructor { .. } => {
+                // TODO: Implement constructor transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
+            
+            Expr::TypeDef { .. } => {
+                // Type definitions don't generate runtime code
+                IrExpr::Literal(Literal::Int(0))
+            }
+            
+            Expr::Module { .. } => {
+                // TODO: Implement module transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
+            
+            Expr::Import { .. } => {
+                // Imports are resolved at compile time
+                IrExpr::Literal(Literal::Int(0))
+            }
+            
+            Expr::QualifiedIdent { .. } => {
+                // TODO: Implement qualified identifier transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
         }
     }
 }

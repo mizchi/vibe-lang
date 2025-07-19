@@ -1,3 +1,4 @@
+use ordered_float::OrderedFloat;
 use std::collections::{HashMap, HashSet};
 use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError};
 
@@ -601,7 +602,7 @@ impl TypeChecker {
             Pattern::Literal(lit, span) => {
                 let lit_type = match lit {
                     Literal::Int(_) => Type::Int,
-                    Literal::Float(_) => Type::Float,
+                    Literal::Float(OrderedFloat(_)) => Type::Float,
                     Literal::Bool(_) => Type::Bool,
                     Literal::String(_) => Type::String,
                 };

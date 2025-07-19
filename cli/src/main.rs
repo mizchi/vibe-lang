@@ -35,6 +35,16 @@ enum Commands {
         /// The XS file to run
         file: PathBuf,
     },
+    
+    /// Run tests
+    Test {
+        /// Test file or directory (defaults to tests/xs)
+        path: Option<PathBuf>,
+        
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -44,6 +54,7 @@ fn main() -> Result<()> {
         Commands::Parse { file } => parse_file(&file),
         Commands::Check { file } => check_file(&file),
         Commands::Run { file } => run_file(&file),
+        Commands::Test { path, verbose } => run_tests(path, verbose),
     }
 }
 
@@ -179,4 +190,70 @@ fn format_value(value: &Value) -> String {
             }
         }
     }
+}
+
+fn run_tests(path: Option<PathBuf>, verbose: bool) -> Result<()> {
+    // For now, just print a message
+    // In a full implementation, this would use wasm_backend::test_runner
+    let test_path = path.unwrap_or_else(|| PathBuf::from("tests/xs"));
+    
+    println!("{}", "Running tests...".yellow());
+    println!("Test path: {}", test_path.display());
+    println!("Verbose: {}", verbose);
+    
+    // Simple test runner using the interpreter
+    if test_path.is_file() {
+        // Run single test file
+        run_test_file(&test_path)?;
+    } else if test_path.is_dir() {
+        // Run all .xs files in directory
+        let mut passed = 0;
+        let mut failed = 0;
+        
+        for entry in fs::read_dir(&test_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "xs") {
+                print!("Testing {}... ", path.file_name().unwrap().to_string_lossy());
+                match run_test_file(&path) {
+                    Ok(_) => {
+                        println!("{}", "PASS".green());
+                        passed += 1;
+                    }
+                    Err(e) => {
+                        println!("{}", "FAIL".red());
+                        if verbose {
+                            eprintln!("  {}", e);
+                        }
+                        failed += 1;
+                    }
+                }
+            }
+        }
+        
+        println!("\nTest Results: {} passed, {} failed", 
+            passed.to_string().green(), 
+            failed.to_string().red());
+        
+        if failed > 0 {
+            std::process::exit(1);
+        }
+    }
+    
+    Ok(())
+}
+
+fn run_test_file(path: &PathBuf) -> Result<()> {
+    let source = fs::read_to_string(path)?;
+    
+    // Parse
+    let expr = parse(&source).map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+    
+    // Type check
+    type_check(&expr).map_err(|e| anyhow::anyhow!("Type error: {}", e))?;
+    
+    // Run
+    eval(&expr).map_err(|e| anyhow::anyhow!("Runtime error: {}", e))?;
+    
+    Ok(())
 }

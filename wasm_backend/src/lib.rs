@@ -8,6 +8,9 @@ use xs_core::ir::IrExpr;
 
 pub mod types;
 pub mod codegen;
+pub mod emit;
+pub mod runner;
+pub mod test_runner;
 
 /// WebAssembly GC module representation
 #[derive(Debug)]
@@ -95,6 +98,7 @@ pub enum WasmInstr {
     Block(Vec<WasmInstr>),
     Loop(Vec<WasmInstr>),
     If {
+        result_type: Option<WasmType>,
         then_instrs: Vec<WasmInstr>,
         else_instrs: Vec<WasmInstr>,
     },

@@ -14,9 +14,10 @@ fn test_simple_literal() {
     assert_eq!(main_func.name, "main");
     assert_eq!(main_func.results, vec![WasmType::I32]);
     
-    // Should generate: i64.const 42, i32.const 0
+    // Should generate: i64.const 42, drop, i32.const 0
     assert!(matches!(main_func.body[0], WasmInstr::I64Const(42)));
-    assert!(matches!(main_func.body[1], WasmInstr::I32Const(0)));
+    assert!(matches!(main_func.body[1], WasmInstr::Drop));
+    assert!(matches!(main_func.body[2], WasmInstr::I32Const(0)));
 }
 
 #[test]
