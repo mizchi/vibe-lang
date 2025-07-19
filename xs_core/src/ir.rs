@@ -1,6 +1,6 @@
 //! Intermediate Representation for XS language with Perceus memory management
 
-use crate::Literal;
+use crate::{Literal, Type};
 
 /// IR expressions with explicit memory management instructions
 #[derive(Debug, Clone, PartialEq)]
@@ -214,6 +214,161 @@ impl IrExpr {
                 vars
             }
             IrExpr::Literal(_) => vec![],
+        }
+    }
+}
+
+/// Typed IR expression with type information
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypedIrExpr {
+    /// Literal value with type
+    Literal {
+        value: Literal,
+        ty: Type,
+    },
+    
+    /// Variable reference with type
+    Var {
+        name: String,
+        ty: Type,
+    },
+    
+    /// Let binding with types
+    Let {
+        name: String,
+        value: Box<TypedIrExpr>,
+        body: Box<TypedIrExpr>,
+        ty: Type,
+    },
+    
+    /// Recursive let binding with types
+    LetRec {
+        name: String,
+        value: Box<TypedIrExpr>,
+        body: Box<TypedIrExpr>,
+        ty: Type,
+    },
+    
+    /// Lambda abstraction with types
+    Lambda {
+        params: Vec<(String, Type)>,
+        body: Box<TypedIrExpr>,
+        ty: Type,
+    },
+    
+    /// Function application with types
+    Apply {
+        func: Box<TypedIrExpr>,
+        args: Vec<TypedIrExpr>,
+        ty: Type,
+    },
+    
+    /// If expression with types
+    If {
+        cond: Box<TypedIrExpr>,
+        then_expr: Box<TypedIrExpr>,
+        else_expr: Box<TypedIrExpr>,
+        ty: Type,
+    },
+    
+    /// List construction with types
+    List {
+        elements: Vec<TypedIrExpr>,
+        elem_ty: Type,
+        ty: Type,
+    },
+    
+    /// Cons operation with types
+    Cons {
+        head: Box<TypedIrExpr>,
+        tail: Box<TypedIrExpr>,
+        ty: Type,
+    },
+    
+    /// Match expression with types
+    Match {
+        expr: Box<TypedIrExpr>,
+        cases: Vec<(TypedPattern, TypedIrExpr)>,
+        ty: Type,
+    },
+    
+    /// Constructor with types
+    Constructor {
+        name: String,
+        args: Vec<TypedIrExpr>,
+        ty: Type,
+    },
+    
+    /// Sequence of expressions
+    Sequence {
+        exprs: Vec<TypedIrExpr>,
+        ty: Type,
+    },
+    
+    // Memory management instructions
+    
+    /// Drop a reference (decrement reference count)
+    Drop {
+        name: String,
+        value: Box<TypedIrExpr>,
+    },
+    
+    /// Duplicate a reference (increment reference count)
+    Dup {
+        name: String,
+        value: Box<TypedIrExpr>,
+    },
+    
+    /// Check if a value can be reused (ref count == 1)
+    ReuseCheck {
+        var: String,
+        reuse_expr: Box<TypedIrExpr>,
+        fallback_expr: Box<TypedIrExpr>,
+        ty: Type,
+    },
+}
+
+/// Pattern for pattern matching in typed IR
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypedPattern {
+    /// Wildcard pattern
+    Wildcard,
+    /// Variable pattern
+    Variable(String, Type),
+    /// Literal pattern
+    Literal(Literal),
+    /// Constructor pattern
+    Constructor {
+        name: String,
+        patterns: Vec<TypedPattern>,
+        ty: Type,
+    },
+    /// List pattern
+    List {
+        patterns: Vec<TypedPattern>,
+        elem_ty: Type,
+    },
+}
+
+impl TypedIrExpr {
+    /// Get the type of this typed IR expression
+    pub fn get_type(&self) -> &Type {
+        match self {
+            TypedIrExpr::Literal { ty, .. } => ty,
+            TypedIrExpr::Var { ty, .. } => ty,
+            TypedIrExpr::Let { ty, .. } => ty,
+            TypedIrExpr::LetRec { ty, .. } => ty,
+            TypedIrExpr::Lambda { ty, .. } => ty,
+            TypedIrExpr::Apply { ty, .. } => ty,
+            TypedIrExpr::If { ty, .. } => ty,
+            TypedIrExpr::List { ty, .. } => ty,
+            TypedIrExpr::Cons { ty, .. } => ty,
+            TypedIrExpr::Match { ty, .. } => ty,
+            TypedIrExpr::Constructor { ty, .. } => ty,
+            TypedIrExpr::Sequence { ty, .. } => ty,
+            TypedIrExpr::Drop { value, .. } => value.get_type(),
+            TypedIrExpr::Dup { value, .. } => value.get_type(),
+            TypedIrExpr::ReuseCheck { ty, .. } => ty,
         }
     }
 }

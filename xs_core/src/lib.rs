@@ -5,6 +5,10 @@ use ordered_float::OrderedFloat;
 mod types;
 mod value;
 pub mod ir;
+pub mod builtins;
+
+// Re-export builtins for convenience
+pub use builtins::{BuiltinFunction, BuiltinRegistry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
