@@ -3,8 +3,9 @@ use thiserror::Error;
 
 mod types;
 mod value;
+pub mod ir;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -16,14 +17,14 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
     Int(i64),
     Bool(bool),
     String(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ident(pub String);
 
 impl fmt::Display for Ident {
@@ -32,7 +33,7 @@ impl fmt::Display for Ident {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Literal(Literal, Span),
     Ident(Ident, Span),
@@ -82,7 +83,13 @@ impl Expr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl Default for Expr {
+    fn default() -> Self {
+        Expr::List(vec![], Span::new(0, 0))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Int,
     Bool,
@@ -105,7 +112,7 @@ impl fmt::Display for Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Int(i64),
     Bool(bool),
@@ -118,7 +125,7 @@ pub enum Value {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Environment {
     bindings: Vec<(Ident, Value)>,
 }
@@ -145,7 +152,7 @@ impl Environment {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum XsError {
     #[error("Parse error at position {0}: {1}")]
     ParseError(usize, String),

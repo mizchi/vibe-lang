@@ -1,0 +1,302 @@
+//! WebAssembly GC code generation implementation
+
+use crate::{
+    WasmModule, WasmFunction, WasmType, WasmInstr, CodeGenError,
+    types::{TypeIndexAllocator, StandardTypes},
+};
+use xs_core::ir::IrExpr;
+use xs_core::Literal;
+use std::collections::HashMap;
+
+/// Code generator for WebAssembly GC
+pub struct CodeGenerator {
+    /// Current function being generated
+    current_function: Option<WasmFunction>,
+    /// Local variable indices
+    locals: HashMap<String, u32>,
+    /// Next local index
+    next_local: u32,
+    /// Type allocator
+    type_allocator: TypeIndexAllocator,
+    /// Standard types
+    std_types: Option<StandardTypes>,
+    /// Generated functions
+    functions: Vec<WasmFunction>,
+    /// Function indices
+    function_indices: HashMap<String, u32>,
+}
+
+impl CodeGenerator {
+    pub fn new() -> Self {
+        let mut type_allocator = TypeIndexAllocator::new();
+        let std_types = StandardTypes::new(&mut type_allocator);
+        
+        Self {
+            current_function: None,
+            locals: HashMap::new(),
+            next_local: 0,
+            type_allocator,
+            std_types: Some(std_types),
+            functions: Vec::new(),
+            function_indices: HashMap::new(),
+        }
+    }
+    
+    /// Generate WebAssembly module from IR
+    pub fn generate(&mut self, ir: &IrExpr) -> Result<WasmModule, CodeGenError> {
+        // Start with main function
+        self.start_function("main", vec![], vec![WasmType::I32]);
+        
+        // Generate code for the expression
+        self.generate_expr(ir)?;
+        
+        // Add return value (0 for success)
+        self.emit(WasmInstr::I32Const(0));
+        
+        // Finish main function
+        let main_func = self.finish_function()?;
+        self.functions.push(main_func);
+        
+        Ok(WasmModule {
+            functions: self.functions.clone(),
+            types: vec![], // TODO: Generate type definitions
+            globals: vec![],
+            memory: None,
+            start: Some(0), // Main function is at index 0
+        })
+    }
+    
+    /// Generate code for an IR expression
+    fn generate_expr(&mut self, expr: &IrExpr) -> Result<(), CodeGenError> {
+        match expr {
+            IrExpr::Literal(lit) => self.generate_literal(lit),
+            IrExpr::Var(name) => self.generate_var(name),
+            IrExpr::Let { name, value, body } => self.generate_let(name, value, body),
+            IrExpr::Lambda { params, body } => self.generate_lambda(params, body),
+            IrExpr::Apply { func, args } => self.generate_apply(func, args),
+            IrExpr::If { cond, then_expr, else_expr } => {
+                self.generate_if(cond, then_expr, else_expr)
+            }
+            IrExpr::List(exprs) => self.generate_list(exprs),
+            IrExpr::Drop(name) => self.generate_drop(name),
+            IrExpr::Dup(name) => self.generate_dup(name),
+            _ => Err(CodeGenError::UnsupportedExpr(format!("{:?}", expr))),
+        }
+    }
+    
+    /// Generate literal value
+    fn generate_literal(&mut self, lit: &Literal) -> Result<(), CodeGenError> {
+        match lit {
+            Literal::Int(n) => {
+                self.emit(WasmInstr::I64Const(*n));
+                Ok(())
+            }
+            Literal::Bool(b) => {
+                self.emit(WasmInstr::I32Const(if *b { 1 } else { 0 }));
+                Ok(())
+            }
+            Literal::String(_s) => {
+                // TODO: Implement string literal generation
+                // For now, just push null
+                self.emit(WasmInstr::RefNull(WasmType::ArrayRef(0)));
+                Ok(())
+            }
+        }
+    }
+    
+    /// Generate variable reference
+    fn generate_var(&mut self, name: &str) -> Result<(), CodeGenError> {
+        if let Some(&idx) = self.locals.get(name) {
+            self.emit(WasmInstr::LocalGet(idx));
+            Ok(())
+        } else {
+            Err(CodeGenError::UndefinedVariable(name.to_string()))
+        }
+    }
+    
+    /// Generate let binding
+    fn generate_let(&mut self, name: &str, value: &IrExpr, body: &IrExpr) -> Result<(), CodeGenError> {
+        // Generate value
+        self.generate_expr(value)?;
+        
+        // Allocate local
+        let local_idx = self.allocate_local(name);
+        self.emit(WasmInstr::LocalSet(local_idx));
+        
+        // Generate body
+        self.generate_expr(body)?;
+        
+        // Clean up local
+        self.locals.remove(name);
+        
+        Ok(())
+    }
+    
+    /// Generate lambda
+    fn generate_lambda(&mut self, _params: &[String], _body: &IrExpr) -> Result<(), CodeGenError> {
+        // TODO: Implement closure creation
+        // For now, just push null
+        self.emit(WasmInstr::RefNull(WasmType::StructRef(0)));
+        Ok(())
+    }
+    
+    /// Generate function application
+    fn generate_apply(&mut self, func: &IrExpr, args: &[IrExpr]) -> Result<(), CodeGenError> {
+        // Generate function
+        self.generate_expr(func)?;
+        
+        // Generate arguments
+        for arg in args {
+            self.generate_expr(arg)?;
+        }
+        
+        // TODO: Implement proper function call
+        // For now, just drop all values and push 0
+        for _ in 0..=args.len() {
+            self.emit(WasmInstr::Drop);
+        }
+        self.emit(WasmInstr::I64Const(0));
+        
+        Ok(())
+    }
+    
+    /// Generate if expression
+    fn generate_if(&mut self, cond: &IrExpr, then_expr: &IrExpr, else_expr: &IrExpr) -> Result<(), CodeGenError> {
+        // Generate condition
+        self.generate_expr(cond)?;
+        
+        // Generate if instruction
+        let mut then_instrs = vec![];
+        let mut else_instrs = vec![];
+        
+        // Save current instructions
+        let saved_instrs = self.current_function.as_ref().map(|f| f.body.clone());
+        
+        // Generate then branch
+        if let Some(ref mut func) = self.current_function {
+            func.body.clear();
+        }
+        self.generate_expr(then_expr)?;
+        if let Some(ref func) = self.current_function {
+            then_instrs = func.body.clone();
+        }
+        
+        // Generate else branch
+        if let Some(ref mut func) = self.current_function {
+            func.body.clear();
+        }
+        self.generate_expr(else_expr)?;
+        if let Some(ref func) = self.current_function {
+            else_instrs = func.body.clone();
+        }
+        
+        // Restore instructions and add if
+        if let Some(ref mut func) = self.current_function {
+            func.body = saved_instrs.unwrap_or_default();
+            func.body.push(WasmInstr::If { then_instrs, else_instrs });
+        }
+        
+        Ok(())
+    }
+    
+    /// Generate list
+    fn generate_list(&mut self, _exprs: &[IrExpr]) -> Result<(), CodeGenError> {
+        // TODO: Implement list creation
+        // For now, just push null
+        self.emit(WasmInstr::RefNull(WasmType::ArrayRef(0)));
+        Ok(())
+    }
+    
+    /// Generate drop instruction
+    fn generate_drop(&mut self, name: &str) -> Result<(), CodeGenError> {
+        self.generate_var(name)?;
+        self.emit(WasmInstr::Drop);
+        Ok(())
+    }
+    
+    /// Generate dup instruction
+    fn generate_dup(&mut self, name: &str) -> Result<(), CodeGenError> {
+        self.generate_var(name)?;
+        self.emit(WasmInstr::Dup);
+        Ok(())
+    }
+    
+    /// Start a new function
+    fn start_function(&mut self, name: &str, params: Vec<WasmType>, results: Vec<WasmType>) {
+        self.current_function = Some(WasmFunction {
+            name: name.to_string(),
+            params,
+            results,
+            locals: vec![],
+            body: vec![],
+        });
+        self.locals.clear();
+        self.next_local = 0;
+    }
+    
+    /// Finish current function
+    fn finish_function(&mut self) -> Result<WasmFunction, CodeGenError> {
+        self.current_function.take()
+            .ok_or_else(|| CodeGenError::UnsupportedExpr("No function to finish".to_string()))
+    }
+    
+    /// Emit instruction
+    fn emit(&mut self, instr: WasmInstr) {
+        if let Some(ref mut func) = self.current_function {
+            func.body.push(instr);
+        }
+    }
+    
+    /// Allocate a local variable
+    fn allocate_local(&mut self, name: &str) -> u32 {
+        let idx = self.next_local;
+        self.next_local += 1;
+        self.locals.insert(name.to_string(), idx);
+        
+        // Add to function locals
+        if let Some(ref mut func) = self.current_function {
+            func.locals.push(WasmType::I64); // Default to i64 for now
+        }
+        
+        idx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_literal_generation() {
+        let mut gen = CodeGenerator::new();
+        gen.start_function("test", vec![], vec![]);
+        
+        let lit = IrExpr::Literal(Literal::Int(42));
+        gen.generate_expr(&lit).unwrap();
+        
+        let func = gen.finish_function().unwrap();
+        assert_eq!(func.body.len(), 1);
+        match &func.body[0] {
+            WasmInstr::I64Const(n) => assert_eq!(*n, 42),
+            _ => panic!("Expected I64Const"),
+        }
+    }
+    
+    #[test]
+    fn test_let_generation() {
+        let mut gen = CodeGenerator::new();
+        gen.start_function("test", vec![], vec![]);
+        
+        let expr = IrExpr::Let {
+            name: "x".to_string(),
+            value: Box::new(IrExpr::Literal(Literal::Int(10))),
+            body: Box::new(IrExpr::Var("x".to_string())),
+        };
+        
+        gen.generate_expr(&expr).unwrap();
+        let func = gen.finish_function().unwrap();
+        
+        // Should have: i64.const 10, local.set 0, local.get 0
+        assert!(func.body.len() >= 3);
+    }
+}
