@@ -3,7 +3,7 @@
 use crate::Literal;
 
 /// IR expressions with explicit memory management instructions
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrExpr {
     /// Literal values
     Literal(Literal),

@@ -7,6 +7,7 @@ pub enum Token {
     LeftParen,
     RightParen,
     Int(i64),
+    Float(f64),
     Bool(bool),
     String(String),
     Symbol(String),
@@ -22,6 +23,12 @@ pub enum Token {
     Match,
     Type,
     Underscore,
+    Module,
+    Import,
+    Export,
+    As,
+    Dot,
+    Define,
 }
 
 pub struct Lexer<'a> {
@@ -71,6 +78,10 @@ impl<'a> Lexer<'a> {
                     '_' => {
                         self.advance();
                         Ok(Some((Token::Underscore, Span::new(start, self.position))))
+                    },
+                    '.' => {
+                        self.advance();
+                        Ok(Some((Token::Dot, Span::new(start, self.position))))
                     },
                     _ if ch.is_alphabetic() || ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '<' || ch == '>' || ch == '=' => {
                         self.read_symbol()
@@ -177,6 +188,38 @@ impl<'a> Lexer<'a> {
             }
         }
         
+        // Check for decimal point
+        if let Some(&'.') = self.chars.peek() {
+            // Make sure the next char is a digit to distinguish from dot operator
+            let mut peek_chars = self.chars.clone();
+            peek_chars.next(); // skip '.'
+            if let Some(&next_ch) = peek_chars.peek() {
+                if next_ch.is_numeric() {
+                    value.push('.');
+                    self.advance();
+                    
+                    while let Some(&ch) = self.chars.peek() {
+                        if ch.is_numeric() {
+                            value.push(ch);
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    // Parse as float
+                    match value.parse::<f64>() {
+                        Ok(f) => return Ok(Some((Token::Float(f), Span::new(start, self.position)))),
+                        Err(_) => return Err(XsError::ParseError(
+                            start,
+                            format!("Invalid float: {}", value)
+                        ))
+                    }
+                }
+            }
+        }
+        
+        // Parse as integer
         match value.parse::<i64>() {
             Ok(n) => Ok(Some((Token::Int(n), Span::new(start, self.position)))),
             Err(_) => Err(XsError::ParseError(
@@ -212,6 +255,11 @@ impl<'a> Lexer<'a> {
             "match" => Token::Match,
             "type" => Token::Type,
             "_" => Token::Underscore,
+            "module" => Token::Module,
+            "import" => Token::Import,
+            "export" => Token::Export,
+            "as" => Token::As,
+            "define" => Token::Define,
             _ => Token::Symbol(value),
         };
         

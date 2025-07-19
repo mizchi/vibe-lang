@@ -16,6 +16,7 @@ impl Interpreter {
         match expr {
             Expr::Literal(lit, _) => Ok(match lit {
                 Literal::Int(n) => Value::Int(*n),
+                Literal::Float(f) => Value::Float(*f),
                 Literal::Bool(b) => Value::Bool(*b),
                 Literal::String(s) => Value::String(s.clone()),
             }),
@@ -192,6 +193,30 @@ impl Interpreter {
                 // Type definitions don't have a runtime value, return a placeholder
                 Ok(Value::Int(0)) // Using 0 as unit value
             }
+            
+            Expr::Module { name: _, exports: _, body, .. } => {
+                // For now, just evaluate the body expressions
+                // TODO: Implement proper module evaluation with export handling
+                let mut result = Value::Int(0); // unit value
+                for expr in body {
+                    result = self.eval(expr, env)?;
+                }
+                Ok(result)
+            }
+            
+            Expr::Import { .. } => {
+                // Import statements don't have a runtime value
+                // TODO: Implement proper import handling
+                Ok(Value::Int(0)) // unit value
+            }
+            
+            Expr::QualifiedIdent { module_name: _, name: _, span } => {
+                // TODO: Implement proper module member lookup
+                Err(XsError::RuntimeError(
+                    span.clone(),
+                    "Module member lookup not yet implemented".to_string(),
+                ))
+            }
         }
     }
 
@@ -328,6 +353,7 @@ impl Interpreter {
             (Pattern::Literal(lit, _), _) => {
                 let matches = match (lit, value) {
                     (Literal::Int(n), Value::Int(v)) => n == v,
+                    (Literal::Float(f), Value::Float(v)) => (f - v).abs() < f64::EPSILON,
                     (Literal::Bool(b), Value::Bool(v)) => b == v,
                     (Literal::String(s), Value::String(v)) => s == v,
                     _ => false,

@@ -5,6 +5,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{}", n),
+            Value::Float(v) => write!(f, "{}", v),
             Value::Bool(b) => write!(f, "{}", b),
             Value::String(s) => write!(f, "{:?}", s),
             Value::List(elems) => {

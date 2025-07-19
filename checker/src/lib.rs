@@ -183,6 +183,7 @@ impl TypeChecker {
         match expr {
             Expr::Literal(lit, _) => Ok(match lit {
                 Literal::Int(_) => Type::Int,
+                Literal::Float(_) => Type::Float,
                 Literal::Bool(_) => Type::Bool,
                 Literal::String(_) => Type::String,
             }),
@@ -485,6 +486,30 @@ impl TypeChecker {
                 // Type definitions don't have a runtime value, return unit type
                 Ok(Type::Int) // Using Int as a placeholder for unit type
             }
+            
+            Expr::Module { name: _, exports: _, body, .. } => {
+                // For now, just type check the body expressions
+                // TODO: Implement proper module type checking with export validation
+                let mut result_type = Type::Int; // unit type
+                for expr in body {
+                    result_type = self.infer(expr, env)?;
+                }
+                Ok(result_type)
+            }
+            
+            Expr::Import { .. } => {
+                // Import statements don't have a runtime value
+                // TODO: Implement proper import handling
+                Ok(Type::Int) // unit type
+            }
+            
+            Expr::QualifiedIdent { module_name: _, name: _, span } => {
+                // TODO: Implement proper module member lookup
+                Err(XsError::TypeError(
+                    span.clone(),
+                    "Module member lookup not yet implemented".to_string(),
+                ))
+            }
         }
     }
 
@@ -532,7 +557,7 @@ impl TypeChecker {
 
     fn unify(&self, t1: &Type, t2: &Type) -> Result<HashMap<String, Type>, XsError> {
         match (t1, t2) {
-            (Type::Int, Type::Int) | (Type::Bool, Type::Bool) | (Type::String, Type::String) => {
+            (Type::Int, Type::Int) | (Type::Float, Type::Float) | (Type::Bool, Type::Bool) | (Type::String, Type::String) => {
                 Ok(HashMap::new())
             }
             (Type::List(a), Type::List(b)) => self.unify(a, b),
@@ -576,6 +601,7 @@ impl TypeChecker {
             Pattern::Literal(lit, span) => {
                 let lit_type = match lit {
                     Literal::Int(_) => Type::Int,
+                    Literal::Float(_) => Type::Float,
                     Literal::Bool(_) => Type::Bool,
                     Literal::String(_) => Type::String,
                 };

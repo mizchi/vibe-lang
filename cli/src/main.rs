@@ -132,6 +132,7 @@ fn run_file(path: &PathBuf) -> Result<()> {
 fn format_type(typ: &Type) -> String {
     match typ {
         Type::Int => "Int".cyan().to_string(),
+        Type::Float => "Float".cyan().to_string(),
         Type::Bool => "Bool".cyan().to_string(),
         Type::String => "String".cyan().to_string(),
         Type::List(t) => format!("(List {})", format_type(t)).cyan().to_string(),
@@ -156,6 +157,7 @@ fn format_type(typ: &Type) -> String {
 fn format_value(value: &Value) -> String {
     match value {
         Value::Int(n) => n.to_string().blue().to_string(),
+        Value::Float(f) => f.to_string().blue().to_string(),
         Value::Bool(b) => b.to_string().magenta().to_string(),
         Value::String(s) => format!("{:?}", s).green().to_string(),
         Value::List(elems) => {

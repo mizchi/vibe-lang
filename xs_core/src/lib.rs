@@ -17,9 +17,10 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Int(i64),
+    Float(f64),
     Bool(bool),
     String(String),
 }
@@ -33,7 +34,7 @@ impl fmt::Display for Ident {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Literal(Literal, Span),
     Ident(Ident, Span),
@@ -87,9 +88,26 @@ pub enum Expr {
         definition: TypeDefinition,
         span: Span,
     },
+    Module {
+        name: Ident,
+        exports: Vec<Ident>,
+        body: Vec<Expr>,
+        span: Span,
+    },
+    Import {
+        module_name: Ident,
+        items: Option<Vec<Ident>>, // None means import all with prefix
+        as_name: Option<Ident>,     // For "import Foo as F"
+        span: Span,
+    },
+    QualifiedIdent {
+        module_name: Ident,
+        name: Ident,
+        span: Span,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Wildcard(Span),
     Literal(Literal, Span),
@@ -120,6 +138,9 @@ impl Expr {
             Expr::Match { span, .. } => span,
             Expr::Constructor { span, .. } => span,
             Expr::TypeDef { span, .. } => span,
+            Expr::Module { span, .. } => span,
+            Expr::Import { span, .. } => span,
+            Expr::QualifiedIdent { span, .. } => span,
         }
     }
 }
@@ -133,6 +154,7 @@ impl Default for Expr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Int,
+    Float,
     Bool,
     String,
     List(Box<Type>),
@@ -161,6 +183,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::Int => write!(f, "Int"),
+            Type::Float => write!(f, "Float"),
             Type::Bool => write!(f, "Bool"),
             Type::String => write!(f, "String"),
             Type::List(t) => write!(f, "(List {})", t),
@@ -181,9 +204,10 @@ impl fmt::Display for Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
+    Float(f64),
     Bool(bool),
     String(String),
     List(Vec<Value>),
@@ -204,7 +228,7 @@ pub enum Value {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Environment {
     bindings: Vec<(Ident, Value)>,
 }
