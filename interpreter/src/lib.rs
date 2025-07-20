@@ -96,6 +96,38 @@ impl Interpreter {
             },
         );
         env = env.extend(
+            Ident("str-concat".to_string()),
+            Value::BuiltinFunction {
+                name: "str-concat".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("int-to-string".to_string()),
+            Value::BuiltinFunction {
+                name: "int-to-string".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("string-to-int".to_string()),
+            Value::BuiltinFunction {
+                name: "string-to-int".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("string-length".to_string()),
+            Value::BuiltinFunction {
+                name: "string-length".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
             Ident("print".to_string()),
             Value::BuiltinFunction {
                 name: "print".to_string(),
@@ -404,15 +436,56 @@ impl Interpreter {
             }
 
             Expr::QualifiedIdent {
-                module_name: _,
-                name: _,
+                module_name,
+                name,
                 span,
             } => {
-                // TODO: Implement proper module member lookup
-                Err(XsError::RuntimeError(
-                    span.clone(),
-                    "Module member lookup not yet implemented".to_string(),
-                ))
+                // Look up builtin module functions
+                let builtin_key = format!("{}.{}", module_name.0, name.0);
+                
+                // Map new namespace names to existing builtin functions
+                let mapped_name = match builtin_key.as_str() {
+                    // Int module
+                    "Int.add" => "+",
+                    "Int.sub" => "-",
+                    "Int.mul" => "*",
+                    "Int.div" => "/",
+                    "Int.mod" => "%",
+                    "Int.toString" => "int-to-string",
+                    "Int.fromString" => "string-to-int",
+                    "Int.lt" => "<",
+                    "Int.gt" => ">",
+                    "Int.lte" => "<=",
+                    "Int.gte" => ">=",
+                    "Int.eq" => "=",
+                    
+                    // String module
+                    "String.concat" => "str-concat",
+                    "String.length" => "string-length",
+                    "String.toInt" => "string-to-int",
+                    "String.fromInt" => "int-to-string",
+                    
+                    // List module
+                    "List.cons" => "cons",
+                    
+                    // IO module
+                    "IO.print" => "print",
+                    
+                    // Float module
+                    "Float.add" => "+.",
+                    
+                    _ => {
+                        return Err(XsError::RuntimeError(
+                            span.clone(),
+                            format!("Unknown qualified identifier: {}", builtin_key),
+                        ))
+                    }
+                };
+                
+                // Look up the builtin function in the environment
+                env.lookup(&Ident(mapped_name.to_string())).cloned().ok_or_else(|| {
+                    XsError::RuntimeError(span.clone(), format!("Builtin function {} not found", mapped_name))
+                })
             }
 
             Expr::Handler { .. } => {
@@ -538,6 +611,40 @@ impl Interpreter {
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
                     "concat requires string arguments".to_string(),
+                )),
+            },
+            "str-concat" => match (&args[0], &args[1]) {
+                (Value::String(s1), Value::String(s2)) => Ok(Value::String(format!("{s1}{s2}"))),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "str-concat requires string arguments".to_string(),
+                )),
+            },
+            "int-to-string" => match &args[0] {
+                Value::Int(n) => Ok(Value::String(n.to_string())),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "int-to-string requires an integer argument".to_string(),
+                )),
+            },
+            "string-to-int" => match &args[0] {
+                Value::String(s) => match s.parse::<i64>() {
+                    Ok(n) => Ok(Value::Int(n)),
+                    Err(_) => Err(XsError::RuntimeError(
+                        span.clone(),
+                        format!("Cannot parse '{}' as integer", s),
+                    )),
+                },
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "string-to-int requires a string argument".to_string(),
+                )),
+            },
+            "string-length" => match &args[0] {
+                Value::String(s) => Ok(Value::Int(s.len() as i64)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "string-length requires a string argument".to_string(),
                 )),
             },
             "print" => match &args[0] {

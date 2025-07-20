@@ -4,6 +4,7 @@ use std::fmt;
 use thiserror::Error;
 
 pub mod builtin_effects;
+pub mod builtin_modules;
 pub mod builtins;
 pub mod curry;
 pub mod effects;

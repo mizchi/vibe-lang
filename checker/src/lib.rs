@@ -113,6 +113,28 @@ impl Default for TypeEnv {
                 )),
             ),
         );
+        env.add_builtin(
+            "str-concat",
+            Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::Function(
+                    Box::new(Type::String),
+                    Box::new(Type::String),
+                )),
+            ),
+        );
+        env.add_builtin(
+            "int-to-string",
+            Type::Function(Box::new(Type::Int), Box::new(Type::String)),
+        );
+        env.add_builtin(
+            "string-to-int",
+            Type::Function(Box::new(Type::String), Box::new(Type::Int)),
+        );
+        env.add_builtin(
+            "string-length",
+            Type::Function(Box::new(Type::String), Box::new(Type::Int)),
+        );
         // print : a -> a
         env.add_builtin(
             "print",
@@ -226,7 +248,11 @@ pub struct TypeChecker {
 
 impl TypeChecker {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            next_var: 0,
+            constraints: Vec::new(),
+            module_env: ModuleEnv::new(), // This will register builtin modules
+        }
     }
     
     pub fn with_module(&mut self, module: ModuleInfo) {

@@ -475,6 +475,120 @@ impl BuiltinFunction for Concat {
     }
 }
 
+pub struct StrConcat;
+impl BuiltinFunction for StrConcat {
+    fn name(&self) -> &str {
+        "str-concat"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(
+            Box::new(Type::String),
+            Box::new(Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::String),
+            )),
+        )
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::String(a), Value::String(b)] => Ok(Value::String(format!("{a}{b}"))),
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "str-concat requires two string arguments".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("str-concat".to_string())
+    }
+}
+
+pub struct IntToString;
+impl BuiltinFunction for IntToString {
+    fn name(&self) -> &str {
+        "int-to-string"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(Box::new(Type::Int), Box::new(Type::String))
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::Int(n)] => Ok(Value::String(n.to_string())),
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "int-to-string requires one integer argument".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("int-to-string".to_string())
+    }
+}
+
+pub struct StringToInt;
+impl BuiltinFunction for StringToInt {
+    fn name(&self) -> &str {
+        "string-to-int"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(Box::new(Type::String), Box::new(Type::Int))
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::String(s)] => {
+                match s.parse::<i64>() {
+                    Ok(n) => Ok(Value::Int(n)),
+                    Err(_) => Err(XsError::RuntimeError(
+                        crate::Span::new(0, 0),
+                        format!("Cannot parse '{}' as integer", s),
+                    )),
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "string-to-int requires one string argument".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("string-to-int".to_string())
+    }
+}
+
+pub struct StringLength;
+impl BuiltinFunction for StringLength {
+    fn name(&self) -> &str {
+        "string-length"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(Box::new(Type::String), Box::new(Type::Int))
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::String(s)] => Ok(Value::Int(s.len() as i64)),
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "string-length requires one string argument".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("string-length".to_string())
+    }
+}
+
 // Floating point operations
 
 pub struct AddFloat;
@@ -531,6 +645,10 @@ impl BuiltinRegistry {
             Box::new(Print),
             // String operations
             Box::new(Concat),
+            Box::new(StrConcat),
+            Box::new(IntToString),
+            Box::new(StringToInt),
+            Box::new(StringLength),
             // Float operations
             Box::new(AddFloat),
         ];

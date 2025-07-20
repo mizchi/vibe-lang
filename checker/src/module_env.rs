@@ -61,7 +61,25 @@ pub struct ModuleEnv {
 
 impl ModuleEnv {
     pub fn new() -> Self {
-        Self::default()
+        let mut env = Self::default();
+        env.register_builtin_modules();
+        env
+    }
+    
+    fn register_builtin_modules(&mut self) {
+        use xs_core::builtin_modules::BuiltinModuleRegistry;
+        
+        let registry = BuiltinModuleRegistry::new();
+        
+        for (module_name, builtin_module) in registry.all_modules() {
+            let mut module_info = ModuleInfo::new(module_name.clone());
+            
+            for (func_name, func_type) in &builtin_module.functions {
+                module_info.add_export(func_name.clone(), TypeScheme::mono(func_type.clone()));
+            }
+            
+            self.register_module(module_info);
+        }
     }
 
     pub fn register_module(&mut self, module: ModuleInfo) {
