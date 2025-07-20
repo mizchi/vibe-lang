@@ -4,7 +4,10 @@ use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError
 
 mod effect_inference;
 mod improved_errors;
+mod module_env;
 mod test_effect_inference;
+
+pub use module_env::{ModuleEnv, ModuleInfo, ExportedItem};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
@@ -218,11 +221,20 @@ pub struct Constraint {
 pub struct TypeChecker {
     next_var: usize,
     constraints: Vec<Constraint>,
+    module_env: ModuleEnv,
 }
 
 impl TypeChecker {
     pub fn new() -> Self {
         Self::default()
+    }
+    
+    pub fn with_module(&mut self, module: ModuleInfo) {
+        self.module_env.register_module(module);
+    }
+    
+    pub fn get_module_env(&self) -> &ModuleEnv {
+        &self.module_env
     }
 
     fn fresh_var(&mut self) -> Type {
@@ -612,36 +624,117 @@ impl TypeChecker {
             }
 
             Expr::Module {
-                name: _,
-                exports: _,
+                name,
+                exports,
                 body,
-                ..
+                span,
             } => {
-                // For now, just type check the body expressions
-                // TODO: Implement proper module type checking with export validation
-                let mut result_type = Type::Int; // unit type
+                // Create new scope for module
+                env.push_scope();
+                
+                // Type check all body expressions
+                let mut bindings = HashMap::new();
+                let mut type_defs = HashMap::new();
+                
                 for expr in body {
-                    result_type = self.infer(expr, env)?;
+                    match expr {
+                        Expr::Let { name: bind_name, value, .. } => {
+                            let typ = self.infer(value, env)?;
+                            let scheme = self.generalize(&typ, env);
+                            env.extend(bind_name.0.clone(), scheme.clone());
+                            bindings.insert(bind_name.0.clone(), scheme);
+                        }
+                        Expr::TypeDef { definition, .. } => {
+                            env.add_type_definition(definition.clone());
+                            type_defs.insert(definition.name.clone(), definition.clone());
+                        }
+                        _ => {
+                            self.infer(expr, env)?;
+                        }
+                    }
                 }
-                Ok(result_type)
+                
+                // Create module info
+                let mut module_info = ModuleInfo::new(name.0.clone());
+                
+                // Validate exports and add to module info
+                for export in exports {
+                    if let Some(scheme) = bindings.get(&export.0) {
+                        module_info.add_export(export.0.clone(), scheme.clone());
+                    } else if let Some(scheme) = env.lookup(&export.0) {
+                        module_info.add_export(export.0.clone(), scheme.clone());
+                    } else if let Some(type_def) = type_defs.get(&export.0) {
+                        // Export type definition
+                        module_info.add_type_definition(type_def.name.clone(), type_def.clone());
+                    } else {
+                        return Err(XsError::TypeError(
+                            span.clone(),
+                            format!("Cannot export undefined identifier: {}", export.0),
+                        ));
+                    }
+                }
+                
+                // Register module in module environment
+                self.module_env.register_module(module_info);
+                
+                env.pop_scope();
+                Ok(Type::Int) // unit type
             }
 
-            Expr::Import { .. } => {
-                // Import statements don't have a runtime value
-                // TODO: Implement proper import handling
+            Expr::Import { 
+                module_name,
+                items,
+                as_name,
+                span,
+            } => {
+                // Check if module exists
+                let module = self.module_env.resolve_module(&module_name.0)
+                    .ok_or_else(|| XsError::TypeError(
+                        span.clone(),
+                        format!("Module not found: {}", module_name.0),
+                    ))?;
+                
+                match (items, as_name) {
+                    // Import specific items
+                    (Some(items), None) => {
+                        for item in items {
+                            if let Some(exported) = module.get_export(&item.0) {
+                                env.extend(item.0.clone(), exported.type_scheme.clone());
+                            } else {
+                                return Err(XsError::TypeError(
+                                    span.clone(),
+                                    format!("Module {} does not export {}", module_name.0, item.0),
+                                ));
+                            }
+                        }
+                    }
+                    // Import with alias
+                    (None, Some(alias)) => {
+                        self.module_env.add_alias(alias.0.clone(), module_name.0.clone());
+                    }
+                    _ => {
+                        return Err(XsError::TypeError(
+                            span.clone(),
+                            "Invalid import syntax".to_string(),
+                        ));
+                    }
+                }
+                
                 Ok(Type::Int) // unit type
             }
 
             Expr::QualifiedIdent {
-                module_name: _,
-                name: _,
+                module_name,
+                name,
                 span,
             } => {
-                // TODO: Implement proper module member lookup
-                Err(XsError::TypeError(
-                    span.clone(),
-                    "Module member lookup not yet implemented".to_string(),
-                ))
+                // Look up the type from the module
+                self.module_env.resolve_qualified_name(&module_name.0, &name.0)
+                    .map(|scheme| self.instantiate(&scheme))
+                    .ok_or_else(|| XsError::TypeError(
+                        span.clone(),
+                        format!("{}.{} not found or not exported", module_name.0, name.0),
+                    ))
             }
 
             Expr::Handler { .. } => {
