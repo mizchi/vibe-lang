@@ -1,26 +1,31 @@
-# XS言語チュートリアル
+# XS Language Tutorials
 
-XS言語を学ぶためのチュートリアル集です。
+Learn XS through hands-on tutorials that guide you from basics to advanced features.
 
-## チュートリアル一覧
+## Tutorial Series
 
-### 初心者向け
+### 1. [Getting Started](01-getting-started.md)
+- Installation and setup
+- Basic syntax and expressions  
+- Variables and functions
+- Control flow with if
+- Lists and basic operations
+- Running XS programs
 
-1. **[はじめに - Getting Started](getting-started.md)**
-   - インストール方法
-   - 基本的な構文
-   - データ型と制御構造
-   - 関数型プログラミングの基礎
-   - 標準ライブラリの使い方
+### 2. [Working with Modules](02-modules.md)
+- Creating modules
+- Exporting and importing
+- Module organization
+- Type definitions in modules
+- Best practices for modular code
 
-### 中級者向け
-
-2. **[高度な機能](advanced-features.md)**
-   - エフェクトシステム
-   - Perceus参照カウント
-   - インクリメンタルコンパイル
-   - コンテンツアドレス型コードベース
-   - パフォーマンス最適化
+### 3. [Advanced Features](03-advanced-features.md)
+- Custom data types (ADTs)
+- Advanced pattern matching
+- Higher-order functions
+- Mutual recursion
+- Error handling patterns
+- Performance optimization
 
 ### 上級者向け（計画中）
 
