@@ -131,20 +131,30 @@ pub enum WasmInstr {
     I32Sub,
     I32Mul,
     I32DivS,
+    I32RemS,
     I64Add,
     I64Sub,
     I64Mul,
     I64DivS,
+    I64RemS,
 
     // Comparisons
     I32Eq,
     I32Ne,
     I32LtS,
+    I32LeS,
     I32GtS,
+    I32GeS,
     I64Eq,
     I64Ne,
     I64LtS,
+    I64LeS,
     I64GtS,
+    I64GeS,
+
+    // Conversions
+    I32ExtendI64S,
+    I64ExtendI32S,
 
     // Stack operations
     Drop,

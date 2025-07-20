@@ -38,11 +38,11 @@ cargo run --bin xsc -- parse examples/list.xs
 (let name "Alice")
 
 ; 関数定義
-(let double (lambda (x) (* x 2)))
+(let double (fn (x) (* x 2)))
 
 ; 型アノテーション
 (let x : Int 42)
-(let f : (-> Int Int) (lambda (x) (+ x 1)))
+(let f : (-> Int Int) (fn (x) (+ x 1)))
 
 ; 条件分岐
 (if (< x 10) 
@@ -61,13 +61,13 @@ cargo run --bin xsc -- parse examples/list.xs
 
 ```lisp
 ; rec構文（型推論サポート）
-(rec factorial (lambda (n)
+(rec factorial (fn (n)
     (if (= n 0)
         1
         (* n (factorial (- n 1))))))
 
 ; let-rec構文
-(let-rec fib (lambda (n : Int) : Int
+(let-rec fib (fn (n : Int) : Int
     (if (< n 2)
         n
         (+ (fib (- n 1)) (fib (- n 2))))))

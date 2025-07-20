@@ -84,7 +84,7 @@ impl InterpreterBackend {
                         let builtin = self.builtins.get(name).unwrap();
                         return builtin
                             .interpret(&arg_values)
-                            .map_err(|e| RuntimeError::XsError(e));
+                            .map_err(RuntimeError::XsError);
                     }
                 }
 
@@ -148,8 +148,7 @@ impl InterpreterBackend {
             }
 
             _ => Err(RuntimeError::InvalidOperation(format!(
-                "Unimplemented IR node: {:?}",
-                ir
+                "Unimplemented IR node: {ir:?}"
             ))),
         }
     }

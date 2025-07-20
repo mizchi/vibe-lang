@@ -231,20 +231,30 @@ fn emit_instruction(
         WasmInstr::I32Sub => write!(output, "i32.sub"),
         WasmInstr::I32Mul => write!(output, "i32.mul"),
         WasmInstr::I32DivS => write!(output, "i32.div_s"),
+        WasmInstr::I32RemS => write!(output, "i32.rem_s"),
         WasmInstr::I64Add => write!(output, "i64.add"),
         WasmInstr::I64Sub => write!(output, "i64.sub"),
         WasmInstr::I64Mul => write!(output, "i64.mul"),
         WasmInstr::I64DivS => write!(output, "i64.div_s"),
+        WasmInstr::I64RemS => write!(output, "i64.rem_s"),
 
         // Comparisons
         WasmInstr::I32Eq => write!(output, "i32.eq"),
         WasmInstr::I32Ne => write!(output, "i32.ne"),
         WasmInstr::I32LtS => write!(output, "i32.lt_s"),
+        WasmInstr::I32LeS => write!(output, "i32.le_s"),
         WasmInstr::I32GtS => write!(output, "i32.gt_s"),
+        WasmInstr::I32GeS => write!(output, "i32.ge_s"),
         WasmInstr::I64Eq => write!(output, "i64.eq"),
         WasmInstr::I64Ne => write!(output, "i64.ne"),
         WasmInstr::I64LtS => write!(output, "i64.lt_s"),
+        WasmInstr::I64LeS => write!(output, "i64.le_s"),
         WasmInstr::I64GtS => write!(output, "i64.gt_s"),
+        WasmInstr::I64GeS => write!(output, "i64.ge_s"),
+
+        // Conversions
+        WasmInstr::I32ExtendI64S => write!(output, "i64.extend32_s"),
+        WasmInstr::I64ExtendI32S => write!(output, "i64.extend_i32_s"),
 
         // Stack operations
         WasmInstr::Drop => write!(output, "drop"),

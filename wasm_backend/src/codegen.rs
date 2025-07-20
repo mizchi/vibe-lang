@@ -153,6 +153,13 @@ impl CodeGenerator {
 
     /// Generate function application
     fn generate_apply(&mut self, func: &IrExpr, args: &[IrExpr]) -> Result<(), CodeGenError> {
+        // Check if this is a builtin function
+        if let IrExpr::Var(name) = func {
+            if let Some(()) = self.try_generate_builtin(name, args)? {
+                return Ok(());
+            }
+        }
+
         // Generate function
         self.generate_expr(func)?;
 
@@ -280,6 +287,69 @@ impl CodeGenerator {
         }
 
         idx
+    }
+
+    /// Try to generate builtin function call
+    fn try_generate_builtin(&mut self, name: &str, args: &[IrExpr]) -> Result<Option<()>, CodeGenError> {
+        // Check if this is a builtin function
+        let is_builtin = match name {
+            "+" | "-" | "*" | "/" | "%" | "<" | ">" | "=" | "<=" | ">=" | "cons" | "concat" => true,
+            _ => false,
+        };
+
+        if !is_builtin {
+            return Ok(None);
+        }
+
+        // Generate arguments first
+        for arg in args {
+            self.generate_expr(arg)?;
+        }
+
+        // Generate builtin operation
+        match name {
+            "+" => self.emit(WasmInstr::I64Add),
+            "-" => self.emit(WasmInstr::I64Sub),
+            "*" => self.emit(WasmInstr::I64Mul),
+            "/" => self.emit(WasmInstr::I64DivS),
+            "%" => self.emit(WasmInstr::I64RemS),
+            "<" => {
+                self.emit(WasmInstr::I64LtS);
+                // Convert i32 to i64 for consistency
+                self.emit(WasmInstr::I64ExtendI32S);
+            }
+            ">" => {
+                self.emit(WasmInstr::I64GtS);
+                // Convert i32 to i64 for consistency
+                self.emit(WasmInstr::I64ExtendI32S);
+            }
+            "=" => {
+                self.emit(WasmInstr::I64Eq);
+                // Convert i32 to i64 for consistency
+                self.emit(WasmInstr::I64ExtendI32S);
+            }
+            "<=" => {
+                self.emit(WasmInstr::I64LeS);
+                // Convert i32 to i64 for consistency
+                self.emit(WasmInstr::I64ExtendI32S);
+            }
+            ">=" => {
+                self.emit(WasmInstr::I64GeS);
+                // Convert i32 to i64 for consistency
+                self.emit(WasmInstr::I64ExtendI32S);
+            }
+            "cons" | "concat" => {
+                // TODO: Implement list/string operations
+                // For now, just drop arguments and push dummy value
+                for _ in 0..args.len() {
+                    self.emit(WasmInstr::Drop);
+                }
+                self.emit(WasmInstr::I64Const(0));
+            }
+            _ => unreachable!("Already checked that this is a builtin"),
+        }
+
+        Ok(Some(()))
     }
 }
 

@@ -24,6 +24,7 @@ impl PerceusTransform {
     }
 
     /// Transform expression to IR
+    #[allow(clippy::only_used_in_recursion)]
     fn transform_expr(&mut self, expr: &Expr) -> IrExpr {
         match expr {
             Expr::Literal(lit, _) => IrExpr::Literal(lit.clone()),

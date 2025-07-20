@@ -57,7 +57,7 @@ impl<B: Backend> Runtime<B> {
         let compiled = self
             .backend
             .compile(ir)
-            .map_err(|e| RuntimeError::InvalidOperation(format!("{:?}", e)))?;
+            .map_err(|e| RuntimeError::InvalidOperation(format!("{e:?}")))?;
         self.backend.execute(&compiled)
     }
 }

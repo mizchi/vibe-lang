@@ -61,7 +61,7 @@ impl PathPattern {
             return true;
         }
 
-        if self.recursive && path.starts_with(&self.pattern.trim_end_matches('*')) {
+        if self.recursive && path.starts_with(self.pattern.trim_end_matches('*')) {
             return true;
         }
 
@@ -152,9 +152,9 @@ impl fmt::Display for Permission {
             Permission::NetworkListen(ports) => {
                 write!(f, "network-listen:{}-{}", ports.start, ports.end)
             }
-            Permission::EnvRead(var) => write!(f, "env-read:{}", var),
-            Permission::EnvWrite(var) => write!(f, "env-write:{}", var),
-            Permission::ProcessSpawn(cmd) => write!(f, "process-spawn:{}", cmd),
+            Permission::EnvRead(var) => write!(f, "env-read:{var}"),
+            Permission::EnvWrite(var) => write!(f, "env-write:{var}"),
+            Permission::ProcessSpawn(cmd) => write!(f, "process-spawn:{cmd}"),
             Permission::ProcessSignal => write!(f, "process-signal"),
             Permission::ClockRead => write!(f, "clock-read"),
             Permission::ClockSet => write!(f, "clock-set"),

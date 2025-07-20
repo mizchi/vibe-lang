@@ -61,7 +61,7 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 (let y: Int 10)  ; 型注釈（オプション）
 
 ; 関数定義（自動カリー化）
-(let add (lambda (x y) (+ x y)))
+(let add (fn (x y) (+ x y)))
 (let inc (add 1))  ; 部分適用
 
 ; let-in構文（ローカルバインディング）
@@ -81,8 +81,8 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
   (match lst
     ((list) (list))
     ((list pivot rest)
-      (let smaller (filter (lambda (x) (< x pivot)) rest) in
-        (let larger (filter (lambda (x) (>= x pivot)) rest) in
+      (let smaller (filter (fn (x) (< x pivot)) rest) in
+        (let larger (filter (fn (x) (>= x pivot)) rest) in
           (append (quicksort smaller)
                   (cons pivot (quicksort larger))))))))
 
@@ -107,7 +107,7 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 ; モジュール
 (module Math
   (export add multiply factorial)
-  (let add (lambda (x y) (+ x y)))
+  (let add (fn (x y) (+ x y)))
   ...)
 
 ; インポート
@@ -148,7 +148,7 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 
 ### 使用例
 ```
-xs> (let double (lambda (x) (* x 2)))
+xs> (let double (fn (x) (* x 2)))
 double : (-> Int Int) = <closure>
   [bac2c0f3]
 

@@ -89,7 +89,7 @@ impl SandboxedWasiRuntime {
         config.wasm_component_model(true);
 
         let engine = Engine::new(&config).map_err(|e| {
-            PermissionError::ManifestError(format!("Failed to create engine: {}", e))
+            PermissionError::ManifestError(format!("Failed to create engine: {e}"))
         })?;
 
         let permissions = PermissionChecker::new(&manifest);
@@ -139,13 +139,10 @@ impl SandboxedWasiRuntime {
     fn configure_environment(&self, builder: &mut WasiCtxBuilder) {
         // Add environment variables based on permissions
         for perm in &self.permissions.granted {
-            match perm {
-                Permission::EnvRead(var) => {
-                    if let Ok(value) = std::env::var(var) {
-                        let _ = builder.env(var, &value);
-                    }
+            if let Permission::EnvRead(var) = perm {
+                if let Ok(value) = std::env::var(var) {
+                    let _ = builder.env(var, &value);
                 }
-                _ => {}
             }
         }
     }

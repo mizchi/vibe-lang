@@ -50,7 +50,7 @@ impl PermissionError {
                        [[permissions.{}]]\n\
                        {} = [\"{}\"]\n",
                     permission_description(perm),
-                    context.map(|c| format!("{}\n", c)).unwrap_or_default(),
+                    context.map(|c| format!("{c}\n")).unwrap_or_default(),
                     perm,
                     permission_to_xs(perm),
                     permission_category(perm),
@@ -65,7 +65,7 @@ impl PermissionError {
                     This permission has been explicitly denied and cannot be granted.\n\
                     Security note: {}",
                     permission_description(perm),
-                    context.map(|c| format!("{}\n", c)).unwrap_or_default(),
+                    context.map(|c| format!("{c}\n")).unwrap_or_default(),
                     security_note(perm)
                 )
             }
@@ -107,9 +107,9 @@ fn permission_to_xs(perm: &Permission) -> String {
         Permission::NetworkListen(ports) => {
             format!("network-listen {}-{}", ports.start, ports.end)
         }
-        Permission::EnvRead(var) => format!("env-read \"{}\"", var),
-        Permission::EnvWrite(var) => format!("env-write \"{}\"", var),
-        Permission::ProcessSpawn(cmd) => format!("process-spawn \"{}\"", cmd),
+        Permission::EnvRead(var) => format!("env-read \"{var}\""),
+        Permission::EnvWrite(var) => format!("env-write \"{var}\""),
+        Permission::ProcessSpawn(cmd) => format!("process-spawn \"{cmd}\""),
         Permission::ProcessSignal => "process-signal".to_string(),
         Permission::ClockRead => "clock-read".to_string(),
         Permission::ClockSet => "clock-set".to_string(),
