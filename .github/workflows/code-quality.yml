@@ -1,0 +1,87 @@
+name: Code Quality
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+jobs:
+  code-duplication:
+    name: Check Code Duplication
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install similarity-rs
+      run: |
+        cargo install similarity-rs
+    
+    - name: Run similarity check
+      run: |
+        similarity-rs . --threshold 0.90 --min-lines 5 --ignore target --ignore node_modules
+    
+    - name: Generate similarity report
+      if: github.event_name == 'pull_request'
+      run: |
+        echo "## Code Duplication Report" > similarity-report.md
+        echo "" >> similarity-report.md
+        similarity-rs . --threshold 0.90 --min-lines 5 --ignore target --ignore node_modules --format markdown >> similarity-report.md || true
+        
+    - name: Comment PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const report = fs.readFileSync('similarity-report.md', 'utf8');
+          
+          // Only comment if there are duplications found
+          if (report.includes('Found similar code blocks')) {
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+          }
+
+  rust-checks:
+    name: Rust Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache cargo index
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache cargo build
+      uses: actions/cache@v3
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Run tests
+      run: cargo test --all-features
+    
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+    
+    - name: Check formatting
+      run: cargo fmt --all -- --check

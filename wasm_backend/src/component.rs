@@ -88,44 +88,48 @@ pub enum WitType {
 }
 
 /// Component builder for creating WASM components
+/// This is a facade that delegates to the actual implementation
 pub struct ComponentBuilder {
-    metadata: ComponentMetadata,
-    modules: HashMap<String, WasmModule>,
+    inner: crate::component_builder::ComponentBuilderImpl,
 }
 
 impl ComponentBuilder {
     pub fn new(name: String, version: String) -> Self {
+        let metadata = ComponentMetadata {
+            name,
+            version,
+            exports: Vec::new(),
+            imports: Vec::new(),
+        };
         Self {
-            metadata: ComponentMetadata {
-                name,
-                version,
-                exports: Vec::new(),
-                imports: Vec::new(),
-            },
-            modules: HashMap::new(),
+            inner: crate::component_builder::ComponentBuilderImpl::new(metadata),
         }
     }
 
     /// Add a WASM module to the component
     pub fn add_module(&mut self, name: String, module: WasmModule) {
-        self.modules.insert(name, module);
+        self.inner.add_module(name, module);
     }
 
     /// Add an export to the component
     pub fn add_export(&mut self, export: ComponentExport) {
-        self.metadata.exports.push(export);
+        self.inner.metadata.exports.push(export);
     }
 
     /// Add an import to the component
     pub fn add_import(&mut self, import: ComponentImport) {
-        self.metadata.imports.push(import);
+        self.inner.metadata.imports.push(import);
+    }
+    
+    /// Set WIT source for the component
+    pub fn with_wit_source(mut self, wit: String) -> Self {
+        self.inner = self.inner.with_wit_source(wit);
+        self
     }
 
-    /// Build the component (placeholder - actual implementation would use wasm-tools)
+    /// Build the component using the actual implementation
     pub fn build(self) -> Result<Vec<u8>, CodeGenError> {
-        // TODO: Implement actual component building using wasm-tools
-        // For now, return a placeholder
-        Err(CodeGenError::UnsupportedExpr("Component building not yet implemented".to_string()))
+        self.inner.build()
     }
 }
 

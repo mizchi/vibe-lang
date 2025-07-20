@@ -45,37 +45,16 @@ impl<'a> Parser<'a> {
     fn parse_effect_set(&mut self) -> Result<EffectRow, XsError> {
         self.advance()?; // consume '{'
 
-        let mut effects = Vec::new();
-
-        loop {
-            if matches!(self.current_token, Some((Token::RightBrace, _))) {
-                break;
+        let effects = self.parse_list_until(Token::RightBrace, |parser| {
+            let effect = parser.parse_single_effect()?;
+            
+            // Handle comma separator
+            if matches!(parser.current_token, Some((Token::Comma, _))) {
+                parser.advance()?;
             }
-
-            effects.push(self.parse_single_effect()?);
-
-            match &self.current_token {
-                Some((Token::Comma, _)) => {
-                    self.advance()?;
-                    // Allow trailing comma
-                    if matches!(self.current_token, Some((Token::RightBrace, _))) {
-                        break;
-                    }
-                }
-                Some((Token::RightBrace, _)) => break,
-                _ => {
-                    let pos = self
-                        .current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0);
-                    return Err(XsError::ParseError(
-                        pos,
-                        "Expected ',' or '}' in effect set".to_string(),
-                    ));
-                }
-            }
-        }
+            
+            Ok(effect)
+        })?;
 
         self.advance()?; // consume '}'
 
@@ -101,37 +80,19 @@ impl<'a> Parser<'a> {
                     "Random" => Effect::Random,
                     "Time" => Effect::Time,
                     "Log" => Effect::Log,
-                    _ => {
-                        let pos = self
-                            .current_token
-                            .as_ref()
-                            .map(|(_, span)| span.start)
-                            .unwrap_or(0);
-                        return Err(XsError::ParseError(pos, format!("Unknown effect: {name}")));
-                    }
+                    _ => return Err(self.parse_error(format!("Unknown effect: {name}"))),
                 };
                 self.advance()?;
                 Ok(effect)
             }
-            _ => {
-                let pos = self
-                    .current_token
-                    .as_ref()
-                    .map(|(_, span)| span.start)
-                    .unwrap_or(0);
-                Err(XsError::ParseError(pos, "Expected effect name".to_string()))
-            }
+            _ => Err(self.parse_error("Expected effect name")),
         }
     }
 
     /// Parse a function type with optional effects
     /// (-> T1 T2) or (-> T1 T2 ! E)
     pub fn parse_function_type_with_effects(&mut self) -> Result<Type, XsError> {
-        let start_pos = self
-            .current_token
-            .as_ref()
-            .map(|(_, span)| span.start)
-            .unwrap_or(0);
+        let start_pos = self.current_position();
         // '->' has already been consumed by parse_type
         self.advance()?; // consume '->'
 

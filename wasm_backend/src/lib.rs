@@ -8,10 +8,12 @@ use xs_core::ir::IrExpr;
 
 pub mod codegen;
 pub mod component;
+pub mod component_builder;
 pub mod emit;
 pub mod runner;
 pub mod test_runner;
 pub mod types;
+pub mod wit_generator;
 
 /// WebAssembly GC module representation
 #[derive(Debug)]

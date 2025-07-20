@@ -1,0 +1,261 @@
+//! Tests for WebAssembly Component Model execution with wasmtime
+//! 
+//! These tests verify that generated components can be loaded and executed
+//! in a real WebAssembly runtime.
+
+use std::fs;
+use std::process::Command;
+use tempfile::TempDir;
+
+// Component execution tests that require full implementation
+#[cfg(test)]
+mod component_tests {
+    use super::*;
+    use wasmtime::component::*;
+    use wasmtime::{Config, Engine, Store};
+
+    /// Helper to compile XS module to component and load in wasmtime
+    fn compile_and_load_component(module_content: &str) -> Result<Component, Box<dyn std::error::Error>> {
+        // This is a placeholder for the actual component building process
+        // In reality, we would:
+        // 1. Compile XS to WASM module
+        // 2. Generate component metadata
+        // 3. Use wasm-tools to create component
+        
+        todo!("Component building not yet implemented")
+    }
+
+    #[test]
+    #[ignore = "Requires full component building implementation"]
+    fn test_math_component_execution() {
+        let module_content = r#"
+(module Math
+  (export add subtract)
+  
+  (let add (fn (x y) (+ x y)))
+  (let subtract (fn (x y) (- x y))))"#;
+
+        // Create wasmtime engine with component model enabled
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).unwrap();
+        
+        // Compile and load component
+        let component = compile_and_load_component(module_content).unwrap();
+        
+        // Create store and linker
+        let mut store = Store::new(&engine, ());
+        let linker = Linker::new(&engine);
+        
+        // Instantiate component
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        
+        // Get exported functions
+        let exports = instance.exports(&mut store);
+        let add_func = exports.typed_func::<(i64, i64), (i64,)>("add").unwrap();
+        let subtract_func = exports.typed_func::<(i64, i64), (i64,)>("subtract").unwrap();
+        
+        // Test execution
+        let (result,) = add_func.call(&mut store, (5, 3)).unwrap();
+        assert_eq!(result, 8);
+        
+        let (result,) = subtract_func.call(&mut store, (10, 4)).unwrap();
+        assert_eq!(result, 6);
+    }
+
+    #[test]
+    #[ignore = "Requires full component building implementation"]
+    fn test_string_component_execution() {
+        let module_content = r#"
+(module StringOps
+  (export concat str-length)
+  
+  (let concat (fn (s1 s2) (string-concat s1 s2)))
+  (let str-length (fn (s) (string-length s))))"#;
+
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).unwrap();
+        
+        let component = compile_and_load_component(module_content).unwrap();
+        
+        let mut store = Store::new(&engine, ());
+        let linker = Linker::new(&engine);
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        
+        let exports = instance.exports(&mut store);
+        let concat_func = exports.typed_func::<(&str, &str), (String,)>("concat").unwrap();
+        let length_func = exports.typed_func::<(&str,), (i64,)>("str-length").unwrap();
+        
+        let (result,) = concat_func.call(&mut store, ("Hello, ", "World!")).unwrap();
+        assert_eq!(result, "Hello, World!");
+        
+        let (result,) = length_func.call(&mut store, ("XS Language",)).unwrap();
+        assert_eq!(result, 11);
+    }
+}
+
+/// Test that validates generated WIT can be parsed by wit-parser
+#[test]
+fn test_wit_parsing_validity() {
+    
+    let module_content = r#"
+(module ValidWIT
+  (export process calculate)
+  
+  (let process (fn (input) (* input 2)))
+  (let calculate (fn (a b c) (+ (* a b) c))))"#;
+
+    let temp_dir = TempDir::new().unwrap();
+    let module_path = temp_dir.path().join("valid.xs");
+    let wit_path = temp_dir.path().join("valid.wit");
+    
+    fs::write(&module_path, module_content).unwrap();
+    
+    // Generate WIT
+    let output = Command::new("cargo")
+        .args(&[
+            "run", "-p", "cli", "--bin", "xsc", "--", 
+            "component", "wit", 
+            module_path.to_str().unwrap(),
+            "-o", wit_path.to_str().unwrap()
+        ])
+        .output()
+        .unwrap();
+    
+    assert!(output.status.success());
+    
+    // If wit-parser is available, validate the WIT file
+    // This would use the wit-parser crate to validate syntax
+    let wit_content = fs::read_to_string(&wit_path).unwrap();
+    
+    // Basic validation
+    assert!(wit_content.contains("package xs:valid@0.1.0;"));
+    assert!(wit_content.contains("interface exports"));
+    assert!(wit_content.contains("process: func"));
+    assert!(wit_content.contains("calculate: func"));
+    
+    // Check for well-formed WIT syntax
+    assert_eq!(wit_content.matches('{').count(), wit_content.matches('}').count());
+    assert_eq!(wit_content.matches('(').count(), wit_content.matches(')').count());
+    assert!(wit_content.trim().ends_with('}'));
+}
+
+/// Test component metadata generation
+#[test]
+fn test_component_metadata_generation() {
+    let module_content = r#"
+(module Metadata
+  (export version get-info)
+  
+  (let version (fn () "1.0.0"))
+  (let get-info (fn (key) "value")))"#;
+
+    let temp_dir = TempDir::new().unwrap();
+    let module_path = temp_dir.path().join("metadata.xs");
+    fs::write(&module_path, module_content).unwrap();
+    
+    // Run WIT generation
+    let output = Command::new("cargo")
+        .args(&[
+            "run", "-p", "cli", "--bin", "xsc", "--", 
+            "component", "wit", 
+            module_path.to_str().unwrap()
+        ])
+        .output()
+        .unwrap();
+    
+    let wit_output = String::from_utf8(output.stdout).unwrap();
+    
+    // Verify metadata elements
+    assert!(wit_output.contains("package xs:metadata@0.1.0"));
+    assert!(wit_output.contains("version: func() -> string"));
+    assert!(wit_output.contains("get-info: func(arg1: string) -> string"));
+}
+
+/// Test that demonstrates component composition readiness
+#[test]
+fn test_component_composition_interface() {
+    let provider_content = r#"
+(module DataProvider
+  (export get-data process-data)
+  
+  (let get-data (fn (id) (* id 10)))
+  (let process-data (fn (data) (+ data 100))))"#;
+
+    let consumer_content = r#"
+(module DataConsumer
+  (export consume)
+  
+  (let consume (fn (provider-func id) (provider-func id))))"#;
+
+    let temp_dir = TempDir::new().unwrap();
+    
+    // Generate WIT for provider
+    let provider_path = temp_dir.path().join("provider.xs");
+    fs::write(&provider_path, provider_content).unwrap();
+    
+    let provider_wit = Command::new("cargo")
+        .args(&[
+            "run", "-p", "cli", "--bin", "xsc", "--", 
+            "component", "wit", 
+            provider_path.to_str().unwrap()
+        ])
+        .output()
+        .unwrap();
+    
+    let provider_wit_str = String::from_utf8(provider_wit.stdout).unwrap();
+    
+    // Generate WIT for consumer
+    let consumer_path = temp_dir.path().join("consumer.xs");
+    fs::write(&consumer_path, consumer_content).unwrap();
+    
+    let consumer_wit = Command::new("cargo")
+        .args(&[
+            "run", "-p", "cli", "--bin", "xsc", "--", 
+            "component", "wit", 
+            consumer_path.to_str().unwrap()
+        ])
+        .output()
+        .unwrap();
+    
+    let consumer_wit_str = String::from_utf8(consumer_wit.stdout).unwrap();
+    
+    // Verify both components have compatible interfaces
+    assert!(provider_wit_str.contains("get-data: func(arg1: s64) -> s64"));
+    assert!(provider_wit_str.contains("process-data: func(arg1: s64) -> s64"));
+    assert!(consumer_wit_str.contains("consume: func(arg1: string, arg2: s64) -> s64"));
+}
+
+/// Test edge cases in WIT generation
+#[test]
+fn test_wit_generation_edge_cases() {
+    // Test with special characters in names
+    let module_content = r#"
+(module EdgeCases
+  (export my-func another-func test_underscore)
+  
+  (let my-func (fn (x) x))
+  (let another-func (fn () 42))
+  (let test_underscore (fn (a b) (+ a b))))"#;
+
+    let temp_dir = TempDir::new().unwrap();
+    let module_path = temp_dir.path().join("edge_cases.xs");
+    fs::write(&module_path, module_content).unwrap();
+    
+    let output = Command::new("cargo")
+        .args(&[
+            "run", "-p", "cli", "--bin", "xsc", "--", 
+            "component", "wit", 
+            module_path.to_str().unwrap()
+        ])
+        .output()
+        .unwrap();
+    
+    let wit_output = String::from_utf8(output.stdout).unwrap();
+    
+    // Verify name conversions
+    assert!(wit_output.contains("my-func: func"));
+    assert!(wit_output.contains("another-func: func"));
+    assert!(wit_output.contains("test-underscore: func")); // underscore should be converted to hyphen
+}

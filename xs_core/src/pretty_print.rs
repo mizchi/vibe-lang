@@ -374,6 +374,11 @@ impl<'a> PrettyPrinter<'a> {
     }
 }
 
+/// 簡単な pretty print 関数
+pub fn pretty_print(expr: &Expr) -> String {
+    PrettyPrinter::new().pretty_print(expr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

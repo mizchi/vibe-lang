@@ -1,6 +1,7 @@
 mod effect_parser;
 pub mod lexer;
 mod metadata_parser;
+mod parser_helpers;
 // mod handler_parser; // TODO: Fix and re-enable
 #[cfg(test)]
 mod test_effects;
@@ -174,24 +175,9 @@ impl<'a> Parser<'a> {
     fn parse_let(&mut self, start: usize) -> Result<Expr, XsError> {
         self.advance()?; // consume 'let'
 
-        let name = match &self.current_token {
-            Some((Token::Symbol(s), _)) => {
-                let ident = Ident(s.clone());
-                self.advance()?;
-                ident
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected variable name after 'let'".to_string(),
-                ))
-            }
-        };
+        let name = self.parse_required_ident("Expected variable name after 'let'")?;
 
-        let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
+        let type_ann = if self.check_token(&Token::Colon) {
             self.advance()?;
             Some(self.parse_type()?)
         } else {
@@ -201,25 +187,11 @@ impl<'a> Parser<'a> {
         let value = Box::new(self.parse_expr()?);
 
         // Check for 'in' keyword for let-in syntax
-        if let Some((Token::In, _)) = &self.current_token {
+        if self.check_token(&Token::In) {
             self.advance()?; // consume 'in'
             let body = Box::new(self.parse_expr()?);
-            let end = match &self.current_token {
-                Some((Token::RightParen, span)) => {
-                    let end = span.end;
-                    self.advance()?;
-                    end
-                }
-                _ => {
-                    return Err(XsError::ParseError(
-                        self.current_token
-                            .as_ref()
-                            .map(|(_, span)| span.start)
-                            .unwrap_or(0),
-                        "Expected ')' after let-in expression".to_string(),
-                    ))
-                }
-            };
+            let end = self.parse_closing_paren("after let-in expression")?;
+            
             Ok(Expr::LetIn {
                 name,
                 type_ann,
@@ -229,22 +201,8 @@ impl<'a> Parser<'a> {
             })
         } else {
             // Standard let expression
-            let end = match &self.current_token {
-                Some((Token::RightParen, span)) => {
-                    let end = span.end;
-                    self.advance()?;
-                    end
-                }
-                _ => {
-                    return Err(XsError::ParseError(
-                        self.current_token
-                            .as_ref()
-                            .map(|(_, span)| span.start)
-                            .unwrap_or(0),
-                        "Expected ')' after let expression".to_string(),
-                    ))
-                }
-            };
+            let end = self.parse_closing_paren("after let expression")?;
+            
             Ok(Expr::Let {
                 name,
                 type_ann,
@@ -257,24 +215,9 @@ impl<'a> Parser<'a> {
     fn parse_let_rec(&mut self, start: usize) -> Result<Expr, XsError> {
         self.advance()?; // consume 'let-rec'
 
-        let name = match &self.current_token {
-            Some((Token::Symbol(s), _)) => {
-                let ident = Ident(s.clone());
-                self.advance()?;
-                ident
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected variable name after 'let-rec'".to_string(),
-                ))
-            }
-        };
+        let name = self.parse_required_ident("Expected variable name after 'let-rec'")?;
 
-        let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
+        let type_ann = if self.check_token(&Token::Colon) {
             self.advance()?;
             Some(self.parse_type()?)
         } else {
@@ -282,23 +225,7 @@ impl<'a> Parser<'a> {
         };
 
         let value = Box::new(self.parse_expr()?);
-
-        let end = match &self.current_token {
-            Some((Token::RightParen, span)) => {
-                let end = span.end;
-                self.advance()?;
-                end
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected ')' after let-rec expression".to_string(),
-                ))
-            }
-        };
+        let end = self.parse_closing_paren("after let-rec expression")?;
 
         Ok(Expr::LetRec {
             name,
@@ -312,65 +239,13 @@ impl<'a> Parser<'a> {
         self.advance()?; // consume 'rec'
 
         // Parse function name
-        let name = match &self.current_token {
-            Some((Token::Symbol(s), _)) => {
-                let ident = Ident(s.clone());
-                self.advance()?;
-                ident
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected function name after 'rec'".to_string(),
-                ))
-            }
-        };
+        let name = self.parse_required_ident("Expected function name after 'rec'")?;
 
         // Parse parameter list
-        if let Some((Token::LeftParen, _)) = &self.current_token {
-            self.advance()?;
-        } else {
-            return Err(XsError::ParseError(
-                self.current_token
-                    .as_ref()
-                    .map(|(_, span)| span.start)
-                    .unwrap_or(0),
-                "Expected '(' after function name".to_string(),
-            ));
-        }
-
-        let mut params = Vec::new();
-        while let Some((Token::Symbol(param_name), _)) = &self.current_token {
-            let ident = Ident(param_name.clone());
-            self.advance()?;
-
-            let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
-                self.advance()?;
-                Some(self.parse_type()?)
-            } else {
-                None
-            };
-
-            params.push((ident, type_ann));
-        }
-
-        if let Some((Token::RightParen, _)) = &self.current_token {
-            self.advance()?;
-        } else {
-            return Err(XsError::ParseError(
-                self.current_token
-                    .as_ref()
-                    .map(|(_, span)| span.start)
-                    .unwrap_or(0),
-                "Expected ')' after parameters".to_string(),
-            ));
-        }
+        let params = self.parse_typed_params()?;
 
         // Parse optional return type
-        let return_type = if let Some((Token::Colon, _)) = &self.current_token {
+        let return_type = if self.check_token(&Token::Colon) {
             self.advance()?;
             Some(self.parse_type()?)
         } else {
@@ -379,23 +254,7 @@ impl<'a> Parser<'a> {
 
         // Parse body
         let body = Box::new(self.parse_expr()?);
-
-        let end = match &self.current_token {
-            Some((Token::RightParen, span)) => {
-                let end = span.end;
-                self.advance()?;
-                end
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected ')' after rec body".to_string(),
-                ))
-            }
-        };
+        let end = self.parse_closing_paren("after rec body")?;
 
         Ok(Expr::Rec {
             name,
@@ -410,63 +269,10 @@ impl<'a> Parser<'a> {
         self.advance()?; // consume 'lambda'
 
         // Parse parameter list
-        if let Some((Token::LeftParen, _)) = &self.current_token {
-            self.advance()?;
-        } else {
-            return Err(XsError::ParseError(
-                self.current_token
-                    .as_ref()
-                    .map(|(_, span)| span.start)
-                    .unwrap_or(0),
-                "Expected '(' after 'lambda'".to_string(),
-            ));
-        }
-
-        let mut params = Vec::new();
-        while let Some((Token::Symbol(name), _)) = &self.current_token {
-            let ident = Ident(name.clone());
-            self.advance()?;
-
-            let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
-                self.advance()?;
-                Some(self.parse_type()?)
-            } else {
-                None
-            };
-
-            params.push((ident, type_ann));
-        }
-
-        if let Some((Token::RightParen, _)) = &self.current_token {
-            self.advance()?;
-        } else {
-            return Err(XsError::ParseError(
-                self.current_token
-                    .as_ref()
-                    .map(|(_, span)| span.start)
-                    .unwrap_or(0),
-                "Expected ')' after lambda parameters".to_string(),
-            ));
-        }
+        let params = self.parse_typed_params()?;
 
         let body = Box::new(self.parse_expr()?);
-
-        let end = match &self.current_token {
-            Some((Token::RightParen, span)) => {
-                let end = span.end;
-                self.advance()?;
-                end
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected ')' after lambda body".to_string(),
-                ))
-            }
-        };
+        let end = self.parse_closing_paren("after lambda body")?;
 
         Ok(curry_lambda(params, body, Span::new(start, end)))
     }
@@ -477,23 +283,7 @@ impl<'a> Parser<'a> {
         let cond = Box::new(self.parse_expr()?);
         let then_expr = Box::new(self.parse_expr()?);
         let else_expr = Box::new(self.parse_expr()?);
-
-        let end = match &self.current_token {
-            Some((Token::RightParen, span)) => {
-                let end = span.end;
-                self.advance()?;
-                end
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected ')' after if expression".to_string(),
-                ))
-            }
-        };
+        let end = self.parse_closing_paren("after if expression")?;
 
         Ok(Expr::If {
             cond,
@@ -828,129 +618,23 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_definition(&mut self, start: usize) -> Result<Expr, XsError> {
-        use xs_core::{Constructor, TypeDefinition};
+        use xs_core::TypeDefinition;
 
         self.advance()?; // consume 'type'
 
         // Parse type name
-        let type_name = match &self.current_token {
-            Some((Token::Symbol(name), _)) => {
-                let name = name.clone();
-                self.advance()?;
-                name
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected type name after 'type'".to_string(),
-                ))
-            }
-        };
+        let type_name = self.parse_required_symbol("Expected type name after 'type'")?;
 
         // Parse type parameters (optional)
-        let mut type_params = Vec::new();
-        while let Some((Token::Symbol(param), _)) = &self.current_token {
-            if param.chars().next().is_some_and(|c| c.is_lowercase()) {
-                type_params.push(param.clone());
-                self.advance()?;
-            } else {
-                break;
-            }
-        }
+        let type_params = self.parse_type_params()?;
 
         // Parse constructors
         let mut constructors = Vec::new();
-
-        while let Some((token, _)) = &self.current_token {
-            if matches!(token, Token::RightParen) {
-                break;
-            }
-
-            // Each constructor should be (Name field1 field2 ...)
-            if let Some((Token::LeftParen, _)) = &self.current_token {
-                self.advance()?;
-
-                let constructor_name = match &self.current_token {
-                    Some((Token::Symbol(name), _)) => {
-                        if !name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                            return Err(XsError::ParseError(
-                                self.current_token
-                                    .as_ref()
-                                    .map(|(_, span)| span.start)
-                                    .unwrap_or(0),
-                                "Constructor name must start with uppercase letter".to_string(),
-                            ));
-                        }
-                        let name = name.clone();
-                        self.advance()?;
-                        name
-                    }
-                    _ => {
-                        return Err(XsError::ParseError(
-                            self.current_token
-                                .as_ref()
-                                .map(|(_, span)| span.start)
-                                .unwrap_or(0),
-                            "Expected constructor name".to_string(),
-                        ))
-                    }
-                };
-
-                // Parse constructor fields
-                let mut fields = Vec::new();
-                while let Some((token, _)) = &self.current_token {
-                    if matches!(token, Token::RightParen) {
-                        break;
-                    }
-                    fields.push(self.parse_type()?);
-                }
-
-                if let Some((Token::RightParen, _)) = &self.current_token {
-                    self.advance()?;
-                } else {
-                    return Err(XsError::ParseError(
-                        self.current_token
-                            .as_ref()
-                            .map(|(_, span)| span.start)
-                            .unwrap_or(0),
-                        "Expected ')' after constructor".to_string(),
-                    ));
-                }
-
-                constructors.push(Constructor {
-                    name: constructor_name,
-                    fields,
-                });
-            } else {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected '(' for constructor definition".to_string(),
-                ));
-            }
+        while !self.check_token(&Token::RightParen) {
+            constructors.push(self.parse_constructor()?);
         }
 
-        let end = match &self.current_token {
-            Some((Token::RightParen, span)) => {
-                let end = span.end;
-                self.advance()?;
-                end
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected ')' after type definition".to_string(),
-                ))
-            }
-        };
+        let end = self.parse_closing_paren("after type definition")?;
 
         let definition = TypeDefinition {
             name: type_name,
@@ -964,87 +648,63 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_constructor(&mut self) -> Result<xs_core::Constructor, XsError> {
+        self.expect_token(Token::LeftParen, "Expected '(' for constructor definition")?;
+
+        // Parse constructor name
+        let constructor_name = match &self.current_token {
+            Some((Token::Symbol(name), _)) => {
+                if !name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    return Err(self.parse_error(
+                        "Constructor name must start with uppercase letter",
+                    ));
+                }
+                let name = name.clone();
+                self.advance()?;
+                name
+            }
+            _ => return Err(self.parse_error("Expected constructor name")),
+        };
+
+        // Parse constructor fields
+        let fields = self.parse_list_until(Token::RightParen, |parser| parser.parse_type())?;
+        
+        self.parse_closing_paren("after constructor")?;
+
+        Ok(xs_core::Constructor {
+            name: constructor_name,
+            fields,
+        })
+    }
+
     fn parse_module(&mut self, start: usize) -> Result<Expr, XsError> {
         self.advance()?; // consume 'module'
 
         // Parse module name
-        let module_name = match &self.current_token {
-            Some((Token::Symbol(name), _)) => {
-                let ident = Ident(name.clone());
-                self.advance()?;
-                ident
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected module name after 'module'".to_string(),
-                ))
-            }
-        };
+        let module_name = Ident(self.parse_required_symbol("Expected module name after 'module'")?);
 
         // Parse export list
         let mut exports = Vec::new();
-        if let Some((Token::LeftParen, _)) = &self.current_token {
+        if self.check_token(&Token::LeftParen) {
             self.advance()?;
-            if let Some((Token::Export, _)) = &self.current_token {
+            self.expect_token(Token::Export, "Expected 'export' after '('")?;
+
+            // Parse exported identifiers
+            while let Some((Token::Symbol(name), _)) = &self.current_token {
+                exports.push(Ident(name.clone()));
                 self.advance()?;
-
-                // Parse exported identifiers
-                while let Some((Token::Symbol(name), _)) = &self.current_token {
-                    exports.push(Ident(name.clone()));
-                    self.advance()?;
-                }
-
-                if let Some((Token::RightParen, _)) = &self.current_token {
-                    self.advance()?;
-                } else {
-                    return Err(XsError::ParseError(
-                        self.current_token
-                            .as_ref()
-                            .map(|(_, span)| span.start)
-                            .unwrap_or(0),
-                        "Expected ')' after export list".to_string(),
-                    ));
-                }
-            } else {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected 'export' after '('".to_string(),
-                ));
             }
+
+            self.parse_closing_paren("after export list")?;
         }
 
         // Parse module body
         let mut body = Vec::new();
-        while let Some((token, _)) = &self.current_token {
-            if matches!(token, Token::RightParen) {
-                break;
-            }
+        while !self.check_token(&Token::RightParen) {
             body.push(self.parse_expr()?);
         }
 
-        let end = match &self.current_token {
-            Some((Token::RightParen, span)) => {
-                let end = span.end;
-                self.advance()?;
-                end
-            }
-            _ => {
-                return Err(XsError::ParseError(
-                    self.current_token
-                        .as_ref()
-                        .map(|(_, span)| span.start)
-                        .unwrap_or(0),
-                    "Expected ')' after module body".to_string(),
-                ))
-            }
-        };
+        let end = self.parse_closing_paren("after module body")?;
 
         Ok(Expr::Module {
             name: module_name,
@@ -1115,128 +775,55 @@ impl<'a> Parser<'a> {
         // (import ModuleName as Alias)
 
         match &self.current_token {
-            Some((Token::LeftParen, _)) => {
-                // Form: (import (ModuleName item1 item2))
-                self.advance()?;
-
-                let module_name = match &self.current_token {
-                    Some((Token::Symbol(name), _)) => {
-                        let ident = Ident(name.clone());
-                        self.advance()?;
-                        ident
-                    }
-                    _ => {
-                        return Err(XsError::ParseError(
-                            self.current_token
-                                .as_ref()
-                                .map(|(_, span)| span.start)
-                                .unwrap_or(0),
-                            "Expected module name in import".to_string(),
-                        ))
-                    }
-                };
-
-                let mut items = Vec::new();
-                while let Some((Token::Symbol(name), _)) = &self.current_token {
-                    items.push(Ident(name.clone()));
-                    self.advance()?;
-                }
-
-                if let Some((Token::RightParen, _)) = &self.current_token {
-                    self.advance()?;
-                } else {
-                    return Err(XsError::ParseError(
-                        self.current_token
-                            .as_ref()
-                            .map(|(_, span)| span.start)
-                            .unwrap_or(0),
-                        "Expected ')' after import items".to_string(),
-                    ));
-                }
-
-                let end = match &self.current_token {
-                    Some((Token::RightParen, span)) => {
-                        let end = span.end;
-                        self.advance()?;
-                        end
-                    }
-                    _ => {
-                        return Err(XsError::ParseError(
-                            self.current_token
-                                .as_ref()
-                                .map(|(_, span)| span.start)
-                                .unwrap_or(0),
-                            "Expected ')' after import".to_string(),
-                        ))
-                    }
-                };
-
-                Ok(Expr::Import {
-                    module_name,
-                    items: Some(items),
-                    as_name: None,
-                    span: Span::new(start, end),
-                })
-            }
-            Some((Token::Symbol(name), _)) => {
-                // Form: (import ModuleName as Alias)
-                let module_name = Ident(name.clone());
-                self.advance()?;
-
-                let as_name = if let Some((Token::As, _)) = &self.current_token {
-                    self.advance()?;
-                    match &self.current_token {
-                        Some((Token::Symbol(alias), _)) => {
-                            let alias = Ident(alias.clone());
-                            self.advance()?;
-                            Some(alias)
-                        }
-                        _ => {
-                            return Err(XsError::ParseError(
-                                self.current_token
-                                    .as_ref()
-                                    .map(|(_, span)| span.start)
-                                    .unwrap_or(0),
-                                "Expected alias name after 'as'".to_string(),
-                            ))
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let end = match &self.current_token {
-                    Some((Token::RightParen, span)) => {
-                        let end = span.end;
-                        self.advance()?;
-                        end
-                    }
-                    _ => {
-                        return Err(XsError::ParseError(
-                            self.current_token
-                                .as_ref()
-                                .map(|(_, span)| span.start)
-                                .unwrap_or(0),
-                            "Expected ')' after import".to_string(),
-                        ))
-                    }
-                };
-
-                Ok(Expr::Import {
-                    module_name,
-                    items: None,
-                    as_name,
-                    span: Span::new(start, end),
-                })
-            }
-            _ => Err(XsError::ParseError(
-                self.current_token
-                    .as_ref()
-                    .map(|(_, span)| span.start)
-                    .unwrap_or(0),
-                "Invalid import syntax".to_string(),
-            )),
+            Some((Token::LeftParen, _)) => self.parse_selective_import(start),
+            Some((Token::Symbol(_), _)) => self.parse_module_import(start),
+            _ => Err(self.parse_error("Invalid import syntax")),
         }
+    }
+
+    fn parse_selective_import(&mut self, start: usize) -> Result<Expr, XsError> {
+        // Form: (import (ModuleName item1 item2))
+        self.advance()?; // consume '('
+
+        let module_name = Ident(self.parse_required_symbol("Expected module name in import")?);
+
+        // Parse import items
+        let mut items = Vec::new();
+        while let Some((Token::Symbol(name), _)) = &self.current_token {
+            items.push(Ident(name.clone()));
+            self.advance()?;
+        }
+
+        self.parse_closing_paren("after import items")?;
+        let end = self.parse_closing_paren("after import")?;
+
+        Ok(Expr::Import {
+            module_name,
+            items: Some(items),
+            as_name: None,
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_module_import(&mut self, start: usize) -> Result<Expr, XsError> {
+        // Form: (import ModuleName as Alias)
+        let module_name = Ident(self.parse_required_symbol("Expected module name")?);
+
+        let as_name = if self.check_token(&Token::As) {
+            self.advance()?; // consume 'as'
+            Some(Ident(self.parse_required_symbol("Expected alias name after 'as'")?))
+        } else {
+            None
+        };
+
+        let end = self.parse_closing_paren("after import")?;
+
+        Ok(Expr::Import {
+            module_name,
+            items: None,
+            as_name,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_type(&mut self) -> Result<Type, XsError> {

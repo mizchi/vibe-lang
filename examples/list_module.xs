@@ -1,21 +1,24 @@
 (module ListUtils
-  (export sum count_positive double_all)
+  (export length head tail sum)
   
-  (let sum (rec sum (lst)
-    (match lst
+  (rec length (xs)
+    (match xs
       ((list) 0)
-      ((list h t) (+ h (sum t))))))
+      ((list _ rest) (+ 1 (length rest)))))
   
-  (let count_positive (rec count_positive (lst)
-    (match lst
+  (let head
+    (fn (xs)
+      (match xs
+        ((list) 0)
+        ((list x _) x))))
+  
+  (let tail
+    (fn (xs)
+      (match xs
+        ((list) (list))
+        ((list _ rest) rest))))
+  
+  (rec sum (xs)
+    (match xs
       ((list) 0)
-      ((list h t) 
-        (if (> h 0)
-            (+ 1 (count_positive t))
-            (count_positive t))))))
-  
-  (let double_all (rec double_all (lst)
-    (match lst
-      ((list) (list))
-      ((list h t) (cons (* h 2) (double_all t))))))
-)
+      ((list x rest) (+ x (sum rest))))))
