@@ -677,6 +677,38 @@ impl TypeChecker {
                             env.extend(bind_name.0.clone(), scheme.clone());
                             bindings.insert(bind_name.0.clone(), scheme);
                         }
+                        Expr::Rec { name: rec_name, params, body: rec_body, .. } => {
+                            // Handle recursive functions in module body
+                            // Create a fresh type variable for the recursive function
+                            let rec_type_var = self.fresh_var();
+                            env.extend(rec_name.0.clone(), TypeScheme::mono(rec_type_var.clone()));
+                            
+                            env.push_scope();
+                            
+                            // Create function type
+                            let mut param_types = Vec::new();
+                            for (param, param_type) in params {
+                                let param_t = param_type.clone().unwrap_or_else(|| self.fresh_var());
+                                env.extend(param.0.clone(), TypeScheme::mono(param_t.clone()));
+                                param_types.push(param_t);
+                            }
+                            
+                            // Infer body type
+                            let body_type = self.infer(rec_body, env)?;
+                            env.pop_scope();
+                            
+                            // Build function type
+                            let func_type = param_types.into_iter()
+                                .rev()
+                                .fold(body_type, |acc, param| Type::Function(Box::new(param), Box::new(acc)));
+                            
+                            // Unify with the recursive type variable
+                            self.unify(&rec_type_var, &func_type)?;
+                            
+                            let scheme = self.generalize(&func_type, env);
+                            env.extend(rec_name.0.clone(), scheme.clone());
+                            bindings.insert(rec_name.0.clone(), scheme);
+                        }
                         Expr::TypeDef { definition, .. } => {
                             env.add_type_definition(definition.clone());
                             type_defs.insert(definition.name.clone(), definition.clone());

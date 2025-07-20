@@ -31,10 +31,8 @@ fn generate_wit(file: &PathBuf, output: Option<PathBuf>) -> Result<()> {
     // Extract module information
     let (_module_name, exports) = extract_module_info(&expr)?;
     
-    // Type check to get export types
-    let mut checker = TypeChecker::new();
-    let mut type_env = TypeEnv::default();
-    let export_types = type_check_exports(&mut checker, &mut type_env, &exports)?;
+    // Type check the module and extract export types
+    let export_types = extract_export_types(&expr)?;
     
     // Generate package name from file name
     let package_name = if let Some(stem) = file.file_stem() {
@@ -82,17 +80,18 @@ fn build_component(file: &PathBuf, output: &PathBuf, version: &str) -> Result<()
     let _typ = type_check(&expr)
         .with_context(|| "Type checking failed")?;
     
-    // Generate WIT for the module
-    let mut checker = TypeChecker::new();
-    let mut type_env = TypeEnv::default();
-    let (_module_name, exports) = extract_module_info(&expr)?;
-    let export_types = type_check_exports(&mut checker, &mut type_env, &exports)?;
+    // Generate WIT for the module  
+    // Instead of re-type-checking exports, extract types from the already type-checked module
+    let export_types = extract_export_types(&expr)?;
     
     let package_name = if let Some(stem) = file.file_stem() {
         format!("xs:{}", stem.to_string_lossy())
     } else {
         "xs:module".to_string()
     };
+    
+    // Re-extract module information to ensure correct order
+    let (_module_name, exports) = extract_module_info(&expr)?;
     
     let mut wit_generator = WitGenerator::new(package_name.clone(), version.to_string());
     for ((name, _), typ) in exports.iter().zip(export_types.iter()) {
@@ -176,8 +175,80 @@ fn find_definition_in_body_list(name: &str, body: &[Expr]) -> Option<Expr> {
     None
 }
 
-/// Type check exports and return their types
-fn type_check_exports(
+/// Extract export types from a type-checked module
+fn extract_export_types(expr: &Expr) -> Result<Vec<Type>> {
+    match expr {
+        Expr::Module { exports, body, .. } => {
+            // Type check the module body to get the types
+            let mut checker = TypeChecker::new();
+            let mut type_env = TypeEnv::default();
+            
+            // Type check the body expressions
+            for body_expr in body {
+                match body_expr {
+                    Expr::Let { name, value, .. } => {
+                        let typ = checker.check(value, &mut type_env)?;
+                        let scheme = checker::TypeScheme::mono(typ);
+                        type_env.extend(name.0.clone(), scheme);
+                    }
+                    Expr::Rec { name, params, body: rec_body, .. } => {
+                        // Handle rec functions properly
+                        type_env.push_scope();
+                        
+                        // Add self-reference with a type variable
+                        let rec_type_var = Type::Var(format!("rec_{}", name.0));
+                        type_env.extend(name.0.clone(), checker::TypeScheme::mono(rec_type_var.clone()));
+                        
+                        // Add parameters
+                        let mut param_types = Vec::new();
+                        for (param, param_type) in params {
+                            let param_t = param_type.clone().unwrap_or_else(|| Type::Var(format!("t{}", param.0)));
+                            type_env.extend(param.0.clone(), checker::TypeScheme::mono(param_t.clone()));
+                            param_types.push(param_t);
+                        }
+                        
+                        // Type check body
+                        let body_type = checker.check(rec_body, &mut type_env)?;
+                        type_env.pop_scope();
+                        
+                        // Build function type
+                        let func_type = param_types.into_iter()
+                            .rev()
+                            .fold(body_type, |acc, param| Type::Function(Box::new(param), Box::new(acc)));
+                        
+                        // Store the type
+                        let scheme = checker::TypeScheme::mono(func_type);
+                        type_env.extend(name.0.clone(), scheme);
+                    }
+                    Expr::TypeDef { .. } => {
+                        // Skip type definitions for now
+                    }
+                    _ => {
+                        // Skip other expressions
+                        checker.check(body_expr, &mut type_env)?;
+                    }
+                }
+            }
+            
+            // Now extract types for exports
+            let mut export_types = Vec::new();
+            for export_name in exports {
+                if let Some(scheme) = type_env.lookup(&export_name.0) {
+                    // Extract type from type scheme
+                    export_types.push(scheme.typ.clone());
+                } else {
+                    return Err(anyhow::anyhow!("Export '{}' not found in module", export_name.0));
+                }
+            }
+            
+            Ok(export_types)
+        }
+        _ => Err(anyhow::anyhow!("Not a module expression")),
+    }
+}
+
+/// Type check exports and return their types (legacy function kept for reference)
+fn _type_check_exports(
     checker: &mut TypeChecker,
     type_env: &mut TypeEnv,
     exports: &[(String, Expr)]
