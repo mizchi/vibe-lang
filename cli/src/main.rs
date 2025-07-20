@@ -11,6 +11,8 @@ use parser::parse;
 use test_framework::TestSuite;
 use xs_core::{Type, Value};
 
+mod component_commands;
+
 #[derive(Parser)]
 #[command(name = "xsc")]
 #[command(author, version, about = "XS Language Compiler", long_about = None)]
@@ -46,6 +48,37 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    
+    /// Component Model operations
+    #[command(subcommand)]
+    Component(ComponentCommands),
+}
+
+#[derive(Subcommand)]
+enum ComponentCommands {
+    /// Generate WIT interface from XS module
+    Wit {
+        /// The XS module file
+        file: PathBuf,
+        
+        /// Output WIT file (defaults to stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    
+    /// Build WASM component from XS module
+    Build {
+        /// The XS module file
+        file: PathBuf,
+        
+        /// Output component file
+        #[arg(short, long)]
+        output: PathBuf,
+        
+        /// Component version
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -56,6 +89,7 @@ fn main() -> Result<()> {
         Commands::Check { file } => check_file(&file),
         Commands::Run { file } => run_file(&file),
         Commands::Test { path, verbose } => run_tests(path, verbose),
+        Commands::Component(cmd) => component_commands::handle_component_command(cmd),
     }
 }
 

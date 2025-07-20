@@ -7,6 +7,7 @@
 use xs_core::ir::IrExpr;
 
 pub mod codegen;
+pub mod component;
 pub mod emit;
 pub mod runner;
 pub mod test_runner;
