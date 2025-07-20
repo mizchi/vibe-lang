@@ -7,6 +7,7 @@ build:
 
 test:
 	cargo test --all
+	cargo run -p cli --bin xsc -- test
 
 clean:
 	cargo clean
@@ -45,6 +46,9 @@ run-shell:
 
 run-tests:
 	cargo run -p cli --bin xsc -- test
+
+test-xs:
+	cargo run -p cli --bin xsc -- test xs/
 
 # Component Model commands
 wit-gen:

@@ -153,7 +153,7 @@ mod tests {
         db.set_expression_source(expr_id.clone(), Arc::new(expr));
         
         let ty = db.type_check_expression(expr_id.clone()).unwrap();
-        assert!(matches!(ty, Type::Arrow(_, _)));
+        assert!(matches!(ty, Type::Function(_, _)));
         
         // Should be cached
         let ty2 = db.type_check_expression(expr_id).unwrap();

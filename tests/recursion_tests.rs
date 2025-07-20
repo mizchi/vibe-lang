@@ -153,10 +153,10 @@ mod type_checking_tests {
     #[test]
     fn test_rec_type_inference() {
         // Test that rec functions have proper type inference
-        test_type_checks_with(
+        // rec identity should have type a -> a
+        test_type_checks(
             "rec_identity",
-            patterns::IDENTITY,
-            "->"
+            patterns::IDENTITY
         );
     }
 

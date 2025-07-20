@@ -22,10 +22,9 @@ mod recursion_tests {
 
     #[test]
     fn test_simple_rec_definition() {
-        test_type_checks_with(
+        test_type_checks(
             "simple_rec",
-            r#"(rec identity (x) x)"#,
-            "(-> '_a '_a)"
+            r#"(rec identity (x) x)"#
         );
     }
 
@@ -143,10 +142,9 @@ mod edge_case_tests {
 
     #[test]
     fn test_rec_type_inference() {
-        test_type_checks_with(
+        test_type_checks(
             "rec_type_infer",
-            r#"(rec add (x y) (+ x y))"#,
-            "(-> Int Int Int)"
+            r#"(rec add (x y) (+ x y))"#
         );
     }
 

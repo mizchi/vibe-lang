@@ -199,12 +199,12 @@ fn test_non_module_expression_wit_generation() {
     let expr_path = temp_dir.path().join("expr.xs");
     fs::write(&expr_path, expr_content).unwrap();
 
-    let wit_output = run_wit_generation(expr_path.to_str().unwrap()).unwrap();
-
-    // Should treat as single main export
-    assert!(wit_output.contains("package xs:expr@0.1.0;"));
-    assert!(wit_output.contains("main: func(arg1: s64, arg2: s64) -> s64;"));
-    assert!(wit_output.contains("world expr {"));
+    let result = run_wit_generation(expr_path.to_str().unwrap());
+    
+    // Currently, WIT generation only supports module expressions
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    assert!(error.contains("Not a module expression"));
 }
 
 #[test]

@@ -656,6 +656,243 @@ impl BuiltinFunction for StrEq {
     }
 }
 
+pub struct StringAt;
+impl BuiltinFunction for StringAt {
+    fn name(&self) -> &str {
+        "stringAt"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(
+            Box::new(Type::String),
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::String))),
+        )
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::String(s), Value::Int(idx)] => {
+                let idx = *idx as usize;
+                if idx >= s.len() {
+                    Err(XsError::RuntimeError(
+                        crate::Span::new(0, 0),
+                        format!("String index {idx} out of bounds for string of length {}", s.len()),
+                    ))
+                } else {
+                    // Get the character at the given index
+                    let char = s.chars().nth(idx).unwrap();
+                    Ok(Value::String(char.to_string()))
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "stringAt requires a string and an integer argument".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("stringAt".to_string())
+    }
+}
+
+pub struct CharCode;
+impl BuiltinFunction for CharCode {
+    fn name(&self) -> &str {
+        "charCode"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(Box::new(Type::String), Box::new(Type::Int))
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::String(s)] => {
+                if s.is_empty() {
+                    Err(XsError::RuntimeError(
+                        crate::Span::new(0, 0),
+                        "charCode requires a non-empty string".to_string(),
+                    ))
+                } else {
+                    let char = s.chars().next().unwrap();
+                    Ok(Value::Int(char as u32 as i64))
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "charCode requires one string argument".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("charCode".to_string())
+    }
+}
+
+pub struct CodeChar;
+impl BuiltinFunction for CodeChar {
+    fn name(&self) -> &str {
+        "codeChar"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(Box::new(Type::Int), Box::new(Type::String))
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::Int(code)] => {
+                if *code < 0 || *code > 0x10FFFF {
+                    Err(XsError::RuntimeError(
+                        crate::Span::new(0, 0),
+                        format!("Invalid character code: {code}"),
+                    ))
+                } else {
+                    match char::from_u32(*code as u32) {
+                        Some(ch) => Ok(Value::String(ch.to_string())),
+                        None => Err(XsError::RuntimeError(
+                            crate::Span::new(0, 0),
+                            format!("Invalid character code: {code}"),
+                        )),
+                    }
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "codeChar requires one integer argument".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("codeChar".to_string())
+    }
+}
+
+pub struct StringSlice;
+impl BuiltinFunction for StringSlice {
+    fn name(&self) -> &str {
+        "stringSlice"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(
+            Box::new(Type::String),
+            Box::new(Type::Function(
+                Box::new(Type::Int),
+                Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::String))),
+            )),
+        )
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::String(s), Value::Int(start), Value::Int(end)] => {
+                let start = *start as usize;
+                let end = *end as usize;
+                let chars: Vec<char> = s.chars().collect();
+                
+                if start > chars.len() || end > chars.len() || start > end {
+                    Err(XsError::RuntimeError(
+                        crate::Span::new(0, 0),
+                        format!("Invalid slice bounds: start={start}, end={end}, length={}", chars.len()),
+                    ))
+                } else {
+                    let slice: String = chars[start..end].iter().collect();
+                    Ok(Value::String(slice))
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "stringSlice requires a string and two integer arguments".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("stringSlice".to_string())
+    }
+}
+
+pub struct ToString;
+impl BuiltinFunction for ToString {
+    fn name(&self) -> &str {
+        "toString"
+    }
+
+    fn type_signature(&self) -> Type {
+        // toString : a -> String
+        Type::Function(
+            Box::new(Type::Var("a".to_string())),
+            Box::new(Type::String),
+        )
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [value] => Ok(Value::String(format!("{value}"))),
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "toString requires exactly one argument".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("toString".to_string())
+    }
+}
+
+// Aliases for lowerCamelCase naming
+pub struct StringConcat;
+impl BuiltinFunction for StringConcat {
+    fn name(&self) -> &str {
+        "stringConcat"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(
+            Box::new(Type::String),
+            Box::new(Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::String),
+            )),
+        )
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        StrConcat.interpret(args)
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("stringConcat".to_string())
+    }
+}
+
+pub struct StringEq;
+impl BuiltinFunction for StringEq {
+    fn name(&self) -> &str {
+        "stringEq"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(
+            Box::new(Type::String),
+            Box::new(Type::Function(Box::new(Type::String), Box::new(Type::Bool))),
+        )
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        StrEq.interpret(args)
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Instructions(vec![])
+    }
+}
+
 /// Registry of all builtin functions
 pub struct BuiltinRegistry {
     functions: Vec<Box<dyn BuiltinFunction>>,
@@ -687,6 +924,13 @@ impl BuiltinRegistry {
             Box::new(StringToInt),
             Box::new(StringLength),
             Box::new(StrEq),
+            Box::new(StringAt),
+            Box::new(CharCode),
+            Box::new(CodeChar),
+            Box::new(StringSlice),
+            Box::new(ToString),
+            Box::new(StringConcat),  // lowerCamelCase alias
+            Box::new(StringEq),      // lowerCamelCase alias
             // Float operations
             Box::new(AddFloat),
         ];
@@ -811,6 +1055,13 @@ mod tests {
         assert!(registry.get("<").is_some());
         assert!(registry.get("cons").is_some());
         assert!(registry.get("+.").is_some());
+        assert!(registry.get("stringAt").is_some());
+        assert!(registry.get("charCode").is_some());
+        assert!(registry.get("codeChar").is_some());
+        assert!(registry.get("stringSlice").is_some());
+        assert!(registry.get("toString").is_some());
+        assert!(registry.get("stringConcat").is_some());
+        assert!(registry.get("stringEq").is_some());
         assert!(registry.get("unknown").is_none());
 
         // Test all() method
@@ -854,5 +1105,109 @@ mod tests {
             WasmBuiltin::Complex(name) => assert_eq!(name, "cons"),
             _ => panic!("Expected Complex"),
         }
+    }
+
+    #[test]
+    fn test_string_at() {
+        let string_at = StringAt;
+        assert_eq!(string_at.name(), "stringAt");
+
+        // Test successful access
+        let result = string_at
+            .interpret(&[Value::String("hello".to_string()), Value::Int(1)])
+            .unwrap();
+        assert_eq!(result, Value::String("e".to_string()));
+
+        // Test out of bounds
+        let result = string_at.interpret(&[Value::String("hi".to_string()), Value::Int(5)]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_char_code() {
+        let char_code = CharCode;
+        assert_eq!(char_code.name(), "charCode");
+
+        // Test ASCII character
+        let result = char_code
+            .interpret(&[Value::String("A".to_string())])
+            .unwrap();
+        assert_eq!(result, Value::Int(65));
+
+        // Test empty string
+        let result = char_code.interpret(&[Value::String("".to_string())]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_code_char() {
+        let code_char = CodeChar;
+        assert_eq!(code_char.name(), "codeChar");
+
+        // Test valid code
+        let result = code_char.interpret(&[Value::Int(65)]).unwrap();
+        assert_eq!(result, Value::String("A".to_string()));
+
+        // Test invalid code (negative)
+        let result = code_char.interpret(&[Value::Int(-1)]);
+        assert!(result.is_err());
+
+        // Test invalid code (too large)
+        let result = code_char.interpret(&[Value::Int(0x110000)]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_string_slice() {
+        let string_slice = StringSlice;
+        assert_eq!(string_slice.name(), "stringSlice");
+
+        // Test normal slice
+        let result = string_slice
+            .interpret(&[
+                Value::String("hello world".to_string()),
+                Value::Int(0),
+                Value::Int(5),
+            ])
+            .unwrap();
+        assert_eq!(result, Value::String("hello".to_string()));
+
+        // Test slice in middle
+        let result = string_slice
+            .interpret(&[
+                Value::String("hello world".to_string()),
+                Value::Int(6),
+                Value::Int(11),
+            ])
+            .unwrap();
+        assert_eq!(result, Value::String("world".to_string()));
+
+        // Test invalid bounds
+        let result = string_slice.interpret(&[
+            Value::String("hi".to_string()),
+            Value::Int(0),
+            Value::Int(10),
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_to_string() {
+        let to_string = ToString;
+        assert_eq!(to_string.name(), "toString");
+
+        // Test with integer
+        let result = to_string.interpret(&[Value::Int(42)]).unwrap();
+        assert_eq!(result, Value::String("42".to_string()));
+
+        // Test with boolean
+        let result = to_string.interpret(&[Value::Bool(true)]).unwrap();
+        assert_eq!(result, Value::String("true".to_string()));
+
+        // Test with string (should return the same)
+        let result = to_string
+            .interpret(&[Value::String("hello".to_string())])
+            .unwrap();
+        assert_eq!(result, Value::String("\"hello\"".to_string()));
     }
 }

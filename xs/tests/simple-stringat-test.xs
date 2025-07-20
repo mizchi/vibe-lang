@@ -1,0 +1,1 @@
+(print (stringAt "hello" 0))

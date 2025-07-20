@@ -80,6 +80,22 @@ impl Interpreter {
             },
         );
         env = env.extend(
+            Ident(">=".to_string()),
+            Value::BuiltinFunction {
+                name: ">=".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("<=".to_string()),
+            Value::BuiltinFunction {
+                name: "<=".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
             Ident("cons".to_string()),
             Value::BuiltinFunction {
                 name: "cons".to_string(),
@@ -140,6 +156,66 @@ impl Interpreter {
             Value::BuiltinFunction {
                 name: "print".to_string(),
                 arity: 1,
+                applied_args: vec![],
+            },
+        );
+        
+        // New builtin functions
+        env = env.extend(
+            Ident("stringAt".to_string()),
+            Value::BuiltinFunction {
+                name: "stringAt".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("charCode".to_string()),
+            Value::BuiltinFunction {
+                name: "charCode".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("codeChar".to_string()),
+            Value::BuiltinFunction {
+                name: "codeChar".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("stringSlice".to_string()),
+            Value::BuiltinFunction {
+                name: "stringSlice".to_string(),
+                arity: 3,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("toString".to_string()),
+            Value::BuiltinFunction {
+                name: "toString".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        
+        // lowerCamelCase aliases
+        env = env.extend(
+            Ident("stringConcat".to_string()),
+            Value::BuiltinFunction {
+                name: "stringConcat".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("stringEq".to_string()),
+            Value::BuiltinFunction {
+                name: "stringEq".to_string(),
+                arity: 2,
                 applied_args: vec![],
             },
         );
@@ -642,6 +718,20 @@ impl Interpreter {
                     "= requires integer arguments".to_string(),
                 )),
             },
+            ">=" => match (&args[0], &args[1]) {
+                (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x >= y)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    ">= requires integer arguments".to_string(),
+                )),
+            },
+            "<=" => match (&args[0], &args[1]) {
+                (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x <= y)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "<= requires integer arguments".to_string(),
+                )),
+            },
             "cons" => match &args[1] {
                 Value::List(tail) => {
                     let mut new_list = vec![args[0].clone()];
@@ -705,6 +795,102 @@ impl Interpreter {
                 let value = &args[0];
                 println!("{value}");
                 Ok(value.clone())
+            },
+            "stringAt" => match (&args[0], &args[1]) {
+                (Value::String(s), Value::Int(idx)) => {
+                    let idx = *idx as usize;
+                    if idx >= s.len() {
+                        Err(XsError::RuntimeError(
+                            span.clone(),
+                            format!("String index {idx} out of bounds for string of length {}", s.len()),
+                        ))
+                    } else {
+                        let ch = s.chars().nth(idx).unwrap();
+                        Ok(Value::String(ch.to_string()))
+                    }
+                }
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "stringAt requires a string and an integer argument".to_string(),
+                )),
+            },
+            "charCode" => match &args[0] {
+                Value::String(s) => {
+                    if s.is_empty() {
+                        Err(XsError::RuntimeError(
+                            span.clone(),
+                            "charCode requires a non-empty string".to_string(),
+                        ))
+                    } else {
+                        let ch = s.chars().next().unwrap();
+                        Ok(Value::Int(ch as u32 as i64))
+                    }
+                }
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "charCode requires a string argument".to_string(),
+                )),
+            },
+            "codeChar" => match &args[0] {
+                Value::Int(code) => {
+                    if *code < 0 || *code > 0x10FFFF {
+                        Err(XsError::RuntimeError(
+                            span.clone(),
+                            format!("Invalid character code: {code}"),
+                        ))
+                    } else {
+                        match char::from_u32(*code as u32) {
+                            Some(ch) => Ok(Value::String(ch.to_string())),
+                            None => Err(XsError::RuntimeError(
+                                span.clone(),
+                                format!("Invalid character code: {code}"),
+                            )),
+                        }
+                    }
+                }
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "codeChar requires an integer argument".to_string(),
+                )),
+            },
+            "stringSlice" => match (&args[0], &args[1], &args[2]) {
+                (Value::String(s), Value::Int(start), Value::Int(end)) => {
+                    let start = *start as usize;
+                    let end = *end as usize;
+                    let chars: Vec<char> = s.chars().collect();
+                    
+                    if start > chars.len() || end > chars.len() || start > end {
+                        Err(XsError::RuntimeError(
+                            span.clone(),
+                            format!("Invalid slice bounds: start={start}, end={end}, length={}", chars.len()),
+                        ))
+                    } else {
+                        let slice: String = chars[start..end].iter().collect();
+                        Ok(Value::String(slice))
+                    }
+                }
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "stringSlice requires a string and two integer arguments".to_string(),
+                )),
+            },
+            "toString" => {
+                let value = &args[0];
+                Ok(Value::String(format!("{value}")))
+            },
+            "stringConcat" => match (&args[0], &args[1]) {
+                (Value::String(s1), Value::String(s2)) => Ok(Value::String(format!("{s1}{s2}"))),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "stringConcat requires string arguments".to_string(),
+                )),
+            },
+            "stringEq" => match (&args[0], &args[1]) {
+                (Value::String(s1), Value::String(s2)) => Ok(Value::Bool(s1 == s2)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "stringEq requires two string arguments".to_string(),
+                )),
             },
             _ => Err(XsError::RuntimeError(
                 span.clone(),

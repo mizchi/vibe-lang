@@ -94,6 +94,20 @@ impl Default for TypeEnv {
             ),
         );
         env.add_builtin(
+            ">=",
+            Type::Function(
+                Box::new(Type::Int),
+                Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool))),
+            ),
+        );
+        env.add_builtin(
+            "<=",
+            Type::Function(
+                Box::new(Type::Int),
+                Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool))),
+            ),
+        );
+        env.add_builtin(
             "cons",
             Type::Function(
                 Box::new(Type::Var("a".to_string())),
@@ -148,6 +162,68 @@ impl Default for TypeEnv {
             Type::Function(
                 Box::new(Type::Var("a".to_string())),
                 Box::new(Type::Var("a".to_string())),
+            ),
+        );
+        
+        // stringAt : String -> Int -> String
+        env.add_builtin(
+            "stringAt",
+            Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::String))),
+            ),
+        );
+        
+        // charCode : String -> Int
+        env.add_builtin(
+            "charCode",
+            Type::Function(Box::new(Type::String), Box::new(Type::Int)),
+        );
+        
+        // codeChar : Int -> String
+        env.add_builtin(
+            "codeChar",
+            Type::Function(Box::new(Type::Int), Box::new(Type::String)),
+        );
+        
+        // stringSlice : String -> Int -> Int -> String
+        env.add_builtin(
+            "stringSlice",
+            Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::Function(
+                    Box::new(Type::Int),
+                    Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::String))),
+                )),
+            ),
+        );
+        
+        // toString : a -> String
+        env.add_builtin(
+            "toString",
+            Type::Function(
+                Box::new(Type::Var("a".to_string())),
+                Box::new(Type::String),
+            ),
+        );
+        
+        // lowerCamelCase aliases
+        env.add_builtin(
+            "stringConcat",
+            Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::Function(
+                    Box::new(Type::String),
+                    Box::new(Type::String),
+                )),
+            ),
+        );
+        
+        env.add_builtin(
+            "stringEq",
+            Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::Function(Box::new(Type::String), Box::new(Type::Bool))),
             ),
         );
 
