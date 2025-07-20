@@ -11,7 +11,7 @@ use parser::parse;
 fn generate_nested_let(depth: usize) -> String {
     let mut expr = "42".to_string();
     for i in (0..depth).rev() {
-        expr = format!("(let x{} {} {})", i, i, expr);
+        expr = format!("(let x{i} {i} {expr})");
     }
     expr
 }
@@ -21,13 +21,13 @@ fn generate_nested_lambda(depth: usize) -> String {
     let mut body = "0".to_string();
 
     for i in 0..depth {
-        params.push(format!("x{}", i));
-        body = format!("(+ {} x{})", body, i);
+        params.push(format!("x{i}"));
+        body = format!("(+ {body} x{i})");
     }
 
     let mut expr = body;
     for param in params.iter().rev() {
-        expr = format!("(fn ({}) {})", param, expr);
+        expr = format!("(fn ({param}) {expr})");
     }
 
     // Apply with arguments
@@ -44,21 +44,21 @@ fn generate_polymorphic_functions(count: usize) -> String {
 
     // Generate identity functions with different names
     for i in 0..count {
-        functions.push(format!("(let id{} (fn (x) x)", i));
+        functions.push(format!("(let id{i} (fn (x) x)"));
     }
 
     // Use them polymorphically
     let mut usage = String::new();
     for i in 0..count {
         if i > 0 {
-            usage.push_str(" ");
+            usage.push(' ');
         }
         usage.push_str(&format!("(+ (id{} {}) (id{} true))", i, i * 10, i));
     }
 
     let mut expr = usage;
     for func in functions.iter().rev() {
-        expr = format!("{} {})", func, expr);
+        expr = format!("{func} {expr})");
     }
 
     expr
@@ -179,7 +179,7 @@ fn benchmark_type_instantiation(c: &mut Criterion) {
     let program_template = |n: usize| {
         let mut uses = Vec::new();
         for i in 0..n {
-            uses.push(format!("(id {})", i));
+            uses.push(format!("(id {i})"));
         }
         format!("(let id (fn (x) x) (list {}))", uses.join(" "))
     };
