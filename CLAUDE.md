@@ -64,11 +64,27 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 (let add (lambda (x y) (+ x y)))
 (let inc (add 1))  ; 部分適用
 
+; let-in構文（ローカルバインディング）
+(let x 10 in (+ x 5))  ; 結果: 15
+(let x 5 in
+  (let y 10 in
+    (* x y)))  ; 結果: 50
+
 ; 再帰関数
 (rec factorial (n)
   (if (= n 0)
       1
       (* n (factorial (- n 1)))))
+
+; rec内でlet-in使用（内部ヘルパー関数）
+(rec quicksort (lst)
+  (match lst
+    ((list) (list))
+    ((list pivot rest)
+      (let smaller (filter (lambda (x) (< x pivot)) rest) in
+        (let larger (filter (lambda (x) (>= x pivot)) rest) in
+          (append (quicksort smaller)
+                  (cons pivot (quicksort larger))))))))
 
 ; let-rec（相互再帰対応）
 (let-rec even (n) (if (= n 0) true (odd (- n 1))))
@@ -187,7 +203,7 @@ Suggestions:
 - ✅ AIフレンドリーなエラーメッセージ
 
 ### 開発中/計画中
-- 🚧 rec内部定義の修正
+- ✅ rec内部定義の修正（let-in構文で解決）
 - 📋 Unison風テスト結果キャッシュシステム
 - 📋 Effect System
 - 📋 WASIサンドボックス

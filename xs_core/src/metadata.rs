@@ -1,13 +1,19 @@
 //! AST metadata management for comments, temporary variable labels, and other annotations
 //! that are semantically separate from the AST structure itself.
 
-use std::collections::HashMap;
 use crate::{Expr, Span};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Unique identifier for AST nodes
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub usize);
+
+impl Default for NodeId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl NodeId {
     pub fn new() -> Self {
@@ -79,10 +85,7 @@ impl MetadataStore {
             kind,
             span,
         };
-        self.entries
-            .entry(node_id)
-            .or_insert_with(Vec::new)
-            .push(entry);
+        self.entries.entry(node_id).or_default().push(entry);
     }
 
     /// Get all metadata for a node
@@ -91,7 +94,11 @@ impl MetadataStore {
     }
 
     /// Get metadata of a specific kind for a node
-    pub fn get_metadata_by_kind(&self, node_id: &NodeId, filter: impl Fn(&MetadataKind) -> bool) -> Vec<&MetadataEntry> {
+    pub fn get_metadata_by_kind(
+        &self,
+        node_id: &NodeId,
+        filter: impl Fn(&MetadataKind) -> bool,
+    ) -> Vec<&MetadataEntry> {
         self.entries
             .get(node_id)
             .map(|entries| entries.iter().filter(|e| filter(&e.kind)).collect())
@@ -122,10 +129,7 @@ impl MetadataStore {
     /// Merge metadata from another store
     pub fn merge(&mut self, other: MetadataStore) {
         for (node_id, entries) in other.entries {
-            self.entries
-                .entry(node_id)
-                .or_insert_with(Vec::new)
-                .extend(entries);
+            self.entries.entry(node_id).or_default().extend(entries);
         }
         self.expr_to_node.extend(other.expr_to_node);
     }
@@ -148,6 +152,12 @@ pub struct AstBuilder {
     metadata_store: MetadataStore,
 }
 
+impl Default for AstBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AstBuilder {
     pub fn new() -> Self {
         Self {
@@ -156,15 +166,18 @@ impl AstBuilder {
     }
 
     pub fn with_comment(&mut self, node_id: NodeId, comment: String, span: Option<Span>) {
-        self.metadata_store.add_metadata(node_id, MetadataKind::Comment(comment), span);
+        self.metadata_store
+            .add_metadata(node_id, MetadataKind::Comment(comment), span);
     }
 
     pub fn with_temp_var(&mut self, node_id: NodeId, label: String, span: Option<Span>) {
-        self.metadata_store.add_metadata(node_id, MetadataKind::TempVarLabel(label), span);
+        self.metadata_store
+            .add_metadata(node_id, MetadataKind::TempVarLabel(label), span);
     }
 
     pub fn with_doc_string(&mut self, node_id: NodeId, doc: String, span: Option<Span>) {
-        self.metadata_store.add_metadata(node_id, MetadataKind::DocString(doc), span);
+        self.metadata_store
+            .add_metadata(node_id, MetadataKind::DocString(doc), span);
     }
 
     pub fn finish(self) -> MetadataStore {
@@ -190,10 +203,10 @@ impl<'a> MetadataAwareFormatter<'a> {
             for entry in metadata {
                 match &entry.kind {
                     MetadataKind::Comment(comment) => {
-                        result.push_str(&format!("; {}\n", comment));
+                        result.push_str(&format!("; {comment}\n"));
                     }
                     MetadataKind::DocString(doc) => {
-                        result.push_str(&format!(";; {}\n", doc));
+                        result.push_str(&format!(";; {doc}\n"));
                     }
                     _ => {}
                 }
@@ -205,16 +218,16 @@ impl<'a> MetadataAwareFormatter<'a> {
 
         // Add trailing temp var label if present
         if let Some(label) = self.metadata_store.get_temp_var_label(node_id) {
-            result.push_str(&format!(" ; => {}", label));
+            result.push_str(&format!(" ; => {label}"));
         }
 
         result
     }
 
-    fn format_expr_inner(&self, expr: &Expr, node_id: &NodeId) -> String {
+    fn format_expr_inner(&self, expr: &Expr, _node_id: &NodeId) -> String {
         // TODO: Implement full expression formatting
         // This is a placeholder that should be replaced with proper formatting logic
-        format!("{:?}", expr)
+        format!("{expr:?}")
     }
 }
 
@@ -228,9 +241,21 @@ mod tests {
         let node_id = NodeId::new();
 
         // Add various metadata
-        store.add_metadata(node_id.clone(), MetadataKind::Comment("This is a comment".to_string()), None);
-        store.add_metadata(node_id.clone(), MetadataKind::TempVarLabel("temp1".to_string()), None);
-        store.add_metadata(node_id.clone(), MetadataKind::DocString("Function documentation".to_string()), None);
+        store.add_metadata(
+            node_id.clone(),
+            MetadataKind::Comment("This is a comment".to_string()),
+            None,
+        );
+        store.add_metadata(
+            node_id.clone(),
+            MetadataKind::TempVarLabel("temp1".to_string()),
+            None,
+        );
+        store.add_metadata(
+            node_id.clone(),
+            MetadataKind::DocString("Function documentation".to_string()),
+            None,
+        );
 
         // Check retrieval
         let comments = store.get_comments(&node_id);

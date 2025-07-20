@@ -1,19 +1,24 @@
+use ordered_float::OrderedFloat;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
-use ordered_float::OrderedFloat;
-use serde::{Serialize, Deserialize};
 
-mod types;
-mod value;
-pub mod ir;
+pub mod builtin_effects;
 pub mod builtins;
 pub mod curry;
+pub mod effects;
+pub mod error_context;
+pub mod ir;
 pub mod metadata;
 pub mod pretty_print;
-pub mod error_context;
+mod types;
+mod value;
 
 // Re-export builtins for convenience
 pub use builtins::{BuiltinFunction, BuiltinRegistry};
+// Re-export effects
+pub use builtin_effects::BuiltinEffects;
+pub use effects::{Effect, EffectRow, EffectSet, EffectVar};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
@@ -59,6 +64,13 @@ pub enum Expr {
         name: Ident,
         type_ann: Option<Type>,
         value: Box<Expr>,
+        span: Span,
+    },
+    LetIn {
+        name: Ident,
+        type_ann: Option<Type>,
+        value: Box<Expr>,
+        body: Box<Expr>,
         span: Span,
     },
     Rec {
@@ -107,12 +119,27 @@ pub enum Expr {
     Import {
         module_name: Ident,
         items: Option<Vec<Ident>>, // None means import all with prefix
-        as_name: Option<Ident>,     // For "import Foo as F"
+        as_name: Option<Ident>,    // For "import Foo as F"
         span: Span,
     },
     QualifiedIdent {
         module_name: Ident,
         name: Ident,
+        span: Span,
+    },
+    Handler {
+        cases: Vec<(Ident, Vec<Pattern>, Ident, Expr)>, // (effect_name, patterns, continuation, body)
+        body: Box<Expr>,
+        span: Span,
+    },
+    WithHandler {
+        handler: Box<Expr>,
+        body: Box<Expr>,
+        span: Span,
+    },
+    Perform {
+        effect: Ident,
+        args: Vec<Expr>,
         span: Span,
     },
 }
@@ -141,6 +168,7 @@ impl Expr {
             Expr::List(_, span) => span,
             Expr::Let { span, .. } => span,
             Expr::LetRec { span, .. } => span,
+            Expr::LetIn { span, .. } => span,
             Expr::Rec { span, .. } => span,
             Expr::Lambda { span, .. } => span,
             Expr::If { span, .. } => span,
@@ -151,6 +179,9 @@ impl Expr {
             Expr::Module { span, .. } => span,
             Expr::Import { span, .. } => span,
             Expr::QualifiedIdent { span, .. } => span,
+            Expr::Handler { span, .. } => span,
+            Expr::WithHandler { span, .. } => span,
+            Expr::Perform { span, .. } => span,
         }
     }
 }
@@ -169,6 +200,11 @@ pub enum Type {
     String,
     List(Box<Type>),
     Function(Box<Type>, Box<Type>),
+    FunctionWithEffect {
+        from: Box<Type>,
+        to: Box<Type>,
+        effects: EffectRow,
+    },
     Var(String),
     UserDefined {
         name: String,
@@ -198,6 +234,13 @@ impl fmt::Display for Type {
             Type::String => write!(f, "String"),
             Type::List(t) => write!(f, "(List {t})"),
             Type::Function(from, to) => write!(f, "(-> {from} {to})"),
+            Type::FunctionWithEffect { from, to, effects } => {
+                if effects.is_pure() {
+                    write!(f, "(-> {from} {to})")
+                } else {
+                    write!(f, "(-> {from} {to} ! {effects})")
+                }
+            }
             Type::Var(name) => write!(f, "{name}"),
             Type::UserDefined { name, type_params } => {
                 if type_params.is_empty() {
@@ -243,12 +286,10 @@ pub enum Value {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Environment {
     bindings: Vec<(Ident, Value)>,
 }
-
 
 impl Environment {
     pub fn new() -> Self {
@@ -268,21 +309,24 @@ impl Environment {
             .find(|(n, _)| n == name)
             .map(|(_, v)| v)
     }
-    
+
     pub fn contains(&self, name: &Ident) -> bool {
         self.bindings.iter().any(|(n, _)| n == name)
     }
-    
+
     pub fn len(&self) -> usize {
         self.bindings.len()
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
     }
-    
+
     pub fn debug_bindings(&self) -> Vec<String> {
-        self.bindings.iter().map(|(name, _)| name.0.clone()).collect()
+        self.bindings
+            .iter()
+            .map(|(name, _)| name.0.clone())
+            .collect()
     }
 }
 
@@ -290,25 +334,28 @@ impl Environment {
 pub enum XsError {
     #[error("Parse error at position {0}: {1}")]
     ParseError(usize, String),
-    
+
     #[error("Type error at {0:?}: {1}")]
     TypeError(Span, String),
-    
+
     #[error("Runtime error at {0:?}: {1}")]
     RuntimeError(Span, String),
-    
+
     #[error("Undefined variable '{0}'")]
     UndefinedVariable(Ident),
-    
-    #[error("Type mismatch: expected {expected}, found {found}")]
-    TypeMismatch { expected: Type, found: Type },
+
+    #[error("Type mismatch: expected {}, found {}", expected, found)]
+    TypeMismatch {
+        expected: Box<Type>,
+        found: Box<Type>,
+    },
 }
 
 impl XsError {
     /// Convert to rich error context for AI-friendly error reporting
     pub fn to_error_context(&self, source: Option<&str>) -> error_context::ErrorContext {
         use error_context::{ErrorBuilder, ErrorCategory};
-        
+
         match self {
             XsError::ParseError(pos, msg) => {
                 let mut builder = ErrorBuilder::new(ErrorCategory::Syntax, msg.clone());
@@ -331,11 +378,9 @@ impl XsError {
                 }
                 builder.build()
             }
-            XsError::UndefinedVariable(ident) => {
-                ErrorBuilder::undefined_variable(&ident.0).build()
-            }
+            XsError::UndefinedVariable(ident) => ErrorBuilder::undefined_variable(&ident.0).build(),
             XsError::TypeMismatch { expected, found } => {
-                ErrorBuilder::type_mismatch(expected.clone(), found.clone()).build()
+                ErrorBuilder::type_mismatch((**expected).clone(), (**found).clone()).build()
             }
         }
     }

@@ -7,27 +7,27 @@
   (define E 2.71828182846)
   
   ; 基本演算
-  (define add (lambda (x y) (+ x y)))
-  (define sub (lambda (x y) (- x y)))
-  (define mul (lambda (x y) (* x y)))
-  (define div (lambda (x y) (/ x y)))
+  (define add (fn (x y) (+ x y)))
+  (define sub (fn (x y) (- x y)))
+  (define mul (fn (x y) (* x y)))
+  (define div (fn (x y) (/ x y)))
   
   ; 累乗 (簡易実装)
-  (define pow (lambda (base exp)
+  (define pow (fn (base exp)
     (if (= exp 0)
         1
         (* base (pow base (- exp 1))))))
   
   ; 絶対値
-  (define abs (lambda (x)
+  (define abs (fn (x)
     (if (< x 0)
         (- 0 x)
         x)))
   
   ; 最大値
-  (define max (lambda (x y)
+  (define max (fn (x y)
     (if (> x y) x y)))
   
   ; 最小値
-  (define min (lambda (x y)
+  (define min (fn (x y)
     (if (< x y) x y))))

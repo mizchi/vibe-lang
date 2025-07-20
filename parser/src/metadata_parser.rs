@@ -2,8 +2,8 @@
 
 use crate::lexer::{Lexer, Token};
 use xs_core::{
-    Expr, Ident, Literal, Pattern, TypeDefinition, Constructor, Span, Type, XsError,
-    metadata::{MetadataStore, NodeId, MetadataKind, AstBuilder},
+    metadata::{MetadataKind, MetadataStore, NodeId},
+    Expr, Ident, Literal, Span, Type, XsError,
 };
 
 pub struct MetadataParser<'a> {
@@ -16,12 +16,20 @@ pub struct MetadataParser<'a> {
 impl<'a> MetadataParser<'a> {
     pub fn new(input: &'a str) -> Self {
         let mut lexer = Lexer::with_comments(input);
-        let current_token = lexer.next_token().ok().flatten();
+        let mut current_token = lexer.next_token().ok().flatten();
+        let mut pending_comments = Vec::new();
+
+        // Skip initial comments
+        while let Some((Token::Comment(comment), span)) = &current_token {
+            pending_comments.push((comment.clone(), span.clone()));
+            current_token = lexer.next_token().ok().flatten();
+        }
+
         Self {
             lexer,
             current_token,
             metadata_store: MetadataStore::new(),
-            pending_comments: Vec::new(),
+            pending_comments,
         }
     }
 
@@ -32,13 +40,13 @@ impl<'a> MetadataParser<'a> {
 
     fn advance(&mut self) -> Result<(), XsError> {
         self.current_token = self.lexer.next_token()?;
-        
+
         // コメントトークンを収集
         while let Some((Token::Comment(comment), span)) = &self.current_token {
             self.pending_comments.push((comment.clone(), span.clone()));
             self.current_token = self.lexer.next_token()?;
         }
-        
+
         Ok(())
     }
 
@@ -55,7 +63,7 @@ impl<'a> MetadataParser<'a> {
     fn parse_expr(&mut self) -> Result<Expr, XsError> {
         let node_id = NodeId::new();
         self.consume_pending_comments(&node_id);
-        
+
         match &self.current_token {
             Some((Token::LeftParen, _)) => self.parse_list(node_id),
             Some((Token::Int(n), span)) => {
@@ -83,18 +91,18 @@ impl<'a> MetadataParser<'a> {
                 Ok(expr)
             }
             Some((Token::Symbol(s), span)) => {
-                let expr = Expr::Variable(Ident(s.clone()), span.clone());
+                let expr = Expr::Ident(Ident(s.clone()), span.clone());
                 self.metadata_store.register_expr(&expr, node_id);
                 self.advance()?;
                 Ok(expr)
             }
             Some((token, span)) => Err(XsError::ParseError(
-                format!("Unexpected token: {:?}", token),
-                span.clone(),
+                span.start,
+                format!("Unexpected token: {token:?}"),
             )),
             None => Err(XsError::ParseError(
+                0,
                 "Unexpected end of input".to_string(),
-                Span::new(0, 0),
             )),
         }
     }
@@ -102,10 +110,12 @@ impl<'a> MetadataParser<'a> {
     fn parse_list(&mut self, node_id: NodeId) -> Result<Expr, XsError> {
         let start_span = match &self.current_token {
             Some((_, span)) => span.clone(),
-            None => return Err(XsError::ParseError(
-                "Expected opening parenthesis".to_string(),
-                Span::new(0, 0),
-            )),
+            None => {
+                return Err(XsError::ParseError(
+                    0,
+                    "Expected opening parenthesis".to_string(),
+                ))
+            }
         };
 
         self.advance()?; // consume '('
@@ -121,7 +131,7 @@ impl<'a> MetadataParser<'a> {
         // 最初の要素を確認
         match &self.current_token {
             Some((Token::Let, _)) => self.parse_let(node_id, start_span),
-            Some((Token::Lambda, _)) => self.parse_lambda(node_id, start_span),
+            Some((Token::Fn, _)) => self.parse_lambda(node_id, start_span),
             Some((Token::If, _)) => self.parse_if(node_id, start_span),
             Some((Token::List, _)) => self.parse_list_literal(node_id, start_span),
             Some((Token::Cons, _)) => self.parse_cons(node_id, start_span),
@@ -137,14 +147,15 @@ impl<'a> MetadataParser<'a> {
     // 他のparse_*メソッドも同様にnode_idを受け取り、メタデータを登録する
     fn parse_let(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
         self.advance()?; // consume 'let'
-        
+
         let name = self.parse_identifier()?;
         let value = Box::new(self.parse_expr()?);
-        
+
         self.expect_right_paren()?;
-        
+
         let expr = Expr::Let {
             name,
+            type_ann: None,
             value,
             span: start_span,
         };
@@ -154,12 +165,12 @@ impl<'a> MetadataParser<'a> {
 
     fn parse_lambda(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
         self.advance()?; // consume 'lambda'
-        
+
         let params = self.parse_parameters()?;
         let body = Box::new(self.parse_expr()?);
-        
+
         self.expect_right_paren()?;
-        
+
         let expr = Expr::Lambda {
             params,
             body,
@@ -179,25 +190,25 @@ impl<'a> MetadataParser<'a> {
                 Ok(ident)
             }
             Some((token, span)) => Err(XsError::ParseError(
-                format!("Expected identifier, found {:?}", token),
-                span.clone(),
+                span.start,
+                format!("Expected identifier, found {token:?}"),
             )),
             None => Err(XsError::ParseError(
+                0,
                 "Expected identifier, found end of input".to_string(),
-                Span::new(0, 0),
             )),
         }
     }
 
     fn parse_parameters(&mut self) -> Result<Vec<(Ident, Option<Type>)>, XsError> {
         self.expect_left_paren()?;
-        
+
         let mut params = Vec::new();
         while !matches!(&self.current_token, Some((Token::RightParen, _))) {
             let ident = self.parse_identifier()?;
             params.push((ident, None)); // 型アノテーションは今のところサポートしない
         }
-        
+
         self.expect_right_paren()?;
         Ok(params)
     }
@@ -209,12 +220,12 @@ impl<'a> MetadataParser<'a> {
                 Ok(())
             }
             Some((token, span)) => Err(XsError::ParseError(
-                format!("Expected '(', found {:?}", token),
-                span.clone(),
+                span.start,
+                format!("Expected '(', found {token:?}"),
             )),
             None => Err(XsError::ParseError(
+                0,
                 "Expected '(', found end of input".to_string(),
-                Span::new(0, 0),
             )),
         }
     }
@@ -226,50 +237,50 @@ impl<'a> MetadataParser<'a> {
                 Ok(())
             }
             Some((token, span)) => Err(XsError::ParseError(
-                format!("Expected ')', found {:?}", token),
-                span.clone(),
+                span.start,
+                format!("Expected ')', found {token:?}"),
             )),
             None => Err(XsError::ParseError(
+                0,
                 "Expected ')', found end of input".to_string(),
-                Span::new(0, 0),
             )),
         }
     }
 
     // 簡略化のため、他のメソッドはプレースホルダーとして実装
-    fn parse_if(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_if(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_if")
     }
 
-    fn parse_list_literal(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_list_literal(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_list_literal")
     }
 
-    fn parse_cons(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_cons(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_cons")
     }
 
-    fn parse_rec(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_rec(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_rec")
     }
 
-    fn parse_match(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_match(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_match")
     }
 
-    fn parse_type_def(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_type_def(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_type_def")
     }
 
-    fn parse_module(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_module(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_module")
     }
 
-    fn parse_import(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_import(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_import")
     }
 
-    fn parse_application(&mut self, node_id: NodeId, start_span: Span) -> Result<Expr, XsError> {
+    fn parse_application(&mut self, _node_id: NodeId, _start_span: Span) -> Result<Expr, XsError> {
         todo!("parse_application")
     }
 }
@@ -287,15 +298,15 @@ mod tests {
     fn test_parse_with_comments() {
         let input = r#"; This is a comment
 (let x 42)  ; x is the answer"#;
-        
+
         let (expr, metadata) = parse_with_metadata(input).unwrap();
-        
+
         // Verify the expression is parsed correctly
         match expr {
             Expr::Let { name, .. } => assert_eq!(name.0, "x"),
             _ => panic!("Expected Let expression"),
         }
-        
+
         // TODO: Verify comments are captured in metadata
     }
 
@@ -303,7 +314,7 @@ mod tests {
     fn test_parse_literal_with_metadata() {
         let input = "42";
         let (expr, metadata) = parse_with_metadata(input).unwrap();
-        
+
         match expr {
             Expr::Literal(Literal::Int(42), _) => (),
             _ => panic!("Expected Int literal"),

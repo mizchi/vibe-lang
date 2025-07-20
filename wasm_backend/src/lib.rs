@@ -1,16 +1,16 @@
 //! WebAssembly backend for XS language
-//! 
+//!
 //! This module implements code generation targeting WebAssembly with Garbage Collection support.
 //! It converts IR expressions into WebAssembly GC instructions, leveraging the native GC
 //! capabilities of modern WebAssembly runtimes.
 
 use xs_core::ir::IrExpr;
 
-pub mod types;
 pub mod codegen;
 pub mod emit;
 pub mod runner;
 pub mod test_runner;
+pub mod types;
 
 /// WebAssembly GC module representation
 #[derive(Debug)]
@@ -84,16 +84,16 @@ pub enum WasmInstr {
     I64Const(i64),
     F32Const(f32),
     F64Const(f64),
-    
+
     // Local operations
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
-    
+
     // Global operations
     GlobalGet(u32),
     GlobalSet(u32),
-    
+
     // Control flow
     Block(Vec<WasmInstr>),
     Loop(Vec<WasmInstr>),
@@ -107,13 +107,13 @@ pub enum WasmInstr {
     Return,
     Call(u32),
     CallIndirect(u32),
-    
+
     // Memory operations
     I32Load,
     I64Load,
     I32Store,
     I64Store,
-    
+
     // Reference operations (GC)
     StructNew(u32),
     StructGet(u32, u32),
@@ -125,7 +125,7 @@ pub enum WasmInstr {
     RefNull(WasmType),
     RefIsNull,
     RefCast(WasmType),
-    
+
     // Arithmetic
     I32Add,
     I32Sub,
@@ -135,7 +135,7 @@ pub enum WasmInstr {
     I64Sub,
     I64Mul,
     I64DivS,
-    
+
     // Comparisons
     I32Eq,
     I32Ne,
@@ -145,7 +145,7 @@ pub enum WasmInstr {
     I64Ne,
     I64LtS,
     I64GtS,
-    
+
     // Stack operations
     Drop,
     Dup,
@@ -162,13 +162,13 @@ pub fn generate_module(ir: &IrExpr) -> Result<WasmModule, CodeGenError> {
 pub enum CodeGenError {
     #[error("Unsupported IR expression: {0}")]
     UnsupportedExpr(String),
-    
+
     #[error("Type error: {0}")]
     TypeError(String),
-    
+
     #[error("Undefined variable: {0}")]
     UndefinedVariable(String),
-    
+
     #[error("Invalid function call: {0}")]
     InvalidCall(String),
 }
@@ -176,12 +176,12 @@ pub enum CodeGenError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_wasm_type_equality() {
         assert_eq!(WasmType::I32, WasmType::I32);
         assert_ne!(WasmType::I32, WasmType::I64);
-        
+
         let ref_type = WasmType::Ref(Box::new(WasmType::StructRef(0)));
         assert_eq!(ref_type, WasmType::Ref(Box::new(WasmType::StructRef(0))));
     }

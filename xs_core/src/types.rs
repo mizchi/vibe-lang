@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
 use crate::Type;
+use std::collections::{HashMap, HashSet};
 
 impl Type {
     pub fn free_vars(&self) -> HashSet<String> {
@@ -7,6 +7,11 @@ impl Type {
             Type::Int | Type::Float | Type::Bool | Type::String => HashSet::new(),
             Type::List(t) => t.free_vars(),
             Type::Function(from, to) => {
+                let mut vars = from.free_vars();
+                vars.extend(to.free_vars());
+                vars
+            }
+            Type::FunctionWithEffect { from, to, .. } => {
                 let mut vars = from.free_vars();
                 vars.extend(to.free_vars());
                 vars
@@ -34,6 +39,11 @@ impl Type {
                 Box::new(from.apply_subst(subst)),
                 Box::new(to.apply_subst(subst)),
             ),
+            Type::FunctionWithEffect { from, to, effects } => Type::FunctionWithEffect {
+                from: Box::new(from.apply_subst(subst)),
+                to: Box::new(to.apply_subst(subst)),
+                effects: effects.clone(), // TODO: effect substitution
+            },
             Type::Var(v) => subst.get(v).cloned().unwrap_or_else(|| self.clone()),
             Type::UserDefined { name, type_params } => Type::UserDefined {
                 name: name.clone(),

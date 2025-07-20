@@ -1,5 +1,5 @@
 //! Builtin functions for XS language
-//! 
+//!
 //! This module provides a unified interface for builtin functions that can be
 //! used by both the interpreter and the WebAssembly backend.
 
@@ -9,13 +9,13 @@ use crate::{Type, Value, XsError};
 pub trait BuiltinFunction {
     /// Get the name of this builtin function
     fn name(&self) -> &str;
-    
+
     /// Get the type signature of this builtin function
     fn type_signature(&self) -> Type;
-    
+
     /// Interpret this function with given arguments
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError>;
-    
+
     /// Generate WebAssembly instructions for this function
     /// Returns a sequence of instructions that compute the result
     fn compile_to_wasm(&self) -> WasmBuiltin;
@@ -69,106 +69,108 @@ pub enum UnaryOp {
 
 pub struct AddInt;
 impl BuiltinFunction for AddInt {
-    fn name(&self) -> &str { "+" }
-    
+    fn name(&self) -> &str {
+        "+"
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a + b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "+ requires two integer arguments".to_string()
+                "+ requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64Add)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64Add)])
     }
 }
 
 pub struct SubInt;
 impl BuiltinFunction for SubInt {
-    fn name(&self) -> &str { "-" }
-    
+    fn name(&self) -> &str {
+        "-"
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a - b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "- requires two integer arguments".to_string()
+                "- requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64Sub)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64Sub)])
     }
 }
 
 pub struct MulInt;
 impl BuiltinFunction for MulInt {
-    fn name(&self) -> &str { "*" }
-    
+    fn name(&self) -> &str {
+        "*"
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a * b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "* requires two integer arguments".to_string()
+                "* requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64Mul)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64Mul)])
     }
 }
 
 pub struct DivInt;
 impl BuiltinFunction for DivInt {
-    fn name(&self) -> &str { "/" }
-    
+    fn name(&self) -> &str {
+        "/"
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => {
                 if *b == 0 {
                     Err(XsError::RuntimeError(
                         crate::Span::new(0, 0),
-                        "Division by zero".to_string()
+                        "Division by zero".to_string(),
                     ))
                 } else {
                     Ok(Value::Int(a / b))
@@ -176,36 +178,36 @@ impl BuiltinFunction for DivInt {
             }
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "/ requires two integer arguments".to_string()
+                "/ requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64DivS)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64DivS)])
     }
 }
 
 pub struct ModInt;
 impl BuiltinFunction for ModInt {
-    fn name(&self) -> &str { "%" }
-    
+    fn name(&self) -> &str {
+        "%"
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => {
                 if *b == 0 {
                     Err(XsError::RuntimeError(
                         crate::Span::new(0, 0),
-                        "Modulo by zero".to_string()
+                        "Modulo by zero".to_string(),
                     ))
                 } else {
                     Ok(Value::Int(a % b))
@@ -213,15 +215,13 @@ impl BuiltinFunction for ModInt {
             }
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "% requires two integer arguments".to_string()
+                "% requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64RemS)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64RemS)])
     }
 }
 
@@ -229,141 +229,141 @@ impl BuiltinFunction for ModInt {
 
 pub struct LessThan;
 impl BuiltinFunction for LessThan {
-    fn name(&self) -> &str { "<" }
-    
+    fn name(&self) -> &str {
+        "<"
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => Ok(Value::Bool(a < b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "< requires two integer arguments".to_string()
+                "< requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64LtS)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64LtS)])
     }
 }
 
 pub struct GreaterThan;
 impl BuiltinFunction for GreaterThan {
-    fn name(&self) -> &str { ">" }
-    
+    fn name(&self) -> &str {
+        ">"
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => Ok(Value::Bool(a > b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "> requires two integer arguments".to_string()
+                "> requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64GtS)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64GtS)])
     }
 }
 
 pub struct LessEqual;
 impl BuiltinFunction for LessEqual {
-    fn name(&self) -> &str { "<=" }
-    
+    fn name(&self) -> &str {
+        "<="
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => Ok(Value::Bool(a <= b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "<= requires two integer arguments".to_string()
+                "<= requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64LeS)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64LeS)])
     }
 }
 
 pub struct GreaterEqual;
 impl BuiltinFunction for GreaterEqual {
-    fn name(&self) -> &str { ">=" }
-    
+    fn name(&self) -> &str {
+        ">="
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => Ok(Value::Bool(a >= b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                ">= requires two integer arguments".to_string()
+                ">= requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64GeS)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64GeS)])
     }
 }
 
 pub struct Equal;
 impl BuiltinFunction for Equal {
-    fn name(&self) -> &str { "=" }
-    
+    fn name(&self) -> &str {
+        "="
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Int),
-            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool)))
+            Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Int(a), Value::Int(b)] => Ok(Value::Bool(a == b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "= requires two integer arguments".to_string()
+                "= requires two integer arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::I64Eq)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::I64Eq)])
     }
 }
 
@@ -371,19 +371,21 @@ impl BuiltinFunction for Equal {
 
 pub struct Cons;
 impl BuiltinFunction for Cons {
-    fn name(&self) -> &str { "cons" }
-    
+    fn name(&self) -> &str {
+        "cons"
+    }
+
     fn type_signature(&self) -> Type {
         // cons : a -> List a -> List a
         Type::Function(
             Box::new(Type::Var("a".to_string())),
             Box::new(Type::Function(
                 Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
-                Box::new(Type::List(Box::new(Type::Var("a".to_string()))))
-            ))
+                Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
+            )),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [head, Value::List(tail)] => {
@@ -393,11 +395,11 @@ impl BuiltinFunction for Cons {
             }
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "cons requires an element and a list".to_string()
+                "cons requires an element and a list".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
         // Cons requires GC support for lists
         WasmBuiltin::Complex("cons".to_string())
@@ -408,25 +410,30 @@ impl BuiltinFunction for Cons {
 
 pub struct Concat;
 impl BuiltinFunction for Concat {
-    fn name(&self) -> &str { "concat" }
-    
+    fn name(&self) -> &str {
+        "concat"
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::String),
-            Box::new(Type::Function(Box::new(Type::String), Box::new(Type::String)))
+            Box::new(Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::String),
+            )),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
-            [Value::String(a), Value::String(b)] => Ok(Value::String(format!("{}{}", a, b))),
+            [Value::String(a), Value::String(b)] => Ok(Value::String(format!("{a}{b}"))),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "concat requires two string arguments".to_string()
+                "concat requires two string arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
         WasmBuiltin::Complex("concat".to_string())
     }
@@ -436,29 +443,29 @@ impl BuiltinFunction for Concat {
 
 pub struct AddFloat;
 impl BuiltinFunction for AddFloat {
-    fn name(&self) -> &str { "+." }
-    
+    fn name(&self) -> &str {
+        "+."
+    }
+
     fn type_signature(&self) -> Type {
         Type::Function(
             Box::new(Type::Float),
-            Box::new(Type::Function(Box::new(Type::Float), Box::new(Type::Float)))
+            Box::new(Type::Function(Box::new(Type::Float), Box::new(Type::Float))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a + b)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "+. requires two float arguments".to_string()
+                "+. requires two float arguments".to_string(),
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Instructions(vec![
-            WasmInstrPattern::Binary(BinaryOp::F64Add)
-        ])
+        WasmBuiltin::Instructions(vec![WasmInstrPattern::Binary(BinaryOp::F64Add)])
     }
 }
 
@@ -489,16 +496,17 @@ impl BuiltinRegistry {
             // Float operations
             Box::new(AddFloat),
         ];
-        
+
         Self { functions }
     }
-    
+
     pub fn get(&self, name: &str) -> Option<&dyn BuiltinFunction> {
-        self.functions.iter()
+        self.functions
+            .iter()
             .find(|f| f.name() == name)
             .map(|f| f.as_ref())
     }
-    
+
     pub fn all(&self) -> &[Box<dyn BuiltinFunction>] {
         &self.functions
     }
@@ -516,53 +524,67 @@ pub use crate::ir::{TypedIrExpr, TypedPattern};
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_add_int() {
         let add = AddInt;
         assert_eq!(add.name(), "+");
-        
+
         // Test successful addition
         let result = add.interpret(&[Value::Int(2), Value::Int(3)]).unwrap();
         assert_eq!(result, Value::Int(5));
-        
+
         // Test error case
         let result = add.interpret(&[Value::Bool(true), Value::Int(3)]);
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_division_by_zero() {
         let div = DivInt;
-        
+
         // Test normal division
         let result = div.interpret(&[Value::Int(10), Value::Int(2)]).unwrap();
         assert_eq!(result, Value::Int(5));
-        
+
         // Test division by zero
         let result = div.interpret(&[Value::Int(10), Value::Int(0)]);
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_comparisons() {
         let lt = LessThan;
-        assert_eq!(lt.interpret(&[Value::Int(1), Value::Int(2)]).unwrap(), Value::Bool(true));
-        assert_eq!(lt.interpret(&[Value::Int(2), Value::Int(1)]).unwrap(), Value::Bool(false));
-        
+        assert_eq!(
+            lt.interpret(&[Value::Int(1), Value::Int(2)]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            lt.interpret(&[Value::Int(2), Value::Int(1)]).unwrap(),
+            Value::Bool(false)
+        );
+
         let eq = Equal;
-        assert_eq!(eq.interpret(&[Value::Int(2), Value::Int(2)]).unwrap(), Value::Bool(true));
-        assert_eq!(eq.interpret(&[Value::Int(2), Value::Int(3)]).unwrap(), Value::Bool(false));
+        assert_eq!(
+            eq.interpret(&[Value::Int(2), Value::Int(2)]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eq.interpret(&[Value::Int(2), Value::Int(3)]).unwrap(),
+            Value::Bool(false)
+        );
     }
-    
+
     #[test]
     fn test_cons() {
         let cons = Cons;
-        let result = cons.interpret(&[
-            Value::Int(1),
-            Value::List(vec![Value::Int(2), Value::Int(3)])
-        ]).unwrap();
-        
+        let result = cons
+            .interpret(&[
+                Value::Int(1),
+                Value::List(vec![Value::Int(2), Value::Int(3)]),
+            ])
+            .unwrap();
+
         match result {
             Value::List(elems) => {
                 assert_eq!(elems.len(), 3);
@@ -573,18 +595,20 @@ mod tests {
             _ => panic!("Expected list"),
         }
     }
-    
+
     #[test]
     fn test_float_addition() {
         let add_float = AddFloat;
-        let result = add_float.interpret(&[Value::Float(1.5), Value::Float(2.5)]).unwrap();
+        let result = add_float
+            .interpret(&[Value::Float(1.5), Value::Float(2.5)])
+            .unwrap();
         assert_eq!(result, Value::Float(4.0));
     }
-    
+
     #[test]
     fn test_builtin_registry() {
         let registry = BuiltinRegistry::new();
-        
+
         // Test finding builtins
         assert!(registry.get("+").is_some());
         assert!(registry.get("-").is_some());
@@ -594,11 +618,11 @@ mod tests {
         assert!(registry.get("cons").is_some());
         assert!(registry.get("+.").is_some());
         assert!(registry.get("unknown").is_none());
-        
+
         // Test all() method
         assert!(registry.all().len() > 0);
     }
-    
+
     #[test]
     fn test_type_signatures() {
         let add = AddInt;
@@ -616,7 +640,7 @@ mod tests {
             _ => panic!("Expected function type"),
         }
     }
-    
+
     #[test]
     fn test_wasm_compilation() {
         let add = AddInt;
@@ -624,13 +648,13 @@ mod tests {
             WasmBuiltin::Instructions(instrs) => {
                 assert_eq!(instrs.len(), 1);
                 match &instrs[0] {
-                    WasmInstrPattern::Binary(BinaryOp::I64Add) => {},
+                    WasmInstrPattern::Binary(BinaryOp::I64Add) => {}
                     _ => panic!("Expected I64Add"),
                 }
             }
             _ => panic!("Expected Instructions"),
         }
-        
+
         let cons = Cons;
         match cons.compile_to_wasm() {
             WasmBuiltin::Complex(name) => assert_eq!(name, "cons"),

@@ -1,14 +1,14 @@
 //! Type conversion between XS types and WebAssembly GC types
 
-use crate::{WasmType, CodeGenError};
+use crate::{CodeGenError, WasmType};
 use xs_core::Type;
 
 /// Convert XS type to WebAssembly type
 pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
     match ty {
-        Type::Int => Ok(WasmType::I64),  // Using i64 for integers
-        Type::Bool => Ok(WasmType::I32), // Bool as i32 (0 or 1)
-        Type::Float => Ok(WasmType::F64), // Float as f64
+        Type::Int => Ok(WasmType::I64),            // Using i64 for integers
+        Type::Bool => Ok(WasmType::I32),           // Bool as i32 (0 or 1)
+        Type::Float => Ok(WasmType::F64),          // Float as f64
         Type::String => Ok(WasmType::ArrayRef(0)), // String as array of bytes
         Type::List(_elem_ty) => {
             // List as array of elements
@@ -29,6 +29,15 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
             // User-defined types need proper struct/class mapping
             // For now, use struct reference with placeholder index
             Ok(WasmType::StructRef(3)) // Placeholder index
+        }
+        Type::FunctionWithEffect {
+            from: _,
+            to: _,
+            effects: _,
+        } => {
+            // Function with effects treated the same as regular function in WASM
+            // Effects are tracked at compile-time, not runtime
+            Ok(WasmType::StructRef(2)) // Same as regular function
         }
     }
 }
@@ -52,7 +61,7 @@ impl TypeIndexAllocator {
             type_map: std::collections::HashMap::new(),
         }
     }
-    
+
     /// Allocate a new type index
     pub fn allocate(&mut self, name: &str) -> u32 {
         if let Some(&index) = self.type_map.get(name) {
@@ -64,7 +73,7 @@ impl TypeIndexAllocator {
             index
         }
     }
-    
+
     /// Get type index by name
     pub fn get(&self, name: &str) -> Option<u32> {
         self.type_map.get(name).copied()
@@ -91,28 +100,28 @@ impl StandardTypes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_type_conversion() {
         assert_eq!(xs_type_to_wasm(&Type::Int).unwrap(), WasmType::I64);
         assert_eq!(xs_type_to_wasm(&Type::Bool).unwrap(), WasmType::I32);
-        
+
         // Type variables should error
         assert!(xs_type_to_wasm(&Type::Var("T".to_string())).is_err());
     }
-    
+
     #[test]
     fn test_type_allocator() {
         let mut allocator = TypeIndexAllocator::new();
-        
+
         let idx1 = allocator.allocate("string");
         let idx2 = allocator.allocate("list");
         let idx3 = allocator.allocate("string"); // Should return same index
-        
+
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 1);
         assert_eq!(idx3, 0); // Same as idx1
-        
+
         assert_eq!(allocator.get("string"), Some(0));
         assert_eq!(allocator.get("list"), Some(1));
         assert_eq!(allocator.get("unknown"), None);

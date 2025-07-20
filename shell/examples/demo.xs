@@ -6,7 +6,7 @@
 (* 3 4)
 
 # Define functions
-(let double (lambda (x) (* x 2)))
+(let double (fn (x) (* x 2)))
 (double 21)
 
 # Lists

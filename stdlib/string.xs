@@ -3,7 +3,7 @@
 ;; Note: 現在の実装では基本的な文字列操作のみ
 
 ;; String predicates
-(let empty-string (lambda (s) (= s "")))
+(let empty-string (fn (s) (= s "")))
 
 ;; String concatenation (using built-in concat)
 (let str-append concat)
@@ -22,5 +22,5 @@
       (concat s (repeat-string (- n 1) s))))
 
 ;; String comparison helpers
-(let str-eq (lambda (s1 s2) (= s1 s2)))
-(let str-neq (lambda (s1 s2) (not (= s1 s2))))
+(let str-eq (fn (s1 s2) (= s1 s2)))
+(let str-neq (fn (s1 s2) (not (= s1 s2))))

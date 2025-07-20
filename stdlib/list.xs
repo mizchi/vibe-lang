@@ -2,8 +2,8 @@
 ;; リスト操作のための関数群
 
 ;; List construction helpers
-(let singleton (lambda (x) (list x)))
-(let pair (lambda (x y) (list x y)))
+(let singleton (fn (x) (list x)))
+(let pair (fn (x y) (list x y)))
 
 ;; List predicates
 (rec null (xs)

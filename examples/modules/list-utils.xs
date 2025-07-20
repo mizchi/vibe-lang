@@ -9,13 +9,13 @@
       ((list _ xs) (+ 1 (len xs))))))
   
   ; 先頭要素を取得
-  (define head (lambda (list)
+  (define head (fn (list)
     (match list
       ((list x _) (Some x))
       ((list) (None)))))
   
   ; 先頭以外を取得
-  (define tail (lambda (list)
+  (define tail (fn (list)
     (match list
       ((list _ xs) xs)
       ((list) (list)))))

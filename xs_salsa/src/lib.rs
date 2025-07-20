@@ -12,7 +12,6 @@ pub struct XsDatabase {
 
 impl salsa::Database for XsDatabase {}
 
-
 impl XsDatabase {
     pub fn new() -> Self {
         Self::default()
@@ -46,32 +45,32 @@ fn type_check_program(db: &dyn CompilerQueries, path: PathBuf) -> Result<Type, X
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_basic_incremental() {
         let mut db = XsDatabase::new();
-        
+
         // Initial compilation
         let path1 = PathBuf::from("test1.xs");
         db.set_source_text(path1.clone(), "42".to_string());
         let type1 = db.type_check_program(path1.clone()).unwrap();
         assert_eq!(type1, Type::Int);
-        
+
         // Change source
         let path2 = PathBuf::from("test2.xs");
         db.set_source_text(path2.clone(), "true".to_string());
         let type2 = db.type_check_program(path2.clone()).unwrap();
         assert_eq!(type2, Type::Bool);
-        
+
         // Check that first result is still cached
         let type1_again = db.type_check_program(path1).unwrap();
         assert_eq!(type1_again, Type::Int);
     }
-    
+
     #[test]
     fn test_parse_error_handling() {
         let mut db = XsDatabase::new();
-        
+
         let path = PathBuf::from("error.xs");
         db.set_source_text(path.clone(), "(invalid".to_string());
         let result = db.type_check_program(path);

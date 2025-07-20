@@ -3,11 +3,11 @@ use checker::{TypeChecker, TypeEnv};
 use codebase::{CodebaseManager, EditAction, EditSession};
 use colored::*;
 use interpreter::Interpreter;
-use xs_core::{Environment, Ident};
 use rustyline::error::ReadlineError;
-use rustyline::{Editor};
+use rustyline::Editor;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use xs_core::{Environment, Ident};
 use xs_core::{Expr, Type, Value};
 
 #[derive(Debug)]
@@ -57,23 +57,25 @@ impl ShellState {
         // Type check
         let mut checker = TypeChecker::new();
         let mut type_env = TypeEnv::default();
-        
+
         // Add current type environment
         for (name, ty) in &self.type_env {
             type_env.extend(name.clone(), checker::TypeScheme::mono(ty.clone()));
         }
-        
-        let ty = checker.check(&expr, &mut type_env).context("Type inference failed")?;
+
+        let ty = checker
+            .check(&expr, &mut type_env)
+            .context("Type inference failed")?;
 
         // Interpret
         let mut interpreter = Interpreter::new();
         let mut env = Interpreter::create_initial_env();
-        
+
         // Add current runtime environment
         for (name, val) in &self.runtime_env {
             env = env.extend(Ident(name.clone()), val.clone());
         }
-        
+
         let result = interpreter.eval(&expr, &env).context("Evaluation failed")?;
 
         // すべての式を自動的にコードベースに保存
@@ -94,54 +96,66 @@ impl ShellState {
                 self.named_exprs.insert(name.0.clone(), val_hash);
                 self.type_env.insert(name.0.clone(), ty.clone());
                 self.runtime_env.insert(name.0.clone(), result.clone());
-                let hash_prefix = if hash.len() >= 8 {
-                    &hash[..8]
-                } else {
-                    &hash
-                };
-                Ok(format!("{} : {} = {}\n  [{}]", name.0, ty, format_value(&result), hash_prefix))
+                let hash_prefix = if hash.len() >= 8 { &hash[..8] } else { &hash };
+                Ok(format!(
+                    "{} : {} = {}\n  [{}]",
+                    name.0,
+                    ty,
+                    format_value(&result),
+                    hash_prefix
+                ))
             }
             _ => {
-                let hash_prefix = if hash.len() >= 8 {
-                    &hash[..8]
-                } else {
-                    &hash
-                };
-                Ok(format!("{} : {}\n  [{}]", format_value(&result), ty, hash_prefix))
+                let hash_prefix = if hash.len() >= 8 { &hash[..8] } else { &hash };
+                Ok(format!(
+                    "{} : {}\n  [{}]",
+                    format_value(&result),
+                    ty,
+                    hash_prefix
+                ))
             }
         }
     }
 
     pub fn name_expression(&mut self, hash_prefix: &str, name: &str) -> Result<String> {
         // ハッシュプレフィックスから完全なハッシュを検索
-        let full_hash = self.expr_history.iter()
+        let full_hash = self
+            .expr_history
+            .iter()
             .rev()
             .find(|h| h.hash.starts_with(hash_prefix))
-            .ok_or_else(|| anyhow::anyhow!("No expression found with hash prefix {}", hash_prefix))?;
-        
+            .ok_or_else(|| {
+                anyhow::anyhow!("No expression found with hash prefix {}", hash_prefix)
+            })?;
+
         let expr = full_hash.expr.clone();
         let ty = full_hash.ty.clone();
         let value = full_hash.value.clone();
         let hash = full_hash.hash.clone();
-        
+
         // 名前を登録
         self.named_exprs.insert(name.to_string(), hash.clone());
         self.type_env.insert(name.to_string(), ty.clone());
         self.runtime_env.insert(name.to_string(), value.clone());
-        
+
         // セッションに追加
         self.session.add_definition(name.to_string(), expr)?;
-        
-        let hash_prefix = if hash.len() >= 8 {
-            &hash[..8]
-        } else {
-            &hash
-        };
-        Ok(format!("Named {} : {} = {} [{}]", name, ty, format_value(&value), hash_prefix))
+
+        let hash_prefix = if hash.len() >= 8 { &hash[..8] } else { &hash };
+        Ok(format!(
+            "Named {} : {} = {} [{}]",
+            name,
+            ty,
+            format_value(&value),
+            hash_prefix
+        ))
     }
 
     pub fn update_codebase(&mut self) -> Result<String> {
-        let edits: Vec<_> = self.session.edits.iter()
+        let edits: Vec<_> = self
+            .session
+            .edits
+            .iter()
             .map(|e| match e {
                 EditAction::AddDefinition { name, .. } => format!("+ {}", name),
                 EditAction::UpdateDefinition { name, .. } => format!("~ {}", name),
@@ -155,14 +169,18 @@ impl ShellState {
 
         let patch = self.codebase.create_patch_from_session(&self.session)?;
         self.codebase.apply_patch(&self.current_branch, &patch)?;
-        
+
         // Get updated branch hash
         let branch = self.codebase.get_branch(&self.current_branch)?;
-        
+
         // Clear session after update
         self.session = EditSession::new(branch.hash.clone());
-        
-        Ok(format!("Updated {} definitions:\n{}", edits.len(), edits.join("\n")))
+
+        Ok(format!(
+            "Updated {} definitions:\n{}",
+            edits.len(),
+            edits.join("\n")
+        ))
     }
 
     pub fn show_history(&self, limit: Option<usize>) -> String {
@@ -171,7 +189,8 @@ impl ShellState {
         }
 
         let history_iter = self.expr_history.iter().rev();
-        let limited_iter: Box<dyn Iterator<Item = &ExpressionHistory>> = if let Some(limit) = limit {
+        let limited_iter: Box<dyn Iterator<Item = &ExpressionHistory>> = if let Some(limit) = limit
+        {
             Box::new(history_iter.take(limit))
         } else {
             Box::new(history_iter)
@@ -179,17 +198,19 @@ impl ShellState {
 
         let mut output = Vec::new();
         for (_i, entry) in limited_iter.enumerate() {
-            let named = self.named_exprs.iter()
+            let named = self
+                .named_exprs
+                .iter()
                 .find(|(_, h)| **h == entry.hash)
                 .map(|(n, _)| format!(" ({})", n))
                 .unwrap_or_default();
-            
+
             let hash_prefix = if entry.hash.len() >= 8 {
                 &entry.hash[..8]
             } else {
                 &entry.hash
             };
-            
+
             output.push(format!(
                 "[{}] {} : {}{}",
                 hash_prefix,
@@ -209,11 +230,7 @@ impl ShellState {
         let mut output = Vec::new();
         for (name, hash) in &self.named_exprs {
             if let Some(entry) = self.expr_history.iter().find(|h| h.hash == *hash) {
-                let hash_prefix = if hash.len() >= 8 {
-                    &hash[..8]
-                } else {
-                    hash
-                };
+                let hash_prefix = if hash.len() >= 8 { &hash[..8] } else { hash };
                 output.push(format!(
                     "{} : {} = {} [{}]",
                     name,
@@ -231,7 +248,10 @@ impl ShellState {
             return "No pending edits".to_string();
         }
 
-        let edits: Vec<_> = self.session.edits.iter()
+        let edits: Vec<_> = self
+            .session
+            .edits
+            .iter()
             .map(|e| match e {
                 EditAction::AddDefinition { name, .. } => format!("+ {}", name),
                 EditAction::UpdateDefinition { name, .. } => format!("~ {}", name),
@@ -253,7 +273,11 @@ fn format_value(val: &Value) -> String {
             format!("(list {})", items.join(" "))
         }
         Value::Closure { .. } => "<closure>".to_string(),
-        Value::BuiltinFunction { name, arity, applied_args } => {
+        Value::BuiltinFunction {
+            name,
+            arity,
+            applied_args,
+        } => {
             format!("<builtin:{}/{} [{}]>", name, arity, applied_args.len())
         }
         Value::Float(f) => f.to_string(),
@@ -266,7 +290,7 @@ pub fn run_repl() -> Result<()> {
     let mut rl = Editor::<()>::new()?;
     let storage_path = PathBuf::from(".xs-codebase");
     let mut state = ShellState::new(storage_path)?;
-    
+
     println!("{}", "XS Language Shell".bold().cyan());
     println!("Type 'help' for available commands\n");
 
@@ -291,13 +315,13 @@ pub fn run_repl() -> Result<()> {
                         println!("{}", state.show_history(limit));
                     }
                     Some(&"ls") => {
-                    let named = state.show_named();
-                    if !named.is_empty() {
-                        println!("{}", named);
-                    } else {
-                        println!("No named expressions");
+                        let named = state.show_named();
+                        if !named.is_empty() {
+                            println!("{}", named);
+                        } else {
+                            println!("No named expressions");
+                        }
                     }
-                }
                     Some(&"edits") => println!("{}", state.show_edits()),
                     Some(&"name") => {
                         if parts.len() >= 3 {
@@ -311,12 +335,10 @@ pub fn run_repl() -> Result<()> {
                             println!("Usage: name <hash-prefix> <name>");
                         }
                     }
-                    Some(&"update") => {
-                        match state.update_codebase() {
-                            Ok(msg) => println!("{}", msg.green()),
-                            Err(e) => println!("{}: {}", "Error".red(), e),
-                        }
-                    }
+                    Some(&"update") => match state.update_codebase() {
+                        Ok(msg) => println!("{}", msg.green()),
+                        Err(e) => println!("{}: {}", "Error".red(), e),
+                    },
                     _ => {
                         // Evaluate as expression
                         match state.evaluate_line(line) {
@@ -358,7 +380,7 @@ fn print_help() {
     println!("  42                   # Evaluates to 42 : Int [12345678]");
     println!("  (+ 1 2)              # Evaluates to 3 : Int [87654321]");
     println!("  name 8765 sum        # Names the expression as 'sum'");
-    println!("  (let f (lambda (x) (* x 2)))");
+    println!("  (let f (fn (x) (* x 2)))");
     println!("  (f 21)               # Uses named function");
     println!("  update               # Commits all named expressions");
 }

@@ -2,8 +2,8 @@
 ;; 数学関数と数値演算
 
 ;; Basic math operations
-(let neg (lambda (x) (- 0 x)))
-(let reciprocal (lambda (x) (/ 1.0 x)))
+(let neg (fn (x) (- 0 x)))
+(let reciprocal (fn (x) (/ 1.0 x)))
 
 ;; Exponentiation
 (rec pow (base exp)
@@ -25,15 +25,15 @@
       a
       (gcd b (% a b))))
 
-(let lcm (lambda (a b)
+(let lcm (fn (a b)
   (/ (* a b) (gcd a b))))
 
 ;; Number predicates
-(let even (lambda (n) (= (% n 2) 0)))
-(let odd (lambda (n) (not (even n))))
-(let positive (lambda (n) (> n 0)))
-(let negative (lambda (n) (< n 0)))
-(let zero (lambda (n) (= n 0)))
+(let even (fn (n) (= (% n 2) 0)))
+(let odd (fn (n) (not (even n))))
+(let positive (fn (n) (> n 0)))
+(let negative (fn (n) (< n 0)))
+(let zero (fn (n) (= n 0)))
 
 ;; Fibonacci sequence
 (rec fib (n)
@@ -50,22 +50,22 @@
   (fib-helper n 0 1))
 
 ;; Sum and product of lists
-(let sum (lambda (xs) (fold-left + 0 xs)))
-(let product (lambda (xs) (fold-left * 1 xs)))
+(let sum (fn (xs) (fold-left + 0 xs)))
+(let product (fn (xs) (fold-left * 1 xs)))
 
 ;; Average
-(let average (lambda (xs)
+(let average (fn (xs)
   (let len (length xs))
   (if (= len 0)
       0
       (/ (sum xs) len))))
 
 ;; Clamp value between min and max
-(let clamp (lambda (min-val max-val x)
+(let clamp (fn (min-val max-val x)
   (max min-val (min max-val x))))
 
 ;; Sign function
-(let sign (lambda (x)
+(let sign (fn (x)
   (if (< x 0)
       -1
       (if (> x 0)

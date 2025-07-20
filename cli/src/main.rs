@@ -5,9 +5,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::*;
 
-use parser::parse;
 use checker::type_check;
 use interpreter::eval;
+use parser::parse;
+use test_framework::TestSuite;
 use xs_core::{Type, Value};
 
 #[derive(Parser)]
@@ -35,12 +36,12 @@ enum Commands {
         /// The XS file to run
         file: PathBuf,
     },
-    
+
     /// Run tests
     Test {
         /// Test file or directory (defaults to tests/xs)
         path: Option<PathBuf>,
-        
+
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -118,7 +119,7 @@ fn run_file(path: &PathBuf) -> Result<()> {
     };
 
     match type_check(&expr) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => {
             eprintln!("{}", "✗ Type error".red());
             eprintln!("{e}");
@@ -147,19 +148,36 @@ fn format_type(typ: &Type) -> String {
         Type::Bool => "Bool".cyan().to_string(),
         Type::String => "String".cyan().to_string(),
         Type::List(t) => format!("(List {})", format_type(t)).cyan().to_string(),
-        Type::Function(from, to) => {
-            format!("({} -> {})", format_type(from), format_type(to)).cyan().to_string()
-        }
+        Type::Function(from, to) => format!("({} -> {})", format_type(from), format_type(to))
+            .cyan()
+            .to_string(),
         Type::Var(name) => format!("'{name}").yellow().to_string(),
         Type::UserDefined { name, type_params } => {
             if type_params.is_empty() {
                 name.cyan().to_string()
             } else {
-                let params = type_params.iter()
+                let params = type_params
+                    .iter()
                     .map(format_type)
                     .collect::<Vec<_>>()
                     .join(" ");
                 format!("({name} {params})").cyan().to_string()
+            }
+        }
+        Type::FunctionWithEffect { from, to, effects } => {
+            if effects.is_pure() {
+                format!("({} -> {})", format_type(from), format_type(to))
+                    .cyan()
+                    .to_string()
+            } else {
+                format!(
+                    "({} -> {} ! {})",
+                    format_type(from),
+                    format_type(to),
+                    effects
+                )
+                .magenta()
+                .to_string()
             }
         }
     }
@@ -175,92 +193,62 @@ fn format_value(value: &Value) -> String {
             let formatted_elems: Vec<String> = elems.iter().map(format_value).collect();
             format!("(list {})", formatted_elems.join(" "))
         }
-        Value::Closure { params, .. } => {
-            format!("<closure:{}>", params.len()).yellow().to_string()
-        }
+        Value::Closure { params, .. } => format!("<closure:{}>", params.len()).yellow().to_string(),
         Value::RecClosure { name, params, .. } => {
-            format!("<rec-closure:{}:{}>", name.0, params.len()).yellow().to_string()
+            format!("<rec-closure:{}:{}>", name.0, params.len())
+                .yellow()
+                .to_string()
         }
         Value::Constructor { name, values } => {
             let formatted_values: Vec<String> = values.iter().map(format_value).collect();
             if formatted_values.is_empty() {
                 name.0.magenta().to_string()
             } else {
-                format!("({} {})", name.0, formatted_values.join(" ")).magenta().to_string()
+                format!("({} {})", name.0, formatted_values.join(" "))
+                    .magenta()
+                    .to_string()
             }
         }
-        Value::BuiltinFunction { name, arity, applied_args } => {
+        Value::BuiltinFunction {
+            name,
+            arity,
+            applied_args,
+        } => {
             if applied_args.is_empty() {
                 format!("<builtin:{}:{}>", name, arity).yellow().to_string()
             } else {
-                format!("<builtin:{}:{}/{}>", name, arity, applied_args.len()).yellow().to_string()
+                format!("<builtin:{}:{}/{}>", name, arity, applied_args.len())
+                    .yellow()
+                    .to_string()
             }
         }
     }
 }
 
 fn run_tests(path: Option<PathBuf>, verbose: bool) -> Result<()> {
-    // For now, just print a message
-    // In a full implementation, this would use wasm_backend::test_runner
     let test_path = path.unwrap_or_else(|| PathBuf::from("tests/xs"));
-    
-    println!("{}", "Running tests...".yellow());
-    println!("Test path: {}", test_path.display());
-    println!("Verbose: {verbose}");
-    
-    // Simple test runner using the interpreter
+
+    // Use the new test framework with caching
+    let mut test_suite = TestSuite::new(verbose);
+
     if test_path.is_file() {
         // Run single test file
-        run_test_file(&test_path)?;
+        test_suite.load_test_file(&test_path)?;
     } else if test_path.is_dir() {
         // Run all .xs files in directory
-        let mut passed = 0;
-        let mut failed = 0;
-        
-        for entry in fs::read_dir(&test_path)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "xs") {
-                print!("Testing {}... ", path.file_name().unwrap().to_string_lossy());
-                match run_test_file(&path) {
-                    Ok(_) => {
-                        println!("{}", "PASS".green());
-                        passed += 1;
-                    }
-                    Err(e) => {
-                        println!("{}", "FAIL".red());
-                        if verbose {
-                            eprintln!("  {e}");
-                        }
-                        failed += 1;
-                    }
-                }
-            }
-        }
-        
-        println!("\nTest Results: {} passed, {} failed", 
-            passed.to_string().green(), 
-            failed.to_string().red());
-        
-        if failed > 0 {
-            std::process::exit(1);
-        }
+        test_suite.load_from_directory(&test_path)?;
+    } else {
+        return Err(anyhow::anyhow!(
+            "Test path does not exist: {}",
+            test_path.display()
+        ));
     }
-    
-    Ok(())
-}
 
-fn run_test_file(path: &PathBuf) -> Result<()> {
-    let source = fs::read_to_string(path)?;
-    
-    // Parse
-    let expr = parse(&source).map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
-    
-    // Type check
-    type_check(&expr).map_err(|e| anyhow::anyhow!("Type error: {}", e))?;
-    
-    // Run
-    eval(&expr).map_err(|e| anyhow::anyhow!("Runtime error: {}", e))?;
-    
+    let summary = test_suite.run_all();
+
+    if !summary.all_passed() {
+        std::process::exit(1);
+    }
+
     Ok(())
 }

@@ -8,12 +8,12 @@ use xs_core::Literal;
 fn test_simple_literal() {
     let ir = IrExpr::Literal(Literal::Int(42));
     let module = generate_module(&ir).unwrap();
-    
+
     assert_eq!(module.functions.len(), 1);
     let main_func = &module.functions[0];
     assert_eq!(main_func.name, "main");
     assert_eq!(main_func.results, vec![WasmType::I32]);
-    
+
     // Should generate: i64.const 42, drop, i32.const 0
     assert!(matches!(main_func.body[0], WasmInstr::I64Const(42)));
     assert!(matches!(main_func.body[1], WasmInstr::Drop));
@@ -27,18 +27,18 @@ fn test_let_binding() {
         value: Box::new(IrExpr::Literal(Literal::Int(10))),
         body: Box::new(IrExpr::Var("x".to_string())),
     };
-    
+
     let module = generate_module(&ir).unwrap();
     let main_func = &module.functions[0];
-    
+
     // Should have local variable
     assert!(!main_func.locals.is_empty());
-    
+
     // Should generate: i64.const 10, local.set 0, local.get 0, i32.const 0
     let mut has_const = false;
     let mut has_set = false;
     let mut has_get = false;
-    
+
     for instr in &main_func.body {
         match instr {
             WasmInstr::I64Const(10) => has_const = true,
@@ -47,7 +47,7 @@ fn test_let_binding() {
             _ => {}
         }
     }
-    
+
     assert!(has_const);
     assert!(has_set);
     assert!(has_get);
@@ -60,10 +60,10 @@ fn test_if_expression() {
         then_expr: Box::new(IrExpr::Literal(Literal::Int(1))),
         else_expr: Box::new(IrExpr::Literal(Literal::Int(2))),
     };
-    
+
     let module = generate_module(&ir).unwrap();
     let main_func = &module.functions[0];
-    
+
     // Should have if instruction
     let mut has_if = false;
     for instr in &main_func.body {
@@ -82,10 +82,10 @@ fn test_perceus_drop() {
         value: Box::new(IrExpr::Literal(Literal::Int(5))),
         body: Box::new(IrExpr::Drop("x".to_string())),
     };
-    
+
     let module = generate_module(&ir).unwrap();
     let main_func = &module.functions[0];
-    
+
     // Should have drop instruction
     let mut has_drop = false;
     for instr in &main_func.body {

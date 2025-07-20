@@ -1,12 +1,12 @@
 //! XS Language - AI-oriented programming language with S-expression syntax
-//! 
+//!
 //! This library provides the core functionality of the XS language,
 //! including parsing, type checking, and interpretation.
 
-pub use xs_core::{Expr, Type, Value, Environment, XsError};
-pub use parser::parse;
-pub use checker::{TypeChecker, type_check};
+pub use checker::{type_check, TypeChecker};
 pub use interpreter::eval;
+pub use parser::parse;
+pub use xs_core::{Environment, Expr, Type, Value, XsError};
 
 /// Parse and type check a program
 pub fn compile(source: &str) -> Result<(Expr, Type), XsError> {

@@ -1,11 +1,15 @@
+mod effect_parser;
 mod lexer;
 mod metadata_parser;
+// mod handler_parser; // TODO: Fix and re-enable
+#[cfg(test)]
+mod test_effects;
 
 use lexer::{Lexer, Token};
 pub use metadata_parser::{parse_with_metadata, MetadataParser};
 use ordered_float::OrderedFloat;
+use xs_core::curry::{curry_apply, curry_lambda};
 use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, XsError};
-use xs_core::curry::{curry_lambda, curry_apply};
 
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
@@ -58,7 +62,7 @@ impl<'a> Parser<'a> {
                 let ident = Ident(s.clone());
                 let start_span = span.clone();
                 self.advance()?;
-                
+
                 // Check for qualified identifier (Module.name)
                 if let Some((Token::Dot, _)) = &self.current_token {
                     self.advance()?;
@@ -73,7 +77,10 @@ impl<'a> Parser<'a> {
                             Ok(qualified)
                         }
                         _ => Err(XsError::ParseError(
-                            self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                            self.current_token
+                                .as_ref()
+                                .map(|(_, span)| span.start)
+                                .unwrap_or(0),
                             "Expected identifier after '.'".to_string(),
                         )),
                     }
@@ -85,7 +92,10 @@ impl<'a> Parser<'a> {
                 span.start,
                 "Expected expression".to_string(),
             )),
-            None => Err(XsError::ParseError(0, "Unexpected end of input".to_string())),
+            None => Err(XsError::ParseError(
+                0,
+                "Unexpected end of input".to_string(),
+            )),
         }
     }
 
@@ -105,7 +115,7 @@ impl<'a> Parser<'a> {
         match &self.current_token {
             Some((Token::Let, _)) => self.parse_let(start_span.start),
             Some((Token::LetRec, _)) => self.parse_let_rec(start_span.start),
-            Some((Token::Lambda, _)) => self.parse_lambda(start_span.start),
+            Some((Token::Fn, _)) => self.parse_lambda(start_span.start),
             Some((Token::If, _)) => self.parse_if(start_span.start),
             Some((Token::List, _)) => self.parse_list_literal(start_span.start),
             Some((Token::Cons, _)) => self.parse_cons(start_span.start),
@@ -115,6 +125,10 @@ impl<'a> Parser<'a> {
             Some((Token::Module, _)) => self.parse_module(start_span.start),
             Some((Token::Import, _)) => self.parse_import(start_span.start),
             Some((Token::Define, _)) => self.parse_define(start_span.start),
+            // TODO: Fix and re-enable handler parsing
+            // Some((Token::Symbol(s), _)) if s == "handler" => self.parse_handler(),
+            // Some((Token::Symbol(s), _)) if s == "with-handler" => self.parse_with_handler(),
+            // Some((Token::Symbol(s), _)) if s == "perform" => self.parse_perform(),
             _ => self.parse_application(start_span.start),
         }
     }
@@ -128,10 +142,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 ident
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected variable name after 'let'".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected variable name after 'let'".to_string(),
+                ))
+            }
         };
 
         let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
@@ -143,24 +162,58 @@ impl<'a> Parser<'a> {
 
         let value = Box::new(self.parse_expr()?);
 
-        let end = match &self.current_token {
-            Some((Token::RightParen, span)) => {
-                let end = span.end;
-                self.advance()?;
-                end
-            }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after let expression".to_string(),
-            )),
-        };
-
-        Ok(Expr::Let {
-            name,
-            type_ann,
-            value,
-            span: Span::new(start, end),
-        })
+        // Check for 'in' keyword for let-in syntax
+        if let Some((Token::In, _)) = &self.current_token {
+            self.advance()?; // consume 'in'
+            let body = Box::new(self.parse_expr()?);
+            let end = match &self.current_token {
+                Some((Token::RightParen, span)) => {
+                    let end = span.end;
+                    self.advance()?;
+                    end
+                }
+                _ => {
+                    return Err(XsError::ParseError(
+                        self.current_token
+                            .as_ref()
+                            .map(|(_, span)| span.start)
+                            .unwrap_or(0),
+                        "Expected ')' after let-in expression".to_string(),
+                    ))
+                }
+            };
+            Ok(Expr::LetIn {
+                name,
+                type_ann,
+                value,
+                body,
+                span: Span::new(start, end),
+            })
+        } else {
+            // Standard let expression
+            let end = match &self.current_token {
+                Some((Token::RightParen, span)) => {
+                    let end = span.end;
+                    self.advance()?;
+                    end
+                }
+                _ => {
+                    return Err(XsError::ParseError(
+                        self.current_token
+                            .as_ref()
+                            .map(|(_, span)| span.start)
+                            .unwrap_or(0),
+                        "Expected ')' after let expression".to_string(),
+                    ))
+                }
+            };
+            Ok(Expr::Let {
+                name,
+                type_ann,
+                value,
+                span: Span::new(start, end),
+            })
+        }
     }
 
     fn parse_let_rec(&mut self, start: usize) -> Result<Expr, XsError> {
@@ -172,10 +225,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 ident
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected variable name after 'let-rec'".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected variable name after 'let-rec'".to_string(),
+                ))
+            }
         };
 
         let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
@@ -193,10 +251,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after let-rec expression".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after let-rec expression".to_string(),
+                ))
+            }
         };
 
         Ok(Expr::LetRec {
@@ -217,10 +280,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 ident
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected function name after 'rec'".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected function name after 'rec'".to_string(),
+                ))
+            }
         };
 
         // Parse parameter list
@@ -228,7 +296,10 @@ impl<'a> Parser<'a> {
             self.advance()?;
         } else {
             return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                self.current_token
+                    .as_ref()
+                    .map(|(_, span)| span.start)
+                    .unwrap_or(0),
                 "Expected '(' after function name".to_string(),
             ));
         }
@@ -252,7 +323,10 @@ impl<'a> Parser<'a> {
             self.advance()?;
         } else {
             return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                self.current_token
+                    .as_ref()
+                    .map(|(_, span)| span.start)
+                    .unwrap_or(0),
                 "Expected ')' after parameters".to_string(),
             ));
         }
@@ -274,10 +348,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after rec body".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after rec body".to_string(),
+                ))
+            }
         };
 
         Ok(Expr::Rec {
@@ -297,7 +376,10 @@ impl<'a> Parser<'a> {
             self.advance()?;
         } else {
             return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                self.current_token
+                    .as_ref()
+                    .map(|(_, span)| span.start)
+                    .unwrap_or(0),
                 "Expected '(' after 'lambda'".to_string(),
             ));
         }
@@ -321,7 +403,10 @@ impl<'a> Parser<'a> {
             self.advance()?;
         } else {
             return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                self.current_token
+                    .as_ref()
+                    .map(|(_, span)| span.start)
+                    .unwrap_or(0),
                 "Expected ')' after lambda parameters".to_string(),
             ));
         }
@@ -334,10 +419,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after lambda body".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after lambda body".to_string(),
+                ))
+            }
         };
 
         Ok(curry_lambda(params, body, Span::new(start, end)))
@@ -356,10 +446,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after if expression".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after if expression".to_string(),
+                ))
+            }
         };
 
         Ok(Expr::If {
@@ -372,50 +467,63 @@ impl<'a> Parser<'a> {
 
     fn parse_list_literal(&mut self, start: usize) -> Result<Expr, XsError> {
         self.advance()?; // consume 'list'
-        
+
         let mut args = Vec::new();
-        
+
         while let Some((token, _)) = &self.current_token {
             if matches!(token, Token::RightParen) {
                 break;
             }
             args.push(self.parse_expr()?);
         }
-        
+
         let end = match &self.current_token {
             Some((Token::RightParen, span)) => {
                 let end = span.end;
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after list".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after list".to_string(),
+                ))
+            }
         };
-        
+
         Ok(Expr::List(args, Span::new(start, end)))
     }
 
     fn parse_cons(&mut self, start: usize) -> Result<Expr, XsError> {
         self.advance()?; // consume 'cons'
-        
+
         let args = vec![self.parse_expr()?, self.parse_expr()?];
-        
+
         let end = match &self.current_token {
             Some((Token::RightParen, span)) => {
                 let end = span.end;
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after cons".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after cons".to_string(),
+                ))
+            }
         };
-        
+
         Ok(curry_apply(
-            Box::new(Expr::Ident(Ident("cons".to_string()), Span::new(start + 1, start + 5))),
+            Box::new(Expr::Ident(
+                Ident("cons".to_string()),
+                Span::new(start + 1, start + 5),
+            )),
             args,
             Span::new(start, end),
         ))
@@ -423,32 +531,37 @@ impl<'a> Parser<'a> {
 
     fn parse_application(&mut self, start: usize) -> Result<Expr, XsError> {
         let first_expr = self.parse_expr()?;
-        
+
         // Check if it's a constructor (starts with uppercase)
         if let Expr::Ident(Ident(name), _) = &first_expr {
             if name.chars().next().is_some_and(|c| c.is_uppercase()) {
                 // Parse as constructor
                 let mut args = Vec::new();
-                
+
                 while let Some((token, _)) = &self.current_token {
                     if matches!(token, Token::RightParen) {
                         break;
                     }
                     args.push(self.parse_expr()?);
                 }
-                
+
                 let end = match &self.current_token {
                     Some((Token::RightParen, span)) => {
                         let end = span.end;
                         self.advance()?;
                         end
                     }
-                    _ => return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                        "Expected ')' after constructor".to_string(),
-                    )),
+                    _ => {
+                        return Err(XsError::ParseError(
+                            self.current_token
+                                .as_ref()
+                                .map(|(_, span)| span.start)
+                                .unwrap_or(0),
+                            "Expected ')' after constructor".to_string(),
+                        ))
+                    }
                 };
-                
+
                 return Ok(Expr::Constructor {
                     name: Ident(name.clone()),
                     args,
@@ -456,7 +569,7 @@ impl<'a> Parser<'a> {
                 });
             }
         }
-        
+
         // Otherwise, parse as regular application
         let func = Box::new(first_expr);
         let mut args = Vec::new();
@@ -474,10 +587,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after application".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after application".to_string(),
+                ))
+            }
         };
 
         Ok(curry_apply(func, args, Span::new(start, end)))
@@ -485,62 +603,73 @@ impl<'a> Parser<'a> {
 
     fn parse_match(&mut self, start: usize) -> Result<Expr, XsError> {
         self.advance()?; // consume 'match'
-        
+
         // Parse the expression to match
         let expr = Box::new(self.parse_expr()?);
-        
+
         // Parse cases
         let mut cases = Vec::new();
-        
+
         while let Some((token, _)) = &self.current_token {
             if matches!(token, Token::RightParen) {
                 break;
             }
-            
+
             // Each case should be (pattern expr)
             if let Some((Token::LeftParen, _)) = &self.current_token {
                 self.advance()?;
-                
+
                 let pattern = self.parse_pattern()?;
                 let case_expr = self.parse_expr()?;
-                
+
                 if let Some((Token::RightParen, _)) = &self.current_token {
                     self.advance()?;
                 } else {
                     return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        self.current_token
+                            .as_ref()
+                            .map(|(_, span)| span.start)
+                            .unwrap_or(0),
                         "Expected ')' after match case".to_string(),
                     ));
                 }
-                
+
                 cases.push((pattern, case_expr));
             } else {
                 return Err(XsError::ParseError(
-                    self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
                     "Expected '(' for match case".to_string(),
                 ));
             }
         }
-        
+
         let end = match &self.current_token {
             Some((Token::RightParen, span)) => {
                 let end = span.end;
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after match expression".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after match expression".to_string(),
+                ))
+            }
         };
-        
+
         Ok(Expr::Match {
             expr,
             cases,
             span: Span::new(start, end),
         })
     }
-    
+
     fn parse_pattern(&mut self) -> Result<Pattern, XsError> {
         match &self.current_token {
             Some((Token::Underscore, span)) => {
@@ -565,13 +694,13 @@ impl<'a> Parser<'a> {
             }
             Some((Token::LeftParen, _)) => {
                 self.advance()?;
-                
+
                 // Check if it's a constructor pattern or list pattern
                 if let Some((Token::Symbol(name), name_span)) = &self.current_token {
                     let constructor_name = Ident(name.clone());
                     let constructor_span = name_span.clone();
                     self.advance()?;
-                    
+
                     let mut patterns = Vec::new();
                     while let Some((token, _)) = &self.current_token {
                         if matches!(token, Token::RightParen) {
@@ -579,19 +708,24 @@ impl<'a> Parser<'a> {
                         }
                         patterns.push(self.parse_pattern()?);
                     }
-                    
+
                     let end = match &self.current_token {
                         Some((Token::RightParen, span)) => {
                             let end = span.end;
                             self.advance()?;
                             end
                         }
-                        _ => return Err(XsError::ParseError(
-                            self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                            "Expected ')' after constructor pattern".to_string(),
-                        )),
+                        _ => {
+                            return Err(XsError::ParseError(
+                                self.current_token
+                                    .as_ref()
+                                    .map(|(_, span)| span.start)
+                                    .unwrap_or(0),
+                                "Expected ')' after constructor pattern".to_string(),
+                            ))
+                        }
                     };
-                    
+
                     Ok(Pattern::Constructor {
                         name: constructor_name,
                         patterns,
@@ -599,7 +733,7 @@ impl<'a> Parser<'a> {
                     })
                 } else if let Some((Token::List, _)) = &self.current_token {
                     self.advance()?;
-                    
+
                     let mut patterns = Vec::new();
                     while let Some((token, _)) = &self.current_token {
                         if matches!(token, Token::RightParen) {
@@ -607,26 +741,34 @@ impl<'a> Parser<'a> {
                         }
                         patterns.push(self.parse_pattern()?);
                     }
-                    
+
                     let end = match &self.current_token {
                         Some((Token::RightParen, span)) => {
                             let end = span.end;
                             self.advance()?;
                             end
                         }
-                        _ => return Err(XsError::ParseError(
-                            self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                            "Expected ')' after list pattern".to_string(),
-                        )),
+                        _ => {
+                            return Err(XsError::ParseError(
+                                self.current_token
+                                    .as_ref()
+                                    .map(|(_, span)| span.start)
+                                    .unwrap_or(0),
+                                "Expected ')' after list pattern".to_string(),
+                            ))
+                        }
                     };
-                    
+
                     Ok(Pattern::List {
                         patterns,
                         span: Span::new(0, end), // TODO: proper span
                     })
                 } else {
                     Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        self.current_token
+                            .as_ref()
+                            .map(|(_, span)| span.start)
+                            .unwrap_or(0),
                         "Expected constructor name or 'list' in pattern".to_string(),
                     ))
                 }
@@ -638,17 +780,20 @@ impl<'a> Parser<'a> {
                 Ok(pattern)
             }
             _ => Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                self.current_token
+                    .as_ref()
+                    .map(|(_, span)| span.start)
+                    .unwrap_or(0),
                 "Expected pattern".to_string(),
             )),
         }
     }
-    
+
     fn parse_type_definition(&mut self, start: usize) -> Result<Expr, XsError> {
-        use xs_core::{TypeDefinition, Constructor};
-        
+        use xs_core::{Constructor, TypeDefinition};
+
         self.advance()?; // consume 'type'
-        
+
         // Parse type name
         let type_name = match &self.current_token {
             Some((Token::Symbol(name), _)) => {
@@ -656,12 +801,17 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 name
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected type name after 'type'".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected type name after 'type'".to_string(),
+                ))
+            }
         };
-        
+
         // Parse type parameters (optional)
         let mut type_params = Vec::new();
         while let Some((Token::Symbol(param), _)) = &self.current_token {
@@ -672,24 +822,27 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        
+
         // Parse constructors
         let mut constructors = Vec::new();
-        
+
         while let Some((token, _)) = &self.current_token {
             if matches!(token, Token::RightParen) {
                 break;
             }
-            
+
             // Each constructor should be (Name field1 field2 ...)
             if let Some((Token::LeftParen, _)) = &self.current_token {
                 self.advance()?;
-                
+
                 let constructor_name = match &self.current_token {
                     Some((Token::Symbol(name), _)) => {
                         if !name.chars().next().is_some_and(|c| c.is_uppercase()) {
                             return Err(XsError::ParseError(
-                                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                                self.current_token
+                                    .as_ref()
+                                    .map(|(_, span)| span.start)
+                                    .unwrap_or(0),
                                 "Constructor name must start with uppercase letter".to_string(),
                             ));
                         }
@@ -697,12 +850,17 @@ impl<'a> Parser<'a> {
                         self.advance()?;
                         name
                     }
-                    _ => return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                        "Expected constructor name".to_string(),
-                    )),
+                    _ => {
+                        return Err(XsError::ParseError(
+                            self.current_token
+                                .as_ref()
+                                .map(|(_, span)| span.start)
+                                .unwrap_or(0),
+                            "Expected constructor name".to_string(),
+                        ))
+                    }
                 };
-                
+
                 // Parse constructor fields
                 let mut fields = Vec::new();
                 while let Some((token, _)) = &self.current_token {
@@ -711,46 +869,57 @@ impl<'a> Parser<'a> {
                     }
                     fields.push(self.parse_type()?);
                 }
-                
+
                 if let Some((Token::RightParen, _)) = &self.current_token {
                     self.advance()?;
                 } else {
                     return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        self.current_token
+                            .as_ref()
+                            .map(|(_, span)| span.start)
+                            .unwrap_or(0),
                         "Expected ')' after constructor".to_string(),
                     ));
                 }
-                
+
                 constructors.push(Constructor {
                     name: constructor_name,
                     fields,
                 });
             } else {
                 return Err(XsError::ParseError(
-                    self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
                     "Expected '(' for constructor definition".to_string(),
                 ));
             }
         }
-        
+
         let end = match &self.current_token {
             Some((Token::RightParen, span)) => {
                 let end = span.end;
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after type definition".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after type definition".to_string(),
+                ))
+            }
         };
-        
+
         let definition = TypeDefinition {
             name: type_name,
             type_params,
             constructors,
         };
-        
+
         Ok(Expr::TypeDef {
             definition,
             span: Span::new(start, end),
@@ -759,7 +928,7 @@ impl<'a> Parser<'a> {
 
     fn parse_module(&mut self, start: usize) -> Result<Expr, XsError> {
         self.advance()?; // consume 'module'
-        
+
         // Parse module name
         let module_name = match &self.current_token {
             Some((Token::Symbol(name), _)) => {
@@ -767,41 +936,52 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 ident
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected module name after 'module'".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected module name after 'module'".to_string(),
+                ))
+            }
         };
-        
+
         // Parse export list
         let mut exports = Vec::new();
         if let Some((Token::LeftParen, _)) = &self.current_token {
             self.advance()?;
             if let Some((Token::Export, _)) = &self.current_token {
                 self.advance()?;
-                
+
                 // Parse exported identifiers
                 while let Some((Token::Symbol(name), _)) = &self.current_token {
                     exports.push(Ident(name.clone()));
                     self.advance()?;
                 }
-                
+
                 if let Some((Token::RightParen, _)) = &self.current_token {
                     self.advance()?;
                 } else {
                     return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        self.current_token
+                            .as_ref()
+                            .map(|(_, span)| span.start)
+                            .unwrap_or(0),
                         "Expected ')' after export list".to_string(),
                     ));
                 }
             } else {
                 return Err(XsError::ParseError(
-                    self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
                     "Expected 'export' after '('".to_string(),
                 ));
             }
         }
-        
+
         // Parse module body
         let mut body = Vec::new();
         while let Some((token, _)) = &self.current_token {
@@ -810,19 +990,24 @@ impl<'a> Parser<'a> {
             }
             body.push(self.parse_expr()?);
         }
-        
+
         let end = match &self.current_token {
             Some((Token::RightParen, span)) => {
                 let end = span.end;
                 self.advance()?;
                 end
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after module body".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after module body".to_string(),
+                ))
+            }
         };
-        
+
         Ok(Expr::Module {
             name: module_name,
             exports,
@@ -830,7 +1015,7 @@ impl<'a> Parser<'a> {
             span: Span::new(start, end),
         })
     }
-    
+
     fn parse_define(&mut self, start: usize) -> Result<Expr, XsError> {
         // define is just like let but for use inside modules
         self.advance()?; // consume 'define'
@@ -841,10 +1026,15 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 ident
             }
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected variable name after 'define'".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected variable name after 'define'".to_string(),
+                ))
+            }
         };
 
         let type_ann = if let Some((Token::Colon, _)) = &self.current_token {
@@ -858,14 +1048,19 @@ impl<'a> Parser<'a> {
 
         let end = match &self.current_token {
             Some((Token::RightParen, span)) => span.end,
-            _ => return Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                "Expected ')' after define expression".to_string(),
-            )),
+            _ => {
+                return Err(XsError::ParseError(
+                    self.current_token
+                        .as_ref()
+                        .map(|(_, span)| span.start)
+                        .unwrap_or(0),
+                    "Expected ')' after define expression".to_string(),
+                ))
+            }
         };
-        
+
         self.advance()?;
-        
+
         Ok(Expr::Let {
             name,
             type_ann,
@@ -873,58 +1068,71 @@ impl<'a> Parser<'a> {
             span: Span::new(start, end),
         })
     }
-    
+
     fn parse_import(&mut self, start: usize) -> Result<Expr, XsError> {
         self.advance()?; // consume 'import'
-        
+
         // Two forms:
         // (import (ModuleName item1 item2))
         // (import ModuleName as Alias)
-        
+
         match &self.current_token {
             Some((Token::LeftParen, _)) => {
                 // Form: (import (ModuleName item1 item2))
                 self.advance()?;
-                
+
                 let module_name = match &self.current_token {
                     Some((Token::Symbol(name), _)) => {
                         let ident = Ident(name.clone());
                         self.advance()?;
                         ident
                     }
-                    _ => return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                        "Expected module name in import".to_string(),
-                    )),
+                    _ => {
+                        return Err(XsError::ParseError(
+                            self.current_token
+                                .as_ref()
+                                .map(|(_, span)| span.start)
+                                .unwrap_or(0),
+                            "Expected module name in import".to_string(),
+                        ))
+                    }
                 };
-                
+
                 let mut items = Vec::new();
                 while let Some((Token::Symbol(name), _)) = &self.current_token {
                     items.push(Ident(name.clone()));
                     self.advance()?;
                 }
-                
+
                 if let Some((Token::RightParen, _)) = &self.current_token {
                     self.advance()?;
                 } else {
                     return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        self.current_token
+                            .as_ref()
+                            .map(|(_, span)| span.start)
+                            .unwrap_or(0),
                         "Expected ')' after import items".to_string(),
                     ));
                 }
-                
+
                 let end = match &self.current_token {
                     Some((Token::RightParen, span)) => {
                         let end = span.end;
                         self.advance()?;
                         end
                     }
-                    _ => return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                        "Expected ')' after import".to_string(),
-                    )),
+                    _ => {
+                        return Err(XsError::ParseError(
+                            self.current_token
+                                .as_ref()
+                                .map(|(_, span)| span.start)
+                                .unwrap_or(0),
+                            "Expected ')' after import".to_string(),
+                        ))
+                    }
                 };
-                
+
                 Ok(Expr::Import {
                     module_name,
                     items: Some(items),
@@ -936,7 +1144,7 @@ impl<'a> Parser<'a> {
                 // Form: (import ModuleName as Alias)
                 let module_name = Ident(name.clone());
                 self.advance()?;
-                
+
                 let as_name = if let Some((Token::As, _)) = &self.current_token {
                     self.advance()?;
                     match &self.current_token {
@@ -945,27 +1153,37 @@ impl<'a> Parser<'a> {
                             self.advance()?;
                             Some(alias)
                         }
-                        _ => return Err(XsError::ParseError(
-                            self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                            "Expected alias name after 'as'".to_string(),
-                        )),
+                        _ => {
+                            return Err(XsError::ParseError(
+                                self.current_token
+                                    .as_ref()
+                                    .map(|(_, span)| span.start)
+                                    .unwrap_or(0),
+                                "Expected alias name after 'as'".to_string(),
+                            ))
+                        }
                     }
                 } else {
                     None
                 };
-                
+
                 let end = match &self.current_token {
                     Some((Token::RightParen, span)) => {
                         let end = span.end;
                         self.advance()?;
                         end
                     }
-                    _ => return Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                        "Expected ')' after import".to_string(),
-                    )),
+                    _ => {
+                        return Err(XsError::ParseError(
+                            self.current_token
+                                .as_ref()
+                                .map(|(_, span)| span.start)
+                                .unwrap_or(0),
+                            "Expected ')' after import".to_string(),
+                        ))
+                    }
                 };
-                
+
                 Ok(Expr::Import {
                     module_name,
                     items: None,
@@ -974,12 +1192,15 @@ impl<'a> Parser<'a> {
                 })
             }
             _ => Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                self.current_token
+                    .as_ref()
+                    .map(|(_, span)| span.start)
+                    .unwrap_or(0),
                 "Invalid import syntax".to_string(),
             )),
         }
     }
-    
+
     fn parse_type(&mut self) -> Result<Type, XsError> {
         match &self.current_token {
             Some((Token::Symbol(s), _)) => {
@@ -997,18 +1218,8 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 match &self.current_token {
                     Some((Token::Arrow, _)) => {
-                        self.advance()?;
-                        let from = Box::new(self.parse_type()?);
-                        let to = Box::new(self.parse_type()?);
-                        if let Some((Token::RightParen, _)) = &self.current_token {
-                            self.advance()?;
-                            Ok(Type::Function(from, to))
-                        } else {
-                            Err(XsError::ParseError(
-                                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
-                                "Expected ')' after function type".to_string(),
-                            ))
-                        }
+                        // Use the effect parser for function types
+                        self.parse_function_type_with_effects()
                     }
                     Some((Token::Symbol(s), _)) if s == "List" => {
                         self.advance()?;
@@ -1018,19 +1229,28 @@ impl<'a> Parser<'a> {
                             Ok(Type::List(elem_type))
                         } else {
                             Err(XsError::ParseError(
-                                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                                self.current_token
+                                    .as_ref()
+                                    .map(|(_, span)| span.start)
+                                    .unwrap_or(0),
                                 "Expected ')' after List type".to_string(),
                             ))
                         }
                     }
                     _ => Err(XsError::ParseError(
-                        self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                        self.current_token
+                            .as_ref()
+                            .map(|(_, span)| span.start)
+                            .unwrap_or(0),
                         "Expected type constructor".to_string(),
                     )),
                 }
             }
             _ => Err(XsError::ParseError(
-                self.current_token.as_ref().map(|(_, span)| span.start).unwrap_or(0),
+                self.current_token
+                    .as_ref()
+                    .map(|(_, span)| span.start)
+                    .unwrap_or(0),
                 "Expected type".to_string(),
             )),
         }
@@ -1050,32 +1270,43 @@ mod tests {
     fn test_parse_rec() {
         let expr = parse("(rec factorial (n) (* n 2))").unwrap();
         match expr {
-            Expr::Rec { name, params, return_type, body, .. } => {
+            Expr::Rec {
+                name,
+                params,
+                return_type,
+                body,
+                ..
+            } => {
                 assert_eq!(name.0, "factorial");
                 assert_eq!(params.len(), 1);
-                assert_eq!(params[0].0.0, "n");
+                assert_eq!(params[0].0 .0, "n");
                 assert!(return_type.is_none());
                 // body should be (* n 2)
                 match body.as_ref() {
-                    Expr::Apply { .. } => {},
+                    Expr::Apply { .. } => {}
                     _ => panic!("Expected apply in body"),
                 }
-            },
+            }
             _ => panic!("Expected Rec expression"),
         }
 
         // Test with type annotations
         let expr = parse("(rec add (x : Int y : Int) : Int (+ x y))").unwrap();
         match expr {
-            Expr::Rec { name, params, return_type, .. } => {
+            Expr::Rec {
+                name,
+                params,
+                return_type,
+                ..
+            } => {
                 assert_eq!(name.0, "add");
                 assert_eq!(params.len(), 2);
-                assert_eq!(params[0].0.0, "x");
-                assert_eq!(params[1].0.0, "y");
+                assert_eq!(params[0].0 .0, "x");
+                assert_eq!(params[1].0 .0, "y");
                 assert!(params[0].1.is_some());
                 assert!(params[1].1.is_some());
                 assert_eq!(return_type, Some(Type::Int));
-            },
+            }
             _ => panic!("Expected Rec expression"),
         }
     }
@@ -1084,19 +1315,19 @@ mod tests {
     fn test_parse_literals() {
         let expr = parse("42").unwrap();
         match expr {
-            Expr::Literal(Literal::Int(42), _) => {},
+            Expr::Literal(Literal::Int(42), _) => {}
             _ => panic!("Expected Int literal"),
         }
 
         let expr = parse("true").unwrap();
         match expr {
-            Expr::Literal(Literal::Bool(true), _) => {},
+            Expr::Literal(Literal::Bool(true), _) => {}
             _ => panic!("Expected Bool literal"),
         }
 
         let expr = parse(r#""hello""#).unwrap();
         match expr {
-            Expr::Literal(Literal::String(s), _) if s == "hello" => {},
+            Expr::Literal(Literal::String(s), _) if s == "hello" => {}
             _ => panic!("Expected String literal"),
         }
     }
@@ -1105,7 +1336,7 @@ mod tests {
     fn test_parse_identifiers() {
         let expr = parse("foo").unwrap();
         match expr {
-            Expr::Ident(Ident(name), _) if name == "foo" => {},
+            Expr::Ident(Ident(name), _) if name == "foo" => {}
             _ => panic!("Expected identifier"),
         }
     }
@@ -1114,14 +1345,19 @@ mod tests {
     fn test_parse_let() {
         let expr = parse("(let x 42)").unwrap();
         match expr {
-            Expr::Let { name, type_ann, value, .. } => {
+            Expr::Let {
+                name,
+                type_ann,
+                value,
+                ..
+            } => {
                 assert_eq!(name.0, "x");
                 assert_eq!(type_ann, None);
                 match value.as_ref() {
-                    Expr::Literal(Literal::Int(42), _) => {},
+                    Expr::Literal(Literal::Int(42), _) => {}
                     _ => panic!("Expected Int literal in let binding"),
                 }
-            },
+            }
             _ => panic!("Expected let expression"),
         }
 
@@ -1130,45 +1366,48 @@ mod tests {
             Expr::Let { name, type_ann, .. } => {
                 assert_eq!(name.0, "x");
                 assert_eq!(type_ann, Some(Type::Int));
-            },
+            }
             _ => panic!("Expected let expression with type annotation"),
         }
     }
 
     #[test]
     fn test_parse_lambda() {
-        let expr = parse("(lambda (x) x)").unwrap();
+        let expr = parse("(fn (x) x)").unwrap();
         match expr {
             Expr::Lambda { params, body, .. } => {
                 assert_eq!(params.len(), 1);
-                assert_eq!(params[0].0.0, "x");
+                assert_eq!(params[0].0 .0, "x");
                 assert_eq!(params[0].1, None);
                 match body.as_ref() {
-                    Expr::Ident(Ident(name), _) if name == "x" => {},
+                    Expr::Ident(Ident(name), _) if name == "x" => {}
                     _ => panic!("Expected identifier in lambda body"),
                 }
-            },
+            }
             _ => panic!("Expected lambda expression"),
         }
 
-        let expr = parse("(lambda (x : Int y : Bool) (+ x 1))").unwrap();
+        let expr = parse("(fn (x : Int y : Bool) (+ x 1))").unwrap();
         // With currying, this becomes nested lambdas
         match expr {
             Expr::Lambda { params, body, .. } => {
                 assert_eq!(params.len(), 1);
-                assert_eq!(params[0].0.0, "x");
+                assert_eq!(params[0].0 .0, "x");
                 assert_eq!(params[0].1, Some(Type::Int));
-                
+
                 // Check nested lambda
                 match body.as_ref() {
-                    Expr::Lambda { params: inner_params, .. } => {
+                    Expr::Lambda {
+                        params: inner_params,
+                        ..
+                    } => {
                         assert_eq!(inner_params.len(), 1);
-                        assert_eq!(inner_params[0].0.0, "y");
+                        assert_eq!(inner_params[0].0 .0, "y");
                         assert_eq!(inner_params[0].1, Some(Type::Bool));
                     }
                     _ => panic!("Expected nested lambda"),
                 }
-            },
+            }
             _ => panic!("Expected lambda expression with typed parameters"),
         }
     }
@@ -1177,20 +1416,25 @@ mod tests {
     fn test_parse_if() {
         let expr = parse("(if true 1 2)").unwrap();
         match expr {
-            Expr::If { cond, then_expr, else_expr, .. } => {
+            Expr::If {
+                cond,
+                then_expr,
+                else_expr,
+                ..
+            } => {
                 match cond.as_ref() {
-                    Expr::Literal(Literal::Bool(true), _) => {},
+                    Expr::Literal(Literal::Bool(true), _) => {}
                     _ => panic!("Expected Bool literal in condition"),
                 }
                 match then_expr.as_ref() {
-                    Expr::Literal(Literal::Int(1), _) => {},
+                    Expr::Literal(Literal::Int(1), _) => {}
                     _ => panic!("Expected Int literal in then branch"),
                 }
                 match else_expr.as_ref() {
-                    Expr::Literal(Literal::Int(2), _) => {},
+                    Expr::Literal(Literal::Int(2), _) => {}
                     _ => panic!("Expected Int literal in else branch"),
                 }
-            },
+            }
             _ => panic!("Expected if expression"),
         }
     }
@@ -1203,16 +1447,20 @@ mod tests {
             Expr::Apply { func, args, .. } => {
                 assert_eq!(args.len(), 1); // Only one arg at outer level
                 match func.as_ref() {
-                    Expr::Apply { func: inner_func, args: inner_args, .. } => {
+                    Expr::Apply {
+                        func: inner_func,
+                        args: inner_args,
+                        ..
+                    } => {
                         match inner_func.as_ref() {
-                            Expr::Ident(Ident(name), _) if name == "+" => {},
+                            Expr::Ident(Ident(name), _) if name == "+" => {}
                             _ => panic!("Expected + function"),
                         }
                         assert_eq!(inner_args.len(), 1);
                     }
                     _ => panic!("Expected nested application"),
                 }
-            },
+            }
             _ => panic!("Expected application"),
         }
     }
@@ -1223,7 +1471,7 @@ mod tests {
         match expr {
             Expr::List(elems, _) => {
                 assert_eq!(elems.len(), 3);
-            },
+            }
             _ => panic!("Expected list"),
         }
 
@@ -1231,23 +1479,28 @@ mod tests {
         match expr {
             Expr::List(elems, _) => {
                 assert_eq!(elems.len(), 0);
-            },
+            }
             _ => panic!("Expected empty list"),
         }
     }
 
     #[test]
     fn test_parse_let_rec() {
-        let expr = parse("(let-rec fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))").unwrap();
+        let expr = parse("(let-rec fact (fn (n) (if (= n 0) 1 (* n (fact (- n 1))))))").unwrap();
         match expr {
-            Expr::LetRec { name, type_ann, value, .. } => {
+            Expr::LetRec {
+                name,
+                type_ann,
+                value,
+                ..
+            } => {
                 assert_eq!(name.0, "fact");
                 assert_eq!(type_ann, None);
                 match value.as_ref() {
-                    Expr::Lambda { .. } => {},
+                    Expr::Lambda { .. } => {}
                     _ => panic!("Expected Lambda in let-rec binding"),
                 }
-            },
+            }
             _ => panic!("Expected let-rec expression"),
         }
     }
@@ -1264,7 +1517,7 @@ mod tests {
             Type::Function(from, to) => {
                 assert_eq!(*from, Type::Int);
                 assert_eq!(*to, Type::Bool);
-            },
+            }
             _ => panic!("Expected function type"),
         }
 
@@ -1273,11 +1526,11 @@ mod tests {
         match typ {
             Type::List(elem) => {
                 assert_eq!(*elem, Type::Int);
-            },
+            }
             _ => panic!("Expected list type"),
         }
     }
-    
+
     #[test]
     fn test_parse_match() {
         let expr = parse("(match x (0 \"zero\") (1 \"one\") (_ \"other\"))").unwrap();
@@ -1286,19 +1539,19 @@ mod tests {
                 assert_eq!(cases.len(), 3);
                 // Check first case
                 match &cases[0].0 {
-                    Pattern::Literal(Literal::Int(0), _) => {},
+                    Pattern::Literal(Literal::Int(0), _) => {}
                     _ => panic!("Expected literal 0 pattern"),
                 }
                 // Check last case
                 match &cases[2].0 {
-                    Pattern::Wildcard(_) => {},
+                    Pattern::Wildcard(_) => {}
                     _ => panic!("Expected wildcard pattern"),
                 }
-            },
+            }
             _ => panic!("Expected Match expression"),
         }
     }
-    
+
     #[test]
     fn test_parse_constructor() {
         let expr = parse("(Some 42)").unwrap();
@@ -1306,11 +1559,11 @@ mod tests {
             Expr::Constructor { name, args, .. } => {
                 assert_eq!(name.0, "Some");
                 assert_eq!(args.len(), 1);
-            },
+            }
             _ => panic!("Expected Constructor expression"),
         }
     }
-    
+
     #[test]
     fn test_parse_pattern() {
         // Test parsing a pattern directly within a match expression
@@ -1326,43 +1579,56 @@ mod tests {
                             Pattern::Variable(Ident(v), _) => assert_eq!(v, "y"),
                             _ => panic!("Expected variable pattern"),
                         }
-                    },
+                    }
                     _ => panic!("Expected constructor pattern"),
                 }
-            },
+            }
             _ => panic!("Expected Match expression"),
         }
     }
-    
+
     #[test]
     fn test_parse_module() {
-        let expr = parse(r#"
+        let expr = parse(
+            r#"
             (module Math
                 (export add sub PI)
                 (define PI 3.14159)
-                (define add (lambda (x y) (+ x y)))
-                (define sub (lambda (x y) (- x y))))
-        "#).unwrap();
-        
+                (define add (fn (x y) (+ x y)))
+                (define sub (fn (x y) (- x y))))
+        "#,
+        )
+        .unwrap();
+
         match expr {
-            Expr::Module { name, exports, body, .. } => {
+            Expr::Module {
+                name,
+                exports,
+                body,
+                ..
+            } => {
                 assert_eq!(name.0, "Math");
                 assert_eq!(exports.len(), 3);
                 assert_eq!(exports[0].0, "add");
                 assert_eq!(exports[1].0, "sub");
                 assert_eq!(exports[2].0, "PI");
                 assert_eq!(body.len(), 3);
-            },
+            }
             _ => panic!("Expected Module expression"),
         }
     }
-    
+
     #[test]
     fn test_parse_import() {
         // Import specific items
         let expr = parse("(import (Math add sub))").unwrap();
         match expr {
-            Expr::Import { module_name, items, as_name, .. } => {
+            Expr::Import {
+                module_name,
+                items,
+                as_name,
+                ..
+            } => {
                 assert_eq!(module_name.0, "Math");
                 assert!(items.is_some());
                 let items = items.unwrap();
@@ -1370,35 +1636,42 @@ mod tests {
                 assert_eq!(items[0].0, "add");
                 assert_eq!(items[1].0, "sub");
                 assert!(as_name.is_none());
-            },
+            }
             _ => panic!("Expected Import expression"),
         }
-        
+
         // Import with alias
         let expr = parse("(import Math as M)").unwrap();
         match expr {
-            Expr::Import { module_name, items, as_name, .. } => {
+            Expr::Import {
+                module_name,
+                items,
+                as_name,
+                ..
+            } => {
                 assert_eq!(module_name.0, "Math");
                 assert!(items.is_none());
                 assert!(as_name.is_some());
                 assert_eq!(as_name.unwrap().0, "M");
-            },
+            }
             _ => panic!("Expected Import expression"),
         }
     }
-    
+
     #[test]
     fn test_parse_qualified_ident() {
         let expr = parse("Math.add").unwrap();
         match expr {
-            Expr::QualifiedIdent { module_name, name, .. } => {
+            Expr::QualifiedIdent {
+                module_name, name, ..
+            } => {
                 assert_eq!(module_name.0, "Math");
                 assert_eq!(name.0, "add");
-            },
+            }
             _ => panic!("Expected QualifiedIdent expression"),
         }
     }
-    
+
     #[test]
     fn test_parse_type_definition() {
         // Simple type without parameters
@@ -1412,10 +1685,10 @@ mod tests {
                 assert_eq!(definition.constructors[0].fields.len(), 1);
                 assert_eq!(definition.constructors[1].name, "None");
                 assert_eq!(definition.constructors[1].fields.len(), 0);
-            },
+            }
             _ => panic!("Expected TypeDef expression"),
         }
-        
+
         // Type with type parameters
         let expr = parse("(type Result a b (Ok a) (Err b))").unwrap();
         match expr {
@@ -1425,7 +1698,7 @@ mod tests {
                 assert_eq!(definition.constructors.len(), 2);
                 assert_eq!(definition.constructors[0].fields.len(), 1);
                 assert_eq!(definition.constructors[1].fields.len(), 1);
-            },
+            }
             _ => panic!("Expected TypeDef expression"),
         }
     }

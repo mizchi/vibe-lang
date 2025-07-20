@@ -1,6 +1,6 @@
 //! AI-friendly error reporting with rich context
 
-use crate::{Span, Type, Expr, Pattern};
+use crate::{Expr, Pattern, Span, Type};
 use std::fmt;
 
 /// Rich error context for AI understanding
@@ -133,9 +133,7 @@ impl ErrorContext {
 
     /// Format for AI consumption (structured)
     pub fn to_ai_format(&self) -> String {
-        let mut parts = vec![
-            format!("ERROR[{}]: {}", self.category_str(), self.message),
-        ];
+        let mut parts = vec![format!("ERROR[{}]: {}", self.category_str(), self.message)];
 
         if let Some(ref snippet) = self.snippet {
             parts.push(format!(
@@ -147,14 +145,19 @@ impl ErrorContext {
 
         if let Some(ref expected) = self.metadata.expected_type {
             if let Some(ref actual) = self.metadata.actual_type {
-                parts.push(format!("Type mismatch: expected {:?}, found {:?}", expected, actual));
+                parts.push(format!(
+                    "Type mismatch: expected {expected:?}, found {actual:?}"
+                ));
             }
         }
 
         if let Some(ref name) = self.metadata.undefined_name {
-            parts.push(format!("Undefined: '{}'", name));
+            parts.push(format!("Undefined: '{name}'"));
             if !self.metadata.similar_names.is_empty() {
-                parts.push(format!("Similar: {}", self.metadata.similar_names.join(", ")));
+                parts.push(format!(
+                    "Similar: {}",
+                    self.metadata.similar_names.join(", ")
+                ));
             }
         }
 
@@ -163,7 +166,7 @@ impl ErrorContext {
             for (i, suggestion) in self.suggestions.iter().enumerate() {
                 parts.push(format!("  {}. {}", i + 1, suggestion.description));
                 if let Some(ref replacement) = suggestion.replacement {
-                    parts.push(format!("     Replace with: {}", replacement));
+                    parts.push(format!("     Replace with: {replacement}"));
                 }
             }
         }
@@ -192,7 +195,6 @@ impl fmt::Display for ErrorContext {
 fn extract_snippet(source: &str, span: &Span) -> (usize, usize, String) {
     let mut line_number = 1;
     let mut column_number = 1;
-    let mut current_pos = 0;
 
     for (i, ch) in source.chars().enumerate() {
         if i == span.start {
@@ -204,12 +206,14 @@ fn extract_snippet(source: &str, span: &Span) -> (usize, usize, String) {
         } else {
             column_number += 1;
         }
-        current_pos = i + 1;
     }
 
     // Extract the line containing the error
     let line_start = source[..span.start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let line_end = source[span.start..].find('\n').map(|i| span.start + i).unwrap_or(source.len());
+    let line_end = source[span.start..]
+        .find('\n')
+        .map(|i| span.start + i)
+        .unwrap_or(source.len());
     let line = &source[line_start..line_end];
 
     (line_number, column_number, line.to_string())
@@ -233,12 +237,11 @@ impl ErrorBuilder {
             type_to_string(&expected),
             type_to_string(&actual)
         );
-        Self::new(ErrorCategory::Type, message)
-            .with_types(expected, actual)
+        Self::new(ErrorCategory::Type, message).with_types(expected, actual)
     }
 
     pub fn undefined_variable(name: &str) -> Self {
-        let message = format!("Undefined variable: '{}'", name);
+        let message = format!("Undefined variable: '{name}'");
         Self::new(ErrorCategory::Scope, message)
     }
 
@@ -270,7 +273,11 @@ impl ErrorBuilder {
         self
     }
 
-    pub fn suggest_high_confidence(mut self, description: impl Into<String>, replacement: String) -> Self {
+    pub fn suggest_high_confidence(
+        mut self,
+        description: impl Into<String>,
+        replacement: String,
+    ) -> Self {
         self.context.suggestions.push(Suggestion {
             description: description.into(),
             replacement: Some(replacement),
@@ -298,7 +305,19 @@ fn type_to_string(ty: &Type) -> String {
         Type::Float => "Float".to_string(),
         Type::List(t) => format!("List[{}]", type_to_string(t)),
         Type::Function(a, b) => format!("{} -> {}", type_to_string(a), type_to_string(b)),
-        Type::Var(v) => format!("'{}", v),
+        Type::FunctionWithEffect { from, to, effects } => {
+            if effects.is_pure() {
+                format!("{} -> {}", type_to_string(from), type_to_string(to))
+            } else {
+                format!(
+                    "{} -> {} ! {}",
+                    type_to_string(from),
+                    type_to_string(to),
+                    effects
+                )
+            }
+        }
+        Type::Var(v) => format!("'{v}"),
         Type::UserDefined { name, .. } => name.clone(),
         // Note: Type::Constructor doesn't exist in current implementation
         // ADT types are represented differently
@@ -309,13 +328,21 @@ fn pattern_to_string(pattern: &Pattern) -> String {
     match pattern {
         Pattern::Variable(ident, _) => ident.0.clone(),
         Pattern::Wildcard(_) => "_".to_string(),
-        Pattern::Literal(lit, _) => format!("{:?}", lit),
+        Pattern::Literal(lit, _) => format!("{lit:?}"),
         Pattern::List { patterns, .. } => {
-            let items = patterns.iter().map(pattern_to_string).collect::<Vec<_>>().join(", ");
-            format!("[{}]", items)
+            let items = patterns
+                .iter()
+                .map(pattern_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{items}]")
         }
         Pattern::Constructor { name, patterns, .. } => {
-            let args = patterns.iter().map(pattern_to_string).collect::<Vec<_>>().join(", ");
+            let args = patterns
+                .iter()
+                .map(pattern_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
             if args.is_empty() {
                 name.0.clone()
             } else {
@@ -331,12 +358,12 @@ mod tests {
 
     #[test]
     fn test_type_mismatch_error() {
-        let error = ErrorBuilder::type_mismatch(
-            Type::Int,
-            Type::String
-        )
-        .suggest("Consider converting the string to an integer", Some("int_of_string".to_string()))
-        .build();
+        let error = ErrorBuilder::type_mismatch(Type::Int, Type::String)
+            .suggest(
+                "Consider converting the string to an integer",
+                Some("int_of_string".to_string()),
+            )
+            .build();
 
         let ai_format = error.to_ai_format();
         assert!(ai_format.contains("Type mismatch"));
@@ -361,7 +388,7 @@ mod tests {
     fn test_snippet_extraction() {
         let source = "let x = 42\nlet y = true\nlet z = x + y";
         let span = Span::new(24, 37); // "let z = x + y"
-        
+
         let error = ErrorBuilder::type_mismatch(Type::Int, Type::Bool)
             .with_snippet(source, span)
             .build();

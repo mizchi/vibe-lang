@@ -1,10 +1,10 @@
 //! Perceus transformation pass for XS language
-//! 
+//!
 //! This module implements the Perceus memory management transformation,
 //! converting high-level expressions into IR with explicit drop/dup instructions.
 
-use xs_core::{Expr, Ident, Literal};
 use xs_core::ir::IrExpr;
+use xs_core::{Expr, Ident, Literal};
 
 /// Perceus transformer that converts AST to IR with memory management
 #[derive(Default)]
@@ -13,27 +13,26 @@ pub struct PerceusTransform {
     // For now, this is a placeholder for the transformation pass
 }
 
-
 impl PerceusTransform {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Transform an AST expression into IR with Perceus memory management
     pub fn transform(&mut self, expr: &Expr) -> IrExpr {
         self.transform_expr(expr)
     }
-    
+
     /// Transform expression to IR
     fn transform_expr(&mut self, expr: &Expr) -> IrExpr {
         match expr {
             Expr::Literal(lit, _) => IrExpr::Literal(lit.clone()),
-            
+
             Expr::Ident(Ident(name), _) => IrExpr::Var(name.clone()),
-            
+
             Expr::Let { name, value, .. } => {
                 let ir_value = self.transform_expr(value);
-                
+
                 // For now, Let just evaluates its value
                 // In a real implementation, this would bind the value to the name
                 // and evaluate some body expression
@@ -43,104 +42,124 @@ impl PerceusTransform {
                     body: Box::new(IrExpr::Literal(Literal::Int(0))), // Placeholder
                 }
             }
-            
+
             Expr::LetRec { name, value, .. } => {
                 let ir_value = self.transform_expr(value);
-                
+
                 IrExpr::LetRec {
                     name: name.0.clone(),
                     value: Box::new(ir_value),
                     body: Box::new(IrExpr::Literal(Literal::Int(0))), // Placeholder
                 }
             }
-            
-            Expr::Lambda { params, body, .. } => {
-                let param_names: Vec<String> = params.iter()
-                    .map(|(Ident(name), _)| name.clone())
-                    .collect();
-                
+
+            Expr::LetIn {
+                name, value, body, ..
+            } => {
+                let ir_value = self.transform_expr(value);
                 let ir_body = self.transform_expr(body);
-                
+
+                IrExpr::Let {
+                    name: name.0.clone(),
+                    value: Box::new(ir_value),
+                    body: Box::new(ir_body),
+                }
+            }
+
+            Expr::Lambda { params, body, .. } => {
+                let param_names: Vec<String> =
+                    params.iter().map(|(Ident(name), _)| name.clone()).collect();
+
+                let ir_body = self.transform_expr(body);
+
                 IrExpr::Lambda {
                     params: param_names,
                     body: Box::new(ir_body),
                 }
             }
-            
-            Expr::If { cond, then_expr, else_expr, .. } => {
+
+            Expr::If {
+                cond,
+                then_expr,
+                else_expr,
+                ..
+            } => {
                 let ir_cond = self.transform_expr(cond);
                 let ir_then = self.transform_expr(then_expr);
                 let ir_else = self.transform_expr(else_expr);
-                
+
                 IrExpr::If {
                     cond: Box::new(ir_cond),
                     then_expr: Box::new(ir_then),
                     else_expr: Box::new(ir_else),
                 }
             }
-            
+
             Expr::Apply { func, args, .. } => {
                 let ir_func = self.transform_expr(func);
-                let ir_args: Vec<IrExpr> = args.iter()
-                    .map(|arg| self.transform_expr(arg))
-                    .collect();
-                
+                let ir_args: Vec<IrExpr> =
+                    args.iter().map(|arg| self.transform_expr(arg)).collect();
+
                 IrExpr::Apply {
                     func: Box::new(ir_func),
                     args: ir_args,
                 }
             }
-            
+
             Expr::List(exprs, _) => {
-                let ir_exprs: Vec<IrExpr> = exprs.iter()
-                    .map(|expr| self.transform_expr(expr))
-                    .collect();
-                
+                let ir_exprs: Vec<IrExpr> =
+                    exprs.iter().map(|expr| self.transform_expr(expr)).collect();
+
                 IrExpr::List(ir_exprs)
             }
-            
+
             Expr::Rec { params, body, .. } => {
                 // Transform rec to lambda with recursive binding
-                let param_names: Vec<String> = params.iter()
-                    .map(|(Ident(name), _)| name.clone())
-                    .collect();
-                
+                let param_names: Vec<String> =
+                    params.iter().map(|(Ident(name), _)| name.clone()).collect();
+
                 let ir_body = self.transform_expr(body);
-                
+
                 IrExpr::Lambda {
                     params: param_names,
                     body: Box::new(ir_body),
                 }
             }
-            
+
             // Patterns not yet supported in IR
             Expr::Match { .. } => {
                 // TODO: Implement pattern matching transformation
                 IrExpr::Literal(Literal::Int(0))
             }
-            
+
             Expr::Constructor { .. } => {
                 // TODO: Implement constructor transformation
                 IrExpr::Literal(Literal::Int(0))
             }
-            
+
             Expr::TypeDef { .. } => {
                 // Type definitions don't generate runtime code
                 IrExpr::Literal(Literal::Int(0))
             }
-            
+
             Expr::Module { .. } => {
                 // TODO: Implement module transformation
                 IrExpr::Literal(Literal::Int(0))
             }
-            
+
             Expr::Import { .. } => {
                 // Imports are resolved at compile time
                 IrExpr::Literal(Literal::Int(0))
             }
-            
+
             Expr::QualifiedIdent { .. } => {
                 // TODO: Implement qualified identifier transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
+
+            // Effect handlers not yet implemented
+            Expr::Handler { .. } | Expr::WithHandler { .. } | Expr::Perform { .. } => {
+                // TODO: Implement effect handler transformation
                 IrExpr::Literal(Literal::Int(0))
             }
         }
@@ -157,23 +176,23 @@ pub fn transform_to_ir(expr: &Expr) -> IrExpr {
 mod tests {
     use super::*;
     use xs_core::{Span, Type};
-    
+
     #[test]
     fn test_literal_transform() {
         let expr = Expr::Literal(Literal::Int(42), Span::new(0, 2));
         let ir = transform_to_ir(&expr);
-        
+
         assert_eq!(ir, IrExpr::Literal(Literal::Int(42)));
     }
-    
+
     #[test]
     fn test_variable_transform() {
         let expr = Expr::Ident(Ident("x".to_string()), Span::new(0, 1));
         let ir = transform_to_ir(&expr);
-        
+
         assert_eq!(ir, IrExpr::Var("x".to_string()));
     }
-    
+
     #[test]
     fn test_lambda_transform() {
         let expr = Expr::Lambda {
@@ -181,9 +200,9 @@ mod tests {
             body: Box::new(Expr::Ident(Ident("x".to_string()), Span::new(0, 1))),
             span: Span::new(0, 10),
         };
-        
+
         let ir = transform_to_ir(&expr);
-        
+
         match ir {
             IrExpr::Lambda { params, body } => {
                 assert_eq!(params, vec!["x".to_string()]);
@@ -192,7 +211,7 @@ mod tests {
             _ => panic!("Expected Lambda"),
         }
     }
-    
+
     #[test]
     fn test_apply_transform() {
         let expr = Expr::Apply {
@@ -203,9 +222,9 @@ mod tests {
             ],
             span: Span::new(0, 6),
         };
-        
+
         let ir = transform_to_ir(&expr);
-        
+
         match ir {
             IrExpr::Apply { func, args } => {
                 assert_eq!(*func, IrExpr::Var("f".to_string()));
