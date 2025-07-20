@@ -110,6 +110,14 @@ impl Default for TypeEnv {
                 )),
             ),
         );
+        // print : a -> a
+        env.add_builtin(
+            "print",
+            Type::Function(
+                Box::new(Type::Var("a".to_string())),
+                Box::new(Type::Var("a".to_string())),
+            ),
+        );
 
         env
     }

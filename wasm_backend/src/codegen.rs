@@ -293,7 +293,7 @@ impl CodeGenerator {
     fn try_generate_builtin(&mut self, name: &str, args: &[IrExpr]) -> Result<Option<()>, CodeGenError> {
         // Check if this is a builtin function
         let is_builtin = match name {
-            "+" | "-" | "*" | "/" | "%" | "<" | ">" | "=" | "<=" | ">=" | "cons" | "concat" => true,
+            "+" | "-" | "*" | "/" | "%" | "<" | ">" | "=" | "<=" | ">=" | "cons" | "concat" | "print" => true,
             _ => false,
         };
 
@@ -338,8 +338,8 @@ impl CodeGenerator {
                 // Convert i32 to i64 for consistency
                 self.emit(WasmInstr::I64ExtendI32S);
             }
-            "cons" | "concat" => {
-                // TODO: Implement list/string operations
+            "cons" | "concat" | "print" => {
+                // TODO: Implement list/string/IO operations
                 // For now, just drop arguments and push dummy value
                 for _ in 0..args.len() {
                     self.emit(WasmInstr::Drop);

@@ -406,6 +406,42 @@ impl BuiltinFunction for Cons {
     }
 }
 
+// I/O operations
+
+pub struct Print;
+impl BuiltinFunction for Print {
+    fn name(&self) -> &str {
+        "print"
+    }
+
+    fn type_signature(&self) -> Type {
+        // print : a -> a
+        // Returns the input value for chaining
+        Type::Function(
+            Box::new(Type::Var("a".to_string())),
+            Box::new(Type::Var("a".to_string())),
+        )
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [value] => {
+                println!("{}", value);
+                Ok(value.clone())
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "print requires exactly one argument".to_string(),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        // Print requires WASI support for stdout
+        WasmBuiltin::Complex("print".to_string())
+    }
+}
+
 // String operations
 
 pub struct Concat;
@@ -491,6 +527,8 @@ impl BuiltinRegistry {
             Box::new(Equal),
             // List operations
             Box::new(Cons),
+            // I/O operations
+            Box::new(Print),
             // String operations
             Box::new(Concat),
             // Float operations

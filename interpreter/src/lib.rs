@@ -95,6 +95,14 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
+        env = env.extend(
+            Ident("print".to_string()),
+            Value::BuiltinFunction {
+                name: "print".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
 
         env
     }
@@ -531,6 +539,12 @@ impl Interpreter {
                     span.clone(),
                     "concat requires string arguments".to_string(),
                 )),
+            },
+            "print" => match &args[0] {
+                value => {
+                    println!("{}", value);
+                    Ok(value.clone())
+                }
             },
             _ => Err(XsError::RuntimeError(
                 span.clone(),
