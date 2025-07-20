@@ -32,7 +32,7 @@ impl Hash {
     }
 
     pub fn to_hex(&self) -> String {
-        hex::encode(&self.0)
+        hex::encode(self.0)
     }
 
     pub fn from_hex(s: &str) -> Result<Self, hex::FromHexError> {
@@ -160,7 +160,7 @@ impl Codebase {
         for dep in deps {
             self.dependents
                 .entry(dep)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(hash.clone());
         }
 
@@ -219,11 +219,11 @@ impl Codebase {
 
         // Add all dependencies first
         for dep_hash in deps.iter().rev() {
-            if let Some(dep_term) = self.get_term(&dep_hash) {
+            if let Some(dep_term) = self.get_term(dep_hash) {
                 if let Some(dep_name) = &dep_term.name {
-                    result.push_str(&format!("(let {} ", dep_name));
+                    result.push_str(&format!("(let {dep_name} "));
                     result.push_str(&self.expr_to_string(&dep_term.expr));
-                    result.push_str("\n");
+                    result.push('\n');
                 }
             }
         }
@@ -249,7 +249,7 @@ impl Codebase {
         let mut env = TypeEnv::new();
         let ty = checker
             .check(&new_expr, &mut env)
-            .map_err(|e| CodebaseError::TypeError(format!("{:?}", e)))?;
+            .map_err(|e| CodebaseError::TypeError(format!("{e:?}")))?;
 
         // Remove old version if it exists
         if let Some(old_hash) = self.term_names.get(name).cloned() {
@@ -334,6 +334,10 @@ impl Codebase {
                     self.extract_deps_recursive(case_expr, deps);
                 }
             }
+            Expr::Pipeline { expr, func, .. } => {
+                self.extract_deps_recursive(expr, deps);
+                self.extract_deps_recursive(func, deps);
+            }
             _ => {}
         }
     }
@@ -348,7 +352,7 @@ impl Codebase {
     /// Convert expression to string representation
     fn expr_to_string(&self, expr: &Expr) -> String {
         // TODO: Implement proper pretty-printing
-        format!("{:?}", expr)
+        format!("{expr:?}")
     }
 
     /// Save codebase to disk
@@ -417,6 +421,7 @@ impl EditSession {
 pub struct CodebaseManager {
     codebase: Codebase,
     branches: HashMap<String, Branch>,
+    #[allow(dead_code)]
     storage_path: std::path::PathBuf,
 }
 
@@ -439,7 +444,7 @@ impl CodebaseManager {
         self.branches.insert(name.clone(), branch);
         self.branches
             .get(&name)
-            .ok_or_else(|| CodebaseError::TermNotFound(name))
+            .ok_or(CodebaseError::TermNotFound(name))
     }
 
     pub fn get_branch(&self, name: &str) -> Result<&Branch, CodebaseError> {
@@ -464,7 +469,7 @@ impl CodebaseManager {
                 }
                 EditAction::UpdateDefinition { name, expr } => {
                     // Convert expr to string representation
-                    let expr_str = format!("{:?}", expr); // TODO: Proper formatting
+                    let expr_str = format!("{expr:?}"); // TODO: Proper formatting
                     patch.update_term(name.clone(), expr_str);
                 }
                 EditAction::DeleteDefinition { name } => {
@@ -496,6 +501,12 @@ pub struct Patch {
     pub adds: Vec<(Option<String>, Expr, Type)>,
     pub removes: Vec<Hash>,
     pub updates: Vec<(String, String)>, // (name, new_expr_string)
+}
+
+impl Default for Patch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Patch {

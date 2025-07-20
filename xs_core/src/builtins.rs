@@ -426,7 +426,7 @@ impl BuiltinFunction for Print {
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [value] => {
-                println!("{}", value);
+                println!("{value}");
                 Ok(value.clone())
             }
             _ => Err(XsError::RuntimeError(
@@ -548,7 +548,7 @@ impl BuiltinFunction for StringToInt {
                     Ok(n) => Ok(Value::Int(n)),
                     Err(_) => Err(XsError::RuntimeError(
                         crate::Span::new(0, 0),
-                        format!("Cannot parse '{}' as integer", s),
+                        format!("Cannot parse '{s}' as integer"),
                     )),
                 }
             }
@@ -619,6 +619,43 @@ impl BuiltinFunction for AddFloat {
     }
 }
 
+pub struct StrEq;
+impl BuiltinFunction for StrEq {
+    fn name(&self) -> &str {
+        "str-eq"
+    }
+
+    fn type_signature(&self) -> Type {
+        Type::Function(
+            Box::new(Type::String),
+            Box::new(Type::Function(Box::new(Type::String), Box::new(Type::Bool))),
+        )
+    }
+
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::String(s1)] => Ok(Value::BuiltinFunction {
+                name: "str-eq".to_string(),
+                arity: 2,
+                applied_args: vec![Value::String(s1.clone())],
+            }),
+            [Value::String(s1), Value::String(s2)] => Ok(Value::Bool(s1 == s2)),
+            [arg] => Err(XsError::TypeError(
+                crate::Span::new(0, 0),
+                format!("str-eq expects string argument, got {arg:?}"),
+            )),
+            args => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                format!("str-eq expects 2 arguments, got {}", args.len()),
+            )),
+        }
+    }
+
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Instructions(vec![])  // String comparison is not yet supported in WASM
+    }
+}
+
 /// Registry of all builtin functions
 pub struct BuiltinRegistry {
     functions: Vec<Box<dyn BuiltinFunction>>,
@@ -649,6 +686,7 @@ impl BuiltinRegistry {
             Box::new(IntToString),
             Box::new(StringToInt),
             Box::new(StringLength),
+            Box::new(StrEq),
             // Float operations
             Box::new(AddFloat),
         ];
@@ -776,7 +814,7 @@ mod tests {
         assert!(registry.get("unknown").is_none());
 
         // Test all() method
-        assert!(registry.all().len() > 0);
+        assert!(!registry.all().is_empty());
     }
 
     #[test]

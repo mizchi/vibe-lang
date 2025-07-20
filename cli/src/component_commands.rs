@@ -40,14 +40,11 @@ fn generate_wit_command(file: PathBuf, output: Option<PathBuf>) -> Result<()> {
             use std::collections::HashMap;
             
             for expr in body {
-                match expr {
-                    xs_core::Expr::Let { name: bind_name, value, .. } => {
-                        // Type check the individual binding
-                        if let Ok(typ) = checker::type_check(value) {
-                            binding_types.insert(bind_name.0.clone(), typ);
-                        }
+                if let xs_core::Expr::Let { name: bind_name, value, .. } = expr {
+                    // Type check the individual binding
+                    if let Ok(typ) = checker::type_check(value) {
+                        binding_types.insert(bind_name.0.clone(), typ);
                     }
-                    _ => {}
                 }
             }
             
@@ -71,7 +68,7 @@ fn generate_wit_command(file: PathBuf, output: Option<PathBuf>) -> Result<()> {
                     .with_context(|| format!("Failed to write WIT file: {}", output_path.display()))?;
                 println!("{} Generated WIT interface: {}", "✓".green(), output_path.display());
             } else {
-                println!("{}", wit_content);
+                println!("{wit_content}");
             }
             
             Ok(())

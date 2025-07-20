@@ -35,6 +35,7 @@ pub enum Token {
     RightBrace,
     Comma,
     Exclamation,
+    Pipeline, // |> operator
     #[allow(dead_code)]
     Ident(String), // 識別子トークンを追加
 }
@@ -120,6 +121,11 @@ impl<'a> Lexer<'a> {
                     '!' => {
                         self.advance();
                         Ok(Some((Token::Exclamation, Span::new(start, self.position))))
+                    }
+                    '|' if self.peek_next() == Some('>') => {
+                        self.advance();
+                        self.advance();
+                        Ok(Some((Token::Pipeline, Span::new(start, self.position))))
                     }
                     _ if ch.is_alphabetic()
                         || ch == '+'

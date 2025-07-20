@@ -14,7 +14,7 @@ use checker::{TypeChecker, TypeEnv};
 use codebase::{CachedTestRunner, Codebase, TestCache, TestOutcome};
 use interpreter::Interpreter;
 use parser::parse;
-use xs_core::{Environment, Expr};
+use xs_core::{Expr, Value};
 
 #[derive(Debug, Clone, Error)]
 pub enum TestError {
@@ -146,12 +146,17 @@ impl TestSuite {
                 .map_err(|e| e.to_string())?;
 
             // Then interpret
-            let env = Environment::new();
+            let env = Interpreter::create_initial_env();
             let mut interpreter = Interpreter::new();
             let value = interpreter.eval(expr, &env).map_err(|e| e.to_string())?;
 
-            // Convert value to string
-            Ok(format!("{:?}", value))
+            // Convert value to string representation for comparison
+            Ok(match &value {
+                Value::Bool(b) => b.to_string(),
+                Value::Int(n) => n.to_string(),
+                Value::String(s) => format!("\"{s}\""),
+                _ => format!("{value:?}"),
+            })
         };
 
         // Check if we have a cached result
@@ -190,8 +195,8 @@ impl TestSuite {
                         }
                         ExpectedResult::Error(expected_err) => TestResult::Failed {
                             error: TestError::AssertionFailed {
-                                expected: format!("error: {}", expected_err),
-                                actual: format!("success: {}", value),
+                                expected: format!("error: {expected_err}"),
+                                actual: format!("success: {value}"),
                             },
                             duration: test_result.duration,
                         },
@@ -326,6 +331,12 @@ pub struct TestSummary {
     pub total: usize,
     pub duration: Duration,
     pub failures: Vec<(String, String)>,
+}
+
+impl Default for TestSummary {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestSummary {

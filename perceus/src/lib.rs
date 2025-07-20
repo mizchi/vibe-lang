@@ -163,6 +163,17 @@ impl PerceusTransform {
                 // TODO: Implement effect handler transformation
                 IrExpr::Literal(Literal::Int(0))
             }
+
+            Expr::Pipeline { expr, func, .. } => {
+                // Transform pipeline into function application
+                let transformed_expr = self.transform_expr(expr);
+                let transformed_func = self.transform_expr(func);
+                
+                IrExpr::Apply {
+                    func: Box::new(transformed_func),
+                    args: vec![transformed_expr],
+                }
+            }
         }
     }
 }

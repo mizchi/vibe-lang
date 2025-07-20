@@ -189,13 +189,13 @@ fn extract_function_signature(typ: &xs_core::Type) -> Option<(Vec<(String, WitTy
                     Type::Function(..) | Type::FunctionWithEffect { .. } => {
                         // This is a curried function, add parameter and continue
                         param_count += 1;
-                        params.push((format!("arg{}", param_count), xs_type_to_wit(param_type)));
+                        params.push((format!("arg{param_count}"), xs_type_to_wit(param_type)));
                         current_type = result_type;
                     }
                     _ => {
                         // This is the final result
                         param_count += 1;
-                        params.push((format!("arg{}", param_count), xs_type_to_wit(param_type)));
+                        params.push((format!("arg{param_count}"), xs_type_to_wit(param_type)));
                         let results = vec![xs_type_to_wit(result_type)];
                         return Some((params, results));
                     }
@@ -218,7 +218,7 @@ pub fn generate_wit_file(
     let mut wit = String::new();
     
     // Package declaration
-    wit.push_str(&format!("package {}@{};\n\n", package_name, version));
+    wit.push_str(&format!("package {package_name}@{version};\n\n"));
     
     // Interface declaration
     wit.push_str("interface exports {\n");
@@ -227,19 +227,19 @@ pub fn generate_wit_file(
     for type_def in &interface.types {
         match type_def {
             TypeDefinition::Record { name, fields } => {
-                wit.push_str(&format!("  record {} {{\n", name));
+                wit.push_str(&format!("  record {name} {{\n"));
                 for (field_name, field_type) in fields {
                     wit.push_str(&format!("    {}: {},\n", field_name, wit_type_to_string(field_type)));
                 }
                 wit.push_str("  }\n\n");
             }
             TypeDefinition::Variant { name, cases } => {
-                wit.push_str(&format!("  variant {} {{\n", name));
+                wit.push_str(&format!("  variant {name} {{\n"));
                 for (case_name, case_type) in cases {
                     if let Some(typ) = case_type {
                         wit.push_str(&format!("    {}({}),\n", case_name, wit_type_to_string(typ)));
                     } else {
-                        wit.push_str(&format!("    {},\n", case_name));
+                        wit.push_str(&format!("    {case_name},\n"));
                     }
                 }
                 wit.push_str("  }\n\n");
@@ -260,7 +260,7 @@ pub fn generate_wit_file(
             .collect();
         wit.push_str(&params.join(", "));
         
-        wit.push_str(")");
+        wit.push(')');
         
         // Results
         if !func.results.is_empty() {
@@ -281,7 +281,7 @@ pub fn generate_wit_file(
     wit.push_str("}\n\n");
     
     // World declaration
-    wit.push_str(&format!("world {} {{\n", package_name));
+    wit.push_str(&format!("world {package_name} {{\n"));
     wit.push_str("  export exports;\n");
     wit.push_str("}\n");
     
@@ -308,7 +308,7 @@ fn wit_type_to_string(typ: &WitType) -> String {
         WitType::Result { ok, err } => {
             let ok_str = ok.as_ref().map(|t| wit_type_to_string(t)).unwrap_or_else(|| "_".to_string());
             let err_str = err.as_ref().map(|t| wit_type_to_string(t)).unwrap_or_else(|| "_".to_string());
-            format!("result<{}, {}>", ok_str, err_str)
+            format!("result<{ok_str}, {err_str}>")
         }
         WitType::Named(name) => name.clone(),
     }

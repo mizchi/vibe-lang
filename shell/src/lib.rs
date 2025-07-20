@@ -7,7 +7,7 @@ use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use xs_core::{Environment, Ident};
+use xs_core::Ident;
 use xs_core::{Expr, Type, Value};
 
 #[derive(Debug)]
@@ -16,6 +16,7 @@ struct ExpressionHistory {
     expr: Expr,
     ty: Type,
     value: Value,
+    #[allow(dead_code)]
     timestamp: std::time::SystemTime,
 }
 
@@ -23,6 +24,7 @@ pub struct ShellState {
     codebase: CodebaseManager,
     current_branch: String,
     session: EditSession,
+    #[allow(dead_code)]
     temp_definitions: HashMap<String, (Expr, Type)>,
     type_env: HashMap<String, Type>,
     runtime_env: HashMap<String, Value>,
@@ -157,9 +159,9 @@ impl ShellState {
             .edits
             .iter()
             .map(|e| match e {
-                EditAction::AddDefinition { name, .. } => format!("+ {}", name),
-                EditAction::UpdateDefinition { name, .. } => format!("~ {}", name),
-                EditAction::DeleteDefinition { name } => format!("- {}", name),
+                EditAction::AddDefinition { name, .. } => format!("+ {name}"),
+                EditAction::UpdateDefinition { name, .. } => format!("~ {name}"),
+                EditAction::DeleteDefinition { name } => format!("- {name}"),
             })
             .collect();
 
@@ -197,12 +199,12 @@ impl ShellState {
         };
 
         let mut output = Vec::new();
-        for (_i, entry) in limited_iter.enumerate() {
+        for entry in limited_iter {
             let named = self
                 .named_exprs
                 .iter()
                 .find(|(_, h)| **h == entry.hash)
-                .map(|(n, _)| format!(" ({})", n))
+                .map(|(n, _)| format!(" ({n})"))
                 .unwrap_or_default();
 
             let hash_prefix = if entry.hash.len() >= 8 {
@@ -253,9 +255,9 @@ impl ShellState {
             .edits
             .iter()
             .map(|e| match e {
-                EditAction::AddDefinition { name, .. } => format!("+ {}", name),
-                EditAction::UpdateDefinition { name, .. } => format!("~ {}", name),
-                EditAction::DeleteDefinition { name } => format!("- {}", name),
+                EditAction::AddDefinition { name, .. } => format!("+ {name}"),
+                EditAction::UpdateDefinition { name, .. } => format!("~ {name}"),
+                EditAction::DeleteDefinition { name } => format!("- {name}"),
             })
             .collect();
 
@@ -267,7 +269,7 @@ fn format_value(val: &Value) -> String {
     match val {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
-        Value::String(s) => format!("\"{}\"", s),
+        Value::String(s) => format!("\"{s}\""),
         Value::List(vals) => {
             let items: Vec<_> = vals.iter().map(format_value).collect();
             format!("(list {})", items.join(" "))
@@ -282,7 +284,7 @@ fn format_value(val: &Value) -> String {
         }
         Value::Float(f) => f.to_string(),
         Value::RecClosure { .. } => "<rec-closure>".to_string(),
-        Value::Constructor { name, .. } => format!("<constructor:{}>", name),
+        Value::Constructor { name, .. } => format!("<constructor:{name}>"),
     }
 }
 
@@ -307,7 +309,7 @@ pub fn run_repl() -> Result<()> {
 
                 // Handle commands
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                match parts.get(0) {
+                match parts.first() {
                     Some(&"help") => print_help(),
                     Some(&"exit") | Some(&"quit") => break,
                     Some(&"history") => {
@@ -317,7 +319,7 @@ pub fn run_repl() -> Result<()> {
                     Some(&"ls") => {
                         let named = state.show_named();
                         if !named.is_empty() {
-                            println!("{}", named);
+                            println!("{named}");
                         } else {
                             println!("No named expressions");
                         }
@@ -342,7 +344,7 @@ pub fn run_repl() -> Result<()> {
                     _ => {
                         // Evaluate as expression
                         match state.evaluate_line(line) {
-                            Ok(result) => println!("{}", result),
+                            Ok(result) => println!("{result}"),
                             Err(e) => println!("{}: {}", "Error".red(), e),
                         }
                     }
@@ -357,7 +359,7 @@ pub fn run_repl() -> Result<()> {
                 break;
             }
             Err(err) => {
-                println!("Error: {:?}", err);
+                println!("Error: {err:?}");
                 break;
             }
         }

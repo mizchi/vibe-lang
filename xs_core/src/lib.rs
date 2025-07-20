@@ -143,6 +143,11 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    Pipeline {
+        expr: Box<Expr>,
+        func: Box<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +188,7 @@ impl Expr {
             Expr::Handler { span, .. } => span,
             Expr::WithHandler { span, .. } => span,
             Expr::Perform { span, .. } => span,
+            Expr::Pipeline { span, .. } => span,
         }
     }
 }

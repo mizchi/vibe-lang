@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 fn create_test_file(dir: &Path, name: &str, content: &str) -> PathBuf {
-    let path = dir.join(format!("{}.xs", name));
+    let path = dir.join(format!("{name}.xs"));
     fs::write(&path, content).unwrap();
     path
 }
@@ -33,7 +33,7 @@ fn test_parse_expectation() {
 
     for (content, expected) in test_cases {
         let result = XsTest::parse_expectation(content);
-        assert_eq!(result, expected, "Failed for content: {}", content);
+        assert_eq!(result, expected, "Failed for content: {content}");
     }
 }
 

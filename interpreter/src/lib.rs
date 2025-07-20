@@ -128,6 +128,14 @@ impl Interpreter {
             },
         );
         env = env.extend(
+            Ident("str-eq".to_string()),
+            Value::BuiltinFunction {
+                name: "str-eq".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
             Ident("print".to_string()),
             Value::BuiltinFunction {
                 name: "print".to_string(),
@@ -464,6 +472,7 @@ impl Interpreter {
                     "String.length" => "string-length",
                     "String.toInt" => "string-to-int",
                     "String.fromInt" => "int-to-string",
+                    "String.eq" => "str-eq",
                     
                     // List module
                     "List.cons" => "cons",
@@ -477,14 +486,14 @@ impl Interpreter {
                     _ => {
                         return Err(XsError::RuntimeError(
                             span.clone(),
-                            format!("Unknown qualified identifier: {}", builtin_key),
+                            format!("Unknown qualified identifier: {builtin_key}"),
                         ))
                     }
                 };
                 
                 // Look up the builtin function in the environment
                 env.lookup(&Ident(mapped_name.to_string())).cloned().ok_or_else(|| {
-                    XsError::RuntimeError(span.clone(), format!("Builtin function {} not found", mapped_name))
+                    XsError::RuntimeError(span.clone(), format!("Builtin function {mapped_name} not found"))
                 })
             }
 
@@ -510,6 +519,44 @@ impl Interpreter {
                     Span::new(0, 0),
                     "perform not yet implemented".to_string(),
                 ))
+            }
+
+            Expr::Pipeline { expr, func, .. } => {
+                // Evaluate the expression first
+                let expr_value = self.eval(expr, env)?;
+                
+                // Evaluate the function
+                let func_value = self.eval(func, env)?;
+                
+                // Apply the function to the expression value
+                match func_value {
+                    Value::Closure { params, body, env: closure_env } => {
+                        if params.len() != 1 {
+                            return Err(XsError::RuntimeError(
+                                func.span().clone(),
+                                format!("Pipeline function expects 1 argument, got {}", params.len()),
+                            ));
+                        }
+                        let new_env = closure_env.extend(params[0].clone(), expr_value);
+                        self.eval(&body, &new_env)
+                    }
+                    Value::BuiltinFunction { name, arity, mut applied_args } => {
+                        applied_args.push(expr_value);
+                        if applied_args.len() == arity {
+                            self.execute_builtin(&name, &applied_args, func.span())
+                        } else {
+                            Ok(Value::BuiltinFunction {
+                                name,
+                                arity,
+                                applied_args,
+                            })
+                        }
+                    }
+                    _ => Err(XsError::RuntimeError(
+                        func.span().clone(),
+                        "Pipeline requires a function".to_string(),
+                    )),
+                }
             }
         }
     }
@@ -632,7 +679,7 @@ impl Interpreter {
                     Ok(n) => Ok(Value::Int(n)),
                     Err(_) => Err(XsError::RuntimeError(
                         span.clone(),
-                        format!("Cannot parse '{}' as integer", s),
+                        format!("Cannot parse '{s}' as integer"),
                     )),
                 },
                 _ => Err(XsError::RuntimeError(
@@ -647,11 +694,17 @@ impl Interpreter {
                     "string-length requires a string argument".to_string(),
                 )),
             },
-            "print" => match &args[0] {
-                value => {
-                    println!("{}", value);
-                    Ok(value.clone())
-                }
+            "str-eq" => match (&args[0], &args[1]) {
+                (Value::String(s1), Value::String(s2)) => Ok(Value::Bool(s1 == s2)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "str-eq requires two string arguments".to_string(),
+                )),
+            },
+            "print" => {
+                let value = &args[0];
+                println!("{value}");
+                Ok(value.clone())
             },
             _ => Err(XsError::RuntimeError(
                 span.clone(),
@@ -752,6 +805,13 @@ impl Interpreter {
     }
 }
 
+/// Helper function to evaluate an expression with a fresh interpreter and initial environment
+pub fn eval(expr: &Expr) -> Result<Value, XsError> {
+    let mut interpreter = Interpreter::new();
+    let env = Interpreter::create_initial_env();
+    interpreter.eval(expr, &env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,11 +901,4 @@ mod tests {
         let result = interp.eval(&expr, &env).unwrap();
         assert_eq!(result, Value::Int(12));
     }
-}
-
-/// Helper function to evaluate an expression with a fresh interpreter and initial environment
-pub fn eval(expr: &Expr) -> Result<Value, XsError> {
-    let mut interpreter = Interpreter::new();
-    let env = Interpreter::create_initial_env();
-    interpreter.eval(expr, &env)
 }

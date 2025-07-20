@@ -126,6 +126,13 @@ impl<'a> PrettyPrinter<'a> {
                     .join(" ");
                 format!("(perform {} {})", effect.0, args_str)
             }
+            Expr::Pipeline { expr, func, .. } => {
+                format!(
+                    "{} |> {}",
+                    self.format_expr(expr, None),
+                    self.format_expr(func, None)
+                )
+            }
         };
 
         result.push_str(&self.indent());

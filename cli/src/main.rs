@@ -41,7 +41,7 @@ enum Commands {
 
     /// Run tests
     Test {
-        /// Test file or directory (defaults to tests/xs)
+        /// Test file or directory (defaults to tests/xs_tests)
         path: Option<PathBuf>,
 
         /// Verbose output
@@ -249,7 +249,7 @@ fn format_value(value: &Value) -> String {
             applied_args,
         } => {
             if applied_args.is_empty() {
-                format!("<builtin:{}:{}>", name, arity).yellow().to_string()
+                format!("<builtin:{name}:{arity}>").yellow().to_string()
             } else {
                 format!("<builtin:{}:{}/{}>", name, arity, applied_args.len())
                     .yellow()
@@ -260,7 +260,7 @@ fn format_value(value: &Value) -> String {
 }
 
 fn run_tests(path: Option<PathBuf>, verbose: bool) -> Result<()> {
-    let test_path = path.unwrap_or_else(|| PathBuf::from("tests/xs"));
+    let test_path = path.unwrap_or_else(|| PathBuf::from("tests/xs_tests"));
 
     // Use the new test framework with caching
     let mut test_suite = TestSuite::new(verbose);

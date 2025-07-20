@@ -938,9 +938,9 @@ mod tests {
         let string_lit = Literal::String("hello".to_string());
 
         // Test Debug trait
-        assert!(format!("{:?}", int_lit).contains("Int"));
-        assert!(format!("{:?}", float_lit).contains("Float"));
-        assert!(format!("{:?}", bool_lit).contains("Bool"));
-        assert!(format!("{:?}", string_lit).contains("String"));
+        assert!(format!("{int_lit:?}").contains("Int"));
+        assert!(format!("{float_lit:?}").contains("Float"));
+        assert!(format!("{bool_lit:?}").contains("Bool"));
+        assert!(format!("{string_lit:?}").contains("String"));
     }
 }

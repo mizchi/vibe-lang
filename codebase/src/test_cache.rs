@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
-use crate::{CodebaseError, Hash};
-use xs_core::{Expr, Value};
+use crate::Hash;
+use xs_core::Expr;
 
 /// Test result with metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +48,12 @@ pub struct TestCache {
     dependency_index: HashMap<Hash, Vec<Hash>>,
 }
 
+impl Default for TestCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestCache {
     pub fn new() -> Self {
         TestCache {
@@ -80,7 +86,7 @@ impl TestCache {
         for dep in &dependencies {
             self.dependency_index
                 .entry(dep.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(test_hash.clone());
         }
 
@@ -134,11 +140,11 @@ impl TestCache {
         let mut hasher = Sha256::new();
 
         // Hash the expression
-        hasher.update(format!("{:?}", expr).as_bytes());
+        hasher.update(format!("{expr:?}").as_bytes());
 
         // Include dependencies in the hash
         for dep in dependencies {
-            hasher.update(&dep.0);
+            hasher.update(dep.0);
         }
 
         let result = hasher.finalize();

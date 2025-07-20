@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::Parser;
-    use xs_core::{Effect, EffectRow, EffectSet, Type};
+    use xs_core::{Effect, EffectRow, Type};
 
     #[test]
     fn test_parse_pure_function_type() {
@@ -12,7 +12,7 @@ mod tests {
                 assert_eq!(*from, Type::Int);
                 assert_eq!(*to, Type::Int);
             }
-            _ => panic!("Expected function type, got {:?}", typ),
+            _ => panic!("Expected function type, got {typ:?}"),
         }
     }
 
@@ -31,7 +31,7 @@ mod tests {
                     _ => panic!("Expected concrete effect set"),
                 }
             }
-            _ => panic!("Expected function with effect type, got {:?}", typ),
+            _ => panic!("Expected function with effect type, got {typ:?}"),
         }
     }
 
@@ -51,7 +51,7 @@ mod tests {
                     _ => panic!("Expected concrete effect set"),
                 }
             }
-            _ => panic!("Expected function with effect type, got {:?}", typ),
+            _ => panic!("Expected function with effect type, got {typ:?}"),
         }
     }
 
@@ -70,7 +70,7 @@ mod tests {
                     _ => panic!("Expected effect variable"),
                 }
             }
-            _ => panic!("Expected function with effect type, got {:?}", typ),
+            _ => panic!("Expected function with effect type, got {typ:?}"),
         }
     }
 }

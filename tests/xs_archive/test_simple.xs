@@ -1,3 +1,3 @@
 ; Simple test without builtin functions
-; expect: Int(42)
+; expect: 42
 42

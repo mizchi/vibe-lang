@@ -1,5 +1,5 @@
 mod effect_parser;
-mod lexer;
+pub mod lexer;
 mod metadata_parser;
 // mod handler_parser; // TODO: Fix and re-enable
 #[cfg(test)]
@@ -27,12 +27,32 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse(&mut self) -> Result<Expr, XsError> {
-        self.parse_expr()
+        self.parse_pipeline()
     }
 
     fn advance(&mut self) -> Result<(), XsError> {
         self.current_token = self.lexer.next_token()?;
         Ok(())
+    }
+
+    fn parse_pipeline(&mut self) -> Result<Expr, XsError> {
+        let mut expr = self.parse_expr()?;
+        
+        while let Some((Token::Pipeline, _)) = &self.current_token {
+            let start = expr.span().start;
+            self.advance()?; // consume |>
+            
+            let func = self.parse_expr()?;
+            let end = func.span().end;
+            
+            expr = Expr::Pipeline {
+                expr: Box::new(expr),
+                func: Box::new(func),
+                span: Span::new(start, end),
+            };
+        }
+        
+        Ok(expr)
     }
 
     fn parse_expr(&mut self) -> Result<Expr, XsError> {
@@ -71,6 +91,24 @@ impl<'a> Parser<'a> {
                             let qualified = Expr::QualifiedIdent {
                                 module_name: ident,
                                 name: Ident(name.clone()),
+                                span: Span::new(start_span.start, end_span.end),
+                            };
+                            self.advance()?;
+                            Ok(qualified)
+                        }
+                        Some((Token::Cons, end_span)) => {
+                            let qualified = Expr::QualifiedIdent {
+                                module_name: ident,
+                                name: Ident("cons".to_string()),
+                                span: Span::new(start_span.start, end_span.end),
+                            };
+                            self.advance()?;
+                            Ok(qualified)
+                        }
+                        Some((Token::List, end_span)) => {
+                            let qualified = Expr::QualifiedIdent {
+                                module_name: ident,
+                                name: Ident("list".to_string()),
                                 span: Span::new(start_span.start, end_span.end),
                             };
                             self.advance()?;

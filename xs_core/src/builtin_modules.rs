@@ -3,7 +3,7 @@
 //! This module provides namespace organization for builtin functions,
 //! allowing them to be accessed as Int.toString, String.concat, etc.
 
-use crate::{Type, TypeDefinition};
+use crate::Type;
 use std::collections::HashMap;
 
 /// Represents a builtin module with its functions
@@ -143,6 +143,13 @@ impl BuiltinModuleRegistry {
         string_module.add_function(
             "fromInt",
             Type::Function(Box::new(Type::Int), Box::new(Type::String)),
+        );
+        string_module.add_function(
+            "eq",
+            Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::Function(Box::new(Type::String), Box::new(Type::Bool))),
+            ),
         );
         self.modules.insert("String".to_string(), string_module);
 

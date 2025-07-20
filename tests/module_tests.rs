@@ -109,7 +109,7 @@ fn test_module_with_types() {
     // Should type check successfully
     match result {
         Ok(_) => {},
-        Err(e) => panic!("Type check failed: {}", e),
+        Err(e) => panic!("Type check failed: {e}"),
     }
 }
 

@@ -135,6 +135,13 @@ impl Default for TypeEnv {
             "string-length",
             Type::Function(Box::new(Type::String), Box::new(Type::Int)),
         );
+        env.add_builtin(
+            "str-eq",
+            Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::Function(Box::new(Type::String), Box::new(Type::Bool))),
+            ),
+        );
         // print : a -> a
         env.add_builtin(
             "print",
@@ -785,6 +792,24 @@ impl TypeChecker {
                     Span::new(0, 0),
                     "perform not yet implemented".to_string(),
                 ))
+            }
+
+            Expr::Pipeline { expr, func, span } => {
+                // Infer types for both expr and func
+                let expr_type = self.infer(expr, env)?;
+                let func_type = self.infer(func, env)?;
+                
+                // func must be a function type that accepts expr_type
+                let result_type = self.fresh_var();
+                let expected_func_type = Type::Function(Box::new(expr_type.clone()), Box::new(result_type.clone()));
+                
+                self.constraints.push(Constraint {
+                    left: func_type,
+                    right: expected_func_type,
+                    span: span.clone(),
+                });
+                
+                Ok(result_type)
             }
         }
     }
