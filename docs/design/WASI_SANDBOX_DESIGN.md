@@ -106,7 +106,7 @@ pub struct PortRange {
 ### 1. パーミッションチェッカー
 
 ```rust
-// wasm_backend/src/permissions.rs
+// xs-wasm/src/permissions.rs
 pub struct PermissionChecker {
     granted: HashSet<Permission>,
     denied: HashSet<Permission>,

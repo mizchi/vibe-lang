@@ -1,5 +1,5 @@
 //! Tests for validating generated WIT files
-//! 
+//!
 //! These tests ensure that generated WIT files are syntactically valid
 //! and can be used with WebAssembly tooling.
 
@@ -41,53 +41,60 @@ fn test_generated_wit_syntax_validation() {
     let temp_dir = TempDir::new().unwrap();
     let module_path = temp_dir.path().join("calculator.xs");
     let wit_path = temp_dir.path().join("calculator.wit");
-    
+
     fs::write(&module_path, module_content).unwrap();
-    
+
     // Generate WIT
     let output = Command::new("cargo")
-        .args(&[
-            "run", "-p", "cli", "--bin", "xsc", "--", 
-            "component", "wit", 
+        .args([
+            "run",
+            "-p",
+            "xs-tools",
+            "--bin",
+            "xsc",
+            "--",
+            "component",
+            "wit",
             module_path.to_str().unwrap(),
-            "-o", wit_path.to_str().unwrap()
+            "-o",
+            wit_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        panic!("WIT generation failed.\nstderr: {}\nstdout: {}", stderr, stdout);
+        panic!("WIT generation failed.\nstderr: {stderr}\nstdout: {stdout}");
     }
     assert!(wit_path.exists());
-    
+
     // Read and validate basic structure
     let wit_content = fs::read_to_string(&wit_path).unwrap();
-    
+
     // Check package declaration
     assert!(wit_content.starts_with("package xs:calculator@0.1.0;"));
-    
+
     // Check interface structure
     assert!(wit_content.contains("interface exports {"));
     assert!(wit_content.contains("}"));
-    
+
     // Check world declaration
     assert!(wit_content.contains("world calculator {"));
     assert!(wit_content.contains("export exports;"));
-    
+
     // Check function signatures
     assert!(wit_content.contains("add: func(arg1: s64, arg2: s64) -> s64;"));
     assert!(wit_content.contains("subtract: func(arg1: s64, arg2: s64) -> s64;"));
     assert!(wit_content.contains("multiply: func(arg1: s64, arg2: s64) -> s64;"));
     assert!(wit_content.contains("divide: func(arg1: s64, arg2: s64) -> s64;"));
     assert!(wit_content.contains("square: func(arg1: s64) -> s64;"));
-    
+
     // Validate balanced braces
     let open_braces = wit_content.matches('{').count();
     let close_braces = wit_content.matches('}').count();
     assert_eq!(open_braces, close_braces);
-    
+
     // Validate balanced parentheses
     let open_parens = wit_content.matches('(').count();
     let close_parens = wit_content.matches(')').count();
@@ -101,7 +108,7 @@ fn test_wit_bindgen_compatibility() {
         eprintln!("Skipping test: wit-bindgen not available");
         return;
     }
-    
+
     let module_content = r#"
 (module SimpleAPI
   (export get-version process-data)
@@ -112,39 +119,47 @@ fn test_wit_bindgen_compatibility() {
     let temp_dir = TempDir::new().unwrap();
     let module_path = temp_dir.path().join("api.xs");
     let wit_path = temp_dir.path().join("api.wit");
-    
+
     fs::write(&module_path, module_content).unwrap();
-    
+
     // Generate WIT
     let output = Command::new("cargo")
-        .args(&[
-            "run", "-p", "cli", "--bin", "xsc", "--", 
-            "component", "wit", 
+        .args([
+            "run",
+            "-p",
+            "xs-tools",
+            "--bin",
+            "xsc",
+            "--",
+            "component",
+            "wit",
             module_path.to_str().unwrap(),
-            "-o", wit_path.to_str().unwrap()
+            "-o",
+            wit_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        panic!("WIT generation failed.\nstderr: {}\nstdout: {}", stderr, stdout);
+        panic!("WIT generation failed.\nstderr: {stderr}\nstdout: {stdout}");
     }
-    
+
     // Try to generate bindings with wit-bindgen
     let bindgen_output = Command::new("wit-bindgen")
-        .args(&[
+        .args([
             "rust",
-            "--out-dir", temp_dir.path().to_str().unwrap(),
-            wit_path.to_str().unwrap()
+            "--out-dir",
+            temp_dir.path().to_str().unwrap(),
+            wit_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
-    
+
     if !bindgen_output.status.success() {
         let stderr = String::from_utf8_lossy(&bindgen_output.stderr);
-        panic!("wit-bindgen failed: {}", stderr);
+        panic!("wit-bindgen failed: {stderr}");
     }
 }
 
@@ -155,7 +170,7 @@ fn test_wasm_tools_wit_validation() {
         eprintln!("Skipping test: wasm-tools not available");
         return;
     }
-    
+
     let module_content = r#"
 (module DataProcessor
   (export transform filter aggregate)
@@ -167,38 +182,42 @@ fn test_wasm_tools_wit_validation() {
     let temp_dir = TempDir::new().unwrap();
     let module_path = temp_dir.path().join("processor.xs");
     let wit_path = temp_dir.path().join("processor.wit");
-    
+
     fs::write(&module_path, module_content).unwrap();
-    
+
     // Generate WIT
     let output = Command::new("cargo")
-        .args(&[
-            "run", "-p", "cli", "--bin", "xsc", "--", 
-            "component", "wit", 
+        .args([
+            "run",
+            "-p",
+            "xs-tools",
+            "--bin",
+            "xsc",
+            "--",
+            "component",
+            "wit",
             module_path.to_str().unwrap(),
-            "-o", wit_path.to_str().unwrap()
+            "-o",
+            wit_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        panic!("WIT generation failed.\nstderr: {}\nstdout: {}", stderr, stdout);
+        panic!("WIT generation failed.\nstderr: {stderr}\nstdout: {stdout}");
     }
-    
+
     // Validate with wasm-tools
     let validate_output = Command::new("wasm-tools")
-        .args(&[
-            "component", "wit",
-            wit_path.to_str().unwrap()
-        ])
+        .args(["component", "wit", wit_path.to_str().unwrap()])
         .output()
         .unwrap();
-    
+
     if !validate_output.status.success() {
         let stderr = String::from_utf8_lossy(&validate_output.stderr);
-        panic!("wasm-tools validation failed: {}", stderr);
+        panic!("wasm-tools validation failed: {stderr}");
     }
 }
 
@@ -213,28 +232,35 @@ fn test_complex_wit_generation() {
     let temp_dir = TempDir::new().unwrap();
     let module_path = temp_dir.path().join("complex.xs");
     let wit_path = temp_dir.path().join("complex.wit");
-    
+
     fs::write(&module_path, module_content).unwrap();
-    
+
     // Generate WIT
     let output = Command::new("cargo")
-        .args(&[
-            "run", "-p", "cli", "--bin", "xsc", "--", 
-            "component", "wit", 
+        .args([
+            "run",
+            "-p",
+            "xs-tools",
+            "--bin",
+            "xsc",
+            "--",
+            "component",
+            "wit",
             module_path.to_str().unwrap(),
-            "-o", wit_path.to_str().unwrap()
+            "-o",
+            wit_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        panic!("WIT generation failed.\nstderr: {}\nstdout: {}", stderr, stdout);
+        panic!("WIT generation failed.\nstderr: {stderr}\nstdout: {stdout}");
     }
-    
+
     let wit_content = fs::read_to_string(&wit_path).unwrap();
-    
+
     // Verify type mapping
     assert!(wit_content.contains("processint: func(arg1: s64) -> s64;"));
 }
@@ -252,32 +278,39 @@ fn test_wit_generation_preserves_naming_conventions() {
     let temp_dir = TempDir::new().unwrap();
     let module_path = temp_dir.path().join("naming.xs");
     let wit_path = temp_dir.path().join("naming.wit");
-    
+
     fs::write(&module_path, module_content).unwrap();
-    
+
     // Generate WIT
     let output = Command::new("cargo")
-        .args(&[
-            "run", "-p", "cli", "--bin", "xsc", "--", 
-            "component", "wit", 
+        .args([
+            "run",
+            "-p",
+            "xs-tools",
+            "--bin",
+            "xsc",
+            "--",
+            "component",
+            "wit",
             module_path.to_str().unwrap(),
-            "-o", wit_path.to_str().unwrap()
+            "-o",
+            wit_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
-    
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    eprintln!("WIT generation stderr: {}", stderr);
-    eprintln!("WIT generation stdout: {}", stdout);
-    
+    eprintln!("WIT generation stderr: {stderr}");
+    eprintln!("WIT generation stdout: {stdout}");
+
     if !output.status.success() {
-        panic!("WIT generation failed.\nstderr: {}\nstdout: {}", stderr, stdout);
+        panic!("WIT generation failed.\nstderr: {stderr}\nstdout: {stdout}");
     }
-    
+
     let wit_content = fs::read_to_string(&wit_path).unwrap();
-    eprintln!("Generated WIT content:\n{}", wit_content);
-    
+    eprintln!("Generated WIT content:\n{wit_content}");
+
     // Verify simple naming
     assert!(wit_content.contains("add: func() -> s64;"));
     assert!(wit_content.contains("subtract: func() -> s64;"));

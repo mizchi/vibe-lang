@@ -3,10 +3,10 @@
 //! This library provides the core functionality of the XS language,
 //! including parsing, type checking, and interpretation.
 
-pub use checker::{type_check, TypeChecker};
-pub use interpreter::eval;
-pub use parser::parse;
+pub use xs_compiler::{type_check, TypeChecker};
+pub use xs_core::parser::parse;
 pub use xs_core::{Environment, Expr, Type, Value, XsError};
+pub use xs_runtime::eval;
 
 /// Parse and type check a program
 pub fn compile(source: &str) -> Result<(Expr, Type), XsError> {

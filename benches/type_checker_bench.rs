@@ -3,10 +3,10 @@
 //! This benchmark suite tests various type checking scenarios to help optimize
 //! the type checker performance, especially for incremental compilation.
 
-use checker::{TypeChecker, TypeEnv};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use parser::parse;
-// use xs_salsa::XsDatabase; // Temporarily disabled due to incomplete implementation
+use xs_compiler::{TypeChecker, TypeEnv};
+use xs_core::parser::parse;
+// use xs_workspace::XsDatabase; // Temporarily disabled due to incomplete implementation
 
 fn generate_nested_let(depth: usize) -> String {
     let mut expr = "42".to_string();

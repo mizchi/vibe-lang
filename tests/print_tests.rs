@@ -1,9 +1,9 @@
 //! Tests for the print builtin function
 
-use checker::type_check;
-use interpreter::eval;
-use parser::parse;
+use xs_compiler::type_check;
+use xs_core::parser::parse;
 use xs_core::Value;
+use xs_runtime::eval;
 
 #[test]
 fn test_print_returns_value() {
@@ -60,7 +60,7 @@ fn test_print_polymorphic() {
         "(print (list 1 2))",
         "(print (fn (x) x))",
     ];
-    
+
     for source in sources {
         let expr = parse(source).unwrap();
         // Should type check successfully

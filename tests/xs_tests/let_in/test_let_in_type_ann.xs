@@ -1,0 +1,1 @@
+(let x : Int 42 in (* x 2))

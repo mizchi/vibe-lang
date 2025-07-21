@@ -2,7 +2,7 @@
 
 ## 現状の責務分析
 
-### 1. perceus
+### 1. xs-compiler (memory optimization module)
 **役割**: AST → IR変換 + メモリ管理の準備
 - ASTからIRへの変換を担当
 - 将来的にはPerceus参照カウント管理（drop/dup挿入）を実装予定
@@ -12,7 +12,7 @@
 - メモリ管理の実装が未完成
 - IR表現が基本的すぎる（型情報やメモリ管理情報が不足）
 
-### 2. interpreter
+### 2. xs-runtime
 **役割**: AST直接実行
 - ASTを直接評価（tree-walking interpreter）
 - ビルトイン関数のランタイム実装
@@ -24,7 +24,7 @@
 - AST直接実行なので最適化が困難
 - PerceusやWebAssemblyとの統合パスがない
 
-### 3. xs_salsa
+### 3. xs-workspace (incremental compilation)
 **役割**: インクリメンタルコンパイルのキャッシュ層
 - ファイル単位でのパース・型チェック結果のキャッシュ
 - 変更検知と差分コンパイル
@@ -33,7 +33,7 @@
 - 現在はパースと型チェックのみ対応
 - IR生成やコード生成のキャッシュは未実装
 
-### 4. wasm_backend
+### 4. xs-wasm
 **役割**: IR → WebAssembly変換と実行
 - IRからWebAssembly（GC付き）への変換
 - WebAssembly Text Format (WAT) の生成

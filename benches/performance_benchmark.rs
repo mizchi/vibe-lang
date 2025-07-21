@@ -1,9 +1,9 @@
 //! Performance benchmarks for XS language components
 
-use checker::{TypeChecker, TypeEnv};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use interpreter::eval;
-use parser::parse;
+use xs_compiler::{TypeChecker, TypeEnv};
+use xs_core::parser::parse;
+use xs_runtime::eval;
 
 fn benchmark_parser(c: &mut Criterion) {
     let simple_expr = "(+ 1 2)";

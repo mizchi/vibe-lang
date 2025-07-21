@@ -22,14 +22,17 @@ fn test_state_effect_simulation() {
     test_runs_with_output(
         "state_effect",
         r#"((fn (state) (list (+ state 1) (+ state 1))) 0)"#,
-        "(list 1 1)"
+        "(list 1 1)",
     );
 }
 
 #[test]
 fn test_exception_effect_simulation() {
     // Simulate exception effects with Result type
-    test_type_checks("exception_effect", r#"(type Result a (Ok a) (Error String))"#);
+    test_type_checks(
+        "exception_effect",
+        r#"(type Result a (Ok a) (Error String))"#,
+    );
 }
 
 #[test]
@@ -44,7 +47,7 @@ fn test_effect_polymorphism() {
     test_runs_with_output(
         "poly_effect",
         r#"((fn (f) (fn (x) (f x))) (fn (x) (* x 2)))"#,
-        "closure"
+        "closure",
     );
 }
 
@@ -54,7 +57,7 @@ fn test_effect_inference() {
     test_runs_with_output(
         "effect_infer",
         r#"((fn (f g) (fn (x) (f (g x)))) (fn (x) (+ x 1)) (fn (x) x))"#,
-        "closure"
+        "closure",
     );
 }
 
@@ -64,7 +67,7 @@ fn test_effect_handlers_preparation() {
     test_runs_with_output(
         "handlers",
         r#"((fn (handler comp) (handler comp)) (fn (x) x) (fn () 42))"#,
-        "42"
+        "<closure>",
     );
 }
 
@@ -74,7 +77,7 @@ fn test_resource_effect_simulation() {
     test_runs_with_output(
         "resource",
         r#"((fn (acquire release use) ((fn (resource) ((fn (result) result) (use resource))) (acquire))) (fn () 1) (fn (c) c) (fn (c) (+ c 10)))"#,
-        "11"
+        "11",
     );
 }
 
@@ -83,7 +86,7 @@ fn test_nondeterminism_effect() {
     // Test nondeterministic computation simulation
     test_runs_successful(
         "nondet",
-        r#"(match (list 1 2 3) ((list) (list)) ((list x y z) (list x y z)))"#
+        r#"(match (list 1 2 3) ((list) (list)) ((list x y z) (list x y z)))"#,
     );
 }
 
@@ -92,7 +95,7 @@ fn test_continuation_effect_prep() {
     // Prepare for continuation effects
     test_runs_successful(
         "continuation",
-        r#"((fn (f) (f (fn (x) x))) (fn (k) (+ 1 (k 42))))"#
+        r#"((fn (f) (f (fn (x) x))) (fn (k) (+ 1 (k 42))))"#,
     );
 }
 

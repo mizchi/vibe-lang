@@ -7,7 +7,7 @@ build:
 
 test:
 	cargo test --all
-	cargo run -p cli --bin xsc -- test
+	cargo run -p xs-tools --bin xsc -- test
 
 clean:
 	cargo clean
@@ -42,18 +42,18 @@ doc:
 
 # XS specific commands
 run-shell:
-	cargo run -p shell --bin xs-shell
+	cargo run -p xs-tools --bin xs-shell
 
 run-tests:
-	cargo run -p cli --bin xsc -- test
+	cargo run -p xs-tools --bin xsc -- test
 
 test-xs:
-	cargo run -p cli --bin xsc -- test xs/
+	cargo run -p xs-tools --bin xsc -- test xs/
 
 # Component Model commands
 wit-gen:
 	@if [ -z "$(FILE)" ]; then echo "Usage: make wit-gen FILE=examples/module.xs"; exit 1; fi
-	cargo run -p cli --bin xsc -- component wit $(FILE)
+	cargo run -p xs-tools --bin xsc -- component generate-wit $(FILE)
 
 # Release build
 release:

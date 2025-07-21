@@ -38,17 +38,13 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 詳細なモジュール責務分担については[ARCHITECTURE.md](./ARCHITECTURE.md)を参照してください。
 
 ### crateの構成
-- **xs_core**: 共通型定義、IR、ビルトイン関数、エラーコンテキスト
-- **parser**: S式パーサー、メタデータ保持パーサー
-- **checker**: HM型推論エンジン、改善されたエラーメッセージ
-- **interpreter**: インタープリター実装
-- **cli**: コマンドラインツール (xsc)
-- **shell**: REPL実装、UCM風のコード管理
-- **codebase**: Unison風構造化コードベース
-- **xs_salsa**: インクリメンタルコンパイル
-- **perceus**: Perceus GC変換
-- **wasm_backend**: WebAssembly GCコード生成
-- **runtime**: 統一ランタイムインターフェース
+- **xs-core**: 言語コア（AST定義、型定義、パーサー、プリティプリンタ）
+- **xs-compiler**: コンパイラ（型チェッカー、メモリ最適化）
+- **xs-runtime**: ランタイム（インタープリター、評価器）
+- **xs-wasm**: WebAssemblyバックエンド（WASMコード生成、WASIサンドボックス）
+- **xs-workspace**: ワークスペース管理（コードベース、インクリメンタルコンパイル）
+- **xs-tools**: CLIツール（xscコマンド、REPL、コンポーネントコマンド）
+- **xs-test**: テストフレームワーク
 
 ### メタデータ管理
 - ASTとは別にコメントや一時変数ラベルを管理

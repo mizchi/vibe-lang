@@ -24,7 +24,11 @@ fn test_simple_lambda() {
 
 #[test]
 fn test_nested_lambda() {
-    test_runs_with_output("nested_lambda", r#"((fn (x) ((fn (y) (+ x y)) 20)) 22)"#, "42");
+    test_runs_with_output(
+        "nested_lambda",
+        r#"((fn (x) ((fn (y) (+ x y)) 20)) 22)"#,
+        "42",
+    );
 }
 
 #[test]
@@ -40,12 +44,19 @@ fn test_list_operations() {
 #[test]
 fn test_recursive_function() {
     // Test recursive function using rec
-    test_type_checks("rec_func", r#"(rec fact (n) (if (= n 0) 1 (* n (fact (- n 1)))))"#);
+    test_type_checks(
+        "rec_func",
+        r#"(rec fact (n) (if (= n 0) 1 (* n (fact (- n 1)))))"#,
+    );
 }
 
 #[test]
 fn test_module_syntax() {
-    test_parses_with("module_syntax", r#"(module Math (export id) (let id (fn (x) x)))"#, "Module");
+    test_parses_with(
+        "module_syntax",
+        r#"(module Math (export id) (let id (fn (x) x)))"#,
+        "Module",
+    );
 }
 
 #[test]
@@ -55,5 +66,9 @@ fn test_type_definition() {
 
 #[test]
 fn test_pattern_matching() {
-    test_runs_with_output("pattern_match", r#"(match (list 1 2) ((list) 0) ((list x _) x))"#, "1");
+    test_runs_with_output(
+        "pattern_match",
+        r#"(match (list 1 2) ((list) 0) ((list x _) x))"#,
+        "1",
+    );
 }

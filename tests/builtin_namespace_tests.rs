@@ -5,7 +5,7 @@ use std::process::Command;
 
 fn run_xsc(args: &[&str]) -> (String, String, bool) {
     let output = Command::new("cargo")
-        .args(["run", "-p", "cli", "--bin", "xsc", "--"])
+        .args(["run", "-p", "xs-tools", "--bin", "xsc", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");
@@ -24,14 +24,14 @@ fn test_int_namespace() {
     let (stdout, stderr, success) = run_xsc(&["run", "test_int_tostring.xs"]);
     assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("\"42\""));
-    
+
     // Test Int.add
     let code = "(Int.add 10 20)";
     fs::write("test_int_add.xs", code).unwrap();
     let (stdout, stderr, success) = run_xsc(&["run", "test_int_add.xs"]);
     assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("30"));
-    
+
     // Test Int.eq
     let code = "(Int.eq 5 5)";
     fs::write("test_int_eq.xs", code).unwrap();
@@ -48,14 +48,14 @@ fn test_string_namespace() {
     let (stdout, stderr, success) = run_xsc(&["run", "test_string_concat.xs"]);
     assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("\"Hello, World!\""));
-    
+
     // Test String.length
     let code = r#"(String.length "Hello")"#;
     fs::write("test_string_length.xs", code).unwrap();
     let (stdout, stderr, success) = run_xsc(&["run", "test_string_length.xs"]);
     assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("5"));
-    
+
     // Test String.fromInt
     let code = "(String.fromInt 123)";
     fs::write("test_string_fromint.xs", code).unwrap();
@@ -102,7 +102,7 @@ fn test_backward_compatibility() {
     let (stdout, stderr, success) = run_xsc(&["run", "test_backward_plus.xs"]);
     assert!(success, "Run failed: {stderr}");
     assert!(stdout.contains("30"));
-    
+
     let code = r#"(str-concat "Hello, " "World!")"#;
     fs::write("test_backward_strconcat.xs", code).unwrap();
     let (stdout, stderr, success) = run_xsc(&["run", "test_backward_strconcat.xs"]);

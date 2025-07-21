@@ -99,16 +99,13 @@ cargo run --bin xsc -- parse examples/list.xs
 
 ```
 xs-lang-v3/
-├── xs_core/        # 共通型定義とIR、ビルトイン関数
-├── parser/         # S式パーサー
-├── checker/        # HM型推論エンジン
-├── interpreter/    # インタープリター
-├── cli/            # コマンドラインインターフェース
-├── xs_salsa/       # インクリメンタルコンパイル
-├── perceus/        # Perceus GC変換
-├── wasm_backend/   # WebAssembly GCコード生成
-├── runtime/        # 統一ランタイムインターフェース
-├── codebase/       # Unison風構造化コードベース
+├── xs-core/        # 言語コア（AST定義、型定義、パーサー、プリティプリンタ）
+├── xs-compiler/    # コンパイラ（型チェッカー、メモリ最適化）
+├── xs-runtime/     # ランタイム（インタープリター、評価器）
+├── xs-wasm/        # WebAssemblyバックエンド（WASMコード生成、WASIサンドボックス）
+├── xs-workspace/   # ワークスペース管理（コードベース、インクリメンタルコンパイル）
+├── xs-tools/       # CLIツール（xscコマンド、REPL、コンポーネントコマンド）
+├── xs-test/        # テストフレームワーク
 └── benches/        # パフォーマンスベンチマーク
 ```
 

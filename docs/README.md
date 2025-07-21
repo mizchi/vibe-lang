@@ -48,7 +48,7 @@ XS言語は、AIによる理解と生成を最適化するように設計され�
 - `checker/` - HM型推論エンジン
 - `interpreter/` - インタープリター
 - `runtime/` - 統一ランタイムインターフェース
-- `wasm_backend/` - WebAssembly GCコード生成
+- `xs-wasm/` - WebAssembly GCコード生成
 
 ### サンプルコード
 - `examples/` - 言語機能のサンプルコード

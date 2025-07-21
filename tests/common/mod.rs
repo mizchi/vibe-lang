@@ -13,7 +13,7 @@ pub struct XscResult {
 /// Helper function to run xsc command
 pub fn run_xsc(args: &[&str]) -> XscResult {
     let output = Command::new("cargo")
-        .args(["run", "-p", "cli", "--bin", "xsc", "--"])
+        .args(["run", "-p", "xs-tools", "--bin", "xsc", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");
@@ -61,6 +61,7 @@ pub fn test_runs_with_output(name: &str, code: &str, expected_output: &str) {
 }
 
 /// Helper to test that code runs successfully (without checking output)
+#[allow(dead_code)]
 pub fn test_runs_successful(name: &str, code: &str) {
     test_with_file(name, code, |result| {
         assert!(result.success, "Failed to run: {}", result.stderr);
@@ -75,6 +76,7 @@ pub fn test_type_checks(name: &str, code: &str) {
 }
 
 /// Helper to test that code type checks and contains expected type
+#[allow(dead_code)]
 pub fn test_type_checks_with(name: &str, code: &str, expected_type: &str) {
     test_type_check(name, code, |result| {
         assert!(result.success, "Type check failed: {}", result.stderr);
@@ -88,6 +90,7 @@ pub fn test_type_checks_with(name: &str, code: &str, expected_type: &str) {
 }
 
 /// Helper to test parsing
+#[allow(dead_code)]
 pub fn test_parse(name: &str, code: &str, test_fn: impl Fn(&XscResult)) {
     let filename = format!("test_{name}.xs");
     fs::write(&filename, code).unwrap();
@@ -99,6 +102,7 @@ pub fn test_parse(name: &str, code: &str, test_fn: impl Fn(&XscResult)) {
 }
 
 /// Helper to test that code parses successfully and contains expected output
+#[allow(dead_code)]
 pub fn test_parses_with(name: &str, code: &str, expected: &str) {
     test_parse(name, code, |result| {
         assert!(result.success, "Parse failed: {}", result.stderr);
@@ -112,6 +116,7 @@ pub fn test_parses_with(name: &str, code: &str, expected: &str) {
 }
 
 /// Common test patterns
+#[allow(dead_code)]
 pub mod patterns {
     pub const FACTORIAL: &str = r#"
 (rec factorial (n : Int) : Int
@@ -128,7 +133,7 @@ pub mod patterns {
 "#;
 
     pub const IDENTITY: &str = r#"(rec identity (x) x)"#;
-    
+
     pub const FIBONACCI: &str = r#"
 (rec fib (n : Int) : Int
   (if (< n 2)

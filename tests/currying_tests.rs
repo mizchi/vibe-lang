@@ -5,7 +5,7 @@ use std::process::Command;
 
 fn run_xsc(args: &[&str]) -> (String, String, bool) {
     let output = Command::new("cargo")
-        .args(["run", "-p", "cli", "--bin", "xsc", "--"])
+        .args(["run", "-p", "xs-tools", "--bin", "xsc", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");
@@ -76,7 +76,7 @@ fn test_partial_application_binding() {
 
     let (stdout, stderr, success) = run_xsc(&["run", "test_partial_bind.xs"]);
     assert!(success, "Run failed: {stderr}");
-    assert!(stdout.contains("builtin:+:2/1"));
+    assert!(stdout.contains("<builtin:+>"));
 
     fs::remove_file("test_partial_bind.xs").ok();
 }

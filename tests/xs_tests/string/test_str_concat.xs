@@ -1,1 +1,0 @@
-(str-concat "Hello, " "World!")

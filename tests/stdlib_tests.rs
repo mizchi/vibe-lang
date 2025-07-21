@@ -5,7 +5,7 @@ use std::process::Command;
 
 fn run_xsc(args: &[&str]) -> (String, String, bool) {
     let output = Command::new("cargo")
-        .args(["run", "-p", "cli", "--bin", "xsc", "--"])
+        .args(["run", "-p", "xs-tools", "--bin", "xsc", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");
