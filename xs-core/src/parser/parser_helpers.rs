@@ -5,6 +5,20 @@ use crate::{Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError};
 use ordered_float::OrderedFloat;
 
 impl<'a> Parser<'a> {
+    /// Parse optional type annotation (: Type)
+    fn parse_optional_type_annotation(&mut self) -> Result<Option<Type>, XsError> {
+        if self.check_token(&Token::Colon) {
+            self.advance()?; // consume ':'
+            Ok(Some(self.parse_type()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Create a default span (to be updated with proper span tracking)
+    fn default_span(&self) -> Span {
+        Span::new(0, 0)
+    }
     pub fn new(input: &'a str) -> Self {
         let mut lexer = super::lexer::Lexer::new(input);
         let current_token = lexer.next_token().ok().flatten();
@@ -261,36 +275,26 @@ impl<'a> Parser<'a> {
     fn parse_let(&mut self) -> Result<Expr, XsError> {
         self.advance()?; // consume 'let'
         let name = self.parse_ident()?;
-
-        // Check for type annotation
-        let type_ann = if self.check_token(&Token::Colon) {
-            self.advance()?; // consume ':'
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
+        let type_ann = self.parse_optional_type_annotation()?;
         let value = Box::new(self.parse_expr()?);
         
         // Check for 'in' keyword for let-in expression
         if self.check_token(&Token::In) {
             self.advance()?; // consume 'in'
             let body = Box::new(self.parse_expr()?);
-            let span = Span::new(0, 0); // Will be updated with proper span tracking
             Ok(Expr::LetIn {
                 name,
                 type_ann,
                 value,
                 body,
-                span,
+                span: self.default_span(),
             })
         } else {
-            let span = Span::new(0, 0); // Will be updated with proper span tracking
             Ok(Expr::Let {
                 name,
                 type_ann,
                 value,
-                span,
+                span: self.default_span(),
             })
         }
     }
@@ -298,22 +302,14 @@ impl<'a> Parser<'a> {
     fn parse_let_rec(&mut self) -> Result<Expr, XsError> {
         self.advance()?; // consume 'let-rec'
         let name = self.parse_ident()?;
-
-        let type_ann = if self.check_token(&Token::Colon) {
-            self.advance()?; // consume ':'
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
+        let type_ann = self.parse_optional_type_annotation()?;
         let value = Box::new(self.parse_expr()?);
-        let span = Span::new(0, 0); // Will be updated with proper span tracking
 
         Ok(Expr::LetRec {
             name,
             type_ann,
             value,
-            span,
+            span: self.default_span(),
         })
     }
 
@@ -321,23 +317,15 @@ impl<'a> Parser<'a> {
         self.advance()?; // consume 'rec'
         let name = self.parse_ident()?;
         let params = self.parse_typed_params()?;
-
-        // Check for return type annotation
-        let return_type = if self.check_token(&Token::Colon) {
-            self.advance()?; // consume ':'
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
+        let return_type = self.parse_optional_type_annotation()?;
         let body = Box::new(self.parse_expr()?);
-        let span = Span::new(0, 0); // Will be updated with proper span tracking
+        
         Ok(Expr::Rec {
             name,
             params,
             return_type,
             body,
-            span,
+            span: self.default_span(),
         })
     }
 

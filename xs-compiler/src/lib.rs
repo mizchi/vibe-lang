@@ -256,25 +256,7 @@ impl TypeChecker {
     }
 
     fn substitute(&self, typ: &Type) -> Type {
-        match typ {
-            Type::Var(name) => {
-                if let Some(subst_type) = self.substitutions.get(name) {
-                    self.substitute(subst_type)
-                } else {
-                    typ.clone()
-                }
-            }
-            Type::Function(param, ret) => Type::Function(
-                Box::new(self.substitute(param)),
-                Box::new(self.substitute(ret)),
-            ),
-            Type::List(elem) => Type::List(Box::new(self.substitute(elem))),
-            Type::UserDefined { name, type_params } => Type::UserDefined {
-                name: name.clone(),
-                type_params: type_params.iter().map(|t| self.substitute(t)).collect(),
-            },
-            _ => typ.clone(),
-        }
+        self.substitute_with_map(typ, &HashMap::new())
     }
 
     fn unify(&mut self, t1: &Type, t2: &Type) -> Result<(), String> {
@@ -326,10 +308,14 @@ impl TypeChecker {
     fn substitute_with_map(&self, typ: &Type, subst: &HashMap<String, Type>) -> Type {
         match typ {
             Type::Var(name) => {
+                // First check the provided substitution map
                 if let Some(new_type) = subst.get(name) {
                     new_type.clone()
+                } else if let Some(subst_type) = self.substitutions.get(name) {
+                    // Then check the global substitutions and recursively substitute
+                    self.substitute_with_map(subst_type, subst)
                 } else {
-                    self.substitute(typ)
+                    typ.clone()
                 }
             }
             Type::Function(param, ret) => Type::Function(
@@ -337,7 +323,11 @@ impl TypeChecker {
                 Box::new(self.substitute_with_map(ret, subst)),
             ),
             Type::List(elem) => Type::List(Box::new(self.substitute_with_map(elem, subst))),
-            _ => self.substitute(typ),
+            Type::UserDefined { name, type_params } => Type::UserDefined {
+                name: name.clone(),
+                type_params: type_params.iter().map(|t| self.substitute_with_map(t, subst)).collect(),
+            },
+            _ => typ.clone(),
         }
     }
 
