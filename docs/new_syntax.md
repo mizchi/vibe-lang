@@ -301,34 +301,50 @@ scale :: Num a => a -> [a] -> [a]
 process :: (Num a, Ord a) => [a] -> a
 ```
 
-## do記法と順序
+## Effect Systemの設計原則
 
-do記法内では順序が重要：
+### Koka風の代数的エフェクト
 
 ```haskell
--- IO操作（順序が重要）
-main = do {
-  name <- getLine           -- 1. 入力を受け取る
-  putStrLn ("Hello, " ++ name)  -- 2. 出力する
-  return name               -- 3. 結果を返す
+-- 基本原則
+-- 1. Effectは明示的に定義される
+-- 2. withでハンドラーを注入
+-- 3. 静的解析でハンドラーの存在を保証
+
+-- Effect付き計算
+computation :: () -> <State Int, IO> String
+computation () = {
+  n <- get ()
+  print "Current state: ${n}"
+  put (n + 1)
+  return "done"
 }
 
--- 通常のブロックと対比
-calculate = {
-  x = 10      -- 順序は関係ない
-  y = 20      -- これらは相互参照可能
-  x + y
+-- ハンドラーで実行
+main = with ioHandler {
+  with stateHandler 0 {
+    computation ()
+  }
 }
 
--- do記法でも定義は順序独立
-process = do {
-  content <- readFile filename
-  return (parse content)
-  
-  -- whereのように、定義は順序独立
-  filename = "data.txt"
-  parse s = lines s
+-- 純粋な計算（Effectなし）
+pure :: Int -> Int
+pure x = x * 2
+
+-- ctl（限定継続）による制御
+-- 継続を捕獲して操作
+searchFirst :: forall a. (a -> Bool) -> [a] -> <Exception> a
+searchFirst pred list = {
+  for x in list {
+    if pred x then return x
+  }
+  raise "Not found"
 }
+
+-- ハンドラーで早期脱出を実装
+result = with earlyExitHandler {
+  searchFirst even [1, 3, 4, 5]
+}  -- 4を返す
 ```
 
 ## 型クラスとインスタンス
@@ -551,6 +567,391 @@ result = {
     helper x = x * 2
   }
   map Local.helper [1,2,3]
+}
+```
+
+## Effect System (Koka風)
+
+### 基本的なEffect定義
+
+```haskell
+-- Effectの定義
+effect State s {
+  get :: () -> s
+  put :: s -> ()
+}
+
+effect IO {
+  readFile :: String -> String
+  writeFile :: String -> String -> ()
+  print :: String -> ()
+}
+
+effect Exception {
+  raise :: forall a. String -> a
+  catch :: forall a. (() -> a) -> (String -> a) -> a
+}
+
+-- コントロールオペレーター
+effect Async {
+  await :: forall a. Promise a -> a
+  yield :: () -> ()
+}
+
+-- 代数的エフェクト
+effect Choice {
+  choose :: forall a. [a] -> a  -- 非決定的選択
+}
+```
+
+### Effect型とハンドラー合成
+
+```haskell
+-- Effect型表記
+increment :: () -> <State Int> Int
+increment () = {
+  x <- get ()
+  put (x + 1)
+  get ()
+}
+
+-- 複数のEffect
+readAndProcess :: String -> <IO, State Int> String
+readAndProcess filename = {
+  content <- readFile filename
+  count <- get ()
+  put (count + 1)
+  print "Processing file #${count}"
+  return (toUpper content)
+}
+
+-- 純粋な関数（Effectなし）
+double :: Int -> Int
+double x = x * 2
+
+-- 明示的なEffect注釈
+pureComputation :: Int -> <> Int
+pureComputation x = x * 2
+
+-- ハンドラーの合成
+-- 複数のEffectを扱う
+combined :: () -> <IO, State Int> String
+combined () = {
+  msg <- readAndProcess "data.txt"
+  n <- get ()
+  print "Processed ${n} files"
+  return msg
+}
+
+-- ハンドラーをネストして実行
+result = with ioHandler {
+  with stateHandler 0 {
+    combined ()
+  }
+}
+
+-- またはハンドラーを合成
+composedHandler = composeHandlers ioHandler (stateHandler 0)
+result = with composedHandler (combined ())
+```
+
+### withハンドラー (Koka風)
+
+```haskell
+-- withでハンドラーを注入
+with handler <effect-expr>
+
+-- State Effectのハンドラー
+stateHandler :: forall a. s -> handler {State s} a (a, s)
+stateHandler initial = handler {
+  return x = (x, initial)
+  
+  get () k = with stateHandler initial (k initial)
+  put s k = with stateHandler s (k ())
+}
+
+-- 使用例
+result = with stateHandler 0 {
+  x <- get ()
+  put (x + 1)
+  y <- get ()
+  return y
+}
+-- result == (1, 1)
+
+-- control演算子（限定継続）
+ctl :: forall a b e. ((a -> e b) -> e b) -> e a
+
+-- 例：例外のハンドラー
+exceptionHandler :: forall a. handler {Exception} a (Maybe a)
+exceptionHandler = handler {
+  return x = Just x
+  
+  raise msg k = Nothing  -- 継続を破棄
+  
+  catch action handler k = 
+    case (with exceptionHandler action) of {
+      Just x -> k x
+      Nothing -> k (handler "exception raised")
+    }
+}
+
+-- IO Effectのハンドラー（実際のIO操作）
+ioHandler :: handler {IO} a a
+ioHandler = handler {
+  return x = x
+  
+  readFile path k = k (unsafePerformIO (System.readFile path))
+  writeFile path content k = k (unsafePerformIO (System.writeFile path content))
+  print msg k = k (unsafePerformIO (System.print msg))
+}
+```
+
+### 純粋な関数との統合
+
+```haskell
+-- 純粋な関数（Effectなし）
+double :: Int -> Int
+double x = x * 2
+
+-- Effect付き関数
+effectful :: '{State Int} Int
+effectful = do '{State Int} {
+  x <- get
+  -- 純粋な関数を普通に呼べる
+  let doubled = double x
+  put doubled
+  return doubled
+}
+
+-- 純粋な値をEffect文脈に持ち上げ
+pure :: a -> '{e} a
+pure x = do '{e} x
+
+-- Effect関数の合成
+compose :: (b -> '{e} c) -> (a -> '{e} b) -> (a -> '{e} c)
+compose f g x = do '{e} {
+  y <- g x
+  f y
+}
+
+-- 条件付きEffect
+when :: Bool -> '{e} () -> '{e} ()
+when condition action = 
+  if condition 
+  then action
+  else do '{e} ()
+```
+
+### 高度なハンドラーパターン
+
+```haskell
+-- 非決定的計算のハンドラー
+choiceHandler :: forall a. handler {Choice} a [a]
+choiceHandler = handler {
+  return x = [x]
+  
+  choose options k = 
+    -- すべての選択肢を試す
+    concat (map k options)
+}
+
+-- 使用例：すべての組み合わせを生成
+allPairs :: () -> <Choice> (Int, Int)
+allPairs () = {
+  x <- choose [1, 2, 3]
+  y <- choose [4, 5]
+  return (x, y)
+}
+
+result = with choiceHandler (allPairs ())
+-- result == [(1,4), (1,5), (2,4), (2,5), (3,4), (3,5)]
+
+-- エフェクトの局所化
+localState :: forall a. Int -> (() -> <State Int> a) -> a
+localState initial action = 
+  with stateHandler initial (action ())
+
+-- 使用例
+compute :: () -> <> Int
+compute () = {
+  x = localState 10 \() -> {
+    n <- get ()
+    put (n * 2)
+    get ()
+  }
+  y = localState 5 \() -> {
+    n <- get ()
+    put (n + 3)
+    get ()
+  }
+  x + y  -- 20 + 8 = 28
+}
+
+-- 制御フローの変更
+earlyReturn :: forall a. handler {Return a} a a
+earlyReturn = handler {
+  return x = x
+  
+  -- ctlで継続を捕獲
+  earlyExit v = ctl \k -> v  -- 継続を無視して値を返す
+}
+```
+
+### シェルでのEffect
+
+```haskell
+-- シェルコマンドはIOエフェクトを持つ
+xsh> cat "file.txt" | toUpper | save "output.txt"
+-- 暗黙的にIOハンドラーで実行される
+
+-- 明示的なハンドラー実行
+xsh> with ioHandler {
+       content <- readFile "data.json"
+       let parsed = parseJson content
+       print parsed
+     }
+
+-- 純粋な計算（Effectなし）
+xsh> map double [1,2,3]
+[2,4,6]
+
+-- Effect付き計算の合成
+xsh> with ioHandler {
+       with stateHandler [] {
+         files <- ls "*.txt"
+         for file in files {
+           content <- readFile file
+           lines <- get ()
+           put (lines ++ [content])
+         }
+         get ()
+       }
+     }
+
+-- 非決定的計算の実行
+xsh> with choiceHandler {
+       x <- choose [1, 2, 3]
+       y <- choose [10, 20]
+       guard (x + y > 12)
+       return (x, y)
+     }
+[(2, 20), (3, 10), (3, 20)]
+```
+
+### Effect推論と静的解析
+
+```haskell
+-- Effect推論
+autoInfer = {
+  x <- get ()      -- State効果を推論
+  print "x=${x}"   -- IO効果を推論
+  put (x + 1)
+}
+-- 推論結果: () -> <State a, IO> ()
+
+-- 純粋性の推論
+pureFn x y = x + y * 2
+-- 推論: Int -> Int -> Int (Effectなし)
+
+effectfulFn x = {
+  print "Computing..."
+  x * 2
+}
+-- 推論: Int -> <IO> Int
+
+-- 静的解析でハンドラーの存在を検証
+-- コンパイル時にハンドラーチェイン全体を解析
+program :: () -> <State Int, IO> String
+program () = {
+  n <- get ()
+  print "Current: ${n}"
+  put (n + 1)
+  return "done"
+}
+
+-- OK: すべてのEffectにハンドラーがある
+main = with ioHandler {
+  with stateHandler 0 {
+    program ()
+  }
+}
+
+-- エラー: Stateハンドラーが不足
+-- bad = with ioHandler (program ())
+
+-- Effectの局所性を静的に検証
+scoped :: () -> <IO> Int
+scoped () = {
+  -- State効果は内部で完結
+  n = with stateHandler 10 {
+    x <- get ()
+    put (x * 2)
+    get ()
+  }
+  print "Result: ${n}"
+  return n
+}
+```
+
+### Effectとパイプライン
+
+```haskell
+-- パイプラインでのEffect処理
+processFiles :: [String] -> <IO, Logger> [Result]
+processFiles files = 
+  files 
+    | filter (endsWith ".txt")
+    | traverse \file -> {
+        log Debug "Processing ${file}"
+        content <- readFile file
+        case parse content of {
+          Ok data -> return Success (file, data)
+          Err e -> {
+            log Error "Failed to parse ${file}: ${e}"
+            return Failure (file, e)
+          }
+        }
+      }
+
+-- 純粋なパイプライン
+pureProcess :: [Int] -> [Int]
+pureProcess nums = nums 
+  | filter (> 0)
+  | map (* 2)
+  | take 10
+
+-- Effectfulパイプライン演算子
+(|>>) :: <e> a -> (a -> <e> b) -> <e> b
+x |>> f = x >>= f
+
+-- ハンドラー付きパイプライン
+withPipeline :: handler h e a b -> <e> a -> (a -> <e> b) -> b
+withPipeline h effect f = with h {
+  x <- effect
+  f x
+}
+
+-- 使用例
+result = with ioHandler {
+  "config.json" 
+    |> readFile 
+    |> parseJson
+    |>> \config -> readFile config.dataFile
+    |>> processData
+}
+
+-- パイプラインハンドラー
+pipeHandler :: forall a. [a] -> handler {Choice} a a
+pipeHandler values = handler {
+  return x = x
+  
+  choose _ k = 
+    -- パイプライン内で最初の成功を返す
+    case filter isSuccess (map k values) of {
+      [] -> error "No successful choice"
+      (x:_) -> x
+    }
 }
 ```
 
