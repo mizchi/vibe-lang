@@ -134,6 +134,13 @@ impl TypeErrorHelper {
                     format!("{} with {} type parameter(s)", name, type_params.len())
                 }
             }
+            Type::Record { fields } => {
+                if fields.is_empty() {
+                    "empty record".to_string()
+                } else {
+                    format!("record with {} field(s)", fields.len())
+                }
+            }
         }
     }
 
@@ -258,6 +265,15 @@ fn type_string(ty: &Type) -> String {
                         .join(" ")
                 )
             }
+        }
+        Type::Record { fields } => {
+            format!(
+                "{{ {} }}",
+                fields.iter()
+                    .map(|(name, ty)| format!("{}: {}", name, type_string(ty)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
     }
 }

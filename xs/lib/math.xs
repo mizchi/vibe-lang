@@ -42,16 +42,16 @@
       (+ (fib (- n 1)) (fib (- n 2)))))
 
 ;; More efficient tail-recursive fibonacci
-(rec fib-tail (n)
-  (rec fib-helper (n a b)
+(rec fibTail (n)
+  (rec fibHelper (n a b)
     (if (= n 0)
         a
-        (fib-helper (- n 1) b (+ a b))))
-  (fib-helper n 0 1))
+        (fibHelper (- n 1) b (+ a b))))
+  (fibHelper n 0 1))
 
 ;; Sum and product of lists
-(let sum (fn (xs) (fold-left + 0 xs)))
-(let product (fn (xs) (fold-left * 1 xs)))
+(let sum (fn (xs) (foldLeft + 0 xs)))
+(let product (fn (xs) (foldLeft * 1 xs)))
 
 ;; Average
 (let average (fn (xs)
@@ -61,8 +61,8 @@
       (/ (sum xs) len))))
 
 ;; Clamp value between min and max
-(let clamp (fn (min-val max-val x)
-  (max min-val (min max-val x))))
+(let clamp (fn (minVal maxVal x)
+  (max minVal (min maxVal x))))
 
 ;; Sign function
 (let sign (fn (x)

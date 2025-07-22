@@ -69,36 +69,36 @@
             
             ;; コメント
             ((stringEq ch ";")
-              (let comment-end (findLineEnd input (+ pos 1)) in
-                (let comment-text (stringSlice input (+ pos 1) comment-end) in
-                  (cons (Token (Comment comment-text) pos comment-end)
-                        (tokenizeWithPos input comment-end)))))
+              (let commentEnd (findLineEnd input (+ pos 1)) in
+                (let commentText (stringSlice input (+ pos 1) commentEnd) in
+                  (cons (Token (Comment commentText) pos commentEnd)
+                        (tokenizeWithPos input commentEnd)))))
             
             ;; 文字列リテラル
             ((stringEq ch "\"")
-              (let string-end (findStringEnd input (+ pos 1)) in
-                (if (< string-end 0)
+              (let stringEnd (findStringEnd input (+ pos 1)) in
+                (if (< stringEnd 0)
                     (error "Unterminated string literal")
-                    (let string-content (stringSlice input (+ pos 1) string-end) in
-                      (cons (Token (StringLit string-content) pos (+ string-end 1))
-                            (tokenizeWithPos input (+ string-end 1)))))))
+                    (let stringContent (stringSlice input (+ pos 1) stringEnd) in
+                      (cons (Token (StringLit stringContent) pos (+ stringEnd 1))
+                            (tokenizeWithPos input (+ stringEnd 1)))))))
             
             ;; 数値リテラル（簡易版）
             ((isDigit ch)
-              (let num-end (findNumberEnd input pos) in
-                (let num-str (stringSlice input pos num-end) in
-                  (if (stringContains num-str ".")
-                      (cons (Token (FloatLit (stringToFloat num-str)) pos num-end)
-                            (tokenizeWithPos input num-end))
-                      (cons (Token (IntLit (stringToInt num-str)) pos num-end)
-                            (tokenizeWithPos input num-end))))))
+              (let numEnd (findNumberEnd input pos) in
+                (let numStr (stringSlice input pos numEnd) in
+                  (if (stringContains numStr ".")
+                      (cons (Token (FloatLit (stringToFloat numStr)) pos numEnd)
+                            (tokenizeWithPos input numEnd))
+                      (cons (Token (IntLit (stringToInt numStr)) pos numEnd)
+                            (tokenizeWithPos input numEnd))))))
             
             ;; シンボル
             ((isSymbolStart ch)
-              (let sym-end (findSymbolEnd input pos) in
-                (let sym-str (stringSlice input pos sym-end) in
-                  (cons (Token (Symbol sym-str) pos sym-end)
-                        (tokenizeWithPos input sym-end)))))
+              (let symEnd (findSymbolEnd input pos) in
+                (let symStr (stringSlice input pos symEnd) in
+                  (cons (Token (Symbol symStr) pos symEnd)
+                        (tokenizeWithPos input symEnd))))))
             
             ;; 不明な文字
             (else

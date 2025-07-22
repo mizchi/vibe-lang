@@ -406,6 +406,111 @@ impl BuiltinFunction for Cons {
     }
 }
 
+pub struct Car;
+impl BuiltinFunction for Car {
+    fn name(&self) -> &str {
+        "car"
+    }
+    
+    fn type_signature(&self) -> Type {
+        // car : List a -> a
+        Type::Function(
+            Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
+            Box::new(Type::Var("a".to_string())),
+        )
+    }
+    
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::List(list)] => {
+                if list.is_empty() {
+                    Err(XsError::RuntimeError(
+                        crate::Span::new(0, 0),
+                        "car: empty list".to_string(),
+                    ))
+                } else {
+                    Ok(list[0].clone())
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "car requires a list argument".to_string(),
+            )),
+        }
+    }
+    
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("car".to_string())
+    }
+}
+
+pub struct Cdr;
+impl BuiltinFunction for Cdr {
+    fn name(&self) -> &str {
+        "cdr"
+    }
+    
+    fn type_signature(&self) -> Type {
+        // cdr : List a -> List a
+        Type::Function(
+            Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
+            Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
+        )
+    }
+    
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::List(list)] => {
+                if list.is_empty() {
+                    Err(XsError::RuntimeError(
+                        crate::Span::new(0, 0),
+                        "cdr: empty list".to_string(),
+                    ))
+                } else {
+                    Ok(Value::List(list[1..].to_vec()))
+                }
+            }
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "cdr requires a list argument".to_string(),
+            )),
+        }
+    }
+    
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("cdr".to_string())
+    }
+}
+
+pub struct IsNull;
+impl BuiltinFunction for IsNull {
+    fn name(&self) -> &str {
+        "null?"
+    }
+    
+    fn type_signature(&self) -> Type {
+        // null? : List a -> Bool
+        Type::Function(
+            Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
+            Box::new(Type::Bool),
+        )
+    }
+    
+    fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
+        match args {
+            [Value::List(list)] => Ok(Value::Bool(list.is_empty())),
+            _ => Err(XsError::RuntimeError(
+                crate::Span::new(0, 0),
+                "null? requires a list argument".to_string(),
+            )),
+        }
+    }
+    
+    fn compile_to_wasm(&self) -> WasmBuiltin {
+        WasmBuiltin::Complex("null?".to_string())
+    }
+}
+
 // I/O operations
 
 pub struct Print;
@@ -478,7 +583,7 @@ impl BuiltinFunction for Concat {
 pub struct StrConcat;
 impl BuiltinFunction for StrConcat {
     fn name(&self) -> &str {
-        "str-concat"
+        "strConcat"
     }
 
     fn type_signature(&self) -> Type {
@@ -496,20 +601,20 @@ impl BuiltinFunction for StrConcat {
             [Value::String(a), Value::String(b)] => Ok(Value::String(format!("{a}{b}"))),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "str-concat requires two string arguments".to_string(),
+                "strConcat requires two string arguments".to_string(),
             )),
         }
     }
 
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Complex("str-concat".to_string())
+        WasmBuiltin::Complex("strConcat".to_string())
     }
 }
 
 pub struct IntToString;
 impl BuiltinFunction for IntToString {
     fn name(&self) -> &str {
-        "int-to-string"
+        "intToString"
     }
 
     fn type_signature(&self) -> Type {
@@ -521,20 +626,20 @@ impl BuiltinFunction for IntToString {
             [Value::Int(n)] => Ok(Value::String(n.to_string())),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "int-to-string requires one integer argument".to_string(),
+                "intToString requires one integer argument".to_string(),
             )),
         }
     }
 
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Complex("int-to-string".to_string())
+        WasmBuiltin::Complex("intToString".to_string())
     }
 }
 
 pub struct StringToInt;
 impl BuiltinFunction for StringToInt {
     fn name(&self) -> &str {
-        "string-to-int"
+        "stringToInt"
     }
 
     fn type_signature(&self) -> Type {
@@ -552,20 +657,20 @@ impl BuiltinFunction for StringToInt {
             },
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "string-to-int requires one string argument".to_string(),
+                "stringToInt requires one string argument".to_string(),
             )),
         }
     }
 
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Complex("string-to-int".to_string())
+        WasmBuiltin::Complex("stringToInt".to_string())
     }
 }
 
 pub struct StringLength;
 impl BuiltinFunction for StringLength {
     fn name(&self) -> &str {
-        "string-length"
+        "stringLength"
     }
 
     fn type_signature(&self) -> Type {
@@ -577,13 +682,13 @@ impl BuiltinFunction for StringLength {
             [Value::String(s)] => Ok(Value::Int(s.len() as i64)),
             _ => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                "string-length requires one string argument".to_string(),
+                "stringLength requires one string argument".to_string(),
             )),
         }
     }
 
     fn compile_to_wasm(&self) -> WasmBuiltin {
-        WasmBuiltin::Complex("string-length".to_string())
+        WasmBuiltin::Complex("stringLength".to_string())
     }
 }
 
@@ -620,7 +725,7 @@ impl BuiltinFunction for AddFloat {
 pub struct StrEq;
 impl BuiltinFunction for StrEq {
     fn name(&self) -> &str {
-        "str-eq"
+        "strEq"
     }
 
     fn type_signature(&self) -> Type {
@@ -633,18 +738,18 @@ impl BuiltinFunction for StrEq {
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::String(s1)] => Ok(Value::BuiltinFunction {
-                name: "str-eq".to_string(),
+                name: "strEq".to_string(),
                 arity: 2,
                 applied_args: vec![Value::String(s1.clone())],
             }),
             [Value::String(s1), Value::String(s2)] => Ok(Value::Bool(s1 == s2)),
             [arg] => Err(XsError::TypeError(
                 crate::Span::new(0, 0),
-                format!("str-eq expects string argument, got {arg:?}"),
+                format!("strEq expects string argument, got {arg:?}"),
             )),
             args => Err(XsError::RuntimeError(
                 crate::Span::new(0, 0),
-                format!("str-eq expects 2 arguments, got {}", args.len()),
+                format!("strEq expects 2 arguments, got {}", args.len()),
             )),
         }
     }
@@ -916,6 +1021,9 @@ impl BuiltinRegistry {
             Box::new(Equal),
             // List operations
             Box::new(Cons),
+            Box::new(Car),
+            Box::new(Cdr),
+            Box::new(IsNull),
             // I/O operations
             Box::new(Print),
             // String operations

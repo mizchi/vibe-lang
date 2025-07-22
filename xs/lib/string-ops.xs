@@ -18,8 +18,8 @@
   (let charAt stringAt)
   
   ;; stringSlice :: String -> Int -> Int -> String
-  ;; 既存のstring-sliceをlowerCamelに
-  (let stringSlice string-slice)
+  ;; ビルトイン関数stringSliceを使用（string-sliceから変更）
+  ;; (let stringSlice stringSlice) -- 不要、ビルトイン関数を直接使用
   
   ;; substring :: String -> Int -> Int -> String
   (let substring (fn (str start end)
@@ -31,37 +31,37 @@
     (indexOfFrom str substr 0))
   
   (rec indexOfFrom (str substr fromPos)
-    (if (> (+ fromPos (string-length substr)) (string-length str))
+    (if (> (+ fromPos (stringLength substr)) (stringLength str))
         -1
-        (if (string-eq (stringSlice str fromPos (+ fromPos (string-length substr))) substr)
+        (if (strEq (stringSlice str fromPos (+ fromPos (stringLength substr))) substr)
             fromPos
             (indexOfFrom str substr (+ fromPos 1)))))
   
   ;; lastIndexOf :: String -> String -> Int
   ;; 部分文字列の最後の出現位置を返す
   (rec lastIndexOf (str substr)
-    (lastIndexOfFrom str substr (- (string-length str) (string-length substr))))
+    (lastIndexOfFrom str substr (- (stringLength str) (stringLength substr))))
   
   (rec lastIndexOfFrom (str substr fromPos)
     (if (< fromPos 0)
         -1
-        (if (string-eq (stringSlice str fromPos (+ fromPos (string-length substr))) substr)
+        (if (strEq (stringSlice str fromPos (+ fromPos (stringLength substr))) substr)
             fromPos
             (lastIndexOfFrom str substr (- fromPos 1)))))
   
   ;; split :: String -> String -> [String]
   ;; 文字列を区切り文字で分割（簡易版）
   (rec split (str delimiter)
-    (if (string-eq str "")
+    (if (strEq str "")
         (list "")
         (splitHelper str delimiter 0 (list))))
   
   (rec splitHelper (str delimiter pos acc)
     (let nextPos (indexOfFrom str delimiter pos) in
       (if (= nextPos -1)
-          (reverse (cons (stringSlice str pos (string-length str)) acc))
+          (reverse (cons (stringSlice str pos (stringLength str)) acc))
           (splitHelper str delimiter 
-                      (+ nextPos (string-length delimiter))
+                      (+ nextPos (stringLength delimiter))
                       (cons (stringSlice str pos nextPos) acc)))))
   
   ;; join :: [String] -> String -> String
@@ -71,7 +71,7 @@
       ((list) "")
       ((list s) s)
       ((list s rest)
-        (string-concat s (string-concat delimiter (join rest delimiter))))))
+        (strConcat s (strConcat delimiter (join rest delimiter))))))
   
   ;; trim :: String -> String
   ;; 前後の空白を削除（簡易版）
@@ -80,16 +80,16 @@
   
   ;; trimStart :: String -> String
   (rec trimStart (str)
-    (if (= (string-length str) 0)
+    (if (= (stringLength str) 0)
         str
         (let firstChar (stringAt str 0) in
           (if (isWhitespace firstChar)
-              (trimStart (stringSlice str 1 (string-length str)))
+              (trimStart (stringSlice str 1 (stringLength str)))
               str))))
   
   ;; trimEnd :: String -> String
   (rec trimEnd (str)
-    (let len (string-length str) in
+    (let len (stringLength str) in
       (if (= len 0)
           str
           (let lastChar (stringAt str (- len 1)) in
@@ -99,24 +99,24 @@
   
   ;; isWhitespace :: String -> Bool
   (let isWhitespace (fn (ch)
-    (or (string-eq ch " ")
-        (or (string-eq ch "\t")
-            (or (string-eq ch "\n")
-                (string-eq ch "\r"))))))
+    (or (strEq ch " ")
+        (or (strEq ch "\t")
+            (or (strEq ch "\n")
+                (strEq ch "\r"))))))
   
   ;; startsWith :: String -> String -> Bool
   (let startsWith (fn (str prefix)
-    (if (> (string-length prefix) (string-length str))
+    (if (> (stringLength prefix) (stringLength str))
         false
-        (string-eq (stringSlice str 0 (string-length prefix)) prefix))))
+        (strEq (stringSlice str 0 (stringLength prefix)) prefix))))
   
   ;; endsWith :: String -> String -> Bool
   (let endsWith (fn (str suffix)
-    (let strLen (string-length str) in
-    (let suffixLen (string-length suffix) in
+    (let strLen (stringLength str) in
+    (let suffixLen (stringLength suffix) in
       (if (> suffixLen strLen)
           false
-          (string-eq (stringSlice str (- strLen suffixLen) strLen) suffix))))))
+          (strEq (stringSlice str (- strLen suffixLen) strLen) suffix))))))
   
   ;; replaceFirst :: String -> String -> String -> String
   ;; 最初の出現箇所のみ置換
@@ -124,10 +124,10 @@
     (let pos (indexOf str target) in
       (if (= pos -1)
           str
-          (string-concat (stringSlice str 0 pos)
-                        (string-concat replacement
-                                      (stringSlice str (+ pos (string-length target))
-                                                  (string-length str))))))))
+          (strConcat (stringSlice str 0 pos)
+                        (strConcat replacement
+                                      (stringSlice str (+ pos (stringLength target))
+                                                  (stringLength str))))))))
   
   ;; replaceAll :: String -> String -> String -> String
   ;; すべての出現箇所を置換
@@ -136,9 +136,9 @@
       (if (= pos -1)
           str
           (let prefix (stringSlice str 0 pos) in
-          (let suffix (stringSlice str (+ pos (string-length target)) (string-length str)) in
-            (string-concat prefix
-                          (string-concat replacement
+          (let suffix (stringSlice str (+ pos (stringLength target)) (stringLength str)) in
+            (strConcat prefix
+                          (strConcat replacement
                                         (replaceAll suffix target replacement))))))))
   
   ;; toLowerCase / toUpperCase は文字コード操作が必要なので省略

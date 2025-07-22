@@ -12,6 +12,24 @@ pub mod test_cache;
 // Incremental compilation modules
 pub mod database;
 
+// Namespace system modules
+pub mod hash;
+pub mod namespace;
+pub mod dependency_extractor;
+pub mod ast_command;
+pub mod incremental_type_checker;
+pub mod differential_test_runner;
+
+// Code query modules
+pub mod code_query;
+pub mod query_engine;
+
+// Pipeline processing modules
+pub mod structured_data;
+pub mod pipeline;
+pub mod shell_syntax;
+pub mod unified_parser;
+
 // Re-export important types
 pub use codebase::{
     Branch, Codebase, CodebaseError, CodebaseManager, EditAction, EditSession, Hash, Patch, Term,

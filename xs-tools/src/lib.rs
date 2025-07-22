@@ -13,6 +13,7 @@ pub mod component_commands;
 pub mod api;
 pub mod commands;
 pub mod shell;
+pub mod permission_cli;
 
 // Re-export important types
 pub use cli::{run_cli, Args, Command};

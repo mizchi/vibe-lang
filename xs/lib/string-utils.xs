@@ -6,13 +6,13 @@
   ;; 文字列の指定位置の文字を取得（簡易版）
   ;; 実際にはビルトイン関数として実装する必要がある
   (let stringAt (fn (str idx)
-    (if (or (< idx 0) (>= idx (string-length str)))
+    (if (or (< idx 0) (>= idx (stringLength str)))
         (error "String index out of bounds")
         ;; ここは仮実装。実際のビルトインが必要
-        (string-slice str idx (+ idx 1)))))
+        (stringSlice str idx (+ idx 1)))))
   
   ;; 文字列のスライス
-  (let stringSlice string-slice)
+  ;; stringSlice is now a builtin function, no need to alias
   
   ;; 文字列が部分文字列を含むかチェック
   (rec stringContains (str substr)
@@ -20,17 +20,17 @@
   
   ;; 指定位置から部分文字列を探す
   (rec stringContainsAt (str substr pos)
-    (if (> (+ pos (string-length substr)) (string-length str))
+    (if (> (+ pos (stringLength substr)) (stringLength str))
         false
-        (if (string-eq (stringSlice str pos (+ pos (string-length substr))) substr)
+        (if (strEq (stringSlice str pos (+ pos (stringLength substr))) substr)
             true
             (stringContainsAt str substr (+ pos 1)))))
   
   ;; 文字列から文字を探す
   (rec findChar (str ch fromPos)
-    (if (>= fromPos (string-length str))
+    (if (>= fromPos (stringLength str))
         -1
-        (if (string-eq (stringAt str fromPos) ch)
+        (if (strEq (stringAt str fromPos) ch)
             fromPos
             (findChar str ch (+ fromPos 1)))))
   
@@ -39,6 +39,6 @@
     (match lst
       ((list) false)
       ((list h t) 
-        (if (string-eq x h)
+        (if (strEq x h)
             true
             (elem x t))))))

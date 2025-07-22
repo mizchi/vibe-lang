@@ -1,6 +1,6 @@
 ;; Test new builtin functions
 
-(let test-program
+(let testProgram
   (let dummy1 (print "=== Testing stringAt ===") in
   (let s "hello" in
   (let dummy2 (print (stringAt s 0)) in  ; h
@@ -36,4 +36,4 @@
   (let dummy25 (print (stringEq "hello" "hello")) in  ; true
   (print (stringEq "hello" "world")))))))))))))))))))))))))))))))  ; false
 
-test-program
+testProgram

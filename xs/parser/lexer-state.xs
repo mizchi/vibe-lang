@@ -15,7 +15,7 @@
     (State.State (fn (state)
       (match state
         ((LexerState input pos)
-          (if (>= pos (string-length input))
+          (if (>= pos (stringLength input))
               (pair (None) state)
               (pair (Some (StringOps.charAt input pos)) state)))))))
   
@@ -78,10 +78,10 @@
         ((None) (error "Unterminated string literal"))
         ((Some ch)
           (cond
-            ((string-eq ch "\"")
+            ((stringEq ch "\"")
               (DoNotation.>> advance
                 (State.stateReturn (stringFromList (reverse acc)))))
-            ((string-eq ch "\\")
+            ((stringEq ch "\\")
               (DoNotation.>>= readChar (fn (_)
                 (DoNotation.>>= readChar (fn (escapedOpt)
                   (match escapedOpt
@@ -100,21 +100,21 @@
           ((None) (State.stateReturn (EOF)))
           ((Some ch)
             (cond
-              ((string-eq ch "(")
+              ((stringEq ch "(")
                 (DoNotation.>> advance (State.stateReturn (LParen))))
-              ((string-eq ch ")")
+              ((stringEq ch ")")
                 (DoNotation.>> advance (State.stateReturn (RParen))))
-              ((string-eq ch "\"")
+              ((stringEq ch "\"")
                 (DoNotation.>>= readString (fn (str)
                   (State.stateReturn (StringLit str)))))
               ((isDigit ch)
                 (DoNotation.>>= readNumber (fn (numStr)
-                  (State.stateReturn (IntLit (string-to-int numStr))))))
+                  (State.stateReturn (IntLit (stringToInt numStr))))))
               ((isSymbolStart ch)
                 (DoNotation.>>= readSymbol (fn (sym)
                   (State.stateReturn (Symbol sym)))))
               (else
-                (error (string-concat "Unexpected character: " ch)))))))))))
+                (error (stringConcat "Unexpected character: " ch)))))))))))
   
   ;; すべてのトークンを読む
   (rec readAllTokens
@@ -130,10 +130,10 @@
   
   ;; ヘルパー関数
   (let isWhitespace (fn (ch)
-    (or (string-eq ch " ")
-        (or (string-eq ch "\t")
-            (or (string-eq ch "\n")
-                (string-eq ch "\r"))))))
+    (or (stringEq ch " ")
+        (or (stringEq ch "\t")
+            (or (stringEq ch "\n")
+                (stringEq ch "\r"))))))
   
   (let isDigit (fn (ch)
     (and (>= ch "0") (<= ch "9"))))
@@ -155,16 +155,16 @@
     (match chars
       ((list) "")
       ((list ch rest)
-        (string-concat ch (stringFromList rest)))))
+        (stringConcat ch (stringFromList rest)))))
   
   ;; エスケープ文字を処理
   (let unescapeChar (fn (ch)
     (cond
-      ((string-eq ch "n") "\n")
-      ((string-eq ch "t") "\t")
-      ((string-eq ch "r") "\r")
-      ((string-eq ch "\\") "\\")
-      ((string-eq ch "\"") "\"")
+      ((stringEq ch "n") "\n")
+      ((stringEq ch "t") "\t")
+      ((stringEq ch "r") "\r")
+      ((stringEq ch "\\") "\\")
+      ((stringEq ch "\"") "\"")
       (else ch))))
   
   ;; リストを逆順に

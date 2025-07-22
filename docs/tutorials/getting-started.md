@@ -251,16 +251,16 @@ XS言語では、複数引数の関数は自動的にカリー化されます。
 (fib 10)  ; => 55
 ```
 
-### let-rec（相互再帰）
+### letRec（相互再帰）
 
 ```lisp
 ; 偶数・奇数の判定（相互再帰）
-(let-rec even (n) 
+(letRec even (n) 
   (if (= n 0) 
       true 
       (odd (- n 1))))
 
-(let-rec odd (n) 
+(letRec odd (n) 
   (if (= n 0) 
       false 
       (even (- n 1))))

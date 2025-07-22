@@ -319,6 +319,12 @@ fn type_to_string(ty: &Type) -> String {
         }
         Type::Var(v) => format!("'{v}"),
         Type::UserDefined { name, .. } => name.clone(),
+        Type::Record { fields } => {
+            let field_strs: Vec<String> = fields.iter()
+                .map(|(name, ty)| format!("{}: {}", name, type_to_string(ty)))
+                .collect();
+            format!("{{ {} }}", field_strs.join(", "))
+        },
         // Note: Type::Constructor doesn't exist in current implementation
         // ADT types are represented differently
     }

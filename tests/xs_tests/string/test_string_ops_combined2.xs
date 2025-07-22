@@ -1,0 +1,1 @@
+(let num-str "100" in (let num (string-to-int num-str) in (let doubled (+ num num) in (int-to-string doubled))))

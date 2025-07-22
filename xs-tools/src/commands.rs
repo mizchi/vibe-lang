@@ -18,9 +18,13 @@ pub enum Command {
 
     // 検索・参照
     Find(String),         // find <pattern> - パターンで検索
+    Search(String),       // search <query> - 構造化検索
     Ls(Option<String>),   // ls [pattern] - 定義一覧
     Dependencies(String), // dependencies <name> - 依存関係を表示
     Dependents(String),   // dependents <name> - 被依存関係を表示
+    
+    // パイプライン処理
+    Pipeline(Vec<String>), // pipeline commands - パイプライン処理
 
     // 型情報
     TypeOf(String), // type-of <expr|name> - 型を表示
@@ -52,6 +56,17 @@ impl Command {
         let input = input.trim();
         if input.is_empty() {
             return Ok(Command::Eval(String::new()));
+        }
+
+        // Check for pipeline syntax
+        if input.contains('|') {
+            let commands: Vec<String> = input.split('|')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if commands.len() > 1 {
+                return Ok(Command::Pipeline(commands));
+            }
         }
 
         // コマンドのパース
@@ -108,6 +123,13 @@ impl Command {
                     anyhow::bail!("find requires a pattern")
                 }
                 Ok(Command::Find(args.join(" ")))
+            }
+
+            "search" => {
+                if args.is_empty() {
+                    anyhow::bail!("search requires a query")
+                }
+                Ok(Command::Search(args.join(" ")))
             }
 
             "ls" | "list" => {
@@ -222,10 +244,12 @@ impl fmt::Display for Command {
             Command::Update => write!(f, "update"),
             Command::Undo => write!(f, "undo"),
             Command::Find(pattern) => write!(f, "find {}", pattern),
+            Command::Search(query) => write!(f, "search {}", query),
             Command::Ls(None) => write!(f, "ls"),
             Command::Ls(Some(pattern)) => write!(f, "ls {}", pattern),
             Command::Dependencies(name) => write!(f, "dependencies {}", name),
             Command::Dependents(name) => write!(f, "dependents {}", name),
+            Command::Pipeline(cmds) => write!(f, "{}", cmds.join(" | ")),
             Command::TypeOf(expr) => write!(f, "type-of {}", expr),
             Command::Branch(None) => write!(f, "branch"),
             Command::Branch(Some(name)) => write!(f, "branch {}", name),
@@ -254,6 +278,14 @@ pub fn print_ucm_help() {
     println!("  exit, quit, :q       Exit the shell");
     println!("  clear, cls           Clear the screen");
     println!();
+    
+    println!("{}", "Syntax Modes:".bold());
+    println!("  :auto                Auto-detect syntax (default)");
+    println!("  :sexpr               S-expression only mode");
+    println!("  :shell               Shell syntax only mode");
+    println!("  :mixed               Mixed syntax mode");
+    println!("  :mode                Show current syntax mode");
+    println!();
 
     println!("{}", "Definition Management:".bold());
     println!("  add [definition]     Add a definition to the codebase");
@@ -264,10 +296,20 @@ pub fn print_ucm_help() {
     println!();
 
     println!("{}", "Search and Navigation:".bold());
-    println!("  find <pattern>       Search for definitions");
+    println!("  find <pattern>       Search for definitions by name");
+    println!("  search <query>       Advanced search (type, AST, dependencies)");
     println!("  ls [pattern]         List definitions");
     println!("  dependencies <name>  Show what <name> depends on");
     println!("  dependents <name>    Show what depends on <name>");
+    println!();
+    
+    println!("{}", "Pipeline Processing:".bold());
+    println!("  cmd | filter field value   Filter by field value");
+    println!("  cmd | select fields...     Select specific fields");
+    println!("  cmd | sort field [desc]    Sort by field");
+    println!("  cmd | take n               Take first n items");
+    println!("  cmd | group by field       Group by field");
+    println!("  cmd | count                Count items");
     println!();
 
     println!("{}", "Type Information:".bold());
@@ -297,11 +339,15 @@ pub fn print_ucm_help() {
     println!();
 
     println!("{}", "Examples:".bold());
-    println!("  > add");
-    println!("  > double = fn x -> x * 2");
-    println!("  > <Ctrl-D>");
-    println!("  > update");
-    println!("  > view double");
-    println!("  > find map");
-    println!("  > type-of (double 21)");
+    println!("  S-expression:");
+    println!("    > (let double (fn (x) (* x 2)))");
+    println!("    > (double 21)");
+    println!();
+    println!("  Shell syntax:");
+    println!("    > ls | filter kind function");
+    println!("    > search type:Int | take 5");
+    println!();
+    println!("  Mixed:");
+    println!("    > add double = fn x -> x * 2");
+    println!("    > type-of (double 21)");
 }

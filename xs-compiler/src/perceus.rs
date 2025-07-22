@@ -174,6 +174,16 @@ impl PerceusTransform {
                     args: vec![transformed_expr],
                 }
             }
+
+            Expr::Record { .. } => {
+                // TODO: Implement record transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
+
+            Expr::FieldAccess { .. } => {
+                // TODO: Implement field access transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
         }
     }
 }

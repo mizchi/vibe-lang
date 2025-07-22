@@ -23,7 +23,7 @@
   (let unwrap (fn (result)
     (match result
       ((Ok value) value)
-      ((Err err) (error (string-concat "unwrap called on Err: " (toString err)))))))
+      ((Err err) (error (strConcat "unwrap called on Err: " (toString err)))))))
   
   ;; 値を取り出す（エラーの場合はデフォルト値）
   (let unwrapOr (fn (result default)

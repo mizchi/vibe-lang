@@ -148,6 +148,7 @@ pub fn xs_type_to_wit(xs_type: &xs_core::Type) -> WitType {
         }
         Type::Var(_) => WitType::String, // Type variables need special handling
         Type::UserDefined { .. } => WitType::String, // ADTs need special handling
+        Type::Record { .. } => WitType::String, // Records need special handling
     }
 }
 

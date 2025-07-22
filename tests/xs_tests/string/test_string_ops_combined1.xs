@@ -1,0 +1,1 @@
+(let count 42 in (let message (str-concat "The answer is: " (int-to-string count)) in message))

@@ -23,11 +23,11 @@
     ((list h t) (cons h (append t ys)))))
 
 (rec reverse (xs)
-  (rec rev-helper (xs acc)
+  (rec revHelper (xs acc)
     (match xs
       ((list) acc)
-      ((list h t) (rev-helper t (cons h acc)))))
-  (rev-helper xs (list)))
+      ((list h t) (revHelper t (cons h acc)))))
+  (revHelper xs (list)))
 
 ;; Higher-order list operations
 (rec map (f xs)
@@ -43,15 +43,15 @@
           (cons h (filter p t))
           (filter p t)))))
 
-(rec fold-left (f acc xs)
+(rec foldLeft (f acc xs)
   (match xs
     ((list) acc)
-    ((list h t) (fold-left f (f acc h) t))))
+    ((list h t) (foldLeft f (f acc h) t))))
 
-(rec fold-right (f xs acc)
+(rec foldRight (f xs acc)
   (match xs
     ((list) acc)
-    ((list h t) (f h (fold-right f t acc)))))
+    ((list h t) (f h (foldRight f t acc)))))
 
 ;; List searching
 (rec find (p xs)

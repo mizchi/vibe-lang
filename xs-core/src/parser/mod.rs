@@ -3,6 +3,7 @@ pub mod lexer;
 mod metadata_parser;
 mod parser_helpers;
 mod test_effects;
+mod test_patterns;
 
 pub use crate::metadata::MetadataStore;
 pub use metadata_parser::parse_with_metadata;

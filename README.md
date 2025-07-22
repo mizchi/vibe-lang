@@ -11,6 +11,9 @@ XS Language is an AI-oriented programming language designed for fast static anal
 - **WebAssemblyバックエンド**: モダンなWebAssembly GCランタイムへのコンパイル
 - **構造化コードベース**: Unison風のコンテンツアドレス型ストレージ
 - **統一ランタイム**: インタープリターとWebAssemblyの統一されたバックエンドインターフェース
+- **名前空間システム**: 階層的な名前空間と依存関係管理
+- **ASTコマンド**: 構造的なコード変換のためのコマンドシステム
+- **差分テスト実行**: 変更の影響を受けるテストのみを実行
 
 ## クイックスタート
 
@@ -61,16 +64,16 @@ cargo run --bin xsc -- parse examples/list.xs
 
 ```lisp
 ; rec構文（型推論サポート）
-(rec factorial (fn (n)
+(rec factorial (n)
     (if (= n 0)
         1
-        (* n (factorial (- n 1))))))
+        (* n (factorial (- n 1)))))
 
-; let-rec構文
-(let-rec fib (fn (n : Int) : Int
+; letRec構文（ハイフンなしのlowerCamelCase）
+(letRec fib (n)
     (if (< n 2)
         n
-        (+ (fib (- n 1)) (fib (- n 2))))))
+        (+ (fib (- n 1)) (fib (- n 2)))))
 ```
 
 ### 代数的データ型とパターンマッチ
@@ -157,6 +160,43 @@ patch.update_term("factorial", new_code);
 patch.apply(&mut codebase)?;
 ```
 
+### 名前空間システム
+
+階層的な名前空間で整理されたコードベース：
+
+```lisp
+; 名前空間の定義
+(namespace Math.Utils
+  (export fibonacci square))
+
+; 完全修飾名でのアクセス
+(Math.Utils.fibonacci 10)
+
+; インポート
+(import Math.Utils (fibonacci square))
+(fibonacci 10)  ; 直接呼び出し可能
+```
+
+### ASTコマンドシステム
+
+構造的で型安全なコード変換：
+
+```rust
+// 変数名の変更
+let cmd = AstCommand::Rename {
+    scope: AstPath::root(),
+    old_name: "oldVar".to_string(),
+    new_name: "newVar".to_string(),
+};
+
+// 式の抽出
+let cmd = AstCommand::Extract {
+    target: path_to_expr,
+    definition_name: "helper".to_string(),
+    namespace: NamespacePath::current(),
+};
+```
+
 ### インクリメンタルコンパイル
 
 Salsaフレームワークを使用して、変更された部分のみを再コンパイルすることで高速な開発サイクルを実現：
@@ -195,19 +235,24 @@ let result = db.type_check_program(path); // 差分のみ再計算
 
 ### 実装済み機能
 
-- ✅ S式パーサー
+- ✅ S式パーサー（lowerCamelCase対応）
 - ✅ HM型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
 - ✅ CLIツール
 - ✅ Salsaインクリメンタルコンパイル
 - ✅ Perceus IR変換
 - ✅ WebAssembly GC基本実装
-- ✅ rec/let-rec構文（型推論対応）
+- ✅ rec/letRec構文（型推論対応）
 - ✅ 代数的データ型
 - ✅ パターンマッチング
 - ✅ モジュールシステム（基本実装）
 - ✅ 統一ランタイムインターフェース
 - ✅ Unison風構造化コードベース
+- ✅ 階層的な名前空間システム
+- ✅ 関数単位の依存関係追跡
+- ✅ ASTコマンドによる構造的変換
+- ✅ インクリメンタル型チェック
+- ✅ 差分テスト実行システム
 - ✅ 包括的なテストカバレッジ（76.63%）
 
 ### 今後の実装予定
@@ -239,10 +284,10 @@ cargo bench --bench type_checker_bench
 ### フィボナッチ数列（rec構文）
 
 ```lisp
-(rec fib (lambda (n)
+(rec fib (n)
     (if (< n 2)
         n
-        (+ (fib (- n 1)) (fib (- n 2))))))
+        (+ (fib (- n 1)) (fib (- n 2)))))
 
 (fib 10)  ; => 55
 ```
@@ -250,13 +295,13 @@ cargo bench --bench type_checker_bench
 ### 高階関数とリスト操作
 
 ```lisp
-(let map (lambda (f) (lambda (lst)
+(let map (fn (f lst)
     (match lst
         ((list) (list))
-        ((cons x xs) (cons (f x) ((map f) xs))))))
+        ((cons x xs) (cons (f x) (map f xs)))))
 
-(let double (lambda (x) (* x 2)))
-((map double) (list 1 2 3 4 5))  ; => (list 2 4 6 8 10)
+(let double (fn (x) (* x 2)))
+(map double (list 1 2 3 4 5))  ; => (list 2 4 6 8 10)
 ```
 
 ### 代数的データ型の例
@@ -266,12 +311,12 @@ cargo bench --bench type_checker_bench
     (Leaf a)
     (Node (Tree a) (Tree a)))
 
-(rec sum_tree (lambda (tree)
+(rec sumTree (tree)
     (match tree
         ((Leaf n) n)
-        ((Node left right) (+ (sum_tree left) (sum_tree right))))))
+        ((Node left right) (+ (sumTree left) (sumTree right))))))
 
-(sum_tree (Node (Leaf 1) (Node (Leaf 2) (Leaf 3))))  ; => 6
+(sumTree (Node (Leaf 1) (Node (Leaf 2) (Leaf 3))))  ; => 6
 ```
 
 ## テスト

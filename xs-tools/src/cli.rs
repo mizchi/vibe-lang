@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use xs_compiler::type_check;
 use xs_core::parser::parse;
 use xs_core::{Type, Value};
-use xs_runtime::eval;
 use xs_test::TestSuite;
+use crate::permission_cli::PermissionArgs;
 
 #[derive(Parser)]
 #[command(name = "xsc")]
@@ -36,6 +36,9 @@ pub enum Command {
     Run {
         /// The XS file to run
         file: PathBuf,
+        
+        #[command(flatten)]
+        permissions: PermissionArgs,
     },
     /// Run tests in a file
     Test {
@@ -138,20 +141,60 @@ pub fn run_cli() -> Result<()> {
             }
         }
 
-        Command::Run { file } => {
+        Command::Run { file, permissions } => {
             let source = fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
+            // Parse and type check to get effects
             match parse(&source) {
-                Ok(expr) => match eval(&expr) {
-                    Ok(value) => {
-                        println!("{}", format_value(&value));
+                Ok(expr) => {
+                    // Type check to get effect information
+                    let ty = match type_check(&expr) {
+                        Ok(ty) => ty,
+                        Err(e) => {
+                            eprintln!("{}: {}", "Type error".red(), e);
+                            std::process::exit(1);
+                        }
+                    };
+                    
+                    // Extract effects from type
+                    let effects = xs_core::effect_extraction::extract_all_possible_effects(&ty);
+                    
+                    // Create permission config
+                    let config = permissions.to_config();
+                    
+                    // Get required permissions from effects
+                    let required_permissions = xs_core::permission::PermissionSet::from_effects(&effects);
+                    
+                    // Print permission summary if not allow-all
+                    if !permissions.allow_all && !permissions.deny_all && !effects.is_pure() {
+                        permissions.print_summary(&config);
+                        
+                        // Show required permissions
+                        if !required_permissions.is_empty() {
+                            println!("\n{}", "Required permissions:".bold());
+                            for perm in required_permissions.iter() {
+                                println!("  - {}", perm);
+                            }
+                        }
+                        println!();
                     }
-                    Err(e) => {
-                        eprintln!("{}: {}", "Runtime error".red(), e);
-                        std::process::exit(1);
+                    
+                    // Run with permission checks
+                    match xs_runtime::runtime_with_permissions::eval_with_permission_check(
+                        &expr,
+                        &xs_runtime::Interpreter::create_initial_env(),
+                        config,
+                    ) {
+                        Ok(value) => {
+                            println!("{}", format_value(&value));
+                        }
+                        Err(e) => {
+                            eprintln!("{}: {}", "Runtime error".red(), e);
+                            std::process::exit(1);
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     eprintln!("{}: {}", "Parse error".red(), e);
                     std::process::exit(1);
@@ -194,7 +237,7 @@ pub fn run_cli() -> Result<()> {
 
                     let start = std::time::Instant::now();
                     for _ in 0..iterations {
-                        let _ = eval(&expr);
+                        let _ = xs_runtime::eval(&expr);
                     }
                     let duration = start.elapsed();
 
@@ -240,6 +283,16 @@ fn format_value(val: &Value) -> String {
             } else {
                 let args: Vec<String> = values.iter().map(format_value).collect();
                 format!("({} {})", name.0, args.join(" "))
+            }
+        }
+        Value::Record { fields } => {
+            if fields.is_empty() {
+                "{}".to_string()
+            } else {
+                let field_strs: Vec<String> = fields.iter()
+                    .map(|(name, value)| format!("{}: {}", name, format_value(value)))
+                    .collect();
+                format!("{{ {} }}", field_strs.join(", "))
             }
         }
     }

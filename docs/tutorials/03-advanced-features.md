@@ -96,15 +96,15 @@ Functions that operate on other functions:
 
 ## Mutual Recursion
 
-Define mutually recursive functions with `let-rec`:
+Define mutually recursive functions with `letRec`:
 
 ```lisp
-(let-rec even (n)
+(letRec even (n)
     (if (= n 0)
         true
         (odd (- n 1))))
 
-(let-rec odd (n)
+(letRec odd (n)
     (if (= n 0)
         false
         (even (- n 1))))

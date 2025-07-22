@@ -33,6 +33,18 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 - レーベンシュタイン距離による類似変数名の提案
 - トークン効率的な英語メッセージ（将来的に多言語化予定）
 
+### 6. 名前空間システム
+- 階層的な名前空間（`Math.Utils.fibonacci`）
+- コンテンツベースの依存関係管理
+- 名前の解決とエイリアス機能
+- インクリメンタルな再コンパイル
+
+### 7. 構造的コード変換
+- ASTコマンドによる安全な変換操作
+- Replace、Rename、Extract、Wrapなどの基本操作
+- 型安全性を保証する変換
+- AIやツールからの予測可能な操作
+
 ## アーキテクチャ
 
 詳細なモジュール責務分担については[ARCHITECTURE.md](./ARCHITECTURE.md)を参照してください。
@@ -53,6 +65,10 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 
 ## 基本構文
 
+### 命名規則
+- **lowerCamelCase**: 変数名、関数名はハイフンなしのlowerCamelCaseを使用
+- 例: `strConcat`、`intToString`、`foldLeft`（~~`str-concat`~~、~~`int-to-string`~~、~~`fold-left`~~）
+
 ```lisp
 ; 変数定義
 (let x 42)
@@ -62,7 +78,7 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 (let add (fn (x y) (+ x y)))
 (let inc (add 1))  ; 部分適用
 
-; let-in構文（ローカルバインディング）
+; letIn構文（ローカルバインディング）
 (let x 10 in (+ x 5))  ; 結果: 15
 (let x 5 in
   (let y 10 in
@@ -74,7 +90,7 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
       1
       (* n (factorial (- n 1)))))
 
-; rec内でlet-in使用（内部ヘルパー関数）
+; rec内でletIn使用（内部ヘルパー関数）
 (rec quicksort (lst)
   (match lst
     ((list) (list))
@@ -84,14 +100,21 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
           (append (quicksort smaller)
                   (cons pivot (quicksort larger))))))))
 
-; let-rec（相互再帰対応）
-(let-rec even (n) (if (= n 0) true (odd (- n 1))))
-(let-rec odd (n) (if (= n 0) false (even (- n 1))))
+; letRec（相互再帰対応）
+(letRec even (n) (if (= n 0) true (odd (- n 1))))
+(letRec odd (n) (if (= n 0) false (even (- n 1))))
 
 ; パターンマッチング
 (match xs
-  ((list) 0)           ; 空リスト
-  ((list h t) (+ 1 (length t))))  ; cons パターン
+  ((list) 0)                      ; 空リスト
+  ((list h) h)                    ; 単一要素
+  ((list h ... t) (+ 1 (length t))))  ; head/tailパターン（...を使用）
+
+; 複数要素と残りのパターン
+(match lst
+  ((list a b c ... rest) (+ a (+ b c)))  ; 最初の3要素を取得
+  ((list x y) (+ x y))                    ; 2要素のみ
+  (_ 0))                                  ; その他
 
 ; 代数的データ型
 (type Option a
@@ -111,6 +134,34 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 ; インポート
 (import Math)
 (import List as L)
+
+; 名前空間での定義
+(namespace Math.Utils
+  (let fibonacci (rec fib (n)
+    (if (< n 2) n
+        (+ (fib (- n 1)) (fib (- n 2)))))))
+
+; 完全修飾名でのアクセス
+(Math.Utils.fibonacci 10)
+
+; レコード（オブジェクトリテラル）
+(let person { name: "Alice", age: 30 })
+
+; フィールドアクセス
+(let name person.name)
+(let age person.age)
+
+; ネストしたレコード
+(let company {
+  name: "TechCorp",
+  address: { city: "Tokyo", zip: "100-0001" }
+})
+
+; ネストしたフィールドアクセス
+(let city company.address.city)
+
+; 関数的な更新（新しいレコードを作成）
+(let updatedPerson { name: "Bob", age: person.age })
 ```
 
 ## 標準ライブラリ
@@ -121,7 +172,7 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 - ブーリアン演算、数値ヘルパー
 
 ### list.xs
-- リスト操作: map, filter, fold-left, fold-right
+- リスト操作: map, filter, foldLeft, foldRight
 - リスト生成: range, replicate
 - リスト検索: find, elem, all, any
 
@@ -132,7 +183,7 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 
 ### string.xs
 - 文字列操作: concat, join, repeat
-- 文字列比較: str-eq, str-neq
+- 文字列比較: strEq, strNeq
 
 ## XS Shell (REPL)
 
@@ -186,7 +237,7 @@ Suggestions:
 ## 実装状況
 
 ### 完了済み機能
-- ✅ S式パーサー（コメント保持対応）
+- ✅ S式パーサー（コメント保持対応、lowerCamelCase対応）
 - ✅ HM型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
 - ✅ CLIツール (xsc parse/check/run/bench)
@@ -199,10 +250,15 @@ Suggestions:
 - ✅ モジュールシステム（基本実装）
 - ✅ ASTメタデータ管理
 - ✅ AIフレンドリーなエラーメッセージ
+- ✅ 階層的な名前空間システム
+- ✅ 関数単位の依存関係追跡
+- ✅ ASTコマンドによる構造的変換
+- ✅ インクリメンタル型チェック
+- ✅ 差分テスト実行システム
 
 ### 開発中/計画中
-- ✅ rec内部定義の修正（let-in構文で解決）
-- 📋 Unison風テスト結果キャッシュシステム
+- ✅ rec内部定義の修正（letIn構文で解決）
+- 📋 Unison風テスト結果キャッシュシステム（基盤実装済み）
 - 📋 Effect System
 - 📋 WASIサンドボックス
 - 📋 並列実行サポート

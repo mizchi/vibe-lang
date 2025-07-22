@@ -1,7 +1,7 @@
 ;; Type checker for XS language
 
 (module TypeChecker
-  (export infer type-check)
+  (export infer typeCheck)
   (import Types)
   (import Parser)
   
@@ -15,79 +15,79 @@
       
       ;; 変数参照
       ((Parser.Symbol name)
-        (match (lookup-env name env)
+        (match (lookupEnv name env)
           ((Some scheme) (Types.instantiate scheme))
-          ((None) (error (string-concat "Undefined variable: " name)))))
+          ((None) (error (stringConcat "Undefined variable: " name)))))
       
       ;; Let式
       ((Parser.Let name value)
-        (let value-type (infer env value) in
-          (let new-env (extend-env name (Types.mono value-type) env) in
-            value-type)))
+        (let valueType (infer env value) in
+          (let newEnv (extendEnv name (Types.mono valueType) env) in
+            valueType)))
       
       ;; 関数適用
       ((Parser.Apply fn args)
-        (let fn-type (infer env fn) in
-          (infer-apply env fn-type args)))
+        (let fnType (infer env fn) in
+          (inferApply env fnType args)))
       
       ;; ラムダ式
       ((Parser.Lambda params body)
-        (let param-types (map (fn (_) (Types.type-var)) params) in
-          (let new-env (extend-env-many params param-types env) in
-            (let body-type (infer new-env body) in
-              (make-function-type param-types body-type)))))
+        (let paramTypes (map (fn (_) (Types.typeVar)) params) in
+          (let newEnv (extendEnvMany params paramTypes env) in
+            (let bodyType (infer newEnv body) in
+              (makeFunctionType paramTypes bodyType)))))
       
       ;; If式
       ((Parser.If cond then else)
-        (let cond-type (infer env cond) in
+        (let condType (infer env cond) in
           (do
-            (unify cond-type (Types.TBool))
-            (let then-type (infer env then) in
-              (let else-type (infer env else) in
+            (unify condType (Types.TBool))
+            (let thenType (infer env then) in
+              (let elseType (infer env else) in
                 (do
-                  (unify then-type else-type)
-                  then-type))))))
+                  (unify thenType elseType)
+                  thenType))))))
       
       ;; リスト
       ((Parser.List elements)
         (match elements
-          ((list) (Types.TList (Types.type-var)))
+          ((list) (Types.TList (Types.typeVar)))
           ((list h t)
-            (let elem-type (infer env h) in
+            (let elemType (infer env h) in
               (do
-                (check-list-elements env elem-type t)
-                (Types.TList elem-type))))))
+                (checkListElements env elemType t)
+                (Types.TList elemType))))))
       
       ;; その他
       (_ (error "Unsupported expression in type inference"))))
   
   ;; 関数適用の型推論
-  (rec infer-apply (env fn-type args)
+  (rec inferApply (env fnType args)
     (match args
-      ((list) fn-type)
-      ((list arg rest-args)
-        (let arg-type (infer env arg) in
-          (let result-type (Types.type-var) in
+      ((list) fnType)
+      ((list arg restArgs)
+        (let argType (infer env arg) in
+          (let resultType (Types.typeVar) in
             (do
-              (unify fn-type (Types.TFunction arg-type result-type))
-              (infer-apply env result-type rest-args)))))))
+              (unify fnType (Types.TFunction argType resultType))
+              (inferApply env resultType restArgs)))))))
   
   ;; 関数型を構築（カリー化）
-  (rec make-function-type (param-types result-type)
-    (match param-types
-      ((list) result-type)
+  (rec makeFunctionType (paramTypes resultType)
+    (match paramTypes
+      ((list) resultType)
       ((list p rest)
-        (Types.TFunction p (make-function-type rest result-type)))))
+        (Types.TFunction p (makeFunctionType rest resultType)))))
   
   ;; リストの要素の型をチェック
-  (rec check-list-elements (env expected-type elements)
+  (rec checkListElements (env expectedType elements)
     (match elements
       ((list) true)
       ((list h t)
-        (let elem-type (infer env h) in
+        (let elemType (infer env h) in
           (do
-            (unify expected-type elem-type)
-            (check-list-elements env expected-type t))))))
+            (unify expectedType elemType)
+            (checkListElements env expectedType t))))))
   
   ;; 型の単一化（簡易版）
   (rec unify (t1 t2)
@@ -113,61 +113,61 @@
       ((pair t (Types.TVar v)) true)
       
       ;; 型が合わない
-      (_ (error (string-concat "Type mismatch: " 
-                               (string-concat (type-to-string t1)
-                                             (string-concat " vs " 
-                                                           (type-to-string t2))))))))
+      (_ (error (stringConcat "Type mismatch: " 
+                               (stringConcat (typeToString t1)
+                                             (stringConcat " vs " 
+                                                           (typeToString t2))))))))
   
   ;; 型環境の操作
-  (let empty-env (Types.TypeEnv (list)))
+  (let emptyEnv (Types.TypeEnv (list)))
   
-  (rec lookup-env (name env)
+  (rec lookupEnv (name env)
     (match env
       ((Types.TypeEnv bindings)
-        (lookup-alist name bindings))))
+        (lookupAlist name bindings))))
   
-  (rec lookup-alist (key alist)
+  (rec lookupAlist (key alist)
     (match alist
       ((list) (None))
       ((list (pair k v) rest)
-        (if (string-eq k key)
+        (if (stringEq k key)
             (Some v)
-            (lookup-alist key rest)))))
+            (lookupAlist key rest)))))
   
-  (let extend-env (fn (name scheme env)
+  (let extendEnv (fn (name scheme env)
     (match env
       ((Types.TypeEnv bindings)
         (Types.TypeEnv (cons (pair name scheme) bindings))))))
   
-  (rec extend-env-many (names types env)
+  (rec extendEnvMany (names types env)
     (match (pair names types)
       ((pair (list) (list)) env)
       ((pair (list n ns) (list t ts))
-        (extend-env-many ns ts 
-                        (extend-env n (Types.mono t) env)))
+        (extendEnvMany ns ts 
+                        (extendEnv n (Types.mono t) env)))
       (_ (error "Mismatched parameter and type lists"))))
   
   ;; 型を文字列に変換（デバッグ用）
-  (rec type-to-string (t)
+  (rec typeToString (t)
     (match t
       ((Types.TInt) "Int")
       ((Types.TFloat) "Float")
       ((Types.TBool) "Bool")
       ((Types.TString) "String")
       ((Types.TList elem) 
-        (string-concat "List " (type-to-string elem)))
+        (stringConcat "List " (typeToString elem)))
       ((Types.TFunction from to)
-        (string-concat "(" 
-                      (string-concat (type-to-string from)
-                                    (string-concat " -> "
-                                                  (string-concat (type-to-string to) ")")))))
+        (stringConcat "(" 
+                      (stringConcat (typeToString from)
+                                    (stringConcat " -> "
+                                                  (stringConcat (typeToString to) ")")))))
       ((Types.TVar v) v)
       ((Types.TUserDefined name args)
         name)))
   
   ;; 型チェックのメイン関数
-  (let type-check (fn (expr)
-    (infer empty-env expr)))
+  (let typeCheck (fn (expr)
+    (infer emptyEnv expr)))
   
   ;; Option型（Types.xsから）
   (type Option a

@@ -39,6 +39,18 @@ impl fmt::Display for Value {
                     write!(f, "<builtin:{name}:{arity}/{}>", applied_args.len())
                 }
             }
+            Value::Record { fields } => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (name, value) in fields {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, value)?;
+                    first = false;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

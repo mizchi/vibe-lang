@@ -1,7 +1,7 @@
 ;; Type definitions for the XS type checker
 
 (module Types
-  (export Type TypeScheme TypeEnv type-var mono poly instantiate)
+  (export Type TypeScheme TypeEnv typeVar mono poly instantiate)
   
   ;; 型の定義
   (type Type
@@ -24,13 +24,13 @@
     (TypeEnv (list (pair String TypeScheme))))
   
   ;; 新しい型変数を生成
-  (let type-var-counter (ref 0))
+  (let typeVarCounter (ref 0))
   
-  (let type-var (fn ()
-    (let n (deref type-var-counter) in
+  (let typeVar (fn ()
+    (let n (deref typeVarCounter) in
       (do
-        (set! type-var-counter (+ n 1))
-        (TVar (string-concat "t" (int-to-string n)))))))
+        (set! typeVarCounter (+ n 1))
+        (TVar (stringConcat "t" (intToString n)))))))
   
   ;; 単相型スキームを作成
   (let mono (fn (t) (Mono t)))
@@ -43,42 +43,42 @@
     (match scheme
       ((Mono t) t)
       ((Poly vars t)
-        (let subst (make-subst vars) in
-          (apply-subst subst t)))))
+        (let subst (makeSubst vars) in
+          (applySubst subst t)))))
   
   ;; 型変数の置換を作成
-  (rec make-subst (vars)
+  (rec makeSubst (vars)
     (match vars
       ((list) (list))
       ((list v vs)
-        (cons (pair v (type-var))
-              (make-subst vs)))))
+        (cons (pair v (typeVar))
+              (makeSubst vs)))))
   
   ;; 置換を型に適用
-  (rec apply-subst (subst t)
+  (rec applySubst (subst t)
     (match t
       ((TInt) (TInt))
       ((TFloat) (TFloat))
       ((TBool) (TBool))
       ((TString) (TString))
-      ((TList elem-type)
-        (TList (apply-subst subst elem-type)))
+      ((TList elemType)
+        (TList (applySubst subst elemType)))
       ((TFunction from to)
-        (TFunction (apply-subst subst from)
-                   (apply-subst subst to)))
+        (TFunction (applySubst subst from)
+                   (applySubst subst to)))
       ((TVar v)
         (match (lookup v subst)
-          ((Some new-type) new-type)
+          ((Some newType) newType)
           ((None) (TVar v))))
       ((TUserDefined name args)
-        (TUserDefined name (map (fn (t) (apply-subst subst t)) args)))))
+        (TUserDefined name (map (fn (t) (applySubst subst t)) args)))))
   
   ;; 環境から型を検索
   (rec lookup (key alist)
     (match alist
       ((list) (None))
       ((list (pair k v) rest)
-        (if (string-eq k key)
+        (if (stringEq k key)
             (Some v)
             (lookup key rest)))))
   
@@ -90,4 +90,4 @@
   ;; 参照型の簡易実装（実際にはビルトインが必要）
   (let ref (fn (x) (list x)))
   (let deref (fn (r) (car r)))
-  (let set! (fn (r v) (set-car! r v))))
+  (let set! (fn (r v) (setCar! r v))))

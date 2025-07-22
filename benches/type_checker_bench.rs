@@ -209,8 +209,8 @@ fn benchmark_recursive_type_checking(c: &mut Criterion) {
         (
             "mutual_rec",
             r#"
-            (let-rec even (fn (n) (if (= n 0) true (odd (- n 1))))
-            (let-rec odd (fn (n) (if (= n 0) false (even (- n 1))))
+            (letRec even (fn (n) (if (= n 0) true (odd (- n 1))))
+            (letRec odd (fn (n) (if (= n 0) false (even (- n 1))))
                 (even 10)))
         "#,
         ),
