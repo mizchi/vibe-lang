@@ -243,7 +243,7 @@ impl ShellState {
 
         if results.is_empty() {
             match pattern {
-                Some(p) => format!("No definitions found matching '{}'", p),
+                Some(p) => format!("No definitions found matching '{p}'"),
                 None => "No definitions in codebase".to_string(),
             }
         } else {
@@ -297,7 +297,7 @@ impl ShellState {
 
     pub fn show_dependencies(&self, name: &str) -> String {
         // TODO: 実際の依存関係解析を実装
-        format!("{} has no dependencies tracked yet", name)
+        format!("{name} has no dependencies tracked yet")
     }
 
     pub fn find_references(&self, name: &str) -> String {
@@ -313,7 +313,7 @@ impl ShellState {
 
         // TODO: 実際の参照解析を実装
         if references.is_empty() {
-            format!("No references found for '{}'", name)
+            format!("No references found for '{name}'")
         } else {
             format!("References to '{}':\n{}", name, references.join("\n"))
         }
@@ -328,7 +328,7 @@ impl ShellState {
                     name_or_expr,
                     entry.ty,
                     format_value(&entry.value),
-                    Self::hash_prefix(&hash)
+                    Self::hash_prefix(hash)
                 ));
             }
         }
@@ -336,8 +336,8 @@ impl ShellState {
         // 式として評価
         match xs_core::parser::parse(name_or_expr) {
             Ok(expr) => match self.type_check_with_env(&expr) {
-                Ok(ty) => Ok(format!("{} : {}", name_or_expr, ty)),
-                Err(e) => Ok(format!("Type error: {}", e)),
+                Ok(ty) => Ok(format!("{name_or_expr} : {ty}")),
+                Err(e) => Ok(format!("Type error: {e}")),
             },
             Err(_) => anyhow::bail!("Invalid expression: {}", name_or_expr),
         }
@@ -352,7 +352,7 @@ impl ShellState {
             .collect();
 
         if results.is_empty() {
-            format!("No definitions found matching '{}'", pattern)
+            format!("No definitions found matching '{pattern}'")
         } else {
             results.join("\n")
         }
@@ -360,7 +360,7 @@ impl ShellState {
 
     pub fn show_dependents(&self, name: &str) -> String {
         // TODO: 実際の被依存関係解析を実装
-        format!("No dependents found for {}", name)
+        format!("No dependents found for {name}")
     }
 
     pub fn show_definition(&self, name: &str) -> Result<String> {
@@ -495,7 +495,7 @@ impl ShellState {
                     false
                 }
             }
-            _ => format!("{:?}", ty).contains(pattern),
+            _ => format!("{ty:?}").contains(pattern),
         }
     }
     
@@ -695,16 +695,6 @@ fn format_value(val: &Value) -> String {
         Value::Float(f) => f.to_string(),
         Value::RecClosure { .. } => "<rec-closure>".to_string(),
         Value::Constructor { name, .. } => format!("<constructor:{name}>"),
-        Value::Record { fields } => {
-            if fields.is_empty() {
-                "{}".to_string()
-            } else {
-                let field_strs: Vec<String> = fields.iter()
-                    .map(|(name, value)| format!("{}: {}", name, format_value(value)))
-                    .collect();
-                format!("{{ {} }}", field_strs.join(", "))
-            }
-        }
     }
 }
 
@@ -785,7 +775,7 @@ pub fn run_repl() -> Result<()> {
 
                             Command::View(name_or_hash) => {
                                 match state.view_definition(&name_or_hash) {
-                                    Ok(result) => println!("{}", result),
+                                    Ok(result) => println!("{result}"),
                                     Err(e) => println!("{}: {}", "Error".red(), e),
                                 }
                             }
@@ -811,7 +801,7 @@ pub fn run_repl() -> Result<()> {
                                         } else {
                                             println!("Found {} definitions:", results.len());
                                             for result in results {
-                                                println!("{}", result);
+                                                println!("{result}");
                                             }
                                         }
                                     }
@@ -821,7 +811,7 @@ pub fn run_repl() -> Result<()> {
                             
                             Command::Pipeline(commands) => {
                                 match state.execute_pipeline(&commands) {
-                                    Ok(result) => println!("{}", result),
+                                    Ok(result) => println!("{result}"),
                                     Err(e) => println!("{}: {}", "Error".red(), e),
                                 }
                             }

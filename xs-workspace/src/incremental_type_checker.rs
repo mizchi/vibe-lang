@@ -23,6 +23,7 @@ struct TypeCheckResult {
     error: Option<String>,
     
     /// Dependencies used during type checking
+    #[allow(dead_code)]
     dependencies: HashSet<DefinitionHash>,
 }
 
@@ -178,7 +179,7 @@ impl IncrementalTypeChecker {
                 .get_definition(&current_hash)
                 .ok_or_else(|| XsError::RuntimeError(
                     xs_core::Span::new(0, 0),
-                    format!("Definition not found: {}", current_hash)
+                    format!("Definition not found: {current_hash}")
                 ))?;
             
             for dep_hash in &definition.dependencies {
@@ -209,7 +210,7 @@ impl IncrementalTypeChecker {
             .get_definition(hash)
             .ok_or_else(|| XsError::RuntimeError(
                 xs_core::Span::new(0, 0),
-                format!("Definition not found: {}", hash)
+                format!("Definition not found: {hash}")
             ))?;
         
         // Create a new type checker for this check
@@ -234,7 +235,7 @@ impl IncrementalTypeChecker {
                 // Create parameter types (would need type annotations)
                 let param_types: Vec<Type> = params.iter()
                     .enumerate()
-                    .map(|(i, _)| Type::Var(format!("t{}", i)))
+                    .map(|(i, _)| Type::Var(format!("t{i}")))
                     .collect();
                 
                 // Add parameters to environment
@@ -439,7 +440,7 @@ mod tests {
         
         // Add some definitions
         for i in 0..5 {
-            let path = DefinitionPath::from_str(&format!("value{}", i)).unwrap();
+            let path = DefinitionPath::from_str(&format!("value{i}")).unwrap();
             let content = DefinitionContent::Value(
                 Expr::Literal(Literal::Int(i), Span::new(0, 1))
             );
@@ -457,7 +458,7 @@ mod tests {
         // Create batch
         let mut batch = TypeCheckBatch::new(&mut checker);
         for i in 0..5 {
-            batch.add(DefinitionPath::from_str(&format!("value{}", i)).unwrap());
+            batch.add(DefinitionPath::from_str(&format!("value{i}")).unwrap());
         }
         
         // Execute batch

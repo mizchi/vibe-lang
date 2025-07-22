@@ -21,6 +21,7 @@ impl NamespacePath {
         Self(vec![])
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(path: &str) -> Self {
         if path.is_empty() {
             Self::root()
@@ -29,6 +30,7 @@ impl NamespacePath {
         }
     }
 
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         self.0.join(".")
     }
@@ -68,6 +70,7 @@ impl DefinitionPath {
         Self { namespace, name }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(path: &str) -> Option<Self> {
         let parts: Vec<&str> = path.split('.').collect();
         if parts.is_empty() {
@@ -86,6 +89,7 @@ impl DefinitionPath {
         })
     }
 
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         if self.namespace.0.is_empty() {
             self.name.clone()
@@ -291,7 +295,7 @@ impl NamespaceStore {
         for dep_hash in &dependencies {
             self.reverse_dependencies
                 .entry(dep_hash.clone())
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(hash.clone());
         }
 

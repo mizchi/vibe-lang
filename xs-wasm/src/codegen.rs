@@ -296,11 +296,8 @@ impl CodeGenerator {
         args: &[IrExpr],
     ) -> Result<Option<()>, CodeGenError> {
         // Check if this is a builtin function
-        let is_builtin = match name {
-            "+" | "-" | "*" | "/" | "%" | "<" | ">" | "=" | "<=" | ">=" | "cons" | "concat"
-            | "print" => true,
-            _ => false,
-        };
+        let is_builtin = matches!(name, "+" | "-" | "*" | "/" | "%" | "<" | ">" | "=" | "<=" | ">=" | "cons" | "concat"
+            | "print");
 
         if !is_builtin {
             return Ok(None);

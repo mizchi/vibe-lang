@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     match api::parse_api_command(&command_json) {
         Ok(command) => {
             let response = api::process_api_command(&mut state, command);
-            println!("{}", response);
+            println!("{response}");
         }
         Err(e) => {
             let error_response = api::ApiResponse::error(e);

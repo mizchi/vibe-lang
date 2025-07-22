@@ -28,13 +28,6 @@ impl Type {
                 }
                 vars
             }
-            Type::Record { fields } => {
-                let mut vars = HashSet::new();
-                for (_, ty) in fields {
-                    vars.extend(ty.free_vars());
-                }
-                vars
-            }
         }
     }
 
@@ -55,11 +48,6 @@ impl Type {
             Type::UserDefined { name, type_params } => Type::UserDefined {
                 name: name.clone(),
                 type_params: type_params.iter().map(|t| t.apply_subst(subst)).collect(),
-            },
-            Type::Record { fields } => Type::Record {
-                fields: fields.iter()
-                    .map(|(name, ty)| (name.clone(), ty.apply_subst(subst)))
-                    .collect(),
             },
         }
     }

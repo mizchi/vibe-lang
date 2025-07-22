@@ -178,15 +178,6 @@ impl<'a> DependencyExtractor<'a> {
                 }
             }
             
-            Expr::Record { fields, .. } => {
-                for (_, value) in fields {
-                    self.visit_expr(value, deps);
-                }
-            }
-            
-            Expr::FieldAccess { record, .. } => {
-                self.visit_expr(record, deps);
-            }
             
             Expr::Module { body, .. } => {
                 for expr in body {
@@ -245,12 +236,9 @@ impl<'a> DependencyExtractor<'a> {
             Pattern::Variable(ident, _) => {
                 self.add_binding(ident.0.clone());
             }
-            Pattern::List { patterns, rest, .. } => {
+            Pattern::List { patterns, .. } => {
                 for p in patterns {
                     self.add_pattern_bindings(p);
-                }
-                if let Some(rest_pattern) = rest {
-                    self.add_pattern_bindings(rest_pattern);
                 }
             }
             Pattern::Constructor { patterns, .. } => {

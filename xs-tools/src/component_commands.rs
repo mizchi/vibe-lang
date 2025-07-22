@@ -68,7 +68,7 @@ fn generate_wit(file: &PathBuf, output: Option<PathBuf>) -> Result<()> {
             output_path.display()
         );
     } else {
-        println!("{}", wit_content);
+        println!("{wit_content}");
     }
 
     Ok(())
@@ -124,8 +124,8 @@ fn _build_component_old(file: &PathBuf, output: &PathBuf, version: &str) -> Resu
         "Success".green(),
         output.display()
     );
-    println!("  Module: {}", module_name);
-    println!("  Version: {}", version);
+    println!("  Module: {module_name}");
+    println!("  Version: {version}");
     println!("  Size: {} bytes", component_bytes.len());
 
     Ok(())

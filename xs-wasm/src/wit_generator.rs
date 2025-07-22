@@ -50,7 +50,7 @@ impl WitGenerator {
             writeln!(&mut wit, "interface types {{").unwrap();
             for (name, typ_def) in &self.types {
                 let wit_type = self.generate_type_definition(name, typ_def);
-                writeln!(&mut wit, "  {}", wit_type).unwrap();
+                writeln!(&mut wit, "  {wit_type}").unwrap();
             }
             writeln!(&mut wit, "}}").unwrap();
             writeln!(&mut wit).unwrap();
@@ -60,7 +60,7 @@ impl WitGenerator {
         writeln!(&mut wit, "interface exports {{").unwrap();
         for (name, typ) in &self.exports {
             if let Some(func_sig) = self.generate_function_signature(name, typ) {
-                writeln!(&mut wit, "  {};", func_sig).unwrap();
+                writeln!(&mut wit, "  {func_sig};").unwrap();
             }
         }
         writeln!(&mut wit, "}}").unwrap();
@@ -70,9 +70,9 @@ impl WitGenerator {
         let world_name = self
             .package_name
             .split(':')
-            .last()
+            .next_back()
             .unwrap_or(&self.package_name);
-        writeln!(&mut wit, "world {} {{", world_name).unwrap();
+        writeln!(&mut wit, "world {world_name} {{").unwrap();
         writeln!(&mut wit, "  export exports;").unwrap();
         if !self.types.is_empty() {
             writeln!(&mut wit, "  export types;").unwrap();
@@ -204,7 +204,7 @@ fn wit_type_string(wit_type: &WitType) -> String {
                 .as_ref()
                 .map(|t| wit_type_string(t))
                 .unwrap_or_else(|| "_".to_string());
-            format!("result<{}, {}>", ok_str, err_str)
+            format!("result<{ok_str}, {err_str}>")
         }
         WitType::Named(name) => to_wit_identifier(name),
     }

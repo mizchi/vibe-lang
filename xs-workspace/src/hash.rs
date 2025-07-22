@@ -76,7 +76,7 @@ impl DefinitionHash {
     /// Convert to hex string
     pub fn to_hex(&self) -> String {
         self.0.iter()
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect()
     }
     
@@ -184,24 +184,6 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             for arg in args {
                 hash_expr(hasher, arg);
             }
-        }
-        Expr::Record { fields, .. } => {
-            hasher.update(b"record");
-            // Sort fields for deterministic ordering
-            let mut sorted_fields: Vec<_> = fields.iter().collect();
-            sorted_fields.sort_by_key(|(k, _)| k.0.as_str());
-            
-            hasher.update(sorted_fields.len().to_le_bytes());
-            for (key, value) in sorted_fields {
-                hasher.update(key.0.as_bytes());
-                hasher.update(b"\0");
-                hash_expr(hasher, value);
-            }
-        }
-        Expr::FieldAccess { record, field, .. } => {
-            hasher.update(b"field_access");
-            hash_expr(hasher, record);
-            hasher.update(field.0.as_bytes());
         }
         Expr::Module { name, exports, body, .. } => {
             hasher.update(b"module");
@@ -351,17 +333,11 @@ fn hash_pattern(hasher: &mut Sha256, pattern: &Pattern) {
                 }
             }
         }
-        Pattern::List { patterns, rest, .. } => {
+        Pattern::List { patterns, .. } => {
             hasher.update(b"list");
             hasher.update(patterns.len().to_le_bytes());
             for p in patterns {
                 hash_pattern(hasher, p);
-            }
-            if let Some(rest_pattern) = rest {
-                hasher.update(b"1");
-                hash_pattern(hasher, rest_pattern);
-            } else {
-                hasher.update(b"0");
             }
         }
         Pattern::Constructor { name, patterns, .. } => {
@@ -395,20 +371,6 @@ fn hash_type(hasher: &mut Sha256, ty: &Type) {
         Type::List(elem) => {
             hasher.update(b"list");
             hash_type(hasher, elem);
-        }
-        Type::Record { fields } => {
-            hasher.update(b"record");
-            
-            // Sort fields for deterministic ordering
-            let mut sorted_fields: Vec<_> = fields.iter().collect();
-            sorted_fields.sort_by_key(|(k, _)| k.as_str());
-            
-            hasher.update(sorted_fields.len().to_le_bytes());
-            for (key, ty) in sorted_fields {
-                hasher.update(key.as_bytes());
-                hasher.update(b"\0");
-                hash_type(hasher, ty);
-            }
         }
         Type::UserDefined { name, type_params } => {
             hasher.update(b"user_defined");

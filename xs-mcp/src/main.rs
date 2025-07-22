@@ -2,7 +2,6 @@
 //!
 //! Run the MCP server for XS language.
 
-use tracing_subscriber;
 use xs_mcp::McpServer;
 
 #[tokio::main]
@@ -16,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Create and run server
     let server = McpServer::new();
-    println!("Starting XS MCP server on {}", addr);
+    println!("Starting XS MCP server on {addr}");
     
     server.run(&addr).await?;
     

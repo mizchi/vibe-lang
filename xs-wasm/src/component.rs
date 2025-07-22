@@ -148,7 +148,6 @@ pub fn xs_type_to_wit(xs_type: &xs_core::Type) -> WitType {
         }
         Type::Var(_) => WitType::String, // Type variables need special handling
         Type::UserDefined { .. } => WitType::String, // ADTs need special handling
-        Type::Record { .. } => WitType::String, // Records need special handling
     }
 }
 
@@ -175,10 +174,13 @@ pub fn generate_wit_interface(
     }
 }
 
+/// Function parameter and return type information
+type FunctionSignatureTuple = (Vec<(String, WitType)>, Vec<WitType>);
+
 /// Extract function signature from XS type, handling curried functions
 fn extract_function_signature(
     typ: &xs_core::Type,
-) -> Option<(Vec<(String, WitType)>, Vec<WitType>)> {
+) -> Option<FunctionSignatureTuple> {
     use xs_core::Type;
 
     let mut params = Vec::new();

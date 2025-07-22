@@ -276,7 +276,7 @@ async fn handle_resources_read(
             })
         }
         
-        _ => Err(format!("Unknown resource: {}", uri))
+        _ => Err(format!("Unknown resource: {uri}"))
     }
 }
 
@@ -338,7 +338,7 @@ async fn handle_prompts_get(
             vec![PromptMessage {
                 role: "user".to_string(),
                 content: PromptContent::Text {
-                    text: format!("Please explain the following XS type signature:\n\n{}", type_sig),
+                    text: format!("Please explain the following XS type signature:\n\n{type_sig}"),
                 },
             }]
         }
@@ -353,7 +353,7 @@ async fn handle_prompts_get(
             vec![PromptMessage {
                 role: "user".to_string(),
                 content: PromptContent::Text {
-                    text: format!("Please generate comprehensive test cases for the following XS code:\n\n```lisp\n{}\n```", code),
+                    text: format!("Please generate comprehensive test cases for the following XS code:\n\n```lisp\n{code}\n```"),
                 },
             }]
         }
@@ -368,11 +368,11 @@ async fn handle_prompts_get(
             vec![PromptMessage {
                 role: "user".to_string(),
                 content: PromptContent::Text {
-                    text: format!("Please suggest refactoring improvements for the following XS code:\n\n```lisp\n{}\n```", code),
+                    text: format!("Please suggest refactoring improvements for the following XS code:\n\n```lisp\n{code}\n```"),
                 },
             }]
         }
-        _ => return Err(format!("Unknown prompt: {}", name))
+        _ => return Err(format!("Unknown prompt: {name}"))
     };
     
     Ok(McpResponse::PromptsGet { messages })

@@ -34,7 +34,7 @@ impl FilterOperator {
     
     /// Create a filter that checks if a field equals a value
     pub fn equals(field: String, value: StructuredValue) -> Self {
-        let desc = format!("filter {} == {:?}", field, value);
+        let desc = format!("filter {field} == {value:?}");
         Self::new(
             move |row| {
                 row.get(&field)
@@ -52,7 +52,7 @@ impl FilterOperator {
     
     /// Create a filter that checks if a field contains a substring
     pub fn contains(field: String, substring: String) -> Self {
-        let desc = format!("filter {} contains '{}'", field, substring);
+        let desc = format!("filter {field} contains '{substring}'");
         Self::new(
             move |row| {
                 row.get(&field)
@@ -96,7 +96,7 @@ impl PipelineOperator for FilterOperator {
             
             _ => Err(XsError::RuntimeError(
                 Span::new(0, 0),
-                format!("Cannot filter non-tabular data")
+                "Cannot filter non-tabular data".to_string()
             )),
         }
     }
@@ -145,7 +145,7 @@ impl MapOperator {
     where
         F: Fn(&HashMap<String, StructuredValue>) -> StructuredValue + 'static,
     {
-        let desc = format!("add column {}", name);
+        let desc = format!("add column {name}");
         Self::new(
             move |mut row| {
                 let value = compute(&row);
@@ -181,7 +181,7 @@ impl PipelineOperator for MapOperator {
             
             _ => Err(XsError::RuntimeError(
                 Span::new(0, 0),
-                format!("Cannot map non-tabular data")
+                "Cannot map non-tabular data".to_string()
             )),
         }
     }
@@ -237,7 +237,7 @@ impl PipelineOperator for SortOperator {
             
             _ => Err(XsError::RuntimeError(
                 Span::new(0, 0),
-                format!("Cannot sort non-tabular data")
+                "Cannot sort non-tabular data".to_string()
             )),
         }
     }
@@ -312,10 +312,10 @@ impl PipelineOperator for GroupByOperator {
                 
                 for row in rows {
                     let key = row.get(&self.field)
-                        .map(|v| format_value_simple(v))
+                        .map(format_value_simple)
                         .unwrap_or_else(|| "<null>".to_string());
                     
-                    groups.entry(key).or_insert_with(Vec::new).push(row);
+                    groups.entry(key).or_default().push(row);
                 }
                 
                 // Convert groups to a new table format
@@ -328,7 +328,7 @@ impl PipelineOperator for GroupByOperator {
                     // Add the grouped rows as a list
                     let group_list = StructuredValue::List(
                         group_rows.into_iter()
-                            .map(|r| StructuredValue::Record(r))
+                            .map(StructuredValue::Record)
                             .collect()
                     );
                     row.insert("items".to_string(), group_list);
@@ -344,7 +344,7 @@ impl PipelineOperator for GroupByOperator {
             
             _ => Err(XsError::RuntimeError(
                 Span::new(0, 0),
-                format!("Cannot group non-tabular data")
+                "Cannot group non-tabular data".to_string()
             )),
         }
     }
@@ -382,7 +382,7 @@ fn format_value_simple(val: &StructuredValue) -> String {
         StructuredValue::Int(n) => n.to_string(),
         StructuredValue::Float(f) => f.to_string(),
         StructuredValue::Bool(b) => b.to_string(),
-        _ => format!("{:?}", val),
+        _ => format!("{val:?}"),
     }
 }
 

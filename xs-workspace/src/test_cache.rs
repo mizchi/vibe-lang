@@ -48,6 +48,7 @@ pub struct TestCache {
     dependency_index: HashMap<Hash, Vec<Hash>>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for TestCache {
     fn default() -> Self {
         TestCache {

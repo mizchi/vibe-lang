@@ -31,6 +31,12 @@ pub struct McpServer {
     state: Arc<RwLock<McpServerState>>,
 }
 
+impl Default for McpServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpServer {
     /// Create a new MCP server
     pub fn new() -> Self {
@@ -76,7 +82,7 @@ async fn handle_mcp_request(
             error!("Error handling MCP request: {}", e);
             McpResponse::Error {
                 code: -32603,
-                message: format!("Internal error: {}", e),
+                message: format!("Internal error: {e}"),
                 data: None,
             }
         }

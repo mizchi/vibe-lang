@@ -67,12 +67,10 @@ impl QueryEngine {
             CodeQuery::DependsOn { target, transitive } => {
                 if *transitive {
                     Ok(self.has_transitive_dependency(hash, target))
+                } else if let Some(target_hash) = self.namespace_store.get_definition_by_path(target) {
+                    Ok(def.dependencies.contains(&target_hash.hash))
                 } else {
-                    if let Some(target_hash) = self.namespace_store.get_definition_by_path(target) {
-                        Ok(def.dependencies.contains(&target_hash.hash))
-                    } else {
-                        Ok(false)
-                    }
+                    Ok(false)
                 }
             }
             
@@ -152,6 +150,7 @@ impl QueryEngine {
     }
     
     /// Check if a type contains a specific type variable
+    #[allow(clippy::only_used_in_recursion)]
     fn type_contains_var(&self, ty: &Type, var_name: &str) -> bool {
         match ty {
             Type::Var(name) => name == var_name,
@@ -231,6 +230,7 @@ impl QueryEngine {
     }
     
     /// Check if an expression contains a specific node type
+    #[allow(clippy::only_used_in_recursion)]
     fn expr_contains_node_type(&self, expr: &Expr, node_type: &AstNodeType) -> bool {
         match (expr, node_type) {
             (Expr::Lambda { .. }, AstNodeType::Lambda) => true,
@@ -274,6 +274,7 @@ impl QueryEngine {
     }
     
     /// Check if an expression uses a specific builtin
+    #[allow(clippy::only_used_in_recursion)]
     fn expr_uses_builtin(&self, expr: &Expr, builtin_name: &str) -> bool {
         match expr {
             Expr::Ident(name, _) => name.0 == builtin_name,
@@ -348,14 +349,12 @@ impl QueryEngine {
     
     /// Check if a pattern has a specific type
     fn pattern_has_type(&self, pattern: &Pattern, pattern_type: &PatternType) -> bool {
-        match (pattern, pattern_type) {
-            (Pattern::Constructor { .. }, PatternType::Constructor) => true,
-            (Pattern::List { .. }, PatternType::List) => true,
-            (Pattern::Literal(..), PatternType::Literal) => true,
-            (Pattern::Variable(..), PatternType::Variable) => true,
-            (Pattern::Wildcard(..), PatternType::Wildcard) => true,
-            _ => false,
-        }
+        matches!((pattern, pattern_type), 
+            (Pattern::Constructor { .. }, PatternType::Constructor) | 
+            (Pattern::List { .. }, PatternType::List) | 
+            (Pattern::Literal(..), PatternType::Literal) | 
+            (Pattern::Variable(..), PatternType::Variable) | 
+            (Pattern::Wildcard(..), PatternType::Wildcard))
     }
     
     /// Check if a name matches a pattern (supports * wildcard)
@@ -452,7 +451,7 @@ impl QueryEngine {
                 Ok(format!("Type matches: {}", self.type_to_string(&def.type_signature)))
             }
             CodeQuery::AstPattern(pattern) => {
-                Ok(format!("AST pattern: {:?}", pattern))
+                Ok(format!("AST pattern: {pattern:?}"))
             }
             CodeQuery::DependsOn { target, .. } => {
                 Ok(format!("Depends on: {}", target.to_string()))
@@ -461,7 +460,7 @@ impl QueryEngine {
                 Ok(format!("Depended by: {}", target.to_string()))
             }
             CodeQuery::NamePattern(pattern) => {
-                Ok(format!("Name matches pattern: {}", pattern))
+                Ok(format!("Name matches pattern: {pattern}"))
             }
             CodeQuery::InNamespace(ns) => {
                 Ok(format!("In namespace: {}", ns.to_string()))
@@ -484,7 +483,7 @@ impl QueryEngine {
                 format!("({} -> {})", self.type_to_string(from), self.type_to_string(to))
             }
             Type::List(inner) => format!("List {}", self.type_to_string(inner)),
-            _ => format!("{:?}", ty),
+            _ => format!("{ty:?}"),
         }
     }
 }
@@ -492,7 +491,7 @@ impl QueryEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::code_query::QueryBuilder;
+    
     
     #[test]
     fn test_name_pattern_matching() {

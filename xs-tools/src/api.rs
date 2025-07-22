@@ -166,7 +166,7 @@ pub struct StatusInfo {
 pub fn process_api_command(shell_state: &mut crate::ShellState, command: ApiCommand) -> String {
     let response = match command {
         ApiCommand::Add { name, expr } => {
-            let full_expr = format!("(let {} {})", name, expr);
+            let full_expr = format!("(let {name} {expr})");
             match shell_state.evaluate_line(&full_expr) {
                 Ok(_) => {
                     let _ = shell_state.update_codebase();
@@ -208,8 +208,7 @@ pub fn process_api_command(shell_state: &mut crate::ShellState, command: ApiComm
                         let name = parts[0].to_string();
                         let rest = parts[1];
                         let type_and_hash: Vec<&str> = rest.split(" [").collect();
-                        let typ = type_and_hash
-                            .get(0)
+                        let typ = type_and_hash.first()
                             .map(|s| s.to_string())
                             .unwrap_or_default();
                         let hash = type_and_hash

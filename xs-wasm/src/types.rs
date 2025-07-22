@@ -39,11 +39,6 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
             // Effects are tracked at compile-time, not runtime
             Ok(WasmType::StructRef(2)) // Same as regular function
         }
-        Type::Record { .. } => {
-            // Records need proper struct mapping
-            // For now, use struct reference with placeholder index
-            Ok(WasmType::StructRef(4)) // Placeholder index
-        }
     }
 }
 

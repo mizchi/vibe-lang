@@ -136,7 +136,7 @@ pub async fn execute_tool(tool_name: &str, arguments: Value) -> Result<Vec<ToolR
         "xs_ast_transform" => execute_ast_transform(arguments).await,
         "xs_analyze_dependencies" => execute_analyze_dependencies(arguments).await,
         "xs_effect_analysis" => execute_effect_analysis(arguments).await,
-        _ => Err(format!("Unknown tool: {}", tool_name)),
+        _ => Err(format!("Unknown tool: {tool_name}")),
     }
 }
 
@@ -148,18 +148,18 @@ async fn execute_parse(args: Value) -> Result<Vec<ToolResult>, String> {
     }
     
     let args: ParseArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {}", e))?;
+        .map_err(|e| format!("Invalid arguments: {e}"))?;
     
     match xs_core::parser::parse(&args.code) {
         Ok(expr) => {
             let ast_json = serde_json::to_string_pretty(&expr)
-                .map_err(|e| format!("Failed to serialize AST: {}", e))?;
+                .map_err(|e| format!("Failed to serialize AST: {e}"))?;
             
             Ok(vec![ToolResult::Text { 
-                text: format!("Successfully parsed XS code:\n```json\n{}\n```", ast_json)
+                text: format!("Successfully parsed XS code:\n```json\n{ast_json}\n```")
             }])
         }
-        Err(e) => Err(format!("Parse error: {}", e))
+        Err(e) => Err(format!("Parse error: {e}"))
     }
 }
 
@@ -171,18 +171,18 @@ async fn execute_typecheck(args: Value) -> Result<Vec<ToolResult>, String> {
     }
     
     let args: TypeCheckArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {}", e))?;
+        .map_err(|e| format!("Invalid arguments: {e}"))?;
     
     let expr = xs_core::parser::parse(&args.code)
-        .map_err(|e| format!("Parse error: {}", e))?;
+        .map_err(|e| format!("Parse error: {e}"))?;
     
     match type_check(&expr) {
         Ok(ty) => {
             Ok(vec![ToolResult::Text { 
-                text: format!("Type check successful!\nType: {}", ty)
+                text: format!("Type check successful!\nType: {ty}")
             }])
         }
-        Err(e) => Err(format!("Type error: {}", e))
+        Err(e) => Err(format!("Type error: {e}"))
     }
 }
 
@@ -196,7 +196,7 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
     }
     
     let args: SearchArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {}", e))?;
+        .map_err(|e| format!("Invalid arguments: {e}"))?;
     
     // Save pattern for later use
     let pattern = args.pattern.clone();
@@ -215,7 +215,7 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
                     output: Some(Box::new(TypePattern::Exact(xs_core::Type::Int))),
                 }),
                 pattern => {
-                    return Err(format!("Unsupported type pattern: {}", pattern));
+                    return Err(format!("Unsupported type pattern: {pattern}"));
                 }
             }
         }
@@ -224,7 +224,7 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
                 "match" => CodeQuery::AstPattern(AstPattern::Contains(AstNodeType::Match)),
                 "rec" | "recursive" => CodeQuery::AstPattern(AstPattern::Contains(AstNodeType::Lambda)), // Rec functions are lambdas
                 pattern => {
-                    return Err(format!("Unsupported AST pattern: {}", pattern));
+                    return Err(format!("Unsupported AST pattern: {pattern}"));
                 }
             }
         }
@@ -285,11 +285,11 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
     }
     
     let args: TransformArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {}", e))?;
+        .map_err(|e| format!("Invalid arguments: {e}"))?;
     
     // Parse the input code
     let expr = xs_core::parser::parse(&args.code)
-        .map_err(|e| format!("Parse error: {}", e))?;
+        .map_err(|e| format!("Parse error: {e}"))?;
     
     // Apply transformation based on type
     let transformed_expr = match args.transform.transform_type.as_str() {
@@ -300,7 +300,7 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
                 new_name: String,
             }
             let params: RenameParams = serde_json::from_value(args.transform.params)
-                .map_err(|e| format!("Invalid rename params: {}", e))?;
+                .map_err(|e| format!("Invalid rename params: {e}"))?;
             
             // Simple rename implementation (placeholder)
             // In a real implementation, this would use AST transformation utilities
@@ -316,11 +316,13 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
             #[derive(Deserialize)]
             struct ExtractParams {
                 function_name: String,
+                #[allow(dead_code)]
                 start_line: Option<usize>,
+                #[allow(dead_code)]
                 end_line: Option<usize>,
             }
             let params: ExtractParams = serde_json::from_value(args.transform.params)
-                .map_err(|e| format!("Invalid extract params: {}", e))?;
+                .map_err(|e| format!("Invalid extract params: {e}"))?;
             
             format!("Extract function '{}' (not yet implemented)", params.function_name)
         }
@@ -331,7 +333,7 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
                 function_name: String,
             }
             let params: InlineParams = serde_json::from_value(args.transform.params)
-                .map_err(|e| format!("Invalid inline params: {}", e))?;
+                .map_err(|e| format!("Invalid inline params: {e}"))?;
             
             format!("Inline function '{}' (not yet implemented)", params.function_name)
         }
@@ -340,10 +342,11 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
             #[derive(Deserialize)]
             struct WrapParams {
                 wrapper_name: String,
+                #[allow(dead_code)]
                 wrapper_type: Option<String>,
             }
             let params: WrapParams = serde_json::from_value(args.transform.params)
-                .map_err(|e| format!("Invalid wrap params: {}", e))?;
+                .map_err(|e| format!("Invalid wrap params: {e}"))?;
             
             format!("Wrap in '{}' (not yet implemented)", params.wrapper_name)
         }
@@ -361,14 +364,15 @@ async fn execute_analyze_dependencies(args: Value) -> Result<Vec<ToolResult>, St
     #[derive(Deserialize)]
     struct AnalyzeArgs {
         code: String,
+        #[allow(dead_code)]
         include_stdlib: Option<bool>,
     }
     
     let args: AnalyzeArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {}", e))?;
+        .map_err(|e| format!("Invalid arguments: {e}"))?;
     
     let _expr = xs_core::parser::parse(&args.code)
-        .map_err(|e| format!("Parse error: {}", e))?;
+        .map_err(|e| format!("Parse error: {e}"))?;
     
     // TODO: Implement actual dependency analysis
     Ok(vec![ToolResult::Text { 
@@ -384,28 +388,18 @@ async fn execute_effect_analysis(args: Value) -> Result<Vec<ToolResult>, String>
     }
     
     let args: EffectArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {}", e))?;
+        .map_err(|e| format!("Invalid arguments: {e}"))?;
     
     let expr = xs_core::parser::parse(&args.code)
-        .map_err(|e| format!("Parse error: {}", e))?;
+        .map_err(|e| format!("Parse error: {e}"))?;
     
     match type_check(&expr) {
-        Ok(ty) => {
-            let effects = xs_core::effect_extraction::extract_all_possible_effects(&ty);
-            let permissions = xs_core::permission::PermissionSet::from_effects(&effects);
-            
-            let mut result = String::new();
-            result.push_str("Effect Analysis Results:\n\n");
-            
-            if effects.is_pure() {
-                result.push_str("This code is pure (no side effects)\n");
-            } else {
-                result.push_str(&format!("Effects: {}\n", effects));
-                result.push_str(&format!("Required permissions: {}\n", permissions));
-            }
-            
-            Ok(vec![ToolResult::Text { text: result }])
+        Ok(_ty) => {
+            // TODO: Implement effect analysis when effect system is ready
+            Ok(vec![ToolResult::Text { 
+                text: "Effect analysis is not yet implemented".to_string()
+            }])
         }
-        Err(e) => Err(format!("Type error during effect analysis: {}", e))
+        Err(e) => Err(format!("Type error during effect analysis: {e}"))
     }
 }

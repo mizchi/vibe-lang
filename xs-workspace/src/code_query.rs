@@ -121,9 +121,16 @@ pub struct QueryBuilder {
     query: Option<CodeQuery>,
 }
 
+#[allow(clippy::derivable_impls)]
+impl Default for QueryBuilder {
+    fn default() -> Self {
+        Self { query: None }
+    }
+}
+
 impl QueryBuilder {
     pub fn new() -> Self {
-        Self { query: None }
+        Self::default()
     }
     
     /// Search for functions with specific type signature
@@ -143,7 +150,7 @@ impl QueryBuilder {
         let path = DefinitionPath::from_str(target)
             .ok_or_else(|| XsError::RuntimeError(
                 xs_core::Span::new(0, 0),
-                format!("Invalid definition path: {}", target)
+                format!("Invalid definition path: {target}")
             ))?;
         
         Ok(self.add_query(CodeQuery::DependsOn { target: path, transitive }))
@@ -183,6 +190,7 @@ impl QueryBuilder {
     }
     
     /// Negate the query
+    #[allow(clippy::should_implement_trait)]
     pub fn not(self) -> Self {
         match self.query {
             Some(q) => Self {
@@ -236,8 +244,7 @@ impl QueryBuilder {
         }
         
         if pattern.starts_with("List ") {
-            let inner = &pattern[5..];
-            return Ok(TypePattern::List(Box::new(Self::parse_type_pattern(inner)?)));
+            return Ok(TypePattern::List(Box::new(Self::parse_type_pattern(pattern.strip_prefix("List<").unwrap())?)));
         }
         
         // Check for type variables
@@ -253,7 +260,7 @@ impl QueryBuilder {
             "Bool" => Ok(TypePattern::Exact(Type::Bool)),
             _ => Err(XsError::RuntimeError(
                 xs_core::Span::new(0, 0),
-                format!("Unknown type pattern: {}", pattern)
+                format!("Unknown type pattern: {pattern}")
             )),
         }
     }

@@ -106,7 +106,7 @@ fn parse_as_shell(input: &str) -> Result<Expr, XsError> {
         Ok(shell_expr) => Ok(shell_to_sexpr(&shell_expr)),
         Err(e) => Err(XsError::ParseError(
             0,
-            format!("Shell syntax error: {}", e)
+            format!("Shell syntax error: {e}")
         ))
     }
 }
@@ -114,9 +114,17 @@ fn parse_as_shell(input: &str) -> Result<Expr, XsError> {
 /// Advanced parser that can handle mixed syntax (future enhancement)
 pub struct MixedSyntaxParser {
     /// Whether to allow shell syntax
+    #[allow(dead_code)]
     allow_shell: bool,
     /// Whether to allow embedded shell in S-expressions
+    #[allow(dead_code)]
     allow_embedded: bool,
+}
+
+impl Default for MixedSyntaxParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MixedSyntaxParser {
@@ -143,22 +151,19 @@ impl MixedSyntaxParser {
 
 /// Syntax mode for the REPL
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub enum SyntaxMode {
     /// Only S-expressions
     SExprOnly,
     /// Only shell syntax
     ShellOnly,
     /// Auto-detect syntax (default)
+    #[default]
     Auto,
     /// Mixed mode with embedded syntax
     Mixed,
 }
 
-impl Default for SyntaxMode {
-    fn default() -> Self {
-        SyntaxMode::Auto
-    }
-}
 
 /// Configuration for unified parsing
 pub struct ParserConfig {

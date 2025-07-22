@@ -230,6 +230,7 @@ pub fn generate_module(ir: &IrExpr) -> Result<WasmModule, CodeGenError> {
     generator.generate(ir)
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for WasmModule {
     fn default() -> Self {
         Self {

@@ -294,7 +294,7 @@ impl AstTransformer {
             }
             
             // TODO: Implement other commands
-            _ => Err(TransformError::NotImplemented(format!("{:?}", command))),
+            _ => Err(TransformError::NotImplemented(format!("{command:?}"))),
         }
     }
     
@@ -382,7 +382,7 @@ impl AstTransformer {
             (Expr::List(items, _), PathSegment::ListElement(i)) => {
                 items.get(*i).ok_or_else(|| TransformError::InvalidPath("List index out of bounds".to_string()))
             }
-            _ => Err(TransformError::InvalidPath(format!("Cannot navigate {:?} in {:?}", segment, expr))),
+            _ => Err(TransformError::InvalidPath(format!("Cannot navigate {segment:?} in {expr:?}"))),
         }
     }
     
@@ -395,7 +395,9 @@ impl AstTransformer {
         }
     }
     
-    fn transform_recursive(&mut self, expr: &Expr, segments: &[PathSegment], index: usize, f: impl FnOnce(&Expr) -> Expr) -> Result<Expr, TransformError> {
+    #[allow(clippy::only_used_in_recursion)]
+    fn transform_recursive(&mut self, _expr: &Expr, segments: &[PathSegment], index: usize, f: impl FnOnce(&Expr) -> Expr) -> Result<Expr, TransformError> {
+        let expr = _expr;
         if index >= segments.len() {
             Ok(f(expr))
         } else {
@@ -419,12 +421,14 @@ impl AstTransformer {
                     })
                 }
                 // TODO: Handle other cases
-                _ => Err(TransformError::InvalidPath(format!("Cannot transform {:?} in {:?}", segment, expr))),
+                _ => Err(TransformError::InvalidPath(format!("Cannot transform {segment:?} in {expr:?}"))),
             }
         }
     }
     
-    fn rename_ident_in_expr(&self, expr: &Expr, old_name: &str, new_name: &str) -> Expr {
+    #[allow(clippy::only_used_in_recursion)]
+    fn rename_ident_in_expr(&self, _expr: &Expr, old_name: &str, new_name: &str) -> Expr {
+        let expr = _expr;
         match expr {
             Expr::Ident(ident, span) if ident.0 == old_name => {
                 Expr::Ident(Ident(new_name.to_string()), span.clone())

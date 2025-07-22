@@ -49,6 +49,7 @@ pub struct DifferentialTestRunner {
     namespace_store: Arc<NamespaceStore>,
     
     /// Test cache for storing results
+    #[allow(dead_code)]
     test_cache: TestCache,
     
     /// Incremental type checker
@@ -166,7 +167,7 @@ impl DifferentialTestRunner {
                     failed_tests += 1;
                     let result = TestResult {
                         outcome: TestOutcome::Fail,
-                        output: format!("Test execution error: {}", e),
+                        output: format!("Test execution error: {e}"),
                         duration: std::time::Duration::from_secs(0),
                         dependencies: HashSet::new(),
                     };
@@ -223,7 +224,7 @@ impl DifferentialTestRunner {
             .get_definition(test_hash)
             .ok_or_else(|| XsError::RuntimeError(
                 xs_core::Span::new(0, 0),
-                format!("Test definition not found: {}", test_hash)
+                format!("Test definition not found: {test_hash}")
             ))?;
         
         // Type check the test first
@@ -250,7 +251,7 @@ impl DifferentialTestRunner {
             Err(e) => {
                 return Ok(TestResult {
                     outcome: TestOutcome::Fail,
-                    output: format!("Test execution error: {}", e),
+                    output: format!("Test execution error: {e}"),
                     duration: start_time.elapsed(),
                     dependencies: test_def.dependencies.clone(),
                 });
@@ -279,7 +280,7 @@ impl DifferentialTestRunner {
             Value::Bool(b) => Ok(b),
             _ => Err(XsError::RuntimeError(
                 xs_core::Span::new(0, 0),
-                format!("Test must return a boolean value, got: {:?}", value)
+                format!("Test must return a boolean value, got: {value:?}")
             ))
         }
     }

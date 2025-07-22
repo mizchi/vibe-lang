@@ -225,8 +225,8 @@ impl Workspace {
             match xs_runtime::eval(expr) {
                 Ok(xs_core::Value::Bool(true)) => Ok("Test passed".to_string()),
                 Ok(xs_core::Value::Bool(false)) => Err("Test failed".to_string()),
-                Ok(v) => Err(format!("Test returned non-boolean value: {:?}", v)),
-                Err(e) => Err(format!("Test error: {}", e)),
+                Ok(v) => Err(format!("Test returned non-boolean value: {v:?}")),
+                Err(e) => Err(format!("Test error: {e}")),
             }
         });
 

@@ -91,7 +91,7 @@ impl Command {
                         if parts.len() == 2 {
                             let name = parts[0].trim();
                             let expr = parts[1].trim();
-                            Ok(Command::Add(Some(format!("(let {} {})", name, expr))))
+                            Ok(Command::Add(Some(format!("(let {name} {expr})"))))
                         } else {
                             Ok(Command::Add(Some(full_args)))
                         }
@@ -179,12 +179,12 @@ impl Command {
             }
 
             "history" => {
-                let limit = args.get(0).and_then(|s| s.parse::<usize>().ok());
+                let limit = args.first().and_then(|s| s.parse::<usize>().ok());
                 Ok(Command::History(limit))
             }
 
             "log" => {
-                let limit = args.get(0).and_then(|s| s.parse::<usize>().ok());
+                let limit = args.first().and_then(|s| s.parse::<usize>().ok());
                 Ok(Command::Log(limit))
             }
 
@@ -238,33 +238,33 @@ impl fmt::Display for Command {
             Command::Exit => write!(f, "exit"),
             Command::Clear => write!(f, "clear"),
             Command::Add(None) => write!(f, "add"),
-            Command::Add(Some(def)) => write!(f, "add {}", def),
-            Command::View(name) => write!(f, "view {}", name),
-            Command::Edit(name) => write!(f, "edit {}", name),
+            Command::Add(Some(def)) => write!(f, "add {def}"),
+            Command::View(name) => write!(f, "view {name}"),
+            Command::Edit(name) => write!(f, "edit {name}"),
             Command::Update => write!(f, "update"),
             Command::Undo => write!(f, "undo"),
-            Command::Find(pattern) => write!(f, "find {}", pattern),
-            Command::Search(query) => write!(f, "search {}", query),
+            Command::Find(pattern) => write!(f, "find {pattern}"),
+            Command::Search(query) => write!(f, "search {query}"),
             Command::Ls(None) => write!(f, "ls"),
-            Command::Ls(Some(pattern)) => write!(f, "ls {}", pattern),
-            Command::Dependencies(name) => write!(f, "dependencies {}", name),
-            Command::Dependents(name) => write!(f, "dependents {}", name),
+            Command::Ls(Some(pattern)) => write!(f, "ls {pattern}"),
+            Command::Dependencies(name) => write!(f, "dependencies {name}"),
+            Command::Dependents(name) => write!(f, "dependents {name}"),
             Command::Pipeline(cmds) => write!(f, "{}", cmds.join(" | ")),
-            Command::TypeOf(expr) => write!(f, "type-of {}", expr),
+            Command::TypeOf(expr) => write!(f, "type-of {expr}"),
             Command::Branch(None) => write!(f, "branch"),
-            Command::Branch(Some(name)) => write!(f, "branch {}", name),
+            Command::Branch(Some(name)) => write!(f, "branch {name}"),
             Command::Branches => write!(f, "branches"),
-            Command::Merge(name) => write!(f, "merge {}", name),
+            Command::Merge(name) => write!(f, "merge {name}"),
             Command::History(None) => write!(f, "history"),
-            Command::History(Some(n)) => write!(f, "history {}", n),
+            Command::History(Some(n)) => write!(f, "history {n}"),
             Command::Log(None) => write!(f, "log"),
-            Command::Log(Some(n)) => write!(f, "log {}", n),
-            Command::Debug(expr) => write!(f, "debug {}", expr),
-            Command::Trace(expr) => write!(f, "trace {}", expr),
-            Command::References(name) => write!(f, "references {}", name),
-            Command::Definition(name) => write!(f, "definition {}", name),
-            Command::Hover(expr) => write!(f, "hover {}", expr),
-            Command::Eval(expr) => write!(f, "{}", expr),
+            Command::Log(Some(n)) => write!(f, "log {n}"),
+            Command::Debug(expr) => write!(f, "debug {expr}"),
+            Command::Trace(expr) => write!(f, "trace {expr}"),
+            Command::References(name) => write!(f, "references {name}"),
+            Command::Definition(name) => write!(f, "definition {name}"),
+            Command::Hover(expr) => write!(f, "hover {expr}"),
+            Command::Eval(expr) => write!(f, "{expr}"),
         }
     }
 }

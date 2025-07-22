@@ -262,20 +262,16 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
                         }
                     }
                     ShellArg::Named(key, val) => {
-                        // Convert to record: {key: value}
-                        let record = Expr::Record {
-                            fields: vec![(
-                                Ident(key.clone()),
-                                Expr::Literal(Literal::String(val.clone()), Span::new(0, 0))
-                            )],
-                            span: Span::new(0, 0),
-                        };
-                        expr_args.push(record);
+                        // Convert named arguments to a simple string representation
+                        expr_args.push(Expr::Literal(
+                            Literal::String(format!("{key}:{val}")),
+                            Span::new(0, 0)
+                        ));
                     }
                     ShellArg::Flag(flag) => {
                         // Convert to symbol
                         expr_args.push(Expr::Ident(
-                            Ident(format!(":{}", flag)),
+                            Ident(format!(":{flag}")),
                             Span::new(0, 0)
                         ));
                     }
@@ -320,7 +316,7 @@ pub fn sexpr_to_shell_syntax(expr: &Expr) -> Option<String> {
                     // Handle pipeline
                     let left = sexpr_to_shell_syntax(&args[0])?;
                     let right = sexpr_to_shell_syntax(&args[1])?;
-                    Some(format!("{} | {}", left, right))
+                    Some(format!("{left} | {right}"))
                 } else {
                     // Regular function call
                     let mut parts = vec![name.clone()];
@@ -357,14 +353,6 @@ fn expr_to_shell_arg(expr: &Expr) -> Option<String> {
         Expr::Literal(Literal::Bool(b), _) => Some(b.to_string()),
         Expr::Ident(Ident(name), _) if name.starts_with(':') => {
             Some(format!("--{}", &name[1..]))
-        }
-        Expr::Record { fields, .. } if fields.len() == 1 => {
-            let (Ident(key), val) = &fields[0];
-            if let Expr::Literal(Literal::String(s), _) = val {
-                Some(format!("{}:{}", key, s))
-            } else {
-                None
-            }
         }
         _ => None,
     }
@@ -405,7 +393,7 @@ mod tests {
         // Should produce: (pipe ls (take 5))
         match sexpr {
             Expr::Apply { func, args, .. } => {
-                if let Expr::Ident(Ident(name), _) = &**func {
+                if let Expr::Ident(Ident(name), _) = func.as_ref() {
                     assert_eq!(name, "pipe");
                     assert_eq!(args.len(), 2);
                 }

@@ -73,9 +73,9 @@ impl ComponentBuilderImpl {
 
         // Emit the module to WAT then encode to WASM
         let wat_text = emit_wat(main_module)
-            .map_err(|e| CodeGenError::TypeError(format!("WAT emission failed: {}", e)))?;
+            .map_err(|e| CodeGenError::TypeError(format!("WAT emission failed: {e}")))?;
         let wasm_bytes = wat::parse_str(&wat_text)
-            .map_err(|e| CodeGenError::TypeError(format!("WAT parsing failed: {}", e)))?;
+            .map_err(|e| CodeGenError::TypeError(format!("WAT parsing failed: {e}")))?;
 
         // Build component using wit-component
         if let Some(wit_source) = &self.wit_source {
@@ -102,9 +102,9 @@ impl ComponentBuilderImpl {
         let component_bytes = ComponentEncoder::default()
             .validate(true)
             .module(module_bytes)
-            .map_err(|e| CodeGenError::TypeError(format!("Component encoder error: {}", e)))?
+            .map_err(|e| CodeGenError::TypeError(format!("Component encoder error: {e}")))?
             .encode()
-            .map_err(|e| CodeGenError::TypeError(format!("Component encoding failed: {}", e)))?;
+            .map_err(|e| CodeGenError::TypeError(format!("Component encoding failed: {e}")))?;
 
         Ok(component_bytes)
     }

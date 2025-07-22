@@ -91,7 +91,7 @@ impl StructuredData {
                 row.insert("hash".to_string(), StructuredValue::String(def.hash.to_hex()));
                 row.insert("type".to_string(), StructuredValue::String(def.type_signature.clone()));
                 row.insert("kind".to_string(), StructuredValue::String(match &def.kind {
-                    DefinitionKind::Function { arity } => format!("function/{}", arity),
+                    DefinitionKind::Function { arity } => format!("function/{arity}"),
                     DefinitionKind::Value => "value".to_string(),
                     DefinitionKind::Type => "type".to_string(),
                 }));
@@ -115,7 +115,7 @@ impl StructuredData {
                     row.insert("hash".to_string(), StructuredValue::String(def.hash.to_hex()));
                     row.insert("type".to_string(), StructuredValue::String(def.type_signature.clone()));
                     row.insert("kind".to_string(), StructuredValue::String(match &def.kind {
-                        DefinitionKind::Function { arity } => format!("function/{}", arity),
+                        DefinitionKind::Function { arity } => format!("function/{arity}"),
                         DefinitionKind::Value => "value".to_string(),
                         DefinitionKind::Type => "type".to_string(),
                     }));
@@ -129,7 +129,7 @@ impl StructuredData {
             
             _ => Err(XsError::RuntimeError(
                 xs_core::Span::new(0, 0),
-                format!("Cannot convert {:?} to table", self)
+                format!("Cannot convert {self:?} to table")
             )),
         }
     }
@@ -169,14 +169,7 @@ impl StructuredValue {
             Value::List(items) => {
                 StructuredValue::List(items.iter().map(Self::from_value).collect())
             }
-            Value::Record { fields } => {
-                let mut record = HashMap::new();
-                for (name, val) in fields {
-                    record.insert(name.0.clone(), Self::from_value(val));
-                }
-                StructuredValue::Record(record)
-            }
-            _ => StructuredValue::String(format!("{:?}", value)),
+            _ => StructuredValue::String(format!("{value:?}")),
         }
     }
     
@@ -193,16 +186,16 @@ impl StructuredValue {
                     .collect();
                 Ok(Value::List(values?))
             }
-            StructuredValue::Record(fields) => {
-                let mut record = Vec::new();
-                for (name, val) in fields {
-                    record.push((xs_core::Ident(name.clone()), val.to_value()?));
-                }
-                Ok(Value::Record { fields: record })
+            StructuredValue::Record(_fields) => {
+                // Records are not supported in Value enum
+                Err(XsError::RuntimeError(
+                    xs_core::Span::new(0, 0),
+                    "Record values are not supported".to_string()
+                ))
             }
             _ => Err(XsError::RuntimeError(
                 xs_core::Span::new(0, 0),
-                format!("Cannot convert {:?} to Value", self)
+                format!("Cannot convert {self:?} to Value")
             )),
         }
     }
