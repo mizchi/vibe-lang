@@ -17,10 +17,10 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 - 参照透過性により、AIが関数の振る舞いを確実に予測可能
 - Perceus参照カウントによる効率的なメモリ管理
 
-### 3. S式ベースの構文
-- パーサー実装の効率化
-- ASTの構造が明確で、AIが解析しやすい
-- LISPファミリーの単純で一貫した構文
+### 3. Haskell風構文とブロックスコープ
+- シェルフレンドリーな読みやすい構文
+- ブロックスコープとパイプライン演算子のサポート
+- Haskellに基づいた型システムと関数型プログラミング
 
 ### 4. Hindley-Milner型推論
 - 明示的な型注釈を最小限に
@@ -69,99 +69,108 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 - **lowerCamelCase**: 変数名、関数名はハイフンなしのlowerCamelCaseを使用
 - 例: `strConcat`、`intToString`、`foldLeft`（~~`str-concat`~~、~~`int-to-string`~~、~~`fold-left`~~）
 
-```lisp
-; 変数定義
-(let x 42)
-(let y: Int 10)  ; 型注釈（オプション）
+```haskell
+-- 変数定義
+let x = 42
+let y : Int = 10  -- 型注釈（オプション）
 
-; 関数定義（自動カリー化）
-(let add (fn (x y) (+ x y)))
-(let inc (add 1))  ; 部分適用
+-- 関数定義（自動カリー化）
+let add = fn x y -> x + y
+let inc = add 1  -- 部分適用
 
-; letIn構文（ローカルバインディング）
-(let x 10 in (+ x 5))  ; 結果: 15
-(let x 5 in
-  (let y 10 in
-    (* x y)))  ; 結果: 50
+-- letIn構文（ローカルバインディング）
+let x = 10 in x + 5  -- 結果: 15
+let x = 5 in
+  let y = 10 in
+    x * y  -- 結果: 50
 
-; 再帰関数
-(rec factorial (n)
-  (if (= n 0)
-      1
-      (* n (factorial (- n 1)))))
+-- 再帰関数
+rec factorial n =
+  if (eq n 0) {
+    1
+  } else {
+    n * (factorial (n - 1))
+  }
 
-; rec内でletIn使用（内部ヘルパー関数）
-(rec quicksort (lst)
-  (match lst
-    ((list) (list))
-    ((list pivot rest)
-      (let smaller (filter (fn (x) (< x pivot)) rest) in
-        (let larger (filter (fn (x) (>= x pivot)) rest) in
-          (append (quicksort smaller)
-                  (cons pivot (quicksort larger))))))))
+-- rec内でletIn使用（内部ヘルパー関数）
+rec quicksort lst =
+  match lst {
+    [] -> []
+    pivot :: rest ->
+      let smaller = filter (fn x -> x < pivot) rest in
+      let larger = filter (fn x -> x >= pivot) rest in
+        append (quicksort smaller) (cons pivot (quicksort larger))
+  }
 
-; letRec（相互再帰対応）
-(letRec even (n) (if (= n 0) true (odd (- n 1))))
-(letRec odd (n) (if (= n 0) false (even (- n 1))))
+-- letRec（相互再帰対応）
+letRec even n = if (eq n 0) { true } else { odd (n - 1) }
+letRec odd n = if (eq n 0) { false } else { even (n - 1) }
 
-; パターンマッチング
-(match xs
-  ((list) 0)                      ; 空リスト
-  ((list h) h)                    ; 単一要素
-  ((list h ... t) (+ 1 (length t))))  ; head/tailパターン（...を使用）
+-- パターンマッチング
+match xs {
+  [] -> 0                        -- 空リスト
+  [h] -> h                       -- 単一要素
+  h :: t -> 1 + (length t)       -- head/tailパターン
+}
 
-; 複数要素と残りのパターン
-(match lst
-  ((list a b c ... rest) (+ a (+ b c)))  ; 最初の3要素を取得
-  ((list x y) (+ x y))                    ; 2要素のみ
-  (_ 0))                                  ; その他
+-- 複数要素と残りのパターン
+match lst {
+  [a, b, c, ...rest] -> a + b + c  -- 最初の3要素を取得
+  [x, y] -> x + y                   -- 2要素のみ
+  _ -> 0                            -- その他
+}
 
-; 代数的データ型
-(type Option a
-  (None)
-  (Some a))
+-- 代数的データ型
+type Option a =
+  | None
+  | Some a
 
-(type Result e a
-  (Error e)
-  (Ok a))
+type Result e a =
+  | Error e
+  | Ok a
 
-; モジュール
-(module Math
-  (export add multiply factorial)
-  (let add (fn (x y) (+ x y)))
-  ...)
+-- モジュール
+module Math {
+  export add, multiply, factorial
+  let add = fn x y -> x + y
+  ...
+}
 
-; インポート
-(import Math)
-(import List as L)
+-- インポート
+import Math
+import List as L
 
-; 名前空間での定義
-(namespace Math.Utils
-  (let fibonacci (rec fib (n)
-    (if (< n 2) n
-        (+ (fib (- n 1)) (fib (- n 2)))))))
+-- 名前空間での定義
+namespace Math.Utils {
+  let fibonacci = rec fib n ->
+    if n < 2 {
+      n
+    } else {
+      (fib (n - 1)) + (fib (n - 2))
+    }
+}
 
-; 完全修飾名でのアクセス
-(Math.Utils.fibonacci 10)
+-- 完全修飾名でのアクセス
+Math.Utils.fibonacci 10
 
-; レコード（オブジェクトリテラル）
-(let person { name: "Alice", age: 30 })
+-- レコード（オブジェクトリテラル）
+let person = { name: "Alice", age: 30 }
 
-; フィールドアクセス
-(let name person.name)
-(let age person.age)
+-- フィールドアクセス
+let name = person.name
+let age = person.age
 
-; ネストしたレコード
-(let company {
+-- ネストしたレコード
+let company = {
   name: "TechCorp",
   address: { city: "Tokyo", zip: "100-0001" }
-})
+}
 
-; ネストしたフィールドアクセス
-(let city company.address.city)
+-- ネストしたフィールドアクセス
+let city = company.address.city
 
-; 関数的な更新（新しいレコードを作成）
-(let updatedPerson { name: "Bob", age: person.age })
+-- 関数的な更新（新しいレコードを作成）
+let updatedPerson = { name: "Bob", age: person.age }
 ```
 
 ## 標準ライブラリ
@@ -197,16 +206,16 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 
 ### 使用例
 ```
-xs> (let double (fn (x) (* x 2)))
-double : (-> Int Int) = <closure>
+xs> let double = fn x -> x * 2
+double : Int -> Int = <closure>
   [bac2c0f3]
 
-xs> (double 21)
+xs> double 21
 42 : Int
   [af3d2e89]
 
 xs> name bac2 double_fn
-Named double_fn : (-> Int Int) = <closure> [bac2c0f3]
+Named double_fn : Int -> Int = <closure> [bac2c0f3]
 
 xs> update
 Updated 1 definitions:
@@ -227,17 +236,17 @@ Updated 1 definitions:
 ```
 ERROR[TYPE]: Type mismatch: expected type 'Int', but found type 'String'
 Location: line 3, column 5
-Code: (+ x y)
+Code: x + y
 Type mismatch: expected Int, found String
 Suggestions:
   1. Convert string to integer using 'int_of_string'
-     Replace with: (int_of_string y)
+     Replace with: intOfString y
 ```
 
 ## 実装状況
 
 ### 完了済み機能
-- ✅ S式パーサー（コメント保持対応、lowerCamelCase対応）
+- ✅ Haskell風パーサー（ブロックスコープ、パイプライン演算子、lowerCamelCase対応）
 - ✅ HM型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
 - ✅ CLIツール (xsc parse/check/run/bench)

@@ -4,7 +4,7 @@ XS Language is an AI-oriented programming language designed for fast static anal
 
 ## 特徴
 
-- **S式構文**: パース効率を最大化し、AIによる解析を容易に
+- **Haskell風構文**: ブロックスコープとパイプライン演算子をサポートした読みやすい構文
 - **静的型付き**: HM型推論による型安全性の保証
 - **インクリメンタルコンパイル**: Salsaフレームワークによる高速な差分コンパイル
 - **Perceus GC**: 参照カウントベースの効率的なメモリ管理
@@ -35,59 +35,62 @@ cargo run --bin xsc -- parse examples/list.xs
 
 ### 基本構文
 
-```lisp
-; 変数定義
-(let x 42)
-(let name "Alice")
+```haskell
+-- 変数定義
+let x = 42
+let name = "Alice"
 
-; 関数定義
-(let double (fn (x) (* x 2)))
+-- 関数定義
+let double = fn x -> x * 2
 
-; 型アノテーション
-(let x : Int 42)
-(let f : (-> Int Int) (fn (x) (+ x 1)))
+-- 型アノテーション
+let x : Int = 42
+let f : Int -> Int = fn x -> x + 1
 
-; 条件分岐
-(if (< x 10) 
-    "small" 
-    "large")
+-- 条件分岐
+if x < 10 { "small" } else { "large" }
 
-; リスト操作
-(let nums (list 1 2 3 4 5))
-(cons 0 nums)
+-- リスト操作
+let nums = [1, 2, 3, 4, 5]
+cons 0 nums
 
-; 関数適用
-(double 21)  ; => 42
+-- 関数適用
+double 21  -- => 42
 ```
 
 ### 再帰関数
 
-```lisp
-; rec構文（型推論サポート）
-(rec factorial (n)
-    (if (= n 0)
+```haskell
+-- rec構文（型推論サポート）
+rec factorial n =
+    if (eq n 0) {
         1
-        (* n (factorial (- n 1)))))
+    } else {
+        n * (factorial (n - 1))
+    }
 
-; letRec構文（ハイフンなしのlowerCamelCase）
-(letRec fib (n)
-    (if (< n 2)
+-- letRec構文（ハイフンなしのlowerCamelCase）
+letRec fib n =
+    if n < 2 {
         n
-        (+ (fib (- n 1)) (fib (- n 2)))))
+    } else {
+        (fib (n - 1)) + (fib (n - 2))
+    }
 ```
 
 ### 代数的データ型とパターンマッチ
 
-```lisp
-; 型定義
-(type Option a
-  (None)
-  (Some a))
+```haskell
+-- 型定義
+type Option a =
+  | None
+  | Some a
 
-; パターンマッチ
-(match opt
-  (None 0)
-  ((Some x) x))
+-- パターンマッチ
+match opt {
+  None -> 0
+  Some x -> x
+}
 ```
 
 ### 型システム
@@ -117,7 +120,7 @@ xs-lang-v3/
 ### コンパイルパイプライン
 
 ```
-ソースコード (S式)
+ソースコード (Haskell風構文)
     ↓ [Parser]
 AST (抽象構文木)
     ↓ [Type Checker]
