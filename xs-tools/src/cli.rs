@@ -28,9 +28,6 @@ pub enum Command {
     Parse {
         /// The XS file to parse
         file: PathBuf,
-        /// Use legacy S-expression parser
-        #[arg(long)]
-        legacy: bool,
     },
     /// Type check a file
     Check {
@@ -225,23 +222,13 @@ pub fn run_cli() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Parse { file, legacy } => {
+        Command::Parse { file } => {
             let source = fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-            let parse_result = if legacy {
-                use xs_core::parser::parse_legacy;
-                parse_legacy(&source)
-            } else {
-                parse(&source)
-            };
-
-            match parse_result {
+            match parse(&source) {
                 Ok(expr) => {
                     println!("{}", "Parse successful!".green());
-                    if legacy {
-                        println!("{}", "(Using legacy S-expression parser)".dimmed());
-                    }
                     println!("{expr:#?}");
                 }
                 Err(e) => {

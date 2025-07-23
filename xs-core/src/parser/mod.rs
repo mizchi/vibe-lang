@@ -18,18 +18,9 @@ pub fn parse(input: &str) -> Result<Expr, XsError> {
     parser.parse()
 }
 
-// Legacy parser function (for backward compatibility)
-pub fn parse_legacy(input: &str) -> Result<Expr, XsError> {
-    let mut parser = Parser::new(input);
-    parser.parse_expr()
-}
 
-pub fn parse_module(input: &str) -> Result<crate::Module, XsError> {
-    let mut parser = Parser::new(input);
-    parser.parse_module()
-}
-
-pub struct Parser<'a> {
+// Legacy parser structure (kept for internal use only)
+struct Parser<'a> {
     lexer: Lexer<'a>,
     current_token: Option<(Token, Span)>,
 }

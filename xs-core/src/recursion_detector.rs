@@ -157,23 +157,22 @@ impl<'a> RecursionVisitor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Literal, Span};
 
     fn parse_and_check(code: &str, name: &str) -> bool {
-        let expr = crate::parser::parse_legacy(code).unwrap();
+        let expr = crate::parser::parse(code).unwrap();
         is_recursive(&Ident(name.to_string()), &expr)
     }
 
     #[test]
     fn test_simple_recursion() {
-        assert!(parse_and_check("(factorial (- n 1))", "factorial"));
-        assert!(!parse_and_check("(other (- n 1))", "factorial"));
+        assert!(parse_and_check("factorial (n - 1)", "factorial"));
+        assert!(!parse_and_check("other (n - 1)", "factorial"));
     }
 
     #[test]
     fn test_nested_recursion() {
         assert!(parse_and_check(
-            "(if (= n 0) 1 (* n (factorial (- n 1))))",
+            "if (eq n 0) { 1 } else { n * (factorial (n - 1)) }",
             "factorial"
         ));
     }
@@ -182,7 +181,7 @@ mod tests {
     fn test_shadowed_name() {
         // Lambda parameter shadows the name
         assert!(!parse_and_check(
-            "(fn (factorial) (factorial 5))",
+            "fn factorial -> factorial 5",
             "factorial"
         ));
     }
@@ -191,7 +190,7 @@ mod tests {
     fn test_let_in_shadowing() {
         // let-in shadows the name
         assert!(!parse_and_check(
-            "(let factorial 5 in (+ factorial 1))",
+            "let factorial = 5 in factorial + 1",
             "factorial"
         ));
     }
