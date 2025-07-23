@@ -9,6 +9,7 @@ use xs_core::{Environment, Expr, Ident, Literal, Pattern, Span, TypeDefinition, 
 
 // Backend module for different execution strategies
 pub mod backend;
+pub mod effect_runtime;
 
 // Re-export important types
 pub use backend::{Backend, InterpreterBackend};
@@ -80,6 +81,107 @@ impl Interpreter {
         Self::default()
     }
 
+
+    pub fn get_lib_runtime_functions(&self) -> HashMap<String, Value> {
+        let mut functions = HashMap::new();
+        
+        functions.insert(
+            "id".to_string(),
+            Value::BuiltinFunction {
+                name: "id".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        
+        functions.insert(
+            "const".to_string(),
+            Value::BuiltinFunction {
+                name: "const".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        
+        functions
+    }
+
+    pub fn get_string_runtime_functions(&self) -> HashMap<String, Value> {
+        let mut functions = HashMap::new();
+        
+        functions.insert(
+            "concat".to_string(),
+            Value::BuiltinFunction {
+                name: "concat".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        
+        functions.insert(
+            "length".to_string(),
+            Value::BuiltinFunction {
+                name: "string-length".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        
+        functions.insert(
+            "toInt".to_string(),
+            Value::BuiltinFunction {
+                name: "string-to-int".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        
+        functions.insert(
+            "fromInt".to_string(),
+            Value::BuiltinFunction {
+                name: "int-to-string".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        
+        functions
+    }
+
+    pub fn get_list_runtime_functions(&self) -> HashMap<String, Value> {
+        let mut functions = HashMap::new();
+        
+        functions.insert(
+            "cons".to_string(),
+            Value::BuiltinFunction {
+                name: "cons".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        
+        // Add more list functions as needed
+        
+        functions
+    }
+
+    pub fn get_int_runtime_functions(&self) -> HashMap<String, Value> {
+        let mut functions = HashMap::new();
+        
+        functions.insert(
+            "toString".to_string(),
+            Value::BuiltinFunction {
+                name: "int-to-string".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        
+        // Add more int functions as needed
+        
+        functions
+    }
+
     pub fn create_initial_env() -> Environment {
         let mut env = Environment::new();
 
@@ -112,6 +214,14 @@ impl Interpreter {
             Ident("/".to_string()),
             Value::BuiltinFunction {
                 name: "/".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("%".to_string()),
+            Value::BuiltinFunction {
+                name: "%".to_string(),
                 arity: 2,
                 applied_args: vec![],
             },
@@ -181,6 +291,22 @@ impl Interpreter {
             },
         );
         env = env.extend(
+            Ident("intToString".to_string()),
+            Value::BuiltinFunction {
+                name: "intToString".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("stringToInt".to_string()),
+            Value::BuiltinFunction {
+                name: "stringToInt".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
             Ident("str-concat".to_string()),
             Value::BuiltinFunction {
                 name: "str-concat".to_string(),
@@ -225,6 +351,40 @@ impl Interpreter {
             Value::BuiltinFunction {
                 name: "print".to_string(),
                 arity: 1,
+                applied_args: vec![],
+            },
+        );
+
+        // Float arithmetic operators
+        env = env.extend(
+            Ident("+.".to_string()),
+            Value::BuiltinFunction {
+                name: "+.".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("-.".to_string()),
+            Value::BuiltinFunction {
+                name: "-.".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("*.".to_string()),
+            Value::BuiltinFunction {
+                name: "*.".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("/.".to_string()),
+            Value::BuiltinFunction {
+                name: "/.".to_string(),
+                arity: 2,
                 applied_args: vec![],
             },
         );
@@ -313,9 +473,36 @@ impl Interpreter {
                 Ok(Value::List(values))
             }
 
-            Expr::Let { value, .. } => {
-                let val = self.eval(value, env)?;
-                Ok(val)
+            Expr::Let { name, value, .. } => {
+                // Check if this is a recursive function
+                let is_recursive = match value.as_ref() {
+                    Expr::Lambda { body, .. } => {
+                        xs_core::recursion_detector::is_recursive(name, body)
+                    }
+                    _ => false,
+                };
+
+                if is_recursive {
+                    // Handle as recursive function
+                    match value.as_ref() {
+                        Expr::Lambda { params, body, .. } => {
+                            let rec_closure = Value::RecClosure {
+                                name: name.clone(),
+                                params: params.iter().map(|(name, _)| name.clone()).collect(),
+                                body: (**body).clone(),
+                                env: env.clone(),
+                            };
+                            Ok(rec_closure)
+                        }
+                        _ => {
+                            // Should not happen, but handle gracefully
+                            self.eval(value, env)
+                        }
+                    }
+                } else {
+                    // Handle as non-recursive binding
+                    self.eval(value, env)
+                }
             }
 
             Expr::LetRec { name, value, .. } => {
@@ -587,6 +774,15 @@ impl Interpreter {
                 Ok(Value::Int(0)) // unit value
             }
 
+            Expr::Use { path, items, .. } => {
+                // Use statements return a special value that indicates environment update
+                // The shell will handle the actual environment update
+                Ok(Value::UseStatement {
+                    path: path.clone(),
+                    items: items.clone(),
+                })
+            }
+
             Expr::QualifiedIdent {
                 module_name,
                 name,
@@ -646,28 +842,52 @@ impl Interpreter {
                     })
             }
 
-            Expr::Handler { .. } => {
-                // TODO: Implement effect handlers
-                Err(XsError::RuntimeError(
-                    Span::new(0, 0),
-                    "Effect handlers not yet implemented".to_string(),
-                ))
+            Expr::Handler { cases: _, body, .. } => {
+                // For now, just evaluate the body
+                // TODO: Implement proper handler semantics
+                self.eval(body, env)
             }
 
-            Expr::WithHandler { .. } => {
-                // TODO: Implement with-handler
-                Err(XsError::RuntimeError(
-                    Span::new(0, 0),
-                    "with-handler not yet implemented".to_string(),
-                ))
+            Expr::WithHandler { handler, body, .. } => {
+                // For now, evaluate handler and then body
+                // TODO: Implement proper with-handler semantics
+                let _ = self.eval(handler, env)?;
+                self.eval(body, env)
             }
 
-            Expr::Perform { .. } => {
-                // TODO: Implement effect performance
-                Err(XsError::RuntimeError(
-                    Span::new(0, 0),
-                    "perform not yet implemented".to_string(),
-                ))
+            Expr::Perform { effect, args, .. } => {
+                // For simple built-in effects, handle them directly
+                match effect.0.as_str() {
+                    "print" => {
+                        if let Some(arg) = args.get(0) {
+                            let val = self.eval(arg, env)?;
+                            if let Value::String(s) = val {
+                                println!("{}", s);
+                                Ok(Value::Constructor {
+                                    name: Ident("Unit".to_string()),
+                                    values: vec![],
+                                })
+                            } else {
+                                Err(XsError::RuntimeError(
+                                    Span::new(0, 0),
+                                    "print expects a string argument".to_string(),
+                                ))
+                            }
+                        } else {
+                            Err(XsError::RuntimeError(
+                                Span::new(0, 0),
+                                "print expects an argument".to_string(),
+                            ))
+                        }
+                    }
+                    _ => {
+                        // TODO: Implement general effect handling
+                        Err(XsError::RuntimeError(
+                            Span::new(0, 0),
+                            format!("Effect '{}' not yet implemented", effect.0),
+                        ))
+                    }
+                }
             }
 
             Expr::Pipeline { expr, func, .. } => {
@@ -718,6 +938,117 @@ impl Interpreter {
                     )),
                 }
             }
+
+            Expr::Block { exprs, .. } => {
+                if exprs.is_empty() {
+                    Ok(Value::Int(0)) // unit value
+                } else {
+                    let mut result = Value::Int(0);
+                    let mut local_env = env.clone();
+                    
+                    for expr in exprs {
+                        // Handle let expressions specially to update the environment
+                        match expr {
+                            Expr::Let { name, value, .. } => {
+                                let val = self.eval(value, &local_env)?;
+                                local_env = local_env.extend(name.clone(), val.clone());
+                                result = val;
+                            }
+                            _ => {
+                                result = self.eval(expr, &local_env)?;
+                            }
+                        }
+                    }
+                    Ok(result)
+                }
+            }
+
+            Expr::Hole { name, span, .. } => {
+                Err(XsError::RuntimeError(
+                    span.clone(),
+                    format!(
+                        "Hole '{}' must be filled before evaluation",
+                        name.as_deref().unwrap_or("@")
+                    ),
+                ))
+            }
+
+            Expr::Do { body, .. } => {
+                // For now, just evaluate the body
+                // TODO: Implement effect checking
+                self.eval(body, env)
+            }
+
+            Expr::RecordLiteral { fields, .. } => {
+                let mut record_fields = Vec::new();
+                for (name, expr) in fields {
+                    let value = self.eval(expr, env)?;
+                    record_fields.push((name.0.clone(), value));
+                }
+                
+                // Sort fields by name for consistent representation
+                record_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                
+                Ok(Value::Record { fields: record_fields })
+            }
+
+            Expr::RecordAccess { record, field, span } => {
+                let record_value = self.eval(record, env)?;
+                
+                match record_value {
+                    Value::Record { fields } => {
+                        // Find the field value
+                        for (fname, fvalue) in fields {
+                            if fname == field.0 {
+                                return Ok(fvalue);
+                            }
+                        }
+                        Err(XsError::RuntimeError(
+                            span.clone(),
+                            format!("Field '{}' not found in record", field.0),
+                        ))
+                    }
+                    _ => Err(XsError::RuntimeError(
+                        span.clone(),
+                        "Cannot access field on non-record value".to_string(),
+                    ))
+                }
+            }
+
+            Expr::RecordUpdate { record, updates, span } => {
+                let record_value = self.eval(record, env)?;
+                
+                match record_value {
+                    Value::Record { mut fields } => {
+                        // Evaluate updates and update field values
+                        for (update_name, update_expr) in updates {
+                            let update_value = self.eval(update_expr, env)?;
+                            let mut found = false;
+                            
+                            for (fname, fvalue) in &mut fields {
+                                if fname == &update_name.0 {
+                                    *fvalue = update_value;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            
+                            if !found {
+                                return Err(XsError::RuntimeError(
+                                    span.clone(),
+                                    format!("Field '{}' not found in record", update_name.0),
+                                ));
+                            }
+                        }
+                        
+                        Ok(Value::Record { fields })
+                    }
+                    _ => Err(XsError::RuntimeError(
+                        span.clone(),
+                        "Cannot update fields on non-record value".to_string(),
+                    ))
+                }
+            }
         }
     }
 
@@ -730,23 +1061,26 @@ impl Interpreter {
         match name {
             "+" => match (&args[0], &args[1]) {
                 (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
-                    "+ requires integer arguments".to_string(),
+                    "+ requires arguments of the same numeric type (Int or Float)".to_string(),
                 )),
             },
             "-" => match (&args[0], &args[1]) {
                 (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x - y)),
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
-                    "- requires integer arguments".to_string(),
+                    "- requires arguments of the same numeric type (Int or Float)".to_string(),
                 )),
             },
             "*" => match (&args[0], &args[1]) {
                 (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x * y)),
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
-                    "* requires integer arguments".to_string(),
+                    "* requires arguments of the same numeric type (Int or Float)".to_string(),
                 )),
             },
             "/" => match (&args[0], &args[1]) {
@@ -760,9 +1094,19 @@ impl Interpreter {
                         Ok(Value::Int(x / y))
                     }
                 }
+                (Value::Float(x), Value::Float(y)) => {
+                    if *y == 0.0 {
+                        Err(XsError::RuntimeError(
+                            span.clone(),
+                            "Division by zero".to_string(),
+                        ))
+                    } else {
+                        Ok(Value::Float(x / y))
+                    }
+                }
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
-                    "/ requires integer arguments".to_string(),
+                    "/ requires arguments of the same numeric type (Int or Float)".to_string(),
                 )),
             },
             "%" => match (&args[0], &args[1]) {
@@ -797,9 +1141,12 @@ impl Interpreter {
             },
             "=" => match (&args[0], &args[1]) {
                 (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x == y)),
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x == y)),
+                (Value::Bool(x), Value::Bool(y)) => Ok(Value::Bool(x == y)),
+                (Value::String(x), Value::String(y)) => Ok(Value::Bool(x == y)),
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
-                    "= requires integer arguments".to_string(),
+                    "= requires arguments of the same type".to_string(),
                 )),
             },
             ">=" => match (&args[0], &args[1]) {
@@ -814,6 +1161,44 @@ impl Interpreter {
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
                     "<= requires integer arguments".to_string(),
+                )),
+            },
+            // Float arithmetic operators
+            "+." => match (&args[0], &args[1]) {
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "+. requires float arguments".to_string(),
+                )),
+            },
+            "-." => match (&args[0], &args[1]) {
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "-. requires float arguments".to_string(),
+                )),
+            },
+            "*." => match (&args[0], &args[1]) {
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "*. requires float arguments".to_string(),
+                )),
+            },
+            "/." => match (&args[0], &args[1]) {
+                (Value::Float(x), Value::Float(y)) => {
+                    if *y == 0.0 {
+                        Err(XsError::RuntimeError(
+                            span.clone(),
+                            "Division by zero".to_string(),
+                        ))
+                    } else {
+                        Ok(Value::Float(x / y))
+                    }
+                }
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "/. requires float arguments".to_string(),
                 )),
             },
             "cons" => match &args[1] {
@@ -841,14 +1226,14 @@ impl Interpreter {
                     "str-concat requires string arguments".to_string(),
                 )),
             },
-            "int-to-string" => match &args[0] {
+            "intToString" | "int-to-string" => match &args[0] {
                 Value::Int(n) => Ok(Value::String(n.to_string())),
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
-                    "int-to-string requires an integer argument".to_string(),
+                    "intToString requires an integer argument".to_string(),
                 )),
             },
-            "string-to-int" => match &args[0] {
+            "stringToInt" | "string-to-int" => match &args[0] {
                 Value::String(s) => match s.parse::<i64>() {
                     Ok(n) => Ok(Value::Int(n)),
                     Err(_) => Err(XsError::RuntimeError(

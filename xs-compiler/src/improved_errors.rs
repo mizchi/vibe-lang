@@ -28,14 +28,42 @@ impl TypeErrorHelper {
     /// Generate improved type mismatch error
     #[allow(dead_code)]
     pub fn type_mismatch(&self, expected: &Type, actual: &Type, span: Span) -> XsError {
-        let context = ErrorBuilder::type_mismatch(expected.clone(), actual.clone())
-            .with_snippet("", span.clone()) // Source will be added later
-            .suggest_high_confidence(
-                self.suggest_type_conversion(actual, expected),
-                self.conversion_code(actual, expected),
-            )
-            .build();
-
+        let mut builder = ErrorBuilder::type_mismatch(expected.clone(), actual.clone())
+            .with_snippet("", span.clone()); // Source will be added later
+        
+        // Add specific suggestions for Int/Float mismatches
+        match (expected, actual) {
+            (Type::Float, Type::Int) => {
+                builder = builder
+                    .suggest_high_confidence(
+                        "Convert integer to float",
+                        "toFloat(value)".to_string(),
+                    )
+                    .suggest(
+                        "Use float literals instead", 
+                        Some("1.0 instead of 1".to_string())
+                    );
+            }
+            (Type::Int, Type::Float) => {
+                builder = builder
+                    .suggest_high_confidence(
+                        "Convert float to integer",
+                        "toInt(value)".to_string(),
+                    )
+                    .suggest(
+                        "Note: This will truncate the decimal part",
+                        None
+                    );
+            }
+            _ => {
+                builder = builder.suggest_high_confidence(
+                    self.suggest_type_conversion(actual, expected),
+                    self.conversion_code(actual, expected),
+                );
+            }
+        }
+        
+        let context = builder.build();
         XsError::TypeError(span, context.to_ai_format())
     }
 
@@ -104,6 +132,7 @@ impl TypeErrorHelper {
             Type::Bool => "boolean".to_string(),
             Type::String => "string".to_string(),
             Type::Float => "floating-point number".to_string(),
+            Type::Unit => "unit".to_string(),
             Type::List(t) => format!("list of {}", self.type_to_readable(t)),
             Type::Function(a, b) => format!(
                 "function from {} to {}",
@@ -133,6 +162,9 @@ impl TypeErrorHelper {
                 } else {
                     format!("{} with {} type parameter(s)", name, type_params.len())
                 }
+            }
+            Type::Record { fields } => {
+                format!("record with {} field(s)", fields.len())
             }
         }
     }
@@ -234,6 +266,7 @@ fn type_string(ty: &Type) -> String {
         Type::Bool => "Bool".to_string(),
         Type::String => "String".to_string(),
         Type::Float => "Float".to_string(),
+        Type::Unit => "Unit".to_string(),
         Type::List(t) => format!("(List {})", type_string(t)),
         Type::Function(a, b) => format!("({} -> {})", type_string(a), type_string(b)),
         Type::FunctionWithEffect { from, to, effects } => {
@@ -258,6 +291,13 @@ fn type_string(ty: &Type) -> String {
                         .join(" ")
                 )
             }
+        }
+        Type::Record { fields } => {
+            let field_strs: Vec<String> = fields
+                .iter()
+                .map(|(name, ty)| format!("{}: {}", name, type_string(ty)))
+                .collect();
+            format!("{{ {} }}", field_strs.join(", "))
         }
     }
 }

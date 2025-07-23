@@ -141,6 +141,7 @@ pub fn xs_type_to_wit(xs_type: &xs_core::Type) -> WitType {
         Type::Float => WitType::Float64,
         Type::Bool => WitType::Bool,
         Type::String => WitType::String,
+        Type::Unit => WitType::String, // Unit represented as empty string in WIT
         Type::List(inner) => WitType::List(Box::new(xs_type_to_wit(inner))),
         Type::Function(_, _) | Type::FunctionWithEffect { .. } => {
             // Functions are handled separately in interfaces
@@ -148,6 +149,7 @@ pub fn xs_type_to_wit(xs_type: &xs_core::Type) -> WitType {
         }
         Type::Var(_) => WitType::String, // Type variables need special handling
         Type::UserDefined { .. } => WitType::String, // ADTs need special handling
+        Type::Record { .. } => WitType::String, // Records need special handling
     }
 }
 

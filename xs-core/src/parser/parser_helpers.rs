@@ -267,6 +267,7 @@ impl<'a> Parser<'a> {
             Some((Token::Type, _)) => self.parse_type_definition(),
             Some((Token::Module, _)) => self.parse_module_expr(),
             Some((Token::Import, _)) => self.parse_import(),
+            Some((Token::Use, _)) => self.parse_use(),
             Some((Token::Symbol(_), _)) => self.parse_application(start),
             _ => self.parse_application(start),
         }
@@ -815,6 +816,70 @@ impl<'a> Parser<'a> {
             module_name,
             items: None, // Simple import without specific items
             as_name,
+            span: Span::new(0, 0),
+        })
+    }
+
+    fn parse_use(&mut self) -> Result<Expr, XsError> {
+        self.advance()?; // consume 'use'
+        
+        // Parse path: lib or lib/String or lib/String/concat
+        let mut path = vec![];
+        
+        // First part - handle both "lib" and "lib/Module" cases
+        if let Some((Token::Symbol(s), _)) = &self.current_token {
+            // Check if the symbol contains '/'
+            if s.contains('/') {
+                // Split the path and add all parts
+                let parts: Vec<&str> = s.split('/').collect();
+                for part in parts {
+                    path.push(part.to_string());
+                }
+            } else {
+                // Just a single identifier
+                path.push(s.clone());
+            }
+            self.advance()?;
+        } else {
+            return Err(XsError::ParseError(
+                self.current_position(),
+                "Expected module path after 'use'".to_string(),
+            ));
+        }
+        
+        // No need to parse remaining segments - they're already handled above
+        
+        // Parse optional item list: (concat, length)
+        let items = if let Some((Token::LeftParen, _)) = &self.current_token {
+            self.advance()?; // consume '('
+            let mut items = vec![];
+            
+            loop {
+                if let Some((Token::Symbol(item), _)) = &self.current_token {
+                    items.push(Ident(item.clone()));
+                    self.advance()?;
+                    
+                    if let Some((Token::Comma, _)) = &self.current_token {
+                        self.advance()?; // consume ','
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            
+            self.expect_token(Token::RightParen, "Expected ')' after item list")?;
+            Some(items)
+        } else {
+            None
+        };
+        
+        self.expect_token(Token::RightParen, "Expected ')'")?;
+        
+        Ok(Expr::Use {
+            path,
+            items,
             span: Span::new(0, 0),
         })
     }

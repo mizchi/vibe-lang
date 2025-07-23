@@ -84,8 +84,36 @@ fn parse_single_command(input: &str) -> Result<ShellExpr, String> {
         "take" => parse_take_command(args),
         "group" => parse_group_command(args),
         _ => {
-            // Generic command
-            Ok(ShellExpr::Command(cmd.to_string(), args.iter().map(|s| s.to_string()).collect()))
+            // For function calls with arguments, use FunctionCall variant
+            if !args.is_empty() {
+                let mut parsed_args = Vec::new();
+                for arg in args {
+                    // Try to parse as number
+                    if let Ok(n) = arg.parse::<i64>() {
+                        parsed_args.push(ShellArg::Positional(n.to_string()));
+                    } else if let Ok(f) = arg.parse::<f64>() {
+                        parsed_args.push(ShellArg::Positional(f.to_string()));
+                    } else if *arg == "true" || *arg == "false" {
+                        parsed_args.push(ShellArg::Positional(arg.to_string()));
+                    } else {
+                        // Check if it's a named argument (key:value)
+                        if arg.contains(':') && !arg.starts_with(':') {
+                            let parts: Vec<&str> = arg.splitn(2, ':').collect();
+                            if parts.len() == 2 {
+                                parsed_args.push(ShellArg::Named(parts[0].to_string(), parts[1].to_string()));
+                            } else {
+                                parsed_args.push(ShellArg::Positional(arg.to_string()));
+                            }
+                        } else {
+                            parsed_args.push(ShellArg::Positional(arg.to_string()));
+                        }
+                    }
+                }
+                Ok(ShellExpr::FunctionCall(cmd.to_string(), parsed_args))
+            } else {
+                // Just a command/identifier
+                Ok(ShellExpr::Command(cmd.to_string(), vec![]))
+            }
         }
     }
 }
@@ -254,11 +282,22 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
             for arg in args {
                 match arg {
                     ShellArg::Positional(val) => {
-                        // Try to parse as number
+                        // Try to parse as number or boolean
                         if let Ok(n) = val.parse::<i64>() {
                             expr_args.push(Expr::Literal(Literal::Int(n), Span::new(0, 0)));
+                        } else if let Ok(f) = val.parse::<f64>() {
+                            expr_args.push(Expr::Literal(Literal::Float(f.into()), Span::new(0, 0)));
+                        } else if val == "true" {
+                            expr_args.push(Expr::Literal(Literal::Bool(true), Span::new(0, 0)));
+                        } else if val == "false" {
+                            expr_args.push(Expr::Literal(Literal::Bool(false), Span::new(0, 0)));
                         } else {
-                            expr_args.push(Expr::Literal(Literal::String(val.clone()), Span::new(0, 0)));
+                            // Check if it's an identifier (starts with lowercase letter)
+                            if val.chars().next().map_or(false, |c| c.is_lowercase()) {
+                                expr_args.push(Expr::Ident(Ident(val.clone()), Span::new(0, 0)));
+                            } else {
+                                expr_args.push(Expr::Literal(Literal::String(val.clone()), Span::new(0, 0)));
+                            }
                         }
                     }
                     ShellArg::Named(key, val) => {

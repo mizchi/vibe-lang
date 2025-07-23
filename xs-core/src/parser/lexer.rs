@@ -29,6 +29,7 @@ pub enum Token {
     Export,
     As,
     Dot,
+    Use,
     Define,
     Comment(String), // コメントトークンを追加
     LeftBrace,
@@ -356,6 +357,7 @@ impl<'a> Lexer<'a> {
             "import" => Token::Import,
             "export" => Token::Export,
             "as" => Token::As,
+            "use" => Token::Use,
             "define" => Token::Define,
             _ => Token::Symbol(value),
         };

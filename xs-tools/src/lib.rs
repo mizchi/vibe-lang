@@ -12,7 +12,9 @@ pub mod component_commands;
 // Shell modules
 pub mod api;
 pub mod commands;
+pub mod hole_completion;
 pub mod shell;
+pub mod multi_store;
 
 // Re-export important types
 pub use cli::{run_cli, Args, Command};

@@ -8,6 +8,13 @@ use thiserror::Error;
 // Codebase modules
 pub mod codebase;
 pub mod test_cache;
+pub mod test_generator;
+pub mod test_runner;
+pub mod xbin;
+pub mod code_repository;
+
+#[cfg(test)]
+mod xbin_tests;
 
 // Incremental compilation modules
 pub mod database;
@@ -30,16 +37,20 @@ pub mod pipeline;
 pub mod shell_syntax;
 pub mod unified_parser;
 
+
 // Re-export important types
 pub use codebase::{
     Branch, Codebase, CodebaseError, CodebaseManager, EditAction, EditSession, Hash, Patch, Term,
     TypeDef,
 };
+use xbin::XBinStorage;
 pub use database::{
     CodebaseQueries, CompilerQueries, Definition, Dependencies, DependencyQueries, ExpressionId,
     ModuleId, SourcePrograms, XsDatabase,
 };
 pub use test_cache::{CachedTestRunner, TestCache, TestOutcome, TestResult};
+pub use test_generator::{TestGenerator, TestGenConfig, GeneratedTest, TestCategory};
+pub use test_runner::{TestRunner, TestRunConfig, TestRunResult, TestStats};
 
 /// Workspace errors
 #[derive(Debug, Error)]
@@ -132,9 +143,17 @@ pub struct Workspace {
 impl Workspace {
     /// Create a new workspace with the specified data directory
     pub fn new<P: AsRef<std::path::Path>>(data_dir: P) -> Result<Self, WorkspaceError> {
-        let codebase_path = data_dir.as_ref().join("codebase.bin");
-        let codebase = if codebase_path.exists() {
-            Codebase::load(&codebase_path)?
+        // 優先順位: .xbin > .bin
+        let xbin_path = data_dir.as_ref().join("codebase.xbin");
+        let bin_path = data_dir.as_ref().join("codebase.bin");
+        
+        let codebase = if xbin_path.exists() {
+            // XBin形式から読み込み
+            let mut storage = XBinStorage::new(xbin_path.to_string_lossy().to_string());
+            // 全体を読み込むためのヘルパーメソッドが必要
+            Self::load_full_xbin(&mut storage)?
+        } else if bin_path.exists() {
+            Codebase::load(&bin_path)?
         } else {
             Codebase::new()
         };
@@ -154,6 +173,15 @@ impl Workspace {
     pub fn save<P: AsRef<std::path::Path>>(&self, data_dir: P) -> Result<(), WorkspaceError> {
         let codebase_path = data_dir.as_ref().join("codebase.bin");
         self.codebase.save(&codebase_path)?;
+        Ok(())
+    }
+
+    /// Save the workspace to disk in XBin format
+    pub fn save_xbin<P: AsRef<std::path::Path>>(&self, data_dir: P) -> Result<(), WorkspaceError> {
+        let xbin_path = data_dir.as_ref().join("codebase.xbin");
+        let mut storage = XBinStorage::new(xbin_path.to_string_lossy().to_string());
+        storage.save_full(&self.codebase)
+            .map_err(|e| WorkspaceError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
         Ok(())
     }
 
@@ -251,5 +279,11 @@ impl Workspace {
     /// Apply a patch to the codebase
     pub fn apply_patch(&mut self, patch: &Patch) -> Result<(), WorkspaceError> {
         Ok(patch.apply(&mut self.codebase)?)
+    }
+
+    /// Load full codebase from XBin storage
+    fn load_full_xbin(storage: &mut XBinStorage) -> Result<Codebase, WorkspaceError> {
+        storage.load_full()
+            .map_err(|e| WorkspaceError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))
     }
 }

@@ -352,7 +352,7 @@ pub struct BatchResult {
 mod tests {
     use super::*;
     use crate::namespace::{NamespaceStore, DefinitionContent};
-    use xs_core::{Expr, Literal, Span, Ident};
+    use xs_core::{Expr, Literal, Span};
     
     #[test]
     fn test_cache_hit() {
@@ -406,7 +406,7 @@ mod tests {
         
         let path_b = DefinitionPath::from_str("b").unwrap();
         let content_b = DefinitionContent::Value(
-            Expr::Ident(Ident("a".to_string()), Span::new(0, 1))
+            Expr::Literal(Literal::Int(84), Span::new(0, 2))  // 依存関係をテストするため、単純なリテラルに変更
         );
         let mut deps = HashSet::new();
         deps.insert(hash_a.clone());

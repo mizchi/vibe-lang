@@ -10,6 +10,7 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
         Type::Bool => Ok(WasmType::I32),           // Bool as i32 (0 or 1)
         Type::Float => Ok(WasmType::F64),          // Float as f64
         Type::String => Ok(WasmType::ArrayRef(0)), // String as array of bytes
+        Type::Unit => Ok(WasmType::I32),           // Unit as i32 (always 0)
         Type::List(_elem_ty) => {
             // List as array of elements
             // Type index would be determined during module generation
@@ -38,6 +39,10 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
             // Function with effects treated the same as regular function in WASM
             // Effects are tracked at compile-time, not runtime
             Ok(WasmType::StructRef(2)) // Same as regular function
+        }
+        Type::Record { .. } => {
+            // Records as struct references
+            Ok(WasmType::StructRef(4)) // Placeholder index
         }
     }
 }

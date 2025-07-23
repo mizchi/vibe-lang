@@ -303,6 +303,7 @@ fn type_to_string(ty: &Type) -> String {
         Type::Bool => "Bool".to_string(),
         Type::String => "String".to_string(),
         Type::Float => "Float".to_string(),
+        Type::Unit => "Unit".to_string(),
         Type::List(t) => format!("List[{}]", type_to_string(t)),
         Type::Function(a, b) => format!("{} -> {}", type_to_string(a), type_to_string(b)),
         Type::FunctionWithEffect { from, to, effects } => {
@@ -319,6 +320,13 @@ fn type_to_string(ty: &Type) -> String {
         }
         Type::Var(v) => format!("'{v}"),
         Type::UserDefined { name, .. } => name.clone(),
+        Type::Record { fields } => {
+            let field_types: Vec<String> = fields
+                .iter()
+                .map(|(name, ty)| format!("{}: {}", name, type_to_string(ty)))
+                .collect();
+            format!("{{ {} }}", field_types.join(", "))
+        }
         // Note: Type::Constructor doesn't exist in current implementation
         // ADT types are represented differently
     }

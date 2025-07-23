@@ -226,8 +226,40 @@ impl<'a> DependencyExtractor<'a> {
                 self.visit_expr(func, deps);
             }
             
-            // Literals and type definitions don't have dependencies
-            Expr::Literal(_, _) | Expr::TypeDef { .. } => {}
+            Expr::Block { exprs, .. } => {
+                for expr in exprs {
+                    self.visit_expr(expr, deps);
+                }
+            }
+            
+            Expr::Hole { .. } => {
+                // Holes don't have dependencies
+            }
+            
+            Expr::Do { body, .. } => {
+                // For now, just visit the body
+                self.visit_expr(body, deps);
+            }
+            
+            Expr::RecordLiteral { fields, .. } => {
+                for (_, expr) in fields {
+                    self.visit_expr(expr, deps);
+                }
+            }
+            
+            Expr::RecordAccess { record, .. } => {
+                self.visit_expr(record, deps);
+            }
+            
+            Expr::RecordUpdate { record, updates, .. } => {
+                self.visit_expr(record, deps);
+                for (_, expr) in updates {
+                    self.visit_expr(expr, deps);
+                }
+            }
+            
+            // Literals, type definitions, and use statements don't have dependencies
+            Expr::Literal(_, _) | Expr::TypeDef { .. } | Expr::Use { .. } => {}
         }
     }
     

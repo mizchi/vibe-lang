@@ -174,6 +174,63 @@ impl PerceusTransform {
                     args: vec![transformed_expr],
                 }
             }
+            
+            Expr::Use { .. } => {
+                // Use statements are compile-time only, return a unit value
+                IrExpr::Literal(Literal::Int(0))
+            }
+
+            Expr::Block { exprs, .. } => {
+                // Transform block expressions
+                if exprs.is_empty() {
+                    IrExpr::Literal(Literal::Int(0)) // unit value
+                } else {
+                    // Transform all expressions and chain them with Let bindings
+                    let mut result = IrExpr::Literal(Literal::Int(0));
+                    for (i, expr) in exprs.iter().enumerate() {
+                        let transformed = self.transform_expr(expr);
+                        if i == exprs.len() - 1 {
+                            // Last expression is the result
+                            result = transformed;
+                        } else {
+                            // Bind intermediate results to dummy variables
+                            result = IrExpr::Let {
+                                name: format!("_block_{}", i),
+                                value: Box::new(transformed),
+                                body: Box::new(result),
+                            };
+                        }
+                    }
+                    result
+                }
+            }
+
+            Expr::Hole { .. } => {
+                // Holes should be filled before transformation
+                // For now, return a placeholder
+                IrExpr::Literal(Literal::Int(0))
+            }
+
+            Expr::Do { body, .. } => {
+                // For now, just transform the body
+                // TODO: Implement effect handling
+                self.transform_expr(body)
+            }
+
+            Expr::RecordLiteral { .. } => {
+                // TODO: Implement record transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
+
+            Expr::RecordAccess { .. } => {
+                // TODO: Implement record access transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
+
+            Expr::RecordUpdate { .. } => {
+                // TODO: Implement record update transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
 
         }
     }

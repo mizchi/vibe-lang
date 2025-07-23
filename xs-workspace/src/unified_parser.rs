@@ -72,6 +72,9 @@ pub fn parse_unified(input: &str) -> Result<Expr, XsError> {
     } else if looks_like_shell_command(input) {
         // Parse as shell syntax
         parse_as_shell(input)
+    } else if looks_like_function_call(input) {
+        // Parse as function call in shell syntax
+        parse_as_shell(input)
     } else {
         // Try S-expression first (for single identifiers, literals, etc.)
         match xs_core::parser::parse(input) {
@@ -97,6 +100,34 @@ fn looks_like_shell_command(input: &str) -> bool {
         first_word,
         "ls" | "search" | "filter" | "select" | "sort" | "take" | 
         "group" | "count" | "definitions" | "pipe"
+    )
+}
+
+/// Check if input looks like a function call (identifier followed by arguments)
+fn looks_like_function_call(input: &str) -> bool {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    
+    // Need at least 2 parts for function call
+    if parts.len() < 2 {
+        return false;
+    }
+    
+    let first = parts[0];
+    
+    // Check if first part is a valid identifier (not a number or string literal)
+    if first.starts_with('"') || first.parse::<i64>().is_ok() || first.parse::<f64>().is_ok() {
+        return false;
+    }
+    
+    // Check if it's not a known shell command
+    !matches!(
+        first,
+        "ls" | "search" | "filter" | "select" | "sort" | "take" | 
+        "group" | "count" | "definitions" | "pipe" | "add" | "view" |
+        "edit" | "update" | "undo" | "find" | "type-of" | "branch" |
+        "merge" | "history" | "log" | "debug" | "trace" | "references" |
+        "definition" | "hover" | "stats" | "dead-code" | "reachable" |
+        "namespace" | "ns"
     )
 }
 

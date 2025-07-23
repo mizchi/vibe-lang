@@ -39,6 +39,30 @@ impl fmt::Display for Value {
                     write!(f, "<builtin:{name}:{arity}/{}>", applied_args.len())
                 }
             }
+            Value::UseStatement { path, items } => {
+                write!(f, "<use {}",  path.join("/"))?;
+                if let Some(items) = items {
+                    write!(f, " (")?;
+                    for (i, item) in items.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", item.0)?;
+                    }
+                    write!(f, ")")?;
+                }
+                write!(f, ">")
+            }
+            Value::Record { fields } => {
+                write!(f, "{{")?;
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, value)?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

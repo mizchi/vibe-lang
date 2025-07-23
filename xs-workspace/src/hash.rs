@@ -300,6 +300,80 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             hash_expr(hasher, expr);
             hash_expr(hasher, func);
         }
+        
+        Expr::Use { path, items, .. } => {
+            hasher.update(b"use");
+            for p in path {
+                hasher.update(p.as_bytes());
+            }
+            if let Some(items) = items {
+                for item in items {
+                    hasher.update(item.0.as_bytes());
+                }
+            }
+        }
+
+        Expr::Block { exprs, .. } => {
+            hasher.update(b"block");
+            hasher.update(exprs.len().to_le_bytes());
+            for expr in exprs {
+                hash_expr(hasher, expr);
+            }
+        }
+
+        Expr::Hole { name, type_hint, .. } => {
+            hasher.update(b"hole");
+            if let Some(name) = name {
+                hasher.update(name.as_bytes());
+            }
+            if let Some(_type_hint) = type_hint {
+                // TODO: Add type hashing when needed
+                hasher.update(b"typed");
+            }
+        }
+
+        Expr::Do { effects, body, .. } => {
+            hasher.update(b"do");
+            hasher.update(effects.len().to_le_bytes());
+            for effect in effects {
+                hasher.update(effect.as_bytes());
+                hasher.update(b"\0");
+            }
+            hash_expr(hasher, body);
+        }
+
+        Expr::RecordLiteral { fields, .. } => {
+            hasher.update(b"record_literal");
+            // Sort fields for deterministic ordering
+            let mut sorted_fields: Vec<_> = fields.iter().collect();
+            sorted_fields.sort_by_key(|(ident, _)| &ident.0);
+            hasher.update(sorted_fields.len().to_le_bytes());
+            for (ident, expr) in sorted_fields {
+                hasher.update(ident.0.as_bytes());
+                hasher.update(b"\0");
+                hash_expr(hasher, expr);
+            }
+        }
+
+        Expr::RecordAccess { record, field, .. } => {
+            hasher.update(b"record_access");
+            hash_expr(hasher, record);
+            hasher.update(field.0.as_bytes());
+        }
+
+        Expr::RecordUpdate { record, updates, .. } => {
+            hasher.update(b"record_update");
+            hash_expr(hasher, record);
+            // Sort updates for deterministic ordering
+            let mut sorted_updates: Vec<_> = updates.iter().collect();
+            sorted_updates.sort_by_key(|(ident, _)| &ident.0);
+            hasher.update(sorted_updates.len().to_le_bytes());
+            for (ident, expr) in sorted_updates {
+                hasher.update(ident.0.as_bytes());
+                hasher.update(b"\0");
+                hash_expr(hasher, expr);
+            }
+        }
     }
 }
 
@@ -359,6 +433,7 @@ fn hash_type(hasher: &mut Sha256, ty: &Type) {
         Type::Float => hasher.update(b"float"),
         Type::String => hasher.update(b"string"),
         Type::Bool => hasher.update(b"bool"),
+        Type::Unit => hasher.update(b"unit"),
         Type::Var(v) => {
             hasher.update(b"var");
             hasher.update(v.as_bytes());
@@ -390,6 +465,15 @@ fn hash_type(hasher: &mut Sha256, ty: &Type) {
                 hasher.update(b"pure");
             } else {
                 hasher.update(b"impure");
+            }
+        }
+        Type::Record { fields } => {
+            hasher.update(b"record");
+            hasher.update(fields.len().to_le_bytes());
+            for (name, ty) in fields {
+                hasher.update(name.as_bytes());
+                hasher.update(b"\0");
+                hash_type(hasher, ty);
             }
         }
     }

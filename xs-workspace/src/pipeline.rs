@@ -407,21 +407,27 @@ pub fn parse_pipeline_operator(cmd: &str) -> Result<Box<dyn PipelineOperator>, X
             
             let field = parts[1].to_string();
             
+            // Special case: filter kind function
+            if field == "kind" && parts.len() == 3 && parts[2] == "function" {
+                Ok(Box::new(FilterOperator::is_function()))
+            }
             // Check for different filter types
-            if parts.len() >= 4 && parts[2] == "contains" {
+            else if parts.len() >= 4 && parts[2] == "contains" {
                 let value = parts[3..].join(" ");
                 Ok(Box::new(FilterOperator::contains(field, value)))
-            } else if parts[2] == "==" || parts[2] == "=" {
+            } else if parts.len() >= 4 && (parts[2] == "==" || parts[2] == "=") {
                 let value = parts[3..].join(" ");
                 Ok(Box::new(FilterOperator::equals(
                     field,
                     StructuredValue::String(value)
                 )))
             } else {
-                Err(XsError::RuntimeError(
-                    Span::new(0, 0),
-                    format!("Unknown filter operator: {}", parts[2])
-                ))
+                // Try to parse as "filter field value" (without operator means ==)
+                let value = parts[2..].join(" ");
+                Ok(Box::new(FilterOperator::equals(
+                    field,
+                    StructuredValue::String(value)
+                )))
             }
         }
         

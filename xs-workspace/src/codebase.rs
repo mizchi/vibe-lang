@@ -67,22 +67,22 @@ pub struct TypeDef {
 #[derive(Debug, Clone)]
 pub struct Codebase {
     /// Terms indexed by hash
-    terms: ImHashMap<Hash, Term>,
+    pub(crate) terms: ImHashMap<Hash, Term>,
 
     /// Type definitions indexed by hash
-    types: ImHashMap<Hash, TypeDef>,
+    pub(crate) types: ImHashMap<Hash, TypeDef>,
 
     /// Name index for terms
-    term_names: ImHashMap<String, Hash>,
+    pub(crate) term_names: ImHashMap<String, Hash>,
 
     /// Name index for types
-    type_names: ImHashMap<String, Hash>,
+    pub(crate) type_names: ImHashMap<String, Hash>,
 
     /// Dependency graph
-    dependencies: ImHashMap<Hash, HashSet<Hash>>,
+    pub(crate) dependencies: ImHashMap<Hash, HashSet<Hash>>,
 
     /// Reverse dependency graph (who depends on this)
-    dependents: ImHashMap<Hash, HashSet<Hash>>,
+    pub(crate) dependents: ImHashMap<Hash, HashSet<Hash>>,
 }
 
 #[derive(Debug, Error)]
@@ -280,6 +280,41 @@ impl Codebase {
         self.dependents.remove(hash);
 
         Ok(())
+    }
+
+    /// 依存関係から逆引き依存関係を再構築
+    pub fn rebuild_dependents(&mut self) {
+        self.dependents.clear();
+        
+        for (hash, deps) in &self.dependencies {
+            for dep in deps {
+                self.dependents
+                    .entry(dep.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(hash.clone());
+            }
+        }
+    }
+
+    /// Get all term names and their hashes
+    pub fn names(&self) -> Vec<(String, Hash)> {
+        self.term_names.iter()
+            .map(|(name, hash)| (name.clone(), hash.clone()))
+            .collect()
+    }
+
+    /// Get direct dependencies of a term
+    pub fn get_direct_dependencies(&self, hash: &Hash) -> HashSet<Hash> {
+        self.dependencies.get(hash)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get dependents of a term
+    pub fn get_dependents(&self, hash: &Hash) -> HashSet<Hash> {
+        self.dependents.get(hash)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Extract dependencies from an expression

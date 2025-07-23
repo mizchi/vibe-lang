@@ -85,6 +85,16 @@ impl<'a> PrettyPrinter<'a> {
             Expr::Import { module_name, .. } => {
                 format!("(import {})", module_name.0)
             }
+            Expr::Use { path, items, .. } => {
+                let path_str = path.join("/");
+                match items {
+                    Some(items) => {
+                        let items_str = items.iter().map(|i| &i.0).cloned().collect::<Vec<_>>().join(", ");
+                        format!("(use {} ({}))", path_str, items_str)
+                    }
+                    None => format!("(use {})", path_str),
+                }
+            }
             Expr::QualifiedIdent {
                 module_name, name, ..
             } => {
@@ -132,6 +142,48 @@ impl<'a> PrettyPrinter<'a> {
                     self.format_expr(expr, None),
                     self.format_expr(func, None)
                 )
+            }
+            Expr::Block { exprs, .. } => {
+                let exprs_str = exprs
+                    .iter()
+                    .map(|e| self.format_expr(e, None))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("{{ {} }}", exprs_str)
+            }
+            Expr::Hole { name, type_hint, .. } => {
+                match (name, type_hint) {
+                    (Some(n), Some(t)) => format!("@{}:{}", n, t),
+                    (Some(n), None) => format!("@{}", n),
+                    (None, Some(t)) => format!("@:{}", t),
+                    (None, None) => "@".to_string(),
+                }
+            }
+            Expr::Do { effects, body, .. } => {
+                if effects.is_empty() {
+                    format!("do {}", self.format_expr(body, None))
+                } else {
+                    format!("do <{}> {}", effects.join(", "), self.format_expr(body, None))
+                }
+            }
+            Expr::RecordLiteral { fields, .. } => {
+                let fields_str = fields
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.0, self.format_expr(v, None)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{ {} }}", fields_str)
+            }
+            Expr::RecordAccess { record, field, .. } => {
+                format!("{}.{}", self.format_expr(record, None), field.0)
+            }
+            Expr::RecordUpdate { record, updates, .. } => {
+                let updates_str = updates
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.0, self.format_expr(v, None)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{ {} | {} }}", self.format_expr(record, None), updates_str)
             }
         };
 

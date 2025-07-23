@@ -49,6 +49,14 @@ pub enum Command {
 
     // 式の評価
     Eval(String), // 通常の式評価
+    
+    // Code repository commands
+    Stats,              // stats - Show repository statistics
+    DeadCode,           // dead-code - Find unreachable code
+    Reachable(Vec<String>), // reachable <namespaces...> - Analyze reachability
+    
+    // Namespace commands
+    Namespace(Option<String>), // namespace [name] - Show current or change namespace
 }
 
 impl Command {
@@ -223,6 +231,25 @@ impl Command {
                 Ok(Command::Hover(args.join(" ")))
             }
 
+            "stats" => Ok(Command::Stats),
+            
+            "dead-code" | "deadcode" => Ok(Command::DeadCode),
+            
+            "reachable" => {
+                if args.is_empty() {
+                    anyhow::bail!("reachable requires at least one namespace")
+                }
+                Ok(Command::Reachable(args.iter().map(|s| s.to_string()).collect()))
+            }
+            
+            "namespace" | "ns" => {
+                if args.is_empty() {
+                    Ok(Command::Namespace(None))
+                } else {
+                    Ok(Command::Namespace(Some(args[0].to_string())))
+                }
+            }
+
             _ => {
                 // コマンドでない場合は式として評価
                 Ok(Command::Eval(input.to_string()))
@@ -265,6 +292,11 @@ impl fmt::Display for Command {
             Command::Definition(name) => write!(f, "definition {name}"),
             Command::Hover(expr) => write!(f, "hover {expr}"),
             Command::Eval(expr) => write!(f, "{expr}"),
+            Command::Stats => write!(f, "stats"),
+            Command::DeadCode => write!(f, "dead-code"),
+            Command::Reachable(namespaces) => write!(f, "reachable {}", namespaces.join(" ")),
+            Command::Namespace(None) => write!(f, "namespace"),
+            Command::Namespace(Some(name)) => write!(f, "namespace {}", name),
         }
     }
 }
@@ -314,6 +346,11 @@ pub fn print_ucm_help() {
 
     println!("{}", "Type Information:".bold());
     println!("  type-of <expr>       Show the type of an expression");
+    println!();
+    
+    println!("{}", "Namespace Management:".bold());
+    println!("  namespace, ns        Show current namespace");
+    println!("  namespace <name>     Change to namespace <name>");
     println!();
 
     println!("{}", "Branch Management:".bold());

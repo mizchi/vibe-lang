@@ -1,6 +1,7 @@
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::iter::FromIterator;
 use thiserror::Error;
 
 pub mod builtin_effects;
@@ -12,7 +13,10 @@ pub mod error_context;
 pub mod ir;
 pub mod metadata;
 pub mod parser;
+pub mod parser_v2;
 pub mod pretty_print;
+pub mod recursion_detector;
+pub mod lib_modules;
 mod types;
 mod value;
 
@@ -124,6 +128,11 @@ pub enum Expr {
         as_name: Option<Ident>,    // For "import Foo as F"
         span: Span,
     },
+    Use {
+        path: Vec<String>,         // e.g., ["lib", "String"] for "use lib/String"
+        items: Option<Vec<Ident>>, // e.g., Some(["concat", "length"]) for "(concat, length)"
+        span: Span,
+    },
     QualifiedIdent {
         module_name: Ident,
         name: Ident,
@@ -147,6 +156,35 @@ pub enum Expr {
     Pipeline {
         expr: Box<Expr>,
         func: Box<Expr>,
+        span: Span,
+    },
+    // New syntax support
+    Block {
+        exprs: Vec<Expr>,
+        span: Span,
+    },
+    Hole {
+        name: Option<String>,
+        type_hint: Option<Type>,
+        span: Span,
+    },
+    Do {
+        effects: Vec<String>,
+        body: Box<Expr>,
+        span: Span,
+    },
+    RecordLiteral {
+        fields: Vec<(Ident, Expr)>,
+        span: Span,
+    },
+    RecordAccess {
+        record: Box<Expr>,
+        field: Ident,
+        span: Span,
+    },
+    RecordUpdate {
+        record: Box<Expr>,
+        updates: Vec<(Ident, Expr)>,
         span: Span,
     },
 }
@@ -185,11 +223,18 @@ impl Expr {
             Expr::TypeDef { span, .. } => span,
             Expr::Module { span, .. } => span,
             Expr::Import { span, .. } => span,
+            Expr::Use { span, .. } => span,
             Expr::QualifiedIdent { span, .. } => span,
             Expr::Handler { span, .. } => span,
             Expr::WithHandler { span, .. } => span,
             Expr::Perform { span, .. } => span,
             Expr::Pipeline { span, .. } => span,
+            Expr::Block { span, .. } => span,
+            Expr::Hole { span, .. } => span,
+            Expr::Do { span, .. } => span,
+            Expr::RecordLiteral { span, .. } => span,
+            Expr::RecordAccess { span, .. } => span,
+            Expr::RecordUpdate { span, .. } => span,
         }
     }
 }
@@ -206,6 +251,7 @@ pub enum Type {
     Float,
     Bool,
     String,
+    Unit,  // Unit type for expressions that don't produce a value
     List(Box<Type>),
     Function(Box<Type>, Box<Type>),
     FunctionWithEffect {
@@ -217,6 +263,9 @@ pub enum Type {
     UserDefined {
         name: String,
         type_params: Vec<Type>,
+    },
+    Record {
+        fields: Vec<(String, Type)>,
     },
 }
 
@@ -240,6 +289,7 @@ impl fmt::Display for Type {
             Type::Float => write!(f, "Float"),
             Type::Bool => write!(f, "Bool"),
             Type::String => write!(f, "String"),
+            Type::Unit => write!(f, "Unit"),
             Type::List(t) => write!(f, "(List {t})"),
             Type::Function(from, to) => write!(f, "(-> {from} {to})"),
             Type::FunctionWithEffect { from, to, effects } => {
@@ -260,6 +310,16 @@ impl fmt::Display for Type {
                     }
                     write!(f, ")")
                 }
+            }
+            Type::Record { fields } => {
+                write!(f, "{{")?;
+                for (i, (name, ty)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, ty)?;
+                }
+                write!(f, "}}")
             }
         }
     }
@@ -291,6 +351,13 @@ pub enum Value {
         name: String,
         arity: usize,
         applied_args: Vec<Value>,
+    },
+    UseStatement {
+        path: Vec<String>,
+        items: Option<Vec<Ident>>,
+    },
+    Record {
+        fields: Vec<(String, Value)>,
     },
 }
 
@@ -335,6 +402,14 @@ impl Environment {
             .iter()
             .map(|(name, _)| name.0.clone())
             .collect()
+    }
+}
+
+impl FromIterator<(Ident, Value)> for Environment {
+    fn from_iter<T: IntoIterator<Item = (Ident, Value)>>(iter: T) -> Self {
+        Environment {
+            bindings: iter.into_iter().collect(),
+        }
     }
 }
 

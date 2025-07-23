@@ -11,6 +11,7 @@ use xs_core::{Expr, Type, Value};
 use xs_runtime::Interpreter;
 use xs_workspace::{CodebaseManager, EditSession, ExpressionId};
 use xs_workspace::unified_parser::{parse_unified_with_mode, SyntaxMode};
+use xs_workspace::code_repository::CodeRepository;
 
 use crate::commands;
 
@@ -28,6 +29,7 @@ pub struct ShellState {
     codebase: CodebaseManager,
     #[allow(dead_code)]
     current_branch: String,
+    current_namespace: String,
     session: EditSession,
     #[allow(dead_code)]
     temp_definitions: HashMap<String, (Expr, Type)>,
@@ -38,6 +40,7 @@ pub struct ShellState {
     #[allow(dead_code)]
     salsa_db: xs_workspace::database::XsDatabaseImpl,
     syntax_mode: SyntaxMode,
+    code_repository: Option<CodeRepository>,
 }
 
 // Helper methods for common operations
@@ -106,20 +109,37 @@ impl ShellState {
 
         checker
             .check(expr, &mut type_env)
-            .map_err(|e| anyhow::anyhow!("Type error: {}", e))
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
 
 // Main implementation methods
 impl ShellState {
     pub fn new(storage_path: PathBuf) -> Result<Self> {
-        let mut codebase = CodebaseManager::new(storage_path)?;
+        let mut codebase = CodebaseManager::new(storage_path.clone())?;
         let main_branch = codebase.create_branch("main".to_string())?;
         let session = EditSession::new(main_branch.hash.clone());
 
-        Ok(Self {
+        // Initialize code repository (SQLite database)
+        let db_path = storage_path.join("code_repository.db");
+        let code_repository = match CodeRepository::new(&db_path) {
+            Ok(mut repo) => {
+                // Start a new session
+                if let Err(e) = repo.start_session() {
+                    eprintln!("Warning: Failed to start repository session: {}", e);
+                }
+                Some(repo)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to initialize code repository: {}", e);
+                None
+            }
+        };
+
+        let shell_state = Self {
             codebase,
             current_branch: "main".to_string(),
+            current_namespace: "scratch".to_string(),
             session,
             temp_definitions: HashMap::new(),
             type_env: HashMap::new(),
@@ -128,17 +148,33 @@ impl ShellState {
             named_exprs: HashMap::new(),
             salsa_db: xs_workspace::database::XsDatabaseImpl::new(),
             syntax_mode: SyntaxMode::Auto,
-        })
+            code_repository,
+        };
+
+        // No auto-imports - require explicit imports like ESM/Python
+
+        Ok(shell_state)
     }
 
     pub fn evaluate_line(&mut self, line: &str) -> Result<String> {
         // Parse expression using unified parser with current mode
-        let expr = parse_unified_with_mode(line, self.syntax_mode).context("Failed to parse expression")?;
+        let mut expr = parse_unified_with_mode(line, self.syntax_mode)
+            .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+
+        // Check if expression contains holes and fill them interactively
+        if self.has_holes(&expr) {
+            use crate::hole_completion::HoleCompleter;
+            let completer = HoleCompleter::new(
+                self.type_env.clone(),
+                xs_core::Environment::from_iter(self.runtime_env.iter().map(|(k, v)| (Ident(k.clone()), v.clone())))
+            );
+            expr = completer.fill_holes_interactive(&expr)?;
+        }
 
         // Type check
         let ty = self
             .type_check_with_env(&expr)
-            .context("Type inference failed")?;
+            .map_err(|e| anyhow::anyhow!("Type error: {}", e))?;
 
         // Interpret
         let mut interpreter = Interpreter::new();
@@ -150,9 +186,47 @@ impl ShellState {
         }
 
         let result = interpreter.eval(&expr, &env).context("Evaluation failed")?;
+        
+        // Handle use statements
+        if let Value::UseStatement { path, items } = &result {
+            // Update both runtime and type environments based on the use statement
+            let runtime_functions = match path.iter().map(|s| s.as_str()).collect::<Vec<_>>().as_slice() {
+                ["lib"] => interpreter.get_lib_runtime_functions(),
+                ["lib", "String"] => interpreter.get_string_runtime_functions(),
+                ["lib", "List"] => interpreter.get_list_runtime_functions(),
+                ["lib", "Int"] => interpreter.get_int_runtime_functions(),
+                _ => HashMap::new(),
+            };
+            
+            // Get type information for the imported functions
+            use xs_core::lib_modules::get_module_functions;
+            let type_functions = get_module_functions(path).unwrap_or_default();
+            
+            if let Some(items) = items {
+                // Import only specific items
+                for item in items {
+                    if let Some(func_value) = runtime_functions.get(&item.0) {
+                        self.runtime_env.insert(item.0.clone(), func_value.clone());
+                    }
+                    if let Some(func_type) = type_functions.get(&item.0) {
+                        self.type_env.insert(item.0.clone(), func_type.clone());
+                    }
+                }
+            } else {
+                // Import all functions
+                for (name, value) in runtime_functions {
+                    self.runtime_env.insert(name, value);
+                }
+                for (name, typ) in type_functions {
+                    self.type_env.insert(name, typ);
+                }
+            }
+        }
 
         // Save to history and Salsa DB
         let hash = self.codebase.hash_expr(&expr);
+        let hash_obj = xs_workspace::Hash::from_hex(&hash)?;
+        
         self.expr_history.push(ExpressionHistory {
             hash: hash.clone(),
             expr: expr.clone(),
@@ -160,6 +234,32 @@ impl ShellState {
             value: result.clone(),
             timestamp: std::time::SystemTime::now(),
         });
+
+        // Auto-save to code repository
+        // Extract dependencies before mutable borrow
+        let dependencies = self.extract_dependencies(&expr);
+        
+        if let Some(repo) = &mut self.code_repository {
+            // Create a Term for storage
+            let term = xs_workspace::Term {
+                hash: hash_obj.clone(),
+                name: None,  // Will be set for let expressions
+                expr: expr.clone(),
+                ty: ty.clone(),
+                dependencies: dependencies.clone(),
+            };
+            
+            // Store in repository
+            if let Err(e) = repo.store_term(&term, &dependencies) {
+                eprintln!("Warning: Failed to store in repository: {}", e);
+            }
+            
+            // Record evaluation
+            let result_str = format_value(&result);
+            if let Err(e) = repo.record_evaluation(line, Some(&hash_obj), &result_str) {
+                eprintln!("Warning: Failed to record evaluation: {}", e);
+            }
+        }
 
         let _expr_id = ExpressionId(hash.clone());
         // TODO: Salsa integration
@@ -171,6 +271,8 @@ impl ShellState {
             Expr::Let { name, value, .. } => {
                 // Save value expression too
                 let val_hash = self.codebase.hash_expr(value);
+                let val_hash_obj = xs_workspace::Hash::from_hex(&val_hash)?;
+                
                 self.expr_history.push(ExpressionHistory {
                     hash: val_hash.clone(),
                     expr: (**value).clone(),
@@ -179,13 +281,49 @@ impl ShellState {
                     timestamp: std::time::SystemTime::now(),
                 });
 
+                // Store named definition in repository
+                // Extract dependencies before mutable borrow
+                let dependencies = self.extract_dependencies(value);
+                
+                if let Some(repo) = &mut self.code_repository {
+                    let named_term = xs_workspace::Term {
+                        hash: val_hash_obj.clone(),
+                        name: Some(name.0.clone()),
+                        expr: (**value).clone(),
+                        ty: ty.clone(),
+                        dependencies: dependencies.clone(),
+                    };
+                    
+                    if let Err(e) = repo.store_term(&named_term, &dependencies) {
+                        eprintln!("Warning: Failed to store named term: {}", e);
+                    }
+                }
+
                 let _val_expr_id = ExpressionId(val_hash.clone());
                 // TODO: Salsa integration
                 // self.salsa_db
                 //     .set_expression_source(val_expr_id.clone(), Arc::new((**value).clone()));
 
-                // Register name
-                self.named_exprs.insert(name.0.clone(), val_hash);
+                // Check if already defined
+                let is_redefinition = self.type_env.contains_key(&name.0);
+                let old_hash = if is_redefinition {
+                    self.named_exprs.get(&name.0).cloned()
+                } else {
+                    None
+                };
+                
+                // Register name with namespace prefix
+                let qualified_name = if self.current_namespace.is_empty() || self.current_namespace == "main" {
+                    name.0.clone()
+                } else {
+                    format!("{}.{}", self.current_namespace, name.0)
+                };
+                self.named_exprs.insert(qualified_name.clone(), val_hash.clone());
+                self.type_env.insert(qualified_name.clone(), ty.clone());
+                self.runtime_env.insert(qualified_name.clone(), result.clone());
+                
+                // Also register without namespace for convenience in current namespace
+                self.named_exprs.insert(name.0.clone(), val_hash.clone());
                 self.type_env.insert(name.0.clone(), ty.clone());
                 self.runtime_env.insert(name.0.clone(), result.clone());
 
@@ -193,11 +331,55 @@ impl ShellState {
                 self.session
                     .add_definition(name.0.clone(), (**value).clone())?;
 
-                Ok(format!(
+                let mut response = format!(
                     "{} : {} = {}\n  [{}]",
                     name.0,
                     ty,
                     format_value(&result),
+                    Self::hash_prefix(&hash)
+                );
+                
+                if is_redefinition {
+                    if let Some(old_hash) = old_hash {
+                        if old_hash != val_hash {
+                            response.push_str(&format!(
+                                "\n  {} (previous definition: [{}])",
+                                "Updated existing definition".yellow(),
+                                Self::hash_prefix(&old_hash)
+                            ));
+                        } else {
+                            response.push_str(&format!(
+                                "\n  {}",
+                                "Definition unchanged (same implementation)".cyan()
+                            ));
+                        }
+                    }
+                }
+                
+                Ok(response)
+            }
+            Expr::Rec { name, .. } => {
+                // Register recursive function with namespace prefix
+                let qualified_name = if self.current_namespace.is_empty() || self.current_namespace == "main" {
+                    name.0.clone()
+                } else {
+                    format!("{}.{}", self.current_namespace, name.0)
+                };
+                self.named_exprs.insert(qualified_name.clone(), hash.clone());
+                self.type_env.insert(qualified_name.clone(), ty.clone());
+                self.runtime_env.insert(qualified_name.clone(), result.clone());
+                
+                // Also register without namespace for convenience in current namespace
+                self.type_env.insert(name.0.clone(), ty.clone());
+                self.runtime_env.insert(name.0.clone(), result.clone());
+                
+                // Add to session
+                self.session.add_definition(name.0.clone(), expr.clone())?;
+                
+                Ok(format!(
+                    "{} : {}\n  [{}]",
+                    format_value(&result),
+                    ty,
                     Self::hash_prefix(&hash)
                 ))
             }
@@ -673,6 +855,97 @@ impl ShellState {
         // Format and return the result
         Ok(format_structured_data(&data))
     }
+
+    /// Check if an expression contains holes
+    fn has_holes(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Hole { .. } => true,
+            Expr::Block { exprs, .. } => exprs.iter().any(|e| self.has_holes(e)),
+            Expr::Apply { func, args, .. } => {
+                self.has_holes(func) || args.iter().any(|a| self.has_holes(a))
+            }
+            Expr::If { cond, then_expr, else_expr, .. } => {
+                self.has_holes(cond) || self.has_holes(then_expr) || self.has_holes(else_expr)
+            }
+            Expr::Let { value, .. } => self.has_holes(value),
+            Expr::LetIn { value, body, .. } => self.has_holes(value) || self.has_holes(body),
+            Expr::Lambda { body, .. } => self.has_holes(body),
+            Expr::Match { expr: match_expr, cases, .. } => {
+                self.has_holes(match_expr) || cases.iter().any(|(_, e)| self.has_holes(e))
+            }
+            Expr::Pipeline { expr: lhs, func, .. } => self.has_holes(lhs) || self.has_holes(func),
+            Expr::Do { body, .. } => self.has_holes(body),
+            Expr::RecordLiteral { fields, .. } => fields.iter().any(|(_, e)| self.has_holes(e)),
+            Expr::RecordAccess { record, .. } => self.has_holes(record),
+            Expr::RecordUpdate { record, updates, .. } => {
+                self.has_holes(record) || updates.iter().any(|(_, e)| self.has_holes(e))
+            }
+            Expr::List(elements, _) => elements.iter().any(|e| self.has_holes(e)),
+            Expr::LetRec { value, .. } => self.has_holes(value),
+            Expr::Rec { body, .. } => self.has_holes(body),
+            _ => false,
+        }
+    }
+
+    /// Extract dependencies from an expression
+    fn extract_dependencies(&self, expr: &Expr) -> std::collections::HashSet<xs_workspace::Hash> {
+        use std::collections::HashSet;
+        let mut deps = HashSet::new();
+        self.extract_deps_recursive(expr, &mut deps);
+        deps
+    }
+
+    fn extract_deps_recursive(&self, expr: &Expr, deps: &mut std::collections::HashSet<xs_workspace::Hash>) {
+        match expr {
+            Expr::Ident(name, _) => {
+                // Check if this identifier refers to a named expression
+                if let Some(hash_str) = self.named_exprs.get(&name.0) {
+                    if let Ok(hash) = xs_workspace::Hash::from_hex(hash_str) {
+                        deps.insert(hash);
+                    }
+                }
+            }
+            Expr::Apply { func, args, .. } => {
+                self.extract_deps_recursive(func, deps);
+                for arg in args {
+                    self.extract_deps_recursive(arg, deps);
+                }
+            }
+            Expr::Lambda { body, .. } => {
+                self.extract_deps_recursive(body, deps);
+            }
+            Expr::Let { value, .. } => {
+                self.extract_deps_recursive(value, deps);
+            }
+            Expr::LetIn { value, body, .. } => {
+                self.extract_deps_recursive(value, deps);
+                self.extract_deps_recursive(body, deps);
+            }
+            Expr::If { cond, then_expr, else_expr, .. } => {
+                self.extract_deps_recursive(cond, deps);
+                self.extract_deps_recursive(then_expr, deps);
+                self.extract_deps_recursive(else_expr, deps);
+            }
+            Expr::Match { expr, cases, .. } => {
+                self.extract_deps_recursive(expr, deps);
+                for (_, case_expr) in cases {
+                    self.extract_deps_recursive(case_expr, deps);
+                }
+            }
+            Expr::List(elements, _) => {
+                for elem in elements {
+                    self.extract_deps_recursive(elem, deps);
+                }
+            }
+            Expr::LetRec { value, .. } => {
+                self.extract_deps_recursive(value, deps);
+            }
+            Expr::Rec { body, .. } => {
+                self.extract_deps_recursive(body, deps);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn format_value(val: &Value) -> String {
@@ -694,7 +967,14 @@ fn format_value(val: &Value) -> String {
         }
         Value::Float(f) => f.to_string(),
         Value::RecClosure { .. } => "<rec-closure>".to_string(),
-        Value::Constructor { name, .. } => format!("<constructor:{name}>"),
+        Value::Constructor { name, .. } => format!("<constructor:{}>", name.0),
+        Value::UseStatement { .. } => "<use>".to_string(),
+        Value::Record { fields } => {
+            let field_strs: Vec<String> = fields.iter()
+                .map(|(name, value)| format!("{}: {}", name, format_value(value)))
+                .collect();
+            format!("{{{}}}", field_strs.join(", "))
+        }
     }
 }
 
@@ -713,7 +993,8 @@ pub fn run_repl() -> Result<()> {
     println!("Default mode: Auto-detect syntax. Use :mode to check, :sexpr/:shell/:auto/:mixed to switch.\n");
 
     loop {
-        let readline = rl.readline("xs> ");
+        let prompt = format!("{}> ", state.current_namespace.cyan());
+        let readline = rl.readline(&prompt);
         match readline {
             Ok(line) => {
                 let line = line.trim();
@@ -816,6 +1097,111 @@ pub fn run_repl() -> Result<()> {
                                 }
                             }
 
+                            Command::Stats => {
+                                if let Some(repo) = &mut state.code_repository {
+                                    match repo.get_access_stats() {
+                                        Ok(stats) => {
+                                            println!("{}", "Repository Statistics:".bold());
+                                            println!();
+                                            println!("{}", "Most accessed definitions:".cyan());
+                                            for (name, count) in stats {
+                                                println!("  {} - {} accesses", name, count);
+                                            }
+                                        }
+                                        Err(e) => println!("{}: {}", "Error".red(), e),
+                                    }
+                                } else {
+                                    println!("{}: Code repository not available", "Error".red());
+                                }
+                            }
+
+                            Command::DeadCode => {
+                                if let Some(repo) = &mut state.code_repository {
+                                    // Get all root namespaces currently in use
+                                    let mut namespaces = std::collections::HashSet::new();
+                                    for (name, _) in &state.named_exprs {
+                                        if let Some(ns) = name.split('.').next() {
+                                            namespaces.insert(ns.to_string());
+                                        }
+                                    }
+                                    let root_namespaces: Vec<String> = namespaces.into_iter().collect();
+                                    
+                                    match repo.analyze_reachability(&root_namespaces) {
+                                        Ok(analysis) => {
+                                            println!("{}", "Dead Code Analysis:".bold());
+                                            println!();
+                                            if analysis.dead_code.is_empty() {
+                                                println!("No dead code found!");
+                                            } else {
+                                                println!("Found {} unreachable definitions:", analysis.dead_code.len());
+                                                
+                                                // Look up names for dead code
+                                                for hash in &analysis.dead_code {
+                                                    if let Ok(results) = repo.search_by_name("") {
+                                                        for (h, name, _) in results {
+                                                            if &h == hash {
+                                                                println!("  {} [{}]", name, hash.to_hex());
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                
+                                                println!();
+                                                println!("Use 'remove-dead-code' to clean up (not implemented yet)");
+                                            }
+                                        }
+                                        Err(e) => println!("{}: {}", "Error".red(), e),
+                                    }
+                                } else {
+                                    println!("{}: Code repository not available", "Error".red());
+                                }
+                            }
+
+                            Command::Reachable(namespaces) => {
+                                if let Some(repo) = &mut state.code_repository {
+                                    match repo.analyze_reachability(&namespaces) {
+                                        Ok(analysis) => {
+                                            println!("{}", "Reachability Analysis:".bold());
+                                            println!();
+                                            println!("From namespaces: {}", namespaces.join(", "));
+                                            println!("Reachable definitions: {}", analysis.reachable.len());
+                                            println!("Unreachable definitions: {}", analysis.dead_code.len());
+                                            println!();
+                                            
+                                            // Show top referenced definitions
+                                            let mut refs: Vec<_> = analysis.reference_count.into_iter().collect();
+                                            refs.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+                                            
+                                            println!("{}", "Most referenced definitions:".cyan());
+                                            for (hash, count) in refs.iter().take(10) {
+                                                // Try to find name
+                                                if let Ok(results) = repo.search_by_name("") {
+                                                    for (h, name, _) in results {
+                                                        if &h == hash {
+                                                            println!("  {} - {} references", name, count);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => println!("{}: {}", "Error".red(), e),
+                                    }
+                                } else {
+                                    println!("{}: Code repository not available", "Error".red());
+                                }
+                            }
+
+                            Command::Namespace(None) => {
+                                println!("Current namespace: {}", state.current_namespace.cyan());
+                            }
+                            
+                            Command::Namespace(Some(name)) => {
+                                state.current_namespace = name.clone();
+                                println!("Changed to namespace: {}", name.cyan());
+                            }
+                            
                             _ => {
                                 println!("{}: Command not yet implemented", "Note".yellow());
                             }
@@ -831,7 +1217,8 @@ pub fn run_repl() -> Result<()> {
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                println!("\n{}", "Use 'exit' to quit".yellow());
+                println!("\n{}", "Goodbye!".green());
+                break;
             }
             Err(ReadlineError::Eof) => {
                 println!("\n{}", "Goodbye!".green());

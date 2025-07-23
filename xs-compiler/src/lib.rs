@@ -14,7 +14,7 @@ pub use module_env::{ExportedItem, ModuleEnv, ModuleInfo};
 
 // Type checker exports
 use std::collections::{HashMap, HashSet};
-use xs_core::{Expr, Ident, Literal, Pattern, Type, TypeDefinition, XsError};
+use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
@@ -43,30 +43,38 @@ impl Default for TypeEnv {
             type_definitions: HashMap::new(),
         };
 
-        // Built-in functions
+        // Built-in functions - polymorphic arithmetic operators
+        let num_var = || Type::Var("num".to_string());
         env.add_builtin(
             "+",
             Type::Function(
-                Box::new(Type::Int),
-                Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
+                Box::new(num_var()),
+                Box::new(Type::Function(Box::new(num_var()), Box::new(num_var()))),
             ),
         );
         env.add_builtin(
             "-",
             Type::Function(
-                Box::new(Type::Int),
-                Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
+                Box::new(num_var()),
+                Box::new(Type::Function(Box::new(num_var()), Box::new(num_var()))),
             ),
         );
         env.add_builtin(
             "*",
             Type::Function(
-                Box::new(Type::Int),
-                Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
+                Box::new(num_var()),
+                Box::new(Type::Function(Box::new(num_var()), Box::new(num_var()))),
             ),
         );
         env.add_builtin(
             "/",
+            Type::Function(
+                Box::new(num_var()),
+                Box::new(Type::Function(Box::new(num_var()), Box::new(num_var()))),
+            ),
+        );
+        env.add_builtin(
+            "%",
             Type::Function(
                 Box::new(Type::Int),
                 Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Int))),
@@ -75,8 +83,8 @@ impl Default for TypeEnv {
         env.add_builtin(
             "=",
             Type::Function(
-                Box::new(Type::Int),
-                Box::new(Type::Function(Box::new(Type::Int), Box::new(Type::Bool))),
+                Box::new(Type::Var("eq".to_string())),
+                Box::new(Type::Function(Box::new(Type::Var("eq".to_string())), Box::new(Type::Bool))),
             ),
         );
         env.add_builtin(
@@ -123,6 +131,36 @@ impl Default for TypeEnv {
                     Box::new(Type::String),
                     Box::new(Type::String),
                 )),
+            ),
+        );
+
+        // Float arithmetic operators
+        env.add_builtin(
+            "+.",
+            Type::Function(
+                Box::new(Type::Float),
+                Box::new(Type::Function(Box::new(Type::Float), Box::new(Type::Float))),
+            ),
+        );
+        env.add_builtin(
+            "-.",
+            Type::Function(
+                Box::new(Type::Float),
+                Box::new(Type::Function(Box::new(Type::Float), Box::new(Type::Float))),
+            ),
+        );
+        env.add_builtin(
+            "*.",
+            Type::Function(
+                Box::new(Type::Float),
+                Box::new(Type::Function(Box::new(Type::Float), Box::new(Type::Float))),
+            ),
+        );
+        env.add_builtin(
+            "/.",
+            Type::Function(
+                Box::new(Type::Float),
+                Box::new(Type::Function(Box::new(Type::Float), Box::new(Type::Float))),
             ),
         );
 
@@ -184,6 +222,11 @@ impl Default for TypeEnv {
                 Box::new(Type::Var("a".to_string())),
             ),
         );
+
+        // Keep only essential built-ins that are not library functions
+        // Everything else requires explicit import
+
+        // No default module functions - require explicit use/import
 
         env
     }
@@ -255,6 +298,39 @@ impl TypeChecker {
         var
     }
 
+    fn handle_use(&mut self, env: &mut TypeEnv, path: &[String], items: &Option<Vec<Ident>>) -> Result<(), XsError> {
+        use xs_core::lib_modules::get_module_functions;
+        
+        // Get available functions for the module
+        let available_functions = get_module_functions(path)
+            .ok_or_else(|| XsError::TypeError(
+                Span::new(0, 0),
+                format!("Unknown module path: {}", path.join("/")),
+            ))?;
+        
+        if let Some(items) = items {
+            // Import only specific items
+            for item in items {
+                let func_name = &item.0;
+                if let Some(func_type) = available_functions.get(func_name) {
+                    env.add_builtin(func_name, func_type.clone());
+                } else {
+                    return Err(XsError::TypeError(
+                        Span::new(0, 0),
+                        format!("Function '{}' not found in module {}", func_name, path.join("/")),
+                    ));
+                }
+            }
+        } else {
+            // Import all functions from the module
+            for (name, typ) in available_functions.into_iter() {
+                env.add_builtin(&name, typ);
+            }
+        }
+        
+        Ok(())
+    }
+
     fn substitute(&self, typ: &Type) -> Type {
         self.substitute_with_map(typ, &HashMap::new())
     }
@@ -282,7 +358,19 @@ impl TypeChecker {
                 self.unify(r1, r2)
             }
             (Type::List(e1), Type::List(e2)) => self.unify(e1, e2),
-            _ => Err(format!("Cannot unify {t1:?} with {t2:?}")),
+            _ => {
+                let error_msg = match (&t1, &t2) {
+                    (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
+                        format!(
+                            "Cannot unify {} with {}.\n\
+                            Hint: For float arithmetic, use operators with dots: +. -. *. /.\n\
+                            Example: (+. 1.8 32.0) instead of (+ 1.8 32.0)"
+                        , t1, t2)
+                    }
+                    _ => format!("Cannot unify {} with {}", t1, t2),
+                };
+                Err(error_msg)
+            }
         }
     }
 
@@ -401,7 +489,29 @@ impl TypeChecker {
                 value,
                 ..
             } => {
-                let value_type = self.check(value, env)?;
+                // Check if this is a function that references itself (recursive)
+                let is_recursive = match value.as_ref() {
+                    Expr::Lambda { body, .. } => {
+                        xs_core::recursion_detector::is_recursive(name, body)
+                    }
+                    _ => false,
+                };
+
+                let value_type = if is_recursive {
+                    // Handle as recursive function
+                    let var_type = type_ann.clone().unwrap_or_else(|| self.fresh_var());
+                    env.push_scope();
+                    env.add_binding(name.0.clone(), TypeScheme::mono(var_type.clone()));
+                    
+                    let actual_type = self.check(value, env)?;
+                    self.unify(&var_type, &actual_type)?;
+                    
+                    env.pop_scope();
+                    self.substitute(&var_type)
+                } else {
+                    // Handle as non-recursive binding
+                    self.check(value, env)?
+                };
 
                 if let Some(ann) = type_ann {
                     self.unify(&value_type, ann)?;
@@ -631,13 +741,49 @@ impl TypeChecker {
                 Ok(Type::Int)
             }
 
+            Expr::Use { path, items, .. } => {
+                // Handle use statement - import functions into current environment
+                self.handle_use(env, path, items).map_err(|e| e.to_string())?;
+                Ok(Type::Unit) // Use statements produce unit value
+            }
+
             Expr::QualifiedIdent { .. } => {
                 // TODO: Implement qualified identifier type checking
                 Ok(self.fresh_var())
             }
 
-            Expr::Handler { .. } | Expr::WithHandler { .. } | Expr::Perform { .. } => {
-                // TODO: Implement effect handler type checking
+            Expr::Handler { cases, body, .. } => {
+                // Check the body to get its type and effects
+                let body_type = self.check(body, env)?;
+                
+                // For now, return the body type
+                // TODO: Properly check handler cases and effect types
+                for (_effect_name, _patterns, _continuation, handler_body) in cases {
+                    let _ = self.check(handler_body, env)?;
+                }
+                
+                Ok(body_type)
+            }
+            
+            Expr::WithHandler { handler, body, .. } => {
+                // Check handler and body
+                let _ = self.check(handler, env)?;
+                let body_type = self.check(body, env)?;
+                
+                // The type of with-handler is the type of the body
+                // with some effects handled by the handler
+                Ok(body_type)
+            }
+            
+            Expr::Perform { effect: _, args, .. } => {
+                // Check all arguments
+                for arg in args {
+                    let _ = self.check(arg, env)?;
+                }
+                
+                // The type of perform depends on the effect's signature
+                // For now, return a fresh type variable
+                // TODO: Look up effect signature and return proper type
                 Ok(self.fresh_var())
             }
 
@@ -651,6 +797,109 @@ impl TypeChecker {
 
                 self.unify(&func_type, &expected_func_type)?;
                 Ok(self.substitute(&result_type))
+            }
+
+            Expr::Block { exprs, .. } => {
+                if exprs.is_empty() {
+                    Ok(Type::Unit)
+                } else {
+                    env.push_scope();
+                    let mut last_type = Type::Unit;
+                    
+                    for expr in exprs {
+                        last_type = self.check(expr, env)?;
+                    }
+                    
+                    env.pop_scope();
+                    Ok(last_type)
+                }
+            }
+
+            Expr::Hole { name, type_hint, span } => {
+                if let Some(hint) = type_hint {
+                    Ok(hint.clone())
+                } else {
+                    Err(format!(
+                        "Hole '{}' at position {} requires type annotation",
+                        name.as_deref().unwrap_or("@"),
+                        span.start
+                    ))
+                }
+            }
+
+            Expr::Do { effects: _, body, .. } => {
+                // For now, just check the body
+                // TODO: Implement effect checking
+                self.check(body, env)
+            }
+
+            Expr::RecordLiteral { fields, .. } => {
+                // Type check each field and collect their types
+                let mut field_types = Vec::new();
+                for (name, expr) in fields {
+                    let ty = self.check(expr, env)?;
+                    field_types.push((name.0.clone(), ty));
+                }
+                
+                // Sort fields by name for consistent type representation
+                field_types.sort_by(|a, b| a.0.cmp(&b.0));
+                
+                Ok(Type::Record { fields: field_types })
+            }
+
+            Expr::RecordAccess { record, field, .. } => {
+                let record_type = self.check(record, env)?;
+                
+                match &record_type {
+                    Type::Record { fields } => {
+                        // Find the field type
+                        for (fname, ftype) in fields {
+                            if fname == &field.0 {
+                                return Ok(ftype.clone());
+                            }
+                        }
+                        Err(format!("Field '{}' not found in record", field.0))
+                    }
+                    Type::Var(_) => {
+                        // If it's a type variable, we need to constrain it to be a record
+                        // For now, return a fresh type variable
+                        Ok(self.fresh_var())
+                    }
+                    _ => Err(format!("Cannot access field '{}' on non-record type", field.0))
+                }
+            }
+
+            Expr::RecordUpdate { record, updates, .. } => {
+                let record_type = self.check(record, env)?;
+                
+                match record_type {
+                    Type::Record { mut fields } => {
+                        // Type check updates and update field types
+                        for (update_name, update_expr) in updates {
+                            let update_type = self.check(update_expr, env)?;
+                            let mut found = false;
+                            
+                            for (fname, ftype) in &mut fields {
+                                if fname == &update_name.0 {
+                                    *ftype = update_type.clone();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            
+                            if !found {
+                                return Err(format!("Field '{}' not found in record", update_name.0));
+                            }
+                        }
+                        
+                        Ok(Type::Record { fields })
+                    }
+                    Type::Var(_) => {
+                        // If it's a type variable, return it as is for now
+                        Ok(record_type)
+                    }
+                    _ => Err("Cannot update fields on non-record type".to_string())
+                }
             }
         }
     }

@@ -244,7 +244,13 @@ impl QueryBuilder {
         }
         
         if pattern.starts_with("List ") {
-            return Ok(TypePattern::List(Box::new(Self::parse_type_pattern(pattern.strip_prefix("List<").unwrap())?)));
+            let inner = pattern.strip_prefix("List ").unwrap();
+            return Ok(TypePattern::List(Box::new(Self::parse_type_pattern(inner)?)));
+        }
+        
+        if pattern.starts_with("List<") && pattern.ends_with(">") {
+            let inner = pattern.strip_prefix("List<").unwrap().strip_suffix(">").unwrap();
+            return Ok(TypePattern::List(Box::new(Self::parse_type_pattern(inner)?)));
         }
         
         // Check for type variables
