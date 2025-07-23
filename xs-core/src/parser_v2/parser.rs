@@ -193,27 +193,33 @@ impl<'a> Parser<'a> {
     fn parse_application(&mut self) -> Result<Expr, XsError> {
         let mut expr = self.parse_primary()?;
         
-        // Handle function application
-        while self.is_application_start() {
-            let arg = self.parse_primary()?;
-            let span_start = expr.span().start;
-            expr = Expr::Apply {
-                func: Box::new(expr),
-                args: vec![arg],
-                span: Span::new(span_start, self.position())
-            };
-        }
-        
-        // Handle record access
-        while matches!(self.current_token, Some((Token::Dot, _))) {
-            self.advance()?;
-            let field = self.parse_identifier()?;
-            let span_start = expr.span().start;
-            expr = Expr::RecordAccess {
-                record: Box::new(expr),
-                field: Ident(field),
-                span: Span::new(span_start, self.position())
-            };
+        // Loop to handle interleaved record access and function application
+        loop {
+            // Handle record access first (higher precedence)
+            if matches!(self.current_token, Some((Token::Dot, _))) {
+                self.advance()?;
+                let field = self.parse_identifier()?;
+                let span_start = expr.span().start;
+                expr = Expr::RecordAccess {
+                    record: Box::new(expr),
+                    field: Ident(field),
+                    span: Span::new(span_start, self.position())
+                };
+            }
+            // Then handle function application
+            else if self.is_application_start() {
+                let arg = self.parse_primary()?;
+                let span_start = expr.span().start;
+                expr = Expr::Apply {
+                    func: Box::new(expr),
+                    args: vec![arg],
+                    span: Span::new(span_start, self.position())
+                };
+            }
+            // No more applications or accesses
+            else {
+                break;
+            }
         }
         
         Ok(expr)
@@ -273,6 +279,10 @@ impl<'a> Parser<'a> {
                 self.parse_list(start)
             }
             Some((Token::Fn, span)) => {
+                let start = span.start;
+                self.parse_lambda(start)
+            }
+            Some((Token::Backslash, span)) => {
                 let start = span.start;
                 self.parse_lambda(start)
             }
@@ -424,7 +434,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_lambda(&mut self, start: usize) -> Result<Expr, XsError> {
-        self.expect_token(Token::Fn)?;
+        // Accept either 'fn' or '\'
+        match &self.current_token {
+            Some((Token::Fn, _)) => self.advance()?,
+            Some((Token::Backslash, _)) => self.advance()?,
+            _ => return Err(XsError::ParseError(
+                self.position(),
+                "Expected 'fn' or '\\'".to_string()
+            ))
+        }
         
         // Parse parameters
         let mut params = Vec::new();
@@ -802,15 +820,50 @@ impl<'a> Parser<'a> {
         
         self.expect_token(Token::Equals)?;
         
-        // For now, just parse type expression as a dummy
-        let _type_expr = self.parse_type_expression()?;
+        // Parse constructors
+        let mut constructors = Vec::new();
         
-        // Create a dummy TypeDef expression
+        // First constructor doesn't need |
+        let first_name = self.parse_identifier()?;
+        let mut first_fields = Vec::new();
+        
+        // Parse constructor fields
+        while self.is_type_expression_start() && 
+              !matches!(self.current_token, Some((Token::Pipe, _))) &&
+              !self.is_end_of_definition() {
+            first_fields.push(self.parse_type_expression()?);
+        }
+        
+        constructors.push(Constructor {
+            name: first_name,
+            fields: first_fields
+        });
+        
+        // Parse remaining constructors
+        while matches!(self.current_token, Some((Token::Pipe, _))) {
+            self.advance()?;
+            
+            let constructor_name = self.parse_identifier()?;
+            let mut fields = Vec::new();
+            
+            // Parse constructor fields
+            while self.is_type_expression_start() && 
+                  !matches!(self.current_token, Some((Token::Pipe, _))) &&
+                  !self.is_end_of_definition() {
+                fields.push(self.parse_type_expression()?);
+            }
+            
+            constructors.push(Constructor {
+                name: constructor_name,
+                fields
+            });
+        }
+        
         Ok(Expr::TypeDef {
             definition: TypeDefinition {
-                name: name.clone(),
+                name,
                 type_params,
-                constructors: vec![]
+                constructors
             },
             span: Span::new(start, self.position())
         })
@@ -923,6 +976,7 @@ impl<'a> Parser<'a> {
         
         self.expect_token(Token::LeftBrace)?;
         
+        let mut exports = Vec::new();
         let mut body = Vec::new();
         
         // Parse module body
@@ -932,12 +986,34 @@ impl<'a> Parser<'a> {
                 continue;
             }
             
-            // Parse module members
-            let member = self.parse_top_level()?;
-            body.push(member);
-            
-            if matches!(self.current_token, Some((Token::Semicolon, _)) | Some((Token::Newline, _))) {
+            // Check for export declaration
+            if matches!(self.current_token, Some((Token::Export, _))) {
                 self.advance()?;
+                
+                // Parse export list
+                loop {
+                    let export_name = self.parse_identifier()?;
+                    exports.push(Ident(export_name));
+                    
+                    if matches!(self.current_token, Some((Token::Comma, _))) {
+                        self.advance()?;
+                    } else {
+                        break;
+                    }
+                }
+                
+                // Expect semicolon or newline after export
+                if matches!(self.current_token, Some((Token::Semicolon, _)) | Some((Token::Newline, _))) {
+                    self.advance()?;
+                }
+            } else {
+                // Parse module members
+                let member = self.parse_top_level()?;
+                body.push(member);
+                
+                if matches!(self.current_token, Some((Token::Semicolon, _)) | Some((Token::Newline, _))) {
+                    self.advance()?;
+                }
             }
         }
         
@@ -945,7 +1021,7 @@ impl<'a> Parser<'a> {
         
         Ok(Expr::Module {
             name: Ident(name),
-            exports: vec![],  // TODO: Parse export list
+            exports,
             body,
             span: Span::new(start, self.position())
         })
@@ -1065,6 +1141,7 @@ impl<'a> Parser<'a> {
             Some((Token::LeftBrace, _)) |
             Some((Token::LeftBracket, _)) |
             Some((Token::Fn, _)) |
+            Some((Token::Backslash, _)) |
             Some((Token::If, _)) |
             Some((Token::Case, _)) |
             Some((Token::Let, _)) |

@@ -1,1 +1,1 @@
-(int-to-string -123)
+Int.toString (-123)

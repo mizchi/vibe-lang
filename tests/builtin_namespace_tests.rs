@@ -67,11 +67,11 @@ fn test_string_namespace() {
 #[test]
 fn test_list_namespace() {
     // Test List.cons
-    let code = "List.cons 1 (cons 2 (cons 3 []))";  // Using [] for empty list
+    let code = "List.cons 1 (cons 2 (cons 3 []))";
     fs::write("test_list_cons.xs", code).unwrap();
     let (stdout, stderr, success) = run_xsc(&["run", "test_list_cons.xs"]);
     assert!(success, "Run failed: {stderr}");
-    assert!(stdout.contains("[1, 2, 3]") || stdout.contains("(list 1 2 3)"));
+    assert!(stdout.contains("(list 1 2 3)") || stdout.contains("[1, 2, 3]"));
 }
 
 #[test]

@@ -1,73 +1,92 @@
-; リストユーティリティモジュール
-(module ListUtils
-  (export length head tail nth take drop filter map fold-left fold-right)
+-- リストユーティリティモジュール
+module ListUtils {
+  export length, head, tail, nth, take, drop, filter, map, foldLeft, foldRight
   
-  ; リストの長さ
-  (define length (rec len (list)
-    (match list
-      ((list) 0)
-      ((list _ xs) (+ 1 (len xs))))))
+  -- リストの長さ
+  rec length list =
+    case list of {
+      [] -> 0
+      x :: xs -> 1 + (length xs)
+    }
   
-  ; 先頭要素を取得
-  (define head (fn (list)
-    (match list
-      ((list x _) (Some x))
-      ((list) (None)))))
+  -- 先頭要素を取得
+  let head list =
+    case list of {
+      x :: xs -> Some x
+      [] -> None
+    }
   
-  ; 先頭以外を取得
-  (define tail (fn (list)
-    (match list
-      ((list _ xs) xs)
-      ((list) (list)))))
+  -- 先頭以外を取得
+  let tail list =
+    case list of {
+      x :: xs -> xs
+      [] -> []
+    }
   
-  ; n番目の要素を取得 (0-indexed)
-  (define nth (rec get-nth (n list)
-    (match list
-      ((list) (None))
-      ((list x xs)
-       (if (= n 0)
-           (Some x)
-           (get-nth (- n 1) xs))))))
+  -- n番目の要素を取得 (0-indexed)
+  rec nth n list =
+    case list of {
+      [] -> None
+      x :: xs ->
+        if eq n 0 {
+          Some x
+        } else {
+          nth (n - 1) xs
+        }
+    }
   
-  ; 最初のn個を取得
-  (define take (rec take-n (n list)
-    (if (<= n 0)
-        (list)
-        (match list
-          ((list) (list))
-          ((list x xs) (cons x (take-n (- n 1) xs)))))))
+  -- 最初のn個を取得
+  rec take n list =
+    if n <= 0 {
+      []
+    } else {
+      case list of {
+        [] -> []
+        x :: xs -> x :: (take (n - 1) xs)
+      }
+    }
   
-  ; 最初のn個を除いたリストを返す
-  (define drop (rec drop-n (n list)
-    (if (<= n 0)
-        list
-        (match list
-          ((list) (list))
-          ((list _ xs) (drop-n (- n 1) xs))))))
+  -- 最初のn個を除いたリストを返す
+  rec drop n list =
+    if n <= 0 {
+      list
+    } else {
+      case list of {
+        [] -> []
+        x :: xs -> drop (n - 1) xs
+      }
+    }
   
-  ; フィルタリング
-  (define filter (rec do-filter (pred list)
-    (match list
-      ((list) (list))
-      ((list x xs)
-       (if (pred x)
-           (cons x (do-filter pred xs))
-           (do-filter pred xs))))))
+  -- フィルタリング
+  rec filter pred list =
+    case list of {
+      [] -> []
+      x :: xs ->
+        if pred x {
+          x :: (filter pred xs)
+        } else {
+          filter pred xs
+        }
+    }
   
-  ; マップ
-  (define map (rec do-map (f list)
-    (match list
-      ((list) (list))
-      ((list x xs) (cons (f x) (do-map f xs))))))
+  -- マップ
+  rec map f list =
+    case list of {
+      [] -> []
+      x :: xs -> (f x) :: (map f xs)
+    }
   
-  ; 左畳み込み
-  (define fold-left (rec do-fold-left (f acc list)
-    (match list
-      ((list) acc)
-      ((list x xs) (do-fold-left f (f acc x) xs)))))
+  -- 左畳み込み
+  rec foldLeft f acc list =
+    case list of {
+      [] -> acc
+      x :: xs -> foldLeft f (f acc x) xs
+    }
   
-  ; 右畳み込み
-  (define fold-right (rec do-fold-right (f list acc)
-    (match list
-      ((list) acc)
-      ((list x xs) (f x (do-fold-right f xs acc))))))
+  -- 右畳み込み
+  rec foldRight f list acc =
+    case list of {
+      [] -> acc
+      x :: xs -> f x (foldRight f xs acc)
+    }
+}

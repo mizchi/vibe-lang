@@ -1,4 +1,6 @@
-(let result (= 1 1) in
-(if result
-    (print "PASS")
-    (print "FAIL")))
+let result = 1 = 1 in
+if result {
+  IO.print "PASS"
+} else {
+  IO.print "FAIL"
+}

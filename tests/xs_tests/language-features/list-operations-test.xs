@@ -1,34 +1,44 @@
-;; Comprehensive test for list operations
+-- Comprehensive test for list operations
 
-;; Test car
-(let test-car-1 (= (car (list 1 2 3)) 1) in
-(let dummy1 (print (if test-car-1 "✓ car [1,2,3] = 1" "✗ car [1,2,3] = 1")) in
+-- Test car
+let testCar1 = eq (List.car [1, 2, 3]) 1 in
+let dummy1 = IO.print (if testCar1 { "✓ car [1,2,3] = 1" } else { "✗ car [1,2,3] = 1" }) in
 
-;; Test cdr
-(let test-cdr-1 (let result (cdr (list 1 2 3)) in
-                 (if (null? result)
-                     false
-                     (= (car result) 2))) in
-(let dummy2 (print (if test-cdr-1 "✓ cdr [1,2,3] starts with 2" "✗ cdr [1,2,3] starts with 2")) in
+-- Test cdr
+let testCdr1 = let result = List.cdr [1, 2, 3] in
+                 if List.null result {
+                   false
+                 } else {
+                   eq (List.car result) 2
+                 } in
+let dummy2 = IO.print (if testCdr1 { "✓ cdr [1,2,3] starts with 2" } else { "✗ cdr [1,2,3] starts with 2" }) in
 
-;; Test null?
-(let test-null-1 (null? (list)) in
-(let test-null-2 (if (null? (list 1)) false true) in
-(let dummy3 (print (if test-null-1 "✓ null? [] = true" "✗ null? [] = true")) in
-(let dummy4 (print (if test-null-2 "✓ null? [1] = false" "✗ null? [1] = false")) in
+-- Test null?
+let testNull1 = List.null [] in
+let testNull2 = if List.null [1] { false } else { true } in
+let dummy3 = IO.print (if testNull1 { "✓ null? [] = true" } else { "✗ null? [] = true" }) in
+let dummy4 = IO.print (if testNull2 { "✓ null? [1] = false" } else { "✗ null? [1] = false" }) in
 
-;; Test combination
-(let test-combo (= (car (cdr (list 1 2 3))) 2) in
-(let dummy5 (print (if test-combo "✓ car (cdr [1,2,3]) = 2" "✗ car (cdr [1,2,3]) = 2")) in
+-- Test combination
+let testCombo = eq (List.car (List.cdr [1, 2, 3])) 2 in
+let dummy5 = IO.print (if testCombo { "✓ car (cdr [1,2,3]) = 2" } else { "✗ car (cdr [1,2,3]) = 2" }) in
 
-;; Final result
-(let all-passed (if test-car-1 
-                    (if test-cdr-1 
-                        (if test-null-1 
-                            (if test-null-2 test-combo false)
-                            false)
-                        false)
-                    false) in
-(if all-passed
-    (print "\nAll tests passed!")
-    (print "\nSome tests failed!"))))))))))))))
+-- Final result
+let allPassed = if testCar1 {
+                  if testCdr1 {
+                    if testNull1 {
+                      if testNull2 { testCombo } else { false }
+                    } else {
+                      false
+                    }
+                  } else {
+                    false
+                  }
+                } else {
+                  false
+                } in
+if allPassed {
+  IO.print "\nAll tests passed!"
+} else {
+  IO.print "\nSome tests failed!"
+}

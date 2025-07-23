@@ -1,1 +1,1 @@
-(print "test")
+IO.print "test"

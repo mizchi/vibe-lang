@@ -1,24 +1,27 @@
-(module ListUtils
-  (export length head tail sum)
+module ListUtils {
+  export length, head, tail, sum
   
-  (rec length (xs)
-    (match xs
-      ((list) 0)
-      ((list _ rest) (+ 1 (length rest)))))
+  rec length xs =
+    case xs of {
+      [] -> 0
+      _ :: rest -> 1 + (length rest)
+    }
   
-  (let head
-    (fn (xs)
-      (match xs
-        ((list) 0)
-        ((list x _) x))))
+  let head xs =
+    case xs of {
+      [] -> 0
+      x :: _ -> x
+    }
   
-  (let tail
-    (fn (xs)
-      (match xs
-        ((list) (list))
-        ((list _ rest) rest))))
+  let tail xs =
+    case xs of {
+      [] -> []
+      _ :: rest -> rest
+    }
   
-  (rec sum (xs)
-    (match xs
-      ((list) 0)
-      ((list x rest) (+ x (sum rest))))))
+  rec sum xs =
+    case xs of {
+      [] -> 0
+      x :: rest -> x + (sum rest)
+    }
+}

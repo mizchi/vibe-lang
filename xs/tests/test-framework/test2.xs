@@ -1,2 +1,2 @@
-(let x 1 in
-(print x))
+let x = 1 in
+IO.print x

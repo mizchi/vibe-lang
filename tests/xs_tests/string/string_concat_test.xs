@@ -1,2 +1,2 @@
-; Test str-concat
-(print (str-concat "Hello, " "World!"))
+-- Test str-concat
+IO.print (String.concat "Hello, " "World!")

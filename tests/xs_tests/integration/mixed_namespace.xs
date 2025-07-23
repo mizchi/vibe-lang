@@ -1,1 +1,1 @@
-(String.concat "Count: " (Int.toString (Int.add 40 2)))
+String.concat "Count: " (Int.toString (Int.add 40 2))

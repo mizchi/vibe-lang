@@ -1,1 +1,1 @@
-(let t1 (= 1 1) in (print t1))
+let t1 = 1 = 1 in IO.print t1

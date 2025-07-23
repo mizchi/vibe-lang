@@ -34,6 +34,7 @@ impl TypeScheme {
 pub struct TypeEnv {
     bindings: Vec<HashMap<String, TypeScheme>>,
     type_definitions: HashMap<String, TypeDefinition>,
+    modules: HashMap<String, HashMap<String, TypeScheme>>,
 }
 
 impl Default for TypeEnv {
@@ -41,6 +42,7 @@ impl Default for TypeEnv {
         let mut env = TypeEnv {
             bindings: vec![HashMap::new()],
             type_definitions: HashMap::new(),
+            modules: HashMap::new(),
         };
 
         // Built-in functions - polymorphic arithmetic operators
@@ -228,6 +230,9 @@ impl Default for TypeEnv {
 
         // No default module functions - require explicit use/import
 
+        // Initialize builtin modules
+        env.init_builtin_modules();
+
         env
     }
 }
@@ -270,6 +275,24 @@ impl TypeEnv {
 
     pub fn lookup_type_definition(&self, name: &str) -> Option<&TypeDefinition> {
         self.type_definitions.get(name)
+    }
+
+    fn init_builtin_modules(&mut self) {
+        use xs_core::builtin_modules::BuiltinModuleRegistry;
+        
+        let registry = BuiltinModuleRegistry::new();
+        
+        for (module_name, module) in registry.all_modules() {
+            let mut module_bindings = HashMap::new();
+            for (func_name, func_type) in &module.functions {
+                module_bindings.insert(func_name.clone(), TypeScheme::mono(func_type.clone()));
+            }
+            self.modules.insert(module_name.clone(), module_bindings);
+        }
+    }
+
+    pub fn lookup_module_function(&self, module: &str, function: &str) -> Option<&TypeScheme> {
+        self.modules.get(module)?.get(function)
     }
 }
 
@@ -747,9 +770,18 @@ impl TypeChecker {
                 Ok(Type::Unit) // Use statements produce unit value
             }
 
-            Expr::QualifiedIdent { .. } => {
-                // TODO: Implement qualified identifier type checking
-                Ok(self.fresh_var())
+            Expr::QualifiedIdent { module_name, name, .. } => {
+                // Handle namespace access like Int.toString
+                let module = &module_name.0;
+                let func = &name.0;
+                
+                match env.lookup_module_function(module, func) {
+                    Some(scheme) => Ok(self.instantiate(scheme)),
+                    None => Err(format!(
+                        "Undefined function: {}.{}",
+                        module, func
+                    )),
+                }
             }
 
             Expr::Handler { cases, body, .. } => {
@@ -848,6 +880,20 @@ impl TypeChecker {
             }
 
             Expr::RecordAccess { record, field, .. } => {
+                // First check if this is a namespace access (e.g., Int.toString)
+                if let Expr::Ident(module_name, _) = record.as_ref() {
+                    // Check if this is a known module name (starts with uppercase)
+                    if module_name.0.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        match env.lookup_module_function(&module_name.0, &field.0) {
+                            Some(scheme) => return Ok(self.instantiate(scheme)),
+                            None => {
+                                // Not a module function, continue with record access
+                            }
+                        }
+                    }
+                }
+                
+                // Normal record field access
                 let record_type = self.check(record, env)?;
                 
                 match &record_type {

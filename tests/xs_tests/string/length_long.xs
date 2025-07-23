@@ -1,1 +1,1 @@
-(string-length "Hello, World!")
+String.length "Hello, World!"

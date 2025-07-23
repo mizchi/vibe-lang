@@ -1,6 +1,6 @@
-
-(match (list 1 2 3)
-  ((list) 0)
-  ((list x xs)
-    (let head_squared (* x x) in
-      head_squared)))
+case [1, 2, 3] of {
+  [] -> 0;
+  x :: xs ->
+    let headSquared = x * x in
+      headSquared
+}

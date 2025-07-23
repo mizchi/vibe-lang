@@ -1,1 +1,1 @@
-(Int.add 10 20)
+Int.add 10 20

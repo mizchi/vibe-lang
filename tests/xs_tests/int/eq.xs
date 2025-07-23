@@ -1,1 +1,1 @@
-(Int.eq 5 5)
+Int.eq 5 5

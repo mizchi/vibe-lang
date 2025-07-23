@@ -448,6 +448,22 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
+        env = env.extend(
+            Ident("strConcat".to_string()),
+            Value::BuiltinFunction {
+                name: "strConcat".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("stringLength".to_string()),
+            Value::BuiltinFunction {
+                name: "stringLength".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
 
         env
     }
@@ -799,8 +815,8 @@ impl Interpreter {
                     "Int.mul" => "*",
                     "Int.div" => "/",
                     "Int.mod" => "%",
-                    "Int.toString" => "int-to-string",
-                    "Int.fromString" => "string-to-int",
+                    "Int.toString" => "intToString",
+                    "Int.fromString" => "stringToInt",
                     "Int.lt" => "<",
                     "Int.gt" => ">",
                     "Int.lte" => "<=",
@@ -808,11 +824,11 @@ impl Interpreter {
                     "Int.eq" => "=",
 
                     // String module
-                    "String.concat" => "str-concat",
-                    "String.length" => "string-length",
-                    "String.toInt" => "string-to-int",
-                    "String.fromInt" => "int-to-string",
-                    "String.eq" => "str-eq",
+                    "String.concat" => "strConcat",
+                    "String.length" => "stringLength",
+                    "String.toInt" => "stringToInt",
+                    "String.fromInt" => "intToString",
+                    "String.eq" => "stringEq",
 
                     // List module
                     "List.cons" => "cons",
@@ -993,6 +1009,83 @@ impl Interpreter {
             }
 
             Expr::RecordAccess { record, field, span } => {
+                // First check if this is a namespace access (e.g., Int.toString)
+                if let Expr::Ident(module_name, _) = record.as_ref() {
+                    // Check if this is a known module name (starts with uppercase)
+                    if module_name.0.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        // Look up builtin module functions
+                        let builtin_key = format!("{}.{}", module_name.0, field.0);
+                        
+                        // Map new namespace names to existing builtin functions
+                        let mapped_name = match builtin_key.as_str() {
+                            // Int module
+                            "Int.add" => "+",
+                            "Int.sub" => "-",
+                            "Int.mul" => "*",
+                            "Int.div" => "/",
+                            "Int.mod" => "%",
+                            "Int.toString" => "intToString",
+                            "Int.fromString" => "string-to-int",
+                            "Int.lt" => "<",
+                            "Int.gt" => ">",
+                            "Int.lte" => "<=",
+                            "Int.gte" => ">=",
+                            "Int.eq" => "=",
+                            
+                            // String module
+                            "String.concat" => "strConcat",
+                            "String.length" => "stringLength",
+                            "String.toInt" => "stringToInt",
+                            "String.fromInt" => "intToString",
+                            "String.eq" => "stringEq",
+                            
+                            // List module
+                            "List.cons" => "cons",
+                            
+                            // IO module
+                            "IO.print" => "print",
+                            
+                            // Float module
+                            "Float.add" => "+.",
+                            
+                            _ => {
+                                // Continue with record access
+                                let record_value = self.eval(record, env)?;
+                                
+                                match record_value {
+                                    Value::Record { fields } => {
+                                        // Find the field value
+                                        for (fname, fvalue) in fields {
+                                            if fname == field.0 {
+                                                return Ok(fvalue);
+                                            }
+                                        }
+                                        return Err(XsError::RuntimeError(
+                                            span.clone(),
+                                            format!("Field '{}' not found in record", field.0),
+                                        ));
+                                    }
+                                    _ => return Err(XsError::RuntimeError(
+                                        span.clone(),
+                                        "Cannot access field on non-record value".to_string(),
+                                    ))
+                                }
+                            }
+                        };
+                        
+                        // Look up the builtin function in the environment
+                        return env.lookup(&Ident(mapped_name.to_string()))
+                            .cloned()
+                            .ok_or_else(|| {
+                                XsError::RuntimeError(
+                                    span.clone(),
+                                    format!("Builtin function {} not found", mapped_name),
+                                )
+                            });
+                    }
+                }
+                
+                // Normal record field access
                 let record_value = self.eval(record, env)?;
                 
                 match record_value {
@@ -1219,7 +1312,7 @@ impl Interpreter {
                     "concat requires string arguments".to_string(),
                 )),
             },
-            "str-concat" => match (&args[0], &args[1]) {
+            "str-concat" | "strConcat" => match (&args[0], &args[1]) {
                 (Value::String(s1), Value::String(s2)) => Ok(Value::String(format!("{s1}{s2}"))),
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
@@ -1246,14 +1339,14 @@ impl Interpreter {
                     "string-to-int requires a string argument".to_string(),
                 )),
             },
-            "string-length" => match &args[0] {
+            "string-length" | "stringLength" => match &args[0] {
                 Value::String(s) => Ok(Value::Int(s.len() as i64)),
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
                     "string-length requires a string argument".to_string(),
                 )),
             },
-            "str-eq" => match (&args[0], &args[1]) {
+            "str-eq" | "stringEq" => match (&args[0], &args[1]) {
                 (Value::String(s1), Value::String(s2)) => Ok(Value::Bool(s1 == s2)),
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
@@ -1358,13 +1451,6 @@ impl Interpreter {
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
                     "stringConcat requires string arguments".to_string(),
-                )),
-            },
-            "stringEq" => match (&args[0], &args[1]) {
-                (Value::String(s1), Value::String(s2)) => Ok(Value::Bool(s1 == s2)),
-                _ => Err(XsError::RuntimeError(
-                    span.clone(),
-                    "stringEq requires two string arguments".to_string(),
                 )),
             },
             _ => Err(XsError::RuntimeError(

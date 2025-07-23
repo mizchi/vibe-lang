@@ -272,27 +272,10 @@ pub fn run_cli() -> Result<()> {
                         Ok(_ty) => {
                             // Run without permission checks
                             use xs_runtime::Interpreter;
-                            use xs_core::{Environment, BuiltinRegistry, Value, Ident};
                             let mut interpreter = Interpreter::new();
                             
                             // Create environment with builtins
-                            let mut env = Environment::default();
-                            let registry = BuiltinRegistry::new();
-                            for builtin in registry.all() {
-                                // Get arity from type signature
-                                let arity = match &builtin.type_signature() {
-                                    xs_core::Type::Function(_, _) => 2, // Binary operators
-                                    _ => 1,
-                                };
-                                env = env.extend(
-                                    Ident(builtin.name().to_string()),
-                                    Value::BuiltinFunction {
-                                        name: builtin.name().to_string(),
-                                        arity,
-                                        applied_args: Vec::new(),
-                                    }
-                                );
-                            }
+                            let env = Interpreter::create_initial_env();
                             match interpreter.eval(&expr, &env) {
                                 Ok(value) => {
                                     println!("{}", format_value(&value));

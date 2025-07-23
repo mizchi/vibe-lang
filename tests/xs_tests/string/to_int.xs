@@ -1,1 +1,1 @@
-(string-to-int "123")
+String.toInt "123"

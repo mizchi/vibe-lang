@@ -1,1 +1,4 @@
-(match (list 1 2) ((list) 0) ((list x _) x))
+case [1, 2] of {
+  [] -> 0
+  x :: _ -> x
+}

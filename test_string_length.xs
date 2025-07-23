@@ -1,1 +1,1 @@
-(String.length "Hello")
+String.length "Hello"

@@ -1,54 +1,59 @@
-;; XS Standard Library - Core Functions
-;; 基本的な関数と演算子のラッパー
+-- XS Standard Library - Core Functions
+-- 基本的な関数と演算子のラッパー
 
-;; Function composition
-(let compose (fn (f g) (fn (x) (f (g x)))))
+-- Function composition
+let compose f g = \x -> f (g x)
 
-;; Identity function
-(let id (fn (x) x))
+-- Identity function
+let id x = x
 
-;; Constant function
-(let const (fn (x) (fn (y) x)))
+-- Constant function
+let const x = \y -> x
 
-;; Flip function arguments
-(let flip (fn (f) (fn (x y) (f y x))))
+-- Flip function arguments
+let flip f = \x y -> f y x
 
-;; Tuple operations
-(let fst (fn (pair) (match pair ((list x y) x))))
-(let snd (fn (pair) (match pair ((list x y) y))))
+-- Tuple operations
+let fst pair = case pair of {
+  [x, y] -> x
+}
 
-;; Maybe type helpers
-(type Maybe a (Just a) (Nothing))
+let snd pair = case pair of {
+  [x, y] -> y
+}
 
-(let maybe (fn (default f m)
-  (match m
-    ((Just x) (f x))
-    ((Nothing) default))))
+-- Maybe type helpers
+type Maybe a = Just a | Nothing
 
-;; Either type helpers
-(type Either a b (Left a) (Right b))
+let maybe default f m = case m of {
+  Just x -> f x;
+  Nothing -> default
+}
 
-(let either (fn (f g e)
-  (match e
-    ((Left x) (f x))
-    ((Right y) (g y)))))
+-- Either type helpers
+type Either a b = Left a | Right b
 
-;; Boolean operations
-(let not (fn (b) (if b false true)))
-(let and (fn (a b) (if a b false)))
-(let or (fn (a b) (if a true b)))
+let either f g e = case e of {
+  Left x -> f x;
+  Right y -> g y
+}
 
-;; Numeric operations
-(let inc (fn (n) (+ n 1)))
-(let dec (fn (n) (- n 1)))
-(let double (fn (n) (* n 2)))
-(let square (fn (n) (* n n)))
-(let abs (fn (n) (if (< n 0) (- 0 n) n)))
+-- Boolean operations
+let not b = if b { false } else { true }
+let and a b = if a { b } else { false }
+let or a b = if a { true } else { b }
 
-;; Comparison helpers
-(let min (fn (a b) (if (< a b) a b)))
-(let max (fn (a b) (if (> a b) a b)))
+-- Numeric operations
+let inc n = n + 1
+let dec n = n - 1
+let double n = n * 2
+let square n = n * n
+let abs n = if n < 0 { 0 - n } else { n }
 
-;; Function application helpers
-(let apply (fn (f x) (f x)))
-(let pipe (fn (x f) (f x)))
+-- Comparison helpers
+let min a b = if a < b { a } else { b }
+let max a b = if a > b { a } else { b }
+
+-- Function application helpers
+let apply f x = f x
+let pipe x f = f x

@@ -1,1 +1,1 @@
-(print "test from echo")
+IO.print "test from echo"

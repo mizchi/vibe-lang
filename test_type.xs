@@ -1,0 +1,1 @@
+type Maybe a = None | Some a

@@ -1,8 +1,8 @@
-
-((rec sum_squares (n)
-  (let is_zero (= n 0) in
-    (if is_zero
-        0
-        (let square (* n n) in
-          (+ square (sum_squares (- n 1)))))))
- 5)
+let sumSquares = rec sumSquares n ->
+  let isZero = n = 0 in
+    if isZero { 0 }
+    else {
+      let square = n * n in
+        square + sumSquares (n - 1)
+    } in
+sumSquares 5

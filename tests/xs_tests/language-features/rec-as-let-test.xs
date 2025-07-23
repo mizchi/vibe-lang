@@ -1,8 +1,10 @@
-;; Test rec with let binding
+-- Test rec with let binding
 
-(let factorial (rec factorial (n)
-  (if (= n 0)
-      1
-      (* n (factorial (- n 1))))) in
+let factorial = rec factorial n =
+  if eq n 0 {
+    1
+  } else {
+    n * (factorial (n - 1))
+  } in
 
-(print (factorial 5)))
+IO.print (factorial 5)

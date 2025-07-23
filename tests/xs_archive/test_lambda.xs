@@ -1,3 +1,3 @@
-; Test lambda application
-; expect: 10
-((fn (x) x) 10)
+-- Test lambda application
+-- expect: 10
+(\x -> x) 10

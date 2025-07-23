@@ -1,1 +1,1 @@
-(string-to-int "-456")
+String.toInt "-456"

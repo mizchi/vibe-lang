@@ -1,20 +1,21 @@
-(module OptionUtils
-  (export map-option is-some is-none)
+module OptionUtils {
+  export mapOption, isSome, isNone
   
-  (let map-option
-    (fn (opt f)
-      (match opt
-        ((Some x) (Some (f x)))
-        ((None) None))))
+  let mapOption opt f =
+    case opt of {
+      Some x -> Some (f x)
+      None -> None
+    }
   
-  (let is-some
-    (fn (opt)
-      (match opt
-        ((Some _) true)
-        ((None) false))))
+  let isSome opt =
+    case opt of {
+      Some _ -> true
+      None -> false
+    }
   
-  (let is-none
-    (fn (opt)
-      (match opt
-        ((Some _) false)
-        ((None) true)))))
+  let isNone opt =
+    case opt of {
+      Some _ -> false
+      None -> true
+    }
+}

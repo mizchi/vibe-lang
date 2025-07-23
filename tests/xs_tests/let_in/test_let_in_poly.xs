@@ -1,5 +1,4 @@
-
-(let id (fn (x) x) in
-  (let int_result (id 42) in
-    (let bool_result (id true) in
-      int_result)))
+let id x = x in
+let intResult = id 42 in
+let boolResult = id true in
+  intResult

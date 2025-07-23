@@ -1,1 +1,1 @@
-(string-to-int "not a number")
+String.toInt "not a number"

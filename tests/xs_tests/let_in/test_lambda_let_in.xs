@@ -1,5 +1,3 @@
-
-((fn (x)
-  (let doubled (* x 2) in
-    (+ doubled 10)))
- 5)
+(\x ->
+  let doubled = x * 2 in
+    doubled + 10) 5

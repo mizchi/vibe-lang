@@ -1,1 +1,1 @@
-(String.fromInt 123)
+String.fromInt 123

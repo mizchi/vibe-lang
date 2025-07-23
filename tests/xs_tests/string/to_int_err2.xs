@@ -1,1 +1,1 @@
-(string-to-int "")
+String.toInt ""

@@ -1,2 +1,2 @@
-; Minimal test
-(print "Hello from XS!")
+-- Minimal test
+IO.print "Hello from XS!"

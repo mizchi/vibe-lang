@@ -56,6 +56,7 @@ pub enum Token {
     Dollar,         // $
     Underscore,     // _
     Ellipsis,       // ...
+    Backslash,      // \
     
     // Type/Effect operators
     LeftAngle,      // <
@@ -198,6 +199,10 @@ impl<'a> Lexer<'a> {
                     '$' => {
                         self.advance();
                         Ok(Some((Token::Dollar, Span::new(start, self.position))))
+                    }
+                    '\\' => {
+                        self.advance();
+                        Ok(Some((Token::Backslash, Span::new(start, self.position))))
                     }
                     '<' => self.read_operator(),
                     '>' => self.read_operator(),

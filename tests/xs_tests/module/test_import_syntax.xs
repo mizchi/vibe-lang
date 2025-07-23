@@ -1,2 +1,1 @@
-
-(import (Math add sub))
+import Math (add, sub)

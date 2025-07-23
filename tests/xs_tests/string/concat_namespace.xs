@@ -1,1 +1,1 @@
-(String.concat "Hello, " "World!")
+String.concat "Hello, " "World!"

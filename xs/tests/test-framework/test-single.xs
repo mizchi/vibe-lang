@@ -1,3 +1,3 @@
-(let x1 (print "Starting tests") in
-(let x2 (print (= 1 1)) in
-(print "Done")))
+let x1 = IO.print "Starting tests" in
+let x2 = IO.print (1 = 1) in
+IO.print "Done"

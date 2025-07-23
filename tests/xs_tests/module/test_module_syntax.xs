@@ -1,5 +1,5 @@
-
-(module TestModule
-  (export foo bar)
-  (define foo 42)
-  (define bar (fn (x) (* x 2))))
+module TestModule {
+  export foo, bar
+  let foo = 42
+  let bar x = x * 2
+}
