@@ -1,1 +1,2 @@
-(Int.toString 42)
+-- expect: "42"
+Int.toString 42

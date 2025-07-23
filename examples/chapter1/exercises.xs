@@ -1,43 +1,51 @@
-; Chapter 1 練習問題の解答例
+-- Chapter 1 練習問題の解答例
 
-; 必要なライブラリ関数をインポート
-(use lib/String (concat))
+-- 必要なライブラリ関数をインポート
+import "../../xs/lib/string.xs" as String
 
-; 問題1: 摂氏を華氏に変換する関数
-(let celsiusToFahrenheit (fn (c: Float)
-  (+ (* c 1.8) 32.0)))
+-- 問題1: 摂氏を華氏に変換する関数
+celsiusToFahrenheit c = c * 1.8 + 32.0
 
-; テスト
-; (celsiusToFahrenheit 0.0)   ; 32.0
-; (celsiusToFahrenheit 100.0) ; 212.0
-; (celsiusToFahrenheit 37.0)  ; 98.6
+-- テスト
+-- celsiusToFahrenheit 0.0   -- => 32.0
+-- celsiusToFahrenheit 100.0 -- => 212.0
+-- celsiusToFahrenheit 37.0  -- => 98.6
 
-; 問題2: 数値が偶数かどうかを判定する関数
-(let isEven (fn (n: Int)
-  (= (% n 2) 0)))
+-- 問題2: 数値が偶数かどうかを判定する関数
+isEven n = n % 2 = 0
 
-; テスト - 以下のコマンドで実行可能:
-; cargo run -p xs-tools --bin xsc -- run examples/chapter1/exercises.xs
-; (isEven 4)   ; true
-; (isEven 7)   ; false
-; (isEven 0)   ; true
-; (isEven -2)  ; true
+-- テスト - 以下のコマンドで実行可能:
+-- cargo run -p xs-tools --bin xsc -- run examples/chapter1/exercises.xs
 
-; 問題3: 文字列を指定回数繰り返す関数
-(rec repeatString (s: String n: Int)
-  (if (= n 0)
-      ""
-      (concat s (repeatString s (- n 1)))))
+-- 問題3: 文字列を反転する関数
+reverseString str =
+  let chars = String.toList str in
+  let reversed = reverse chars in
+  String.fromList reversed
 
-; より効率的な末尾再帰版
-(let repeatStringTail (fn (s: String n: Int)
-  (rec repeatHelper (n acc)
-    (if (= n 0)
-        acc
-        (repeatHelper (- n 1) (concat acc s))))
-  (repeatHelper n "")))
+-- 問題4: リストの最大値を求める関数
+maximum lst =
+  case lst of {
+    [] -> error "Empty list has no maximum";
+    [x] -> x;
+    h :: t -> 
+      let maxTail = maximum t in
+      if h > maxTail { h } else { maxTail }
+  }
 
-; テスト
-; (repeatString "Hi" 3)        ; "HiHiHi"
-; (repeatString "XS " 2)       ; "XS XS "
-; (repeatStringTail "!" 5)     ; "!!!!!"
+-- 問題5: フィボナッチ数列のn番目の値を求める関数
+fibonacci n =
+  if n < 2 {
+    n
+  } else {
+    fibonacci (n - 1) + fibonacci (n - 2)
+  }
+
+-- 実行例
+let test1 = celsiusToFahrenheit 0.0      -- => 32.0
+let test2 = isEven 42                     -- => true
+let test3 = isEven 43                     -- => false
+let test4 = fibonacci 10                  -- => 55
+
+-- 結果を表示
+[test1, test2, test3, test4]

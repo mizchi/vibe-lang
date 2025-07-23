@@ -1,1 +1,2 @@
-(int-to-string -123)
+-- expect: "-123"
+Int.toString (-123)

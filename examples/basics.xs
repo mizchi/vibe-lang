@@ -4,7 +4,7 @@
 10 + 20                   -- => 30
 
 -- 関数定義と適用
-(\x y -> x + y) 3 4       -- => 7
+let add = fn x = fn y = x + y in add 3 4  -- => 7
 
 -- let束縛
 let x = 42 in x           -- => 42

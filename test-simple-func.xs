@@ -1,1 +1,0 @@
-intToString 42

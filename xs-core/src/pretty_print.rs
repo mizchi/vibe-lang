@@ -61,6 +61,9 @@ impl<'a> PrettyPrinter<'a> {
             Expr::LetIn {
                 name, value, body, ..
             } => self.format_let_in(name, value, body),
+            Expr::LetRecIn {
+                name, value, body, ..
+            } => self.format_letrec_in(name, value, body),
             Expr::If {
                 cond,
                 then_expr,
@@ -241,6 +244,15 @@ impl<'a> PrettyPrinter<'a> {
     fn format_let_in(&self, name: &Ident, value: &Expr, body: &Expr) -> String {
         format!(
             "(let {} {} in {})",
+            name.0,
+            self.format_expr(value, None),
+            self.format_expr(body, None)
+        )
+    }
+
+    fn format_letrec_in(&self, name: &Ident, value: &Expr, body: &Expr) -> String {
+        format!(
+            "(letrec {} {} in {})",
             name.0,
             self.format_expr(value, None),
             self.format_expr(body, None)

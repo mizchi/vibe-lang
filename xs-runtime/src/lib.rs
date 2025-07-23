@@ -477,9 +477,24 @@ impl Interpreter {
                 Literal::String(s) => Value::String(s.clone()),
             }),
 
-            Expr::Ident(name, span) => env.lookup(name).cloned().ok_or_else(|| {
-                XsError::RuntimeError(span.clone(), format!("Undefined variable: {name}"))
-            }),
+            Expr::Ident(name, span) => {
+                // Check for builtin functions first
+                match name.0.as_str() {
+                    "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">=" => {
+                        Ok(Value::BuiltinFunction {
+                            name: name.0.clone(),
+                            arity: 2,
+                            applied_args: vec![],
+                        })
+                    }
+                    _ => {
+                        // Look up in environment
+                        env.lookup(name).cloned().ok_or_else(|| {
+                            XsError::RuntimeError(span.clone(), format!("Undefined variable: {name}"))
+                        })
+                    }
+                }
+            },
 
             Expr::List(elems, _) => {
                 let mut values = Vec::new();
@@ -1142,6 +1157,33 @@ impl Interpreter {
                     ))
                 }
             }
+            
+            Expr::LetRecIn { name, value, body, .. } => {
+                // Create recursive closure for the value
+                let closure = match value.as_ref() {
+                    Expr::Lambda { params, body: lambda_body, .. } => {
+                        let param_names = params.iter().map(|(n, _)| n.clone()).collect();
+                        Value::RecClosure {
+                            name: name.clone(),
+                            params: param_names,
+                            body: *lambda_body.clone(),
+                            env: env.clone(),
+                        }
+                    }
+                    _ => {
+                        // If value is not a lambda, just evaluate it normally
+                        // (this handles cases like recursive data structures)
+                        let val = self.eval(value, env)?;
+                        val
+                    }
+                };
+                
+                // Extend environment with the recursive binding
+                let new_env = env.extend(name.clone(), closure);
+                
+                // Evaluate body in extended environment
+                self.eval(body, &new_env)
+            }
         }
     }
 
@@ -1174,6 +1216,16 @@ impl Interpreter {
                 _ => Err(XsError::RuntimeError(
                     span.clone(),
                     "* requires arguments of the same numeric type (Int or Float)".to_string(),
+                )),
+            },
+            "==" => match (&args[0], &args[1]) {
+                (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x == y)),
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x == y)),
+                (Value::Bool(x), Value::Bool(y)) => Ok(Value::Bool(x == y)),
+                (Value::String(x), Value::String(y)) => Ok(Value::Bool(x == y)),
+                _ => Err(XsError::RuntimeError(
+                    span.clone(),
+                    "== requires arguments of the same type".to_string(),
                 )),
             },
             "/" => match (&args[0], &args[1]) {

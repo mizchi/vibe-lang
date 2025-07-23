@@ -1,1 +1,3 @@
-(string-to-int "0")
+-- Test string to integer conversion with zero
+-- expect: 0
+String.toInt "0"

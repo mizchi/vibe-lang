@@ -1,1 +1,2 @@
-(Int.eq 5 5)
+-- expect: true
+Int.eq 5 5

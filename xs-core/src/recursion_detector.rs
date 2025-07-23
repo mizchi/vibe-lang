@@ -101,6 +101,12 @@ impl<'a> RecursionVisitor<'a> {
             // Recursive let is already handled
             Expr::LetRec { .. } => {}
             
+            // LetRecIn - recursion is already handled by using LetRecIn
+            Expr::LetRecIn { value, body, .. } => {
+                self.visit_expr(value);
+                self.visit_expr(body);
+            }
+            
             // Effect-related expressions
             Expr::Constructor { .. } => {}
             Expr::Handler { .. } => {}

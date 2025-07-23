@@ -260,6 +260,15 @@ impl<'a> DependencyExtractor<'a> {
             
             // Literals, type definitions, and use statements don't have dependencies
             Expr::Literal(_, _) | Expr::TypeDef { .. } | Expr::Use { .. } => {}
+            
+            // LetRecIn - visit value in extended scope, then body
+            Expr::LetRecIn { name, value, body, .. } => {
+                self.push_scope();
+                self.add_binding(name.0.clone());
+                self.visit_expr(value, deps);
+                self.visit_expr(body, deps);
+                self.pop_scope();
+            }
         }
     }
     

@@ -1,3 +1,4 @@
+-- expect: 55
 let sumSquares = rec sumSquares n ->
   let isZero = n = 0 in
     if isZero { 0 }

@@ -1,1 +1,0 @@
-(strConcat "Hello, " "World!")

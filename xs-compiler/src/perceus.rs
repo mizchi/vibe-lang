@@ -231,6 +231,18 @@ impl PerceusTransform {
                 // TODO: Implement record update transformation
                 IrExpr::Literal(Literal::Int(0))
             }
+            
+            Expr::LetRecIn { name, value, body, .. } => {
+                // Transform recursive let binding with body
+                let value_ir = self.transform_expr(value);
+                let body_ir = self.transform_expr(body);
+                
+                IrExpr::LetRec {
+                    name: name.0.clone(),
+                    value: Box::new(value_ir),
+                    body: Box::new(body_ir),
+                }
+            }
 
         }
     }

@@ -58,11 +58,53 @@ impl<'a> Parser<'a> {
     fn parse_top_level(&mut self) -> Result<Expr, XsError> {
         match &self.current_token {
             Some((Token::Let, _)) => self.parse_let_binding(),
+            Some((Token::LetRec, _)) => self.parse_letrec_binding(),
             Some((Token::Type, _)) => self.parse_type_definition(),
             Some((Token::Data, _)) => self.parse_data_definition(),
             Some((Token::Effect, _)) => self.parse_effect_definition(),
             Some((Token::Import, _)) => self.parse_import(),
             Some((Token::Module, _)) => self.parse_module_definition(),
+            Some((Token::Symbol(name), span)) => {
+                // Look ahead to determine if this is a function definition
+                let start = span.start;
+                let name = name.clone();
+                let name_span = span.clone();
+                self.advance()?; // consume the identifier
+                
+                // Check if followed by parameters or '=' (function definition)
+                if matches!(self.current_token, Some((Token::Symbol(_), _))) ||
+                   matches!(self.current_token, Some((Token::Equals, _))) ||
+                   matches!(self.current_token, Some((Token::Colon, _))) {
+                    // This is a function definition
+                    self.parse_function_definition(name, start)
+                } else if matches!(self.current_token, Some((Token::Dot, _))) {
+                    // This is a namespace access like String.concat
+                    // Put the identifier back and parse as expression
+                    let mut expr = Expr::Ident(Ident(name), name_span);
+                    
+                    // Handle record access
+                    while matches!(self.current_token, Some((Token::Dot, _))) {
+                        self.advance()?;
+                        let field = self.parse_identifier()?;
+                        expr = Expr::RecordAccess {
+                            record: Box::new(expr),
+                            field: Ident(field),
+                            span: Span::new(start, self.position())
+                        };
+                    }
+                    
+                    // Now handle function application if any
+                    if self.is_application_start() {
+                        self.parse_remaining_application(expr)
+                    } else {
+                        Ok(expr)
+                    }
+                } else {
+                    // Not a function definition, just an identifier expression
+                    // Return the identifier and let parse_module handle the rest
+                    Ok(Expr::Ident(Ident(name), Span::new(start, self.position())))
+                }
+            }
             _ => self.parse_expression(),
         }
     }
@@ -82,6 +124,7 @@ impl<'a> Parser<'a> {
             }
             
             self.expect_token(Token::Equals)?;
+            self.skip_newlines();  // Allow newlines after '='
             let body = self.parse_expression()?;
             
             // Convert to nested lambdas
@@ -98,6 +141,7 @@ impl<'a> Parser<'a> {
             // Check for 'in' keyword
             if matches!(self.current_token, Some((Token::In, _))) {
                 self.advance()?;
+                self.skip_newlines();  // Allow newlines after 'in'
                 let in_body = self.parse_expression()?;
                 Ok(Expr::LetIn {
                     name: Ident(name),
@@ -117,11 +161,13 @@ impl<'a> Parser<'a> {
         } else {
             // Simple let binding
             self.expect_token(Token::Equals)?;
+            self.skip_newlines();  // Allow newlines after '='
             let value = self.parse_expression()?;
             
             // Check for 'in' keyword
             if matches!(self.current_token, Some((Token::In, _))) {
                 self.advance()?;
+                self.skip_newlines();  // Allow newlines after 'in'
                 let body = self.parse_expression()?;
                 Ok(Expr::LetIn {
                     name: Ident(name),
@@ -141,6 +187,84 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_letrec_binding(&mut self) -> Result<Expr, XsError> {
+        let start_span = self.expect_token(Token::LetRec)?;
+        let name = self.parse_identifier()?;
+        
+        // Check for function syntax: letrec name args = body
+        if !matches!(self.current_token, Some((Token::Equals, _))) {
+            // Function definition
+            let mut params = vec![];
+            
+            // Parse parameters
+            while !matches!(self.current_token, Some((Token::Equals, _))) {
+                params.push((Ident(self.parse_identifier()?), None));
+            }
+            
+            self.expect_token(Token::Equals)?;
+            self.skip_newlines();  // Allow newlines after '='
+            let body = self.parse_expression()?;
+            
+            // Convert to nested lambdas
+            let lambda = params.into_iter()
+                .rev()
+                .fold(body, |acc, param| {
+                    Expr::Lambda {
+                        params: vec![param],
+                        body: Box::new(acc),
+                        span: Span::new(start_span.start, self.position())
+                    }
+                });
+            
+            // Check for 'in' keyword
+            if matches!(self.current_token, Some((Token::In, _))) {
+                self.advance()?;
+                self.skip_newlines();  // Allow newlines after 'in'
+                let in_body = self.parse_expression()?;
+                Ok(Expr::LetRecIn {
+                    name: Ident(name),
+                    type_ann: None,
+                    value: Box::new(lambda),
+                    body: Box::new(in_body),
+                    span: Span::new(start_span.start, self.position())
+                })
+            } else {
+                Ok(Expr::LetRec {
+                    name: Ident(name),
+                    type_ann: None,
+                    value: Box::new(lambda),
+                    span: Span::new(start_span.start, self.position())
+                })
+            }
+        } else {
+            // Simple letrec binding
+            self.expect_token(Token::Equals)?;
+            self.skip_newlines();  // Allow newlines after '='
+            let value = self.parse_expression()?;
+            
+            // Check for 'in' keyword
+            if matches!(self.current_token, Some((Token::In, _))) {
+                self.advance()?;
+                self.skip_newlines();  // Allow newlines after 'in'
+                let body = self.parse_expression()?;
+                Ok(Expr::LetRecIn {
+                    name: Ident(name),
+                    type_ann: None,
+                    value: Box::new(value),
+                    body: Box::new(body),
+                    span: Span::new(start_span.start, self.position())
+                })
+            } else {
+                Ok(Expr::LetRec {
+                    name: Ident(name),
+                    type_ann: None,
+                    value: Box::new(value),
+                    span: Span::new(start_span.start, self.position())
+                })
+            }
+        }
+    }
+
     fn parse_expression(&mut self) -> Result<Expr, XsError> {
         self.parse_infix()
     }
@@ -151,7 +275,11 @@ impl<'a> Parser<'a> {
         // Handle infix operators
         while self.is_infix_operator() {
             let op_span = self.current_span();
-            let op = self.parse_identifier()?;
+            let op = self.parse_infix_operator()?;
+            
+            // Skip newlines after operator
+            self.skip_newlines();
+            
             let right = self.parse_pipeline()?;
             
             // First apply operator to left operand
@@ -170,6 +298,28 @@ impl<'a> Parser<'a> {
         }
         
         Ok(left)
+    }
+    
+    fn parse_infix_operator(&mut self) -> Result<String, XsError> {
+        match &self.current_token {
+            Some((Token::Symbol(s), _)) => {
+                let op = s.clone();
+                self.advance()?;
+                Ok(op)
+            }
+            Some((Token::Equals, _)) => {
+                self.advance()?;
+                Ok("=".to_string())
+            }
+            Some((Token::EqualsEquals, _)) => {
+                self.advance()?;
+                Ok("==".to_string())
+            }
+            _ => Err(XsError::ParseError(
+                self.position(),
+                format!("Expected infix operator, got {:?}", self.current_token)
+            ))
+        }
     }
 
     fn parse_pipeline(&mut self) -> Result<Expr, XsError> {
@@ -266,7 +416,9 @@ impl<'a> Parser<'a> {
             }
             Some((Token::LeftParen, _)) => {
                 self.advance()?;
+                self.skip_newlines();  // Allow newlines after '('
                 let expr = self.parse_expression()?;
+                self.skip_newlines();  // Allow newlines before ')'
                 self.expect_token(Token::RightParen)?;
                 Ok(expr)
             }
@@ -296,6 +448,9 @@ impl<'a> Parser<'a> {
             }
             Some((Token::Let, _)) => {
                 self.parse_let_binding()
+            }
+            Some((Token::LetRec, _)) => {
+                self.parse_letrec_binding()
             }
             Some((Token::Perform, span)) => {
                 let start = span.start;
@@ -335,6 +490,7 @@ impl<'a> Parser<'a> {
 
     fn parse_block_or_record(&mut self, start: usize) -> Result<Expr, XsError> {
         self.expect_token(Token::LeftBrace)?;
+        self.skip_newlines();  // Allow newlines after '{'
         
         // Peek ahead to determine if it's a record or block
         if self.is_record_syntax() {
@@ -444,35 +600,58 @@ impl<'a> Parser<'a> {
             ))
         }
         
-        // Parse parameters
+        // Parse parameters with new syntax: fn x: Type -> y: Type = body
         let mut params = Vec::new();
         
-        // Check if parameters are in parentheses
-        if matches!(self.current_token, Some((Token::LeftParen, _))) {
-            self.advance()?;
-            while !matches!(self.current_token, Some((Token::RightParen, _))) {
-                let param_name = self.parse_identifier()?;
-                let type_ann = if matches!(self.current_token, Some((Token::Colon, _))) {
-                    self.advance()?;
-                    Some(self.parse_type_expression()?)
-                } else {
-                    None
-                };
-                params.push((Ident(param_name), type_ann));
-                
-                if matches!(self.current_token, Some((Token::Comma, _))) {
-                    self.advance()?;
-                }
+        // Parse parameters until we hit '=' or '{' 
+        loop {
+            // Check if we've reached the body
+            if matches!(self.current_token, Some((Token::Equals, _))) || 
+               matches!(self.current_token, Some((Token::LeftBrace, _))) {
+                break;
             }
-            self.expect_token(Token::RightParen)?;
-        } else {
-            // Single parameter without parentheses
+            
+            // Parse parameter name
             let param_name = self.parse_identifier()?;
-            params.push((Ident(param_name), None));
+            
+            // Parse optional type annotation
+            let type_ann = if matches!(self.current_token, Some((Token::Colon, _))) {
+                self.advance()?;
+                Some(self.parse_type_expression()?)
+            } else {
+                None
+            };
+            
+            params.push((Ident(param_name), type_ann));
+            
+            // Check for '->' between parameters
+            if matches!(self.current_token, Some((Token::Arrow, _))) {
+                self.advance()?;
+                // Continue parsing more parameters
+            } else {
+                // No more parameters
+                break;
+            }
         }
         
-        self.expect_token(Token::Arrow)?;
-        let body = self.parse_expression()?;
+        // Expect '=' or '{' before body
+        let body = if matches!(self.current_token, Some((Token::Equals, _))) {
+            self.advance()?;
+            
+            // Skip newlines after equals
+            while matches!(self.current_token, Some((Token::Newline, _))) {
+                self.advance()?;
+            }
+            
+            self.parse_expression()?
+        } else if matches!(self.current_token, Some((Token::LeftBrace, _))) {
+            self.parse_block_or_record(self.position())?
+        } else {
+            return Err(XsError::ParseError(
+                self.position(),
+                "Expected '=' or '{' after function parameters".to_string()
+            ));
+        };
         
         // Create nested lambdas for multiple parameters
         let lambda = params.into_iter()
@@ -491,19 +670,8 @@ impl<'a> Parser<'a> {
     fn parse_if(&mut self, start: usize) -> Result<Expr, XsError> {
         self.expect_token(Token::If)?;
         
-        // Parse condition - it might be a complex expression
-        let mut condition = self.parse_primary()?;
-        
-        // Handle infix operators in condition
-        while self.is_infix_operator() {
-            let op = self.parse_identifier()?;
-            let right = self.parse_primary()?;
-            condition = Expr::Apply {
-                func: Box::new(Expr::Ident(Ident(op), self.current_span())),
-                args: vec![condition, right],
-                span: Span::new(start, self.position())
-            };
-        }
+        // Parse condition as a full expression
+        let condition = self.parse_expression()?;
         
         // Expect block for then branch
         if !matches!(self.current_token, Some((Token::LeftBrace, _))) {
@@ -516,18 +684,27 @@ impl<'a> Parser<'a> {
         let then_start = self.position();
         let then_expr = self.parse_block_or_record(then_start)?;
         
-        self.expect_token(Token::Else)?;
-        
-        // Else branch must also be a block
-        if !matches!(self.current_token, Some((Token::LeftBrace, _))) {
-            return Err(XsError::ParseError(
-                self.position(),
-                "Expected '{' after else".to_string()
-            ));
-        }
-        
-        let else_start = self.position();
-        let else_expr = self.parse_block_or_record(else_start)?;
+        // Check if there's an else branch
+        let else_expr = if matches!(self.current_token, Some((Token::Else, _))) {
+            self.advance()?; // consume 'else'
+            
+            // Else branch must also be a block
+            if !matches!(self.current_token, Some((Token::LeftBrace, _))) {
+                return Err(XsError::ParseError(
+                    self.position(),
+                    "Expected '{' after else".to_string()
+                ));
+            }
+            
+            let else_start = self.position();
+            self.parse_block_or_record(else_start)?
+        } else {
+            // No else branch - return unit (empty record)
+            Expr::RecordLiteral {
+                fields: vec![],
+                span: Span::new(self.position(), self.position())
+            }
+        };
         
         Ok(Expr::If {
             cond: Box::new(condition),
@@ -590,8 +767,22 @@ impl<'a> Parser<'a> {
                 let span = span.clone();
                 self.advance()?;
                 
+                // Check for cons pattern (x :: xs)
+                if matches!(self.current_token, Some((Token::DoubleColon, _))) {
+                    self.advance()?; // consume ::
+                    let tail_pattern = self.parse_pattern()?;
+                    // Use Constructor pattern for cons
+                    Ok(Pattern::Constructor {
+                        name: Ident("::".to_string()),
+                        patterns: vec![
+                            Pattern::Variable(Ident(name), span.clone()),
+                            tail_pattern
+                        ],
+                        span
+                    })
+                }
                 // Check for constructor pattern
-                if self.is_pattern_continuation() {
+                else if self.is_pattern_continuation() {
                     let mut patterns = vec![];
                     while self.is_pattern_continuation() {
                         patterns.push(self.parse_pattern()?);
@@ -738,7 +929,60 @@ impl<'a> Parser<'a> {
             span: Span::new(start, self.position())
         })
     }
-    
+
+    fn parse_function_definition(&mut self, name: String, start: usize) -> Result<Expr, XsError> {
+        // Parse parameters
+        let mut params = Vec::new();
+        
+        // Parse parameters until we hit '='
+        while !matches!(self.current_token, Some((Token::Equals, _))) {
+            let param_name = self.parse_identifier()?;
+            
+            // Parse optional type annotation
+            let type_ann = if matches!(self.current_token, Some((Token::Colon, _))) {
+                self.advance()?;
+                Some(self.parse_type_expression()?)
+            } else {
+                None
+            };
+            
+            params.push((Ident(param_name), type_ann));
+            
+            // Check for '->' between parameters
+            if matches!(self.current_token, Some((Token::Arrow, _))) {
+                self.advance()?;
+            }
+        }
+        
+        self.expect_token(Token::Equals)?;
+        
+        // Skip newlines after equals
+        while matches!(self.current_token, Some((Token::Newline, _))) {
+            self.advance()?;
+        }
+        
+        let body = self.parse_expression()?;
+        
+        // Create nested lambdas for multiple parameters
+        let lambda = params.into_iter()
+            .rev()
+            .fold(body, |acc, param| {
+                Expr::Lambda {
+                    params: vec![param],
+                    body: Box::new(acc),
+                    span: Span::new(start, self.position())
+                }
+            });
+        
+        // Create a Let binding for the function
+        Ok(Expr::Let {
+            name: Ident(name),
+            type_ann: None,
+            value: Box::new(lambda),
+            span: Span::new(start, self.position())
+        })
+    }
+
     fn parse_handler(&mut self, start: usize) -> Result<Expr, XsError> {
         self.expect_token(Token::Handler)?;
         
@@ -1096,6 +1340,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_module_path(&mut self) -> Result<String, XsError> {
+        // Check if it's a string literal (file path)
+        if let Some((Token::String(path), _)) = &self.current_token {
+            let path = path.clone();
+            self.advance()?;
+            return Ok(path);
+        }
+        
+        // Otherwise parse as dotted identifier
         let mut path = self.parse_identifier()?;
         
         while matches!(self.current_token, Some((Token::Dot, _))) {
@@ -1138,7 +1390,6 @@ impl<'a> Parser<'a> {
             Some((Token::String(_), _)) |
             Some((Token::Symbol(_), _)) |
             Some((Token::LeftParen, _)) |
-            Some((Token::LeftBrace, _)) |
             Some((Token::LeftBracket, _)) |
             Some((Token::Fn, _)) |
             Some((Token::Backslash, _)) |
@@ -1167,9 +1418,11 @@ impl<'a> Parser<'a> {
         match &self.current_token {
             Some((Token::Symbol(s), _)) => {
                 matches!(s.as_str(), "+" | "-" | "*" | "/" | "%" | 
-                        "<" | ">" | "<=" | ">=" | "==" | "!=" |
+                        "<" | ">" | "<=" | ">=" | "!=" |
                         "&&" | "||" | "++")
             }
+            Some((Token::Equals, _)) => true,  // Handle '=' as infix operator
+            Some((Token::EqualsEquals, _)) => true,  // Handle '==' as infix operator
             _ => false
         }
     }
@@ -1223,5 +1476,24 @@ impl<'a> Parser<'a> {
             .as_ref()
             .map(|(_, span)| span.clone())
             .unwrap_or(Span::new(0, 0))
+    }
+    
+    fn skip_newlines(&mut self) {
+        while matches!(self.current_token, Some((Token::Newline, _))) {
+            let _ = self.advance();
+        }
+    }
+    
+    fn parse_remaining_application(&mut self, mut expr: Expr) -> Result<Expr, XsError> {
+        while self.is_application_start() {
+            let arg = self.parse_primary()?;
+            let span_start = expr.span().start;
+            expr = Expr::Apply {
+                func: Box::new(expr),
+                args: vec![arg],
+                span: Span::new(span_start, self.position())
+            };
+        }
+        Ok(expr)
     }
 }

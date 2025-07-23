@@ -1,1 +1,2 @@
-(int-to-string 0)
+-- expect: "0"
+Int.toString 0

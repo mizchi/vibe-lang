@@ -69,6 +69,13 @@ impl Default for TypeEnv {
             ),
         );
         env.add_builtin(
+            "==",
+            Type::Function(
+                Box::new(num_var()),
+                Box::new(Type::Function(Box::new(num_var()), Box::new(Type::Bool))),
+            ),
+        );
+        env.add_builtin(
             "/",
             Type::Function(
                 Box::new(num_var()),
@@ -946,6 +953,33 @@ impl TypeChecker {
                     }
                     _ => Err("Cannot update fields on non-record type".to_string())
                 }
+            }
+            
+            Expr::LetRecIn { name, type_ann, value, body, .. } => {
+                // Similar to LetRec but with a body expression
+                let value_type = if let Some(ann) = type_ann {
+                    ann.clone()
+                } else {
+                    self.fresh_var()
+                };
+                
+                // Add name to environment for recursive calls
+                env.push_scope();
+                env.add_binding(name.0.clone(), TypeScheme::mono(value_type.clone()));
+                
+                // Type check the value
+                let inferred_type = self.check(value, env)?;
+                self.unify(&value_type, &inferred_type)?;
+                
+                // Update binding with generalized type
+                let gen_scheme = self.generalize(&inferred_type, env);
+                env.add_binding(name.0.clone(), gen_scheme);
+                
+                // Type check the body
+                let body_type = self.check(body, env)?;
+                env.pop_scope();
+                
+                Ok(body_type)
             }
         }
     }

@@ -1,56 +1,56 @@
-; XS Shell Pipeline Functions
-; Provides shell-style pipeline operations for the REPL
+-- XS Shell Pipeline Functions
+-- Provides shell-style pipeline operations for the REPL
 
-; Pipe operator - connects two operations
-(let pipe (fn (input op) 
-  (op input)))
+-- Pipe operator - connects two operations
+let pipe = \input op -> 
+  op input
 
-; List all definitions
-(let definitions (fn () 
-  (builtinDefinitions)))
+-- List all definitions
+let definitions = \() -> 
+  builtinDefinitions
 
-; List shorthand
-(let ls definitions)
+-- List shorthand
+let ls = definitions
 
-; Filter definitions by a predicate
-(let filter (fn (field value)
-  (fn (defs)
-    (builtinFilter defs field value))))
+-- Filter definitions by a predicate
+let filter = \field value ->
+  \defs ->
+    builtinFilter defs field value
 
-; Select specific fields from definitions
-(let select (fn fields
-  (fn (defs)
-    (builtinSelect defs fields))))
+-- Select specific fields from definitions
+let select = \fields ->
+  \defs ->
+    builtinSelect defs fields
 
-; Sort definitions by a field
-(let sort (fn (field)
-  (fn (defs)
-    (builtinSort defs field false))))
+-- Sort definitions by a field
+let sort = \field ->
+  \defs ->
+    builtinSort defs field false
 
-; Sort definitions by a field in descending order
-(let sortDesc (fn (field)
-  (fn (defs)
-    (builtinSort defs field true))))
+-- Sort definitions by a field in descending order
+let sortDesc = \field ->
+  \defs ->
+    builtinSort defs field true
 
-; Take first n items
-(let take (fn (n)
-  (fn (items)
-    (builtinTake items n))))
+-- Take first n items
+let take = \n ->
+  \items ->
+    builtinTake items n
 
-; Group definitions by a field
-(let groupBy (fn (field)
-  (fn (defs)
-    (builtinGroupBy defs field))))
+-- Group definitions by a field
+let groupBy = \field ->
+  \defs ->
+    builtinGroupBy defs field
 
-; Count items
-(let count (fn (items)
-  (builtinCount items)))
+-- Count items
+let count = \items ->
+  builtinCount items
 
-; Search definitions with query
-(let search (fn (query)
-  (builtinSearch query)))
+-- Search definitions with query
+let search = \query ->
+  builtinSearch query
 
-; Example pipeline operations:
-; (pipe (definitions) (filter "kind" "function"))
-; (pipe (pipe (definitions) (filter "kind" "function")) (sort "name"))
-; (pipe (search "type:Int") (take 5))
+-- Example pipeline operations:
+-- pipe (definitions) (filter "kind" "function")
+-- pipe (pipe (definitions) (filter "kind" "function")) (sort "name")
+-- pipe (search "type:Int") (take 5)

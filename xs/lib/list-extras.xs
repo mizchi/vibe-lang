@@ -1,34 +1,42 @@
-;; Additional list operations for XS standard library
+-- Additional list operations for XS standard library
 
-;; reverse - reverses a list
-(let reverse (fn (lst)
-  (let reverseHelper (rec reverseHelper (lst acc)
-    (if (null? lst)
-        acc
-        (reverseHelper (cdr lst) (cons (car lst) acc)))) in
-  (reverseHelper lst (list)))) in
+-- reverse - reverses a list (using helper function)
+reverseHelper lst acc =
+  case lst of {
+    [] -> acc;
+    h :: t -> reverseHelper t (cons h acc)
+  }
 
-;; append - concatenates two lists
-(let append (rec append (xs ys)
-  (if (null? xs)
-      ys
-      (cons (car xs) (append (cdr xs) ys)))) in
+reverse lst = reverseHelper lst []
 
-;; take - takes first n elements from a list
-(let take (rec take (n lst)
-  (if (= n 0)
-      (list)
-      (if (null? lst)
-          (list)
-          (cons (car lst) (take (- n 1) (cdr lst)))))) in
+-- append - concatenates two lists  
+append xs ys =
+  case xs of {
+    [] -> ys;
+    h :: t -> cons h (append t ys)
+  }
 
-;; drop - drops first n elements from a list
-(let drop (rec drop (n lst)
-  (if (= n 0)
-      lst
-      (if (null? lst)
-          (list)
-          (drop (- n 1) (cdr lst))))) in
+-- take - takes first n elements from a list
+take n lst =
+  if n = 0 {
+    []
+  } else {
+    case lst of {
+      [] -> [];
+      h :: t -> cons h (take (n - 1) t)
+    }
+  }
 
-;; Export all functions
-(list reverse append take drop)))))
+-- drop - drops first n elements from a list
+drop n lst =
+  if n = 0 {
+    lst
+  } else {
+    case lst of {
+      [] -> [];
+      h :: t -> drop (n - 1) t
+    }
+  }
+
+-- Export all functions
+[reverse, append, take, drop]

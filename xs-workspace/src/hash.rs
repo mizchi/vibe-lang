@@ -374,6 +374,20 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
                 hash_expr(hasher, expr);
             }
         }
+        
+        Expr::LetRecIn { name, type_ann, value, body, .. } => {
+            hasher.update(b"letrec_in");
+            hasher.update(name.0.as_bytes());
+            hasher.update(b"\0");
+            if let Some(t) = type_ann {
+                hasher.update(b"1");
+                hash_type(hasher, t);
+            } else {
+                hasher.update(b"0");
+            }
+            hash_expr(hasher, value);
+            hash_expr(hasher, body);
+        }
     }
 }
 

@@ -79,6 +79,13 @@ pub enum Expr {
         body: Box<Expr>,
         span: Span,
     },
+    LetRecIn {
+        name: Ident,
+        type_ann: Option<Type>,
+        value: Box<Expr>,
+        body: Box<Expr>,
+        span: Span,
+    },
     Rec {
         name: Ident,
         params: Vec<(Ident, Option<Type>)>,
@@ -214,6 +221,7 @@ impl Expr {
             Expr::Let { span, .. } => span,
             Expr::LetRec { span, .. } => span,
             Expr::LetIn { span, .. } => span,
+            Expr::LetRecIn { span, .. } => span,
             Expr::Rec { span, .. } => span,
             Expr::Lambda { span, .. } => span,
             Expr::If { span, .. } => span,

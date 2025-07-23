@@ -1,3 +1,4 @@
+-- expect: 120
 let factorial = rec factorial n ->
   let isZero = n = 0 in
     if isZero { 1 }

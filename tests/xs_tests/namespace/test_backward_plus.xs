@@ -1,1 +1,3 @@
-(+ 10 20)
+-- Test backward compatibility for + operator
+-- expect: 30
+10 + 20

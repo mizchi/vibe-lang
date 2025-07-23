@@ -1,1 +1,0 @@
-((Int.toString) 42)

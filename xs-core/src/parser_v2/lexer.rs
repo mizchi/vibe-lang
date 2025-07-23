@@ -21,6 +21,7 @@ pub enum Token {
     
     // Keywords (lowerCamelCase style)
     Let,
+    LetRec,
     In,
     Fn,
     If,
@@ -42,6 +43,7 @@ pub enum Token {
     
     // Operators
     Equals,         // =
+    EqualsEquals,   // ==
     Arrow,          // ->
     FatArrow,       // =>
     Pipe,           // |
@@ -138,8 +140,14 @@ impl<'a> Lexer<'a> {
                         Ok(Some((Token::FatArrow, Span::new(start, self.position))))
                     }
                     '=' => {
-                        self.advance();
-                        Ok(Some((Token::Equals, Span::new(start, self.position))))
+                        if self.peek_next() == Some('=') {
+                            self.advance();
+                            self.advance();
+                            Ok(Some((Token::EqualsEquals, Span::new(start, self.position))))
+                        } else {
+                            self.advance();
+                            Ok(Some((Token::Equals, Span::new(start, self.position))))
+                        }
                     }
                     '-' if self.peek_next() == Some('>') => {
                         self.advance();
@@ -429,6 +437,7 @@ impl<'a> Lexer<'a> {
 
         let token = match value.as_str() {
             "let" => Token::Let,
+            "letrec" => Token::LetRec,
             "in" => Token::In,
             "fn" => Token::Fn,
             "if" => Token::If,
