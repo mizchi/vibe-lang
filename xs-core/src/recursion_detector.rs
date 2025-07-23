@@ -160,7 +160,7 @@ mod tests {
     use crate::{Literal, Span};
 
     fn parse_and_check(code: &str, name: &str) -> bool {
-        let expr = crate::parser::parse(code).unwrap();
+        let expr = crate::parser::parse_legacy(code).unwrap();
         is_recursive(&Ident(name.to_string()), &expr)
     }
 

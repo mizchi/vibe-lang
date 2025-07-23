@@ -21,7 +21,7 @@ mod tests {
         assert!(effects.is_pure());
 
         // Lambda creation is pure
-        let lambda = parse("(fn (x) x)").unwrap();
+        let lambda = parse("fn x -> x").unwrap();
         let effects = ctx.infer_effects(&lambda).unwrap();
         assert!(effects.is_pure());
     }
@@ -31,7 +31,7 @@ mod tests {
         let mut ctx = EffectContext::new();
 
         // print has IO effect
-        let print_expr = parse(r#"(print "hello")"#).unwrap();
+        let print_expr = parse(r#"print "hello""#).unwrap();
         let effects = ctx.infer_effects(&print_expr).unwrap();
         match effects {
             EffectRow::Concrete(set) => {
@@ -46,13 +46,7 @@ mod tests {
         let mut ctx = EffectContext::new();
 
         // Let-in sequences effects
-        let let_in = parse(
-            r#"
-            (let x (print "hello") in
-              (print "world"))
-        "#,
-        )
-        .unwrap();
+        let let_in = parse(r#"let x = print "hello" in print "world""#).unwrap();
         let effects = ctx.infer_effects(&let_in).unwrap();
         match effects {
             EffectRow::Concrete(set) => {
@@ -68,11 +62,11 @@ mod tests {
 
         // If combines effects from all branches
         let if_expr = parse(
-            r#"
-            (if true
-              (print "yes")
-              (error "no"))
-        "#,
+            r#"if true {
+    print "yes"
+  } else {
+    error "no"
+  }"#,
         )
         .unwrap();
         let effects = ctx.infer_effects(&if_expr).unwrap();

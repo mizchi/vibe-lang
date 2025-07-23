@@ -1,1 +1,1 @@
-(List.cons 1 (cons 2 (cons 3 (list))))
+List.cons 1 (cons 2 (cons 3 []))

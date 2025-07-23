@@ -28,25 +28,19 @@ pub enum Command {
     Parse {
         /// The XS file to parse
         file: PathBuf,
-        /// Use new parser (parser_v2)
+        /// Use legacy S-expression parser
         #[arg(long)]
-        new_parser: bool,
+        legacy: bool,
     },
     /// Type check a file
     Check {
         /// The XS file to type check
         file: PathBuf,
-        /// Use new parser (parser_v2)
-        #[arg(long)]
-        new_parser: bool,
     },
     /// Run a file
     Run {
         /// The XS file to run
         file: PathBuf,
-        /// Use new parser (parser_v2)
-        #[arg(long)]
-        new_parser: bool,
     },
     /// Run tests in a file
     Test {
@@ -231,24 +225,22 @@ pub fn run_cli() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Parse { file, new_parser } => {
+        Command::Parse { file, legacy } => {
             let source = fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-            let parse_result = if new_parser {
-                // Use parser_v2
-                use xs_core::parser_v2::Parser;
-                Parser::new(&source).and_then(|mut p| p.parse())
+            let parse_result = if legacy {
+                use xs_core::parser::parse_legacy;
+                parse_legacy(&source)
             } else {
-                // Use original parser
                 parse(&source)
             };
 
             match parse_result {
                 Ok(expr) => {
                     println!("{}", "Parse successful!".green());
-                    if new_parser {
-                        println!("{}", "(Using new parser)".dimmed());
+                    if legacy {
+                        println!("{}", "(Using legacy S-expression parser)".dimmed());
                     }
                     println!("{expr:#?}");
                 }
@@ -259,24 +251,14 @@ pub fn run_cli() -> Result<()> {
             }
         }
 
-        Command::Check { file, new_parser } => {
+        Command::Check { file } => {
             let source = fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-            let parse_result = if new_parser {
-                use xs_core::parser_v2::Parser;
-                Parser::new(&source).and_then(|mut p| p.parse())
-            } else {
-                parse(&source)
-            };
-
-            match parse_result {
+            match parse(&source) {
                 Ok(expr) => match type_check(&expr) {
                     Ok(ty) => {
                         println!("{}", "Type check successful!".green());
-                        if new_parser {
-                            println!("{}", "(Using new parser)".dimmed());
-                        }
                         println!("Type: {}", format_type(&ty));
                     }
                     Err(e) => {
@@ -291,26 +273,16 @@ pub fn run_cli() -> Result<()> {
             }
         }
 
-        Command::Run { file, new_parser } => {
+        Command::Run { file } => {
             let source = fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-            let parse_result = if new_parser {
-                use xs_core::parser_v2::Parser;
-                Parser::new(&source).and_then(|mut p| p.parse())
-            } else {
-                parse(&source)
-            };
-
             // Parse and type check to get effects
-            match parse_result {
+            match parse(&source) {
                 Ok(expr) => {
                     // Type check
                     match type_check(&expr) {
                         Ok(_ty) => {
-                            if new_parser {
-                                println!("{}", "(Using new parser)".dimmed());
-                            }
                             // Run without permission checks
                             use xs_runtime::Interpreter;
                             use xs_core::{Environment, BuiltinRegistry, Value, Ident};

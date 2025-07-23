@@ -436,6 +436,7 @@ impl<'a> Lexer<'a> {
             "with" => Token::With,
             "do" => Token::Do,
             "perform" => Token::Perform,
+            "handler" => Token::Handler,
             "module" => Token::Module,
             "import" => Token::Import,
             "export" => Token::Export,
