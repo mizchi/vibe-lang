@@ -1,11 +1,12 @@
 # XS Language - AI-Oriented Programming Language
 
-XS Language is an AI-oriented programming language designed for fast static analysis with Haskell-inspired syntax. It features a static type system with Hindley-Milner type inference, incremental compilation using Salsa framework, Perceus memory management, WebAssembly backend with GC support, and Unison-style content-addressed code storage.
+XS Language is an AI-oriented programming language designed for fast static analysis with Haskell-inspired syntax. It features a static type system with Hindley-Milner type inference, effect system for tracking side effects, incremental compilation using Salsa framework, Perceus memory management, WebAssembly backend with GC support, and Unison-style content-addressed code storage.
 
 ## 特徴
 
 - **Haskell風構文**: ブロックスコープとパイプライン演算子をサポートした読みやすい構文
 - **静的型付き**: HM型推論による型安全性の保証
+- **エフェクトシステム**: 拡張可能エフェクト（Extensible Effects）による副作用の追跡
 - **インクリメンタルコンパイル**: Salsaフレームワークによる高速な差分コンパイル
 - **Perceus GC**: 参照カウントベースの効率的なメモリ管理
 - **WebAssemblyバックエンド**: モダンなWebAssembly GCランタイムへのコンパイル
@@ -13,7 +14,8 @@ XS Language is an AI-oriented programming language designed for fast static anal
 - **統一ランタイム**: インタープリターとWebAssemblyの統一されたバックエンドインターフェース
 - **名前空間システム**: 階層的な名前空間と依存関係管理
 - **ASTコマンド**: 構造的なコード変換のためのコマンドシステム
-- **差分テスト実行**: 変更の影響を受けるテストのみを実行
+- **構造化検索**: 型・AST・依存関係による高度な検索機能
+- **セマンティック解析**: ブロックごとの権限管理とスコープ解析
 
 ## クイックスタート
 
@@ -21,14 +23,20 @@ XS Language is an AI-oriented programming language designed for fast static anal
 # ビルド
 cargo build --release
 
+# XS Shell (REPL) の起動
+cargo run -p xsh --bin xsh
+
 # プログラムの実行
-cargo run --bin xsc -- run examples/arithmetic.xs
+cargo run -p xsh --bin xsh -- run examples/arithmetic.xs
 
 # 型チェック
-cargo run --bin xsc -- check examples/lambda.xs
+cargo run -p xsh --bin xsh -- check examples/lambda.xs
 
 # AST表示
-cargo run --bin xsc -- parse examples/list.xs
+cargo run -p xsh --bin xsh -- parse examples/list.xs
+
+# テストの実行
+cargo run -p xsh --bin xsh -- test
 ```
 
 ## 言語仕様
@@ -40,8 +48,23 @@ cargo run --bin xsc -- parse examples/list.xs
 let x = 42
 let name = "Alice"
 
--- 関数定義
+-- 関数定義（従来のラムダ式）
 let double = fn x -> x * 2
+
+-- 新しい関数定義構文（型注釈付き）
+let add x:Int y:Int -> Int = x + y
+let greet name:String -> String = String.concat "Hello, " name
+
+-- 省略可能なパラメータ（Optional parameters）
+let process key:Int flag?:String -> Int = 
+  match flag {
+    None -> key
+    Some f -> key + (String.length f)
+  }
+
+-- エフェクト付き関数定義
+let readConfig path:String -> <IO> String = 
+  perform IO.readFile path
 
 -- 型アノテーション
 let x : Int = 42
@@ -56,6 +79,37 @@ cons 0 nums
 
 -- 関数適用
 double 21  -- => 42
+add 5 3    -- => 8
+process 42 (Some "verbose")  -- => 49
+process 42 None              -- => 42
+```
+
+### 省略可能なパラメータ
+
+```haskell
+-- 省略可能なパラメータは必須パラメータの後にのみ配置可能
+let config port:Int host?:String debug?:Bool -> String =
+  let hostStr = match host {
+    None -> "localhost"
+    Some h -> h
+  } in
+  let debugStr = match debug {
+    None -> "false"
+    Some true -> "true"
+    Some false -> "false"
+  } in
+    String.concat hostStr (String.concat ":" (Int.toString port))
+
+-- 使用例
+config 8080 (Some "example.com") (Some true)  -- => "example.com:8080"
+config 3000 None None                          -- => "localhost:3000"
+
+-- 型の糖衣構文: Type? は Option<Type> の短縮形
+let parse input:String default?:Int? -> Int =
+  match default {
+    None -> 0
+    Some d -> d
+  }
 ```
 
 ### 再帰関数
@@ -100,7 +154,7 @@ type Result e a =
   | Error e
   | Ok a
 
--- パターンマッチ
+-- パターンマッチ（ofキーワード不要）
 match opt {
   None -> 0
   Some x -> x
@@ -110,8 +164,37 @@ match opt {
 match lst {
   [a, b, c, ...rest] -> a + b + c  -- 最初の3要素を取得
   [x, y] -> x + y                   -- 2要素のみ
+  h :: t -> h + (length t)          -- head/tailパターン
+  [] -> 0                           -- 空リスト
   _ -> 0                            -- その他
 }
+```
+
+### レコード型
+
+```haskell
+-- レコードの定義
+let person = { name: "Alice", age: 30 }
+
+-- フィールドアクセス
+person.name  -- => "Alice"
+person.age   -- => 30
+
+-- レコードの更新（新しいレコードを作成）
+let updated = { name: "Bob", age: person.age }
+```
+
+### エフェクトシステム
+
+```haskell
+-- perform構文でエフェクトを実行
+let readFile = fn path -> perform IO (readFileContents path)
+
+-- 複数のエフェクトを持つ関数
+let processFile = fn path ->
+  let contents = perform IO (readFileContents path) in
+  let result = perform Compute (expensiveCalculation contents) in
+  perform IO (writeFile (path ++ ".out") result)
 ```
 
 ### 型システム
@@ -126,13 +209,15 @@ match lst {
 
 ```
 xs-lang-v3/
-├── xs-core/        # 言語コア（AST定義、型定義、パーサー、プリティプリンタ）
-├── xs-compiler/    # コンパイラ（型チェッカー、メモリ最適化）
-├── xs-runtime/     # ランタイム（インタープリター、評価器）
+├── xs-core/        # 言語コア（AST定義、型定義、パーサー、プリティプリンタ、エフェクト定義）
+├── xs-compiler/    # コンパイラ（型チェッカー、エフェクト推論、セマンティック解析）
+├── xs-runtime/     # ランタイム（インタープリター、評価器、エフェクトランタイム）
 ├── xs-wasm/        # WebAssemblyバックエンド（WASMコード生成、WASIサンドボックス）
 ├── xs-workspace/   # ワークスペース管理（コードベース、インクリメンタルコンパイル）
-├── xs-tools/       # CLIツール（xscコマンド、REPL、コンポーネントコマンド）
+├── xsh/            # 統合シェル・REPL（XS Shell、コマンドラインツール）
 ├── xs-test/        # テストフレームワーク
+├── xs-lsp/         # Language Server Protocol実装
+├── xs-mcp/         # Model Context Protocol実装
 └── benches/        # パフォーマンスベンチマーク
 ```
 
@@ -144,8 +229,10 @@ xs-lang-v3/
 ソースコード (Haskell風構文)
     ↓ [Parser]
 AST (抽象構文木)
-    ↓ [Type Checker]
-型付きAST
+    ↓ [Semantic Analysis]
+検証済みAST（ブロック属性付き）
+    ↓ [Type Checker + Effect Inference]
+型付きAST（エフェクト注釈付き）
     ↓ [Perceus Transform]
 TypedIR (型付き中間表現)
     ↓ [Backend (Interpreter/WebAssembly)]
@@ -278,7 +365,7 @@ let result = db.type_check_program(path); // 差分のみ再計算
 - ✅ Haskell風パーサー（parser、lowerCamelCase対応）
 - ✅ HM型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
-- ✅ CLIツール
+- ✅ 統合CLIツール (xsh)
 - ✅ Salsaインクリメンタルコンパイル
 - ✅ Perceus IR変換
 - ✅ WebAssembly GC基本実装
@@ -289,19 +376,32 @@ let result = db.type_check_program(path); // 差分のみ再計算
 - ✅ 統一ランタイムインターフェース
 - ✅ Unison風構造化コードベース
 - ✅ 階層的な名前空間システム
-- ✅ 関数単位の依存関係追跡
+- ✅ 関数単位の依存関係追跡（型定義含む）
 - ✅ ASTコマンドによる構造的変換
 - ✅ インクリメンタル型チェック
 - ✅ 差分テスト実行システム
+- ✅ 構造化検索（型・AST・依存関係による検索）
+- ✅ コンテンツアドレス型コード管理
+- ✅ ハッシュ参照 (`#abc123`)
+- ✅ バージョン指定インポート (`import Math@abc123`)
+- ✅ 型推論結果の自動埋め込み
+- ✅ エフェクトシステム（基本実装）
+- ✅ `perform` 構文
+- ✅ `==` 演算子
+- ✅ 省略可能なパラメータ (`param?:Type?`)
+- ✅ 新しい関数定義構文
 - ✅ 包括的なテストカバレッジ（76.63%）
 
-### 今後の実装予定
+### 実装中/今後の実装予定
 
-- 🚧 標準ライブラリの拡充
+- 🚧 エフェクトシステムの完成（do記法、handle/with構文）
+- 🚧 構造化シェルのパイプライン処理
+- 📋 標準ライブラリの拡充
 - 📋 最適化パス
 - 📋 デバッガー統合
-- 📋 LSP (Language Server Protocol) サポート
+- 📋 LSP (Language Server Protocol) の完全サポート
 - 📋 パッケージマネージャー
+- 📋 並列実行サポート
 
 ## パフォーマンス
 

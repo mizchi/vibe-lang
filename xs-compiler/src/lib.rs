@@ -468,6 +468,19 @@ impl TypeChecker {
                 self.unify(r1, r2)
             }
             (Type::List(e1), Type::List(e2)) => self.unify(e1, e2),
+            (Type::UserDefined { name: n1, type_params: p1 }, 
+             Type::UserDefined { name: n2, type_params: p2 }) => {
+                if n1 != n2 {
+                    Err(format!("Cannot unify different types: {} and {}", n1, n2))
+                } else if p1.len() != p2.len() {
+                    Err(format!("Type parameter count mismatch for {}: {} vs {}", n1, p1.len(), p2.len()))
+                } else {
+                    for (param1, param2) in p1.iter().zip(p2.iter()) {
+                        self.unify(param1, param2)?;
+                    }
+                    Ok(())
+                }
+            }
             _ => {
                 let error_msg = match (&t1, &t2) {
                     (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
@@ -776,6 +789,9 @@ impl TypeChecker {
                     Expr::Lambda { body, .. } => {
                         xs_core::recursion_detector::is_recursive(name, body)
                     }
+                    Expr::FunctionDef { body, .. } => {
+                        xs_core::recursion_detector::is_recursive(name, body)
+                    }
                     _ => false,
                 };
 
@@ -847,6 +863,45 @@ impl TypeChecker {
                 Ok(body_type)
             }
 
+            Expr::FunctionDef { params, return_type, effects, body, .. } => {
+                // Handle FunctionDef similar to Lambda but with more information
+                env.push_scope();
+                let mut param_types = Vec::new();
+                
+                for param in params {
+                    let param_type = if let Some(typ) = &param.typ {
+                        typ.clone()
+                    } else {
+                        self.fresh_var()
+                    };
+                    param_types.push(param_type.clone());
+                    env.add_binding(param.name.0.clone(), TypeScheme::mono(param_type));
+                }
+                
+                let body_type = self.check(body, env)?;
+                env.pop_scope();
+                
+                // Check return type if specified
+                if let Some(ret_type) = return_type {
+                    self.unify(&body_type, ret_type)?;
+                }
+                
+                // Build function type
+                let mut result_type = body_type;
+                for param_type in param_types.into_iter().rev() {
+                    if effects.is_some() {
+                        result_type = Type::FunctionWithEffect {
+                            from: Box::new(param_type),
+                            to: Box::new(result_type),
+                            effects: effects.clone().unwrap(),
+                        };
+                    } else {
+                        result_type = Type::Function(Box::new(param_type), Box::new(result_type));
+                    }
+                }
+                
+                Ok(result_type)
+            }
             Expr::Lambda { params, body, .. } => {
                 env.push_scope();
                 let mut param_types = Vec::new();
@@ -1041,9 +1096,13 @@ impl TypeChecker {
                 Ok(Type::Int)
             }
 
-            Expr::Import { .. } => {
+            Expr::Import { module_name, hash, .. } => {
                 // TODO: Implement import type checking
-                Ok(Type::Int)
+                // For hash-based imports, we need to resolve the specific version
+                if let Some(_h) = hash {
+                    // TODO: Resolve module at specific hash
+                }
+                Ok(Type::Unit)
             }
 
             Expr::Use { path, items, .. } => {
@@ -1288,6 +1347,12 @@ impl TypeChecker {
                 // For now, just return the expression type
                 Ok(expr_type)
             }
+            
+            Expr::HashRef { hash: _, .. } => {
+                // Hash references require runtime lookup, so we return a fresh type variable
+                // The actual type will be determined when the hash is resolved
+                Ok(self.fresh_var())
+            }
         }
     }
 
@@ -1344,8 +1409,13 @@ impl TypeChecker {
                         Err(":: constructor expects exactly 2 patterns".to_string())
                     }
                 } else {
-                    // For other constructors, look up in type definitions
-                    // TODO: Implement general constructor pattern checking
+                    // For other constructors, check nested patterns
+                    // TODO: Implement proper constructor type lookup
+                    for pattern in patterns {
+                        // For now, use a fresh type variable for each pattern
+                        let pattern_type = self.fresh_var();
+                        self.check_pattern(pattern, &pattern_type, env)?;
+                    }
                     Ok(())
                 }
             }

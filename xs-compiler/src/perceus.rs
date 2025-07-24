@@ -67,6 +67,20 @@ impl PerceusTransform {
                 }
             }
 
+            Expr::FunctionDef { params, body, .. } => {
+                // Convert FunctionDef to Lambda in IR
+                let param_names: Vec<String> = params.iter()
+                    .map(|param| param.name.0.clone())
+                    .collect();
+
+                let ir_body = self.transform_expr(body);
+
+                IrExpr::Lambda {
+                    params: param_names,
+                    body: Box::new(ir_body),
+                }
+            }
+
             Expr::Lambda { params, body, .. } => {
                 let param_names: Vec<String> =
                     params.iter().map(|(Ident(name), _)| name.clone()).collect();
@@ -148,8 +162,12 @@ impl PerceusTransform {
                 IrExpr::Literal(Literal::Int(0))
             }
 
-            Expr::Import { .. } => {
+            Expr::Import { hash, .. } => {
                 // Imports are resolved at compile time
+                // Hash-based imports need special handling
+                if let Some(_h) = hash {
+                    // TODO: Resolve module at specific hash
+                }
                 IrExpr::Literal(Literal::Int(0))
             }
 
@@ -246,6 +264,12 @@ impl PerceusTransform {
             
             Expr::HandleExpr { .. } => {
                 // TODO: Implement handle expression transformation
+                IrExpr::Literal(Literal::Int(0))
+            }
+            
+            Expr::HashRef { .. } => {
+                // Hash references are resolved before compilation
+                // This should never be reached if the shell properly resolves them
                 IrExpr::Literal(Literal::Int(0))
             }
 

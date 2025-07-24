@@ -48,6 +48,8 @@ pub enum Token {
     EqualsEquals,   // ==
     Arrow,          // ->
     FatArrow,       // =>
+    LessThan,       // <
+    GreaterThan,    // >
     LeftArrow,      // <-
     Pipe,           // |
     PipeForward,    // |>
@@ -484,7 +486,21 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        Ok(Some((Token::Symbol(value), Span::new(start, self.position))))
+        // Map specific operators to tokens
+        let token = match value.as_str() {
+            "=" => Token::Equals,
+            "==" => Token::EqualsEquals,
+            "->" => Token::Arrow,
+            "=>" => Token::FatArrow,
+            "<" => Token::LessThan,
+            ">" => Token::GreaterThan,
+            "<-" => Token::LeftArrow,
+            "|" => Token::Pipe,
+            "|>" => Token::PipeForward,
+            _ => Token::Symbol(value),
+        };
+        
+        Ok(Some((token, Span::new(start, self.position))))
     }
 }
 

@@ -154,6 +154,14 @@ impl<'a> RecursionVisitor<'a> {
                     self.visit_expr(value);
                 }
             }
+            
+            Expr::FunctionDef { body, .. } => {
+                self.visit_expr(body);
+            }
+            
+            Expr::HashRef { .. } => {
+                // Hash references don't contain recursive references
+            }
         }
     }
 

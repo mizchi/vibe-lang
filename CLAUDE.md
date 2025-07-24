@@ -45,18 +45,33 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 - 型安全性を保証する変換
 - AIやツールからの予測可能な操作
 
+### 8. エフェクトシステム（実装中）
+- 拡張可能エフェクト（Extensible Effects）
+- 関数レベルでのエフェクト推論
+- `perform`構文によるエフェクト実行
+- `handle/with`構文によるエフェクトハンドラー（実装予定）
+- IO、State、Exception、Asyncなどの組み込みエフェクト
+
+### 9. セマンティック解析フェーズ
+- パース後の構造検証
+- ブロックごとのエフェクト権限管理
+- スコープとキャプチャの解析
+- 特殊フォーム（match、do、handle）の検証
+
 ## アーキテクチャ
 
 詳細なモジュール責務分担については[ARCHITECTURE.md](./ARCHITECTURE.md)を参照してください。
 
 ### crateの構成
-- **xs-core**: 言語コア（AST定義、型定義、パーサー、プリティプリンタ）
-- **xs-compiler**: コンパイラ（型チェッカー、メモリ最適化）
-- **xs-runtime**: ランタイム（インタープリター、評価器）
+- **xs-core**: 言語コア（AST定義、型定義、パーサー、プリティプリンタ、エフェクト定義）
+- **xs-compiler**: コンパイラ（型チェッカー、エフェクト推論、セマンティック解析、メモリ最適化）
+- **xs-runtime**: ランタイム（インタープリター、評価器、エフェクトランタイム）
 - **xs-wasm**: WebAssemblyバックエンド（WASMコード生成、WASIサンドボックス）
-- **xs-workspace**: ワークスペース管理（コードベース、インクリメンタルコンパイル）
-- **xs-tools**: CLIツール（xscコマンド、REPL、コンポーネントコマンド）
+- **xs-workspace**: ワークスペース管理（コードベース、インクリメンタルコンパイル、ブロック属性管理）
+- **xsh**: 統合シェル・REPL（XS Shell、コマンドラインツール）
 - **xs-test**: テストフレームワーク
+- **xs-lsp**: Language Server Protocol実装（エディタ統合）
+- **xs-mcp**: Model Context Protocol実装（AI統合）
 
 ### メタデータ管理
 - ASTとは別にコメントや一時変数ラベルを管理
@@ -106,7 +121,7 @@ rec quicksort lst =
 letRec even n = if (eq n 0) { true } else { odd (n - 1) }
 letRec odd n = if (eq n 0) { false } else { even (n - 1) }
 
--- パターンマッチング
+-- パターンマッチング（ofキーワード不要）
 match xs {
   [] -> 0                        -- 空リスト
   [h] -> h                       -- 単一要素
@@ -171,6 +186,20 @@ let city = company.address.city
 
 -- 関数的な更新（新しいレコードを作成）
 let updatedPerson = { name: "Bob", age: person.age }
+
+-- エフェクトの使用例
+-- perform構文でエフェクトを実行
+let greet = fn name -> perform IO ("Hello, " ++ name)
+
+-- handle構文でエフェクトを処理（実装予定）
+handle {
+  x <- perform State.get;
+  perform State.put (x + 1);
+  perform State.get
+} {
+  State.get () k -> k 0 0    -- 初期状態0を返す
+  State.put s k -> k () s    -- 状態を更新
+}
 ```
 
 ## 標準ライブラリ
@@ -195,32 +224,43 @@ let updatedPerson = { name: "Bob", age: person.age }
 - 文字列比較: strEq, strNeq
 - 文字列変換: intToString, stringToInt
 
-## XS Shell (REPL)
+## XS Shell (xsh)
 
 ### 基本コマンド
 - `help` - ヘルプ表示
 - `history [n]` - 評価履歴表示
-- `ls` - 名前付き式の一覧
-- `name <hash> <name>` - ハッシュプレフィックスで式に名前を付ける
-- `update` - 変更をコードベースにコミット
-- `edits` - 保留中の編集を表示
+- `ls [pattern]` - 名前付き式の一覧（パターンフィルタ対応）
+- `search <query>` - 型・AST・依存関係による検索
+- `find <pattern>` - 名前パターンによる検索
+- `add <name> = <expr>` - 式に名前を付けて追加
+- `view <name|hash>` - 定義の表示
+
+### 検索機能
+- `search type:Int->Int` - 型による検索
+- `search ast:match` - AST構造による検索
+- `search dependsOn:foo` - 依存関係による検索
 
 ### 使用例
 ```
 xs> let double = fn x -> x * 2
-double : Int -> Int = <closure>
-  [bac2c0f3]
+double : Int -> Int
 
 xs> double 21
-42 : Int
-  [af3d2e89]
+42
 
-xs> name bac2 double_fn
-Named double_fn : Int -> Int = <closure> [bac2c0f3]
+xs> add double_fn = fn x -> x * 2
+Added double_fn
 
-xs> update
-Updated 1 definitions:
-+ double_fn
+xs> search type:Int->Int
+Found 3 definitions:
+double : Int -> Int [bac2c0f3]
+double_fn : Int -> Int [bac2c0f3]
+inc : Int -> Int [def456ab]
+
+xs> search ast:match
+Found 2 definitions:
+quicksort : List a -> List a [abc123de]
+findFirst : (a -> Bool) -> List a -> Option a [fed987cb]
 ```
 
 ## エラーメッセージの設計
@@ -250,26 +290,41 @@ Suggestions:
 - ✅ Haskell風パーサー（ブロックスコープ、パイプライン演算子、lowerCamelCase対応）
 - ✅ HM型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
-- ✅ CLIツール (xsc parse/check/run/bench)
-- ✅ REPL (XS Shell)
+- ✅ 統合CLIツール (xsh: parse/check/run/test/bench/shell)
+- ✅ 高機能REPL (XS Shell with 検索機能)
 - ✅ コンテンツアドレス型コードベース
 - ✅ 自動カリー化と部分適用
 - ✅ 標準ライブラリ（core, list, math, string）
-- ✅ パターンマッチング
+- ✅ パターンマッチング（`::` 演算子、リストパターン）
+- ✅ レコード型（オブジェクトリテラル）
 - ✅ 代数的データ型
 - ✅ モジュールシステム（基本実装）
 - ✅ ASTメタデータ管理
 - ✅ AIフレンドリーなエラーメッセージ
 - ✅ 階層的な名前空間システム
-- ✅ 関数単位の依存関係追跡
+- ✅ 関数単位の依存関係追跡（型定義含む）
 - ✅ ASTコマンドによる構造的変換
 - ✅ インクリメンタル型チェック
 - ✅ 差分テスト実行システム
+- ✅ match構文の統一化（case/ofキーワード廃止）
+- ✅ ==演算子のサポート
+- ✅ エフェクトシステム（基本実装）
+- ✅ セマンティック解析フェーズ
+- ✅ AST/型による構造化検索
+- ✅ ハッシュ参照（`#abc123`）
+- ✅ バージョン指定インポート（`import Math@abc123`）
+- ✅ 型推論結果の自動埋め込み
+- ✅ 省略可能なパラメータ（`param?:Type?`）
+- ✅ 新しい関数定義構文（`let func x:Int y:Int -> Int = x + y`）
+- ✅ Option型の糖衣構文（`String?`）
 
 ### 開発中/計画中
-- ✅ rec内部定義の修正（letIn構文で解決）
-- 📋 Unison風テスト結果キャッシュシステム（基盤実装済み）
-- 📋 Effect System
+- 📋 do記法の完全実装
+- 📋 handle/with構文の完全実装
+- 📋 エフェクト多相性
+- 📋 統一文法の完全実装（keyword_form）
+- 📋 構造化シェルのパイプライン処理
+- 📋 実行権限システム（エフェクトベース）
 - 📋 WASIサンドボックス
 - 📋 並列実行サポート
 - 📋 より高度な型システム（GADTs、型クラスなど）
@@ -307,11 +362,11 @@ Suggestions:
 
 3. **XSコード（セルフホスティング部分）のテスト**
    ```bash
-   # デフォルトのテスト（tests/xs_tests）
-   cargo run -p cli --bin xsc -- test
+   # xshを使用したテスト実行
+   cargo run -p xsh --bin xsh -- test
    
-   # xs/ディレクトリのテスト（セルフホスティング）
-   cargo run -p cli --bin xsc -- test xs/
+   # 特定のファイルのテスト
+   cargo run -p xsh --bin xsh -- test tests/xs_tests/
    
    # または Makefile を使用
    make test-xs

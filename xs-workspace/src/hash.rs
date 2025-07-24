@@ -205,7 +205,7 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
                 hash_expr(hasher, expr);
             }
         }
-        Expr::Import { module_name, items, as_name, .. } => {
+        Expr::Import { module_name, items, as_name, hash, .. } => {
             hasher.update(b"import");
             hasher.update(module_name.0.as_bytes());
             hasher.update(b"\0");
@@ -226,6 +226,13 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             if let Some(alias) = as_name {
                 hasher.update(b"1");
                 hasher.update(alias.0.as_bytes());
+            } else {
+                hasher.update(b"0");
+            }
+            
+            if let Some(h) = hash {
+                hasher.update(b"1");
+                hasher.update(h.as_bytes());
             } else {
                 hasher.update(b"0");
             }
@@ -417,6 +424,40 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
                 hasher.update(b"\0");
                 hash_expr(hasher, body);
             }
+        }
+        
+        Expr::FunctionDef { name, params, return_type, effects, body, .. } => {
+            hasher.update(b"function_def");
+            hasher.update(name.0.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(params.len().to_le_bytes());
+            for param in params {
+                hasher.update(param.name.0.as_bytes());
+                hasher.update(b"\0");
+                if let Some(typ) = &param.typ {
+                    hasher.update(b"1");
+                    hash_type(hasher, typ);
+                } else {
+                    hasher.update(b"0");
+                }
+            }
+            if let Some(ret_type) = return_type {
+                hasher.update(b"1");
+                hash_type(hasher, ret_type);
+            } else {
+                hasher.update(b"0");
+            }
+            if let Some(eff) = effects {
+                hasher.update(b"1");
+                hasher.update(eff.to_string().as_bytes());
+            } else {
+                hasher.update(b"0");
+            }
+            hash_expr(hasher, body);
+        }
+        Expr::HashRef { hash, .. } => {
+            hasher.update(b"hashref");
+            hasher.update(hash.as_bytes());
         }
     }
 }

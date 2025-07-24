@@ -20,6 +20,7 @@ pub mod pretty_print;
 pub mod recursion_detector;
 pub mod lib_modules;
 pub mod block_attributes;
+pub mod type_annotator;
 mod types;
 mod value;
 
@@ -56,6 +57,13 @@ impl fmt::Display for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionParam {
+    pub name: Ident,
+    pub typ: Option<Type>,
+    pub is_optional: bool,  // Indicates if the parameter is optional (has ? suffix)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +129,15 @@ pub enum Expr {
         body: Box<Expr>,
         span: Span,
     },
+    // New function definition with named parameters
+    FunctionDef {
+        name: Ident,
+        params: Vec<FunctionParam>,
+        return_type: Option<Type>,
+        effects: Option<EffectRow>,
+        body: Box<Expr>,
+        span: Span,
+    },
     If {
         cond: Box<Expr>,
         then_expr: Box<Expr>,
@@ -156,6 +173,7 @@ pub enum Expr {
         module_name: Ident,
         items: Option<Vec<Ident>>, // None means import all with prefix
         as_name: Option<Ident>,    // For "import Foo as F"
+        hash: Option<String>,      // For "import Foo@abc123" - specific version
         span: Span,
     },
     Use {
@@ -222,6 +240,11 @@ pub enum Expr {
         updates: Vec<(Ident, Expr)>,
         span: Span,
     },
+    // Hash reference for content-addressed code
+    HashRef {
+        hash: String,  // Hex string of the hash
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +275,7 @@ impl Expr {
             Expr::LetRecIn { span, .. } => span,
             Expr::Rec { span, .. } => span,
             Expr::Lambda { span, .. } => span,
+            Expr::FunctionDef { span, .. } => span,
             Expr::If { span, .. } => span,
             Expr::Apply { span, .. } => span,
             Expr::Match { span, .. } => span,
@@ -272,6 +296,7 @@ impl Expr {
             Expr::RecordLiteral { span, .. } => span,
             Expr::RecordAccess { span, .. } => span,
             Expr::RecordUpdate { span, .. } => span,
+            Expr::HashRef { span, .. } => span,
         }
     }
 }

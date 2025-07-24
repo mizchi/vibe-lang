@@ -799,9 +799,13 @@ impl Interpreter {
                 Ok(result)
             }
 
-            Expr::Import { .. } => {
+            Expr::Import { module_name, hash, .. } => {
                 // Import statements don't have a runtime value
                 // TODO: Implement proper import handling
+                // For hash-based imports, we need to resolve the specific version
+                if let Some(_h) = hash {
+                    // TODO: Resolve module at specific hash
+                }
                 Ok(Value::Int(0)) // unit value
             }
 
@@ -1208,6 +1212,27 @@ impl Interpreter {
                 // TODO: Implement effect handling
                 // For now, just evaluate the expression without handling effects
                 self.eval(expr, env)
+            }
+            
+            Expr::FunctionDef { params, body, .. } => {
+                // Convert FunctionDef to a closure
+                let param_names: Vec<Ident> = params.iter()
+                    .map(|param| param.name.clone())
+                    .collect();
+                Ok(Value::Closure {
+                    params: param_names,
+                    body: (**body).clone(),
+                    env: env.clone(),
+                })
+            }
+            
+            Expr::HashRef { hash, span } => {
+                // Hash references require looking up the expression in a content-addressed store
+                // For now, return an error since we need integration with the codebase
+                Err(XsError::RuntimeError(
+                    span.clone(),
+                    format!("Hash reference #{} not implemented in interpreter yet", hash),
+                ))
             }
         }
     }

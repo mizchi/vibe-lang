@@ -32,6 +32,64 @@ impl<'a> DependencyExtractor<'a> {
         dependencies
     }
     
+    /// Extract dependencies from a type
+    pub fn extract_from_type(&mut self, typ: &xs_core::Type) -> HashSet<DefinitionHash> {
+        let mut dependencies = HashSet::new();
+        self.visit_type(typ, &mut dependencies);
+        dependencies
+    }
+    
+    /// Visit a type and extract dependencies
+    fn visit_type(&mut self, typ: &xs_core::Type, deps: &mut HashSet<DefinitionHash>) {
+        use xs_core::Type;
+        match typ {
+            Type::UserDefined { name, type_params } => {
+                // User-defined types are dependencies
+                if let Some(hash) = self.resolve_type_name(name) {
+                    deps.insert(hash);
+                }
+                // Also check type parameters
+                for param in type_params {
+                    self.visit_type(param, deps);
+                }
+            }
+            Type::Function(from, to) => {
+                self.visit_type(from, deps);
+                self.visit_type(to, deps);
+            }
+            Type::FunctionWithEffect { from, to, .. } => {
+                self.visit_type(from, deps);
+                self.visit_type(to, deps);
+                // TODO: Extract dependencies from effects
+            }
+            Type::List(elem) => {
+                self.visit_type(elem, deps);
+            }
+            Type::Record { fields } => {
+                for (_, field_type) in fields {
+                    self.visit_type(field_type, deps);
+                }
+            }
+            // Primitive types and type variables have no dependencies
+            Type::Int | Type::Float | Type::Bool | Type::String | Type::Unit | Type::Var(_) => {}
+        }
+    }
+    
+    /// Resolve a type name to its definition hash
+    fn resolve_type_name(&self, name: &str) -> Option<DefinitionHash> {
+        // Try to resolve as a type definition
+        let ident = Ident(name.to_string());
+        self.resolve_ident(&ident)
+    }
+    
+    /// Resolve a constructor to its type definition hash
+    fn resolve_constructor_type(&self, constructor_name: &Ident) -> Option<DefinitionHash> {
+        // For now, we'll try to resolve the constructor name directly
+        // In the future, we might need a more sophisticated approach
+        // that maps constructors to their type definitions
+        self.resolve_ident(constructor_name)
+    }
+    
     /// Check if a name is a local binding
     fn is_local_binding(&self, name: &str) -> bool {
         self.local_scopes.iter().any(|scope| scope.contains(name))
@@ -77,9 +135,12 @@ impl<'a> DependencyExtractor<'a> {
                 // Create new scope for lambda
                 self.push_scope();
                 
-                // Add parameters to current scope
-                for (param, _) in params {
+                // Add parameters to current scope and check type annotations
+                for (param, type_ann) in params {
                     self.add_binding(param.0.clone());
+                    if let Some(typ) = type_ann {
+                        self.visit_type(typ, deps);
+                    }
                 }
                 
                 // Visit body
@@ -89,15 +150,25 @@ impl<'a> DependencyExtractor<'a> {
                 self.pop_scope();
             }
             
-            Expr::Let { name, value, .. } => {
-                // Visit value first
+            Expr::Let { name, type_ann, value, .. } => {
+                // Check type annotation
+                if let Some(typ) = type_ann {
+                    self.visit_type(typ, deps);
+                }
+                
+                // Visit value
                 self.visit_expr(value, deps);
                 
                 // Add name to current scope for subsequent expressions
                 self.add_binding(name.0.clone());
             }
             
-            Expr::LetIn { name, value, body, .. } => {
+            Expr::LetIn { name, type_ann, value, body, .. } => {
+                // Check type annotation
+                if let Some(typ) = type_ann {
+                    self.visit_type(typ, deps);
+                }
+                
                 // Visit value
                 self.visit_expr(value, deps);
                 
@@ -112,7 +183,12 @@ impl<'a> DependencyExtractor<'a> {
                 self.pop_scope();
             }
             
-            Expr::LetRec { name, value, .. } => {
+            Expr::LetRec { name, type_ann, value, .. } => {
+                // Check type annotation
+                if let Some(typ) = type_ann {
+                    self.visit_type(typ, deps);
+                }
+                
                 // Add name to current scope before visiting value (for recursion)
                 self.add_binding(name.0.clone());
                 
@@ -120,16 +196,24 @@ impl<'a> DependencyExtractor<'a> {
                 self.visit_expr(value, deps);
             }
             
-            Expr::Rec { name, params, body, .. } => {
+            Expr::Rec { name, params, return_type, body, .. } => {
+                // Check return type annotation
+                if let Some(typ) = return_type {
+                    self.visit_type(typ, deps);
+                }
+                
                 // Create new scope
                 self.push_scope();
                 
                 // Add function name for recursion
                 self.add_binding(name.0.clone());
                 
-                // Add parameters
-                for (param, _) in params {
+                // Add parameters and check their type annotations
+                for (param, type_ann) in params {
                     self.add_binding(param.0.clone());
+                    if let Some(typ) = type_ann {
+                        self.visit_type(typ, deps);
+                    }
                 }
                 
                 // Visit body
@@ -172,7 +256,12 @@ impl<'a> DependencyExtractor<'a> {
                 }
             }
             
-            Expr::Constructor { args, .. } => {
+            Expr::Constructor { name, args, .. } => {
+                // Constructor itself might be a dependency if it's from a user-defined type
+                if let Some(hash) = self.resolve_constructor_type(name) {
+                    deps.insert(hash);
+                }
+                
                 for arg in args {
                     self.visit_expr(arg, deps);
                 }
@@ -285,6 +374,42 @@ impl<'a> DependencyExtractor<'a> {
                 }
                 if let Some((_, body)) = return_handler {
                     self.visit_expr(body, deps);
+                }
+            }
+            
+            Expr::FunctionDef { params, return_type, effects: _, body, .. } => {
+                // Check return type annotation
+                if let Some(typ) = return_type {
+                    self.visit_type(typ, deps);
+                }
+                
+                // Create new scope for function parameters
+                self.push_scope();
+                
+                // Add parameters to current scope and check their types
+                for param in params {
+                    self.add_binding(param.name.0.clone());
+                    if let Some(typ) = &param.typ {
+                        self.visit_type(typ, deps);
+                    }
+                }
+                
+                // Visit body
+                self.visit_expr(body, deps);
+                
+                // Pop scope
+                self.pop_scope();
+            }
+            
+            Expr::HashRef { hash, .. } => {
+                // Hash references directly reference content by hash
+                // Convert hex string to DefinitionHash if valid
+                if let Ok(hash_bytes) = hex::decode(hash) {
+                    if hash_bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&hash_bytes);
+                        deps.insert(DefinitionHash(arr));
+                    }
                 }
             }
         }

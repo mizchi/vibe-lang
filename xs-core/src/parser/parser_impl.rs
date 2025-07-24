@@ -126,52 +126,162 @@ impl<'a> Parser<'a> {
             // Function definition
             let mut params = vec![];
             
-            // Parse parameters with optional type annotations
+            // Parse parameters with new syntax: name:Type or name?:Type?
             while !matches!(self.current_token, Some((Token::Equals, _))) && 
-                  !matches!(self.current_token, Some((Token::Colon, _))) {
-                // Check if this is a parenthesized parameter with type annotation
-                if matches!(self.current_token, Some((Token::LeftParen, _))) {
-                    self.advance()?; // consume '('
-                    let param_name = self.parse_identifier()?;
-                    
-                    // Check for type annotation
-                    let param_type = if matches!(self.current_token, Some((Token::Colon, _))) {
-                        self.advance()?; // consume ':'
-                        Some(self.parse_type_expression()?)
+                  !matches!(self.current_token, Some((Token::Arrow, _))) {
+                let param_name = self.parse_identifier()?;
+                
+                // Check for optional parameter marker '?'
+                let is_optional = if let Some((Token::Symbol(s), _)) = &self.current_token {
+                    if s == "?" {
+                        self.advance()?; // consume '?'
+                        true
                     } else {
-                        None
+                        false
+                    }
+                } else {
+                    false
+                };
+                
+                // Check for type annotation with ':'
+                let param_type = if matches!(self.current_token, Some((Token::Colon, _))) {
+                    self.advance()?; // consume ':'
+                    let base_type = self.parse_type_expression()?;
+                    
+                    // Check for optional type marker '?'
+                    let final_type = if let Some((Token::Symbol(s), _)) = &self.current_token {
+                        if s == "?" {
+                            self.advance()?; // consume '?'
+                            // Wrap in Option type
+                            Type::UserDefined {
+                                name: "Option".to_string(),
+                                type_params: vec![base_type],
+                            }
+                        } else if is_optional {
+                            // If parameter is optional but type doesn't have ?, wrap it in Option
+                            Type::UserDefined {
+                                name: "Option".to_string(),
+                                type_params: vec![base_type],
+                            }
+                        } else {
+                            base_type
+                        }
+                    } else if is_optional {
+                        // If parameter is optional but type doesn't have ?, wrap it in Option
+                        Type::UserDefined {
+                            name: "Option".to_string(),
+                            type_params: vec![base_type],
+                        }
+                    } else {
+                        base_type
                     };
                     
-                    self.expect_token(Token::RightParen)?;
-                    params.push((Ident(param_name), param_type));
+                    Some(final_type)
                 } else {
-                    // Simple parameter without annotation
-                    params.push((Ident(self.parse_identifier()?), None));
-                }
+                    None
+                };
+                
+                params.push((Ident(param_name), param_type, is_optional));
             }
             
-            // Parse optional return type annotation
-            let _return_type = if matches!(self.current_token, Some((Token::Colon, _))) {
-                self.advance()?; // consume ':'
-                Some(self.parse_type_expression()?)
+            // Parse optional return type annotation with -> syntax
+            let (return_type, effects) = if matches!(self.current_token, Some((Token::Arrow, _))) {
+                self.advance()?; // consume '->'
+                
+                // Check for effect annotation <Effect1, Effect2>
+                let effects = if matches!(self.current_token, Some((Token::LessThan, _))) {
+                    self.advance()?; // consume '<'
+                    let mut effect_list = vec![];
+                    
+                    // Parse effect list
+                    loop {
+                        let effect_name = self.parse_identifier()?;
+                        effect_list.push(effect_name);
+                        
+                        if matches!(self.current_token, Some((Token::Comma, _))) {
+                            self.advance()?; // consume ','
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    self.expect_token(Token::GreaterThan)?; // consume '>'
+                    Some(effect_list)
+                } else {
+                    None
+                };
+                
+                // Parse return type
+                let return_type = Some(self.parse_type_expression()?);
+                (return_type, effects)
             } else {
-                None
+                (None, None)
             };
+            
+            // Validate parameter ordering: optional parameters must come after required ones
+            let mut found_optional = false;
+            for (_, _, is_optional) in &params {
+                if found_optional && !is_optional {
+                    return Err(XsError::ParseError(
+                        self.position(),
+                        "Optional parameters must come after all required parameters".to_string()
+                    ));
+                }
+                if *is_optional {
+                    found_optional = true;
+                }
+            }
             
             self.expect_token(Token::Equals)?;
             self.skip_newlines();  // Allow newlines after '='
             let body = self.parse_expression()?;
             
-            // Convert to nested lambdas
-            let lambda = params.into_iter()
-                .rev()
-                .fold(body, |acc, param| {
-                    Expr::Lambda {
-                        params: vec![param],
-                        body: Box::new(acc),
-                        span: Span::new(start_span.start, self.position())
-                    }
-                });
+            // Convert effects list to EffectRow
+            let effect_row = if let Some(effect_names) = effects {
+                use crate::effects::{EffectRow, EffectSet, Effect};
+                let mut effects = Vec::new();
+                for effect_name in effect_names {
+                    // Map effect names to known effects
+                    let effect = match effect_name.as_str() {
+                        "IO" => Effect::IO,
+                        "State" => Effect::State,
+                        "Error" => Effect::Error,
+                        "Async" => Effect::Async,
+                        "Network" => Effect::Network,
+                        "FileSystem" => Effect::FileSystem,
+                        "Random" => Effect::Random,
+                        "Time" => Effect::Time,
+                        "Log" => Effect::Log,
+                        "Pure" => Effect::Pure,
+                        _ => {
+                            // For unknown effects, we could either error or default to IO
+                            // For now, let's error
+                            return Err(XsError::ParseError(
+                                self.position(),
+                                format!("Unknown effect: {}", effect_name)
+                            ));
+                        }
+                    };
+                    effects.push(effect);
+                }
+                Some(EffectRow::Concrete(EffectSet::from_effects(effects)))
+            } else {
+                None
+            };
+            
+            // Create FunctionDef expression
+            let func_params: Vec<crate::FunctionParam> = params.into_iter()
+                .map(|(name, typ, is_optional)| crate::FunctionParam { name, typ, is_optional })
+                .collect();
+            
+            let function_def = Expr::FunctionDef {
+                name: Ident(name.clone()),
+                params: func_params,
+                return_type,
+                effects: effect_row,
+                body: Box::new(body),
+                span: Span::new(start_span.start, self.position())
+            };
             
             // Check for 'in' keyword
             if matches!(self.current_token, Some((Token::In, _))) {
@@ -181,7 +291,7 @@ impl<'a> Parser<'a> {
                 Ok(Expr::LetIn {
                     name: Ident(name),
                     type_ann,
-                    value: Box::new(lambda),
+                    value: Box::new(function_def),
                     body: Box::new(in_body),
                     span: Span::new(start_span.start, self.position())
                 })
@@ -189,7 +299,7 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Let {
                     name: Ident(name),
                     type_ann,
-                    value: Box::new(lambda),
+                    value: Box::new(function_def),
                     span: Span::new(start_span.start, self.position())
                 })
             }
@@ -353,6 +463,14 @@ impl<'a> Parser<'a> {
             Some((Token::DoubleColon, _)) => {
                 self.advance()?;
                 Ok("::".to_string())
+            }
+            Some((Token::LessThan, _)) => {
+                self.advance()?;
+                Ok("<".to_string())
+            }
+            Some((Token::GreaterThan, _)) => {
+                self.advance()?;
+                Ok(">".to_string())
             }
             _ => Err(XsError::ParseError(
                 self.position(),
@@ -535,6 +653,33 @@ impl<'a> Parser<'a> {
             Some((Token::Handle, span)) => {
                 let start = span.start;
                 self.parse_handle_expr(start)
+            }
+            Some((Token::Hash, span)) => {
+                let start = span.start;
+                self.advance()?;
+                // Parse hash reference: #abc123...
+                // The hash value should be an identifier (alphanumeric string)
+                if let Some((Token::Symbol(hash), _)) = &self.current_token {
+                    let hash_str = hash.clone();
+                    self.advance()?;
+                    Ok(Expr::HashRef {
+                        hash: hash_str,
+                        span: Span::new(start, self.position())
+                    })
+                } else if let Some((Token::Int(n), _)) = &self.current_token {
+                    // Handle cases where hash starts with numbers
+                    let hash_str = n.to_string();
+                    self.advance()?;
+                    Ok(Expr::HashRef {
+                        hash: hash_str,
+                        span: Span::new(start, self.position())
+                    })
+                } else {
+                    Err(XsError::ParseError(
+                        self.position(),
+                        "Expected hash value after #".to_string()
+                    ))
+                }
             }
             _ => Err(XsError::ParseError(
                 self.position(),
@@ -1429,6 +1574,32 @@ impl<'a> Parser<'a> {
         self.expect_token(Token::Import)?;
         let module_path = self.parse_module_path()?;
         
+        // Check for hash import: import Foo@abc123
+        let hash = if matches!(self.current_token, Some((Token::At, _))) {
+            self.advance()?;
+            // Parse hash value (can be symbol or int for flexibility)
+            match &self.current_token {
+                Some((Token::Symbol(h), _)) => {
+                    let hash_str = h.clone();
+                    self.advance()?;
+                    Some(hash_str)
+                }
+                Some((Token::Int(n), _)) => {
+                    let hash_str = n.to_string();
+                    self.advance()?;
+                    Some(hash_str)
+                }
+                _ => {
+                    return Err(XsError::ParseError(
+                        self.position(),
+                        "Expected hash value after @".to_string()
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        
         let (items, as_name) = if matches!(self.current_token, Some((Token::As, _))) {
             self.advance()?;
             let alias = self.parse_identifier()?;
@@ -1441,6 +1612,7 @@ impl<'a> Parser<'a> {
             module_name: Ident(module_path),
             items,
             as_name,
+            hash,
             span: Span::new(start, self.position())
         })
     }
@@ -1505,17 +1677,17 @@ impl<'a> Parser<'a> {
 
     fn parse_type_expression(&mut self) -> Result<Type, XsError> {
         // Parse basic types
-        match &self.current_token {
+        let base_type = match &self.current_token {
             Some((Token::Symbol(s), _)) => {
                 let type_name = s.clone();
                 self.advance()?;
                 
                 match type_name.as_str() {
-                    "Int" => Ok(Type::Int),
-                    "Float" => Ok(Type::Float),
-                    "Bool" => Ok(Type::Bool),
-                    "String" => Ok(Type::String),
-                    "Unit" => Ok(Type::Unit),
+                    "Int" => Type::Int,
+                    "Float" => Type::Float,
+                    "Bool" => Type::Bool,
+                    "String" => Type::String,
+                    "Unit" => Type::Unit,
                     _ => {
                         // Check for type parameters
                         let mut type_params = Vec::new();
@@ -1524,12 +1696,12 @@ impl<'a> Parser<'a> {
                         }
                         
                         if type_params.is_empty() {
-                            Ok(Type::Var(type_name))
+                            Type::Var(type_name)
                         } else {
-                            Ok(Type::UserDefined {
+                            Type::UserDefined {
                                 name: type_name,
                                 type_params
-                            })
+                            }
                         }
                     }
                 }
@@ -1543,19 +1715,35 @@ impl<'a> Parser<'a> {
                     let from_type = self.parse_type_expression()?;
                     let to_type = self.parse_type_expression()?;
                     self.expect_token(Token::RightParen)?;
-                    Ok(Type::Function(Box::new(from_type), Box::new(to_type)))
+                    Type::Function(Box::new(from_type), Box::new(to_type))
                 } else {
                     // List type
                     self.expect_token(Token::Symbol("List".to_string()))?;
                     let elem_type = self.parse_type_expression()?;
                     self.expect_token(Token::RightParen)?;
-                    Ok(Type::List(Box::new(elem_type)))
+                    Type::List(Box::new(elem_type))
                 }
             }
-            _ => Err(XsError::ParseError(
+            _ => return Err(XsError::ParseError(
                 self.position(),
                 "Expected type expression".to_string()
             ))
+        };
+        
+        // Check for optional type marker '?'
+        if let Some((Token::Symbol(s), _)) = &self.current_token {
+            if s == "?" {
+                self.advance()?; // consume '?'
+                // Wrap in Option type
+                Ok(Type::UserDefined {
+                    name: "Option".to_string(),
+                    type_params: vec![base_type],
+                })
+            } else {
+                Ok(base_type)
+            }
+        } else {
+            Ok(base_type)
         }
     }
 
@@ -1648,12 +1836,14 @@ impl<'a> Parser<'a> {
         match &self.current_token {
             Some((Token::Symbol(s), _)) => {
                 matches!(s.as_str(), "+" | "-" | "*" | "/" | "%" | 
-                        "<" | ">" | "<=" | ">=" | "!=" |
+                        "<=" | ">=" | "!=" |
                         "&&" | "||" | "++")
             }
             Some((Token::Equals, _)) => true,  // Handle '=' as infix operator
             Some((Token::EqualsEquals, _)) => true,  // Handle '==' as infix operator
             Some((Token::DoubleColon, _)) => true,  // Handle '::' as infix operator (cons)
+            Some((Token::LessThan, _)) => true,  // Handle '<' as infix operator
+            Some((Token::GreaterThan, _)) => true,  // Handle '>' as infix operator
             _ => false
         }
     }

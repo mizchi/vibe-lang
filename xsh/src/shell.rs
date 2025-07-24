@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use xs_compiler::{TypeChecker, TypeEnv};
 use xs_core::pretty_print::pretty_print;
@@ -12,6 +12,9 @@ use xs_runtime::Interpreter;
 use xs_workspace::{CodebaseManager, EditSession, ExpressionId};
 use xs_workspace::unified_parser::{parse_unified_with_mode, SyntaxMode};
 use xs_workspace::code_repository::CodeRepository;
+use xs_workspace::namespace::{NamespaceStore, NamespacePath, DefinitionPath, DefinitionContent, NamespaceCommand};
+use xs_workspace::hash::DefinitionHash;
+use xs_core::type_annotator::{embed_type_annotations, deep_embed_types};
 
 use crate::commands;
 use crate::search_patterns::{parse_type_pattern, AstPattern, expr_contains_pattern};
@@ -42,6 +45,7 @@ pub struct ShellState {
     salsa_db: xs_workspace::database::XsDatabaseImpl,
     syntax_mode: SyntaxMode,
     code_repository: Option<CodeRepository>,
+    namespace_store: NamespaceStore,
 }
 
 // Helper methods for common operations
@@ -74,7 +78,7 @@ impl ShellState {
         let hash_prefix = Self::hash_prefix(&entry.hash);
         if let Some(name) = name {
             format!(
-                "{} = {}\n  : {}\n  [{}]",
+                "{} = {}\n  : {} (inferred)\n  [{}]",
                 name,
                 pretty_print(&entry.expr),
                 entry.ty,
@@ -82,7 +86,7 @@ impl ShellState {
             )
         } else {
             format!(
-                "{}\n  : {}\n  [{}]",
+                "{}\n  : {} (inferred)\n  [{}]",
                 pretty_print(&entry.expr),
                 entry.ty,
                 hash_prefix
@@ -97,6 +101,7 @@ impl ShellState {
             .find(|(_, h)| *h == hash)
             .map(|(n, _)| n.as_str())
     }
+    
 
     /// Type check an expression with current environment
     fn type_check_with_env(&self, expr: &Expr) -> Result<Type> {
@@ -111,6 +116,80 @@ impl ShellState {
         checker
             .check(expr, &mut type_env)
             .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+    
+    /// Resolve hash references in an expression
+    fn resolve_hash_refs(&self, expr: &Expr) -> Result<Expr> {
+        match expr {
+            Expr::HashRef { hash, span: _ } => {
+                // Try to find the expression by hash
+                if let Some(entry) = self.find_expression(hash) {
+                    Ok(entry.expr.clone())
+                } else {
+                    Err(anyhow::anyhow!("Hash reference #{} not found", hash))
+                }
+            }
+            // Recursively process other expression types
+            Expr::Apply { func, args, span } => {
+                let resolved_func = self.resolve_hash_refs(func)?;
+                let resolved_args: Result<Vec<_>> = args.iter()
+                    .map(|arg| self.resolve_hash_refs(arg))
+                    .collect();
+                Ok(Expr::Apply {
+                    func: Box::new(resolved_func),
+                    args: resolved_args?,
+                    span: span.clone(),
+                })
+            }
+            Expr::Lambda { params, body, span } => {
+                let resolved_body = self.resolve_hash_refs(body)?;
+                Ok(Expr::Lambda {
+                    params: params.clone(),
+                    body: Box::new(resolved_body),
+                    span: span.clone(),
+                })
+            }
+            Expr::Let { name, type_ann, value, span } => {
+                let resolved_value = self.resolve_hash_refs(value)?;
+                Ok(Expr::Let {
+                    name: name.clone(),
+                    type_ann: type_ann.clone(),
+                    value: Box::new(resolved_value),
+                    span: span.clone(),
+                })
+            }
+            Expr::LetIn { name, type_ann, value, body, span } => {
+                let resolved_value = self.resolve_hash_refs(value)?;
+                let resolved_body = self.resolve_hash_refs(body)?;
+                Ok(Expr::LetIn {
+                    name: name.clone(),
+                    type_ann: type_ann.clone(),
+                    value: Box::new(resolved_value),
+                    body: Box::new(resolved_body),
+                    span: span.clone(),
+                })
+            }
+            Expr::If { cond, then_expr, else_expr, span } => {
+                let resolved_cond = self.resolve_hash_refs(cond)?;
+                let resolved_then = self.resolve_hash_refs(then_expr)?;
+                let resolved_else = self.resolve_hash_refs(else_expr)?;
+                Ok(Expr::If {
+                    cond: Box::new(resolved_cond),
+                    then_expr: Box::new(resolved_then),
+                    else_expr: Box::new(resolved_else),
+                    span: span.clone(),
+                })
+            }
+            Expr::List(exprs, span) => {
+                let resolved: Result<Vec<_>> = exprs.iter()
+                    .map(|e| self.resolve_hash_refs(e))
+                    .collect();
+                Ok(Expr::List(resolved?, span.clone()))
+            }
+            // For other expression types, return as-is
+            // TODO: Add more cases as needed
+            _ => Ok(expr.clone()),
+        }
     }
 }
 
@@ -150,6 +229,7 @@ impl ShellState {
             salsa_db: xs_workspace::database::XsDatabaseImpl::new(),
             syntax_mode: SyntaxMode::Auto,
             code_repository,
+            namespace_store: NamespaceStore::new(),
         };
 
         // Auto-load index.xbin if it exists
@@ -170,6 +250,9 @@ impl ShellState {
         // Parse expression using unified parser with current mode
         let mut expr = parse_unified_with_mode(line, self.syntax_mode)
             .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+
+        // Resolve hash references before any other processing
+        expr = self.resolve_hash_refs(&expr)?;
 
         // Check if expression contains holes and fill them interactively
         if self.has_holes(&expr) {
@@ -288,14 +371,30 @@ impl ShellState {
 
         // Handle special forms
         match &expr {
-            Expr::Let { name, value, .. } => {
-                // Save value expression too
-                let val_hash = self.codebase.hash_expr(value);
-                let val_hash_obj = xs_workspace::Hash::from_hex(&val_hash)?;
+            Expr::Let { name, value, type_ann, .. } => {
+                // Embed type annotation if not present
+                let annotated_value = if type_ann.is_none() {
+                    // The value itself might be a lambda or function that needs type annotation
+                    Box::new(embed_type_annotations(value, &ty))
+                } else {
+                    value.clone()
+                };
+                
+                // Create the annotated let expression
+                let annotated_expr = Expr::Let {
+                    name: name.clone(),
+                    type_ann: if type_ann.is_none() { Some(ty.clone()) } else { type_ann.clone() },
+                    value: annotated_value.clone(),
+                    span: expr.span().clone(),
+                };
+                
+                // Save the complete annotated let expression
+                let expr_hash = self.codebase.hash_expr(&annotated_expr);
+                let expr_hash_obj = xs_workspace::Hash::from_hex(&expr_hash)?;
                 
                 self.expr_history.push(ExpressionHistory {
-                    hash: val_hash.clone(),
-                    expr: (**value).clone(),
+                    hash: expr_hash.clone(),
+                    expr: annotated_expr.clone(),
                     ty: ty.clone(),
                     value: result.clone(),
                     timestamp: std::time::SystemTime::now(),
@@ -303,13 +402,13 @@ impl ShellState {
 
                 // Store named definition in repository
                 // Extract dependencies before mutable borrow
-                let dependencies = self.extract_dependencies(value);
+                let dependencies = self.extract_dependencies(&annotated_expr);
                 
                 if let Some(repo) = &mut self.code_repository {
                     let named_term = xs_workspace::Term {
-                        hash: val_hash_obj.clone(),
+                        hash: expr_hash_obj.clone(),
                         name: Some(name.0.clone()),
-                        expr: (**value).clone(),
+                        expr: annotated_expr.clone(),
                         ty: ty.clone(),
                         dependencies: dependencies.clone(),
                     };
@@ -319,7 +418,7 @@ impl ShellState {
                     }
                 }
 
-                let _val_expr_id = ExpressionId(val_hash.clone());
+                let _val_expr_id = ExpressionId(expr_hash.clone());
                 // TODO: Salsa integration
                 // self.salsa_db
                 //     .set_expression_source(val_expr_id.clone(), Arc::new((**value).clone()));
@@ -338,18 +437,53 @@ impl ShellState {
                 } else {
                     format!("{}.{}", self.current_namespace, name.0)
                 };
-                self.named_exprs.insert(qualified_name.clone(), val_hash.clone());
+                self.named_exprs.insert(qualified_name.clone(), expr_hash.clone());
                 self.type_env.insert(qualified_name.clone(), ty.clone());
                 self.runtime_env.insert(qualified_name.clone(), result.clone());
                 
                 // Also register without namespace for convenience in current namespace
-                self.named_exprs.insert(name.0.clone(), val_hash.clone());
+                self.named_exprs.insert(name.0.clone(), expr_hash.clone());
                 self.type_env.insert(name.0.clone(), ty.clone());
                 self.runtime_env.insert(name.0.clone(), result.clone());
 
                 // Add to session
                 self.session
                     .add_definition(name.0.clone(), (**value).clone())?;
+                
+                // Add to namespace store with annotated expression
+                let current_ns = NamespacePath::from_str(&self.current_namespace);
+                let def_path = DefinitionPath::new(current_ns, name.0.clone());
+                let content = DefinitionContent::Value((*annotated_value).clone());
+                
+                // Convert workspace hash dependencies to namespace hash dependencies
+                let ns_dependencies: HashSet<DefinitionHash> = dependencies.iter()
+                    .filter_map(|h| {
+                        // Convert workspace Hash to hex and then to DefinitionHash
+                        let hex = h.to_hex();
+                        if let Ok(bytes) = hex::decode(&hex) {
+                            if bytes.len() == 32 {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&bytes);
+                                Some(DefinitionHash(arr))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                
+                let command = NamespaceCommand::AddDefinition {
+                    path: def_path,
+                    content,
+                    type_signature: ty.clone(),
+                    metadata: Default::default(),
+                };
+                
+                if let Err(e) = self.namespace_store.execute_command(command) {
+                    eprintln!("Warning: Failed to add to namespace store: {}", e);
+                }
 
                 let mut response = format!(
                     "{} : {} = {}\n  [{}]",
@@ -361,7 +495,7 @@ impl ShellState {
                 
                 if is_redefinition {
                     if let Some(old_hash) = old_hash {
-                        if old_hash != val_hash {
+                        if old_hash != expr_hash {
                             response.push_str(&format!(
                                 "\n  {} (previous definition: [{}])",
                                 "Updated existing definition".yellow(),
@@ -378,7 +512,19 @@ impl ShellState {
                 
                 Ok(response)
             }
-            Expr::Rec { name, .. } => {
+            Expr::Rec { name, params, return_type, body, span } => {
+                // Embed return type annotation if not present
+                let annotated_expr = if return_type.is_none() {
+                    Expr::Rec {
+                        name: name.clone(),
+                        params: params.clone(),
+                        return_type: Some(ty.clone()),
+                        body: body.clone(),
+                        span: span.clone(),
+                    }
+                } else {
+                    expr.clone()
+                };
                 // Register recursive function with namespace prefix
                 let qualified_name = if self.current_namespace.is_empty() || self.current_namespace == "main" {
                     name.0.clone()
@@ -393,8 +539,73 @@ impl ShellState {
                 self.type_env.insert(name.0.clone(), ty.clone());
                 self.runtime_env.insert(name.0.clone(), result.clone());
                 
-                // Add to session
-                self.session.add_definition(name.0.clone(), expr.clone())?;
+                // Save the complete annotated rec expression
+                let expr_hash = self.codebase.hash_expr(&annotated_expr);
+                let expr_hash_obj = xs_workspace::Hash::from_hex(&expr_hash)?;
+                
+                self.expr_history.push(ExpressionHistory {
+                    hash: expr_hash.clone(),
+                    expr: annotated_expr.clone(),
+                    ty: ty.clone(),
+                    value: result.clone(),
+                    timestamp: std::time::SystemTime::now(),
+                });
+
+                // Store named definition in repository
+                let dependencies = self.extract_dependencies(&annotated_expr);
+                
+                if let Some(repo) = &mut self.code_repository {
+                    let named_term = xs_workspace::Term {
+                        hash: expr_hash_obj.clone(),
+                        name: Some(name.0.clone()),
+                        expr: annotated_expr.clone(),
+                        ty: ty.clone(),
+                        dependencies: dependencies.clone(),
+                    };
+                    
+                    if let Err(e) = repo.store_term(&named_term, &dependencies) {
+                        eprintln!("Warning: Failed to store named term: {}", e);
+                    }
+                }
+                
+                // Add to session with type annotation
+                self.session.add_definition(name.0.clone(), annotated_expr.clone())?;
+                
+                // Also add to namespace store
+                let current_ns = NamespacePath::from_str(&self.current_namespace);
+                let def_path = DefinitionPath::new(current_ns, name.0.clone());
+                let ns_dependencies: HashSet<DefinitionHash> = dependencies.iter()
+                    .filter_map(|h| {
+                        let hex = h.to_hex();
+                        if let Ok(bytes) = hex::decode(&hex) {
+                            if bytes.len() == 32 {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&bytes);
+                                Some(DefinitionHash(arr))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                
+                let content = DefinitionContent::Function {
+                    params: params.iter().map(|(p, _)| p.0.clone()).collect(),
+                    body: (**body).clone(),
+                };
+                
+                let command = NamespaceCommand::AddDefinition {
+                    path: def_path,
+                    content,
+                    type_signature: ty.clone(),
+                    metadata: Default::default(),
+                };
+                
+                if let Err(e) = self.namespace_store.execute_command(command) {
+                    eprintln!("Warning: Failed to add to namespace store: {}", e);
+                }
                 
                 Ok(format!(
                     "{} : {}\n  [{}]",
