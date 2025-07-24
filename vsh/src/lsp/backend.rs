@@ -168,10 +168,10 @@ impl LanguageServer for XSLanguageServer {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let text = params.text_document.text;
-        
+
         debug!("Document opened: {}", uri);
         self.documents.open(uri.clone(), text);
-        
+
         if let Err(e) = self.analyze_document(&uri).await {
             error!("Failed to analyze document: {}", e);
         }
@@ -179,12 +179,12 @@ impl LanguageServer for XSLanguageServer {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        
+
         for change in params.content_changes {
             // In full sync mode, we expect the full text
             self.documents.update(uri.clone(), change.text);
         }
-        
+
         if let Err(e) = self.analyze_document(&uri).await {
             error!("Failed to analyze document: {}", e);
         }
@@ -201,7 +201,10 @@ impl LanguageServer for XSLanguageServer {
         super::handlers::hover::handle_hover(self, params).await
     }
 
-    async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
         super::handlers::goto_definition::handle_goto_definition(self, params).await
     }
 

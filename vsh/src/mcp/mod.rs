@@ -4,10 +4,10 @@
 //! with XS language features including type checking, code analysis, and
 //! AST manipulation.
 
+pub mod handlers;
 pub mod protocol;
 pub mod server;
-pub mod handlers;
 pub mod tools;
 
-pub use server::McpServer;
 pub use protocol::{McpRequest, McpResponse};
+pub use server::McpServer;

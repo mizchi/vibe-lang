@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 use thiserror::Error;
-use vibe_core::{DoStatement, Environment, Expr, Ident, Literal, Pattern, Span, TypeDefinition, Value, XsError};
+use vibe_core::{
+    DoStatement, Environment, Expr, Ident, Literal, Pattern, Span, TypeDefinition, Value, XsError,
+};
 
 // Backend module for different execution strategies
 pub mod backend;
@@ -81,10 +83,9 @@ impl Interpreter {
         Self::default()
     }
 
-
     pub fn get_lib_runtime_functions(&self) -> HashMap<String, Value> {
         let mut functions = HashMap::new();
-        
+
         functions.insert(
             "id".to_string(),
             Value::BuiltinFunction {
@@ -93,7 +94,7 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
-        
+
         functions.insert(
             "const".to_string(),
             Value::BuiltinFunction {
@@ -102,13 +103,13 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
-        
+
         functions
     }
 
     pub fn get_string_runtime_functions(&self) -> HashMap<String, Value> {
         let mut functions = HashMap::new();
-        
+
         functions.insert(
             "concat".to_string(),
             Value::BuiltinFunction {
@@ -117,7 +118,7 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
-        
+
         functions.insert(
             "length".to_string(),
             Value::BuiltinFunction {
@@ -126,7 +127,7 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
-        
+
         functions.insert(
             "toInt".to_string(),
             Value::BuiltinFunction {
@@ -135,7 +136,7 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
-        
+
         functions.insert(
             "fromInt".to_string(),
             Value::BuiltinFunction {
@@ -144,13 +145,13 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
-        
+
         functions
     }
 
     pub fn get_list_runtime_functions(&self) -> HashMap<String, Value> {
         let mut functions = HashMap::new();
-        
+
         functions.insert(
             "cons".to_string(),
             Value::BuiltinFunction {
@@ -159,15 +160,15 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
-        
+
         // Add more list functions as needed
-        
+
         functions
     }
 
     pub fn get_int_runtime_functions(&self) -> HashMap<String, Value> {
         let mut functions = HashMap::new();
-        
+
         functions.insert(
             "toString".to_string(),
             Value::BuiltinFunction {
@@ -176,9 +177,9 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
-        
+
         // Add more int functions as needed
-        
+
         functions
     }
 
@@ -490,11 +491,14 @@ impl Interpreter {
                     _ => {
                         // Look up in environment
                         env.lookup(name).cloned().ok_or_else(|| {
-                            XsError::RuntimeError(span.clone(), format!("Undefined variable: {name}"))
+                            XsError::RuntimeError(
+                                span.clone(),
+                                format!("Undefined variable: {name}"),
+                            )
                         })
                     }
                 }
-            },
+            }
 
             Expr::List(elems, _) => {
                 let mut values = Vec::new();
@@ -799,7 +803,7 @@ impl Interpreter {
                 Ok(result)
             }
 
-            Expr::Import {  hash, .. } => {
+            Expr::Import { hash, .. } => {
                 // Import statements don't have a runtime value
                 // TODO: Implement proper import handling
                 // For hash-based imports, we need to resolve the specific version
@@ -980,7 +984,7 @@ impl Interpreter {
                 } else {
                     let mut result = Value::Int(0);
                     let mut local_env = env.clone();
-                    
+
                     for expr in exprs {
                         // Handle let expressions specially to update the environment
                         match expr {
@@ -998,27 +1002,25 @@ impl Interpreter {
                 }
             }
 
-            Expr::Hole { name, span, .. } => {
-                Err(XsError::RuntimeError(
-                    span.clone(),
-                    format!(
-                        "Hole '{}' must be filled before evaluation",
-                        name.as_deref().unwrap_or("@")
-                    ),
-                ))
-            }
+            Expr::Hole { name, span, .. } => Err(XsError::RuntimeError(
+                span.clone(),
+                format!(
+                    "Hole '{}' must be filled before evaluation",
+                    name.as_deref().unwrap_or("@")
+                ),
+            )),
 
             Expr::Do { statements, .. } => {
                 // Process each statement in the do block
                 let mut result = Value::List(vec![]);
                 let mut local_env = env.clone();
-                
+
                 for statement in statements {
                     match statement {
                         DoStatement::Bind { name, expr, .. } => {
                             // Evaluate the expression being bound
                             let value = self.eval(expr, &local_env)?;
-                            
+
                             // TODO: For now, we just add the binding to the environment
                             // In the future, this should handle effect unwrapping properly
                             local_env = local_env.extend(name.clone(), value);
@@ -1029,7 +1031,7 @@ impl Interpreter {
                         }
                     }
                 }
-                
+
                 Ok(result)
             }
 
@@ -1039,21 +1041,32 @@ impl Interpreter {
                     let value = self.eval(expr, env)?;
                     record_fields.push((name.0.clone(), value));
                 }
-                
+
                 // Sort fields by name for consistent representation
                 record_fields.sort_by(|a, b| a.0.cmp(&b.0));
-                
-                Ok(Value::Record { fields: record_fields })
+
+                Ok(Value::Record {
+                    fields: record_fields,
+                })
             }
 
-            Expr::RecordAccess { record, field, span } => {
+            Expr::RecordAccess {
+                record,
+                field,
+                span,
+            } => {
                 // First check if this is a namespace access (e.g., Int.toString)
                 if let Expr::Ident(module_name, _) = record.as_ref() {
                     // Check if this is a known module name (starts with uppercase)
-                    if module_name.0.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    if module_name
+                        .0
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_uppercase())
+                    {
                         // Look up builtin module functions
                         let builtin_key = format!("{}.{}", module_name.0, field.0);
-                        
+
                         // Map new namespace names to existing builtin functions
                         let mapped_name = match builtin_key.as_str() {
                             // Int module
@@ -1069,27 +1082,27 @@ impl Interpreter {
                             "Int.lte" => "<=",
                             "Int.gte" => ">=",
                             "Int.eq" => "=",
-                            
+
                             // String module
                             "String.concat" => "strConcat",
                             "String.length" => "stringLength",
                             "String.toInt" => "stringToInt",
                             "String.fromInt" => "intToString",
                             "String.eq" => "stringEq",
-                            
+
                             // List module
                             "List.cons" => "cons",
-                            
+
                             // IO module
                             "IO.print" => "print",
-                            
+
                             // Float module
                             "Float.add" => "+.",
-                            
+
                             _ => {
                                 // Continue with record access
                                 let record_value = self.eval(record, env)?;
-                                
+
                                 match record_value {
                                     Value::Record { fields } => {
                                         // Find the field value
@@ -1103,16 +1116,19 @@ impl Interpreter {
                                             format!("Field '{}' not found in record", field.0),
                                         ));
                                     }
-                                    _ => return Err(XsError::RuntimeError(
-                                        span.clone(),
-                                        "Cannot access field on non-record value".to_string(),
-                                    ))
+                                    _ => {
+                                        return Err(XsError::RuntimeError(
+                                            span.clone(),
+                                            "Cannot access field on non-record value".to_string(),
+                                        ))
+                                    }
                                 }
                             }
                         };
-                        
+
                         // Look up the builtin function in the environment
-                        return env.lookup(&Ident(mapped_name.to_string()))
+                        return env
+                            .lookup(&Ident(mapped_name.to_string()))
                             .cloned()
                             .ok_or_else(|| {
                                 XsError::RuntimeError(
@@ -1122,10 +1138,10 @@ impl Interpreter {
                             });
                     }
                 }
-                
+
                 // Normal record field access
                 let record_value = self.eval(record, env)?;
-                
+
                 match record_value {
                     Value::Record { fields } => {
                         // Find the field value
@@ -1142,20 +1158,24 @@ impl Interpreter {
                     _ => Err(XsError::RuntimeError(
                         span.clone(),
                         "Cannot access field on non-record value".to_string(),
-                    ))
+                    )),
                 }
             }
 
-            Expr::RecordUpdate { record, updates, span } => {
+            Expr::RecordUpdate {
+                record,
+                updates,
+                span,
+            } => {
                 let record_value = self.eval(record, env)?;
-                
+
                 match record_value {
                     Value::Record { mut fields } => {
                         // Evaluate updates and update field values
                         for (update_name, update_expr) in updates {
                             let update_value = self.eval(update_expr, env)?;
                             let mut found = false;
-                            
+
                             for (fname, fvalue) in &mut fields {
                                 if fname == &update_name.0 {
                                     *fvalue = update_value;
@@ -1163,7 +1183,7 @@ impl Interpreter {
                                     break;
                                 }
                             }
-                            
+
                             if !found {
                                 return Err(XsError::RuntimeError(
                                     span.clone(),
@@ -1171,20 +1191,26 @@ impl Interpreter {
                                 ));
                             }
                         }
-                        
+
                         Ok(Value::Record { fields })
                     }
                     _ => Err(XsError::RuntimeError(
                         span.clone(),
                         "Cannot update fields on non-record value".to_string(),
-                    ))
+                    )),
                 }
             }
-            
-            Expr::LetRecIn { name, value, body, .. } => {
+
+            Expr::LetRecIn {
+                name, value, body, ..
+            } => {
                 // Create recursive closure for the value
                 let closure = match value.as_ref() {
-                    Expr::Lambda { params, body: lambda_body, .. } => {
+                    Expr::Lambda {
+                        params,
+                        body: lambda_body,
+                        ..
+                    } => {
                         let param_names = params.iter().map(|(n, _)| n.clone()).collect();
                         Value::RecClosure {
                             name: name.clone(),
@@ -1200,38 +1226,45 @@ impl Interpreter {
                         val
                     }
                 };
-                
+
                 // Extend environment with the recursive binding
                 let new_env = env.extend(name.clone(), closure);
-                
+
                 // Evaluate body in extended environment
                 self.eval(body, &new_env)
             }
-            
-            Expr::HandleExpr { expr, handlers: _, return_handler: _, .. } => {
+
+            Expr::HandleExpr {
+                expr,
+                handlers: _,
+                return_handler: _,
+                ..
+            } => {
                 // TODO: Implement effect handling
                 // For now, just evaluate the expression without handling effects
                 self.eval(expr, env)
             }
-            
+
             Expr::FunctionDef { params, body, .. } => {
                 // Convert FunctionDef to a closure
-                let param_names: Vec<Ident> = params.iter()
-                    .map(|param| param.name.clone())
-                    .collect();
+                let param_names: Vec<Ident> =
+                    params.iter().map(|param| param.name.clone()).collect();
                 Ok(Value::Closure {
                     params: param_names,
                     body: (**body).clone(),
                     env: env.clone(),
                 })
             }
-            
+
             Expr::HashRef { hash, span } => {
                 // Hash references require looking up the expression in a content-addressed store
                 // For now, return an error since we need integration with the codebase
                 Err(XsError::RuntimeError(
                     span.clone(),
-                    format!("Hash reference #{} not implemented in interpreter yet", hash),
+                    format!(
+                        "Hash reference #{} not implemented in interpreter yet",
+                        hash
+                    ),
                 ))
             }
         }
@@ -1611,21 +1644,18 @@ impl Interpreter {
             }
 
             // Handle :: (cons) pattern against list
-            (
-                Pattern::Constructor {
-                    name,
-                    patterns,
-                    ..
-                },
-                Value::List(values),
-            ) if name.0 == "::" => {
+            (Pattern::Constructor { name, patterns, .. }, Value::List(values))
+                if name.0 == "::" =>
+            {
                 // :: pattern expects exactly 2 patterns: head and tail
                 if patterns.len() == 2 && !values.is_empty() {
                     // Match head pattern with first element
                     if let Some(head_bindings) = self.match_pattern(&patterns[0], &values[0])? {
                         // Match tail pattern with rest of list
                         let tail_value = Value::List(values[1..].to_vec());
-                        if let Some(tail_bindings) = self.match_pattern(&patterns[1], &tail_value)? {
+                        if let Some(tail_bindings) =
+                            self.match_pattern(&patterns[1], &tail_value)?
+                        {
                             let mut all_bindings = head_bindings;
                             all_bindings.extend(tail_bindings);
                             return Ok(Some(all_bindings));
@@ -1634,7 +1664,7 @@ impl Interpreter {
                 }
                 Ok(None)
             }
-            
+
             (Pattern::List { patterns, .. }, Value::List(values)) => {
                 if patterns.is_empty() && values.is_empty() {
                     return Ok(Some(vec![]));

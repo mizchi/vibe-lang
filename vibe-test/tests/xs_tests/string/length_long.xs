@@ -1,1 +1,0 @@
-String.length "Hello, World!"

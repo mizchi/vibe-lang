@@ -30,7 +30,7 @@ impl TypeErrorHelper {
     pub fn type_mismatch(&self, expected: &Type, actual: &Type, span: Span) -> XsError {
         let mut builder = ErrorBuilder::type_mismatch(expected.clone(), actual.clone())
             .with_snippet("", span.clone()); // Source will be added later
-        
+
         // Add specific suggestions for Int/Float mismatches
         match (expected, actual) {
             (Type::Float, Type::Int) => {
@@ -40,20 +40,14 @@ impl TypeErrorHelper {
                         "toFloat(value)".to_string(),
                     )
                     .suggest(
-                        "Use float literals instead", 
-                        Some("1.0 instead of 1".to_string())
+                        "Use float literals instead",
+                        Some("1.0 instead of 1".to_string()),
                     );
             }
             (Type::Int, Type::Float) => {
                 builder = builder
-                    .suggest_high_confidence(
-                        "Convert float to integer",
-                        "toInt(value)".to_string(),
-                    )
-                    .suggest(
-                        "Note: This will truncate the decimal part",
-                        None
-                    );
+                    .suggest_high_confidence("Convert float to integer", "toInt(value)".to_string())
+                    .suggest("Note: This will truncate the decimal part", None);
             }
             _ => {
                 builder = builder.suggest_high_confidence(
@@ -62,7 +56,7 @@ impl TypeErrorHelper {
                 );
             }
         }
-        
+
         let context = builder.build();
         XsError::TypeError(span, context.to_ai_format())
     }

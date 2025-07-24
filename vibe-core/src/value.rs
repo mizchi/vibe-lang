@@ -40,7 +40,7 @@ impl fmt::Display for Value {
                 }
             }
             Value::UseStatement { path, items } => {
-                write!(f, "<use {}",  path.join("/"))?;
+                write!(f, "<use {}", path.join("/"))?;
                 if let Some(items) = items {
                     write!(f, " (")?;
                     for (i, item) in items.iter().enumerate() {

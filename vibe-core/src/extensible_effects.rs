@@ -307,10 +307,7 @@ mod tests {
 
     #[test]
     fn test_effect_with_type_args() {
-        let state_int = EffectInstance::with_type_args(
-            "State".to_string(),
-            vec![crate::Type::Int],
-        );
+        let state_int = EffectInstance::with_type_args("State".to_string(), vec![crate::Type::Int]);
         assert_eq!(format!("{}", state_int), "State<Int>");
     }
 
@@ -318,11 +315,9 @@ mod tests {
     fn test_effect_extension() {
         let io = EffectInstance::new("IO".to_string());
         let state = EffectInstance::new("State".to_string());
-        
-        let row = ExtensibleEffectRow::pure()
-            .add_effect(io)
-            .add_effect(state);
-        
+
+        let row = ExtensibleEffectRow::pure().add_effect(io).add_effect(state);
+
         let effects = row.get_effects();
         assert_eq!(effects.len(), 2);
     }

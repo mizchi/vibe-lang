@@ -1,10 +1,10 @@
 //! AST Command System
-//! 
+//!
 //! Provides structured commands for modifying XS code through AST transformations.
 //! This enables AI and tools to make precise, type-safe code modifications.
 
-use vibe_core::{Expr, Ident, Type, Pattern};
-use crate::namespace::{NamespacePath, DefinitionPath};
+use crate::namespace::{DefinitionPath, NamespacePath};
+use vibe_core::{Expr, Ident, Pattern, Type};
 
 /// A command that transforms the AST
 #[derive(Debug, Clone)]
@@ -15,78 +15,64 @@ pub enum AstCommand {
         position: InsertPosition,
         expr: Expr,
     },
-    
+
     /// Replace an expression at a specific location
-    Replace {
-        target: AstPath,
-        new_expr: Expr,
-    },
-    
+    Replace { target: AstPath, new_expr: Expr },
+
     /// Delete an expression at a specific location
-    Delete {
-        target: AstPath,
-    },
-    
+    Delete { target: AstPath },
+
     /// Rename an identifier throughout a scope
     Rename {
         scope: AstPath,
         old_name: String,
         new_name: String,
     },
-    
+
     /// Extract an expression into a new definition
     Extract {
         target: AstPath,
         definition_name: String,
         namespace: NamespacePath,
     },
-    
+
     /// Inline a definition at all usage sites
-    Inline {
-        definition: DefinitionPath,
-    },
-    
+    Inline { definition: DefinitionPath },
+
     /// Move an expression to a different location
     Move {
         source: AstPath,
         destination: AstPath,
         position: InsertPosition,
     },
-    
+
     /// Wrap an expression with another expression
     Wrap {
         target: AstPath,
         wrapper: ExprWrapper,
     },
-    
+
     /// Unwrap an expression (remove wrapping)
-    Unwrap {
-        target: AstPath,
-    },
-    
+    Unwrap { target: AstPath },
+
     /// Add a type annotation
     AddTypeAnnotation {
         target: AstPath,
         type_annotation: Type,
     },
-    
+
     /// Remove a type annotation
-    RemoveTypeAnnotation {
-        target: AstPath,
-    },
-    
+    RemoveTypeAnnotation { target: AstPath },
+
     /// Transform a pattern match
     TransformMatch {
         target: AstPath,
         transformation: MatchTransformation,
     },
-    
+
     /// Refactor a sequence of lets into let-in
-    RefactorToLetIn {
-        target: AstPath,
-        let_count: usize,
-    },
-    
+    RefactorToLetIn { target: AstPath, let_count: usize },
+
     /// Convert between different function syntaxes
     ConvertFunction {
         target: AstPath,
@@ -105,15 +91,15 @@ impl AstPath {
     pub fn root() -> Self {
         Self { segments: vec![] }
     }
-    
+
     pub fn push(&mut self, segment: PathSegment) {
         self.segments.push(segment);
     }
-    
+
     pub fn pop(&mut self) -> Option<PathSegment> {
         self.segments.pop()
     }
-    
+
     pub fn child(mut self, segment: PathSegment) -> Self {
         self.push(segment);
         self
@@ -125,52 +111,52 @@ impl AstPath {
 pub enum PathSegment {
     /// Named definition
     Definition(String),
-    
+
     /// Function body
     FunctionBody,
-    
+
     /// Lambda body
     LambdaBody,
-    
+
     /// Let binding value
     LetValue,
-    
+
     /// Let-in body
     LetInBody,
-    
+
     /// If condition
     IfCondition,
-    
+
     /// If then branch
     IfThen,
-    
+
     /// If else branch
     IfElse,
-    
+
     /// Apply function
     ApplyFunction,
-    
+
     /// Apply argument at index
     ApplyArgument(usize),
-    
+
     /// Match expression
     MatchExpr,
-    
+
     /// Match case at index
     MatchCase(usize),
-    
+
     /// Match case pattern
     MatchCasePattern,
-    
+
     /// Match case body
     MatchCaseBody,
-    
+
     /// List element at index
     ListElement(usize),
-    
+
     /// Record field
     RecordField(String),
-    
+
     /// Module body expression at index
     ModuleBodyExpr(usize),
 }
@@ -193,23 +179,18 @@ pub enum ExprWrapper {
         name: String,
         type_ann: Option<Type>,
     },
-    
+
     /// Wrap in a lambda
-    Lambda {
-        params: Vec<(String, Option<Type>)>,
-    },
-    
+    Lambda { params: Vec<(String, Option<Type>)> },
+
     /// Wrap in parentheses (for precedence)
     Parentheses,
-    
+
     /// Wrap in a list
     List,
-    
+
     /// Wrap in an if expression
-    If {
-        condition: Expr,
-        else_branch: Expr,
-    },
+    If { condition: Expr, else_branch: Expr },
 }
 
 /// Transformations for match expressions
@@ -221,26 +202,18 @@ pub enum MatchTransformation {
         body: Expr,
         position: InsertPosition,
     },
-    
+
     /// Remove a case
-    RemoveCase {
-        index: usize,
-    },
-    
+    RemoveCase { index: usize },
+
     /// Reorder cases
-    ReorderCases {
-        new_order: Vec<usize>,
-    },
-    
+    ReorderCases { new_order: Vec<usize> },
+
     /// Merge similar cases
-    MergeCases {
-        indices: Vec<usize>,
-    },
-    
+    MergeCases { indices: Vec<usize> },
+
     /// Split a case with OR patterns
-    SplitCase {
-        index: usize,
-    },
+    SplitCase { index: usize },
 }
 
 /// Function definition styles
@@ -248,10 +221,10 @@ pub enum MatchTransformation {
 pub enum FunctionStyle {
     /// Regular function: (fn (x y) body)
     Regular,
-    
+
     /// Curried function: (fn (x) (fn (y) body))
     Curried,
-    
+
     /// Named recursive: (rec name (x y) body)
     Recursive { name: String },
 }
@@ -261,10 +234,10 @@ pub enum FunctionStyle {
 pub struct CommandResult {
     /// The transformed expression
     pub expr: Expr,
-    
+
     /// Expressions that were extracted (for Extract command)
     pub extracted: Vec<(String, Expr)>,
-    
+
     /// Locations that were affected
     pub affected_paths: Vec<AstPath>,
 }
@@ -274,31 +247,43 @@ pub struct AstTransformer;
 
 impl AstTransformer {
     /// Apply a command to an expression
-    pub fn apply_command(expr: &Expr, command: &AstCommand) -> Result<CommandResult, TransformError> {
+    pub fn apply_command(
+        expr: &Expr,
+        command: &AstCommand,
+    ) -> Result<CommandResult, TransformError> {
         let mut transformer = AstTransformer;
         transformer.transform(expr, command)
     }
-    
-    fn transform(&mut self, expr: &Expr, command: &AstCommand) -> Result<CommandResult, TransformError> {
+
+    fn transform(
+        &mut self,
+        expr: &Expr,
+        command: &AstCommand,
+    ) -> Result<CommandResult, TransformError> {
         match command {
             AstCommand::Replace { target, new_expr } => {
                 self.replace_at_path(expr, target, new_expr)
             }
-            
-            AstCommand::Rename { scope, old_name, new_name } => {
-                self.rename_in_scope(expr, scope, old_name, new_name)
-            }
-            
-            AstCommand::Wrap { target, wrapper } => {
-                self.wrap_at_path(expr, target, wrapper)
-            }
-            
+
+            AstCommand::Rename {
+                scope,
+                old_name,
+                new_name,
+            } => self.rename_in_scope(expr, scope, old_name, new_name),
+
+            AstCommand::Wrap { target, wrapper } => self.wrap_at_path(expr, target, wrapper),
+
             // TODO: Implement other commands
             _ => Err(TransformError::NotImplemented(format!("{command:?}"))),
         }
     }
-    
-    fn replace_at_path(&mut self, expr: &Expr, path: &AstPath, new_expr: &Expr) -> Result<CommandResult, TransformError> {
+
+    fn replace_at_path(
+        &mut self,
+        expr: &Expr,
+        path: &AstPath,
+        new_expr: &Expr,
+    ) -> Result<CommandResult, TransformError> {
         if path.segments.is_empty() {
             // Replacing root expression
             Ok(CommandResult {
@@ -316,11 +301,17 @@ impl AstTransformer {
             })
         }
     }
-    
-    fn rename_in_scope(&mut self, expr: &Expr, scope: &AstPath, old_name: &str, new_name: &str) -> Result<CommandResult, TransformError> {
+
+    fn rename_in_scope(
+        &mut self,
+        expr: &Expr,
+        scope: &AstPath,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<CommandResult, TransformError> {
         let scope_expr = self.navigate_to_path(expr, scope)?;
         let renamed = self.rename_ident_in_expr(scope_expr, old_name, new_name);
-        
+
         if scope.segments.is_empty() {
             Ok(CommandResult {
                 expr: renamed,
@@ -336,11 +327,16 @@ impl AstTransformer {
             })
         }
     }
-    
-    fn wrap_at_path(&mut self, expr: &Expr, path: &AstPath, wrapper: &ExprWrapper) -> Result<CommandResult, TransformError> {
+
+    fn wrap_at_path(
+        &mut self,
+        expr: &Expr,
+        path: &AstPath,
+        wrapper: &ExprWrapper,
+    ) -> Result<CommandResult, TransformError> {
         let target_expr = self.navigate_to_path(expr, path)?;
         let wrapped = self.wrap_expr(target_expr, wrapper);
-        
+
         if path.segments.is_empty() {
             Ok(CommandResult {
                 expr: wrapped,
@@ -356,18 +352,26 @@ impl AstTransformer {
             })
         }
     }
-    
-    fn navigate_to_path<'a>(&self, expr: &'a Expr, path: &AstPath) -> Result<&'a Expr, TransformError> {
+
+    fn navigate_to_path<'a>(
+        &self,
+        expr: &'a Expr,
+        path: &AstPath,
+    ) -> Result<&'a Expr, TransformError> {
         let mut current = expr;
-        
+
         for segment in &path.segments {
             current = self.navigate_segment(current, segment)?;
         }
-        
+
         Ok(current)
     }
-    
-    fn navigate_segment<'a>(&self, expr: &'a Expr, segment: &PathSegment) -> Result<&'a Expr, TransformError> {
+
+    fn navigate_segment<'a>(
+        &self,
+        expr: &'a Expr,
+        segment: &PathSegment,
+    ) -> Result<&'a Expr, TransformError> {
         match (expr, segment) {
             (Expr::Lambda { body, .. }, PathSegment::LambdaBody) => Ok(body),
             (Expr::Let { value, .. }, PathSegment::LetValue) => Ok(value),
@@ -377,16 +381,25 @@ impl AstTransformer {
             (Expr::If { else_expr, .. }, PathSegment::IfElse) => Ok(else_expr),
             (Expr::Apply { func, .. }, PathSegment::ApplyFunction) => Ok(func),
             (Expr::Apply { args, .. }, PathSegment::ApplyArgument(i)) => {
-                args.get(*i).ok_or_else(|| TransformError::InvalidPath("Argument index out of bounds".to_string()))
+                args.get(*i).ok_or_else(|| {
+                    TransformError::InvalidPath("Argument index out of bounds".to_string())
+                })
             }
-            (Expr::List(items, _), PathSegment::ListElement(i)) => {
-                items.get(*i).ok_or_else(|| TransformError::InvalidPath("List index out of bounds".to_string()))
-            }
-            _ => Err(TransformError::InvalidPath(format!("Cannot navigate {segment:?} in {expr:?}"))),
+            (Expr::List(items, _), PathSegment::ListElement(i)) => items
+                .get(*i)
+                .ok_or_else(|| TransformError::InvalidPath("List index out of bounds".to_string())),
+            _ => Err(TransformError::InvalidPath(format!(
+                "Cannot navigate {segment:?} in {expr:?}"
+            ))),
         }
     }
-    
-    fn transform_at_path(&mut self, expr: &Expr, path: &AstPath, f: impl FnOnce(&Expr) -> Expr) -> Result<Expr, TransformError> {
+
+    fn transform_at_path(
+        &mut self,
+        expr: &Expr,
+        path: &AstPath,
+        f: impl FnOnce(&Expr) -> Expr,
+    ) -> Result<Expr, TransformError> {
         if path.segments.is_empty() {
             Ok(f(expr))
         } else {
@@ -394,9 +407,15 @@ impl AstTransformer {
             self.transform_recursive(expr, &path.segments, 0, f)
         }
     }
-    
+
     #[allow(clippy::only_used_in_recursion)]
-    fn transform_recursive(&mut self, _expr: &Expr, segments: &[PathSegment], index: usize, f: impl FnOnce(&Expr) -> Expr) -> Result<Expr, TransformError> {
+    fn transform_recursive(
+        &mut self,
+        _expr: &Expr,
+        segments: &[PathSegment],
+        index: usize,
+        f: impl FnOnce(&Expr) -> Expr,
+    ) -> Result<Expr, TransformError> {
         let expr = _expr;
         if index >= segments.len() {
             Ok(f(expr))
@@ -404,15 +423,25 @@ impl AstTransformer {
             let segment = &segments[index];
             match (expr, segment) {
                 (Expr::Lambda { params, body, span }, PathSegment::LambdaBody) => {
-                    let new_body = Box::new(self.transform_recursive(body, segments, index + 1, f)?);
+                    let new_body =
+                        Box::new(self.transform_recursive(body, segments, index + 1, f)?);
                     Ok(Expr::Lambda {
                         params: params.clone(),
                         body: new_body,
                         span: span.clone(),
                     })
                 }
-                (Expr::Let { name, type_ann, value, span }, PathSegment::LetValue) => {
-                    let new_value = Box::new(self.transform_recursive(value, segments, index + 1, f)?);
+                (
+                    Expr::Let {
+                        name,
+                        type_ann,
+                        value,
+                        span,
+                    },
+                    PathSegment::LetValue,
+                ) => {
+                    let new_value =
+                        Box::new(self.transform_recursive(value, segments, index + 1, f)?);
                     Ok(Expr::Let {
                         name: name.clone(),
                         type_ann: type_ann.clone(),
@@ -421,11 +450,13 @@ impl AstTransformer {
                     })
                 }
                 // TODO: Handle other cases
-                _ => Err(TransformError::InvalidPath(format!("Cannot transform {segment:?} in {expr:?}"))),
+                _ => Err(TransformError::InvalidPath(format!(
+                    "Cannot transform {segment:?} in {expr:?}"
+                ))),
             }
         }
     }
-    
+
     #[allow(clippy::only_used_in_recursion)]
     fn rename_ident_in_expr(&self, _expr: &Expr, old_name: &str, new_name: &str) -> Expr {
         let expr = _expr;
@@ -446,39 +477,37 @@ impl AstTransformer {
                     }
                 }
             }
-            Expr::Apply { func, args, span } => {
-                Expr::Apply {
-                    func: Box::new(self.rename_ident_in_expr(func, old_name, new_name)),
-                    args: args.iter().map(|arg| self.rename_ident_in_expr(arg, old_name, new_name)).collect(),
-                    span: span.clone(),
-                }
-            }
+            Expr::Apply { func, args, span } => Expr::Apply {
+                func: Box::new(self.rename_ident_in_expr(func, old_name, new_name)),
+                args: args
+                    .iter()
+                    .map(|arg| self.rename_ident_in_expr(arg, old_name, new_name))
+                    .collect(),
+                span: span.clone(),
+            },
             // TODO: Handle other cases
             _ => expr.clone(),
         }
     }
-    
+
     fn wrap_expr(&self, expr: &Expr, wrapper: &ExprWrapper) -> Expr {
         let span = expr.span().clone();
         match wrapper {
-            ExprWrapper::Let { name, type_ann } => {
-                Expr::Let {
-                    name: Ident(name.clone()),
-                    type_ann: type_ann.clone(),
-                    value: Box::new(expr.clone()),
-                    span,
-                }
-            }
-            ExprWrapper::Lambda { params } => {
-                Expr::Lambda {
-                    params: params.iter().map(|(n, t)| (Ident(n.clone()), t.clone())).collect(),
-                    body: Box::new(expr.clone()),
-                    span,
-                }
-            }
-            ExprWrapper::List => {
-                Expr::List(vec![expr.clone()], span)
-            }
+            ExprWrapper::Let { name, type_ann } => Expr::Let {
+                name: Ident(name.clone()),
+                type_ann: type_ann.clone(),
+                value: Box::new(expr.clone()),
+                span,
+            },
+            ExprWrapper::Lambda { params } => Expr::Lambda {
+                params: params
+                    .iter()
+                    .map(|(n, t)| (Ident(n.clone()), t.clone()))
+                    .collect(),
+                body: Box::new(expr.clone()),
+                span,
+            },
+            ExprWrapper::List => Expr::List(vec![expr.clone()], span),
             // TODO: Handle other wrappers
             _ => expr.clone(),
         }
@@ -490,13 +519,13 @@ impl AstTransformer {
 pub enum TransformError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
-    
+
     #[error("Target not found")]
     TargetNotFound,
-    
+
     #[error("Invalid transformation: {0}")]
     InvalidTransformation(String),
-    
+
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 }
@@ -505,21 +534,21 @@ pub enum TransformError {
 mod tests {
     use super::*;
     use vibe_core::{Literal, Span};
-    
+
     #[test]
     fn test_replace_root() {
         let expr = Expr::Literal(Literal::Int(42), Span::new(0, 2));
         let new_expr = Expr::Literal(Literal::Int(100), Span::new(0, 3));
-        
+
         let command = AstCommand::Replace {
             target: AstPath::root(),
             new_expr: new_expr.clone(),
         };
-        
+
         let result = AstTransformer::apply_command(&expr, &command).unwrap();
         assert_eq!(result.expr, new_expr);
     }
-    
+
     #[test]
     fn test_rename_ident() {
         let expr = Expr::Apply {
@@ -530,15 +559,15 @@ mod tests {
             ],
             span: Span::new(0, 8),
         };
-        
+
         let command = AstCommand::Rename {
             scope: AstPath::root(),
             old_name: "x".to_string(),
             new_name: "z".to_string(),
         };
-        
+
         let result = AstTransformer::apply_command(&expr, &command).unwrap();
-        
+
         // Check that x was renamed to z
         if let Expr::Apply { args, .. } = &result.expr {
             if let Expr::Ident(ident, _) = &args[0] {
@@ -550,11 +579,11 @@ mod tests {
             panic!("Expected apply expression");
         }
     }
-    
+
     #[test]
     fn test_wrap_in_let() {
         let expr = Expr::Literal(Literal::Int(42), Span::new(0, 2));
-        
+
         let command = AstCommand::Wrap {
             target: AstPath::root(),
             wrapper: ExprWrapper::Let {
@@ -562,11 +591,17 @@ mod tests {
                 type_ann: Some(Type::Int),
             },
         };
-        
+
         let result = AstTransformer::apply_command(&expr, &command).unwrap();
-        
+
         // Check that expression was wrapped in let
-        if let Expr::Let { name, value, type_ann, .. } = &result.expr {
+        if let Expr::Let {
+            name,
+            value,
+            type_ann,
+            ..
+        } = &result.expr
+        {
             assert_eq!(name.0, "x");
             assert_eq!(type_ann, &Some(Type::Int));
             assert_eq!(**value, expr);

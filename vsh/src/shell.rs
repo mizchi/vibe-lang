@@ -6,18 +6,20 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use vibe_compiler::{TypeChecker, TypeEnv};
 use vibe_core::pretty_print::pretty_print;
+use vibe_core::type_annotator::embed_type_annotations;
 use vibe_core::Ident;
 use vibe_core::{DoStatement, Expr, Type, Value};
 use vibe_runtime::Interpreter;
-use vibe_workspace::{CodebaseManager, EditSession, ExpressionId};
-use vibe_workspace::unified_parser::{parse_unified_with_mode, SyntaxMode};
 use vibe_workspace::code_repository::CodeRepository;
-use vibe_workspace::namespace::{NamespaceStore, NamespacePath, DefinitionPath, DefinitionContent, NamespaceCommand};
 use vibe_workspace::hash::DefinitionHash;
-use vibe_core::type_annotator::embed_type_annotations;
+use vibe_workspace::namespace::{
+    DefinitionContent, DefinitionPath, NamespaceCommand, NamespacePath, NamespaceStore,
+};
+use vibe_workspace::unified_parser::{parse_unified_with_mode, SyntaxMode};
+use vibe_workspace::{CodebaseManager, EditSession, ExpressionId};
 
 use crate::commands;
-use crate::search_patterns::{parse_type_pattern, AstPattern, expr_contains_pattern};
+use crate::search_patterns::{expr_contains_pattern, parse_type_pattern, AstPattern};
 
 #[derive(Debug)]
 struct ExpressionHistory {
@@ -101,7 +103,6 @@ impl ShellState {
             .find(|(_, h)| *h == hash)
             .map(|(n, _)| n.as_str())
     }
-    
 
     /// Type check an expression with current environment
     fn type_check_with_env(&self, expr: &Expr) -> Result<Type> {
@@ -117,7 +118,7 @@ impl ShellState {
             .check(expr, &mut type_env)
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
-    
+
     /// Resolve hash references in an expression
     fn resolve_hash_refs(&self, expr: &Expr) -> Result<Expr> {
         match expr {
@@ -132,9 +133,8 @@ impl ShellState {
             // Recursively process other expression types
             Expr::Apply { func, args, span } => {
                 let resolved_func = self.resolve_hash_refs(func)?;
-                let resolved_args: Result<Vec<_>> = args.iter()
-                    .map(|arg| self.resolve_hash_refs(arg))
-                    .collect();
+                let resolved_args: Result<Vec<_>> =
+                    args.iter().map(|arg| self.resolve_hash_refs(arg)).collect();
                 Ok(Expr::Apply {
                     func: Box::new(resolved_func),
                     args: resolved_args?,
@@ -149,7 +149,12 @@ impl ShellState {
                     span: span.clone(),
                 })
             }
-            Expr::Let { name, type_ann, value, span } => {
+            Expr::Let {
+                name,
+                type_ann,
+                value,
+                span,
+            } => {
                 let resolved_value = self.resolve_hash_refs(value)?;
                 Ok(Expr::Let {
                     name: name.clone(),
@@ -158,7 +163,13 @@ impl ShellState {
                     span: span.clone(),
                 })
             }
-            Expr::LetIn { name, type_ann, value, body, span } => {
+            Expr::LetIn {
+                name,
+                type_ann,
+                value,
+                body,
+                span,
+            } => {
                 let resolved_value = self.resolve_hash_refs(value)?;
                 let resolved_body = self.resolve_hash_refs(body)?;
                 Ok(Expr::LetIn {
@@ -169,7 +180,12 @@ impl ShellState {
                     span: span.clone(),
                 })
             }
-            Expr::If { cond, then_expr, else_expr, span } => {
+            Expr::If {
+                cond,
+                then_expr,
+                else_expr,
+                span,
+            } => {
                 let resolved_cond = self.resolve_hash_refs(cond)?;
                 let resolved_then = self.resolve_hash_refs(then_expr)?;
                 let resolved_else = self.resolve_hash_refs(else_expr)?;
@@ -181,9 +197,8 @@ impl ShellState {
                 })
             }
             Expr::List(exprs, span) => {
-                let resolved: Result<Vec<_>> = exprs.iter()
-                    .map(|e| self.resolve_hash_refs(e))
-                    .collect();
+                let resolved: Result<Vec<_>> =
+                    exprs.iter().map(|e| self.resolve_hash_refs(e)).collect();
                 Ok(Expr::List(resolved?, span.clone()))
             }
             // For other expression types, return as-is
@@ -259,7 +274,11 @@ impl ShellState {
             use crate::hole_completion::HoleCompleter;
             let completer = HoleCompleter::new(
                 self.type_env.clone(),
-                vibe_core::Environment::from_iter(self.runtime_env.iter().map(|(k, v)| (Ident(k.clone()), v.clone())))
+                vibe_core::Environment::from_iter(
+                    self.runtime_env
+                        .iter()
+                        .map(|(k, v)| (Ident(k.clone()), v.clone())),
+                ),
             );
             expr = completer.fill_holes_interactive(&expr)?;
         }
@@ -268,10 +287,11 @@ impl ShellState {
         let _block_attributes = {
             use vibe_compiler::semantic_analysis::SemanticAnalyzer;
             let mut analyzer = SemanticAnalyzer::new();
-            analyzer.analyze(&expr)
+            analyzer
+                .analyze(&expr)
                 .map_err(|e| anyhow::anyhow!("Semantic analysis error: {}", e))?
         };
-        
+
         // TODO: Store block attributes in the codebase or repository when persistence is needed
 
         // Type check
@@ -289,22 +309,27 @@ impl ShellState {
         }
 
         let result = interpreter.eval(&expr, &env).context("Evaluation failed")?;
-        
+
         // Handle use statements
         if let Value::UseStatement { path, items } = &result {
             // Update both runtime and type environments based on the use statement
-            let runtime_functions = match path.iter().map(|s| s.as_str()).collect::<Vec<_>>().as_slice() {
+            let runtime_functions = match path
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
                 ["lib"] => interpreter.get_lib_runtime_functions(),
                 ["lib", "String"] => interpreter.get_string_runtime_functions(),
                 ["lib", "List"] => interpreter.get_list_runtime_functions(),
                 ["lib", "Int"] => interpreter.get_int_runtime_functions(),
                 _ => HashMap::new(),
             };
-            
+
             // Get type information for the imported functions
             use vibe_core::lib_modules::get_module_functions;
             let type_functions = get_module_functions(path).unwrap_or_default();
-            
+
             if let Some(items) = items {
                 // Import only specific items
                 for item in items {
@@ -329,7 +354,7 @@ impl ShellState {
         // Save to history and Salsa DB
         let hash = self.codebase.hash_expr(&expr);
         let hash_obj = vibe_workspace::Hash::from_hex(&hash)?;
-        
+
         self.expr_history.push(ExpressionHistory {
             hash: hash.clone(),
             expr: expr.clone(),
@@ -341,22 +366,22 @@ impl ShellState {
         // Auto-save to code repository
         // Extract dependencies before mutable borrow
         let dependencies = self.extract_dependencies(&expr);
-        
+
         if let Some(repo) = &mut self.code_repository {
             // Create a Term for storage
             let term = vibe_workspace::Term {
                 hash: hash_obj.clone(),
-                name: None,  // Will be set for let expressions
+                name: None, // Will be set for let expressions
                 expr: expr.clone(),
                 ty: ty.clone(),
                 dependencies: dependencies.clone(),
             };
-            
+
             // Store in repository
             if let Err(e) = repo.store_term(&term, &dependencies) {
                 eprintln!("Warning: Failed to store in repository: {}", e);
             }
-            
+
             // Record evaluation
             let result_str = format_value(&result);
             if let Err(e) = repo.record_evaluation(line, Some(&hash_obj), &result_str) {
@@ -371,7 +396,12 @@ impl ShellState {
 
         // Handle special forms
         match &expr {
-            Expr::Let { name, value, type_ann, .. } => {
+            Expr::Let {
+                name,
+                value,
+                type_ann,
+                ..
+            } => {
                 // Embed type annotation if not present
                 let annotated_value = if type_ann.is_none() {
                     // The value itself might be a lambda or function that needs type annotation
@@ -379,19 +409,23 @@ impl ShellState {
                 } else {
                     value.clone()
                 };
-                
+
                 // Create the annotated let expression
                 let annotated_expr = Expr::Let {
                     name: name.clone(),
-                    type_ann: if type_ann.is_none() { Some(ty.clone()) } else { type_ann.clone() },
+                    type_ann: if type_ann.is_none() {
+                        Some(ty.clone())
+                    } else {
+                        type_ann.clone()
+                    },
                     value: annotated_value.clone(),
                     span: expr.span().clone(),
                 };
-                
+
                 // Save the complete annotated let expression
                 let expr_hash = self.codebase.hash_expr(&annotated_expr);
                 let expr_hash_obj = vibe_workspace::Hash::from_hex(&expr_hash)?;
-                
+
                 self.expr_history.push(ExpressionHistory {
                     hash: expr_hash.clone(),
                     expr: annotated_expr.clone(),
@@ -403,7 +437,7 @@ impl ShellState {
                 // Store named definition in repository
                 // Extract dependencies before mutable borrow
                 let dependencies = self.extract_dependencies(&annotated_expr);
-                
+
                 if let Some(repo) = &mut self.code_repository {
                     let named_term = vibe_workspace::Term {
                         hash: expr_hash_obj.clone(),
@@ -412,7 +446,7 @@ impl ShellState {
                         ty: ty.clone(),
                         dependencies: dependencies.clone(),
                     };
-                    
+
                     if let Err(e) = repo.store_term(&named_term, &dependencies) {
                         eprintln!("Warning: Failed to store named term: {}", e);
                     }
@@ -430,17 +464,20 @@ impl ShellState {
                 } else {
                     None
                 };
-                
+
                 // Register name with namespace prefix
-                let qualified_name = if self.current_namespace.is_empty() || self.current_namespace == "main" {
-                    name.0.clone()
-                } else {
-                    format!("{}.{}", self.current_namespace, name.0)
-                };
-                self.named_exprs.insert(qualified_name.clone(), expr_hash.clone());
+                let qualified_name =
+                    if self.current_namespace.is_empty() || self.current_namespace == "main" {
+                        name.0.clone()
+                    } else {
+                        format!("{}.{}", self.current_namespace, name.0)
+                    };
+                self.named_exprs
+                    .insert(qualified_name.clone(), expr_hash.clone());
                 self.type_env.insert(qualified_name.clone(), ty.clone());
-                self.runtime_env.insert(qualified_name.clone(), result.clone());
-                
+                self.runtime_env
+                    .insert(qualified_name.clone(), result.clone());
+
                 // Also register without namespace for convenience in current namespace
                 self.named_exprs.insert(name.0.clone(), expr_hash.clone());
                 self.type_env.insert(name.0.clone(), ty.clone());
@@ -449,14 +486,15 @@ impl ShellState {
                 // Add to session
                 self.session
                     .add_definition(name.0.clone(), (**value).clone())?;
-                
+
                 // Add to namespace store with annotated expression
                 let current_ns = NamespacePath::from_str(&self.current_namespace);
                 let def_path = DefinitionPath::new(current_ns, name.0.clone());
                 let content = DefinitionContent::Value((*annotated_value).clone());
-                
+
                 // Convert workspace hash dependencies to namespace hash dependencies
-                let _ns_dependencies: HashSet<DefinitionHash> = dependencies.iter()
+                let _ns_dependencies: HashSet<DefinitionHash> = dependencies
+                    .iter()
                     .filter_map(|h| {
                         // Convert workspace Hash to hex and then to DefinitionHash
                         let hex = h.to_hex();
@@ -473,14 +511,14 @@ impl ShellState {
                         }
                     })
                     .collect();
-                
+
                 let command = NamespaceCommand::AddDefinition {
                     path: def_path,
                     content,
                     type_signature: ty.clone(),
                     metadata: Default::default(),
                 };
-                
+
                 if let Err(e) = self.namespace_store.execute_command(command) {
                     eprintln!("Warning: Failed to add to namespace store: {}", e);
                 }
@@ -492,7 +530,7 @@ impl ShellState {
                     format_value(&result),
                     Self::hash_prefix(&hash)
                 );
-                
+
                 if is_redefinition {
                     if let Some(old_hash) = old_hash {
                         if old_hash != expr_hash {
@@ -509,10 +547,16 @@ impl ShellState {
                         }
                     }
                 }
-                
+
                 Ok(response)
             }
-            Expr::Rec { name, params, return_type, body, span } => {
+            Expr::Rec {
+                name,
+                params,
+                return_type,
+                body,
+                span,
+            } => {
                 // Embed return type annotation if not present
                 let annotated_expr = if return_type.is_none() {
                     Expr::Rec {
@@ -526,23 +570,26 @@ impl ShellState {
                     expr.clone()
                 };
                 // Register recursive function with namespace prefix
-                let qualified_name = if self.current_namespace.is_empty() || self.current_namespace == "main" {
-                    name.0.clone()
-                } else {
-                    format!("{}.{}", self.current_namespace, name.0)
-                };
-                self.named_exprs.insert(qualified_name.clone(), hash.clone());
+                let qualified_name =
+                    if self.current_namespace.is_empty() || self.current_namespace == "main" {
+                        name.0.clone()
+                    } else {
+                        format!("{}.{}", self.current_namespace, name.0)
+                    };
+                self.named_exprs
+                    .insert(qualified_name.clone(), hash.clone());
                 self.type_env.insert(qualified_name.clone(), ty.clone());
-                self.runtime_env.insert(qualified_name.clone(), result.clone());
-                
+                self.runtime_env
+                    .insert(qualified_name.clone(), result.clone());
+
                 // Also register without namespace for convenience in current namespace
                 self.type_env.insert(name.0.clone(), ty.clone());
                 self.runtime_env.insert(name.0.clone(), result.clone());
-                
+
                 // Save the complete annotated rec expression
                 let expr_hash = self.codebase.hash_expr(&annotated_expr);
                 let expr_hash_obj = vibe_workspace::Hash::from_hex(&expr_hash)?;
-                
+
                 self.expr_history.push(ExpressionHistory {
                     hash: expr_hash.clone(),
                     expr: annotated_expr.clone(),
@@ -553,7 +600,7 @@ impl ShellState {
 
                 // Store named definition in repository
                 let dependencies = self.extract_dependencies(&annotated_expr);
-                
+
                 if let Some(repo) = &mut self.code_repository {
                     let named_term = vibe_workspace::Term {
                         hash: expr_hash_obj.clone(),
@@ -562,19 +609,21 @@ impl ShellState {
                         ty: ty.clone(),
                         dependencies: dependencies.clone(),
                     };
-                    
+
                     if let Err(e) = repo.store_term(&named_term, &dependencies) {
                         eprintln!("Warning: Failed to store named term: {}", e);
                     }
                 }
-                
+
                 // Add to session with type annotation
-                self.session.add_definition(name.0.clone(), annotated_expr.clone())?;
-                
+                self.session
+                    .add_definition(name.0.clone(), annotated_expr.clone())?;
+
                 // Also add to namespace store
                 let current_ns = NamespacePath::from_str(&self.current_namespace);
                 let def_path = DefinitionPath::new(current_ns, name.0.clone());
-                let ns_dependencies: HashSet<DefinitionHash> = dependencies.iter()
+                let ns_dependencies: HashSet<DefinitionHash> = dependencies
+                    .iter()
                     .filter_map(|h| {
                         let hex = h.to_hex();
                         if let Ok(bytes) = hex::decode(&hex) {
@@ -590,23 +639,23 @@ impl ShellState {
                         }
                     })
                     .collect();
-                
+
                 let content = DefinitionContent::Function {
                     params: params.iter().map(|(p, _)| p.0.clone()).collect(),
                     body: (**body).clone(),
                 };
-                
+
                 let command = NamespaceCommand::AddDefinition {
                     path: def_path,
                     content,
                     type_signature: ty.clone(),
                     metadata: Default::default(),
                 };
-                
+
                 if let Err(e) = self.namespace_store.execute_command(command) {
                     eprintln!("Warning: Failed to add to namespace store: {}", e);
                 }
-                
+
                 Ok(format!(
                     "{} : {}\n  [{}]",
                     format_value(&result),
@@ -634,30 +683,31 @@ impl ShellState {
 
     pub fn load_vbin(&mut self, path: &PathBuf) -> Result<()> {
         use vibe_workspace::vbin::VBinStorage;
-        
+
         let mut storage = VBinStorage::new(path.to_string_lossy().to_string());
-        let loaded_codebase = storage.load_full()
+        let loaded_codebase = storage
+            .load_full()
             .map_err(|e| anyhow::anyhow!("Failed to load vbin: {}", e))?;
-        
+
         // Add all terms to the current environment
         for (name, hash) in loaded_codebase.names() {
             if let Some(term) = loaded_codebase.get_term(&hash) {
                 // Add to type environment
                 self.type_env.insert(name.clone(), term.ty.clone());
-                
+
                 // Evaluate and add to runtime environment
                 let mut interpreter = Interpreter::new();
                 let mut env = Interpreter::create_initial_env();
-                
+
                 // Add current runtime environment for evaluation
                 for (existing_name, val) in &self.runtime_env {
                     env = env.extend(Ident(existing_name.clone()), val.clone());
                 }
-                
+
                 match interpreter.eval(&term.expr, &env) {
                     Ok(value) => {
                         self.runtime_env.insert(name.clone(), value.clone());
-                        
+
                         // Add to history
                         let entry = ExpressionHistory {
                             hash: hash.to_hex(),
@@ -675,7 +725,7 @@ impl ShellState {
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -847,7 +897,6 @@ impl ShellState {
     }
 
     pub fn search_definitions(&self, query: &str) -> Result<Vec<String>> {
-        
         // Parse query syntax
         let results = if query.starts_with("type:") {
             // Type search
@@ -865,13 +914,13 @@ impl ShellState {
             // Default: name search
             self.search_by_name(query)?
         };
-        
+
         Ok(results)
     }
-    
+
     fn search_by_type(&self, pattern: &str) -> Result<Vec<String>> {
         let mut results = Vec::new();
-        
+
         for (name, hash) in &self.named_exprs {
             if let Some(entry) = self.expr_history.iter().find(|h| &h.hash == hash) {
                 if self.type_matches_pattern(&entry.ty, pattern) {
@@ -884,13 +933,13 @@ impl ShellState {
                 }
             }
         }
-        
+
         Ok(results)
     }
-    
+
     fn search_by_ast(&self, pattern: &str) -> Result<Vec<String>> {
         let mut results = Vec::new();
-        
+
         for (name, hash) in &self.named_exprs {
             if let Some(entry) = self.expr_history.iter().find(|h| &h.hash == hash) {
                 if self.expr_contains_pattern(&entry.expr, pattern) {
@@ -903,18 +952,18 @@ impl ShellState {
                 }
             }
         }
-        
+
         Ok(results)
     }
-    
+
     fn search_depends_on(&self, _target: &str) -> Result<Vec<String>> {
         // Placeholder for dependency search
         Ok(vec!["Dependency search not yet implemented".to_string()])
     }
-    
+
     fn search_by_name(&self, pattern: &str) -> Result<Vec<String>> {
         let mut results = Vec::new();
-        
+
         for (name, hash) in &self.named_exprs {
             if name.contains(pattern) {
                 if let Some(entry) = self.expr_history.iter().find(|h| &h.hash == hash) {
@@ -927,17 +976,17 @@ impl ShellState {
                 }
             }
         }
-        
+
         Ok(results)
     }
-    
+
     fn type_matches_pattern(&self, ty: &Type, pattern: &str) -> bool {
         match parse_type_pattern(pattern) {
             Ok(matcher) => matcher(ty),
             Err(_) => format!("{ty:?}").contains(pattern), // Fallback to simple string matching
         }
     }
-    
+
     fn expr_contains_pattern(&self, expr: &Expr, pattern: &str) -> bool {
         if let Some(ast_pattern) = AstPattern::from_str(pattern) {
             expr_contains_pattern(expr, &ast_pattern)
@@ -945,16 +994,19 @@ impl ShellState {
             false
         }
     }
-    
+
     pub fn execute_pipeline(&self, commands: &[String]) -> Result<String> {
-        use vibe_workspace::structured_data::{StructuredData, DefinitionData, DefinitionKind, DefinitionMetadata, format_structured_data};
-        use vibe_workspace::pipeline::parse_pipeline_operator;
         use chrono::Utc;
-        
+        use vibe_workspace::pipeline::parse_pipeline_operator;
+        use vibe_workspace::structured_data::{
+            format_structured_data, DefinitionData, DefinitionKind, DefinitionMetadata,
+            StructuredData,
+        };
+
         if commands.is_empty() {
             return Err(anyhow::anyhow!("Empty pipeline"));
         }
-        
+
         // Execute the first command to get initial data
         let first_cmd = &commands[0];
         let mut data = if first_cmd == "definitions" || first_cmd == "ls" {
@@ -966,15 +1018,16 @@ impl ShellState {
                         Type::Function(_, _) => DefinitionKind::Function { arity: 1 }, // Simplified
                         _ => DefinitionKind::Value,
                     };
-                    
+
                     let def = DefinitionData {
                         name: name.clone(),
-                        path: vibe_workspace::namespace::DefinitionPath::from_str(name).unwrap_or_else(|| {
-                            vibe_workspace::namespace::DefinitionPath::new(
-                                vibe_workspace::namespace::NamespacePath::root(),
-                                name.clone()
-                            )
-                        }),
+                        path: vibe_workspace::namespace::DefinitionPath::from_str(name)
+                            .unwrap_or_else(|| {
+                                vibe_workspace::namespace::DefinitionPath::new(
+                                    vibe_workspace::namespace::NamespacePath::root(),
+                                    name.clone(),
+                                )
+                            }),
                         hash: vibe_workspace::hash::DefinitionHash([0; 32]), // Simplified
                         type_signature: format!("{}", entry.ty),
                         kind,
@@ -994,7 +1047,7 @@ impl ShellState {
             // Execute search and convert to structured data
             let query = first_cmd.trim_start_matches("search ").trim();
             let results = self.search_definitions(query)?;
-            
+
             // Convert search results to definitions
             let mut defs = Vec::new();
             for result_str in results {
@@ -1007,15 +1060,16 @@ impl ShellState {
                                 Type::Function(_, _) => DefinitionKind::Function { arity: 1 },
                                 _ => DefinitionKind::Value,
                             };
-                            
+
                             let def = DefinitionData {
                                 name: name.to_string(),
-                                path: vibe_workspace::namespace::DefinitionPath::from_str(name).unwrap_or_else(|| {
-                                    vibe_workspace::namespace::DefinitionPath::new(
-                                        vibe_workspace::namespace::NamespacePath::root(),
-                                        name.to_string()
-                                    )
-                                }),
+                                path: vibe_workspace::namespace::DefinitionPath::from_str(name)
+                                    .unwrap_or_else(|| {
+                                        vibe_workspace::namespace::DefinitionPath::new(
+                                            vibe_workspace::namespace::NamespacePath::root(),
+                                            name.to_string(),
+                                        )
+                                    }),
                                 hash: vibe_workspace::hash::DefinitionHash([0; 32]),
                                 type_signature: format!("{}", entry.ty),
                                 kind,
@@ -1034,15 +1088,17 @@ impl ShellState {
             }
             StructuredData::Definitions(defs)
         } else {
-            return Err(anyhow::anyhow!("First command must be 'definitions', 'ls', or 'search'"));
+            return Err(anyhow::anyhow!(
+                "First command must be 'definitions', 'ls', or 'search'"
+            ));
         };
-        
+
         // Apply pipeline operators
         for cmd in &commands[1..] {
             let operator = parse_pipeline_operator(cmd)?;
             data = operator.apply(data)?;
         }
-        
+
         // Format and return the result
         Ok(format_structured_data(&data))
     }
@@ -1055,34 +1111,46 @@ impl ShellState {
             Expr::Apply { func, args, .. } => {
                 self.has_holes(func) || args.iter().any(|a| self.has_holes(a))
             }
-            Expr::If { cond, then_expr, else_expr, .. } => {
-                self.has_holes(cond) || self.has_holes(then_expr) || self.has_holes(else_expr)
-            }
+            Expr::If {
+                cond,
+                then_expr,
+                else_expr,
+                ..
+            } => self.has_holes(cond) || self.has_holes(then_expr) || self.has_holes(else_expr),
             Expr::Let { value, .. } => self.has_holes(value),
             Expr::LetIn { value, body, .. } => self.has_holes(value) || self.has_holes(body),
             Expr::Lambda { body, .. } => self.has_holes(body),
-            Expr::Match { expr: match_expr, cases, .. } => {
-                self.has_holes(match_expr) || cases.iter().any(|(_, e)| self.has_holes(e))
-            }
-            Expr::Pipeline { expr: lhs, func, .. } => self.has_holes(lhs) || self.has_holes(func),
-            Expr::Do { statements, .. } => {
-                statements.iter().any(|stmt| match stmt {
-                    DoStatement::Bind { expr, .. } => self.has_holes(expr),
-                    DoStatement::Expression(expr) => self.has_holes(expr),
-                })
-            }
+            Expr::Match {
+                expr: match_expr,
+                cases,
+                ..
+            } => self.has_holes(match_expr) || cases.iter().any(|(_, e)| self.has_holes(e)),
+            Expr::Pipeline {
+                expr: lhs, func, ..
+            } => self.has_holes(lhs) || self.has_holes(func),
+            Expr::Do { statements, .. } => statements.iter().any(|stmt| match stmt {
+                DoStatement::Bind { expr, .. } => self.has_holes(expr),
+                DoStatement::Expression(expr) => self.has_holes(expr),
+            }),
             Expr::RecordLiteral { fields, .. } => fields.iter().any(|(_, e)| self.has_holes(e)),
             Expr::RecordAccess { record, .. } => self.has_holes(record),
-            Expr::RecordUpdate { record, updates, .. } => {
-                self.has_holes(record) || updates.iter().any(|(_, e)| self.has_holes(e))
-            }
+            Expr::RecordUpdate {
+                record, updates, ..
+            } => self.has_holes(record) || updates.iter().any(|(_, e)| self.has_holes(e)),
             Expr::List(elements, _) => elements.iter().any(|e| self.has_holes(e)),
             Expr::LetRec { value, .. } => self.has_holes(value),
             Expr::LetRecIn { value, body, .. } => self.has_holes(value) || self.has_holes(body),
-            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
-                self.has_holes(expr) || 
-                handlers.iter().any(|h| self.has_holes(&h.body)) ||
-                return_handler.as_ref().map_or(false, |(_, body)| self.has_holes(body))
+            Expr::HandleExpr {
+                expr,
+                handlers,
+                return_handler,
+                ..
+            } => {
+                self.has_holes(expr)
+                    || handlers.iter().any(|h| self.has_holes(&h.body))
+                    || return_handler
+                        .as_ref()
+                        .map_or(false, |(_, body)| self.has_holes(body))
             }
             Expr::Rec { body, .. } => self.has_holes(body),
             _ => false,
@@ -1097,7 +1165,11 @@ impl ShellState {
         deps
     }
 
-    fn extract_deps_recursive(&self, expr: &Expr, deps: &mut std::collections::HashSet<vibe_workspace::Hash>) {
+    fn extract_deps_recursive(
+        &self,
+        expr: &Expr,
+        deps: &mut std::collections::HashSet<vibe_workspace::Hash>,
+    ) {
         match expr {
             Expr::Ident(name, _) => {
                 // Check if this identifier refers to a named expression
@@ -1123,7 +1195,12 @@ impl ShellState {
                 self.extract_deps_recursive(value, deps);
                 self.extract_deps_recursive(body, deps);
             }
-            Expr::If { cond, then_expr, else_expr, .. } => {
+            Expr::If {
+                cond,
+                then_expr,
+                else_expr,
+                ..
+            } => {
                 self.extract_deps_recursive(cond, deps);
                 self.extract_deps_recursive(then_expr, deps);
                 self.extract_deps_recursive(else_expr, deps);
@@ -1172,7 +1249,8 @@ fn format_value(val: &Value) -> String {
         Value::Constructor { name, .. } => format!("<constructor:{}>", name.0),
         Value::UseStatement { .. } => "<use>".to_string(),
         Value::Record { fields } => {
-            let field_strs: Vec<String> = fields.iter()
+            let field_strs: Vec<String> = fields
+                .iter()
                 .map(|(name, value)| format!("{}: {}", name, format_value(value)))
                 .collect();
             format!("{{{}}}", field_strs.join(", "))
@@ -1190,7 +1268,12 @@ pub fn run_repl() -> Result<()> {
     let storage_path = PathBuf::from(".xs-codebase");
     let mut state = ShellState::new(storage_path)?;
 
-    println!("{}", "Vibe Language Shell - Unified S-expression & Shell Syntax".bold().cyan());
+    println!(
+        "{}",
+        "Vibe Language Shell - Unified S-expression & Shell Syntax"
+            .bold()
+            .cyan()
+    );
     println!("Type 'help' for available commands");
     println!("Default mode: Auto-detect syntax. Use :mode to check, :sexpr/:shell/:auto/:mixed to switch.\n");
 
@@ -1276,22 +1359,20 @@ pub fn run_repl() -> Result<()> {
                                 Err(e) => println!("{}: {}", "Error".red(), e),
                             },
 
-                            Command::Search(query) => {
-                                match state.search_definitions(&query) {
-                                    Ok(results) => {
-                                        if results.is_empty() {
-                                            println!("No definitions found matching the query");
-                                        } else {
-                                            println!("Found {} definitions:", results.len());
-                                            for result in results {
-                                                println!("{result}");
-                                            }
+                            Command::Search(query) => match state.search_definitions(&query) {
+                                Ok(results) => {
+                                    if results.is_empty() {
+                                        println!("No definitions found matching the query");
+                                    } else {
+                                        println!("Found {} definitions:", results.len());
+                                        for result in results {
+                                            println!("{result}");
                                         }
                                     }
-                                    Err(e) => println!("{}: {}", "Error".red(), e),
                                 }
-                            }
-                            
+                                Err(e) => println!("{}: {}", "Error".red(), e),
+                            },
+
                             Command::Pipeline(commands) => {
                                 match state.execute_pipeline(&commands) {
                                     Ok(result) => println!("{result}"),
@@ -1326,8 +1407,9 @@ pub fn run_repl() -> Result<()> {
                                             namespaces.insert(ns.to_string());
                                         }
                                     }
-                                    let root_namespaces: Vec<String> = namespaces.into_iter().collect();
-                                    
+                                    let root_namespaces: Vec<String> =
+                                        namespaces.into_iter().collect();
+
                                     match repo.analyze_reachability(&root_namespaces) {
                                         Ok(analysis) => {
                                             println!("{}", "Dead Code Analysis:".bold());
@@ -1335,20 +1417,27 @@ pub fn run_repl() -> Result<()> {
                                             if analysis.dead_code.is_empty() {
                                                 println!("No dead code found!");
                                             } else {
-                                                println!("Found {} unreachable definitions:", analysis.dead_code.len());
-                                                
+                                                println!(
+                                                    "Found {} unreachable definitions:",
+                                                    analysis.dead_code.len()
+                                                );
+
                                                 // Look up names for dead code
                                                 for hash in &analysis.dead_code {
                                                     if let Ok(results) = repo.search_by_name("") {
                                                         for (h, name, _) in results {
                                                             if &h == hash {
-                                                                println!("  {} [{}]", name, hash.to_hex());
+                                                                println!(
+                                                                    "  {} [{}]",
+                                                                    name,
+                                                                    hash.to_hex()
+                                                                );
                                                                 break;
                                                             }
                                                         }
                                                     }
                                                 }
-                                                
+
                                                 println!();
                                                 println!("Use 'remove-dead-code' to clean up (not implemented yet)");
                                             }
@@ -1367,21 +1456,33 @@ pub fn run_repl() -> Result<()> {
                                             println!("{}", "Reachability Analysis:".bold());
                                             println!();
                                             println!("From namespaces: {}", namespaces.join(", "));
-                                            println!("Reachable definitions: {}", analysis.reachable.len());
-                                            println!("Unreachable definitions: {}", analysis.dead_code.len());
+                                            println!(
+                                                "Reachable definitions: {}",
+                                                analysis.reachable.len()
+                                            );
+                                            println!(
+                                                "Unreachable definitions: {}",
+                                                analysis.dead_code.len()
+                                            );
                                             println!();
-                                            
+
                                             // Show top referenced definitions
-                                            let mut refs: Vec<_> = analysis.reference_count.into_iter().collect();
-                                            refs.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
-                                            
+                                            let mut refs: Vec<_> =
+                                                analysis.reference_count.into_iter().collect();
+                                            refs.sort_by_key(|(_, count)| {
+                                                std::cmp::Reverse(*count)
+                                            });
+
                                             println!("{}", "Most referenced definitions:".cyan());
                                             for (hash, count) in refs.iter().take(10) {
                                                 // Try to find name
                                                 if let Ok(results) = repo.search_by_name("") {
                                                     for (h, name, _) in results {
                                                         if &h == hash {
-                                                            println!("  {} - {} references", name, count);
+                                                            println!(
+                                                                "  {} - {} references",
+                                                                name, count
+                                                            );
                                                             break;
                                                         }
                                                     }
@@ -1398,12 +1499,12 @@ pub fn run_repl() -> Result<()> {
                             Command::Namespace(None) => {
                                 println!("Current namespace: {}", state.current_namespace.cyan());
                             }
-                            
+
                             Command::Namespace(Some(name)) => {
                                 state.current_namespace = name.clone();
                                 println!("Changed to namespace: {}", name.cyan());
                             }
-                            
+
                             _ => {
                                 println!("{}: Command not yet implemented", "Note".yellow());
                             }

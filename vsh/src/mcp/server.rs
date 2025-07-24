@@ -2,16 +2,11 @@
 //!
 //! HTTP server that handles MCP protocol requests.
 
-use axum::{
-    extract::State,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower::ServiceBuilder;
-use tracing::{info, error};
+use tracing::{error, info};
 
 use super::{
     handlers,
@@ -45,28 +40,25 @@ impl McpServer {
             version: env!("CARGO_PKG_VERSION").to_string(),
             workspace: None,
         };
-        
+
         Self {
             state: Arc::new(RwLock::new(state)),
         }
     }
-    
+
     /// Build the router
     pub fn router(self) -> Router {
         Router::new()
             .route("/mcp", post(handle_mcp_request))
-            .layer(
-                ServiceBuilder::new()
-                    .layer(axum::middleware::from_fn(logging_middleware))
-            )
+            .layer(ServiceBuilder::new().layer(axum::middleware::from_fn(logging_middleware)))
             .with_state(self.state)
     }
-    
+
     /// Run the server
     pub async fn run(self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         info!("MCP server listening on {}", addr);
-        
+
         axum::serve(listener, self.router()).await?;
         Ok(())
     }
@@ -88,7 +80,7 @@ async fn handle_mcp_request(
             }
         }
     };
-    
+
     Json(response)
 }
 
@@ -96,21 +88,18 @@ async fn handle_mcp_request(
 pub async fn run_server(port: u16) -> anyhow::Result<()> {
     let server = McpServer::new();
     let state = server.state.clone();
-    
+
     let app = Router::new()
         .route("/", post(handle_mcp_request))
-        .layer(
-            ServiceBuilder::new()
-                .layer(axum::middleware::from_fn(logging_middleware))
-        )
+        .layer(ServiceBuilder::new().layer(axum::middleware::from_fn(logging_middleware)))
         .with_state(state);
-    
+
     let addr = format!("0.0.0.0:{}", port);
     info!("MCP server listening on {}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
-    
+
     Ok(())
 }
 
@@ -121,12 +110,12 @@ async fn logging_middleware(
 ) -> impl IntoResponse {
     let method = request.method().clone();
     let uri = request.uri().clone();
-    
+
     info!("Request: {} {}", method, uri);
-    
+
     let response = next.run(request).await;
-    
+
     info!("Response: {}", response.status());
-    
+
     response
 }

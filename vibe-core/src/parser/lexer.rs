@@ -5,20 +5,20 @@ use std::str::Chars;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Basic tokens
-    LeftParen,      // (
-    RightParen,     // )
-    LeftBrace,      // {
-    RightBrace,     // }
-    LeftBracket,    // [
-    RightBracket,   // ]
-    
+    LeftParen,    // (
+    RightParen,   // )
+    LeftBrace,    // {
+    RightBrace,   // }
+    LeftBracket,  // [
+    RightBracket, // ]
+
     // Literals
     Int(i64),
     Float(f64),
     Bool(bool),
     String(String),
     Symbol(String),
-    
+
     // Keywords (lowerCamelCase style)
     Let,
     LetRec,
@@ -26,7 +26,7 @@ pub enum Token {
     Fn,
     If,
     Else,
-    Match,  // match keyword for pattern matching
+    Match, // match keyword for pattern matching
     Type,
     Data,
     Effect,
@@ -42,36 +42,36 @@ pub enum Token {
     As,
     Where,
     Forall,
-    
+
     // Operators
-    Equals,         // =
-    EqualsEquals,   // ==
-    Arrow,          // ->
-    FatArrow,       // =>
-    LessThan,       // <
-    GreaterThan,    // >
-    LeftArrow,      // <-
-    Pipe,           // |
-    PipeForward,    // |>
-    Dot,            // .
-    Comma,          // ,
-    Colon,          // :
-    Semicolon,      // ;
-    DoubleColon,    // ::
-    At,             // @
-    Hash,           // #
-    Dollar,         // $
-    Underscore,     // _
-    Ellipsis,       // ...
-    Backslash,      // \
-    
+    Equals,       // =
+    EqualsEquals, // ==
+    Arrow,        // ->
+    FatArrow,     // =>
+    LessThan,     // <
+    GreaterThan,  // >
+    LeftArrow,    // <-
+    Pipe,         // |
+    PipeForward,  // |>
+    Dot,          // .
+    Comma,        // ,
+    Colon,        // :
+    Semicolon,    // ;
+    DoubleColon,  // ::
+    At,           // @
+    Hash,         // #
+    Dollar,       // $
+    Underscore,   // _
+    Ellipsis,     // ...
+    Backslash,    // \
+
     // Type/Effect operators
-    LeftAngle,      // <
-    RightAngle,     // >
-    
+    LeftAngle,  // <
+    RightAngle, // >
+
     // Comments
     Comment(String),
-    
+
     // Special
     Newline,
     Eof,
@@ -109,127 +109,123 @@ impl<'a> Lexer<'a> {
 
         match self.chars.peek() {
             None => Ok(None),
-            Some(&ch) => {
-                match ch {
-                    '\n' => {
-                        self.advance();
-                        Ok(Some((Token::Newline, Span::new(start, self.position))))
-                    }
-                    '(' => {
-                        self.advance();
-                        Ok(Some((Token::LeftParen, Span::new(start, self.position))))
-                    }
-                    ')' => {
-                        self.advance();
-                        Ok(Some((Token::RightParen, Span::new(start, self.position))))
-                    }
-                    '{' => {
-                        self.advance();
-                        Ok(Some((Token::LeftBrace, Span::new(start, self.position))))
-                    }
-                    '}' => {
-                        self.advance();
-                        Ok(Some((Token::RightBrace, Span::new(start, self.position))))
-                    }
-                    '[' => {
-                        self.advance();
-                        Ok(Some((Token::LeftBracket, Span::new(start, self.position))))
-                    }
-                    ']' => {
-                        self.advance();
-                        Ok(Some((Token::RightBracket, Span::new(start, self.position))))
-                    }
-                    '=' if self.peek_next() == Some('>') => {
-                        self.advance();
-                        self.advance();
-                        Ok(Some((Token::FatArrow, Span::new(start, self.position))))
-                    }
-                    '=' => {
-                        if self.peek_next() == Some('=') {
-                            self.advance();
-                            self.advance();
-                            Ok(Some((Token::EqualsEquals, Span::new(start, self.position))))
-                        } else {
-                            self.advance();
-                            Ok(Some((Token::Equals, Span::new(start, self.position))))
-                        }
-                    }
-                    '-' if self.peek_next() == Some('>') => {
-                        self.advance();
-                        self.advance();
-                        Ok(Some((Token::Arrow, Span::new(start, self.position))))
-                    }
-                    '-' if self.peek_next() == Some('-') => {
-                        self.read_line_comment()
-                    }
-                    '-' if self.peek_next().map(|c| c.is_numeric()).unwrap_or(false) => {
-                        self.read_number()
-                    }
-                    '|' if self.peek_next() == Some('>') => {
-                        self.advance();
-                        self.advance();
-                        Ok(Some((Token::PipeForward, Span::new(start, self.position))))
-                    }
-                    '|' => {
-                        self.advance();
-                        Ok(Some((Token::Pipe, Span::new(start, self.position))))
-                    }
-                    ':' if self.peek_next() == Some(':') => {
-                        self.advance();
-                        self.advance();
-                        Ok(Some((Token::DoubleColon, Span::new(start, self.position))))
-                    }
-                    ':' => {
-                        self.advance();
-                        Ok(Some((Token::Colon, Span::new(start, self.position))))
-                    }
-                    '.' if self.peek_next() == Some('.') && self.peek_next_next() == Some('.') => {
-                        self.advance();
-                        self.advance();
-                        self.advance();
-                        Ok(Some((Token::Ellipsis, Span::new(start, self.position))))
-                    }
-                    '.' => {
-                        self.advance();
-                        Ok(Some((Token::Dot, Span::new(start, self.position))))
-                    }
-                    ',' => {
-                        self.advance();
-                        Ok(Some((Token::Comma, Span::new(start, self.position))))
-                    }
-                    ';' => {
-                        self.advance();
-                        Ok(Some((Token::Semicolon, Span::new(start, self.position))))
-                    }
-                    '@' => {
-                        self.advance();
-                        Ok(Some((Token::At, Span::new(start, self.position))))
-                    }
-                    '#' => {
-                        self.advance();
-                        Ok(Some((Token::Hash, Span::new(start, self.position))))
-                    }
-                    '$' => {
-                        self.advance();
-                        Ok(Some((Token::Dollar, Span::new(start, self.position))))
-                    }
-                    '\\' => {
-                        self.advance();
-                        Ok(Some((Token::Backslash, Span::new(start, self.position))))
-                    }
-                    '<' => self.read_operator(),
-                    '>' => self.read_operator(),
-                    '"' => self.read_string(),
-                    '\'' => self.read_char_or_quoted_symbol(),
-                    '0'..='9' => self.read_number(),
-                    _ if ch.is_alphabetic() || ch == '_' => self.read_identifier(),
-                    _ if is_operator_char(ch) => self.read_operator(),
-                    _ => Err(XsError::ParseError(
-                        self.position,
-                        format!("Unexpected character: {ch}"),
-                    )),
+            Some(&ch) => match ch {
+                '\n' => {
+                    self.advance();
+                    Ok(Some((Token::Newline, Span::new(start, self.position))))
                 }
-            }
+                '(' => {
+                    self.advance();
+                    Ok(Some((Token::LeftParen, Span::new(start, self.position))))
+                }
+                ')' => {
+                    self.advance();
+                    Ok(Some((Token::RightParen, Span::new(start, self.position))))
+                }
+                '{' => {
+                    self.advance();
+                    Ok(Some((Token::LeftBrace, Span::new(start, self.position))))
+                }
+                '}' => {
+                    self.advance();
+                    Ok(Some((Token::RightBrace, Span::new(start, self.position))))
+                }
+                '[' => {
+                    self.advance();
+                    Ok(Some((Token::LeftBracket, Span::new(start, self.position))))
+                }
+                ']' => {
+                    self.advance();
+                    Ok(Some((Token::RightBracket, Span::new(start, self.position))))
+                }
+                '=' if self.peek_next() == Some('>') => {
+                    self.advance();
+                    self.advance();
+                    Ok(Some((Token::FatArrow, Span::new(start, self.position))))
+                }
+                '=' => {
+                    if self.peek_next() == Some('=') {
+                        self.advance();
+                        self.advance();
+                        Ok(Some((Token::EqualsEquals, Span::new(start, self.position))))
+                    } else {
+                        self.advance();
+                        Ok(Some((Token::Equals, Span::new(start, self.position))))
+                    }
+                }
+                '-' if self.peek_next() == Some('>') => {
+                    self.advance();
+                    self.advance();
+                    Ok(Some((Token::Arrow, Span::new(start, self.position))))
+                }
+                '-' if self.peek_next() == Some('-') => self.read_line_comment(),
+                '-' if self.peek_next().map(|c| c.is_numeric()).unwrap_or(false) => {
+                    self.read_number()
+                }
+                '|' if self.peek_next() == Some('>') => {
+                    self.advance();
+                    self.advance();
+                    Ok(Some((Token::PipeForward, Span::new(start, self.position))))
+                }
+                '|' => {
+                    self.advance();
+                    Ok(Some((Token::Pipe, Span::new(start, self.position))))
+                }
+                ':' if self.peek_next() == Some(':') => {
+                    self.advance();
+                    self.advance();
+                    Ok(Some((Token::DoubleColon, Span::new(start, self.position))))
+                }
+                ':' => {
+                    self.advance();
+                    Ok(Some((Token::Colon, Span::new(start, self.position))))
+                }
+                '.' if self.peek_next() == Some('.') && self.peek_next_next() == Some('.') => {
+                    self.advance();
+                    self.advance();
+                    self.advance();
+                    Ok(Some((Token::Ellipsis, Span::new(start, self.position))))
+                }
+                '.' => {
+                    self.advance();
+                    Ok(Some((Token::Dot, Span::new(start, self.position))))
+                }
+                ',' => {
+                    self.advance();
+                    Ok(Some((Token::Comma, Span::new(start, self.position))))
+                }
+                ';' => {
+                    self.advance();
+                    Ok(Some((Token::Semicolon, Span::new(start, self.position))))
+                }
+                '@' => {
+                    self.advance();
+                    Ok(Some((Token::At, Span::new(start, self.position))))
+                }
+                '#' => {
+                    self.advance();
+                    Ok(Some((Token::Hash, Span::new(start, self.position))))
+                }
+                '$' => {
+                    self.advance();
+                    Ok(Some((Token::Dollar, Span::new(start, self.position))))
+                }
+                '\\' => {
+                    self.advance();
+                    Ok(Some((Token::Backslash, Span::new(start, self.position))))
+                }
+                '<' => self.read_operator(),
+                '>' => self.read_operator(),
+                '"' => self.read_string(),
+                '\'' => self.read_char_or_quoted_symbol(),
+                '0'..='9' => self.read_number(),
+                _ if ch.is_alphabetic() || ch == '_' => self.read_identifier(),
+                _ if is_operator_char(ch) => self.read_operator(),
+                _ => Err(XsError::ParseError(
+                    self.position,
+                    format!("Unexpected character: {ch}"),
+                )),
+            },
         }
     }
 
@@ -406,7 +402,9 @@ impl<'a> Lexer<'a> {
                     }
 
                     match value.parse::<f64>() {
-                        Ok(f) => return Ok(Some((Token::Float(f), Span::new(start, self.position)))),
+                        Ok(f) => {
+                            return Ok(Some((Token::Float(f), Span::new(start, self.position))))
+                        }
                         Err(_) => {
                             return Err(XsError::ParseError(
                                 start,
@@ -443,7 +441,7 @@ impl<'a> Lexer<'a> {
         let token = match value.as_str() {
             "let" => Token::Let,
             "letrec" => Token::LetRec,
-            "rec" => Token::LetRec,  // Support both "rec" and "letrec"
+            "rec" => Token::LetRec, // Support both "rec" and "letrec"
             "in" => Token::In,
             "fn" => Token::Fn,
             "if" => Token::If,
@@ -499,13 +497,16 @@ impl<'a> Lexer<'a> {
             "|>" => Token::PipeForward,
             _ => Token::Symbol(value),
         };
-        
+
         Ok(Some((token, Span::new(start, self.position))))
     }
 }
 
 fn is_operator_char(ch: char) -> bool {
-    matches!(ch, '+' | '-' | '*' | '/' | '%' | '&' | '^' | '!' | '?' | '~' | '<' | '>' | '=')
+    matches!(
+        ch,
+        '+' | '-' | '*' | '/' | '%' | '&' | '^' | '!' | '?' | '~' | '<' | '>' | '='
+    )
 }
 
 #[cfg(test)]
@@ -515,7 +516,7 @@ mod tests {
     #[test]
     fn test_basic_tokens() {
         let mut lexer = Lexer::new("{ } ( ) [ ]");
-        
+
         assert_eq!(
             lexer.next_token().unwrap(),
             Some((Token::LeftBrace, Span::new(0, 1)))
@@ -545,7 +546,7 @@ mod tests {
     #[test]
     fn test_operators() {
         let mut lexer = Lexer::new("= -> => | |> :: ... @ #");
-        
+
         assert_eq!(
             lexer.next_token().unwrap(),
             Some((Token::Equals, Span::new(0, 1)))
@@ -587,7 +588,7 @@ mod tests {
     #[test]
     fn test_keywords() {
         let mut lexer = Lexer::new("let fn if else match with do effect handler");
-        
+
         assert_eq!(
             lexer.next_token().unwrap(),
             Some((Token::Let, Span::new(0, 3)))
@@ -629,7 +630,7 @@ mod tests {
     #[test]
     fn test_comments() {
         let mut lexer = Lexer::new("42 -- this is a comment\n43");
-        
+
         assert_eq!(
             lexer.next_token().unwrap(),
             Some((Token::Int(42), Span::new(0, 2)))
@@ -647,7 +648,7 @@ mod tests {
     #[test]
     fn test_newlines() {
         let mut lexer = Lexer::new("42\n43\n");
-        
+
         assert_eq!(
             lexer.next_token().unwrap(),
             Some((Token::Int(42), Span::new(0, 2)))

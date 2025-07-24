@@ -4,10 +4,10 @@ use anyhow::{Context, Result};
 use colored::*;
 use std::fs;
 use std::path::PathBuf;
+use vibe_compiler::wasm::wit_generator::WitGenerator;
 use vibe_compiler::{type_check, TypeChecker, TypeEnv};
 use vibe_core::parser::parse;
 use vibe_core::{Expr, Span, Type};
-use vibe_compiler::wasm::wit_generator::WitGenerator;
 
 use crate::cli::ComponentCommand;
 
@@ -317,7 +317,8 @@ fn _type_check_exports(
             // This is a simplified approach - ideally we'd do proper recursive binding
             match checker.check(expr, type_env) {
                 Ok(typ) => {
-                    type_env.add_binding(name.clone(), vibe_compiler::TypeScheme::mono(typ.clone()));
+                    type_env
+                        .add_binding(name.clone(), vibe_compiler::TypeScheme::mono(typ.clone()));
                 }
                 Err(_) => {} // Ignore errors in first pass
             }

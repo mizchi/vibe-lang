@@ -285,7 +285,7 @@ impl Codebase {
     /// 依存関係から逆引き依存関係を再構築
     pub fn rebuild_dependents(&mut self) {
         self.dependents.clear();
-        
+
         for (hash, deps) in &self.dependencies {
             for dep in deps {
                 self.dependents
@@ -298,23 +298,20 @@ impl Codebase {
 
     /// Get all term names and their hashes
     pub fn names(&self) -> Vec<(String, Hash)> {
-        self.term_names.iter()
+        self.term_names
+            .iter()
             .map(|(name, hash)| (name.clone(), hash.clone()))
             .collect()
     }
 
     /// Get direct dependencies of a term
     pub fn get_direct_dependencies(&self, hash: &Hash) -> HashSet<Hash> {
-        self.dependencies.get(hash)
-            .cloned()
-            .unwrap_or_default()
+        self.dependencies.get(hash).cloned().unwrap_or_default()
     }
 
     /// Get dependents of a term
     pub fn get_dependents(&self, hash: &Hash) -> HashSet<Hash> {
-        self.dependents.get(hash)
-            .cloned()
-            .unwrap_or_default()
+        self.dependents.get(hash).cloned().unwrap_or_default()
     }
 
     /// Extract dependencies from an expression

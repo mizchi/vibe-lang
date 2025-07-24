@@ -4,8 +4,8 @@
 //! S-expressions and shell syntax, allowing them to coexist in the same
 //! workspace and share the same semantics.
 
-use vibe_core::{Expr, XsError};
 use crate::shell_syntax::{parse_shell_syntax, shell_to_sexpr};
+use vibe_core::{Expr, XsError};
 
 /// Unified expression that can be either S-expression or shell syntax
 #[derive(Debug, Clone)]
@@ -21,25 +21,16 @@ pub enum UnifiedExpr {
 /// Parse a line of input with specified mode
 pub fn parse_unified_with_mode(input: &str, mode: SyntaxMode) -> Result<Expr, XsError> {
     let input = input.trim();
-    
+
     // Empty input
     if input.is_empty() {
-        return Err(XsError::ParseError(
-            0,
-            "Empty input".to_string()
-        ));
+        return Err(XsError::ParseError(0, "Empty input".to_string()));
     }
-    
+
     match mode {
-        SyntaxMode::SExprOnly => {
-            vibe_core::parser::parse(input)
-        }
-        SyntaxMode::ShellOnly => {
-            parse_as_shell(input)
-        }
-        SyntaxMode::Auto => {
-            parse_unified(input)
-        }
+        SyntaxMode::SExprOnly => vibe_core::parser::parse(input),
+        SyntaxMode::ShellOnly => parse_as_shell(input),
+        SyntaxMode::Auto => parse_unified(input),
         SyntaxMode::Mixed => {
             // For now, same as Auto. Future: support embedded syntax
             parse_unified(input)
@@ -50,15 +41,12 @@ pub fn parse_unified_with_mode(input: &str, mode: SyntaxMode) -> Result<Expr, Xs
 /// Parse a line of input, automatically detecting syntax type
 pub fn parse_unified(input: &str) -> Result<Expr, XsError> {
     let input = input.trim();
-    
+
     // Empty input
     if input.is_empty() {
-        return Err(XsError::ParseError(
-            0,
-            "Empty input".to_string()
-        ));
+        return Err(XsError::ParseError(0, "Empty input".to_string()));
     }
-    
+
     // Check if it's an S-expression
     if input.starts_with('(') {
         // Try to parse as S-expression first
@@ -93,41 +81,72 @@ fn looks_like_shell_command(input: &str) -> bool {
     if input.contains('|') {
         return true;
     }
-    
+
     // Known shell commands
     let first_word = input.split_whitespace().next().unwrap_or("");
     matches!(
         first_word,
-        "ls" | "search" | "filter" | "select" | "sort" | "take" | 
-        "group" | "count" | "definitions" | "pipe"
+        "ls" | "search"
+            | "filter"
+            | "select"
+            | "sort"
+            | "take"
+            | "group"
+            | "count"
+            | "definitions"
+            | "pipe"
     )
 }
 
 /// Check if input looks like a function call (identifier followed by arguments)
 fn looks_like_function_call(input: &str) -> bool {
     let parts: Vec<&str> = input.split_whitespace().collect();
-    
+
     // Need at least 2 parts for function call
     if parts.len() < 2 {
         return false;
     }
-    
+
     let first = parts[0];
-    
+
     // Check if first part is a valid identifier (not a number or string literal)
     if first.starts_with('"') || first.parse::<i64>().is_ok() || first.parse::<f64>().is_ok() {
         return false;
     }
-    
+
     // Check if it's not a known shell command
     !matches!(
         first,
-        "ls" | "search" | "filter" | "select" | "sort" | "take" | 
-        "group" | "count" | "definitions" | "pipe" | "add" | "view" |
-        "edit" | "update" | "undo" | "find" | "type-of" | "branch" |
-        "merge" | "history" | "log" | "debug" | "trace" | "references" |
-        "definition" | "hover" | "stats" | "dead-code" | "reachable" |
-        "namespace" | "ns"
+        "ls" | "search"
+            | "filter"
+            | "select"
+            | "sort"
+            | "take"
+            | "group"
+            | "count"
+            | "definitions"
+            | "pipe"
+            | "add"
+            | "view"
+            | "edit"
+            | "update"
+            | "undo"
+            | "find"
+            | "type-of"
+            | "branch"
+            | "merge"
+            | "history"
+            | "log"
+            | "debug"
+            | "trace"
+            | "references"
+            | "definition"
+            | "hover"
+            | "stats"
+            | "dead-code"
+            | "reachable"
+            | "namespace"
+            | "ns"
     )
 }
 
@@ -135,10 +154,7 @@ fn looks_like_function_call(input: &str) -> bool {
 fn parse_as_shell(input: &str) -> Result<Expr, XsError> {
     match parse_shell_syntax(input) {
         Ok(shell_expr) => Ok(shell_to_sexpr(&shell_expr)),
-        Err(e) => Err(XsError::ParseError(
-            0,
-            format!("Shell syntax error: {e}")
-        ))
+        Err(e) => Err(XsError::ParseError(0, format!("Shell syntax error: {e}"))),
     }
 }
 
@@ -165,13 +181,13 @@ impl MixedSyntaxParser {
             allow_embedded: true,
         }
     }
-    
+
     /// Parse with mixed syntax support
     pub fn parse(&self, input: &str) -> Result<Expr, XsError> {
         // For now, delegate to unified parser
         parse_unified(input)
     }
-    
+
     /// Parse S-expression with embedded shell commands
     /// Example: (map $[ls | filter type function] process)
     pub fn parse_with_embedded(&self, input: &str) -> Result<Expr, XsError> {
@@ -181,8 +197,7 @@ impl MixedSyntaxParser {
 }
 
 /// Syntax mode for the REPL
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum SyntaxMode {
     /// Only S-expressions
     SExprOnly,
@@ -194,7 +209,6 @@ pub enum SyntaxMode {
     /// Mixed mode with embedded syntax
     Mixed,
 }
-
 
 /// Configuration for unified parsing
 pub struct ParserConfig {
@@ -220,7 +234,7 @@ impl Default for ParserConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_sexpr() {
         let input = "(+ 1 2)";
@@ -231,7 +245,7 @@ mod tests {
             _ => panic!("Expected Apply expression"),
         }
     }
-    
+
     #[test]
     fn test_parse_shell() {
         let input = "ls | filter kind function";
@@ -242,15 +256,15 @@ mod tests {
             _ => panic!("Expected Apply expression"),
         }
     }
-    
+
     #[test]
     fn test_auto_detect() {
         // S-expression
         assert!(parse_unified("(let x 10)").is_ok());
-        
+
         // Shell command
         assert!(parse_unified("search type:Int").is_ok());
-        
+
         // Pipeline
         assert!(parse_unified("ls | take 5").is_ok());
     }

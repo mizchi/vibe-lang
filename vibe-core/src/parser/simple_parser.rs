@@ -1,8 +1,8 @@
 //! Simple parser implementation for testing parser
 //! This is a minimal implementation to test the lexer and basic parsing
 
-use crate::{Expr, Span, XsError, Ident, Literal};
 use super::lexer::{Lexer, Token};
+use crate::{Expr, Ident, Literal, Span, XsError};
 
 pub struct SimpleParser<'a> {
     lexer: Lexer<'a>,
@@ -13,7 +13,7 @@ impl<'a> SimpleParser<'a> {
     pub fn new(input: &'a str) -> Result<Self, XsError> {
         let mut lexer = Lexer::new(input);
         let current_token = lexer.next_token()?;
-        
+
         Ok(SimpleParser {
             lexer,
             current_token,
@@ -48,8 +48,8 @@ impl<'a> SimpleParser<'a> {
             }
             _ => Err(XsError::ParseError(
                 self.position(),
-                format!("Unexpected token: {:?}", self.current_token)
-            ))
+                format!("Unexpected token: {:?}", self.current_token),
+            )),
         }
     }
 
@@ -76,7 +76,7 @@ mod tests {
         let mut parser = SimpleParser::new("42").unwrap();
         let expr = parser.parse_expr().unwrap();
         match expr {
-            Expr::Literal(Literal::Int(42), _) => {},
+            Expr::Literal(Literal::Int(42), _) => {}
             _ => panic!("Expected Int literal"),
         }
     }
@@ -86,7 +86,7 @@ mod tests {
         let mut parser = SimpleParser::new("true").unwrap();
         let expr = parser.parse_expr().unwrap();
         match expr {
-            Expr::Literal(Literal::Bool(true), _) => {},
+            Expr::Literal(Literal::Bool(true), _) => {}
             _ => panic!("Expected Bool literal"),
         }
     }
@@ -96,7 +96,7 @@ mod tests {
         let mut parser = SimpleParser::new("\"hello\"").unwrap();
         let expr = parser.parse_expr().unwrap();
         match expr {
-            Expr::Literal(Literal::String(s), _) if s == "hello" => {},
+            Expr::Literal(Literal::String(s), _) if s == "hello" => {}
             _ => panic!("Expected String literal"),
         }
     }
@@ -106,7 +106,7 @@ mod tests {
         let mut parser = SimpleParser::new("foo").unwrap();
         let expr = parser.parse_expr().unwrap();
         match expr {
-            Expr::Ident(Ident(name), _) if name == "foo" => {},
+            Expr::Ident(Ident(name), _) if name == "foo" => {}
             _ => panic!("Expected Identifier"),
         }
     }

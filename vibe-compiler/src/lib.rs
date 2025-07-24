@@ -23,14 +23,17 @@ pub use perceus::PerceusTransform;
 
 // Type checker exports
 use std::collections::{HashMap, HashSet};
-use vibe_core::{DoStatement, Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError, extensible_effects::ExtensibleEffectRow};
+use vibe_core::{
+    extensible_effects::ExtensibleEffectRow, DoStatement, Expr, Ident, Literal, Pattern, Span,
+    Type, TypeDefinition, XsError,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
     pub vars: Vec<String>,
     pub typ: Type,
     pub effects: Option<ExtensibleEffectRow>, // Track effects at type scheme level
-    pub effect_vars: Vec<String>, // Effect variables for polymorphic effects
+    pub effect_vars: Vec<String>,             // Effect variables for polymorphic effects
 }
 
 impl TypeScheme {
@@ -42,7 +45,7 @@ impl TypeScheme {
             effect_vars: Vec::new(),
         }
     }
-    
+
     pub fn mono_with_effects(typ: Type, effects: ExtensibleEffectRow) -> Self {
         TypeScheme {
             vars: Vec::new(),
@@ -115,7 +118,10 @@ impl Default for TypeEnv {
             "=",
             Type::Function(
                 Box::new(Type::Var("eq".to_string())),
-                Box::new(Type::Function(Box::new(Type::Var("eq".to_string())), Box::new(Type::Bool))),
+                Box::new(Type::Function(
+                    Box::new(Type::Var("eq".to_string())),
+                    Box::new(Type::Bool),
+                )),
             ),
         );
         env.add_builtin(
@@ -205,7 +211,7 @@ impl Default for TypeEnv {
                 )),
             ),
         );
-        
+
         // Also register :: as an alias for cons
         env.add_builtin(
             "::",
@@ -320,9 +326,9 @@ impl TypeEnv {
 
     fn init_builtin_modules(&mut self) {
         use vibe_core::builtin_modules::BuiltinModuleRegistry;
-        
+
         let registry = BuiltinModuleRegistry::new();
-        
+
         for (module_name, module) in registry.all_modules() {
             let mut module_bindings = HashMap::new();
             for (func_name, func_type) in &module.functions {
@@ -335,25 +341,25 @@ impl TypeEnv {
     pub fn lookup_module_function(&self, module: &str, function: &str) -> Option<&TypeScheme> {
         self.modules.get(module)?.get(function)
     }
-    
+
     /// Get all bindings from all scopes (for effect variable collection)
     pub fn all_bindings(&self) -> Vec<(&String, &TypeScheme)> {
         let mut bindings = Vec::new();
-        
+
         // Collect from all scopes
         for scope in &self.bindings {
             for (name, scheme) in scope {
                 bindings.push((name, scheme));
             }
         }
-        
+
         // Also collect from modules
         for (_module_name, module_bindings) in &self.modules {
             for (name, scheme) in module_bindings {
                 bindings.push((name, scheme));
             }
         }
-        
+
         bindings
     }
 }
@@ -378,7 +384,7 @@ impl TypeChecker {
             effect_checker: Some(effect_checker::EffectChecker::new()),
         }
     }
-    
+
     pub fn new_without_effects() -> Self {
         TypeChecker {
             fresh_var_counter: 0,
@@ -393,16 +399,22 @@ impl TypeChecker {
         var
     }
 
-    fn handle_use(&mut self, env: &mut TypeEnv, path: &[String], items: &Option<Vec<Ident>>) -> Result<(), XsError> {
+    fn handle_use(
+        &mut self,
+        env: &mut TypeEnv,
+        path: &[String],
+        items: &Option<Vec<Ident>>,
+    ) -> Result<(), XsError> {
         use vibe_core::lib_modules::get_module_functions;
-        
+
         // Get available functions for the module
-        let available_functions = get_module_functions(path)
-            .ok_or_else(|| XsError::TypeError(
+        let available_functions = get_module_functions(path).ok_or_else(|| {
+            XsError::TypeError(
                 Span::new(0, 0),
                 format!("Unknown module path: {}", path.join("/")),
-            ))?;
-        
+            )
+        })?;
+
         if let Some(items) = items {
             // Import only specific items
             for item in items {
@@ -412,7 +424,11 @@ impl TypeChecker {
                 } else {
                     return Err(XsError::TypeError(
                         Span::new(0, 0),
-                        format!("Function '{}' not found in module {}", func_name, path.join("/")),
+                        format!(
+                            "Function '{}' not found in module {}",
+                            func_name,
+                            path.join("/")
+                        ),
                     ));
                 }
             }
@@ -422,7 +438,7 @@ impl TypeChecker {
                 env.add_builtin(&name, typ);
             }
         }
-        
+
         Ok(())
     }
 
@@ -452,8 +468,18 @@ impl TypeChecker {
                 self.unify(p1, p2)?;
                 self.unify(r1, r2)
             }
-            (Type::FunctionWithEffect { from: f1, to: t1, effects: e1 }, 
-             Type::FunctionWithEffect { from: f2, to: t2, effects: e2 }) => {
+            (
+                Type::FunctionWithEffect {
+                    from: f1,
+                    to: t1,
+                    effects: e1,
+                },
+                Type::FunctionWithEffect {
+                    from: f2,
+                    to: t2,
+                    effects: e2,
+                },
+            ) => {
                 self.unify(f1, f2)?;
                 self.unify(t1, t2)?;
                 // TODO: unify effects
@@ -465,18 +491,41 @@ impl TypeChecker {
                 }
             }
             // Allow unifying pure functions with effectful functions
-            (Type::Function(p1, r1), Type::FunctionWithEffect { from: p2, to: r2, .. }) |
-            (Type::FunctionWithEffect { from: p1, to: r1, .. }, Type::Function(p2, r2)) => {
+            (
+                Type::Function(p1, r1),
+                Type::FunctionWithEffect {
+                    from: p2, to: r2, ..
+                },
+            )
+            | (
+                Type::FunctionWithEffect {
+                    from: p1, to: r1, ..
+                },
+                Type::Function(p2, r2),
+            ) => {
                 self.unify(p1, p2)?;
                 self.unify(r1, r2)
             }
             (Type::List(e1), Type::List(e2)) => self.unify(e1, e2),
-            (Type::UserDefined { name: n1, type_params: p1 }, 
-             Type::UserDefined { name: n2, type_params: p2 }) => {
+            (
+                Type::UserDefined {
+                    name: n1,
+                    type_params: p1,
+                },
+                Type::UserDefined {
+                    name: n2,
+                    type_params: p2,
+                },
+            ) => {
                 if n1 != n2 {
                     Err(format!("Cannot unify different types: {} and {}", n1, n2))
                 } else if p1.len() != p2.len() {
-                    Err(format!("Type parameter count mismatch for {}: {} vs {}", n1, p1.len(), p2.len()))
+                    Err(format!(
+                        "Type parameter count mismatch for {}: {} vs {}",
+                        n1,
+                        p1.len(),
+                        p2.len()
+                    ))
                 } else {
                     for (param1, param2) in p1.iter().zip(p2.iter()) {
                         self.unify(param1, param2)?;
@@ -490,8 +539,9 @@ impl TypeChecker {
                         format!(
                             "Cannot unify {} with {}.\n\
                             Hint: For float arithmetic, use operators with dots: +. -. *. /.\n\
-                            Example: (+. 1.8 32.0) instead of (+ 1.8 32.0)"
-                        , t1, t2)
+                            Example: (+. 1.8 32.0) instead of (+ 1.8 32.0)",
+                            t1, t2
+                        )
                     }
                     _ => format!("Cannot unify {} with {}", t1, t2),
                 };
@@ -516,9 +566,9 @@ impl TypeChecker {
         for var in &scheme.vars {
             subst.insert(var.clone(), self.fresh_var());
         }
-        
+
         let instantiated_typ = self.substitute_with_map(&scheme.typ, &subst);
-        
+
         // If the scheme has effects, instantiate them too
         if let (Some(effects), Some(effect_checker)) = (&scheme.effects, &mut self.effect_checker) {
             if !scheme.effect_vars.is_empty() {
@@ -526,7 +576,7 @@ impl TypeChecker {
                     vars: scheme.effect_vars.clone(),
                     effects: effects.clone(),
                 });
-                
+
                 // Apply instantiated effects to function types
                 match instantiated_typ {
                     Type::Function(from, to) => {
@@ -540,7 +590,7 @@ impl TypeChecker {
                 }
             }
         }
-        
+
         instantiated_typ
     }
 
@@ -569,7 +619,10 @@ impl TypeChecker {
             Type::List(elem) => Type::List(Box::new(self.substitute_with_map(elem, subst))),
             Type::UserDefined { name, type_params } => Type::UserDefined {
                 name: name.clone(),
-                type_params: type_params.iter().map(|t| self.substitute_with_map(t, subst)).collect(),
+                type_params: type_params
+                    .iter()
+                    .map(|t| self.substitute_with_map(t, subst))
+                    .collect(),
             },
             _ => typ.clone(),
         }
@@ -580,33 +633,40 @@ impl TypeChecker {
         let free_vars = Self::free_type_vars(&typ);
         let env_vars = self.env_type_vars(env);
         let vars: Vec<String> = free_vars.difference(&env_vars).cloned().collect();
-        TypeScheme { vars, typ, effects: None, effect_vars: Vec::new() }
+        TypeScheme {
+            vars,
+            typ,
+            effects: None,
+            effect_vars: Vec::new(),
+        }
     }
-    
+
     fn generalize_with_effects(&mut self, typ: &Type, env: &TypeEnv) -> TypeScheme {
         let typ = self.substitute(typ);
         let free_vars = Self::free_type_vars(&typ);
         let env_vars = self.env_type_vars(env);
         let vars: Vec<String> = free_vars.difference(&env_vars).cloned().collect();
-        
+
         // Extract effects from function types
         let (effects, effect_vars) = match &typ {
             Type::FunctionWithEffect { effects, .. } => {
                 let extensible_effects = self.effect_row_to_extensible(effects.clone());
                 if let Some(effect_checker) = &mut self.effect_checker {
-                    let effect_scheme = effect_checker.generalize_effects(
-                        &extensible_effects,
-                        env
-                    );
+                    let effect_scheme = effect_checker.generalize_effects(&extensible_effects, env);
                     (Some(extensible_effects), effect_scheme.vars)
                 } else {
                     (Some(extensible_effects), Vec::new())
                 }
             }
-            _ => (None, Vec::new())
+            _ => (None, Vec::new()),
         };
-        
-        TypeScheme { vars, typ, effects, effect_vars }
+
+        TypeScheme {
+            vars,
+            typ,
+            effects,
+            effect_vars,
+        }
     }
 
     fn free_type_vars(typ: &Type) -> HashSet<String> {
@@ -644,10 +704,13 @@ impl TypeChecker {
     }
 
     /// Convert ExtensibleEffectRow to EffectRow
-    fn extensible_to_effect_row(&self, ext_row: vibe_core::extensible_effects::ExtensibleEffectRow) -> vibe_core::effects::EffectRow {
+    fn extensible_to_effect_row(
+        &self,
+        ext_row: vibe_core::extensible_effects::ExtensibleEffectRow,
+    ) -> vibe_core::effects::EffectRow {
         use vibe_core::effects::{Effect, EffectRow, EffectSet};
         use vibe_core::extensible_effects::ExtensibleEffectRow;
-        
+
         match ext_row {
             ExtensibleEffectRow::Empty => EffectRow::Concrete(EffectSet::pure()),
             ExtensibleEffectRow::Single(effect) => {
@@ -658,7 +721,7 @@ impl TypeChecker {
                     "State" => set.add(Effect::State),
                     "Exception" => set.add(Effect::Error), // Effect::Error instead of Exception
                     "Async" => set.add(Effect::Async),
-                    _ => {}, // Unknown effects are ignored for now
+                    _ => {} // Unknown effects are ignored for now
                 }
                 EffectRow::Concrete(set)
             }
@@ -674,7 +737,7 @@ impl TypeChecker {
                     "State" => set.add(Effect::State),
                     "Exception" => set.add(Effect::Error), // Effect::Error instead of Exception
                     "Async" => set.add(Effect::Async),
-                    _ => {},
+                    _ => {}
                 }
                 EffectRow::Concrete(set)
             }
@@ -703,12 +766,15 @@ impl TypeChecker {
             }
         }
     }
-    
+
     /// Convert EffectRow to ExtensibleEffectRow
-    fn effect_row_to_extensible(&self, row: vibe_core::effects::EffectRow) -> vibe_core::extensible_effects::ExtensibleEffectRow {
+    fn effect_row_to_extensible(
+        &self,
+        row: vibe_core::effects::EffectRow,
+    ) -> vibe_core::extensible_effects::ExtensibleEffectRow {
         use vibe_core::effects::{Effect, EffectRow};
-        use vibe_core::extensible_effects::{ExtensibleEffectRow, EffectInstance};
-        
+        use vibe_core::extensible_effects::{EffectInstance, ExtensibleEffectRow};
+
         match row {
             EffectRow::Concrete(set) => {
                 let mut result = ExtensibleEffectRow::Empty;
@@ -736,7 +802,7 @@ impl TypeChecker {
                     ExtensibleEffectRow::Empty => ExtensibleEffectRow::Variable(var.0),
                     _ => ExtensibleEffectRow::Union(
                         Box::new(base),
-                        Box::new(ExtensibleEffectRow::Variable(var.0))
+                        Box::new(ExtensibleEffectRow::Variable(var.0)),
                     ),
                 }
             }
@@ -747,14 +813,14 @@ impl TypeChecker {
         let typ = self.check_with_effects(expr, env)?;
         Ok(typ)
     }
-    
+
     pub fn check_with_effects(&mut self, expr: &Expr, env: &mut TypeEnv) -> Result<Type, String> {
         // Check effects if effect checker is enabled
         if let Some(effect_checker) = &mut self.effect_checker {
             let _effects = effect_checker.infer_effects(expr, env)?;
             // TODO: Store effects in type annotation
         }
-        
+
         match expr {
             Expr::Literal(lit, _) => match lit {
                 Literal::Int(_) => Ok(Type::Int),
@@ -803,10 +869,10 @@ impl TypeChecker {
                     let var_type = type_ann.clone().unwrap_or_else(|| self.fresh_var());
                     env.push_scope();
                     env.add_binding(name.0.clone(), TypeScheme::mono(var_type.clone()));
-                    
+
                     let actual_type = self.check(value, env)?;
                     self.unify(&var_type, &actual_type)?;
-                    
+
                     env.pop_scope();
                     self.substitute(&var_type)
                 } else {
@@ -866,11 +932,17 @@ impl TypeChecker {
                 Ok(body_type)
             }
 
-            Expr::FunctionDef { params, return_type, effects, body, .. } => {
+            Expr::FunctionDef {
+                params,
+                return_type,
+                effects,
+                body,
+                ..
+            } => {
                 // Handle FunctionDef similar to Lambda but with more information
                 env.push_scope();
                 let mut param_types = Vec::new();
-                
+
                 for param in params {
                     let param_type = if let Some(typ) = &param.typ {
                         typ.clone()
@@ -880,15 +952,15 @@ impl TypeChecker {
                     param_types.push(param_type.clone());
                     env.add_binding(param.name.0.clone(), TypeScheme::mono(param_type));
                 }
-                
+
                 let body_type = self.check(body, env)?;
                 env.pop_scope();
-                
+
                 // Check return type if specified
                 if let Some(ret_type) = return_type {
                     self.unify(&body_type, ret_type)?;
                 }
-                
+
                 // Build function type
                 let mut result_type = body_type;
                 for param_type in param_types.into_iter().rev() {
@@ -902,7 +974,7 @@ impl TypeChecker {
                         result_type = Type::Function(Box::new(param_type), Box::new(result_type));
                     }
                 }
-                
+
                 Ok(result_type)
             }
             Expr::Lambda { params, body, .. } => {
@@ -917,7 +989,7 @@ impl TypeChecker {
 
                 // Infer body type
                 let body_type = self.check(body, env)?;
-                
+
                 // Infer effects from the lambda body
                 let body_effects = if let Some(effect_checker) = &mut self.effect_checker {
                     effect_checker.infer_effects(body, env)?
@@ -925,13 +997,13 @@ impl TypeChecker {
                     // If no effect checker, assume pure
                     vibe_core::extensible_effects::ExtensibleEffectRow::pure()
                 };
-                
+
                 env.pop_scope();
 
                 // Build function type with effects if necessary
                 let mut result_type = body_type;
                 let effect_row = self.extensible_to_effect_row(body_effects);
-                
+
                 for param_type in param_types.into_iter().rev() {
                     if effect_row.is_pure() {
                         result_type = Type::Function(Box::new(param_type), Box::new(result_type));
@@ -1099,7 +1171,7 @@ impl TypeChecker {
                 Ok(Type::Int)
             }
 
-            Expr::Import {  hash, .. } => {
+            Expr::Import { hash, .. } => {
                 // TODO: Implement import type checking
                 // For hash-based imports, we need to resolve the specific version
                 if let Some(_h) = hash {
@@ -1110,53 +1182,55 @@ impl TypeChecker {
 
             Expr::Use { path, items, .. } => {
                 // Handle use statement - import functions into current environment
-                self.handle_use(env, path, items).map_err(|e| e.to_string())?;
+                self.handle_use(env, path, items)
+                    .map_err(|e| e.to_string())?;
                 Ok(Type::Unit) // Use statements produce unit value
             }
 
-            Expr::QualifiedIdent { module_name, name, .. } => {
+            Expr::QualifiedIdent {
+                module_name, name, ..
+            } => {
                 // Handle namespace access like Int.toString
                 let module = &module_name.0;
                 let func = &name.0;
-                
+
                 match env.lookup_module_function(module, func) {
                     Some(scheme) => Ok(self.instantiate(scheme)),
-                    None => Err(format!(
-                        "Undefined function: {}.{}",
-                        module, func
-                    )),
+                    None => Err(format!("Undefined function: {}.{}", module, func)),
                 }
             }
 
             Expr::Handler { cases, body, .. } => {
                 // Check the body to get its type and effects
                 let body_type = self.check(body, env)?;
-                
+
                 // For now, return the body type
                 // TODO: Properly check handler cases and effect types
                 for (_effect_name, _patterns, _continuation, handler_body) in cases {
                     let _ = self.check(handler_body, env)?;
                 }
-                
+
                 Ok(body_type)
             }
-            
+
             Expr::WithHandler { handler, body, .. } => {
                 // Check handler and body
                 let _ = self.check(handler, env)?;
                 let body_type = self.check(body, env)?;
-                
+
                 // The type of with-handler is the type of the body
                 // with some effects handled by the handler
                 Ok(body_type)
             }
-            
-            Expr::Perform { effect: _, args, .. } => {
+
+            Expr::Perform {
+                effect: _, args, ..
+            } => {
                 // Check all arguments
                 for arg in args {
                     let _ = self.check(arg, env)?;
                 }
-                
+
                 // The type of perform depends on the effect's signature
                 // For now, return a fresh type variable
                 // TODO: Look up effect signature and return proper type
@@ -1181,17 +1255,21 @@ impl TypeChecker {
                 } else {
                     env.push_scope();
                     let mut last_type = Type::Unit;
-                    
+
                     for expr in exprs {
                         last_type = self.check(expr, env)?;
                     }
-                    
+
                     env.pop_scope();
                     Ok(last_type)
                 }
             }
 
-            Expr::Hole { name, type_hint, span } => {
+            Expr::Hole {
+                name,
+                type_hint,
+                span,
+            } => {
                 if let Some(hint) = type_hint {
                     Ok(hint.clone())
                 } else {
@@ -1206,21 +1284,24 @@ impl TypeChecker {
             Expr::Do { statements, .. } => {
                 // Process each statement in the do block
                 let mut result_type = Type::Unit;
-                
+
                 for statement in statements {
                     match statement {
                         DoStatement::Bind { name, expr, .. } => {
                             // Type check the expression being bound
                             let expr_type = self.check(expr, env)?;
-                            
+
                             // TODO: For now, we just add the binding to the environment
                             // In the future, this should handle effect types properly
-                            env.add_binding(name.0.clone(), TypeScheme {
-                                vars: vec![],
-                                typ: expr_type,
-                                effects: None,
-                                effect_vars: vec![],
-                            });
+                            env.add_binding(
+                                name.0.clone(),
+                                TypeScheme {
+                                    vars: vec![],
+                                    typ: expr_type,
+                                    effects: None,
+                                    effect_vars: vec![],
+                                },
+                            );
                         }
                         DoStatement::Expression(expr) => {
                             // The last expression determines the type of the do block
@@ -1228,7 +1309,7 @@ impl TypeChecker {
                         }
                     }
                 }
-                
+
                 Ok(result_type)
             }
 
@@ -1239,18 +1320,25 @@ impl TypeChecker {
                     let ty = self.check(expr, env)?;
                     field_types.push((name.0.clone(), ty));
                 }
-                
+
                 // Sort fields by name for consistent type representation
                 field_types.sort_by(|a, b| a.0.cmp(&b.0));
-                
-                Ok(Type::Record { fields: field_types })
+
+                Ok(Type::Record {
+                    fields: field_types,
+                })
             }
 
             Expr::RecordAccess { record, field, .. } => {
                 // First check if this is a namespace access (e.g., Int.toString)
                 if let Expr::Ident(module_name, _) = record.as_ref() {
                     // Check if this is a known module name (starts with uppercase)
-                    if module_name.0.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    if module_name
+                        .0
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_uppercase())
+                    {
                         match env.lookup_module_function(&module_name.0, &field.0) {
                             Some(scheme) => return Ok(self.instantiate(scheme)),
                             None => {
@@ -1259,10 +1347,10 @@ impl TypeChecker {
                         }
                     }
                 }
-                
+
                 // Normal record field access
                 let record_type = self.check(record, env)?;
-                
+
                 match &record_type {
                     Type::Record { fields } => {
                         // Find the field type
@@ -1278,20 +1366,25 @@ impl TypeChecker {
                         // For now, return a fresh type variable
                         Ok(self.fresh_var())
                     }
-                    _ => Err(format!("Cannot access field '{}' on non-record type", field.0))
+                    _ => Err(format!(
+                        "Cannot access field '{}' on non-record type",
+                        field.0
+                    )),
                 }
             }
 
-            Expr::RecordUpdate { record, updates, .. } => {
+            Expr::RecordUpdate {
+                record, updates, ..
+            } => {
                 let record_type = self.check(record, env)?;
-                
+
                 match record_type {
                     Type::Record { mut fields } => {
                         // Type check updates and update field types
                         for (update_name, update_expr) in updates {
                             let update_type = self.check(update_expr, env)?;
                             let mut found = false;
-                            
+
                             for (fname, ftype) in &mut fields {
                                 if fname == &update_name.0 {
                                     *ftype = update_type.clone();
@@ -1299,58 +1392,72 @@ impl TypeChecker {
                                     break;
                                 }
                             }
-                            
+
                             if !found {
-                                return Err(format!("Field '{}' not found in record", update_name.0));
+                                return Err(format!(
+                                    "Field '{}' not found in record",
+                                    update_name.0
+                                ));
                             }
                         }
-                        
+
                         Ok(Type::Record { fields })
                     }
                     Type::Var(_) => {
                         // If it's a type variable, return it as is for now
                         Ok(record_type)
                     }
-                    _ => Err("Cannot update fields on non-record type".to_string())
+                    _ => Err("Cannot update fields on non-record type".to_string()),
                 }
             }
-            
-            Expr::LetRecIn { name, type_ann, value, body, .. } => {
+
+            Expr::LetRecIn {
+                name,
+                type_ann,
+                value,
+                body,
+                ..
+            } => {
                 // Similar to LetRec but with a body expression
                 let value_type = if let Some(ann) = type_ann {
                     ann.clone()
                 } else {
                     self.fresh_var()
                 };
-                
+
                 // Add name to environment for recursive calls
                 env.push_scope();
                 env.add_binding(name.0.clone(), TypeScheme::mono(value_type.clone()));
-                
+
                 // Type check the value
                 let inferred_type = self.check(value, env)?;
                 self.unify(&value_type, &inferred_type)?;
-                
+
                 // Update binding with generalized type
                 let gen_scheme = self.generalize(&inferred_type, env);
                 env.add_binding(name.0.clone(), gen_scheme);
-                
+
                 // Type check the body
                 let body_type = self.check(body, env)?;
                 env.pop_scope();
-                
+
                 Ok(body_type)
             }
-            
-            Expr::HandleExpr { expr, handlers: _, return_handler: _, .. } => {
+
+            Expr::HandleExpr {
+                expr,
+                handlers: _,
+                return_handler: _,
+                ..
+            } => {
                 // Type check the handled expression
                 let expr_type = self.check(expr, env)?;
-                
+
                 // TODO: Implement proper effect handler type checking
                 // For now, just return the expression type
                 Ok(expr_type)
             }
-            
+
             Expr::HashRef { hash: _, .. } => {
                 // Hash references require runtime lookup, so we return a fresh type variable
                 // The actual type will be determined when the hash is resolved
@@ -1400,13 +1507,13 @@ impl TypeChecker {
                             }
                             _ => return Err(":: pattern expects a list type".to_string()),
                         };
-                        
+
                         // Check head pattern with element type
                         self.check_pattern(&patterns[0], &elem_type, env)?;
-                        
+
                         // Check tail pattern with list type
                         self.check_pattern(&patterns[1], &list_type, env)?;
-                        
+
                         Ok(())
                     } else {
                         Err(":: constructor expects exactly 2 patterns".to_string())

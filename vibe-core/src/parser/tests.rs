@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Expr, Span, Ident, Literal};
+use crate::{Expr, Ident, Literal, Span};
 
 #[test]
 fn test_parse_simple_expression() {
@@ -16,7 +16,7 @@ fn test_parse_let_binding() {
         Expr::Let { name, value, .. } => {
             assert_eq!(name, Ident("x".to_string()));
             match value.as_ref() {
-                Expr::Literal(Literal::Int(42), _) => {},
+                Expr::Literal(Literal::Int(42), _) => {}
                 _ => panic!("Expected Int literal"),
             }
         }
@@ -86,13 +86,17 @@ fn test_parse_if_with_blocks() {
     let mut parser = Parser::new("if true { 1 } else { -1 }").unwrap();
     let expr = parser.parse().unwrap();
     match expr {
-        Expr::If { then_expr, else_expr, .. } => {
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
             match then_expr.as_ref() {
-                Expr::Literal(Literal::Int(1), _) => {},
+                Expr::Literal(Literal::Int(1), _) => {}
                 _ => panic!("Expected Int(1) in then branch"),
             }
             match else_expr.as_ref() {
-                Expr::Literal(Literal::Int(-1), _) => {},
+                Expr::Literal(Literal::Int(-1), _) => {}
                 _ => panic!("Expected Int(-1) in else branch"),
             }
         }
@@ -126,7 +130,10 @@ fn test_parse_lambda_multi_param() {
                     assert_eq!(params[0].0, Ident("x".to_string()));
                     // Check for nested lambda
                     match body.as_ref() {
-                        Expr::Lambda { params: inner_params, .. } => {
+                        Expr::Lambda {
+                            params: inner_params,
+                            ..
+                        } => {
                             assert_eq!(inner_params.len(), 1);
                             assert_eq!(inner_params[0].0, Ident("y".to_string()));
                         }
@@ -148,15 +155,15 @@ fn test_parse_list() {
         Expr::List(items, _) => {
             assert_eq!(items.len(), 3);
             match &items[0] {
-                Expr::Literal(Literal::Int(1), _) => {},
+                Expr::Literal(Literal::Int(1), _) => {}
                 _ => panic!("Expected Int(1)"),
             }
             match &items[1] {
-                Expr::Literal(Literal::Int(2), _) => {},
+                Expr::Literal(Literal::Int(2), _) => {}
                 _ => panic!("Expected Int(2)"),
             }
             match &items[2] {
-                Expr::Literal(Literal::Int(3), _) => {},
+                Expr::Literal(Literal::Int(3), _) => {}
                 _ => panic!("Expected Int(3)"),
             }
         }

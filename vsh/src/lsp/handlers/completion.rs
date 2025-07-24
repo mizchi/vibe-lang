@@ -10,25 +10,24 @@ pub async fn handle_completion(
 ) -> Result<Option<CompletionResponse>> {
     let uri = &params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
-    
+
     debug!("Completion request at {:?} position {:?}", uri, position);
-    
+
     // Get document content
     let _content = match server.documents().get(uri) {
         Some(doc) => doc,
         None => return Ok(None),
     };
-    
+
     // Create basic completions
     let mut items = vec![];
-    
+
     // Add XS language keywords
     let keywords = vec![
-        "let", "rec", "in", "fn", "if", "then", "else", 
-        "match", "case", "of", "type", "module", "import",
-        "export", "perform", "handle", "with", "end"
+        "let", "rec", "in", "fn", "if", "then", "else", "match", "case", "of", "type", "module",
+        "import", "export", "perform", "handle", "with", "end",
     ];
-    
+
     for keyword in keywords {
         items.push(CompletionItem {
             label: keyword.to_string(),
@@ -37,7 +36,7 @@ pub async fn handle_completion(
             ..Default::default()
         });
     }
-    
+
     // Add builtin functions
     let builtins = vec![
         ("String.concat", "String -> String -> String"),
@@ -47,18 +46,19 @@ pub async fn handle_completion(
         ("cons", "a -> List a -> List a"),
         ("print", "String -> IO ()"),
     ];
-    
+
     for (name, type_sig) in builtins {
         items.push(CompletionItem {
             label: name.to_string(),
             kind: Some(CompletionItemKind::FUNCTION),
             detail: Some(type_sig.to_string()),
-            documentation: Some(Documentation::String(
-                format!("Built-in function: {}", name)
-            )),
+            documentation: Some(Documentation::String(format!(
+                "Built-in function: {}",
+                name
+            ))),
             ..Default::default()
         });
     }
-    
+
     Ok(Some(CompletionResponse::Array(items)))
 }

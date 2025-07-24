@@ -6,11 +6,11 @@
 use super::component::ComponentMetadata;
 use super::emit::emit_wat;
 use super::{codegen::CodeGenerator, CodeGenError, WasmModule};
+use crate::PerceusTransform;
 use std::collections::HashMap;
+use vibe_core::Expr;
 use wasm_encoder::{Component, ComponentTypeSection};
 use wit_component::ComponentEncoder;
-use crate::PerceusTransform;
-use vibe_core::Expr;
 
 /// Full component builder implementation
 pub struct ComponentBuilderImpl {

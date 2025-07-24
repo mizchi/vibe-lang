@@ -2,8 +2,8 @@
 //!
 //! This module provides the runtime implementation of algebraic effect handlers.
 
-use vibe_core::{Environment, Expr, Ident, Value, XsError, Span};
 use std::collections::HashMap;
+use vibe_core::{Environment, Expr, Ident, Span, Value, XsError};
 
 /// Effect handler context during evaluation
 #[derive(Debug, Clone)]
@@ -88,11 +88,7 @@ pub fn perform_effect(
 ) -> Result<EffectResult, XsError> {
     if let Some(handler) = effect_context.find_handler(effect_name) {
         // Create a continuation for the rest of the computation
-        let continuation = Continuation::new(
-            current_expr,
-            env.clone(),
-            effect_context.clone(),
-        );
+        let continuation = Continuation::new(current_expr, env.clone(), effect_context.clone());
 
         Ok(EffectResult::Handled {
             handler: handler.clone(),
@@ -151,10 +147,7 @@ pub mod builtin_effects {
                 let stdin = io::stdin();
                 let mut line = String::new();
                 stdin.lock().read_line(&mut line).map_err(|e| {
-                    XsError::RuntimeError(
-                        Span::new(0, 0),
-                        format!("IO error: {}", e),
-                    )
+                    XsError::RuntimeError(Span::new(0, 0), format!("IO error: {}", e))
                 })?;
                 // Remove trailing newline
                 if line.ends_with('\n') {
@@ -173,7 +166,11 @@ pub mod builtin_effects {
     }
 
     /// Perform a built-in State effect
-    pub fn perform_state(effect_name: &str, args: &[Value], state: &mut Option<Value>) -> Result<Value, XsError> {
+    pub fn perform_state(
+        effect_name: &str,
+        args: &[Value],
+        state: &mut Option<Value>,
+    ) -> Result<Value, XsError> {
         match effect_name {
             "get-state" => {
                 if let Some(ref s) = state {

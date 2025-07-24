@@ -1,23 +1,22 @@
 //! VBin - Vibe言語のコンパクトなバイナリコードベースフォーマット
-//! 
+//!
 //! UCMのようにコードベースをDBとして格納し、必要な定義だけを展開できる
 //! バイナリストレージフォーマット。
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write, Seek, SeekFrom};
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use bincode;
-use flate2::write::GzEncoder;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use flate2::Compression;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::codebase::{Codebase, Hash, Term, TypeDef};
 
 /// VBinフォーマットのバージョン
 const VBIN_VERSION: u32 = 1;
-
 
 /// 固定サイズヘッダー（25バイト）
 /// magic: 4 bytes
@@ -63,7 +62,13 @@ pub struct VBinStorage {
 }
 
 /// ヘッダーをバイト配列に書き込む
-fn write_header(magic: &[u8; 4], version: u32, index_offset: u64, metadata_offset: u64, compression: u8) -> [u8; HEADER_SIZE] {
+fn write_header(
+    magic: &[u8; 4],
+    version: u32,
+    index_offset: u64,
+    metadata_offset: u64,
+    compression: u8,
+) -> [u8; HEADER_SIZE] {
     let mut header = [0u8; HEADER_SIZE];
     header[0..4].copy_from_slice(magic);
     header[4..8].copy_from_slice(&version.to_le_bytes());
@@ -77,18 +82,16 @@ fn write_header(magic: &[u8; 4], version: u32, index_offset: u64, metadata_offse
 fn read_header(bytes: &[u8; HEADER_SIZE]) -> Result<([u8; 4], u32, u64, u64, u8), String> {
     let mut magic = [0u8; 4];
     magic.copy_from_slice(&bytes[0..4]);
-    
+
     let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
     let index_offset = u64::from_le_bytes([
-        bytes[8], bytes[9], bytes[10], bytes[11],
-        bytes[12], bytes[13], bytes[14], bytes[15]
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
     ]);
     let metadata_offset = u64::from_le_bytes([
-        bytes[16], bytes[17], bytes[18], bytes[19],
-        bytes[20], bytes[21], bytes[22], bytes[23]
+        bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23],
     ]);
     let compression = bytes[24];
-    
+
     Ok((magic, version, index_offset, metadata_offset, compression))
 }
 
@@ -103,19 +106,21 @@ impl VBinStorage {
 
     /// コードベース全体をVBin形式で保存
     pub fn save_full(&mut self, codebase: &Codebase) -> Result<(), String> {
-        let mut file = File::create(&self.path)
-            .map_err(|e| format!("Failed to create vbin file: {}", e))?;
-        
+        let mut file =
+            File::create(&self.path).map_err(|e| format!("Failed to create vbin file: {}", e))?;
+
         let mut data_offset = HEADER_SIZE as u64;
         let mut index = HashMap::new();
         let mut data_buffer = Vec::new();
 
         // 1. すべての定義をシリアライズしてデータセクションを構築
         for (hash, term) in &codebase.terms {
-            let serialized = bincode::serialize(term)
-                .map_err(|e| format!("Failed to serialize term: {}", e))?;
-            
-            let dependencies = codebase.dependencies.get(hash)
+            let serialized =
+                bincode::serialize(term).map_err(|e| format!("Failed to serialize term: {}", e))?;
+
+            let dependencies = codebase
+                .dependencies
+                .get(hash)
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
@@ -137,7 +142,7 @@ impl VBinStorage {
         for (hash, type_def) in &codebase.types {
             let serialized = bincode::serialize(type_def)
                 .map_err(|e| format!("Failed to serialize type: {}", e))?;
-            
+
             let entry = IndexEntry {
                 hash: hash.clone(),
                 kind: 1, // Type
@@ -152,8 +157,8 @@ impl VBinStorage {
         }
 
         // 2. インデックスをシリアライズ
-        let index_data = bincode::serialize(&index)
-            .map_err(|e| format!("Failed to serialize index: {}", e))?;
+        let index_data =
+            bincode::serialize(&index).map_err(|e| format!("Failed to serialize index: {}", e))?;
         let index_offset = data_offset;
 
         // 3. メタデータを構築
@@ -167,7 +172,9 @@ impl VBinStorage {
                 .unwrap()
                 .as_secs(),
             total_definitions: (codebase.terms.len() + codebase.types.len()) as u32,
-            namespaces: codebase.term_names.iter()
+            namespaces: codebase
+                .term_names
+                .iter()
                 .filter(|(_, _)| true)
                 .map(|(name, hash)| {
                     let namespace = name.split('.').next().unwrap_or("").to_string();
@@ -191,22 +198,25 @@ impl VBinStorage {
             metadata_offset,
             1, // gzip
         );
-        
+
         // ヘッダーは非圧縮で書き込む
         file.write_all(&header_data).map_err(|e| e.to_string())?;
-        
+
         // データ、インデックス、メタデータを圧縮
         let mut compressed_data = Vec::new();
         {
             let mut encoder = GzEncoder::new(&mut compressed_data, Compression::default());
             encoder.write_all(&data_buffer).map_err(|e| e.to_string())?;
             encoder.write_all(&index_data).map_err(|e| e.to_string())?;
-            encoder.write_all(&metadata_data).map_err(|e| e.to_string())?;
+            encoder
+                .write_all(&metadata_data)
+                .map_err(|e| e.to_string())?;
             encoder.finish().map_err(|e| e.to_string())?;
         }
-        
+
         // 圧縮データを書き込む
-        file.write_all(&compressed_data).map_err(|e| e.to_string())?;
+        file.write_all(&compressed_data)
+            .map_err(|e| e.to_string())?;
 
         // キャッシュを更新
         self.index_cache = Some(index);
@@ -234,19 +244,25 @@ impl VBinStorage {
                 let data = self.read_entry(entry)?;
 
                 match entry.kind {
-                    0 => { // Term
+                    0 => {
+                        // Term
                         let term: Term = bincode::deserialize(&data)
                             .map_err(|e| format!("Failed to deserialize term: {}", e))?;
                         // 名前のマッピングを復元
                         if let Some(ref name) = term.name {
-                            codebase.term_names.insert(name.clone(), current_hash.clone());
+                            codebase
+                                .term_names
+                                .insert(name.clone(), current_hash.clone());
                         }
                         codebase.terms.insert(current_hash.clone(), term);
                     }
-                    1 => { // Type
+                    1 => {
+                        // Type
                         let type_def: TypeDef = bincode::deserialize(&data)
                             .map_err(|e| format!("Failed to deserialize type: {}", e))?;
-                        codebase.type_names.insert(type_def.name.clone(), current_hash.clone());
+                        codebase
+                            .type_names
+                            .insert(type_def.name.clone(), current_hash.clone());
                         codebase.types.insert(current_hash.clone(), type_def);
                     }
                     _ => return Err("Unknown entry kind".to_string()),
@@ -255,7 +271,9 @@ impl VBinStorage {
                 // 依存関係を追加
                 for dep in &entry.dependencies {
                     to_load.push(dep.clone());
-                    codebase.dependencies.entry(current_hash.clone())
+                    codebase
+                        .dependencies
+                        .entry(current_hash.clone())
                         .or_insert_with(HashSet::new)
                         .insert(dep.clone());
                 }
@@ -271,16 +289,15 @@ impl VBinStorage {
     pub fn retrieve_namespace(&mut self, namespace: &str) -> Result<Codebase, String> {
         // メタデータを読み込み
         let metadata = self.read_metadata()?;
-        
-        
+
         if let Some(hashes) = metadata.namespaces.get(namespace) {
             let mut codebase = Codebase::new();
-            
+
             for hash in hashes {
                 let partial = self.retrieve_with_dependencies(hash)?;
                 codebase.merge(partial);
             }
-            
+
             Ok(codebase)
         } else {
             Ok(Codebase::new())
@@ -293,20 +310,25 @@ impl VBinStorage {
             return Ok(());
         }
 
-        let mut file = File::open(&self.path)
-            .map_err(|e| format!("Failed to open vbin file: {}", e))?;
-        
+        let mut file =
+            File::open(&self.path).map_err(|e| format!("Failed to open vbin file: {}", e))?;
+
         // ヘッダーを読み込み（非圧縮）
         let mut header_buf = [0u8; HEADER_SIZE];
-        file.read_exact(&mut header_buf).map_err(|e| e.to_string())?;
-        
-        let (magic, version, index_offset, metadata_offset, _compression) = read_header(&header_buf)?;
-        
+        file.read_exact(&mut header_buf)
+            .map_err(|e| e.to_string())?;
+
+        let (magic, version, index_offset, metadata_offset, _compression) =
+            read_header(&header_buf)?;
+
         if magic != [b'V', b'B', b'I', b'N'] {
-            return Err(format!("Invalid vbin file format. Expected {:?}, got {:?}", 
-                [b'V', b'B', b'I', b'N'], magic));
+            return Err(format!(
+                "Invalid vbin file format. Expected {:?}, got {:?}",
+                [b'V', b'B', b'I', b'N'],
+                magic
+            ));
         }
-        
+
         if version != VBIN_VERSION {
             return Err(format!("Unsupported vbin version: {}", version));
         }
@@ -314,56 +336,64 @@ impl VBinStorage {
         // 残りのデータ（圧縮部分）を読み込み
         let mut decoder = GzDecoder::new(file);
         let mut all_data = Vec::new();
-        decoder.read_to_end(&mut all_data).map_err(|e| e.to_string())?;
-        
+        decoder
+            .read_to_end(&mut all_data)
+            .map_err(|e| e.to_string())?;
+
         let index_start = (index_offset - HEADER_SIZE as u64) as usize;
         let index_end = (metadata_offset - HEADER_SIZE as u64) as usize;
         let index_data = &all_data[index_start..index_end];
-        
+
         let index: HashMap<Hash, IndexEntry> = bincode::deserialize(index_data)
             .map_err(|e| format!("Failed to deserialize index: {}", e))?;
-        
+
         self.index_cache = Some(index);
         Ok(())
     }
 
     /// エントリのデータを読み込み
     fn read_entry(&self, entry: &IndexEntry) -> Result<Vec<u8>, String> {
-        let mut file = File::open(&self.path)
-            .map_err(|e| format!("Failed to open vbin file: {}", e))?;
-        
+        let mut file =
+            File::open(&self.path).map_err(|e| format!("Failed to open vbin file: {}", e))?;
+
         // ヘッダーをスキップして圧縮データ部分へ
-        file.seek(SeekFrom::Start(HEADER_SIZE as u64)).map_err(|e| e.to_string())?;
-        
+        file.seek(SeekFrom::Start(HEADER_SIZE as u64))
+            .map_err(|e| e.to_string())?;
+
         let mut decoder = GzDecoder::new(file);
         let mut all_data = Vec::new();
-        decoder.read_to_end(&mut all_data).map_err(|e| e.to_string())?;
-        
+        decoder
+            .read_to_end(&mut all_data)
+            .map_err(|e| e.to_string())?;
+
         let start = (entry.offset - HEADER_SIZE as u64) as usize;
         let end = start + entry.size as usize;
-        
+
         Ok(all_data[start..end].to_vec())
     }
 
     /// メタデータを読み込み
     fn read_metadata(&self) -> Result<VBinMetadata, String> {
-        let mut file = File::open(&self.path)
-            .map_err(|e| format!("Failed to open vbin file: {}", e))?;
-        
+        let mut file =
+            File::open(&self.path).map_err(|e| format!("Failed to open vbin file: {}", e))?;
+
         // ヘッダーを読み込み（非圧縮）
         let mut header_buf = [0u8; HEADER_SIZE];
-        file.read_exact(&mut header_buf).map_err(|e| e.to_string())?;
-        
+        file.read_exact(&mut header_buf)
+            .map_err(|e| e.to_string())?;
+
         let (_, _, _, metadata_offset, _) = read_header(&header_buf)?;
-        
+
         // 圧縮データを読み込み
         let mut decoder = GzDecoder::new(file);
         let mut all_data = Vec::new();
-        decoder.read_to_end(&mut all_data).map_err(|e| e.to_string())?;
-        
+        decoder
+            .read_to_end(&mut all_data)
+            .map_err(|e| e.to_string())?;
+
         let metadata_start = (metadata_offset - HEADER_SIZE as u64) as usize;
         let metadata_data = &all_data[metadata_start..];
-        
+
         bincode::deserialize(metadata_data)
             .map_err(|e| format!("Failed to deserialize metadata: {}", e))
     }
@@ -383,13 +413,19 @@ impl Codebase {
         for (name, hash) in other.type_names {
             self.type_names.insert(name, hash);
         }
-        
+
         for (hash, deps) in other.dependencies {
-            self.dependencies.entry(hash).or_insert_with(HashSet::new).extend(deps);
+            self.dependencies
+                .entry(hash)
+                .or_insert_with(HashSet::new)
+                .extend(deps);
         }
-        
+
         for (hash, deps) in other.dependents {
-            self.dependents.entry(hash).or_insert_with(HashSet::new).extend(deps);
+            self.dependents
+                .entry(hash)
+                .or_insert_with(HashSet::new)
+                .extend(deps);
         }
     }
 }
@@ -425,15 +461,16 @@ impl VBinStorage {
         // インデックスを読み込み
         self.ensure_index_loaded()?;
         let index = self.index_cache.as_ref().unwrap();
-        
+
         let mut codebase = Codebase::new();
-        
+
         // すべてのエントリを読み込み
         for (hash, entry) in index {
             let data = self.read_entry(entry)?;
-            
+
             match entry.kind {
-                0 => { // Term
+                0 => {
+                    // Term
                     let term: Term = bincode::deserialize(&data)
                         .map_err(|e| format!("Failed to deserialize term: {}", e))?;
                     // 名前のマッピングを復元
@@ -442,31 +479,38 @@ impl VBinStorage {
                     }
                     codebase.terms.insert(hash.clone(), term);
                 }
-                1 => { // Type
+                1 => {
+                    // Type
                     let type_def: TypeDef = bincode::deserialize(&data)
                         .map_err(|e| format!("Failed to deserialize type: {}", e))?;
                     // 型名のマッピングを復元
-                    codebase.type_names.insert(type_def.name.clone(), hash.clone());
+                    codebase
+                        .type_names
+                        .insert(type_def.name.clone(), hash.clone());
                     codebase.types.insert(hash.clone(), type_def);
                 }
                 _ => return Err("Unknown entry kind".to_string()),
             }
-            
+
             // 依存関係を復元
             if !entry.dependencies.is_empty() {
-                codebase.dependencies.insert(hash.clone(), entry.dependencies.iter().cloned().collect());
+                codebase
+                    .dependencies
+                    .insert(hash.clone(), entry.dependencies.iter().cloned().collect());
             }
         }
-        
+
         // 逆引き依存関係を再構築
         for (from, deps) in &codebase.dependencies {
             for to in deps {
-                codebase.dependents.entry(to.clone())
+                codebase
+                    .dependents
+                    .entry(to.clone())
                     .or_insert_with(HashSet::new)
                     .insert(from.clone());
             }
         }
-        
+
         Ok(codebase)
     }
 
@@ -487,11 +531,11 @@ impl VBinStorage {
         self.ensure_index_loaded()?;
         let metadata = self.read_metadata()?;
         let index = self.index_cache.as_ref().unwrap();
-        
+
         let mut term_count = 0;
         let mut type_count = 0;
         let mut total_size = 0;
-        
+
         for entry in index.values() {
             match entry.kind {
                 0 => term_count += 1,
@@ -500,7 +544,7 @@ impl VBinStorage {
             }
             total_size += entry.size as u64;
         }
-        
+
         Ok(VBinStats {
             term_count,
             type_count,
@@ -524,4 +568,3 @@ pub struct VBinStats {
     pub created_at: u64,
     pub updated_at: u64,
 }
-

@@ -1,10 +1,10 @@
 //! Content hashing for definitions
-//! 
+//!
 //! Provides deterministic hashing of XS definitions for content addressing.
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::fmt;
-use vibe_core::{DoStatement, Expr, Type, Pattern, Literal};
+use vibe_core::{DoStatement, Expr, Literal, Pattern, Type};
 
 /// A hash identifying a definition by its content
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -14,7 +14,7 @@ impl DefinitionHash {
     /// Compute hash for a definition
     pub fn compute(content: &crate::namespace::DefinitionContent, type_signature: &Type) -> Self {
         let mut hasher = Sha256::new();
-        
+
         // Hash the content
         match content {
             crate::namespace::DefinitionContent::Function { params, body } => {
@@ -26,7 +26,10 @@ impl DefinitionHash {
                 }
                 hash_expr(&mut hasher, body);
             }
-            crate::namespace::DefinitionContent::Type { params, constructors } => {
+            crate::namespace::DefinitionContent::Type {
+                params,
+                constructors,
+            } => {
                 hasher.update(b"type");
                 hasher.update(params.len().to_le_bytes());
                 for param in params {
@@ -48,38 +51,36 @@ impl DefinitionHash {
                 hash_expr(&mut hasher, expr);
             }
         }
-        
+
         // Hash the type signature
         hash_type(&mut hasher, type_signature);
-        
+
         let result = hasher.finalize();
         let mut hash_bytes = [0u8; 32];
         hash_bytes.copy_from_slice(&result);
         Self(hash_bytes)
     }
-    
+
     /// Create from hex string
     pub fn from_hex(hex: &str) -> Option<Self> {
         if hex.len() != 64 {
             return None;
         }
-        
+
         let mut bytes = [0u8; 32];
         for i in 0..32 {
             let byte_str = &hex[i * 2..i * 2 + 2];
             bytes[i] = u8::from_str_radix(byte_str, 16).ok()?;
         }
-        
+
         Some(Self(bytes))
     }
-    
+
     /// Convert to hex string
     pub fn to_hex(&self) -> String {
-        self.0.iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
     }
-    
+
     /// Get a short prefix for display (first 8 chars)
     pub fn short(&self) -> String {
         self.to_hex()[..8].to_string()
@@ -95,26 +96,24 @@ impl fmt::Display for DefinitionHash {
 /// Hash an expression deterministically
 fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
     match expr {
-        Expr::Literal(lit, _) => {
-            match lit {
-                Literal::Int(n) => {
-                    hasher.update(b"int");
-                    hasher.update(n.to_le_bytes());
-                }
-                Literal::Float(f) => {
-                    hasher.update(b"float");
-                    hasher.update(f.to_le_bytes());
-                }
-                Literal::String(s) => {
-                    hasher.update(b"string");
-                    hasher.update(s.as_bytes());
-                }
-                Literal::Bool(b) => {
-                    hasher.update(b"bool");
-                    hasher.update(if *b { &[1u8] } else { &[0u8] });
-                }
+        Expr::Literal(lit, _) => match lit {
+            Literal::Int(n) => {
+                hasher.update(b"int");
+                hasher.update(n.to_le_bytes());
             }
-        }
+            Literal::Float(f) => {
+                hasher.update(b"float");
+                hasher.update(f.to_le_bytes());
+            }
+            Literal::String(s) => {
+                hasher.update(b"string");
+                hasher.update(s.as_bytes());
+            }
+            Literal::Bool(b) => {
+                hasher.update(b"bool");
+                hasher.update(if *b { &[1u8] } else { &[0u8] });
+            }
+        },
         Expr::Ident(ident, _) => {
             hasher.update(b"ident");
             hasher.update(ident.0.as_bytes());
@@ -147,14 +146,21 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             hasher.update(b"\0");
             hash_expr(hasher, value);
         }
-        Expr::LetIn { name, value, body, .. } => {
+        Expr::LetIn {
+            name, value, body, ..
+        } => {
             hasher.update(b"letin");
             hasher.update(name.0.as_bytes());
             hasher.update(b"\0");
             hash_expr(hasher, value);
             hash_expr(hasher, body);
         }
-        Expr::If { cond, then_expr, else_expr, .. } => {
+        Expr::If {
+            cond,
+            then_expr,
+            else_expr,
+            ..
+        } => {
             hasher.update(b"if");
             hash_expr(hasher, cond);
             hash_expr(hasher, then_expr);
@@ -185,31 +191,42 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
                 hash_expr(hasher, arg);
             }
         }
-        Expr::Module { name, exports, body, .. } => {
+        Expr::Module {
+            name,
+            exports,
+            body,
+            ..
+        } => {
             hasher.update(b"module");
             hasher.update(name.0.as_bytes());
             hasher.update(b"\0");
-            
+
             // Sort exports for deterministic ordering
             let mut sorted_exports: Vec<_> = exports.iter().map(|i| &i.0).collect();
             sorted_exports.sort();
-            
+
             hasher.update(sorted_exports.len().to_le_bytes());
             for export in sorted_exports {
                 hasher.update(export.as_bytes());
                 hasher.update(b"\0");
             }
-            
+
             hasher.update(body.len().to_le_bytes());
             for expr in body {
                 hash_expr(hasher, expr);
             }
         }
-        Expr::Import { module_name, items, as_name, hash, .. } => {
+        Expr::Import {
+            module_name,
+            items,
+            as_name,
+            hash,
+            ..
+        } => {
             hasher.update(b"import");
             hasher.update(module_name.0.as_bytes());
             hasher.update(b"\0");
-            
+
             if let Some(items) = items {
                 hasher.update(b"1");
                 hasher.update(items.len().to_le_bytes());
@@ -222,14 +239,14 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             } else {
                 hasher.update(b"0");
             }
-            
+
             if let Some(alias) = as_name {
                 hasher.update(b"1");
                 hasher.update(alias.0.as_bytes());
             } else {
                 hasher.update(b"0");
             }
-            
+
             if let Some(h) = hash {
                 hasher.update(b"1");
                 hasher.update(h.as_bytes());
@@ -256,7 +273,9 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
                 }
             }
         }
-        Expr::Rec { name, params, body, .. } => {
+        Expr::Rec {
+            name, params, body, ..
+        } => {
             hasher.update(b"rec");
             hasher.update(name.0.as_bytes());
             hasher.update(b"\0");
@@ -267,7 +286,9 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             }
             hash_expr(hasher, body);
         }
-        Expr::QualifiedIdent { module_name, name, .. } => {
+        Expr::QualifiedIdent {
+            module_name, name, ..
+        } => {
             hasher.update(b"qualified_ident");
             hasher.update(module_name.0.as_bytes());
             hasher.update(b"\0");
@@ -307,7 +328,7 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             hash_expr(hasher, expr);
             hash_expr(hasher, func);
         }
-        
+
         Expr::Use { path, items, .. } => {
             hasher.update(b"use");
             for p in path {
@@ -328,7 +349,9 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             }
         }
 
-        Expr::Hole { name, type_hint, .. } => {
+        Expr::Hole {
+            name, type_hint, ..
+        } => {
             hasher.update(b"hole");
             if let Some(name) = name {
                 hasher.update(name.as_bytes());
@@ -377,7 +400,9 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             hasher.update(field.0.as_bytes());
         }
 
-        Expr::RecordUpdate { record, updates, .. } => {
+        Expr::RecordUpdate {
+            record, updates, ..
+        } => {
             hasher.update(b"record_update");
             hash_expr(hasher, record);
             // Sort updates for deterministic ordering
@@ -390,8 +415,14 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
                 hash_expr(hasher, expr);
             }
         }
-        
-        Expr::LetRecIn { name, type_ann, value, body, .. } => {
+
+        Expr::LetRecIn {
+            name,
+            type_ann,
+            value,
+            body,
+            ..
+        } => {
             hasher.update(b"letrec_in");
             hasher.update(name.0.as_bytes());
             hasher.update(b"\0");
@@ -404,8 +435,13 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             hash_expr(hasher, value);
             hash_expr(hasher, body);
         }
-        
-        Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+
+        Expr::HandleExpr {
+            expr,
+            handlers,
+            return_handler,
+            ..
+        } => {
             hasher.update(b"handle");
             hash_expr(hasher, expr);
             hasher.update(handlers.len().to_le_bytes());
@@ -425,8 +461,15 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
                 hash_expr(hasher, body);
             }
         }
-        
-        Expr::FunctionDef { name, params, return_type, effects, body, .. } => {
+
+        Expr::FunctionDef {
+            name,
+            params,
+            return_type,
+            effects,
+            body,
+            ..
+        } => {
             hasher.update(b"function_def");
             hasher.update(name.0.as_bytes());
             hasher.update(b"\0");
@@ -472,26 +515,24 @@ fn hash_pattern(hasher: &mut Sha256, pattern: &Pattern) {
         Pattern::Wildcard(_) => {
             hasher.update(b"wildcard");
         }
-        Pattern::Literal(lit, _) => {
-            match lit {
-                Literal::Int(n) => {
-                    hasher.update(b"int");
-                    hasher.update(n.to_le_bytes());
-                }
-                Literal::Float(f) => {
-                    hasher.update(b"float");
-                    hasher.update(f.to_le_bytes());
-                }
-                Literal::Bool(b) => {
-                    hasher.update(b"bool");
-                    hasher.update(if *b { &[1u8] } else { &[0u8] });
-                }
-                Literal::String(s) => {
-                    hasher.update(b"string");
-                    hasher.update(s.as_bytes());
-                }
+        Pattern::Literal(lit, _) => match lit {
+            Literal::Int(n) => {
+                hasher.update(b"int");
+                hasher.update(n.to_le_bytes());
             }
-        }
+            Literal::Float(f) => {
+                hasher.update(b"float");
+                hasher.update(f.to_le_bytes());
+            }
+            Literal::Bool(b) => {
+                hasher.update(b"bool");
+                hasher.update(if *b { &[1u8] } else { &[0u8] });
+            }
+            Literal::String(s) => {
+                hasher.update(b"string");
+                hasher.update(s.as_bytes());
+            }
+        },
         Pattern::List { patterns, .. } => {
             hasher.update(b"list");
             hasher.update(patterns.len().to_le_bytes());
@@ -571,36 +612,40 @@ mod tests {
 
     #[test]
     fn test_deterministic_hashing() {
-        let content = DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
+        let content =
+            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
         let ty = Type::Int;
-        
+
         let hash1 = DefinitionHash::compute(&content, &ty);
         let hash2 = DefinitionHash::compute(&content, &ty);
-        
+
         assert_eq!(hash1, hash2);
     }
 
     #[test]
     fn test_hash_hex_conversion() {
-        let content = DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
+        let content =
+            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
         let ty = Type::Int;
-        
+
         let hash = DefinitionHash::compute(&content, &ty);
         let hex = hash.to_hex();
         let hash2 = DefinitionHash::from_hex(&hex).unwrap();
-        
+
         assert_eq!(hash, hash2);
     }
 
     #[test]
     fn test_different_content_different_hash() {
-        let content1 = DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
-        let content2 = DefinitionContent::Value(Expr::Literal(Literal::Int(43), vibe_core::Span::new(0, 0)));
+        let content1 =
+            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
+        let content2 =
+            DefinitionContent::Value(Expr::Literal(Literal::Int(43), vibe_core::Span::new(0, 0)));
         let ty = Type::Int;
-        
+
         let hash1 = DefinitionHash::compute(&content1, &ty);
         let hash2 = DefinitionHash::compute(&content2, &ty);
-        
+
         assert_ne!(hash1, hash2);
     }
 }

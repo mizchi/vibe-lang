@@ -69,9 +69,8 @@ impl PerceusTransform {
 
             Expr::FunctionDef { params, body, .. } => {
                 // Convert FunctionDef to Lambda in IR
-                let param_names: Vec<String> = params.iter()
-                    .map(|param| param.name.0.clone())
-                    .collect();
+                let param_names: Vec<String> =
+                    params.iter().map(|param| param.name.0.clone()).collect();
 
                 let ir_body = self.transform_expr(body);
 
@@ -192,7 +191,7 @@ impl PerceusTransform {
                     args: vec![transformed_expr],
                 }
             }
-            
+
             Expr::Use { .. } => {
                 // Use statements are compile-time only, return a unit value
                 IrExpr::Literal(Literal::Int(0))
@@ -249,30 +248,31 @@ impl PerceusTransform {
                 // TODO: Implement record update transformation
                 IrExpr::Literal(Literal::Int(0))
             }
-            
-            Expr::LetRecIn { name, value, body, .. } => {
+
+            Expr::LetRecIn {
+                name, value, body, ..
+            } => {
                 // Transform recursive let binding with body
                 let value_ir = self.transform_expr(value);
                 let body_ir = self.transform_expr(body);
-                
+
                 IrExpr::LetRec {
                     name: name.0.clone(),
                     value: Box::new(value_ir),
                     body: Box::new(body_ir),
                 }
             }
-            
+
             Expr::HandleExpr { .. } => {
                 // TODO: Implement handle expression transformation
                 IrExpr::Literal(Literal::Int(0))
             }
-            
+
             Expr::HashRef { .. } => {
                 // Hash references are resolved before compilation
                 // This should never be reached if the shell properly resolves them
                 IrExpr::Literal(Literal::Int(0))
             }
-
         }
     }
 }

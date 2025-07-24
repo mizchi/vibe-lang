@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use vsh::{run_repl, cli};
 use std::path::PathBuf;
+use vsh::{cli, run_repl};
 
 #[derive(Parser)]
 #[command(name = "vsh")]
@@ -17,7 +17,7 @@ struct Args {
 enum Command {
     /// Interactive shell (default if no command specified)
     Shell,
-    
+
     /// Run an expression and exit
     Run {
         /// The expression to evaluate
@@ -26,13 +26,13 @@ enum Command {
         #[arg(long, short)]
         persist: bool,
     },
-    
+
     /// Parse a file and display the AST
     Parse {
         /// The XS file to parse
         file: PathBuf,
     },
-    
+
     /// Type check a file or directory
     Check {
         /// The XS file or directory to type check
@@ -41,13 +41,13 @@ enum Command {
         #[arg(long, short)]
         verbose: bool,
     },
-    
+
     /// Run a file
     Exec {
         /// The XS file to run
         file: PathBuf,
     },
-    
+
     /// Run tests in a file
     Test {
         /// The XS file containing tests
@@ -59,7 +59,7 @@ enum Command {
         #[arg(long)]
         verbose: bool,
     },
-    
+
     /// Run a benchmark
     Bench {
         /// The XS file to benchmark
@@ -68,13 +68,13 @@ enum Command {
         #[arg(short = 'n', long, default_value = "100")]
         iterations: u32,
     },
-    
+
     /// Generate WebAssembly Component from XS module
     Component {
         #[command(subcommand)]
         command: cli::ComponentCommand,
     },
-    
+
     /// Manage VBin codebase storage
     Codebase {
         #[command(subcommand)]
@@ -84,15 +84,16 @@ enum Command {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    
+
     match args.command {
         Some(Command::Shell) | None => {
             // Run interactive REPL
             run_repl()
         }
-        Some(Command::Run { expression, persist }) => {
-            run_expression(&expression, persist)
-        }
+        Some(Command::Run {
+            expression,
+            persist,
+        }) => run_expression(&expression, persist),
         Some(cmd) => {
             // Convert to cli::Command and run
             let cli_command = match cmd {
@@ -105,31 +106,33 @@ fn main() -> Result<()> {
                 Command::Codebase { command } => cli::Command::Codebase { command },
                 _ => unreachable!(),
             };
-            
+
             // Create cli::Args and run
-            let cli_args = cli::Args { command: cli_command };
+            let cli_args = cli::Args {
+                command: cli_command,
+            };
             cli::run_cli_with_args(cli_args)
         }
     }
 }
 
 fn run_expression(expr: &str, persist: bool) -> Result<()> {
-    use vibe_core::parser::parse;
+    use std::path::PathBuf;
     use vibe_compiler::type_check;
+    use vibe_core::parser::parse;
     use vibe_runtime::Interpreter;
     use vibe_workspace::Codebase;
-    use std::path::PathBuf;
-    
+
     // Parse the expression
     let parsed = parse(expr)?;
-    
+
     // Type check
     let ty = type_check(&parsed)?;
-    
+
     // Evaluate
     let mut interpreter = Interpreter::new();
     let mut env = Interpreter::create_initial_env();
-    
+
     // Load index.vin if it exists to populate the environment
     let index_path = PathBuf::from("index.vin");
     let mut codebase = if index_path.exists() {
@@ -155,12 +158,12 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
     } else {
         Codebase::new()
     };
-    
+
     let result = interpreter.eval(&parsed, &env)?;
-    
+
     // Print result
     println!("{}", vsh::cli::format_value(&result));
-    
+
     // Save to index.vin if persist is enabled
     if persist {
         let timestamp = std::time::SystemTime::now()
@@ -168,7 +171,7 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
             .unwrap()
             .as_secs();
         let name = format!("run_{}", timestamp);
-        
+
         match codebase.add_term(Some(name.clone()), parsed.clone(), ty.clone()) {
             Ok(hash) => {
                 // Save the updated codebase
@@ -185,6 +188,6 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
             }
         }
     }
-    
+
     Ok(())
 }

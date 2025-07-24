@@ -21,7 +21,7 @@ impl NodeId {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         NodeId(COUNTER.fetch_add(1, Ordering::SeqCst))
     }
-    
+
     pub fn fresh() -> Self {
         Self::new()
     }

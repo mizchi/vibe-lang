@@ -180,9 +180,7 @@ pub fn generate_wit_interface(
 type FunctionSignatureTuple = (Vec<(String, WitType)>, Vec<WitType>);
 
 /// Extract function signature from XS type, handling curried functions
-fn extract_function_signature(
-    typ: &vibe_core::Type,
-) -> Option<FunctionSignatureTuple> {
+fn extract_function_signature(typ: &vibe_core::Type) -> Option<FunctionSignatureTuple> {
     use vibe_core::Type;
 
     let mut params = Vec::new();

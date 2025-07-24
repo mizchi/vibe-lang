@@ -7,10 +7,10 @@ use vibe_core::{Expr, Span};
 pub struct SourceMap {
     /// Maps from byte position to line/column
     position_map: Vec<(usize, usize)>, // (line, column)
-    
+
     /// Maps from AST node to source range
     node_ranges: HashMap<usize, Range>,
-    
+
     /// Source text for reference
     source: String,
 }
@@ -22,7 +22,7 @@ impl SourceMap {
             node_ranges: HashMap::new(),
             source: source.to_string(),
         };
-        
+
         source_map.visit_expr(expr);
         source_map
     }
@@ -31,7 +31,7 @@ impl SourceMap {
         let mut map = Vec::with_capacity(source.len());
         let mut line = 0;
         let mut column = 0;
-        
+
         for ch in source.chars() {
             map.push((line, column));
             if ch == '\n' {
@@ -41,7 +41,7 @@ impl SourceMap {
                 column += 1;
             }
         }
-        
+
         map
     }
 
@@ -72,23 +72,36 @@ impl SourceMap {
                 self.add_node_range(span, expr);
                 self.visit_expr(value);
             }
-            Expr::LetIn { value, body, span, .. } => {
+            Expr::LetIn {
+                value, body, span, ..
+            } => {
                 self.add_node_range(span, expr);
                 self.visit_expr(value);
                 self.visit_expr(body);
             }
-            Expr::LetRecIn { value, body, span, .. } => {
+            Expr::LetRecIn {
+                value, body, span, ..
+            } => {
                 self.add_node_range(span, expr);
                 self.visit_expr(value);
                 self.visit_expr(body);
             }
-            Expr::If { cond, then_expr, else_expr, span } => {
+            Expr::If {
+                cond,
+                then_expr,
+                else_expr,
+                span,
+            } => {
                 self.add_node_range(span, expr);
                 self.visit_expr(cond);
                 self.visit_expr(then_expr);
                 self.visit_expr(else_expr);
             }
-            Expr::Match { expr: scrutinee, cases, span } => {
+            Expr::Match {
+                expr: scrutinee,
+                cases,
+                span,
+            } => {
                 self.add_node_range(span, expr);
                 self.visit_expr(scrutinee);
                 for (_, case_expr) in cases {
@@ -146,7 +159,11 @@ impl SourceMap {
                 self.add_node_range(span, expr);
                 self.visit_expr(body);
             }
-            Expr::WithHandler { body, handler, span } => {
+            Expr::WithHandler {
+                body,
+                handler,
+                span,
+            } => {
                 self.add_node_range(span, expr);
                 self.visit_expr(body);
                 self.visit_expr(handler);
@@ -169,9 +186,11 @@ impl SourceMap {
 
     pub fn span_to_range(&self, span: &Span) -> Option<Range> {
         let start_pos = self.position_map.get(span.start)?;
-        let end_pos = self.position_map.get(span.end.saturating_sub(1))
+        let end_pos = self
+            .position_map
+            .get(span.end.saturating_sub(1))
             .or_else(|| self.position_map.last())?;
-        
+
         Some(Range {
             start: Position {
                 line: start_pos.0 as u32,
@@ -187,18 +206,19 @@ impl SourceMap {
     pub fn position_to_offset(&self, position: Position) -> Option<usize> {
         let target_line = position.line as usize;
         let target_char = position.character as usize;
-        
-        self.position_map.iter()
+
+        self.position_map
+            .iter()
             .position(|(line, col)| *line == target_line && *col == target_char)
     }
 
     pub fn find_node_at_position(&self, position: Position) -> Option<Range> {
         let _offset = self.position_to_offset(position)?;
-        
+
         // Find the smallest range containing the position
         let mut best_range: Option<Range> = None;
         let mut best_size = usize::MAX;
-        
+
         for range in self.node_ranges.values() {
             if self.range_contains_position(range, position) {
                 let size = self.range_size(range);
@@ -208,15 +228,15 @@ impl SourceMap {
                 }
             }
         }
-        
+
         best_range
     }
 
     fn range_contains_position(&self, range: &Range, position: Position) -> bool {
-        (range.start.line < position.line || 
-         (range.start.line == position.line && range.start.character <= position.character)) &&
-        (range.end.line > position.line ||
-         (range.end.line == position.line && range.end.character >= position.character))
+        (range.start.line < position.line
+            || (range.start.line == position.line && range.start.character <= position.character))
+            && (range.end.line > position.line
+                || (range.end.line == position.line && range.end.character >= position.character))
     }
 
     fn range_size(&self, range: &Range) -> usize {
@@ -224,8 +244,7 @@ impl SourceMap {
             (range.end.character - range.start.character) as usize
         } else {
             // Approximate size for multi-line ranges
-            ((range.end.line - range.start.line) as usize * 80) +
-            range.end.character as usize
+            ((range.end.line - range.start.line) as usize * 80) + range.end.character as usize
         }
     }
 }

@@ -2,8 +2,8 @@
 
 #[cfg(test)]
 mod tests {
-    use vsh::search_patterns::{parse_type_pattern, AstPattern, expr_contains_pattern};
-    use vibe_core::{Type, Expr, Ident, Literal, Span};
+    use vibe_core::{Expr, Ident, Literal, Span, Type};
+    use vsh::search_patterns::{expr_contains_pattern, parse_type_pattern, AstPattern};
 
     #[test]
     fn test_type_pattern_int() {
@@ -18,7 +18,7 @@ mod tests {
         let matcher = parse_type_pattern("Int -> Int").unwrap();
         let int_to_int = Type::Function(Box::new(Type::Int), Box::new(Type::Int));
         let string_to_int = Type::Function(Box::new(Type::String), Box::new(Type::Int));
-        
+
         assert!(matcher(&int_to_int));
         assert!(!matcher(&string_to_int));
     }
@@ -29,7 +29,7 @@ mod tests {
         let int_to_int = Type::Function(Box::new(Type::Int), Box::new(Type::Int));
         let string_to_int = Type::Function(Box::new(Type::String), Box::new(Type::Int));
         let int_to_string = Type::Function(Box::new(Type::Int), Box::new(Type::String));
-        
+
         assert!(matcher(&int_to_int));
         assert!(matcher(&string_to_int));
         assert!(!matcher(&int_to_string));
@@ -40,7 +40,7 @@ mod tests {
         let matcher = parse_type_pattern("[Int]").unwrap();
         let int_list = Type::List(Box::new(Type::Int));
         let string_list = Type::List(Box::new(Type::String));
-        
+
         assert!(matcher(&int_list));
         assert!(!matcher(&string_list));
     }
@@ -59,7 +59,7 @@ mod tests {
             else_expr: Box::new(Expr::Literal(Literal::Int(2), Span::new(7, 8))),
             span: Span::new(0, 8),
         };
-        
+
         assert!(pattern.matches(&match_expr));
         assert!(!pattern.matches(&if_expr));
     }
@@ -77,7 +77,7 @@ mod tests {
             }),
             span: Span::new(0, 10),
         };
-        
+
         assert!(expr_contains_pattern(&nested_expr, &pattern));
     }
 }

@@ -3,37 +3,37 @@
 //! Provides structured data types for nushell-style pipeline operations,
 //! enabling filtering, transformation, and inspection of code definitions.
 
+use crate::hash::DefinitionHash;
+use crate::namespace::DefinitionPath;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use vibe_core::{Value, XsError};
-use crate::namespace::DefinitionPath;
-use crate::hash::DefinitionHash;
-use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
 
 /// Structured data that can flow through pipelines
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StructuredData {
     /// A single definition
     Definition(DefinitionData),
-    
+
     /// A list of definitions
     Definitions(Vec<DefinitionData>),
-    
+
     /// A table with rows and columns
     Table {
         columns: Vec<String>,
         rows: Vec<HashMap<String, StructuredValue>>,
     },
-    
+
     /// A single value
     Value(StructuredValue),
-    
+
     /// A list of values
     List(Vec<StructuredValue>),
-    
+
     /// A record (key-value pairs)
     Record(HashMap<String, StructuredValue>),
-    
+
     /// Empty data
     Empty,
 }
@@ -86,66 +86,109 @@ impl StructuredData {
         match self {
             StructuredData::Definition(def) => {
                 let mut row = HashMap::new();
-                row.insert("name".to_string(), StructuredValue::String(def.name.clone()));
-                row.insert("path".to_string(), StructuredValue::String(def.path.to_string()));
-                row.insert("hash".to_string(), StructuredValue::String(def.hash.to_hex()));
-                row.insert("type".to_string(), StructuredValue::String(def.type_signature.clone()));
-                row.insert("kind".to_string(), StructuredValue::String(match &def.kind {
-                    DefinitionKind::Function { arity } => format!("function/{arity}"),
-                    DefinitionKind::Value => "value".to_string(),
-                    DefinitionKind::Type => "type".to_string(),
-                }));
-                
-                Ok(StructuredData::Table {
-                    columns: vec!["name".to_string(), "path".to_string(), "hash".to_string(), 
-                                  "type".to_string(), "kind".to_string()],
-                    rows: vec![row],
-                })
-            }
-            
-            StructuredData::Definitions(defs) => {
-                let columns = vec!["name".to_string(), "path".to_string(), "hash".to_string(), 
-                                  "type".to_string(), "kind".to_string()];
-                let mut rows = Vec::new();
-                
-                for def in defs {
-                    let mut row = HashMap::new();
-                    row.insert("name".to_string(), StructuredValue::String(def.name.clone()));
-                    row.insert("path".to_string(), StructuredValue::String(def.path.to_string()));
-                    row.insert("hash".to_string(), StructuredValue::String(def.hash.to_hex()));
-                    row.insert("type".to_string(), StructuredValue::String(def.type_signature.clone()));
-                    row.insert("kind".to_string(), StructuredValue::String(match &def.kind {
+                row.insert(
+                    "name".to_string(),
+                    StructuredValue::String(def.name.clone()),
+                );
+                row.insert(
+                    "path".to_string(),
+                    StructuredValue::String(def.path.to_string()),
+                );
+                row.insert(
+                    "hash".to_string(),
+                    StructuredValue::String(def.hash.to_hex()),
+                );
+                row.insert(
+                    "type".to_string(),
+                    StructuredValue::String(def.type_signature.clone()),
+                );
+                row.insert(
+                    "kind".to_string(),
+                    StructuredValue::String(match &def.kind {
                         DefinitionKind::Function { arity } => format!("function/{arity}"),
                         DefinitionKind::Value => "value".to_string(),
                         DefinitionKind::Type => "type".to_string(),
-                    }));
+                    }),
+                );
+
+                Ok(StructuredData::Table {
+                    columns: vec![
+                        "name".to_string(),
+                        "path".to_string(),
+                        "hash".to_string(),
+                        "type".to_string(),
+                        "kind".to_string(),
+                    ],
+                    rows: vec![row],
+                })
+            }
+
+            StructuredData::Definitions(defs) => {
+                let columns = vec![
+                    "name".to_string(),
+                    "path".to_string(),
+                    "hash".to_string(),
+                    "type".to_string(),
+                    "kind".to_string(),
+                ];
+                let mut rows = Vec::new();
+
+                for def in defs {
+                    let mut row = HashMap::new();
+                    row.insert(
+                        "name".to_string(),
+                        StructuredValue::String(def.name.clone()),
+                    );
+                    row.insert(
+                        "path".to_string(),
+                        StructuredValue::String(def.path.to_string()),
+                    );
+                    row.insert(
+                        "hash".to_string(),
+                        StructuredValue::String(def.hash.to_hex()),
+                    );
+                    row.insert(
+                        "type".to_string(),
+                        StructuredValue::String(def.type_signature.clone()),
+                    );
+                    row.insert(
+                        "kind".to_string(),
+                        StructuredValue::String(match &def.kind {
+                            DefinitionKind::Function { arity } => format!("function/{arity}"),
+                            DefinitionKind::Value => "value".to_string(),
+                            DefinitionKind::Type => "type".to_string(),
+                        }),
+                    );
                     rows.push(row);
                 }
-                
+
                 Ok(StructuredData::Table { columns, rows })
             }
-            
+
             StructuredData::Table { .. } => Ok(self.clone()),
-            
+
             _ => Err(XsError::RuntimeError(
                 vibe_core::Span::new(0, 0),
-                format!("Cannot convert {self:?} to table")
+                format!("Cannot convert {self:?} to table"),
             )),
         }
     }
-    
+
     /// Get column names if this is tabular data
     pub fn columns(&self) -> Option<Vec<String>> {
         match self {
             StructuredData::Table { columns, .. } => Some(columns.clone()),
-            StructuredData::Definitions(_) => {
-                Some(vec!["name".to_string(), "path".to_string(), "hash".to_string(), 
-                         "type".to_string(), "kind".to_string()])
-            }
+            StructuredData::Definitions(_) => Some(vec![
+                "name".to_string(),
+                "path".to_string(),
+                "hash".to_string(),
+                "type".to_string(),
+                "kind".to_string(),
+            ]),
             _ => None,
         }
     }
-    
+
     /// Check if data is empty
     pub fn is_empty(&self) -> bool {
         match self {
@@ -172,7 +215,7 @@ impl StructuredValue {
             _ => StructuredValue::String(format!("{value:?}")),
         }
     }
-    
+
     /// Try to convert to XS Value
     pub fn to_value(&self) -> Result<Value, XsError> {
         match self {
@@ -181,25 +224,23 @@ impl StructuredValue {
             StructuredValue::Float(f) => Ok(Value::Float(*f)),
             StructuredValue::Bool(b) => Ok(Value::Bool(*b)),
             StructuredValue::List(items) => {
-                let values: Result<Vec<_>, _> = items.iter()
-                    .map(|item| item.to_value())
-                    .collect();
+                let values: Result<Vec<_>, _> = items.iter().map(|item| item.to_value()).collect();
                 Ok(Value::List(values?))
             }
             StructuredValue::Record(_fields) => {
                 // Records are not supported in Value enum
                 Err(XsError::RuntimeError(
                     vibe_core::Span::new(0, 0),
-                    "Record values are not supported".to_string()
+                    "Record values are not supported".to_string(),
                 ))
             }
             _ => Err(XsError::RuntimeError(
                 vibe_core::Span::new(0, 0),
-                format!("Cannot convert {self:?} to Value")
+                format!("Cannot convert {self:?} to Value"),
             )),
         }
     }
-    
+
     /// Get as string if possible
     pub fn as_string(&self) -> Option<&str> {
         match self {
@@ -207,7 +248,7 @@ impl StructuredValue {
             _ => None,
         }
     }
-    
+
     /// Get as integer if possible
     pub fn as_int(&self) -> Option<i64> {
         match self {
@@ -215,7 +256,7 @@ impl StructuredValue {
             _ => None,
         }
     }
-    
+
     /// Get as boolean if possible
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -229,41 +270,51 @@ impl StructuredValue {
 pub fn format_structured_data(data: &StructuredData) -> String {
     match data {
         StructuredData::Empty => "<empty>".to_string(),
-        
+
         StructuredData::Value(val) => format_value(val),
-        
+
         StructuredData::List(items) => {
-            let formatted: Vec<String> = items.iter()
-                .map(format_value)
-                .collect();
+            let formatted: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", formatted.join(", "))
         }
-        
+
         StructuredData::Record(fields) => {
-            let formatted: Vec<String> = fields.iter()
+            let formatted: Vec<String> = fields
+                .iter()
                 .map(|(k, v)| format!("{}: {}", k, format_value(v)))
                 .collect();
             format!("{{{}}}", formatted.join(", "))
         }
-        
+
         StructuredData::Definition(def) => {
-            format!("{} : {} [{}]", def.name, def.type_signature, &def.hash.to_hex()[..8])
+            format!(
+                "{} : {} [{}]",
+                def.name,
+                def.type_signature,
+                &def.hash.to_hex()[..8]
+            )
         }
-        
+
         StructuredData::Definitions(defs) => {
             if defs.is_empty() {
                 "<no definitions>".to_string()
             } else {
-                let lines: Vec<String> = defs.iter()
-                    .map(|def| format!("{} : {} [{}]", def.name, def.type_signature, &def.hash.to_hex()[..8]))
+                let lines: Vec<String> = defs
+                    .iter()
+                    .map(|def| {
+                        format!(
+                            "{} : {} [{}]",
+                            def.name,
+                            def.type_signature,
+                            &def.hash.to_hex()[..8]
+                        )
+                    })
                     .collect();
                 lines.join("\n")
             }
         }
-        
-        StructuredData::Table { columns, rows } => {
-            format_table(columns, rows)
-        }
+
+        StructuredData::Table { columns, rows } => format_table(columns, rows),
     }
 }
 
@@ -275,13 +326,12 @@ fn format_value(val: &StructuredValue) -> String {
         StructuredValue::Bool(b) => b.to_string(),
         StructuredValue::DateTime(dt) => dt.to_rfc3339(),
         StructuredValue::List(items) => {
-            let formatted: Vec<String> = items.iter()
-                .map(format_value)
-                .collect();
+            let formatted: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", formatted.join(", "))
         }
         StructuredValue::Record(fields) => {
-            let formatted: Vec<String> = fields.iter()
+            let formatted: Vec<String> = fields
+                .iter()
                 .map(|(k, v)| format!("{}: {}", k, format_value(v)))
                 .collect();
             format!("{{{}}}", formatted.join(", "))
@@ -294,12 +344,10 @@ fn format_table(columns: &[String], rows: &[HashMap<String, StructuredValue>]) -
     if rows.is_empty() {
         return "<empty table>".to_string();
     }
-    
+
     // Calculate column widths
-    let mut widths: Vec<usize> = columns.iter()
-        .map(|col| col.len())
-        .collect();
-    
+    let mut widths: Vec<usize> = columns.iter().map(|col| col.len()).collect();
+
     for row in rows {
         for (i, col) in columns.iter().enumerate() {
             if let Some(val) = row.get(col) {
@@ -310,7 +358,7 @@ fn format_table(columns: &[String], rows: &[HashMap<String, StructuredValue>]) -
             }
         }
     }
-    
+
     // Format header
     let mut result = String::new();
     for (i, col) in columns.iter().enumerate() {
@@ -320,7 +368,7 @@ fn format_table(columns: &[String], rows: &[HashMap<String, StructuredValue>]) -
         result.push_str(&format!("{:width$}", col, width = widths[i]));
     }
     result.push('\n');
-    
+
     // Add separator
     for (i, width) in widths.iter().enumerate() {
         if i > 0 {
@@ -329,20 +377,21 @@ fn format_table(columns: &[String], rows: &[HashMap<String, StructuredValue>]) -
         result.push_str(&"-".repeat(*width));
     }
     result.push('\n');
-    
+
     // Format rows
     for row in rows {
         for (i, col) in columns.iter().enumerate() {
             if i > 0 {
                 result.push_str(" | ");
             }
-            let val = row.get(col)
+            let val = row
+                .get(col)
                 .map(format_value)
                 .unwrap_or_else(|| "".to_string());
             result.push_str(&format!("{:width$}", val, width = widths[i]));
         }
         result.push('\n');
     }
-    
+
     result
 }

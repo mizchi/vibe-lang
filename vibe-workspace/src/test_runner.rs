@@ -1,18 +1,18 @@
 //! Test runner with caching support
-//! 
+//!
 //! This module provides a test runner that can execute generated tests
 //! with support for result caching and parallel execution.
 
-use std::time::{Duration, Instant};
-use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use crate::Codebase;
 use crate::test_cache::{TestCache, TestOutcome};
 use crate::test_generator::{GeneratedTest, TestProperty};
+use crate::Codebase;
 use vibe_compiler::TypeChecker;
+use vibe_core::{Environment, Expr, Value};
 use vibe_runtime::Interpreter;
-use vibe_core::{Expr, Value, Environment};
 
 /// Test execution configuration
 #[derive(Debug, Clone)]
@@ -71,11 +71,7 @@ pub struct TestRunner {
 
 impl TestRunner {
     /// Create a new test runner
-    pub fn new(
-        config: TestRunConfig,
-        cache: TestCache,
-        codebase: Codebase,
-    ) -> Self {
+    pub fn new(config: TestRunConfig, cache: TestCache, codebase: Codebase) -> Self {
         TestRunner {
             config,
             cache: Arc::new(Mutex::new(cache)),
@@ -125,7 +121,7 @@ impl TestRunner {
 
         for test in tests {
             let result = self.run_single_test(test);
-            
+
             // Check fail-fast
             if self.config.fail_fast {
                 if let TestOutcome::Failed { .. } = &result.outcome {
@@ -133,7 +129,7 @@ impl TestRunner {
                     break;
                 }
             }
-            
+
             results.push(result);
         }
 
@@ -157,13 +153,11 @@ impl TestRunner {
                     if self.config.verbosity >= 2 {
                         println!("  Using cached result");
                     }
-                    
+
                     // Verify properties on cached result
-                    let verified_properties = self.verify_properties_from_outcome(
-                        &test.properties,
-                        &cached_result.result,
-                    );
-                    
+                    let verified_properties = self
+                        .verify_properties_from_outcome(&test.properties, &cached_result.result);
+
                     return TestRunResult {
                         test,
                         outcome: cached_result.result.clone(),
@@ -182,20 +176,12 @@ impl TestRunner {
         if self.config.use_cache {
             if let Ok(mut cache) = self.cache.lock() {
                 let deps = vec![test.function_hash.clone()];
-                cache.cache_result(
-                    &test.test_expr,
-                    deps,
-                    outcome.clone(),
-                    duration,
-                );
+                cache.cache_result(&test.test_expr, deps, outcome.clone(), duration);
             }
         }
 
         // Verify properties
-        let verified_properties = self.verify_properties_from_outcome(
-            &test.properties,
-            &outcome,
-        );
+        let verified_properties = self.verify_properties_from_outcome(&test.properties, &outcome);
 
         TestRunResult {
             test,
@@ -248,19 +234,23 @@ impl TestRunner {
                 let value_str = format_value(&value);
                 (TestOutcome::Passed { value: value_str }, duration)
             }
-            Ok(Err(e)) => {
-                (TestOutcome::Failed {
+            Ok(Err(e)) => (
+                TestOutcome::Failed {
                     error: format!("Runtime error: {}", e),
-                }, duration)
-            }
+                },
+                duration,
+            ),
             Err(_) => {
                 // Panic occurred, possibly timeout
                 if duration >= self.config.timeout {
                     (TestOutcome::Timeout, duration)
                 } else {
-                    (TestOutcome::Failed {
-                        error: "Test panicked".to_string(),
-                    }, duration)
+                    (
+                        TestOutcome::Failed {
+                            error: "Test panicked".to_string(),
+                        },
+                        duration,
+                    )
                 }
             }
         }
@@ -281,7 +271,7 @@ impl TestRunner {
     /// Populate runtime environment with definitions from codebase
     fn populate_runtime_env(&self, env: &mut Environment) {
         use vibe_core::{Ident, Value};
-        
+
         // Add definitions from codebase to runtime environment
         // We need to evaluate each definition and bind it
         for (name, hash) in &self.codebase.term_names {
@@ -297,7 +287,12 @@ impl TestRunner {
                         };
                         *env = env.extend(Ident(name.clone()), closure);
                     }
-                    Expr::Rec { name: rec_name, params, body, .. } => {
+                    Expr::Rec {
+                        name: rec_name,
+                        params,
+                        body,
+                        ..
+                    } => {
                         let closure = Value::RecClosure {
                             name: rec_name.clone(),
                             params: params.iter().map(|(id, _)| id.clone()).collect(),
@@ -369,9 +364,7 @@ fn format_value(value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::String(s) => format!("{:?}", s),
         Value::List(items) => {
-            let item_strs: Vec<String> = items.iter()
-                .map(format_value)
-                .collect();
+            let item_strs: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", item_strs.join(", "))
         }
         Value::Closure { .. } => "<closure>".to_string(),
@@ -380,7 +373,8 @@ fn format_value(value: &Value) -> String {
         Value::Constructor { .. } => "<constructor>".to_string(),
         Value::UseStatement { .. } => "<use>".to_string(),
         Value::Record { fields } => {
-            let field_strs: Vec<String> = fields.iter()
+            let field_strs: Vec<String> = fields
+                .iter()
                 .map(|(name, value)| format!("{}: {}", name, format_value(value)))
                 .collect();
             format!("{{{}}}", field_strs.join(", "))
@@ -435,14 +429,21 @@ impl TestStats {
     pub fn print_summary(&self) {
         println!("\nTest Summary:");
         println!("  Total:       {}", self.total);
-        println!("  Passed:      {} ({}%)", self.passed, 
-            if self.total > 0 { self.passed * 100 / self.total } else { 0 });
+        println!(
+            "  Passed:      {} ({}%)",
+            self.passed,
+            if self.total > 0 {
+                self.passed * 100 / self.total
+            } else {
+                0
+            }
+        );
         println!("  Failed:      {}", self.failed);
         println!("  Timeout:     {}", self.timeout);
         println!("  Skipped:     {}", self.skipped);
         println!("  From cache:  {}", self.from_cache);
         println!("  Total time:  {:.2?}", self.total_duration);
-        
+
         if self.from_cache > 0 {
             println!("  Cache hit rate: {}%", self.from_cache * 100 / self.total);
         }

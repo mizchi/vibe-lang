@@ -208,7 +208,8 @@ pub fn process_api_command(shell_state: &mut crate::ShellState, command: ApiComm
                         let name = parts[0].to_string();
                         let rest = parts[1];
                         let type_and_hash: Vec<&str> = rest.split(" [").collect();
-                        let typ = type_and_hash.first()
+                        let typ = type_and_hash
+                            .first()
                             .map(|s| s.to_string())
                             .unwrap_or_default();
                         let hash = type_and_hash

@@ -2,10 +2,10 @@
 //!
 //! Provides tools that AI assistants can use to interact with XS code.
 
+use super::protocol::{Tool, ToolResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use vibe_compiler::type_check;
-use super::protocol::{Tool, ToolResult};
 
 /// Get all available tools
 pub fn get_tools() -> Vec<Tool> {
@@ -146,20 +146,20 @@ async fn execute_parse(args: Value) -> Result<Vec<ToolResult>, String> {
     struct ParseArgs {
         code: String,
     }
-    
-    let args: ParseArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {e}"))?;
-    
+
+    let args: ParseArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
+
     match vibe_core::parser::parse(&args.code) {
         Ok(expr) => {
             let ast_json = serde_json::to_string_pretty(&expr)
                 .map_err(|e| format!("Failed to serialize AST: {e}"))?;
-            
-            Ok(vec![ToolResult::Text { 
-                text: format!("Successfully parsed XS code:\n```json\n{ast_json}\n```")
+
+            Ok(vec![ToolResult::Text {
+                text: format!("Successfully parsed XS code:\n```json\n{ast_json}\n```"),
             }])
         }
-        Err(e) => Err(format!("Parse error: {e}"))
+        Err(e) => Err(format!("Parse error: {e}")),
     }
 }
 
@@ -169,20 +169,17 @@ async fn execute_typecheck(args: Value) -> Result<Vec<ToolResult>, String> {
     struct TypeCheckArgs {
         code: String,
     }
-    
-    let args: TypeCheckArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {e}"))?;
-    
-    let expr = vibe_core::parser::parse(&args.code)
-        .map_err(|e| format!("Parse error: {e}"))?;
-    
+
+    let args: TypeCheckArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
+
+    let expr = vibe_core::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
+
     match type_check(&expr) {
-        Ok(ty) => {
-            Ok(vec![ToolResult::Text { 
-                text: format!("Type check successful!\nType: {ty}")
-            }])
-        }
-        Err(e) => Err(format!("Type error: {e}"))
+        Ok(ty) => Ok(vec![ToolResult::Text {
+            text: format!("Type check successful!\nType: {ty}"),
+        }]),
+        Err(e) => Err(format!("Type error: {e}")),
     }
 }
 
@@ -194,18 +191,18 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
         pattern: String,
         transitive: Option<bool>,
     }
-    
-    let args: SearchArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {e}"))?;
-    
+
+    let args: SearchArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
+
     // Save pattern for later use
     let pattern = args.pattern.clone();
-    
+
     // Create a temporary workspace to demonstrate search
     // In a real implementation, this would use an existing workspace
-    use vibe_workspace::code_query::{CodeQuery, TypePattern, AstPattern, AstNodeType};
+    use vibe_workspace::code_query::{AstNodeType, AstPattern, CodeQuery, TypePattern};
     use vibe_workspace::namespace::DefinitionPath;
-    
+
     let _query = match args.query_type.as_str() {
         "type_pattern" => {
             // Parse type pattern
@@ -222,33 +219,36 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
         "ast_pattern" => {
             match args.pattern.as_str() {
                 "match" => CodeQuery::AstPattern(AstPattern::Contains(AstNodeType::Match)),
-                "rec" | "recursive" => CodeQuery::AstPattern(AstPattern::Contains(AstNodeType::Lambda)), // Rec functions are lambdas
+                "rec" | "recursive" => {
+                    CodeQuery::AstPattern(AstPattern::Contains(AstNodeType::Lambda))
+                } // Rec functions are lambdas
                 pattern => {
                     return Err(format!("Unsupported AST pattern: {pattern}"));
                 }
             }
         }
-        "name_pattern" => {
-            CodeQuery::NamePattern(args.pattern)
-        }
+        "name_pattern" => CodeQuery::NamePattern(args.pattern),
         "depends_on" => {
             // Parse definition path
             let parts: Vec<&str> = args.pattern.split('.').collect();
             if parts.is_empty() {
                 return Err("Invalid definition path".to_string());
             }
-            
+
             let path = DefinitionPath {
                 namespace: if parts.len() > 1 {
                     vibe_workspace::namespace::NamespacePath(
-                        parts[..parts.len()-1].iter().map(|s| s.to_string()).collect()
+                        parts[..parts.len() - 1]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
                     )
                 } else {
                     vibe_workspace::namespace::NamespacePath(vec![])
                 },
                 name: parts.last().unwrap().to_string(),
             };
-            
+
             CodeQuery::DependsOn {
                 target: path,
                 transitive: args.transitive.unwrap_or(false),
@@ -258,14 +258,19 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
             return Err(format!("Unknown query type: {}", args.query_type));
         }
     };
-    
+
     // For now, return a placeholder result
     // In a real implementation, this would search the actual codebase
     let mut result = String::new();
-    result.push_str(&format!("Search Results for {} query '{}'\n\n", args.query_type, pattern));
+    result.push_str(&format!(
+        "Search Results for {} query '{}'\n\n",
+        args.query_type, pattern
+    ));
     result.push_str("Found 0 matches\n");
-    result.push_str("\n(Note: This is a placeholder. Connect to an actual workspace for real results)");
-    
+    result.push_str(
+        "\n(Note: This is a placeholder. Connect to an actual workspace for real results)",
+    );
+
     Ok(vec![ToolResult::Text { text: result }])
 }
 
@@ -276,21 +281,20 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
         code: String,
         transform: TransformSpec,
     }
-    
+
     #[derive(Deserialize)]
     struct TransformSpec {
         #[serde(rename = "type")]
         transform_type: String,
         params: Value,
     }
-    
-    let args: TransformArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {e}"))?;
-    
+
+    let args: TransformArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
+
     // Parse the input code
-    let expr = vibe_core::parser::parse(&args.code)
-        .map_err(|e| format!("Parse error: {e}"))?;
-    
+    let expr = vibe_core::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
+
     // Apply transformation based on type
     let transformed_expr = match args.transform.transform_type.as_str() {
         "rename" => {
@@ -301,17 +305,19 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
             }
             let params: RenameParams = serde_json::from_value(args.transform.params)
                 .map_err(|e| format!("Invalid rename params: {e}"))?;
-            
+
             // Simple rename implementation (placeholder)
             // In a real implementation, this would use AST transformation utilities
             use vibe_core::pretty_print::pretty_print;
             let pretty = pretty_print(&expr);
             let transformed = pretty.replace(&params.old_name, &params.new_name);
-            
-            format!("Renamed '{}' to '{}' in code:\n\n{}", 
-                   params.old_name, params.new_name, transformed)
+
+            format!(
+                "Renamed '{}' to '{}' in code:\n\n{}",
+                params.old_name, params.new_name, transformed
+            )
         }
-        
+
         "extract" => {
             #[derive(Deserialize)]
             struct ExtractParams {
@@ -323,10 +329,13 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
             }
             let params: ExtractParams = serde_json::from_value(args.transform.params)
                 .map_err(|e| format!("Invalid extract params: {e}"))?;
-            
-            format!("Extract function '{}' (not yet implemented)", params.function_name)
+
+            format!(
+                "Extract function '{}' (not yet implemented)",
+                params.function_name
+            )
         }
-        
+
         "inline" => {
             #[derive(Deserialize)]
             struct InlineParams {
@@ -334,10 +343,13 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
             }
             let params: InlineParams = serde_json::from_value(args.transform.params)
                 .map_err(|e| format!("Invalid inline params: {e}"))?;
-            
-            format!("Inline function '{}' (not yet implemented)", params.function_name)
+
+            format!(
+                "Inline function '{}' (not yet implemented)",
+                params.function_name
+            )
         }
-        
+
         "wrap" => {
             #[derive(Deserialize)]
             struct WrapParams {
@@ -347,16 +359,21 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
             }
             let params: WrapParams = serde_json::from_value(args.transform.params)
                 .map_err(|e| format!("Invalid wrap params: {e}"))?;
-            
+
             format!("Wrap in '{}' (not yet implemented)", params.wrapper_name)
         }
-        
+
         _ => {
-            return Err(format!("Unknown transformation type: {}", args.transform.transform_type));
+            return Err(format!(
+                "Unknown transformation type: {}",
+                args.transform.transform_type
+            ));
         }
     };
-    
-    Ok(vec![ToolResult::Text { text: transformed_expr }])
+
+    Ok(vec![ToolResult::Text {
+        text: transformed_expr,
+    }])
 }
 
 /// Analyze dependencies
@@ -367,16 +384,15 @@ async fn execute_analyze_dependencies(args: Value) -> Result<Vec<ToolResult>, St
         #[allow(dead_code)]
         include_stdlib: Option<bool>,
     }
-    
-    let args: AnalyzeArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {e}"))?;
-    
-    let _expr = vibe_core::parser::parse(&args.code)
-        .map_err(|e| format!("Parse error: {e}"))?;
-    
+
+    let args: AnalyzeArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
+
+    let _expr = vibe_core::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
+
     // TODO: Implement actual dependency analysis
-    Ok(vec![ToolResult::Text { 
-        text: "Dependency analysis completed (implementation pending)".to_string()
+    Ok(vec![ToolResult::Text {
+        text: "Dependency analysis completed (implementation pending)".to_string(),
     }])
 }
 
@@ -386,20 +402,19 @@ async fn execute_effect_analysis(args: Value) -> Result<Vec<ToolResult>, String>
     struct EffectArgs {
         code: String,
     }
-    
-    let args: EffectArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid arguments: {e}"))?;
-    
-    let expr = vibe_core::parser::parse(&args.code)
-        .map_err(|e| format!("Parse error: {e}"))?;
-    
+
+    let args: EffectArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
+
+    let expr = vibe_core::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
+
     match type_check(&expr) {
         Ok(_ty) => {
             // TODO: Implement effect analysis when effect system is ready
-            Ok(vec![ToolResult::Text { 
-                text: "Effect analysis is not yet implemented".to_string()
+            Ok(vec![ToolResult::Text {
+                text: "Effect analysis is not yet implemented".to_string(),
             }])
         }
-        Err(e) => Err(format!("Type error during effect analysis: {e}"))
+        Err(e) => Err(format!("Type error during effect analysis: {e}")),
     }
 }

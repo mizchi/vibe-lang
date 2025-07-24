@@ -37,7 +37,11 @@ mod tests {
         match &effects {
             EffectRow::Concrete(set) => {
                 eprintln!("Effects: {:?}", set);
-                assert!(set.contains(&Effect::IO), "Expected IO effect, got: {:?}", set);
+                assert!(
+                    set.contains(&Effect::IO),
+                    "Expected IO effect, got: {:?}",
+                    set
+                );
             }
             _ => panic!("Expected concrete IO effect, got: {:?}", effects),
         }

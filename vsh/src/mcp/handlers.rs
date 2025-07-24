@@ -2,15 +2,11 @@
 //!
 //! Handles different types of MCP protocol requests.
 
+use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use serde_json::json;
 
-use super::{
-    protocol::*,
-    server::McpServerState,
-    tools,
-};
+use super::{protocol::*, server::McpServerState, tools};
 
 /// Handle an MCP request
 pub async fn handle_request(
@@ -18,30 +14,20 @@ pub async fn handle_request(
     request: McpRequest,
 ) -> Result<McpResponse, String> {
     match request {
-        McpRequest::Initialize { protocol_version, capabilities } => {
-            handle_initialize(state, protocol_version, capabilities).await
-        }
-        McpRequest::ToolsList => {
-            handle_tools_list().await
-        }
-        McpRequest::ToolsCall { tool_name, arguments } => {
-            handle_tools_call(tool_name, arguments).await
-        }
-        McpRequest::ResourcesList => {
-            handle_resources_list(state).await
-        }
-        McpRequest::ResourcesRead { uri } => {
-            handle_resources_read(state, uri).await
-        }
-        McpRequest::PromptsList => {
-            handle_prompts_list().await
-        }
-        McpRequest::PromptsGet { name, arguments } => {
-            handle_prompts_get(name, arguments).await
-        }
-        McpRequest::Completion { ref_, context } => {
-            handle_completion(ref_, context).await
-        }
+        McpRequest::Initialize {
+            protocol_version,
+            capabilities,
+        } => handle_initialize(state, protocol_version, capabilities).await,
+        McpRequest::ToolsList => handle_tools_list().await,
+        McpRequest::ToolsCall {
+            tool_name,
+            arguments,
+        } => handle_tools_call(tool_name, arguments).await,
+        McpRequest::ResourcesList => handle_resources_list(state).await,
+        McpRequest::ResourcesRead { uri } => handle_resources_read(state, uri).await,
+        McpRequest::PromptsList => handle_prompts_list().await,
+        McpRequest::PromptsGet { name, arguments } => handle_prompts_get(name, arguments).await,
+        McpRequest::Completion { ref_, context } => handle_completion(ref_, context).await,
         McpRequest::Cancel { request_id: _ } => {
             // TODO: Implement request cancellation
             Err("Cancellation not yet implemented".to_string())
@@ -56,7 +42,7 @@ async fn handle_initialize(
     _capabilities: ClientCapabilities,
 ) -> Result<McpResponse, String> {
     let state = state.read().await;
-    
+
     Ok(McpResponse::Initialize {
         protocol_version,
         capabilities: ServerCapabilities {
@@ -135,7 +121,7 @@ async fn handle_resources_read(
     uri: String,
 ) -> Result<McpResponse, String> {
     let state = state.read().await;
-    
+
     match uri.as_str() {
         "xs://workspace/definitions" => {
             // Get definitions from workspace if available
@@ -167,7 +153,7 @@ async fn handle_resources_read(
                     "error": "No workspace loaded"
                 })
             };
-            
+
             Ok(McpResponse::ResourcesRead {
                 contents: vec![ResourceContent {
                     uri,
@@ -177,7 +163,7 @@ async fn handle_resources_read(
                 }],
             })
         }
-        
+
         "xs://workspace/types" => {
             // Get type definitions
             let types = json!({
@@ -203,7 +189,7 @@ async fn handle_resources_read(
                 ],
                 "total": 2
             });
-            
+
             Ok(McpResponse::ResourcesRead {
                 contents: vec![ResourceContent {
                     uri,
@@ -213,7 +199,7 @@ async fn handle_resources_read(
                 }],
             })
         }
-        
+
         "xs://workspace/dependencies" => {
             // Get dependency graph
             let deps = json!({
@@ -228,7 +214,7 @@ async fn handle_resources_read(
                     "Math.mul": ["Math.Utils.factorial", "Math.product"]
                 }
             });
-            
+
             Ok(McpResponse::ResourcesRead {
                 contents: vec![ResourceContent {
                     uri,
@@ -238,7 +224,7 @@ async fn handle_resources_read(
                 }],
             })
         }
-        
+
         "xs://workspace/namespaces" => {
             // Get namespace structure
             let namespaces = json!({
@@ -265,7 +251,7 @@ async fn handle_resources_read(
                     }
                 }
             });
-            
+
             Ok(McpResponse::ResourcesRead {
                 contents: vec![ResourceContent {
                     uri,
@@ -275,8 +261,8 @@ async fn handle_resources_read(
                 }],
             })
         }
-        
-        _ => Err(format!("Unknown resource: {uri}"))
+
+        _ => Err(format!("Unknown resource: {uri}")),
     }
 }
 
@@ -287,35 +273,29 @@ async fn handle_prompts_list() -> Result<McpResponse, String> {
             Prompt {
                 name: "explain_type".to_string(),
                 description: Some("Explain an XS type signature".to_string()),
-                arguments: Some(vec![
-                    PromptArgument {
-                        name: "type".to_string(),
-                        description: Some("The type signature to explain".to_string()),
-                        required: Some(true),
-                    }
-                ]),
+                arguments: Some(vec![PromptArgument {
+                    name: "type".to_string(),
+                    description: Some("The type signature to explain".to_string()),
+                    required: Some(true),
+                }]),
             },
             Prompt {
                 name: "generate_test".to_string(),
                 description: Some("Generate test cases for XS code".to_string()),
-                arguments: Some(vec![
-                    PromptArgument {
-                        name: "code".to_string(),
-                        description: Some("The code to generate tests for".to_string()),
-                        required: Some(true),
-                    }
-                ]),
+                arguments: Some(vec![PromptArgument {
+                    name: "code".to_string(),
+                    description: Some("The code to generate tests for".to_string()),
+                    required: Some(true),
+                }]),
             },
             Prompt {
                 name: "suggest_refactoring".to_string(),
                 description: Some("Suggest refactoring for XS code".to_string()),
-                arguments: Some(vec![
-                    PromptArgument {
-                        name: "code".to_string(),
-                        description: Some("The code to analyze".to_string()),
-                        required: Some(true),
-                    }
-                ]),
+                arguments: Some(vec![PromptArgument {
+                    name: "code".to_string(),
+                    description: Some("The code to analyze".to_string()),
+                    required: Some(true),
+                }]),
             },
         ],
     })
@@ -334,7 +314,7 @@ async fn handle_prompts_get(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing 'type' argument")?
                 .to_string();
-            
+
             vec![PromptMessage {
                 role: "user".to_string(),
                 content: PromptContent::Text {
@@ -349,7 +329,7 @@ async fn handle_prompts_get(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing 'code' argument")?
                 .to_string();
-            
+
             vec![PromptMessage {
                 role: "user".to_string(),
                 content: PromptContent::Text {
@@ -364,7 +344,7 @@ async fn handle_prompts_get(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing 'code' argument")?
                 .to_string();
-            
+
             vec![PromptMessage {
                 role: "user".to_string(),
                 content: PromptContent::Text {
@@ -372,9 +352,9 @@ async fn handle_prompts_get(
                 },
             }]
         }
-        _ => return Err(format!("Unknown prompt: {name}"))
+        _ => return Err(format!("Unknown prompt: {name}")),
     };
-    
+
     Ok(McpResponse::PromptsGet { messages })
 }
 
@@ -396,7 +376,7 @@ async fn handle_completion(
                 }),
                 json!({
                     "label": "foldLeft",
-                    "kind": "function", 
+                    "kind": "function",
                     "detail": "(-> (List a) b (-> b a b) b)",
                     "documentation": "Left fold over a list"
                 }),
@@ -496,7 +476,7 @@ async fn handle_completion(
                                 "detail": "(-> (List a) (-> a Bool) (List a))"
                             }),
                         ],
-                        _ => vec![]
+                        _ => vec![],
                     }
                 } else {
                     vec![]
@@ -506,9 +486,9 @@ async fn handle_completion(
             }
         }
     };
-    
+
     let total = completions.len() as i32;
-    
+
     Ok(McpResponse::Completion {
         completion: CompletionResult {
             values: completions,

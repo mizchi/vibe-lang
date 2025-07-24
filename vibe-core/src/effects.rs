@@ -139,11 +139,13 @@ impl fmt::Display for EffectSet {
         if self.is_pure() {
             write!(f, "Pure")
         } else {
-            let effects: Vec<String> = self.effects.iter()
-                .filter(|e| **e != Effect::Pure)  // Skip Pure in mixed sets
+            let effects: Vec<String> = self
+                .effects
+                .iter()
+                .filter(|e| **e != Effect::Pure) // Skip Pure in mixed sets
                 .map(|e| e.to_string())
                 .collect();
-            
+
             if effects.len() == 1 {
                 // Single effect: IO instead of {IO}
                 write!(f, "{}", effects[0])

@@ -13,9 +13,9 @@ pub mod component_commands;
 pub mod api;
 pub mod commands;
 pub mod hole_completion;
-pub mod shell;
 pub mod multi_store;
 pub mod search_patterns;
+pub mod shell;
 
 // MCP (Model Context Protocol) module
 pub mod mcp;

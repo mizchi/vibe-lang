@@ -1,12 +1,12 @@
 //! Namespace system for XS language
-//! 
+//!
 //! Provides Unison-like content-addressed namespace management with
 //! hierarchical organization and dependency tracking.
 
+use crate::hash::DefinitionHash;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use vibe_core::{Expr, Type, XsError};
-use crate::hash::DefinitionHash;
 
 /// A path in the namespace hierarchy (e.g., ["Math", "utils", "fibonacci"])
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -50,7 +50,7 @@ impl NamespacePath {
             Some(Self(segments))
         }
     }
-    
+
     pub fn child(&self, name: &str) -> Self {
         let mut segments = self.0.clone();
         segments.push(name.to_string());
@@ -76,13 +76,13 @@ impl DefinitionPath {
         if parts.is_empty() {
             return None;
         }
-        
+
         let name = parts.last()?.to_string();
         let namespace_parts: Vec<String> = parts[..parts.len() - 1]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        
+
         Some(Self {
             namespace: NamespacePath(namespace_parts),
             name,
@@ -172,31 +172,29 @@ pub enum NamespaceCommand {
         type_signature: Type,
         metadata: DefinitionMetadata,
     },
-    
+
     /// Update an existing definition
     UpdateDefinition {
         path: DefinitionPath,
         content: DefinitionContent,
         type_signature: Type,
     },
-    
+
     /// Move a definition to a new location
     MoveDefinition {
         from: DefinitionPath,
         to: DefinitionPath,
     },
-    
+
     /// Create an alias for a definition
     CreateAlias {
         target: DefinitionPath,
         alias: DefinitionPath,
     },
-    
+
     /// Delete a name (definition remains in storage)
-    DeleteName {
-        path: DefinitionPath,
-    },
-    
+    DeleteName { path: DefinitionPath },
+
     /// Rename all occurrences within a scope
     RenameInScope {
         old_name: String,
@@ -209,13 +207,13 @@ pub enum NamespaceCommand {
 pub struct NamespaceStore {
     /// All namespaces by path
     namespaces: HashMap<NamespacePath, Namespace>,
-    
+
     /// All definitions by hash
     definitions: HashMap<DefinitionHash, Arc<Definition>>,
-    
+
     /// Reverse dependency graph: hash -> set of hashes that depend on it
     reverse_dependencies: HashMap<DefinitionHash, HashSet<DefinitionHash>>,
-    
+
     /// Name to hash mappings for quick lookup
     name_index: HashMap<DefinitionPath, DefinitionHash>,
 }
@@ -228,13 +226,12 @@ impl NamespaceStore {
             reverse_dependencies: HashMap::new(),
             name_index: HashMap::new(),
         };
-        
+
         // Create root namespace
-        store.namespaces.insert(
-            NamespacePath::root(),
-            Namespace::new(NamespacePath::root())
-        );
-        
+        store
+            .namespaces
+            .insert(NamespacePath::root(), Namespace::new(NamespacePath::root()));
+
         store
     }
 
@@ -245,17 +242,18 @@ impl NamespaceStore {
         for segment in &path.0 {
             let parent_path = current.clone();
             current = current.append(segment);
-            
+
             // Add to parent's subnamespaces
             if let Some(parent) = self.namespaces.get_mut(&parent_path) {
                 parent.subnamespaces.insert(segment.clone());
             }
-            
+
             // Create namespace if it doesn't exist
-            self.namespaces.entry(current.clone())
+            self.namespaces
+                .entry(current.clone())
                 .or_insert_with(|| Namespace::new(current.clone()));
         }
-        
+
         self.namespaces.get_mut(path).unwrap()
     }
 
@@ -272,7 +270,7 @@ impl NamespaceStore {
         if self.name_index.contains_key(&path) {
             return Err(XsError::RuntimeError(
                 vibe_core::Span::new(0, 0),
-                format!("Definition '{}' already exists", path.to_string())
+                format!("Definition '{}' already exists", path.to_string()),
             ));
         }
 
@@ -301,7 +299,9 @@ impl NamespaceStore {
 
         // Add to namespace
         let namespace = self.get_or_create_namespace(&path.namespace);
-        namespace.definitions.insert(path.name.clone(), hash.clone());
+        namespace
+            .definitions
+            .insert(path.name.clone(), hash.clone());
 
         // Update name index
         self.name_index.insert(path, hash.clone());
@@ -316,7 +316,8 @@ impl NamespaceStore {
 
     /// Get a definition by path
     pub fn get_definition_by_path(&self, path: &DefinitionPath) -> Option<&Arc<Definition>> {
-        self.name_index.get(path)
+        self.name_index
+            .get(path)
             .and_then(|hash| self.definitions.get(hash))
     }
 
@@ -331,88 +332,117 @@ impl NamespaceStore {
     /// Execute a namespace command
     pub fn execute_command(&mut self, command: NamespaceCommand) -> Result<(), XsError> {
         match command {
-            NamespaceCommand::AddDefinition { path, content, type_signature, metadata } => {
+            NamespaceCommand::AddDefinition {
+                path,
+                content,
+                type_signature,
+                metadata,
+            } => {
                 // Extract dependencies from content
                 let dependencies = self.extract_dependencies(&content)?;
                 self.add_definition(path, content, type_signature, dependencies, metadata)?;
             }
-            
-            NamespaceCommand::UpdateDefinition { path, content, type_signature } => {
+
+            NamespaceCommand::UpdateDefinition {
+                path,
+                content,
+                type_signature,
+            } => {
                 // Remove old definition name
                 if let Some(_old_hash) = self.name_index.remove(&path) {
                     if let Some(namespace) = self.namespaces.get_mut(&path.namespace) {
                         namespace.definitions.remove(&path.name);
                     }
                 }
-                
+
                 // Add new definition
                 let dependencies = self.extract_dependencies(&content)?;
-                self.add_definition(path, content, type_signature, dependencies, DefinitionMetadata::default())?;
+                self.add_definition(
+                    path,
+                    content,
+                    type_signature,
+                    dependencies,
+                    DefinitionMetadata::default(),
+                )?;
             }
-            
+
             NamespaceCommand::MoveDefinition { from, to } => {
                 // Get the hash
-                let hash = self.name_index.remove(&from)
-                    .ok_or_else(|| XsError::RuntimeError(
+                let hash = self.name_index.remove(&from).ok_or_else(|| {
+                    XsError::RuntimeError(
                         vibe_core::Span::new(0, 0),
-                        format!("Definition '{}' not found", from.to_string())
-                    ))?;
-                
+                        format!("Definition '{}' not found", from.to_string()),
+                    )
+                })?;
+
                 // Remove from old namespace
                 if let Some(namespace) = self.namespaces.get_mut(&from.namespace) {
                     namespace.definitions.remove(&from.name);
                 }
-                
+
                 // Add to new namespace
                 let namespace = self.get_or_create_namespace(&to.namespace);
                 namespace.definitions.insert(to.name.clone(), hash.clone());
-                
+
                 // Update name index
                 self.name_index.insert(to, hash);
             }
-            
+
             NamespaceCommand::CreateAlias { target, alias } => {
                 // Get the hash
-                let hash = self.name_index.get(&target)
-                    .ok_or_else(|| XsError::RuntimeError(
-                        vibe_core::Span::new(0, 0),
-                        format!("Definition '{}' not found", target.to_string())
-                    ))?
+                let hash = self
+                    .name_index
+                    .get(&target)
+                    .ok_or_else(|| {
+                        XsError::RuntimeError(
+                            vibe_core::Span::new(0, 0),
+                            format!("Definition '{}' not found", target.to_string()),
+                        )
+                    })?
                     .clone();
-                
+
                 // Add alias
                 let namespace = self.get_or_create_namespace(&alias.namespace);
-                namespace.definitions.insert(alias.name.clone(), hash.clone());
+                namespace
+                    .definitions
+                    .insert(alias.name.clone(), hash.clone());
                 self.name_index.insert(alias, hash);
             }
-            
+
             NamespaceCommand::DeleteName { path } => {
                 // Remove from namespace
                 if let Some(namespace) = self.namespaces.get_mut(&path.namespace) {
                     namespace.definitions.remove(&path.name);
                 }
-                
+
                 // Remove from name index
                 self.name_index.remove(&path);
-                
+
                 // Note: The definition itself remains in self.definitions
             }
-            
-            NamespaceCommand::RenameInScope { old_name: _, new_name: _, scope: _ } => {
+
+            NamespaceCommand::RenameInScope {
+                old_name: _,
+                new_name: _,
+                scope: _,
+            } => {
                 // This would require updating all definitions in the scope
                 // that reference old_name to use new_name instead
                 // For now, this is a placeholder
                 todo!("Implement rename in scope")
             }
         }
-        
+
         Ok(())
     }
 
     /// Extract dependencies from definition content
-    fn extract_dependencies(&self, content: &DefinitionContent) -> Result<HashSet<DefinitionHash>, XsError> {
+    fn extract_dependencies(
+        &self,
+        content: &DefinitionContent,
+    ) -> Result<HashSet<DefinitionHash>, XsError> {
         use crate::dependency_extractor::DependencyExtractor;
-        
+
         match content {
             DefinitionContent::Function { body, .. } => {
                 let mut extractor = DependencyExtractor::new(self, NamespacePath::root());
@@ -431,9 +461,11 @@ impl NamespaceStore {
 
     /// List all definitions in a namespace
     pub fn list_namespace(&self, path: &NamespacePath) -> Vec<(String, DefinitionHash)> {
-        self.namespaces.get(path)
+        self.namespaces
+            .get(path)
             .map(|ns| {
-                ns.definitions.iter()
+                ns.definitions
+                    .iter()
                     .map(|(name, hash)| (name.clone(), hash.clone()))
                     .collect()
             })
@@ -442,7 +474,8 @@ impl NamespaceStore {
 
     /// Get all sub-namespaces of a namespace
     pub fn list_subnamespaces(&self, path: &NamespacePath) -> Vec<String> {
-        self.namespaces.get(path)
+        self.namespaces
+            .get(path)
             .map(|ns| ns.subnamespaces.iter().cloned().collect())
             .unwrap_or_default()
     }
@@ -479,26 +512,28 @@ mod tests {
     #[test]
     fn test_add_definition() {
         let mut store = NamespaceStore::new();
-        
+
         let path = DefinitionPath::from_str("Math.fibonacci").unwrap();
         let content = DefinitionContent::Value(Expr::Ident(
             vibe_core::Ident("test".to_string()),
-            vibe_core::Span::new(0, 4)
+            vibe_core::Span::new(0, 4),
         ));
         let type_sig = Type::Int;
-        
-        let hash = store.add_definition(
-            path.clone(),
-            content,
-            type_sig,
-            HashSet::new(),
-            DefinitionMetadata::default(),
-        ).unwrap();
-        
+
+        let hash = store
+            .add_definition(
+                path.clone(),
+                content,
+                type_sig,
+                HashSet::new(),
+                DefinitionMetadata::default(),
+            )
+            .unwrap();
+
         // Check that definition was added
         assert!(store.get_definition(&hash).is_some());
         assert!(store.get_definition_by_path(&path).is_some());
-        
+
         // Check that namespace was created
         let math_ns = NamespacePath::from_str("Math");
         assert!(store.namespaces.contains_key(&math_ns));

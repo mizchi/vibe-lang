@@ -1,7 +1,9 @@
 //! Pretty printer that considers metadata when formatting code
 
 use crate::metadata::{MetadataStore, NodeId};
-use crate::{Constructor, DoStatement, Expr, Ident, Literal, Pattern, Type, TypeDefinition, FunctionParam};
+use crate::{
+    Constructor, DoStatement, Expr, FunctionParam, Ident, Literal, Pattern, Type, TypeDefinition,
+};
 
 pub struct PrettyPrinter<'a> {
     metadata_store: Option<&'a MetadataStore>,
@@ -55,14 +57,28 @@ impl<'a> PrettyPrinter<'a> {
             Expr::Literal(lit, _) => self.format_literal(lit),
             Expr::Ident(ident, _) => ident.0.clone(),
             Expr::Lambda { params, body, .. } => self.format_lambda(params, body),
-            Expr::FunctionDef { name, params, return_type, effects, body, .. } => {
-                self.format_function_def(name, params, return_type, effects, body)
-            },
+            Expr::FunctionDef {
+                name,
+                params,
+                return_type,
+                effects,
+                body,
+                ..
+            } => self.format_function_def(name, params, return_type, effects, body),
             Expr::Apply { func, args, .. } => self.format_application(func, args),
-            Expr::Let { name, type_ann, value, .. } => self.format_let(name, type_ann, value),
+            Expr::Let {
+                name,
+                type_ann,
+                value,
+                ..
+            } => self.format_let(name, type_ann, value),
             Expr::LetRec { name, value, .. } => self.format_let(name, &None, value),
             Expr::LetIn {
-                name, type_ann, value, body, ..
+                name,
+                type_ann,
+                value,
+                body,
+                ..
             } => self.format_let_in(name, type_ann, value, body),
             Expr::LetRecIn {
                 name, value, body, ..
@@ -78,7 +94,11 @@ impl<'a> PrettyPrinter<'a> {
             // Lists are handled by Expr::List
             Expr::Match { expr, cases, .. } => self.format_match(expr, cases),
             Expr::Rec {
-                name, params, return_type, body, ..
+                name,
+                params,
+                return_type,
+                body,
+                ..
             } => self.format_rec(name, params, return_type, body),
             Expr::TypeDef { definition, .. } => self.format_type_def(definition),
             Expr::Constructor { name, args, .. } => self.format_constructor(name, args),
@@ -88,7 +108,12 @@ impl<'a> PrettyPrinter<'a> {
                 body,
                 ..
             } => self.format_module(name, exports, body),
-            Expr::Import { module_name, hash, as_name, .. } => {
+            Expr::Import {
+                module_name,
+                hash,
+                as_name,
+                ..
+            } => {
                 let mut result = format!("import {}", module_name.0);
                 if let Some(h) = hash {
                     result.push_str(&format!("@{}", h));
@@ -102,7 +127,12 @@ impl<'a> PrettyPrinter<'a> {
                 let path_str = path.join("/");
                 match items {
                     Some(items) => {
-                        let items_str = items.iter().map(|i| &i.0).cloned().collect::<Vec<_>>().join(", ");
+                        let items_str = items
+                            .iter()
+                            .map(|i| &i.0)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         format!("(use {path_str} ({items_str}))")
                     }
                     None => format!("(use {path_str})"),
@@ -141,9 +171,14 @@ impl<'a> PrettyPrinter<'a> {
                     self.format_expr(body, None)
                 )
             }
-            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+            Expr::HandleExpr {
+                expr,
+                handlers,
+                return_handler,
+                ..
+            } => {
                 let mut result = format!("handle {} with\n", self.format_expr(expr, None));
-                
+
                 for handler in handlers {
                     result.push_str("  | ");
                     result.push_str(&handler.effect.0);
@@ -151,19 +186,19 @@ impl<'a> PrettyPrinter<'a> {
                         result.push('.');
                         result.push_str(&op.0);
                     }
-                    
+
                     for arg in &handler.args {
                         result.push(' ');
                         result.push_str(&self.format_pattern(arg));
                     }
-                    
+
                     result.push(' ');
                     result.push_str(&handler.continuation.0);
                     result.push_str(" -> ");
                     result.push_str(&self.format_expr(&handler.body, None));
                     result.push('\n');
                 }
-                
+
                 if let Some((var, body)) = return_handler {
                     result.push_str("  | return ");
                     result.push_str(&var.0);
@@ -171,7 +206,7 @@ impl<'a> PrettyPrinter<'a> {
                     result.push_str(&self.format_expr(body, None));
                     result.push('\n');
                 }
-                
+
                 result.push_str("end");
                 result
             }
@@ -198,29 +233,38 @@ impl<'a> PrettyPrinter<'a> {
                     .join("; ");
                 format!("{{ {} }}", exprs_str)
             }
-            Expr::Hole { name, type_hint, .. } => {
-                match (name, type_hint) {
-                    (Some(n), Some(t)) => format!("@{}:{}", n, t),
-                    (Some(n), None) => format!("@{}", n),
-                    (None, Some(t)) => format!("@:{}", t),
-                    (None, None) => "@".to_string(),
-                }
-            }
+            Expr::Hole {
+                name, type_hint, ..
+            } => match (name, type_hint) {
+                (Some(n), Some(t)) => format!("@{}:{}", n, t),
+                (Some(n), None) => format!("@{}", n),
+                (None, Some(t)) => format!("@:{}", t),
+                (None, None) => "@".to_string(),
+            },
             Expr::Do { statements, .. } => {
                 let mut result = String::from("do {\n");
                 let indent = "  ";
-                
+
                 for statement in statements {
                     match statement {
                         DoStatement::Bind { name, expr, .. } => {
-                            result.push_str(&format!("{}{} <- {}\n", indent, name.0, self.format_expr(expr, None)));
+                            result.push_str(&format!(
+                                "{}{} <- {}\n",
+                                indent,
+                                name.0,
+                                self.format_expr(expr, None)
+                            ));
                         }
                         DoStatement::Expression(expr) => {
-                            result.push_str(&format!("{}{}\n", indent, self.format_expr(expr, None)));
+                            result.push_str(&format!(
+                                "{}{}\n",
+                                indent,
+                                self.format_expr(expr, None)
+                            ));
                         }
                     }
                 }
-                
+
                 result.push('}');
                 result
             }
@@ -235,7 +279,9 @@ impl<'a> PrettyPrinter<'a> {
             Expr::RecordAccess { record, field, .. } => {
                 format!("{}.{}", self.format_expr(record, None), field.0)
             }
-            Expr::RecordUpdate { record, updates, .. } => {
+            Expr::RecordUpdate {
+                record, updates, ..
+            } => {
                 let updates_str = updates
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k.0, self.format_expr(v, None)))
@@ -293,20 +339,36 @@ impl<'a> PrettyPrinter<'a> {
             Type::String => "String".to_string(),
             Type::Unit => "Unit".to_string(),
             Type::List(t) => format!("List {}", self.format_type(t)),
-            Type::Function(from, to) => format!("{} -> {}", self.format_type(from), self.format_type(to)),
+            Type::Function(from, to) => {
+                format!("{} -> {}", self.format_type(from), self.format_type(to))
+            }
             Type::FunctionWithEffect { from, to, effects } => {
-                format!("{} -> <{}> {}", self.format_type(from), effects, self.format_type(to))
+                format!(
+                    "{} -> <{}> {}",
+                    self.format_type(from),
+                    effects,
+                    self.format_type(to)
+                )
             }
             Type::Var(name) => name.clone(),
             Type::UserDefined { name, type_params } => {
                 if type_params.is_empty() {
                     name.clone()
                 } else {
-                    format!("{} {}", name, type_params.iter().map(|t| self.format_type(t)).collect::<Vec<_>>().join(" "))
+                    format!(
+                        "{} {}",
+                        name,
+                        type_params
+                            .iter()
+                            .map(|t| self.format_type(t))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )
                 }
             }
             Type::Record { fields } => {
-                let field_strs: Vec<String> = fields.iter()
+                let field_strs: Vec<String> = fields
+                    .iter()
                     .map(|(name, typ)| format!("{}: {}", name, self.format_type(typ)))
                     .collect();
                 format!("{{ {} }}", field_strs.join(", "))
@@ -324,7 +386,7 @@ impl<'a> PrettyPrinter<'a> {
     ) -> String {
         use std::fmt::Write;
         let mut result = format!("let {} ", name.0);
-        
+
         // Format parameters with types
         for param in params {
             if let Some(typ) = &param.typ {
@@ -333,26 +395,26 @@ impl<'a> PrettyPrinter<'a> {
                 write!(&mut result, "{} ", param.name.0).unwrap();
             }
         }
-        
+
         // Format return type and effects
         if return_type.is_some() || effects.is_some() {
             result.push_str("-> ");
-            
+
             if let Some(eff) = effects {
                 if !eff.is_pure() {
                     write!(&mut result, "<{}> ", eff).unwrap();
                 }
             }
-            
+
             if let Some(ret_type) = return_type {
                 result.push_str(&self.format_type(ret_type));
                 result.push(' ');
             }
         }
-        
+
         result.push_str("= ");
         result.push_str(&self.format_expr(body, None));
-        
+
         result
     }
 
@@ -368,12 +430,23 @@ impl<'a> PrettyPrinter<'a> {
 
     fn format_let(&self, name: &Ident, type_ann: &Option<Type>, value: &Expr) -> String {
         match type_ann {
-            Some(ty) => format!("(let {} : {} {})", name.0, self.format_type(ty), self.format_expr(value, None)),
-            None => format!("(let {} {})", name.0, self.format_expr(value, None))
+            Some(ty) => format!(
+                "(let {} : {} {})",
+                name.0,
+                self.format_type(ty),
+                self.format_expr(value, None)
+            ),
+            None => format!("(let {} {})", name.0, self.format_expr(value, None)),
         }
     }
 
-    fn format_let_in(&self, name: &Ident, type_ann: &Option<Type>, value: &Expr, body: &Expr) -> String {
+    fn format_let_in(
+        &self,
+        name: &Ident,
+        type_ann: &Option<Type>,
+        value: &Expr,
+        body: &Expr,
+    ) -> String {
         match type_ann {
             Some(ty) => format!(
                 "(let {} : {} {} in {})",
@@ -387,11 +460,17 @@ impl<'a> PrettyPrinter<'a> {
                 name.0,
                 self.format_expr(value, None),
                 self.format_expr(body, None)
-            )
+            ),
         }
     }
 
-    fn format_letrec_in(&self, name: &Ident, type_ann: &Option<Type>, value: &Expr, body: &Expr) -> String {
+    fn format_letrec_in(
+        &self,
+        name: &Ident,
+        type_ann: &Option<Type>,
+        value: &Expr,
+        body: &Expr,
+    ) -> String {
         match type_ann {
             Some(ty) => format!(
                 "(letrec {} : {} {} in {})",
@@ -405,7 +484,7 @@ impl<'a> PrettyPrinter<'a> {
                 name.0,
                 self.format_expr(value, None),
                 self.format_expr(body, None)
-            )
+            ),
         }
     }
 
@@ -504,7 +583,13 @@ impl<'a> PrettyPrinter<'a> {
         }
     }
 
-    fn format_rec(&self, name: &Ident, params: &[(Ident, Option<Type>)], return_type: &Option<Type>, body: &Expr) -> String {
+    fn format_rec(
+        &self,
+        name: &Ident,
+        params: &[(Ident, Option<Type>)],
+        return_type: &Option<Type>,
+        body: &Expr,
+    ) -> String {
         let params_str = params
             .iter()
             .map(|(ident, _)| ident.0.clone())
@@ -523,7 +608,7 @@ impl<'a> PrettyPrinter<'a> {
                 name.0,
                 params_str,
                 self.format_expr(body, None)
-            )
+            ),
         }
     }
 

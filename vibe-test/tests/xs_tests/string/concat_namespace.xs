@@ -1,1 +1,0 @@
-String.concat "Hello, " "World!"

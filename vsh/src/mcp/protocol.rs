@@ -14,43 +14,36 @@ pub enum McpRequest {
         protocol_version: String,
         capabilities: ClientCapabilities,
     },
-    
+
     /// List available tools
     ToolsList,
-    
+
     /// Execute a tool
-    ToolsCall {
-        tool_name: String,
-        arguments: Value,
-    },
-    
+    ToolsCall { tool_name: String, arguments: Value },
+
     /// List available resources
     ResourcesList,
-    
+
     /// Read a resource
-    ResourcesRead {
-        uri: String,
-    },
-    
+    ResourcesRead { uri: String },
+
     /// List available prompts
     PromptsList,
-    
+
     /// Get a prompt
     PromptsGet {
         name: String,
         arguments: Option<Value>,
     },
-    
+
     /// Completion request
     Completion {
         ref_: ResourceReference,
         context: Option<Value>,
     },
-    
+
     /// Cancel a request
-    Cancel {
-        request_id: String,
-    },
+    Cancel { request_id: String },
 }
 
 /// MCP Response types
@@ -63,42 +56,28 @@ pub enum McpResponse {
         capabilities: ServerCapabilities,
         server_info: ServerInfo,
     },
-    
+
     /// Tools list response
-    ToolsList {
-        tools: Vec<Tool>,
-    },
-    
+    ToolsList { tools: Vec<Tool> },
+
     /// Tool execution result
-    ToolsCall {
-        content: Vec<ToolResult>,
-    },
-    
+    ToolsCall { content: Vec<ToolResult> },
+
     /// Resources list response
-    ResourcesList {
-        resources: Vec<Resource>,
-    },
-    
+    ResourcesList { resources: Vec<Resource> },
+
     /// Resource content
-    ResourcesRead {
-        contents: Vec<ResourceContent>,
-    },
-    
+    ResourcesRead { contents: Vec<ResourceContent> },
+
     /// Prompts list response
-    PromptsList {
-        prompts: Vec<Prompt>,
-    },
-    
+    PromptsList { prompts: Vec<Prompt> },
+
     /// Prompt content
-    PromptsGet {
-        messages: Vec<PromptMessage>,
-    },
-    
+    PromptsGet { messages: Vec<PromptMessage> },
+
     /// Completion response
-    Completion {
-        completion: CompletionResult,
-    },
-    
+    Completion { completion: CompletionResult },
+
     /// Error response
     Error {
         code: i32,
@@ -146,14 +125,9 @@ pub enum ToolResult {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { 
-        data: String,
-        mime_type: String,
-    },
+    Image { data: String, mime_type: String },
     #[serde(rename = "resource")]
-    Resource { 
-        resource: ResourceReference,
-    },
+    Resource { resource: ResourceReference },
 }
 
 /// Resource definition
@@ -212,14 +186,9 @@ pub enum PromptContent {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { 
-        data: String,
-        mime_type: String,
-    },
+    Image { data: String, mime_type: String },
     #[serde(rename = "resource")]
-    Resource { 
-        resource: ResourceReference,
-    },
+    Resource { resource: ResourceReference },
 }
 
 /// Completion result

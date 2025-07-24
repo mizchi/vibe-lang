@@ -2,25 +2,24 @@
 
 #[cfg(test)]
 mod tests {
-    use vibe_core::Type;
-    use vibe_core::extensible_effects::{ExtensibleEffectRow, EffectInstance};
     use crate::effect_checker::EffectChecker;
-    use crate::{TypeEnv, TypeChecker};
+    use crate::{TypeChecker, TypeEnv};
+    use vibe_core::extensible_effects::{EffectInstance, ExtensibleEffectRow};
+    use vibe_core::Type;
 
     fn parse_and_check(code: &str) -> Result<(Type, ExtensibleEffectRow), String> {
         // Parse the code
-        let expr = vibe_core::parser::parse(code)
-            .map_err(|e| format!("Parse error: {:?}", e))?;
-        
+        let expr = vibe_core::parser::parse(code).map_err(|e| format!("Parse error: {:?}", e))?;
+
         // Type check
         let mut type_checker = TypeChecker::new();
         let mut type_env = TypeEnv::new();
         let typ = type_checker.check(&expr, &mut type_env)?;
-        
+
         // Effect check
         let mut effect_checker = EffectChecker::new();
         let effects = effect_checker.infer_effects(&expr, &type_env)?;
-        
+
         Ok((typ, effects))
     }
 
@@ -28,7 +27,7 @@ mod tests {
     fn test_pure_computation() {
         let code = "42";
         let (typ, effects) = parse_and_check(code).unwrap();
-        
+
         assert_eq!(typ, Type::Int);
         assert!(effects.is_pure());
     }
@@ -37,7 +36,7 @@ mod tests {
     fn test_io_effect() {
         let code = r#"perform IO "Hello""#;
         let result = parse_and_check(code);
-        
+
         // This might fail initially as we need to implement effect parsing
         if let Ok((_, effects)) = result {
             assert!(!effects.is_pure());
@@ -55,9 +54,9 @@ mod tests {
               perform State.put (x + 1)
             end
         "#;
-        
+
         let result = parse_and_check(code);
-        
+
         if let Ok((_, effects)) = result {
             assert!(!effects.is_pure());
             let effect_list = effects.get_effects();
@@ -74,9 +73,9 @@ mod tests {
               | return x s -> x
             end
         "#;
-        
+
         let result = parse_and_check(code);
-        
+
         // Handler should eliminate the State effect
         if let Ok((_, effects)) = result {
             // After handling, the State effect should be removed
@@ -94,9 +93,9 @@ mod tests {
               h :: t -> (f h) :: (map f t)
             }
         "#;
-        
+
         let result = parse_and_check(code);
-        
+
         // The effect should be polymorphic (effect variable)
         if let Ok((typ, _effects)) = result {
             // Type should be something like (a -> e b) -> [a] -> e [b]
@@ -104,7 +103,7 @@ mod tests {
                 Type::Function(_, _) => {
                     // OK - it's a function
                 }
-                _ => panic!("Expected function type")
+                _ => panic!("Expected function type"),
             }
         }
     }
@@ -112,20 +111,20 @@ mod tests {
     #[test]
     fn test_effect_row_operations() {
         use vibe_core::extensible_effects::ExtensibleEffectRow;
-        
+
         // Test pure
         let pure = ExtensibleEffectRow::pure();
         assert!(pure.is_pure());
-        
+
         // Test single effect
         let io = EffectInstance::new("IO".to_string());
         let io_row = ExtensibleEffectRow::Single(io.clone());
         assert!(!io_row.is_pure());
-        
+
         // Test extension
         let state = EffectInstance::new("State".to_string());
         let combined = io_row.add_effect(state.clone());
-        
+
         let effects = combined.get_effects();
         assert_eq!(effects.len(), 2);
         assert!(effects.iter().any(|e| e.name == "IO"));
@@ -135,25 +134,17 @@ mod tests {
     #[test]
     fn test_effect_with_type_parameters() {
         use vibe_core::extensible_effects::EffectInstance;
-        
+
         // State<Int> effect
-        let state_int = EffectInstance::with_type_args(
-            "State".to_string(),
-            vec![Type::Int]
-        );
-        
+        let state_int = EffectInstance::with_type_args("State".to_string(), vec![Type::Int]);
+
         // Exception<String> effect
-        let exception_string = EffectInstance::with_type_args(
-            "Exception".to_string(),
-            vec![Type::String]
-        );
-        
+        let exception_string =
+            EffectInstance::with_type_args("Exception".to_string(), vec![Type::String]);
+
         // Different type parameters should make different effects
-        let state_string = EffectInstance::with_type_args(
-            "State".to_string(),
-            vec![Type::String]
-        );
-        
+        let state_string = EffectInstance::with_type_args("State".to_string(), vec![Type::String]);
+
         assert_ne!(state_int, state_string);
         assert_ne!(state_int, exception_string);
     }

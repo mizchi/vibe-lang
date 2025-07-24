@@ -326,9 +326,8 @@ fn type_to_string(ty: &Type) -> String {
                 .map(|(name, ty)| format!("{}: {}", name, type_to_string(ty)))
                 .collect();
             format!("{{ {} }}", field_types.join(", "))
-        }
-        // Note: Type::Constructor doesn't exist in current implementation
-        // ADT types are represented differently
+        } // Note: Type::Constructor doesn't exist in current implementation
+          // ADT types are represented differently
     }
 }
 

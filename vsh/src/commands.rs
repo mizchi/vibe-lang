@@ -22,7 +22,7 @@ pub enum Command {
     Ls(Option<String>),   // ls [pattern] - 定義一覧
     Dependencies(String), // dependencies <name> - 依存関係を表示
     Dependents(String),   // dependents <name> - 被依存関係を表示
-    
+
     // パイプライン処理
     Pipeline(Vec<String>), // pipeline commands - パイプライン処理
 
@@ -49,12 +49,12 @@ pub enum Command {
 
     // 式の評価
     Eval(String), // 通常の式評価
-    
+
     // Code repository commands
-    Stats,              // stats - Show repository statistics
-    DeadCode,           // dead-code - Find unreachable code
+    Stats,                  // stats - Show repository statistics
+    DeadCode,               // dead-code - Find unreachable code
     Reachable(Vec<String>), // reachable <namespaces...> - Analyze reachability
-    
+
     // Namespace commands
     Namespace(Option<String>), // namespace [name] - Show current or change namespace
 }
@@ -68,7 +68,8 @@ impl Command {
 
         // Check for pipeline syntax
         if input.contains('|') {
-            let commands: Vec<String> = input.split('|')
+            let commands: Vec<String> = input
+                .split('|')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
@@ -232,16 +233,18 @@ impl Command {
             }
 
             "stats" => Ok(Command::Stats),
-            
+
             "dead-code" | "deadcode" => Ok(Command::DeadCode),
-            
+
             "reachable" => {
                 if args.is_empty() {
                     anyhow::bail!("reachable requires at least one namespace")
                 }
-                Ok(Command::Reachable(args.iter().map(|s| s.to_string()).collect()))
+                Ok(Command::Reachable(
+                    args.iter().map(|s| s.to_string()).collect(),
+                ))
             }
-            
+
             "namespace" | "ns" => {
                 if args.is_empty() {
                     Ok(Command::Namespace(None))
@@ -310,7 +313,7 @@ pub fn print_ucm_help() {
     println!("  exit, quit, :q       Exit the shell");
     println!("  clear, cls           Clear the screen");
     println!();
-    
+
     println!("{}", "Syntax Modes:".bold());
     println!("  :auto                Auto-detect syntax (default)");
     println!("  :sexpr               S-expression only mode");
@@ -334,7 +337,7 @@ pub fn print_ucm_help() {
     println!("  dependencies <name>  Show what <name> depends on");
     println!("  dependents <name>    Show what depends on <name>");
     println!();
-    
+
     println!("{}", "Pipeline Processing:".bold());
     println!("  cmd | filter field value   Filter by field value");
     println!("  cmd | select fields...     Select specific fields");
@@ -347,7 +350,7 @@ pub fn print_ucm_help() {
     println!("{}", "Type Information:".bold());
     println!("  type-of <expr>       Show the type of an expression");
     println!();
-    
+
     println!("{}", "Namespace Management:".bold());
     println!("  namespace, ns        Show current namespace");
     println!("  namespace <name>     Change to namespace <name>");

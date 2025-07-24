@@ -58,7 +58,9 @@ impl<'a> RecursionVisitor<'a> {
                 // This handles let expressions differently from let statements
             }
 
-            Expr::LetIn { name, value, body, .. } => {
+            Expr::LetIn {
+                name, value, body, ..
+            } => {
                 // Check value first
                 self.visit_expr(value);
                 // Then shadow the name for the body
@@ -68,7 +70,12 @@ impl<'a> RecursionVisitor<'a> {
                 self.bound_vars = old_bound;
             }
 
-            Expr::If { cond, then_expr, else_expr, .. } => {
+            Expr::If {
+                cond,
+                then_expr,
+                else_expr,
+                ..
+            } => {
                 self.visit_expr(cond);
                 self.visit_expr(then_expr);
                 self.visit_expr(else_expr);
@@ -95,23 +102,32 @@ impl<'a> RecursionVisitor<'a> {
             Expr::Rec { .. } => {}
 
             // Other expressions that don't contain sub-expressions
-            Expr::Literal(_, _) | Expr::TypeDef { .. } | Expr::Module { .. } 
-            | Expr::Import { .. } | Expr::Use { .. } | Expr::QualifiedIdent { .. } => {}
+            Expr::Literal(_, _)
+            | Expr::TypeDef { .. }
+            | Expr::Module { .. }
+            | Expr::Import { .. }
+            | Expr::Use { .. }
+            | Expr::QualifiedIdent { .. } => {}
 
             // Recursive let is already handled
             Expr::LetRec { .. } => {}
-            
+
             // LetRecIn - recursion is already handled by using LetRecIn
             Expr::LetRecIn { value, body, .. } => {
                 self.visit_expr(value);
                 self.visit_expr(body);
             }
-            
+
             // Effect-related expressions
             Expr::Constructor { .. } => {}
             Expr::Handler { .. } => {}
             Expr::WithHandler { .. } => {}
-            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+            Expr::HandleExpr {
+                expr,
+                handlers,
+                return_handler,
+                ..
+            } => {
                 self.visit_expr(expr);
                 for handler in handlers {
                     self.visit_expr(&handler.body);
@@ -148,17 +164,19 @@ impl<'a> RecursionVisitor<'a> {
             Expr::RecordAccess { record, .. } => {
                 self.visit_expr(record);
             }
-            Expr::RecordUpdate { record, updates, .. } => {
+            Expr::RecordUpdate {
+                record, updates, ..
+            } => {
                 self.visit_expr(record);
                 for (_, value) in updates {
                     self.visit_expr(value);
                 }
             }
-            
+
             Expr::FunctionDef { body, .. } => {
                 self.visit_expr(body);
             }
-            
+
             Expr::HashRef { .. } => {
                 // Hash references don't contain recursive references
             }
@@ -212,10 +230,7 @@ mod tests {
     #[test]
     fn test_shadowed_name() {
         // Lambda parameter shadows the name
-        assert!(!parse_and_check(
-            "fn factorial = factorial 5",
-            "factorial"
-        ));
+        assert!(!parse_and_check("fn factorial = factorial 5", "factorial"));
     }
 
     #[test]

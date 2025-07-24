@@ -10,16 +10,16 @@ use vibe_core::{Expr, Ident, Literal, Span};
 pub enum ShellExpr {
     /// Simple command: `ls`, `definitions`
     Command(String, Vec<String>),
-    
+
     /// Pipeline: `cmd1 | cmd2 | cmd3`
     Pipeline(Vec<ShellExpr>),
-    
+
     /// Function call: `search type:Int`
     FunctionCall(String, Vec<ShellArg>),
-    
+
     /// Variable reference: `$var`
     Variable(String),
-    
+
     /// Literal value
     Literal(ShellLiteral),
 }
@@ -29,10 +29,10 @@ pub enum ShellExpr {
 pub enum ShellArg {
     /// Positional argument
     Positional(String),
-    
+
     /// Named argument: `key:value`
     Named(String, String),
-    
+
     /// Flag: `--flag`
     Flag(String),
 }
@@ -48,7 +48,7 @@ pub enum ShellLiteral {
 /// Parse shell syntax into ShellExpr
 pub fn parse_shell_syntax(input: &str) -> Result<ShellExpr, String> {
     let input = input.trim();
-    
+
     // Check for pipeline
     if input.contains('|') {
         let parts: Vec<&str> = input.split('|').map(|s| s.trim()).collect();
@@ -60,7 +60,7 @@ pub fn parse_shell_syntax(input: &str) -> Result<ShellExpr, String> {
             return Ok(ShellExpr::Pipeline(pipeline));
         }
     }
-    
+
     // Single command
     parse_single_command(input)
 }
@@ -71,10 +71,10 @@ fn parse_single_command(input: &str) -> Result<ShellExpr, String> {
     if parts.is_empty() {
         return Err("Empty command".to_string());
     }
-    
+
     let cmd = parts[0];
     let args = &parts[1..];
-    
+
     // Check for special commands that need custom parsing
     match cmd {
         "search" => parse_search_command(args),
@@ -100,7 +100,10 @@ fn parse_single_command(input: &str) -> Result<ShellExpr, String> {
                         if arg.contains(':') && !arg.starts_with(':') {
                             let parts: Vec<&str> = arg.splitn(2, ':').collect();
                             if parts.len() == 2 {
-                                parsed_args.push(ShellArg::Named(parts[0].to_string(), parts[1].to_string()));
+                                parsed_args.push(ShellArg::Named(
+                                    parts[0].to_string(),
+                                    parts[1].to_string(),
+                                ));
                             } else {
                                 parsed_args.push(ShellArg::Positional(arg.to_string()));
                             }
@@ -123,7 +126,7 @@ fn parse_search_command(args: &[&str]) -> Result<ShellExpr, String> {
     if args.is_empty() {
         return Err("search requires a query".to_string());
     }
-    
+
     let mut parsed_args = Vec::new();
     for arg in args {
         if arg.contains(':') {
@@ -137,7 +140,7 @@ fn parse_search_command(args: &[&str]) -> Result<ShellExpr, String> {
             parsed_args.push(ShellArg::Positional(arg.to_string()));
         }
     }
-    
+
     Ok(ShellExpr::FunctionCall("search".to_string(), parsed_args))
 }
 
@@ -146,9 +149,9 @@ fn parse_filter_command(args: &[&str]) -> Result<ShellExpr, String> {
     if args.len() < 2 {
         return Err("filter requires field and value".to_string());
     }
-    
+
     let field = args[0].to_string();
-    
+
     // Handle different filter operators
     if args.len() >= 3 && (args[1] == "=" || args[1] == "==" || args[1] == "contains") {
         let op = args[1];
@@ -166,10 +169,7 @@ fn parse_filter_command(args: &[&str]) -> Result<ShellExpr, String> {
         let value = args[1..].join(" ");
         Ok(ShellExpr::FunctionCall(
             "filter".to_string(),
-            vec![
-                ShellArg::Positional(field),
-                ShellArg::Positional(value),
-            ],
+            vec![ShellArg::Positional(field), ShellArg::Positional(value)],
         ))
     }
 }
@@ -179,11 +179,12 @@ fn parse_select_command(args: &[&str]) -> Result<ShellExpr, String> {
     if args.is_empty() {
         return Err("select requires at least one field".to_string());
     }
-    
-    let fields: Vec<ShellArg> = args.iter()
+
+    let fields: Vec<ShellArg> = args
+        .iter()
         .map(|&s| ShellArg::Positional(s.to_string()))
         .collect();
-    
+
     Ok(ShellExpr::FunctionCall("select".to_string(), fields))
 }
 
@@ -192,13 +193,13 @@ fn parse_sort_command(args: &[&str]) -> Result<ShellExpr, String> {
     if args.is_empty() {
         return Err("sort requires a field".to_string());
     }
-    
+
     let mut parsed_args = vec![ShellArg::Positional(args[0].to_string())];
-    
+
     if args.len() > 1 && (args[1] == "desc" || args[1] == "reverse") {
         parsed_args.push(ShellArg::Flag("desc".to_string()));
     }
-    
+
     Ok(ShellExpr::FunctionCall("sort".to_string(), parsed_args))
 }
 
@@ -207,7 +208,7 @@ fn parse_take_command(args: &[&str]) -> Result<ShellExpr, String> {
     if args.is_empty() {
         return Err("take requires a count".to_string());
     }
-    
+
     Ok(ShellExpr::FunctionCall(
         "take".to_string(),
         vec![ShellArg::Positional(args[0].to_string())],
@@ -219,7 +220,7 @@ fn parse_group_command(args: &[&str]) -> Result<ShellExpr, String> {
     if args.len() < 2 || args[0] != "by" {
         return Err("group requires 'by' and a field".to_string());
     }
-    
+
     Ok(ShellExpr::FunctionCall(
         "groupBy".to_string(),
         vec![ShellArg::Positional(args[1].to_string())],
@@ -232,14 +233,11 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
         ShellExpr::Command(cmd, args) => {
             // Convert to function call: (cmd arg1 arg2 ...)
             let mut expr_args = vec![Expr::Ident(Ident(cmd.clone()), Span::new(0, 0))];
-            
+
             for arg in args {
-                expr_args.push(Expr::Literal(
-                    Literal::String(arg.clone()),
-                    Span::new(0, 0)
-                ));
+                expr_args.push(Expr::Literal(Literal::String(arg.clone()), Span::new(0, 0)));
             }
-            
+
             if expr_args.len() == 1 {
                 // Just the command itself
                 expr_args[0].clone()
@@ -254,15 +252,15 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
                 }
             }
         }
-        
+
         ShellExpr::Pipeline(commands) => {
             // Convert to nested pipe calls: (pipe cmd1 (pipe cmd2 cmd3))
             if commands.is_empty() {
                 return Expr::List(vec![], Span::new(0, 0));
             }
-            
+
             let mut result = shell_to_sexpr(&commands[0]);
-            
+
             for cmd in &commands[1..] {
                 result = Expr::Apply {
                     func: Box::new(Expr::Ident(Ident("pipe".to_string()), Span::new(0, 0))),
@@ -270,14 +268,14 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
                     span: Span::new(0, 0),
                 };
             }
-            
+
             result
         }
-        
+
         ShellExpr::FunctionCall(name, args) => {
             // Convert to function call with proper argument handling
             let mut expr_args = Vec::new();
-            
+
             // Handle positional arguments first
             for arg in args {
                 match arg {
@@ -286,7 +284,8 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
                         if let Ok(n) = val.parse::<i64>() {
                             expr_args.push(Expr::Literal(Literal::Int(n), Span::new(0, 0)));
                         } else if let Ok(f) = val.parse::<f64>() {
-                            expr_args.push(Expr::Literal(Literal::Float(f.into()), Span::new(0, 0)));
+                            expr_args
+                                .push(Expr::Literal(Literal::Float(f.into()), Span::new(0, 0)));
                         } else if val == "true" {
                             expr_args.push(Expr::Literal(Literal::Bool(true), Span::new(0, 0)));
                         } else if val == "false" {
@@ -296,7 +295,10 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
                             if val.chars().next().map_or(false, |c| c.is_lowercase()) {
                                 expr_args.push(Expr::Ident(Ident(val.clone()), Span::new(0, 0)));
                             } else {
-                                expr_args.push(Expr::Literal(Literal::String(val.clone()), Span::new(0, 0)));
+                                expr_args.push(Expr::Literal(
+                                    Literal::String(val.clone()),
+                                    Span::new(0, 0),
+                                ));
                             }
                         }
                     }
@@ -304,19 +306,16 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
                         // Convert named arguments to a simple string representation
                         expr_args.push(Expr::Literal(
                             Literal::String(format!("{key}:{val}")),
-                            Span::new(0, 0)
+                            Span::new(0, 0),
                         ));
                     }
                     ShellArg::Flag(flag) => {
                         // Convert to symbol
-                        expr_args.push(Expr::Ident(
-                            Ident(format!(":{flag}")),
-                            Span::new(0, 0)
-                        ));
+                        expr_args.push(Expr::Ident(Ident(format!(":{flag}")), Span::new(0, 0)));
                     }
                 }
             }
-            
+
             if expr_args.is_empty() {
                 Expr::Ident(Ident(name.clone()), Span::new(0, 0))
             } else {
@@ -327,16 +326,18 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
                 }
             }
         }
-        
+
         ShellExpr::Variable(name) => {
             // Variable reference
             Expr::Ident(Ident(name.clone()), Span::new(0, 0))
         }
-        
+
         ShellExpr::Literal(lit) => {
             // Convert literal
             match lit {
-                ShellLiteral::String(s) => Expr::Literal(Literal::String(s.clone()), Span::new(0, 0)),
+                ShellLiteral::String(s) => {
+                    Expr::Literal(Literal::String(s.clone()), Span::new(0, 0))
+                }
                 ShellLiteral::Int(n) => Expr::Literal(Literal::Int(*n), Span::new(0, 0)),
                 ShellLiteral::Bool(b) => Expr::Literal(Literal::Bool(*b), Span::new(0, 0)),
             }
@@ -348,7 +349,7 @@ pub fn shell_to_sexpr(shell_expr: &ShellExpr) -> Expr {
 pub fn sexpr_to_shell_syntax(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Ident(Ident(name), _) => Some(name.clone()),
-        
+
         Expr::Apply { func, args, .. } => {
             if let Expr::Ident(Ident(name), _) = &**func {
                 if name == "pipe" && args.len() == 2 {
@@ -370,16 +371,14 @@ pub fn sexpr_to_shell_syntax(expr: &Expr) -> Option<String> {
                 None
             }
         }
-        
-        Expr::Literal(lit, _) => {
-            match lit {
-                Literal::String(s) => Some(s.clone()),
-                Literal::Int(n) => Some(n.to_string()),
-                Literal::Bool(b) => Some(b.to_string()),
-                _ => None,
-            }
-        }
-        
+
+        Expr::Literal(lit, _) => match lit {
+            Literal::String(s) => Some(s.clone()),
+            Literal::Int(n) => Some(n.to_string()),
+            Literal::Bool(b) => Some(b.to_string()),
+            _ => None,
+        },
+
         _ => None,
     }
 }
@@ -390,9 +389,7 @@ fn expr_to_shell_arg(expr: &Expr) -> Option<String> {
         Expr::Literal(Literal::String(s), _) => Some(s.clone()),
         Expr::Literal(Literal::Int(n), _) => Some(n.to_string()),
         Expr::Literal(Literal::Bool(b), _) => Some(b.to_string()),
-        Expr::Ident(Ident(name), _) if name.starts_with(':') => {
-            Some(format!("--{}", &name[1..]))
-        }
+        Expr::Ident(Ident(name), _) if name.starts_with(':') => Some(format!("--{}", &name[1..])),
         _ => None,
     }
 }
@@ -400,7 +397,7 @@ fn expr_to_shell_arg(expr: &Expr) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_simple_command() {
         let shell = parse_shell_syntax("ls").unwrap();
@@ -412,7 +409,7 @@ mod tests {
             _ => panic!("Expected Command"),
         }
     }
-    
+
     #[test]
     fn test_parse_pipeline() {
         let shell = parse_shell_syntax("ls | filter kind function | sort name").unwrap();
@@ -423,12 +420,12 @@ mod tests {
             _ => panic!("Expected Pipeline"),
         }
     }
-    
+
     #[test]
     fn test_shell_to_sexpr_pipeline() {
         let shell = parse_shell_syntax("ls | take 5").unwrap();
         let sexpr = shell_to_sexpr(&shell);
-        
+
         // Should produce: (pipe ls (take 5))
         match sexpr {
             Expr::Apply { func, args, .. } => {
@@ -440,7 +437,7 @@ mod tests {
             _ => panic!("Expected Apply"),
         }
     }
-    
+
     #[test]
     fn test_search_command() {
         let shell = parse_shell_syntax("search type:Int").unwrap();

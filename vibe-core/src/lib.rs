@@ -6,20 +6,20 @@ use std::fmt;
 use std::iter::FromIterator;
 use thiserror::Error;
 
+pub mod block_attributes;
 pub mod builtin_effects;
 pub mod builtin_modules;
 pub mod builtins;
 pub mod curry;
 pub mod effects;
-pub mod extensible_effects;
 pub mod error_context;
+pub mod extensible_effects;
 pub mod ir;
+pub mod lib_modules;
 pub mod metadata;
 pub mod parser;
 pub mod pretty_print;
 pub mod recursion_detector;
-pub mod lib_modules;
-pub mod block_attributes;
 pub mod type_annotator;
 mod types;
 mod value;
@@ -63,7 +63,7 @@ impl fmt::Display for Ident {
 pub struct FunctionParam {
     pub name: Ident,
     pub typ: Option<Type>,
-    pub is_optional: bool,  // Indicates if the parameter is optional (has ? suffix)
+    pub is_optional: bool, // Indicates if the parameter is optional (has ? suffix)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,11 +78,7 @@ pub struct HandlerCase {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DoStatement {
-    Bind {
-        name: Ident,
-        expr: Expr,
-        span: Span,
-    },
+    Bind { name: Ident, expr: Expr, span: Span },
     Expression(Expr),
 }
 
@@ -242,7 +238,7 @@ pub enum Expr {
     },
     // Hash reference for content-addressed code
     HashRef {
-        hash: String,  // Hex string of the hash
+        hash: String, // Hex string of the hash
         span: Span,
     },
 }
@@ -313,7 +309,7 @@ pub enum Type {
     Float,
     Bool,
     String,
-    Unit,  // Unit type for expressions that don't produce a value
+    Unit, // Unit type for expressions that don't produce a value
     List(Box<Type>),
     Function(Box<Type>, Box<Type>),
     FunctionWithEffect {
@@ -333,8 +329,8 @@ pub enum Type {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeAnnotation {
-    pub type_vars: Vec<String>,      // Type variables (a, b, c)
-    pub effect_vars: Vec<String>,    // Effect variables (e, e1, e2)
+    pub type_vars: Vec<String>,   // Type variables (a, b, c)
+    pub effect_vars: Vec<String>, // Effect variables (e, e1, e2)
     pub typ: Type,
 }
 
@@ -366,7 +362,7 @@ impl fmt::Display for Type {
                     Type::Function(_, _) | Type::FunctionWithEffect { .. } => {
                         write!(f, "({from}) -> {to}")
                     }
-                    _ => write!(f, "{from} -> {to}")
+                    _ => write!(f, "{from} -> {to}"),
                 }
             }
             Type::FunctionWithEffect { from, to, effects } => {
@@ -376,7 +372,7 @@ impl fmt::Display for Type {
                         Type::Function(_, _) | Type::FunctionWithEffect { .. } => {
                             write!(f, "({from}) -> {to}")
                         }
-                        _ => write!(f, "{from} -> {to}")
+                        _ => write!(f, "{from} -> {to}"),
                     }
                 } else {
                     // Format as: Int -> <IO> String
@@ -384,7 +380,7 @@ impl fmt::Display for Type {
                         Type::Function(_, _) | Type::FunctionWithEffect { .. } => {
                             write!(f, "({from}) -> <{effects}> {to}")
                         }
-                        _ => write!(f, "{from} -> <{effects}> {to}")
+                        _ => write!(f, "{from} -> <{effects}> {to}"),
                     }
                 }
             }

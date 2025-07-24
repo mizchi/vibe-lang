@@ -1,14 +1,14 @@
 //! Interactive hole completion for the @ syntax
-//! 
+//!
 //! This module provides functionality for interactively filling holes in expressions.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use rustyline::Editor;
+use std::collections::HashMap;
 use std::io::{self, Write};
 use vibe_compiler::TypeChecker;
 use vibe_core::{DoStatement, Expr, Type};
-use std::collections::HashMap;
 
 /// Information about a hole in an expression
 #[derive(Debug, Clone)]
@@ -37,7 +37,10 @@ pub struct HoleCompleter {
 
 impl HoleCompleter {
     pub fn new(type_env: HashMap<String, Type>, runtime_env: vibe_core::Environment) -> Self {
-        Self { type_env, runtime_env }
+        Self {
+            type_env,
+            runtime_env,
+        }
     }
 
     /// Find all holes in an expression
@@ -47,9 +50,16 @@ impl HoleCompleter {
         holes
     }
 
-    fn find_holes_rec(&self, expr: &Expr, path: &mut Vec<usize>, holes: &mut Vec<(Vec<usize>, HoleInfo)>) {
+    fn find_holes_rec(
+        &self,
+        expr: &Expr,
+        path: &mut Vec<usize>,
+        holes: &mut Vec<(Vec<usize>, HoleInfo)>,
+    ) {
         match expr {
-            Expr::Hole { name, type_hint, .. } => {
+            Expr::Hole {
+                name, type_hint, ..
+            } => {
                 let info = self.analyze_hole(expr, name.as_deref(), type_hint.as_ref());
                 holes.push((path.clone(), info));
             }
@@ -64,22 +74,27 @@ impl HoleCompleter {
                 path.push(0);
                 self.find_holes_rec(func, path, holes);
                 path.pop();
-                
+
                 for (i, arg) in args.iter().enumerate() {
                     path.push(i + 1);
                     self.find_holes_rec(arg, path, holes);
                     path.pop();
                 }
             }
-            Expr::If { cond, then_expr, else_expr, .. } => {
+            Expr::If {
+                cond,
+                then_expr,
+                else_expr,
+                ..
+            } => {
                 path.push(0);
                 self.find_holes_rec(cond, path, holes);
                 path.pop();
-                
+
                 path.push(1);
                 self.find_holes_rec(then_expr, path, holes);
                 path.pop();
-                
+
                 path.push(2);
                 self.find_holes_rec(else_expr, path, holes);
                 path.pop();
@@ -93,7 +108,7 @@ impl HoleCompleter {
                 path.push(0);
                 self.find_holes_rec(value, path, holes);
                 path.pop();
-                
+
                 path.push(1);
                 self.find_holes_rec(body, path, holes);
                 path.pop();
@@ -103,22 +118,28 @@ impl HoleCompleter {
                 self.find_holes_rec(body, path, holes);
                 path.pop();
             }
-            Expr::Match { expr: match_expr, cases, .. } => {
+            Expr::Match {
+                expr: match_expr,
+                cases,
+                ..
+            } => {
                 path.push(0);
                 self.find_holes_rec(match_expr, path, holes);
                 path.pop();
-                
+
                 for (i, (_, case_expr)) in cases.iter().enumerate() {
                     path.push(i + 1);
                     self.find_holes_rec(case_expr, path, holes);
                     path.pop();
                 }
             }
-            Expr::Pipeline { expr: lhs, func, .. } => {
+            Expr::Pipeline {
+                expr: lhs, func, ..
+            } => {
                 path.push(0);
                 self.find_holes_rec(lhs, path, holes);
                 path.pop();
-                
+
                 path.push(1);
                 self.find_holes_rec(func, path, holes);
                 path.pop();
@@ -149,11 +170,13 @@ impl HoleCompleter {
                 self.find_holes_rec(record, path, holes);
                 path.pop();
             }
-            Expr::RecordUpdate { record, updates, .. } => {
+            Expr::RecordUpdate {
+                record, updates, ..
+            } => {
                 path.push(0);
                 self.find_holes_rec(record, path, holes);
                 path.pop();
-                
+
                 for (i, (_, update_expr)) in updates.iter().enumerate() {
                     path.push(i + 1);
                     self.find_holes_rec(update_expr, path, holes);
@@ -168,17 +191,22 @@ impl HoleCompleter {
                 self.find_holes_rec(body, path, holes);
                 path.pop();
             }
-            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+            Expr::HandleExpr {
+                expr,
+                handlers,
+                return_handler,
+                ..
+            } => {
                 path.push(0);
                 self.find_holes_rec(expr, path, holes);
                 path.pop();
-                
+
                 for (i, handler) in handlers.iter().enumerate() {
                     path.push(i + 1);
                     self.find_holes_rec(&handler.body, path, holes);
                     path.pop();
                 }
-                
+
                 if let Some((_, body)) = return_handler {
                     path.push(handlers.len() + 1);
                     self.find_holes_rec(body, path, holes);
@@ -226,7 +254,14 @@ impl HoleCompleter {
         HoleInfo {
             name: name.map(String::from),
             expected_type: type_hint.cloned(),
-            context: format!("Hole{}", if let Some(n) = name { format!(" '{}'", n) } else { String::new() }),
+            context: format!(
+                "Hole{}",
+                if let Some(n) = name {
+                    format!(" '{}'", n)
+                } else {
+                    String::new()
+                }
+            ),
             suggestions,
         }
     }
@@ -291,7 +326,7 @@ impl HoleCompleter {
                     description: Some("Empty list".to_string()),
                     confidence: 0.9,
                 });
-                
+
                 // Suggest a singleton list if we can suggest the element type
                 if let Some(elem_suggestions) = self.suggest_values_for_type(elem_ty).first() {
                     suggestions.push(HoleSuggestion {
@@ -335,20 +370,23 @@ impl HoleCompleter {
     /// Interactively fill holes in an expression
     pub fn fill_holes_interactive(&self, expr: &Expr) -> Result<Expr> {
         let holes = self.find_holes(expr);
-        
+
         if holes.is_empty() {
             return Ok(expr.clone());
         }
 
-        println!("{}", format!("Found {} hole(s) to fill:", holes.len()).yellow());
-        
+        println!(
+            "{}",
+            format!("Found {} hole(s) to fill:", holes.len()).yellow()
+        );
+
         let mut filled_expr = expr.clone();
         let mut rl = Editor::<()>::new()?;
 
         for (i, (path, hole_info)) in holes.iter().enumerate() {
             println!("\n{}", format!("Hole {} of {}:", i + 1, holes.len()).bold());
             println!("  Context: {}", hole_info.context);
-            
+
             if let Some(expected_type) = &hole_info.expected_type {
                 println!("  Expected type: {}", format!("{}", expected_type).cyan());
             }
@@ -356,11 +394,14 @@ impl HoleCompleter {
             if !hole_info.suggestions.is_empty() {
                 println!("\n  Suggestions:");
                 for (j, suggestion) in hole_info.suggestions.iter().take(5).enumerate() {
-                    let desc = suggestion.description.as_ref()
+                    let desc = suggestion
+                        .description
+                        .as_ref()
                         .map(|d| format!(" - {}", d))
                         .unwrap_or_default();
-                    println!("    {}) {} : {}{}", 
-                        j + 1, 
+                    println!(
+                        "    {}) {} : {}{}",
+                        j + 1,
                         suggestion.value.green(),
                         format!("{}", suggestion.type_).cyan(),
                         desc.dimmed()
@@ -369,13 +410,18 @@ impl HoleCompleter {
             }
 
             // Get user input
-            let prompt = format!("? Enter value for hole{}: ", 
-                hole_info.name.as_ref().map(|n| format!(" '{}'", n)).unwrap_or_default()
+            let prompt = format!(
+                "? Enter value for hole{}: ",
+                hole_info
+                    .name
+                    .as_ref()
+                    .map(|n| format!(" '{}'", n))
+                    .unwrap_or_default()
             );
-            
+
             loop {
                 let input = rl.readline(&prompt)?;
-                
+
                 // Try to parse the input as an expression
                 match vibe_core::parser::parse(&input) {
                     Ok(hole_value) => {
@@ -383,16 +429,20 @@ impl HoleCompleter {
                         if let Some(expected_type) = &hole_info.expected_type {
                             let mut checker = TypeChecker::new();
                             let mut type_env = vibe_compiler::TypeEnv::default();
-                            
+
                             // Add known types to environment
                             for (name, ty) in &self.type_env {
-                                type_env.add_binding(name.clone(), vibe_compiler::TypeScheme::mono(ty.clone()));
+                                type_env.add_binding(
+                                    name.clone(),
+                                    vibe_compiler::TypeScheme::mono(ty.clone()),
+                                );
                             }
-                            
+
                             match checker.check(&hole_value, &mut type_env) {
                                 Ok(actual_type) => {
                                     if !self.types_match(&actual_type, expected_type) {
-                                        eprintln!("{}: Expected type {}, but got {}", 
+                                        eprintln!(
+                                            "{}: Expected type {}, but got {}",
                                             "Type mismatch".red(),
                                             format!("{}", expected_type).cyan(),
                                             format!("{}", actual_type).cyan()
@@ -406,7 +456,7 @@ impl HoleCompleter {
                                 }
                             }
                         }
-                        
+
                         // Replace the hole with the value
                         filled_expr = self.replace_hole_at_path(&filled_expr, path, hole_value)?;
                         break;
@@ -435,9 +485,13 @@ impl HoleCompleter {
             Expr::Block { exprs, span } => {
                 let mut new_exprs = exprs.clone();
                 if index < new_exprs.len() {
-                    new_exprs[index] = self.replace_hole_at_path(&new_exprs[index], rest_path, replacement)?;
+                    new_exprs[index] =
+                        self.replace_hole_at_path(&new_exprs[index], rest_path, replacement)?;
                 }
-                Ok(Expr::Block { exprs: new_exprs, span: span.clone() })
+                Ok(Expr::Block {
+                    exprs: new_exprs,
+                    span: span.clone(),
+                })
             }
             Expr::Apply { func, args, span } => {
                 if index == 0 {
@@ -450,7 +504,11 @@ impl HoleCompleter {
                     let mut new_args = args.clone();
                     let arg_index = index - 1;
                     if arg_index < new_args.len() {
-                        new_args[arg_index] = self.replace_hole_at_path(&new_args[arg_index], rest_path, replacement)?;
+                        new_args[arg_index] = self.replace_hole_at_path(
+                            &new_args[arg_index],
+                            rest_path,
+                            replacement,
+                        )?;
                     }
                     Ok(Expr::Apply {
                         func: func.clone(),
@@ -460,7 +518,7 @@ impl HoleCompleter {
                 }
             }
             // Add more cases for other expression types as needed
-            _ => Ok(expr.clone())
+            _ => Ok(expr.clone()),
         }
     }
 }
@@ -468,37 +526,54 @@ impl HoleCompleter {
 /// Fill holes in an expression using a simple prompt interface
 pub fn fill_holes_simple(expr: &Expr) -> Result<Expr> {
     let holes = find_all_holes(expr);
-    
+
     if holes.is_empty() {
         return Ok(expr.clone());
     }
 
-    println!("{}", format!("Found {} hole(s) to fill:", holes.len()).yellow());
-    
+    println!(
+        "{}",
+        format!("Found {} hole(s) to fill:", holes.len()).yellow()
+    );
+
     let mut filled_expr = expr.clone();
-    
+
     for (i, (path, name, type_hint)) in holes.iter().enumerate() {
         let prompt = if let Some(n) = name {
-            format!("Enter value for hole '{}' ({}): ", n, type_hint.as_ref().map(|t| format!("{}", t)).unwrap_or_else(|| "any type".to_string()))
+            format!(
+                "Enter value for hole '{}' ({}): ",
+                n,
+                type_hint
+                    .as_ref()
+                    .map(|t| format!("{}", t))
+                    .unwrap_or_else(|| "any type".to_string())
+            )
         } else {
-            format!("Enter value for hole {} ({}): ", i + 1, type_hint.as_ref().map(|t| format!("{}", t)).unwrap_or_else(|| "any type".to_string()))
+            format!(
+                "Enter value for hole {} ({}): ",
+                i + 1,
+                type_hint
+                    .as_ref()
+                    .map(|t| format!("{}", t))
+                    .unwrap_or_else(|| "any type".to_string())
+            )
         };
-        
+
         print!("{}", prompt);
         io::stdout().flush()?;
-        
+
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
         let input = input.trim();
-        
+
         // Parse the input as an expression
         let hole_value = vibe_core::parser::parse(input)
             .with_context(|| format!("Failed to parse input for hole"))?;
-        
+
         // Replace the hole
         filled_expr = replace_hole(&filled_expr, path, hole_value)?;
     }
-    
+
     Ok(filled_expr)
 }
 
@@ -509,9 +584,15 @@ fn find_all_holes(expr: &Expr) -> Vec<(Vec<usize>, Option<String>, Option<Type>)
     holes
 }
 
-fn find_holes_recursive(expr: &Expr, path: &mut Vec<usize>, holes: &mut Vec<(Vec<usize>, Option<String>, Option<Type>)>) {
+fn find_holes_recursive(
+    expr: &Expr,
+    path: &mut Vec<usize>,
+    holes: &mut Vec<(Vec<usize>, Option<String>, Option<Type>)>,
+) {
     match expr {
-        Expr::Hole { name, type_hint, .. } => {
+        Expr::Hole {
+            name, type_hint, ..
+        } => {
             holes.push((path.clone(), name.clone(), type_hint.clone()));
         }
         Expr::Block { exprs, .. } => {
@@ -531,7 +612,7 @@ fn replace_hole(expr: &Expr, path: &[usize], replacement: Expr) -> Result<Expr> 
     if path.is_empty() {
         return Ok(replacement);
     }
-    
+
     match expr {
         Expr::Block { exprs, span } => {
             let mut new_exprs = exprs.clone();
@@ -539,9 +620,12 @@ fn replace_hole(expr: &Expr, path: &[usize], replacement: Expr) -> Result<Expr> 
             if index < new_exprs.len() {
                 new_exprs[index] = replace_hole(&new_exprs[index], &path[1..], replacement)?;
             }
-            Ok(Expr::Block { exprs: new_exprs, span: span.clone() })
+            Ok(Expr::Block {
+                exprs: new_exprs,
+                span: span.clone(),
+            })
         }
         // Add more cases as needed
-        _ => Ok(expr.clone())
+        _ => Ok(expr.clone()),
     }
 }

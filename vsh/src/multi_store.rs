@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use std::path::Path;
-use vibe_core::{Expr, parser::parse};
 use vibe_compiler::type_check;
+use vibe_core::{parser::parse, Expr};
 use vibe_workspace::Codebase;
 
 /// Extract individual definitions from a parsed expression
@@ -19,9 +19,15 @@ fn extract_definitions_recursive(expr: &Expr, definitions: &mut Vec<(String, Exp
         Expr::Let { name, value, .. } => {
             definitions.push((name.0.clone(), *value.clone()));
         }
-        
+
         // Top-level recursive function
-        Expr::Rec { name, params, body, span, .. } => {
+        Expr::Rec {
+            name,
+            params,
+            body,
+            span,
+            ..
+        } => {
             // Convert rec to a recursive closure expression
             let rec_expr = Expr::Rec {
                 name: name.clone(),
@@ -32,7 +38,7 @@ fn extract_definitions_recursive(expr: &Expr, definitions: &mut Vec<(String, Exp
             };
             definitions.push((name.0.clone(), rec_expr));
         }
-        
+
         // Module with multiple definitions
         Expr::Module { body, .. } => {
             // Process each expression in the module body
@@ -40,14 +46,14 @@ fn extract_definitions_recursive(expr: &Expr, definitions: &mut Vec<(String, Exp
                 extract_definitions_recursive(expr, definitions);
             }
         }
-        
+
         // List of expressions (common pattern for multiple definitions)
         Expr::List(exprs, _) => {
             for expr in exprs {
                 extract_definitions_recursive(expr, definitions);
             }
         }
-        
+
         // Apply expression might be a sequence of lets
         Expr::Apply { func, args, .. } => {
             // Check if this is a let sequence pattern
@@ -56,7 +62,7 @@ fn extract_definitions_recursive(expr: &Expr, definitions: &mut Vec<(String, Exp
                 extract_definitions_recursive(arg, definitions);
             }
         }
-        
+
         _ => {
             // Other expression types are not top-level definitions
         }
@@ -66,21 +72,22 @@ fn extract_definitions_recursive(expr: &Expr, definitions: &mut Vec<(String, Exp
 /// Store multiple definitions from a file into a codebase
 pub fn store_file_with_multiple_defs(file_path: &Path, codebase: &mut Codebase) -> Result<usize> {
     let content = std::fs::read_to_string(file_path)?;
-    
+
     // Try to parse as a sequence of expressions
-    let lines: Vec<&str> = content.lines()
+    let lines: Vec<&str> = content
+        .lines()
         .filter(|line| !line.trim().is_empty() && !line.trim().starts_with(';'))
         .collect();
-    
+
     let mut count = 0;
-    
+
     // Process each non-empty, non-comment line as a potential definition
     for line in lines {
         // Skip if line doesn't start with '('
         if !line.trim().starts_with('(') {
             continue;
         }
-        
+
         match parse(line) {
             Ok(expr) => {
                 let defs = extract_definitions(&expr);
@@ -103,6 +110,6 @@ pub fn store_file_with_multiple_defs(file_path: &Path, codebase: &mut Codebase) 
             }
         }
     }
-    
+
     Ok(count)
 }

@@ -411,7 +411,7 @@ impl BuiltinFunction for Car {
     fn name(&self) -> &str {
         "car"
     }
-    
+
     fn type_signature(&self) -> Type {
         // car : List a -> a
         Type::Function(
@@ -419,7 +419,7 @@ impl BuiltinFunction for Car {
             Box::new(Type::Var("a".to_string())),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::List(list)] => {
@@ -438,7 +438,7 @@ impl BuiltinFunction for Car {
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
         WasmBuiltin::Complex("car".to_string())
     }
@@ -449,7 +449,7 @@ impl BuiltinFunction for Cdr {
     fn name(&self) -> &str {
         "cdr"
     }
-    
+
     fn type_signature(&self) -> Type {
         // cdr : List a -> List a
         Type::Function(
@@ -457,7 +457,7 @@ impl BuiltinFunction for Cdr {
             Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::List(list)] => {
@@ -476,7 +476,7 @@ impl BuiltinFunction for Cdr {
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
         WasmBuiltin::Complex("cdr".to_string())
     }
@@ -487,7 +487,7 @@ impl BuiltinFunction for IsNull {
     fn name(&self) -> &str {
         "null?"
     }
-    
+
     fn type_signature(&self) -> Type {
         // null? : List a -> Bool
         Type::Function(
@@ -495,7 +495,7 @@ impl BuiltinFunction for IsNull {
             Box::new(Type::Bool),
         )
     }
-    
+
     fn interpret(&self, args: &[Value]) -> Result<Value, XsError> {
         match args {
             [Value::List(list)] => Ok(Value::Bool(list.is_empty())),
@@ -505,7 +505,7 @@ impl BuiltinFunction for IsNull {
             )),
         }
     }
-    
+
     fn compile_to_wasm(&self) -> WasmBuiltin {
         WasmBuiltin::Complex("null?".to_string())
     }

@@ -1,11 +1,11 @@
 //! Automatic test generation from XBin codebase
-//! 
+//!
 //! This module generates test cases for public functions in an XBin codebase
 //! by analyzing their type signatures and generating appropriate test inputs.
 
+use crate::{Codebase, Hash, Term};
 use std::collections::HashSet;
-use crate::{Codebase, Term, Hash};
-use vibe_core::{Expr, Type, Value, Ident, Literal, Span};
+use vibe_core::{Expr, Ident, Literal, Span, Type, Value};
 
 /// Test generation configuration
 #[derive(Debug, Clone)]
@@ -101,12 +101,12 @@ impl TestGenerator {
     pub fn new(config: TestGenConfig) -> Self {
         TestGenerator { config }
     }
-    
+
     /// Extract function arguments and final return type
     fn extract_function_args(&self, ty: &Type) -> (Vec<Type>, Type) {
         let mut args = Vec::new();
         let mut current = ty;
-        
+
         loop {
             match current {
                 Type::Function(input, output) => {
@@ -124,8 +124,11 @@ impl TestGenerator {
     pub fn generate_tests(&self, codebase: &Codebase) -> Vec<GeneratedTest> {
         let mut tests = Vec::new();
         let mut visited = HashSet::new();
-        
-        println!("DEBUG: Codebase has {} named terms", codebase.term_names.len());
+
+        println!(
+            "DEBUG: Codebase has {} named terms",
+            codebase.term_names.len()
+        );
 
         // Iterate through all named terms
         for (name, hash) in &codebase.term_names {
@@ -140,14 +143,13 @@ impl TestGenerator {
             // Generate tests for this definition
             if let Some(term) = codebase.get_term(hash) {
                 println!("DEBUG: Found term with type: {:?}", term.ty);
-                let function_tests = self.generate_tests_for_term(
-                    name,
-                    hash,
-                    term,
-                    codebase,
-                    &mut visited,
+                let function_tests =
+                    self.generate_tests_for_term(name, hash, term, codebase, &mut visited);
+                println!(
+                    "DEBUG: Generated {} tests for {}",
+                    function_tests.len(),
+                    name
                 );
-                println!("DEBUG: Generated {} tests for {}", function_tests.len(), name);
                 tests.extend(function_tests);
             } else {
                 println!("DEBUG: No term found for hash: {:?}", hash);
@@ -178,13 +180,9 @@ impl TestGenerator {
             Type::Function(input_ty, output_ty) => {
                 println!("DEBUG: Function type: {} -> {}", input_ty, output_ty);
                 // Generate tests for functions
-                tests.extend(self.generate_function_tests(
-                    name,
-                    hash,
-                    &term.expr,
-                    input_ty,
-                    output_ty,
-                ));
+                tests.extend(
+                    self.generate_function_tests(name, hash, &term.expr, input_ty, output_ty),
+                );
             }
             Type::Int | Type::Bool | Type::String | Type::Float => {
                 // Generate tests for constants
@@ -215,9 +213,12 @@ impl TestGenerator {
         output_ty: &Type,
     ) -> Vec<GeneratedTest> {
         let mut tests = Vec::new();
-        
+
         // Analyze function type to determine argument count
-        let (arg_types, final_output) = self.extract_function_args(&Type::Function(Box::new(input_ty.clone()), Box::new(output_ty.clone())));
+        let (arg_types, final_output) = self.extract_function_args(&Type::Function(
+            Box::new(input_ty.clone()),
+            Box::new(output_ty.clone()),
+        ));
         println!("DEBUG: Function {} has {} arguments", name, arg_types.len());
 
         // Generate test cases based on argument count
@@ -243,14 +244,17 @@ impl TestGenerator {
             // Two argument function - generate combinations
             if let (Some(inputs1), Some(inputs2)) = (
                 self.generate_basic_inputs(&arg_types[0]),
-                self.generate_basic_inputs(&arg_types[1])
+                self.generate_basic_inputs(&arg_types[1]),
             ) {
                 // Generate a subset of combinations to avoid explosion
-                for (i, (input1, input2)) in inputs1.iter().take(3)
+                for (i, (input1, input2)) in inputs1
+                    .iter()
+                    .take(3)
                     .flat_map(|v1| inputs2.iter().take(3).map(move |v2| (v1, v2)))
                     .enumerate()
                 {
-                    let test_expr = self.create_function_call_multi(name, &[input1.clone(), input2.clone()]);
+                    let test_expr =
+                        self.create_function_call_multi(name, &[input1.clone(), input2.clone()]);
                     tests.push(GeneratedTest {
                         name: format!("{}_basic_{}", name, i),
                         function_name: name.to_string(),
@@ -286,12 +290,15 @@ impl TestGenerator {
                 // Generate edge cases for two-argument functions
                 if let (Some(edge1), Some(_edge2)) = (
                     self.generate_edge_case_inputs(&arg_types[0]),
-                    self.generate_edge_case_inputs(&arg_types[1])
+                    self.generate_edge_case_inputs(&arg_types[1]),
                 ) {
                     // Test edge cases on first argument with normal second argument
                     if let Some(normal2) = self.generate_basic_inputs(&arg_types[1]) {
                         for (i, input1) in edge1.iter().take(2).enumerate() {
-                            let test_expr = self.create_function_call_multi(name, &[input1.clone(), normal2[0].clone()]);
+                            let test_expr = self.create_function_call_multi(
+                                name,
+                                &[input1.clone(), normal2[0].clone()],
+                            );
                             tests.push(GeneratedTest {
                                 name: format!("{}_edge_{}", name, i),
                                 function_name: name.to_string(),
@@ -325,10 +332,7 @@ impl TestGenerator {
                 Value::Int(42),
                 Value::Int(100),
             ]),
-            Type::Bool => Some(vec![
-                Value::Bool(true),
-                Value::Bool(false),
-            ]),
+            Type::Bool => Some(vec![Value::Bool(true), Value::Bool(false)]),
             Type::String => Some(vec![
                 Value::String("".to_string()),
                 Value::String("hello".to_string()),
@@ -348,12 +352,12 @@ impl TestGenerator {
                     let mut list_inputs = vec![
                         Value::List(vec![]), // Empty list
                     ];
-                    
+
                     // Single element lists
                     for elem in elem_inputs.iter().take(2) {
                         list_inputs.push(Value::List(vec![elem.clone()]));
                     }
-                    
+
                     // Two element list
                     if elem_inputs.len() >= 2 {
                         list_inputs.push(Value::List(vec![
@@ -361,7 +365,7 @@ impl TestGenerator {
                             elem_inputs[1].clone(),
                         ]));
                     }
-                    
+
                     Some(list_inputs)
                 } else {
                     None
@@ -432,12 +436,18 @@ impl TestGenerator {
         output_ty: &Type,
     ) -> Vec<GeneratedTest> {
         let mut tests = Vec::new();
-        
-        let (arg_types, final_output) = self.extract_function_args(&Type::Function(Box::new(input_ty.clone()), Box::new(output_ty.clone())));
+
+        let (arg_types, final_output) = self.extract_function_args(&Type::Function(
+            Box::new(input_ty.clone()),
+            Box::new(output_ty.clone()),
+        ));
 
         // Pure function test - same input should give same output
         if arg_types.len() == 1 {
-            if let Some(test_input) = self.generate_basic_inputs(&arg_types[0]).and_then(|v| v.first().cloned()) {
+            if let Some(test_input) = self
+                .generate_basic_inputs(&arg_types[0])
+                .and_then(|v| v.first().cloned())
+            {
                 let test_expr = self.create_function_call(name, &test_input);
                 tests.push(GeneratedTest {
                     name: format!("{}_pure", name),
@@ -454,10 +464,11 @@ impl TestGenerator {
         } else if arg_types.len() == 2 {
             if let (Some(inputs1), Some(inputs2)) = (
                 self.generate_basic_inputs(&arg_types[0]),
-                self.generate_basic_inputs(&arg_types[1])
+                self.generate_basic_inputs(&arg_types[1]),
             ) {
                 if let (Some(input1), Some(input2)) = (inputs1.first(), inputs2.first()) {
-                    let test_expr = self.create_function_call_multi(name, &[input1.clone(), input2.clone()]);
+                    let test_expr =
+                        self.create_function_call_multi(name, &[input1.clone(), input2.clone()]);
                     tests.push(GeneratedTest {
                         name: format!("{}_pure", name),
                         function_name: name.to_string(),
@@ -505,31 +516,19 @@ impl TestGenerator {
             function_name: name.to_string(),
             function_hash: hash.clone(),
             test_expr: expr.clone(),
-            properties: vec![
-                TestProperty::HasType(ty.clone()),
-                TestProperty::NoErrors,
-            ],
+            properties: vec![TestProperty::HasType(ty.clone()), TestProperty::NoErrors],
             category: TestCategory::Basic,
         }
     }
 
     /// Generate test for a list constant
-    fn generate_list_test(
-        &self,
-        name: &str,
-        hash: &Hash,
-        expr: &Expr,
-        ty: &Type,
-    ) -> GeneratedTest {
+    fn generate_list_test(&self, name: &str, hash: &Hash, expr: &Expr, ty: &Type) -> GeneratedTest {
         GeneratedTest {
             name: format!("{}_list", name),
             function_name: name.to_string(),
             function_hash: hash.clone(),
             test_expr: expr.clone(),
-            properties: vec![
-                TestProperty::HasType(ty.clone()),
-                TestProperty::NoErrors,
-            ],
+            properties: vec![TestProperty::HasType(ty.clone()), TestProperty::NoErrors],
             category: TestCategory::Basic,
         }
     }
@@ -538,19 +537,19 @@ impl TestGenerator {
     fn create_function_call(&self, func_name: &str, input: &Value) -> Expr {
         let func_expr = Expr::Ident(Ident(func_name.to_string()), Span::new(0, 0));
         let arg_expr = value_to_expr(input);
-        
+
         Expr::Apply {
             func: Box::new(func_expr),
             args: vec![arg_expr],
             span: Span::new(0, 0),
         }
     }
-    
+
     /// Create a function call expression with multiple arguments
     fn create_function_call_multi(&self, func_name: &str, inputs: &[Value]) -> Expr {
         let func_expr = Expr::Ident(Ident(func_name.to_string()), Span::new(0, 0));
         let arg_exprs: Vec<Expr> = inputs.iter().map(value_to_expr).collect();
-        
+
         Expr::Apply {
             func: Box::new(func_expr),
             args: arg_exprs,
