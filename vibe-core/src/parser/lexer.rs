@@ -158,7 +158,26 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     Ok(Some((Token::Arrow, Span::new(start, self.position))))
                 }
-                '-' if self.peek_next() == Some('-') => self.read_line_comment(),
+                '#' => {
+                    // Check if it's a comment or hash token
+                    if let Some(next_ch) = self.peek_next() {
+                        if next_ch == '#' && self.peek_nth(2) == Some('#') {
+                            // Multi-line comment ###
+                            self.read_multi_line_comment()
+                        } else if next_ch == ')' || next_ch == '}' || next_ch == ']' || next_ch == ',' || next_ch == ';' {
+                            // Hash token followed by delimiter  
+                            self.advance();
+                            Ok(Some((Token::Hash, Span::new(start, self.position))))
+                        } else {
+                            // Single-line comment
+                            self.read_line_comment()
+                        }
+                    } else {
+                        // EOF after #, treat as hash token
+                        self.advance();
+                        Ok(Some((Token::Hash, Span::new(start, self.position))))
+                    }
+                }
                 '-' if self.peek_next().map(|c| c.is_numeric()).unwrap_or(false) => {
                     self.read_number()
                 }
@@ -201,10 +220,6 @@ impl<'a> Lexer<'a> {
                 '@' => {
                     self.advance();
                     Ok(Some((Token::At, Span::new(start, self.position))))
-                }
-                '#' => {
-                    self.advance();
-                    Ok(Some((Token::Hash, Span::new(start, self.position))))
                 }
                 '$' => {
                     self.advance();
@@ -256,6 +271,14 @@ impl<'a> Lexer<'a> {
         iter.peek().copied()
     }
 
+    fn peek_nth(&mut self, n: usize) -> Option<char> {
+        let mut iter = self.chars.clone();
+        for _ in 0..n {
+            iter.next();
+        }
+        iter.peek().copied()
+    }
+
     fn skip_whitespace_except_newline(&mut self) {
         while let Some(&ch) = self.chars.peek() {
             if ch == ' ' || ch == '\t' || ch == '\r' {
@@ -268,8 +291,7 @@ impl<'a> Lexer<'a> {
 
     fn read_line_comment(&mut self) -> Result<Option<(Token, Span)>, XsError> {
         let start = self.position;
-        self.advance(); // skip first -
-        self.advance(); // skip second -
+        self.advance(); // skip #
 
         let mut comment = String::new();
         while let Some(&ch) = self.chars.peek() {
@@ -278,6 +300,45 @@ impl<'a> Lexer<'a> {
             }
             comment.push(ch);
             self.advance();
+        }
+
+        if self.skip_comments {
+            // Skip the comment and get next token
+            self.next_token()
+        } else {
+            Ok(Some((
+                Token::Comment(comment.trim().to_string()),
+                Span::new(start, self.position),
+            )))
+        }
+    }
+
+    fn read_multi_line_comment(&mut self) -> Result<Option<(Token, Span)>, XsError> {
+        let start = self.position;
+        self.advance(); // skip first #
+        self.advance(); // skip second #
+        self.advance(); // skip third #
+
+        let mut comment = String::new();
+        let mut found_end = false;
+        
+        while let Some(&ch) = self.chars.peek() {
+            if ch == '#' && self.peek_next() == Some('#') && self.peek_nth(2) == Some('#') {
+                self.advance(); // skip first #
+                self.advance(); // skip second #
+                self.advance(); // skip third #
+                found_end = true;
+                break;
+            }
+            comment.push(ch);
+            self.advance();
+        }
+
+        if !found_end {
+            return Err(XsError::ParseError(
+                start,
+                "Unterminated multi-line comment".to_string(),
+            ));
         }
 
         if self.skip_comments {
@@ -607,7 +668,7 @@ mod tests {
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Match, Span::new(15, 19)))
+            Some((Token::Match, Span::new(15, 20)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
@@ -615,21 +676,21 @@ mod tests {
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Do, Span::new(28, 30)))
+            Some((Token::Do, Span::new(26, 28)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Effect, Span::new(31, 37)))
+            Some((Token::Effect, Span::new(29, 35)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Handler, Span::new(38, 45)))
+            Some((Token::Handler, Span::new(36, 43)))
         );
     }
 
     #[test]
     fn test_comments() {
-        let mut lexer = Lexer::new("42 -- this is a comment\n43");
+        let mut lexer = Lexer::new("42 # this is a comment\n43");
 
         assert_eq!(
             lexer.next_token().unwrap(),
@@ -637,11 +698,25 @@ mod tests {
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Newline, Span::new(23, 24)))
+            Some((Token::Newline, Span::new(22, 23)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Int(43), Span::new(24, 26)))
+            Some((Token::Int(43), Span::new(23, 25)))
+        );
+    }
+
+    #[test]
+    fn test_multi_line_comments() {
+        let mut lexer = Lexer::new("42 ### this is a\nmulti-line comment ### 43");
+
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Int(42), Span::new(0, 2)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Int(43), Span::new(40, 42)))
         );
     }
 

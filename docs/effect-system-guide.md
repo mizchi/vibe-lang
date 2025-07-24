@@ -22,35 +22,35 @@ Vibe's effect system tracks side effects at the type level, distinguishing pure 
 ### Performing Effects
 
 ```haskell
--- IO effect
+# IO effect
 let greet name = perform IO.print ("Hello, " ++ name)
 
--- Function type includes effect
--- greet : String -> IO Unit
+# Function type includes effect
+# greet : String -> IO Unit
 ```
 
 ### Pure vs Effectful Functions
 
 ```haskell
--- Pure function (no effects)
+# Pure function (no effects)
 let add x y = x + y
--- add : Int -> Int -> Int
+# add : Int -> Int -> Int
 
--- Effectful function
+# Effectful function
 let printSum x y = perform IO.print (intToString (x + y))
--- printSum : Int -> Int -> IO Unit
+# printSum : Int -> Int -> IO Unit
 ```
 
 ### Multiple Effects
 
 ```haskell
--- Function using multiple effects
+# Function using multiple effects
 let readAndPrint = 
   perform {
     x <- State.get;
     perform IO.print (intToString x)
   }
--- readAndPrint : {State Int, IO} Unit
+# readAndPrint : {State Int, IO} Unit
 ```
 
 ## Built-in Effects
@@ -67,8 +67,8 @@ Basic handler syntax is recognized:
 
 ```haskell
 handle expr {
-  IO.print s k -> -- Handle print operation
-  Return x -> x   -- Handle final value
+  IO.print s k -> # Handle print operation
+  Return x -> x   # Handle final value
 }
 ```
 

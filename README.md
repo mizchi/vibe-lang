@@ -34,34 +34,34 @@ cargo run -p vsh -- test
 ## Basic Syntax
 
 ```haskell
--- Variables and functions
+# Variables and functions
 let x = 42
 let add x y = x + y
-let inc = add 1  -- Partial application
+let inc = add 1  # Partial application
 
--- Recursive functions
+# Recursive functions
 rec factorial n =
   if n == 0 then 1
   else n * factorial (n - 1)
 
--- Pattern matching
+# Pattern matching
 match list {
   [] -> 0
   x :: xs -> 1 + length xs
 }
 
--- Let-in expressions
+# Let-in expressions
 let x = 10 in
 let y = 20 in
   x + y
 
--- Pipeline operator
+# Pipeline operator
 [1, 2, 3]
   |> map (fn x -> x * 2)
   |> filter (fn x -> x > 2)
   |> sum
 
--- Effects (basic implementation)
+# Effects (basic implementation)
 let greet name = perform IO.print ("Hello, " ++ name)
 ```
 

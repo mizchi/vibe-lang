@@ -85,21 +85,21 @@ Vibe言語は、AIが理解・解析しやすいように設計された静的�
 - 例: `strConcat`、`intToString`、`foldLeft`（~~`str-concat`~~、~~`int-to-string`~~、~~`fold-left`~~）
 
 ```haskell
--- 変数定義
+# 変数定義
 let x = 42
-let y : Int = 10  -- 型注釈（オプション）
+let y : Int = 10  # 型注釈（オプション）
 
--- 関数定義（自動カリー化）
+# 関数定義（自動カリー化）
 let add = fn x y -> x + y
-let inc = add 1  -- 部分適用
+let inc = add 1  # 部分適用
 
--- letIn構文（ローカルバインディング）
-let x = 10 in x + 5  -- 結果: 15
+# letIn構文（ローカルバインディング）
+let x = 10 in x + 5  # 結果: 15
 let x = 5 in
   let y = 10 in
-    x * y  -- 結果: 50
+    x * y  # 結果: 50
 
--- 再帰関数
+# 再帰関数
 rec factorial n =
   if (eq n 0) {
     1
@@ -107,7 +107,7 @@ rec factorial n =
     n * (factorial (n - 1))
   }
 
--- rec内でletIn使用（内部ヘルパー関数）
+# rec内でletIn使用（内部ヘルパー関数）
 rec quicksort lst =
   match lst {
     [] -> []
@@ -117,25 +117,25 @@ rec quicksort lst =
         append (quicksort smaller) (cons pivot (quicksort larger))
   }
 
--- letRec（相互再帰対応）
+# letRec（相互再帰対応）
 letRec even n = if (eq n 0) { true } else { odd (n - 1) }
 letRec odd n = if (eq n 0) { false } else { even (n - 1) }
 
--- パターンマッチング（ofキーワード不要）
+# パターンマッチング（ofキーワード不要）
 match xs {
-  [] -> 0                        -- 空リスト
-  [h] -> h                       -- 単一要素
-  h :: t -> 1 + (length t)       -- head/tailパターン
+  [] -> 0                        # 空リスト
+  [h] -> h                       # 単一要素
+  h :: t -> 1 + (length t)       # head/tailパターン
 }
 
--- 複数要素と残りのパターン
+# 複数要素と残りのパターン
 match lst {
-  [a, b, c, ...rest] -> a + b + c  -- 最初の3要素を取得
-  [x, y] -> x + y                   -- 2要素のみ
-  _ -> 0                            -- その他
+  [a, b, c, ...rest] -> a + b + c  # 最初の3要素を取得
+  [x, y] -> x + y                   # 2要素のみ
+  _ -> 0                            # その他
 }
 
--- 代数的データ型
+# 代数的データ型
 type Option a =
   | None
   | Some a
@@ -144,18 +144,18 @@ type Result e a =
   | Error e
   | Ok a
 
--- モジュール
+# モジュール
 module Math {
   export add, multiply, factorial
   let add = fn x y -> x + y
   ...
 }
 
--- インポート
+# インポート
 import Math
 import List as L
 
--- 名前空間での定義
+# 名前空間での定義
 namespace Math.Utils {
   let fibonacci = rec fib n ->
     if n < 2 {
@@ -165,40 +165,40 @@ namespace Math.Utils {
     }
 }
 
--- 完全修飾名でのアクセス
+# 完全修飾名でのアクセス
 Math.Utils.fibonacci 10
 
--- レコード（オブジェクトリテラル）
+# レコード（オブジェクトリテラル）
 let person = { name: "Alice", age: 30 }
 
--- フィールドアクセス
+# フィールドアクセス
 let name = person.name
 let age = person.age
 
--- ネストしたレコード
+# ネストしたレコード
 let company = {
   name: "TechCorp",
   address: { city: "Tokyo", zip: "100-0001" }
 }
 
--- ネストしたフィールドアクセス
+# ネストしたフィールドアクセス
 let city = company.address.city
 
--- 関数的な更新（新しいレコードを作成）
+# 関数的な更新（新しいレコードを作成）
 let updatedPerson = { name: "Bob", age: person.age }
 
--- エフェクトの使用例
--- perform構文でエフェクトを実行
+# エフェクトの使用例
+# perform構文でエフェクトを実行
 let greet = fn name -> perform IO ("Hello, " ++ name)
 
--- handle構文でエフェクトを処理（実装予定）
+# handle構文でエフェクトを処理（実装予定）
 handle {
   x <- perform State.get;
   perform State.put (x + 1);
   perform State.get
 } {
-  State.get () k -> k 0 0    -- 初期状態0を返す
-  State.put s k -> k () s    -- 状態を更新
+  State.get () k -> k 0 0    # 初期状態0を返す
+  State.put s k -> k () s    # 状態を更新
 }
 ```
 

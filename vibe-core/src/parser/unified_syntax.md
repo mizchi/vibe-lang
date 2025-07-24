@@ -12,30 +12,30 @@
 All special forms become function calls with block arguments:
 
 ```
--- Pattern matching
+# Pattern matching
 match expr {
   pattern1 -> result1
   pattern2 -> result2
 }
 
--- Do notation
+# Do notation
 do {
   x <- action1;
   y <- action2;
   result
 }
 
--- Effect handling
+# Effect handling
 handle expr {
   Effect1 args k -> handler1
   Effect2 args k -> handler2
   return x -> result
 }
 
--- Perform effect (already function-like)
+# Perform effect (already function-like)
 perform IO "hello"
 
--- With handler (already function-like)
+# With handler (already function-like)
 with handler body
 ```
 

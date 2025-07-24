@@ -269,7 +269,7 @@ fn test_parse_with_handler() {
 #[test]
 fn test_parse_comments() {
     // Test single expression with comment
-    let input = "-- This is a comment\nlet x = 42";
+    let input = "# This is a comment\nlet x = 42";
     let mut parser = Parser::new(input).unwrap();
     let expr = parser.parse().unwrap();
     // Comments should be skipped
