@@ -211,10 +211,10 @@ impl PerceusTransform {
                 IrExpr::Literal(Literal::Int(0))
             }
 
-            Expr::Do { body, .. } => {
-                // For now, just transform the body
-                // TODO: Implement effect handling
-                self.transform_expr(body)
+            Expr::Do { .. } => {
+                // TODO: Implement proper Do block transformation
+                // For now, just return a placeholder
+                IrExpr::Literal(Literal::Int(0))
             }
 
             Expr::RecordLiteral { .. } => {
@@ -242,6 +242,11 @@ impl PerceusTransform {
                     value: Box::new(value_ir),
                     body: Box::new(body_ir),
                 }
+            }
+            
+            Expr::HandleExpr { .. } => {
+                // TODO: Implement handle expression transformation
+                IrExpr::Literal(Literal::Int(0))
             }
 
         }

@@ -1,4 +1,4 @@
-use xs_core::parser_v2::{Lexer, Token};
+use xs_core::parser::{Lexer, Token};
 
 fn main() {
     let input = "if x > 0 { 1 } else { -1 }";

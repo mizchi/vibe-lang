@@ -3,7 +3,7 @@
 //! This module provides conversion utilities to bridge the new parser
 //! with the existing Expr structure, allowing gradual migration.
 
-use crate::{Expr, Span};
+use crate::{DoStatement, Expr, Span};
 
 /// Converts new syntax features to existing Expr nodes where possible
 pub fn convert_to_legacy_expr(expr: Expr) -> Expr {
@@ -138,7 +138,7 @@ pub fn has_new_syntax_features(expr: &Expr) -> bool {
 /// Placeholder for content-addressed hash calculation
 pub fn calculate_content_hash(expr: &Expr) -> String {
     // TODO: Implement proper SHA256 hashing of Expr
-    format!("hash_{:?}", expr).chars().take(8).collect()
+    format!("hash_{expr:?}").chars().take(8).collect()
 }
 
 /// Extract type holes (@:Type) from Expr
@@ -192,7 +192,23 @@ pub fn extract_type_holes(expr: &Expr) -> Vec<(String, Span)> {
                 walk(handler, holes);
                 walk(body, holes);
             }
-            Expr::Do { body, .. } => walk(body, holes),
+            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+                walk(expr, holes);
+                for handler in handlers {
+                    walk(&handler.body, holes);
+                }
+                if let Some((_, body)) = return_handler {
+                    walk(body, holes);
+                }
+            }
+            Expr::Do { statements, .. } => {
+                for statement in statements {
+                    match statement {
+                        DoStatement::Bind { expr, .. } => walk(expr, holes),
+                        DoStatement::Expression(expr) => walk(expr, holes),
+                    }
+                }
+            }
             Expr::RecordAccess { record, .. } => walk(record, holes),
             Expr::RecordUpdate { record, updates, .. } => {
                 walk(record, holes);

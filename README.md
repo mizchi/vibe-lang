@@ -1,6 +1,6 @@
 # XS Language - AI-Oriented Programming Language
 
-XS Language is an AI-oriented programming language designed for fast static analysis with S-expression syntax. It features a static type system with Hindley-Milner type inference, incremental compilation using Salsa framework, Perceus memory management, WebAssembly backend with GC support, and Unison-style content-addressed code storage.
+XS Language is an AI-oriented programming language designed for fast static analysis with Haskell-inspired syntax. It features a static type system with Hindley-Milner type inference, incremental compilation using Salsa framework, Perceus memory management, WebAssembly backend with GC support, and Unison-style content-addressed code storage.
 
 ## 特徴
 
@@ -63,7 +63,7 @@ double 21  -- => 42
 ```haskell
 -- rec構文（型推論サポート）
 rec factorial n =
-    if (eq n 0) {
+    if n == 0 {
         1
     } else {
         n * (factorial (n - 1))
@@ -76,6 +76,16 @@ letRec fib n =
     } else {
         (fib (n - 1)) + (fib (n - 2))
     }
+
+-- rec内でのletバインディング
+let fibonacci = fn (n : Int) ->
+  let fibHelper = rec fibHelper n a b =
+    if n == 0 {
+      a
+    } else {
+      fibHelper (n - 1) b (a + b)
+    } in
+  fibHelper n 0 1
 ```
 
 ### 代数的データ型とパターンマッチ
@@ -86,10 +96,21 @@ type Option a =
   | None
   | Some a
 
+type Result e a =
+  | Error e
+  | Ok a
+
 -- パターンマッチ
 match opt {
   None -> 0
   Some x -> x
+}
+
+-- リストパターン（複数要素と残りのパターン）
+match lst {
+  [a, b, c, ...rest] -> a + b + c  -- 最初の3要素を取得
+  [x, y] -> x + y                   -- 2要素のみ
+  _ -> 0                            -- その他
 }
 ```
 
@@ -163,21 +184,36 @@ patch.update_term("factorial", new_code);
 patch.apply(&mut codebase)?;
 ```
 
-### 名前空間システム
+### モジュールと名前空間システム
 
-階層的な名前空間で整理されたコードベース：
+階層的な名前空間とモジュールシステム：
 
-```lisp
-; 名前空間の定義
-(namespace Math.Utils
-  (export fibonacci square))
+```haskell
+-- モジュール定義
+module Math {
+  export add, multiply, PI
+  
+  let PI = 3.14159
+  let add x y = x + y
+  let multiply x y = x * y
+}
 
-; 完全修飾名でのアクセス
-(Math.Utils.fibonacci 10)
+-- インポート
+import Math
+import List as L
 
-; インポート
-(import Math.Utils (fibonacci square))
-(fibonacci 10)  ; 直接呼び出し可能
+-- 名前空間での定義
+namespace Math.Utils {
+  let fibonacci = rec fib n ->
+    if n < 2 {
+      n
+    } else {
+      (fib (n - 1)) + (fib (n - 2))
+    }
+}
+
+-- 完全修飾名でのアクセス
+Math.Utils.fibonacci 10
 ```
 
 ### ASTコマンドシステム
@@ -228,7 +264,8 @@ let result = db.type_check_program(path); // 差分のみ再計算
 
 ### 比較演算
 - `<`, `>`, `<=`, `>=` : 大小比較
-- `=` : 等価比較
+- `==` : 等価比較
+- `eq` : 等価比較（ビルトイン関数）
 
 ### リスト操作
 - `cons` : リストの先頭に要素を追加
@@ -238,17 +275,17 @@ let result = db.type_check_program(path); // 差分のみ再計算
 
 ### 実装済み機能
 
-- ✅ S式パーサー（lowerCamelCase対応）
+- ✅ Haskell風パーサー（parser、lowerCamelCase対応）
 - ✅ HM型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
 - ✅ CLIツール
 - ✅ Salsaインクリメンタルコンパイル
 - ✅ Perceus IR変換
 - ✅ WebAssembly GC基本実装
-- ✅ rec/letRec構文（型推論対応）
+- ✅ rec/letRec構文（型推論対応、rec内letバインディング）
 - ✅ 代数的データ型
-- ✅ パターンマッチング
-- ✅ モジュールシステム（基本実装）
+- ✅ パターンマッチング（リストパターン、残余パターン対応）
+- ✅ モジュールシステム（module/export構文）
 - ✅ 統一ランタイムインターフェース
 - ✅ Unison風構造化コードベース
 - ✅ 階層的な名前空間システム
@@ -286,40 +323,44 @@ cargo bench --bench type_checker_bench
 
 ### フィボナッチ数列（rec構文）
 
-```lisp
-(rec fib (n)
-    (if (< n 2)
+```haskell
+rec fib n =
+    if n < 2 {
         n
-        (+ (fib (- n 1)) (fib (- n 2)))))
+    } else {
+        (fib (n - 1)) + (fib (n - 2))
+    }
 
-(fib 10)  ; => 55
+fib 10  -- => 55
 ```
 
 ### 高階関数とリスト操作
 
-```lisp
-(let map (fn (f lst)
-    (match lst
-        ((list) (list))
-        ((cons x xs) (cons (f x) (map f xs)))))
+```haskell
+let map = fn f lst ->
+    match lst {
+        [] -> []
+        x :: xs -> cons (f x) (map f xs)
+    }
 
-(let double (fn (x) (* x 2)))
-(map double (list 1 2 3 4 5))  ; => (list 2 4 6 8 10)
+let double = fn x -> x * 2
+map double [1, 2, 3, 4, 5]  -- => [2, 4, 6, 8, 10]
 ```
 
 ### 代数的データ型の例
 
-```lisp
-(type Tree a
-    (Leaf a)
-    (Node (Tree a) (Tree a)))
+```haskell
+type Tree a =
+    | Leaf a
+    | Node (Tree a) (Tree a)
 
-(rec sumTree (tree)
-    (match tree
-        ((Leaf n) n)
-        ((Node left right) (+ (sumTree left) (sumTree right))))))
+rec sumTree tree =
+    match tree {
+        Leaf n -> n
+        Node left right -> (sumTree left) + (sumTree right)
+    }
 
-(sumTree (Node (Leaf 1) (Node (Leaf 2) (Leaf 3))))  ; => 6
+sumTree (Node (Leaf 1) (Node (Leaf 2) (Leaf 3)))  -- => 6
 ```
 
 ## テスト

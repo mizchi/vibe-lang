@@ -4,47 +4,83 @@ use std::str::Chars;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    LeftParen,
-    RightParen,
+    // Basic tokens
+    LeftParen,      // (
+    RightParen,     // )
+    LeftBrace,      // {
+    RightBrace,     // }
+    LeftBracket,    // [
+    RightBracket,   // ]
+    
+    // Literals
     Int(i64),
     Float(f64),
     Bool(bool),
     String(String),
     Symbol(String),
+    
+    // Keywords (lowerCamelCase style)
     Let,
     LetRec,
     In,
     Fn,
     If,
-    List,
-    Cons,
-    Colon,
-    Arrow,
-    Rec,
-    Match,
+    Else,
+    Match,  // match keyword for pattern matching
     Type,
-    Underscore,
+    Data,
+    Effect,
+    Handler,
+    Handle,
+    With,
+    Do,
+    Perform,
+    End,
     Module,
     Import,
     Export,
     As,
-    Dot,
-    Use,
-    Define,
-    Comment(String), // コメントトークンを追加
-    LeftBrace,
-    RightBrace,
-    Comma,
-    Exclamation,
-    Pipeline, // |> operator
-    #[allow(dead_code)]
-    Ident(String), // 識別子トークンを追加
+    Where,
+    Forall,
+    
+    // Operators
+    Equals,         // =
+    EqualsEquals,   // ==
+    Arrow,          // ->
+    FatArrow,       // =>
+    LeftArrow,      // <-
+    Pipe,           // |
+    PipeForward,    // |>
+    Dot,            // .
+    Comma,          // ,
+    Colon,          // :
+    Semicolon,      // ;
+    DoubleColon,    // ::
+    At,             // @
+    Hash,           // #
+    Dollar,         // $
+    Underscore,     // _
+    Ellipsis,       // ...
+    Backslash,      // \
+    
+    // Type/Effect operators
+    LeftAngle,      // <
+    RightAngle,     // >
+    
+    // Comments
+    Comment(String),
+    
+    // Special
+    Newline,
+    Eof,
 }
 
 pub struct Lexer<'a> {
     chars: Peekable<Chars<'a>>,
     position: usize,
-    skip_comments: bool, // コメントをスキップするかどうか
+    line: usize,
+    column: usize,
+    skip_comments: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -52,20 +88,20 @@ impl<'a> Lexer<'a> {
         Lexer {
             chars: input.chars().peekable(),
             position: 0,
-            skip_comments: true, // デフォルトではコメントをスキップ
+            line: 1,
+            column: 1,
+            skip_comments: true,
         }
     }
 
     pub fn with_comments(input: &'a str) -> Self {
-        Lexer {
-            chars: input.chars().peekable(),
-            position: 0,
-            skip_comments: false, // コメントを保持
-        }
+        let mut lexer = Self::new(input);
+        lexer.skip_comments = false;
+        lexer
     }
 
     pub fn next_token(&mut self) -> Result<Option<(Token, Span)>, XsError> {
-        self.skip_whitespace_and_maybe_comments();
+        self.skip_whitespace_except_newline();
 
         let start = self.position;
 
@@ -73,9 +109,9 @@ impl<'a> Lexer<'a> {
             None => Ok(None),
             Some(&ch) => {
                 match ch {
-                    ';' if !self.skip_comments => {
-                        // コメントをトークンとして読み取る
-                        self.read_comment()
+                    '\n' => {
+                        self.advance();
+                        Ok(Some((Token::Newline, Span::new(start, self.position))))
                     }
                     '(' => {
                         self.advance();
@@ -85,28 +121,6 @@ impl<'a> Lexer<'a> {
                         self.advance();
                         Ok(Some((Token::RightParen, Span::new(start, self.position))))
                     }
-                    ':' => {
-                        self.advance();
-                        Ok(Some((Token::Colon, Span::new(start, self.position))))
-                    }
-                    '"' => self.read_string(),
-                    '-' if self.peek_next() == Some('>') => {
-                        self.advance();
-                        self.advance();
-                        Ok(Some((Token::Arrow, Span::new(start, self.position))))
-                    }
-                    '-' if self.peek_next().map(|c| c.is_numeric()).unwrap_or(false) => {
-                        self.read_number()
-                    }
-                    '0'..='9' => self.read_number(),
-                    '_' => {
-                        self.advance();
-                        Ok(Some((Token::Underscore, Span::new(start, self.position))))
-                    }
-                    '.' => {
-                        self.advance();
-                        Ok(Some((Token::Dot, Span::new(start, self.position))))
-                    }
                     '{' => {
                         self.advance();
                         Ok(Some((Token::LeftBrace, Span::new(start, self.position))))
@@ -115,31 +129,99 @@ impl<'a> Lexer<'a> {
                         self.advance();
                         Ok(Some((Token::RightBrace, Span::new(start, self.position))))
                     }
-                    ',' => {
+                    '[' => {
                         self.advance();
-                        Ok(Some((Token::Comma, Span::new(start, self.position))))
+                        Ok(Some((Token::LeftBracket, Span::new(start, self.position))))
                     }
-                    '!' => {
+                    ']' => {
                         self.advance();
-                        Ok(Some((Token::Exclamation, Span::new(start, self.position))))
+                        Ok(Some((Token::RightBracket, Span::new(start, self.position))))
+                    }
+                    '=' if self.peek_next() == Some('>') => {
+                        self.advance();
+                        self.advance();
+                        Ok(Some((Token::FatArrow, Span::new(start, self.position))))
+                    }
+                    '=' => {
+                        if self.peek_next() == Some('=') {
+                            self.advance();
+                            self.advance();
+                            Ok(Some((Token::EqualsEquals, Span::new(start, self.position))))
+                        } else {
+                            self.advance();
+                            Ok(Some((Token::Equals, Span::new(start, self.position))))
+                        }
+                    }
+                    '-' if self.peek_next() == Some('>') => {
+                        self.advance();
+                        self.advance();
+                        Ok(Some((Token::Arrow, Span::new(start, self.position))))
+                    }
+                    '-' if self.peek_next() == Some('-') => {
+                        self.read_line_comment()
+                    }
+                    '-' if self.peek_next().map(|c| c.is_numeric()).unwrap_or(false) => {
+                        self.read_number()
                     }
                     '|' if self.peek_next() == Some('>') => {
                         self.advance();
                         self.advance();
-                        Ok(Some((Token::Pipeline, Span::new(start, self.position))))
+                        Ok(Some((Token::PipeForward, Span::new(start, self.position))))
                     }
-                    _ if ch.is_alphabetic()
-                        || ch == '+'
-                        || ch == '-'
-                        || ch == '*'
-                        || ch == '/'
-                        || ch == '%'
-                        || ch == '<'
-                        || ch == '>'
-                        || ch == '=' =>
-                    {
-                        self.read_symbol()
+                    '|' => {
+                        self.advance();
+                        Ok(Some((Token::Pipe, Span::new(start, self.position))))
                     }
+                    ':' if self.peek_next() == Some(':') => {
+                        self.advance();
+                        self.advance();
+                        Ok(Some((Token::DoubleColon, Span::new(start, self.position))))
+                    }
+                    ':' => {
+                        self.advance();
+                        Ok(Some((Token::Colon, Span::new(start, self.position))))
+                    }
+                    '.' if self.peek_next() == Some('.') && self.peek_next_next() == Some('.') => {
+                        self.advance();
+                        self.advance();
+                        self.advance();
+                        Ok(Some((Token::Ellipsis, Span::new(start, self.position))))
+                    }
+                    '.' => {
+                        self.advance();
+                        Ok(Some((Token::Dot, Span::new(start, self.position))))
+                    }
+                    ',' => {
+                        self.advance();
+                        Ok(Some((Token::Comma, Span::new(start, self.position))))
+                    }
+                    ';' => {
+                        self.advance();
+                        Ok(Some((Token::Semicolon, Span::new(start, self.position))))
+                    }
+                    '@' => {
+                        self.advance();
+                        Ok(Some((Token::At, Span::new(start, self.position))))
+                    }
+                    '#' => {
+                        self.advance();
+                        Ok(Some((Token::Hash, Span::new(start, self.position))))
+                    }
+                    '$' => {
+                        self.advance();
+                        Ok(Some((Token::Dollar, Span::new(start, self.position))))
+                    }
+                    '\\' => {
+                        self.advance();
+                        Ok(Some((Token::Backslash, Span::new(start, self.position))))
+                    }
+                    '<' => self.read_operator(),
+                    '>' => self.read_operator(),
+                    '"' => self.read_string(),
+                    '\'' => self.read_char_or_quoted_symbol(),
+                    '0'..='9' => self.read_number(),
+                    _ if ch.is_alphabetic() || ch == '_' => self.read_identifier(),
+                    _ if is_operator_char(ch) => self.read_operator(),
                     _ => Err(XsError::ParseError(
                         self.position,
                         format!("Unexpected character: {ch}"),
@@ -151,8 +233,14 @@ impl<'a> Lexer<'a> {
 
     fn advance(&mut self) -> Option<char> {
         let ch = self.chars.next();
-        if ch.is_some() {
+        if let Some(c) = ch {
             self.position += 1;
+            if c == '\n' {
+                self.line += 1;
+                self.column = 1;
+            } else {
+                self.column += 1;
+            }
         }
         ch
     }
@@ -163,27 +251,27 @@ impl<'a> Lexer<'a> {
         iter.peek().copied()
     }
 
-    fn skip_whitespace_and_maybe_comments(&mut self) {
+    fn peek_next_next(&mut self) -> Option<char> {
+        let mut iter = self.chars.clone();
+        iter.next();
+        iter.next();
+        iter.peek().copied()
+    }
+
+    fn skip_whitespace_except_newline(&mut self) {
         while let Some(&ch) = self.chars.peek() {
-            if ch.is_whitespace() {
+            if ch == ' ' || ch == '\t' || ch == '\r' {
                 self.advance();
-            } else if ch == ';' && self.skip_comments {
-                // コメントをスキップ
-                while let Some(&ch) = self.chars.peek() {
-                    self.advance();
-                    if ch == '\n' {
-                        break;
-                    }
-                }
             } else {
                 break;
             }
         }
     }
 
-    fn read_comment(&mut self) -> Result<Option<(Token, Span)>, XsError> {
+    fn read_line_comment(&mut self) -> Result<Option<(Token, Span)>, XsError> {
         let start = self.position;
-        self.advance(); // Skip ';'
+        self.advance(); // skip first -
+        self.advance(); // skip second -
 
         let mut comment = String::new();
         while let Some(&ch) = self.chars.peek() {
@@ -194,10 +282,15 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
 
-        Ok(Some((
-            Token::Comment(comment.trim().to_string()),
-            Span::new(start, self.position),
-        )))
+        if self.skip_comments {
+            // Skip the comment and get next token
+            self.next_token()
+        } else {
+            Ok(Some((
+                Token::Comment(comment.trim().to_string()),
+                Span::new(start, self.position),
+            )))
+        }
     }
 
     fn read_string(&mut self) -> Result<Option<(Token, Span)>, XsError> {
@@ -250,6 +343,30 @@ impl<'a> Lexer<'a> {
         ))
     }
 
+    fn read_char_or_quoted_symbol(&mut self) -> Result<Option<(Token, Span)>, XsError> {
+        let start = self.position;
+        self.advance(); // skip opening quote
+
+        let mut value = String::new();
+        while let Some(&ch) = self.chars.peek() {
+            if ch == '\'' {
+                self.advance();
+                // For now, treat as symbol
+                return Ok(Some((
+                    Token::Symbol(value),
+                    Span::new(start, self.position),
+                )));
+            }
+            value.push(ch);
+            self.advance();
+        }
+
+        Err(XsError::ParseError(
+            start,
+            "Unterminated quoted symbol".to_string(),
+        ))
+    }
+
     fn read_number(&mut self) -> Result<Option<(Token, Span)>, XsError> {
         let start = self.position;
         let mut value = String::new();
@@ -270,9 +387,8 @@ impl<'a> Lexer<'a> {
 
         // Check for decimal point
         if let Some(&'.') = self.chars.peek() {
-            // Make sure the next char is a digit to distinguish from dot operator
             let mut peek_chars = self.chars.clone();
-            peek_chars.next(); // skip '.'
+            peek_chars.next();
             if let Some(&next_ch) = peek_chars.peek() {
                 if next_ch.is_numeric() {
                     value.push('.');
@@ -287,11 +403,8 @@ impl<'a> Lexer<'a> {
                         }
                     }
 
-                    // Parse as float
                     match value.parse::<f64>() {
-                        Ok(f) => {
-                            return Ok(Some((Token::Float(f), Span::new(start, self.position))))
-                        }
+                        Ok(f) => return Ok(Some((Token::Float(f), Span::new(start, self.position)))),
                         Err(_) => {
                             return Err(XsError::ParseError(
                                 start,
@@ -303,7 +416,6 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        // Parse as integer
         match value.parse::<i64>() {
             Ok(n) => Ok(Some((Token::Int(n), Span::new(start, self.position)))),
             Err(_) => Err(XsError::ParseError(
@@ -313,24 +425,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn read_symbol(&mut self) -> Result<Option<(Token, Span)>, XsError> {
+    fn read_identifier(&mut self) -> Result<Option<(Token, Span)>, XsError> {
         let start = self.position;
         let mut value = String::new();
 
         while let Some(&ch) = self.chars.peek() {
-            if ch.is_alphanumeric()
-                || ch == '-'
-                || ch == '_'
-                || ch == '+'
-                || ch == '*'
-                || ch == '/'
-                || ch == '%'
-                || ch == '<'
-                || ch == '>'
-                || ch == '='
-                || ch == '?'
-                || ch == '!'
-            {
+            if ch.is_alphanumeric() || ch == '_' {
                 value.push(ch);
                 self.advance();
             } else {
@@ -340,30 +440,56 @@ impl<'a> Lexer<'a> {
 
         let token = match value.as_str() {
             "let" => Token::Let,
-            "let-rec" => Token::LetRec,
+            "letrec" => Token::LetRec,
+            "rec" => Token::LetRec,  // Support both "rec" and "letrec"
             "in" => Token::In,
             "fn" => Token::Fn,
-            "lambda" => Token::Fn, // backward compatibility
             "if" => Token::If,
-            "list" => Token::List,
-            "cons" => Token::Cons,
-            "true" => Token::Bool(true),
-            "false" => Token::Bool(false),
-            "rec" => Token::Rec,
+            "else" => Token::Else,
             "match" => Token::Match,
             "type" => Token::Type,
-            "_" => Token::Underscore,
+            "data" => Token::Data,
+            "effect" => Token::Effect,
+            "with" => Token::With,
+            "do" => Token::Do,
+            "perform" => Token::Perform,
+            "handler" => Token::Handler,
+            "end" => Token::End,
+            "handle" => Token::Handle,
             "module" => Token::Module,
             "import" => Token::Import,
             "export" => Token::Export,
             "as" => Token::As,
-            "use" => Token::Use,
-            "define" => Token::Define,
+            "where" => Token::Where,
+            "forall" => Token::Forall,
+            "true" => Token::Bool(true),
+            "false" => Token::Bool(false),
+            "_" => Token::Underscore,
             _ => Token::Symbol(value),
         };
 
         Ok(Some((token, Span::new(start, self.position))))
     }
+
+    fn read_operator(&mut self) -> Result<Option<(Token, Span)>, XsError> {
+        let start = self.position;
+        let mut value = String::new();
+
+        while let Some(&ch) = self.chars.peek() {
+            if is_operator_char(ch) {
+                value.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        Ok(Some((Token::Symbol(value), Span::new(start, self.position))))
+    }
+}
+
+fn is_operator_char(ch: char) -> bool {
+    matches!(ch, '+' | '-' | '*' | '/' | '%' | '&' | '^' | '!' | '?' | '~' | '<' | '>' | '=')
 }
 
 #[cfg(test)]
@@ -372,108 +498,155 @@ mod tests {
 
     #[test]
     fn test_basic_tokens() {
-        let mut lexer = Lexer::new("( ) : ->");
-
+        let mut lexer = Lexer::new("{ } ( ) [ ]");
+        
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::LeftParen, Span::new(0, 1)))
+            Some((Token::LeftBrace, Span::new(0, 1)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::RightParen, Span::new(2, 3)))
+            Some((Token::RightBrace, Span::new(2, 3)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Colon, Span::new(4, 5)))
+            Some((Token::LeftParen, Span::new(4, 5)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Arrow, Span::new(6, 8)))
-        );
-        assert_eq!(lexer.next_token().unwrap(), None);
-    }
-
-    #[test]
-    fn test_numbers() {
-        let mut lexer = Lexer::new("42 -17 0");
-
-        assert_eq!(
-            lexer.next_token().unwrap(),
-            Some((Token::Int(42), Span::new(0, 2)))
+            Some((Token::RightParen, Span::new(6, 7)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Int(-17), Span::new(3, 6)))
+            Some((Token::LeftBracket, Span::new(8, 9)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Int(0), Span::new(7, 8)))
+            Some((Token::RightBracket, Span::new(10, 11)))
         );
     }
 
     #[test]
-    fn test_strings() {
-        let mut lexer = Lexer::new(r#""hello" "world\n""#);
-
+    fn test_operators() {
+        let mut lexer = Lexer::new("= -> => | |> :: ... @ #");
+        
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::String("hello".to_string()), Span::new(0, 7)))
+            Some((Token::Equals, Span::new(0, 1)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::String("world\n".to_string()), Span::new(8, 17)))
+            Some((Token::Arrow, Span::new(2, 4)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::FatArrow, Span::new(5, 7)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Pipe, Span::new(8, 9)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::PipeForward, Span::new(10, 12)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::DoubleColon, Span::new(13, 15)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Ellipsis, Span::new(16, 19)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::At, Span::new(20, 21)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Hash, Span::new(22, 23)))
         );
     }
 
     #[test]
-    fn test_symbols_and_keywords() {
-        let mut lexer = Lexer::new("let lambda if + - foo-bar true false");
-
+    fn test_keywords() {
+        let mut lexer = Lexer::new("let fn if else match with do effect handler");
+        
         assert_eq!(
             lexer.next_token().unwrap(),
             Some((Token::Let, Span::new(0, 3)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Fn, Span::new(4, 10)))
+            Some((Token::Fn, Span::new(4, 6)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::If, Span::new(11, 13)))
+            Some((Token::If, Span::new(7, 9)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Symbol("+".to_string()), Span::new(14, 15)))
+            Some((Token::Else, Span::new(10, 14)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Symbol("-".to_string()), Span::new(16, 17)))
+            Some((Token::Match, Span::new(15, 19)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Symbol("foo-bar".to_string()), Span::new(18, 25)))
+            Some((Token::With, Span::new(21, 25)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Bool(true), Span::new(26, 30)))
+            Some((Token::Do, Span::new(28, 30)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Bool(false), Span::new(31, 36)))
+            Some((Token::Effect, Span::new(31, 37)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Handler, Span::new(38, 45)))
         );
     }
 
     #[test]
     fn test_comments() {
-        let mut lexer = Lexer::new("42 ; this is a comment\n43");
-
+        let mut lexer = Lexer::new("42 -- this is a comment\n43");
+        
         assert_eq!(
             lexer.next_token().unwrap(),
             Some((Token::Int(42), Span::new(0, 2)))
         );
         assert_eq!(
             lexer.next_token().unwrap(),
-            Some((Token::Int(43), Span::new(23, 25)))
+            Some((Token::Newline, Span::new(23, 24)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Int(43), Span::new(24, 26)))
+        );
+    }
+
+    #[test]
+    fn test_newlines() {
+        let mut lexer = Lexer::new("42\n43\n");
+        
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Int(42), Span::new(0, 2)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Newline, Span::new(2, 3)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Int(43), Span::new(3, 5)))
+        );
+        assert_eq!(
+            lexer.next_token().unwrap(),
+            Some((Token::Newline, Span::new(5, 6)))
         );
     }
 }

@@ -193,6 +193,7 @@ let updatedPerson = { name: "Bob", age: person.age }
 ### string.xs
 - 文字列操作: concat, join, repeat
 - 文字列比較: strEq, strNeq
+- 文字列変換: intToString, stringToInt
 
 ## XS Shell (REPL)
 

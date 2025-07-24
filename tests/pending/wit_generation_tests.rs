@@ -10,9 +10,9 @@ fn run_wit_generation(input_file: &str) -> Result<String, String> {
         .args([
             "run",
             "-p",
-            "xs-tools",
+            "xsh",
             "--bin",
-            "xsc",
+            "xsh",
             "--",
             "component",
             "wit",
@@ -166,9 +166,9 @@ fn test_wit_file_output() {
         .args([
             "run",
             "-p",
-            "xs-tools",
+            "xsh",
             "--bin",
-            "xsc",
+            "xsh",
             "--",
             "component",
             "wit",

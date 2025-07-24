@@ -4,22 +4,30 @@
 //! for the XS language compiler.
 
 // Re-export type checker functionality
+mod effect_checker;
 mod effect_inference;
 mod improved_errors;
 mod module_env;
+pub mod semantic_analysis;
+
+use effect_checker::EffectScheme;
 #[cfg(test)]
 mod test_effect_inference;
+#[cfg(test)]
+mod test_extensible_effects;
 
 pub use module_env::{ExportedItem, ModuleEnv, ModuleInfo};
 
 // Type checker exports
 use std::collections::{HashMap, HashSet};
-use xs_core::{Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError};
+use xs_core::{DoStatement, Expr, Ident, Literal, Pattern, Span, Type, TypeDefinition, XsError, extensible_effects::ExtensibleEffectRow};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
     pub vars: Vec<String>,
     pub typ: Type,
+    pub effects: Option<ExtensibleEffectRow>, // Track effects at type scheme level
+    pub effect_vars: Vec<String>, // Effect variables for polymorphic effects
 }
 
 impl TypeScheme {
@@ -27,6 +35,17 @@ impl TypeScheme {
         TypeScheme {
             vars: Vec::new(),
             typ,
+            effects: None,
+            effect_vars: Vec::new(),
+        }
+    }
+    
+    pub fn mono_with_effects(typ: Type, effects: ExtensibleEffectRow) -> Self {
+        TypeScheme {
+            vars: Vec::new(),
+            typ,
+            effects: Some(effects),
+            effect_vars: Vec::new(),
         }
     }
 }
@@ -183,6 +202,18 @@ impl Default for TypeEnv {
                 )),
             ),
         );
+        
+        // Also register :: as an alias for cons
+        env.add_builtin(
+            "::",
+            Type::Function(
+                Box::new(Type::Var("a".to_string())),
+                Box::new(Type::Function(
+                    Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
+                    Box::new(Type::List(Box::new(Type::Var("a".to_string())))),
+                )),
+            ),
+        );
 
         env.add_builtin(
             "head",
@@ -301,11 +332,33 @@ impl TypeEnv {
     pub fn lookup_module_function(&self, module: &str, function: &str) -> Option<&TypeScheme> {
         self.modules.get(module)?.get(function)
     }
+    
+    /// Get all bindings from all scopes (for effect variable collection)
+    pub fn all_bindings(&self) -> Vec<(&String, &TypeScheme)> {
+        let mut bindings = Vec::new();
+        
+        // Collect from all scopes
+        for scope in &self.bindings {
+            for (name, scheme) in scope {
+                bindings.push((name, scheme));
+            }
+        }
+        
+        // Also collect from modules
+        for (_module_name, module_bindings) in &self.modules {
+            for (name, scheme) in module_bindings {
+                bindings.push((name, scheme));
+            }
+        }
+        
+        bindings
+    }
 }
 
 pub struct TypeChecker {
     fresh_var_counter: usize,
     substitutions: HashMap<String, Type>,
+    effect_checker: Option<effect_checker::EffectChecker>,
 }
 
 impl Default for TypeChecker {
@@ -319,11 +372,20 @@ impl TypeChecker {
         TypeChecker {
             fresh_var_counter: 0,
             substitutions: HashMap::new(),
+            effect_checker: Some(effect_checker::EffectChecker::new()),
+        }
+    }
+    
+    pub fn new_without_effects() -> Self {
+        TypeChecker {
+            fresh_var_counter: 0,
+            substitutions: HashMap::new(),
+            effect_checker: None,
         }
     }
 
     fn fresh_var(&mut self) -> Type {
-        let var = Type::Var(format!("t{}", self.fresh_var_counter));
+        let var = Type::Var(format!("a{}", self.fresh_var_counter));
         self.fresh_var_counter += 1;
         var
     }
@@ -387,6 +449,24 @@ impl TypeChecker {
                 self.unify(p1, p2)?;
                 self.unify(r1, r2)
             }
+            (Type::FunctionWithEffect { from: f1, to: t1, effects: e1 }, 
+             Type::FunctionWithEffect { from: f2, to: t2, effects: e2 }) => {
+                self.unify(f1, f2)?;
+                self.unify(t1, t2)?;
+                // TODO: unify effects
+                if e1 != e2 {
+                    // For now, just check equality
+                    Err(format!("Cannot unify effects: {:?} and {:?}", e1, e2))
+                } else {
+                    Ok(())
+                }
+            }
+            // Allow unifying pure functions with effectful functions
+            (Type::Function(p1, r1), Type::FunctionWithEffect { from: p2, to: r2, .. }) |
+            (Type::FunctionWithEffect { from: p1, to: r1, .. }, Type::Function(p2, r2)) => {
+                self.unify(p1, p2)?;
+                self.unify(r1, r2)
+            }
             (Type::List(e1), Type::List(e2)) => self.unify(e1, e2),
             _ => {
                 let error_msg = match (&t1, &t2) {
@@ -420,7 +500,32 @@ impl TypeChecker {
         for var in &scheme.vars {
             subst.insert(var.clone(), self.fresh_var());
         }
-        self.substitute_with_map(&scheme.typ, &subst)
+        
+        let instantiated_typ = self.substitute_with_map(&scheme.typ, &subst);
+        
+        // If the scheme has effects, instantiate them too
+        if let (Some(effects), Some(effect_checker)) = (&scheme.effects, &mut self.effect_checker) {
+            if !scheme.effect_vars.is_empty() {
+                let instantiated_effects = effect_checker.instantiate_effects(&EffectScheme {
+                    vars: scheme.effect_vars.clone(),
+                    effects: effects.clone(),
+                });
+                
+                // Apply instantiated effects to function types
+                match instantiated_typ {
+                    Type::Function(from, to) => {
+                        return Type::FunctionWithEffect {
+                            from,
+                            to,
+                            effects: self.extensible_to_effect_row(instantiated_effects),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        instantiated_typ
     }
 
     fn substitute_with_map(&self, typ: &Type, subst: &HashMap<String, Type>) -> Type {
@@ -440,6 +545,11 @@ impl TypeChecker {
                 Box::new(self.substitute_with_map(param, subst)),
                 Box::new(self.substitute_with_map(ret, subst)),
             ),
+            Type::FunctionWithEffect { from, to, effects } => Type::FunctionWithEffect {
+                from: Box::new(self.substitute_with_map(from, subst)),
+                to: Box::new(self.substitute_with_map(to, subst)),
+                effects: effects.clone(), // TODO: substitute effect variables
+            },
             Type::List(elem) => Type::List(Box::new(self.substitute_with_map(elem, subst))),
             Type::UserDefined { name, type_params } => Type::UserDefined {
                 name: name.clone(),
@@ -454,7 +564,33 @@ impl TypeChecker {
         let free_vars = Self::free_type_vars(&typ);
         let env_vars = self.env_type_vars(env);
         let vars: Vec<String> = free_vars.difference(&env_vars).cloned().collect();
-        TypeScheme { vars, typ }
+        TypeScheme { vars, typ, effects: None, effect_vars: Vec::new() }
+    }
+    
+    fn generalize_with_effects(&mut self, typ: &Type, env: &TypeEnv) -> TypeScheme {
+        let typ = self.substitute(typ);
+        let free_vars = Self::free_type_vars(&typ);
+        let env_vars = self.env_type_vars(env);
+        let vars: Vec<String> = free_vars.difference(&env_vars).cloned().collect();
+        
+        // Extract effects from function types
+        let (effects, effect_vars) = match &typ {
+            Type::FunctionWithEffect { effects, .. } => {
+                let extensible_effects = self.effect_row_to_extensible(effects.clone());
+                if let Some(effect_checker) = &mut self.effect_checker {
+                    let effect_scheme = effect_checker.generalize_effects(
+                        &extensible_effects,
+                        env
+                    );
+                    (Some(extensible_effects), effect_scheme.vars)
+                } else {
+                    (Some(extensible_effects), Vec::new())
+                }
+            }
+            _ => (None, Vec::new())
+        };
+        
+        TypeScheme { vars, typ, effects, effect_vars }
     }
 
     fn free_type_vars(typ: &Type) -> HashSet<String> {
@@ -467,6 +603,11 @@ impl TypeChecker {
             Type::Function(param, ret) => {
                 let mut vars = Self::free_type_vars(param);
                 vars.extend(Self::free_type_vars(ret));
+                vars
+            }
+            Type::FunctionWithEffect { from, to, .. } => {
+                let mut vars = Self::free_type_vars(from);
+                vars.extend(Self::free_type_vars(to));
                 vars
             }
             Type::List(elem) => Self::free_type_vars(elem),
@@ -486,7 +627,118 @@ impl TypeChecker {
         vars
     }
 
+    /// Convert ExtensibleEffectRow to EffectRow
+    fn extensible_to_effect_row(&self, ext_row: xs_core::extensible_effects::ExtensibleEffectRow) -> xs_core::effects::EffectRow {
+        use xs_core::effects::{Effect, EffectRow, EffectSet};
+        use xs_core::extensible_effects::ExtensibleEffectRow;
+        
+        match ext_row {
+            ExtensibleEffectRow::Empty => EffectRow::Concrete(EffectSet::pure()),
+            ExtensibleEffectRow::Single(effect) => {
+                let mut set = EffectSet::pure();
+                // Convert effect name to Effect enum
+                match effect.name.as_str() {
+                    "IO" => set.add(Effect::IO),
+                    "State" => set.add(Effect::State),
+                    "Exception" => set.add(Effect::Error), // Effect::Error instead of Exception
+                    "Async" => set.add(Effect::Async),
+                    _ => {}, // Unknown effects are ignored for now
+                }
+                EffectRow::Concrete(set)
+            }
+            ExtensibleEffectRow::Extend(effect, rest) => {
+                // Recursively build the effect set
+                let mut set = match self.extensible_to_effect_row(*rest) {
+                    EffectRow::Concrete(s) => s,
+                    _ => EffectSet::pure(),
+                };
+                // Add the current effect
+                match effect.name.as_str() {
+                    "IO" => set.add(Effect::IO),
+                    "State" => set.add(Effect::State),
+                    "Exception" => set.add(Effect::Error), // Effect::Error instead of Exception
+                    "Async" => set.add(Effect::Async),
+                    _ => {},
+                }
+                EffectRow::Concrete(set)
+            }
+            ExtensibleEffectRow::Variable(var) => {
+                // Convert to effect variable
+                EffectRow::Variable(xs_core::effects::EffectVar(var))
+            }
+            ExtensibleEffectRow::Union(left, right) => {
+                // Union both sides
+                let left_row = self.extensible_to_effect_row(*left);
+                let right_row = self.extensible_to_effect_row(*right);
+                match (left_row, right_row) {
+                    (EffectRow::Concrete(mut left_set), EffectRow::Concrete(right_set)) => {
+                        // Merge the sets using iter() method
+                        for effect in right_set.iter() {
+                            left_set.add(effect.clone());
+                        }
+                        EffectRow::Concrete(left_set)
+                    }
+                    _ => {
+                        // For now, if either side has variables, default to pure
+                        // This should be improved with proper effect unification
+                        EffectRow::Concrete(EffectSet::pure())
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Convert EffectRow to ExtensibleEffectRow
+    fn effect_row_to_extensible(&self, row: xs_core::effects::EffectRow) -> xs_core::extensible_effects::ExtensibleEffectRow {
+        use xs_core::effects::{Effect, EffectRow};
+        use xs_core::extensible_effects::{ExtensibleEffectRow, EffectInstance};
+        
+        match row {
+            EffectRow::Concrete(set) => {
+                let mut result = ExtensibleEffectRow::Empty;
+                for effect in set.iter() {
+                    let effect_name = match effect {
+                        Effect::IO => "IO",
+                        Effect::State => "State",
+                        Effect::Error => "Exception",
+                        Effect::Async => "Async",
+                        Effect::Network => "Network",
+                        Effect::FileSystem => "FileSystem",
+                        Effect::Random => "Random",
+                        Effect::Time => "Time",
+                        Effect::Log => "Log",
+                        Effect::Pure => continue,
+                    };
+                    result = result.add_effect(EffectInstance::new(effect_name.to_string()));
+                }
+                result
+            }
+            EffectRow::Variable(var) => ExtensibleEffectRow::Variable(var.0),
+            EffectRow::Extension(set, var) => {
+                let base = self.effect_row_to_extensible(EffectRow::Concrete(set));
+                match base {
+                    ExtensibleEffectRow::Empty => ExtensibleEffectRow::Variable(var.0),
+                    _ => ExtensibleEffectRow::Union(
+                        Box::new(base),
+                        Box::new(ExtensibleEffectRow::Variable(var.0))
+                    ),
+                }
+            }
+        }
+    }
+
     pub fn check(&mut self, expr: &Expr, env: &mut TypeEnv) -> Result<Type, String> {
+        let typ = self.check_with_effects(expr, env)?;
+        Ok(typ)
+    }
+    
+    pub fn check_with_effects(&mut self, expr: &Expr, env: &mut TypeEnv) -> Result<Type, String> {
+        // Check effects if effect checker is enabled
+        if let Some(effect_checker) = &mut self.effect_checker {
+            let _effects = effect_checker.infer_effects(expr, env)?;
+            // TODO: Store effects in type annotation
+        }
+        
         match expr {
             Expr::Literal(lit, _) => match lit {
                 Literal::Int(_) => Ok(Type::Int),
@@ -547,7 +799,7 @@ impl TypeChecker {
                     self.unify(&value_type, ann)?;
                 }
 
-                let scheme = self.generalize(&value_type, env);
+                let scheme = self.generalize_with_effects(&value_type, env);
                 env.add_binding(name.0.clone(), scheme);
                 Ok(value_type)
             }
@@ -565,7 +817,7 @@ impl TypeChecker {
                 self.unify(&var_type, &value_type)?;
 
                 let final_type = self.substitute(&var_type);
-                let scheme = self.generalize(&final_type, env);
+                let scheme = self.generalize_with_effects(&final_type, env);
                 env.add_binding(name.0.clone(), scheme);
 
                 Ok(final_type)
@@ -605,12 +857,33 @@ impl TypeChecker {
                     env.add_binding(param_name.clone(), TypeScheme::mono(param_type));
                 }
 
+                // Infer body type
                 let body_type = self.check(body, env)?;
+                
+                // Infer effects from the lambda body
+                let body_effects = if let Some(effect_checker) = &mut self.effect_checker {
+                    effect_checker.infer_effects(body, env)?
+                } else {
+                    // If no effect checker, assume pure
+                    xs_core::extensible_effects::ExtensibleEffectRow::pure()
+                };
+                
                 env.pop_scope();
 
+                // Build function type with effects if necessary
                 let mut result_type = body_type;
+                let effect_row = self.extensible_to_effect_row(body_effects);
+                
                 for param_type in param_types.into_iter().rev() {
-                    result_type = Type::Function(Box::new(param_type), Box::new(result_type));
+                    if effect_row.is_pure() {
+                        result_type = Type::Function(Box::new(param_type), Box::new(result_type));
+                    } else {
+                        result_type = Type::FunctionWithEffect {
+                            from: Box::new(param_type),
+                            to: Box::new(result_type),
+                            effects: effect_row.clone(),
+                        };
+                    }
                 }
 
                 Ok(result_type)
@@ -752,6 +1025,8 @@ impl TypeChecker {
                         TypeScheme {
                             vars: definition.type_params.clone(),
                             typ: cons_type,
+                            effects: None,
+                            effect_vars: vec![],
                         }
                     };
 
@@ -866,10 +1141,33 @@ impl TypeChecker {
                 }
             }
 
-            Expr::Do { effects: _, body, .. } => {
-                // For now, just check the body
-                // TODO: Implement effect checking
-                self.check(body, env)
+            Expr::Do { statements, .. } => {
+                // Process each statement in the do block
+                let mut result_type = Type::Unit;
+                
+                for statement in statements {
+                    match statement {
+                        DoStatement::Bind { name, expr, .. } => {
+                            // Type check the expression being bound
+                            let expr_type = self.check(expr, env)?;
+                            
+                            // TODO: For now, we just add the binding to the environment
+                            // In the future, this should handle effect types properly
+                            env.add_binding(name.0.clone(), TypeScheme {
+                                vars: vec![],
+                                typ: expr_type,
+                                effects: None,
+                                effect_vars: vec![],
+                            });
+                        }
+                        DoStatement::Expression(expr) => {
+                            // The last expression determines the type of the do block
+                            result_type = self.check(expr, env)?;
+                        }
+                    }
+                }
+                
+                Ok(result_type)
             }
 
             Expr::RecordLiteral { fields, .. } => {
@@ -981,6 +1279,15 @@ impl TypeChecker {
                 
                 Ok(body_type)
             }
+            
+            Expr::HandleExpr { expr, handlers: _, return_handler: _, .. } => {
+                // Type check the handled expression
+                let expr_type = self.check(expr, env)?;
+                
+                // TODO: Implement proper effect handler type checking
+                // For now, just return the expression type
+                Ok(expr_type)
+            }
         }
     }
 
@@ -1008,9 +1315,39 @@ impl TypeChecker {
                 Ok(())
             }
 
-            Pattern::Constructor { .. } => {
-                // TODO: Implement constructor pattern checking
-                Ok(())
+            Pattern::Constructor { name, patterns, .. } => {
+                // Handle :: (cons) constructor specially
+                if name.0 == "::" {
+                    // For lists, we expect [head, tail] patterns
+                    if patterns.len() == 2 {
+                        // If expected_type is a type variable, unify it with List(elem)
+                        let (elem_type, list_type) = match expected_type {
+                            Type::List(elem) => ((**elem).clone(), expected_type.clone()),
+                            Type::Var(_) => {
+                                // Create fresh element type and unify
+                                let elem = self.fresh_var();
+                                let list = Type::List(Box::new(elem.clone()));
+                                self.unify(expected_type, &list)?;
+                                (elem, list)
+                            }
+                            _ => return Err(":: pattern expects a list type".to_string()),
+                        };
+                        
+                        // Check head pattern with element type
+                        self.check_pattern(&patterns[0], &elem_type, env)?;
+                        
+                        // Check tail pattern with list type
+                        self.check_pattern(&patterns[1], &list_type, env)?;
+                        
+                        Ok(())
+                    } else {
+                        Err(":: constructor expects exactly 2 patterns".to_string())
+                    }
+                } else {
+                    // For other constructors, look up in type definitions
+                    // TODO: Implement general constructor pattern checking
+                    Ok(())
+                }
             }
 
             Pattern::List { patterns, .. } => {
@@ -1041,5 +1378,5 @@ pub fn type_check(expr: &Expr) -> Result<Type, XsError> {
     let mut type_env = TypeEnv::new();
     type_checker
         .check(expr, &mut type_env)
-        .map_err(|e| XsError::TypeError(xs_core::Span::new(0, 0), e))
+        .map_err(|e| XsError::TypeError(expr.span().clone(), e))
 }

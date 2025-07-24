@@ -12,6 +12,7 @@ pub mod test_generator;
 pub mod test_runner;
 pub mod xbin;
 pub mod code_repository;
+pub mod block_registry;
 
 #[cfg(test)]
 mod xbin_tests;

@@ -4,7 +4,7 @@
 
 use sha2::{Sha256, Digest};
 use std::fmt;
-use xs_core::{Expr, Type, Pattern, Literal};
+use xs_core::{DoStatement, Expr, Type, Pattern, Literal};
 
 /// A hash identifying a definition by its content
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -332,14 +332,23 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             }
         }
 
-        Expr::Do { effects, body, .. } => {
+        Expr::Do { statements, .. } => {
             hasher.update(b"do");
-            hasher.update(effects.len().to_le_bytes());
-            for effect in effects {
-                hasher.update(effect.as_bytes());
-                hasher.update(b"\0");
+            hasher.update(statements.len().to_le_bytes());
+            for statement in statements {
+                match statement {
+                    DoStatement::Bind { name, expr, .. } => {
+                        hasher.update(b"bind");
+                        hasher.update(name.0.as_bytes());
+                        hasher.update(b"\0");
+                        hash_expr(hasher, expr);
+                    }
+                    DoStatement::Expression(expr) => {
+                        hasher.update(b"expr");
+                        hash_expr(hasher, expr);
+                    }
+                }
             }
-            hash_expr(hasher, body);
         }
 
         Expr::RecordLiteral { fields, .. } => {
@@ -387,6 +396,27 @@ fn hash_expr(hasher: &mut Sha256, expr: &Expr) {
             }
             hash_expr(hasher, value);
             hash_expr(hasher, body);
+        }
+        
+        Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+            hasher.update(b"handle");
+            hash_expr(hasher, expr);
+            hasher.update(handlers.len().to_le_bytes());
+            for handler in handlers {
+                hasher.update(handler.effect.0.as_bytes());
+                hasher.update(b"\0");
+                if let Some(op) = &handler.operation {
+                    hasher.update(op.0.as_bytes());
+                    hasher.update(b"\0");
+                }
+                hash_expr(hasher, &handler.body);
+            }
+            if let Some((var, body)) = return_handler {
+                hasher.update(b"return");
+                hasher.update(var.0.as_bytes());
+                hasher.update(b"\0");
+                hash_expr(hasher, body);
+            }
         }
     }
 }

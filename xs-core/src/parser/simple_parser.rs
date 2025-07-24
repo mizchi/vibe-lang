@@ -1,4 +1,4 @@
-//! Simple parser implementation for testing parser_v2
+//! Simple parser implementation for testing parser
 //! This is a minimal implementation to test the lexer and basic parsing
 
 use crate::{Expr, Span, XsError, Ident, Literal};

@@ -7,7 +7,7 @@ use colored::Colorize;
 use rustyline::Editor;
 use std::io::{self, Write};
 use xs_compiler::TypeChecker;
-use xs_core::{Expr, Type};
+use xs_core::{DoStatement, Expr, Type};
 use std::collections::HashMap;
 
 /// Information about a hole in an expression
@@ -123,10 +123,19 @@ impl HoleCompleter {
                 self.find_holes_rec(func, path, holes);
                 path.pop();
             }
-            Expr::Do { body, .. } => {
-                path.push(0);
-                self.find_holes_rec(body, path, holes);
-                path.pop();
+            Expr::Do { statements, .. } => {
+                for (i, statement) in statements.iter().enumerate() {
+                    path.push(i);
+                    match statement {
+                        DoStatement::Bind { expr, .. } => {
+                            self.find_holes_rec(expr, path, holes);
+                        }
+                        DoStatement::Expression(expr) => {
+                            self.find_holes_rec(expr, path, holes);
+                        }
+                    }
+                    path.pop();
+                }
             }
             Expr::RecordLiteral { fields, .. } => {
                 for (i, (_, field_expr)) in fields.iter().enumerate() {
@@ -148,6 +157,31 @@ impl HoleCompleter {
                 for (i, (_, update_expr)) in updates.iter().enumerate() {
                     path.push(i + 1);
                     self.find_holes_rec(update_expr, path, holes);
+                    path.pop();
+                }
+            }
+            Expr::LetRecIn { value, body, .. } => {
+                path.push(0);
+                self.find_holes_rec(value, path, holes);
+                path.pop();
+                path.push(1);
+                self.find_holes_rec(body, path, holes);
+                path.pop();
+            }
+            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+                path.push(0);
+                self.find_holes_rec(expr, path, holes);
+                path.pop();
+                
+                for (i, handler) in handlers.iter().enumerate() {
+                    path.push(i + 1);
+                    self.find_holes_rec(&handler.body, path, holes);
+                    path.pop();
+                }
+                
+                if let Some((_, body)) = return_handler {
+                    path.push(handlers.len() + 1);
+                    self.find_holes_rec(body, path, holes);
                     path.pop();
                 }
             }

@@ -1,6 +1,6 @@
 //! Automatic recursion detection for let-bound functions
 
-use crate::{Expr, Ident};
+use crate::{DoStatement, Expr, Ident};
 use std::collections::HashSet;
 
 /// Detect if a function body references the given name (indicating recursion)
@@ -111,6 +111,15 @@ impl<'a> RecursionVisitor<'a> {
             Expr::Constructor { .. } => {}
             Expr::Handler { .. } => {}
             Expr::WithHandler { .. } => {}
+            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+                self.visit_expr(expr);
+                for handler in handlers {
+                    self.visit_expr(&handler.body);
+                }
+                if let Some((_, body)) = return_handler {
+                    self.visit_expr(body);
+                }
+            }
             Expr::Perform { .. } => {}
             Expr::Pipeline { .. } => {}
             Expr::Block { exprs, .. } => {
@@ -119,8 +128,17 @@ impl<'a> RecursionVisitor<'a> {
                 }
             }
             Expr::Hole { .. } => {}
-            Expr::Do { body, .. } => {
-                self.visit_expr(body);
+            Expr::Do { statements, .. } => {
+                for statement in statements {
+                    match statement {
+                        DoStatement::Bind { expr, .. } => {
+                            self.visit_expr(expr);
+                        }
+                        DoStatement::Expression(expr) => {
+                            self.visit_expr(expr);
+                        }
+                    }
+                }
             }
             Expr::RecordLiteral { fields, .. } => {
                 for (_, value) in fields {
@@ -187,7 +205,7 @@ mod tests {
     fn test_shadowed_name() {
         // Lambda parameter shadows the name
         assert!(!parse_and_check(
-            "fn factorial -> factorial 5",
+            "fn factorial = factorial 5",
             "factorial"
         ));
     }

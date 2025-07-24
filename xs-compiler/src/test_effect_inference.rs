@@ -21,7 +21,7 @@ mod tests {
         assert!(effects.is_pure());
 
         // Lambda creation is pure
-        let lambda = parse("fn x -> x").unwrap();
+        let lambda = parse("fn x = x").unwrap();
         let effects = ctx.infer_effects(&lambda).unwrap();
         assert!(effects.is_pure());
     }
@@ -32,12 +32,14 @@ mod tests {
 
         // print has IO effect
         let print_expr = parse(r#"print "hello""#).unwrap();
+        eprintln!("Parsed expr: {:?}", print_expr);
         let effects = ctx.infer_effects(&print_expr).unwrap();
-        match effects {
+        match &effects {
             EffectRow::Concrete(set) => {
-                assert!(set.contains(&Effect::IO));
+                eprintln!("Effects: {:?}", set);
+                assert!(set.contains(&Effect::IO), "Expected IO effect, got: {:?}", set);
             }
-            _ => panic!("Expected concrete IO effect"),
+            _ => panic!("Expected concrete IO effect, got: {:?}", effects),
         }
     }
 

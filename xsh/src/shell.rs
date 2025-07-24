@@ -7,13 +7,14 @@ use std::path::PathBuf;
 use xs_compiler::{TypeChecker, TypeEnv};
 use xs_core::pretty_print::pretty_print;
 use xs_core::Ident;
-use xs_core::{Expr, Type, Value};
+use xs_core::{DoStatement, Expr, Type, Value};
 use xs_runtime::Interpreter;
 use xs_workspace::{CodebaseManager, EditSession, ExpressionId};
 use xs_workspace::unified_parser::{parse_unified_with_mode, SyntaxMode};
 use xs_workspace::code_repository::CodeRepository;
 
 use crate::commands;
+use crate::search_patterns::{parse_type_pattern, AstPattern, expr_contains_pattern};
 
 #[derive(Debug)]
 struct ExpressionHistory {
@@ -179,6 +180,16 @@ impl ShellState {
             );
             expr = completer.fill_holes_interactive(&expr)?;
         }
+
+        // Semantic analysis
+        let _block_attributes = {
+            use xs_compiler::semantic_analysis::SemanticAnalyzer;
+            let mut analyzer = SemanticAnalyzer::new();
+            analyzer.analyze(&expr)
+                .map_err(|e| anyhow::anyhow!("Semantic analysis error: {}", e))?
+        };
+        
+        // TODO: Store block attributes in the codebase or repository when persistence is needed
 
         // Type check
         let ty = self
@@ -710,104 +721,17 @@ impl ShellState {
     }
     
     fn type_matches_pattern(&self, ty: &Type, pattern: &str) -> bool {
-        // Simple pattern matching for now
-        match pattern {
-            "Int -> Int" => {
-                if let Type::Function(from, to) = ty {
-                    matches!(**from, Type::Int) && matches!(**to, Type::Int)
-                } else {
-                    false
-                }
-            }
-            "_ -> Int" => {
-                if let Type::Function(_, to) = ty {
-                    matches!(**to, Type::Int)
-                } else {
-                    false
-                }
-            }
-            "Int -> _" => {
-                if let Type::Function(from, _) = ty {
-                    matches!(**from, Type::Int)
-                } else {
-                    false
-                }
-            }
-            _ => format!("{ty:?}").contains(pattern),
+        match parse_type_pattern(pattern) {
+            Ok(matcher) => matcher(ty),
+            Err(_) => format!("{ty:?}").contains(pattern), // Fallback to simple string matching
         }
     }
     
     fn expr_contains_pattern(&self, expr: &Expr, pattern: &str) -> bool {
-        match pattern {
-            "match" => self.expr_contains_match(expr),
-            "lambda" | "fn" => self.expr_contains_lambda(expr),
-            "if" => self.expr_contains_if(expr),
-            _ => false,
-        }
-    }
-    
-    fn expr_contains_match(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::Match { .. } => true,
-            Expr::Lambda { body, .. } => self.expr_contains_match(body),
-            Expr::Apply { func, args, .. } => {
-                self.expr_contains_match(func) || 
-                args.iter().any(|arg| self.expr_contains_match(arg))
-            }
-            Expr::Let { value, .. } => self.expr_contains_match(value),
-            Expr::LetIn { value, body, .. } => {
-                self.expr_contains_match(value) || self.expr_contains_match(body)
-            }
-            Expr::If { cond, then_expr, else_expr, .. } => {
-                self.expr_contains_match(cond) || 
-                self.expr_contains_match(then_expr) || 
-                self.expr_contains_match(else_expr)
-            }
-            _ => false,
-        }
-    }
-    
-    fn expr_contains_lambda(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::Lambda { .. } => true,
-            Expr::Apply { func, args, .. } => {
-                self.expr_contains_lambda(func) || 
-                args.iter().any(|arg| self.expr_contains_lambda(arg))
-            }
-            Expr::Let { value, .. } => self.expr_contains_lambda(value),
-            Expr::LetIn { value, body, .. } => {
-                self.expr_contains_lambda(value) || self.expr_contains_lambda(body)
-            }
-            Expr::If { cond, then_expr, else_expr, .. } => {
-                self.expr_contains_lambda(cond) || 
-                self.expr_contains_lambda(then_expr) || 
-                self.expr_contains_lambda(else_expr)
-            }
-            Expr::Match { expr, cases, .. } => {
-                self.expr_contains_lambda(expr) ||
-                cases.iter().any(|(_, e)| self.expr_contains_lambda(e))
-            }
-            _ => false,
-        }
-    }
-    
-    fn expr_contains_if(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::If { .. } => true,
-            Expr::Lambda { body, .. } => self.expr_contains_if(body),
-            Expr::Apply { func, args, .. } => {
-                self.expr_contains_if(func) || 
-                args.iter().any(|arg| self.expr_contains_if(arg))
-            }
-            Expr::Let { value, .. } => self.expr_contains_if(value),
-            Expr::LetIn { value, body, .. } => {
-                self.expr_contains_if(value) || self.expr_contains_if(body)
-            }
-            Expr::Match { expr, cases, .. } => {
-                self.expr_contains_if(expr) ||
-                cases.iter().any(|(_, e)| self.expr_contains_if(e))
-            }
-            _ => false,
+        if let Some(ast_pattern) = AstPattern::from_str(pattern) {
+            expr_contains_pattern(expr, &ast_pattern)
+        } else {
+            false
         }
     }
     
@@ -930,7 +854,12 @@ impl ShellState {
                 self.has_holes(match_expr) || cases.iter().any(|(_, e)| self.has_holes(e))
             }
             Expr::Pipeline { expr: lhs, func, .. } => self.has_holes(lhs) || self.has_holes(func),
-            Expr::Do { body, .. } => self.has_holes(body),
+            Expr::Do { statements, .. } => {
+                statements.iter().any(|stmt| match stmt {
+                    DoStatement::Bind { expr, .. } => self.has_holes(expr),
+                    DoStatement::Expression(expr) => self.has_holes(expr),
+                })
+            }
             Expr::RecordLiteral { fields, .. } => fields.iter().any(|(_, e)| self.has_holes(e)),
             Expr::RecordAccess { record, .. } => self.has_holes(record),
             Expr::RecordUpdate { record, updates, .. } => {
@@ -938,6 +867,12 @@ impl ShellState {
             }
             Expr::List(elements, _) => elements.iter().any(|e| self.has_holes(e)),
             Expr::LetRec { value, .. } => self.has_holes(value),
+            Expr::LetRecIn { value, body, .. } => self.has_holes(value) || self.has_holes(body),
+            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+                self.has_holes(expr) || 
+                handlers.iter().any(|h| self.has_holes(&h.body)) ||
+                return_handler.as_ref().map_or(false, |(_, body)| self.has_holes(body))
+            }
             Expr::Rec { body, .. } => self.has_holes(body),
             _ => false,
         }

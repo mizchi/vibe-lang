@@ -320,6 +320,41 @@ impl EffectContext {
 
                 Ok(self.inference.union_effects(&expr_effects, &case_effects))
             }
+            Expr::Block { exprs, .. } => {
+                // Block sequences effects from all expressions
+                // For now, treat as application if it looks like one
+                if exprs.len() >= 2 {
+                    // Try to interpret as function application
+                    let func = &exprs[0];
+                    let args = &exprs[1..];
+                    
+                    // Check if this is a function application pattern
+                    if matches!(func, Expr::Ident(_, _)) {
+                        let func_effects = self.infer_effects(func)?;
+                        let mut arg_effects = EffectRow::pure();
+                        
+                        for arg in args {
+                            let eff = self.infer_effects(arg)?;
+                            arg_effects = self.inference.union_effects(&arg_effects, &eff);
+                        }
+                        
+                        // Get the function's latent effects
+                        let latent_effects = self.get_function_effects(func)?;
+                        
+                        // Union all effects
+                        let result = self.inference.union_effects(&func_effects, &arg_effects);
+                        return Ok(self.inference.union_effects(&result, &latent_effects));
+                    }
+                }
+                
+                // Otherwise, sequence all effects
+                let mut total_effects = EffectRow::pure();
+                for expr in exprs {
+                    let eff = self.infer_effects(expr)?;
+                    total_effects = self.inference.union_effects(&total_effects, &eff);
+                }
+                Ok(total_effects)
+            }
             _ => {
                 // For other expressions, assume pure for now
                 Ok(EffectRow::pure())

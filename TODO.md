@@ -27,14 +27,37 @@
 
 ## 今後の実装計画（AI時代の言語設計）
 
-### Phase 1: コード検索の強化 (1-2週間) 🔍 【最優先】
+### 次の優先実装項目 🚀
+
+#### 1. エフェクトシステムの完成（1-2週間）
+- [ ] do記法のパーサー実装
+  - `do { x <- perform State.get; perform State.put (x + 1) }`
+- [ ] handle/with構文の実装
+  - `handle expr with { State.get () k -> k 0 0 }`
+- [ ] エフェクトハンドラーの除去ロジック
+- [ ] 関数型でのエフェクト表示（`Int -> <IO> String`）
+- [ ] エフェクト多相関数のサポート
+
+#### 2. シェルテストの拡充（1週間）
+- [ ] shell_e2e_test.rsの完成
+- [ ] 対話的コマンドのテスト
+- [ ] エラーハンドリングのテスト
+- [ ] 複雑なシナリオのテスト
+
+#### 3. 構造化シェルのパイプライン（2週間）
+- [ ] パイプライン演算子 `|>` の実装
+- [ ] 標準的なコレクション操作（filter, map, reduce）
+- [ ] 構造化データの表示改善
+- [ ] JSON/YAML出力サポート
+
+### Phase 1: コード検索の強化 (1-2週間) 🔍 【完了】
 
 #### AST/型によるクエリシステム
-- [ ] 型パターンによる検索（例: "Int -> Int型の関数を全て検索"）
-- [ ] AST構造による検索（例: "match式を含む関数"）
-- [ ] 依存関係による検索（DependsOn/DependedBy）
-- [ ] REPLでの検索コマンド（`search`, `find`）
-- [ ] 検索結果の構造化表示
+- [x] 型パターンによる検索（例: "Int -> Int型の関数を全て検索"） ✅
+- [x] AST構造による検索（例: "match式を含む関数"） ✅
+- [x] 依存関係による検索（DependsOn/DependedBy） ✅
+- [x] REPLでの検索コマンド（`search`, `find`） ✅
+- [x] 検索結果の構造化表示 ✅
 
 ```lisp
 ; 使用例
@@ -67,25 +90,30 @@ xs> inspect Math.fibonacci
 }
 ```
 
-### Phase 3: Effect System (3-4週間) 🎯 【高優先】
+### Phase 3: Effect System (3-4週間) 🎯 【基本実装完了】
 
 #### 副作用の型レベル追跡
-- [ ] Effect型の定義（IO, Network, FileSystem等）
-- [ ] 関数からのEffect推論
-- [ ] Effect注釈の構文
-- [ ] 純粋関数との明確な区別
+- [x] Effect型の定義（IO, Network, FileSystem等） ✅
+- [x] 関数からのEffect推論 ✅
+- [x] Effect注釈の構文（基本実装） ✅
+- [x] 純粋関数との明確な区別 ✅
 
 ```lisp
-; Effect注釈の例
-(effect IO
-  (print : (-> String (IO Unit)))
-  (read : (-> (IO String))))
-
-(let readAndPrint : {IO} Unit
-  (fn ()
-    (let input (perform read))
-    (perform (print input))))
+; Effect使用例（現在の構文）
+let hello = fn () -> perform IO "Hello, World!"
+let divide = fn x y ->
+  if y == 0 {
+    perform Exception "Division by zero"
+  } else {
+    x / y
+  }
 ```
+
+#### 残りのタスク
+- [ ] do記法の完全サポート
+- [ ] ハンドラー構文の実装
+- [ ] エフェクト多相性の完全実装
+- [ ] 関数型でのエフェクト表示（`Int -> IO String`など）
 
 ### Phase 4: 実行権限システム (2週間) 🔒
 
@@ -172,7 +200,7 @@ xs run --allow-read=/tmp program.xs  # /tmpのみ読み取り許可
 ## 既知の問題と修正予定 🐛
 
 ### パーサー関連
-- [x] parser_v2が`let ... in`の後の改行を正しく処理できない ✅
+- [x] parserが`let ... in`の後の改行を正しく処理できない ✅
   - 現状: `let x = 1 in\nx + 1` がパースエラーになる
   - 対策: 改行のトークン処理を修正
   - 実装済み: `skip_newlines()`を適切な箇所に追加
@@ -191,6 +219,23 @@ xs run --allow-read=/tmp program.xs  # /tmpのみ読み取り許可
   - 実装済み: `letrec name args = body in expr`構文を追加
 - [x] ==演算子のサポート ✅
   - 実装済み: レキサー、パーサー、型チェッカー、ランタイムで対応
+- [x] match構文の統一 ✅
+  - `case`キーワードを廃止し、`match`のみを使用
+  - `of`キーワードを完全削除（`match expr { ... }`形式に統一）
+- [x] セマンティック解析フェーズの実装 ✅
+  - パース後に特殊フォームを検証
+  - ブロックごとのエフェクト権限管理
+  - スコープとキャプチャの解析
+- [ ] 統一文法の完全実装（Unified Grammar Design）
+  - 現状: 特殊構文（match、do、handle）が個別にパースされている
+  - 対策: keyword_form として統一的に扱い、セマンティック解析で検証
+  - 利点: パーサーの簡素化、エラーメッセージの改善、IDE対応の容易化
+- [ ] do記法での複雑な構文サポート
+  - 現状: `do { ... }` 形式のモナド的構文が未実装
+  - 対策: パーサーの拡張とデシュガリング実装
+- [ ] ハンドラー構文の完全実装
+  - 現状: `handle ... with` 構文が部分的にしか動作しない
+  - 対策: パーサーとランタイムでの完全サポート
 
 ### ツール関連
 - [ ] SQLiteのFOREIGN KEY制約エラー

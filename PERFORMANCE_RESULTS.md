@@ -2,7 +2,7 @@
 
 ## Test Environment
 - Date: 2025-07-23
-- Parser: parser_v2 (Haskell-style syntax with block scopes)
+- Parser: parser (Haskell-style syntax with block scopes)
 - Optimization: Release build
 
 ## Benchmark Results
@@ -65,7 +65,7 @@ let result = [1, 2, 3, 4, 5]
 
 ## Analysis
 
-The new parser (parser_v2) demonstrates excellent performance:
+The new parser (parser) demonstrates excellent performance:
 
 1. **Simple expressions**: Sub-150ns parsing time
 2. **Complex recursive functions**: Sub-600ns for multi-line function definitions

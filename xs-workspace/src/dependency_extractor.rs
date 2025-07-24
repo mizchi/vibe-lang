@@ -4,7 +4,7 @@
 //! and resolve them to their content hashes.
 
 use std::collections::HashSet;
-use xs_core::{Expr, Pattern, Ident};
+use xs_core::{DoStatement, Expr, Pattern, Ident};
 use crate::namespace::{NamespaceStore, DefinitionPath, NamespacePath};
 use crate::hash::DefinitionHash;
 
@@ -236,9 +236,17 @@ impl<'a> DependencyExtractor<'a> {
                 // Holes don't have dependencies
             }
             
-            Expr::Do { body, .. } => {
-                // For now, just visit the body
-                self.visit_expr(body, deps);
+            Expr::Do { statements, .. } => {
+                for statement in statements {
+                    match statement {
+                        DoStatement::Bind { expr, .. } => {
+                            self.visit_expr(expr, deps);
+                        }
+                        DoStatement::Expression(expr) => {
+                            self.visit_expr(expr, deps);
+                        }
+                    }
+                }
             }
             
             Expr::RecordLiteral { fields, .. } => {
@@ -268,6 +276,16 @@ impl<'a> DependencyExtractor<'a> {
                 self.visit_expr(value, deps);
                 self.visit_expr(body, deps);
                 self.pop_scope();
+            }
+            
+            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+                self.visit_expr(expr, deps);
+                for handler in handlers {
+                    self.visit_expr(&handler.body, deps);
+                }
+                if let Some((_, body)) = return_handler {
+                    self.visit_expr(body, deps);
+                }
             }
         }
     }

@@ -1,4 +1,4 @@
-use xs_core::parser_v2::{Lexer, Parser};
+use xs_core::parser::{Lexer, Parser};
 
 fn main() {
     let inputs = vec![

@@ -1,0 +1,1 @@
+perform print "Hello from XS"

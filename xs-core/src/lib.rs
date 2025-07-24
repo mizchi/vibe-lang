@@ -1,3 +1,5 @@
+#![allow(clippy::uninlined_format_args)]
+
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -9,14 +11,15 @@ pub mod builtin_modules;
 pub mod builtins;
 pub mod curry;
 pub mod effects;
+pub mod extensible_effects;
 pub mod error_context;
 pub mod ir;
 pub mod metadata;
 pub mod parser;
-pub mod parser_v2;
 pub mod pretty_print;
 pub mod recursion_detector;
 pub mod lib_modules;
+pub mod block_attributes;
 mod types;
 mod value;
 
@@ -46,13 +49,33 @@ pub enum Literal {
     String(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Ident(pub String);
 
 impl fmt::Display for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandlerCase {
+    pub effect: Ident,
+    pub operation: Option<Ident>, // e.g., State.get
+    pub args: Vec<Pattern>,
+    pub continuation: Ident,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DoStatement {
+    Bind {
+        name: Ident,
+        expr: Expr,
+        span: Span,
+    },
+    Expression(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +173,12 @@ pub enum Expr {
         body: Box<Expr>,
         span: Span,
     },
+    HandleExpr {
+        expr: Box<Expr>,
+        handlers: Vec<HandlerCase>,
+        return_handler: Option<(Ident, Box<Expr>)>, // (var_name, expr) for "return x -> expr"
+        span: Span,
+    },
     WithHandler {
         handler: Box<Expr>,
         body: Box<Expr>,
@@ -176,8 +205,7 @@ pub enum Expr {
         span: Span,
     },
     Do {
-        effects: Vec<String>,
-        body: Box<Expr>,
+        statements: Vec<DoStatement>,
         span: Span,
     },
     RecordLiteral {
@@ -234,6 +262,7 @@ impl Expr {
             Expr::Use { span, .. } => span,
             Expr::QualifiedIdent { span, .. } => span,
             Expr::Handler { span, .. } => span,
+            Expr::HandleExpr { span, .. } => span,
             Expr::WithHandler { span, .. } => span,
             Expr::Perform { span, .. } => span,
             Expr::Pipeline { span, .. } => span,
@@ -278,6 +307,13 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeAnnotation {
+    pub type_vars: Vec<String>,      // Type variables (a, b, c)
+    pub effect_vars: Vec<String>,    // Effect variables (e, e1, e2)
+    pub typ: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeDefinition {
     pub name: String,
     pub type_params: Vec<String>,
@@ -299,12 +335,32 @@ impl fmt::Display for Type {
             Type::String => write!(f, "String"),
             Type::Unit => write!(f, "Unit"),
             Type::List(t) => write!(f, "(List {t})"),
-            Type::Function(from, to) => write!(f, "(-> {from} {to})"),
+            Type::Function(from, to) => {
+                // Add parentheses for function arguments
+                match from.as_ref() {
+                    Type::Function(_, _) | Type::FunctionWithEffect { .. } => {
+                        write!(f, "({from}) -> {to}")
+                    }
+                    _ => write!(f, "{from} -> {to}")
+                }
+            }
             Type::FunctionWithEffect { from, to, effects } => {
                 if effects.is_pure() {
-                    write!(f, "(-> {from} {to})")
+                    // Same as regular function
+                    match from.as_ref() {
+                        Type::Function(_, _) | Type::FunctionWithEffect { .. } => {
+                            write!(f, "({from}) -> {to}")
+                        }
+                        _ => write!(f, "{from} -> {to}")
+                    }
                 } else {
-                    write!(f, "(-> {from} {to} ! {effects})")
+                    // Format as: Int -> <IO> String
+                    match from.as_ref() {
+                        Type::Function(_, _) | Type::FunctionWithEffect { .. } => {
+                            write!(f, "({from}) -> <{effects}> {to}")
+                        }
+                        _ => write!(f, "{from} -> <{effects}> {to}")
+                    }
                 }
             }
             Type::Var(name) => write!(f, "{name}"),

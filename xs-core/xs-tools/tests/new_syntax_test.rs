@@ -1,7 +1,7 @@
 //! Integration tests for new parser and syntax features
 
 use xs_compiler::type_check;
-use xs_core::parser_v2::Parser;
+use xs_core::parser::Parser;
 use xs_core::{Environment, Value};
 use xs_runtime::Interpreter;
 

@@ -1,7 +1,7 @@
 //! Pretty printer that considers metadata when formatting code
 
 use crate::metadata::{MetadataStore, NodeId};
-use crate::{Constructor, Expr, Ident, Literal, Pattern, Type, TypeDefinition};
+use crate::{Constructor, DoStatement, Expr, Ident, Literal, Pattern, Type, TypeDefinition};
 
 pub struct PrettyPrinter<'a> {
     metadata_store: Option<&'a MetadataStore>,
@@ -93,9 +93,9 @@ impl<'a> PrettyPrinter<'a> {
                 match items {
                     Some(items) => {
                         let items_str = items.iter().map(|i| &i.0).cloned().collect::<Vec<_>>().join(", ");
-                        format!("(use {} ({}))", path_str, items_str)
+                        format!("(use {path_str} ({items_str}))")
                     }
-                    None => format!("(use {})", path_str),
+                    None => format!("(use {path_str})"),
                 }
             }
             Expr::QualifiedIdent {
@@ -131,6 +131,40 @@ impl<'a> PrettyPrinter<'a> {
                     self.format_expr(body, None)
                 )
             }
+            Expr::HandleExpr { expr, handlers, return_handler, .. } => {
+                let mut result = format!("handle {} with\n", self.format_expr(expr, None));
+                
+                for handler in handlers {
+                    result.push_str("  | ");
+                    result.push_str(&handler.effect.0);
+                    if let Some(op) = &handler.operation {
+                        result.push('.');
+                        result.push_str(&op.0);
+                    }
+                    
+                    for arg in &handler.args {
+                        result.push(' ');
+                        result.push_str(&self.format_pattern(arg));
+                    }
+                    
+                    result.push(' ');
+                    result.push_str(&handler.continuation.0);
+                    result.push_str(" -> ");
+                    result.push_str(&self.format_expr(&handler.body, None));
+                    result.push('\n');
+                }
+                
+                if let Some((var, body)) = return_handler {
+                    result.push_str("  | return ");
+                    result.push_str(&var.0);
+                    result.push_str(" -> ");
+                    result.push_str(&self.format_expr(body, None));
+                    result.push('\n');
+                }
+                
+                result.push_str("end");
+                result
+            }
             Expr::Perform { effect, args, .. } => {
                 let args_str = args
                     .iter()
@@ -162,12 +196,23 @@ impl<'a> PrettyPrinter<'a> {
                     (None, None) => "@".to_string(),
                 }
             }
-            Expr::Do { effects, body, .. } => {
-                if effects.is_empty() {
-                    format!("do {}", self.format_expr(body, None))
-                } else {
-                    format!("do <{}> {}", effects.join(", "), self.format_expr(body, None))
+            Expr::Do { statements, .. } => {
+                let mut result = String::from("do {\n");
+                let indent = "  ";
+                
+                for statement in statements {
+                    match statement {
+                        DoStatement::Bind { name, expr, .. } => {
+                            result.push_str(&format!("{}{} <- {}\n", indent, name.0, self.format_expr(expr, None)));
+                        }
+                        DoStatement::Expression(expr) => {
+                            result.push_str(&format!("{}{}\n", indent, self.format_expr(expr, None)));
+                        }
+                    }
                 }
+                
+                result.push('}');
+                result
             }
             Expr::RecordLiteral { fields, .. } => {
                 let fields_str = fields

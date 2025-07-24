@@ -6,27 +6,27 @@ use common::*;
 #[test]
 fn test_function_hashing() {
     // Test that identical functions produce the same hash
-    test_parses_with("hash1", r#"\x -> x + 1"#, "Lambda");
-    test_parses_with("hash2", r#"\x -> x + 1"#, "Lambda");
+    test_parses_with("hash1", r#"fn x = x + 1"#, "Lambda");
+    test_parses_with("hash2", r#"fn x = x + 1"#, "Lambda");
     // In the future, this would check that both produce the same hash
 }
 
 #[test]
 fn test_content_addressed_storage() {
     // Test that content determines storage location
-    test_parses_with("content_addr", r#"\x y z -> x * y + z"#, "Lambda");
+    test_parses_with("content_addr", r#"let f x y z = x * y + z"#, "Let");
 }
 
 #[test]
 fn test_simple_lambda() {
-    test_runs_with_output("simple_lambda", r#"(\x -> x * 2) 20"#, "40");
+    test_runs_with_output("simple_lambda", r#"(fn x = x * 2) 20"#, "40");
 }
 
 #[test]
 fn test_nested_lambda() {
     test_runs_with_output(
         "nested_lambda",
-        r#"(\x -> (\y -> x + y) 20) 22"#,
+        r#"(fn x = (fn y = x + y) 20) 22"#,
         "42",
     );
 }
@@ -46,7 +46,7 @@ fn test_recursive_function() {
     // Test recursive function using rec
     test_type_checks(
         "rec_func",
-        r#"let fact = rec fact n -> if n = 0 { 1 } else { n * fact (n - 1) } in fact"#,
+        r#"rec fact n = if n == 0 { 1 } else { n * fact (n - 1) }"#,
     );
 }
 

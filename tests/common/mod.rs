@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::process::Command;
+use std::env;
 
 /// Result of running xsc command
 pub struct XscResult {
@@ -13,7 +14,7 @@ pub struct XscResult {
 /// Helper function to run xsc command
 pub fn run_xsc(args: &[&str]) -> XscResult {
     let output = Command::new("cargo")
-        .args(["run", "-p", "xs-tools", "--bin", "xsc", "--"])
+        .args(["run", "-p", "xsh", "--bin", "xsh", "--"])
         .args(args)
         .output()
         .expect("Failed to execute xsc");
@@ -27,10 +28,12 @@ pub fn run_xsc(args: &[&str]) -> XscResult {
 
 /// Helper to create temp file, run test, and clean up
 pub fn test_with_file(name: &str, code: &str, test_fn: impl Fn(&XscResult)) {
-    let filename = format!("test_{name}.xs");
+    let temp_dir = env::temp_dir();
+    let filename = temp_dir.join(format!("test_{name}.xs"));
+    let filename_str = filename.to_str().unwrap();
     fs::write(&filename, code).unwrap();
 
-    let result = run_xsc(&["run", &filename]);
+    let result = run_xsc(&["exec", filename_str]);
     test_fn(&result);
 
     fs::remove_file(&filename).ok();
@@ -38,10 +41,12 @@ pub fn test_with_file(name: &str, code: &str, test_fn: impl Fn(&XscResult)) {
 
 /// Helper to test type checking
 pub fn test_type_check(name: &str, code: &str, test_fn: impl Fn(&XscResult)) {
-    let filename = format!("test_{name}.xs");
+    let temp_dir = env::temp_dir();
+    let filename = temp_dir.join(format!("test_{name}.xs"));
+    let filename_str = filename.to_str().unwrap();
     fs::write(&filename, code).unwrap();
 
-    let result = run_xsc(&["check", &filename]);
+    let result = run_xsc(&["check", filename_str]);
     test_fn(&result);
 
     fs::remove_file(&filename).ok();
@@ -92,10 +97,12 @@ pub fn test_type_checks_with(name: &str, code: &str, expected_type: &str) {
 /// Helper to test parsing
 #[allow(dead_code)]
 pub fn test_parse(name: &str, code: &str, test_fn: impl Fn(&XscResult)) {
-    let filename = format!("test_{name}.xs");
+    let temp_dir = env::temp_dir();
+    let filename = temp_dir.join(format!("test_{name}.xs"));
+    let filename_str = filename.to_str().unwrap();
     fs::write(&filename, code).unwrap();
 
-    let result = run_xsc(&["parse", &filename]);
+    let result = run_xsc(&["parse", filename_str]);
     test_fn(&result);
 
     fs::remove_file(&filename).ok();

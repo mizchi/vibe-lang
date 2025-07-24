@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use thiserror::Error;
-use xs_core::{Environment, Expr, Ident, Literal, Pattern, Span, TypeDefinition, Value, XsError};
+use xs_core::{DoStatement, Environment, Expr, Ident, Literal, Pattern, Span, TypeDefinition, Value, XsError};
 
 // Backend module for different execution strategies
 pub mod backend;
@@ -1004,10 +1004,29 @@ impl Interpreter {
                 ))
             }
 
-            Expr::Do { body, .. } => {
-                // For now, just evaluate the body
-                // TODO: Implement effect checking
-                self.eval(body, env)
+            Expr::Do { statements, .. } => {
+                // Process each statement in the do block
+                let mut result = Value::List(vec![]);
+                let mut local_env = env.clone();
+                
+                for statement in statements {
+                    match statement {
+                        DoStatement::Bind { name, expr, .. } => {
+                            // Evaluate the expression being bound
+                            let value = self.eval(expr, &local_env)?;
+                            
+                            // TODO: For now, we just add the binding to the environment
+                            // In the future, this should handle effect unwrapping properly
+                            local_env = local_env.extend(name.clone(), value);
+                        }
+                        DoStatement::Expression(expr) => {
+                            // The last expression determines the result of the do block
+                            result = self.eval(expr, &local_env)?;
+                        }
+                    }
+                }
+                
+                Ok(result)
             }
 
             Expr::RecordLiteral { fields, .. } => {
@@ -1183,6 +1202,12 @@ impl Interpreter {
                 
                 // Evaluate body in extended environment
                 self.eval(body, &new_env)
+            }
+            
+            Expr::HandleExpr { expr, handlers: _, return_handler: _, .. } => {
+                // TODO: Implement effect handling
+                // For now, just evaluate the expression without handling effects
+                self.eval(expr, env)
             }
         }
     }
@@ -1560,6 +1585,31 @@ impl Interpreter {
                 Ok(Some(all_bindings))
             }
 
+            // Handle :: (cons) pattern against list
+            (
+                Pattern::Constructor {
+                    name,
+                    patterns,
+                    ..
+                },
+                Value::List(values),
+            ) if name.0 == "::" => {
+                // :: pattern expects exactly 2 patterns: head and tail
+                if patterns.len() == 2 && !values.is_empty() {
+                    // Match head pattern with first element
+                    if let Some(head_bindings) = self.match_pattern(&patterns[0], &values[0])? {
+                        // Match tail pattern with rest of list
+                        let tail_value = Value::List(values[1..].to_vec());
+                        if let Some(tail_bindings) = self.match_pattern(&patterns[1], &tail_value)? {
+                            let mut all_bindings = head_bindings;
+                            all_bindings.extend(tail_bindings);
+                            return Ok(Some(all_bindings));
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            
             (Pattern::List { patterns, .. }, Value::List(values)) => {
                 if patterns.is_empty() && values.is_empty() {
                     return Ok(Some(vec![]));

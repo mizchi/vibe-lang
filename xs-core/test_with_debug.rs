@@ -1,4 +1,4 @@
-use xs_core::parser_v2::Parser;
+use xs_core::parser::Parser;
 
 fn main() {
     let input = "with myHandler { doSomething }";
