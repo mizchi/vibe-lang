@@ -1,6 +1,6 @@
-# XS Language - AI-Oriented Programming Language
+# Vibe Language - AI-Oriented Programming Language for Vibe Coding
 
-XS Language is an AI-oriented programming language designed for fast static analysis with Haskell-inspired syntax. It features a static type system with Hindley-Milner type inference, effect system for tracking side effects, incremental compilation using Salsa framework, Perceus memory management, WebAssembly backend with GC support, and Unison-style content-addressed code storage.
+Vibe Language is an AI-oriented programming language designed for vibe coding - a development style focused on experimentation, trial-and-error, and finding the right "vibe" in code. It features a static type system with Hindley-Milner type inference, effect system for tracking side effects, incremental compilation using Salsa framework, Perceus memory management, WebAssembly backend with GC support, and Unison-style content-addressed code storage.
 
 ## 特徴
 
@@ -23,20 +23,20 @@ XS Language is an AI-oriented programming language designed for fast static anal
 # ビルド
 cargo build --release
 
-# XS Shell (REPL) の起動
-cargo run -p xsh --bin xsh
+# Vibe Shell (REPL) の起動
+cargo run -p vsh --bin vsh
 
 # プログラムの実行
-cargo run -p xsh --bin xsh -- run examples/arithmetic.xs
+cargo run -p vsh --bin vsh -- run examples/arithmetic.vibe
 
 # 型チェック
-cargo run -p xsh --bin xsh -- check examples/lambda.xs
+cargo run -p vsh --bin vsh -- check examples/lambda.vibe
 
 # AST表示
-cargo run -p xsh --bin xsh -- parse examples/list.xs
+cargo run -p vsh --bin vsh -- parse examples/list.vibe
 
 # テストの実行
-cargo run -p xsh --bin xsh -- test
+cargo run -p vsh --bin vsh -- test
 ```
 
 ## 言語仕様
@@ -214,7 +214,7 @@ xs-lang-v3/
 ├── xs-runtime/     # ランタイム（インタープリター、評価器、エフェクトランタイム）
 ├── xs-wasm/        # WebAssemblyバックエンド（WASMコード生成、WASIサンドボックス）
 ├── xs-workspace/   # ワークスペース管理（コードベース、インクリメンタルコンパイル）
-├── xsh/            # 統合シェル・REPL（XS Shell、コマンドラインツール）
+├── vsh/            # 統合シェル・REPL（Vibe Shell、コマンドラインツール）
 ├── xs-test/        # テストフレームワーク
 ├── xs-lsp/         # Language Server Protocol実装
 ├── xs-mcp/         # Model Context Protocol実装

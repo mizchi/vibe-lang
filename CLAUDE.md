@@ -1,7 +1,7 @@
-# XS Language - AI向け高速静的解析言語
+# Vibe Language - AI向け高速静的解析言語
 
 ## 概要
-XS言語は、AIが理解・解析しやすいように設計された静的型付き関数型プログラミング言語です。コンテンツアドレス型のコード管理、純粋関数型設計、そしてAIフレンドリーなエラーメッセージにより、AIによるコード理解と生成を最適化します。
+Vibe言語は、AIが理解・解析しやすいように設計された静的型付き関数型プログラミング言語です。コンテンツアドレス型のコード管理、純粋関数型設計、そしてAIフレンドリーなエラーメッセージにより、AIによるコード理解と生成を最適化します。
 
 ## 言語の特徴
 
@@ -68,7 +68,7 @@ XS言語は、AIが理解・解析しやすいように設計された静的型�
 - **xs-runtime**: ランタイム（インタープリター、評価器、エフェクトランタイム）
 - **xs-wasm**: WebAssemblyバックエンド（WASMコード生成、WASIサンドボックス）
 - **xs-workspace**: ワークスペース管理（コードベース、インクリメンタルコンパイル、ブロック属性管理）
-- **xsh**: 統合シェル・REPL（XS Shell、コマンドラインツール）
+- **vsh**: 統合シェル・REPL（Vibe Shell、コマンドラインツール）
 - **xs-test**: テストフレームワーク
 - **xs-lsp**: Language Server Protocol実装（エディタ統合）
 - **xs-mcp**: Model Context Protocol実装（AI統合）
@@ -204,27 +204,27 @@ handle {
 
 ## 標準ライブラリ
 
-### core.xs
+### core.vibe
 - 基本的な関数合成、恒等関数、定数関数
 - Maybe/Either型と関連関数
 - ブーリアン演算、数値ヘルパー
 
-### list.xs
+### list.vibe
 - リスト操作: map, filter, foldLeft, foldRight
 - リスト生成: range, replicate
 - リスト検索: find, elem, all, any
 
-### math.xs
+### math.vibe
 - 数学関数: pow, factorial, gcd, lcm
 - 数値述語: even, odd, positive, negative
 - 統計関数: sum, product, average
 
-### string.xs
+### string.vibe
 - 文字列操作: concat, join, repeat
 - 文字列比較: strEq, strNeq
 - 文字列変換: intToString, stringToInt
 
-## XS Shell (xsh)
+## Vibe Shell (vsh)
 
 ### 基本コマンド
 - `help` - ヘルプ表示
@@ -290,8 +290,8 @@ Suggestions:
 - ✅ Haskell風パーサー（ブロックスコープ、パイプライン演算子、lowerCamelCase対応）
 - ✅ HM型推論（完全な型推論サポート）
 - ✅ 基本的なインタープリター
-- ✅ 統合CLIツール (xsh: parse/check/run/test/bench/shell)
-- ✅ 高機能REPL (XS Shell with 検索機能)
+- ✅ 統合CLIツール (vsh: parse/check/run/test/bench/shell)
+- ✅ 高機能REPL (Vibe Shell with 検索機能)
 - ✅ コンテンツアドレス型コードベース
 - ✅ 自動カリー化と部分適用
 - ✅ 標準ライブラリ（core, list, math, string）
@@ -362,11 +362,11 @@ Suggestions:
 
 3. **XSコード（セルフホスティング部分）のテスト**
    ```bash
-   # xshを使用したテスト実行
-   cargo run -p xsh --bin xsh -- test
+   # vshを使用したテスト実行
+   cargo run -p vsh --bin vsh -- test
    
    # 特定のファイルのテスト
-   cargo run -p xsh --bin xsh -- test tests/xs_tests/
+   cargo run -p vsh --bin vsh -- test tests/xs_tests/
    
    # または Makefile を使用
    make test-xs
