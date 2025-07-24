@@ -465,6 +465,32 @@ impl Interpreter {
                 applied_args: vec![],
             },
         );
+        
+        // Test-related builtin functions
+        env = env.extend(
+            Ident("test".to_string()),
+            Value::BuiltinFunction {
+                name: "test".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("assert".to_string()),
+            Value::BuiltinFunction {
+                name: "assert".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("inspect".to_string()),
+            Value::BuiltinFunction {
+                name: "inspect".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
 
         env
     }
@@ -1588,6 +1614,69 @@ impl Interpreter {
                     "stringConcat requires string arguments".to_string(),
                 )),
             },
+            "test" => {
+                // test : String -> (Unit -> a) -> Unit
+                // For now, just return Unit
+                // The actual test execution will be handled by the test runner
+                if args.len() != 2 {
+                    return Err(XsError::RuntimeError(
+                        span.clone(),
+                        "test requires exactly 2 arguments: name and test function".to_string(),
+                    ));
+                }
+                Ok(Value::Constructor {
+                    name: Ident("Unit".to_string()),
+                    values: vec![],
+                })
+            }
+            "assert" => {
+                // assert : Bool -> String -> Unit
+                if args.len() != 2 {
+                    return Err(XsError::RuntimeError(
+                        span.clone(),
+                        "assert requires exactly 2 arguments: condition and message".to_string(),
+                    ));
+                }
+                match (&args[0], &args[1]) {
+                    (Value::Bool(condition), Value::String(message)) => {
+                        if !condition {
+                            Err(XsError::RuntimeError(
+                                span.clone(),
+                                format!("Assertion failed: {}", message),
+                            ))
+                        } else {
+                            Ok(Value::Constructor {
+                    name: Ident("Unit".to_string()),
+                    values: vec![],
+                })
+                        }
+                    }
+                    _ => Err(XsError::RuntimeError(
+                        span.clone(),
+                        "assert requires a boolean condition and a string message".to_string(),
+                    )),
+                }
+            }
+            "inspect" => {
+                // inspect : a -> String -> a
+                // Prints the value with a label and returns the value
+                if args.len() != 2 {
+                    return Err(XsError::RuntimeError(
+                        span.clone(),
+                        "inspect requires exactly 2 arguments: value and label".to_string(),
+                    ));
+                }
+                match &args[1] {
+                    Value::String(label) => {
+                        println!("[{}] {}", label, args[0]);
+                        Ok(args[0].clone())
+                    }
+                    _ => Err(XsError::RuntimeError(
+                        span.clone(),
+                        "inspect requires a string label as second argument".to_string(),
+                    )),
+                }
+            }
             _ => Err(XsError::RuntimeError(
                 span.clone(),
                 format!("Unknown builtin function: {name}"),

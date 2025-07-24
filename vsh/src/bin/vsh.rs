@@ -18,13 +18,10 @@ enum Command {
     /// Interactive shell (default if no command specified)
     Shell,
 
-    /// Run an expression and exit
+    /// Run a file
     Run {
-        /// The expression to evaluate
-        expression: String,
-        /// Persist the result to index.vin
-        #[arg(long, short)]
-        persist: bool,
+        /// The file to run
+        file: PathBuf,
     },
 
     /// Parse a file and display the AST
@@ -90,10 +87,10 @@ fn main() -> Result<()> {
             // Run interactive REPL
             run_repl()
         }
-        Some(Command::Run {
-            expression,
-            persist,
-        }) => run_expression(&expression, persist),
+        Some(Command::Run { file }) => {
+            let cli_command = cli::Command::Run { file };
+            cli::run_cli_with_args(cli::Args { command: cli_command })
+        }
         Some(cmd) => {
             // Convert to cli::Command and run
             let cli_command = match cmd {
@@ -116,6 +113,8 @@ fn main() -> Result<()> {
     }
 }
 
+// Not used anymore - run file instead
+#[allow(dead_code)]
 fn run_expression(expr: &str, persist: bool) -> Result<()> {
     use std::path::PathBuf;
     use vibe_compiler::type_check;

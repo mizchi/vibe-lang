@@ -279,7 +279,7 @@ pub fn run_cli_with_args(args: Args) -> Result<()> {
                     }
                 }
             } else if path.is_dir() {
-                // Directory check - find all .xs and .vin files
+                // Directory check - find all .vibe and .vin files
                 for entry in WalkDir::new(&path)
                     .follow_links(true)
                     .into_iter()
@@ -289,7 +289,7 @@ pub fn run_cli_with_args(args: Args) -> Result<()> {
                     if path.is_file() {
                         let ext = path.extension().and_then(|s| s.to_str());
                         match ext {
-                            Some("xs") => {
+                            Some("vibe") => {
                                 if verbose {
                                     print!("Checking {} ... ", path.display());
                                 }
@@ -589,13 +589,13 @@ fn handle_codebase_command(command: CodebaseCommand) -> Result<()> {
                     crate::multi_store::store_file_with_multiple_defs(&directory, &mut codebase)?;
                 file_count += defs_count;
             } else {
-                // Recursively find all .xs files
+                // Recursively find all .vibe files
                 for entry in walkdir::WalkDir::new(&directory)
                     .follow_links(true)
                     .into_iter()
                     .filter_map(|e| e.ok())
                 {
-                    if entry.path().extension().and_then(|s| s.to_str()) == Some("xs") {
+                    if entry.path().extension().and_then(|s| s.to_str()) == Some("vibe") {
                         println!("Processing file: {}", entry.path().display());
                         let defs_count = crate::multi_store::store_file_with_multiple_defs(
                             entry.path(),
@@ -647,7 +647,7 @@ fn handle_codebase_command(command: CodebaseCommand) -> Result<()> {
             // Save extracted definitions
             for (name, _) in codebase.names() {
                 if let Some(term) = codebase.get_term_by_name(&name) {
-                    let file_path = output.join(format!("{}.xs", name));
+                    let file_path = output.join(format!("{}.vibe", name));
                     let content = pretty_print(&term.expr);
                     fs::write(&file_path, content)?;
                     println!("Extracted: {}", file_path.display());

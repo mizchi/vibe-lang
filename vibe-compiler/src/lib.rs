@@ -272,6 +272,43 @@ impl Default for TypeEnv {
             ),
         );
 
+        // Test framework builtins
+        env.add_builtin(
+            "test",
+            Type::Function(
+                Box::new(Type::String),
+                Box::new(Type::Function(
+                    Box::new(Type::Function(
+                        Box::new(Type::Var("a".to_string())),
+                        Box::new(Type::Var("b".to_string())),
+                    )),
+                    Box::new(Type::Unit),
+                )),
+            ),
+        );
+
+        env.add_builtin(
+            "assert",
+            Type::Function(
+                Box::new(Type::Bool),
+                Box::new(Type::Function(
+                    Box::new(Type::String),
+                    Box::new(Type::Unit),
+                )),
+            ),
+        );
+
+        env.add_builtin(
+            "inspect",
+            Type::Function(
+                Box::new(Type::Var("a".to_string())),
+                Box::new(Type::Function(
+                    Box::new(Type::String),
+                    Box::new(Type::Var("a".to_string())),
+                )),
+            ),
+        );
+
         // Keep only essential built-ins that are not library functions
         // Everything else requires explicit import
 

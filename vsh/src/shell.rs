@@ -622,7 +622,7 @@ impl ShellState {
                 // Also add to namespace store
                 let current_ns = NamespacePath::from_str(&self.current_namespace);
                 let def_path = DefinitionPath::new(current_ns, name.0.clone());
-                let ns_dependencies: HashSet<DefinitionHash> = dependencies
+                let _ns_dependencies: HashSet<DefinitionHash> = dependencies
                     .iter()
                     .filter_map(|h| {
                         let hex = h.to_hex();

@@ -42,9 +42,13 @@
 
 - [ ] vibe-core は wasm-pack でコンパイルできるような純粋なロジックとして、fs を mock すれば動くとする
 - [ ] vibe-runtime は、deno permissions のように権限を管理する仕組みを持つ
-- [ ] 実用性を判定するために、vibe 言語によって、いくつかのライブラリをセルフホストする
+- [ ] ある程度枯れたら、実用性を判定するために、vibe 言語によって、いくつかのライブラリを実装して評価
   - [ ] React / ELM 風の UI ライブラリを実装する
   - [ ] JSONSchema Checker を実装する
+  - [ ] MCP Client
+- [ ] Debugger
+- [ ] TypeScript 型定義を生成
+- [ ] AI Builtin (Claude Code)
 
 ---
 
