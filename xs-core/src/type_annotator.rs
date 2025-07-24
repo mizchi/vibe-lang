@@ -3,7 +3,7 @@
 //! This module provides functionality to embed inferred types back into expressions
 //! as explicit type annotations.
 
-use crate::{Expr, Type, Ident, Span};
+use crate::{Expr, Type};
 
 /// Embed type annotations into an expression based on inferred types
 pub fn embed_type_annotations(expr: &Expr, inferred_type: &Type) -> Expr {
@@ -185,7 +185,7 @@ pub fn deep_embed_types(expr: &Expr, type_env: &std::collections::HashMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Literal, Span};
+    use crate::{Ident, Literal, Span};
 
     #[test]
     fn test_embed_let_type() {

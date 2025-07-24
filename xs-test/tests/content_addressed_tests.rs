@@ -1,3 +1,5 @@
+mod common;
+
 #[cfg(test)]
 mod content_addressed_tests {
     use crate::common::*;

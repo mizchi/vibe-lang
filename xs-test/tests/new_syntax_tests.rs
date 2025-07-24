@@ -1,3 +1,5 @@
+mod common;
+
 #[cfg(test)]
 mod new_syntax_tests {
     use crate::common::*;

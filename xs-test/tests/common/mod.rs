@@ -122,6 +122,27 @@ pub fn test_parses_with(name: &str, code: &str, expected: &str) {
     });
 }
 
+/// Helper to test that code parses successfully
+pub fn test_parse_ok(name: &str, code: &str) {
+    test_parse(name, code, |result| {
+        assert!(result.success, "Parse failed: {}", result.stderr);
+    });
+}
+
+/// Helper to test that code type checks successfully
+pub fn test_typecheck_ok(name: &str, code: &str) {
+    test_type_check(name, code, |result| {
+        assert!(result.success, "Type check failed: {}", result.stderr);
+    });
+}
+
+/// Helper to test that code type checks and fails
+pub fn test_typecheck_err(name: &str, code: &str) {
+    test_type_check(name, code, |result| {
+        assert!(!result.success, "Expected type check to fail but it succeeded");
+    });
+}
+
 /// Common test patterns
 #[allow(dead_code)]
 pub mod patterns {

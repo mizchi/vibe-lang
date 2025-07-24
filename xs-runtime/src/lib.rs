@@ -799,7 +799,7 @@ impl Interpreter {
                 Ok(result)
             }
 
-            Expr::Import { module_name, hash, .. } => {
+            Expr::Import {  hash, .. } => {
                 // Import statements don't have a runtime value
                 // TODO: Implement proper import handling
                 // For hash-based imports, we need to resolve the specific version

@@ -24,11 +24,7 @@ fn test_simple_lambda() {
 
 #[test]
 fn test_nested_lambda() {
-    test_runs_with_output(
-        "nested_lambda",
-        r#"(fn x = (fn y = x + y) 20) 22"#,
-        "42",
-    );
+    test_runs_with_output("nested_lambda", r#"(fn x = (fn y = x + y) 20) 22"#, "42");
 }
 
 #[test]

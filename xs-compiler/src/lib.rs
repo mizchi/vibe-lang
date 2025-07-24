@@ -1096,7 +1096,7 @@ impl TypeChecker {
                 Ok(Type::Int)
             }
 
-            Expr::Import { module_name, hash, .. } => {
+            Expr::Import {  hash, .. } => {
                 // TODO: Implement import type checking
                 // For hash-based imports, we need to resolve the specific version
                 if let Some(_h) = hash {
