@@ -13,7 +13,7 @@ use vsh::{api, shell::ShellState};
 
 fn main() -> Result<()> {
     // Initialize shell state
-    let storage_path = PathBuf::from(".xs-codebase");
+    let storage_path = PathBuf::from(".");
     let mut state = ShellState::new(storage_path)?;
 
     // Get command from args or stdin

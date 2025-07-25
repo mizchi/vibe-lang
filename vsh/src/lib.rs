@@ -25,6 +25,8 @@ pub mod lsp;
 
 // Test framework
 pub mod test_runner;
+pub mod incremental_bench;
+pub mod wasm_bench;
 
 // Re-export important types
 pub use cli::{run_cli, Args, Command};

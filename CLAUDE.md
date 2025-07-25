@@ -93,6 +93,11 @@ let y : Int = 10  # 型注釈（オプション）
 let add = fn x y -> x + y
 let inc = add 1  # 部分適用
 
+# $演算子（低優先順位関数適用）
+print $ 1 + 2              # print (1 + 2)
+map double $ [1, 2, 3]     # map double [1, 2, 3]
+f $ g $ h x                # f (g (h x)) - 右結合
+
 # letIn構文（ローカルバインディング）
 let x = 10 in x + 5  # 結果: 15
 let x = 5 in
@@ -317,6 +322,7 @@ Suggestions:
 - ✅ 省略可能なパラメータ（`param?:Type?`）
 - ✅ 新しい関数定義構文（`let func x:Int y:Int -> Int = x + y`）
 - ✅ Option型の糖衣構文（`String?`）
+- ✅ $演算子（Haskell風の低優先順位関数適用）
 
 ### 開発中/計画中
 - 📋 do記法の完全実装

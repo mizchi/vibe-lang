@@ -18,7 +18,7 @@ pub mod wit_generator;
 pub use codegen::CodeGenerator;
 
 /// WebAssembly GC module representation
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WasmModule {
     /// Function definitions
     pub functions: Vec<WasmFunction>,
@@ -33,7 +33,7 @@ pub struct WasmModule {
 }
 
 /// WebAssembly function definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WasmFunction {
     pub name: String,
     pub params: Vec<WasmType>,
@@ -66,7 +66,7 @@ pub enum WasmType {
 }
 
 /// WebAssembly global variable
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WasmGlobal {
     pub name: String,
     pub ty: WasmType,
@@ -75,14 +75,14 @@ pub struct WasmGlobal {
 }
 
 /// WebAssembly memory configuration
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WasmMemory {
     pub min_pages: u32,
     pub max_pages: Option<u32>,
 }
 
 /// WebAssembly instructions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WasmInstr {
     // Constants
     I32Const(i32),

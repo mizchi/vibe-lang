@@ -10,7 +10,6 @@ use vibe_core::type_annotator::embed_type_annotations;
 use vibe_core::Ident;
 use vibe_core::{DoStatement, Expr, Type, Value};
 use vibe_runtime::Interpreter;
-use vibe_workspace::code_repository::CodeRepository;
 use vibe_workspace::hash::DefinitionHash;
 use vibe_workspace::namespace::{
     DefinitionContent, DefinitionPath, NamespaceCommand, NamespacePath, NamespaceStore,
@@ -46,7 +45,6 @@ pub struct ShellState {
     #[allow(dead_code)]
     salsa_db: vibe_workspace::database::XsDatabaseImpl,
     syntax_mode: SyntaxMode,
-    code_repository: Option<CodeRepository>,
     namespace_store: NamespaceStore,
 }
 
@@ -215,21 +213,6 @@ impl ShellState {
         let main_branch = codebase.create_branch("main".to_string())?;
         let session = EditSession::new(main_branch.hash.clone());
 
-        // Initialize code repository (SQLite database)
-        let db_path = storage_path.join("code_repository.db");
-        let code_repository = match CodeRepository::new(&db_path) {
-            Ok(mut repo) => {
-                // Start a new session
-                if let Err(e) = repo.start_session() {
-                    eprintln!("Warning: Failed to start repository session: {}", e);
-                }
-                Some(repo)
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to initialize code repository: {}", e);
-                None
-            }
-        };
 
         let mut shell_state = Self {
             codebase,
@@ -243,18 +226,17 @@ impl ShellState {
             named_exprs: HashMap::new(),
             salsa_db: vibe_workspace::database::XsDatabaseImpl::new(),
             syntax_mode: SyntaxMode::Auto,
-            code_repository,
             namespace_store: NamespaceStore::new(),
         };
 
-        // Auto-load index.vin if it exists
-        let index_path = PathBuf::from("index.vin");
+        // Auto-load index.vibes if it exists
+        let index_path = PathBuf::from("index.vibes");
         if index_path.exists() {
-            println!("{}", "Loading index.vin...".cyan());
+            println!("{}", "Loading index.vibes...".cyan());
             if let Err(e) = shell_state.load_vbin(&index_path) {
-                eprintln!("{}: Failed to load index.vin: {}", "Warning".yellow(), e);
+                eprintln!("{}: Failed to load index.vibes: {}", "Warning".yellow(), e);
             } else {
-                println!("{}", "index.vin loaded successfully".green());
+                println!("{}", "index.vibes loaded successfully".green());
             }
         }
 
@@ -363,31 +345,7 @@ impl ShellState {
             timestamp: std::time::SystemTime::now(),
         });
 
-        // Auto-save to code repository
-        // Extract dependencies before mutable borrow
-        let dependencies = self.extract_dependencies(&expr);
-
-        if let Some(repo) = &mut self.code_repository {
-            // Create a Term for storage
-            let term = vibe_workspace::Term {
-                hash: hash_obj.clone(),
-                name: None, // Will be set for let expressions
-                expr: expr.clone(),
-                ty: ty.clone(),
-                dependencies: dependencies.clone(),
-            };
-
-            // Store in repository
-            if let Err(e) = repo.store_term(&term, &dependencies) {
-                eprintln!("Warning: Failed to store in repository: {}", e);
-            }
-
-            // Record evaluation
-            let result_str = format_value(&result);
-            if let Err(e) = repo.record_evaluation(line, Some(&hash_obj), &result_str) {
-                eprintln!("Warning: Failed to record evaluation: {}", e);
-            }
-        }
+        // Auto-save to index.vibes will be done at exit
 
         let _expr_id = ExpressionId(hash.clone());
         // TODO: Salsa integration
@@ -434,23 +392,7 @@ impl ShellState {
                     timestamp: std::time::SystemTime::now(),
                 });
 
-                // Store named definition in repository
-                // Extract dependencies before mutable borrow
-                let dependencies = self.extract_dependencies(&annotated_expr);
-
-                if let Some(repo) = &mut self.code_repository {
-                    let named_term = vibe_workspace::Term {
-                        hash: expr_hash_obj.clone(),
-                        name: Some(name.0.clone()),
-                        expr: annotated_expr.clone(),
-                        ty: ty.clone(),
-                        dependencies: dependencies.clone(),
-                    };
-
-                    if let Err(e) = repo.store_term(&named_term, &dependencies) {
-                        eprintln!("Warning: Failed to store named term: {}", e);
-                    }
-                }
+                // Named definitions will be saved to index.vibes at exit
 
                 let _val_expr_id = ExpressionId(expr_hash.clone());
                 // TODO: Salsa integration
@@ -492,25 +434,8 @@ impl ShellState {
                 let def_path = DefinitionPath::new(current_ns, name.0.clone());
                 let content = DefinitionContent::Value((*annotated_value).clone());
 
-                // Convert workspace hash dependencies to namespace hash dependencies
-                let _ns_dependencies: HashSet<DefinitionHash> = dependencies
-                    .iter()
-                    .filter_map(|h| {
-                        // Convert workspace Hash to hex and then to DefinitionHash
-                        let hex = h.to_hex();
-                        if let Ok(bytes) = hex::decode(&hex) {
-                            if bytes.len() == 32 {
-                                let mut arr = [0u8; 32];
-                                arr.copy_from_slice(&bytes);
-                                Some(DefinitionHash(arr))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                // Dependencies will be handled later if needed
+                let _ns_dependencies: HashSet<DefinitionHash> = HashSet::new();
 
                 let command = NamespaceCommand::AddDefinition {
                     path: def_path,
@@ -598,22 +523,7 @@ impl ShellState {
                     timestamp: std::time::SystemTime::now(),
                 });
 
-                // Store named definition in repository
-                let dependencies = self.extract_dependencies(&annotated_expr);
-
-                if let Some(repo) = &mut self.code_repository {
-                    let named_term = vibe_workspace::Term {
-                        hash: expr_hash_obj.clone(),
-                        name: Some(name.0.clone()),
-                        expr: annotated_expr.clone(),
-                        ty: ty.clone(),
-                        dependencies: dependencies.clone(),
-                    };
-
-                    if let Err(e) = repo.store_term(&named_term, &dependencies) {
-                        eprintln!("Warning: Failed to store named term: {}", e);
-                    }
-                }
+                // Recursive definitions will be saved to index.vibes at exit
 
                 // Add to session with type annotation
                 self.session
@@ -622,23 +532,7 @@ impl ShellState {
                 // Also add to namespace store
                 let current_ns = NamespacePath::from_str(&self.current_namespace);
                 let def_path = DefinitionPath::new(current_ns, name.0.clone());
-                let _ns_dependencies: HashSet<DefinitionHash> = dependencies
-                    .iter()
-                    .filter_map(|h| {
-                        let hex = h.to_hex();
-                        if let Ok(bytes) = hex::decode(&hex) {
-                            if bytes.len() == 32 {
-                                let mut arr = [0u8; 32];
-                                arr.copy_from_slice(&bytes);
-                                Some(DefinitionHash(arr))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                let _ns_dependencies: HashSet<DefinitionHash> = HashSet::new();
 
                 let content = DefinitionContent::Function {
                     params: params.iter().map(|(p, _)| p.0.clone()).collect(),
@@ -725,6 +619,39 @@ impl ShellState {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    pub fn save_vbin(&self, path: &PathBuf) -> Result<()> {
+        use vibe_workspace::vbin::VBinStorage;
+        use vibe_workspace::Codebase;
+
+        // Create a new codebase to save
+        let mut codebase = Codebase::new();
+
+        // Add all named expressions to the codebase
+        for (name, hash) in &self.named_exprs {
+            if let Some(entry) = self.expr_history.iter().find(|h| &h.hash == hash) {
+                // Skip if it's already been saved (check by hash)
+                let hash_obj = vibe_workspace::Hash::from_hex(hash)?;
+                if codebase.get_term(&hash_obj).is_some() {
+                    continue;
+                }
+
+                // Create dependencies set
+                let _dependencies = self.extract_dependencies(&entry.expr);
+
+                // Add the term
+                codebase.add_term(Some(name.clone()), entry.expr.clone(), entry.ty.clone())?;
+            }
+        }
+
+        // Save to VBin format
+        let mut storage = VBinStorage::new(path.to_string_lossy().to_string());
+        storage
+            .save_full(&codebase)
+            .map_err(|e| anyhow::anyhow!("Failed to save vbin: {}", e))?;
 
         Ok(())
     }
@@ -1265,7 +1192,7 @@ pub fn run_repl() -> Result<()> {
     use rustyline::Editor;
 
     let mut rl = Editor::<()>::new()?;
-    let storage_path = PathBuf::from(".xs-codebase");
+    let storage_path = PathBuf::from(".");
     let mut state = ShellState::new(storage_path)?;
 
     println!(
@@ -1381,119 +1308,15 @@ pub fn run_repl() -> Result<()> {
                             }
 
                             Command::Stats => {
-                                if let Some(repo) = &mut state.code_repository {
-                                    match repo.get_access_stats() {
-                                        Ok(stats) => {
-                                            println!("{}", "Repository Statistics:".bold());
-                                            println!();
-                                            println!("{}", "Most accessed definitions:".cyan());
-                                            for (name, count) in stats {
-                                                println!("  {} - {} accesses", name, count);
-                                            }
-                                        }
-                                        Err(e) => println!("{}: {}", "Error".red(), e),
-                                    }
-                                } else {
-                                    println!("{}: Code repository not available", "Error".red());
-                                }
+                                println!("{}: Stats command is no longer available. Use 'ls' to list definitions.", "Info".yellow());
                             }
 
                             Command::DeadCode => {
-                                if let Some(repo) = &mut state.code_repository {
-                                    // Get all root namespaces currently in use
-                                    let mut namespaces = std::collections::HashSet::new();
-                                    for (name, _) in &state.named_exprs {
-                                        if let Some(ns) = name.split('.').next() {
-                                            namespaces.insert(ns.to_string());
-                                        }
-                                    }
-                                    let root_namespaces: Vec<String> =
-                                        namespaces.into_iter().collect();
-
-                                    match repo.analyze_reachability(&root_namespaces) {
-                                        Ok(analysis) => {
-                                            println!("{}", "Dead Code Analysis:".bold());
-                                            println!();
-                                            if analysis.dead_code.is_empty() {
-                                                println!("No dead code found!");
-                                            } else {
-                                                println!(
-                                                    "Found {} unreachable definitions:",
-                                                    analysis.dead_code.len()
-                                                );
-
-                                                // Look up names for dead code
-                                                for hash in &analysis.dead_code {
-                                                    if let Ok(results) = repo.search_by_name("") {
-                                                        for (h, name, _) in results {
-                                                            if &h == hash {
-                                                                println!(
-                                                                    "  {} [{}]",
-                                                                    name,
-                                                                    hash.to_hex()
-                                                                );
-                                                                break;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                println!();
-                                                println!("Use 'remove-dead-code' to clean up (not implemented yet)");
-                                            }
-                                        }
-                                        Err(e) => println!("{}: {}", "Error".red(), e),
-                                    }
-                                } else {
-                                    println!("{}: Code repository not available", "Error".red());
-                                }
+                                println!("{}: Dead code analysis is no longer available.", "Info".yellow());
                             }
 
-                            Command::Reachable(namespaces) => {
-                                if let Some(repo) = &mut state.code_repository {
-                                    match repo.analyze_reachability(&namespaces) {
-                                        Ok(analysis) => {
-                                            println!("{}", "Reachability Analysis:".bold());
-                                            println!();
-                                            println!("From namespaces: {}", namespaces.join(", "));
-                                            println!(
-                                                "Reachable definitions: {}",
-                                                analysis.reachable.len()
-                                            );
-                                            println!(
-                                                "Unreachable definitions: {}",
-                                                analysis.dead_code.len()
-                                            );
-                                            println!();
-
-                                            // Show top referenced definitions
-                                            let mut refs: Vec<_> =
-                                                analysis.reference_count.into_iter().collect();
-                                            refs.sort_by_key(|(_, count)| {
-                                                std::cmp::Reverse(*count)
-                                            });
-
-                                            println!("{}", "Most referenced definitions:".cyan());
-                                            for (hash, count) in refs.iter().take(10) {
-                                                // Try to find name
-                                                if let Ok(results) = repo.search_by_name("") {
-                                                    for (h, name, _) in results {
-                                                        if &h == hash {
-                                                            println!(
-                                                                "  {} - {} references",
-                                                                name, count
-                                                            );
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Err(e) => println!("{}: {}", "Error".red(), e),
-                                    }
-                                } else {
-                                    println!("{}: Code repository not available", "Error".red());
-                                }
+                            Command::Reachable(_namespaces) => {
+                                println!("{}: Reachability analysis is no longer available.", "Info".yellow());
                             }
 
                             Command::Namespace(None) => {
@@ -1532,6 +1355,13 @@ pub fn run_repl() -> Result<()> {
                 break;
             }
         }
+    }
+
+    // Save current state to index.vibes
+    let index_path = PathBuf::from("index.vibes");
+    match state.save_vbin(&index_path) {
+        Ok(()) => println!("{}", "State saved to index.vibes".green()),
+        Err(e) => eprintln!("{}: Failed to save index.vibes: {}", "Warning".yellow(), e),
     }
 
     Ok(())

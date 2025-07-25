@@ -64,6 +64,12 @@ enum Command {
         /// Number of iterations
         #[arg(short = 'n', long, default_value = "100")]
         iterations: u32,
+        /// Run incremental compilation benchmark
+        #[arg(long)]
+        incremental: bool,
+        /// Run WASM generation benchmark
+        #[arg(long)]
+        wasm: bool,
     },
 
     /// Generate WebAssembly Component from XS module
@@ -98,7 +104,7 @@ fn main() -> Result<()> {
                 Command::Check { path, verbose } => cli::Command::Check { path, verbose },
                 Command::Exec { file } => cli::Command::Run { file },
                 Command::Test { file, all, verbose } => cli::Command::Test { file, all, verbose },
-                Command::Bench { file, iterations } => cli::Command::Bench { file, iterations },
+                Command::Bench { file, iterations, incremental, wasm } => cli::Command::Bench { file, iterations, incremental, wasm },
                 Command::Component { command } => cli::Command::Component { command },
                 Command::Codebase { command } => cli::Command::Codebase { command },
                 _ => unreachable!(),
@@ -132,8 +138,8 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
     let mut interpreter = Interpreter::new();
     let mut env = Interpreter::create_initial_env();
 
-    // Load index.vin if it exists to populate the environment
-    let index_path = PathBuf::from("index.vin");
+    // Load index.vibes if it exists to populate the environment
+    let index_path = PathBuf::from("index.vibes");
     let mut codebase = if index_path.exists() {
         use vibe_workspace::vbin::VBinStorage;
         let mut storage = VBinStorage::new(index_path.to_string_lossy().to_string());
@@ -163,7 +169,7 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
     // Print result
     println!("{}", vsh::cli::format_value(&result));
 
-    // Save to index.vin if persist is enabled
+    // Save to index.vibes if persist is enabled
     if persist {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -177,7 +183,7 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
                 use vibe_workspace::vbin::VBinStorage;
                 let mut storage = VBinStorage::new(index_path.to_string_lossy().to_string());
                 if let Err(e) = storage.save_full(&mut codebase) {
-                    eprintln!("Warning: Failed to save to index.vin: {}", e);
+                    eprintln!("Warning: Failed to save to index.vibes: {}", e);
                 } else {
                     eprintln!("Expression saved as {} [{}]", name, hash.to_hex());
                 }

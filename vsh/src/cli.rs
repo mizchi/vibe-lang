@@ -60,6 +60,12 @@ pub enum Command {
         /// Number of iterations
         #[arg(short = 'n', long, default_value = "100")]
         iterations: u32,
+        /// Run incremental compilation benchmark
+        #[arg(long)]
+        incremental: bool,
+        /// Run WASM generation benchmark
+        #[arg(long)]
+        wasm: bool,
     },
     /// Generate WebAssembly Component from XS module
     Component {
@@ -132,13 +138,13 @@ pub enum CodebaseCommand {
         #[arg(default_value = ".")]
         directory: PathBuf,
         /// Output VBin file
-        #[arg(short, long, default_value = "codebase.vin")]
+        #[arg(short, long, default_value = "codebase.vibes")]
         output: PathBuf,
     },
     /// Load specific definitions from VBin
     Load {
         /// VBin file to load from
-        #[arg(default_value = "codebase.vin")]
+        #[arg(default_value = "codebase.vibes")]
         input: PathBuf,
         /// Hash or name of definition to load
         definition: String,
@@ -152,7 +158,7 @@ pub enum CodebaseCommand {
     /// Query VBin codebase
     Query {
         /// VBin file to query
-        #[arg(default_value = "codebase.vin")]
+        #[arg(default_value = "codebase.vibes")]
         input: PathBuf,
         /// Query type
         #[command(subcommand)]
@@ -161,13 +167,13 @@ pub enum CodebaseCommand {
     /// Show VBin statistics
     Stats {
         /// VBin file to analyze
-        #[arg(default_value = "codebase.vin")]
+        #[arg(default_value = "codebase.vibes")]
         input: PathBuf,
     },
     /// Generate and run tests for VBin codebase
     Test {
         /// VBin file to test
-        #[arg(default_value = "codebase.vin")]
+        #[arg(default_value = "codebase.vibes")]
         input: PathBuf,
         /// Filter for function names to test
         #[arg(short, long)]
@@ -279,7 +285,7 @@ pub fn run_cli_with_args(args: Args) -> Result<()> {
                     }
                 }
             } else if path.is_dir() {
-                // Directory check - find all .vibe and .vin files
+                // Directory check - find all .vibe and .vibes files
                 for entry in WalkDir::new(&path)
                     .follow_links(true)
                     .into_iter()
@@ -355,6 +361,9 @@ pub fn run_cli_with_args(args: Args) -> Result<()> {
             let source = fs::read_to_string(&file)
                 .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
+            // Check file extension
+            let extension = file.extension().and_then(|s| s.to_str()).unwrap_or("");
+            
             // Parse and type check to get effects
             match parse(&source) {
                 Ok(expr) => {
@@ -367,9 +376,52 @@ pub fn run_cli_with_args(args: Args) -> Result<()> {
 
                             // Create environment with builtins
                             let env = Interpreter::create_initial_env();
-                            match interpreter.eval(&expr, &env) {
+                            
+                            // For .vibe files, look for and execute main function
+                            // For .vsh files (or no extension), execute top-level expression
+                            let result = if extension == "vibe" {
+                                // For .vibe files, wrap the expression to call main
+                                // First evaluate the file content, then call main
+                                let wrapped_expr = vibe_core::Expr::Block {
+                                    exprs: vec![
+                                        expr.clone(),
+                                        vibe_core::Expr::Apply {
+                                            func: Box::new(vibe_core::Expr::Ident(
+                                                vibe_core::Ident("main".to_string()),
+                                                vibe_core::Span::new(0, 0)
+                                            )),
+                                            args: vec![],
+                                            span: vibe_core::Span::new(0, 0),
+                                        }
+                                    ],
+                                    span: vibe_core::Span::new(0, 0),
+                                };
+                                
+                                // Evaluate the wrapped expression
+                                match interpreter.eval(&wrapped_expr, &env) {
+                                    Ok(value) => Ok(value),
+                                    Err(e) => {
+                                        // Check if the error is about missing main function
+                                        if e.to_string().contains("Undefined variable: main") {
+                                            eprintln!("{}: No main function found in .vibe file", "Error".red().bold());
+                                            eprintln!("Hint: .vibe files require a main function. Use .vsh extension for direct execution.");
+                                            std::process::exit(1);
+                                        } else {
+                                            Err(e)
+                                        }
+                                    }
+                                }
+                            } else {
+                                // For .vsh files or files without extension, execute top-level
+                                interpreter.eval(&expr, &env)
+                            };
+                            
+                            match result {
                                 Ok(value) => {
-                                    println!("{}", format_value(&value));
+                                    // Don't print empty string values from main function
+                                    if extension != "vibe" || !matches!(value, Value::String(ref s) if s.is_empty()) {
+                                        println!("{}", format_value(&value));
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("{}: {}", "Runtime error".red(), e);
@@ -415,31 +467,40 @@ pub fn run_cli_with_args(args: Args) -> Result<()> {
             }
         }
 
-        Command::Bench { file, iterations } => {
-            let source = fs::read_to_string(&file)
-                .with_context(|| format!("Failed to read file: {}", file.display()))?;
+        Command::Bench { file, iterations, incremental, wasm } => {
+            if incremental {
+                // Run incremental compilation benchmark
+                crate::incremental_bench::run_incremental_benchmark(&file, iterations)?;
+            } else if wasm {
+                // Run WASM generation benchmark
+                crate::wasm_bench::run_wasm_benchmark(&file, iterations)?;
+            } else {
+                // Run interpreter benchmark
+                let source = fs::read_to_string(&file)
+                    .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-            match parse(&source) {
-                Ok(expr) => {
-                    println!("Running benchmark with {iterations} iterations...");
+                match parse(&source) {
+                    Ok(expr) => {
+                        println!("Running benchmark with {iterations} iterations...");
 
-                    let start = std::time::Instant::now();
-                    use vibe_core::Environment;
-                    use vibe_runtime::Interpreter;
-                    for _ in 0..iterations {
-                        let mut interpreter = Interpreter::new();
-                        let env = Environment::default();
-                        let _ = interpreter.eval(&expr, &env);
+                        let start = std::time::Instant::now();
+                        use vibe_core::Environment;
+                        use vibe_runtime::Interpreter;
+                        for _ in 0..iterations {
+                            let mut interpreter = Interpreter::new();
+                            let env = Environment::default();
+                            let _ = interpreter.eval(&expr, &env);
+                        }
+                        let duration = start.elapsed();
+
+                        let avg_time = duration / iterations;
+                        println!("Average time: {avg_time:?}");
+                        println!("Total time: {duration:?}");
                     }
-                    let duration = start.elapsed();
-
-                    let avg_time = duration / iterations;
-                    println!("Average time: {avg_time:?}");
-                    println!("Total time: {duration:?}");
-                }
-                Err(e) => {
-                    eprintln!("{}: {}", "Parse error".red(), e);
-                    std::process::exit(1);
+                    Err(e) => {
+                        eprintln!("{}: {}", "Parse error".red(), e);
+                        std::process::exit(1);
+                    }
                 }
             }
         }

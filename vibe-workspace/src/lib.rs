@@ -19,6 +19,7 @@ mod vbin_tests;
 
 // Incremental compilation modules
 pub mod database;
+pub mod wasm_queries_simple;
 
 // Namespace system modules
 pub mod ast_command;
@@ -143,8 +144,8 @@ pub struct Workspace {
 impl Workspace {
     /// Create a new workspace with the specified data directory
     pub fn new<P: AsRef<std::path::Path>>(data_dir: P) -> Result<Self, WorkspaceError> {
-        // 優先順位: .vin > .bin
-        let xbin_path = data_dir.as_ref().join("codebase.vin");
+        // 優先順位: .vibes > .bin
+        let xbin_path = data_dir.as_ref().join("codebase.vibes");
         let bin_path = data_dir.as_ref().join("codebase.bin");
 
         let codebase = if xbin_path.exists() {
@@ -178,7 +179,7 @@ impl Workspace {
 
     /// Save the workspace to disk in VBin format
     pub fn save_vbin<P: AsRef<std::path::Path>>(&self, data_dir: P) -> Result<(), WorkspaceError> {
-        let xbin_path = data_dir.as_ref().join("codebase.vin");
+        let xbin_path = data_dir.as_ref().join("codebase.vibes");
         let mut storage = VBinStorage::new(xbin_path.to_string_lossy().to_string());
         storage.save_full(&self.codebase).map_err(|e| {
             WorkspaceError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))

@@ -11,7 +11,7 @@ test:
 
 clean:
 	cargo clean
-	rm -rf .xs-codebase
+	rm -f index.vibes
 
 check: format lint test check-duplication
 

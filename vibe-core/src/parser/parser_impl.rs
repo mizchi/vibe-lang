@@ -30,18 +30,22 @@ impl<'a> Parser<'a> {
     fn parse_module(&mut self) -> Result<Expr, XsError> {
         let mut exprs = Vec::new();
 
-        while self.current_token.is_some() {
+        loop {
             // Skip newlines at module level
-            if matches!(self.current_token, Some((Token::Newline, _))) {
+            while matches!(self.current_token, Some((Token::Newline, _))) {
                 self.advance()?;
-                continue;
+            }
+
+            // Check if we have any tokens left
+            if self.current_token.is_none() {
+                break;
             }
 
             let expr = self.parse_top_level()?;
             exprs.push(expr);
 
             // Consume optional semicolon or newline
-            if matches!(
+            while matches!(
                 self.current_token,
                 Some((Token::Semicolon, _)) | Some((Token::Newline, _))
             ) {
@@ -70,47 +74,10 @@ impl<'a> Parser<'a> {
             Some((Token::Effect, _)) => self.parse_effect_definition(),
             Some((Token::Import, _)) => self.parse_import(),
             Some((Token::Module, _)) => self.parse_module_definition(),
-            Some((Token::Symbol(name), span)) => {
-                // Look ahead to determine if this is a function definition
-                let start = span.start;
-                let name = name.clone();
-                let name_span = span.clone();
-                self.advance()?; // consume the identifier
-
-                // Check if followed by parameters or '=' (function definition)
-                if matches!(self.current_token, Some((Token::Symbol(_), _)))
-                    || matches!(self.current_token, Some((Token::Equals, _)))
-                    || matches!(self.current_token, Some((Token::Colon, _)))
-                {
-                    // This is a function definition
-                    self.parse_function_definition(name, start)
-                } else if matches!(self.current_token, Some((Token::Dot, _))) {
-                    // This is a namespace access like String.concat
-                    // Put the identifier back and parse as expression
-                    let mut expr = Expr::Ident(Ident(name), name_span);
-
-                    // Handle record access
-                    while matches!(self.current_token, Some((Token::Dot, _))) {
-                        self.advance()?;
-                        let field = self.parse_identifier()?;
-                        expr = Expr::RecordAccess {
-                            record: Box::new(expr),
-                            field: Ident(field),
-                            span: Span::new(start, self.position()),
-                        };
-                    }
-
-                    // Now handle function application if any
-                    if self.is_application_start() {
-                        self.parse_remaining_application(expr)
-                    } else {
-                        Ok(expr)
-                    }
-                } else {
-                    // Not a function definition, just an identifier expression
-                    // Return the identifier and let parse_module handle the rest
-                    Ok(Expr::Ident(Ident(name), Span::new(start, self.position())))
-                }
+            Some((Token::Symbol(_), _)) => {
+                // At top level, parse as expression to handle all cases uniformly
+                // This allows both function applications and infix operations
+                self.parse_expression()
             }
             _ => self.parse_expression(),
         }
@@ -423,7 +390,45 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<Expr, XsError> {
-        self.parse_infix()
+        self.parse_dollar()
+    }
+
+    /// Parse the $ operator, which acts as a low-precedence function application.
+    /// 
+    /// The $ operator is syntactic sugar that allows you to write:
+    ///   f $ x + y
+    /// instead of:
+    ///   f (x + y)
+    /// 
+    /// Properties:
+    /// - Lowest precedence (lower than all other operators)
+    /// - Right-associative: f $ g $ h x  parses as  f (g (h x))
+    /// - Simply converts to regular function application in the AST
+    fn parse_dollar(&mut self) -> Result<Expr, XsError> {
+        let mut left = self.parse_infix()?;
+        
+        while matches!(self.current_token, Some((Token::Dollar, _))) {
+            let start_pos = left.span().start;
+            self.advance()?; // consume '$'
+            self.skip_newlines();
+            
+            // $ is right-associative, so recursively parse the entire right side.
+            // This has the effect of putting parentheses around everything to the right:
+            //   f $ x + y      becomes  f (x + y)
+            //   f $ g $ h x    becomes  f (g (h x))
+            //   f $ g x $ h y  becomes  f ((g x) (h y))
+            let right = self.parse_dollar()?;
+            
+            // The $ operator doesn't create a special AST node.
+            // It's purely syntactic sugar that converts to regular function application.
+            left = Expr::Apply {
+                func: Box::new(left),
+                args: vec![right],
+                span: Span::new(start_pos, self.position()),
+            };
+        }
+        
+        Ok(left)
     }
 
     fn parse_infix(&mut self) -> Result<Expr, XsError> {
@@ -775,10 +780,11 @@ impl<'a> Parser<'a> {
         self.expect_token(Token::RightBrace)?;
 
         if exprs.is_empty() {
-            Ok(Expr::Literal(
-                Literal::Int(0),
-                Span::new(start, self.position()),
-            ))
+            // Return an empty block instead of Literal(Int(0))
+            Ok(Expr::Block {
+                exprs: vec![],
+                span: Span::new(start, self.position()),
+            })
         } else if exprs.len() == 1 {
             Ok(exprs.into_iter().next().unwrap())
         } else {
@@ -878,14 +884,23 @@ impl<'a> Parser<'a> {
         };
 
         // Create nested lambdas for multiple parameters
-        let lambda = params
-            .into_iter()
-            .rev()
-            .fold(body, |acc, param| Expr::Lambda {
-                params: vec![param],
-                body: Box::new(acc),
+        let lambda = if params.is_empty() {
+            // For empty params, create a lambda with no parameters
+            Expr::Lambda {
+                params: vec![],
+                body: Box::new(body),
                 span: Span::new(start, self.position()),
-            });
+            }
+        } else {
+            params
+                .into_iter()
+                .rev()
+                .fold(body, |acc, param| Expr::Lambda {
+                    params: vec![param],
+                    body: Box::new(acc),
+                    span: Span::new(start, self.position()),
+                })
+        };
 
         Ok(lambda)
     }
@@ -1187,6 +1202,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[allow(dead_code)]
     fn parse_function_definition(&mut self, name: String, start: usize) -> Result<Expr, XsError> {
         // Parse parameters
         let mut params = Vec::new();
@@ -1892,6 +1908,7 @@ impl<'a> Parser<'a> {
             Some((Token::DoubleColon, _)) => true, // Handle '::' as infix operator (cons)
             Some((Token::LessThan, _)) => true, // Handle '<' as infix operator
             Some((Token::GreaterThan, _)) => true, // Handle '>' as infix operator
+            Some((Token::Dollar, _)) => false, // $ is handled separately with lower precedence
             _ => false,
         }
     }
@@ -1918,6 +1935,7 @@ impl<'a> Parser<'a> {
                 | None
         )
     }
+
 
     fn expect_token(&mut self, expected: Token) -> Result<Span, XsError> {
         match &self.current_token {
@@ -1958,6 +1976,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[allow(dead_code)]
     fn parse_remaining_application(&mut self, mut expr: Expr) -> Result<Expr, XsError> {
         while self.is_application_start() {
             let arg = self.parse_primary()?;

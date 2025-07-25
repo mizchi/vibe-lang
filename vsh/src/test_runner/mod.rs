@@ -126,6 +126,15 @@ impl TestSuite {
 
         // Parse test file
         let expr = parse(&source).map_err(|e| TestError::ParseError(e.to_string()))?;
+        
+        if self.verbose {
+            println!("Parsed expression type: {:?}", match &expr {
+                Expr::Block { .. } => "Block",
+                Expr::Apply { .. } => "Apply",
+                Expr::Let { .. } => "Let",
+                _ => "Other",
+            });
+        }
 
         // Extract in-source tests
         let in_source_tests = self.extract_in_source_tests(&expr);
@@ -169,12 +178,28 @@ impl TestSuite {
 
     /// Recursively extract test function calls
     fn extract_in_source_tests_recursive(&self, expr: &Expr, tests: &mut Vec<InSourceTest>) {
-        // Skip verbose debug for now
+        if self.verbose {
+            println!("Checking expr for tests: {:?}", match expr {
+                Expr::Block { .. } => "Block",
+                Expr::Apply { .. } => "Apply",
+                Expr::Let { .. } => "Let",
+                _ => "Other",
+            });
+        }
         match expr {
             // Look for: test "name" (fn -> ...) or (test "name") (fn -> ...)
             Expr::Apply { func, args, span } => {
                 // Check if it's a direct test call: test "name" (fn -> ...)
                 if let Expr::Ident(Ident(name), _) = func.as_ref() {
+                    if self.verbose && name == "test" {
+                        println!("Found test call with {} args", args.len());
+                        if args.len() >= 1 {
+                            println!("First arg: {:?}", match &args[0] {
+                                Expr::Literal(vibe_core::Literal::String(s), _) => format!("String({})", s),
+                                _ => "Not a string".to_string(),
+                            });
+                        }
+                    }
                     if name == "test" && args.len() == 2 {
                         if let Expr::Literal(vibe_core::Literal::String(test_name), _) = &args[0] {
                             tests.push(InSourceTest {

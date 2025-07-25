@@ -424,6 +424,22 @@ impl Interpreter {
             },
         );
         env = env.extend(
+            Ident("error".to_string()),
+            Value::BuiltinFunction {
+                name: "error".to_string(),
+                arity: 1,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
+            Ident("concat".to_string()),
+            Value::BuiltinFunction {
+                name: "concat".to_string(),
+                arity: 2,
+                applied_args: vec![],
+            },
+        );
+        env = env.extend(
             Ident("toString".to_string()),
             Value::BuiltinFunction {
                 name: "toString".to_string(),
@@ -1302,8 +1318,15 @@ impl Interpreter {
         args: &[Value],
         span: &vibe_core::Span,
     ) -> Result<Value, XsError> {
-        match name {
-            "+" => match (&args[0], &args[1]) {
+        // Handle both with and without __builtin_ prefix
+        let builtin_name = if name.starts_with("__builtin_") {
+            &name[10..]  // Remove "__builtin_" prefix
+        } else {
+            name
+        };
+        
+        match builtin_name {
+            "+" | "add" => match (&args[0], &args[1]) {
                 (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
                 (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
                 _ => Err(XsError::RuntimeError(
@@ -1311,7 +1334,7 @@ impl Interpreter {
                     "+ requires arguments of the same numeric type (Int or Float)".to_string(),
                 )),
             },
-            "-" => match (&args[0], &args[1]) {
+            "-" | "sub" => match (&args[0], &args[1]) {
                 (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x - y)),
                 (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
                 _ => Err(XsError::RuntimeError(
@@ -1674,6 +1697,26 @@ impl Interpreter {
                     _ => Err(XsError::RuntimeError(
                         span.clone(),
                         "inspect requires a string label as second argument".to_string(),
+                    )),
+                }
+            }
+            "error" => {
+                // error : String -> a
+                // Triggers a runtime error with the given message
+                if args.len() != 1 {
+                    return Err(XsError::RuntimeError(
+                        span.clone(),
+                        "error requires exactly 1 argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    Value::String(msg) => Err(XsError::RuntimeError(
+                        span.clone(),
+                        msg.clone(),
+                    )),
+                    _ => Err(XsError::RuntimeError(
+                        span.clone(),
+                        "error requires a string argument".to_string(),
                     )),
                 }
             }

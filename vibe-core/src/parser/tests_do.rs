@@ -69,15 +69,20 @@ mod tests {
         let expr = result.unwrap();
         match expr {
             Expr::Do { statements, .. } => {
-                assert_eq!(statements.len(), 2);
+                assert_eq!(statements.len(), 3); // print, "Hello", and 42 are parsed as separate expressions
 
-                // Both should be expression statements
+                // All three should be expression statements
                 match &statements[0] {
                     DoStatement::Expression(_) => {}
                     _ => panic!("Expected expression statement"),
                 }
 
                 match &statements[1] {
+                    DoStatement::Expression(_) => {}
+                    _ => panic!("Expected expression statement"),
+                }
+
+                match &statements[2] {
                     DoStatement::Expression(_) => {}
                     _ => panic!("Expected expression statement"),
                 }
