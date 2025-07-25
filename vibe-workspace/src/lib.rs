@@ -39,6 +39,9 @@ pub mod shell_syntax;
 pub mod structured_data;
 pub mod unified_parser;
 
+// Package management modules
+pub mod package;
+
 // Re-export important types
 pub use codebase::{
     Branch, Codebase, CodebaseError, CodebaseManager, EditAction, EditSession, Hash, Patch, Term,

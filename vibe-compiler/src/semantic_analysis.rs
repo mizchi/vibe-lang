@@ -31,11 +31,13 @@ pub struct SemanticAnalyzer {
 struct ScopeContext {
     block_id: NodeId,
     bindings: HashMap<String, BindingInfo>,
+    #[allow(dead_code)]
     parent: Option<NodeId>,
 }
 
 #[derive(Debug, Clone)]
 struct BindingInfo {
+    #[allow(dead_code)]
     defined_at: Span,
     mutable: bool,
     captured: bool,
@@ -43,7 +45,9 @@ struct BindingInfo {
 
 #[derive(Debug, Clone)]
 struct EffectContext {
+    #[allow(dead_code)]
     block_id: NodeId,
+    #[allow(dead_code)]
     permissions: EffectPermissions,
 }
 
