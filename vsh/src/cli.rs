@@ -42,10 +42,11 @@ pub enum Command {
         /// The XS file to run
         file: PathBuf,
     },
-    /// Run tests in a file
+    /// Run tests in a file or directory
     Test {
-        /// The XS file containing tests
-        file: PathBuf,
+        /// The XS file or directory containing tests (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
         /// Run all tests including those marked as ignored
         #[arg(long)]
         all: bool,
@@ -443,27 +444,77 @@ pub fn run_cli_with_args(args: Args) -> Result<()> {
         }
 
         Command::Test {
-            file,
+            path,
             all: _all,
             verbose,
         } => {
-            let source = fs::read_to_string(&file)
-                .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-            match parse(&source) {
-                Ok(_expr) => {
-                    let mut suite = TestSuite::new(verbose);
-                    suite.load_test_file(&file)?;
-                    let summary = suite.run_all();
-
-                    if summary.failed > 0 {
-                        std::process::exit(1);
+            use walkdir::WalkDir;
+            
+            let mut suite = TestSuite::new(verbose);
+            let mut total_files = 0;
+            let mut error_files = 0;
+            
+            // Check if path is a file or directory
+            if path.is_file() {
+                // Single file test
+                if path.extension().and_then(|s| s.to_str()) == Some("vibe") {
+                    match suite.load_test_file(&path) {
+                        Ok(tests_found) => {
+                            if tests_found > 0 {
+                                total_files += 1;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("{}: {}: {}", "Error".red(), path.display(), e);
+                            error_files += 1;
+                        }
                     }
                 }
-                Err(e) => {
-                    eprintln!("{}: {}", "Parse error".red(), e);
-                    std::process::exit(1);
+            } else if path.is_dir() {
+                // Directory scan - find all .vibe files
+                for entry in WalkDir::new(&path)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("vibe") {
+                        match suite.load_test_file(path) {
+                            Ok(tests_found) => {
+                                if tests_found > 0 {
+                                    total_files += 1;
+                                    if verbose {
+                                        println!("Found {} tests in {}", tests_found, path.display());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("{}: {}: {}", "Error".red(), path.display(), e);
+                                error_files += 1;
+                            }
+                        }
+                    }
                 }
+            } else {
+                eprintln!("{}: Path does not exist: {}", "Error".red(), path.display());
+                std::process::exit(1);
+            }
+            
+            // Run all collected tests
+            if suite.total_tests() == 0 {
+                println!("No tests found in {}", path.display());
+                return Ok(());
+            }
+            
+            println!("\nRunning {} tests from {} files...", suite.total_tests(), total_files);
+            let summary = suite.run_all();
+            
+            if error_files > 0 {
+                eprintln!("\n{} {} files had errors", "Warning:".yellow(), error_files);
+            }
+
+            if summary.failed > 0 {
+                std::process::exit(1);
             }
         }
 

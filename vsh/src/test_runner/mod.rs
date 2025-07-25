@@ -98,6 +98,11 @@ impl TestSuite {
             verbose,
         }
     }
+    
+    /// Get total number of tests
+    pub fn total_tests(&self) -> usize {
+        self.tests.len() + self.in_source_tests.len()
+    }
 
     /// Load tests from a directory
     pub fn load_from_directory(&mut self, dir: &Path) -> Result<()> {
@@ -110,8 +115,9 @@ impl TestSuite {
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("vibe") {
-                if let Err(e) = self.load_test_file(&path) {
-                    eprintln!("Warning: Failed to load {}: {}", path.display(), e);
+                match self.load_test_file(&path) {
+                    Ok(_) => {},
+                    Err(e) => eprintln!("Warning: Failed to load {}: {}", path.display(), e),
                 }
             }
         }
@@ -120,7 +126,8 @@ impl TestSuite {
     }
 
     /// Load a single test file and extract in-source tests
-    pub fn load_test_file(&mut self, path: &Path) -> Result<()> {
+    /// Returns the number of tests found
+    pub fn load_test_file(&mut self, path: &Path) -> Result<usize> {
         let source = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
 
@@ -138,10 +145,10 @@ impl TestSuite {
 
         // Extract in-source tests
         let in_source_tests = self.extract_in_source_tests(&expr);
-        let has_in_source_tests = !in_source_tests.is_empty();
+        let num_in_source_tests = in_source_tests.len();
         
-        if self.verbose && has_in_source_tests {
-            println!("Found {} in-source tests in {}", in_source_tests.len(), path.display());
+        if self.verbose && num_in_source_tests > 0 {
+            println!("Found {} in-source tests in {}", num_in_source_tests, path.display());
         }
         
         for test in in_source_tests {
@@ -149,7 +156,8 @@ impl TestSuite {
         }
 
         // Only add as traditional test if no in-source tests were found
-        if !has_in_source_tests {
+        let mut num_traditional_tests = 0;
+        if num_in_source_tests == 0 {
             // Check for traditional test files with # expect: comments
             let expected = self.extract_expected_from_source(&source);
             if expected.is_some() {
@@ -160,10 +168,11 @@ impl TestSuite {
                     expected,
                 };
                 self.tests.push(test_case);
+                num_traditional_tests = 1;
             }
         }
 
-        Ok(())
+        Ok(num_in_source_tests + num_traditional_tests)
     }
 
     /// Extract in-source tests from an expression

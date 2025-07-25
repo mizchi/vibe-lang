@@ -45,10 +45,11 @@ enum Command {
         file: PathBuf,
     },
 
-    /// Run tests in a file
+    /// Run tests in a file or directory
     Test {
-        /// The XS file containing tests
-        file: PathBuf,
+        /// The XS file or directory containing tests (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
         /// Run all tests including those marked as ignored
         #[arg(long)]
         all: bool,
@@ -103,7 +104,7 @@ fn main() -> Result<()> {
                 Command::Parse { file } => cli::Command::Parse { file },
                 Command::Check { path, verbose } => cli::Command::Check { path, verbose },
                 Command::Exec { file } => cli::Command::Run { file },
-                Command::Test { file, all, verbose } => cli::Command::Test { file, all, verbose },
+                Command::Test { path, all, verbose } => cli::Command::Test { path, all, verbose },
                 Command::Bench { file, iterations, incremental, wasm } => cli::Command::Bench { file, iterations, incremental, wasm },
                 Command::Component { command } => cli::Command::Component { command },
                 Command::Codebase { command } => cli::Command::Codebase { command },
