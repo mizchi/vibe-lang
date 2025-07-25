@@ -5,7 +5,7 @@ use colored::Colorize;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vibe_workspace::{
+use vibe_codebase::{
     database::{XsDatabaseImpl, SourcePrograms, CompilerQueries},
     wasm_queries_simple::{WasmCache, generate_wasm_direct},
 };

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vibe_compiler::{TypeChecker, TypeEnv};
 use vibe_core::{parser, Expr};
-use vibe_workspace::{
+use vibe_codebase::{
     database::{XsDatabaseImpl, SourcePrograms, CompilerQueries},
     incremental_type_checker::{IncrementalTypeChecker, TypeCheckBatch},
     namespace::{NamespaceStore, DefinitionPath},

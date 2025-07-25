@@ -265,6 +265,7 @@ fn error_tests() -> Vec<TestCase> {
 }
 
 /// Load and evaluate existing test files
+#[allow(dead_code)]
 fn load_test_file(_shell: &mut ShellState, path: &str) -> Vec<TestCase> {
     let mut cases = Vec::new();
 

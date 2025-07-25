@@ -4,18 +4,18 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use vibe_codebase::hash::DefinitionHash;
+use vibe_codebase::namespace::{
+    DefinitionContent, DefinitionPath, NamespaceCommand, NamespacePath, NamespaceStore,
+};
+use vibe_codebase::unified_parser::{parse_unified_with_mode, SyntaxMode};
+use vibe_codebase::{CodebaseManager, EditSession, ExpressionId};
 use vibe_compiler::{TypeChecker, TypeEnv};
 use vibe_core::pretty_print::pretty_print;
 use vibe_core::type_annotator::embed_type_annotations;
 use vibe_core::Ident;
 use vibe_core::{DoStatement, Expr, Type, Value};
 use vibe_runtime::Interpreter;
-use vibe_workspace::hash::DefinitionHash;
-use vibe_workspace::namespace::{
-    DefinitionContent, DefinitionPath, NamespaceCommand, NamespacePath, NamespaceStore,
-};
-use vibe_workspace::unified_parser::{parse_unified_with_mode, SyntaxMode};
-use vibe_workspace::{CodebaseManager, EditSession, ExpressionId};
 
 use crate::commands;
 use crate::search_patterns::{expr_contains_pattern, parse_type_pattern, AstPattern};
@@ -43,7 +43,7 @@ pub struct ShellState {
     expr_history: Vec<ExpressionHistory>,
     pub(crate) named_exprs: HashMap<String, String>, // name -> hash
     #[allow(dead_code)]
-    salsa_db: vibe_workspace::database::XsDatabaseImpl,
+    salsa_db: vibe_codebase::database::XsDatabaseImpl,
     syntax_mode: SyntaxMode,
     namespace_store: NamespaceStore,
 }
@@ -213,7 +213,6 @@ impl ShellState {
         let main_branch = codebase.create_branch("main".to_string())?;
         let session = EditSession::new(main_branch.hash.clone());
 
-
         let mut shell_state = Self {
             codebase,
             current_branch: "main".to_string(),
@@ -224,7 +223,7 @@ impl ShellState {
             runtime_env: HashMap::new(),
             expr_history: Vec::new(),
             named_exprs: HashMap::new(),
-            salsa_db: vibe_workspace::database::XsDatabaseImpl::new(),
+            salsa_db: vibe_codebase::database::XsDatabaseImpl::new(),
             syntax_mode: SyntaxMode::Auto,
             namespace_store: NamespaceStore::new(),
         };
@@ -335,7 +334,7 @@ impl ShellState {
 
         // Save to history and Salsa DB
         let hash = self.codebase.hash_expr(&expr);
-        let _hash_obj = vibe_workspace::Hash::from_hex(&hash)?;
+        let _hash_obj = vibe_codebase::Hash::from_hex(&hash)?;
 
         self.expr_history.push(ExpressionHistory {
             hash: hash.clone(),
@@ -382,7 +381,7 @@ impl ShellState {
 
                 // Save the complete annotated let expression
                 let expr_hash = self.codebase.hash_expr(&annotated_expr);
-                let _expr_hash_obj = vibe_workspace::Hash::from_hex(&expr_hash)?;
+                let _expr_hash_obj = vibe_codebase::Hash::from_hex(&expr_hash)?;
 
                 self.expr_history.push(ExpressionHistory {
                     hash: expr_hash.clone(),
@@ -513,7 +512,7 @@ impl ShellState {
 
                 // Save the complete annotated rec expression
                 let expr_hash = self.codebase.hash_expr(&annotated_expr);
-                let _expr_hash_obj = vibe_workspace::Hash::from_hex(&expr_hash)?;
+                let _expr_hash_obj = vibe_codebase::Hash::from_hex(&expr_hash)?;
 
                 self.expr_history.push(ExpressionHistory {
                     hash: expr_hash.clone(),
@@ -576,7 +575,7 @@ impl ShellState {
     }
 
     pub fn load_vbin(&mut self, path: &PathBuf) -> Result<()> {
-        use vibe_workspace::vbin::VBinStorage;
+        use vibe_codebase::vbin::VBinStorage;
 
         let mut storage = VBinStorage::new(path.to_string_lossy().to_string());
         let loaded_codebase = storage
@@ -624,8 +623,8 @@ impl ShellState {
     }
 
     pub fn save_vbin(&self, path: &PathBuf) -> Result<()> {
-        use vibe_workspace::vbin::VBinStorage;
-        use vibe_workspace::Codebase;
+        use vibe_codebase::vbin::VBinStorage;
+        use vibe_codebase::Codebase;
 
         // Create a new codebase to save
         let mut codebase = Codebase::new();
@@ -634,7 +633,7 @@ impl ShellState {
         for (name, hash) in &self.named_exprs {
             if let Some(entry) = self.expr_history.iter().find(|h| &h.hash == hash) {
                 // Skip if it's already been saved (check by hash)
-                let hash_obj = vibe_workspace::Hash::from_hex(hash)?;
+                let hash_obj = vibe_codebase::Hash::from_hex(hash)?;
                 if codebase.get_term(&hash_obj).is_some() {
                     continue;
                 }
@@ -924,8 +923,8 @@ impl ShellState {
 
     pub fn execute_pipeline(&self, commands: &[String]) -> Result<String> {
         use chrono::Utc;
-        use vibe_workspace::pipeline::parse_pipeline_operator;
-        use vibe_workspace::structured_data::{
+        use vibe_codebase::pipeline::parse_pipeline_operator;
+        use vibe_codebase::structured_data::{
             format_structured_data, DefinitionData, DefinitionKind, DefinitionMetadata,
             StructuredData,
         };
@@ -948,14 +947,14 @@ impl ShellState {
 
                     let def = DefinitionData {
                         name: name.clone(),
-                        path: vibe_workspace::namespace::DefinitionPath::from_str(name)
+                        path: vibe_codebase::namespace::DefinitionPath::from_str(name)
                             .unwrap_or_else(|| {
-                                vibe_workspace::namespace::DefinitionPath::new(
-                                    vibe_workspace::namespace::NamespacePath::root(),
+                                vibe_codebase::namespace::DefinitionPath::new(
+                                    vibe_codebase::namespace::NamespacePath::root(),
                                     name.clone(),
                                 )
                             }),
-                        hash: vibe_workspace::hash::DefinitionHash([0; 32]), // Simplified
+                        hash: vibe_codebase::hash::DefinitionHash([0; 32]), // Simplified
                         type_signature: format!("{}", entry.ty),
                         kind,
                         dependencies: vec![],
@@ -990,14 +989,14 @@ impl ShellState {
 
                             let def = DefinitionData {
                                 name: name.to_string(),
-                                path: vibe_workspace::namespace::DefinitionPath::from_str(name)
+                                path: vibe_codebase::namespace::DefinitionPath::from_str(name)
                                     .unwrap_or_else(|| {
-                                        vibe_workspace::namespace::DefinitionPath::new(
-                                            vibe_workspace::namespace::NamespacePath::root(),
+                                        vibe_codebase::namespace::DefinitionPath::new(
+                                            vibe_codebase::namespace::NamespacePath::root(),
                                             name.to_string(),
                                         )
                                     }),
-                                hash: vibe_workspace::hash::DefinitionHash([0; 32]),
+                                hash: vibe_codebase::hash::DefinitionHash([0; 32]),
                                 type_signature: format!("{}", entry.ty),
                                 kind,
                                 dependencies: vec![],
@@ -1085,7 +1084,7 @@ impl ShellState {
     }
 
     /// Extract dependencies from an expression
-    fn extract_dependencies(&self, expr: &Expr) -> std::collections::HashSet<vibe_workspace::Hash> {
+    fn extract_dependencies(&self, expr: &Expr) -> std::collections::HashSet<vibe_codebase::Hash> {
         use std::collections::HashSet;
         let mut deps = HashSet::new();
         self.extract_deps_recursive(expr, &mut deps);
@@ -1095,13 +1094,13 @@ impl ShellState {
     fn extract_deps_recursive(
         &self,
         expr: &Expr,
-        deps: &mut std::collections::HashSet<vibe_workspace::Hash>,
+        deps: &mut std::collections::HashSet<vibe_codebase::Hash>,
     ) {
         match expr {
             Expr::Ident(name, _) => {
                 // Check if this identifier refers to a named expression
                 if let Some(hash_str) = self.named_exprs.get(&name.0) {
-                    if let Ok(hash) = vibe_workspace::Hash::from_hex(hash_str) {
+                    if let Ok(hash) = vibe_codebase::Hash::from_hex(hash_str) {
                         deps.insert(hash);
                     }
                 }
@@ -1312,11 +1311,17 @@ pub fn run_repl() -> Result<()> {
                             }
 
                             Command::DeadCode => {
-                                println!("{}: Dead code analysis is no longer available.", "Info".yellow());
+                                println!(
+                                    "{}: Dead code analysis is no longer available.",
+                                    "Info".yellow()
+                                );
                             }
 
                             Command::Reachable(_namespaces) => {
-                                println!("{}: Reachability analysis is no longer available.", "Info".yellow());
+                                println!(
+                                    "{}: Reachability analysis is no longer available.",
+                                    "Info".yellow()
+                                );
                             }
 
                             Command::Namespace(None) => {

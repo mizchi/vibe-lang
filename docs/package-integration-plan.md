@@ -1,4 +1,4 @@
-# vibe-package と vpm の vibe-workspace への統合計画
+# vibe-package と vpm の vibe-codebase への統合計画
 
 ## 現状分析
 
@@ -14,7 +14,7 @@
 - CLIツール（vibe-packageを使用）
 - コマンド: init, install, publish, search, info, list, clear, update
 
-### vibe-workspace
+### vibe-codebase
 - コードベース管理（content-addressed storage）
 - インクリメンタルコンパイル
 - テスト実行とキャッシュ
@@ -24,10 +24,10 @@
 ## 統合方針
 
 ### 1. モジュール統合
-vibe-packageのモジュールをvibe-workspaceに移動：
+vibe-packageのモジュールをvibe-codebaseに移動：
 
 ```
-vibe-workspace/src/
+vibe-codebase/src/
   # 既存のモジュール
   codebase.rs
   vbin.rs
@@ -81,7 +81,7 @@ vsh pkg publish
 ### 4. 実装手順
 
 1. **Phase 1: モジュール移動**
-   - vibe-packageのソースをvibe-workspace/src/packageに移動
+   - vibe-packageのソースをvibe-codebase/src/packageに移動
    - 依存関係の調整
    - テストの移行
 

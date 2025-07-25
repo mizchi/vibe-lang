@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use colored::*;
 use std::path::Path;
-use vibe_workspace::package::{
+use vibe_codebase::package::{
     cache::PackageCache,
     manifest::PackageManifest,
     hash::calculate_package_hash,

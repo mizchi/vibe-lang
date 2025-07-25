@@ -1,8 +1,8 @@
 //! Tests for dead code detection functionality
 
 use std::collections::HashSet;
-use vibe_workspace::code_repository::CodeRepository;
-use vibe_workspace::{Hash, Term};
+use vibe_codebase::code_repository::CodeRepository;
+use vibe_codebase::{Hash, Term};
 
 /// Create a complex dependency graph for testing
 fn setup_complex_codebase(repo: &mut CodeRepository) {

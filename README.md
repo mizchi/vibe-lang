@@ -70,7 +70,7 @@ let greet name = perform IO.print ("Hello, " ++ name)
 - `vibe-core/` - Core language definitions (AST, types, parser)
 - `vibe-compiler/` - Type checker, effect inference, WebAssembly codegen
 - `vibe-runtime/` - Interpreter and runtime system
-- `vibe-workspace/` - Content-addressed storage and namespace management
+- `vibe-codebase/` - Content-addressed storage and namespace management
 - `vsh/` - Vibe Shell (REPL, CLI, LSP, MCP, test runner)
 
 ## Standard Library

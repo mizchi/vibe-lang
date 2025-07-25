@@ -200,8 +200,8 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
 
     // Create a temporary workspace to demonstrate search
     // In a real implementation, this would use an existing workspace
-    use vibe_workspace::code_query::{AstNodeType, AstPattern, CodeQuery, TypePattern};
-    use vibe_workspace::namespace::DefinitionPath;
+    use vibe_codebase::code_query::{AstNodeType, AstPattern, CodeQuery, TypePattern};
+    use vibe_codebase::namespace::DefinitionPath;
 
     let _query = match args.query_type.as_str() {
         "type_pattern" => {
@@ -237,14 +237,14 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
 
             let path = DefinitionPath {
                 namespace: if parts.len() > 1 {
-                    vibe_workspace::namespace::NamespacePath(
+                    vibe_codebase::namespace::NamespacePath(
                         parts[..parts.len() - 1]
                             .iter()
                             .map(|s| s.to_string())
                             .collect(),
                     )
                 } else {
-                    vibe_workspace::namespace::NamespacePath(vec![])
+                    vibe_codebase::namespace::NamespacePath(vec![])
                 },
                 name: parts.last().unwrap().to_string(),
             };

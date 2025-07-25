@@ -17,7 +17,7 @@ use vibe_compiler::{TypeChecker, TypeEnv};
 use vibe_core::parser::parse;
 use vibe_core::{Expr, Ident, Value, XsError};
 use vibe_runtime::Interpreter;
-use vibe_workspace::{Codebase, Hash, TestCache, TestOutcome};
+use vibe_codebase::{Codebase, Hash, TestCache, TestOutcome};
 
 #[derive(Debug, Clone, Error)]
 pub enum TestError {

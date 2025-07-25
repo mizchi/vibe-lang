@@ -34,7 +34,7 @@
   - 相対パス foo/bar.vibe の xxx に対して import ./foo/bar (xxx, yyy)
   - 基本的には関数一つが保存されるとする
   - wasm component model と統合するときのインターフェースを考慮しておく
-- [ ] vibe-workspace
+- [ ] vibe-codebase
   - ucm を参考にコード操作体系を設計する
   - AST に Typed IR として推論結果を保持して、検索時はそれを参考にする
 

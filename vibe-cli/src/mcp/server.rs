@@ -19,7 +19,7 @@ pub struct McpServerState {
     /// Server version
     pub version: String,
     /// Workspace manager (if initialized)
-    pub workspace: Option<vibe_workspace::CodebaseManager>,
+    pub workspace: Option<vibe_codebase::CodebaseManager>,
 }
 
 /// MCP Server

@@ -131,7 +131,7 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
     use vibe_compiler::type_check;
     use vibe_core::parser::parse;
     use vibe_runtime::Interpreter;
-    use vibe_workspace::Codebase;
+    use vibe_codebase::Codebase;
 
     // Parse the expression
     let parsed = parse(expr)?;
@@ -146,7 +146,7 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
     // Load index.vibes if it exists to populate the environment
     let index_path = PathBuf::from("index.vibes");
     let mut codebase = if index_path.exists() {
-        use vibe_workspace::vbin::VBinStorage;
+        use vibe_codebase::vbin::VBinStorage;
         let mut storage = VBinStorage::new(index_path.to_string_lossy().to_string());
         match storage.load_full() {
             Ok(cb) => {
@@ -185,7 +185,7 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
         match codebase.add_term(Some(name.clone()), parsed.clone(), ty.clone()) {
             Ok(hash) => {
                 // Save the updated codebase
-                use vibe_workspace::vbin::VBinStorage;
+                use vibe_codebase::vbin::VBinStorage;
                 let mut storage = VBinStorage::new(index_path.to_string_lossy().to_string());
                 if let Err(e) = storage.save_full(&mut codebase) {
                     eprintln!("Warning: Failed to save to index.vibes: {}", e);

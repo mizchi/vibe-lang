@@ -11,8 +11,8 @@ use vibe_compiler::type_check;
 use vibe_core::parser::parse;
 use vibe_core::pretty_print::pretty_print;
 use vibe_core::{Type, Value};
-use vibe_workspace::vbin::VBinStorage;
-use vibe_workspace::{Codebase, Hash};
+use vibe_codebase::vbin::VBinStorage;
+use vibe_codebase::{Codebase, Hash};
 
 #[derive(Parser)]
 #[command(name = "xsc")]
@@ -948,7 +948,7 @@ fn handle_codebase_command(command: CodebaseCommand) -> Result<()> {
             fail_fast,
             verbosity,
         } => {
-            use vibe_workspace::{
+            use vibe_codebase::{
                 TestCache, TestGenConfig, TestGenerator, TestRunConfig, TestRunner, TestStats,
             };
 
@@ -968,11 +968,11 @@ fn handle_codebase_command(command: CodebaseCommand) -> Result<()> {
                 println!("  Total cached results: {}", results.len());
                 let passed = results
                     .iter()
-                    .filter(|r| matches!(r.result, vibe_workspace::TestOutcome::Passed { .. }))
+                    .filter(|r| matches!(r.result, vibe_codebase::TestOutcome::Passed { .. }))
                     .count();
                 let failed = results
                     .iter()
-                    .filter(|r| matches!(r.result, vibe_workspace::TestOutcome::Failed { .. }))
+                    .filter(|r| matches!(r.result, vibe_codebase::TestOutcome::Failed { .. }))
                     .count();
                 println!("  Passed: {}", passed);
                 println!("  Failed: {}", failed);
@@ -1024,10 +1024,10 @@ fn handle_codebase_command(command: CodebaseCommand) -> Result<()> {
             if verbosity > 0 {
                 for result in &results {
                     let status = match &result.outcome {
-                        vibe_workspace::TestOutcome::Passed { .. } => "PASS".green(),
-                        vibe_workspace::TestOutcome::Failed { .. } => "FAIL".red(),
-                        vibe_workspace::TestOutcome::Timeout => "TIMEOUT".yellow(),
-                        vibe_workspace::TestOutcome::Skipped { .. } => "SKIP".blue(),
+                        vibe_codebase::TestOutcome::Passed { .. } => "PASS".green(),
+                        vibe_codebase::TestOutcome::Failed { .. } => "FAIL".red(),
+                        vibe_codebase::TestOutcome::Timeout => "TIMEOUT".yellow(),
+                        vibe_codebase::TestOutcome::Skipped { .. } => "SKIP".blue(),
                     };
 
                     let cache_marker = if result.from_cache { " (cached)" } else { "" };
@@ -1038,10 +1038,10 @@ fn handle_codebase_command(command: CodebaseCommand) -> Result<()> {
 
                     if verbosity > 1 {
                         match &result.outcome {
-                            vibe_workspace::TestOutcome::Failed { error } => {
+                            vibe_codebase::TestOutcome::Failed { error } => {
                                 println!("  Error: {}", error.red());
                             }
-                            vibe_workspace::TestOutcome::Passed { value } => {
+                            vibe_codebase::TestOutcome::Passed { value } => {
                                 println!("  Result: {}", value);
                             }
                             _ => {}

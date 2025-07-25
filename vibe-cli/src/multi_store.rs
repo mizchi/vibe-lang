@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::path::Path;
 use vibe_compiler::type_check;
 use vibe_core::{parser::parse, Expr};
-use vibe_workspace::Codebase;
+use vibe_codebase::Codebase;
 
 /// Extract individual definitions from a parsed expression
 pub fn extract_definitions(expr: &Expr) -> Vec<(String, Expr)> {
