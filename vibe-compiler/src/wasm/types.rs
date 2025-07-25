@@ -1,7 +1,7 @@
 //! Type conversion between XS types and WebAssembly GC types
 
 use super::{CodeGenError, WasmType};
-use vibe_core::Type;
+use vibe_language::Type;
 
 /// Convert XS type to WebAssembly type
 pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {

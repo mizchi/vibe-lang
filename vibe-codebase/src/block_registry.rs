@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use vibe_core::block_attributes::{BlockAttributeRegistry, BlockAttributes};
-use vibe_core::metadata::NodeId;
+use vibe_language::block_attributes::{BlockAttributeRegistry, BlockAttributes};
+use vibe_language::metadata::NodeId;
 
 /// Block registry that integrates with the codebase
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +68,7 @@ pub trait CodebaseWithBlockAttributes {
     fn analyze_and_store(
         &mut self,
         expr_hash: String,
-        expr: &vibe_core::Expr,
+        expr: &vibe_language::Expr,
     ) -> Result<(), String>;
 
     /// Get block attributes for an expression
@@ -78,7 +78,7 @@ pub trait CodebaseWithBlockAttributes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::block_attributes::EffectPermissions;
+    use vibe_language::block_attributes::EffectPermissions;
 
     #[test]
     fn test_block_registry_storage() {

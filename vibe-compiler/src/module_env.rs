@@ -3,8 +3,8 @@
 use crate::TypeScheme;
 use std::collections::HashMap;
 #[cfg(test)]
-use vibe_core::Type;
-use vibe_core::TypeDefinition;
+use vibe_language::Type;
+use vibe_language::TypeDefinition;
 
 /// Information about an exported item from a module
 #[derive(Debug, Clone)]
@@ -65,7 +65,7 @@ impl ModuleEnv {
     }
 
     fn register_builtin_modules(&mut self) {
-        use vibe_core::builtin_modules::BuiltinModuleRegistry;
+        use vibe_language::builtin_modules::BuiltinModuleRegistry;
 
         let registry = BuiltinModuleRegistry::new();
 

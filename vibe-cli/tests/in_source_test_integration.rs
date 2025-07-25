@@ -4,10 +4,10 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
 
-    /// Helper to run vsh test command and capture output
+    /// Helper to run vibe test command and capture output
     fn run_vsh_test(test_file: &Path) -> Result<(String, i32), std::io::Error> {
         let output = std::process::Command::new("cargo")
-            .args(&["run", "-p", "vsh", "--bin", "vsh", "--", "test", test_file.to_str().unwrap()])
+            .args(&["run", "-p", "vibe-cli", "--bin", "vibe", "--", "test", test_file.to_str().unwrap()])
             .output()?;
         
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();

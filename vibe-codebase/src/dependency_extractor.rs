@@ -6,7 +6,7 @@
 use crate::hash::DefinitionHash;
 use crate::namespace::{DefinitionPath, NamespacePath, NamespaceStore};
 use std::collections::HashSet;
-use vibe_core::{DoStatement, Expr, Ident, Pattern};
+use vibe_language::{DoStatement, Expr, Ident, Pattern};
 
 /// Context for dependency extraction
 pub struct DependencyExtractor<'a> {
@@ -33,15 +33,15 @@ impl<'a> DependencyExtractor<'a> {
     }
 
     /// Extract dependencies from a type
-    pub fn extract_from_type(&mut self, typ: &vibe_core::Type) -> HashSet<DefinitionHash> {
+    pub fn extract_from_type(&mut self, typ: &vibe_language::Type) -> HashSet<DefinitionHash> {
         let mut dependencies = HashSet::new();
         self.visit_type(typ, &mut dependencies);
         dependencies
     }
 
     /// Visit a type and extract dependencies
-    fn visit_type(&mut self, typ: &vibe_core::Type, deps: &mut HashSet<DefinitionHash>) {
-        use vibe_core::Type;
+    fn visit_type(&mut self, typ: &vibe_language::Type, deps: &mut HashSet<DefinitionHash>) {
+        use vibe_language::Type;
         match typ {
             Type::UserDefined { name, type_params } => {
                 // User-defined types are dependencies
@@ -518,7 +518,7 @@ impl<'a> DependencyExtractor<'a> {
 mod tests {
     use super::*;
     use crate::namespace::{DefinitionContent, NamespaceStore};
-    use vibe_core::{Literal, Span, Type};
+    use vibe_language::{Literal, Span, Type};
 
     #[test]
     fn test_extract_simple_dependency() {

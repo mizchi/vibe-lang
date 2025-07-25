@@ -3,7 +3,7 @@
 //! Converts shell-style syntax (including pipelines) to XS S-expressions,
 //! allowing unified AST handling for both traditional XS code and shell commands.
 
-use vibe_core::{Expr, Ident, Literal, Span};
+use vibe_language::{Expr, Ident, Literal, Span};
 
 /// Shell expression that can be converted to S-expression
 #[derive(Debug, Clone)]

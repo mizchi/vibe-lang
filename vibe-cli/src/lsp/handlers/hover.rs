@@ -3,7 +3,7 @@ use tower_lsp::lsp_types::*;
 use tracing::debug;
 
 use crate::lsp::backend::XSLanguageServer;
-use vibe_core::parser;
+use vibe_language::parser;
 
 pub async fn handle_hover(server: &XSLanguageServer, params: HoverParams) -> Result<Option<Hover>> {
     let uri = &params.text_document_position_params.text_document.uri;

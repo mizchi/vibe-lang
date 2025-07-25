@@ -11,7 +11,7 @@ use crate::namespace::{
 };
 use std::collections::HashSet;
 use std::sync::Arc;
-use vibe_core::{Expr, Pattern, Type, XsError};
+use vibe_language::{Expr, Pattern, Type, XsError};
 
 /// Query engine for executing searches
 pub struct QueryEngine {

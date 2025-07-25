@@ -133,8 +133,8 @@ impl ComponentBuilder {
 }
 
 /// Convert XS type to WIT type
-pub fn xs_type_to_wit(xs_type: &vibe_core::Type) -> WitType {
-    use vibe_core::Type;
+pub fn xs_type_to_wit(xs_type: &vibe_language::Type) -> WitType {
+    use vibe_language::Type;
 
     match xs_type {
         Type::Int => WitType::S64,
@@ -156,7 +156,7 @@ pub fn xs_type_to_wit(xs_type: &vibe_core::Type) -> WitType {
 /// Generate WIT interface from XS module exports
 pub fn generate_wit_interface(
     _module_name: &str,
-    exports: &[(String, vibe_core::Type)],
+    exports: &[(String, vibe_language::Type)],
 ) -> InterfaceDefinition {
     let mut functions = Vec::new();
 
@@ -180,8 +180,8 @@ pub fn generate_wit_interface(
 type FunctionSignatureTuple = (Vec<(String, WitType)>, Vec<WitType>);
 
 /// Extract function signature from XS type, handling curried functions
-fn extract_function_signature(typ: &vibe_core::Type) -> Option<FunctionSignatureTuple> {
-    use vibe_core::Type;
+fn extract_function_signature(typ: &vibe_language::Type) -> Option<FunctionSignatureTuple> {
+    use vibe_language::Type;
 
     let mut params = Vec::new();
     let mut current_type = typ;

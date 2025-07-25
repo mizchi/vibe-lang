@@ -4,7 +4,7 @@
 
 use sha2::{Digest, Sha256};
 use std::fmt;
-use vibe_core::{DoStatement, Expr, Literal, Pattern, Type};
+use vibe_language::{DoStatement, Expr, Literal, Pattern, Type};
 
 /// A hash identifying a definition by its content
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -613,7 +613,7 @@ mod tests {
     #[test]
     fn test_deterministic_hashing() {
         let content =
-            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
+            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_language::Span::new(0, 0)));
         let ty = Type::Int;
 
         let hash1 = DefinitionHash::compute(&content, &ty);
@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn test_hash_hex_conversion() {
         let content =
-            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
+            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_language::Span::new(0, 0)));
         let ty = Type::Int;
 
         let hash = DefinitionHash::compute(&content, &ty);
@@ -638,9 +638,9 @@ mod tests {
     #[test]
     fn test_different_content_different_hash() {
         let content1 =
-            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_core::Span::new(0, 0)));
+            DefinitionContent::Value(Expr::Literal(Literal::Int(42), vibe_language::Span::new(0, 0)));
         let content2 =
-            DefinitionContent::Value(Expr::Literal(Literal::Int(43), vibe_core::Span::new(0, 0)));
+            DefinitionContent::Value(Expr::Literal(Literal::Int(43), vibe_language::Span::new(0, 0)));
         let ty = Type::Int;
 
         let hash1 = DefinitionHash::compute(&content1, &ty);

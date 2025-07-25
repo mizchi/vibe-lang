@@ -12,8 +12,8 @@ fn setup_complex_codebase(repo: &mut CodeRepository) {
     let util_term = Term {
         hash: util_hash.clone(),
         name: Some("Core.util".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: HashSet::new(),
     };
     repo.store_term(&util_term, &HashSet::new()).unwrap();
@@ -26,8 +26,8 @@ fn setup_complex_codebase(repo: &mut CodeRepository) {
     let main_term = Term {
         hash: main_hash.clone(),
         name: Some("Main.entry".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(2), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(2), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: main_deps.clone(),
     };
     repo.store_term(&main_term, &main_deps).unwrap();
@@ -40,8 +40,8 @@ fn setup_complex_codebase(repo: &mut CodeRepository) {
     let helper_term = Term {
         hash: helper_hash.clone(),
         name: Some("Helper.process".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(3), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(3), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: helper_deps.clone(),
     };
     repo.store_term(&helper_term, &helper_deps).unwrap();
@@ -51,8 +51,8 @@ fn setup_complex_codebase(repo: &mut CodeRepository) {
     let main_term_updated = Term {
         hash: main_hash.clone(),
         name: Some("Main.entry".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(2), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(2), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: main_deps.clone(),
     };
     repo.store_term(&main_term_updated, &main_deps).unwrap();
@@ -63,8 +63,8 @@ fn setup_complex_codebase(repo: &mut CodeRepository) {
     let dead1_term = Term {
         hash: dead1_hash.clone(),
         name: Some("Dead.function1".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(4), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(4), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: HashSet::new(),
     };
     repo.store_term(&dead1_term, &HashSet::new()).unwrap();
@@ -77,8 +77,8 @@ fn setup_complex_codebase(repo: &mut CodeRepository) {
     let dead2_term = Term {
         hash: dead2_hash.clone(),
         name: Some("Dead.function2".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(5), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(5), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: dead2_deps.clone(),
     };
     repo.store_term(&dead2_term, &dead2_deps).unwrap();
@@ -89,8 +89,8 @@ fn setup_complex_codebase(repo: &mut CodeRepository) {
     let test_term = Term {
         hash: test_hash.clone(),
         name: Some("Test.suite".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(6), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(6), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: HashSet::new(),
     };
     repo.store_term(&test_term, &HashSet::new()).unwrap();
@@ -183,8 +183,8 @@ fn test_circular_dependencies() {
     let a_term = Term {
         hash: a_hash.clone(),
         name: Some("Circular.a".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: HashSet::new(),
     };
     repo.store_term(&a_term, &HashSet::new()).unwrap();
@@ -195,8 +195,8 @@ fn test_circular_dependencies() {
     let b_term = Term {
         hash: b_hash.clone(),
         name: Some("Circular.b".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(2), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(2), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: b_deps.clone(),
     };
     repo.store_term(&b_term, &b_deps).unwrap();
@@ -207,8 +207,8 @@ fn test_circular_dependencies() {
     let c_term = Term {
         hash: c_hash.clone(),
         name: Some("Circular.c".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(3), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(3), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: c_deps.clone(),
     };
     repo.store_term(&c_term, &c_deps).unwrap();
@@ -219,8 +219,8 @@ fn test_circular_dependencies() {
     let a_term_updated = Term {
         hash: a_hash.clone(),
         name: Some("Circular.a".to_string()),
-        expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1)),
-        ty: vibe_core::Type::Int,
+        expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1)),
+        ty: vibe_language::Type::Int,
         dependencies: a_deps_updated.clone(),
     };
     repo.store_term(&a_term_updated, &a_deps_updated).unwrap();

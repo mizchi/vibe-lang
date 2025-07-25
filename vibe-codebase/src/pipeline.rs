@@ -4,7 +4,7 @@
 
 use crate::structured_data::{StructuredData, StructuredValue};
 use std::collections::HashMap;
-use vibe_core::{Span, XsError};
+use vibe_language::{Span, XsError};
 
 /// Pipeline operator that transforms structured data
 pub trait PipelineOperator {

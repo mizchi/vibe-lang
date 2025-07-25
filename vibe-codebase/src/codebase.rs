@@ -11,8 +11,8 @@ use std::path::Path;
 use thiserror::Error;
 
 use vibe_compiler::{TypeChecker, TypeEnv};
-use vibe_core::parser::parse;
-use vibe_core::{Expr, Type};
+use vibe_language::parser::parse;
+use vibe_language::{Expr, Type};
 
 pub use crate::test_cache::{CachedTestRunner, TestCache, TestOutcome, TestResult};
 
@@ -60,7 +60,7 @@ pub struct Term {
 pub struct TypeDef {
     pub hash: Hash,
     pub name: String,
-    pub definition: vibe_core::TypeDefinition,
+    pub definition: vibe_language::TypeDefinition,
 }
 
 /// The structured codebase
@@ -663,7 +663,7 @@ impl<'de> Deserialize<'de> for Codebase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::{Ident, Pattern};
+    use vibe_language::{Ident, Pattern};
 
     #[test]
     fn test_hash_operations() {
@@ -677,7 +677,7 @@ mod tests {
     #[test]
     fn test_codebase_add_term() {
         let mut codebase = Codebase::new();
-        let expr = Expr::Literal(vibe_core::Literal::Int(42), vibe_core::Span::new(0, 2));
+        let expr = Expr::Literal(vibe_language::Literal::Int(42), vibe_language::Span::new(0, 2));
         let ty = Type::Int;
 
         let hash = codebase
@@ -696,7 +696,7 @@ mod tests {
         let mut codebase = Codebase::new();
         let mut patch = Patch::new();
 
-        let expr = Expr::Literal(vibe_core::Literal::Int(42), vibe_core::Span::new(0, 2));
+        let expr = Expr::Literal(vibe_language::Literal::Int(42), vibe_language::Span::new(0, 2));
         let ty = Type::Int;
 
         patch.add_term(Some("x".to_string()), expr, ty);
@@ -710,7 +710,7 @@ mod tests {
         let mut codebase = Codebase::new();
 
         // Add a base function
-        let base_expr = Expr::Literal(vibe_core::Literal::Int(10), vibe_core::Span::new(0, 2));
+        let base_expr = Expr::Literal(vibe_language::Literal::Int(10), vibe_language::Span::new(0, 2));
         let base_hash = codebase
             .add_term(Some("base".to_string()), base_expr, Type::Int)
             .unwrap();
@@ -719,10 +719,10 @@ mod tests {
         let dependent_expr = Expr::Apply {
             func: Box::new(Expr::Ident(
                 Ident("base".to_string()),
-                vibe_core::Span::new(0, 4),
+                vibe_language::Span::new(0, 4),
             )),
             args: vec![],
-            span: vibe_core::Span::new(0, 6),
+            span: vibe_language::Span::new(0, 6),
         };
         let dependent_hash = codebase
             .add_term(Some("dependent".to_string()), dependent_expr, Type::Int)
@@ -743,9 +743,9 @@ mod tests {
             params: vec![(Ident("x".to_string()), Some(Type::Int))],
             body: Box::new(Expr::Ident(
                 Ident("x".to_string()),
-                vibe_core::Span::new(0, 1),
+                vibe_language::Span::new(0, 1),
             )),
-            span: vibe_core::Span::new(0, 10),
+            span: vibe_language::Span::new(0, 10),
         };
         codebase
             .add_term(
@@ -765,7 +765,7 @@ mod tests {
         let mut codebase = Codebase::new();
 
         // Add initial term
-        let expr1 = Expr::Literal(vibe_core::Literal::Int(42), vibe_core::Span::new(0, 2));
+        let expr1 = Expr::Literal(vibe_language::Literal::Int(42), vibe_language::Span::new(0, 2));
         codebase
             .add_term(Some("x".to_string()), expr1, Type::Int)
             .unwrap();
@@ -778,7 +778,7 @@ mod tests {
         // Verify update
         let term = codebase.get_term_by_name("x").unwrap();
         match &term.expr {
-            Expr::Literal(vibe_core::Literal::Int(n), _) => assert_eq!(*n, 100),
+            Expr::Literal(vibe_language::Literal::Int(n), _) => assert_eq!(*n, 100),
             _ => panic!("Expected int literal"),
         }
     }
@@ -788,7 +788,7 @@ mod tests {
         let mut codebase = Codebase::new();
 
         // Add a term
-        let expr = Expr::Literal(vibe_core::Literal::Int(42), vibe_core::Span::new(0, 2));
+        let expr = Expr::Literal(vibe_language::Literal::Int(42), vibe_language::Span::new(0, 2));
         let hash = codebase
             .add_term(Some("x".to_string()), expr, Type::Int)
             .unwrap();
@@ -803,13 +803,13 @@ mod tests {
         let mut codebase = Codebase::new();
 
         // Add base term
-        let base_expr = Expr::Literal(vibe_core::Literal::Int(10), vibe_core::Span::new(0, 2));
+        let base_expr = Expr::Literal(vibe_language::Literal::Int(10), vibe_language::Span::new(0, 2));
         let base_hash = codebase
             .add_term(Some("base".to_string()), base_expr, Type::Int)
             .unwrap();
 
         // Add dependent term
-        let dependent_expr = Expr::Ident(Ident("base".to_string()), vibe_core::Span::new(0, 4));
+        let dependent_expr = Expr::Ident(Ident("base".to_string()), vibe_language::Span::new(0, 4));
         codebase
             .add_term(Some("dependent".to_string()), dependent_expr, Type::Int)
             .unwrap();
@@ -823,7 +823,7 @@ mod tests {
         let mut codebase = Codebase::new();
 
         // Create a chain of dependencies: a -> b -> c
-        let a_expr = Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1));
+        let a_expr = Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1));
         codebase
             .add_term(Some("a".to_string()), a_expr, Type::Int)
             .unwrap();
@@ -831,10 +831,10 @@ mod tests {
         let b_expr = Expr::Apply {
             func: Box::new(Expr::Ident(
                 Ident("a".to_string()),
-                vibe_core::Span::new(0, 1),
+                vibe_language::Span::new(0, 1),
             )),
             args: vec![],
-            span: vibe_core::Span::new(0, 3),
+            span: vibe_language::Span::new(0, 3),
         };
         codebase
             .add_term(Some("b".to_string()), b_expr, Type::Int)
@@ -843,10 +843,10 @@ mod tests {
         let c_expr = Expr::Apply {
             func: Box::new(Expr::Ident(
                 Ident("b".to_string()),
-                vibe_core::Span::new(0, 1),
+                vibe_language::Span::new(0, 1),
             )),
             args: vec![],
-            span: vibe_core::Span::new(0, 3),
+            span: vibe_language::Span::new(0, 3),
         };
         let c_hash = codebase
             .add_term(Some("c".to_string()), c_expr, Type::Int)
@@ -862,12 +862,12 @@ mod tests {
         let mut codebase = Codebase::new();
 
         // Add initial terms
-        let expr1 = Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1));
+        let expr1 = Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1));
         let hash1 = codebase
             .add_term(Some("x".to_string()), expr1.clone(), Type::Int)
             .unwrap();
 
-        let expr2 = Expr::Literal(vibe_core::Literal::Int(2), vibe_core::Span::new(0, 1));
+        let expr2 = Expr::Literal(vibe_language::Literal::Int(2), vibe_language::Span::new(0, 1));
         codebase
             .add_term(Some("y".to_string()), expr2.clone(), Type::Int)
             .unwrap();
@@ -887,7 +887,7 @@ mod tests {
 
         let y_term = codebase.get_term_by_name("y").unwrap();
         match &y_term.expr {
-            Expr::Literal(vibe_core::Literal::Int(n), _) => assert_eq!(*n, 3),
+            Expr::Literal(vibe_language::Literal::Int(n), _) => assert_eq!(*n, 3),
             _ => panic!("Expected int literal"),
         }
     }
@@ -897,7 +897,7 @@ mod tests {
         let mut codebase = Codebase::new();
 
         // Add some terms
-        let expr1 = Expr::Literal(vibe_core::Literal::Int(42), vibe_core::Span::new(0, 2));
+        let expr1 = Expr::Literal(vibe_language::Literal::Int(42), vibe_language::Span::new(0, 2));
         codebase
             .add_term(Some("x".to_string()), expr1, Type::Int)
             .unwrap();
@@ -906,9 +906,9 @@ mod tests {
             params: vec![(Ident("y".to_string()), Some(Type::Int))],
             body: Box::new(Expr::Ident(
                 Ident("y".to_string()),
-                vibe_core::Span::new(0, 1),
+                vibe_language::Span::new(0, 1),
             )),
-            span: vibe_core::Span::new(0, 10),
+            span: vibe_language::Span::new(0, 10),
         };
         codebase
             .add_term(
@@ -941,7 +941,7 @@ mod tests {
         let mut codebase = Codebase::new();
 
         // Add a base term
-        let base_expr = Expr::Literal(vibe_core::Literal::Int(10), vibe_core::Span::new(0, 2));
+        let base_expr = Expr::Literal(vibe_language::Literal::Int(10), vibe_language::Span::new(0, 2));
         codebase
             .add_term(Some("base".to_string()), base_expr, Type::Int)
             .unwrap();
@@ -950,13 +950,13 @@ mod tests {
         let match_expr = Expr::Match {
             expr: Box::new(Expr::Ident(
                 Ident("base".to_string()),
-                vibe_core::Span::new(0, 4),
+                vibe_language::Span::new(0, 4),
             )),
             cases: vec![(
-                Pattern::Literal(vibe_core::Literal::Int(10), vibe_core::Span::new(0, 2)),
-                Expr::Literal(vibe_core::Literal::Bool(true), vibe_core::Span::new(0, 4)),
+                Pattern::Literal(vibe_language::Literal::Int(10), vibe_language::Span::new(0, 2)),
+                Expr::Literal(vibe_language::Literal::Bool(true), vibe_language::Span::new(0, 4)),
             )],
-            span: vibe_core::Span::new(0, 20),
+            span: vibe_language::Span::new(0, 20),
         };
 
         let deps = codebase.extract_dependencies(&match_expr);

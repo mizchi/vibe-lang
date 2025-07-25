@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod tests {
     use crate::effect_inference::{EffectContext, EffectInference};
-    use vibe_core::parser::parse;
-    use vibe_core::{Effect, EffectRow, EffectSet};
+    use vibe_language::parser::parse;
+    use vibe_language::{Effect, EffectRow, EffectSet};
 
     #[test]
     fn test_pure_expressions() {
@@ -110,7 +110,7 @@ mod tests {
 
         // Test extension rows
         let io_set = EffectSet::single(Effect::IO);
-        let var = vibe_core::EffectVar("ρ".to_string());
+        let var = vibe_language::EffectVar("ρ".to_string());
         let ext = EffectRow::Extension(io_set.clone(), var.clone());
 
         // Extension should not be pure

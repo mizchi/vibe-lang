@@ -6,7 +6,7 @@
 use crate::hash::DefinitionHash;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use vibe_core::{Expr, Type, XsError};
+use vibe_language::{Expr, Type, XsError};
 
 /// A path in the namespace hierarchy (e.g., ["Math", "utils", "fibonacci"])
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -269,7 +269,7 @@ impl NamespaceStore {
         // Check if name already exists
         if self.name_index.contains_key(&path) {
             return Err(XsError::RuntimeError(
-                vibe_core::Span::new(0, 0),
+                vibe_language::Span::new(0, 0),
                 format!("Definition '{}' already exists", path.to_string()),
             ));
         }
@@ -370,7 +370,7 @@ impl NamespaceStore {
                 // Get the hash
                 let hash = self.name_index.remove(&from).ok_or_else(|| {
                     XsError::RuntimeError(
-                        vibe_core::Span::new(0, 0),
+                        vibe_language::Span::new(0, 0),
                         format!("Definition '{}' not found", from.to_string()),
                     )
                 })?;
@@ -395,7 +395,7 @@ impl NamespaceStore {
                     .get(&target)
                     .ok_or_else(|| {
                         XsError::RuntimeError(
-                            vibe_core::Span::new(0, 0),
+                            vibe_language::Span::new(0, 0),
                             format!("Definition '{}' not found", target.to_string()),
                         )
                     })?
@@ -515,8 +515,8 @@ mod tests {
 
         let path = DefinitionPath::from_str("Math.fibonacci").unwrap();
         let content = DefinitionContent::Value(Expr::Ident(
-            vibe_core::Ident("test".to_string()),
-            vibe_core::Span::new(0, 4),
+            vibe_language::Ident("test".to_string()),
+            vibe_language::Span::new(0, 4),
         ));
         let type_sig = Type::Int;
 

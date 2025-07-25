@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use vibe_core::{Expr, Ident, Literal, Span, Type};
+    use vibe_language::{Expr, Ident, Literal, Span, Type};
     use vibe_cli::search_patterns::{expr_contains_pattern, parse_type_pattern, AstPattern};
 
     #[test]

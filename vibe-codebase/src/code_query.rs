@@ -5,7 +5,7 @@
 
 use crate::hash::DefinitionHash;
 use crate::namespace::{DefinitionPath, NamespacePath};
-use vibe_core::{Type, XsError};
+use vibe_language::{Type, XsError};
 
 /// Query type for searching code
 #[derive(Debug, Clone)]
@@ -149,7 +149,7 @@ impl QueryBuilder {
     pub fn depends_on(self, target: &str, transitive: bool) -> Result<Self, XsError> {
         let path = DefinitionPath::from_str(target).ok_or_else(|| {
             XsError::RuntimeError(
-                vibe_core::Span::new(0, 0),
+                vibe_language::Span::new(0, 0),
                 format!("Invalid definition path: {target}"),
             )
         })?;
@@ -277,7 +277,7 @@ impl QueryBuilder {
             "String" => Ok(TypePattern::Exact(Type::String)),
             "Bool" => Ok(TypePattern::Exact(Type::Bool)),
             _ => Err(XsError::RuntimeError(
-                vibe_core::Span::new(0, 0),
+                vibe_language::Span::new(0, 0),
                 format!("Unknown type pattern: {pattern}"),
             )),
         }

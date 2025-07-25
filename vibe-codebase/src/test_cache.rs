@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use crate::Hash;
-use vibe_core::Expr;
+use vibe_language::Expr;
 
 /// Test result with metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,7 +295,7 @@ impl<'a> CachedTestRunner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::{Expr, Ident, Literal, Span};
+    use vibe_language::{Expr, Ident, Literal, Span};
 
     #[test]
     fn test_cache_basic() {

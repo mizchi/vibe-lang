@@ -9,7 +9,7 @@ use crate::namespace::{DefinitionContent, DefinitionPath, NamespacePath, Namespa
 use crate::test_cache::TestCache;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use vibe_core::{Expr, Value, XsError};
+use vibe_language::{Expr, Value, XsError};
 
 /// Test outcome
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -226,7 +226,7 @@ impl DifferentialTestRunner {
             .get_definition(test_hash)
             .ok_or_else(|| {
                 XsError::RuntimeError(
-                    vibe_core::Span::new(0, 0),
+                    vibe_language::Span::new(0, 0),
                     format!("Test definition not found: {test_hash}"),
                 )
             })?;
@@ -242,7 +242,7 @@ impl DifferentialTestRunner {
             DefinitionContent::Value(expr) => expr.clone(),
             _ => {
                 return Err(XsError::RuntimeError(
-                    vibe_core::Span::new(0, 0),
+                    vibe_language::Span::new(0, 0),
                     "Test must be a function or value".to_string(),
                 ))
             }
@@ -283,7 +283,7 @@ impl DifferentialTestRunner {
         match value {
             Value::Bool(b) => Ok(b),
             _ => Err(XsError::RuntimeError(
-                vibe_core::Span::new(0, 0),
+                vibe_language::Span::new(0, 0),
                 format!("Test must return a boolean value, got: {value:?}"),
             )),
         }
@@ -342,7 +342,7 @@ pub struct TestStats {
 mod tests {
     use super::*;
     use crate::namespace::NamespaceStore;
-    use vibe_core::{Literal, Span};
+    use vibe_language::{Literal, Span};
 
     #[test]
     fn test_discover_tests() {
@@ -356,7 +356,7 @@ mod tests {
             .add_definition(
                 test_path,
                 test_content,
-                vibe_core::Type::Bool,
+                vibe_language::Type::Bool,
                 HashSet::new(),
                 Default::default(),
             )
@@ -370,7 +370,7 @@ mod tests {
             .add_definition(
                 other_path,
                 other_content,
-                vibe_core::Type::Int,
+                vibe_language::Type::Int,
                 HashSet::new(),
                 Default::default(),
             )
@@ -399,7 +399,7 @@ mod tests {
             .add_definition(
                 helper_path,
                 helper_content,
-                vibe_core::Type::Int,
+                vibe_language::Type::Int,
                 HashSet::new(),
                 Default::default(),
             )
@@ -416,7 +416,7 @@ mod tests {
             .add_definition(
                 test_path,
                 test_content,
-                vibe_core::Type::Bool,
+                vibe_language::Type::Bool,
                 deps,
                 Default::default(),
             )

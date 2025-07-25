@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use thiserror::Error;
-use vibe_core::{
+use vibe_language::{
     DoStatement, Environment, Expr, Ident, Literal, Pattern, Span, TypeDefinition, Value, XsError,
 };
 
@@ -53,7 +53,7 @@ impl<B: Backend> Runtime<B> {
     }
 
     /// Compile typed IR to backend-specific format
-    pub fn compile(&mut self, ir: &vibe_core::ir::TypedIrExpr) -> Result<B::Output, B::Error> {
+    pub fn compile(&mut self, ir: &vibe_language::ir::TypedIrExpr) -> Result<B::Output, B::Error> {
         self.backend.compile(ir)
     }
 
@@ -63,7 +63,7 @@ impl<B: Backend> Runtime<B> {
     }
 
     /// Compile and execute in one step
-    pub fn eval(&mut self, ir: &vibe_core::ir::TypedIrExpr) -> Result<Value, RuntimeError> {
+    pub fn eval(&mut self, ir: &vibe_language::ir::TypedIrExpr) -> Result<Value, RuntimeError> {
         let compiled = self
             .backend
             .compile(ir)
@@ -554,7 +554,7 @@ impl Interpreter {
                 // Check if this is a recursive function
                 let is_recursive = match value.as_ref() {
                     Expr::Lambda { body, .. } => {
-                        vibe_core::recursion_detector::is_recursive(name, body)
+                        vibe_language::recursion_detector::is_recursive(name, body)
                     }
                     _ => false,
                 };
@@ -1316,7 +1316,7 @@ impl Interpreter {
         &mut self,
         name: &str,
         args: &[Value],
-        span: &vibe_core::Span,
+        span: &vibe_language::Span,
     ) -> Result<Value, XsError> {
         // Handle both with and without __builtin_ prefix
         let builtin_name = if name.starts_with("__builtin_") {
@@ -1851,7 +1851,7 @@ pub fn eval(expr: &Expr) -> Result<Value, XsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::{Expr, Ident, Literal, Span};
+    use vibe_language::{Expr, Ident, Literal, Span};
 
     fn setup() -> (Interpreter, Environment) {
         let interp = Interpreter::new();

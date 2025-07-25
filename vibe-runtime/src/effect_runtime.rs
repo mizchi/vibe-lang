@@ -3,7 +3,7 @@
 //! This module provides the runtime implementation of algebraic effect handlers.
 
 use std::collections::HashMap;
-use vibe_core::{Environment, Expr, Ident, Span, Value, XsError};
+use vibe_language::{Environment, Expr, Ident, Span, Value, XsError};
 
 /// Effect handler context during evaluation
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ struct HandlerFrame {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct HandlerImpl {
-    patterns: Vec<vibe_core::Pattern>,
+    patterns: Vec<vibe_language::Pattern>,
     continuation_name: Ident,
     body: Expr,
     env: Environment,
@@ -123,7 +123,7 @@ pub enum EffectResult {
 /// Built-in effect implementations
 pub mod builtin_effects {
     use super::*;
-    use vibe_core::Value;
+    use vibe_language::Value;
 
     /// Perform a built-in IO effect
     pub fn perform_io(effect_name: &str, args: &[Value]) -> Result<Value, XsError> {

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::path::PathBuf;
-use vibe_core::parser::Parser;
+use vibe_language::parser::Parser;
 use vibe_cli::shell::ShellState;
 
 #[test]
@@ -60,7 +60,7 @@ fn test_import_with_hash_parsing() -> Result<()> {
 
     let expr = result.unwrap();
     match expr {
-        vibe_core::Expr::Import {
+        vibe_language::Expr::Import {
             module_name, hash, ..
         } => {
             assert_eq!(module_name.0, "Math");

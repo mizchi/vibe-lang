@@ -6,7 +6,7 @@
 use std::sync::Arc;
 // use std::collections::HashMap;
 use vibe_compiler::{TypeChecker, TypeEnv};
-use vibe_core::{Expr, Type, XsError};
+use vibe_language::{Expr, Type, XsError};
 
 /// Source program input for the database
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -82,7 +82,7 @@ pub trait XsDatabase: CompilerQueries + DependencyQueries + CodebaseQueries {}
 /// Implement parse_source query
 fn parse_source(db: &dyn CompilerQueries, key: SourcePrograms) -> Result<Arc<Expr>, XsError> {
     let source = db.source_text(key);
-    vibe_core::parser::parse(&source).map(Arc::new)
+    vibe_language::parser::parse(&source).map(Arc::new)
 }
 
 /// Implement type_check query
@@ -92,7 +92,7 @@ fn type_check(db: &dyn CompilerQueries, key: SourcePrograms) -> Result<Type, XsE
     let mut env = TypeEnv::new();
     checker
         .check(&expr, &mut env)
-        .map_err(|e| XsError::TypeError(vibe_core::Span::new(0, 0), e))
+        .map_err(|e| XsError::TypeError(vibe_language::Span::new(0, 0), e))
 }
 
 /// Implement expression_type query
@@ -102,7 +102,7 @@ fn expression_type(db: &dyn CodebaseQueries, id: ExpressionId) -> Result<Type, X
     let mut env = TypeEnv::new();
     checker
         .check(&expr, &mut env)
-        .map_err(|e| XsError::TypeError(vibe_core::Span::new(0, 0), e))
+        .map_err(|e| XsError::TypeError(vibe_language::Span::new(0, 0), e))
 }
 
 /// Implement module_dependencies query

@@ -8,7 +8,7 @@ use rustyline::Editor;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use vibe_compiler::TypeChecker;
-use vibe_core::{DoStatement, Expr, Type};
+use vibe_language::{DoStatement, Expr, Type};
 
 /// Information about a hole in an expression
 #[derive(Debug, Clone)]
@@ -32,11 +32,11 @@ pub struct HoleSuggestion {
 pub struct HoleCompleter {
     type_env: HashMap<String, Type>,
     #[allow(dead_code)]
-    runtime_env: vibe_core::Environment,
+    runtime_env: vibe_language::Environment,
 }
 
 impl HoleCompleter {
-    pub fn new(type_env: HashMap<String, Type>, runtime_env: vibe_core::Environment) -> Self {
+    pub fn new(type_env: HashMap<String, Type>, runtime_env: vibe_language::Environment) -> Self {
         Self {
             type_env,
             runtime_env,
@@ -423,7 +423,7 @@ impl HoleCompleter {
                 let input = rl.readline(&prompt)?;
 
                 // Try to parse the input as an expression
-                match vibe_core::parser::parse(&input) {
+                match vibe_language::parser::parse(&input) {
                     Ok(hole_value) => {
                         // Type check if we have an expected type
                         if let Some(expected_type) = &hole_info.expected_type {
@@ -567,7 +567,7 @@ pub fn fill_holes_simple(expr: &Expr) -> Result<Expr> {
         let input = input.trim();
 
         // Parse the input as an expression
-        let hole_value = vibe_core::parser::parse(input)
+        let hole_value = vibe_language::parser::parse(input)
             .with_context(|| format!("Failed to parse input for hole"))?;
 
         // Replace the hole

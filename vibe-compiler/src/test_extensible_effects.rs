@@ -4,12 +4,12 @@
 mod tests {
     use crate::effect_checker::EffectChecker;
     use crate::{TypeChecker, TypeEnv};
-    use vibe_core::extensible_effects::{EffectInstance, ExtensibleEffectRow};
-    use vibe_core::Type;
+    use vibe_language::extensible_effects::{EffectInstance, ExtensibleEffectRow};
+    use vibe_language::Type;
 
     fn parse_and_check(code: &str) -> Result<(Type, ExtensibleEffectRow), String> {
         // Parse the code
-        let expr = vibe_core::parser::parse(code).map_err(|e| format!("Parse error: {:?}", e))?;
+        let expr = vibe_language::parser::parse(code).map_err(|e| format!("Parse error: {:?}", e))?;
 
         // Type check
         let mut type_checker = TypeChecker::new();
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_effect_row_operations() {
-        use vibe_core::extensible_effects::ExtensibleEffectRow;
+        use vibe_language::extensible_effects::ExtensibleEffectRow;
 
         // Test pure
         let pure = ExtensibleEffectRow::pure();
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_effect_with_type_parameters() {
-        use vibe_core::extensible_effects::EffectInstance;
+        use vibe_language::extensible_effects::EffectInstance;
 
         // State<Int> effect
         let state_int = EffectInstance::with_type_args("State".to_string(), vec![Type::Int]);

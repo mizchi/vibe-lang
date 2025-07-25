@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use vibe_core::{Effect, EffectRow, EffectSet, EffectVar, Expr, Ident, Span, Type, XsError};
+use vibe_language::{Effect, EffectRow, EffectSet, EffectVar, Expr, Ident, Span, Type, XsError};
 
 /// Effect constraint for inference
 #[derive(Debug, Clone, PartialEq, Eq)]

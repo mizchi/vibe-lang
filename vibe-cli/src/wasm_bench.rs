@@ -98,7 +98,7 @@ fn benchmark_type_check_only(source: &str, iterations: u32) -> Result<BenchmarkR
 
 /// Benchmark WASM generation without caching
 fn benchmark_wasm_no_cache(source: &str, iterations: u32) -> Result<BenchmarkResult> {
-    let expr = vibe_core::parser::parse(source)
+    let expr = vibe_language::parser::parse(source)
         .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
     
     let start = Instant::now();
@@ -117,7 +117,7 @@ fn benchmark_wasm_no_cache(source: &str, iterations: u32) -> Result<BenchmarkRes
 
 /// Benchmark WASM generation with simple caching
 fn benchmark_wasm_with_cache(source: &str, iterations: u32) -> Result<BenchmarkResult> {
-    let expr = vibe_core::parser::parse(source)
+    let expr = vibe_language::parser::parse(source)
         .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
     
     let mut cache = WasmCache::new();
@@ -142,7 +142,7 @@ fn benchmark_wasm_with_cache(source: &str, iterations: u32) -> Result<BenchmarkR
 
 /// Test incremental changes with detailed timing
 fn test_incremental_changes(source: &str) -> Result<()> {
-    let expr = vibe_core::parser::parse(source)
+    let expr = vibe_language::parser::parse(source)
         .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
     
     let mut cache = WasmCache::new();
@@ -200,13 +200,13 @@ pub fn compare_wasm_vs_interpreter(file: &Path) -> Result<()> {
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     // Parse once
-    let expr = vibe_core::parser::parse(&source)
+    let expr = vibe_language::parser::parse(&source)
         .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
 
     // 1. Interpreter execution time
     let start = Instant::now();
     let mut interpreter = vibe_runtime::Interpreter::new();
-    let env = vibe_core::Environment::default();
+    let env = vibe_language::Environment::default();
     let _ = interpreter.eval(&expr, &env)?;
     let interp_time = start.elapsed();
     println!("Interpreter execution: {:?}", interp_time);

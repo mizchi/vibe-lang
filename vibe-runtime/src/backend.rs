@@ -1,8 +1,8 @@
 //! Backend trait and implementations
 
 use crate::RuntimeError;
-use vibe_core::ir::TypedIrExpr;
-use vibe_core::{BuiltinRegistry, Environment, Literal, Value};
+use vibe_language::ir::TypedIrExpr;
+use vibe_language::{BuiltinRegistry, Environment, Literal, Value};
 
 /// Trait for execution backends
 pub trait Backend {
@@ -41,7 +41,7 @@ impl InterpreterBackend {
             TypedIrExpr::Literal { value, .. } => Ok(literal_to_value(value.clone())),
 
             TypedIrExpr::Var { name, .. } => env
-                .lookup(&vibe_core::Ident(name.clone()))
+                .lookup(&vibe_language::Ident(name.clone()))
                 .cloned()
                 .ok_or_else(|| RuntimeError::UndefinedVariable(name.clone())),
 
@@ -49,15 +49,15 @@ impl InterpreterBackend {
                 name, value, body, ..
             } => {
                 let val = self.eval_ir(value, env)?;
-                let new_env = env.extend(vibe_core::Ident(name.clone()), val);
+                let new_env = env.extend(vibe_language::Ident(name.clone()), val);
                 self.eval_ir(body, &new_env)
             }
 
             TypedIrExpr::Lambda { params, body, .. } => {
                 // Create closure
-                let param_names: Vec<vibe_core::Ident> = params
+                let param_names: Vec<vibe_language::Ident> = params
                     .iter()
-                    .map(|(name, _)| vibe_core::Ident(name.clone()))
+                    .map(|(name, _)| vibe_language::Ident(name.clone()))
                     .collect();
 
                 // For now, convert back to AST for closure
@@ -154,15 +154,15 @@ impl InterpreterBackend {
     }
 
     // Temporary helper to convert IR back to Expr for closures
-    fn ir_to_expr(&self, _ir: &TypedIrExpr) -> vibe_core::Expr {
+    fn ir_to_expr(&self, _ir: &TypedIrExpr) -> vibe_language::Expr {
         // This is a placeholder - in a real implementation we'd store typed IR in closures
-        vibe_core::Expr::Literal(vibe_core::Literal::Int(0), vibe_core::Span::new(0, 0))
+        vibe_language::Expr::Literal(vibe_language::Literal::Int(0), vibe_language::Span::new(0, 0))
     }
 
     // Temporary helper to evaluate AST expressions (for closures)
     fn eval_expr(
         &mut self,
-        _expr: &vibe_core::Expr,
+        _expr: &vibe_language::Expr,
         _env: &Environment,
     ) -> Result<Value, RuntimeError> {
         // This would use the existing interpreter logic
@@ -200,8 +200,8 @@ pub(crate) fn literal_to_value(lit: Literal) -> Value {
 mod tests {
     use super::*;
     use ordered_float::OrderedFloat;
-    use vibe_core::ir::TypedIrExpr;
-    use vibe_core::{Expr, Ident, Literal, Type};
+    use vibe_language::ir::TypedIrExpr;
+    use vibe_language::{Expr, Ident, Literal, Type};
 
     #[test]
     fn test_interpreter_backend_creation() {

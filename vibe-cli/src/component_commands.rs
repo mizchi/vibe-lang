@@ -6,8 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 use vibe_compiler::wasm::wit_generator::WitGenerator;
 use vibe_compiler::{type_check, TypeChecker, TypeEnv};
-use vibe_core::parser::parse;
-use vibe_core::{Expr, Span, Type};
+use vibe_language::parser::parse;
+use vibe_language::{Expr, Span, Type};
 
 use crate::cli::ComponentCommand;
 
@@ -384,7 +384,7 @@ fn run_component(input: &PathBuf, args: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::{Ident, Span};
+    use vibe_language::{Ident, Span};
 
     #[test]
     fn test_extract_module_info() {

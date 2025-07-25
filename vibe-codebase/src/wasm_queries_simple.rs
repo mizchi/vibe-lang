@@ -5,7 +5,7 @@
 
 use vibe_compiler::wasm::{CodeGenerator, WasmModule};
 use vibe_compiler::{TypeChecker, TypeEnv};
-use vibe_core::{Expr, XsError};
+use vibe_language::{Expr, XsError};
 
 /// Generate WASM directly from expression without caching
 pub fn generate_wasm_direct(expr: &Expr) -> Result<WasmModule, XsError> {
@@ -13,7 +13,7 @@ pub fn generate_wasm_direct(expr: &Expr) -> Result<WasmModule, XsError> {
     let mut type_checker = TypeChecker::new();
     let mut type_env = TypeEnv::new();
     let _ty = type_checker.check(expr, &mut type_env)
-        .map_err(|e| XsError::TypeError(vibe_core::Span::new(0, 0), e))?;
+        .map_err(|e| XsError::TypeError(vibe_language::Span::new(0, 0), e))?;
     
     // Convert to IR (simplified - just use untyped IR for now)
     let ir = expr_to_ir(expr)?;
@@ -21,30 +21,30 @@ pub fn generate_wasm_direct(expr: &Expr) -> Result<WasmModule, XsError> {
     // Generate WASM
     let mut codegen = CodeGenerator::new();
     codegen.generate(&ir)
-        .map_err(|e| XsError::RuntimeError(vibe_core::Span::new(0, 0), e.to_string()))
+        .map_err(|e| XsError::RuntimeError(vibe_language::Span::new(0, 0), e.to_string()))
 }
 
 /// Simple expression to IR conversion
-fn expr_to_ir(expr: &Expr) -> Result<vibe_core::ir::IrExpr, XsError> {
+fn expr_to_ir(expr: &Expr) -> Result<vibe_language::ir::IrExpr, XsError> {
     match expr {
-        Expr::Literal(lit, _) => Ok(vibe_core::ir::IrExpr::Literal(lit.clone())),
+        Expr::Literal(lit, _) => Ok(vibe_language::ir::IrExpr::Literal(lit.clone())),
         
-        Expr::Ident(name, _) => Ok(vibe_core::ir::IrExpr::Var(name.0.clone())),
+        Expr::Ident(name, _) => Ok(vibe_language::ir::IrExpr::Var(name.0.clone())),
         
         Expr::Let { name, value, .. } => {
             let value_ir = expr_to_ir(value)?;
             // For simplicity, just return the value
-            Ok(vibe_core::ir::IrExpr::Let {
+            Ok(vibe_language::ir::IrExpr::Let {
                 name: name.0.clone(),
                 value: Box::new(value_ir),
-                body: Box::new(vibe_core::ir::IrExpr::Literal(vibe_core::Literal::Int(0))),
+                body: Box::new(vibe_language::ir::IrExpr::Literal(vibe_language::Literal::Int(0))),
             })
         }
         
         Expr::Lambda { params, body, .. } => {
             let param_names = params.iter().map(|(name, _)| name.0.clone()).collect();
             let body_ir = expr_to_ir(body)?;
-            Ok(vibe_core::ir::IrExpr::Lambda {
+            Ok(vibe_language::ir::IrExpr::Lambda {
                 params: param_names,
                 body: Box::new(body_ir),
             })
@@ -53,7 +53,7 @@ fn expr_to_ir(expr: &Expr) -> Result<vibe_core::ir::IrExpr, XsError> {
         Expr::Apply { func, args, .. } => {
             let func_ir = expr_to_ir(func)?;
             let args_ir: Result<Vec<_>, _> = args.iter().map(expr_to_ir).collect();
-            Ok(vibe_core::ir::IrExpr::Apply {
+            Ok(vibe_language::ir::IrExpr::Apply {
                 func: Box::new(func_ir),
                 args: args_ir?,
             })
@@ -63,7 +63,7 @@ fn expr_to_ir(expr: &Expr) -> Result<vibe_core::ir::IrExpr, XsError> {
             let cond_ir = expr_to_ir(cond)?;
             let then_ir = expr_to_ir(then_expr)?;
             let else_ir = expr_to_ir(else_expr)?;
-            Ok(vibe_core::ir::IrExpr::If {
+            Ok(vibe_language::ir::IrExpr::If {
                 cond: Box::new(cond_ir),
                 then_expr: Box::new(then_ir),
                 else_expr: Box::new(else_ir),
@@ -73,7 +73,7 @@ fn expr_to_ir(expr: &Expr) -> Result<vibe_core::ir::IrExpr, XsError> {
         Expr::Block { exprs, .. } => {
             // Convert block to nested let bindings
             if exprs.is_empty() {
-                Ok(vibe_core::ir::IrExpr::Literal(vibe_core::Literal::Int(0)))
+                Ok(vibe_language::ir::IrExpr::Literal(vibe_language::Literal::Int(0)))
             } else {
                 // Build from the last expression backwards
                 let mut iter = exprs.iter().rev();
@@ -85,7 +85,7 @@ fn expr_to_ir(expr: &Expr) -> Result<vibe_core::ir::IrExpr, XsError> {
                     match expr {
                         Expr::Let { name, value, .. } => {
                             let value_ir = expr_to_ir(value)?;
-                            body = vibe_core::ir::IrExpr::Let {
+                            body = vibe_language::ir::IrExpr::Let {
                                 name: name.0.clone(),
                                 value: Box::new(value_ir),
                                 body: Box::new(body),
@@ -94,11 +94,11 @@ fn expr_to_ir(expr: &Expr) -> Result<vibe_core::ir::IrExpr, XsError> {
                         Expr::FunctionDef { name, params, body: fn_body, .. } => {
                             let param_names = params.iter().map(|p| p.name.0.clone()).collect();
                             let fn_body_ir = expr_to_ir(fn_body)?;
-                            let lambda = vibe_core::ir::IrExpr::Lambda {
+                            let lambda = vibe_language::ir::IrExpr::Lambda {
                                 params: param_names,
                                 body: Box::new(fn_body_ir),
                             };
-                            body = vibe_core::ir::IrExpr::Let {
+                            body = vibe_language::ir::IrExpr::Let {
                                 name: name.0.clone(),
                                 value: Box::new(lambda),
                                 body: Box::new(body),
@@ -116,14 +116,14 @@ fn expr_to_ir(expr: &Expr) -> Result<vibe_core::ir::IrExpr, XsError> {
         Expr::FunctionDef { params, body, .. } => {
             let param_names = params.iter().map(|p| p.name.0.clone()).collect();
             let body_ir = expr_to_ir(body)?;
-            Ok(vibe_core::ir::IrExpr::Lambda {
+            Ok(vibe_language::ir::IrExpr::Lambda {
                 params: param_names,
                 body: Box::new(body_ir),
             })
         }
         
         _ => Err(XsError::RuntimeError(
-            vibe_core::Span::new(0, 0),
+            vibe_language::Span::new(0, 0),
             format!("Expression to IR conversion not implemented for: {:?}", expr),
         )),
     }
@@ -192,7 +192,7 @@ pub fn wasm_to_cached_result(module: &WasmModule) -> Result<CachedWasmResult, Xs
     
     // Parse to binary
     let wasm_bytes = wat::parse_str(&wat_text)
-        .map_err(|e| XsError::RuntimeError(vibe_core::Span::new(0, 0), e.to_string()))?;
+        .map_err(|e| XsError::RuntimeError(vibe_language::Span::new(0, 0), e.to_string()))?;
     
     Ok(CachedWasmResult {
         wat_text,

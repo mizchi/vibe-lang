@@ -5,7 +5,7 @@
 //! workspace and share the same semantics.
 
 use crate::shell_syntax::{parse_shell_syntax, shell_to_sexpr};
-use vibe_core::{Expr, XsError};
+use vibe_language::{Expr, XsError};
 
 /// Unified expression that can be either S-expression or shell syntax
 #[derive(Debug, Clone)]
@@ -28,7 +28,7 @@ pub fn parse_unified_with_mode(input: &str, mode: SyntaxMode) -> Result<Expr, Xs
     }
 
     match mode {
-        SyntaxMode::SExprOnly => vibe_core::parser::parse(input),
+        SyntaxMode::SExprOnly => vibe_language::parser::parse(input),
         SyntaxMode::ShellOnly => parse_as_shell(input),
         SyntaxMode::Auto => parse_unified(input),
         SyntaxMode::Mixed => {
@@ -50,7 +50,7 @@ pub fn parse_unified(input: &str) -> Result<Expr, XsError> {
     // Check if it's an S-expression
     if input.starts_with('(') {
         // Try to parse as S-expression first
-        match vibe_core::parser::parse(input) {
+        match vibe_language::parser::parse(input) {
             Ok(expr) => Ok(expr),
             Err(_) => {
                 // If S-expression parsing fails, try shell syntax
@@ -65,7 +65,7 @@ pub fn parse_unified(input: &str) -> Result<Expr, XsError> {
         parse_as_shell(input)
     } else {
         // Try S-expression first (for single identifiers, literals, etc.)
-        match vibe_core::parser::parse(input) {
+        match vibe_language::parser::parse(input) {
             Ok(expr) => Ok(expr),
             Err(_) => {
                 // Fall back to shell syntax

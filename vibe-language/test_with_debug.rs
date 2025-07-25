@@ -1,4 +1,4 @@
-use vibe_core::parser::Parser;
+use vibe_language::parser::Parser;
 
 fn main() {
     let input = "with myHandler { doSomething }";

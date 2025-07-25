@@ -150,7 +150,7 @@ async fn execute_parse(args: Value) -> Result<Vec<ToolResult>, String> {
     let args: ParseArgs =
         serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
 
-    match vibe_core::parser::parse(&args.code) {
+    match vibe_language::parser::parse(&args.code) {
         Ok(expr) => {
             let ast_json = serde_json::to_string_pretty(&expr)
                 .map_err(|e| format!("Failed to serialize AST: {e}"))?;
@@ -173,7 +173,7 @@ async fn execute_typecheck(args: Value) -> Result<Vec<ToolResult>, String> {
     let args: TypeCheckArgs =
         serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
 
-    let expr = vibe_core::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
+    let expr = vibe_language::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
 
     match type_check(&expr) {
         Ok(ty) => Ok(vec![ToolResult::Text {
@@ -208,8 +208,8 @@ async fn execute_search(args: Value) -> Result<Vec<ToolResult>, String> {
             // Parse type pattern
             match args.pattern.as_str() {
                 "Int -> Int" => CodeQuery::TypePattern(TypePattern::Function {
-                    input: Some(Box::new(TypePattern::Exact(vibe_core::Type::Int))),
-                    output: Some(Box::new(TypePattern::Exact(vibe_core::Type::Int))),
+                    input: Some(Box::new(TypePattern::Exact(vibe_language::Type::Int))),
+                    output: Some(Box::new(TypePattern::Exact(vibe_language::Type::Int))),
                 }),
                 pattern => {
                     return Err(format!("Unsupported type pattern: {pattern}"));
@@ -293,7 +293,7 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
         serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
 
     // Parse the input code
-    let expr = vibe_core::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
+    let expr = vibe_language::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
 
     // Apply transformation based on type
     let transformed_expr = match args.transform.transform_type.as_str() {
@@ -308,7 +308,7 @@ async fn execute_ast_transform(args: Value) -> Result<Vec<ToolResult>, String> {
 
             // Simple rename implementation (placeholder)
             // In a real implementation, this would use AST transformation utilities
-            use vibe_core::pretty_print::pretty_print;
+            use vibe_language::pretty_print::pretty_print;
             let pretty = pretty_print(&expr);
             let transformed = pretty.replace(&params.old_name, &params.new_name);
 
@@ -388,7 +388,7 @@ async fn execute_analyze_dependencies(args: Value) -> Result<Vec<ToolResult>, St
     let args: AnalyzeArgs =
         serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
 
-    let _expr = vibe_core::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
+    let _expr = vibe_language::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
 
     // TODO: Implement actual dependency analysis
     Ok(vec![ToolResult::Text {
@@ -406,7 +406,7 @@ async fn execute_effect_analysis(args: Value) -> Result<Vec<ToolResult>, String>
     let args: EffectArgs =
         serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {e}"))?;
 
-    let expr = vibe_core::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
+    let expr = vibe_language::parser::parse(&args.code).map_err(|e| format!("Parse error: {e}"))?;
 
     match type_check(&expr) {
         Ok(_ty) => {

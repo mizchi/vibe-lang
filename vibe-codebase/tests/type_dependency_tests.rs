@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod type_dependency_tests {
     use std::collections::HashSet;
-    use vibe_core::{Expr, FunctionParam, Ident, Literal, Span, Type};
+    use vibe_language::{Expr, FunctionParam, Ident, Literal, Span, Type};
     use vibe_codebase::{
         dependency_extractor::DependencyExtractor,
         namespace::{DefinitionContent, DefinitionPath, NamespacePath, NamespaceStore},

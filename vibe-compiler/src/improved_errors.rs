@@ -1,7 +1,7 @@
 //! Improved type checker with AI-friendly error messages
 
-use vibe_core::error_context::{ErrorBuilder, ErrorCategory};
-use vibe_core::{Ident, Span, Type, XsError};
+use vibe_language::error_context::{ErrorBuilder, ErrorCategory};
+use vibe_language::{Ident, Span, Type, XsError};
 
 /// Helper functions for generating better type error messages
 #[allow(dead_code)]

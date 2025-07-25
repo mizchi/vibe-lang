@@ -11,10 +11,10 @@ use vibe_codebase::namespace::{
 use vibe_codebase::unified_parser::{parse_unified_with_mode, SyntaxMode};
 use vibe_codebase::{CodebaseManager, EditSession, ExpressionId};
 use vibe_compiler::{TypeChecker, TypeEnv};
-use vibe_core::pretty_print::pretty_print;
-use vibe_core::type_annotator::embed_type_annotations;
-use vibe_core::Ident;
-use vibe_core::{DoStatement, Expr, Type, Value};
+use vibe_language::pretty_print::pretty_print;
+use vibe_language::type_annotator::embed_type_annotations;
+use vibe_language::Ident;
+use vibe_language::{DoStatement, Expr, Type, Value};
 use vibe_runtime::Interpreter;
 
 use crate::commands;
@@ -255,7 +255,7 @@ impl ShellState {
             use crate::hole_completion::HoleCompleter;
             let completer = HoleCompleter::new(
                 self.type_env.clone(),
-                vibe_core::Environment::from_iter(
+                vibe_language::Environment::from_iter(
                     self.runtime_env
                         .iter()
                         .map(|(k, v)| (Ident(k.clone()), v.clone())),
@@ -308,7 +308,7 @@ impl ShellState {
             };
 
             // Get type information for the imported functions
-            use vibe_core::lib_modules::get_module_functions;
+            use vibe_language::lib_modules::get_module_functions;
             let type_functions = get_module_functions(path).unwrap_or_default();
 
             if let Some(items) = items {
@@ -724,7 +724,7 @@ impl ShellState {
     }
 
     pub fn type_of_expr(&mut self, expr_str: &str) -> Result<String> {
-        let expr = vibe_core::parser::parse(expr_str).context("Failed to parse expression")?;
+        let expr = vibe_language::parser::parse(expr_str).context("Failed to parse expression")?;
         match self.type_check_with_env(&expr) {
             Ok(ty) => Ok(ty.to_string()),
             Err(e) => Err(e),
@@ -770,7 +770,7 @@ impl ShellState {
         }
 
         // 式として評価
-        match vibe_core::parser::parse(name_or_expr) {
+        match vibe_language::parser::parse(name_or_expr) {
             Ok(expr) => match self.type_check_with_env(&expr) {
                 Ok(ty) => Ok(format!("{name_or_expr} : {ty}")),
                 Err(e) => Ok(format!("Type error: {e}")),

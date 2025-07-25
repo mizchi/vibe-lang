@@ -1,7 +1,7 @@
 //! Search pattern parsing and matching for code search functionality
 
 use anyhow::{anyhow, Result};
-use vibe_core::{Expr, Type};
+use vibe_language::{Expr, Type};
 
 /// Parse a type pattern string into a matcher function
 pub fn parse_type_pattern(pattern: &str) -> Result<Box<dyn Fn(&Type) -> bool>> {

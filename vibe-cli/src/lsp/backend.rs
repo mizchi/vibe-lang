@@ -43,7 +43,7 @@ impl XSLanguageServer {
         debug!("Analyzing document: {}", uri);
 
         // Parse the document
-        match vibe_core::parser::parse(&content) {
+        match vibe_language::parser::parse(&content) {
             Ok(expr) => {
                 // Generate source map
                 let source_map = SourceMap::from_ast(&expr, &content);
@@ -78,9 +78,9 @@ impl XSLanguageServer {
         Ok(())
     }
 
-    fn parse_error_to_diagnostic(&self, error: vibe_core::XsError, _uri: &Url) -> Diagnostic {
+    fn parse_error_to_diagnostic(&self, error: vibe_language::XsError, _uri: &Url) -> Diagnostic {
         let (position, message) = match error {
-            vibe_core::XsError::ParseError(pos, msg) => (pos, msg),
+            vibe_language::XsError::ParseError(pos, msg) => (pos, msg),
             _ => (0, format!("{}", error)),
         };
 
@@ -108,10 +108,10 @@ impl XSLanguageServer {
         }
     }
 
-    fn type_error_to_diagnostic(&self, error: vibe_core::XsError, _uri: &Url) -> Diagnostic {
+    fn type_error_to_diagnostic(&self, error: vibe_language::XsError, _uri: &Url) -> Diagnostic {
         let (span, message) = match error {
-            vibe_core::XsError::TypeError(span, msg) => (span, msg),
-            _ => (vibe_core::Span::new(0, 0), format!("{}", error)),
+            vibe_language::XsError::TypeError(span, msg) => (span, msg),
+            _ => (vibe_language::Span::new(0, 0), format!("{}", error)),
         };
 
         let range = Range {

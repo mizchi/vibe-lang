@@ -129,7 +129,7 @@ fn main() -> Result<()> {
 fn run_expression(expr: &str, persist: bool) -> Result<()> {
     use std::path::PathBuf;
     use vibe_compiler::type_check;
-    use vibe_core::parser::parse;
+    use vibe_language::parser::parse;
     use vibe_runtime::Interpreter;
     use vibe_codebase::Codebase;
 
@@ -155,7 +155,7 @@ fn run_expression(expr: &str, persist: bool) -> Result<()> {
                     if let Some(term) = cb.get_term(&hash) {
                         match interpreter.eval(&term.expr, &env) {
                             Ok(value) => {
-                                env = env.extend(vibe_core::Ident(name), value);
+                                env = env.extend(vibe_language::Ident(name), value);
                             }
                             Err(_) => {} // Ignore evaluation errors for now
                         }

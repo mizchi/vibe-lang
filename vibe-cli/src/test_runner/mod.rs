@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 use vibe_compiler::{TypeChecker, TypeEnv};
-use vibe_core::parser::parse;
-use vibe_core::{Expr, Ident, Value, XsError};
+use vibe_language::parser::parse;
+use vibe_language::{Expr, Ident, Value, XsError};
 use vibe_runtime::Interpreter;
 use vibe_codebase::{Codebase, Hash, TestCache, TestOutcome};
 
@@ -206,13 +206,13 @@ impl TestSuite {
                         println!("Found test call with {} args", args.len());
                         if args.len() >= 1 {
                             println!("First arg: {:?}", match &args[0] {
-                                Expr::Literal(vibe_core::Literal::String(s), _) => format!("String({})", s),
+                                Expr::Literal(vibe_language::Literal::String(s), _) => format!("String({})", s),
                                 _ => "Not a string".to_string(),
                             });
                         }
                     }
                     if name == "test" && args.len() == 2 {
-                        if let Expr::Literal(vibe_core::Literal::String(test_name), _) = &args[0] {
+                        if let Expr::Literal(vibe_language::Literal::String(test_name), _) = &args[0] {
                             tests.push(InSourceTest {
                                 name: test_name.clone(),
                                 test_expr: args[1].clone(),
@@ -225,7 +225,7 @@ impl TestSuite {
                 else if let Expr::Apply { func: inner_func, args: inner_args, .. } = func.as_ref() {
                     if let Expr::Ident(Ident(name), _) = inner_func.as_ref() {
                         if name == "test" && inner_args.len() == 1 && args.len() == 1 {
-                            if let Expr::Literal(vibe_core::Literal::String(test_name), _) = &inner_args[0] {
+                            if let Expr::Literal(vibe_language::Literal::String(test_name), _) = &inner_args[0] {
                                 tests.push(InSourceTest {
                                     name: test_name.clone(),
                                     test_expr: args[0].clone(),
@@ -494,7 +494,7 @@ impl TestSuite {
         &self,
         test_fn: Value,
         interpreter: &mut Interpreter,
-        _env: &vibe_core::Environment,
+        _env: &vibe_language::Environment,
     ) -> Result<Value, XsError> {
         match test_fn {
             Value::Closure { params, body, env: closure_env } => {
@@ -519,7 +519,7 @@ impl TestSuite {
             }
             Value::BuiltinFunction { .. } => {
                 Err(XsError::RuntimeError(
-                    vibe_core::Span::new(0, 0),
+                    vibe_language::Span::new(0, 0),
                     "Cannot use builtin function as test".to_string(),
                 ))
             }
@@ -545,8 +545,8 @@ impl TestSuite {
         &self,
         expr: &Expr,
         interpreter: &mut Interpreter,
-        mut env: vibe_core::Environment,
-    ) -> Result<vibe_core::Environment, XsError> {
+        mut env: vibe_language::Environment,
+    ) -> Result<vibe_language::Environment, XsError> {
         match expr {
             // Handle blocks with multiple expressions
             Expr::Block { exprs, .. } => {
@@ -693,7 +693,7 @@ let x = 42
 
     #[test]
     fn test_extract_in_source_tests() {
-        use vibe_core::{Expr, Ident, Literal, Span};
+        use vibe_language::{Expr, Ident, Literal, Span};
         
         let suite = TestSuite::new(false);
         

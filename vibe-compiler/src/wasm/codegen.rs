@@ -3,8 +3,8 @@
 use super::{CodeGenError, WasmFunction, WasmInstr, WasmModule, WasmType};
 // ordered_float is re-exported from xs-core
 use std::collections::HashMap;
-use vibe_core::ir::IrExpr;
-use vibe_core::Literal;
+use vibe_language::ir::IrExpr;
+use vibe_language::Literal;
 
 /// Code generator for WebAssembly GC
 pub struct CodeGenerator {

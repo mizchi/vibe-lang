@@ -6,7 +6,7 @@
 use super::component::{xs_type_to_wit, WitType};
 use std::collections::HashMap;
 use std::fmt::Write;
-use vibe_core::{Type, TypeDefinition};
+use vibe_language::{Type, TypeDefinition};
 
 /// WIT generator for XS modules
 pub struct WitGenerator {
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_generate_with_types() {
-        use vibe_core::Constructor;
+        use vibe_language::Constructor;
 
         let mut gen = WitGenerator::new("xs:data".to_string(), "0.1.0".to_string());
 

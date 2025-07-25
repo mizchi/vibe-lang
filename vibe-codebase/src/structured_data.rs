@@ -8,7 +8,7 @@ use crate::namespace::DefinitionPath;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use vibe_core::{Value, XsError};
+use vibe_language::{Value, XsError};
 
 /// Structured data that can flow through pipelines
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,7 +168,7 @@ impl StructuredData {
             StructuredData::Table { .. } => Ok(self.clone()),
 
             _ => Err(XsError::RuntimeError(
-                vibe_core::Span::new(0, 0),
+                vibe_language::Span::new(0, 0),
                 format!("Cannot convert {self:?} to table"),
             )),
         }
@@ -230,12 +230,12 @@ impl StructuredValue {
             StructuredValue::Record(_fields) => {
                 // Records are not supported in Value enum
                 Err(XsError::RuntimeError(
-                    vibe_core::Span::new(0, 0),
+                    vibe_language::Span::new(0, 0),
                     "Record values are not supported".to_string(),
                 ))
             }
             _ => Err(XsError::RuntimeError(
-                vibe_core::Span::new(0, 0),
+                vibe_language::Span::new(0, 0),
                 format!("Cannot convert {self:?} to Value"),
             )),
         }

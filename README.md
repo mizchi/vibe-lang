@@ -19,13 +19,13 @@ Vibe Language is a purely functional programming language designed for AI-assist
 cargo build --release
 
 # Start Vibe Shell (REPL)
-cargo run -p vsh
+cargo run -p vive
 
 # Run a program
-cargo run -p vsh -- run examples/hello.vibe
+cargo run -p vive -- run examples/hello.vibe
 
 # Type check
-cargo run -p vsh -- check examples/fibonacci.vibe
+cargo run -p vive -- check examples/fibonacci.vibe
 
 # Run tests
 cargo run -p vsh -- test
@@ -67,7 +67,7 @@ let greet name = perform IO.print ("Hello, " ++ name)
 
 ## Project Structure
 
-- `vibe-core/` - Core language definitions (AST, types, parser)
+- `vibe-language/` - Core language definitions (AST, types, parser)
 - `vibe-compiler/` - Type checker, effect inference, WebAssembly codegen
 - `vibe-runtime/` - Interpreter and runtime system
 - `vibe-codebase/` - Content-addressed storage and namespace management

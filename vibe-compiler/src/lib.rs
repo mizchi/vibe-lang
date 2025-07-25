@@ -23,7 +23,7 @@ pub use perceus::PerceusTransform;
 
 // Type checker exports
 use std::collections::{HashMap, HashSet};
-use vibe_core::{
+use vibe_language::{
     extensible_effects::ExtensibleEffectRow, DoStatement, Expr, Ident, Literal, Pattern, Span,
     Type, TypeDefinition, XsError,
 };
@@ -362,7 +362,7 @@ impl TypeEnv {
     }
 
     fn init_builtin_modules(&mut self) {
-        use vibe_core::builtin_modules::BuiltinModuleRegistry;
+        use vibe_language::builtin_modules::BuiltinModuleRegistry;
 
         let registry = BuiltinModuleRegistry::new();
 
@@ -442,7 +442,7 @@ impl TypeChecker {
         path: &[String],
         items: &Option<Vec<Ident>>,
     ) -> Result<(), XsError> {
-        use vibe_core::lib_modules::get_module_functions;
+        use vibe_language::lib_modules::get_module_functions;
 
         // Get available functions for the module
         let available_functions = get_module_functions(path).ok_or_else(|| {
@@ -743,10 +743,10 @@ impl TypeChecker {
     /// Convert ExtensibleEffectRow to EffectRow
     fn extensible_to_effect_row(
         &self,
-        ext_row: vibe_core::extensible_effects::ExtensibleEffectRow,
-    ) -> vibe_core::effects::EffectRow {
-        use vibe_core::effects::{Effect, EffectRow, EffectSet};
-        use vibe_core::extensible_effects::ExtensibleEffectRow;
+        ext_row: vibe_language::extensible_effects::ExtensibleEffectRow,
+    ) -> vibe_language::effects::EffectRow {
+        use vibe_language::effects::{Effect, EffectRow, EffectSet};
+        use vibe_language::extensible_effects::ExtensibleEffectRow;
 
         match ext_row {
             ExtensibleEffectRow::Empty => EffectRow::Concrete(EffectSet::pure()),
@@ -780,7 +780,7 @@ impl TypeChecker {
             }
             ExtensibleEffectRow::Variable(var) => {
                 // Convert to effect variable
-                EffectRow::Variable(vibe_core::effects::EffectVar(var))
+                EffectRow::Variable(vibe_language::effects::EffectVar(var))
             }
             ExtensibleEffectRow::Union(left, right) => {
                 // Union both sides
@@ -807,10 +807,10 @@ impl TypeChecker {
     /// Convert EffectRow to ExtensibleEffectRow
     fn effect_row_to_extensible(
         &self,
-        row: vibe_core::effects::EffectRow,
-    ) -> vibe_core::extensible_effects::ExtensibleEffectRow {
-        use vibe_core::effects::{Effect, EffectRow};
-        use vibe_core::extensible_effects::{EffectInstance, ExtensibleEffectRow};
+        row: vibe_language::effects::EffectRow,
+    ) -> vibe_language::extensible_effects::ExtensibleEffectRow {
+        use vibe_language::effects::{Effect, EffectRow};
+        use vibe_language::extensible_effects::{EffectInstance, ExtensibleEffectRow};
 
         match row {
             EffectRow::Concrete(set) => {
@@ -893,10 +893,10 @@ impl TypeChecker {
                 // Check if this is a function that references itself (recursive)
                 let is_recursive = match value.as_ref() {
                     Expr::Lambda { body, .. } => {
-                        vibe_core::recursion_detector::is_recursive(name, body)
+                        vibe_language::recursion_detector::is_recursive(name, body)
                     }
                     Expr::FunctionDef { body, .. } => {
-                        vibe_core::recursion_detector::is_recursive(name, body)
+                        vibe_language::recursion_detector::is_recursive(name, body)
                     }
                     _ => false,
                 };
@@ -1032,7 +1032,7 @@ impl TypeChecker {
                     effect_checker.infer_effects(body, env)?
                 } else {
                     // If no effect checker, assume pure
-                    vibe_core::extensible_effects::ExtensibleEffectRow::pure()
+                    vibe_language::extensible_effects::ExtensibleEffectRow::pure()
                 };
 
                 env.pop_scope();
@@ -1586,7 +1586,7 @@ impl TypeChecker {
 pub use perceus::transform_to_ir;
 
 // Re-export commonly used types
-pub use vibe_core::ir::IrExpr;
+pub use vibe_language::ir::IrExpr;
 
 // Public API function for type checking
 pub fn type_check(expr: &Expr) -> Result<Type, XsError> {

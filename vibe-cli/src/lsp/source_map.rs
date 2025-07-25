@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use tower_lsp::lsp_types::{Position, Range};
-use vibe_core::{Expr, Span};
+use vibe_language::{Expr, Span};
 
 /// Maps between source positions and AST nodes
 #[derive(Debug, Clone)]

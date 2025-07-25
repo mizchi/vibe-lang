@@ -114,7 +114,7 @@ impl IncrementalCompiler {
     }
 
     /// Type check a file
-    pub fn type_check(&self, path: &str) -> Result<vibe_core::Type, vibe_core::XsError> {
+    pub fn type_check(&self, path: &str) -> Result<vibe_language::Type, vibe_language::XsError> {
         // Use the type_check query
         // Set empty content for now - it should be in cache
         let source = SourcePrograms {
@@ -225,7 +225,7 @@ impl Workspace {
         &mut self,
         path: &str,
         content: &str,
-    ) -> Result<vibe_core::Type, WorkspaceError> {
+    ) -> Result<vibe_language::Type, WorkspaceError> {
         self.compiler
             .set_file_content(path.to_string(), content.to_string());
         self.compiler
@@ -237,8 +237,8 @@ impl Workspace {
     pub fn add_term(
         &mut self,
         name: Option<String>,
-        expr: vibe_core::Expr,
-        ty: vibe_core::Type,
+        expr: vibe_language::Expr,
+        ty: vibe_language::Type,
     ) -> Result<Hash, WorkspaceError> {
         Ok(self.codebase.add_term(name, expr, ty)?)
     }
@@ -256,8 +256,8 @@ impl Workspace {
         let result = runner.run_test(&term.expr, |expr| {
             // Simple test executor - just evaluate and check if it's true
             match vibe_runtime::eval(expr) {
-                Ok(vibe_core::Value::Bool(true)) => Ok("Test passed".to_string()),
-                Ok(vibe_core::Value::Bool(false)) => Err("Test failed".to_string()),
+                Ok(vibe_language::Value::Bool(true)) => Ok("Test passed".to_string()),
+                Ok(vibe_language::Value::Bool(false)) => Err("Test failed".to_string()),
                 Ok(v) => Err(format!("Test returned non-boolean value: {v:?}")),
                 Err(e) => Err(format!("Test error: {e}")),
             }

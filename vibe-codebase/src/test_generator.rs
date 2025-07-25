@@ -5,7 +5,7 @@
 
 use crate::{Codebase, Hash, Term};
 use std::collections::HashSet;
-use vibe_core::{Expr, Ident, Literal, Span, Type, Value};
+use vibe_language::{Expr, Ident, Literal, Span, Type, Value};
 
 /// Test generation configuration
 #[derive(Debug, Clone)]

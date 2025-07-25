@@ -8,7 +8,7 @@ use crate::namespace::{DefinitionPath, NamespaceStore};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use vibe_compiler::{TypeChecker, TypeEnv};
-use vibe_core::{Type, XsError};
+use vibe_language::{Type, XsError};
 
 /// Cache entry for type checking results
 #[derive(Debug, Clone)]
@@ -51,7 +51,7 @@ impl IncrementalTypeChecker {
             .get_definition_by_path(path)
             .ok_or_else(|| {
                 XsError::RuntimeError(
-                    vibe_core::Span::new(0, 0),
+                    vibe_language::Span::new(0, 0),
                     format!("Definition not found: {}", path.to_string()),
                 )
             })?;
@@ -64,7 +64,7 @@ impl IncrementalTypeChecker {
                 return Ok(cached.type_.clone());
             } else {
                 return Err(XsError::TypeError(
-                    vibe_core::Span::new(0, 0),
+                    vibe_language::Span::new(0, 0),
                     cached
                         .error
                         .clone()
@@ -189,7 +189,7 @@ impl IncrementalTypeChecker {
                 .get_definition(&current_hash)
                 .ok_or_else(|| {
                     XsError::RuntimeError(
-                        vibe_core::Span::new(0, 0),
+                        vibe_language::Span::new(0, 0),
                         format!("Definition not found: {current_hash}"),
                     )
                 })?;
@@ -220,7 +220,7 @@ impl IncrementalTypeChecker {
     fn type_check_single_definition(&self, hash: &DefinitionHash) -> Result<Type, XsError> {
         let definition = self.namespace_store.get_definition(hash).ok_or_else(|| {
             XsError::RuntimeError(
-                vibe_core::Span::new(0, 0),
+                vibe_language::Span::new(0, 0),
                 format!("Definition not found: {hash}"),
             )
         })?;
@@ -263,7 +263,7 @@ impl IncrementalTypeChecker {
                 // Type check body
                 let body_type = type_checker
                     .check(body, &mut type_env)
-                    .map_err(|e| XsError::TypeError(vibe_core::Span::new(0, 0), e))?;
+                    .map_err(|e| XsError::TypeError(vibe_language::Span::new(0, 0), e))?;
 
                 // Build function type
                 let mut result_type = body_type;
@@ -275,7 +275,7 @@ impl IncrementalTypeChecker {
             }
             crate::namespace::DefinitionContent::Value(expr) => type_checker
                 .check(expr, &mut type_env)
-                .map_err(|e| XsError::TypeError(vibe_core::Span::new(0, 0), e)),
+                .map_err(|e| XsError::TypeError(vibe_language::Span::new(0, 0), e)),
             crate::namespace::DefinitionContent::Type { .. } => {
                 // Type definitions have kind * -> *
                 Ok(Type::Var("Type".to_string()))
@@ -368,7 +368,7 @@ pub struct BatchResult {
 mod tests {
     use super::*;
     use crate::namespace::{DefinitionContent, NamespaceStore};
-    use vibe_core::{Expr, Literal, Span};
+    use vibe_language::{Expr, Literal, Span};
 
     #[test]
     fn test_cache_hit() {

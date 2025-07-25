@@ -8,7 +8,7 @@ use super::emit::emit_wat;
 use super::{codegen::CodeGenerator, CodeGenError, WasmModule};
 use crate::PerceusTransform;
 use std::collections::HashMap;
-use vibe_core::Expr;
+use vibe_language::Expr;
 use wasm_encoder::{Component, ComponentTypeSection};
 use wit_component::ComponentEncoder;
 
@@ -161,7 +161,7 @@ pub fn compile_xs_to_component(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::{Literal, Span};
+    use vibe_language::{Literal, Span};
 
     #[test]
     fn test_simple_component_build() {

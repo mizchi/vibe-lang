@@ -1,8 +1,8 @@
 //! Integration tests for new parser and syntax features
 
 use vibe_compiler::type_check;
-use vibe_core::parser::Parser;
-use vibe_core::{Environment, Value};
+use vibe_language::parser::Parser;
+use vibe_language::{Environment, Value};
 use vibe_runtime::Interpreter;
 
 #[test]
@@ -51,7 +51,7 @@ fn test_record_literal() {
     
     // Should parse successfully as RecordLiteral
     match expr {
-        vibe_core::Expr::RecordLiteral { fields, .. } => {
+        vibe_language::Expr::RecordLiteral { fields, .. } => {
             assert_eq!(fields.len(), 2);
         }
         _ => panic!("Expected RecordLiteral"),
@@ -67,7 +67,7 @@ fn test_hole_syntax() {
     
     // Should parse as Hole
     match expr {
-        vibe_core::Expr::Hole { .. } => {
+        vibe_language::Expr::Hole { .. } => {
             // OK
         }
         _ => panic!("Expected Hole"),
@@ -83,7 +83,7 @@ fn test_do_block() {
     
     // Should parse as Do
     match expr {
-        vibe_core::Expr::Do { effects, .. } => {
+        vibe_language::Expr::Do { effects, .. } => {
             assert_eq!(effects.len(), 1);
             assert_eq!(effects[0], "IO");
         }
@@ -121,10 +121,10 @@ fn test_if_with_blocks() {
     
     // Should parse as If with block expressions
     match expr {
-        vibe_core::Expr::If { then_expr, else_expr: _, .. } => {
+        vibe_language::Expr::If { then_expr, else_expr: _, .. } => {
             // Both branches should be strings
             match then_expr.as_ref() {
-                vibe_core::Expr::Literal(vibe_core::Literal::String(s), _) => {
+                vibe_language::Expr::Literal(vibe_language::Literal::String(s), _) => {
                     assert_eq!(s, "positive");
                 }
                 _ => panic!("Expected string literal in then branch"),
@@ -149,7 +149,7 @@ fn test_case_expression() {
     
     // Should parse as Match
     match expr {
-        vibe_core::Expr::Match { cases, .. } => {
+        vibe_language::Expr::Match { cases, .. } => {
             assert_eq!(cases.len(), 3);
         }
         _ => panic!("Expected Match expression"),
@@ -165,7 +165,7 @@ fn test_record_access() {
     
     // Should parse as RecordAccess
     match expr {
-        vibe_core::Expr::RecordAccess { field, .. } => {
+        vibe_language::Expr::RecordAccess { field, .. } => {
             assert_eq!(field.0, "name");
         }
         _ => panic!("Expected RecordAccess"),

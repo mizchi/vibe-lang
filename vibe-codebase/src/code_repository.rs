@@ -514,7 +514,7 @@ mod tests {
 
         // Create a test term
         let expr =
-            vibe_core::Expr::Literal(vibe_core::Literal::Int(42), vibe_core::Span::new(0, 2));
+            vibe_language::Expr::Literal(vibe_language::Literal::Int(42), vibe_language::Span::new(0, 2));
         let hash =
             Hash::from_hex("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
                 .unwrap();
@@ -522,7 +522,7 @@ mod tests {
             hash: hash.clone(),
             name: Some("answer".to_string()),
             expr: expr.clone(),
-            ty: vibe_core::Type::Int,
+            ty: vibe_language::Type::Int,
             dependencies: HashSet::new(),
         };
 
@@ -553,8 +553,8 @@ mod tests {
         let term1 = Term {
             hash: hash1.clone(),
             name: Some("base".to_string()),
-            expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1)),
-            ty: vibe_core::Type::Int,
+            expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1)),
+            ty: vibe_language::Type::Int,
             dependencies: HashSet::new(),
         };
 
@@ -564,11 +564,11 @@ mod tests {
         let term2 = Term {
             hash: hash2.clone(),
             name: Some("derived".to_string()),
-            expr: vibe_core::Expr::Ident(
-                vibe_core::Ident("base".to_string()),
-                vibe_core::Span::new(0, 4),
+            expr: vibe_language::Expr::Ident(
+                vibe_language::Ident("base".to_string()),
+                vibe_language::Span::new(0, 4),
             ),
-            ty: vibe_core::Type::Int,
+            ty: vibe_language::Type::Int,
             dependencies: deps.clone(),
         };
 
@@ -606,11 +606,11 @@ mod tests {
             let term = Term {
                 hash: hash.clone(),
                 name: Some(name.to_string()),
-                expr: vibe_core::Expr::Literal(
-                    vibe_core::Literal::Int(1),
-                    vibe_core::Span::new(0, 1),
+                expr: vibe_language::Expr::Literal(
+                    vibe_language::Literal::Int(1),
+                    vibe_language::Span::new(0, 1),
                 ),
-                ty: vibe_core::Type::Int,
+                ty: vibe_language::Type::Int,
                 dependencies: HashSet::new(),
             };
             repo.store_term(&term, &HashSet::new()).unwrap();
@@ -638,8 +638,8 @@ mod tests {
         let term = Term {
             hash: hash.clone(),
             name: Some("popular".to_string()),
-            expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1)),
-            ty: vibe_core::Type::Int,
+            expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1)),
+            ty: vibe_language::Type::Int,
             dependencies: HashSet::new(),
         };
 
@@ -681,8 +681,8 @@ mod tests {
         let add_term = Term {
             hash: add_hash.clone(),
             name: Some("Math.add".to_string()),
-            expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1)),
-            ty: vibe_core::Type::Int,
+            expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1)),
+            ty: vibe_language::Type::Int,
             dependencies: HashSet::new(),
         };
 
@@ -692,8 +692,8 @@ mod tests {
         let double_term = Term {
             hash: double_hash.clone(),
             name: Some("Math.double".to_string()),
-            expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(2), vibe_core::Span::new(0, 1)),
-            ty: vibe_core::Type::Int,
+            expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(2), vibe_language::Span::new(0, 1)),
+            ty: vibe_language::Type::Int,
             dependencies: double_deps.clone(),
         };
 
@@ -703,8 +703,8 @@ mod tests {
         let compute_term = Term {
             hash: compute_hash.clone(),
             name: Some("Main.compute".to_string()),
-            expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(3), vibe_core::Span::new(0, 1)),
-            ty: vibe_core::Type::Int,
+            expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(3), vibe_language::Span::new(0, 1)),
+            ty: vibe_language::Type::Int,
             dependencies: compute_deps.clone(),
         };
 
@@ -714,8 +714,8 @@ mod tests {
         let unused_term = Term {
             hash: unused_hash.clone(),
             name: Some("unused".to_string()),
-            expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(4), vibe_core::Span::new(0, 1)),
-            ty: vibe_core::Type::Int,
+            expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(4), vibe_language::Span::new(0, 1)),
+            ty: vibe_language::Type::Int,
             dependencies: unused_deps.clone(),
         };
 
@@ -753,8 +753,8 @@ mod tests {
         let term = Term {
             hash: hash.clone(),
             name: Some("test_expr".to_string()),
-            expr: vibe_core::Expr::Literal(vibe_core::Literal::Int(3), vibe_core::Span::new(0, 1)),
-            ty: vibe_core::Type::Int,
+            expr: vibe_language::Expr::Literal(vibe_language::Literal::Int(3), vibe_language::Span::new(0, 1)),
+            ty: vibe_language::Type::Int,
             dependencies: HashSet::new(),
         };
         repo.store_term(&term, &HashSet::new()).unwrap();
@@ -778,11 +778,11 @@ mod tests {
         let dead_term = Term {
             hash: dead_hash.clone(),
             name: Some("dead_code".to_string()),
-            expr: vibe_core::Expr::Literal(
-                vibe_core::Literal::Int(666),
-                vibe_core::Span::new(0, 3),
+            expr: vibe_language::Expr::Literal(
+                vibe_language::Literal::Int(666),
+                vibe_language::Span::new(0, 3),
             ),
-            ty: vibe_core::Type::Int,
+            ty: vibe_language::Type::Int,
             dependencies: HashSet::new(),
         };
 

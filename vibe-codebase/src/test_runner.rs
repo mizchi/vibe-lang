@@ -11,7 +11,7 @@ use crate::test_cache::{TestCache, TestOutcome};
 use crate::test_generator::{GeneratedTest, TestProperty};
 use crate::Codebase;
 use vibe_compiler::TypeChecker;
-use vibe_core::{Environment, Expr, Value};
+use vibe_language::{Environment, Expr, Value};
 use vibe_runtime::Interpreter;
 
 /// Test execution configuration
@@ -270,7 +270,7 @@ impl TestRunner {
 
     /// Populate runtime environment with definitions from codebase
     fn populate_runtime_env(&self, env: &mut Environment) {
-        use vibe_core::{Ident, Value};
+        use vibe_language::{Ident, Value};
 
         // Add definitions from codebase to runtime environment
         // We need to evaluate each definition and bind it

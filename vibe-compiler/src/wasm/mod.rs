@@ -4,7 +4,7 @@
 //! moved from vibe-wasm crate.
 
 use thiserror::Error;
-use vibe_core::ir::IrExpr;
+use vibe_language::ir::IrExpr;
 
 // WebAssembly code generation modules
 pub mod codegen;

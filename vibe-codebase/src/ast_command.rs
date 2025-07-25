@@ -4,7 +4,7 @@
 //! This enables AI and tools to make precise, type-safe code modifications.
 
 use crate::namespace::{DefinitionPath, NamespacePath};
-use vibe_core::{Expr, Ident, Pattern, Type};
+use vibe_language::{Expr, Ident, Pattern, Type};
 
 /// A command that transforms the AST
 #[derive(Debug, Clone)]
@@ -533,7 +533,7 @@ pub enum TransformError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::{Literal, Span};
+    use vibe_language::{Literal, Span};
 
     #[test]
     fn test_replace_root() {

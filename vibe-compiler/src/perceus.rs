@@ -3,8 +3,8 @@
 //! This module implements the Perceus memory management transformation,
 //! converting high-level expressions into IR with explicit drop/dup instructions.
 
-use vibe_core::ir::IrExpr;
-use vibe_core::{Expr, Ident, Literal};
+use vibe_language::ir::IrExpr;
+use vibe_language::{Expr, Ident, Literal};
 
 /// Perceus transformer that converts AST to IR with memory management
 #[derive(Default)]
@@ -286,7 +286,7 @@ pub fn transform_to_ir(expr: &Expr) -> IrExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::{Span, Type};
+    use vibe_language::{Span, Type};
 
     #[test]
     fn test_literal_transform() {

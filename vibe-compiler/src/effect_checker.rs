@@ -5,7 +5,7 @@
 
 use crate::TypeEnv;
 use std::collections::{HashMap, HashSet};
-use vibe_core::{
+use vibe_language::{
     extensible_effects::{EffectDefinition, EffectInstance, ExtensibleEffectRow},
     Expr,
 };
@@ -46,7 +46,7 @@ impl EffectChecker {
     pub fn new() -> Self {
         let mut effect_definitions = HashMap::new();
         // Convert BTreeMap to HashMap
-        for (name, def) in vibe_core::extensible_effects::builtin_effects() {
+        for (name, def) in vibe_language::extensible_effects::builtin_effects() {
             effect_definitions.insert(name, def);
         }
 
@@ -457,7 +457,7 @@ impl EffectChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::{Expr, Ident, Literal, Span};
+    use vibe_language::{Expr, Ident, Literal, Span};
 
     #[test]
     fn test_pure_expression() {
@@ -509,7 +509,7 @@ mod tests {
         // Create a handler
         let handle_expr = Expr::HandleExpr {
             expr: Box::new(perform_expr),
-            handlers: vec![vibe_core::HandlerCase {
+            handlers: vec![vibe_language::HandlerCase {
                 effect: Ident("State".to_string()),
                 operation: None,
                 args: vec![],
@@ -555,7 +555,7 @@ mod tests {
         // Handler that only handles State
         let handle_expr = Expr::HandleExpr {
             expr: Box::new(block),
-            handlers: vec![vibe_core::HandlerCase {
+            handlers: vec![vibe_language::HandlerCase {
                 effect: Ident("State".to_string()),
                 operation: None,
                 args: vec![],

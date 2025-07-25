@@ -11,47 +11,47 @@ mod tests {
 
         // Add some terms
         let expr1 =
-            vibe_core::Expr::Literal(vibe_core::Literal::Int(42), vibe_core::Span::new(0, 2));
+            vibe_language::Expr::Literal(vibe_language::Literal::Int(42), vibe_language::Span::new(0, 2));
         let _hash1 = codebase
-            .add_term(Some("answer".to_string()), expr1, vibe_core::Type::Int)
+            .add_term(Some("answer".to_string()), expr1, vibe_language::Type::Int)
             .unwrap();
 
-        let expr2 = vibe_core::Expr::Lambda {
+        let expr2 = vibe_language::Expr::Lambda {
             params: vec![(
-                vibe_core::Ident("x".to_string()),
-                Some(vibe_core::Type::Int),
+                vibe_language::Ident("x".to_string()),
+                Some(vibe_language::Type::Int),
             )],
-            body: Box::new(vibe_core::Expr::Ident(
-                vibe_core::Ident("x".to_string()),
-                vibe_core::Span::new(0, 1),
+            body: Box::new(vibe_language::Expr::Ident(
+                vibe_language::Ident("x".to_string()),
+                vibe_language::Span::new(0, 1),
             )),
-            span: vibe_core::Span::new(0, 10),
+            span: vibe_language::Span::new(0, 10),
         };
         let _hash2 = codebase
             .add_term(
                 Some("identity".to_string()),
                 expr2,
-                vibe_core::Type::Function(
-                    Box::new(vibe_core::Type::Int),
-                    Box::new(vibe_core::Type::Int),
+                vibe_language::Type::Function(
+                    Box::new(vibe_language::Type::Int),
+                    Box::new(vibe_language::Type::Int),
                 ),
             )
             .unwrap();
 
         // Add dependency
-        let expr3 = vibe_core::Expr::Apply {
-            func: Box::new(vibe_core::Expr::Ident(
-                vibe_core::Ident("identity".to_string()),
-                vibe_core::Span::new(0, 8),
+        let expr3 = vibe_language::Expr::Apply {
+            func: Box::new(vibe_language::Expr::Ident(
+                vibe_language::Ident("identity".to_string()),
+                vibe_language::Span::new(0, 8),
             )),
-            args: vec![vibe_core::Expr::Ident(
-                vibe_core::Ident("answer".to_string()),
-                vibe_core::Span::new(0, 6),
+            args: vec![vibe_language::Expr::Ident(
+                vibe_language::Ident("answer".to_string()),
+                vibe_language::Span::new(0, 6),
             )],
-            span: vibe_core::Span::new(0, 20),
+            span: vibe_language::Span::new(0, 20),
         };
         codebase
-            .add_term(Some("result".to_string()), expr3, vibe_core::Type::Int)
+            .add_term(Some("result".to_string()), expr3, vibe_language::Type::Int)
             .unwrap();
 
         codebase
@@ -90,9 +90,9 @@ mod tests {
         let mut codebase = Codebase::new();
         for i in 0..100 {
             let expr =
-                vibe_core::Expr::Literal(vibe_core::Literal::Int(i), vibe_core::Span::new(0, 4));
+                vibe_language::Expr::Literal(vibe_language::Literal::Int(i), vibe_language::Span::new(0, 4));
             codebase
-                .add_term(Some(format!("num_{}", i)), expr, vibe_core::Type::Int)
+                .add_term(Some(format!("num_{}", i)), expr, vibe_language::Type::Int)
                 .unwrap();
         }
 
@@ -154,16 +154,16 @@ mod tests {
         codebase
             .add_term(
                 Some("Math.add".to_string()),
-                vibe_core::Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1)),
-                vibe_core::Type::Int,
+                vibe_language::Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1)),
+                vibe_language::Type::Int,
             )
             .unwrap();
 
         codebase
             .add_term(
                 Some("Math.mul".to_string()),
-                vibe_core::Expr::Literal(vibe_core::Literal::Int(2), vibe_core::Span::new(0, 1)),
-                vibe_core::Type::Int,
+                vibe_language::Expr::Literal(vibe_language::Literal::Int(2), vibe_language::Span::new(0, 1)),
+                vibe_language::Type::Int,
             )
             .unwrap();
 
@@ -171,11 +171,11 @@ mod tests {
         codebase
             .add_term(
                 Some("String.empty".to_string()),
-                vibe_core::Expr::Literal(
-                    vibe_core::Literal::String("".to_string()),
-                    vibe_core::Span::new(0, 2),
+                vibe_language::Expr::Literal(
+                    vibe_language::Literal::String("".to_string()),
+                    vibe_language::Span::new(0, 2),
                 ),
-                vibe_core::Type::String,
+                vibe_language::Type::String,
             )
             .unwrap();
 
@@ -258,16 +258,16 @@ mod tests {
         let mut cb1 = Codebase::new();
         cb1.add_term(
             Some("foo".to_string()),
-            vibe_core::Expr::Literal(vibe_core::Literal::Int(1), vibe_core::Span::new(0, 1)),
-            vibe_core::Type::Int,
+            vibe_language::Expr::Literal(vibe_language::Literal::Int(1), vibe_language::Span::new(0, 1)),
+            vibe_language::Type::Int,
         )
         .unwrap();
 
         let mut cb2 = Codebase::new();
         cb2.add_term(
             Some("bar".to_string()),
-            vibe_core::Expr::Literal(vibe_core::Literal::Int(2), vibe_core::Span::new(0, 1)),
-            vibe_core::Type::Int,
+            vibe_language::Expr::Literal(vibe_language::Literal::Int(2), vibe_language::Span::new(0, 1)),
+            vibe_language::Type::Int,
         )
         .unwrap();
 

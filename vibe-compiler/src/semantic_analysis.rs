@@ -7,7 +7,7 @@
 //! - Prepares metadata for the codebase
 
 use std::collections::{HashMap, HashSet};
-use vibe_core::{
+use vibe_language::{
     block_attributes::{
         BindingAttributes, BlockAttributeRegistry, BlockAttributes, EffectPermissions,
         ScopeAttributes,
@@ -394,7 +394,7 @@ impl SemanticAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_core::parser::parse;
+    use vibe_language::parser::parse;
 
     #[test]
     fn test_block_attribute_analysis() {
