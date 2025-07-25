@@ -6,8 +6,8 @@ use crate::{Expr, Ident, Literal};
 #[test]
 fn test_parse_top_level_application_simple() {
     // Test: add 3 4
-    let mut parser = Parser::new("add 3 4").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "add 3 4";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Apply { func, args, .. } => {
@@ -42,8 +42,8 @@ fn test_parse_top_level_application_simple() {
 #[test]
 fn test_parse_top_level_application_multiple() {
     // Test: fold add 0 list
-    let mut parser = Parser::new("fold add 0 list").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fold add 0 list";
+    let expr = parse(source).unwrap();
     
     // Should parse as ((fold add) 0) list
     match expr {
@@ -67,8 +67,8 @@ fn test_parse_top_level_mixed_expressions() {
 let f = fn x = x + 1
 f 5
 "#;
-    let mut parser = Parser::new(input).unwrap();
-    let expr = parser.parse().unwrap();
+    let source = input;
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Block { exprs, .. } => {
@@ -101,8 +101,8 @@ f 5
 #[test]
 fn test_parse_namespace_application() {
     // Test: String.concat "hello" "world"
-    let mut parser = Parser::new("String.concat \"hello\" \"world\"").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "String.concat \"hello\" \"world\"";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Apply { func, args, .. } => {
@@ -133,8 +133,8 @@ fn test_parse_namespace_application() {
 #[test]
 fn test_parse_application_with_parentheses() {
     // Test: map (fn x = x + 1) list
-    let mut parser = Parser::new("map (fn x = x + 1) list").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "map (fn x = x + 1) list";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Apply { func, args, .. } => {
@@ -167,8 +167,8 @@ fn test_parse_chained_application() {
     // Test: f g h x
     let input = "f g h x";
     println!("Testing input: {:?}", input);
-    let mut parser = Parser::new(input).unwrap();
-    let expr = parser.parse().unwrap();
+    let source = input;
+    let expr = parse(source).unwrap();
     
     // Should parse as ((f g) h) x
     match expr {
@@ -215,8 +215,8 @@ fn test_parse_mixed_operators_and_application() {
     // Test: f x + g y
     // NOTE: This test expects the expression to be parsed as (f x) + (g y)
     // which is not a top-level function application but an infix expression
-    let mut parser = Parser::new("f x + g y").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "f x + g y";
+    let expr = parse(source).unwrap();
     
     // Should parse as (f x) + (g y)
     match expr {

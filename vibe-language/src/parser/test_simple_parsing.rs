@@ -2,11 +2,12 @@
 
 use super::*;
 use crate::{Expr, Ident};
+use crate::parser::parse;
 
 #[test]
 fn test_parse_single_identifier() {
-    let mut parser = Parser::new("x").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "x";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Ident(Ident(name), _) => assert_eq!(name, "x"),
@@ -18,11 +19,7 @@ fn test_parse_single_identifier() {
 fn test_parse_two_identifiers() {
     // Test with proper string
     let input = "x y";
-    let mut parser = match Parser::new(input) {
-        Ok(p) => p,
-        Err(e) => panic!("Failed to create parser: {:?}", e),
-    };
-    let expr = match parser.parse() {
+    let expr = match parse(input) {
         Ok(e) => e,
         Err(e) => panic!("Parse failed: {:?}", e),
     };

@@ -6,8 +6,8 @@ use crate::{Expr, Ident};
 #[test]
 fn test_parse_fn_with_complex_body() {
     // Test: fn x = let y = x * 2 in y + 1
-    let mut parser = Parser::new("fn x = let y = x * 2 in y + 1").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x = let y = x * 2 in y + 1";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Lambda { params, body, .. } => {
@@ -43,8 +43,8 @@ fn test_parse_fn_with_match() {
     // Test: fn x = match x { 0 -> "zero"; _ -> "other" }
     // Note: Using semicolon instead of comma between match arms
     let input = r#"fn x = match x { 0 -> "zero"; _ -> "other" }"#;
-    let mut parser = Parser::new(input).unwrap();
-    let expr = parser.parse().unwrap();
+    let source = input;
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Lambda { params, body, .. } => {
@@ -73,8 +73,8 @@ fn test_parse_fn_with_match() {
 fn test_parse_fn_with_optional_params() {
     // Test: fn x?: Int -> y: String = strConcat (intToString x) y
     // Optional parameters with ? syntax are not yet supported
-    let mut parser = Parser::new("fn x?: Int -> y: String = strConcat (intToString x) y").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x?: Int -> y: String = strConcat (intToString x) y";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Lambda { params, body, .. } => {
@@ -99,8 +99,8 @@ fn test_parse_fn_with_optional_params() {
 #[test]
 fn test_parse_fn_with_type_constraints() {
     // Test: fn x: a -> y: a -> Bool = eq x y
-    let mut parser = Parser::new("fn x: a -> y: a -> Bool = eq x y").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x: a -> y: a -> Bool = eq x y";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Lambda { params, .. } => {
@@ -116,8 +116,8 @@ fn test_parse_fn_with_type_constraints() {
 fn test_parse_fn_empty_with_effects() {
     // Test: fn {} with IO effect (future syntax)
     // For now, just test empty fn
-    let mut parser = Parser::new("fn {}").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn {}";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Lambda { params, body, .. } => {
@@ -142,7 +142,8 @@ fn test_parse_fn_empty_with_effects() {
 fn test_parse_fn_with_record_destructuring() {
     // Test: fn {x, y} = x + y
     // This might not be supported yet, but let's test the current behavior
-    let result = Parser::new("fn {x, y} = x + y");
+    let source = "fn {x, y} = x + y";
+    let result = parse(source);
     
     // If record destructuring in params is not supported, this should fail
     // or parse differently
@@ -150,21 +151,13 @@ fn test_parse_fn_with_record_destructuring() {
         // Expected for now
         return;
     }
-    
-    let mut parser = result.unwrap();
-    let expr_result = parser.parse();
-    
-    if expr_result.is_err() {
-        // Also acceptable if it fails during parsing
-        return;
-    }
 }
 
 #[test]
 fn test_parse_fn_in_let_binding() {
     // Test: let compose = fn f -> g -> x = f (g x)
-    let mut parser = Parser::new("let compose = fn f -> g -> x = f (g x)").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "let compose = fn f -> g -> x = f (g x)";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Let { name, value, .. } => {
@@ -203,8 +196,8 @@ fn test_parse_fn_in_let_binding() {
 #[test]
 fn test_parse_fn_with_guards() {
     // Test: fn x = if x > 0 { x } else { -x }
-    let mut parser = Parser::new("fn x = if x > 0 { x } else { -x }").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x = if x > 0 { x } else { -x }";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Lambda { params, body, .. } => {
@@ -225,8 +218,8 @@ fn test_parse_fn_with_guards() {
 fn test_parse_fn_type_annotation_only() {
     // Test: fn x: Int -> Int = x
     // This syntax with return type annotation is not yet supported
-    let mut parser = Parser::new("fn x: Int -> Int = x").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x: Int -> Int = x";
+    let expr = parse(source).unwrap();
     
     match expr {
         Expr::Lambda { params, body, .. } => {

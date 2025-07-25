@@ -3,15 +3,15 @@ use crate::{Expr, Ident, Literal, Span};
 
 #[test]
 fn test_parse_simple_expression() {
-    let mut parser = Parser::new("42").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "42";
+    let expr = parse(source).unwrap();
     assert_eq!(expr, Expr::Literal(Literal::Int(42), Span::new(0, 2)));
 }
 
 #[test]
 fn test_parse_let_binding() {
-    let mut parser = Parser::new("let x = 42").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "let x = 42";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Let { name, value, .. } => {
             assert_eq!(name, Ident("x".to_string()));
@@ -26,8 +26,8 @@ fn test_parse_let_binding() {
 
 #[test]
 fn test_parse_function_definition() {
-    let mut parser = Parser::new("let add x y = x + y").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "let add x y = x + y";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Let { name, value, .. } => {
             assert_eq!(name, Ident("add".to_string()));
@@ -47,8 +47,8 @@ fn test_parse_function_definition() {
 
 #[test]
 fn test_parse_pipeline() {
-    let mut parser = Parser::new("let result = x |> f |> g").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "let result = x |> f |> g";
+    let expr = parse(source).unwrap();
     // Pipeline should be wrapped in Let
     match expr {
         Expr::Let { value, .. } => {
@@ -66,8 +66,8 @@ fn test_parse_pipeline() {
 
 #[test]
 fn test_parse_block() {
-    let mut parser = Parser::new("{ let x = 1; x + 2 }").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "{ let x = 1; x + 2 }";
+    let expr = parse(source).unwrap();
     // Block should return last expression or Block itself
     match expr {
         Expr::Block { exprs, .. } => {
@@ -84,8 +84,8 @@ fn test_parse_block() {
 #[test]
 fn test_parse_if_with_blocks() {
     // Test simpler version first
-    let mut parser = Parser::new("if true { 1 } else { -1 }").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "if true { 1 } else { -1 }";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::If {
             then_expr,
@@ -107,8 +107,8 @@ fn test_parse_if_with_blocks() {
 
 #[test]
 fn test_parse_lambda() {
-    let mut parser = Parser::new("fn x = x * 2").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x = x * 2";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params, .. } => {
             assert_eq!(params.len(), 1);
@@ -120,8 +120,8 @@ fn test_parse_lambda() {
 
 #[test]
 fn test_parse_lambda_multi_param() {
-    let mut parser = Parser::new("let add x y = x + y").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "let add x y = x + y";
+    let expr = parse(source).unwrap();
     // Should be a let binding with FunctionDef
     match expr {
         Expr::Let { value, .. } => {
@@ -140,8 +140,8 @@ fn test_parse_lambda_multi_param() {
 
 #[test]
 fn test_parse_list() {
-    let mut parser = Parser::new("[1, 2, 3]").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "[1, 2, 3]";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::List(items, _) => {
             assert_eq!(items.len(), 3);
@@ -165,8 +165,8 @@ fn test_parse_list() {
 // Hole syntax is not supported in parser
 // #[test]
 // fn test_parse_hole() {
-//     let mut parser = Parser::new("x * @:Int").unwrap();
-//     let expr = parser.parse().unwrap();
+//     let source = "x * @:Int";
+//     let expr = parse(source).unwrap();
 //     // Should parse @ as a special hole expression
 //     match expr {
 //         Expr::Apply { args, .. } => {
@@ -190,8 +190,8 @@ match x {
     _ -> "other"
 }
 "#;
-    let mut parser = Parser::new(input).unwrap();
-    let expr = parser.parse().unwrap();
+    let source = input;
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Match { cases, .. } => {
             assert_eq!(cases.len(), 3);
@@ -203,8 +203,8 @@ match x {
 #[test]
 fn test_parse_record_literal() {
     let input = r#"{ name: "Alice", age: 30 }"#;
-    let mut parser = Parser::new(input).unwrap();
-    let expr = parser.parse().unwrap();
+    let source = input;
+    let expr = parse(source).unwrap();
     match expr {
         Expr::RecordLiteral { fields, .. } => {
             assert_eq!(fields.len(), 2);
@@ -218,8 +218,8 @@ fn test_parse_record_literal() {
 #[test]
 fn test_parse_record_access() {
     let input = "person.name";
-    let mut parser = Parser::new(input).unwrap();
-    let expr = parser.parse().unwrap();
+    let source = input;
+    let expr = parse(source).unwrap();
     match expr {
         Expr::RecordAccess { field, .. } => {
             assert_eq!(field, Ident("name".to_string()));
@@ -231,8 +231,8 @@ fn test_parse_record_access() {
 #[test]
 fn test_parse_do_block() {
     let input = "do { print \"Hello\" }";
-    let mut parser = Parser::new(input).unwrap();
-    let expr = parser.parse().unwrap();
+    let source = input;
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Do { statements, .. } => {
             // The current parser creates a do block with the body as statements
@@ -245,10 +245,10 @@ fn test_parse_do_block() {
 #[test]
 fn test_parse_with_handler() {
     let input = "with myHandler { doSomething }";
-    let mut parser = Parser::new(input).unwrap();
+    let source = input;
     // Debug: try without parse() wrapper first
     println!("About to parse with handler");
-    let expr = parser.parse().unwrap();
+    let expr = parse(source).unwrap();
     match expr {
         Expr::WithHandler { .. } => {
             // Successfully parsed with handler
@@ -261,8 +261,8 @@ fn test_parse_with_handler() {
 fn test_parse_comments() {
     // Test single expression with comment
     let input = "# This is a comment\nlet x = 42";
-    let mut parser = Parser::new(input).unwrap();
-    let expr = parser.parse().unwrap();
+    let source = input;
+    let expr = parse(source).unwrap();
     // Comments should be skipped
     match expr {
         Expr::Let { .. } => {

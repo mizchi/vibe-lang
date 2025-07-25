@@ -1,6 +1,7 @@
 //! Intermediate Representation for XS language with Perceus memory management
 
 use crate::{Literal, Type};
+use serde::{Serialize, Deserialize};
 
 /// IR expressions with explicit memory management instructions
 #[derive(Debug, Clone, PartialEq)]
@@ -230,7 +231,7 @@ impl IrExpr {
 }
 
 /// Typed IR expression with type information
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypedIrExpr {
     /// Literal value with type
     Literal { value: Literal, ty: Type },
@@ -330,7 +331,7 @@ pub enum TypedIrExpr {
 }
 
 /// Pattern for pattern matching in typed IR
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypedPattern {
     /// Wildcard pattern
     Wildcard,

@@ -1,7 +1,8 @@
-//! Parser V2 - New shell-friendly syntax parser for XS language
+//! Parser - GLL-based parser for Vibe language
 //!
-//! This parser implements the new syntax design described in docs/new_syntax.md
+//! This parser uses a Generalized LL (GLL) algorithm for parsing
 //! Goals:
+//! - Handle ambiguous grammars
 //! - Shell-friendly syntax with block scopes using {}
 //! - Pipeline operators with | as primary
 //! - Interactive hole-filling with @ notation
@@ -12,18 +13,35 @@
 
 pub mod ast_bridge;
 pub mod lexer;
-pub mod parser_impl;
-pub mod simple_parser;
 pub mod experimental;
 
 pub use lexer::Lexer;
-pub use parser_impl::Parser;
-pub use simple_parser::SimpleParser;
+pub use experimental::unified_vibe_parser::UnifiedVibeParser;
+
+// Re-export for backward compatibility
+pub use UnifiedVibeParser as Parser;
 
 // Convenience function for parsing
 pub fn parse(input: &str) -> Result<crate::Expr, crate::XsError> {
-    let mut parser = Parser::new(input)?;
-    parser.parse()
+    let mut parser = UnifiedVibeParser::new();
+    let exprs = parser.parse(input)
+        .map_err(|e| crate::XsError::ParseError(0, e.to_string()))?;
+    
+    // Return the first expression or create a sequence if multiple
+    match exprs.len() {
+        0 => Err(crate::XsError::ParseError(
+            0,
+            "No expressions found".to_string()
+        )),
+        1 => Ok(exprs.into_iter().next().unwrap()),
+        _ => {
+            // Create a Block expression for multiple expressions
+            Ok(crate::Expr::Block {
+                exprs,
+                span: crate::Span::new(0, 0)
+            })
+        }
+    }
 }
 
 #[cfg(test)]

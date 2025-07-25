@@ -1,13 +1,16 @@
 use super::gll::GLLParser;
 use super::unified_vibe_grammar::create_unified_vibe_grammar;
 use super::error::{ParseError, ErrorLocation};
+use super::sppf_to_ast_converter::{SPPFToASTConverter, ConversionError};
 use crate::parser::lexer::{Lexer, Token};
-use crate::{Expr, Pattern, Type, Span};
+use crate::{Expr};
 use crate::XsError;
 
 /// Unified Vibe language parser using consistent syntax
 pub struct UnifiedVibeParser {
     gll_parser: GLLParser,
+    /// Store tokens for SPPF to AST conversion
+    last_tokens: Vec<Token>,
 }
 
 impl UnifiedVibeParser {
@@ -15,6 +18,7 @@ impl UnifiedVibeParser {
         let grammar = create_unified_vibe_grammar();
         Self {
             gll_parser: GLLParser::new(grammar),
+            last_tokens: vec![],
         }
     }
     
@@ -22,6 +26,9 @@ impl UnifiedVibeParser {
     pub fn parse(&mut self, source: &str) -> Result<Vec<Expr>, ParseError> {
         // Tokenize the input
         let tokens = self.tokenize(source)?;
+        
+        // Store tokens for later use
+        self.last_tokens = tokens.clone();
         
         // Convert tokens to strings for GLL parser
         let token_strings: Vec<String> = tokens.into_iter()
@@ -31,8 +38,12 @@ impl UnifiedVibeParser {
         // Parse with GLL parser
         let sppf_roots = self.gll_parser.parse_with_errors(token_strings)?;
         
+        // eprintln!("GLL parse returned {} roots", sppf_roots.len());
+        
         // Convert SPPF to AST
+        // eprintln!("Starting SPPF to AST conversion...");
         let ast = self.sppf_to_ast(sppf_roots)?;
+        // eprintln!("AST conversion complete: {} expressions", ast.len());
         
         Ok(ast)
     }
@@ -76,7 +87,7 @@ impl UnifiedVibeParser {
             Token::Import => "import".to_string(),
             Token::Export => "exposing".to_string(),  // Using 'exposing' in unified syntax
             Token::As => "as".to_string(),
-            Token::Fn => "\\".to_string(),  // Lambda syntax
+            Token::Fn => "fn".to_string(),  // Lambda syntax
             Token::Perform => "perform".to_string(),
             Token::Handle => "handle".to_string(),
             Token::With => "with".to_string(),
@@ -184,11 +195,38 @@ impl UnifiedVibeParser {
         ParseError::syntax(message, location)
     }
     
-    /// Convert SPPF to AST (placeholder - needs implementation)
-    fn sppf_to_ast(&self, _sppf_roots: Vec<usize>) -> Result<Vec<Expr>, ParseError> {
-        // TODO: Implement SPPF to AST conversion
-        // This will require walking the SPPF tree and constructing AST nodes
-        Ok(vec![])
+    /// Convert SPPF to AST
+    fn sppf_to_ast(&self, sppf_roots: Vec<usize>) -> Result<Vec<Expr>, ParseError> {
+        // eprintln!("sppf_to_ast called with {} roots", sppf_roots.len());
+        // Get SPPF reference from the parser
+        let sppf = self.gll_parser.get_sppf();
+        
+        // Use stored tokens
+        let tokens = self.last_tokens.clone();
+        // eprintln!("Got {} tokens from tokenizer", tokens.len());
+        
+        // Create converter
+        let converter = SPPFToASTConverter::new(sppf, tokens);
+        
+        // Convert SPPF roots to AST
+        let result = converter.convert(sppf_roots)
+            .map_err(|e| self.conversion_error_to_parse_error(e));
+        // eprintln!("Conversion result: {:?}", result);
+        result
+    }
+    
+    /// Convert ConversionError to ParseError
+    fn conversion_error_to_parse_error(&self, error: ConversionError) -> ParseError {
+        let message = format!("AST conversion error: {}", error);
+        let location = ErrorLocation {
+            file: None,
+            line: 1,
+            column: 1,
+            offset: 0,
+            length: 1,
+        };
+        
+        ParseError::syntax(message, location)
     }
 }
 
@@ -225,6 +263,12 @@ mod tests {
             | [] -> 0
             | h :: t -> 1 + length t
         "#;
+        
+        // Debug: print tokens
+        if let Ok(tokens) = parser.tokenize(source) {
+            println!("Tokens: {:?}", tokens);
+        }
+        
         let result = parser.parse(source);
         
         assert!(result.is_ok(), "Failed to parse: {:?}", result);

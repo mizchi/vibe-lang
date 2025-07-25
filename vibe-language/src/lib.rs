@@ -21,6 +21,7 @@ pub mod parser;
 pub mod pretty_print;
 pub mod recursion_detector;
 pub mod type_annotator;
+pub mod typed_ir;
 mod types;
 mod value;
 

@@ -244,7 +244,7 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
         ],
     });
     
-    // LambdaExpr -> \ Parameters -> Expr
+    // LambdaExpr -> \ Parameters -> Expr | fn Parameters -> Expr | fn Parameters Block
     rules.push(GLLRule {
         lhs: "LambdaExpr".to_string(),
         rhs: vec![
@@ -252,6 +252,23 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
             GLLSymbol::NonTerminal("Parameters".to_string()),
             GLLSymbol::Terminal("->".to_string()),
             GLLSymbol::NonTerminal("Expr".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "LambdaExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("fn".to_string()),
+            GLLSymbol::NonTerminal("Parameters".to_string()),
+            GLLSymbol::Terminal("->".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "LambdaExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("fn".to_string()),
+            GLLSymbol::NonTerminal("Parameters".to_string()),
+            GLLSymbol::NonTerminal("Block".to_string()),
         ],
     });
     

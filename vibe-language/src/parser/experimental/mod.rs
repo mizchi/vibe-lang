@@ -7,6 +7,9 @@ pub mod vibe_parser;
 pub mod vibe_simplified_grammar;
 pub mod unified_vibe_grammar;
 pub mod unified_vibe_parser;
+// pub mod sppf_to_ast; // Temporarily disabled due to AST structure changes
+pub mod sppf_to_ast_simple;
+pub mod sppf_to_ast_converter;
 
 pub use parser::{ParserState, ParseEffect, Constraint, NodeId};
 pub use gll::{GLLParser, GLLGrammar, GLLRule, GLLSymbol, demo_complex_gll_verification};

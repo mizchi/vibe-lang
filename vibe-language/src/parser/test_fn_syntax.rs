@@ -6,8 +6,8 @@ use crate::{Expr, Ident};
 #[test]
 fn test_parse_fn_minimal() {
     // Test: fn {}
-    let mut parser = Parser::new("fn {}").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn {}";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params, body, .. } => {
             assert_eq!(params.len(), 0);
@@ -24,8 +24,8 @@ fn test_parse_fn_minimal() {
 #[test]
 fn test_parse_fn_with_new_param_syntax() {
     // Test: fn x: Int -> y: Int = { x + y }
-    let mut parser = Parser::new("fn x: Int -> y: Int = { x + y }").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x: Int -> y: Int = { x + y }";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params, body, .. } => {
             assert_eq!(params.len(), 1);
@@ -49,8 +49,8 @@ fn test_parse_fn_with_new_param_syntax() {
 #[test]
 fn test_parse_fn_single_arg() {
     // Test: fn x = x + 1 (new syntax)
-    let mut parser = Parser::new("fn x = x + 1").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x = x + 1";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params, body, .. } => {
             assert_eq!(params.len(), 1);
@@ -68,8 +68,8 @@ fn test_parse_fn_single_arg() {
 #[test]
 fn test_parse_fn_multiple_args() {
     // Test: fn x -> y = x + y (new syntax with ->)
-    let mut parser = Parser::new("fn x -> y = x + y").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x -> y = x + y";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params, body, .. } => {
             assert_eq!(params.len(), 1);
@@ -90,8 +90,8 @@ fn test_parse_fn_multiple_args() {
 #[test]
 fn test_parse_fn_with_parens() {
     // Test: fn x = x (parentheses are not supported in new syntax)
-    let mut parser = Parser::new("fn x = x").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x = x";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params,  .. } => {
             assert_eq!(params.len(), 1);
@@ -104,8 +104,8 @@ fn test_parse_fn_with_parens() {
 #[test]
 fn test_parse_fn_with_type_annotation() {
     // Test: fn x: Int = x + 1 (new syntax)
-    let mut parser = Parser::new("fn x: Int = x + 1").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x: Int = x + 1";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params,  .. } => {
             assert_eq!(params.len(), 1);
@@ -119,8 +119,8 @@ fn test_parse_fn_with_type_annotation() {
 #[test]
 fn test_parse_fn_block_body() {
     // Test: fn x -> { x + 1 }
-    let mut parser = Parser::new("fn x -> { x + 1 }").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x -> { x + 1 }";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params,  .. } => {
             assert_eq!(params.len(), 1);
@@ -133,8 +133,8 @@ fn test_parse_fn_block_body() {
 #[test]
 fn test_parse_let_with_fn() {
     // Test: let f = fn x = x + 1
-    let mut parser = Parser::new("let f = fn x = x + 1").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "let f = fn x = x + 1";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Let { name, value, .. } => {
             assert_eq!(name, Ident("f".to_string()));
@@ -151,8 +151,8 @@ fn test_parse_let_with_fn() {
 fn test_parse_fn_in_application() {
     // Test: map (fn x = x + 1) list
     // Now parses as a single application
-    let mut parser = Parser::new("map (fn x = x + 1) list").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "map (fn x = x + 1) list";
+    let expr = parse(source).unwrap();
     
     // The parser now treats this as a single function application
     match expr {
@@ -188,8 +188,8 @@ fn test_parse_fn_in_application() {
 #[test]
 fn test_parse_fn_equals_syntax() {
     // Test: fn x = x + 1
-    let mut parser = Parser::new("fn x = x + 1").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x = x + 1";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params,  .. } => {
             assert_eq!(params.len(), 1);
@@ -202,8 +202,8 @@ fn test_parse_fn_equals_syntax() {
 #[test]
 fn test_parse_nested_fn() {
     // Test: fn x = fn y = x + y
-    let mut parser = Parser::new("fn x = fn y = x + y").unwrap();
-    let expr = parser.parse().unwrap();
+    let source = "fn x = fn y = x + y";
+    let expr = parse(source).unwrap();
     match expr {
         Expr::Lambda { params, body, .. } => {
             assert_eq!(params.len(), 1);

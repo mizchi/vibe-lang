@@ -1,4 +1,4 @@
-use crate::parser::Parser;
+use crate::parser::parse;
 use crate::{Expr, Ident};
 
 /// Test that $ operator acts exactly like parentheses
@@ -7,8 +7,8 @@ use crate::{Expr, Ident};
 #[test]
 fn test_dollar_is_parentheses_basic() {
     // Test: f $ x should be identical to f (x)
-    let with_dollar = Parser::new("f $ x").unwrap().parse().unwrap();
-    let with_parens = Parser::new("f (x)").unwrap().parse().unwrap();
+    let with_dollar = parse("f $ x").unwrap();
+    let with_parens = parse("f (x)").unwrap();
     
     // Both should be Apply { func: f, args: [x] }
     assert!(matches!(with_dollar, Expr::Apply { .. }));
@@ -18,8 +18,8 @@ fn test_dollar_is_parentheses_basic() {
 #[test]
 fn test_dollar_with_arithmetic() {
     // Test: f $ x + y should be identical to f (x + y)
-    let with_dollar = Parser::new("f $ x + y").unwrap().parse().unwrap();
-    let with_parens = Parser::new("f (x + y)").unwrap().parse().unwrap();
+    let with_dollar = parse("f $ x + y").unwrap();
+    let with_parens = parse("f (x + y)").unwrap();
     
     // Both should parse as: Apply(f, [Apply(+, [x, y])])
     match (&with_dollar, &with_parens) {
@@ -42,8 +42,8 @@ fn test_dollar_with_arithmetic() {
 #[test]
 fn test_dollar_right_associative() {
     // Test: f $ g $ h x should be identical to f (g (h x))
-    let with_dollar = Parser::new("f $ g $ h x").unwrap().parse().unwrap();
-    let with_parens = Parser::new("f (g (h x))").unwrap().parse().unwrap();
+    let with_dollar = parse("f $ g $ h x").unwrap();
+    let with_parens = parse("f (g (h x))").unwrap();
     
     // Both should have the same structure
     match (&with_dollar, &with_parens) {
@@ -82,7 +82,7 @@ fn test_dollar_precedence_vs_application() {
     // Test: f x $ g y
     // This should parse as: (f x) (g y)
     // Because function application has higher precedence than $
-    let expr = Parser::new("f x $ g y").unwrap().parse().unwrap();
+    let expr = parse("f x $ g y").unwrap();
     
     match expr {
         Expr::Apply { func, args, .. } => {
@@ -115,8 +115,8 @@ fn test_dollar_precedence_vs_application() {
 fn test_dollar_with_complex_expressions() {
     // Test: print $ "Hello " ++ name ++ "!"
     // Should be identical to: print ("Hello " ++ name ++ "!")
-    let with_dollar = Parser::new(r#"print $ "Hello " ++ name ++ "!""#).unwrap().parse().unwrap();
-    let with_parens = Parser::new(r#"print ("Hello " ++ name ++ "!")"#).unwrap().parse().unwrap();
+    let with_dollar = parse(r#"print $ "Hello " ++ name ++ "!""#).unwrap();
+    let with_parens = parse(r#"print ("Hello " ++ name ++ "!")"#).unwrap();
     
     // Both should have print as function with one complex argument
     match (&with_dollar, &with_parens) {
@@ -141,8 +141,8 @@ fn test_dollar_unnecessary_usage() {
     ];
     
     for (with_dollar, without) in tests {
-        let expr1 = Parser::new(with_dollar).unwrap().parse().unwrap();
-        let expr2 = Parser::new(without).unwrap().parse().unwrap();
+        let expr1 = parse(with_dollar).unwrap();
+        let expr2 = parse(without).unwrap();
         
         // Both should produce Apply nodes
         assert!(matches!(expr1, Expr::Apply { .. }), "Failed for: {}", with_dollar);
@@ -155,7 +155,7 @@ fn test_dollar_with_conditionals() {
     // Test: process $ if flag { getThing } else { getOther }
     // Should be identical to: process (if flag { getThing } else { getOther })
     let code = "process $ if flag { getThing } else { getOther }";
-    let expr = Parser::new(code).unwrap().parse().unwrap();
+    let expr = parse(code).unwrap();
     
     match expr {
         Expr::Apply { func, args, .. } => {
@@ -172,7 +172,7 @@ fn test_dollar_in_function_composition() {
     // Test function composition pattern
     // compose f $ compose g h
     // Should be: compose f (compose g h)
-    let expr = Parser::new("compose f $ compose g h").unwrap().parse().unwrap();
+    let expr = parse("compose f $ compose g h").unwrap();
     
     match expr {
         Expr::Apply { func, args, .. } => {
