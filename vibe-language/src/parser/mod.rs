@@ -14,6 +14,7 @@ pub mod ast_bridge;
 pub mod lexer;
 pub mod parser_impl;
 pub mod simple_parser;
+pub mod experimental;
 
 pub use lexer::Lexer;
 pub use parser_impl::Parser;
