@@ -209,7 +209,7 @@ fn collect_and_print_results() {
     let test_code = generate_test_code(&results);
 
     // Write to file
-    let output_path = "xs-tools/tests/shell_e2e_generated.rs";
+    let output_path = "tests/generated/shell_e2e_generated.rs";
     fs::write(output_path, test_code).unwrap();
     println!("\nGenerated test code written to: {}", output_path);
 }
