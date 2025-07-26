@@ -75,24 +75,82 @@ pub fn create_vibe_grammar() -> GLLGrammar {
         ],
     });
     
-    // ImportDef -> import ModulePath
+    // ImportDef -> import ModulePath ImportClauses
     rules.push(GLLRule {
         lhs: "ImportDef".to_string(),
         rhs: vec![
             GLLSymbol::Terminal("import".to_string()),
             GLLSymbol::NonTerminal("ModulePath".to_string()),
+            GLLSymbol::NonTerminal("ImportClauses".to_string()),
         ],
     });
     
-    // ImportDef -> import ModulePath as Ident
+    // ImportClauses -> ImportClause ImportClauses | ε
     rules.push(GLLRule {
-        lhs: "ImportDef".to_string(),
+        lhs: "ImportClauses".to_string(),
         rhs: vec![
-            GLLSymbol::Terminal("import".to_string()),
-            GLLSymbol::NonTerminal("ModulePath".to_string()),
+            GLLSymbol::NonTerminal("ImportClause".to_string()),
+            GLLSymbol::NonTerminal("ImportClauses".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "ImportClauses".to_string(),
+        rhs: vec![GLLSymbol::Epsilon],
+    });
+    
+    // ImportClause -> as Ident | @ Hash | exposing ( ImportItems )
+    rules.push(GLLRule {
+        lhs: "ImportClause".to_string(),
+        rhs: vec![
             GLLSymbol::Terminal("as".to_string()),
             GLLSymbol::NonTerminal("Ident".to_string()),
         ],
+    });
+    rules.push(GLLRule {
+        lhs: "ImportClause".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("@".to_string()),
+            GLLSymbol::NonTerminal("Hash".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "ImportClause".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("exposing".to_string()),
+            GLLSymbol::Terminal("(".to_string()),
+            GLLSymbol::NonTerminal("ImportItems".to_string()),
+            GLLSymbol::Terminal(")".to_string()),
+        ],
+    });
+    
+    // ImportItems -> ImportItem , ImportItems | ImportItem | ε
+    rules.push(GLLRule {
+        lhs: "ImportItems".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("ImportItem".to_string()),
+            GLLSymbol::Terminal(",".to_string()),
+            GLLSymbol::NonTerminal("ImportItems".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "ImportItems".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("ImportItem".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "ImportItems".to_string(),
+        rhs: vec![GLLSymbol::Epsilon],
+    });
+    
+    // ImportItem -> Ident
+    rules.push(GLLRule {
+        lhs: "ImportItem".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("Ident".to_string())],
+    });
+    
+    // Hash -> identifier (for hash values like abc123)
+    rules.push(GLLRule {
+        lhs: "Hash".to_string(),
+        rhs: vec![GLLSymbol::Terminal("identifier".to_string())],
     });
     
     // TypeDef -> type TypeName TypeParams = TypeConstructors

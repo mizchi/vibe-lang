@@ -13,6 +13,7 @@ pub mod builtin_modules;
 pub mod builtins;
 pub mod content_hash;
 pub mod curry;
+pub mod effect_inference;
 pub mod effect_normalizer;
 pub mod effects;
 pub mod error_context;
@@ -31,7 +32,11 @@ pub mod type_annotator;
 pub mod typed_ir;
 
 #[cfg(test)]
+mod effect_inference_tests;
+#[cfg(test)]
 mod effect_system_tests;
+#[cfg(test)]
+mod simple_effect_tests;
 mod types;
 mod value;
 
