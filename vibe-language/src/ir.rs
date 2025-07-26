@@ -73,7 +73,7 @@ pub enum IrExpr {
 }
 
 /// Ownership information for variables
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ownership {
     /// Owned value (reference count = 1)
     Owned,

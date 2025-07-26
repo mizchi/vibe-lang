@@ -224,42 +224,31 @@ impl NormalizedExpr {
             })
     }
     
-    /// Desugar do notation to nested binds
+    /// Desugar do notation to nested binds with optional effect context
     pub fn desugar_do_block(stmts: Vec<DoStatement>, ctx: &mut DesugarContext) -> Self {
-        match stmts.as_slice() {
-            [] => panic!("Empty do block"),
-            [DoStatement::Expr(e)] => e.clone(),
-            [DoStatement::Bind(pat, expr), rest @ ..] => {
-                let var = ctx.fresh_var("do_bind");
-                NormalizedExpr::Let {
-                    name: var.clone(),
-                    value: Box::new(expr.clone()),
-                    body: Box::new(match pat {
+        // Convert to Koka-style do statements for effect handling
+        let koka_stmts: Vec<crate::koka_effects::DoStatement> = stmts.into_iter().map(|stmt| {
+            match stmt {
+                DoStatement::Bind(pat, expr) => {
+                    // For now, only handle variable patterns
+                    match pat {
                         NormalizedPattern::Variable(name) => {
-                            NormalizedExpr::Let {
-                                name: name.clone(),
-                                value: Box::new(NormalizedExpr::Var(var)),
-                                body: Box::new(Self::desugar_do_block(rest.to_vec(), ctx)),
-                            }
+                            crate::koka_effects::DoStatement::Bind(name, expr)
                         }
-                        _ => {
-                            NormalizedExpr::Match {
-                                expr: Box::new(NormalizedExpr::Var(var)),
-                                cases: vec![(pat.clone(), Self::desugar_do_block(rest.to_vec(), ctx))],
-                            }
-                        }
-                    }),
+                        _ => panic!("Complex patterns in do-bind not yet supported")
+                    }
+                }
+                DoStatement::Let(name, expr) => {
+                    crate::koka_effects::DoStatement::Let(name, expr)
+                }
+                DoStatement::Expr(expr) => {
+                    crate::koka_effects::DoStatement::Expr(expr)
                 }
             }
-            [DoStatement::Let(name, expr), rest @ ..] => {
-                NormalizedExpr::Let {
-                    name: name.clone(),
-                    value: Box::new(expr.clone()),
-                    body: Box::new(Self::desugar_do_block(rest.to_vec(), ctx)),
-                }
-            }
-            _ => panic!("Invalid do block structure"),
-        }
+        }).collect();
+        
+        // Use Koka-style desugaring (without implicit effect for now)
+        crate::koka_effects::desugar_do_notation(koka_stmts, None)
     }
     
     /// Desugar sequence/block expressions
@@ -305,14 +294,14 @@ mod tests {
         
         match result {
             NormalizedExpr::Apply { func, arg } => {
-                match &**func {
+                match func.as_ref() {
                     NormalizedExpr::Apply { func: inner_func, arg: inner_arg } => {
-                        assert_eq!(&**inner_func, &NormalizedExpr::Var("+".to_string()));
-                        assert_eq!(&**inner_arg, &NormalizedExpr::Literal(Literal::Int(1)));
+                        assert_eq!(inner_func.as_ref(), &NormalizedExpr::Var("+".to_string()));
+                        assert_eq!(inner_arg.as_ref(), &NormalizedExpr::Literal(Literal::Int(1)));
                     }
                     _ => panic!("Expected nested Apply"),
                 }
-                assert_eq!(&**arg, &NormalizedExpr::Literal(Literal::Int(2)));
+                assert_eq!(arg.as_ref(), &NormalizedExpr::Literal(Literal::Int(2)));
             }
             _ => panic!("Expected Apply"),
         }
@@ -328,7 +317,7 @@ mod tests {
         
         match result {
             NormalizedExpr::Match { expr, cases } => {
-                assert_eq!(&**expr, &cond);
+                assert_eq!(expr.as_ref(), &cond);
                 assert_eq!(cases.len(), 2);
                 assert_eq!(cases[0].0, NormalizedPattern::Literal(Literal::Bool(true)));
                 assert_eq!(cases[0].1, then_expr);
@@ -350,13 +339,13 @@ mod tests {
         match result {
             NormalizedExpr::Lambda { param, body: inner } => {
                 assert_eq!(param, "x");
-                match &**inner {
+                match inner.as_ref() {
                     NormalizedExpr::Lambda { param, body: inner2 } => {
                         assert_eq!(param, "y");
-                        match &**inner2 {
+                        match inner2.as_ref() {
                             NormalizedExpr::Lambda { param, body: inner3 } => {
                                 assert_eq!(param, "z");
-                                assert_eq!(&**inner3, &body);
+                                assert_eq!(inner3.as_ref(), &body);
                             }
                             _ => panic!("Expected third Lambda"),
                         }

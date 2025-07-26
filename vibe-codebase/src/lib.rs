@@ -9,9 +9,6 @@ use thiserror::Error;
 pub mod block_registry;
 pub mod code_repository;
 pub mod codebase;
-pub mod test_cache;
-pub mod test_generator;
-pub mod test_runner;
 pub mod vbin;
 
 #[cfg(test)]
@@ -51,9 +48,6 @@ pub use database::{
     CodebaseQueries, CompilerQueries, Definition, Dependencies, DependencyQueries, ExpressionId,
     ModuleId, SourcePrograms, XsDatabase,
 };
-pub use test_cache::{CachedTestRunner, TestCache, TestOutcome, TestResult};
-pub use test_generator::{GeneratedTest, TestCategory, TestGenConfig, TestGenerator};
-pub use test_runner::{TestRunConfig, TestRunResult, TestRunner, TestStats};
 use vbin::VBinStorage;
 
 /// Workspace errors
@@ -67,9 +61,6 @@ pub enum WorkspaceError {
 
     #[error("Incremental compilation error: {0}")]
     IncrementalError(String),
-
-    #[error("Test cache error: {0}")]
-    TestCacheError(String),
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -141,7 +132,6 @@ impl Default for IncrementalCompiler {
 pub struct Workspace {
     codebase: Codebase,
     compiler: IncrementalCompiler,
-    test_cache: TestCache,
 }
 
 impl Workspace {
@@ -163,13 +153,10 @@ impl Workspace {
         };
 
         let compiler = IncrementalCompiler::new();
-        let test_cache = TestCache::new(data_dir.as_ref().join("test_cache"))
-            .map_err(|e| WorkspaceError::TestCacheError(e.to_string()))?;
 
         Ok(Self {
             codebase,
             compiler,
-            test_cache,
         })
     }
 
@@ -210,15 +197,6 @@ impl Workspace {
         &mut self.compiler
     }
 
-    /// Get a reference to the test cache
-    pub fn test_cache(&self) -> &TestCache {
-        &self.test_cache
-    }
-
-    /// Get a mutable reference to the test cache
-    pub fn test_cache_mut(&mut self) -> &mut TestCache {
-        &mut self.test_cache
-    }
 
     /// Compile a file incrementally
     pub fn compile_file(
@@ -243,27 +221,19 @@ impl Workspace {
         Ok(self.codebase.add_term(name, expr, ty)?)
     }
 
-    /// Run tests with caching
-    pub fn run_test(&mut self, hash: &Hash) -> Result<TestResult, WorkspaceError> {
+    /// Run tests
+    pub fn run_test(&mut self, hash: &Hash) -> Result<String, WorkspaceError> {
         let term = self.codebase.get_term(hash).ok_or_else(|| {
             WorkspaceError::CodebaseError(CodebaseError::HashNotFound(hash.to_hex()))
         })?;
 
-        // Use the test cache to run tests
-        let mut runner = CachedTestRunner::new(&mut self.test_cache, &self.codebase);
-
-        // Run the test with a simple executor
-        let result = runner.run_test(&term.expr, |expr| {
-            // Simple test executor - just evaluate and check if it's true
-            match vibe_runtime::eval(expr) {
-                Ok(vibe_language::Value::Bool(true)) => Ok("Test passed".to_string()),
-                Ok(vibe_language::Value::Bool(false)) => Err("Test failed".to_string()),
-                Ok(v) => Err(format!("Test returned non-boolean value: {v:?}")),
-                Err(e) => Err(format!("Test error: {e}")),
-            }
-        });
-
-        Ok(result)
+        // Simple test executor - just evaluate and check if it's true
+        match vibe_runtime::eval(&term.expr) {
+            Ok(vibe_language::Value::Bool(true)) => Ok("Test passed".to_string()),
+            Ok(vibe_language::Value::Bool(false)) => Err(WorkspaceError::CompilationError("Test failed".to_string())),
+            Ok(v) => Err(WorkspaceError::CompilationError(format!("Test returned non-boolean value: {v:?}"))),
+            Err(e) => Err(WorkspaceError::CompilationError(format!("Test error: {e}"))),
+        }
     }
 
     /// Edit a term by name

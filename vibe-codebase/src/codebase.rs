@@ -14,8 +14,6 @@ use vibe_compiler::{TypeChecker, TypeEnv};
 use vibe_language::parser::parse;
 use vibe_language::{Expr, Type};
 
-pub use crate::test_cache::{CachedTestRunner, TestCache, TestOutcome, TestResult};
-
 /// Hash of a code element (function, type, etc.)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Hash(pub(crate) [u8; 32]);

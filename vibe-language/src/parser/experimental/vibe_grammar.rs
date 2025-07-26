@@ -159,7 +159,7 @@ pub fn create_vibe_grammar() -> GLLGrammar {
         rhs: vec![GLLSymbol::Epsilon],
     });
     
-    // Expr -> MatchExpr | IfExpr | LetInExpr | FnExpr | AppExpr
+    // Expr -> MatchExpr | IfExpr | LetInExpr | FnExpr | WithExpr | DoExpr | HandleExpr | AppExpr
     rules.push(GLLRule {
         lhs: "Expr".to_string(),
         rhs: vec![GLLSymbol::NonTerminal("MatchExpr".to_string())],
@@ -175,6 +175,18 @@ pub fn create_vibe_grammar() -> GLLGrammar {
     rules.push(GLLRule {
         lhs: "Expr".to_string(),
         rhs: vec![GLLSymbol::NonTerminal("FnExpr".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Expr".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("WithExpr".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Expr".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("DoExpr".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Expr".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("HandleExpr".to_string())],
     });
     rules.push(GLLRule {
         lhs: "Expr".to_string(),
@@ -283,6 +295,186 @@ pub fn create_vibe_grammar() -> GLLGrammar {
             GLLSymbol::Terminal("fn".to_string()),
             GLLSymbol::NonTerminal("Params".to_string()),
             GLLSymbol::Terminal("->".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+        ],
+    });
+    
+    // WithExpr -> with Handler { Expr }
+    rules.push(GLLRule {
+        lhs: "WithExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("with".to_string()),
+            GLLSymbol::NonTerminal("Handler".to_string()),
+            GLLSymbol::Terminal("{".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
+        ],
+    });
+    
+    // DoExpr -> do { DoStatements }
+    rules.push(GLLRule {
+        lhs: "DoExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("do".to_string()),
+            GLLSymbol::Terminal("{".to_string()),
+            GLLSymbol::NonTerminal("DoStatements".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
+        ],
+    });
+    
+    // DoStatements -> DoStatement ; DoStatements | DoStatement
+    rules.push(GLLRule {
+        lhs: "DoStatements".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("DoStatement".to_string()),
+            GLLSymbol::Terminal(";".to_string()),
+            GLLSymbol::NonTerminal("DoStatements".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "DoStatements".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("DoStatement".to_string())],
+    });
+    
+    // DoStatement -> Ident <- Expr | Expr
+    rules.push(GLLRule {
+        lhs: "DoStatement".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("Ident".to_string()),
+            GLLSymbol::Terminal("<-".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "DoStatement".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("Expr".to_string())],
+    });
+    
+    // HandleExpr -> handle { Expr } { HandlerCases }
+    rules.push(GLLRule {
+        lhs: "HandleExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("handle".to_string()),
+            GLLSymbol::Terminal("{".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
+            GLLSymbol::Terminal("{".to_string()),
+            GLLSymbol::NonTerminal("HandlerCases".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
+        ],
+    });
+    
+    // HandleExpr -> handle { Expr } { }  (empty handlers for testing)
+    rules.push(GLLRule {
+        lhs: "HandleExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("handle".to_string()),
+            GLLSymbol::Terminal("{".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
+            GLLSymbol::Terminal("{".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
+        ],
+    });
+    
+    // HandlerCases -> HandlerCase HandlerCases | HandlerCase
+    rules.push(GLLRule {
+        lhs: "HandlerCases".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("HandlerCase".to_string()),
+            GLLSymbol::NonTerminal("HandlerCases".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "HandlerCases".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("HandlerCase".to_string())],
+    });
+    
+    // HandlerCase -> EffectOp HandlerParams -> Expr
+    rules.push(GLLRule {
+        lhs: "HandlerCase".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("EffectOp".to_string()),
+            GLLSymbol::NonTerminal("HandlerParams".to_string()),
+            GLLSymbol::Terminal("->".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+        ],
+    });
+    
+    // HandlerParams -> Ident HandlerParams | Ident | ε
+    rules.push(GLLRule {
+        lhs: "HandlerParams".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("Ident".to_string()),
+            GLLSymbol::NonTerminal("HandlerParams".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "HandlerParams".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("Ident".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "HandlerParams".to_string(),
+        rhs: vec![GLLSymbol::Epsilon],
+    });
+    
+    // EffectOp -> Ident . Ident
+    rules.push(GLLRule {
+        lhs: "EffectOp".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("Ident".to_string()),
+            GLLSymbol::Terminal(".".to_string()),
+            GLLSymbol::NonTerminal("Ident".to_string()),
+        ],
+    });
+    // EffectOp -> TypeName . Ident (for type names like IO)
+    rules.push(GLLRule {
+        lhs: "EffectOp".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("TypeName".to_string()),
+            GLLSymbol::Terminal(".".to_string()),
+            GLLSymbol::NonTerminal("Ident".to_string()),
+        ],
+    });
+    
+    // Handler -> Ident | { HandlerFields }
+    rules.push(GLLRule {
+        lhs: "Handler".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("Ident".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Handler".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("{".to_string()),
+            GLLSymbol::NonTerminal("HandlerFields".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
+        ],
+    });
+    
+    // HandlerFields -> HandlerField , HandlerFields | HandlerField | ε
+    rules.push(GLLRule {
+        lhs: "HandlerFields".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("HandlerField".to_string()),
+            GLLSymbol::Terminal(",".to_string()),
+            GLLSymbol::NonTerminal("HandlerFields".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "HandlerFields".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("HandlerField".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "HandlerFields".to_string(),
+        rhs: vec![GLLSymbol::Epsilon],
+    });
+    
+    // HandlerField -> EffectOp : Expr
+    rules.push(GLLRule {
+        lhs: "HandlerField".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("EffectOp".to_string()),
+            GLLSymbol::Terminal(":".to_string()),
             GLLSymbol::NonTerminal("Expr".to_string()),
         ],
     });
@@ -416,7 +608,7 @@ pub fn create_vibe_grammar() -> GLLGrammar {
         rhs: vec![GLLSymbol::NonTerminal("AtomExpr".to_string())],
     });
     
-    // AtomExpr -> Ident | Literal | ( Expr ) | { RecordFields } | [ ListElements ]
+    // AtomExpr -> Ident | Literal | ( Expr ) | { RecordFields } | [ ListElements ] | PerformExpr
     rules.push(GLLRule {
         lhs: "AtomExpr".to_string(),
         rhs: vec![GLLSymbol::NonTerminal("Ident".to_string())],
@@ -454,6 +646,29 @@ pub fn create_vibe_grammar() -> GLLGrammar {
         rhs: vec![
             GLLSymbol::Terminal("[".to_string()),
             GLLSymbol::Terminal("]".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "AtomExpr".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("PerformExpr".to_string())],
+    });
+    
+    // PerformExpr -> perform EffectOp AtomExprs
+    rules.push(GLLRule {
+        lhs: "PerformExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("perform".to_string()),
+            GLLSymbol::NonTerminal("EffectOp".to_string()),
+            GLLSymbol::NonTerminal("AtomExprs".to_string()),
+        ],
+    });
+    
+    // PerformExpr -> perform EffectOp  (no args)
+    rules.push(GLLRule {
+        lhs: "PerformExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("perform".to_string()),
+            GLLSymbol::NonTerminal("EffectOp".to_string()),
         ],
     });
     
@@ -769,6 +984,162 @@ mod tests {
         ];
         
         let result = parser.parse(input);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_with_handler_expression() {
+        let grammar = create_vibe_grammar();
+        let mut parser = GLLParser::new(grammar);
+        
+        // Test: with stateHandler { perform State.get }
+        let input = vec![
+            "with".to_string(),
+            "identifier".to_string(), // stateHandler
+            "{".to_string(),
+            "perform".to_string(),
+            "identifier".to_string(), // State
+            ".".to_string(),
+            "identifier".to_string(), // get
+            "}".to_string(),
+        ];
+        
+        let result = parser.parse(input);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_with_inline_handler() {
+        let grammar = create_vibe_grammar();
+        let mut parser = GLLParser::new(grammar);
+        
+        // Test: with { State.get: fn x k -> k 0 } { perform State.get }
+        let input = vec![
+            "with".to_string(),
+            "{".to_string(),
+            "identifier".to_string(), // State
+            ".".to_string(),
+            "identifier".to_string(), // get
+            ":".to_string(),
+            "fn".to_string(),
+            "identifier".to_string(), // x
+            "identifier".to_string(), // k
+            "->".to_string(),
+            "identifier".to_string(), // k
+            "number".to_string(), // 0
+            "}".to_string(),
+            "{".to_string(),
+            "perform".to_string(),
+            "identifier".to_string(), // State
+            ".".to_string(),
+            "identifier".to_string(), // get
+            "}".to_string(),
+        ];
+        
+        let result = parser.parse(input);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_do_notation() {
+        let grammar = create_vibe_grammar();
+        let mut parser = GLLParser::new(grammar);
+        
+        // Test: do { x <- perform State.get ; perform State.put (x + 1) }
+        let input = vec![
+            "do".to_string(),
+            "{".to_string(),
+            "identifier".to_string(), // x
+            "<-".to_string(),
+            "perform".to_string(),
+            "identifier".to_string(), // State
+            ".".to_string(),
+            "identifier".to_string(), // get
+            "perform".to_string(),
+            "identifier".to_string(), // State
+            ".".to_string(),
+            "identifier".to_string(), // put
+            "(".to_string(),
+            "identifier".to_string(), // x
+            "+".to_string(),
+            "number".to_string(), // 1
+            ")".to_string(),
+            "}".to_string(),
+        ];
+        
+        let result = parser.parse(input);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_handle_expression() {
+        let grammar = create_vibe_grammar();
+        let mut parser = GLLParser::new(grammar);
+        
+        // Test: handle { number } { IO.print msg k -> k () }
+        let input = vec![
+            "handle".to_string(),
+            "{".to_string(),
+            "number".to_string(), // 42
+            "}".to_string(),
+            "{".to_string(),
+            "identifier".to_string(), // IO
+            ".".to_string(),
+            "identifier".to_string(), // print
+            "identifier".to_string(), // msg
+            "identifier".to_string(), // k
+            "->".to_string(),
+            "identifier".to_string(), // k
+            "(".to_string(),
+            ")".to_string(),
+            "}".to_string(),
+        ];
+        
+        let result = parser.parse(input);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_perform_expression() {
+        let grammar = create_vibe_grammar();
+        let mut parser = GLLParser::new(grammar);
+        
+        // Test: perform IO.print
+        let input = vec![
+            "perform".to_string(),
+            "identifier".to_string(), // IO
+            ".".to_string(),
+            "identifier".to_string(), // print
+        ];
+        
+        let result = parser.parse(input);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_simple_handle() {
+        let grammar = create_vibe_grammar();
+        let mut parser = GLLParser::new(grammar);
+        
+        // Test: handle { number } { IO.print -> number }
+        let input = vec![
+            "handle".to_string(),
+            "{".to_string(),
+            "number".to_string(), // 42
+            "}".to_string(),
+            "{".to_string(),
+            "identifier".to_string(), // IO
+            ".".to_string(),
+            "identifier".to_string(), // print
+            "->".to_string(),
+            "number".to_string(), // 1
+            "}".to_string(),
+        ];
+        
+        let result = parser.parse(input);
+        if !result.is_ok() {
+            println!("Parse failed: {:?}", result);
+        }
         assert!(result.is_ok());
     }
 }

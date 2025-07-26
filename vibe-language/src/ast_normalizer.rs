@@ -155,6 +155,15 @@ impl AstNormalizer {
                 NormalizedExpr::desugar_do_block(normalized_stmts, &mut self.ctx)
             }
             
+            Expr::WithHandler { handler, body, .. } => {
+                // Desugar with handler { body } to handle { body } { handler }
+                let normalized_handler = self.normalize_expr(handler);
+                let normalized_body = self.normalize_expr(body);
+                
+                // Use Koka-style desugaring
+                crate::koka_effects::desugar_with_handler(normalized_handler, normalized_body)
+            }
+            
             Expr::Perform { effect, args, .. } => {
                 NormalizedExpr::Perform {
                     effect: effect.0.clone(),

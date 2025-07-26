@@ -6,7 +6,6 @@
 use crate::hash::DefinitionHash;
 use crate::incremental_type_checker::IncrementalTypeChecker;
 use crate::namespace::{DefinitionContent, DefinitionPath, NamespacePath, NamespaceStore};
-use crate::test_cache::TestCache;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use vibe_language::{Expr, Value, XsError};
@@ -48,10 +47,6 @@ pub struct DifferentialTestRunner {
     /// Reference to namespace store
     namespace_store: Arc<NamespaceStore>,
 
-    /// Test cache for storing results
-    #[allow(dead_code)]
-    test_cache: TestCache,
-
     /// Incremental type checker
     type_checker: IncrementalTypeChecker,
 
@@ -60,12 +55,11 @@ pub struct DifferentialTestRunner {
 }
 
 impl DifferentialTestRunner {
-    pub fn new(namespace_store: Arc<NamespaceStore>, test_cache: TestCache) -> Self {
+    pub fn new(namespace_store: Arc<NamespaceStore>) -> Self {
         let type_checker = IncrementalTypeChecker::new(namespace_store.clone());
 
         Self {
             namespace_store,
-            test_cache,
             type_checker,
             discovered_tests: HashMap::new(),
         }
@@ -376,9 +370,7 @@ mod tests {
             )
             .unwrap();
 
-        let temp_dir = tempfile::tempdir().unwrap();
-        let test_cache = TestCache::new(temp_dir.path()).unwrap();
-        let mut runner = DifferentialTestRunner::new(Arc::new(store), test_cache);
+        let mut runner = DifferentialTestRunner::new(Arc::new(store));
 
         let tests = runner.discover_tests().unwrap();
 
@@ -422,9 +414,7 @@ mod tests {
             )
             .unwrap();
 
-        let temp_dir = tempfile::tempdir().unwrap();
-        let test_cache = TestCache::new(temp_dir.path()).unwrap();
-        let mut runner = DifferentialTestRunner::new(Arc::new(store), test_cache);
+        let mut runner = DifferentialTestRunner::new(Arc::new(store));
 
         // Discover tests
         runner.discover_tests().unwrap();

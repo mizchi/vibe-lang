@@ -47,7 +47,7 @@ impl IRPipeline {
             
             NormalizedExpr::Lambda { param, body } => {
                 // For now, assume parameter type (would be inferred in real implementation)
-                let param_ty = Type::TypeVar("a".to_string());
+                let param_ty = Type::Var("a".to_string());
                 self.type_env.insert(param.clone(), param_ty.clone());
                 
                 let body_ir = self.normalize_to_typed(body)?;
@@ -98,8 +98,8 @@ impl IRPipeline {
                     // Empty list, polymorphic type
                     Ok(TypedIrExpr::List {
                         elements: vec![],
-                        elem_ty: Type::TypeVar("a".to_string()),
-                        ty: Type::List(Box::new(Type::TypeVar("a".to_string()))),
+                        elem_ty: Type::Var("a".to_string()),
+                        ty: Type::List(Box::new(Type::Var("a".to_string()))),
                     })
                 } else {
                     let typed_elements: Result<Vec<_>, _> = elements.iter()

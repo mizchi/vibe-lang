@@ -17,7 +17,16 @@ use vibe_compiler::{TypeChecker, TypeEnv};
 use vibe_language::parser::parse;
 use vibe_language::{Expr, Ident, Value, XsError};
 use vibe_runtime::Interpreter;
-use vibe_codebase::{Codebase, Hash, TestCache, TestOutcome};
+use vibe_codebase::{Codebase, Hash};
+
+/// Test outcome placeholder for now
+#[derive(Debug, Clone)]
+pub enum TestOutcome {
+    Passed { value: String },
+    Failed { error: String },
+    Skipped { reason: String },
+    Timeout,
+}
 
 #[derive(Debug, Clone, Error)]
 pub enum TestError {
@@ -84,8 +93,6 @@ pub struct TestSuite {
     in_source_tests: Vec<(PathBuf, InSourceTest)>,
     #[allow(dead_code)]
     codebase: Codebase,
-    #[allow(dead_code)]
-    cache: TestCache,
     verbose: bool,
 }
 
@@ -95,8 +102,6 @@ impl TestSuite {
             tests: Vec::new(),
             in_source_tests: Vec::new(),
             codebase: Codebase::new(),
-            cache: TestCache::new(std::env::temp_dir().join("vibe_test_cache"))
-                .expect("Failed to create test cache"),
             verbose,
         }
     }
