@@ -448,7 +448,7 @@ pub enum Value {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Environment {
-    bindings: Vec<(Ident, Value)>,
+    bindings: im::Vector<(Ident, Value)>,
 }
 
 impl Environment {
@@ -457,9 +457,11 @@ impl Environment {
     }
 
     pub fn extend(&self, name: Ident, value: Value) -> Self {
-        let mut new_env = self.clone();
-        new_env.bindings.push((name, value));
-        new_env
+        let mut new_bindings = self.bindings.clone();
+        new_bindings.push_back((name, value));
+        Environment {
+            bindings: new_bindings,
+        }
     }
 
     pub fn lookup(&self, name: &Ident) -> Option<&Value> {
