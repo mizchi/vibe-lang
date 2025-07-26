@@ -1,7 +1,7 @@
 //! SPPF to AST Converter - Converts Shared Packed Parse Forest to Vibe AST
 
 use super::gll::sppf::{SharedPackedParseForest, SPPFNode, SPPFNodeType};
-use crate::{Expr, Ident, Literal, Span};
+use crate::{Expr, Ident, Literal, Pattern, Span};
 use crate::parser::lexer::Token;
 use ordered_float::OrderedFloat;
 
@@ -36,8 +36,8 @@ impl SPPFToASTConverter {
     pub fn convert(&self, roots: Vec<usize>) -> Result<Vec<Expr>, ConversionError> {
         let mut exprs = Vec::new();
         
-        // eprintln!("Converting {} roots to AST", roots.len());
-        // eprintln!("Available tokens: {:?}", self.tokens);
+        println!("DEBUG: convert() called with {} roots", roots.len());
+        println!("DEBUG: Available tokens: {:?}", self.tokens);
         
         for root_id in roots {
             if let Some(node) = self.get_node(root_id) {
@@ -45,8 +45,9 @@ impl SPPFToASTConverter {
                 match &node.node_type {
                     SPPFNodeType::NonTerminal(name) if name == "Program" || name == "program" => {
                         // A program can have multiple expressions
-                        let program_exprs = self.convert_program(root_id)?;
-                        exprs.extend(program_exprs);
+                        if let Ok(Expr::List(program_exprs, _)) = self.convert_program(root_id) {
+                            exprs.extend(program_exprs);
+                        }
                     }
                     _ => {
                         // Single expression
@@ -62,49 +63,6 @@ impl SPPFToASTConverter {
         Ok(exprs)
     }
     
-    /// Convert a program node to expressions
-    fn convert_program(&self, node_id: usize) -> Result<Vec<Expr>, ConversionError> {
-        let node = self.get_node(node_id).ok_or(ConversionError::InvalidNode)?;
-        let mut exprs = Vec::new();
-        
-        
-        // // eprintln!("Converting program node with {} child sets", node.children.len());
-        // Program consists of multiple expressions
-        for (i, children) in node.children.iter().enumerate() {
-            // // eprintln!("  Child set {}: {} children", i, children.len());
-            for &child_id in children {
-                if let Some(child) = self.get_node(child_id) {
-                    // // eprintln!("    Child node: {:?} at pos {}-{}", child.node_type, child.start, child.end);
-                    match &child.node_type {
-                        SPPFNodeType::NonTerminal(name) => {
-                            // Skip empty Program nodes (they're just continuations)
-                            if name == "Program" && child.start == child.end {
-                                // // eprintln!("    Skipping empty Program node");
-                                continue;
-                            }
-                            let expr = self.convert_nonterminal_expr(name, child_id)?;
-                            // Don't add empty lists that come from Program nodes
-                            if let Expr::List(ref items, _) = expr {
-                                if items.is_empty() && name == "Program" {
-                                    // // eprintln!("    Skipping empty list from Program node");
-                                    continue;
-                                }
-                            }
-                            exprs.push(expr);
-                        }
-                        SPPFNodeType::Terminal(token) => {
-                            let expr = self.convert_terminal_to_expr(token, child.start, child.end)?;
-                            exprs.push(expr);
-                        }
-                        _ => {
-                        }
-                    }
-                }
-            }
-        }
-        
-        Ok(exprs)
-    }
     
     /// Convert an expression node
     fn convert_expr(&self, node_id: usize) -> Result<Expr, ConversionError> {
@@ -177,18 +135,23 @@ impl SPPFToASTConverter {
     
     /// Convert a non-terminal expression
     fn convert_nonterminal_expr(&self, name: &str, node_id: usize) -> Result<Expr, ConversionError> {
-        // eprintln!("convert_nonterminal_expr: {} at node {}", name, node_id);
+        if let Some(node) = self.get_node(node_id) {
+            println!("DEBUG: convert_nonterminal_expr: {} at node {} (pos {}-{})", name, node_id, node.start, node.end);
+        } else {
+            println!("DEBUG: convert_nonterminal_expr: {} at node {} (invalid node)", name, node_id);
+        }
         match name {
             "TopLevelDef" => self.convert_top_level_def(node_id),
             "let_binding" | "LetBinding" | "LetDef" => self.convert_let_binding(node_id),
             "lambda" | "Lambda" | "LambdaExpr" => self.convert_lambda(node_id),
             "if_expr" | "IfExpr" => self.convert_if_expr(node_id),
+            "case_expr" | "CaseExpr" => self.convert_case_expr(node_id),
             "application" | "Application" => self.convert_application(node_id),
             "list" | "List" => self.convert_list(node_id),
             "Program" => {
-                // Avoid infinite recursion - Program nodes in child position
-                // are usually empty continuations
-                Ok(Expr::List(vec![], Span::new(0, 0)))
+                // Program nodes should convert their children
+                // This handles recursive Program nodes in the SPPF
+                self.convert_program(node_id)
             }
             "BinaryExpr" | "PipelineExpr" | "ApplyExpr" => {
                 // These might need special handling
@@ -358,13 +321,154 @@ impl SPPFToASTConverter {
         let node = self.get_node(node_id).ok_or(ConversionError::InvalidNode)?;
         let span = Span::new(node.start, node.end);
         
-        // Simplified: create a basic if expression
-        Ok(Expr::If {
-            cond: Box::new(Expr::Literal(Literal::Bool(true), span.clone())),
-            then_expr: Box::new(Expr::Literal(Literal::Int(1), span.clone())),
-            else_expr: Box::new(Expr::Literal(Literal::Int(0), span.clone())),
-            span,
-        })
+        // eprintln!("convert_if_expr: node at pos {}-{}", node.start, node.end);
+        // eprintln!("  Node has {} child sets", node.children.len());
+        // eprintln!("  Tokens: {:?}", &self.tokens[node.start..node.end.min(self.tokens.len())]);
+        
+        // IfExpr -> if Expr Block else Block
+        // The issue is that the node position (6-9) is incomplete.
+        // We need to look at the entire token stream from the beginning
+        
+        // Find the if token before this position
+        let mut if_pos = None;
+        for i in (0..node.start).rev() {
+            if let Some(Token::If) = self.get_token_at_position(i) {
+                if_pos = Some(i);
+                break;
+            }
+        }
+        
+        if let Some(start) = if_pos {
+            // Find the end of the if expression
+            let mut end = node.end;
+            let mut brace_count = 0;
+            let mut found_else = false;
+            
+            for i in start..self.tokens.len() {
+                if let Some(token) = self.get_token_at_position(i) {
+                    match token {
+                        Token::LeftBrace => brace_count += 1,
+                        Token::RightBrace => {
+                            brace_count -= 1;
+                            if brace_count == 0 && found_else {
+                                end = i + 1;
+                                break;
+                            }
+                        }
+                        Token::Else => found_else = true,
+                        _ => {}
+                    }
+                }
+            }
+            
+            return self.parse_if_expr_from_tokens(start, end);
+        }
+        
+        // Otherwise, try to find children in SPPF
+        let mut cond_expr = None;
+        let mut then_expr = None;
+        let mut else_expr = None;
+        
+        // Look for the pattern in children
+        for children in &node.children {
+            if children.len() >= 6 {
+                // Expected: if, Expr, then, Expr, else, Expr
+                let mut expr_count = 0;
+                for &child_id in children {
+                    if let Some(child) = self.get_node(child_id) {
+                        match &child.node_type {
+                            SPPFNodeType::Terminal(term) => {
+                                // Skip if, then, else terminals
+                                if term != "if" && term != "then" && term != "else" {
+                                    // Might be a literal or identifier
+                                    if expr_count == 0 && cond_expr.is_none() {
+                                        cond_expr = self.convert_node_to_expr(child_id).ok();
+                                        expr_count += 1;
+                                    } else if expr_count == 1 && then_expr.is_none() {
+                                        then_expr = self.convert_node_to_expr(child_id).ok();
+                                        expr_count += 1;
+                                    } else if expr_count == 2 && else_expr.is_none() {
+                                        else_expr = self.convert_node_to_expr(child_id).ok();
+                                        expr_count += 1;
+                                    }
+                                }
+                            }
+                            SPPFNodeType::NonTerminal(_) => {
+                                // This is likely an Expr node
+                                if expr_count == 0 && cond_expr.is_none() {
+                                    cond_expr = self.convert_node_to_expr(child_id).ok();
+                                    expr_count += 1;
+                                } else if expr_count == 1 && then_expr.is_none() {
+                                    then_expr = self.convert_node_to_expr(child_id).ok();
+                                    expr_count += 1;
+                                } else if expr_count == 2 && else_expr.is_none() {
+                                    else_expr = self.convert_node_to_expr(child_id).ok();
+                                    expr_count += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                
+                if let (Some(cond), Some(then_e), Some(else_e)) = (cond_expr.clone(), then_expr.clone(), else_expr.clone()) {
+                    return Ok(Expr::If {
+                        cond: Box::new(cond),
+                        then_expr: Box::new(then_e),
+                        else_expr: Box::new(else_e),
+                        span,
+                    });
+                }
+            }
+        }
+        
+        // Fallback: try a simpler approach
+        Err(ConversionError::UnexpectedToken("Failed to parse if expression".to_string()))
+    }
+    
+    /// Convert a match/case expression
+    fn convert_case_expr(&self, node_id: usize) -> Result<Expr, ConversionError> {
+        let node = self.get_node(node_id).ok_or(ConversionError::InvalidNode)?;
+        let span = Span::new(node.start, node.end);
+        
+        println!("DEBUG: convert_case_expr called with node_id={}, start={}, end={}", node_id, node.start, node.end);
+        
+        // CaseExpr -> match Expr { CaseBranches }
+        // Find the match token
+        let mut match_pos = None;
+        for i in (0..=node.start).rev() {
+            if let Some(Token::Match) = self.get_token_at_position(i) {
+                match_pos = Some(i);
+                break;
+            }
+        }
+        
+        if let Some(start) = match_pos {
+            // Find the end of the match expression
+            let mut end = node.end;
+            let mut brace_count = 0;
+            
+            for i in start..self.tokens.len() {
+                if let Some(token) = self.get_token_at_position(i) {
+                    match token {
+                        Token::LeftBrace => brace_count += 1,
+                        Token::RightBrace => {
+                            brace_count -= 1;
+                            if brace_count == 0 {
+                                end = i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            
+            return self.parse_match_expr_from_tokens(start, end);
+        }
+        
+        // Fallback: create a simple match expression
+        Err(ConversionError::UnexpectedToken("Failed to parse match expression".to_string()))
     }
     
     /// Convert function application
@@ -398,7 +502,7 @@ impl SPPFToASTConverter {
         
         // Analyze children structure
         for (i, children) in node.children.iter().enumerate() {
-            // // eprintln!("  Child set {}: {} children", i, children.len());
+            // eprintln!("  Child set {}: {} children", i, children.len());
             for &child_id in children {
                 if let Some(child) = self.get_node(child_id) {
                     // eprintln!("    Child: {:?} at pos {}-{}", child.node_type, child.start, child.end);
@@ -461,7 +565,37 @@ impl SPPFToASTConverter {
                             "LetBinding" => {
                                 // LetBinding has been parsed, but we need to look at tokens
                                 // The actual structure is in the tokens, not in the SPPF children
-                                return self.parse_let_binding_from_tokens(node.start, node.end);
+                                // The LetBinding node itself might be empty, so we parse from TopLevelDef's range
+                                // eprintln!("  Found LetBinding child, parsing from tokens");
+                                
+                                // Find the actual range of this let binding
+                                let mut end = node.start;
+                                let mut brace_count: i32 = 0;
+                                let mut paren_count: i32 = 0;
+                                
+                                // Scan tokens to find the end of this let binding
+                                for i in node.start..self.tokens.len() {
+                                    match &self.tokens[i] {
+                                        Token::Let if i > node.start && brace_count == 0 && paren_count == 0 => {
+                                            // Found next let statement
+                                            end = i;
+                                            break;
+                                        }
+                                        Token::LeftBrace => brace_count += 1,
+                                        Token::RightBrace => {
+                                            brace_count = brace_count.saturating_sub(1);
+                                        }
+                                        Token::LeftParen => paren_count += 1,
+                                        Token::RightParen => {
+                                            paren_count = paren_count.saturating_sub(1);
+                                        }
+                                        _ => {}
+                                    }
+                                    end = i + 1;
+                                }
+                                
+                                // eprintln!("  Parsing let from {} to {}", node.start, end);
+                                return self.parse_let_binding_from_tokens(node.start, end);
                             }
                             "LambdaExpr" => {
                                 // For top-level lambda, parse from tokens directly
@@ -473,9 +607,11 @@ impl SPPFToASTConverter {
                                 // Otherwise, continue with child processing
                             }
                             "Expr" => {
+                                println!("DEBUG: TopLevelDef found Expr child");
                                 // Expr -> BinaryExpr -> ...
                                 if let Some(expr_children) = child.children.first() {
                                     if let Some(&expr_child_id) = expr_children.first() {
+                                        println!("DEBUG: Converting Expr child_id={}", expr_child_id);
                                         return self.convert_node_to_expr(expr_child_id);
                                     }
                                 }
@@ -490,6 +626,59 @@ impl SPPFToASTConverter {
         
         // Fallback
         Ok(Expr::Literal(Literal::Int(0), Span::new(node.start, node.end)))
+    }
+    
+    /// Convert a Program node
+    fn convert_program(&self, node_id: usize) -> Result<Expr, ConversionError> {
+        let node = self.get_node(node_id).ok_or(ConversionError::InvalidNode)?;
+        println!("DEBUG: convert_program: node_id={}, pos {}-{}", node_id, node.start, node.end);
+        println!("DEBUG: convert_program: {} child sets", node.children.len());
+        
+        // A Program node can have multiple definitions
+        let mut definitions = Vec::new();
+        
+        // Look at the children
+        for (i, children) in node.children.iter().enumerate() {
+            println!("DEBUG: convert_program: child set {} has {} children", i, children.len());
+            for &child_id in children {
+                if let Some(child) = self.get_node(child_id) {
+                    println!("DEBUG: convert_program: child type={:?} at pos {}-{}", child.node_type, child.start, child.end);
+                    
+                    match &child.node_type {
+                        SPPFNodeType::NonTerminal(name) => {
+                            println!("DEBUG: convert_program: NonTerminal child: {}", name);
+                            if name == "TopLevelDef" {
+                                // Convert each top-level definition
+                                if let Ok(def) = self.convert_top_level_def(child_id) {
+                                    definitions.push(def);
+                                }
+                            } else if name == "Program" {
+                                // Recursive Program node - check if it's the same node to avoid infinite recursion
+                                if child_id != node_id {
+                                    if let Ok(Expr::List(exprs, _)) = self.convert_program(child_id) {
+                                        definitions.extend(exprs);
+                                    }
+                                }
+                            } else {
+                                // Try to convert as expression
+                                if let Ok(expr) = self.convert_nonterminal_expr(name, child_id) {
+                                    definitions.push(expr);
+                                }
+                            }
+                        }
+                        _ => {
+                            // Try to convert as expression
+                            if let Ok(expr) = self.convert_node_to_expr(child_id) {
+                                definitions.push(expr);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        println!("DEBUG: convert_program: found {} definitions", definitions.len());
+        Ok(Expr::List(definitions, Span::new(node.start, node.end)))
     }
     
     /// Convert a complex expression (fallback)
@@ -557,10 +746,26 @@ impl SPPFToASTConverter {
     /// Convert node to expression (dispatcher)
     fn convert_node_to_expr(&self, node_id: usize) -> Result<Expr, ConversionError> {
         if let Some(node) = self.get_node(node_id) {
+            println!("DEBUG: convert_node_to_expr: node_id={}, type={:?}", node_id, node.node_type);
             match &node.node_type {
                 SPPFNodeType::NonTerminal(name) => self.convert_nonterminal_expr(name, node_id),
                 SPPFNodeType::Terminal(token) => self.convert_terminal_to_expr(token, node.start, node.end),
-                _ => Err(ConversionError::UnsupportedNode),
+                SPPFNodeType::Intermediate { slot } => {
+                    println!("DEBUG: Found Intermediate node with slot={}", slot);
+                    // Intermediate nodes are used for binarization in GLL parsing
+                    // We need to look at their children
+                    if let Some(children) = node.children.first() {
+                        if let Some(&child_id) = children.first() {
+                            println!("DEBUG: Converting first child of Intermediate node");
+                            return self.convert_node_to_expr(child_id);
+                        }
+                    }
+                    Err(ConversionError::UnsupportedNode)
+                }
+                _ => {
+                    println!("DEBUG: Unsupported node type: {:?}", node.node_type);
+                    Err(ConversionError::UnsupportedNode)
+                }
             }
         } else {
             Err(ConversionError::InvalidNode)
@@ -596,19 +801,90 @@ impl SPPFToASTConverter {
             }
         }
         
-        // Parse: let <identifier> = <expr>
+        // Parse: let <identifier> [params...] = <expr>
         if tokens.len() >= 4 {
             if let Token::Let = tokens[0] {
                 if let Token::Symbol(name) = tokens[1] {
-                    if let Token::Equals = tokens[2] {
-                        // The value could be various things
-                        let value = match tokens[3] {
-                            Token::Int(n) => Expr::Literal(Literal::Int(*n), Span::new(start + 3, start + 4)),
-                            Token::Float(f) => Expr::Literal(Literal::Float(OrderedFloat(*f)), Span::new(start + 3, start + 4)),
-                            Token::String(s) => Expr::Literal(Literal::String(s.clone()), Span::new(start + 3, start + 4)),
-                            Token::Bool(b) => Expr::Literal(Literal::Bool(*b), Span::new(start + 3, start + 4)),
-                            Token::Symbol(s) => Expr::Ident(Ident(s.clone()), Span::new(start + 3, start + 4)),
-                            _ => return Err(ConversionError::UnexpectedToken(format!("{:?}", tokens[3]))),
+                    // Find the equals sign
+                    let mut equals_pos = None;
+                    for (i, token) in tokens.iter().enumerate() {
+                        if let Token::Equals = token {
+                            equals_pos = Some(i);
+                            break;
+                        }
+                    }
+                    
+                    if let Some(eq_idx) = equals_pos {
+                        // Check if we have parameters between name and =
+                        let params: Vec<Ident> = if eq_idx > 2 {
+                            // Collect parameter names
+                            let mut p = Vec::new();
+                            for i in 2..eq_idx {
+                                if let Token::Symbol(param_name) = tokens[i] {
+                                    p.push(Ident(param_name.clone()));
+                                }
+                            }
+                            p
+                        } else {
+                            Vec::new()
+                        };
+                        
+                        // Parse the body expression
+                        let body_start = eq_idx + 1;
+                        let body = if body_start < tokens.len() {
+                            // For now, handle simple cases
+                            match tokens[body_start] {
+                                Token::Int(n) => Expr::Literal(Literal::Int(*n), Span::new(start + body_start, start + body_start + 1)),
+                                Token::Float(f) => Expr::Literal(Literal::Float(OrderedFloat(*f)), Span::new(start + body_start, start + body_start + 1)),
+                                Token::String(s) => Expr::Literal(Literal::String(s.clone()), Span::new(start + body_start, start + body_start + 1)),
+                                Token::Bool(b) => Expr::Literal(Literal::Bool(*b), Span::new(start + body_start, start + body_start + 1)),
+                                Token::Symbol(s) => {
+                                    // Could be a simple identifier or start of a more complex expression
+                                    // Check if this is a binary expression
+                                    if body_start + 2 < tokens.len() {
+                                        // Check for binary operator
+                                        if let Token::Symbol(op) = tokens[body_start + 1] {
+                                            if matches!(op.as_str(), "+" | "-" | "*" | "/" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||") {
+                                                // This is a binary expression
+                                                if let Token::Symbol(rhs) = tokens[body_start + 2] {
+                                                    let left = Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1));
+                                                    let right = Expr::Ident(Ident(rhs.clone()), Span::new(start + body_start + 2, start + body_start + 3));
+                                                    Expr::Apply {
+                                                        func: Box::new(Expr::Ident(Ident(op.clone()), Span::new(start + body_start + 1, start + body_start + 2))),
+                                                        args: vec![left, right],
+                                                        span: Span::new(start + body_start, start + body_start + 3),
+                                                    }
+                                                } else {
+                                                    Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1))
+                                                }
+                                            } else {
+                                                Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1))
+                                            }
+                                        } else {
+                                            Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1))
+                                        }
+                                    } else {
+                                        Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1))
+                                    }
+                                }
+                                _ => return Err(ConversionError::UnexpectedToken(format!("{:?}", tokens[body_start]))),
+                            }
+                        } else {
+                            return Err(ConversionError::UnexpectedToken("Missing expression after =".to_string()));
+                        };
+                        
+                        // If we have parameters, wrap the body in lambda expressions
+                        let value = if params.is_empty() {
+                            body
+                        } else {
+                            // Create nested lambdas for currying
+                            params.iter().rev().fold(body, |acc, param| {
+                                Expr::Lambda {
+                                    params: vec![(param.clone(), None)],
+                                    body: Box::new(acc),
+                                    span: Span::new(start, end),
+                                }
+                            })
                         };
                         
                         return Ok(Expr::Let {
@@ -1144,6 +1420,213 @@ impl SPPFToASTConverter {
         }
         
         Err(ConversionError::UnexpectedToken("Failed to parse block expression".to_string()))
+    }
+    
+    /// Parse if expression from tokens: if cond { expr } else { expr }
+    fn parse_if_expr_from_tokens(&self, start: usize, end: usize) -> Result<Expr, ConversionError> {
+        // eprintln!("parse_if_expr_from_tokens: range {}-{}", start, end);
+        
+        // Collect tokens in the range
+        let mut tokens = Vec::new();
+        for i in start..self.tokens.len().min(end) {
+            tokens.push(&self.tokens[i]);
+        }
+        
+        // Find brace and else positions
+        let mut first_lbrace = None;
+        let mut first_rbrace = None;
+        let mut else_pos = None;
+        let mut second_lbrace = None;
+        let mut second_rbrace = None;
+        let mut brace_count = 0;
+        
+        for (i, token) in tokens.iter().enumerate() {
+            match token {
+                Token::LeftBrace => {
+                    if first_lbrace.is_none() && else_pos.is_none() {
+                        first_lbrace = Some(i);
+                    } else if else_pos.is_some() && second_lbrace.is_none() {
+                        second_lbrace = Some(i);
+                    }
+                    brace_count += 1;
+                }
+                Token::RightBrace => {
+                    brace_count -= 1;
+                    if brace_count == 0 {
+                        if first_rbrace.is_none() && else_pos.is_none() {
+                            first_rbrace = Some(i);
+                        } else if else_pos.is_some() && second_rbrace.is_none() {
+                            second_rbrace = Some(i);
+                        }
+                    }
+                }
+                Token::Else => {
+                    if brace_count == 0 {
+                        else_pos = Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        // Validate structure: if <cond> { <then_expr> } else { <else_expr> }
+        if let (Some(lb1), Some(rb1), Some(else_idx), Some(lb2), Some(rb2)) = 
+            (first_lbrace, first_rbrace, else_pos, second_lbrace, second_rbrace) {
+            
+            // Parse condition (between if and first {)
+            let cond = self.parse_simple_expr_from_tokens(&tokens[1..lb1], start + 1)?;
+            
+            // Parse then branch (between { and })
+            let then_expr = if rb1 > lb1 + 1 {
+                self.parse_simple_expr_from_tokens(&tokens[lb1 + 1..rb1], start + lb1 + 1)?
+            } else {
+                // Empty block
+                Expr::Block { exprs: vec![], span: Span::new(start + lb1, start + rb1 + 1) }
+            };
+            
+            // Parse else branch (between { and })
+            let else_expr = if rb2 > lb2 + 1 {
+                self.parse_simple_expr_from_tokens(&tokens[lb2 + 1..rb2], start + lb2 + 1)?
+            } else {
+                // Empty block
+                Expr::Block { exprs: vec![], span: Span::new(start + lb2, start + rb2 + 1) }
+            };
+            
+            return Ok(Expr::If {
+                cond: Box::new(cond),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
+                span: Span::new(start, end),
+            });
+        }
+        
+        Err(ConversionError::UnexpectedToken("Invalid if expression syntax".to_string()))
+    }
+    
+    /// Parse a simple expression from a slice of tokens
+    fn parse_simple_expr_from_tokens(&self, tokens: &[&Token], start_pos: usize) -> Result<Expr, ConversionError> {
+        if tokens.is_empty() {
+            return Err(ConversionError::UnexpectedToken("Empty expression".to_string()));
+        }
+        
+        // For now, handle simple cases
+        match tokens[0] {
+            Token::Int(n) => Ok(Expr::Literal(Literal::Int(*n), Span::new(start_pos, start_pos + 1))),
+            Token::Float(f) => Ok(Expr::Literal(Literal::Float(OrderedFloat(*f)), Span::new(start_pos, start_pos + 1))),
+            Token::String(s) => Ok(Expr::Literal(Literal::String(s.clone()), Span::new(start_pos, start_pos + 1))),
+            Token::Bool(b) => Ok(Expr::Literal(Literal::Bool(*b), Span::new(start_pos, start_pos + 1))),
+            Token::Symbol(s) => Ok(Expr::Ident(Ident(s.clone()), Span::new(start_pos, start_pos + 1))),
+            _ => Err(ConversionError::UnexpectedToken(format!("Cannot parse expression starting with {:?}", tokens[0]))),
+        }
+    }
+    
+    /// Parse match expression from tokens: match expr { pat1 -> expr1 pat2 -> expr2 ... }
+    fn parse_match_expr_from_tokens(&self, start: usize, end: usize) -> Result<Expr, ConversionError> {
+        // eprintln!("parse_match_expr_from_tokens: range {}-{}", start, end);
+        
+        // Collect tokens in the range
+        let mut tokens = Vec::new();
+        for i in start..self.tokens.len().min(end) {
+            tokens.push(&self.tokens[i]);
+        }
+        
+        // Find the left brace
+        let mut lbrace_pos = None;
+        let mut rbrace_pos = None;
+        
+        for (i, token) in tokens.iter().enumerate() {
+            match token {
+                Token::LeftBrace => {
+                    if lbrace_pos.is_none() {
+                        lbrace_pos = Some(i);
+                    }
+                }
+                Token::RightBrace => {
+                    rbrace_pos = Some(i);
+                }
+                _ => {}
+            }
+        }
+        
+        if let (Some(lb), Some(rb)) = (lbrace_pos, rbrace_pos) {
+            // Parse the expression being matched (between match and {)
+            let expr = if lb > 1 {
+                self.parse_simple_expr_from_tokens(&tokens[1..lb], start + 1)?
+            } else {
+                return Err(ConversionError::UnexpectedToken("Missing expression in match".to_string()));
+            };
+            
+            // Parse the branches (between { and })
+            let mut branches = Vec::new();
+            
+            // For now, just create a simple pattern match
+            // TODO: Parse actual patterns and branches
+            
+            // Simple case: match true { true -> 1 false -> 0 }
+            if rb > lb + 1 {
+                // Look for patterns
+                let mut i = lb + 1;
+                while i < rb {
+                    if let Some(token) = tokens.get(i) {
+                        // Parse pattern
+                        let pattern = match token {
+                            Token::Bool(b) => Pattern::Literal(Literal::Bool(*b), Span::new(i, i + 1)),
+                            Token::Int(n) => Pattern::Literal(Literal::Int(*n), Span::new(i, i + 1)),
+                            Token::Symbol(s) if s == "_" => Pattern::Wildcard(Span::new(i, i + 1)),
+                            Token::Symbol(s) => Pattern::Variable(Ident(s.clone()), Span::new(i, i + 1)),
+                            Token::LeftBracket => {
+                                // List pattern - for now, just empty list
+                                if i + 1 < rb {
+                                    if let Some(Token::RightBracket) = tokens.get(i + 1) {
+                                        i += 1; // Skip the ]
+                                        Pattern::List { patterns: vec![], span: Span::new(i, i + 2) }
+                                    } else {
+                                        Pattern::Wildcard(Span::new(i, i + 1))
+                                    }
+                                } else {
+                                    Pattern::Wildcard(Span::new(i, i + 1))
+                                }
+                            }
+                            _ => Pattern::Wildcard(Span::new(i, i + 1)),
+                        };
+                        
+                        // Look for ->
+                        if i + 2 < rb {
+                            if let Some(Token::Arrow) = tokens.get(i + 1) {
+                                // Parse the branch expression
+                                if let Some(branch_token) = tokens.get(i + 2) {
+                                    let branch_expr = match branch_token {
+                                        Token::Int(n) => Expr::Literal(Literal::Int(*n), Span::new(start + i + 2, start + i + 3)),
+                                        Token::Bool(b) => Expr::Literal(Literal::Bool(*b), Span::new(start + i + 2, start + i + 3)),
+                                        Token::String(s) => Expr::Literal(Literal::String(s.clone()), Span::new(start + i + 2, start + i + 3)),
+                                        Token::Symbol(s) => Expr::Ident(Ident(s.clone()), Span::new(start + i + 2, start + i + 3)),
+                                        _ => Expr::Literal(Literal::Int(0), Span::new(start + i + 2, start + i + 3)),
+                                    };
+                                    
+                                    branches.push((pattern, branch_expr));
+                                    i += 3; // Skip pattern, ->, and expression
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            
+            // If no branches were parsed, add a default
+            if branches.is_empty() {
+                branches.push((Pattern::Wildcard(Span::new(start, start + 1)), Expr::Literal(Literal::Int(0), Span::new(start, start + 1))));
+            }
+            
+            return Ok(Expr::Match {
+                expr: Box::new(expr),
+                cases: branches,
+                span: Span::new(start, end),
+            });
+        }
+        
+        Err(ConversionError::UnexpectedToken("Invalid match expression syntax".to_string()))
     }
 }
 

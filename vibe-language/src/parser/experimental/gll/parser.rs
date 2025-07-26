@@ -287,7 +287,8 @@ impl GLLParser {
         
         // Create a return node that remembers where to continue after the non-terminal
         // Store the next slot information in the GSS node
-        let return_slot_encoded = next_slot.rule_index * 1000 + next_slot.position;
+        // Use a larger multiplier to handle longer rules (up to 100,000 positions)
+        let return_slot_encoded = next_slot.rule_index * 100000 + next_slot.position;
         
         // Check if we already have this return node
         if let Some(existing_node) = self.gss.get_node_id(return_slot_encoded, input_pos) {
@@ -363,7 +364,7 @@ impl GLLParser {
         
         // The slot in the GSS node contains the encoded rule index
         let encoded_slot = gss_node_data.slot;
-        let rule_index = encoded_slot / 1000;
+        let rule_index = encoded_slot / 100000;
         
         #[cfg(test)]
         println!("  GSS node data: slot={}, position={}", gss_node_data.slot, gss_node_data.position);
@@ -399,8 +400,8 @@ impl GLLParser {
                     if let Some(_parent_node) = self.gss.get_node(parent) {
                         // The current GSS node stores the return slot
                         let return_slot = gss_node_data.slot;
-                        let rule_index = return_slot / 1000;
-                        let rule_position = return_slot % 1000;
+                        let rule_index = return_slot / 100000;
+                        let rule_position = return_slot % 100000;
                         
                         #[cfg(test)]
                         println!("  Creating descriptor for parent: rule={}, pos={}, parent_gss={}", 
@@ -477,7 +478,7 @@ impl GLLParser {
                 use crate::parser::experimental::error_helpers::ErrorReporting;
                 
                 // Try to determine what went wrong
-                let position = self.state.effects.len(); // Approximate position
+                let position = if self.input.is_empty() { 0 } else { self.input.len() - 1 }; // Use actual input position
                 
                 if msg.contains("No valid parse found") {
                     // Determine expected tokens at failure point
@@ -673,5 +674,33 @@ mod tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err();
         assert!(error_msg.contains("maximum iterations"), "Error was: {}", error_msg);
+    }
+
+    #[test]
+    fn test_large_position_handling() {
+        // Test that the parser can handle positions greater than 999
+        // Create a rule with many tokens (more than 1000)
+        let mut rhs = vec![];
+        for i in 0..1500 {
+            rhs.push(GLLSymbol::Terminal(format!("t{}", i)));
+        }
+        
+        let rules = vec![
+            GLLRule { lhs: "S".to_string(), rhs: rhs.clone() },
+        ];
+        
+        let grammar = GLLGrammar::new(rules, "S".to_string());
+        let mut parser = GLLParser::new(grammar);
+        
+        // Create matching input
+        let mut input = vec![];
+        for i in 0..1500 {
+            input.push(format!("t{}", i));
+        }
+        
+        let result = parser.parse(input);
+        
+        // Should successfully parse without encoding issues
+        assert!(result.is_ok());
     }
 }

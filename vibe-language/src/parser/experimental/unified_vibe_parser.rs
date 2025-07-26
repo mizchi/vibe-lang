@@ -41,9 +41,9 @@ impl UnifiedVibeParser {
         // eprintln!("GLL parse returned {} roots", sppf_roots.len());
         
         // Convert SPPF to AST
-        // eprintln!("Starting SPPF to AST conversion...");
+        eprintln!("Starting SPPF to AST conversion with {} roots", sppf_roots.len());
         let ast = self.sppf_to_ast(sppf_roots)?;
-        // eprintln!("AST conversion complete: {} expressions", ast.len());
+        eprintln!("AST conversion complete: {} expressions", ast.len());
         
         Ok(ast)
     }
@@ -81,7 +81,7 @@ impl UnifiedVibeParser {
             Token::In => "in".to_string(),
             Token::If => "if".to_string(),
             Token::Else => "else".to_string(),
-            Token::Match => "case".to_string(),  // Using 'case' in unified syntax
+            Token::Match => "match".to_string(),  // Updated to match syntax
             Token::Type => "type".to_string(),
             Token::Module => "module".to_string(),
             Token::Import => "import".to_string(),

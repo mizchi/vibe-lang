@@ -175,35 +175,34 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
         ],
     });
     
-    // IfExpr -> if Expr then Expr else Expr
+    // IfExpr -> if Expr Block else Block
     rules.push(GLLRule {
         lhs: "IfExpr".to_string(),
         rhs: vec![
             GLLSymbol::Terminal("if".to_string()),
             GLLSymbol::NonTerminal("Expr".to_string()),
-            GLLSymbol::Terminal("then".to_string()),
-            GLLSymbol::NonTerminal("Expr".to_string()),
+            GLLSymbol::NonTerminal("Block".to_string()),
             GLLSymbol::Terminal("else".to_string()),
-            GLLSymbol::NonTerminal("Expr".to_string()),
+            GLLSymbol::NonTerminal("Block".to_string()),
         ],
     });
     
-    // CaseExpr -> case Expr of CaseBranches
+    // CaseExpr -> match Expr { CaseBranches }
     rules.push(GLLRule {
         lhs: "CaseExpr".to_string(),
         rhs: vec![
-            GLLSymbol::Terminal("case".to_string()),
+            GLLSymbol::Terminal("match".to_string()),
             GLLSymbol::NonTerminal("Expr".to_string()),
-            GLLSymbol::Terminal("of".to_string()),
+            GLLSymbol::Terminal("{".to_string()),
             GLLSymbol::NonTerminal("CaseBranches".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
         ],
     });
     
-    // CaseBranches -> | Pattern CaseGuard -> Expr CaseBranches | | Pattern CaseGuard -> Expr
+    // CaseBranches -> Pattern CaseGuard -> Expr CaseBranches | Pattern CaseGuard -> Expr
     rules.push(GLLRule {
         lhs: "CaseBranches".to_string(),
         rhs: vec![
-            GLLSymbol::Terminal("|".to_string()),
             GLLSymbol::NonTerminal("Pattern".to_string()),
             GLLSymbol::NonTerminal("CaseGuard".to_string()),
             GLLSymbol::Terminal("->".to_string()),
@@ -214,7 +213,6 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
     rules.push(GLLRule {
         lhs: "CaseBranches".to_string(),
         rhs: vec![
-            GLLSymbol::Terminal("|".to_string()),
             GLLSymbol::NonTerminal("Pattern".to_string()),
             GLLSymbol::NonTerminal("CaseGuard".to_string()),
             GLLSymbol::Terminal("->".to_string()),

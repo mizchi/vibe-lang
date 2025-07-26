@@ -52,10 +52,9 @@ fn test_optional_parameters_in_shell() -> Result<()> {
 #[test]
 fn test_import_with_hash_parsing() -> Result<()> {
     let input = "import Math@abc123";
-    let mut parser = Parser::new(input)?;
 
     // Test parsing import with hash
-    let result = parser.parse();
+    let result = vibe_language::parser::parse(input);
     assert!(result.is_ok());
 
     let expr = result.unwrap();
