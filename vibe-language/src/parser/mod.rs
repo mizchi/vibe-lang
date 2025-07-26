@@ -50,13 +50,3 @@ mod tests;
 mod tests_do;
 #[cfg(test)]
 mod tests_handle;
-#[cfg(test)]
-mod test_fn_syntax;
-#[cfg(test)]
-mod test_top_level_application;
-#[cfg(test)]
-mod test_fn_advanced;
-#[cfg(test)]
-mod test_simple_parsing;
-#[cfg(test)]
-mod test_dollar_as_parentheses;

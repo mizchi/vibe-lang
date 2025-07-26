@@ -128,13 +128,17 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
         ],
     });
     
-    // TypeAnnotation -> -> Type
+    // TypeAnnotation -> : Type | ε
     rules.push(GLLRule {
         lhs: "TypeAnnotation".to_string(),
         rhs: vec![
-            GLLSymbol::Terminal("->".to_string()),
+            GLLSymbol::Terminal(":".to_string()),
             GLLSymbol::NonTerminal("Type".to_string()),
         ],
+    });
+    rules.push(GLLRule {
+        lhs: "TypeAnnotation".to_string(),
+        rhs: vec![GLLSymbol::Epsilon],
     });
     
     // ========== Expressions ==========
@@ -502,7 +506,7 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
         rhs: vec![GLLSymbol::NonTerminal("PrimaryExpr".to_string())],
     });
     
-    // PrimaryExpr -> Literal | identifier | Constructor | ( Expr ) | [ ListElements ] | { RecordFields } | Block
+    // PrimaryExpr -> Literal | identifier | Constructor | ( Expr ) | ( Operator ) | [ ListElements ] | { RecordFields } | Block | perform PostfixExpr | handle Block Handlers
     rules.push(GLLRule {
         lhs: "PrimaryExpr".to_string(),
         rhs: vec![GLLSymbol::NonTerminal("Literal".to_string())],
@@ -515,11 +519,37 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
         lhs: "PrimaryExpr".to_string(),
         rhs: vec![GLLSymbol::NonTerminal("Constructor".to_string())],
     });
+    // Add perform expression
+    rules.push(GLLRule {
+        lhs: "PrimaryExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("perform".to_string()),
+            GLLSymbol::NonTerminal("PostfixExpr".to_string()),
+        ],
+    });
+    // Add handle expression
+    rules.push(GLLRule {
+        lhs: "PrimaryExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("handle".to_string()),
+            GLLSymbol::NonTerminal("Block".to_string()),
+            GLLSymbol::NonTerminal("Handlers".to_string()),
+        ],
+    });
     rules.push(GLLRule {
         lhs: "PrimaryExpr".to_string(),
         rhs: vec![
             GLLSymbol::Terminal("(".to_string()),
             GLLSymbol::NonTerminal("Expr".to_string()),
+            GLLSymbol::Terminal(")".to_string()),
+        ],
+    });
+    // Add operator section: ( Operator )
+    rules.push(GLLRule {
+        lhs: "PrimaryExpr".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("(".to_string()),
+            GLLSymbol::NonTerminal("Operator".to_string()),
             GLLSymbol::Terminal(")".to_string()),
         ],
     });
@@ -956,6 +986,53 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
         lhs: "RecordFields".to_string(),
         rhs: vec![GLLSymbol::NonTerminal("RecordField".to_string())],
     });
+    
+    // Handlers -> { HandlerCases }
+    rules.push(GLLRule {
+        lhs: "Handlers".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("{".to_string()),
+            GLLSymbol::NonTerminal("HandlerCases".to_string()),
+            GLLSymbol::Terminal("}".to_string()),
+        ],
+    });
+    
+    // HandlerCases -> HandlerCase HandlerCases | HandlerCase | ε
+    rules.push(GLLRule {
+        lhs: "HandlerCases".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("HandlerCase".to_string()),
+            GLLSymbol::NonTerminal("HandlerCases".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "HandlerCases".to_string(),
+        rhs: vec![GLLSymbol::NonTerminal("HandlerCase".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "HandlerCases".to_string(),
+        rhs: vec![GLLSymbol::Epsilon],
+    });
+    
+    // HandlerCase -> identifier PatternList -> Expr | type_identifier PatternList -> Expr
+    rules.push(GLLRule {
+        lhs: "HandlerCase".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("identifier".to_string()),
+            GLLSymbol::NonTerminal("PatternList".to_string()),
+            GLLSymbol::Terminal("->".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+        ],
+    });
+    rules.push(GLLRule {
+        lhs: "HandlerCase".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("type_identifier".to_string()),
+            GLLSymbol::NonTerminal("PatternList".to_string()),
+            GLLSymbol::Terminal("->".to_string()),
+            GLLSymbol::NonTerminal("Expr".to_string()),
+        ],
+    });
     rules.push(GLLRule {
         lhs: "RecordFields".to_string(),
         rhs: vec![GLLSymbol::Epsilon],
@@ -1011,6 +1088,28 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
     rules.push(GLLRule {
         lhs: "ModulePath".to_string(),
         rhs: vec![GLLSymbol::Terminal("type_identifier".to_string())],
+    });
+    
+    // ModulePath -> type_identifier @ identifier (for hash reference)
+    rules.push(GLLRule {
+        lhs: "ModulePath".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("type_identifier".to_string()),
+            GLLSymbol::Terminal("@".to_string()),
+            GLLSymbol::Terminal("identifier".to_string()),
+        ],
+    });
+    
+    // ModulePath -> type_identifier . ModulePath @ identifier
+    rules.push(GLLRule {
+        lhs: "ModulePath".to_string(),
+        rhs: vec![
+            GLLSymbol::Terminal("type_identifier".to_string()),
+            GLLSymbol::Terminal(".".to_string()),
+            GLLSymbol::NonTerminal("ModulePath".to_string()),
+            GLLSymbol::Terminal("@".to_string()),
+            GLLSymbol::Terminal("identifier".to_string()),
+        ],
     });
     
     // ExportList -> ImportList
@@ -1121,6 +1220,80 @@ pub fn create_unified_vibe_grammar() -> GLLGrammar {
     rules.push(GLLRule {
         lhs: "EffectBody".to_string(),
         rhs: vec![GLLSymbol::Epsilon],
+    });
+    
+    // Operator -> + | - | * | / | mod | ^ | ++ | :: | == | != | < | > | <= | >= | && | || | |> | $
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("+".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("-".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("*".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("/".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("mod".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("^".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("++".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("::".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("==".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("!=".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("<".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal(">".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("<=".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal(">=".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("&&".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("||".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("|>".to_string())],
+    });
+    rules.push(GLLRule {
+        lhs: "Operator".to_string(),
+        rhs: vec![GLLSymbol::Terminal("$".to_string())],
     });
     
     GLLGrammar::new(rules, "Program".to_string())

@@ -6,6 +6,7 @@ use std::fmt;
 use std::iter::FromIterator;
 use thiserror::Error;
 
+pub mod ast_normalizer;
 pub mod block_attributes;
 pub mod builtin_effects;
 pub mod builtin_modules;
@@ -15,8 +16,10 @@ pub mod effects;
 pub mod error_context;
 pub mod extensible_effects;
 pub mod ir;
+pub mod ir_pipeline;
 pub mod lib_modules;
 pub mod metadata;
+pub mod normalized_ast;
 pub mod parser;
 pub mod pretty_print;
 pub mod recursion_detector;
@@ -43,7 +46,7 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Literal {
     Int(i64),
     Float(OrderedFloat<f64>),

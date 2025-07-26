@@ -2,13 +2,14 @@ use super::gll::GLLParser;
 use super::unified_vibe_grammar::create_unified_vibe_grammar;
 use super::error::{ParseError, ErrorLocation};
 use super::sppf_to_ast_converter::{SPPFToASTConverter, ConversionError};
+use super::expression_combiner::ExpressionCombiner;
 use crate::parser::lexer::{Lexer, Token};
 use crate::{Expr};
 use crate::XsError;
 
 /// Unified Vibe language parser using consistent syntax
 pub struct UnifiedVibeParser {
-    gll_parser: GLLParser,
+    pub(crate) gll_parser: GLLParser,
     /// Store tokens for SPPF to AST conversion
     last_tokens: Vec<Token>,
 }
@@ -35,6 +36,11 @@ impl UnifiedVibeParser {
             .map(|t| self.token_to_string(t))
             .collect();
         
+        #[cfg(test)]
+        if source.contains('[') {
+            println!("DEBUG: GLL parser input strings: {:?}", token_strings);
+        }
+        
         // Parse with GLL parser
         let sppf_roots = self.gll_parser.parse_with_errors(token_strings)?;
         
@@ -42,6 +48,12 @@ impl UnifiedVibeParser {
         
         // Convert SPPF to AST
         eprintln!("Starting SPPF to AST conversion with {} roots", sppf_roots.len());
+        
+        // Debug: Print SPPF roots info
+        for (i, &root_id) in sppf_roots.iter().enumerate() {
+            eprintln!("  Root {}: node_id={}", i, root_id);
+        }
+        
         let ast = self.sppf_to_ast(sppf_roots)?;
         eprintln!("AST conversion complete: {} expressions", ast.len());
         
@@ -67,6 +79,11 @@ impl UnifiedVibeParser {
                     return Err(self.xs_error_to_parse_error(e, source));
                 }
             }
+        }
+        
+        #[cfg(test)]
+        if source.contains('[') {
+            println!("DEBUG: tokenize() input '{}' produced tokens: {:?}", source, tokens);
         }
         
         Ok(tokens)
@@ -209,10 +226,15 @@ impl UnifiedVibeParser {
         let converter = SPPFToASTConverter::new(sppf, tokens);
         
         // Convert SPPF roots to AST
-        let result = converter.convert(sppf_roots)
-            .map_err(|e| self.conversion_error_to_parse_error(e));
-        // eprintln!("Conversion result: {:?}", result);
-        result
+        let exprs = converter.convert(sppf_roots)
+            .map_err(|e| self.conversion_error_to_parse_error(e))?;
+        
+        // Apply expression combiner to fix split expressions
+        let combiner = ExpressionCombiner::new(exprs);
+        let combined = combiner.combine();
+        
+        // eprintln!("After combining: {} expressions", combined.len());
+        Ok(combined)
     }
     
     /// Convert ConversionError to ParseError
@@ -227,6 +249,12 @@ impl UnifiedVibeParser {
         };
         
         ParseError::syntax(message, location)
+    }
+    
+    /// Get GLL parser for testing
+    #[cfg(test)]
+    pub fn gll_parser(&self) -> &GLLParser {
+        &self.gll_parser
     }
 }
 

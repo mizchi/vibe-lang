@@ -290,6 +290,9 @@ impl GLLParser {
         // Use a larger multiplier to handle longer rules (up to 100,000 positions)
         let return_slot_encoded = next_slot.rule_index * 100000 + next_slot.position;
         
+        #[cfg(test)]
+        println!("process_nonterminal: {} at pos={}, return_slot_encoded={}", nonterminal, input_pos, return_slot_encoded);
+        
         // Check if we already have this return node
         if let Some(existing_node) = self.gss.get_node_id(return_slot_encoded, input_pos) {
             // Use existing node and add another edge
@@ -301,6 +304,9 @@ impl GLLParser {
             // Create new return node
             let return_node = self.gss.create_node(return_slot_encoded, input_pos);
             self.gss.add_edge(gss_node, return_node, sppf_node);
+            
+            #[cfg(test)]
+            println!("  Created return node {} with slot={} at pos={}", return_node, return_slot_encoded, input_pos);
             
             // Try all rules for this non-terminal
             let rule_indices = self.grammar.nonterminal_rules.get(nonterminal).cloned();

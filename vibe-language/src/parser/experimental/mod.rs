@@ -2,6 +2,7 @@ pub mod parser;
 pub mod gll;
 pub mod error;
 pub mod error_helpers;
+pub mod expression_combiner;
 pub mod vibe_grammar;
 pub mod vibe_parser;
 pub mod vibe_simplified_grammar;
