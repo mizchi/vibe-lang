@@ -36,8 +36,8 @@ impl SPPFToASTConverter {
     pub fn convert(&self, roots: Vec<usize>) -> Result<Vec<Expr>, ConversionError> {
         let mut exprs = Vec::new();
         
-        println!("DEBUG: convert() called with {} roots", roots.len());
-        println!("DEBUG: Available tokens: {:?}", self.tokens);
+        // println!("DEBUG: convert() called with {} roots", roots.len());
+        // println!("DEBUG: Available tokens: {:?}", self.tokens);
         
         for root_id in roots {
             if let Some(node) = self.get_node(root_id) {
@@ -135,11 +135,11 @@ impl SPPFToASTConverter {
     
     /// Convert a non-terminal expression
     fn convert_nonterminal_expr(&self, name: &str, node_id: usize) -> Result<Expr, ConversionError> {
-        if let Some(node) = self.get_node(node_id) {
-            println!("DEBUG: convert_nonterminal_expr: {} at node {} (pos {}-{})", name, node_id, node.start, node.end);
-        } else {
-            println!("DEBUG: convert_nonterminal_expr: {} at node {} (invalid node)", name, node_id);
-        }
+        // if let Some(node) = self.get_node(node_id) {
+        //     println!("DEBUG: convert_nonterminal_expr: {} at node {} (pos {}-{})", name, node_id, node.start, node.end);
+        // } else {
+        //     println!("DEBUG: convert_nonterminal_expr: {} at node {} (invalid node)", name, node_id);
+        // }
         match name {
             "TopLevelDef" => self.convert_top_level_def(node_id),
             "let_binding" | "LetBinding" | "LetDef" => self.convert_let_binding(node_id),
@@ -607,11 +607,11 @@ impl SPPFToASTConverter {
                                 // Otherwise, continue with child processing
                             }
                             "Expr" => {
-                                println!("DEBUG: TopLevelDef found Expr child");
+                                // println!("DEBUG: TopLevelDef found Expr child");
                                 // Expr -> BinaryExpr -> ...
                                 if let Some(expr_children) = child.children.first() {
                                     if let Some(&expr_child_id) = expr_children.first() {
-                                        println!("DEBUG: Converting Expr child_id={}", expr_child_id);
+                                        // println!("DEBUG: Converting Expr child_id={}", expr_child_id);
                                         return self.convert_node_to_expr(expr_child_id);
                                     }
                                 }
@@ -631,22 +631,22 @@ impl SPPFToASTConverter {
     /// Convert a Program node
     fn convert_program(&self, node_id: usize) -> Result<Expr, ConversionError> {
         let node = self.get_node(node_id).ok_or(ConversionError::InvalidNode)?;
-        println!("DEBUG: convert_program: node_id={}, pos {}-{}", node_id, node.start, node.end);
-        println!("DEBUG: convert_program: {} child sets", node.children.len());
+        // println!("DEBUG: convert_program: node_id={}, pos {}-{}", node_id, node.start, node.end);
+        // println!("DEBUG: convert_program: {} child sets", node.children.len());
         
         // A Program node can have multiple definitions
         let mut definitions = Vec::new();
         
         // Look at the children
         for (i, children) in node.children.iter().enumerate() {
-            println!("DEBUG: convert_program: child set {} has {} children", i, children.len());
+            // println!("DEBUG: convert_program: child set {} has {} children", i, children.len());
             for &child_id in children {
                 if let Some(child) = self.get_node(child_id) {
-                    println!("DEBUG: convert_program: child type={:?} at pos {}-{}", child.node_type, child.start, child.end);
+                    // println!("DEBUG: convert_program: child type={:?} at pos {}-{}", child.node_type, child.start, child.end);
                     
                     match &child.node_type {
                         SPPFNodeType::NonTerminal(name) => {
-                            println!("DEBUG: convert_program: NonTerminal child: {}", name);
+                            // println!("DEBUG: convert_program: NonTerminal child: {}", name);
                             if name == "TopLevelDef" {
                                 // Convert each top-level definition
                                 if let Ok(def) = self.convert_top_level_def(child_id) {
@@ -677,7 +677,7 @@ impl SPPFToASTConverter {
             }
         }
         
-        println!("DEBUG: convert_program: found {} definitions", definitions.len());
+        // println!("DEBUG: convert_program: found {} definitions", definitions.len());
         Ok(Expr::List(definitions, Span::new(node.start, node.end)))
     }
     
@@ -746,24 +746,29 @@ impl SPPFToASTConverter {
     /// Convert node to expression (dispatcher)
     fn convert_node_to_expr(&self, node_id: usize) -> Result<Expr, ConversionError> {
         if let Some(node) = self.get_node(node_id) {
-            println!("DEBUG: convert_node_to_expr: node_id={}, type={:?}", node_id, node.node_type);
+            // println!("DEBUG: convert_node_to_expr: node_id={}, type={:?}", node_id, node.node_type);
             match &node.node_type {
                 SPPFNodeType::NonTerminal(name) => self.convert_nonterminal_expr(name, node_id),
                 SPPFNodeType::Terminal(token) => self.convert_terminal_to_expr(token, node.start, node.end),
                 SPPFNodeType::Intermediate { slot } => {
-                    println!("DEBUG: Found Intermediate node with slot={}", slot);
+                    // println!("DEBUG: Found Intermediate node with slot={}", slot);
                     // Intermediate nodes are used for binarization in GLL parsing
                     // We need to look at their children
                     if let Some(children) = node.children.first() {
                         if let Some(&child_id) = children.first() {
-                            println!("DEBUG: Converting first child of Intermediate node");
+                            // println!("DEBUG: Converting first child of Intermediate node");
                             return self.convert_node_to_expr(child_id);
                         }
                     }
                     Err(ConversionError::UnsupportedNode)
                 }
+                SPPFNodeType::Epsilon => {
+                    // println!("DEBUG: Found Epsilon node");
+                    // Epsilon nodes represent empty productions
+                    Ok(Expr::List(vec![], Span::new(node.start, node.end)))
+                }
                 _ => {
-                    println!("DEBUG: Unsupported node type: {:?}", node.node_type);
+                    // println!("DEBUG: Unsupported node type: {:?}", node.node_type);
                     Err(ConversionError::UnsupportedNode)
                 }
             }
@@ -776,6 +781,43 @@ impl SPPFToASTConverter {
     fn get_node(&self, node_id: usize) -> Option<&SPPFNode> {
         unsafe {
             (*self.sppf).get_node(node_id)
+        }
+    }
+    
+    /// Debug helper to print node structure
+    fn debug_print_node(&self, node_id: usize, indent: usize) {
+        let indent_str = " ".repeat(indent);
+        if let Some(node) = self.get_node(node_id) {
+            match &node.node_type {
+                SPPFNodeType::Terminal(s) => {
+                    println!("{}Terminal({}) @{}-{} id={}", indent_str, s, node.start, node.end, node_id);
+                }
+                SPPFNodeType::NonTerminal(s) => {
+                    println!("{}NonTerminal({}) @{}-{} id={}", indent_str, s, node.start, node.end, node_id);
+                }
+                SPPFNodeType::Intermediate { slot } => {
+                    println!("{}Intermediate(slot {}) @{}-{} id={}", indent_str, slot, node.start, node.end, node_id);
+                }
+                SPPFNodeType::Packed { slot } => {
+                    println!("{}Packed(slot={}) @{}-{} id={}", indent_str, slot, node.start, node.end, node_id);
+                }
+                SPPFNodeType::Epsilon => {
+                    println!("{}Epsilon @{}-{} id={}", indent_str, node.start, node.end, node_id);
+                }
+            }
+            
+            // Print children
+            for (i, children) in node.children.iter().enumerate() {
+                if !children.is_empty() {
+                    println!("{}  Child set {}:", indent_str, i);
+                    for &child_id in children {
+                        // Avoid cycles
+                        if indent < 20 {
+                            self.debug_print_node(child_id, indent + 4);
+                        }
+                    }
+                }
+            }
         }
     }
     
