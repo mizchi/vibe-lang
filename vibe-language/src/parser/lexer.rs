@@ -71,6 +71,9 @@ pub enum Token {
 
     // Comments
     Comment(String),
+    
+    // Type operators
+    QuestionMark, // ?
 
     // Special
     Newline,
@@ -228,6 +231,10 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     self.advance();
                     Ok(Some((Token::Backslash, Span::new(start, self.position))))
+                }
+                '?' => {
+                    self.advance();
+                    Ok(Some((Token::QuestionMark, Span::new(start, self.position))))
                 }
                 '<' => self.read_operator(),
                 '>' => self.read_operator(),

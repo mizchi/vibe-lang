@@ -12,7 +12,7 @@ pub mod unified_vibe_parser;
 pub mod sppf_to_ast_simple;
 pub mod sppf_to_ast_converter;
 
-pub use parser::{ParserState, ParseEffect, Constraint, NodeId};
+pub use parser::{ParserState, ParseEffect, Constraint, NodeId, parse_with_gll};
 pub use gll::{GLLParser, GLLGrammar, GLLRule, GLLSymbol, demo_complex_gll_verification};
 pub use error::{ParseError as StructuredParseError, ErrorCategory, ErrorLocation, ParseErrorBuilder};
 pub use error_helpers::{ErrorReporting, suggest_similar_tokens};

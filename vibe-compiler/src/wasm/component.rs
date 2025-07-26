@@ -150,6 +150,15 @@ pub fn xs_type_to_wit(xs_type: &vibe_language::Type) -> WitType {
         Type::Var(_) => WitType::String, // Type variables need special handling
         Type::UserDefined { .. } => WitType::String, // ADTs need special handling
         Type::Record { .. } => WitType::String, // Records need special handling
+        Type::Option(inner) => {
+            // Option type maps to WIT option
+            WitType::Option(Box::new(xs_type_to_wit(inner)))
+        }
+        Type::Tuple(_types) => {
+            // Tuples need special handling in WIT
+            // For now, represent as string
+            WitType::String
+        }
     }
 }
 

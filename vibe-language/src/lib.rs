@@ -37,6 +37,8 @@ mod effect_inference_tests;
 mod effect_system_tests;
 #[cfg(test)]
 mod simple_effect_tests;
+#[cfg(test)]
+mod type_tests;
 mod types;
 mod value;
 
@@ -341,6 +343,10 @@ pub enum Type {
     Record {
         fields: Vec<(String, Type)>,
     },
+    /// Option type (e.g., String? is sugar for Option String)
+    Option(Box<Type>),
+    /// Tuple type
+    Tuple(Vec<Type>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,6 +378,17 @@ impl fmt::Display for Type {
             Type::String => write!(f, "String"),
             Type::Unit => write!(f, "Unit"),
             Type::List(t) => write!(f, "(List {t})"),
+            Type::Option(t) => write!(f, "{}?", t),
+            Type::Tuple(types) => {
+                write!(f, "(")?;
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", t)?;
+                }
+                write!(f, ")")
+            }
             Type::Function(from, to) => {
                 // Add parentheses for function arguments
                 match from.as_ref() {

@@ -160,6 +160,11 @@ impl TypeErrorHelper {
             Type::Record { fields } => {
                 format!("record with {} field(s)", fields.len())
             }
+            Type::Option(t) => format!("optional {}", self.type_to_readable(t)),
+            Type::Tuple(types) => {
+                let type_strs: Vec<String> = types.iter().map(|t| self.type_to_readable(t)).collect();
+                format!("tuple of ({})", type_strs.join(", "))
+            }
         }
     }
 
@@ -292,6 +297,11 @@ fn type_string(ty: &Type) -> String {
                 .map(|(name, ty)| format!("{}: {}", name, type_string(ty)))
                 .collect();
             format!("{{ {} }}", field_strs.join(", "))
+        }
+        Type::Option(t) => format!("{}?", type_string(t)),
+        Type::Tuple(types) => {
+            let type_strs: Vec<String> = types.iter().map(type_string).collect();
+            format!("({})", type_strs.join(", "))
         }
     }
 }

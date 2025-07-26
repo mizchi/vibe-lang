@@ -602,6 +602,17 @@ fn hash_type(hasher: &mut Sha256, ty: &Type) {
                 hash_type(hasher, ty);
             }
         }
+        Type::Option(inner) => {
+            hasher.update(b"option");
+            hash_type(hasher, inner);
+        }
+        Type::Tuple(types) => {
+            hasher.update(b"tuple");
+            hasher.update(types.len().to_le_bytes());
+            for ty in types {
+                hash_type(hasher, ty);
+            }
+        }
     }
 }
 

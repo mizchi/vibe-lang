@@ -35,6 +35,14 @@ impl Type {
                 }
                 vars
             }
+            Type::Option(t) => t.free_vars(),
+            Type::Tuple(types) => {
+                let mut vars = HashSet::new();
+                for t in types {
+                    vars.extend(t.free_vars());
+                }
+                vars
+            }
         }
     }
 
@@ -62,6 +70,10 @@ impl Type {
                     .map(|(name, ty)| (name.clone(), ty.apply_subst(subst)))
                     .collect(),
             },
+            Type::Option(t) => Type::Option(Box::new(t.apply_subst(subst))),
+            Type::Tuple(types) => Type::Tuple(
+                types.iter().map(|t| t.apply_subst(subst)).collect()
+            ),
         }
     }
 }

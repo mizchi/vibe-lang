@@ -44,6 +44,16 @@ pub fn xs_type_to_wasm(ty: &Type) -> Result<WasmType, CodeGenError> {
             // Records as struct references
             Ok(WasmType::StructRef(4)) // Placeholder index
         }
+        Type::Option(_inner) => {
+            // Option types represented as nullable references in WASM GC
+            // Could be struct with tag for None/Some
+            Ok(WasmType::StructRef(5)) // Placeholder index
+        }
+        Type::Tuple(types) => {
+            // Tuples as struct references with fields for each element
+            // Number of fields determined by tuple size
+            Ok(WasmType::StructRef((6 + types.len()) as u32)) // Placeholder index based on size
+        }
     }
 }
 

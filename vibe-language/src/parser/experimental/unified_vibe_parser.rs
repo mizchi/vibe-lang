@@ -141,6 +141,7 @@ impl UnifiedVibeParser {
             Token::Dollar => "$".to_string(),
             Token::At => "@".to_string(),
             Token::Hash => "#".to_string(),
+            Token::QuestionMark => "?".to_string(),
             Token::Underscore => "_".to_string(),
             Token::LeftArrow => "<-".to_string(),
             Token::PipeForward => "|>".to_string(),

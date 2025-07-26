@@ -326,8 +326,12 @@ fn type_to_string(ty: &Type) -> String {
                 .map(|(name, ty)| format!("{}: {}", name, type_to_string(ty)))
                 .collect();
             format!("{{ {} }}", field_types.join(", "))
-        } // Note: Type::Constructor doesn't exist in current implementation
-          // ADT types are represented differently
+        }
+        Type::Option(t) => format!("{}?", type_to_string(t)),
+        Type::Tuple(types) => {
+            let type_strs: Vec<String> = types.iter().map(type_to_string).collect();
+            format!("({})", type_strs.join(", "))
+        }
     }
 }
 

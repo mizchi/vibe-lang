@@ -776,7 +776,7 @@ pub fn create_vibe_grammar() -> GLLGrammar {
         rhs: vec![GLLSymbol::Epsilon],
     });
     
-    // Type -> TypeName | Type -> Type | ( Type )
+    // Type -> TypeName | Type -> Type | ( Type ) | Type?
     rules.push(GLLRule {
         lhs: "Type".to_string(),
         rhs: vec![GLLSymbol::NonTerminal("TypeName".to_string())],
@@ -795,6 +795,14 @@ pub fn create_vibe_grammar() -> GLLGrammar {
             GLLSymbol::Terminal("(".to_string()),
             GLLSymbol::NonTerminal("Type".to_string()),
             GLLSymbol::Terminal(")".to_string()),
+        ],
+    });
+    // Type? (Option type sugar)
+    rules.push(GLLRule {
+        lhs: "Type".to_string(),
+        rhs: vec![
+            GLLSymbol::NonTerminal("TypeName".to_string()),
+            GLLSymbol::Terminal("?".to_string()),
         ],
     });
     

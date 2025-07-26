@@ -142,7 +142,20 @@ impl SPPFToASTConverter {
             "false" => Ok(Expr::Literal(Literal::Bool(false), span)),
             "identifier" => {
                 if let Some(Token::Symbol(name)) = self.get_token_at_position(start) {
-                    Ok(Expr::Ident(Ident(name.clone()), span))
+                    // Check for Option constructors
+                    match name.as_str() {
+                        "None" => Ok(Expr::Constructor {
+                            name: Ident("None".to_string()),
+                            args: vec![],
+                            span,
+                        }),
+                        "Some" => {
+                            // Some is followed by an argument
+                            // For now, return an identifier - proper parsing will be done at apply level
+                            Ok(Expr::Ident(Ident(name.clone()), span))
+                        }
+                        _ => Ok(Expr::Ident(Ident(name.clone()), span))
+                    }
                 } else {
                     Ok(Expr::Ident(Ident("_".to_string()), span))
                 }
@@ -1470,20 +1483,61 @@ impl SPPFToASTConverter {
                                     self.parse_list_from_tokens(start + body_start, end)?
                                 }
                                 Token::Symbol(s) => {
-                                    // Could be a simple identifier or start of a more complex expression
-                                    // Check if this is a binary expression
-                                    if body_start + 2 < tokens.len() {
-                                        // Check for binary operator
-                                        if let Token::Symbol(op) = tokens[body_start + 1] {
-                                            if matches!(op.as_str(), "+" | "-" | "*" | "/" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||") {
-                                                // This is a binary expression
-                                                if let Token::Symbol(rhs) = tokens[body_start + 2] {
-                                                    let left = Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1));
-                                                    let right = Expr::Ident(Ident(rhs.clone()), Span::new(start + body_start + 2, start + body_start + 3));
-                                                    Expr::Apply {
-                                                        func: Box::new(Expr::Ident(Ident(op.clone()), Span::new(start + body_start + 1, start + body_start + 2))),
-                                                        args: vec![left, right],
-                                                        span: Span::new(start + body_start, start + body_start + 3),
+                                    // Check for None/Some constructors
+                                    if s == "None" {
+                                        Expr::Constructor {
+                                            name: Ident("None".to_string()),
+                                            args: vec![],
+                                            span: Span::new(start + body_start, start + body_start + 1),
+                                        }
+                                    } else if s == "Some" {
+                                        // Check if we have an argument after Some
+                                        if body_start + 1 < tokens.len() {
+                                            // Parse the argument
+                                            let arg = match tokens[body_start + 1] {
+                                                Token::Int(n) => Expr::Literal(Literal::Int(*n), Span::new(start + body_start + 1, start + body_start + 2)),
+                                                Token::Float(f) => Expr::Literal(Literal::Float(OrderedFloat(*f)), Span::new(start + body_start + 1, start + body_start + 2)),
+                                                Token::String(s) => Expr::Literal(Literal::String(s.clone()), Span::new(start + body_start + 1, start + body_start + 2)),
+                                                Token::Bool(b) => Expr::Literal(Literal::Bool(*b), Span::new(start + body_start + 1, start + body_start + 2)),
+                                                Token::Symbol(sym) => {
+                                                    if sym == "None" {
+                                                        Expr::Constructor {
+                                                            name: Ident("None".to_string()),
+                                                            args: vec![],
+                                                            span: Span::new(start + body_start + 1, start + body_start + 2),
+                                                        }
+                                                    } else {
+                                                        Expr::Ident(Ident(sym.clone()), Span::new(start + body_start + 1, start + body_start + 2))
+                                                    }
+                                                }
+                                                _ => return Err(ConversionError::UnexpectedToken("Expected argument for Some".to_string())),
+                                            };
+                                            Expr::Constructor {
+                                                name: Ident("Some".to_string()),
+                                                args: vec![arg],
+                                                span: Span::new(start + body_start, start + body_start + 2),
+                                            }
+                                        } else {
+                                            return Err(ConversionError::UnexpectedToken("Some requires an argument".to_string()));
+                                        }
+                                    } else {
+                                        // Could be a simple identifier or start of a more complex expression
+                                        // Check if this is a binary expression
+                                        if body_start + 2 < tokens.len() {
+                                            // Check for binary operator
+                                            if let Token::Symbol(op) = tokens[body_start + 1] {
+                                                if matches!(op.as_str(), "+" | "-" | "*" | "/" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||") {
+                                                    // This is a binary expression
+                                                    if let Token::Symbol(rhs) = tokens[body_start + 2] {
+                                                        let left = Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1));
+                                                        let right = Expr::Ident(Ident(rhs.clone()), Span::new(start + body_start + 2, start + body_start + 3));
+                                                        Expr::Apply {
+                                                            func: Box::new(Expr::Ident(Ident(op.clone()), Span::new(start + body_start + 1, start + body_start + 2))),
+                                                            args: vec![left, right],
+                                                            span: Span::new(start + body_start, start + body_start + 3),
+                                                        }
+                                                    } else {
+                                                        Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1))
                                                     }
                                                 } else {
                                                     Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1))
@@ -1494,8 +1548,6 @@ impl SPPFToASTConverter {
                                         } else {
                                             Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1))
                                         }
-                                    } else {
-                                        Expr::Ident(Ident(s.clone()), Span::new(start + body_start, start + body_start + 1))
                                     }
                                 }
                                 _ => return Err(ConversionError::UnexpectedToken(format!("{:?}", tokens[body_start]))),
@@ -1632,13 +1684,72 @@ impl SPPFToASTConverter {
         
         // First token should be the function
         let mut pos = start;
-        let func = match self.get_token_at_position(pos) {
+        let (func_name, func_expr) = match self.get_token_at_position(pos) {
             Some(Token::Symbol(name)) => {
                 pos += 1;
-                Expr::Ident(Ident(name.clone()), Span::new(start, pos))
+                (name.clone(), Expr::Ident(Ident(name.clone()), Span::new(start, pos)))
             }
             _ => return Err(ConversionError::UnexpectedToken("Expected function name".to_string())),
         };
+        
+        // Check if this is the Some constructor
+        if func_name == "Some" {
+            // Parse arguments for Some constructor
+            let mut args = Vec::new();
+            while pos < end {
+                if let Some(token) = self.get_token_at_position(pos) {
+                    match token {
+                        Token::Symbol(s) => {
+                            if s == "None" {
+                                args.push(Expr::Constructor {
+                                    name: Ident("None".to_string()),
+                                    args: vec![],
+                                    span: Span::new(pos, pos + 1),
+                                });
+                            } else {
+                                args.push(Expr::Ident(Ident(s.clone()), Span::new(pos, pos + 1)));
+                            }
+                            pos += 1;
+                        }
+                        Token::Int(n) => {
+                            args.push(Expr::Literal(Literal::Int(*n), Span::new(pos, pos + 1)));
+                            pos += 1;
+                        }
+                        Token::Float(f) => {
+                            args.push(Expr::Literal(Literal::Float(OrderedFloat(*f)), Span::new(pos, pos + 1)));
+                            pos += 1;
+                        }
+                        Token::String(s) => {
+                            args.push(Expr::Literal(Literal::String(s.clone()), Span::new(pos, pos + 1)));
+                            pos += 1;
+                        }
+                        Token::Bool(b) => {
+                            args.push(Expr::Literal(Literal::Bool(*b), Span::new(pos, pos + 1)));
+                            pos += 1;
+                        }
+                        Token::LeftParen => {
+                            // Parse parenthesized expression
+                            let paren_end = self.find_matching_paren(pos)?;
+                            // For now, skip parenthesized expressions in Some arguments
+                            pos = paren_end + 1;
+                        }
+                        _ => {
+                            // Skip other tokens
+                            pos += 1;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+            
+            // Return Some constructor with arguments
+            return Ok(Expr::Constructor {
+                name: Ident("Some".to_string()),
+                args,
+                span: Span::new(start, end),
+            });
+        }
         
         // Parse arguments - can be complex expressions
         let mut args = Vec::new();
@@ -1710,15 +1821,15 @@ impl SPPFToASTConverter {
             }
         }
         
-        println!("DEBUG: Parsed function: {:?}, args: {:?}", func, args);
+        println!("DEBUG: Parsed function: {:?}, args: {:?}", func_expr, args);
         
         if args.is_empty() {
             // No arguments, just return the function
-            Ok(func)
+            Ok(func_expr)
         } else {
             // Build left-associative application
             // f a b c -> ((f a) b) c
-            let mut result = func;
+            let mut result = func_expr;
             for arg in args {
                 result = Expr::Apply {
                     func: Box::new(result),
@@ -2121,6 +2232,14 @@ impl SPPFToASTConverter {
                         return Ok(Expr::Literal(Literal::Bool(*b), Span::new(start, end)));
                     }
                     Token::Symbol(s) => {
+                        // Check for None constructor
+                        if s == "None" {
+                            return Ok(Expr::Constructor {
+                                name: Ident("None".to_string()),
+                                args: vec![],
+                                span: Span::new(start, end),
+                            });
+                        }
                         return Ok(Expr::Ident(Ident(s.clone()), Span::new(start, end)));
                     }
                     _ => {}
@@ -3257,7 +3376,7 @@ impl SPPFToASTConverter {
         // Handle simple types
         match tokens[0] {
             Token::Symbol(name) => {
-                match name.as_str() {
+                let base_type = match name.as_str() {
                     "Int" => Some(Type::Int),
                     "Float" => Some(Type::Float),
                     "Bool" => Some(Type::Bool),
@@ -3269,7 +3388,17 @@ impl SPPFToASTConverter {
                             type_params: vec![],
                         })
                     }
+                };
+                
+                // Check for optional type suffix (?)
+                if tokens.len() > 1 {
+                    if let Token::QuestionMark = tokens[1] {
+                        // T? is sugar for Option T
+                        return base_type.map(|t| Type::Option(Box::new(t)));
+                    }
                 }
+                
+                base_type
             }
             _ => None,
         }

@@ -373,6 +373,11 @@ impl<'a> PrettyPrinter<'a> {
                     .collect();
                 format!("{{ {} }}", field_strs.join(", "))
             }
+            Type::Option(t) => format!("{}?", self.format_type(t)),
+            Type::Tuple(types) => {
+                let type_strs: Vec<String> = types.iter().map(|t| self.format_type(t)).collect();
+                format!("({})", type_strs.join(", "))
+            }
         }
     }
 

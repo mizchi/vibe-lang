@@ -41,6 +41,7 @@ fn token_to_string(token: &Token) -> String {
         Token::Dollar => "$".to_string(),
         Token::At => "@".to_string(),
         Token::Hash => "#".to_string(),
+        Token::QuestionMark => "?".to_string(),
         Token::Underscore => "_".to_string(),
         
         // Delimiters

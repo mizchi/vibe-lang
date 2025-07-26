@@ -70,6 +70,14 @@ impl<'a> DependencyExtractor<'a> {
                     self.visit_type(field_type, deps);
                 }
             }
+            Type::Option(inner) => {
+                self.visit_type(inner, deps);
+            }
+            Type::Tuple(types) => {
+                for t in types {
+                    self.visit_type(t, deps);
+                }
+            }
             // Primitive types and type variables have no dependencies
             Type::Int | Type::Float | Type::Bool | Type::String | Type::Unit | Type::Var(_) => {}
         }
