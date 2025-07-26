@@ -29,6 +29,9 @@ pub mod pretty_print;
 pub mod recursion_detector;
 pub mod type_annotator;
 pub mod typed_ir;
+
+#[cfg(test)]
+mod effect_system_tests;
 mod types;
 mod value;
 
