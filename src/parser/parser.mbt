@@ -1,10 +1,40 @@
 ///|
 /// Parser for xsh (CST + AST)
 suberror ParseError {
-  UnexpectedToken(expected~ : String, got~ : String)
-  UnexpectedEof
-  InvalidHashSuffix(String)
+  UnexpectedToken(expected~ : String, got~ : String, span~ : @core.Span)
+  UnexpectedEof(span~ : @core.Span)
+  InvalidHashSuffix(value~ : String, span~ : @core.Span)
 } derive(Show, Eq)
+
+///|
+pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
+  match self {
+    ParseError::UnexpectedToken(expected~, got~, span~) =>
+      @core.Diagnostic::{
+        stage: "parse",
+        message: "unexpected token: got " + got + ", expected " + expected,
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+    ParseError::UnexpectedEof(span~) =>
+      @core.Diagnostic::{
+        stage: "parse",
+        message: "unexpected end of file",
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+    ParseError::InvalidHashSuffix(value~, span~) =>
+      @core.Diagnostic::{
+        stage: "parse",
+        message: "invalid hash suffix: " + value,
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+  }
+}
 
 ///|
 /// CST parser state
@@ -768,6 +798,34 @@ fn AstParser::peek_non_trivia_kind(
 }
 
 ///|
+fn AstParser::offset_at(self : AstParser, pos : Int) -> Int {
+  let mut i = 0
+  let mut offset = 0
+  let limit = if pos > self.tokens.length() {
+    self.tokens.length()
+  } else {
+    pos
+  }
+  while i < limit {
+    offset += self.tokens[i].text().length()
+    i += 1
+  }
+  offset
+}
+
+///|
+fn AstParser::span_from(self : AstParser, start_pos : Int) -> @core.Span {
+  @core.Span::new(self.offset_at(start_pos), self.offset_at(self.pos))
+}
+
+///|
+fn AstParser::token_span(self : AstParser) -> @core.Span {
+  let start = self.offset_at(self.pos)
+  let tok = self.peek()
+  @core.Span::new(start, start + tok.text().length())
+}
+
+///|
 fn AstParser::skip_trivia(self : AstParser) -> Unit {
   while is_trivia(self.peek_kind()) {
     self.pos += 1
@@ -804,26 +862,30 @@ fn AstParser::expect(
     self.pos += 1
     tok
   } else if tok.kind() == eof() {
-    raise ParseError::UnexpectedEof
+    raise ParseError::UnexpectedEof(span=self.token_span())
   } else {
-    raise ParseError::UnexpectedToken(expected=label, got=tok.text())
+    raise ParseError::UnexpectedToken(
+      expected=label,
+      got=tok.text(),
+      span=self.token_span(),
+    )
   }
 }
 
 ///|
-pub fn AstParser::parse(self : AstParser) -> Module raise ParseError {
-  let stmts : Array[Stmt] = []
+pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
+  let stmts : Array[@core.Stmt] = []
   while {
           self.skip_trivia()
           self.peek_kind() != eof()
         } {
     stmts.push(self.parse_stmt())
   }
-  Module::{ stmts, }
+  @core.Module::{ stmts, }
 }
 
 ///|
-fn AstParser::parse_stmt(self : AstParser) -> Stmt raise ParseError {
+fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   self.skip_trivia()
   match self.peek_kind() {
     k if k == let_kw() => self.parse_let_stmt()
@@ -834,15 +896,18 @@ fn AstParser::parse_stmt(self : AstParser) -> Stmt raise ParseError {
     k if k == test_kw() => self.parse_test_stmt()
     k if k == flake_kw() => self.parse_flake_stmt()
     _ => {
+      let start = self.pos
       let expr = self.parse_expr()
       let _ = self.eat(semicolon())
-      Stmt::Expr(expr~)
+      let span = self.span_from(start)
+      @core.Stmt::Expr(expr~, span~)
     }
   }
 }
 
 ///|
-fn AstParser::parse_let_stmt(self : AstParser) -> Stmt raise ParseError {
+fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let _ = self.expect(let_kw(), "let")
   self.skip_trivia()
   let mut rec_flag = false
@@ -854,11 +919,13 @@ fn AstParser::parse_let_stmt(self : AstParser) -> Stmt raise ParseError {
   let _ = self.expect(eq(), "=")
   let expr = self.parse_expr()
   let _ = self.eat(semicolon())
-  Stmt::Let(rec=rec_flag, name=name_tok.text(), expr~)
+  let span = self.span_from(start)
+  @core.Stmt::Let(rec=rec_flag, name=name_tok.text(), expr~, span~)
 }
 
 ///|
-fn AstParser::parse_enum_stmt(self : AstParser) -> Stmt raise ParseError {
+fn AstParser::parse_enum_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let _ = self.expect(enum_kw(), "enum")
   self.skip_trivia()
   let name_tok = self.expect(name(), "enum name")
@@ -866,13 +933,13 @@ fn AstParser::parse_enum_stmt(self : AstParser) -> Stmt raise ParseError {
   let param_set = param_set_from_params(params)
   self.skip_trivia()
   let _ = self.expect(lbrace(), "{")
-  let ctors : Array[TypeCtor] = []
+  let ctors : Array[@core.TypeCtor] = []
   while {
           self.skip_trivia()
           self.peek_kind() != rbrace()
         } {
     if self.peek_kind() == eof() {
-      raise ParseError::UnexpectedEof
+      raise ParseError::UnexpectedEof(span=self.token_span())
     }
     ctors.push(self.parse_type_ctor(param_set))
     let _ = self.eat(comma())
@@ -881,11 +948,15 @@ fn AstParser::parse_enum_stmt(self : AstParser) -> Stmt raise ParseError {
   }
   let _ = self.expect(rbrace(), "}")
   let _ = self.eat(semicolon())
-  Stmt::EnumDef(name=name_tok.text(), params~, ctors~)
+  let span = self.span_from(start)
+  @core.Stmt::EnumDef(name=name_tok.text(), params~, ctors~, span~)
 }
 
 ///|
-fn AstParser::parse_type_alias_stmt(self : AstParser) -> Stmt raise ParseError {
+fn AstParser::parse_type_alias_stmt(
+  self : AstParser,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let _ = self.expect(type_kw(), "type")
   self.skip_trivia()
   let name_tok = self.expect(name(), "type name")
@@ -894,19 +965,25 @@ fn AstParser::parse_type_alias_stmt(self : AstParser) -> Stmt raise ParseError {
   let _ = self.expect(eq(), "=")
   let target = self.parse_type_with_params(param_set)
   let _ = self.eat(semicolon())
-  Stmt::TypeAlias(name=name_tok.text(), params~, target~)
+  let span = self.span_from(start)
+  @core.Stmt::TypeAlias(name=name_tok.text(), params~, target~, span~)
 }
 
 ///|
 fn AstParser::parse_type_ctor(
   self : AstParser,
   params : Map[String, Bool],
-) -> TypeCtor raise ParseError {
+) -> @core.TypeCtor raise ParseError {
+  let start = self.pos
   let name_tok = self.expect(name(), "ctor")
-  if not(is_ctor_name(name_tok.text())) {
-    raise ParseError::UnexpectedToken(expected="ctor", got=name_tok.text())
+  if not(@core.is_ctor_name(name_tok.text())) {
+    raise ParseError::UnexpectedToken(
+      expected="ctor",
+      got=name_tok.text(),
+      span=self.token_span(),
+    )
   }
-  let args : Array[Type] = []
+  let args : Array[@core.Type] = []
   self.skip_trivia()
   if self.peek_kind() == lparen() {
     let _ = self.bump()
@@ -928,7 +1005,8 @@ fn AstParser::parse_type_ctor(
     let _ = self.expect(rparen(), ")")
 
   }
-  TypeCtor::{ name: name_tok.text(), args }
+  let span = self.span_from(start)
+  @core.TypeCtor::{ name: name_tok.text(), args, span }
 }
 
 ///|
@@ -972,7 +1050,8 @@ fn param_set_from_params(params : Array[String]) -> Map[String, Bool] {
 }
 
 ///|
-fn AstParser::parse_flake_stmt(self : AstParser) -> Stmt raise ParseError {
+fn AstParser::parse_flake_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let _ = self.expect(flake_kw(), "flake")
   let _ = self.expect(lbrace(), "{")
   let buf = StringBuilder::new()
@@ -980,7 +1059,7 @@ fn AstParser::parse_flake_stmt(self : AstParser) -> Stmt raise ParseError {
   while depth > 0 {
     let tok = self.peek()
     if tok.kind() == eof() {
-      raise ParseError::UnexpectedEof
+      raise ParseError::UnexpectedEof(span=self.token_span())
     }
     self.pos += 1
     if tok.kind() == lbrace() {
@@ -993,11 +1072,13 @@ fn AstParser::parse_flake_stmt(self : AstParser) -> Stmt raise ParseError {
     }
     buf.write_string(tok.text())
   }
-  Stmt::Flake(raw=buf.to_string())
+  let span = self.span_from(start)
+  @core.Stmt::Flake(raw=buf.to_string(), span~)
 }
 
 ///|
-fn AstParser::parse_test_stmt(self : AstParser) -> Stmt raise ParseError {
+fn AstParser::parse_test_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let _ = self.expect(test_kw(), "test")
   self.skip_trivia()
   let mut name : String? = None
@@ -1007,30 +1088,34 @@ fn AstParser::parse_test_stmt(self : AstParser) -> Stmt raise ParseError {
     self.skip_trivia()
   }
   let body = self.parse_block()
-  Stmt::Test(name~, body~)
+  let span = self.span_from(start)
+  @core.Stmt::Test(name~, body~, span~)
 }
 
 ///|
-fn AstParser::parse_block(self : AstParser) -> Module raise ParseError {
+fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
   let _ = self.expect(lbrace(), "{")
-  let stmts : Array[Stmt] = []
+  let stmts : Array[@core.Stmt] = []
   while {
           self.skip_trivia()
           self.peek_kind() != rbrace()
         } {
     if self.peek_kind() == eof() {
-      raise ParseError::UnexpectedEof
+      raise ParseError::UnexpectedEof(span=self.token_span())
     }
     stmts.push(self.parse_stmt())
   }
   let _ = self.expect(rbrace(), "}")
-  Module::{ stmts, }
+  @core.Module::{ stmts, }
 }
 
 ///|
 
 ///|
-fn split_hash_optional(name : String) -> Ref? raise ParseError {
+fn split_hash_optional(
+  name : String,
+  span : @core.Span,
+) -> @core.Ref? raise ParseError {
   let chars : Array[Char] = []
   for c in name {
     chars.push(c)
@@ -1049,7 +1134,7 @@ fn split_hash_optional(name : String) -> Ref? raise ParseError {
     return None
   }
   if hash_count > 1 || hash_pos <= 0 || hash_pos >= chars.length() - 1 {
-    raise ParseError::InvalidHashSuffix(name)
+    raise ParseError::InvalidHashSuffix(value=name, span~)
   }
   let left = StringBuilder::new()
   for i in 0..<hash_pos {
@@ -1059,48 +1144,69 @@ fn split_hash_optional(name : String) -> Ref? raise ParseError {
   for i in (hash_pos + 1)..<chars.length() {
     right.write_char(chars[i])
   }
-  Some(Ref::{ name: left.to_string(), hash_prefix: Some(right.to_string()) })
+  Some(@core.Ref::{
+    name: left.to_string(),
+    hash_prefix: Some(right.to_string()),
+  })
 }
 
 ///|
-fn AstParser::parse_alias_stmt(self : AstParser) -> Stmt raise ParseError {
+fn AstParser::parse_alias_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let _ = self.expect(alias_kw(), "alias")
+  let name_start = self.pos
   let name_tok = self.expect(name(), "name")
+  let name_span = self.span_from(name_start)
   let _ = self.expect(eq(), "=")
+  let target_start = self.pos
   let target_tok = self.expect(name(), "name#hash")
+  let target_span = self.span_from(target_start)
   let _ = self.eat(semicolon())
-  let target = match split_hash_optional(target_tok.text()) {
+  let target = match split_hash_optional(target_tok.text(), target_span) {
     Some(r) => {
       if r.name.is_empty() || r.hash_prefix is None {
-        raise ParseError::InvalidHashSuffix(target_tok.text())
+        raise ParseError::InvalidHashSuffix(
+          value=target_tok.text(),
+          span=target_span,
+        )
       }
-      AliasTarget::Module(r)
+      @core.AliasTarget::Module(r)
     }
-    None => AliasTarget::Name(target_tok.text())
+    None => @core.AliasTarget::Name(target_tok.text())
   }
-  let name_ref = split_hash_optional(name_tok.text())
+  let name_ref = split_hash_optional(name_tok.text(), name_span)
   match name_ref {
-    Some(_) => raise ParseError::InvalidHashSuffix(name_tok.text())
+    Some(_) =>
+      raise ParseError::InvalidHashSuffix(value=name_tok.text(), span=name_span)
     None => ()
   }
-  Stmt::Alias(name=name_tok.text(), target~)
+  let span = self.span_from(start)
+  @core.Stmt::Alias(name=name_tok.text(), target~, span~)
 }
 
 ///|
-fn AstParser::parse_import_stmt(self : AstParser) -> Stmt raise ParseError {
+fn AstParser::parse_import_stmt(
+  self : AstParser,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let _ = self.expect(import_kw(), "import")
   self.skip_trivia()
   let tok = self.peek()
   if tok.kind() != name() && tok.kind() != string_lit() {
-    raise ParseError::UnexpectedToken(expected="path", got=tok.text())
+    raise ParseError::UnexpectedToken(
+      expected="path",
+      got=tok.text(),
+      span=self.token_span(),
+    )
   }
   let _ = self.bump()
   let _ = self.eat(semicolon())
-  Stmt::Import(path=tok.text())
+  let span = self.span_from(start)
+  @core.Stmt::Import(path=tok.text(), span~)
 }
 
 ///|
-fn AstParser::parse_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
   self.skip_trivia()
   if self.peek_kind() == if_kw() {
     self.parse_if_expr()
@@ -1121,14 +1227,17 @@ fn AstParser::parse_expr(self : AstParser) -> Expr raise ParseError {
   } else if self.peek_kind() == lbracket() {
     self.parse_array_expr()
   } else if self.peek_kind() == lbrace() {
-    Expr::Block(body=self.parse_block())
+    let start = self.pos
+    let body = self.parse_block()
+    let span = self.span_from(start)
+    @core.Expr::Block(body~, span~)
   } else {
     self.parse_or_expr()
   }
 }
 
 ///|
-fn AstParser::parse_pipe_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_pipe_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_cmp_expr()
   while {
           self.skip_trivia()
@@ -1145,7 +1254,7 @@ fn AstParser::parse_pipe_expr(self : AstParser) -> Expr raise ParseError {
 }
 
 ///|
-fn AstParser::parse_or_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_or_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_and_expr()
   while {
           self.skip_trivia()
@@ -1153,17 +1262,23 @@ fn AstParser::parse_or_expr(self : AstParser) -> Expr raise ParseError {
         } {
     let _ = self.bump()
     let right = self.parse_and_expr()
-    left = Expr::If(
-      cond=left,
-      then_body=Module::{ stmts: [Stmt::Expr(expr=Expr::Bool(true))] },
-      else_body=Module::{ stmts: [Stmt::Expr(expr=right)] },
-    )
+    let left_span = left.span()
+    let right_span = right.span()
+    let span = @core.Span::merge(left_span, right_span)
+    let then_expr = @core.Expr::Bool(value=true, span~)
+    let then_body = @core.Module::{
+      stmts: [@core.Stmt::Expr(expr=then_expr, span~)],
+    }
+    let else_body = @core.Module::{
+      stmts: [@core.Stmt::Expr(expr=right, span=right_span)],
+    }
+    left = @core.Expr::If(cond=left, then_body~, else_body~, span~)
   }
   left
 }
 
 ///|
-fn AstParser::parse_and_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_and_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_pipe_expr()
   while {
           self.skip_trivia()
@@ -1171,17 +1286,23 @@ fn AstParser::parse_and_expr(self : AstParser) -> Expr raise ParseError {
         } {
     let _ = self.bump()
     let right = self.parse_pipe_expr()
-    left = Expr::If(
-      cond=left,
-      then_body=Module::{ stmts: [Stmt::Expr(expr=right)] },
-      else_body=Module::{ stmts: [Stmt::Expr(expr=Expr::Bool(false))] },
-    )
+    let left_span = left.span()
+    let right_span = right.span()
+    let span = @core.Span::merge(left_span, right_span)
+    let else_expr = @core.Expr::Bool(value=false, span~)
+    let then_body = @core.Module::{
+      stmts: [@core.Stmt::Expr(expr=right, span=right_span)],
+    }
+    let else_body = @core.Module::{
+      stmts: [@core.Stmt::Expr(expr=else_expr, span~)],
+    }
+    left = @core.Expr::If(cond=left, then_body~, else_body~, span~)
   }
   left
 }
 
 ///|
-fn AstParser::parse_cmp_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_cmp_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_add_expr()
   while {
           self.skip_trivia()
@@ -1201,7 +1322,11 @@ fn AstParser::parse_cmp_expr(self : AstParser) -> Expr raise ParseError {
 }
 
 ///|
-fn cmp_expr_from_op(op : @cst.SyntaxKind, left : Expr, right : Expr) -> Expr {
+fn cmp_expr_from_op(
+  op : @cst.SyntaxKind,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> @core.Expr {
   match op {
     k if k == eqeq() => call2("eq", left, right)
     k if k == neq() => call1("not", call2("eq", left, right))
@@ -1214,38 +1339,66 @@ fn cmp_expr_from_op(op : @cst.SyntaxKind, left : Expr, right : Expr) -> Expr {
 }
 
 ///|
-fn call1(name : String, value : Expr) -> Expr {
-  Expr::Call(name~, args=[CallArg::{ label: None, expr: value }])
+fn call1(name : String, value : @core.Expr) -> @core.Expr {
+  let span = value.span()
+  @core.Expr::Call(
+    name~,
+    args=[@core.CallArg::{ label: None, expr: value, span }],
+    span~,
+  )
 }
 
 ///|
-fn call2(name : String, left : Expr, right : Expr) -> Expr {
-  Expr::Call(name~, args=[
-    CallArg::{ label: None, expr: left },
-    CallArg::{ label: None, expr: right },
-  ])
+fn call2(name : String, left : @core.Expr, right : @core.Expr) -> @core.Expr {
+  let left_span = left.span()
+  let right_span = right.span()
+  let span = @core.Span::merge(left_span, right_span)
+  @core.Expr::Call(
+    name~,
+    args=[
+      @core.CallArg::{ label: None, expr: left, span: left_span },
+      @core.CallArg::{ label: None, expr: right, span: right_span },
+    ],
+    span~,
+  )
 }
 
 ///|
-fn pipe_apply(left : Expr, right : Expr) -> Expr raise ParseError {
+fn pipe_apply(
+  left : @core.Expr,
+  right : @core.Expr,
+) -> @core.Expr raise ParseError {
   match right {
-    Expr::Ident(name) =>
-      Expr::Call(name~, args=[CallArg::{ label: None, expr: left }])
-    Expr::Call(name~, args~) => {
-      let out : Array[CallArg] = []
-      out.push(CallArg::{ label: None, expr: left })
+    @core.Expr::Ident(name~, span~) => {
+      let left_span = left.span()
+      let call_span = @core.Span::merge(left_span, span)
+      @core.Expr::Call(
+        name~,
+        args=[@core.CallArg::{ label: None, expr: left, span: left_span }],
+        span=call_span,
+      )
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let left_span = left.span()
+      let call_span = @core.Span::merge(left_span, span)
+      let out : Array[@core.CallArg] = []
+      out.push(@core.CallArg::{ label: None, expr: left, span: left_span })
       for arg in args {
         out.push(arg)
       }
-      Expr::Call(name~, args=out)
+      @core.Expr::Call(name~, args=out, span=call_span)
     }
     _ =>
-      raise ParseError::UnexpectedToken(expected="call", got=right.to_string())
+      raise ParseError::UnexpectedToken(
+        expected="call",
+        got=right.to_string(),
+        span=right.span(),
+      )
   }
 }
 
 ///|
-fn AstParser::parse_add_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_add_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_mul_expr()
   while {
           self.skip_trivia()
@@ -1261,7 +1414,7 @@ fn AstParser::parse_add_expr(self : AstParser) -> Expr raise ParseError {
 }
 
 ///|
-fn AstParser::parse_mul_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_mul_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_unary_expr()
   while {
           self.skip_trivia()
@@ -1277,13 +1430,14 @@ fn AstParser::parse_mul_expr(self : AstParser) -> Expr raise ParseError {
 }
 
 ///|
-fn AstParser::parse_unary_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_unary_expr(self : AstParser) -> @core.Expr raise ParseError {
   self.skip_trivia()
   match self.peek_kind() {
     k if k == minus() => {
       let _ = self.bump()
       let value = self.parse_unary_expr()
-      call2("sub", Expr::Int(0), value)
+      let zero_span = value.span()
+      call2("sub", @core.Expr::Int(value=0, span=zero_span), value)
     }
     k if k == bang() => {
       let _ = self.bump()
@@ -1295,7 +1449,8 @@ fn AstParser::parse_unary_expr(self : AstParser) -> Expr raise ParseError {
 }
 
 ///|
-fn AstParser::parse_if_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_if_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(if_kw(), "if")
   let cond = self.parse_expr()
   let then_body = self.parse_block()
@@ -1304,121 +1459,157 @@ fn AstParser::parse_if_expr(self : AstParser) -> Expr raise ParseError {
     self.parse_block()
   } else {
     let expr = self.parse_expr()
-    Module::{ stmts: [Stmt::Expr(expr~)] }
+    let expr_span = expr.span()
+    @core.Module::{ stmts: [@core.Stmt::Expr(expr~, span=expr_span)] }
   }
-  Expr::If(cond~, then_body~, else_body~)
+  let span = self.span_from(start)
+  @core.Expr::If(cond~, then_body~, else_body~, span~)
 }
 
 ///|
-fn AstParser::parse_match_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_match_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(match_kw(), "match")
   let scrutinee = self.parse_expr()
   let _ = self.expect(lbrace(), "{")
-  let arms : Array[MatchArm] = []
+  let arms : Array[@core.MatchArm] = []
   while {
           self.skip_trivia()
           self.peek_kind() != rbrace()
         } {
     if self.peek_kind() == eof() {
-      raise ParseError::UnexpectedEof
+      raise ParseError::UnexpectedEof(span=self.token_span())
     }
     let pat = self.parse_pattern()
     self.skip_trivia()
-    let mut cond : Expr? = None
+    let mut cond : @core.Expr? = None
     if self.peek_kind() == if_kw() {
       let _ = self.bump()
       cond = Some(self.parse_expr())
     }
     let _ = self.expect(arrow(), "=>")
     let expr = self.parse_expr()
-    arms.push(MatchArm::{ pat, cond, expr })
+    let mut arm_span = @core.Span::merge(pat.span(), expr.span())
+    match cond {
+      Some(c) => arm_span = @core.Span::merge(arm_span, c.span())
+      None => ()
+    }
+    arms.push(@core.MatchArm::{ pat, cond, expr, span: arm_span })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
 
   }
   let _ = self.expect(rbrace(), "}")
-  Expr::Match(scrutinee~, arms~)
+  let span = self.span_from(start)
+  @core.Expr::Match(scrutinee~, arms~, span~)
 }
 
 ///|
-fn AstParser::parse_do_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_do_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(do_kw(), "do")
   let body = self.parse_block()
-  Expr::Do(body~)
+  let span = self.span_from(start)
+  @core.Expr::Do(body~, span~)
 }
 
 ///|
-fn AstParser::parse_try_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_try_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(try_kw(), "try")
   let try_body = self.parse_block()
   self.skip_trivia()
   let _ = self.expect(catch_kw(), "catch")
   let catch_body = self.parse_block()
-  Expr::Try(try_body~, catch_body~)
+  let span = self.span_from(start)
+  @core.Expr::Try(try_body~, catch_body~, span~)
 }
 
 ///|
-fn AstParser::parse_record_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_record_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(record_kw(), "record")
   let _ = self.expect(lbrace(), "{")
-  let fields : Array[RecordFieldExpr] = []
+  let fields : Array[@core.RecordFieldExpr] = []
   while {
           self.skip_trivia()
           self.peek_kind() != rbrace()
         } {
     if self.peek_kind() == eof() {
-      raise ParseError::UnexpectedEof
+      raise ParseError::UnexpectedEof(span=self.token_span())
     }
+    let field_start = self.pos
     let name_tok = self.expect(name(), "field")
     let _ = self.expect(colon(), ":")
     let expr = self.parse_expr()
-    fields.push(RecordFieldExpr::{ name: name_tok.text(), expr })
+    let field_span = self.span_from(field_start)
+    fields.push(@core.RecordFieldExpr::{
+      name: name_tok.text(),
+      expr,
+      span: field_span,
+    })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
 
   }
   let _ = self.expect(rbrace(), "}")
-  Expr::Record(fields)
+  let span = self.span_from(start)
+  @core.Expr::Record(fields~, span~)
 }
 
 ///|
-fn AstParser::parse_map_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_map_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(map_kw(), "map")
   let _ = self.expect(lbrace(), "{")
-  let fields : Array[MapFieldExpr] = []
+  let fields : Array[@core.MapFieldExpr] = []
   while {
           self.skip_trivia()
           self.peek_kind() != rbrace()
         } {
     if self.peek_kind() == eof() {
-      raise ParseError::UnexpectedEof
+      raise ParseError::UnexpectedEof(span=self.token_span())
     }
+    let field_start = self.pos
     let key_tok = self.peek()
     if key_tok.kind() != name() && key_tok.kind() != string_lit() {
-      raise ParseError::UnexpectedToken(expected="map key", got=key_tok.text())
+      raise ParseError::UnexpectedToken(
+        expected="map key",
+        got=key_tok.text(),
+        span=self.token_span(),
+      )
     }
     let _ = self.bump()
     let _ = self.expect(colon(), ":")
     let expr = self.parse_expr()
-    fields.push(MapFieldExpr::{ key: key_tok.text(), expr })
+    let field_span = self.span_from(field_start)
+    fields.push(@core.MapFieldExpr::{
+      key: key_tok.text(),
+      expr,
+      span: field_span,
+    })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
 
   }
   let _ = self.expect(rbrace(), "}")
-  Expr::Map(fields)
+  let span = self.span_from(start)
+  @core.Expr::Map(fields~, span~)
 }
 
 ///|
-fn AstParser::parse_array_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_array_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(lbracket(), "[")
-  let items : Array[Expr] = []
+  let items : Array[@core.Expr] = []
   while {
           self.skip_trivia()
           self.peek_kind() != rbracket()
         } {
     if self.peek_kind() == eof() {
-      raise ParseError::UnexpectedEof
+      raise ParseError::UnexpectedEof(span=self.token_span())
     }
     items.push(self.parse_expr())
     let _ = self.eat(comma())
@@ -1426,30 +1617,33 @@ fn AstParser::parse_array_expr(self : AstParser) -> Expr raise ParseError {
 
   }
   let _ = self.expect(rbracket(), "]")
-  Expr::Array(items)
+  let span = self.span_from(start)
+  @core.Expr::Array(items~, span~)
 }
 
 ///|
-fn AstParser::parse_fn_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_fn_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(fn_kw(), "fn")
   let params = self.parse_param_list({})
   self.skip_trivia()
-  let mut ret : Type? = None
-  let mut effects : Array[EffectAtom] = []
+  let mut ret : @core.Type? = None
+  let mut effects : Array[@core.EffectAtom] = []
   if self.peek_kind() == thin_arrow() {
     let _ = self.bump()
     ret = Some(self.parse_type())
     effects = self.parse_effect_list()
   }
   let body = self.parse_block()
-  Expr::Fn(params~, ret~, effects~, body~)
+  let span = self.span_from(start)
+  @core.Expr::Fn(params~, ret~, effects~, body~, span~)
 }
 
 ///|
 fn AstParser::parse_effect_list(
   self : AstParser,
-) -> Array[EffectAtom] raise ParseError {
-  let effects : Array[EffectAtom] = []
+) -> Array[@core.EffectAtom] raise ParseError {
+  let effects : Array[@core.EffectAtom] = []
   self.skip_trivia()
   if self.peek_kind() == name() && self.peek().text() == "with" {
     let _ = self.bump()
@@ -1482,9 +1676,9 @@ fn AstParser::parse_effect_list(
 fn AstParser::parse_param_list(
   self : AstParser,
   params : Map[String, Bool],
-) -> Array[FuncParam] raise ParseError {
+) -> Array[@core.FuncParam] raise ParseError {
   let _ = self.expect(lparen(), "(")
-  let out : Array[FuncParam] = []
+  let out : Array[@core.FuncParam] = []
   self.skip_trivia()
   if self.peek_kind() != rparen() {
     out.push(self.parse_param(params))
@@ -1508,46 +1702,51 @@ fn AstParser::parse_param_list(
 fn AstParser::parse_param(
   self : AstParser,
   params : Map[String, Bool],
-) -> FuncParam raise ParseError {
+) -> @core.FuncParam raise ParseError {
+  let name_start = self.pos
   let name_tok = self.expect(name(), "param")
-  let (base, label) = split_param_label(name_tok.text())
+  let name_span = self.span_from(name_start)
+  let (base, label) = split_param_label(name_tok.text(), name_span)
   self.skip_trivia()
   let _ = self.expect(colon(), ":")
   let ty = self.parse_type_with_params(params)
-  FuncParam::{ name: base, label, ty }
+  @core.FuncParam::{ name: base, label, ty }
 }
 
 ///|
-fn split_param_label(name : String) -> (String, ParamLabel) raise ParseError {
+fn split_param_label(
+  name : String,
+  span : @core.Span,
+) -> (String, @core.ParamLabel) raise ParseError {
   let chars : Array[Char] = []
   for c in name {
     chars.push(c)
   }
   if chars.is_empty() {
-    raise ParseError::UnexpectedToken(expected="param", got=name)
+    raise ParseError::UnexpectedToken(expected="param", got=name, span~)
   }
   let last = chars[chars.length() - 1]
   if last == '~' || last == '?' {
     if chars.length() == 1 {
-      raise ParseError::UnexpectedToken(expected="param", got=name)
+      raise ParseError::UnexpectedToken(expected="param", got=name, span~)
     }
     let buf = StringBuilder::new()
     for i in 0..<(chars.length() - 1) {
       buf.write_char(chars[i])
     }
     let label = if last == '~' {
-      ParamLabel::Required
+      @core.ParamLabel::Required
     } else {
-      ParamLabel::Optional
+      @core.ParamLabel::Optional
     }
     (buf.to_string(), label)
   } else {
-    (name, ParamLabel::Positional)
+    (name, @core.ParamLabel::Positional)
   }
 }
 
 ///|
-fn AstParser::parse_type(self : AstParser) -> Type raise ParseError {
+fn AstParser::parse_type(self : AstParser) -> @core.Type raise ParseError {
   self.parse_type_with_params({})
 }
 
@@ -1555,7 +1754,7 @@ fn AstParser::parse_type(self : AstParser) -> Type raise ParseError {
 fn AstParser::parse_type_with_params(
   self : AstParser,
   params : Map[String, Bool],
-) -> Type raise ParseError {
+) -> @core.Type raise ParseError {
   self.skip_trivia()
   let tok = self.peek()
   match tok.kind() {
@@ -1566,100 +1765,141 @@ fn AstParser::parse_type_with_params(
       let _ = self.expect(thin_arrow(), "->")
       let ret = self.parse_type_with_params(params)
       let effects = self.parse_effect_list()
-      Type::Func(params=params_list, ret~, effects~)
+      @core.Type::Func(params=params_list, ret~, effects~)
     }
     k if k == name() => {
+      let name_start = self.pos
       let _ = self.bump()
+      let name_span = self.span_from(name_start)
       let name = tok.text()
       let args = self.parse_type_args(params)
       match name {
         "Int" =>
           if args.is_empty() {
-            Type::Int
+            @core.Type::Int
           } else {
-            raise ParseError::UnexpectedToken(expected="type", got=name)
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
           }
         "Bool" =>
           if args.is_empty() {
-            Type::Bool
+            @core.Type::Bool
           } else {
-            raise ParseError::UnexpectedToken(expected="type", got=name)
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
           }
         "String" =>
           if args.is_empty() {
-            Type::String
+            @core.Type::String
           } else {
-            raise ParseError::UnexpectedToken(expected="type", got=name)
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
           }
-        "Path" =>
+        "@core.Path" =>
           if args.is_empty() {
-            Type::Path
+            @core.Type::Path
           } else {
-            raise ParseError::UnexpectedToken(expected="type", got=name)
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
           }
         "Unit" =>
           if args.is_empty() {
-            Type::Unit
+            @core.Type::Unit
           } else {
-            raise ParseError::UnexpectedToken(expected="type", got=name)
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
           }
         "Array" =>
           if args.length() == 1 {
-            Type::Array(args[0])
+            @core.Type::Array(args[0])
           } else {
-            raise ParseError::UnexpectedToken(expected="Array[T]", got=name)
+            raise ParseError::UnexpectedToken(
+              expected="Array[T]",
+              got=name,
+              span=name_span,
+            )
           }
         "Map" =>
           if args.length() == 1 {
-            Type::Map(args[0])
+            @core.Type::Map(args[0])
           } else {
-            raise ParseError::UnexpectedToken(expected="Map[T]", got=name)
+            raise ParseError::UnexpectedToken(
+              expected="Map[T]",
+              got=name,
+              span=name_span,
+            )
           }
         "ArrayBuilder" =>
           if args.length() == 1 {
-            Type::ArrayBuilder(args[0])
+            @core.Type::ArrayBuilder(args[0])
           } else {
             raise ParseError::UnexpectedToken(
               expected="ArrayBuilder[T]",
               got=name,
+              span=name_span,
             )
           }
         "MapBuilder" =>
           if args.length() == 1 {
-            Type::MapBuilder(args[0])
+            @core.Type::MapBuilder(args[0])
           } else {
             raise ParseError::UnexpectedToken(
               expected="MapBuilder[T]",
               got=name,
+              span=name_span,
             )
           }
         _ =>
           if params.contains(name) {
             if not(args.is_empty()) {
-              raise ParseError::UnexpectedToken(expected="type param", got=name)
+              raise ParseError::UnexpectedToken(
+                expected="type param",
+                got=name,
+                span=name_span,
+              )
             }
-            Type::Param(name)
+            @core.Type::Param(name)
           } else {
-            Type::Named(name~, args~)
+            @core.Type::Named(name~, args~)
           }
       }
     }
     k if k == lparen() => self.parse_tuple_type(params)
-    _ => raise ParseError::UnexpectedToken(expected="type", got=tok.text())
+    _ =>
+      raise ParseError::UnexpectedToken(
+        expected="type",
+        got=tok.text(),
+        span=self.token_span(),
+      )
   }
 }
 
 ///|
-fn effect_atom_from_name(name : String) -> EffectAtom {
+fn effect_atom_from_name(name : String) -> @core.EffectAtom {
   if name.length() == 0 {
-    EffectAtom::Const(name)
+    @core.EffectAtom::Const(name)
   } else {
     let chars = name.to_array()
     let c = chars[0]
     if c >= 'a' && c <= 'z' {
-      EffectAtom::Var(name)
+      @core.EffectAtom::Var(name)
     } else {
-      EffectAtom::Const(name)
+      @core.EffectAtom::Const(name)
     }
   }
 }
@@ -1668,12 +1908,12 @@ fn effect_atom_from_name(name : String) -> EffectAtom {
 fn AstParser::parse_tuple_type(
   self : AstParser,
   params : Map[String, Bool],
-) -> Type raise ParseError {
+) -> @core.Type raise ParseError {
   let _ = self.expect(lparen(), "(")
   let first = self.parse_type_with_params(params)
   self.skip_trivia()
   if self.peek_kind() == comma() {
-    let items : Array[Type] = []
+    let items : Array[@core.Type] = []
     items.push(first)
     while {
             self.skip_trivia()
@@ -1687,7 +1927,7 @@ fn AstParser::parse_tuple_type(
       items.push(self.parse_type_with_params(params))
     }
     let _ = self.expect(rparen(), ")")
-    Type::Tuple(items)
+    @core.Type::Tuple(items)
   } else {
     let _ = self.expect(rparen(), ")")
     first
@@ -1698,8 +1938,8 @@ fn AstParser::parse_tuple_type(
 fn AstParser::parse_type_args(
   self : AstParser,
   params : Map[String, Bool],
-) -> Array[Type] raise ParseError {
-  let args : Array[Type] = []
+) -> Array[@core.Type] raise ParseError {
+  let args : Array[@core.Type] = []
   self.skip_trivia()
   if self.peek_kind() == lbracket() {
     let _ = self.bump()
@@ -1725,12 +1965,13 @@ fn AstParser::parse_type_args(
 }
 
 ///|
-fn AstParser::parse_paren_expr(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_paren_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
   let _ = self.expect(lparen(), "(")
   let first = self.parse_expr()
   self.skip_trivia()
   if self.peek_kind() == comma() {
-    let items : Array[Expr] = []
+    let items : Array[@core.Expr] = []
     items.push(first)
     while {
             self.skip_trivia()
@@ -1744,7 +1985,8 @@ fn AstParser::parse_paren_expr(self : AstParser) -> Expr raise ParseError {
       items.push(self.parse_expr())
     }
     let _ = self.expect(rparen(), ")")
-    Expr::Tuple(items)
+    let span = self.span_from(start)
+    @core.Expr::Tuple(items~, span~)
   } else {
     let _ = self.expect(rparen(), ")")
     first
@@ -1752,8 +1994,9 @@ fn AstParser::parse_paren_expr(self : AstParser) -> Expr raise ParseError {
 }
 
 ///|
-fn AstParser::parse_pattern(self : AstParser) -> Pat raise ParseError {
+fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
   self.skip_trivia()
+  let start = self.pos
   let tok = self.peek()
   match tok.kind() {
     k if k == lparen() => self.parse_tuple_pattern()
@@ -1764,31 +2007,46 @@ fn AstParser::parse_pattern(self : AstParser) -> Pat raise ParseError {
         tok.text(),
       )
       match parsed {
-        Ok(v) => Pat::Int(v)
+        Ok(v) => {
+          let span = self.span_from(start)
+          @core.Pat::Int(value=v, span~)
+        }
         Err(_) =>
-          raise ParseError::UnexpectedToken(expected="int", got=tok.text())
+          raise ParseError::UnexpectedToken(
+            expected="int",
+            got=tok.text(),
+            span=self.token_span(),
+          )
       }
     }
     k if k == bool_lit() => {
       let _ = self.bump()
       if tok.text() == "true" {
-        Pat::Bool(true)
+        let span = self.span_from(start)
+        @core.Pat::Bool(value=true, span~)
       } else if tok.text() == "false" {
-        Pat::Bool(false)
+        let span = self.span_from(start)
+        @core.Pat::Bool(value=false, span~)
       } else {
-        raise ParseError::UnexpectedToken(expected="bool", got=tok.text())
+        raise ParseError::UnexpectedToken(
+          expected="bool",
+          got=tok.text(),
+          span=self.token_span(),
+        )
       }
     }
     k if k == string_lit() => {
       let _ = self.bump()
-      Pat::String(tok.text())
+      let span = self.span_from(start)
+      @core.Pat::String(value=tok.text(), span~)
     }
     k if k == name() => {
       let _ = self.bump()
       if tok.text() == "_" {
-        Pat::Wildcard
-      } else if is_ctor_name(tok.text()) {
-        let args : Array[Pat] = []
+        let span = self.span_from(start)
+        @core.Pat::Wildcard(span~)
+      } else if @core.is_ctor_name(tok.text()) {
+        let args : Array[@core.Pat] = []
         if self.peek_kind() == lparen() {
           let _ = self.bump()
           self.skip_trivia()
@@ -1805,22 +2063,32 @@ fn AstParser::parse_pattern(self : AstParser) -> Pat raise ParseError {
           let _ = self.expect(rparen(), ")")
 
         }
-        Pat::Ctor(name=tok.text(), args~)
+        let span = self.span_from(start)
+        @core.Pat::Ctor(name=tok.text(), args~, span~)
       } else {
-        Pat::Bind(tok.text())
+        let span = self.span_from(start)
+        @core.Pat::Bind(name=tok.text(), span~)
       }
     }
-    _ => raise ParseError::UnexpectedToken(expected="pattern", got=tok.text())
+    _ =>
+      raise ParseError::UnexpectedToken(
+        expected="pattern",
+        got=tok.text(),
+        span=self.token_span(),
+      )
   }
 }
 
 ///|
-fn AstParser::parse_tuple_pattern(self : AstParser) -> Pat raise ParseError {
+fn AstParser::parse_tuple_pattern(
+  self : AstParser,
+) -> @core.Pat raise ParseError {
+  let start = self.pos
   let _ = self.expect(lparen(), "(")
   let first = self.parse_pattern()
   self.skip_trivia()
   if self.peek_kind() == comma() {
-    let items : Array[Pat] = []
+    let items : Array[@core.Pat] = []
     items.push(first)
     while {
             self.skip_trivia()
@@ -1834,7 +2102,8 @@ fn AstParser::parse_tuple_pattern(self : AstParser) -> Pat raise ParseError {
       items.push(self.parse_pattern())
     }
     let _ = self.expect(rparen(), ")")
-    Pat::Tuple(items)
+    let span = self.span_from(start)
+    @core.Pat::Tuple(items~, span~)
   } else {
     let _ = self.expect(rparen(), ")")
     first
@@ -1842,43 +2111,58 @@ fn AstParser::parse_tuple_pattern(self : AstParser) -> Pat raise ParseError {
 }
 
 ///|
-fn AstParser::parse_record_pattern(self : AstParser) -> Pat raise ParseError {
+fn AstParser::parse_record_pattern(
+  self : AstParser,
+) -> @core.Pat raise ParseError {
+  let start = self.pos
   let _ = self.expect(record_kw(), "record")
   let _ = self.expect(lbrace(), "{")
-  let fields : Array[RecordFieldPat] = []
+  let fields : Array[@core.RecordFieldPat] = []
   while {
           self.skip_trivia()
           self.peek_kind() != rbrace()
         } {
     if self.peek_kind() == eof() {
-      raise ParseError::UnexpectedEof
+      raise ParseError::UnexpectedEof(span=self.token_span())
     }
+    let field_start = self.pos
     let name_tok = self.expect(name(), "field")
     let _ = self.expect(colon(), ":")
     let pat = self.parse_pattern()
-    fields.push(RecordFieldPat::{ name: name_tok.text(), pat })
+    let field_span = self.span_from(field_start)
+    fields.push(@core.RecordFieldPat::{
+      name: name_tok.text(),
+      pat,
+      span: field_span,
+    })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
 
   }
   let _ = self.expect(rbrace(), "}")
-  Pat::Record(fields)
+  let span = self.span_from(start)
+  @core.Pat::Record(fields~, span~)
 }
 
 ///|
-fn AstParser::parse_call_or_primary(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_call_or_primary(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
   self.skip_trivia()
   let tok = self.peek()
   if tok.kind() == name() {
+    let start = self.pos
     let name_tok = self.bump()
     self.skip_trivia()
     if self.peek_kind() == lparen() {
       let _ = self.bump()
       let args = self.parse_args()
       let _ = self.expect(rparen(), ")")
-      Expr::Call(name=name_tok.text(), args~)
+      let span = self.span_from(start)
+      @core.Expr::Call(name=name_tok.text(), args~, span~)
     } else {
-      Expr::Ident(name_tok.text())
+      let span = self.span_from(start)
+      @core.Expr::Ident(name=name_tok.text(), span~)
     }
   } else {
     self.parse_primary()
@@ -1886,8 +2170,10 @@ fn AstParser::parse_call_or_primary(self : AstParser) -> Expr raise ParseError {
 }
 
 ///|
-fn AstParser::parse_args(self : AstParser) -> Array[CallArg] raise ParseError {
-  let args : Array[CallArg] = []
+fn AstParser::parse_args(
+  self : AstParser,
+) -> Array[@core.CallArg] raise ParseError {
+  let args : Array[@core.CallArg] = []
   self.skip_trivia()
   if self.peek_kind() != rparen() {
     args.push(self.parse_arg())
@@ -1903,26 +2189,34 @@ fn AstParser::parse_args(self : AstParser) -> Array[CallArg] raise ParseError {
 }
 
 ///|
-fn AstParser::parse_arg(self : AstParser) -> CallArg raise ParseError {
+fn AstParser::parse_arg(self : AstParser) -> @core.CallArg raise ParseError {
   self.skip_trivia()
+  let start = self.pos
   if self.peek_kind() == name() &&
     self.peek_non_trivia_kind(self.pos + 1) == eq() {
     let label_tok = self.expect(name(), "label")
     if label_tok.text().has_suffix("?") || label_tok.text().has_suffix("~") {
-      raise ParseError::UnexpectedToken(expected="label", got=label_tok.text())
+      raise ParseError::UnexpectedToken(
+        expected="label",
+        got=label_tok.text(),
+        span=self.token_span(),
+      )
     }
     let _ = self.expect(eq(), "=")
     let expr = self.parse_expr()
-    CallArg::{ label: Some(label_tok.text()), expr }
+    let span = self.span_from(start)
+    @core.CallArg::{ label: Some(label_tok.text()), expr, span }
   } else {
     let expr = self.parse_expr()
-    CallArg::{ label: None, expr }
+    let span = self.span_from(start)
+    @core.CallArg::{ label: None, expr, span }
   }
 }
 
 ///|
-fn AstParser::parse_primary(self : AstParser) -> Expr raise ParseError {
+fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
   self.skip_trivia()
+  let start = self.pos
   let tok = self.peek()
   match tok.kind() {
     k if k == int_lit() => {
@@ -1931,45 +2225,70 @@ fn AstParser::parse_primary(self : AstParser) -> Expr raise ParseError {
         tok.text(),
       )
       match parsed {
-        Ok(v) => Expr::Int(v)
+        Ok(v) => {
+          let span = self.span_from(start)
+          @core.Expr::Int(value=v, span~)
+        }
         Err(_) =>
-          raise ParseError::UnexpectedToken(expected="int", got=tok.text())
+          raise ParseError::UnexpectedToken(
+            expected="int",
+            got=tok.text(),
+            span=self.token_span(),
+          )
       }
     }
     k if k == bool_lit() => {
       let _ = self.bump()
       if tok.text() == "true" {
-        Expr::Bool(true)
+        let span = self.span_from(start)
+        @core.Expr::Bool(value=true, span~)
       } else if tok.text() == "false" {
-        Expr::Bool(false)
+        let span = self.span_from(start)
+        @core.Expr::Bool(value=false, span~)
       } else {
-        raise ParseError::UnexpectedToken(expected="bool", got=tok.text())
+        raise ParseError::UnexpectedToken(
+          expected="bool",
+          got=tok.text(),
+          span=self.token_span(),
+        )
       }
     }
     k if k == string_lit() => {
       let _ = self.bump()
-      Expr::String(tok.text())
+      let span = self.span_from(start)
+      @core.Expr::String(value=tok.text(), span~)
     }
     k if k == char_lit() => {
       let _ = self.bump()
       let chars = tok.text().to_array()
       if chars.length() == 1 {
-        Expr::Int(chars[0].to_int())
+        let span = self.span_from(start)
+        @core.Expr::Int(value=chars[0].to_int(), span~)
       } else {
-        raise ParseError::UnexpectedToken(expected="char", got=tok.text())
+        raise ParseError::UnexpectedToken(
+          expected="char",
+          got=tok.text(),
+          span=self.token_span(),
+        )
       }
     }
     k if k == name() => {
       let _ = self.bump()
-      Expr::Ident(tok.text())
+      let span = self.span_from(start)
+      @core.Expr::Ident(name=tok.text(), span~)
     }
-    _ => raise ParseError::UnexpectedToken(expected="expr", got=tok.text())
+    _ =>
+      raise ParseError::UnexpectedToken(
+        expected="expr",
+        got=tok.text(),
+        span=self.token_span(),
+      )
   }
 }
 
 ///|
 /// Parse input into AST
-pub fn parse_ast(input : String) -> Module raise ParseError {
+pub fn parse_ast(input : String) -> @core.Module raise ParseError {
   let tokens = tokenize(input)
   let parser = AstParser::new(tokens)
   parser.parse()

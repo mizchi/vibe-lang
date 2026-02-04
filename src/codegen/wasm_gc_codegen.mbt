@@ -129,17 +129,26 @@ fn emit_struct_set_gc(buf : GcByteBuf, type_idx : Int, field_idx : Int) -> Unit 
 fn compile_expr_gc(
   ctx : GcCodegenCtx,
   buf : GcByteBuf,
-  expr : Expr,
+  expr : @core.Expr,
 ) -> Unit raise WasmGenError {
   match expr {
-    Expr::Int(n) => emit_i32_const_gc(buf, n)
-    Expr::Bool(b) => emit_i32_const_gc(buf, if b { 1 } else { 0 })
-    Expr::Ident(name) =>
+    @core.Expr::Int(value=n, span~) => {
+      let _ = span
+      emit_i32_const_gc(buf, n)
+    }
+    @core.Expr::Bool(value=b, span~) => {
+      let _ = span
+      emit_i32_const_gc(buf, if b { 1 } else { 0 })
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
       match ctx.locals.get(name) {
         Some(idx) => emit_local_get_gc(buf, idx)
         None => raise WasmGenError::UnknownName(name)
       }
-    Expr::Record(fields) => {
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
       let ordered = sort_record_fields_expr(fields)
       let type_idx = get_struct_type_index_gc(ctx, ordered.length())
       for field in ordered {
@@ -147,9 +156,10 @@ fn compile_expr_gc(
       }
       emit_struct_new_gc(buf, type_idx)
     }
-    Expr::Call(name~, args~) =>
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
       if name == "record_set" {
-        let pos_args : Array[Expr] = []
+        let pos_args : Array[@core.Expr] = []
         for arg in args {
           match arg.label {
             Some(_) => raise WasmGenError::Unsupported("record_set labeled")
@@ -161,12 +171,16 @@ fn compile_expr_gc(
         }
         let record_expr = pos_args[0]
         let field_name = match pos_args[1] {
-          Expr::String(s) => s
+          @core.Expr::String(value=s, span~) => {
+            let _ = span
+            s
+          }
           _ => raise WasmGenError::Unsupported("record_set field")
         }
         let value_expr = pos_args[2]
         match record_expr {
-          Expr::Record(fields) => {
+          @core.Expr::Record(fields~, span~) => {
+            let _ = span
             let ordered = sort_record_fields_expr(fields)
             let type_idx = get_struct_type_index_gc(ctx, ordered.length())
             let mut field_idx = -1
@@ -196,12 +210,15 @@ fn compile_expr_gc(
       } else {
         raise WasmGenError::Unsupported("call")
       }
-    Expr::Match(scrutinee~, arms~) => {
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
       if arms.length() == 0 {
         raise WasmGenError::Unsupported("empty match")
       }
       match arms[0].pat {
-        Pat::Record(fields) => {
+        @core.Pat::Record(fields~, span~) => {
+          let _ = span
           let ordered = sort_record_fields_pat(fields)
           let type_idx = get_struct_type_index_gc(ctx, ordered.length())
           compile_expr_gc(ctx, buf, scrutinee)
@@ -210,7 +227,12 @@ fn compile_expr_gc(
         _ => raise WasmGenError::Unsupported("match pattern")
       }
     }
-    Expr::Try(..) => raise WasmGenError::Unsupported("try")
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = try_body
+      let _ = catch_body
+      let _ = span
+      raise WasmGenError::Unsupported("try")
+    }
     _ => raise WasmGenError::Unsupported("expr")
   }
 }
@@ -219,11 +241,12 @@ fn compile_expr_gc(
 fn compile_stmt_gc(
   ctx : GcCodegenCtx,
   buf : GcByteBuf,
-  stmt : Stmt,
+  stmt : @core.Stmt,
   is_last : Bool,
 ) -> Unit raise WasmGenError {
   match stmt {
-    Stmt::Let(rec~, name~, expr~) => {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let _ = span
       let _ = rec
       let idx = ctx.local_count
       ctx.local_count += 1
@@ -235,7 +258,8 @@ fn compile_stmt_gc(
         emit_local_set_gc(buf, idx)
       }
     }
-    Stmt::Expr(expr~) => {
+    @core.Stmt::Expr(expr~, span~) => {
+      let _ = span
       compile_expr_gc(ctx, buf, expr)
       emit_drop_gc(buf)
     }
@@ -247,7 +271,7 @@ fn compile_stmt_gc(
 fn compile_block_gc(
   ctx : GcCodegenCtx,
   buf : GcByteBuf,
-  body : Module,
+  body : @core.Module,
 ) -> Unit raise WasmGenError {
   let len = body.stmts.length()
   if len == 0 {
@@ -315,7 +339,7 @@ fn build_module_gc(ctx : GcCodegenCtx, body : Array[Byte]) -> Bytes {
 }
 
 ///|
-pub fn emit_module_wasm_gc(ast : Module) -> Bytes raise WasmGenError {
+pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   let ctx = GcCodegenCtx::new()
   let body = GcByteBuf::new()
   compile_block_gc(ctx, body, ast)

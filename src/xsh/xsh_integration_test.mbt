@@ -7,8 +7,8 @@ test "xsh integration compile/import/run" {
   db.set_source("lib.xsh", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
-  let import_hash = git_blob_hash_string(lib_source)
-  let import_ref = module_ref_from_hash(import_hash)
+  let import_hash = @core.git_blob_hash_string(lib_source)
+  let import_ref = @core.module_ref_from_hash(import_hash)
   assert_eq(compiled.imports.length(), 1)
   assert_eq(compiled.imports[0], import_ref)
   match compiled.aliases.get("lib") {
@@ -19,7 +19,7 @@ test "xsh integration compile/import/run" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.run_compiled(compiled)
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("missing x binding")
   }
 }

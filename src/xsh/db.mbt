@@ -1,11 +1,5 @@
 ///|
 /// Incremental xsh database using ripple
-pub struct Diagnostic {
-  stage : String
-  message : String
-} derive(Show, Eq)
-
-///|
 pub struct ImportSpec {
   path : String
   alias_name : String
@@ -19,10 +13,10 @@ pub struct XshDb {
   rt : @ripple.Runtime
   sources : @ripple.Input[String, String]
   cst_query : @ripple.Query[String, @cst.SyntaxNode]
-  ast_query : @ripple.Query[String, Module]
-  type_query : @ripple.Query[String, TypeEnv]
+  ast_query : @ripple.Query[String, @core.Module]
+  type_query : @ripple.Query[String, @checker.TypeEnv]
   import_query : @ripple.Query[String, Array[ImportSpec]]
-  diags : @ripple.Accumulator[Diagnostic]
+  diags : @ripple.Accumulator[@core.Diagnostic]
 }
 
 ///|
@@ -31,26 +25,23 @@ pub fn XshDb::new() -> XshDb {
   let rt = db.runtime()
   let sources : @ripple.Input[String, String] = db.input()
   sources.register(rt)
-  let diags : @ripple.Accumulator[Diagnostic] = db.accumulator()
+  let diags : @ripple.Accumulator[@core.Diagnostic] = db.accumulator()
   let cst_query : @ripple.Query[String, @cst.SyntaxNode] = db.query(fn(
     rt,
     path,
   ) {
     match sources.get(rt, path) {
-      Some(content) => parse_cst(content)
-      None => parse_cst("")
+      Some(content) => @parser.parse_cst(content)
+      None => @parser.parse_cst("")
     }
   })
   cst_query.register(rt)
-  let ast_query : @ripple.Query[String, Module] = db.query(fn(rt, path) {
+  let ast_query : @ripple.Query[String, @core.Module] = db.query(fn(rt, path) {
     match sources.get(rt, path) {
       Some(content) =>
-        parse_ast(content) catch {
+        @parser.parse_ast(content) catch {
           e => {
-            diags.push(rt, Diagnostic::{
-              stage: "parse",
-              message: e.to_string(),
-            })
+            diags.push(rt, e.diagnostic())
             { stmts: [] }
           }
         }
@@ -66,22 +57,26 @@ pub fn XshDb::new() -> XshDb {
     let out : Array[ImportSpec] = []
     for stmt in ast.stmts {
       match stmt {
-        Stmt::Import(path~) => {
-          let alias_name = import_alias_name(path)
+        @core.Stmt::Import(path~, span~) => {
+          let _ = span
+          let alias_name = @core.import_alias_name(path)
           match sources.get(rt, path) {
             Some(content) => {
-              let hash = git_blob_hash_string(content)
+              let hash = @core.git_blob_hash_string(content)
               out.push(ImportSpec::{
                 path,
                 alias_name,
                 hash: Some(hash),
-                module_ref: Some(module_ref_from_hash(hash)),
+                module_ref: Some(@core.module_ref_from_hash(hash)),
               })
             }
             None => {
-              diags.push(rt, Diagnostic::{
+              diags.push(rt, @core.Diagnostic::{
                 stage: "import",
                 message: "missing: " + path,
+                span: Some(span),
+                hint: None,
+                note: None,
               })
               out.push(ImportSpec::{
                 path,
@@ -98,15 +93,18 @@ pub fn XshDb::new() -> XshDb {
     out
   })
   import_query.register(rt)
-  let type_query : @ripple.Query[String, TypeEnv] = db.query(fn(rt, path) {
+  let type_query : @ripple.Query[String, @checker.TypeEnv] = db.query(fn(
+    rt,
+    path,
+  ) {
     let ast = ast_query.fetch(rt, path)
     let imports = import_query.fetch(rt, path)
     let aliases = build_alias_map_from_ast(ast, imports)
     let desugared = desugar_method_calls(ast, aliases)
-    type_check_with_aliases(desugared, aliases) catch {
+    @checker.type_check_with_aliases(desugared, aliases) catch {
       e => {
-        diags.push(rt, Diagnostic::{ stage: "type", message: e.to_string() })
-        TypeEnv::new()
+        diags.push(rt, e.diagnostic())
+        @checker.TypeEnv::new()
       }
     }
   })
@@ -116,23 +114,26 @@ pub fn XshDb::new() -> XshDb {
 
 ///|
 fn build_alias_map_from_ast(
-  ast : Module,
+  ast : @core.Module,
   imports : Array[ImportSpec],
-) -> Map[String, Ref] {
-  let aliases : Map[String, Ref] = {}
+) -> Map[String, @core.Ref] {
+  let aliases : Map[String, @core.Ref] = {}
   for imp in imports {
     match imp.module_ref {
-      Some(m) => aliases[imp.alias_name] = Ref::{ name: m, hash_prefix: None }
+      Some(m) =>
+        aliases[imp.alias_name] = @core.Ref::{ name: m, hash_prefix: None }
       None => ()
     }
   }
   for stmt in ast.stmts {
     match stmt {
-      Stmt::Alias(name~, target~) =>
+      @core.Stmt::Alias(name~, target~, span~) => {
+        let _ = span
         match target {
-          AliasTarget::Module(r) => aliases[name] = r
-          AliasTarget::Name(_) => ()
+          @core.AliasTarget::Module(r) => aliases[name] = r
+          @core.AliasTarget::Name(_) => ()
         }
+      }
       _ => ()
     }
   }
@@ -151,12 +152,12 @@ pub fn XshDb::cst(self : XshDb, path : String) -> @cst.SyntaxNode {
 }
 
 ///|
-pub fn XshDb::ast(self : XshDb, path : String) -> Module {
+pub fn XshDb::ast(self : XshDb, path : String) -> @core.Module {
   self.ast_query.fetch(self.rt, path)
 }
 
 ///|
-pub fn XshDb::types(self : XshDb, path : String) -> TypeEnv {
+pub fn XshDb::types(self : XshDb, path : String) -> @checker.TypeEnv {
   self.type_query.fetch(self.rt, path)
 }
 
@@ -172,12 +173,16 @@ pub fn XshDb::get_source(self : XshDb, path : String) -> String? {
 
 ///|
 /// Build alias map from imports (alias -> module ref)
-pub fn XshDb::import_aliases(self : XshDb, path : String) -> Map[String, Ref] {
+pub fn XshDb::import_aliases(
+  self : XshDb,
+  path : String,
+) -> Map[String, @core.Ref] {
   let imports = self.import_query.fetch(self.rt, path)
-  let aliases : Map[String, Ref] = {}
+  let aliases : Map[String, @core.Ref] = {}
   for imp in imports {
     match imp.module_ref {
-      Some(m) => aliases[imp.alias_name] = Ref::{ name: m, hash_prefix: None }
+      Some(m) =>
+        aliases[imp.alias_name] = @core.Ref::{ name: m, hash_prefix: None }
       None => ()
     }
   }
@@ -186,11 +191,14 @@ pub fn XshDb::import_aliases(self : XshDb, path : String) -> Map[String, Ref] {
 
 ///|
 /// Collect diagnostics from parse/type stages
-pub fn XshDb::diagnostics(self : XshDb, path : String) -> Array[Diagnostic] {
+pub fn XshDb::diagnostics(
+  self : XshDb,
+  path : String,
+) -> Array[@core.Diagnostic] {
   let parse_diags = self.diags.get_for_query(self.ast_query, path)
   let type_diags = self.diags.get_for_query(self.type_query, path)
   let import_diags = self.diags.get_for_query(self.import_query, path)
-  let out : Array[Diagnostic] = []
+  let out : Array[@core.Diagnostic] = []
   for d in parse_diags {
     out.push(d)
   }

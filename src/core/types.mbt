@@ -1,6 +1,6 @@
 ///|
 /// Types and values for xsh
-pub enum ParamLabel {
+pub(all) enum ParamLabel {
   Positional
   Required
   Optional
@@ -15,20 +15,20 @@ pub fn ParamLabel::is_positional(self : ParamLabel) -> Bool {
 }
 
 ///|
-pub struct FuncParam {
+pub(all) struct FuncParam {
   name : String
   label : ParamLabel
   ty : Type
 } derive(Show, Eq)
 
 ///|
-pub enum EffectAtom {
+pub(all) enum EffectAtom {
   Const(String)
   Var(String)
 } derive(Show, Eq)
 
 ///|
-pub enum Type {
+pub(all) enum Type {
   Int
   Bool
   String
@@ -48,7 +48,7 @@ pub enum Type {
 } derive(Show, Eq)
 
 ///|
-pub struct Path {
+pub(all) struct Path {
   raw : String
 } derive(Show, Eq)
 
@@ -69,7 +69,7 @@ pub fn Path::as_string(self : Path) -> String {
 }
 
 ///|
-pub struct FnValue {
+pub(all) struct FnValue {
   params : Array[FuncParam]
   body : Module
   env : Map[String, String]
@@ -78,7 +78,7 @@ pub struct FnValue {
 } derive(Show, Eq)
 
 ///|
-pub enum Value {
+pub(all) enum Value {
   Int(Int)
   Bool(Bool)
   String(String)

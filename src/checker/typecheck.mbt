@@ -1,63 +1,164 @@
 ///|
-/// Type checking for xsh
+/// @core.Type checking for xsh
 suberror TypeError {
-  UnknownName(String)
-  UnknownType(String)
-  Mismatch(expected~ : Type, actual~ : Type)
-  BadCall(String)
-  BadRec(String)
-  BadMatch(String)
-  NonExhaustiveMatch
-  BadTypeDef(String)
-  EffectNotAllowed(String)
+  UnknownName(name~ : String, span~ : @core.Span, suggestion~ : String?)
+  UnknownType(name~ : String, span~ : @core.Span, suggestion~ : String?)
+  Mismatch(
+    expected~ : @core.Type,
+    actual~ : @core.Type,
+    span~ : @core.Span,
+    context~ : String?
+  )
+  BadCall(message~ : String, span~ : @core.Span)
+  BadRec(message~ : String, span~ : @core.Span)
+  BadMatch(message~ : String, span~ : @core.Span)
+  NonExhaustiveMatch(span~ : @core.Span)
+  BadTypeDef(message~ : String, span~ : @core.Span)
+  EffectNotAllowed(name~ : String, span~ : @core.Span)
 } derive(Show, Eq)
+
+///|
+fn suggestion_hint(suggestion : String?) -> String? {
+  match suggestion {
+    Some(name) => Some("did you mean `" + name + "`?")
+    None => None
+  }
+}
+
+///|
+pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
+  match self {
+    TypeError::UnknownName(name~, span~, suggestion~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "unknown name: " + name,
+        span: Some(span),
+        hint: suggestion_hint(suggestion),
+        note: None,
+      }
+    TypeError::UnknownType(name~, span~, suggestion~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "unknown type: " + name,
+        span: Some(span),
+        hint: suggestion_hint(suggestion),
+        note: None,
+      }
+    TypeError::Mismatch(expected~, actual~, span~, context~) => {
+      let message = match context {
+        Some(ctx) => "type mismatch (" + ctx + ")"
+        None => "type mismatch"
+      }
+      @core.Diagnostic::{
+        stage: "type",
+        message,
+        span: Some(span),
+        hint: None,
+        note: Some(
+          "expected: " +
+          expected.to_string() +
+          "\nactual: " +
+          actual.to_string(),
+        ),
+      }
+    }
+    TypeError::BadCall(message~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "bad call: " + message,
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+    TypeError::BadRec(message~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "bad rec: " + message,
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+    TypeError::BadMatch(message~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "match error: " + message,
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+    TypeError::NonExhaustiveMatch(span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "non-exhaustive match",
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+    TypeError::BadTypeDef(message~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "type definition: " + message,
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+    TypeError::EffectNotAllowed(name~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "effect not allowed: " + name,
+        span: Some(span),
+        hint: None,
+        note: None,
+      }
+  }
+}
 
 ///|
 pub struct CtorInfo {
   type_name : String
   params : Array[String]
-  payload : Type
+  payload : @core.Type
 } derive(Show, Eq)
 
 ///|
 priv struct CtorInstance {
-  payload : Type
-  ret : Type
+  payload : @core.Type
+  ret : @core.Type
 }
 
 ///|
 pub struct EnumDef {
   name : String
   params : Array[String]
-  ctors : Array[TypeCtor]
+  ctors : Array[@core.TypeCtor]
 } derive(Show, Eq)
 
 ///|
 pub struct TypeScheme {
   vars : Array[Int]
   effect_vars : Array[String]
-  ty : Type
+  ty : @core.Type
 } derive(Show, Eq)
 
 ///|
 pub struct TypeAlias {
   name : String
   params : Array[String]
-  target : Type
+  target : @core.Type
 } derive(Show, Eq)
 
 ///|
 pub struct TypeEnv {
   bindings : Map[String, TypeScheme]
-  addr_types : Map[String, Type]
+  addr_types : Map[String, @core.Type]
   enum_defs : Map[String, EnumDef]
   type_aliases : Map[String, TypeAlias]
   ctor_index : Map[String, CtorInfo]
   purities : Map[String, Bool]
   mut next_var : Int
   mut next_effect_var : Int
-  subs : Map[Int, Type]
-  effect_subs : Map[String, Array[EffectAtom]]
+  subs : Map[Int, @core.Type]
+  effect_subs : Map[String, Array[@core.EffectAtom]]
 } derive(Show, Eq)
 
 ///|
@@ -79,13 +180,13 @@ fn effect_scope_all() -> EffectScope {
 }
 
 ///|
-fn effect_scope_from_list(effects : Array[EffectAtom]) -> EffectScope {
+fn effect_scope_from_list(effects : Array[@core.EffectAtom]) -> EffectScope {
   let allowed : Map[String, Bool] = {}
   let mut rest : String? = None
   for effect in effects {
     match effect {
-      EffectAtom::Const(name) => allowed[name] = true
-      EffectAtom::Var(name) =>
+      @core.EffectAtom::Const(name) => allowed[name] = true
+      @core.EffectAtom::Var(name) =>
         match rest {
           Some(existing) => if existing != name { () }
           None => rest = Some(name)
@@ -97,23 +198,24 @@ fn effect_scope_from_list(effects : Array[EffectAtom]) -> EffectScope {
 
 ///|
 fn normalize_effects(
-  effects : Array[EffectAtom],
-) -> Array[EffectAtom] raise TypeError {
-  let out : Array[EffectAtom] = []
+  effects : Array[@core.EffectAtom],
+  span : @core.Span,
+) -> Array[@core.EffectAtom] raise TypeError {
+  let out : Array[@core.EffectAtom] = []
   let seen : Map[String, Bool] = {}
   let mut seen_var : String? = None
   for effect in effects {
     match effect {
-      EffectAtom::Const(name) =>
+      @core.EffectAtom::Const(name) =>
         if not(seen.contains(name)) {
           seen[name] = true
           out.push(effect)
         }
-      EffectAtom::Var(name) =>
+      @core.EffectAtom::Var(name) =>
         match seen_var {
           Some(existing) =>
             if existing != name {
-              raise TypeError::BadTypeDef("multiple effect vars")
+              raise TypeError::BadTypeDef(message="multiple effect vars", span~)
             } else {
               ()
             }
@@ -131,7 +233,8 @@ fn normalize_effects(
 fn require_effects(
   env : TypeEnv,
   scope : EffectScope,
-  effects : Array[EffectAtom],
+  effects : Array[@core.EffectAtom],
+  span : @core.Span,
 ) -> Unit raise TypeError {
   if scope.allow_all {
     return ()
@@ -139,15 +242,15 @@ fn require_effects(
   let scope_set = effect_set_from_scope(scope)
   let required_set = effect_set_from_atoms(env, effects)
   match ensure_effects_allowed(env, scope_set, required_set) {
-    Some(name) => raise TypeError::EffectNotAllowed(name)
+    Some(name) => raise TypeError::EffectNotAllowed(name~, span~)
     None => ()
   }
 }
 
 ///|
-fn builtin_effects(name : String) -> Array[EffectAtom] {
+fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
   match name {
-    "sh" => [EffectAtom::Const("Stdout")]
+    "sh" => [@core.EffectAtom::Const("Stdout")]
     _ => []
   }
 }
@@ -155,7 +258,7 @@ fn builtin_effects(name : String) -> Array[EffectAtom] {
 ///|
 fn effect_scope_extend(
   scope : EffectScope,
-  extra : Array[EffectAtom],
+  extra : Array[@core.EffectAtom],
 ) -> EffectScope {
   if scope.allow_all {
     scope
@@ -167,8 +270,8 @@ fn effect_scope_extend(
     }
     for effect in extra {
       match effect {
-        EffectAtom::Const(name) => allowed[name] = true
-        EffectAtom::Var(name) =>
+        @core.EffectAtom::Const(name) => allowed[name] = true
+        @core.EffectAtom::Var(name) =>
           match rest {
             Some(existing) => if existing != name { () }
             None => rest = Some(name)
@@ -210,7 +313,10 @@ fn effect_set_merge(a : EffectSet, b : EffectSet) -> EffectSet raise TypeError {
       if v1 == v2 {
         Some(v1)
       } else {
-        raise TypeError::BadTypeDef("multiple effect vars")
+        raise TypeError::BadTypeDef(
+          message="multiple effect vars",
+          span=unknown_span(),
+        )
       }
   }
   EffectSet::{ consts, rest }
@@ -219,7 +325,7 @@ fn effect_set_merge(a : EffectSet, b : EffectSet) -> EffectSet raise TypeError {
 ///|
 fn effect_set_from_atoms(
   env : TypeEnv,
-  effects : Array[EffectAtom],
+  effects : Array[@core.EffectAtom],
 ) -> EffectSet raise TypeError {
   effect_set_from_atoms_inner(env, effects, {})
 }
@@ -227,18 +333,18 @@ fn effect_set_from_atoms(
 ///|
 fn effect_set_from_atoms_inner(
   env : TypeEnv,
-  effects : Array[EffectAtom],
+  effects : Array[@core.EffectAtom],
   visiting : Map[String, Bool],
 ) -> EffectSet raise TypeError {
   let mut out = effect_set_empty()
   for effect in effects {
     match effect {
-      EffectAtom::Const(name) => {
+      @core.EffectAtom::Const(name) => {
         let consts : Map[String, Bool] = {}
         consts[name] = true
         out = effect_set_merge(out, EffectSet::{ consts, rest: None })
       }
-      EffectAtom::Var(name) => {
+      @core.EffectAtom::Var(name) => {
         let resolved = resolve_effect_var(env, name, visiting)
         out = effect_set_merge(out, resolved)
       }
@@ -271,13 +377,13 @@ fn resolve_effect_var(
 }
 
 ///|
-fn effect_set_to_atoms(set : EffectSet) -> Array[EffectAtom] {
-  let out : Array[EffectAtom] = []
+fn effect_set_to_atoms(set : EffectSet) -> Array[@core.EffectAtom] {
+  let out : Array[@core.EffectAtom] = []
   for name, _ in set.consts {
-    out.push(EffectAtom::Const(name))
+    out.push(@core.EffectAtom::Const(name))
   }
   match set.rest {
-    Some(name) => out.push(EffectAtom::Var(name))
+    Some(name) => out.push(@core.EffectAtom::Var(name))
     None => ()
   }
   out
@@ -381,7 +487,10 @@ fn add_const_to_effect_var(
   match env.effect_subs.get(name) {
     None => {
       let rest = fresh_effect_var(env)
-      env.effect_subs[name] = [EffectAtom::Const(effect), EffectAtom::Var(rest)]
+      env.effect_subs[name] = [
+        @core.EffectAtom::Const(effect),
+        @core.EffectAtom::Var(rest),
+      ]
     }
     Some(effects) => {
       let current = effect_set_from_atoms(env, effects)
@@ -447,8 +556,8 @@ fn ensure_effects_allowed(
 ///|
 fn unify_effects(
   env : TypeEnv,
-  left : Array[EffectAtom],
-  right : Array[EffectAtom],
+  left : Array[@core.EffectAtom],
+  right : Array[@core.EffectAtom],
 ) -> Bool raise TypeError {
   let a = effect_set_from_atoms(env, left)
   let b = effect_set_from_atoms(env, right)
@@ -522,7 +631,7 @@ pub fn TypeEnv::new() -> TypeEnv {
 }
 
 ///|
-pub fn TypeEnv::get(self : TypeEnv, name : String) -> Type? {
+pub fn TypeEnv::get(self : TypeEnv, name : String) -> @core.Type? {
   match self.bindings.get(name) {
     Some(scheme) => Some(instantiate_scheme(self, scheme))
     None => None
@@ -540,7 +649,7 @@ pub fn TypeEnv::get_purity(self : TypeEnv, name : String) -> Bool? {
 }
 
 ///|
-pub fn TypeEnv::get_addr_type(self : TypeEnv, addr : String) -> Type? {
+pub fn TypeEnv::get_addr_type(self : TypeEnv, addr : String) -> @core.Type? {
   self.addr_types.get(addr)
 }
 
@@ -550,7 +659,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
   for name, scheme in self.bindings {
     bindings[name] = scheme
   }
-  let addr_types : Map[String, Type] = {}
+  let addr_types : Map[String, @core.Type] = {}
   for addr, ty in self.addr_types {
     addr_types[addr] = ty
   }
@@ -570,11 +679,11 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
   for name, pure in self.purities {
     purities[name] = pure
   }
-  let subs : Map[Int, Type] = {}
+  let subs : Map[Int, @core.Type] = {}
   for id, ty in self.subs {
     subs[id] = ty
   }
-  let effect_subs : Map[String, Array[EffectAtom]] = {}
+  let effect_subs : Map[String, Array[@core.EffectAtom]] = {}
   for name, effects in self.effect_subs {
     effect_subs[name] = effects
   }
@@ -593,7 +702,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
 }
 
 ///|
-pub fn TypeEnv::set(self : TypeEnv, name : String, ty : Type) -> Unit {
+pub fn TypeEnv::set(self : TypeEnv, name : String, ty : @core.Type) -> Unit {
   self.bindings[name] = TypeScheme::{ vars: [], effect_vars: [], ty }
 }
 
@@ -654,20 +763,24 @@ pub fn TypeEnv::set_ctor(
 }
 
 ///|
-pub fn TypeEnv::set_addr_type(self : TypeEnv, addr : String, ty : Type) -> Unit {
+pub fn TypeEnv::set_addr_type(
+  self : TypeEnv,
+  addr : String,
+  ty : @core.Type,
+) -> Unit {
   self.addr_types[addr] = ty
 }
 
 ///|
-pub fn type_check(ast : Module) -> TypeEnv raise TypeError {
+pub fn type_check(ast : @core.Module) -> TypeEnv raise TypeError {
   type_check_with_aliases(ast, {})
 }
 
 ///|
-/// Type check with import aliases (qualified names treated as external).
+/// @core.Type check with import aliases (qualified names treated as external).
 pub fn type_check_with_aliases(
-  ast : Module,
-  aliases : Map[String, Ref],
+  ast : @core.Module,
+  aliases : Map[String, @core.Ref],
 ) -> TypeEnv raise TypeError {
   let env = TypeEnv::new()
   ensure_prelude_option(env)
@@ -678,8 +791,8 @@ pub fn type_check_with_aliases(
 ///|
 pub fn type_check_with_env(
   env : TypeEnv,
-  ast : Module,
-  aliases : Map[String, Ref],
+  ast : @core.Module,
+  aliases : Map[String, @core.Ref],
 ) -> TypeEnv raise TypeError {
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
@@ -689,41 +802,53 @@ pub fn type_check_with_env(
 ///|
 fn type_check_stmts(
   env : TypeEnv,
-  stmts : Array[Stmt],
-  aliases : Map[String, Ref],
+  stmts : Array[@core.Stmt],
+  aliases : Map[String, @core.Ref],
   effects : EffectScope,
   allow_effect : Bool,
 ) -> TypeEnv raise TypeError {
   for stmt in stmts {
     match stmt {
-      Stmt::Let(rec~, name~, expr~) => {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
         let scheme = type_let_expr(
-          env, rec, name, expr, aliases, effects, allow_effect,
+          env, rec, name, expr, span, aliases, effects, allow_effect,
         )
         env.set_scheme(name, scheme)
         let info = purity_for_let(env, rec, name, expr)
         env.set_purity(name, info.value)
       }
-      Stmt::EnumDef(name~, params~, ctors~) =>
-        register_enum_def(env, name, params, ctors)
-      Stmt::TypeAlias(name~, params~, target~) =>
-        register_type_alias(env, name, params, target)
-      Stmt::Expr(expr~) => {
+      @core.Stmt::EnumDef(name~, params~, ctors~, span~) =>
+        register_enum_def(env, name, params, ctors, span)
+      @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
+        register_type_alias(env, name, params, target, span)
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
         let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
 
       }
-      Stmt::Flake(_) => ()
-      Stmt::Alias(name~, target~) =>
+      @core.Stmt::Flake(raw~, span~) => {
+        let _ = raw
+        let _ = span
+
+      }
+      @core.Stmt::Alias(name~, target~, span~) =>
         match target {
-          AliasTarget::Module(_) => ()
-          AliasTarget::Name(target_name) =>
+          @core.AliasTarget::Module(_) => ()
+          @core.AliasTarget::Name(target_name) =>
             match env.get_scheme(target_name) {
               Some(scheme) => env.set_scheme(name, scheme)
-              None => raise TypeError::UnknownName(target_name)
+              None =>
+                raise TypeError::UnknownName(
+                  name=target_name,
+                  span~,
+                  suggestion=find_name_suggestion(env, aliases, target_name),
+                )
             }
         }
-      Stmt::Import(..) => ()
-      Stmt::Test(name~, body~) => {
+      @core.Stmt::Import(..) => ()
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = span
         let _ = name
         let _ = type_check_stmts(
           clone_env(env),
@@ -745,32 +870,118 @@ fn clone_env(env : TypeEnv) -> TypeEnv {
 }
 
 ///|
-fn ensure_unique_params(params : Array[String]) -> Unit raise TypeError {
+fn ensure_unique_params(
+  params : Array[String],
+  span : @core.Span,
+) -> Unit raise TypeError {
   let seen : Map[String, Bool] = {}
   for param in params {
     if seen.contains(param) {
-      raise TypeError::BadTypeDef("duplicate type param: " + param)
+      raise TypeError::BadTypeDef(
+        message="duplicate type param: " + param,
+        span~,
+      )
     }
     seen[param] = true
   }
 }
 
 ///|
-fn ensure_prelude_option(env : TypeEnv) -> Unit raise TypeError {
-  if env.get_enum_def("Option") is Some(_) {
-    return
+fn simple_distance(a : String, b : String) -> Int {
+  let a_chars = a.to_array()
+  let b_chars = b.to_array()
+  let min = if a_chars.length() < b_chars.length() {
+    a_chars.length()
+  } else {
+    b_chars.length()
   }
-  let ctors : Array[TypeCtor] = [
-    TypeCtor::{ name: "Some", args: [Type::Param("T")] },
-    TypeCtor::{ name: "None", args: [] },
-  ]
-  register_enum_def(env, "Option", ["T"], ctors)
+  let mut diff = if a_chars.length() > b_chars.length() {
+    a_chars.length() - b_chars.length()
+  } else {
+    b_chars.length() - a_chars.length()
+  }
+  for i in 0..<min {
+    if a_chars[i] != b_chars[i] {
+      diff += 1
+    }
+  }
+  diff
 }
 
 ///|
-fn ensure_prelude_functions(
+fn best_suggestion(candidates : Array[String], name : String) -> String? {
+  let mut best : String? = None
+  let mut best_score = 9999
+  for cand in candidates {
+    let score = simple_distance(name, cand)
+    if score < best_score {
+      best_score = score
+      best = Some(cand)
+    }
+  }
+  if best_score <= 3 {
+    best
+  } else {
+    None
+  }
+}
+
+///|
+fn unknown_span() -> @core.Span {
+  @core.Span::empty(0)
+}
+
+///|
+fn find_name_suggestion(
   env : TypeEnv,
-  aliases : Map[String, Ref],
+  aliases : Map[String, @core.Ref],
+  name : String,
+) -> String? {
+  let candidates : Array[String] = []
+  for key, _ in env.bindings {
+    candidates.push(key)
+  }
+  for key, _ in env.ctor_index {
+    candidates.push(key)
+  }
+  for key, _ in aliases {
+    candidates.push(key)
+  }
+  best_suggestion(candidates, name)
+}
+
+///|
+fn find_type_suggestion(env : TypeEnv, name : String) -> String? {
+  let candidates : Array[String] = [
+    "Int", "Bool", "String", "@core.Path", "Unit", "Array", "Map", "ArrayBuilder",
+    "MapBuilder",
+  ]
+  for key, _ in env.enum_defs {
+    candidates.push(key)
+  }
+  for key, _ in env.type_aliases {
+    candidates.push(key)
+  }
+  best_suggestion(candidates, name)
+}
+
+///|
+pub fn ensure_prelude_option(env : TypeEnv) -> Unit raise TypeError {
+  if env.get_enum_def("Option") is Some(_) {
+    return
+  }
+  let span = @core.Span::empty(0)
+  let ctors : Array[@core.TypeCtor] = [
+    @core.TypeCtor::{ name: "Some", args: [@core.Type::Param("T")], span },
+    @core.TypeCtor::{ name: "None", args: [], span },
+  ]
+  register_enum_def(env, "Option", ["T"], ctors, span)
+}
+
+///|
+pub fn ensure_prelude_functions(
+  env : TypeEnv,
+  aliases : Map[String, @core.Ref],
 ) -> Unit raise TypeError {
   match env.get_purity("__prelude_loaded") {
     Some(_) => ()
@@ -789,10 +1000,10 @@ fn ensure_prelude_functions(
 }
 
 ///|
-fn fresh_type_var(env : TypeEnv) -> Type {
+fn fresh_type_var(env : TypeEnv) -> @core.Type {
   let id = env.next_var
   env.next_var += 1
-  Type::Var(id)
+  @core.Type::Var(id)
 }
 
 ///|
@@ -803,8 +1014,8 @@ fn fresh_effect_var(env : TypeEnv) -> String {
 }
 
 ///|
-fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> Type {
-  let mapping : Map[Int, Type] = {}
+fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> @core.Type {
+  let mapping : Map[Int, @core.Type] = {}
   for id in scheme.vars {
     mapping[id] = fresh_type_var(env)
   }
@@ -818,9 +1029,9 @@ fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> Type {
 }
 
 ///|
-fn resolve_type(env : TypeEnv, ty : Type) -> Type {
+fn resolve_type(env : TypeEnv, ty : @core.Type) -> @core.Type {
   match ty {
-    Type::Var(id) =>
+    @core.Type::Var(id) =>
       match env.subs.get(id) {
         Some(t) => {
           let resolved = resolve_type(env, t)
@@ -829,168 +1040,183 @@ fn resolve_type(env : TypeEnv, ty : Type) -> Type {
         }
         None => ty
       }
-    Type::Tuple(items) => {
-      let out : Array[Type] = []
+    @core.Type::Tuple(items) => {
+      let out : Array[@core.Type] = []
       for item in items {
         out.push(resolve_type(env, item))
       }
-      Type::Tuple(out)
+      @core.Type::Tuple(out)
     }
-    Type::Record(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Record(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = resolve_type(env, item)
       }
-      Type::Record(out)
+      @core.Type::Record(out)
     }
-    Type::Array(inner) => Type::Array(resolve_type(env, inner))
-    Type::Map(inner) => Type::Map(resolve_type(env, inner))
-    Type::ArrayBuilder(inner) => Type::ArrayBuilder(resolve_type(env, inner))
-    Type::MapBuilder(inner) => Type::MapBuilder(resolve_type(env, inner))
-    Type::Variant(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Array(inner) => @core.Type::Array(resolve_type(env, inner))
+    @core.Type::Map(inner) => @core.Type::Map(resolve_type(env, inner))
+    @core.Type::ArrayBuilder(inner) =>
+      @core.Type::ArrayBuilder(resolve_type(env, inner))
+    @core.Type::MapBuilder(inner) =>
+      @core.Type::MapBuilder(resolve_type(env, inner))
+    @core.Type::Variant(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = resolve_type(env, item)
       }
-      Type::Variant(out)
+      @core.Type::Variant(out)
     }
-    Type::Named(name~, args~) => {
-      let out : Array[Type] = []
+    @core.Type::Named(name~, args~) => {
+      let out : Array[@core.Type] = []
       for arg in args {
         out.push(resolve_type(env, arg))
       }
-      Type::Named(name~, args=out)
+      @core.Type::Named(name~, args=out)
     }
-    Type::Func(params~, ret~, effects~) => {
-      let out : Array[FuncParam] = []
+    @core.Type::Func(params~, ret~, effects~) => {
+      let out : Array[@core.FuncParam] = []
       for param in params {
-        out.push(FuncParam::{
+        out.push(@core.FuncParam::{
           name: param.name,
           label: param.label,
           ty: resolve_type(env, param.ty),
         })
       }
-      Type::Func(params=out, ret=resolve_type(env, ret), effects~)
+      @core.Type::Func(params=out, ret=resolve_type(env, ret), effects~)
     }
     _ => ty
   }
 }
 
 ///|
-fn substitute_type_vars(ty : Type, subs : Map[Int, Type]) -> Type {
+fn substitute_type_vars(
+  ty : @core.Type,
+  subs : Map[Int, @core.Type],
+) -> @core.Type {
   match ty {
-    Type::Var(id) =>
+    @core.Type::Var(id) =>
       match subs.get(id) {
         Some(t) => t
         None => ty
       }
-    Type::Tuple(items) => {
-      let out : Array[Type] = []
+    @core.Type::Tuple(items) => {
+      let out : Array[@core.Type] = []
       for item in items {
         out.push(substitute_type_vars(item, subs))
       }
-      Type::Tuple(out)
+      @core.Type::Tuple(out)
     }
-    Type::Record(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Record(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = substitute_type_vars(item, subs)
       }
-      Type::Record(out)
+      @core.Type::Record(out)
     }
-    Type::Array(inner) => Type::Array(substitute_type_vars(inner, subs))
-    Type::Map(inner) => Type::Map(substitute_type_vars(inner, subs))
-    Type::ArrayBuilder(inner) =>
-      Type::ArrayBuilder(substitute_type_vars(inner, subs))
-    Type::MapBuilder(inner) =>
-      Type::MapBuilder(substitute_type_vars(inner, subs))
-    Type::Variant(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Array(inner) =>
+      @core.Type::Array(substitute_type_vars(inner, subs))
+    @core.Type::Map(inner) => @core.Type::Map(substitute_type_vars(inner, subs))
+    @core.Type::ArrayBuilder(inner) =>
+      @core.Type::ArrayBuilder(substitute_type_vars(inner, subs))
+    @core.Type::MapBuilder(inner) =>
+      @core.Type::MapBuilder(substitute_type_vars(inner, subs))
+    @core.Type::Variant(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = substitute_type_vars(item, subs)
       }
-      Type::Variant(out)
+      @core.Type::Variant(out)
     }
-    Type::Named(name~, args~) => {
-      let out : Array[Type] = []
+    @core.Type::Named(name~, args~) => {
+      let out : Array[@core.Type] = []
       for arg in args {
         out.push(substitute_type_vars(arg, subs))
       }
-      Type::Named(name~, args=out)
+      @core.Type::Named(name~, args=out)
     }
-    Type::Func(params~, ret~, effects~) => {
-      let out : Array[FuncParam] = []
+    @core.Type::Func(params~, ret~, effects~) => {
+      let out : Array[@core.FuncParam] = []
       for param in params {
-        out.push(FuncParam::{
+        out.push(@core.FuncParam::{
           name: param.name,
           label: param.label,
           ty: substitute_type_vars(param.ty, subs),
         })
       }
-      Type::Func(params=out, ret=substitute_type_vars(ret, subs), effects~)
+      @core.Type::Func(
+        params=out,
+        ret=substitute_type_vars(ret, subs),
+        effects~,
+      )
     }
     _ => ty
   }
 }
 
 ///|
-fn substitute_effect_vars(ty : Type, subs : Map[String, String]) -> Type {
+fn substitute_effect_vars(
+  ty : @core.Type,
+  subs : Map[String, String],
+) -> @core.Type {
   match ty {
-    Type::Tuple(items) => {
-      let out : Array[Type] = []
+    @core.Type::Tuple(items) => {
+      let out : Array[@core.Type] = []
       for item in items {
         out.push(substitute_effect_vars(item, subs))
       }
-      Type::Tuple(out)
+      @core.Type::Tuple(out)
     }
-    Type::Record(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Record(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = substitute_effect_vars(item, subs)
       }
-      Type::Record(out)
+      @core.Type::Record(out)
     }
-    Type::Array(inner) => Type::Array(substitute_effect_vars(inner, subs))
-    Type::Map(inner) => Type::Map(substitute_effect_vars(inner, subs))
-    Type::ArrayBuilder(inner) =>
-      Type::ArrayBuilder(substitute_effect_vars(inner, subs))
-    Type::MapBuilder(inner) =>
-      Type::MapBuilder(substitute_effect_vars(inner, subs))
-    Type::Variant(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Array(inner) =>
+      @core.Type::Array(substitute_effect_vars(inner, subs))
+    @core.Type::Map(inner) =>
+      @core.Type::Map(substitute_effect_vars(inner, subs))
+    @core.Type::ArrayBuilder(inner) =>
+      @core.Type::ArrayBuilder(substitute_effect_vars(inner, subs))
+    @core.Type::MapBuilder(inner) =>
+      @core.Type::MapBuilder(substitute_effect_vars(inner, subs))
+    @core.Type::Variant(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = substitute_effect_vars(item, subs)
       }
-      Type::Variant(out)
+      @core.Type::Variant(out)
     }
-    Type::Named(name~, args~) => {
-      let out : Array[Type] = []
+    @core.Type::Named(name~, args~) => {
+      let out : Array[@core.Type] = []
       for arg in args {
         out.push(substitute_effect_vars(arg, subs))
       }
-      Type::Named(name~, args=out)
+      @core.Type::Named(name~, args=out)
     }
-    Type::Func(params~, ret~, effects~) => {
-      let out : Array[FuncParam] = []
+    @core.Type::Func(params~, ret~, effects~) => {
+      let out : Array[@core.FuncParam] = []
       for param in params {
-        out.push(FuncParam::{
+        out.push(@core.FuncParam::{
           name: param.name,
           label: param.label,
           ty: substitute_effect_vars(param.ty, subs),
         })
       }
-      let eff_out : Array[EffectAtom] = []
+      let eff_out : Array[@core.EffectAtom] = []
       for effect in effects {
         match effect {
-          EffectAtom::Const(_) => eff_out.push(effect)
-          EffectAtom::Var(name) =>
+          @core.EffectAtom::Const(_) => eff_out.push(effect)
+          @core.EffectAtom::Var(name) =>
             match subs.get(name) {
-              Some(mapped) => eff_out.push(EffectAtom::Var(mapped))
+              Some(mapped) => eff_out.push(@core.EffectAtom::Var(mapped))
               None => eff_out.push(effect)
             }
         }
       }
-      Type::Func(
+      @core.Type::Func(
         params=out,
         ret=substitute_effect_vars(ret, subs),
         effects=eff_out,
@@ -1001,56 +1227,60 @@ fn substitute_effect_vars(ty : Type, subs : Map[String, String]) -> Type {
 }
 
 ///|
-fn substitute_type(ty : Type, subs : Map[String, Type]) -> Type {
+fn substitute_type(
+  ty : @core.Type,
+  subs : Map[String, @core.Type],
+) -> @core.Type {
   match ty {
-    Type::Param(name) =>
+    @core.Type::Param(name) =>
       match subs.get(name) {
         Some(t) => t
         None => ty
       }
-    Type::Tuple(items) => {
-      let out : Array[Type] = []
+    @core.Type::Tuple(items) => {
+      let out : Array[@core.Type] = []
       for item in items {
         out.push(substitute_type(item, subs))
       }
-      Type::Tuple(out)
+      @core.Type::Tuple(out)
     }
-    Type::Record(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Record(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = substitute_type(item, subs)
       }
-      Type::Record(out)
+      @core.Type::Record(out)
     }
-    Type::Array(inner) => Type::Array(substitute_type(inner, subs))
-    Type::Map(inner) => Type::Map(substitute_type(inner, subs))
-    Type::ArrayBuilder(inner) =>
-      Type::ArrayBuilder(substitute_type(inner, subs))
-    Type::MapBuilder(inner) => Type::MapBuilder(substitute_type(inner, subs))
-    Type::Variant(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Array(inner) => @core.Type::Array(substitute_type(inner, subs))
+    @core.Type::Map(inner) => @core.Type::Map(substitute_type(inner, subs))
+    @core.Type::ArrayBuilder(inner) =>
+      @core.Type::ArrayBuilder(substitute_type(inner, subs))
+    @core.Type::MapBuilder(inner) =>
+      @core.Type::MapBuilder(substitute_type(inner, subs))
+    @core.Type::Variant(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = substitute_type(item, subs)
       }
-      Type::Variant(out)
+      @core.Type::Variant(out)
     }
-    Type::Named(name~, args~) => {
-      let out : Array[Type] = []
+    @core.Type::Named(name~, args~) => {
+      let out : Array[@core.Type] = []
       for arg in args {
         out.push(substitute_type(arg, subs))
       }
-      Type::Named(name~, args=out)
+      @core.Type::Named(name~, args=out)
     }
-    Type::Func(params~, ret~, effects~) => {
-      let out : Array[FuncParam] = []
+    @core.Type::Func(params~, ret~, effects~) => {
+      let out : Array[@core.FuncParam] = []
       for param in params {
-        out.push(FuncParam::{
+        out.push(@core.FuncParam::{
           name: param.name,
           label: param.label,
           ty: substitute_type(param.ty, subs),
         })
       }
-      Type::Func(params=out, ret=substitute_type(ret, subs), effects~)
+      @core.Type::Func(params=out, ret=substitute_type(ret, subs), effects~)
     }
     _ => ty
   }
@@ -1058,15 +1288,15 @@ fn substitute_type(ty : Type, subs : Map[String, Type]) -> Type {
 
 ///|
 fn instantiate_ctor(env : TypeEnv, info : CtorInfo) -> CtorInstance {
-  let mapping : Map[String, Type] = {}
-  let args : Array[Type] = []
+  let mapping : Map[String, @core.Type] = {}
+  let args : Array[@core.Type] = []
   for param in info.params {
     let ty_var = fresh_type_var(env)
     mapping[param] = ty_var
     args.push(ty_var)
   }
   let payload = substitute_type(info.payload, mapping)
-  let ret = Type::Named(name=info.type_name, args~)
+  let ret = @core.Type::Named(name=info.type_name, args~)
   { payload, ret }
 }
 
@@ -1075,27 +1305,34 @@ fn register_enum_def(
   env : TypeEnv,
   name : String,
   params : Array[String],
-  ctors : Array[TypeCtor],
+  ctors : Array[@core.TypeCtor],
+  span : @core.Span,
 ) -> Unit raise TypeError {
   if env.get_enum_def(name) is Some(_) || env.get_type_alias(name) is Some(_) {
-    raise TypeError::BadTypeDef("duplicate type: " + name)
+    raise TypeError::BadTypeDef(message="duplicate type: " + name, span~)
   }
   if ctors.is_empty() {
-    raise TypeError::BadTypeDef("empty type: " + name)
+    raise TypeError::BadTypeDef(message="empty type: " + name, span~)
   }
-  ensure_unique_params(params)
+  ensure_unique_params(params, span)
   env.set_enum_def(name, EnumDef::{ name, params, ctors })
-  let ctor_map : Map[String, Type] = {}
+  let ctor_map : Map[String, @core.Type] = {}
   for ctor in ctors {
     if ctor_map.contains(ctor.name) {
-      raise TypeError::BadTypeDef("duplicate ctor: " + ctor.name)
+      raise TypeError::BadTypeDef(
+        message="duplicate ctor: " + ctor.name,
+        span=ctor.span,
+      )
     }
     let payload = ctor_payload_type(env, ctor)
     ctor_map[ctor.name] = payload
   }
   for ctor_name, payload in ctor_map {
     if env.get_ctor(ctor_name) is Some(_) {
-      raise TypeError::BadTypeDef("ctor already defined: " + ctor_name)
+      raise TypeError::BadTypeDef(
+        message="ctor already defined: " + ctor_name,
+        span~,
+      )
     }
     env.set_ctor(ctor_name, CtorInfo::{ type_name: name, params, payload })
   }
@@ -1106,49 +1343,65 @@ fn register_type_alias(
   env : TypeEnv,
   name : String,
   params : Array[String],
-  target : Type,
+  target : @core.Type,
+  span : @core.Span,
 ) -> Unit raise TypeError {
   if env.get_enum_def(name) is Some(_) || env.get_type_alias(name) is Some(_) {
-    raise TypeError::BadTypeDef("duplicate type: " + name)
+    raise TypeError::BadTypeDef(message="duplicate type: " + name, span~)
   }
-  ensure_unique_params(params)
+  ensure_unique_params(params, span)
   let normalized = normalize_type(env, target)
   env.set_type_alias(name, TypeAlias::{ name, params, target: normalized })
 }
 
 ///|
-fn ctor_payload_type(env : TypeEnv, ctor : TypeCtor) -> Type raise TypeError {
+fn ctor_payload_type(
+  env : TypeEnv,
+  ctor : @core.TypeCtor,
+) -> @core.Type raise TypeError {
   if ctor.args.length() == 0 {
-    Type::Unit
+    @core.Type::Unit
   } else if ctor.args.length() == 1 {
     normalize_type(env, ctor.args[0])
   } else {
-    let items : Array[Type] = []
+    let items : Array[@core.Type] = []
     for arg in ctor.args {
       items.push(normalize_type(env, arg))
     }
-    Type::Tuple(items)
+    @core.Type::Tuple(items)
   }
 }
 
 ///|
 fn type_expr_eff(
   env : TypeEnv,
-  expr : Expr,
-  aliases : Map[String, Ref],
+  expr : @core.Expr,
+  aliases : Map[String, @core.Ref],
   effects : EffectScope,
   allow_effect : Bool,
-) -> Type raise TypeError {
+) -> @core.Type raise TypeError {
   match expr {
-    Expr::Int(_) => Type::Int
-    Expr::Bool(_) => Type::Bool
-    Expr::String(_) => Type::String
-    Expr::Ident(name) =>
+    @core.Expr::Int(value~, span~) => {
+      let _ = value
+      let _ = span
+      @core.Type::Int
+    }
+    @core.Expr::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+      @core.Type::Bool
+    }
+    @core.Expr::String(value~, span~) => {
+      let _ = value
+      let _ = span
+      @core.Type::String
+    }
+    @core.Expr::Ident(name~, span~) =>
       match env.get(name) {
         Some(ty) => ty
         None =>
           if has_alias_prefix(name, aliases) {
-            Type::Unit
+            @core.Type::Unit
           } else {
             match env.get_ctor(name) {
               Some(info) => {
@@ -1156,40 +1409,47 @@ fn type_expr_eff(
                 inst.ret
               }
               None =>
-                if is_ctor_name(name) {
-                  let map : Map[String, Type] = {}
-                  map[name] = Type::Unit
-                  Type::Variant(map)
+                if @core.is_ctor_name(name) {
+                  let map : Map[String, @core.Type] = {}
+                  map[name] = @core.Type::Unit
+                  @core.Type::Variant(map)
                 } else {
-                  raise TypeError::UnknownName(name)
+                  raise TypeError::UnknownName(
+                    name~,
+                    span~,
+                    suggestion=find_name_suggestion(env, aliases, name),
+                  )
                 }
             }
           }
       }
-    Expr::Call(name~, args~) =>
+    @core.Expr::Call(name~, args~, span~) =>
       if has_alias_prefix(name, aliases) {
-        Type::Unit
+        @core.Type::Unit
       } else {
-        type_call(env, name, args, aliases, effects, allow_effect)
+        type_call(env, name, args, aliases, effects, allow_effect, span)
       }
-    Expr::Tuple(items) => {
-      let tys : Array[Type] = []
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
+      let tys : Array[@core.Type] = []
       for item in items {
         tys.push(type_expr_eff(env, item, aliases, effects, allow_effect))
       }
-      Type::Tuple(tys)
+      @core.Type::Tuple(tys)
     }
-    Expr::Record(fields) => {
-      let map : Map[String, Type] = {}
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
+      let map : Map[String, @core.Type] = {}
       for field in fields {
         let ty = type_expr_eff(env, field.expr, aliases, effects, allow_effect)
         map[field.name] = ty
       }
-      Type::Record(map)
+      @core.Type::Record(map)
     }
-    Expr::Array(items) =>
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
       if items.is_empty() {
-        Type::Array(Type::Unit)
+        @core.Type::Array(@core.Type::Unit)
       } else {
         let first = type_expr_eff(env, items[0], aliases, effects, allow_effect)
         let elem_ty = normalize_type(env, first)
@@ -1202,14 +1462,21 @@ fn type_expr_eff(
             allow_effect,
           )
           if not(type_equal(env, elem_ty, item_ty)) {
-            raise TypeError::Mismatch(expected=elem_ty, actual=item_ty)
+            raise TypeError::Mismatch(
+              expected=elem_ty,
+              actual=item_ty,
+              span=items[i].span(),
+              context=Some("array item"),
+            )
           }
         }
-        Type::Array(elem_ty)
+        @core.Type::Array(elem_ty)
       }
-    Expr::Map(fields) =>
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
       if fields.is_empty() {
-        Type::Map(Type::Unit)
+        @core.Type::Map(@core.Type::Unit)
       } else {
         let first = type_expr_eff(
           env,
@@ -1228,42 +1495,68 @@ fn type_expr_eff(
             allow_effect,
           )
           if not(type_equal(env, val_ty, item_ty)) {
-            raise TypeError::Mismatch(expected=val_ty, actual=item_ty)
+            raise TypeError::Mismatch(
+              expected=val_ty,
+              actual=item_ty,
+              span=fields[i].span,
+              context=Some("map value"),
+            )
           }
         }
-        Type::Map(val_ty)
+        @core.Type::Map(val_ty)
       }
-    Expr::If(cond~, then_body~, else_body~) => {
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
       let cond_ty = type_expr_eff(env, cond, aliases, effects, allow_effect)
-      if not(type_equal(env, cond_ty, Type::Bool)) {
-        raise TypeError::Mismatch(expected=Type::Bool, actual=cond_ty)
+      if not(type_equal(env, cond_ty, @core.Type::Bool)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Bool,
+          actual=cond_ty,
+          span=cond.span(),
+          context=Some("if condition"),
+        )
       }
       let then_ty = type_block(env, then_body, aliases, effects, allow_effect)
       let else_ty = type_block(env, else_body, aliases, effects, allow_effect)
       if not(type_equal(env, then_ty, else_ty)) {
-        raise TypeError::Mismatch(expected=then_ty, actual=else_ty)
+        raise TypeError::Mismatch(
+          expected=then_ty,
+          actual=else_ty,
+          span~,
+          context=Some("if branches"),
+        )
       }
       then_ty
     }
-    Expr::Block(body~) => type_block(env, body, aliases, effects, allow_effect)
-    Expr::Try(try_body~, catch_body~) => {
-      let try_scope = effect_scope_extend(effects, [EffectAtom::Const("Error")])
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      type_block(env, body, aliases, effects, allow_effect)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let try_scope = effect_scope_extend(effects, [
+        @core.EffectAtom::Const("Error"),
+      ])
       let try_ty = type_block(env, try_body, aliases, try_scope, allow_effect)
       let catch_ty = type_block(env, catch_body, aliases, effects, allow_effect)
       if not(type_equal(env, try_ty, catch_ty)) {
-        raise TypeError::Mismatch(expected=try_ty, actual=catch_ty)
+        raise TypeError::Mismatch(
+          expected=try_ty,
+          actual=catch_ty,
+          span~,
+          context=Some("try/catch branches"),
+        )
       }
       try_ty
     }
-    Expr::Match(scrutinee~, arms~) => {
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
       if arms.is_empty() {
-        raise TypeError::BadMatch("empty match")
+        raise TypeError::BadMatch(message="empty match", span~)
       }
       let scrutinee_ty = normalize_type(
         env,
         type_expr_eff(env, scrutinee, aliases, effects, allow_effect),
       )
-      let mut result : Type? = None
+      let mut result : @core.Type? = None
       let mut has_wildcard = false
       let mut has_ctor = false
       let covered : Map[String, Bool] = {}
@@ -1272,7 +1565,7 @@ fn type_expr_eff(
           has_wildcard = true
         }
         match arm.pat {
-          Pat::Ctor(name~, ..) => {
+          @core.Pat::Ctor(name~, ..) => {
             has_ctor = true
             covered[name] = true
           }
@@ -1286,8 +1579,13 @@ fn type_expr_eff(
         match arm.cond {
           Some(c) => {
             let g_ty = type_expr_eff(arm_env, c, aliases, effects, allow_effect)
-            if not(type_equal(env, g_ty, Type::Bool)) {
-              raise TypeError::Mismatch(expected=Type::Bool, actual=g_ty)
+            if not(type_equal(env, g_ty, @core.Type::Bool)) {
+              raise TypeError::Mismatch(
+                expected=@core.Type::Bool,
+                actual=g_ty,
+                span=c.span(),
+                context=Some("match guard"),
+              )
             }
           }
           None => ()
@@ -1302,14 +1600,19 @@ fn type_expr_eff(
         match result {
           Some(t) =>
             if not(type_equal(env, t, arm_ty)) {
-              raise TypeError::Mismatch(expected=t, actual=arm_ty)
+              raise TypeError::Mismatch(
+                expected=t,
+                actual=arm_ty,
+                span=arm.expr.span(),
+                context=Some("match arm"),
+              )
             }
           None => result = Some(arm_ty)
         }
       }
       if not(has_wildcard) {
         match scrutinee_ty {
-          Type::Variant(types) => {
+          @core.Type::Variant(types) => {
             let mut missing = false
             for name, _ in types {
               if not(covered.contains(name)) {
@@ -1318,36 +1621,39 @@ fn type_expr_eff(
               }
             }
             if missing {
-              raise TypeError::NonExhaustiveMatch
+              raise TypeError::NonExhaustiveMatch(span~)
             }
           }
-          _ => if not(has_ctor) { raise TypeError::NonExhaustiveMatch }
+          _ => if not(has_ctor) { raise TypeError::NonExhaustiveMatch(span~) }
         }
       }
       match result {
         Some(t) => t
-        None => Type::Unit
+        None => @core.Type::Unit
       }
     }
-    Expr::Do(body~) => type_block(env, body, aliases, effects, true)
-    Expr::Fn(params~, ret~, effects=fn_effects, body~) => {
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      type_block(env, body, aliases, effects, true)
+    }
+    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~) => {
       let scope_env = clone_env(env)
-      let resolved_params : Array[FuncParam] = []
+      let resolved_params : Array[@core.FuncParam] = []
       for param in params {
         let resolved = normalize_type(env, param.ty)
-        let binding_ty = if param.label == ParamLabel::Optional {
-          Type::Named(name="Option", args=[resolved])
+        let binding_ty = if param.label == @core.ParamLabel::Optional {
+          @core.Type::Named(name="Option", args=[resolved])
         } else {
           resolved
         }
         scope_env.set(param.name, binding_ty)
-        resolved_params.push(FuncParam::{
+        resolved_params.push(@core.FuncParam::{
           name: param.name,
           label: param.label,
           ty: resolved,
         })
       }
-      let normalized_effects = normalize_effects(fn_effects)
+      let normalized_effects = normalize_effects(fn_effects, span)
       let fn_scope = effect_scope_from_list(normalized_effects)
       let body_ty = type_block(scope_env, body, aliases, fn_scope, allow_effect)
       let resolved_effects = effect_set_to_atoms(
@@ -1357,13 +1663,18 @@ fn type_expr_eff(
         Some(r) => {
           let resolved = normalize_type(env, r)
           if not(type_equal(env, resolved, body_ty)) {
-            raise TypeError::Mismatch(expected=resolved, actual=body_ty)
+            raise TypeError::Mismatch(
+              expected=resolved,
+              actual=body_ty,
+              span~,
+              context=Some("fn return"),
+            )
           }
           resolved
         }
         None => body_ty
       }
-      Type::Func(
+      @core.Type::Func(
         params=resolved_params,
         ret=final_ret,
         effects=resolved_effects,
@@ -1373,10 +1684,10 @@ fn type_expr_eff(
 }
 
 ///|
-fn is_top_wildcard(pat : Pat) -> Bool {
+fn is_top_wildcard(pat : @core.Pat) -> Bool {
   match pat {
-    Pat::Wildcard => true
-    Pat::Bind(_) => true
+    @core.Pat::Wildcard(..) => true
+    @core.Pat::Bind(..) => true
     _ => false
   }
 }
@@ -1384,17 +1695,17 @@ fn is_top_wildcard(pat : Pat) -> Bool {
 ///|
 fn collect_pattern_bindings(
   env : TypeEnv,
-  pat : Pat,
-  scrutinee_ty : Type,
-) -> Map[String, Type] raise TypeError {
-  let out : Map[String, Type] = {}
+  pat : @core.Pat,
+  scrutinee_ty : @core.Type,
+) -> Map[String, @core.Type] raise TypeError {
+  let out : Map[String, @core.Type] = {}
   let normalized = normalize_type(env, scrutinee_ty)
   collect_pattern_bindings_inner(env, out, pat, normalized)
   out
 }
 
 ///|
-fn generalize(env : TypeEnv, ty : Type) -> TypeScheme raise TypeError {
+fn generalize(env : TypeEnv, ty : @core.Type) -> TypeScheme raise TypeError {
   let resolved = resolve_type(env, ty)
   let normalized = normalize_type(env, resolved)
   let free_ty = free_vars_in_type(env, normalized)
@@ -1438,37 +1749,41 @@ fn free_vars_in_scheme(env : TypeEnv, scheme : TypeScheme) -> Map[Int, Bool] {
 }
 
 ///|
-fn free_vars_in_type(env : TypeEnv, ty : Type) -> Map[Int, Bool] {
+fn free_vars_in_type(env : TypeEnv, ty : @core.Type) -> Map[Int, Bool] {
   let out : Map[Int, Bool] = {}
   collect_free_vars(env, ty, out)
   out
 }
 
 ///|
-fn collect_free_vars(env : TypeEnv, ty : Type, out : Map[Int, Bool]) -> Unit {
+fn collect_free_vars(
+  env : TypeEnv,
+  ty : @core.Type,
+  out : Map[Int, Bool],
+) -> Unit {
   match resolve_type(env, ty) {
-    Type::Var(id) => out[id] = true
-    Type::Tuple(items) =>
+    @core.Type::Var(id) => out[id] = true
+    @core.Type::Tuple(items) =>
       for item in items {
         collect_free_vars(env, item, out)
       }
-    Type::Record(fields) =>
+    @core.Type::Record(fields) =>
       for _, item in fields {
         collect_free_vars(env, item, out)
       }
-    Type::Array(inner) => collect_free_vars(env, inner, out)
-    Type::Map(inner) => collect_free_vars(env, inner, out)
-    Type::ArrayBuilder(inner) => collect_free_vars(env, inner, out)
-    Type::MapBuilder(inner) => collect_free_vars(env, inner, out)
-    Type::Variant(fields) =>
+    @core.Type::Array(inner) => collect_free_vars(env, inner, out)
+    @core.Type::Map(inner) => collect_free_vars(env, inner, out)
+    @core.Type::ArrayBuilder(inner) => collect_free_vars(env, inner, out)
+    @core.Type::MapBuilder(inner) => collect_free_vars(env, inner, out)
+    @core.Type::Variant(fields) =>
       for _, item in fields {
         collect_free_vars(env, item, out)
       }
-    Type::Named(name=_, args~) =>
+    @core.Type::Named(name=_, args~) =>
       for arg in args {
         collect_free_vars(env, arg, out)
       }
-    Type::Func(params~, ret~, effects=_) => {
+    @core.Type::Func(params~, ret~, effects=_) => {
       collect_free_vars(env, ret, out)
       for param in params {
         collect_free_vars(env, param.ty, out)
@@ -1503,7 +1818,10 @@ fn free_effect_vars_in_scheme(
 }
 
 ///|
-fn free_effect_vars_in_type(env : TypeEnv, ty : Type) -> Map[String, Bool] {
+fn free_effect_vars_in_type(
+  env : TypeEnv,
+  ty : @core.Type,
+) -> Map[String, Bool] {
   let out : Map[String, Bool] = {}
   collect_free_effect_vars(env, ty, out)
   out
@@ -1512,31 +1830,31 @@ fn free_effect_vars_in_type(env : TypeEnv, ty : Type) -> Map[String, Bool] {
 ///|
 fn collect_free_effect_vars(
   env : TypeEnv,
-  ty : Type,
+  ty : @core.Type,
   out : Map[String, Bool],
 ) -> Unit {
   match resolve_type(env, ty) {
-    Type::Tuple(items) =>
+    @core.Type::Tuple(items) =>
       for item in items {
         collect_free_effect_vars(env, item, out)
       }
-    Type::Record(fields) =>
+    @core.Type::Record(fields) =>
       for _, item in fields {
         collect_free_effect_vars(env, item, out)
       }
-    Type::Array(inner) => collect_free_effect_vars(env, inner, out)
-    Type::Map(inner) => collect_free_effect_vars(env, inner, out)
-    Type::ArrayBuilder(inner) => collect_free_effect_vars(env, inner, out)
-    Type::MapBuilder(inner) => collect_free_effect_vars(env, inner, out)
-    Type::Variant(fields) =>
+    @core.Type::Array(inner) => collect_free_effect_vars(env, inner, out)
+    @core.Type::Map(inner) => collect_free_effect_vars(env, inner, out)
+    @core.Type::ArrayBuilder(inner) => collect_free_effect_vars(env, inner, out)
+    @core.Type::MapBuilder(inner) => collect_free_effect_vars(env, inner, out)
+    @core.Type::Variant(fields) =>
       for _, item in fields {
         collect_free_effect_vars(env, item, out)
       }
-    Type::Named(name=_, args~) =>
+    @core.Type::Named(name=_, args~) =>
       for arg in args {
         collect_free_effect_vars(env, arg, out)
       }
-    Type::Func(params~, ret~, effects~) => {
+    @core.Type::Func(params~, ret~, effects~) => {
       collect_free_effect_vars(env, ret, out)
       for param in params {
         collect_free_effect_vars(env, param.ty, out)
@@ -1550,14 +1868,15 @@ fn collect_free_effect_vars(
 ///|
 fn collect_free_effect_vars_in_effects(
   env : TypeEnv,
-  effects : Array[EffectAtom],
+  effects : Array[@core.EffectAtom],
   out : Map[String, Bool],
   visiting : Map[String, Bool],
 ) -> Unit {
   for effect in effects {
     match effect {
-      EffectAtom::Const(_) => ()
-      EffectAtom::Var(name) => collect_free_effect_var(env, name, out, visiting)
+      @core.EffectAtom::Const(_) => ()
+      @core.EffectAtom::Var(name) =>
+        collect_free_effect_var(env, name, out, visiting)
     }
   }
 }
@@ -1589,21 +1908,24 @@ fn collect_free_effect_var(
 ///|
 fn collect_pattern_bindings_inner(
   env : TypeEnv,
-  out : Map[String, Type],
-  pat : Pat,
-  scrutinee_ty : Type,
+  out : Map[String, @core.Type],
+  pat : @core.Pat,
+  scrutinee_ty : @core.Type,
 ) -> Unit raise TypeError {
   match pat {
-    Pat::Wildcard => ()
-    Pat::Bind(name) => {
+    @core.Pat::Wildcard(span~) => {
+      let _ = span
+
+    }
+    @core.Pat::Bind(name~, span~) => {
       if out.contains(name) {
-        raise TypeError::BadMatch("duplicate bind: " + name)
+        raise TypeError::BadMatch(message="duplicate bind: " + name, span~)
       }
       out[name] = scrutinee_ty
     }
-    Pat::Ctor(name~, args~) =>
+    @core.Pat::Ctor(name~, args~, span~) =>
       match scrutinee_ty {
-        Type::Variant(types) =>
+        @core.Type::Variant(types) =>
           match types.get(name) {
             Some(field_ty) =>
               if args.length() == 0 {
@@ -1612,9 +1934,9 @@ fn collect_pattern_bindings_inner(
                 collect_pattern_bindings_inner(env, out, args[0], field_ty)
               } else {
                 match field_ty {
-                  Type::Tuple(items) =>
+                  @core.Type::Tuple(items) =>
                     if items.length() != args.length() {
-                      raise TypeError::BadMatch("ctor arity")
+                      raise TypeError::BadMatch(message="ctor arity", span~)
                     } else {
                       for i in 0..<args.length() {
                         collect_pattern_bindings_inner(
@@ -1625,7 +1947,11 @@ fn collect_pattern_bindings_inner(
                         )
                       }
                     }
-                  _ => raise TypeError::BadMatch("ctor expects tuple")
+                  _ =>
+                    raise TypeError::BadMatch(
+                      message="ctor expects tuple",
+                      span~,
+                    )
                 }
               }
             None => {
@@ -1637,7 +1963,10 @@ fn collect_pattern_bindings_inner(
                 }
               }
               if closed {
-                raise TypeError::BadMatch("unknown ctor: " + name)
+                raise TypeError::BadMatch(
+                  message="unknown ctor: " + name,
+                  span~,
+                )
               } else {
                 for arg in args {
                   collect_pattern_bindings_loose(out, arg)
@@ -1645,7 +1974,7 @@ fn collect_pattern_bindings_inner(
               }
             }
           }
-        Type::Record(types) =>
+        @core.Type::Record(types) =>
           match types.get(name) {
             Some(field_ty) =>
               if args.length() == 0 {
@@ -1654,9 +1983,9 @@ fn collect_pattern_bindings_inner(
                 collect_pattern_bindings_inner(env, out, args[0], field_ty)
               } else {
                 match field_ty {
-                  Type::Tuple(items) =>
+                  @core.Type::Tuple(items) =>
                     if items.length() != args.length() {
-                      raise TypeError::BadMatch("ctor arity")
+                      raise TypeError::BadMatch(message="ctor arity", span~)
                     } else {
                       for i in 0..<args.length() {
                         collect_pattern_bindings_inner(
@@ -1667,7 +1996,11 @@ fn collect_pattern_bindings_inner(
                         )
                       }
                     }
-                  _ => raise TypeError::BadMatch("ctor expects tuple")
+                  _ =>
+                    raise TypeError::BadMatch(
+                      message="ctor expects tuple",
+                      span~,
+                    )
                 }
               }
             None =>
@@ -1675,124 +2008,190 @@ fn collect_pattern_bindings_inner(
                 collect_pattern_bindings_loose(out, arg)
               }
           }
-        _ => raise TypeError::BadMatch("expected ctor variant")
+        _ => raise TypeError::BadMatch(message="expected ctor variant", span~)
       }
-    Pat::Int(_) =>
-      if not(type_equal(env, scrutinee_ty, Type::Int)) {
-        raise TypeError::Mismatch(expected=Type::Int, actual=scrutinee_ty)
+    @core.Pat::Int(value~, span~) => {
+      let _ = value
+      if not(type_equal(env, scrutinee_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=scrutinee_ty,
+          span~,
+          context=Some("pattern"),
+        )
       }
-    Pat::Bool(_) =>
-      if not(type_equal(env, scrutinee_ty, Type::Bool)) {
-        raise TypeError::Mismatch(expected=Type::Bool, actual=scrutinee_ty)
+    }
+    @core.Pat::Bool(value~, span~) => {
+      let _ = value
+      if not(type_equal(env, scrutinee_ty, @core.Type::Bool)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Bool,
+          actual=scrutinee_ty,
+          span~,
+          context=Some("pattern"),
+        )
       }
-    Pat::String(_) =>
-      if not(type_equal(env, scrutinee_ty, Type::String)) {
-        raise TypeError::Mismatch(expected=Type::String, actual=scrutinee_ty)
+    }
+    @core.Pat::String(value~, span~) => {
+      let _ = value
+      if not(type_equal(env, scrutinee_ty, @core.Type::String)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::String,
+          actual=scrutinee_ty,
+          span~,
+          context=Some("pattern"),
+        )
       }
-    Pat::Tuple(items) =>
+    }
+    @core.Pat::Tuple(items~, span~) =>
       match scrutinee_ty {
-        Type::Tuple(types) => {
+        @core.Type::Tuple(types) => {
           if items.length() != types.length() {
-            raise TypeError::BadMatch("tuple arity")
+            raise TypeError::BadMatch(message="tuple arity", span~)
           }
           for i in 0..<items.length() {
             collect_pattern_bindings_inner(env, out, items[i], types[i])
           }
         }
-        _ => raise TypeError::BadMatch("expected tuple")
+        _ => raise TypeError::BadMatch(message="expected tuple", span~)
       }
-    Pat::Record(fields) =>
+    @core.Pat::Record(fields~, span~) =>
       match scrutinee_ty {
-        Type::Record(types) =>
+        @core.Type::Record(types) =>
           for field in fields {
             match types.get(field.name) {
               Some(field_ty) =>
                 collect_pattern_bindings_inner(env, out, field.pat, field_ty)
-              None => raise TypeError::BadMatch("missing field: " + field.name)
+              None =>
+                raise TypeError::BadMatch(
+                  message="missing field: " + field.name,
+                  span=field.span,
+                )
             }
           }
-        _ => raise TypeError::BadMatch("expected record")
+        _ => raise TypeError::BadMatch(message="expected record", span~)
       }
   }
 }
 
 ///|
 fn collect_pattern_bindings_loose(
-  out : Map[String, Type],
-  pat : Pat,
+  out : Map[String, @core.Type],
+  pat : @core.Pat,
 ) -> Unit raise TypeError {
   match pat {
-    Pat::Wildcard => ()
-    Pat::Bind(name) => {
-      if out.contains(name) {
-        raise TypeError::BadMatch("duplicate bind: " + name)
-      }
-      out[name] = Type::Unit
+    @core.Pat::Wildcard(span~) => {
+      let _ = span
+
     }
-    Pat::Ctor(name~, args~) => {
+    @core.Pat::Bind(name~, span~) => {
+      if out.contains(name) {
+        raise TypeError::BadMatch(message="duplicate bind: " + name, span~)
+      }
+      out[name] = @core.Type::Unit
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
       let _ = name
+      let _ = span
       for arg in args {
         collect_pattern_bindings_loose(out, arg)
       }
     }
-    Pat::Tuple(items) =>
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
       for item in items {
         collect_pattern_bindings_loose(out, item)
       }
-    Pat::Record(fields) =>
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
       for field in fields {
         collect_pattern_bindings_loose(out, field.pat)
       }
-    Pat::Int(_) | Pat::Bool(_) | Pat::String(_) => ()
+    }
+    @core.Pat::Int(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Pat::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Pat::String(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
   }
 }
 
 ///|
 fn type_block(
   env : TypeEnv,
-  body : Module,
-  aliases : Map[String, Ref],
+  body : @core.Module,
+  aliases : Map[String, @core.Ref],
   effects : EffectScope,
   allow_effect : Bool,
-) -> Type raise TypeError {
+) -> @core.Type raise TypeError {
   let scope_env = clone_env(env)
-  let mut last = Type::Unit
+  let mut last = @core.Type::Unit
   for stmt in body.stmts {
     match stmt {
-      Stmt::Let(rec~, name~, expr~) => {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
         let scheme = type_let_expr(
-          scope_env, rec, name, expr, aliases, effects, allow_effect,
+          scope_env, rec, name, expr, span, aliases, effects, allow_effect,
         )
         scope_env.set_scheme(name, scheme)
         last = scheme.ty
       }
-      Stmt::EnumDef(name~, params~, ctors~) => {
-        register_enum_def(scope_env, name, params, ctors)
-        last = Type::Unit
+      @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
+        register_enum_def(scope_env, name, params, ctors, span)
+        last = @core.Type::Unit
       }
-      Stmt::TypeAlias(name~, params~, target~) => {
-        register_type_alias(scope_env, name, params, target)
-        last = Type::Unit
+      @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
+        register_type_alias(scope_env, name, params, target, span)
+        last = @core.Type::Unit
       }
-      Stmt::Expr(expr~) =>
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
         last = type_expr_eff(scope_env, expr, aliases, effects, allow_effect)
-      Stmt::Flake(_) => last = Type::Unit
-      Stmt::Alias(name~, target~) => {
+      }
+      @core.Stmt::Flake(raw~, span~) => {
+        let _ = raw
+        let _ = span
+        last = @core.Type::Unit
+      }
+      @core.Stmt::Alias(name~, target~, span~) => {
         match target {
-          AliasTarget::Module(_) => ()
-          AliasTarget::Name(target_name) =>
+          @core.AliasTarget::Module(_) => ()
+          @core.AliasTarget::Name(target_name) =>
             match scope_env.get_scheme(target_name) {
               Some(scheme) => scope_env.set_scheme(name, scheme)
-              None => raise TypeError::UnknownName(target_name)
+              None =>
+                raise TypeError::UnknownName(
+                  name=target_name,
+                  span~,
+                  suggestion=find_name_suggestion(
+                    scope_env, aliases, target_name,
+                  ),
+                )
             }
         }
-        last = Type::Unit
+        last = @core.Type::Unit
       }
-      Stmt::Import(..) => last = Type::Unit
-      Stmt::Test(name~, body~) => {
+      @core.Stmt::Import(path~, span~) => {
+        let _ = path
+        let _ = span
+        last = @core.Type::Unit
+      }
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = span
         let _ = name
         let _ = type_block(scope_env, body, aliases, effects, allow_effect)
-        last = Type::Unit
+        last = @core.Type::Unit
       }
     }
   }
@@ -1803,34 +2202,37 @@ fn type_block(
 fn type_call(
   env : TypeEnv,
   name : String,
-  args : Array[CallArg],
-  aliases : Map[String, Ref],
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
   effects : EffectScope,
   allow_effect : Bool,
-) -> Type raise TypeError {
+  call_span : @core.Span,
+) -> @core.Type raise TypeError {
   match env.get(name) {
     Some(ty) =>
       match ty {
-        Type::Func(params~, ret~, effects=fn_effects) => {
-          check_call_args(env, params, args, aliases, effects, allow_effect)
-          require_effects(env, effects, fn_effects)
+        @core.Type::Func(params~, ret~, effects=fn_effects) => {
+          check_call_args(
+            env, params, args, aliases, effects, allow_effect, call_span,
+          )
+          require_effects(env, effects, fn_effects, call_span)
           ret
         }
-        _ => raise TypeError::BadCall(name)
+        _ => raise TypeError::BadCall(message=name, span=call_span)
       }
     None =>
       match env.get_ctor(name) {
         Some(info) => {
-          let pos_args = extract_positional_args(args, name)
+          let pos_args = extract_positional_args(args, name, call_span)
           let inst = instantiate_ctor(env, info)
           match inst.payload {
-            Type::Unit =>
+            @core.Type::Unit =>
               if pos_args.length() != 0 {
-                raise TypeError::BadCall(name)
+                raise TypeError::BadCall(message=name, span=call_span)
               }
-            Type::Tuple(items) =>
+            @core.Type::Tuple(items) =>
               if pos_args.length() != items.length() {
-                raise TypeError::BadCall(name)
+                raise TypeError::BadCall(message=name, span=call_span)
               } else {
                 for i in 0..<items.length() {
                   let arg_ty = type_expr_eff(
@@ -1841,13 +2243,18 @@ fn type_call(
                     allow_effect,
                   )
                   if not(type_equal(env, arg_ty, items[i])) {
-                    raise TypeError::Mismatch(expected=items[i], actual=arg_ty)
+                    raise TypeError::Mismatch(
+                      expected=items[i],
+                      actual=arg_ty,
+                      span=pos_args[i].span(),
+                      context=Some("ctor argument"),
+                    )
                   }
                 }
               }
             _ =>
               if pos_args.length() != 1 {
-                raise TypeError::BadCall(name)
+                raise TypeError::BadCall(message=name, span=call_span)
               } else {
                 let arg_ty = type_expr_eff(
                   env,
@@ -1860,6 +2267,8 @@ fn type_call(
                   raise TypeError::Mismatch(
                     expected=inst.payload,
                     actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("ctor argument"),
                   )
                 }
               }
@@ -1867,30 +2276,30 @@ fn type_call(
           inst.ret
         }
         None =>
-          if is_ctor_name(name) {
-            let pos_args = extract_positional_args(args, name)
+          if @core.is_ctor_name(name) {
+            let pos_args = extract_positional_args(args, name, call_span)
             let field_ty = if pos_args.length() == 0 {
-              Type::Unit
+              @core.Type::Unit
             } else if pos_args.length() == 1 {
               type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
             } else {
-              let tys : Array[Type] = []
+              let tys : Array[@core.Type] = []
               for arg in pos_args {
                 tys.push(
                   type_expr_eff(env, arg, aliases, effects, allow_effect),
                 )
               }
-              Type::Tuple(tys)
+              @core.Type::Tuple(tys)
             }
-            let map : Map[String, Type] = {}
+            let map : Map[String, @core.Type] = {}
             map[name] = field_ty
-            Type::Variant(map)
+            @core.Type::Variant(map)
           } else {
             match name {
               "path" => {
-                let pos_args = extract_positional_args(args, "path")
+                let pos_args = extract_positional_args(args, "path", call_span)
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall("path")
+                  raise TypeError::BadCall(message="path", span=call_span)
                 }
                 let arg_ty = type_expr_eff(
                   env,
@@ -1899,36 +2308,43 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, arg_ty, Type::String)) {
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                Type::Path
+                @core.Type::Path
               }
               "addr" => {
-                let pos_args = extract_positional_args(args, "addr")
+                let pos_args = extract_positional_args(args, "addr", call_span)
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall("addr")
+                  raise TypeError::BadCall(message="addr", span=call_span)
                 }
                 match pos_args[0] {
-                  Expr::String(s) =>
+                  @core.Expr::String(value=s, span~) =>
                     match env.get_addr_type(s) {
                       Some(ty) => ty
-                      None => raise TypeError::UnknownName("addr:" + s)
+                      None =>
+                        raise TypeError::UnknownName(
+                          name="addr:" + s,
+                          span~,
+                          suggestion=None,
+                        )
                     }
-                  _ => raise TypeError::BadCall("addr")
+                  _ => raise TypeError::BadCall(message="addr", span=call_span)
                 }
               }
               "sh" => {
-                let pos_args = extract_positional_args(args, "sh")
+                let pos_args = extract_positional_args(args, "sh", call_span)
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall("sh")
+                  raise TypeError::BadCall(message="sh", span=call_span)
                 }
-                require_effects(env, effects, builtin_effects("sh"))
+                require_effects(env, effects, builtin_effects("sh"), call_span)
                 if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed("sh")
+                  raise TypeError::EffectNotAllowed(name="sh", span=call_span)
                 }
                 let arg_ty = type_expr_eff(
                   env,
@@ -1937,34 +2353,50 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, arg_ty, Type::String)) {
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                Type::Unit
+                @core.Type::Unit
               }
               "array_builder" => {
-                let pos_args = extract_positional_args(args, "array_builder")
+                let pos_args = extract_positional_args(
+                  args, "array_builder", call_span,
+                )
                 if pos_args.length() != 0 {
-                  raise TypeError::BadCall("array_builder")
+                  raise TypeError::BadCall(
+                    message="array_builder",
+                    span=call_span,
+                  )
                 }
                 if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed("array_builder")
+                  raise TypeError::EffectNotAllowed(
+                    name="array_builder",
+                    span=call_span,
+                  )
                 }
                 let elem = fresh_type_var(env)
-                Type::ArrayBuilder(elem)
+                @core.Type::ArrayBuilder(elem)
               }
               "array_builder_push" => {
                 let pos_args = extract_positional_args(
-                  args, "array_builder_push",
+                  args, "array_builder_push", call_span,
                 )
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("array_builder_push")
+                  raise TypeError::BadCall(
+                    message="array_builder_push",
+                    span=call_span,
+                  )
                 }
                 if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed("array_builder_push")
+                  raise TypeError::EffectNotAllowed(
+                    name="array_builder_push",
+                    span=call_span,
+                  )
                 }
                 let builder_ty = type_expr_eff(
                   env,
@@ -1981,26 +2413,45 @@ fn type_call(
                   allow_effect,
                 )
                 let elem_ty = fresh_type_var(env)
-                if not(type_equal(env, builder_ty, Type::ArrayBuilder(elem_ty))) {
+                if not(
+                    type_equal(
+                      env,
+                      builder_ty,
+                      @core.Type::ArrayBuilder(elem_ty),
+                    ),
+                  ) {
                   raise TypeError::Mismatch(
-                    expected=Type::ArrayBuilder(elem_ty),
+                    expected=@core.Type::ArrayBuilder(elem_ty),
                     actual=builder_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
                 if not(type_equal(env, value_ty, elem_ty)) {
-                  raise TypeError::Mismatch(expected=elem_ty, actual=value_ty)
+                  raise TypeError::Mismatch(
+                    expected=elem_ty,
+                    actual=value_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Unit
+                @core.Type::Unit
               }
               "array_builder_freeze" => {
                 let pos_args = extract_positional_args(
-                  args, "array_builder_freeze",
+                  args, "array_builder_freeze", call_span,
                 )
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall("array_builder_freeze")
+                  raise TypeError::BadCall(
+                    message="array_builder_freeze",
+                    span=call_span,
+                  )
                 }
                 if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed("array_builder_freeze")
+                  raise TypeError::EffectNotAllowed(
+                    name="array_builder_freeze",
+                    span=call_span,
+                  )
                 }
                 let builder_ty = type_expr_eff(
                   env,
@@ -2010,32 +2461,56 @@ fn type_call(
                   allow_effect,
                 )
                 let elem_ty = fresh_type_var(env)
-                if not(type_equal(env, builder_ty, Type::ArrayBuilder(elem_ty))) {
+                if not(
+                    type_equal(
+                      env,
+                      builder_ty,
+                      @core.Type::ArrayBuilder(elem_ty),
+                    ),
+                  ) {
                   raise TypeError::Mismatch(
-                    expected=Type::ArrayBuilder(elem_ty),
+                    expected=@core.Type::ArrayBuilder(elem_ty),
                     actual=builder_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                Type::Array(elem_ty)
+                @core.Type::Array(elem_ty)
               }
               "map_builder" => {
-                let pos_args = extract_positional_args(args, "map_builder")
+                let pos_args = extract_positional_args(
+                  args, "map_builder", call_span,
+                )
                 if pos_args.length() != 0 {
-                  raise TypeError::BadCall("map_builder")
+                  raise TypeError::BadCall(
+                    message="map_builder",
+                    span=call_span,
+                  )
                 }
                 if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed("map_builder")
+                  raise TypeError::EffectNotAllowed(
+                    name="map_builder",
+                    span=call_span,
+                  )
                 }
                 let value = fresh_type_var(env)
-                Type::MapBuilder(value)
+                @core.Type::MapBuilder(value)
               }
               "map_builder_set" => {
-                let pos_args = extract_positional_args(args, "map_builder_set")
+                let pos_args = extract_positional_args(
+                  args, "map_builder_set", call_span,
+                )
                 if pos_args.length() != 3 {
-                  raise TypeError::BadCall("map_builder_set")
+                  raise TypeError::BadCall(
+                    message="map_builder_set",
+                    span=call_span,
+                  )
                 }
                 if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed("map_builder_set")
+                  raise TypeError::EffectNotAllowed(
+                    name="map_builder_set",
+                    span=call_span,
+                  )
                 }
                 let builder_ty = type_expr_eff(
                   env,
@@ -2058,33 +2533,50 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, key_ty, Type::String)) {
+                if not(type_equal(env, key_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=key_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
                   )
                 }
                 let elem_ty = fresh_type_var(env)
-                if not(type_equal(env, builder_ty, Type::MapBuilder(elem_ty))) {
+                if not(
+                    type_equal(env, builder_ty, @core.Type::MapBuilder(elem_ty)),
+                  ) {
                   raise TypeError::Mismatch(
-                    expected=Type::MapBuilder(elem_ty),
+                    expected=@core.Type::MapBuilder(elem_ty),
                     actual=builder_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
                 if not(type_equal(env, value_ty, elem_ty)) {
-                  raise TypeError::Mismatch(expected=elem_ty, actual=value_ty)
+                  raise TypeError::Mismatch(
+                    expected=elem_ty,
+                    actual=value_ty,
+                    span=pos_args[2].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Unit
+                @core.Type::Unit
               }
               "map_builder_freeze" => {
                 let pos_args = extract_positional_args(
-                  args, "map_builder_freeze",
+                  args, "map_builder_freeze", call_span,
                 )
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall("map_builder_freeze")
+                  raise TypeError::BadCall(
+                    message="map_builder_freeze",
+                    span=call_span,
+                  )
                 }
                 if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed("map_builder_freeze")
+                  raise TypeError::EffectNotAllowed(
+                    name="map_builder_freeze",
+                    span=call_span,
+                  )
                 }
                 let builder_ty = type_expr_eff(
                   env,
@@ -2094,18 +2586,27 @@ fn type_call(
                   allow_effect,
                 )
                 let elem_ty = fresh_type_var(env)
-                if not(type_equal(env, builder_ty, Type::MapBuilder(elem_ty))) {
+                if not(
+                    type_equal(env, builder_ty, @core.Type::MapBuilder(elem_ty)),
+                  ) {
                   raise TypeError::Mismatch(
-                    expected=Type::MapBuilder(elem_ty),
+                    expected=@core.Type::MapBuilder(elem_ty),
                     actual=builder_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                Type::Map(elem_ty)
+                @core.Type::Map(elem_ty)
               }
               "array_length" => {
-                let pos_args = extract_positional_args(args, "array_length")
+                let pos_args = extract_positional_args(
+                  args, "array_length", call_span,
+                )
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall("array_length")
+                  raise TypeError::BadCall(
+                    message="array_length",
+                    span=call_span,
+                  )
                 }
                 let array_ty = type_expr_eff(
                   env,
@@ -2115,18 +2616,22 @@ fn type_call(
                   allow_effect,
                 )
                 let elem_ty = fresh_type_var(env)
-                if not(type_equal(env, array_ty, Type::Array(elem_ty))) {
+                if not(type_equal(env, array_ty, @core.Type::Array(elem_ty))) {
                   raise TypeError::Mismatch(
-                    expected=Type::Array(elem_ty),
+                    expected=@core.Type::Array(elem_ty),
                     actual=array_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                Type::Int
+                @core.Type::Int
               }
               "array_get" => {
-                let pos_args = extract_positional_args(args, "array_get")
+                let pos_args = extract_positional_args(
+                  args, "array_get", call_span,
+                )
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("array_get")
+                  raise TypeError::BadCall(message="array_get", span=call_span)
                 }
                 let array_ty = type_expr_eff(
                   env,
@@ -2142,22 +2647,31 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, index_ty, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=index_ty)
+                if not(type_equal(env, index_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=index_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
                 let elem_ty = fresh_type_var(env)
-                if not(type_equal(env, array_ty, Type::Array(elem_ty))) {
+                if not(type_equal(env, array_ty, @core.Type::Array(elem_ty))) {
                   raise TypeError::Mismatch(
-                    expected=Type::Array(elem_ty),
+                    expected=@core.Type::Array(elem_ty),
                     actual=array_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
                 elem_ty
               }
               "map_get" => {
-                let pos_args = extract_positional_args(args, "map_get")
+                let pos_args = extract_positional_args(
+                  args, "map_get", call_span,
+                )
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("map_get")
+                  raise TypeError::BadCall(message="map_get", span=call_span)
                 }
                 let map_ty = type_expr_eff(
                   env,
@@ -2173,25 +2687,34 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, key_ty, Type::String)) {
+                if not(type_equal(env, key_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=key_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
                   )
                 }
                 let elem_ty = fresh_type_var(env)
-                if not(type_equal(env, map_ty, Type::Map(elem_ty))) {
+                if not(type_equal(env, map_ty, @core.Type::Map(elem_ty))) {
                   raise TypeError::Mismatch(
-                    expected=Type::Map(elem_ty),
+                    expected=@core.Type::Map(elem_ty),
                     actual=map_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
                 elem_ty
               }
               "string_length" => {
-                let pos_args = extract_positional_args(args, "string_length")
+                let pos_args = extract_positional_args(
+                  args, "string_length", call_span,
+                )
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall("string_length")
+                  raise TypeError::BadCall(
+                    message="string_length",
+                    span=call_span,
+                  )
                 }
                 let arg_ty = type_expr_eff(
                   env,
@@ -2200,20 +2723,25 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, arg_ty, Type::String)) {
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                Type::Int
+                @core.Type::Int
               }
               "string_char_code_at" => {
                 let pos_args = extract_positional_args(
-                  args, "string_char_code_at",
+                  args, "string_char_code_at", call_span,
                 )
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("string_char_code_at")
+                  raise TypeError::BadCall(
+                    message="string_char_code_at",
+                    span=call_span,
+                  )
                 }
                 let str_ty = type_expr_eff(
                   env,
@@ -2229,21 +2757,33 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, str_ty, Type::String)) {
+                if not(type_equal(env, str_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=str_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                if not(type_equal(env, index_ty, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=index_ty)
+                if not(type_equal(env, index_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=index_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Int
+                @core.Type::Int
               }
               "string_substring" => {
-                let pos_args = extract_positional_args(args, "string_substring")
+                let pos_args = extract_positional_args(
+                  args, "string_substring", call_span,
+                )
                 if pos_args.length() != 3 {
-                  raise TypeError::BadCall("string_substring")
+                  raise TypeError::BadCall(
+                    message="string_substring",
+                    span=call_span,
+                  )
                 }
                 let str_ty = type_expr_eff(
                   env,
@@ -2266,24 +2806,41 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, str_ty, Type::String)) {
+                if not(type_equal(env, str_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=str_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                if not(type_equal(env, start_ty, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=start_ty)
+                if not(type_equal(env, start_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=start_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                if not(type_equal(env, end_ty, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=end_ty)
+                if not(type_equal(env, end_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=end_ty,
+                    span=pos_args[2].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::String
+                @core.Type::String
               }
               "string_concat" => {
-                let pos_args = extract_positional_args(args, "string_concat")
+                let pos_args = extract_positional_args(
+                  args, "string_concat", call_span,
+                )
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("string_concat")
+                  raise TypeError::BadCall(
+                    message="string_concat",
+                    span=call_span,
+                  )
                 }
                 let left_ty = type_expr_eff(
                   env,
@@ -2299,24 +2856,33 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, left_ty, Type::String)) {
+                if not(type_equal(env, left_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=left_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                if not(type_equal(env, right_ty, Type::String)) {
+                if not(type_equal(env, right_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=right_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
                   )
                 }
-                Type::String
+                @core.Type::String
               }
               "string_equals" => {
-                let pos_args = extract_positional_args(args, "string_equals")
+                let pos_args = extract_positional_args(
+                  args, "string_equals", call_span,
+                )
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("string_equals")
+                  raise TypeError::BadCall(
+                    message="string_equals",
+                    span=call_span,
+                  )
                 }
                 let left_ty = type_expr_eff(
                   env,
@@ -2332,24 +2898,28 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, left_ty, Type::String)) {
+                if not(type_equal(env, left_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=left_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
                   )
                 }
-                if not(type_equal(env, right_ty, Type::String)) {
+                if not(type_equal(env, right_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=right_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
                   )
                 }
-                Type::Bool
+                @core.Type::Bool
               }
               "__add" => {
-                let pos_args = extract_positional_args(args, "__add")
+                let pos_args = extract_positional_args(args, "__add", call_span)
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("__add")
+                  raise TypeError::BadCall(message="__add", span=call_span)
                 }
                 let a = type_expr_eff(
                   env,
@@ -2365,18 +2935,28 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=a)
+                if not(type_equal(env, a, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
                 }
-                if not(type_equal(env, b, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=b)
+                if not(type_equal(env, b, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Int
+                @core.Type::Int
               }
               "__sub" => {
-                let pos_args = extract_positional_args(args, "__sub")
+                let pos_args = extract_positional_args(args, "__sub", call_span)
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("__sub")
+                  raise TypeError::BadCall(message="__sub", span=call_span)
                 }
                 let a = type_expr_eff(
                   env,
@@ -2392,18 +2972,28 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=a)
+                if not(type_equal(env, a, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
                 }
-                if not(type_equal(env, b, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=b)
+                if not(type_equal(env, b, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Int
+                @core.Type::Int
               }
               "__mul" => {
-                let pos_args = extract_positional_args(args, "__mul")
+                let pos_args = extract_positional_args(args, "__mul", call_span)
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("__mul")
+                  raise TypeError::BadCall(message="__mul", span=call_span)
                 }
                 let a = type_expr_eff(
                   env,
@@ -2419,18 +3009,28 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=a)
+                if not(type_equal(env, a, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
                 }
-                if not(type_equal(env, b, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=b)
+                if not(type_equal(env, b, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Int
+                @core.Type::Int
               }
               "__div" => {
-                let pos_args = extract_positional_args(args, "__div")
+                let pos_args = extract_positional_args(args, "__div", call_span)
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("__div")
+                  raise TypeError::BadCall(message="__div", span=call_span)
                 }
                 let a = type_expr_eff(
                   env,
@@ -2446,18 +3046,28 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=a)
+                if not(type_equal(env, a, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
                 }
-                if not(type_equal(env, b, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=b)
+                if not(type_equal(env, b, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Int
+                @core.Type::Int
               }
               "__eq" => {
-                let pos_args = extract_positional_args(args, "__eq")
+                let pos_args = extract_positional_args(args, "__eq", call_span)
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("__eq")
+                  raise TypeError::BadCall(message="__eq", span=call_span)
                 }
                 let a = type_expr_eff(
                   env,
@@ -2473,18 +3083,28 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=a)
+                if not(type_equal(env, a, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
                 }
-                if not(type_equal(env, b, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=b)
+                if not(type_equal(env, b, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Bool
+                @core.Type::Bool
               }
               "__lt" => {
-                let pos_args = extract_positional_args(args, "__lt")
+                let pos_args = extract_positional_args(args, "__lt", call_span)
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall("__lt")
+                  raise TypeError::BadCall(message="__lt", span=call_span)
                 }
                 let a = type_expr_eff(
                   env,
@@ -2500,18 +3120,30 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=a)
+                if not(type_equal(env, a, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
                 }
-                if not(type_equal(env, b, Type::Int)) {
-                  raise TypeError::Mismatch(expected=Type::Int, actual=b)
+                if not(type_equal(env, b, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Bool
+                @core.Type::Bool
               }
               "__assert" => {
-                let pos_args = extract_positional_args(args, "__assert")
+                let pos_args = extract_positional_args(
+                  args, "__assert", call_span,
+                )
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall("__assert")
+                  raise TypeError::BadCall(message="__assert", span=call_span)
                 }
                 let a = type_expr_eff(
                   env,
@@ -2520,15 +3152,22 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, Type::Bool)) {
-                  raise TypeError::Mismatch(expected=Type::Bool, actual=a)
+                if not(type_equal(env, a, @core.Type::Bool)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Bool,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
                 }
-                Type::Unit
+                @core.Type::Unit
               }
               "record_set" => {
-                let pos_args = extract_positional_args(args, "record_set")
+                let pos_args = extract_positional_args(
+                  args, "record_set", call_span,
+                )
                 if pos_args.length() != 3 {
-                  raise TypeError::BadCall("record_set")
+                  raise TypeError::BadCall(message="record_set", span=call_span)
                 }
                 let record_ty = normalize_type(
                   env,
@@ -2547,10 +3186,12 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, field_ty, Type::String)) {
+                if not(type_equal(env, field_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
-                    expected=Type::String,
+                    expected=@core.Type::String,
                     actual=field_ty,
+                    span=pos_args[1].span(),
+                    context=Some("record field name"),
                   )
                 }
                 let value_ty = type_expr_eff(
@@ -2561,26 +3202,36 @@ fn type_call(
                   allow_effect,
                 )
                 match record_ty {
-                  Type::Record(fields) =>
+                  @core.Type::Record(fields) =>
                     match pos_args[1] {
-                      Expr::String(name) =>
+                      @core.Expr::String(value=name, span~) =>
                         match fields.get(name) {
                           Some(expect) =>
                             if not(type_equal(env, expect, value_ty)) {
                               raise TypeError::Mismatch(
                                 expected=expect,
                                 actual=value_ty,
+                                span=pos_args[2].span(),
+                                context=Some("record field value"),
                               )
                             }
-                          None => raise TypeError::BadCall("record_set")
+                          None =>
+                            raise TypeError::BadCall(
+                              message="record_set",
+                              span~,
+                            )
                         }
                       _ => ()
                     }
-                  _ => raise TypeError::BadCall("record_set")
+                  _ =>
+                    raise TypeError::BadCall(
+                      message="record_set",
+                      span=call_span,
+                    )
                 }
                 record_ty
               }
-              _ => raise TypeError::BadCall(name)
+              _ => raise TypeError::BadCall(message=name, span=call_span)
             }
           }
       }
@@ -2590,15 +3241,19 @@ fn type_call(
 ///|
 fn is_non_expansive_expr(
   env : TypeEnv,
-  expr : Expr,
-  aliases : Map[String, Ref],
+  expr : @core.Expr,
+  aliases : Map[String, @core.Ref],
 ) -> Bool {
   match expr {
-    Expr::Int(_) => true
-    Expr::Bool(_) => true
-    Expr::String(_) => true
-    Expr::Ident(name) => not(has_alias_prefix(name, aliases))
-    Expr::Tuple(items) => {
+    @core.Expr::Int(..) => true
+    @core.Expr::Bool(..) => true
+    @core.Expr::String(..) => true
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
+      not(has_alias_prefix(name, aliases))
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
       let mut ok = true
       for item in items {
         if not(is_non_expansive_expr(env, item, aliases)) {
@@ -2608,7 +3263,8 @@ fn is_non_expansive_expr(
       }
       ok
     }
-    Expr::Record(fields) => {
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
       let mut ok = true
       for field in fields {
         if not(is_non_expansive_expr(env, field.expr, aliases)) {
@@ -2618,7 +3274,8 @@ fn is_non_expansive_expr(
       }
       ok
     }
-    Expr::Array(items) => {
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
       let mut ok = true
       for item in items {
         if not(is_non_expansive_expr(env, item, aliases)) {
@@ -2628,7 +3285,8 @@ fn is_non_expansive_expr(
       }
       ok
     }
-    Expr::Map(fields) => {
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
       let mut ok = true
       for field in fields {
         if not(is_non_expansive_expr(env, field.expr, aliases)) {
@@ -2638,11 +3296,12 @@ fn is_non_expansive_expr(
       }
       ok
     }
-    Expr::Fn(..) => true
-    Expr::Call(name~, args~) =>
+    @core.Expr::Fn(..) => true
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
       if has_alias_prefix(name, aliases) {
         false
-      } else if is_ctor_name(name) {
+      } else if @core.is_ctor_name(name) {
         let mut ok = true
         for arg in args {
           if not(is_non_expansive_expr(env, arg.expr, aliases)) {
@@ -2654,6 +3313,7 @@ fn is_non_expansive_expr(
       } else {
         false
       }
+    }
     _ => false
   }
 }
@@ -2663,37 +3323,49 @@ fn type_let_expr(
   env : TypeEnv,
   rec : Bool,
   name : String,
-  expr : Expr,
-  aliases : Map[String, Ref],
+  expr : @core.Expr,
+  span : @core.Span,
+  aliases : Map[String, @core.Ref],
   effects : EffectScope,
   allow_effect : Bool,
 ) -> TypeScheme raise TypeError {
   if rec {
     match expr {
-      Expr::Fn(params~, ret~, effects=fn_effects, body~) =>
+      @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span=fn_span) =>
         match ret {
-          None => raise TypeError::BadRec("missing return type")
+          None => raise TypeError::BadRec(message="missing return type", span~)
           Some(r) => {
-            let normalized_effects = normalize_effects(fn_effects)
+            let normalized_effects = normalize_effects(fn_effects, fn_span)
             let fn_ty = normalize_type(
               env,
-              Type::Func(params~, ret=r, effects=normalized_effects),
+              @core.Type::Func(params~, ret=r, effects=normalized_effects),
             )
             env.set(name, fn_ty)
             let ty = type_expr_eff(
               env,
-              Expr::Fn(params~, ret~, effects=normalized_effects, body~),
+              @core.Expr::Fn(
+                params~,
+                ret~,
+                effects=normalized_effects,
+                body~,
+                span=fn_span,
+              ),
               aliases,
               effects,
               allow_effect,
             )
             if not(type_equal(env, ty, fn_ty)) {
-              raise TypeError::Mismatch(expected=fn_ty, actual=ty)
+              raise TypeError::Mismatch(
+                expected=fn_ty,
+                actual=ty,
+                span=fn_span,
+                context=Some("recursive binding"),
+              )
             }
             TypeScheme::{ vars: [], effect_vars: [], ty: fn_ty }
           }
         }
-      _ => raise TypeError::BadRec("expected fn")
+      _ => raise TypeError::BadRec(message="expected fn", span~)
     }
   } else {
     let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
@@ -2714,18 +3386,21 @@ fn type_let_expr(
 ///|
 priv struct ArgType {
   label : String?
-  ty : Type
+  ty : @core.Type
+  span : @core.Span
 }
 
 ///|
 fn extract_positional_args(
-  args : Array[CallArg],
+  args : Array[@core.CallArg],
   name : String,
-) -> Array[Expr] raise TypeError {
-  let out : Array[Expr] = []
+  call_span : @core.Span,
+) -> Array[@core.Expr] raise TypeError {
+  let _ = call_span
+  let out : Array[@core.Expr] = []
   for arg in args {
     match arg.label {
-      Some(_) => raise TypeError::BadCall(name)
+      Some(_) => raise TypeError::BadCall(message=name, span=arg.span)
       None => out.push(arg.expr)
     }
   }
@@ -2735,20 +3410,21 @@ fn extract_positional_args(
 ///|
 fn check_call_args(
   env : TypeEnv,
-  params : Array[FuncParam],
-  args : Array[CallArg],
-  aliases : Map[String, Ref],
+  params : Array[@core.FuncParam],
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
   effects : EffectScope,
   allow_effect : Bool,
+  call_span : @core.Span,
 ) -> Unit raise TypeError {
   let arg_types : Array[ArgType] = []
   for arg in args {
     let ty = type_expr_eff(env, arg.expr, aliases, effects, allow_effect)
-    arg_types.push(ArgType::{ label: arg.label, ty })
+    arg_types.push(ArgType::{ label: arg.label, ty, span: arg.span })
   }
-  let positional : Array[FuncParam] = []
+  let positional : Array[@core.FuncParam] = []
   for param in params {
-    if param.label == ParamLabel::Positional {
+    if param.label == @core.ParamLabel::Positional {
       positional.push(param)
     }
   }
@@ -2758,21 +3434,32 @@ fn check_call_args(
     match arg.label {
       None => {
         if pos_index >= positional.length() {
-          raise TypeError::BadCall("too many positional args")
+          raise TypeError::BadCall(
+            message="too many positional args",
+            span=arg.span,
+          )
         }
         let param = positional[pos_index]
         pos_index += 1
         if not(type_equal(env, param.ty, arg.ty)) {
-          raise TypeError::Mismatch(expected=param.ty, actual=arg.ty)
+          raise TypeError::Mismatch(
+            expected=param.ty,
+            actual=arg.ty,
+            span=arg.span,
+            context=Some("argument"),
+          )
         }
       }
       Some(label) => {
         if used_labels.contains(label) {
-          raise TypeError::BadCall("duplicate label: " + label)
+          raise TypeError::BadCall(
+            message="duplicate label: " + label,
+            span=arg.span,
+          )
         }
-        let mut found : FuncParam? = None
+        let mut found : @core.FuncParam? = None
         for param in params {
-          if param.label != ParamLabel::Positional && param.name == label {
+          if param.label != @core.ParamLabel::Positional && param.name == label {
             found = Some(param)
             break
           }
@@ -2781,27 +3468,39 @@ fn check_call_args(
           Some(param) => {
             used_labels[label] = true
             if not(type_equal(env, param.ty, arg.ty)) {
-              raise TypeError::Mismatch(expected=param.ty, actual=arg.ty)
+              raise TypeError::Mismatch(
+                expected=param.ty,
+                actual=arg.ty,
+                span=arg.span,
+                context=Some("argument"),
+              )
             }
           }
-          None => raise TypeError::BadCall("unknown label: " + label)
+          None =>
+            raise TypeError::BadCall(
+              message="unknown label: " + label,
+              span=arg.span,
+            )
         }
       }
     }
   }
   if pos_index != positional.length() {
-    raise TypeError::BadCall("missing positional args")
+    raise TypeError::BadCall(message="missing positional args", span=call_span)
   }
   for param in params {
-    if param.label == ParamLabel::Required &&
+    if param.label == @core.ParamLabel::Required &&
       not(used_labels.contains(param.name)) {
-      raise TypeError::BadCall("missing label: " + param.name)
+      raise TypeError::BadCall(
+        message="missing label: " + param.name,
+        span=call_span,
+      )
     }
   }
 }
 
 ///|
-fn normalize_type(env : TypeEnv, ty : Type) -> Type raise TypeError {
+fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError {
   let resolved = resolve_type(env, ty)
   normalize_type_inner(env, resolved, {})
 }
@@ -2809,19 +3508,23 @@ fn normalize_type(env : TypeEnv, ty : Type) -> Type raise TypeError {
 ///|
 fn normalize_type_inner(
   env : TypeEnv,
-  ty : Type,
+  ty : @core.Type,
   visiting : Map[String, Bool],
-) -> Type raise TypeError {
+) -> @core.Type raise TypeError {
   match ty {
-    Type::Named(name~, args~) => {
-      let normalized_args : Array[Type] = []
+    @core.Type::Named(name~, args~) => {
+      let normalized_args : Array[@core.Type] = []
       for arg in args {
         normalized_args.push(normalize_type_inner(env, arg, visiting))
       }
       if visiting.contains(name) {
         match env.get_enum_def(name) {
-          Some(_) => Type::Named(name~, args=normalized_args)
-          None => raise TypeError::BadTypeDef("recursive type: " + name)
+          Some(_) => @core.Type::Named(name~, args=normalized_args)
+          None =>
+            raise TypeError::BadTypeDef(
+              message="recursive type: " + name,
+              span=unknown_span(),
+            )
         }
       } else {
         let next : Map[String, Bool] = {}
@@ -2832,9 +3535,12 @@ fn normalize_type_inner(
         match env.get_type_alias(name) {
           Some(type_alias) => {
             if type_alias.params.length() != normalized_args.length() {
-              raise TypeError::BadTypeDef("type arity: " + name)
+              raise TypeError::BadTypeDef(
+                message="type arity: " + name,
+                span=unknown_span(),
+              )
             }
-            let mapping : Map[String, Type] = {}
+            let mapping : Map[String, @core.Type] = {}
             for i in 0..<type_alias.params.length() {
               mapping[type_alias.params[i]] = normalized_args[i]
             }
@@ -2845,73 +3551,82 @@ fn normalize_type_inner(
             match env.get_enum_def(name) {
               Some(def) => {
                 if def.params.length() != normalized_args.length() {
-                  raise TypeError::BadTypeDef("type arity: " + name)
+                  raise TypeError::BadTypeDef(
+                    message="type arity: " + name,
+                    span=unknown_span(),
+                  )
                 }
-                let mapping : Map[String, Type] = {}
+                let mapping : Map[String, @core.Type] = {}
                 for i in 0..<def.params.length() {
                   mapping[def.params[i]] = normalized_args[i]
                 }
-                let ctor_map : Map[String, Type] = {}
+                let ctor_map : Map[String, @core.Type] = {}
                 for ctor in def.ctors {
                   let base_payload = if ctor.args.length() == 0 {
-                    Type::Unit
+                    @core.Type::Unit
                   } else if ctor.args.length() == 1 {
                     ctor.args[0]
                   } else {
-                    Type::Tuple(ctor.args)
+                    @core.Type::Tuple(ctor.args)
                   }
                   let substituted = substitute_type(base_payload, mapping)
                   ctor_map[ctor.name] = normalize_type_inner(
                     env, substituted, next,
                   )
                 }
-                Type::Variant(ctor_map)
+                @core.Type::Variant(ctor_map)
               }
-              None => raise TypeError::UnknownType(name)
+              None =>
+                raise TypeError::UnknownType(
+                  name~,
+                  span=unknown_span(),
+                  suggestion=find_type_suggestion(env, name),
+                )
             }
         }
       }
     }
-    Type::Tuple(items) => {
-      let out : Array[Type] = []
+    @core.Type::Tuple(items) => {
+      let out : Array[@core.Type] = []
       for item in items {
         out.push(normalize_type_inner(env, item, visiting))
       }
-      Type::Tuple(out)
+      @core.Type::Tuple(out)
     }
-    Type::Record(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Record(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = normalize_type_inner(env, item, visiting)
       }
-      Type::Record(out)
+      @core.Type::Record(out)
     }
-    Type::Array(inner) =>
-      Type::Array(normalize_type_inner(env, inner, visiting))
-    Type::Map(inner) => Type::Map(normalize_type_inner(env, inner, visiting))
-    Type::ArrayBuilder(inner) =>
-      Type::ArrayBuilder(normalize_type_inner(env, inner, visiting))
-    Type::MapBuilder(inner) =>
-      Type::MapBuilder(normalize_type_inner(env, inner, visiting))
-    Type::Variant(fields) => {
-      let out : Map[String, Type] = {}
+    @core.Type::Array(inner) =>
+      @core.Type::Array(normalize_type_inner(env, inner, visiting))
+    @core.Type::Map(inner) =>
+      @core.Type::Map(normalize_type_inner(env, inner, visiting))
+    @core.Type::ArrayBuilder(inner) =>
+      @core.Type::ArrayBuilder(normalize_type_inner(env, inner, visiting))
+    @core.Type::MapBuilder(inner) =>
+      @core.Type::MapBuilder(normalize_type_inner(env, inner, visiting))
+    @core.Type::Variant(fields) => {
+      let out : Map[String, @core.Type] = {}
       for name, item in fields {
         out[name] = normalize_type_inner(env, item, visiting)
       }
-      Type::Variant(out)
+      @core.Type::Variant(out)
     }
-    Type::Param(_) => ty
-    Type::Var(_) => ty
-    Type::Func(params~, ret~, effects~) => {
-      let out : Array[FuncParam] = []
+    @core.Type::Param(_) => ty
+    @core.Type::Var(_) => ty
+    @core.Type::Func(params~, ret~, effects~) => {
+      let out : Array[@core.FuncParam] = []
       for param in params {
-        out.push(FuncParam::{
+        out.push(@core.FuncParam::{
           name: param.name,
           label: param.label,
           ty: normalize_type_inner(env, param.ty, visiting),
         })
       }
-      Type::Func(
+      @core.Type::Func(
         params=out,
         ret=normalize_type_inner(env, ret, visiting),
         effects~,
@@ -2922,7 +3637,11 @@ fn normalize_type_inner(
 }
 
 ///|
-fn type_equal(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
+fn type_equal(
+  env : TypeEnv,
+  a : @core.Type,
+  b : @core.Type,
+) -> Bool raise TypeError {
   unify_types(env, a, b)
 }
 
@@ -2930,27 +3649,31 @@ fn type_equal(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
 /// Completion helper: true if param type can accept receiver type.
 pub fn completion_param_matches(
   env : TypeEnv,
-  receiver : Type,
-  param : Type,
+  receiver : @core.Type,
+  param : @core.Type,
 ) -> Bool {
   let recv = normalize_type(env, receiver) catch { _ => receiver }
   let param_ty = normalize_type(env, param) catch { _ => param }
   match param_ty {
-    Type::Var(_) | Type::Param(_) => true
+    @core.Type::Var(_) | @core.Type::Param(_) => true
     _ =>
       match recv {
-        Type::Var(_) | Type::Param(_) => true
+        @core.Type::Var(_) | @core.Type::Param(_) => true
         _ => type_equal(env, recv, param_ty) catch { _ => false }
       }
   }
 }
 
 ///|
-fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
+fn unify_types(
+  env : TypeEnv,
+  a : @core.Type,
+  b : @core.Type,
+) -> Bool raise TypeError {
   let left = resolve_type(env, a)
   let right = resolve_type(env, b)
   match (left, right) {
-    (Type::Named(name=an, args=aa), Type::Named(name=bn, args=bb)) =>
+    (@core.Type::Named(name=an, args=aa), @core.Type::Named(name=bn, args=bb)) =>
       if an == bn {
         if aa.length() != bb.length() {
           false
@@ -2969,25 +3692,25 @@ fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
         let nr = normalize_type(env, right)
         unify_types(env, nl, nr)
       }
-    (Type::Var(id), t) => bind_var(env, id, t)
-    (t, Type::Var(id)) => bind_var(env, id, t)
-    (Type::Param(a0), Type::Param(b0)) => a0 == b0
-    (Type::Param(_), _) => false
-    (_, Type::Param(_)) => false
-    (Type::Named(..), _) => {
+    (@core.Type::Var(id), t) => bind_var(env, id, t)
+    (t, @core.Type::Var(id)) => bind_var(env, id, t)
+    (@core.Type::Param(a0), @core.Type::Param(b0)) => a0 == b0
+    (@core.Type::Param(_), _) => false
+    (_, @core.Type::Param(_)) => false
+    (@core.Type::Named(..), _) => {
       let nl = normalize_type(env, left)
       unify_types(env, nl, right)
     }
-    (_, Type::Named(..)) => {
+    (_, @core.Type::Named(..)) => {
       let nr = normalize_type(env, right)
       unify_types(env, left, nr)
     }
-    (Type::Int, Type::Int) => true
-    (Type::Bool, Type::Bool) => true
-    (Type::String, Type::String) => true
-    (Type::Path, Type::Path) => true
-    (Type::Unit, Type::Unit) => true
-    (Type::Tuple(xs), Type::Tuple(ys)) =>
+    (@core.Type::Int, @core.Type::Int) => true
+    (@core.Type::Bool, @core.Type::Bool) => true
+    (@core.Type::String, @core.Type::String) => true
+    (@core.Type::Path, @core.Type::Path) => true
+    (@core.Type::Unit, @core.Type::Unit) => true
+    (@core.Type::Tuple(xs), @core.Type::Tuple(ys)) =>
       if xs.length() != ys.length() {
         false
       } else {
@@ -3000,7 +3723,7 @@ fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
         }
         ok
       }
-    (Type::Record(ax), Type::Record(bx)) =>
+    (@core.Type::Record(ax), @core.Type::Record(bx)) =>
       if ax.length() != bx.length() {
         false
       } else {
@@ -3020,11 +3743,13 @@ fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
         }
         ok
       }
-    (Type::Array(ae), Type::Array(be)) => unify_types(env, ae, be)
-    (Type::Map(av), Type::Map(bv)) => unify_types(env, av, bv)
-    (Type::ArrayBuilder(ae), Type::ArrayBuilder(be)) => unify_types(env, ae, be)
-    (Type::MapBuilder(av), Type::MapBuilder(bv)) => unify_types(env, av, bv)
-    (Type::Variant(ax), Type::Variant(bx)) =>
+    (@core.Type::Array(ae), @core.Type::Array(be)) => unify_types(env, ae, be)
+    (@core.Type::Map(av), @core.Type::Map(bv)) => unify_types(env, av, bv)
+    (@core.Type::ArrayBuilder(ae), @core.Type::ArrayBuilder(be)) =>
+      unify_types(env, ae, be)
+    (@core.Type::MapBuilder(av), @core.Type::MapBuilder(bv)) =>
+      unify_types(env, av, bv)
+    (@core.Type::Variant(ax), @core.Type::Variant(bx)) =>
       if ax.length() != bx.length() {
         false
       } else {
@@ -3045,8 +3770,8 @@ fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
         ok
       }
     (
-      Type::Func(params=pa, ret=ra, effects=ea),
-      Type::Func(params=pb, ret=rb, effects=eb),
+      @core.Type::Func(params=pa, ret=ra, effects=ea),
+      @core.Type::Func(params=pb, ret=rb, effects=eb),
     ) =>
       if pa.length() != pb.length() {
         false
@@ -3071,20 +3796,20 @@ fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
 ///|
 fn param_unify(
   env : TypeEnv,
-  a : FuncParam,
-  b : FuncParam,
+  a : @core.FuncParam,
+  b : @core.FuncParam,
 ) -> Bool raise TypeError {
   if a.label != b.label {
     return false
   }
-  if a.label != ParamLabel::Positional && a.name != b.name {
+  if a.label != @core.ParamLabel::Positional && a.name != b.name {
     return false
   }
   unify_types(env, a.ty, b.ty)
 }
 
 ///|
-fn bind_var(env : TypeEnv, id : Int, ty : Type) -> Bool {
+fn bind_var(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
   if occurs_in(env, id, ty) {
     false
   } else {
@@ -3094,10 +3819,10 @@ fn bind_var(env : TypeEnv, id : Int, ty : Type) -> Bool {
 }
 
 ///|
-fn occurs_in(env : TypeEnv, id : Int, ty : Type) -> Bool {
+fn occurs_in(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
   match resolve_type(env, ty) {
-    Type::Var(other) => other == id
-    Type::Tuple(items) => {
+    @core.Type::Var(other) => other == id
+    @core.Type::Tuple(items) => {
       let mut found = false
       for item in items {
         if occurs_in(env, id, item) {
@@ -3107,7 +3832,7 @@ fn occurs_in(env : TypeEnv, id : Int, ty : Type) -> Bool {
       }
       found
     }
-    Type::Record(fields) => {
+    @core.Type::Record(fields) => {
       let mut found = false
       for _, item in fields {
         if occurs_in(env, id, item) {
@@ -3117,9 +3842,9 @@ fn occurs_in(env : TypeEnv, id : Int, ty : Type) -> Bool {
       }
       found
     }
-    Type::Array(inner) => occurs_in(env, id, inner)
-    Type::Map(inner) => occurs_in(env, id, inner)
-    Type::Variant(fields) => {
+    @core.Type::Array(inner) => occurs_in(env, id, inner)
+    @core.Type::Map(inner) => occurs_in(env, id, inner)
+    @core.Type::Variant(fields) => {
       let mut found = false
       for _, item in fields {
         if occurs_in(env, id, item) {
@@ -3129,7 +3854,7 @@ fn occurs_in(env : TypeEnv, id : Int, ty : Type) -> Bool {
       }
       found
     }
-    Type::Named(name=_, args~) => {
+    @core.Type::Named(name=_, args~) => {
       let mut found = false
       for arg in args {
         if occurs_in(env, id, arg) {
@@ -3139,7 +3864,7 @@ fn occurs_in(env : TypeEnv, id : Int, ty : Type) -> Bool {
       }
       found
     }
-    Type::Func(params~, ret~, effects=_) => {
+    @core.Type::Func(params~, ret~, effects=_) => {
       let mut found = occurs_in(env, id, ret)
       if not(found) {
         for param in params {
@@ -3156,7 +3881,7 @@ fn occurs_in(env : TypeEnv, id : Int, ty : Type) -> Bool {
 }
 
 ///|
-fn has_alias_prefix(name : String, aliases : Map[String, Ref]) -> Bool {
+fn has_alias_prefix(name : String, aliases : Map[String, @core.Ref]) -> Bool {
   let chars : Array[Char] = []
   for c in name {
     chars.push(c)

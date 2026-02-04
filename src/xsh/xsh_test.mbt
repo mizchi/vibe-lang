@@ -13,7 +13,7 @@ test "xsh eval path normalization" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let p = path(\"a/../b\")")
   match rt.get("p") {
-    Some(Value::Path(p)) => assert_eq(p.as_string(), "/b")
+    Some(@core.Value::Path(p)) => assert_eq(p.as_string(), "/b")
     _ => fail("expected path value")
   }
 }
@@ -72,8 +72,8 @@ test "xsh import hashes" {
   let imp = imports[0]
   match imp.hash {
     Some(h) => {
-      assert_eq(h, git_blob_hash_string("let y = 2"))
-      assert_eq(imp.module_ref, Some(module_ref_from_hash(h)))
+      assert_eq(h, @core.git_blob_hash_string("let y = 2"))
+      assert_eq(imp.module_ref, Some(@core.module_ref_from_hash(h)))
       assert_eq(imp.alias_name, "foo")
     }
     None => fail("missing hash")
@@ -86,7 +86,7 @@ test "xsh import alias resolution" {
   db.set_source("main", "import foo.xsh")
   db.set_source("foo.xsh", "let y = 2")
   let aliases = db.import_aliases("main")
-  let resolved = resolve_qualified("foo.bar", aliases)
+  let resolved = @core.resolve_qualified("foo.bar", aliases)
   match aliases.get("foo") {
     Some(r) => assert_eq(resolved, r.name + "/bar")
     None => fail("missing alias")
@@ -99,14 +99,14 @@ test "xsh compile and run" {
   db.set_source("main", "import foo.xsh\nlet x = 1\nfoo.bar")
   db.set_source("foo.xsh", "let y = 2")
   let compiled = compile_module(db, "main")
-  let import_hash = git_blob_hash_string("let y = 2")
-  let import_ref = module_ref_from_hash(import_hash)
+  let import_hash = @core.git_blob_hash_string("let y = 2")
+  let import_ref = @core.module_ref_from_hash(import_hash)
   assert_true(compiled.ir.contains(import_ref + "/bar"))
-  assert_eq(compiled.module_ref, module_ref_from_hash(compiled.ir_hash))
+  assert_eq(compiled.module_ref, @core.module_ref_from_hash(compiled.ir_hash))
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.run_compiled(compiled)
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("missing x binding")
   }
 }
@@ -115,26 +115,26 @@ test "xsh compile and run" {
 test "xsh prelude add/sub/eq/lt" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   match rt.get("add") {
-    Some(Value::Fn(_)) => ()
+    Some(@core.Value::Fn(_)) => ()
     _ => fail("add should be fn")
   }
   let _ = rt.eval_script(
     "let a = add(1, 2)\nlet b = sub(5, 3)\nlet c = eq(2, 2)\nlet d = lt(1, 2)",
   )
   match rt.get("a") {
-    Some(Value::Int(v)) => assert_eq(v, 3)
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
     _ => fail("add")
   }
   match rt.get("b") {
-    Some(Value::Int(v)) => assert_eq(v, 2)
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
     _ => fail("sub")
   }
   match rt.get("c") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("eq")
   }
   match rt.get("d") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("lt")
   }
 }
@@ -151,19 +151,19 @@ test "xsh method call and pipe" {
     #|let r = w |> inc |> inc
   let _ = rt.eval_script(script)
   match rt.get("y") {
-    Some(Value::Int(v)) => assert_eq(v, 3)
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
     _ => fail("missing y")
   }
   match rt.get("z") {
-    Some(Value::Int(v)) => assert_eq(v, 3)
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
     _ => fail("missing z")
   }
   match rt.get("w") {
-    Some(Value::Int(v)) => assert_eq(v, 7)
+    Some(@core.Value::Int(v)) => assert_eq(v, 7)
     _ => fail("missing w")
   }
   match rt.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 9)
+    Some(@core.Value::Int(v)) => assert_eq(v, 9)
     _ => fail("missing r")
   }
 }
@@ -173,15 +173,15 @@ test "xsh char literal" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let a = 'a'\nlet b = '\\n'\nlet c = '\\''")
   match rt.get("a") {
-    Some(Value::Int(v)) => assert_eq(v, 97)
+    Some(@core.Value::Int(v)) => assert_eq(v, 97)
     _ => fail("missing a")
   }
   match rt.get("b") {
-    Some(Value::Int(v)) => assert_eq(v, 10)
+    Some(@core.Value::Int(v)) => assert_eq(v, 10)
     _ => fail("missing b")
   }
   match rt.get("c") {
-    Some(Value::Int(v)) => assert_eq(v, 39)
+    Some(@core.Value::Int(v)) => assert_eq(v, 39)
     _ => fail("missing c")
   }
 }
@@ -193,7 +193,7 @@ test "xsh pipe and logical precedence" {
     "let id = fn (x: Bool) -> Bool { x }\n" + "let v = true |> id && false",
   )
   match rt.get("v") {
-    Some(Value::Bool(v)) => assert_false(v)
+    Some(@core.Value::Bool(v)) => assert_false(v)
     _ => fail("missing v")
   }
 }
@@ -205,7 +205,7 @@ test "xsh fn expression and call" {
     "let f = fn (x: Int, y: Int) -> Int { add(x, y) }\nlet r = f(1, 2)",
   )
   match rt.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 3)
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
     _ => fail("fn call")
   }
 }
@@ -228,7 +228,7 @@ test "xsh fn effect requires declaration" {
     "let r = g(1)",
   )
   match rt_ok.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("effect ok")
   }
   let rt_try = Runtime::new(@capability.CapabilitySet::new())
@@ -238,7 +238,7 @@ test "xsh fn effect requires declaration" {
     "let r = g(1)",
   )
   match rt_try.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("effect try")
   }
 }
@@ -263,7 +263,7 @@ test "xsh higher-order effects propagate" {
     "let r = g(2)",
   )
   match rt_ok.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 2)
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
     _ => fail("expected higher-order ok")
   }
 }
@@ -275,24 +275,24 @@ test "xsh fn labeled and optional args" {
     "let f = fn (x: Int, y~: String, z?: Bool) { y }\nlet a = f(1, y=\"ok\")",
   )
   match rt.get("a") {
-    Some(Value::String(v)) => assert_eq(v, "ok")
+    Some(@core.Value::String(v)) => assert_eq(v, "ok")
     _ => fail("labeled arg")
   }
   let _ = rt.eval_script(
     "let g = fn (z?: Bool) { z }\nlet n = g()\nlet s = g(z=true)",
   )
   match rt.get("n") {
-    Some(Value::Record(map)) =>
+    Some(@core.Value::Record(map)) =>
       match map.get("None") {
-        Some(Value::Unit) => ()
+        Some(@core.Value::Unit) => ()
         _ => fail("optional none")
       }
     _ => fail("optional none")
   }
   match rt.get("s") {
-    Some(Value::Record(map)) =>
+    Some(@core.Value::Record(map)) =>
       match map.get("Some") {
-        Some(Value::Bool(v)) => assert_true(v)
+        Some(@core.Value::Bool(v)) => assert_true(v)
         _ => fail("optional some")
       }
     _ => fail("optional some")
@@ -359,7 +359,7 @@ test "xsh repl keeps type env across eval_script calls" {
     Ok(_) => ()
   }
   match rt.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 3)
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
     _ => fail("missing r")
   }
 }
@@ -388,7 +388,7 @@ test "xsh let rec function" {
   }
   let _ = rt.eval_script("let r = sum(3)")
   match rt.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 6)
+    Some(@core.Value::Int(v)) => assert_eq(v, 6)
     _ => fail("rec result")
   }
 }
@@ -435,11 +435,11 @@ test "xsh bool literal" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let t = true\nlet f = false")
   match rt.get("t") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("true")
   }
   match rt.get("f") {
-    Some(Value::Bool(v)) => assert_false(v)
+    Some(@core.Value::Bool(v)) => assert_false(v)
     _ => fail("false")
   }
 }
@@ -451,15 +451,15 @@ test "xsh bool ops" {
     "let a = not(true)\nlet b = and(true, false)\nlet c = or(true, false)",
   )
   match rt.get("a") {
-    Some(Value::Bool(v)) => assert_false(v)
+    Some(@core.Value::Bool(v)) => assert_false(v)
     _ => fail("not")
   }
   match rt.get("b") {
-    Some(Value::Bool(v)) => assert_false(v)
+    Some(@core.Value::Bool(v)) => assert_false(v)
     _ => fail("and")
   }
   match rt.get("c") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("or")
   }
 }
@@ -469,7 +469,7 @@ test "xsh assert" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let ok = assert(true)")
   match rt.get("ok") {
-    Some(Value::Unit) => ()
+    Some(@core.Value::Unit) => ()
     _ => fail("assert true")
   }
   let result : Result[EvalResult, Error] = try? rt.eval_script("assert(false)")
@@ -486,15 +486,15 @@ test "xsh boolean operators" {
     "let a = true && false\nlet b = true || false\nlet c = !false",
   )
   match rt.get("a") {
-    Some(Value::Bool(v)) => assert_false(v)
+    Some(@core.Value::Bool(v)) => assert_false(v)
     _ => fail("and and")
   }
   match rt.get("b") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("or or")
   }
   match rt.get("c") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("not")
   }
 }
@@ -504,12 +504,12 @@ test "xsh if expression" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = if true { 1 } else { 2 }")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("if true")
   }
   let _ = rt.eval_script("let y = if false { 1 } else { 2 }")
   match rt.get("y") {
-    Some(Value::Int(v)) => assert_eq(v, 2)
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
     _ => fail("if false")
   }
 }
@@ -519,7 +519,7 @@ test "xsh if block scope" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = if true { let y = 1\n y } else { 2 }")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("if block")
   }
   match rt.get("y") {
@@ -533,7 +533,7 @@ test "xsh block expression" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = { let y = 3\n y }")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 3)
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
     _ => fail("block expr")
   }
   match rt.get("y") {
@@ -547,10 +547,10 @@ test "xsh array and map literals" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let a = [1, 2, 3]")
   match rt.get("a") {
-    Some(Value::Array(values)) => {
+    Some(@core.Value::Array(values)) => {
       assert_eq(values.length(), 3)
       match values[0] {
-        Value::Int(v) => assert_eq(v, 1)
+        @core.Value::Int(v) => assert_eq(v, 1)
         _ => fail("array[0]")
       }
     }
@@ -558,13 +558,13 @@ test "xsh array and map literals" {
   }
   let _ = rt.eval_script("let m = map { a: 1, \"b\": 2 }")
   match rt.get("m") {
-    Some(Value::Map(map)) => {
+    Some(@core.Value::Map(map)) => {
       match map.get("a") {
-        Some(Value::Int(v)) => assert_eq(v, 1)
+        Some(@core.Value::Int(v)) => assert_eq(v, 1)
         _ => fail("map a")
       }
       match map.get("b") {
-        Some(Value::Int(v)) => assert_eq(v, 2)
+        Some(@core.Value::Int(v)) => assert_eq(v, 2)
         _ => fail("map b")
       }
     }
@@ -577,12 +577,12 @@ test "xsh match expression" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = match 2 { 1 => 10, 2 => 20, _ => 0 }")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 20)
+    Some(@core.Value::Int(v)) => assert_eq(v, 20)
     _ => fail("match int")
   }
   let _ = rt.eval_script("let y = match true { true => 1, _ => 0 }")
   match rt.get("y") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("match bool")
   }
 }
@@ -592,12 +592,12 @@ test "xsh if else expression" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = if true {1} else 2")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("if true")
   }
   let _ = rt.eval_script("let y = if false {1} else 2")
   match rt.get("y") {
-    Some(Value::Int(v)) => assert_eq(v, 2)
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
     _ => fail("if false")
   }
 }
@@ -607,26 +607,26 @@ test "xsh binary operators" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = 1 + 2 * 3")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 7)
+    Some(@core.Value::Int(v)) => assert_eq(v, 7)
     _ => fail("binary ops")
   }
   let _ = rt.eval_script("let y = 8 - 3 * 2")
   match rt.get("y") {
-    Some(Value::Int(v)) => assert_eq(v, 2)
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
     _ => fail("binary ops sub")
   }
   let _ = rt.eval_script("let z = 8 / 2 + 1")
   match rt.get("z") {
-    Some(Value::Int(v)) => assert_eq(v, 5)
+    Some(@core.Value::Int(v)) => assert_eq(v, 5)
     _ => fail("binary ops div")
   }
   let _ = rt.eval_script("let w = 8/2+1\nlet m = 8-3*2")
   match rt.get("w") {
-    Some(Value::Int(v)) => assert_eq(v, 5)
+    Some(@core.Value::Int(v)) => assert_eq(v, 5)
     _ => fail("binary ops div no space")
   }
   match rt.get("m") {
-    Some(Value::Int(v)) => assert_eq(v, 2)
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
     _ => fail("binary ops sub no space")
   }
 }
@@ -638,27 +638,27 @@ test "xsh comparison operators" {
     "let a = 1 == 1\nlet b = 1 != 2\nlet c = 1 < 2\nlet d = 2 <= 2\nlet e = 3 > 2\nlet f = 2 >= 2",
   )
   match rt.get("a") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("eqeq")
   }
   match rt.get("b") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("neq")
   }
   match rt.get("c") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("lt")
   }
   match rt.get("d") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("lte")
   }
   match rt.get("e") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("gt")
   }
   match rt.get("f") {
-    Some(Value::Bool(v)) => assert_true(v)
+    Some(@core.Value::Bool(v)) => assert_true(v)
     _ => fail("gte")
   }
 }
@@ -669,13 +669,13 @@ test "xsh ctor match" {
   let _ = rt.eval_script("let v = Ok(1)")
   let _ = rt.eval_script("let r = match v { Ok(x) => 1, Err => 0 }")
   match rt.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("match ok")
   }
   let _ = rt.eval_script("let n = Err")
   let _ = rt.eval_script("let r2 = match n { Ok(x) => 1, Err => 0 }")
   match rt.get("r2") {
-    Some(Value::Int(v)) => assert_eq(v, 0)
+    Some(@core.Value::Int(v)) => assert_eq(v, 0)
     _ => fail("match none")
   }
 }
@@ -691,7 +691,7 @@ test "xsh type def and ctor call" {
   )
   let _ = rt.eval_script("let r = f(Ok(2))")
   match rt.get("r") {
-    Some(Value::Int(v)) => assert_eq(v, 2)
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
     _ => fail("type def call")
   }
 }
@@ -713,7 +713,7 @@ test "xsh match bind pattern" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = match 3 { v => add(v, 1) }")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 4)
+    Some(@core.Value::Int(v)) => assert_eq(v, 4)
     _ => fail("match bind")
   }
 }
@@ -723,14 +723,14 @@ test "xsh match tuple and record patterns" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = match (1, 2) { (a, b) => add(a, b), _ => 0 }")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 3)
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
     _ => fail("match tuple")
   }
   let _ = rt.eval_script(
     "let y = match record { a: 1, b: 2 } { record { a: v } => v, _ => 0 }",
   )
   match rt.get("y") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("match record")
   }
 }
@@ -740,12 +740,12 @@ test "xsh match guard" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = match 2 { v if lt(v, 2) => 1, _ => 9 }")
   match rt.get("x") {
-    Some(Value::Int(v)) => assert_eq(v, 9)
+    Some(@core.Value::Int(v)) => assert_eq(v, 9)
     _ => fail("guard false")
   }
   let _ = rt.eval_script("let y = match 1 { v if lt(v, 2) => 1, _ => 9 }")
   match rt.get("y") {
-    Some(Value::Int(v)) => assert_eq(v, 1)
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("guard true")
   }
 }
@@ -779,16 +779,16 @@ test "xsh array builder freeze snapshot" {
     "let a = do { let b = array_builder()\narray_builder_push(b, 1)\nlet x = array_builder_freeze(b)\narray_builder_push(b, 2)\nlet y = array_builder_freeze(b)\n(x, y) }",
   )
   match rt.get("a") {
-    Some(Value::Tuple(items)) =>
+    Some(@core.Value::Tuple(items)) =>
       if items.length() != 2 {
         fail("tuple size")
       } else {
         match (items[0], items[1]) {
-          (Value::Array(xs), Value::Array(ys)) => {
+          (@core.Value::Array(xs), @core.Value::Array(ys)) => {
             assert_eq(xs.length(), 1)
             assert_eq(ys.length(), 2)
             match (xs[0], ys[0], ys[1]) {
-              (Value::Int(a0), Value::Int(b0), Value::Int(b1)) => {
+              (@core.Value::Int(a0), @core.Value::Int(b0), @core.Value::Int(b1)) => {
                 assert_eq(a0, 1)
                 assert_eq(b0, 1)
                 assert_eq(b1, 2)
@@ -810,18 +810,18 @@ test "xsh map builder freeze snapshot" {
     "let m = do { let b = map_builder()\nmap_builder_set(b, \"a\", 1)\nlet x = map_builder_freeze(b)\nmap_builder_set(b, \"b\", 2)\nlet y = map_builder_freeze(b)\n(x, y) }",
   )
   match rt.get("m") {
-    Some(Value::Tuple(items)) =>
+    Some(@core.Value::Tuple(items)) =>
       if items.length() != 2 {
         fail("tuple size")
       } else {
         match (items[0], items[1]) {
-          (Value::Map(xs), Value::Map(ys)) => {
+          (@core.Value::Map(xs), @core.Value::Map(ys)) => {
             match (xs.get("a"), xs.get("b")) {
-              (Some(Value::Int(v)), None) => assert_eq(v, 1)
+              (Some(@core.Value::Int(v)), None) => assert_eq(v, 1)
               _ => fail("map snapshot a")
             }
             match (ys.get("a"), ys.get("b")) {
-              (Some(Value::Int(a0)), Some(Value::Int(b0))) => {
+              (Some(@core.Value::Int(a0)), Some(@core.Value::Int(b0))) => {
                 assert_eq(a0, 1)
                 assert_eq(b0, 2)
               }

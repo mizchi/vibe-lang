@@ -97,7 +97,7 @@ test "wasm wat fixtures" {
     } noraise {
       b => b
     }
-    let actual = try wasm_to_wat(wasm) catch {
+    let actual = try @codegen.wasm_to_wat(wasm) catch {
       e => fail("[\{path}] wat error: \{e.to_string()}")
     } noraise {
       s => s

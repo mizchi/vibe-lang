@@ -6,7 +6,7 @@ pub enum Effect {
 
 ///|
 pub struct EvalResult {
-  last : Value?
+  last : @core.Value?
   effects : Array[Effect]
 } derive(Show, Eq)
 
@@ -20,16 +20,17 @@ suberror EvalError {
 ///|
 pub fn Runtime::eval_module(
   self : Runtime,
-  ast : Module,
+  ast : @core.Module,
 ) -> EvalResult raise EvalError {
   let effects : Array[Effect] = []
-  let mut last : Value? = None
+  let mut last : @core.Value? = None
   for stmt in ast.stmts {
     match stmt {
-      Stmt::Let(rec~, name~, expr~) => {
-        let info = purity_for_let(self.type_env, rec, name, expr)
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
+        let info = @checker.purity_for_let(self.type_env, rec, name, expr)
         let use_addr = rec || info.expr
-        let addr = expr_address(
+        let addr = @codegen.expr_address(
           expr,
           self.addr_env,
           if rec {
@@ -50,15 +51,15 @@ pub fn Runtime::eval_module(
         }
         let out = eval_expr(self, expr)
         let value = match out.value {
-          Value::Fn(fn_val) => {
-            let updated = FnValue::{
+          @core.Value::Fn(fn_val) => {
+            let updated = @core.FnValue::{
               params: fn_val.params,
               body: fn_val.body,
               env: fn_val.env,
               addr: Some(addr),
               pure: fn_val.pure,
             }
-            Value::Fn(updated)
+            @core.Value::Fn(updated)
           }
           _ => out.value
         }
@@ -72,29 +73,56 @@ pub fn Runtime::eval_module(
         }
         last = Some(value)
       }
-      Stmt::EnumDef(..) => last = Some(Value::Unit)
-      Stmt::TypeAlias(..) => last = Some(Value::Unit)
-      Stmt::Expr(expr~) => {
+      @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
+        let _ = name
+        let _ = params
+        let _ = ctors
+        let _ = span
+        last = Some(@core.Value::Unit)
+      }
+      @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
+        let _ = name
+        let _ = params
+        let _ = target
+        let _ = span
+        last = Some(@core.Value::Unit)
+      }
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
         let out = eval_expr(self, expr)
         for eff in out.effects {
           effects.push(eff)
         }
         last = Some(out.value)
       }
-      Stmt::Flake(_) => last = Some(Value::Unit)
-      Stmt::Alias(name~, target~) => {
+      @core.Stmt::Flake(raw~, span~) => {
+        let _ = raw
+        let _ = span
+        last = Some(@core.Value::Unit)
+      }
+      @core.Stmt::Alias(name~, target~, span~) => {
+        let _ = span
         match target {
-          AliasTarget::Module(r) => self.set_alias(name, r)
-          AliasTarget::Name(target_name) =>
+          @core.AliasTarget::Module(r) => self.set_alias(name, r)
+          @core.AliasTarget::Name(target_name) =>
             match self.addr_env.get(target_name) {
               Some(addr) => self.set_name_alias(name, addr)
               None => raise EvalError::UnknownName(target_name)
             }
         }
-        last = Some(Value::Unit)
+        last = Some(@core.Value::Unit)
       }
-      Stmt::Import(_) => last = Some(Value::Unit)
-      Stmt::Test(..) => last = Some(Value::Unit)
+      @core.Stmt::Import(path~, span~) => {
+        let _ = path
+        let _ = span
+        last = Some(@core.Value::Unit)
+      }
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = body
+        let _ = span
+        last = Some(@core.Value::Unit)
+      }
     }
   }
   { last, effects }
@@ -102,7 +130,7 @@ pub fn Runtime::eval_module(
 
 ///|
 priv struct EvalOutput {
-  value : Value
+  value : @core.Value
   effects : Array[Effect]
 }
 
@@ -115,32 +143,47 @@ priv struct EvalArgsOutput {
 ///|
 priv struct EvalArgValue {
   label : String?
-  value : Value
+  value : @core.Value
 }
 
 ///|
-fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
+fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
   match expr {
-    Expr::Int(n) => { value: Value::Int(n), effects: [] }
-    Expr::Bool(b) => { value: Value::Bool(b), effects: [] }
-    Expr::String(s) => { value: Value::String(s), effects: [] }
-    Expr::Ident(name) =>
+    @core.Expr::Int(value=n, span~) => {
+      let _ = span
+      { value: @core.Value::Int(n), effects: [] }
+    }
+    @core.Expr::Bool(value=b, span~) => {
+      let _ = span
+      { value: @core.Value::Bool(b), effects: [] }
+    }
+    @core.Expr::String(value=s, span~) => {
+      let _ = span
+      { value: @core.Value::String(s), effects: [] }
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
       match rt.get(name) {
         Some(v) => { value: v, effects: [] }
         None =>
           if has_alias_prefix_rt(rt, name) {
-            { value: Value::Unit, effects: [] }
-          } else if is_ctor_name(name) {
-            let map : Map[String, Value] = {}
-            map[name] = Value::Unit
-            { value: Value::Record(map), effects: [] }
+            { value: @core.Value::Unit, effects: [] }
+          } else if @core.is_ctor_name(name) {
+            let map : Map[String, @core.Value] = {}
+            map[name] = @core.Value::Unit
+            { value: @core.Value::Record(map), effects: [] }
           } else {
             raise EvalError::UnknownName(name)
           }
       }
-    Expr::Call(name~, args~) => eval_call(rt, name, args)
-    Expr::Tuple(items) => {
-      let values : Array[Value] = []
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
+      eval_call(rt, name, args)
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
+      let values : Array[@core.Value] = []
       let effects : Array[Effect] = []
       for item in items {
         let out = eval_expr(rt, item)
@@ -149,10 +192,11 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
           effects.push(eff)
         }
       }
-      { value: Value::Tuple(values), effects }
+      { value: @core.Value::Tuple(values), effects }
     }
-    Expr::Record(fields) => {
-      let map : Map[String, Value] = {}
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
+      let map : Map[String, @core.Value] = {}
       let effects : Array[Effect] = []
       for field in fields {
         let out = eval_expr(rt, field.expr)
@@ -161,10 +205,11 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
           effects.push(eff)
         }
       }
-      { value: Value::Record(map), effects }
+      { value: @core.Value::Record(map), effects }
     }
-    Expr::Array(items) => {
-      let values : Array[Value] = []
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
+      let values : Array[@core.Value] = []
       let effects : Array[Effect] = []
       for item in items {
         let out = eval_expr(rt, item)
@@ -173,10 +218,11 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
           effects.push(eff)
         }
       }
-      { value: Value::Array(values), effects }
+      { value: @core.Value::Array(values), effects }
     }
-    Expr::Map(fields) => {
-      let map : Map[String, Value] = {}
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
+      let map : Map[String, @core.Value] = {}
       let effects : Array[Effect] = []
       for field in fields {
         let out = eval_expr(rt, field.expr)
@@ -185,13 +231,14 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
           effects.push(eff)
         }
       }
-      { value: Value::Map(map), effects }
+      { value: @core.Value::Map(map), effects }
     }
-    Expr::If(cond~, then_body~, else_body~) => {
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
       let cond_out = eval_expr(rt, cond)
       let effects = cond_out.effects
       match cond_out.value {
-        Value::Bool(b) => {
+        @core.Value::Bool(b) => {
           let branch_out = if b {
             eval_block(rt, then_body)
           } else {
@@ -205,15 +252,21 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
         _ => raise EvalError::BadCall("if")
       }
     }
-    Expr::Block(body~) => eval_block(rt, body)
-    Expr::Try(try_body~, catch_body~) =>
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      eval_block(rt, body)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
       eval_block(rt, try_body) catch {
         _ => eval_block(rt, catch_body)
       }
-    Expr::Match(scrutinee~, arms~) => {
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
       let scrutinee_out = eval_expr(rt, scrutinee)
       let effects = scrutinee_out.effects
-      let mut matched : Value? = None
+      let mut matched : @core.Value? = None
       for arm in arms {
         match match_pattern(arm.pat, scrutinee_out.value) {
           Some(bindings) => {
@@ -224,7 +277,7 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
                   effects.push(eff)
                 }
                 match g_out.value {
-                  Value::Bool(b) => b
+                  @core.Value::Bool(b) => b
                   _ => raise EvalError::BadCall("guard")
                 }
               }
@@ -244,50 +297,60 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
       }
       match matched {
         Some(v) => { value: v, effects }
-        None => { value: Value::Unit, effects }
+        None => { value: @core.Value::Unit, effects }
       }
     }
-    Expr::Do(body~) => eval_block(rt, body)
-    Expr::Fn(params~, ret~, effects=fn_effects, body~) => {
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      eval_block(rt, body)
+    }
+    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~) => {
+      let _ = span
       let _ = ret
       let _ = fn_effects
-      let purity = purity_for_let(
+      let purity = @checker.purity_for_let(
         rt.type_env,
         false,
         "_",
-        Expr::Fn(params~, ret~, effects=fn_effects, body~),
+        @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~),
       )
-      let closure = FnValue::{
+      let closure = @core.FnValue::{
         params,
         body,
         env: rt.env_snapshot(),
         addr: None,
         pure: purity.value,
       }
-      { value: Value::Fn(closure), effects: [] }
+      { value: @core.Value::Fn(closure), effects: [] }
     }
   }
 }
 
 ///|
-fn match_pattern(pat : Pat, value : Value) -> Map[String, Value]? {
+fn match_pattern(
+  pat : @core.Pat,
+  value : @core.Value,
+) -> Map[String, @core.Value]? {
   match pat {
-    Pat::Wildcard => {
-      let bindings : Map[String, Value] = {}
+    @core.Pat::Wildcard(span~) => {
+      let _ = span
+      let bindings : Map[String, @core.Value] = {}
       Some(bindings)
     }
-    Pat::Bind(name) => {
-      let bindings : Map[String, Value] = {}
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      let bindings : Map[String, @core.Value] = {}
       bindings[name] = value
       Some(bindings)
     }
-    Pat::Ctor(name~, args~) =>
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = span
       match value {
-        Value::Record(map) =>
+        @core.Value::Record(map) =>
           match map.get(name) {
             Some(field_val) =>
               if args.length() == 0 {
-                let bindings : Map[String, Value] = {}
+                let bindings : Map[String, @core.Value] = {}
                 Some(bindings)
               } else if args.length() == 1 {
                 match match_pattern(args[0], field_val) {
@@ -296,11 +359,11 @@ fn match_pattern(pat : Pat, value : Value) -> Map[String, Value]? {
                 }
               } else {
                 match field_val {
-                  Value::Tuple(values) =>
+                  @core.Value::Tuple(values) =>
                     if values.length() != args.length() {
                       None
                     } else {
-                      let bindings : Map[String, Value] = {}
+                      let bindings : Map[String, @core.Value] = {}
                       let mut ok = true
                       for i in 0..<args.length() {
                         match match_pattern(args[i], values[i]) {
@@ -327,46 +390,54 @@ fn match_pattern(pat : Pat, value : Value) -> Map[String, Value]? {
           }
         _ => None
       }
-    Pat::Int(n) =>
+    }
+    @core.Pat::Int(value=n, span~) => {
+      let _ = span
       match value {
-        Value::Int(v) =>
+        @core.Value::Int(v) =>
           if v == n {
-            let bindings : Map[String, Value] = {}
+            let bindings : Map[String, @core.Value] = {}
             Some(bindings)
           } else {
             None
           }
         _ => None
       }
-    Pat::Bool(b) =>
+    }
+    @core.Pat::Bool(value=b, span~) => {
+      let _ = span
       match value {
-        Value::Bool(v) =>
+        @core.Value::Bool(v) =>
           if v == b {
-            let bindings : Map[String, Value] = {}
+            let bindings : Map[String, @core.Value] = {}
             Some(bindings)
           } else {
             None
           }
         _ => None
       }
-    Pat::String(s) =>
+    }
+    @core.Pat::String(value=s, span~) => {
+      let _ = span
       match value {
-        Value::String(v) =>
+        @core.Value::String(v) =>
           if v == s {
-            let bindings : Map[String, Value] = {}
+            let bindings : Map[String, @core.Value] = {}
             Some(bindings)
           } else {
             None
           }
         _ => None
       }
-    Pat::Tuple(items) =>
+    }
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
       match value {
-        Value::Tuple(values) =>
+        @core.Value::Tuple(values) =>
           if items.length() != values.length() {
             None
           } else {
-            let bindings : Map[String, Value] = {}
+            let bindings : Map[String, @core.Value] = {}
             let mut ok = true
             for i in 0..<items.length() {
               match match_pattern(items[i], values[i]) {
@@ -388,10 +459,12 @@ fn match_pattern(pat : Pat, value : Value) -> Map[String, Value]? {
           }
         _ => None
       }
-    Pat::Record(fields) =>
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
       match value {
-        Value::Record(map) => {
-          let bindings : Map[String, Value] = {}
+        @core.Value::Record(map) => {
+          let bindings : Map[String, @core.Value] = {}
           let mut ok = true
           for field in fields {
             match map.get(field.name) {
@@ -420,14 +493,15 @@ fn match_pattern(pat : Pat, value : Value) -> Map[String, Value]? {
         }
         _ => None
       }
+    }
   }
 }
 
 ///|
 fn eval_expr_with_bindings(
   rt : Runtime,
-  expr : Expr,
-  bindings : Map[String, Value],
+  expr : @core.Expr,
+  bindings : Map[String, @core.Value],
 ) -> EvalOutput raise EvalError {
   let scope_rt = rt.fork_for_test()
   for name, value in bindings {
@@ -437,12 +511,12 @@ fn eval_expr_with_bindings(
 }
 
 ///|
-fn eval_block(rt : Runtime, body : Module) -> EvalOutput raise EvalError {
+fn eval_block(rt : Runtime, body : @core.Module) -> EvalOutput raise EvalError {
   let scope_rt = rt.fork_for_test()
   let res = scope_rt.eval_module(body)
   let value = match res.last {
     Some(v) => v
-    None => Value::Unit
+    None => @core.Value::Unit
   }
   { value, effects: res.effects }
 }
@@ -451,16 +525,16 @@ fn eval_block(rt : Runtime, body : Module) -> EvalOutput raise EvalError {
 fn eval_call(
   rt : Runtime,
   name : String,
-  args : Array[CallArg],
+  args : Array[@core.CallArg],
 ) -> EvalOutput raise EvalError {
   if has_alias_prefix_rt(rt, name) {
-    { value: Value::Unit, effects: [] }
+    { value: @core.Value::Unit, effects: [] }
   } else {
     match rt.get(name) {
-      Some(Value::Fn(fn_val)) => eval_user_call(rt, fn_val, args)
+      Some(@core.Value::Fn(fn_val)) => eval_user_call(rt, fn_val, args)
       Some(_) => raise EvalError::BadCall(name)
       None =>
-        if is_ctor_name(name) {
+        if @core.is_ctor_name(name) {
           let out = eval_args(rt, args)
           let pos_args = extract_positional_values(out.args, name)
           let value = ctor_value_from_args(name, pos_args)
@@ -486,13 +560,13 @@ fn eval_call(
                 raise EvalError::BadCall("sh")
               }
               match pos_args[0] {
-                Value::String(cmd) => {
+                @core.Value::String(cmd) => {
                   if not(rt.caps().can_spawn("sh")) {
                     raise EvalError::PermissionDenied("process_spawn")
                   }
                   let effects = out.effects
                   effects.push(Effect::ShellExec(cmd))
-                  { value: Value::Unit, effects }
+                  { value: @core.Value::Unit, effects }
                 }
                 _ => raise EvalError::BadCall("sh")
               }
@@ -504,7 +578,7 @@ fn eval_call(
                 raise EvalError::BadCall("addr")
               }
               match pos_args[0] {
-                Value::String(addr) =>
+                @core.Value::String(addr) =>
                   match rt.get_by_addr(addr) {
                     Some(v) => { value: v, effects: out.effects }
                     None => raise EvalError::BadCall("addr")
@@ -521,7 +595,7 @@ fn eval_call(
               if pos_args.length() != 0 {
                 raise EvalError::BadCall("array_builder")
               }
-              { value: Value::ArrayBuilder([]), effects: out.effects }
+              { value: @core.Value::ArrayBuilder([]), effects: out.effects }
             }
             "array_builder_push" => {
               let out = eval_args(rt, args)
@@ -533,9 +607,9 @@ fn eval_call(
                 raise EvalError::BadCall("array_builder_push")
               }
               match pos_args[0] {
-                Value::ArrayBuilder(items) => {
+                @core.Value::ArrayBuilder(items) => {
                   items.push(pos_args[1])
-                  { value: Value::Unit, effects: out.effects }
+                  { value: @core.Value::Unit, effects: out.effects }
                 }
                 _ => raise EvalError::BadCall("array_builder_push")
               }
@@ -550,9 +624,9 @@ fn eval_call(
                 raise EvalError::BadCall("array_builder_freeze")
               }
               match pos_args[0] {
-                Value::ArrayBuilder(items) => {
+                @core.Value::ArrayBuilder(items) => {
                   let snapshot = clone_value_array(items)
-                  { value: Value::Array(snapshot), effects: out.effects }
+                  { value: @core.Value::Array(snapshot), effects: out.effects }
                 }
                 _ => raise EvalError::BadCall("array_builder_freeze")
               }
@@ -563,7 +637,7 @@ fn eval_call(
               if pos_args.length() != 0 {
                 raise EvalError::BadCall("map_builder")
               }
-              { value: Value::MapBuilder({}), effects: out.effects }
+              { value: @core.Value::MapBuilder({}), effects: out.effects }
             }
             "map_builder_set" => {
               let out = eval_args(rt, args)
@@ -575,9 +649,9 @@ fn eval_call(
                 raise EvalError::BadCall("map_builder_set")
               }
               match (pos_args[0], pos_args[1]) {
-                (Value::MapBuilder(items), Value::String(key)) => {
+                (@core.Value::MapBuilder(items), @core.Value::String(key)) => {
                   items[key] = pos_args[2]
-                  { value: Value::Unit, effects: out.effects }
+                  { value: @core.Value::Unit, effects: out.effects }
                 }
                 _ => raise EvalError::BadCall("map_builder_set")
               }
@@ -592,9 +666,9 @@ fn eval_call(
                 raise EvalError::BadCall("map_builder_freeze")
               }
               match pos_args[0] {
-                Value::MapBuilder(items) => {
+                @core.Value::MapBuilder(items) => {
                   let snapshot = clone_value_map(items)
-                  { value: Value::Map(snapshot), effects: out.effects }
+                  { value: @core.Value::Map(snapshot), effects: out.effects }
                 }
                 _ => raise EvalError::BadCall("map_builder_freeze")
               }
@@ -607,33 +681,38 @@ fn eval_call(
 }
 
 ///|
-fn ctor_value_from_args(name : String, args : Array[Value]) -> Value {
+fn ctor_value_from_args(
+  name : String,
+  args : Array[@core.Value],
+) -> @core.Value {
   let field_value = if args.length() == 0 {
-    Value::Unit
+    @core.Value::Unit
   } else if args.length() == 1 {
     args[0]
   } else {
-    Value::Tuple(args)
+    @core.Value::Tuple(args)
   }
-  let map : Map[String, Value] = {}
+  let map : Map[String, @core.Value] = {}
   map[name] = field_value
-  Value::Record(map)
+  @core.Value::Record(map)
 }
 
 ///|
-fn clone_value_array(items : Array[Value]) -> Array[Value] {
+fn clone_value_array(items : Array[@core.Value]) -> Array[@core.Value] {
   items.copy()
 }
 
 ///|
-fn clone_value_map(items : Map[String, Value]) -> Map[String, Value] {
+fn clone_value_map(
+  items : Map[String, @core.Value],
+) -> Map[String, @core.Value] {
   items.copy()
 }
 
 ///|
 fn eval_args(
   rt : Runtime,
-  args : Array[CallArg],
+  args : Array[@core.CallArg],
 ) -> EvalArgsOutput raise EvalError {
   let out_args : Array[EvalArgValue] = []
   let effects : Array[Effect] = []
@@ -651,8 +730,8 @@ fn eval_args(
 fn extract_positional_values(
   args : Array[EvalArgValue],
   name : String,
-) -> Array[Value] raise EvalError {
-  let out : Array[Value] = []
+) -> Array[@core.Value] raise EvalError {
+  let out : Array[@core.Value] = []
   for arg in args {
     match arg.label {
       Some(_) => raise EvalError::BadCall(name)
@@ -665,8 +744,8 @@ fn extract_positional_values(
 ///|
 fn eval_user_call(
   rt : Runtime,
-  fn_val : FnValue,
-  args : Array[CallArg],
+  fn_val : @core.FnValue,
+  args : Array[@core.CallArg],
 ) -> EvalOutput raise EvalError {
   let out = eval_args(rt, args)
   let mut use_cache = false
@@ -701,17 +780,17 @@ fn eval_user_call(
 
 ///|
 fn bind_call_values(
-  params : Array[FuncParam],
+  params : Array[@core.FuncParam],
   args : Array[EvalArgValue],
-) -> Map[String, Value] raise EvalError {
-  let positional : Array[FuncParam] = []
+) -> Map[String, @core.Value] raise EvalError {
+  let positional : Array[@core.FuncParam] = []
   for param in params {
-    if param.label == ParamLabel::Positional {
+    if param.label == @core.ParamLabel::Positional {
       positional.push(param)
     }
   }
   let mut pos_index = 0
-  let bound : Map[String, Value] = {}
+  let bound : Map[String, @core.Value] = {}
   let used_labels : Map[String, Bool] = {}
   for arg in args {
     match arg.label {
@@ -727,9 +806,9 @@ fn bind_call_values(
         if used_labels.contains(label) {
           raise EvalError::BadCall("duplicate label: " + label)
         }
-        let mut found : FuncParam? = None
+        let mut found : @core.FuncParam? = None
         for param in params {
-          if param.label != ParamLabel::Positional && param.name == label {
+          if param.label != @core.ParamLabel::Positional && param.name == label {
             found = Some(param)
             break
           }
@@ -748,12 +827,13 @@ fn bind_call_values(
     raise EvalError::BadCall("missing positional args")
   }
   for param in params {
-    if param.label == ParamLabel::Required && not(bound.contains(param.name)) {
+    if param.label == @core.ParamLabel::Required &&
+      not(bound.contains(param.name)) {
       raise EvalError::BadCall("missing label: " + param.name)
     }
   }
   for param in params {
-    if param.label == ParamLabel::Optional {
+    if param.label == @core.ParamLabel::Optional {
       match bound.get(param.name) {
         Some(v) => bound[param.name] = ctor_value_from_args("Some", [v])
         None => bound[param.name] = ctor_value_from_args("None", [])
@@ -764,8 +844,8 @@ fn bind_call_values(
 }
 
 ///|
-fn values_from_eval_args(args : Array[EvalArgValue]) -> Array[Value] {
-  let out : Array[Value] = []
+fn values_from_eval_args(args : Array[EvalArgValue]) -> Array[@core.Value] {
+  let out : Array[@core.Value] = []
   for arg in args {
     out.push(arg.value)
   }
@@ -797,15 +877,15 @@ fn is_pure_builtin(name : String) -> Bool {
 ///|
 fn eval_pure_builtin(
   name : String,
-  args : Array[Value],
-) -> Value raise EvalError {
+  args : Array[@core.Value],
+) -> @core.Value raise EvalError {
   match name {
     "path" => {
       if args.length() != 1 {
         raise EvalError::BadCall("path")
       }
       match args[0] {
-        Value::String(s) => Value::Path(Path::new(s))
+        @core.Value::String(s) => @core.Value::Path(@core.Path::new(s))
         _ => raise EvalError::BadCall("path")
       }
     }
@@ -814,7 +894,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("array_length")
       }
       match args[0] {
-        Value::Array(items) => Value::Int(items.length())
+        @core.Value::Array(items) => @core.Value::Int(items.length())
         _ => raise EvalError::BadCall("array_length")
       }
     }
@@ -823,7 +903,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("array_get")
       }
       match (args[0], args[1]) {
-        (Value::Array(items), Value::Int(index)) => {
+        (@core.Value::Array(items), @core.Value::Int(index)) => {
           if index < 0 || index >= items.length() {
             raise EvalError::BadCall("array_get")
           }
@@ -837,7 +917,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("map_get")
       }
       match (args[0], args[1]) {
-        (Value::Map(items), Value::String(key)) =>
+        (@core.Value::Map(items), @core.Value::String(key)) =>
           match items.get(key) {
             Some(value) => value
             None => raise EvalError::BadCall("map_get")
@@ -850,7 +930,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_length")
       }
       match args[0] {
-        Value::String(s) => Value::Int(String::length(s))
+        @core.Value::String(s) => @core.Value::Int(String::length(s))
         _ => raise EvalError::BadCall("string_length")
       }
     }
@@ -859,12 +939,12 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_char_code_at")
       }
       match (args[0], args[1]) {
-        (Value::String(s), Value::Int(index)) => {
+        (@core.Value::String(s), @core.Value::Int(index)) => {
           if index < 0 || index >= String::length(s) {
             raise EvalError::BadCall("string_char_code_at")
           }
           let code = String::code_unit_at(s, index)
-          Value::Int(UInt16::to_int(code))
+          @core.Value::Int(UInt16::to_int(code))
         }
         _ => raise EvalError::BadCall("string_char_code_at")
       }
@@ -874,7 +954,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_substring")
       }
       match (args[0], args[1], args[2]) {
-        (Value::String(s), Value::Int(start), Value::Int(end)) => {
+        (@core.Value::String(s), @core.Value::Int(start), @core.Value::Int(end)) => {
           let len = String::length(s)
           let mut a = start
           let mut b = end
@@ -891,7 +971,7 @@ fn eval_pure_builtin(
             b = len
           }
           let (from, to) = if a <= b { (a, b) } else { (b, a) }
-          Value::String(String::unsafe_substring(s, start=from, end=to))
+          @core.Value::String(String::unsafe_substring(s, start=from, end=to))
         }
         _ => raise EvalError::BadCall("string_substring")
       }
@@ -901,7 +981,8 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_concat")
       }
       match (args[0], args[1]) {
-        (Value::String(a), Value::String(b)) => Value::String(String::add(a, b))
+        (@core.Value::String(a), @core.Value::String(b)) =>
+          @core.Value::String(String::add(a, b))
         _ => raise EvalError::BadCall("string_concat")
       }
     }
@@ -910,7 +991,8 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_equals")
       }
       match (args[0], args[1]) {
-        (Value::String(a), Value::String(b)) => Value::Bool(String::equal(a, b))
+        (@core.Value::String(a), @core.Value::String(b)) =>
+          @core.Value::Bool(String::equal(a, b))
         _ => raise EvalError::BadCall("string_equals")
       }
     }
@@ -919,7 +1001,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__add")
       }
       match (args[0], args[1]) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a + b)
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a + b)
         _ => raise EvalError::BadCall("__add")
       }
     }
@@ -928,7 +1010,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__sub")
       }
       match (args[0], args[1]) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a - b)
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a - b)
         _ => raise EvalError::BadCall("__sub")
       }
     }
@@ -937,7 +1019,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__mul")
       }
       match (args[0], args[1]) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a * b)
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a * b)
         _ => raise EvalError::BadCall("__mul")
       }
     }
@@ -946,11 +1028,11 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__div")
       }
       match (args[0], args[1]) {
-        (Value::Int(a), Value::Int(b)) =>
+        (@core.Value::Int(a), @core.Value::Int(b)) =>
           if b == 0 {
             raise EvalError::BadCall("__div")
           } else {
-            Value::Int(a / b)
+            @core.Value::Int(a / b)
           }
         _ => raise EvalError::BadCall("__div")
       }
@@ -960,7 +1042,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__eq")
       }
       match (args[0], args[1]) {
-        (Value::Int(a), Value::Int(b)) => Value::Bool(a == b)
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Bool(a == b)
         _ => raise EvalError::BadCall("__eq")
       }
     }
@@ -969,7 +1051,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__lt")
       }
       match (args[0], args[1]) {
-        (Value::Int(a), Value::Int(b)) => Value::Bool(a < b)
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Bool(a < b)
         _ => raise EvalError::BadCall("__lt")
       }
     }
@@ -978,9 +1060,9 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__assert")
       }
       match args[0] {
-        Value::Bool(b) =>
+        @core.Value::Bool(b) =>
           if b {
-            Value::Unit
+            @core.Value::Unit
           } else {
             raise EvalError::BadCall("assert")
           }
@@ -992,16 +1074,16 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("record_set")
       }
       match (args[0], args[1]) {
-        (Value::Record(map), Value::String(name)) => {
+        (@core.Value::Record(map), @core.Value::String(name)) => {
           if not(map.contains(name)) {
             raise EvalError::BadCall("record_set")
           }
-          let out : Map[String, Value] = {}
+          let out : Map[String, @core.Value] = {}
           for k, v in map {
             out[k] = v
           }
           out[name] = args[2]
-          Value::Record(out)
+          @core.Value::Record(out)
         }
         _ => raise EvalError::BadCall("record_set")
       }
@@ -1011,7 +1093,7 @@ fn eval_pure_builtin(
 }
 
 ///|
-fn pure_call_key(name : String, args : Array[Value]) -> String {
+fn pure_call_key(name : String, args : Array[@core.Value]) -> String {
   let buf = StringBuilder::new()
   buf.write_string("pure:")
   buf.write_string(name)
@@ -1019,11 +1101,11 @@ fn pure_call_key(name : String, args : Array[Value]) -> String {
     buf.write_char('\n')
     buf.write_string(value_hash(arg))
   }
-  git_blob_hash_string(buf.to_string())
+  @core.git_blob_hash_string(buf.to_string())
 }
 
 ///|
-fn fn_call_key(addr : String, args : Array[Value]) -> String {
+fn fn_call_key(addr : String, args : Array[@core.Value]) -> String {
   let buf = StringBuilder::new()
   buf.write_string("fn:")
   buf.write_string(addr)
@@ -1031,7 +1113,7 @@ fn fn_call_key(addr : String, args : Array[Value]) -> String {
     buf.write_char('\n')
     buf.write_string(value_hash(arg))
   }
-  git_blob_hash_string(buf.to_string())
+  @core.git_blob_hash_string(buf.to_string())
 }
 
 ///|

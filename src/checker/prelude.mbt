@@ -12,8 +12,8 @@ let prelude_source : String =
   #|let assert = fn (cond: Bool) -> Unit { __assert(cond) }
 
 ///|
-fn prelude_ast() -> Module {
-  try! parse_ast(prelude_source)
+pub fn prelude_ast() -> @core.Module {
+  try! @parser.parse_ast(prelude_source)
 }
 
 ///|

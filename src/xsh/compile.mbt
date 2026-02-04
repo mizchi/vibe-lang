@@ -2,14 +2,14 @@
 /// xsh compile + run pipeline (prototype)
 suberror CompileError {
   MissingSource(String)
-  Parse(ParseError)
-  Type(TypeError)
+  Parse(@parser.ParseError)
+  Type(@checker.TypeError)
 } derive(Show, Eq)
 
 ///|
 suberror WasmCompileError {
   Compile(CompileError)
-  Gen(WasmGenError)
+  Gen(@codegen.WasmGenError)
 } derive(Show, Eq)
 
 ///|
@@ -19,8 +19,8 @@ pub struct CompiledModule {
   ir_hash : String
   module_ref : String
   imports : Array[String]
-  aliases : Map[String, Ref]
-  ast : Module
+  aliases : Map[String, @core.Ref]
+  ast : @core.Module
 }
 
 ///|
@@ -33,18 +33,20 @@ pub fn compile_module(
     Some(s) => s
     None => raise CompileError::MissingSource(path)
   }
-  let raw_ast = parse_ast(source) catch { e => raise CompileError::Parse(e) }
+  let raw_ast = @parser.parse_ast(source) catch {
+    e => raise CompileError::Parse(e)
+  }
   let aliases = build_alias_map(raw_ast, db.import_aliases(path))
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
-    let _ = type_check_with_aliases(ast, aliases)
+    let _ = @checker.type_check_with_aliases(ast, aliases)
 
   } catch {
     e => raise CompileError::Type(e)
   }
   let ir = module_to_sexp(ast, aliases)
-  let ir_hash = git_blob_hash_string(ir)
-  let module_ref = module_ref_from_hash(ir_hash)
+  let ir_hash = @core.git_blob_hash_string(ir)
+  let module_ref = @core.module_ref_from_hash(ir_hash)
   let imports : Array[String] = []
   for imp in db.imports(path) {
     match imp.module_ref {
@@ -79,7 +81,7 @@ pub fn compile_module_wasm(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  emit_module_wasm(compiled.ast) catch {
+  @codegen.emit_module_wasm(compiled.ast) catch {
     e => raise WasmCompileError::Gen(e)
   }
 }
@@ -93,7 +95,7 @@ pub fn compile_module_wasm_js_string(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  emit_module_wasm_js_string(compiled.ast) catch {
+  @codegen.emit_module_wasm_js_string(compiled.ast) catch {
     e => raise WasmCompileError::Gen(e)
   }
 }
@@ -107,7 +109,7 @@ pub fn compile_module_wasm_gc(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  emit_module_wasm_gc(compiled.ast) catch {
+  @codegen.emit_module_wasm_gc(compiled.ast) catch {
     e => raise WasmCompileError::Gen(e)
   }
 }
@@ -115,17 +117,19 @@ pub fn compile_module_wasm_gc(
 ///|
 /// Merge alias statements into import alias map.
 fn build_alias_map(
-  ast : Module,
-  import_aliases : Map[String, Ref],
-) -> Map[String, Ref] {
+  ast : @core.Module,
+  import_aliases : Map[String, @core.Ref],
+) -> Map[String, @core.Ref] {
   let aliases = import_aliases
   for stmt in ast.stmts {
     match stmt {
-      Stmt::Alias(name~, target~) =>
+      @core.Stmt::Alias(name~, target~, span~) => {
+        let _ = span
         match target {
-          AliasTarget::Module(r) => aliases[name] = r
-          AliasTarget::Name(_) => ()
+          @core.AliasTarget::Module(r) => aliases[name] = r
+          @core.AliasTarget::Name(_) => ()
         }
+      }
       _ => ()
     }
   }
@@ -134,17 +138,24 @@ fn build_alias_map(
 
 ///|
 /// Convert module to canonical S-expression for hashing.
-fn module_to_sexp(ast : Module, aliases : Map[String, Ref]) -> String {
+fn module_to_sexp(
+  ast : @core.Module,
+  aliases : Map[String, @core.Ref],
+) -> String {
   "(module " + stmts_to_sexp(ast.stmts, aliases) + ")"
 }
 
 ///|
-fn stmts_to_sexp(stmts : Array[Stmt], aliases : Map[String, Ref]) -> String {
+fn stmts_to_sexp(
+  stmts : Array[@core.Stmt],
+  aliases : Map[String, @core.Ref],
+) -> String {
   let buf = StringBuilder::new()
   buf.write_string("(stmts")
   for stmt in stmts {
     match stmt {
-      Stmt::Let(rec~, name~, expr~) => {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
         if rec {
           buf.write_string(" (let-rec ")
         } else {
@@ -155,7 +166,8 @@ fn stmts_to_sexp(stmts : Array[Stmt], aliases : Map[String, Ref]) -> String {
         buf.write_string(expr_to_sexp(expr, aliases))
         buf.write_char(')')
       }
-      Stmt::EnumDef(name~, params~, ctors~) => {
+      @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
+        let _ = span
         buf.write_string(" (enum ")
         buf.write_string(escape_atom(name))
         buf.write_string(" (params")
@@ -174,7 +186,8 @@ fn stmts_to_sexp(stmts : Array[Stmt], aliases : Map[String, Ref]) -> String {
         }
         buf.write_string("))")
       }
-      Stmt::TypeAlias(name~, params~, target~) => {
+      @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
+        let _ = span
         buf.write_string(" (type-alias ")
         buf.write_string(escape_atom(name))
         buf.write_string(" (params")
@@ -186,15 +199,34 @@ fn stmts_to_sexp(stmts : Array[Stmt], aliases : Map[String, Ref]) -> String {
         buf.write_string(type_to_sexp(target))
         buf.write_char(')')
       }
-      Stmt::Expr(expr~) => {
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
         buf.write_string(" (expr ")
         buf.write_string(expr_to_sexp(expr, aliases))
         buf.write_char(')')
       }
-      Stmt::Flake(_) => buf.write_string(" (flake)")
-      Stmt::Alias(..) => ()
-      Stmt::Import(..) => ()
-      Stmt::Test(..) => ()
+      @core.Stmt::Flake(raw~, span~) => {
+        let _ = raw
+        let _ = span
+        buf.write_string(" (flake)")
+      }
+      @core.Stmt::Alias(name~, target~, span~) => {
+        let _ = name
+        let _ = target
+        let _ = span
+
+      }
+      @core.Stmt::Import(path~, span~) => {
+        let _ = path
+        let _ = span
+
+      }
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = body
+        let _ = span
+
+      }
     }
   }
   buf.write_char(')')
@@ -202,23 +234,37 @@ fn stmts_to_sexp(stmts : Array[Stmt], aliases : Map[String, Ref]) -> String {
 }
 
 ///|
-fn block_to_sexp(body : Module, aliases : Map[String, Ref]) -> String {
+fn block_to_sexp(
+  body : @core.Module,
+  aliases : Map[String, @core.Ref],
+) -> String {
   "(block " + stmts_to_sexp(body.stmts, aliases) + ")"
 }
 
 ///|
 /// Convert expression to S-expression.
-fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
+fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
   match expr {
-    Expr::Int(n) => "(lit (int " + n.to_string() + "))"
-    Expr::Bool(b) => "(lit (bool " + (if b { "true" } else { "false" }) + "))"
-    Expr::String(s) => "(lit (string " + escape_string(s) + "))"
-    Expr::Ident(name) => {
-      let resolved = resolve_qualified(name, aliases)
+    @core.Expr::Int(value=n, span~) => {
+      let _ = span
+      "(lit (int " + n.to_string() + "))"
+    }
+    @core.Expr::Bool(value=b, span~) => {
+      let _ = span
+      "(lit (bool " + (if b { "true" } else { "false" }) + "))"
+    }
+    @core.Expr::String(value=s, span~) => {
+      let _ = span
+      "(lit (string " + escape_string(s) + "))"
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
+      let resolved = @core.resolve_qualified(name, aliases)
       "(ref " + escape_string(resolved) + ")"
     }
-    Expr::Call(name~, args~) => {
-      let resolved = resolve_qualified(name, aliases)
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
+      let resolved = @core.resolve_qualified(name, aliases)
       let buf = StringBuilder::new()
       buf.write_string("(call ")
       buf.write_string(escape_string(resolved))
@@ -227,7 +273,8 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Expr::If(cond~, then_body~, else_body~) => {
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(if ")
       buf.write_string(expr_to_sexp(cond, aliases))
@@ -238,8 +285,12 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Expr::Block(body~) => block_to_sexp(body, aliases)
-    Expr::Match(scrutinee~, arms~) => {
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      block_to_sexp(body, aliases)
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(match ")
       buf.write_string(expr_to_sexp(scrutinee, aliases))
@@ -251,8 +302,12 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_string("))")
       buf.to_string()
     }
-    Expr::Do(body~) => "(do " + block_to_sexp(body, aliases) + ")"
-    Expr::Tuple(items) => {
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      "(do " + block_to_sexp(body, aliases) + ")"
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(tuple")
       for item in items {
@@ -262,7 +317,8 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Expr::Record(fields) => {
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(record")
       let sorted = sort_record_fields_expr(fields)
@@ -277,7 +333,8 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Expr::Array(items) => {
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(array")
       for item in items {
@@ -287,7 +344,8 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Expr::Map(fields) => {
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(map")
       let sorted = sort_map_fields_expr(fields)
@@ -302,7 +360,8 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Expr::Try(try_body~, catch_body~) => {
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(try ")
       buf.write_string(block_to_sexp(try_body, aliases))
@@ -311,7 +370,8 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Expr::Fn(params~, ret~, effects~, body~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(fn (params")
       for param in params {
@@ -338,8 +398,8 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
 
 ///|
 fn call_args_to_sexp(
-  args : Array[CallArg],
-  aliases : Map[String, Ref],
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
 ) -> String {
   let buf = StringBuilder::new()
   buf.write_string("(args")
@@ -358,7 +418,7 @@ fn call_args_to_sexp(
 }
 
 ///|
-fn param_to_sexp(param : FuncParam) -> String {
+fn param_to_sexp(param : @core.FuncParam) -> String {
   let buf = StringBuilder::new()
   buf.write_string("(param ")
   buf.write_string(escape_atom(param.name))
@@ -371,23 +431,23 @@ fn param_to_sexp(param : FuncParam) -> String {
 }
 
 ///|
-fn label_to_sexp(label : ParamLabel) -> String {
+fn label_to_sexp(label : @core.ParamLabel) -> String {
   match label {
-    ParamLabel::Positional => "pos"
-    ParamLabel::Required => "req"
-    ParamLabel::Optional => "opt"
+    @core.ParamLabel::Positional => "pos"
+    @core.ParamLabel::Required => "req"
+    @core.ParamLabel::Optional => "opt"
   }
 }
 
 ///|
-fn type_to_sexp(ty : Type) -> String {
+fn type_to_sexp(ty : @core.Type) -> String {
   match ty {
-    Type::Int => "Int"
-    Type::Bool => "Bool"
-    Type::String => "String"
-    Type::Path => "Path"
-    Type::Unit => "Unit"
-    Type::Named(name~, args~) => {
+    @core.Type::Int => "Int"
+    @core.Type::Bool => "Bool"
+    @core.Type::String => "String"
+    @core.Type::Path => "@core.Path"
+    @core.Type::Unit => "Unit"
+    @core.Type::Named(name~, args~) => {
       let buf = StringBuilder::new()
       buf.write_string("(Named ")
       buf.write_string(escape_atom(name))
@@ -398,9 +458,9 @@ fn type_to_sexp(ty : Type) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Type::Param(name) => "(Param " + escape_atom(name) + ")"
-    Type::Var(id) => "(Var " + id.to_string() + ")"
-    Type::Tuple(items) => {
+    @core.Type::Param(name) => "(Param " + escape_atom(name) + ")"
+    @core.Type::Var(id) => "(Var " + id.to_string() + ")"
+    @core.Type::Tuple(items) => {
       let buf = StringBuilder::new()
       buf.write_string("(Tuple")
       for item in items {
@@ -410,7 +470,7 @@ fn type_to_sexp(ty : Type) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Type::Record(fields) => {
+    @core.Type::Record(fields) => {
       let keys = sort_record_type_keys(fields)
       let buf = StringBuilder::new()
       buf.write_string("(Record")
@@ -430,11 +490,12 @@ fn type_to_sexp(ty : Type) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Type::Array(inner) => "(Array " + type_to_sexp(inner) + ")"
-    Type::Map(inner) => "(Map " + type_to_sexp(inner) + ")"
-    Type::ArrayBuilder(inner) => "(ArrayBuilder " + type_to_sexp(inner) + ")"
-    Type::MapBuilder(inner) => "(MapBuilder " + type_to_sexp(inner) + ")"
-    Type::Variant(fields) => {
+    @core.Type::Array(inner) => "(Array " + type_to_sexp(inner) + ")"
+    @core.Type::Map(inner) => "(Map " + type_to_sexp(inner) + ")"
+    @core.Type::ArrayBuilder(inner) =>
+      "(ArrayBuilder " + type_to_sexp(inner) + ")"
+    @core.Type::MapBuilder(inner) => "(MapBuilder " + type_to_sexp(inner) + ")"
+    @core.Type::Variant(fields) => {
       let keys = sort_record_type_keys(fields)
       let buf = StringBuilder::new()
       buf.write_string("(Variant")
@@ -454,7 +515,7 @@ fn type_to_sexp(ty : Type) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Type::Func(params~, ret~, effects~) => {
+    @core.Type::Func(params~, ret~, effects~) => {
       let buf = StringBuilder::new()
       buf.write_string("(Func (params")
       for param in params {
@@ -476,26 +537,26 @@ fn type_to_sexp(ty : Type) -> String {
 }
 
 ///|
-fn effect_atom_to_sexp(effect : EffectAtom) -> String {
+fn effect_atom_to_sexp(effect : @core.EffectAtom) -> String {
   match effect {
-    EffectAtom::Const(name) => escape_atom(name)
-    EffectAtom::Var(name) => escape_atom(name)
+    @core.EffectAtom::Const(name) => escape_atom(name)
+    @core.EffectAtom::Var(name) => escape_atom(name)
   }
 }
 
 ///|
-fn type_ctor_payload(ctor : TypeCtor) -> Type {
+fn type_ctor_payload(ctor : @core.TypeCtor) -> @core.Type {
   if ctor.args.length() == 0 {
-    Type::Unit
+    @core.Type::Unit
   } else if ctor.args.length() == 1 {
     ctor.args[0]
   } else {
-    Type::Tuple(ctor.args)
+    @core.Type::Tuple(ctor.args)
   }
 }
 
 ///|
-fn sort_record_type_keys(fields : Map[String, Type]) -> Array[String] {
+fn sort_record_type_keys(fields : Map[String, @core.Type]) -> Array[String] {
   let out : Array[String] = []
   for name, _ in fields {
     out.push(name)
@@ -511,8 +572,10 @@ fn sort_record_type_keys(fields : Map[String, Type]) -> Array[String] {
 }
 
 ///|
-fn sort_map_fields_expr(fields : Array[MapFieldExpr]) -> Array[MapFieldExpr] {
-  let out : Array[MapFieldExpr] = []
+fn sort_map_fields_expr(
+  fields : Array[@core.MapFieldExpr],
+) -> Array[@core.MapFieldExpr] {
+  let out : Array[@core.MapFieldExpr] = []
   for field in fields {
     out.push(field)
     let mut i = out.length() - 1
@@ -527,8 +590,26 @@ fn sort_map_fields_expr(fields : Array[MapFieldExpr]) -> Array[MapFieldExpr] {
 }
 
 ///|
-fn sort_type_ctors(ctors : Array[TypeCtor]) -> Array[TypeCtor] {
-  let out : Array[TypeCtor] = []
+fn sort_record_fields_expr(
+  fields : Array[@core.RecordFieldExpr],
+) -> Array[@core.RecordFieldExpr] {
+  let out : Array[@core.RecordFieldExpr] = []
+  for field in fields {
+    out.push(field)
+    let mut i = out.length() - 1
+    while i > 0 && string_lt_compile(out[i].name, out[i - 1].name) {
+      let tmp = out[i - 1]
+      out[i - 1] = out[i]
+      out[i] = tmp
+      i -= 1
+    }
+  }
+  out
+}
+
+///|
+fn sort_type_ctors(ctors : Array[@core.TypeCtor]) -> Array[@core.TypeCtor] {
+  let out : Array[@core.TypeCtor] = []
   for ctor in ctors {
     out.push(ctor)
     let mut i = out.length() - 1
@@ -565,7 +646,10 @@ fn string_lt_compile(a : String, b : String) -> Bool {
 }
 
 ///|
-fn match_arm_to_sexp(arm : MatchArm, aliases : Map[String, Ref]) -> String {
+fn match_arm_to_sexp(
+  arm : @core.MatchArm,
+  aliases : Map[String, @core.Ref],
+) -> String {
   let buf = StringBuilder::new()
   buf.write_string("(arm ")
   buf.write_string(pat_to_sexp(arm.pat))
@@ -584,11 +668,18 @@ fn match_arm_to_sexp(arm : MatchArm, aliases : Map[String, Ref]) -> String {
 }
 
 ///|
-fn pat_to_sexp(pat : Pat) -> String {
+fn pat_to_sexp(pat : @core.Pat) -> String {
   match pat {
-    Pat::Wildcard => "(pat _)"
-    Pat::Bind(name) => "(pat (bind " + escape_string(name) + "))"
-    Pat::Ctor(name~, args~) => {
+    @core.Pat::Wildcard(span~) => {
+      let _ = span
+      "(pat _)"
+    }
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      "(pat (bind " + escape_string(name) + "))"
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(pat (ctor ")
       buf.write_string(escape_string(name))
@@ -599,7 +690,8 @@ fn pat_to_sexp(pat : Pat) -> String {
       buf.write_string("))")
       buf.to_string()
     }
-    Pat::Tuple(items) => {
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(pat (tuple")
       for item in items {
@@ -609,7 +701,8 @@ fn pat_to_sexp(pat : Pat) -> String {
       buf.write_string("))")
       buf.to_string()
     }
-    Pat::Record(fields) => {
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(pat (record")
       for field in fields {
@@ -623,9 +716,18 @@ fn pat_to_sexp(pat : Pat) -> String {
       buf.write_string("))")
       buf.to_string()
     }
-    Pat::Int(n) => "(pat (int " + n.to_string() + "))"
-    Pat::Bool(b) => "(pat (bool " + (if b { "true" } else { "false" }) + "))"
-    Pat::String(s) => "(pat (string " + escape_string(s) + "))"
+    @core.Pat::Int(value=n, span~) => {
+      let _ = span
+      "(pat (int " + n.to_string() + "))"
+    }
+    @core.Pat::Bool(value=b, span~) => {
+      let _ = span
+      "(pat (bool " + (if b { "true" } else { "false" }) + "))"
+    }
+    @core.Pat::String(value=s, span~) => {
+      let _ = span
+      "(pat (string " + escape_string(s) + "))"
+    }
   }
 }
 

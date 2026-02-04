@@ -1,7 +1,7 @@
 ///|
 /// Content-addressed store and runtime for xsh
 pub struct Store {
-  values : Map[String, Value]
+  values : Map[String, @core.Value]
 } derive(Show, Eq)
 
 ///|
@@ -10,12 +10,12 @@ pub fn Store::new() -> Store {
 }
 
 ///|
-pub fn Store::put(self : Store, hash : String, value : Value) -> Unit {
+pub fn Store::put(self : Store, hash : String, value : @core.Value) -> Unit {
   self.values[hash] = value
 }
 
 ///|
-pub fn Store::get(self : Store, hash : String) -> Value? {
+pub fn Store::get(self : Store, hash : String) -> @core.Value? {
   self.values.get(hash)
 }
 
@@ -41,10 +41,10 @@ pub struct Runtime {
   addr_env : Map[String, String]
   names : Map[String, String]
   caps : @capability.CapabilitySet
-  aliases : Map[String, Ref]
+  aliases : Map[String, @core.Ref]
   pure_cache : PureCache
   test_cache : TestCache
-  mut type_env : TypeEnv
+  mut type_env : @checker.TypeEnv
 }
 
 ///|
@@ -58,13 +58,13 @@ pub fn Runtime::new(caps : @capability.CapabilitySet) -> Runtime {
     aliases: {},
     pure_cache: PureCache::new(),
     test_cache: TestCache::new(),
-    type_env: TypeEnv::new(),
+    type_env: @checker.TypeEnv::new(),
   }
-  let env = TypeEnv::new()
-  let _ = try! ensure_prelude_option(env)
-  let _ = try! ensure_prelude_functions(env, {})
+  let env = @checker.TypeEnv::new()
+  let _ = try! @checker.ensure_prelude_option(env)
+  let _ = try! @checker.ensure_prelude_functions(env, {})
   rt.type_env = env
-  let _ = try! rt.eval_module(prelude_ast())
+  let _ = try! rt.eval_module(@checker.prelude_ast())
   rt
 }
 
@@ -74,7 +74,11 @@ pub fn Runtime::caps(self : Runtime) -> @capability.CapabilitySet {
 }
 
 ///|
-pub fn Runtime::bind(self : Runtime, name : String, value : Value) -> String {
+pub fn Runtime::bind(
+  self : Runtime,
+  name : String,
+  value : @core.Value,
+) -> String {
   let hash = value_hash(value)
   self.store.put(hash, value)
   self.env[name] = hash
@@ -86,7 +90,7 @@ pub fn Runtime::bind_with_addr(
   self : Runtime,
   name : String,
   addr : String,
-  value : Value,
+  value : @core.Value,
 ) -> Unit {
   self.store.put(addr, value)
   self.env[name] = addr
@@ -94,7 +98,7 @@ pub fn Runtime::bind_with_addr(
 }
 
 ///|
-pub fn Runtime::get(self : Runtime, name : String) -> Value? {
+pub fn Runtime::get(self : Runtime, name : String) -> @core.Value? {
   match self.env.get(name) {
     Some(hash) => self.store.get(hash)
     None => None
@@ -102,7 +106,7 @@ pub fn Runtime::get(self : Runtime, name : String) -> Value? {
 }
 
 ///|
-pub fn Runtime::get_by_addr(self : Runtime, addr : String) -> Value? {
+pub fn Runtime::get_by_addr(self : Runtime, addr : String) -> @core.Value? {
   self.store.get(addr)
 }
 
@@ -125,12 +129,16 @@ pub fn Runtime::remove_binding(self : Runtime, name : String) -> Bool {
 }
 
 ///|
-pub fn Runtime::set_alias(self : Runtime, name : String, target : Ref) -> Unit {
+pub fn Runtime::set_alias(
+  self : Runtime,
+  name : String,
+  target : @core.Ref,
+) -> Unit {
   self.aliases[name] = target
 }
 
 ///|
-pub fn Runtime::get_alias(self : Runtime, name : String) -> Ref? {
+pub fn Runtime::get_alias(self : Runtime, name : String) -> @core.Ref? {
   self.aliases.get(name)
 }
 
@@ -154,7 +162,7 @@ pub fn Runtime::alias_count(self : Runtime) -> Int {
 }
 
 ///|
-pub fn Runtime::pure_cache_get(self : Runtime, key : String) -> Value? {
+pub fn Runtime::pure_cache_get(self : Runtime, key : String) -> @core.Value? {
   self.pure_cache.get(key)
 }
 
@@ -162,7 +170,7 @@ pub fn Runtime::pure_cache_get(self : Runtime, key : String) -> Value? {
 pub fn Runtime::pure_cache_set(
   self : Runtime,
   key : String,
-  value : Value,
+  value : @core.Value,
 ) -> Unit {
   self.pure_cache.set(key, value)
 }
@@ -227,12 +235,12 @@ pub fn Runtime::fork_with_env(
 }
 
 ///|
-pub fn Runtime::type_env(self : Runtime) -> TypeEnv {
+pub fn Runtime::type_env(self : Runtime) -> @checker.TypeEnv {
   self.type_env
 }
 
 ///|
-pub fn Runtime::set_type_env(self : Runtime, env : TypeEnv) -> Unit {
+pub fn Runtime::set_type_env(self : Runtime, env : @checker.TypeEnv) -> Unit {
   self.type_env = env
 }
 
@@ -246,8 +254,8 @@ fn clone_string_map(src : Map[String, String]) -> Map[String, String] {
 }
 
 ///|
-fn clone_ref_map(src : Map[String, Ref]) -> Map[String, Ref] {
-  let out : Map[String, Ref] = {}
+fn clone_ref_map(src : Map[String, @core.Ref]) -> Map[String, @core.Ref] {
+  let out : Map[String, @core.Ref] = {}
   for k, v in src {
     out[k] = v
   }
@@ -284,7 +292,7 @@ pub fn Runtime::gc(self : Runtime) -> Unit {
 
 ///|
 /// Hash a value for content-addressed storage
-pub fn value_hash(value : Value) -> String {
+pub fn value_hash(value : @core.Value) -> String {
   let hasher = @bit.Sha1State::new()
   hasher.update_string(value.to_string())
   hasher.finish().to_hex()

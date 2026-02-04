@@ -1,7 +1,7 @@
 ///|
 /// Cache for pure test results.
 pub enum TestOutcome {
-  Passed(Value)
+  Passed(@core.Value)
   Failed(String)
 } derive(Show, Eq)
 

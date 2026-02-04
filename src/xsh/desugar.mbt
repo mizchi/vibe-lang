@@ -1,89 +1,108 @@
 ///|
 /// Desugar method-call syntax (t.foo(...)) into foo(t, ...)
-pub fn desugar_method_calls(ast : Module, aliases : Map[String, Ref]) -> Module {
+pub fn desugar_method_calls(
+  ast : @core.Module,
+  aliases : Map[String, @core.Ref],
+) -> @core.Module {
   let scope : Map[String, Bool] = {}
   desugar_block(ast, scope, aliases)
 }
 
 ///|
 fn desugar_block(
-  body : Module,
+  body : @core.Module,
   scope : Map[String, Bool],
-  aliases : Map[String, Ref],
-) -> Module {
+  aliases : Map[String, @core.Ref],
+) -> @core.Module {
   let scope_map = clone_scope(scope)
-  let out : Array[Stmt] = []
+  let out : Array[@core.Stmt] = []
   for stmt in body.stmts {
     let next = desugar_stmt(stmt, scope_map, aliases)
     out.push(next)
     match stmt {
-      Stmt::Let(name~, ..) => scope_map[name] = true
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = rec
+        let _ = expr
+        let _ = span
+        scope_map[name] = true
+      }
       _ => ()
     }
   }
-  Module::{ stmts: out }
+  @core.Module::{ stmts: out }
 }
 
 ///|
 fn desugar_stmt(
-  stmt : Stmt,
+  stmt : @core.Stmt,
   scope : Map[String, Bool],
-  aliases : Map[String, Ref],
-) -> Stmt {
+  aliases : Map[String, @core.Ref],
+) -> @core.Stmt {
   match stmt {
-    Stmt::Let(rec~, name~, expr~) =>
-      Stmt::Let(rec~, name~, expr=desugar_expr(expr, scope, aliases))
-    Stmt::Expr(expr~) => Stmt::Expr(expr=desugar_expr(expr, scope, aliases))
-    Stmt::Test(name~, body~) =>
-      Stmt::Test(name~, body=desugar_block(body, scope, aliases))
-    Stmt::EnumDef(..) => stmt
-    Stmt::TypeAlias(..) => stmt
-    Stmt::Flake(..) => stmt
-    Stmt::Alias(..) => stmt
-    Stmt::Import(..) => stmt
+    @core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @core.Stmt::Let(
+        rec~,
+        name~,
+        expr=desugar_expr(expr, scope, aliases),
+        span~,
+      )
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(expr=desugar_expr(expr, scope, aliases), span~)
+    @core.Stmt::Test(name~, body~, span~) =>
+      @core.Stmt::Test(name~, body=desugar_block(body, scope, aliases), span~)
+    @core.Stmt::EnumDef(..) => stmt
+    @core.Stmt::TypeAlias(..) => stmt
+    @core.Stmt::Flake(..) => stmt
+    @core.Stmt::Alias(..) => stmt
+    @core.Stmt::Import(..) => stmt
   }
 }
 
 ///|
 fn desugar_expr(
-  expr : Expr,
+  expr : @core.Expr,
   scope : Map[String, Bool],
-  aliases : Map[String, Ref],
-) -> Expr {
+  aliases : Map[String, @core.Ref],
+) -> @core.Expr {
   match expr {
-    Expr::Call(name~, args~) => {
-      let next_args : Array[CallArg] = []
+    @core.Expr::Call(name~, args~, span~) => {
+      let next_args : Array[@core.CallArg] = []
       for arg in args {
-        next_args.push(CallArg::{
+        next_args.push(@core.CallArg::{
           label: arg.label,
           expr: desugar_expr(arg.expr, scope, aliases),
+          span: arg.span,
         })
       }
       match split_method_call_name(name) {
         Some((recv, method_name)) =>
           if scope.contains(recv) && not(aliases.contains(recv)) {
-            let merged : Array[CallArg] = []
-            merged.push(CallArg::{ label: None, expr: Expr::Ident(recv) })
+            let merged : Array[@core.CallArg] = []
+            let recv_expr = @core.Expr::Ident(name=recv, span~)
+            merged.push(@core.CallArg::{ label: None, expr: recv_expr, span })
             for arg in next_args {
               merged.push(arg)
             }
-            Expr::Call(name=method_name, args=merged)
+            @core.Expr::Call(name=method_name, args=merged, span~)
           } else {
-            Expr::Call(name~, args=next_args)
+            @core.Expr::Call(name~, args=next_args, span~)
           }
-        None => Expr::Call(name~, args=next_args)
+        None => @core.Expr::Call(name~, args=next_args, span~)
       }
     }
-    Expr::If(cond~, then_body~, else_body~) =>
-      Expr::If(
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
         cond=desugar_expr(cond, scope, aliases),
         then_body=desugar_block(then_body, scope, aliases),
         else_body=desugar_block(else_body, scope, aliases),
+        span~,
       )
-    Expr::Block(body~) => Expr::Block(body=desugar_block(body, scope, aliases))
-    Expr::Do(body~) => Expr::Do(body=desugar_block(body, scope, aliases))
-    Expr::Match(scrutinee~, arms~) => {
-      let next_arms : Array[MatchArm] = []
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(body=desugar_block(body, scope, aliases), span~)
+    @core.Expr::Do(body~, span~) =>
+      @core.Expr::Do(body=desugar_block(body, scope, aliases), span~)
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let next_arms : Array[@core.MatchArm] = []
       let scrut = desugar_expr(scrutinee, scope, aliases)
       for arm in arms {
         let arm_scope = clone_scope(scope)
@@ -97,63 +116,68 @@ fn desugar_expr(
           None => None
         }
         let next_expr = desugar_expr(arm.expr, arm_scope, aliases)
-        next_arms.push(MatchArm::{
+        next_arms.push(@core.MatchArm::{
           pat: arm.pat,
           cond: next_cond,
           expr: next_expr,
+          span: arm.span,
         })
       }
-      Expr::Match(scrutinee=scrut, arms=next_arms)
+      @core.Expr::Match(scrutinee=scrut, arms=next_arms, span~)
     }
-    Expr::Tuple(items) => {
-      let out : Array[Expr] = []
+    @core.Expr::Tuple(items~, span~) => {
+      let out : Array[@core.Expr] = []
       for item in items {
         out.push(desugar_expr(item, scope, aliases))
       }
-      Expr::Tuple(out)
+      @core.Expr::Tuple(items=out, span~)
     }
-    Expr::Record(fields) => {
-      let out : Array[RecordFieldExpr] = []
+    @core.Expr::Record(fields~, span~) => {
+      let out : Array[@core.RecordFieldExpr] = []
       for field in fields {
-        out.push(RecordFieldExpr::{
+        out.push(@core.RecordFieldExpr::{
           name: field.name,
           expr: desugar_expr(field.expr, scope, aliases),
+          span: field.span,
         })
       }
-      Expr::Record(out)
+      @core.Expr::Record(fields=out, span~)
     }
-    Expr::Array(items) => {
-      let out : Array[Expr] = []
+    @core.Expr::Array(items~, span~) => {
+      let out : Array[@core.Expr] = []
       for item in items {
         out.push(desugar_expr(item, scope, aliases))
       }
-      Expr::Array(out)
+      @core.Expr::Array(items=out, span~)
     }
-    Expr::Map(fields) => {
-      let out : Array[MapFieldExpr] = []
+    @core.Expr::Map(fields~, span~) => {
+      let out : Array[@core.MapFieldExpr] = []
       for field in fields {
-        out.push(MapFieldExpr::{
+        out.push(@core.MapFieldExpr::{
           key: field.key,
           expr: desugar_expr(field.expr, scope, aliases),
+          span: field.span,
         })
       }
-      Expr::Map(out)
+      @core.Expr::Map(fields=out, span~)
     }
-    Expr::Try(try_body~, catch_body~) =>
-      Expr::Try(
+    @core.Expr::Try(try_body~, catch_body~, span~) =>
+      @core.Expr::Try(
         try_body=desugar_block(try_body, clone_scope(scope), aliases),
         catch_body=desugar_block(catch_body, clone_scope(scope), aliases),
+        span~,
       )
-    Expr::Fn(params~, ret~, effects~, body~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
       let next_scope = clone_scope(scope)
       for param in params {
         next_scope[param.name] = true
       }
-      Expr::Fn(
+      @core.Expr::Fn(
         params~,
         ret~,
         effects~,
         body=desugar_block(body, next_scope, aliases),
+        span~,
       )
     }
     _ => expr
@@ -205,23 +229,31 @@ fn is_simple_ident(name : String) -> Bool {
 }
 
 ///|
-fn collect_pat_bindings(pat : Pat, out : Array[String]) -> Unit {
+fn collect_pat_bindings(pat : @core.Pat, out : Array[String]) -> Unit {
   match pat {
-    Pat::Bind(name) => out.push(name)
-    Pat::Ctor(name~, args~) => {
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      out.push(name)
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
       let _ = name
+      let _ = span
       for arg in args {
         collect_pat_bindings(arg, out)
       }
     }
-    Pat::Tuple(items) =>
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
       for item in items {
         collect_pat_bindings(item, out)
       }
-    Pat::Record(fields) =>
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
       for field in fields {
         collect_pat_bindings(field.pat, out)
       }
+    }
     _ => ()
   }
 }

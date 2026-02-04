@@ -10,14 +10,15 @@ pub fn purity_for_let(
   env : TypeEnv,
   rec : Bool,
   name : String,
-  expr : Expr,
+  expr : @core.Expr,
 ) -> PurityInfo {
   let locals : Map[String, Bool] = {}
   if rec {
     locals[name] = true
   }
   match expr {
-    Expr::Fn(params~, ret~, effects=_, body~) => {
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+      let _ = span
       let _ = ret
       let fn_locals : Map[String, Bool] = {}
       for key, val in locals {
@@ -37,26 +38,39 @@ pub fn purity_for_let(
 }
 
 ///|
-pub fn purity_expr(env : TypeEnv, expr : Expr) -> Bool {
+pub fn purity_expr(env : TypeEnv, expr : @core.Expr) -> Bool {
   purity_expr_inner(env, expr, {})
 }
 
 ///|
-pub fn purity_block(env : TypeEnv, body : Module) -> Bool {
+pub fn purity_block(env : TypeEnv, body : @core.Module) -> Bool {
   purity_block_inner(env, body, {})
 }
 
 ///|
 fn purity_expr_inner(
   env : TypeEnv,
-  expr : Expr,
+  expr : @core.Expr,
   locals : Map[String, Bool],
 ) -> Bool {
   match expr {
-    Expr::Int(_) => true
-    Expr::Bool(_) => true
-    Expr::String(_) => true
-    Expr::Ident(name) =>
+    @core.Expr::Int(value~, span~) => {
+      let _ = value
+      let _ = span
+      true
+    }
+    @core.Expr::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+      true
+    }
+    @core.Expr::String(value~, span~) => {
+      let _ = value
+      let _ = span
+      true
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
       match locals.get(name) {
         Some(pure) => pure
         None =>
@@ -65,11 +79,14 @@ fn purity_expr_inner(
             None => is_pure_builtin_name(name)
           }
       }
-    Expr::Call(name~, args~) =>
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
       if is_effectful_call_name(name) {
         false
       } else {
-        let callee_pure = if is_pure_builtin_name(name) || is_ctor_name(name) {
+        let callee_pure = if is_pure_builtin_name(name) ||
+          @core.is_ctor_name(name) {
           true
         } else {
           match locals.get(name) {
@@ -94,8 +111,13 @@ fn purity_expr_inner(
           ok
         }
       }
-    Expr::Tuple(items) => purity_all(env, items, locals)
-    Expr::Record(fields) => {
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
+      purity_all(env, items, locals)
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
       let mut ok = true
       for field in fields {
         if not(purity_expr_inner(env, field.expr, locals)) {
@@ -105,8 +127,12 @@ fn purity_expr_inner(
       }
       ok
     }
-    Expr::Array(items) => purity_all(env, items, locals)
-    Expr::Map(fields) => {
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
+      purity_all(env, items, locals)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
       let mut ok = true
       for field in fields {
         if not(purity_expr_inner(env, field.expr, locals)) {
@@ -116,15 +142,23 @@ fn purity_expr_inner(
       }
       ok
     }
-    Expr::If(cond~, then_body~, else_body~) =>
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
       purity_expr_inner(env, cond, locals) &&
       purity_block_inner(env, then_body, locals) &&
       purity_block_inner(env, else_body, locals)
-    Expr::Block(body~) => purity_block_inner(env, body, locals)
-    Expr::Try(try_body~, catch_body~) =>
+    }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      purity_block_inner(env, body, locals)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
       purity_block_inner(env, try_body, locals) &&
       purity_block_inner(env, catch_body, locals)
-    Expr::Match(scrutinee~, arms~) =>
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
       if not(purity_expr_inner(env, scrutinee, locals)) {
         false
       } else {
@@ -147,22 +181,35 @@ fn purity_expr_inner(
         }
         ok
       }
-    Expr::Do(_) => false
-    Expr::Fn(..) => true
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = body
+      let _ = span
+      false
+    }
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+      let _ = params
+      let _ = ret
+      let _ = effects
+      let _ = body
+      let _ = span
+      true
+    }
   }
 }
 
 ///|
 fn purity_block_inner(
   env : TypeEnv,
-  body : Module,
+  body : @core.Module,
   locals : Map[String, Bool],
 ) -> Bool {
   let scope = clone_bool_map(locals)
   let mut ok = true
   for stmt in body.stmts {
     match stmt {
-      Stmt::Let(rec~, name~, expr~) => {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
         let info = purity_for_let_in_scope(env, rec, name, expr, scope)
         if not(info.expr) {
           ok = false
@@ -170,12 +217,19 @@ fn purity_block_inner(
         }
         scope[name] = info.value
       }
-      Stmt::Expr(expr~) =>
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
         if not(purity_expr_inner(env, expr, scope)) {
           ok = false
           break
         }
-      Stmt::Test(..) => ()
+      }
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = body
+        let _ = span
+
+      }
       _ => ()
     }
   }
@@ -187,7 +241,7 @@ fn purity_for_let_in_scope(
   env : TypeEnv,
   rec : Bool,
   name : String,
-  expr : Expr,
+  expr : @core.Expr,
   locals : Map[String, Bool],
 ) -> PurityInfo {
   let scope = clone_bool_map(locals)
@@ -195,7 +249,8 @@ fn purity_for_let_in_scope(
     scope[name] = true
   }
   match expr {
-    Expr::Fn(params~, ret~, effects=_, body~) => {
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+      let _ = span
       let _ = ret
       let fn_locals = clone_bool_map(scope)
       for param in params {
@@ -214,7 +269,7 @@ fn purity_for_let_in_scope(
 ///|
 fn purity_all(
   env : TypeEnv,
-  items : Array[Expr],
+  items : Array[@core.Expr],
   locals : Map[String, Bool],
 ) -> Bool {
   let mut ok = true
@@ -228,27 +283,50 @@ fn purity_all(
 }
 
 ///|
-fn bind_pattern_names(bound : Map[String, Bool], pat : Pat) -> Unit {
+pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
   match pat {
-    Pat::Wildcard => ()
-    Pat::Bind(name) => bound[name] = true
-    Pat::Ctor(name~, args~) => {
+    @core.Pat::Wildcard(span~) => {
+      let _ = span
+
+    }
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      bound[name] = true
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
       let _ = name
+      let _ = span
       for arg in args {
         bind_pattern_names(bound, arg)
       }
     }
-    Pat::Tuple(items) =>
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
       for item in items {
         bind_pattern_names(bound, item)
       }
-    Pat::Record(fields) =>
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
       for field in fields {
         bind_pattern_names(bound, field.pat)
       }
-    Pat::Int(_) => ()
-    Pat::Bool(_) => ()
-    Pat::String(_) => ()
+    }
+    @core.Pat::Int(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Pat::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Pat::String(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
   }
 }
 
@@ -286,7 +364,7 @@ fn is_pure_builtin_name(name : String) -> Bool {
 }
 
 ///|
-fn clone_bool_map(src : Map[String, Bool]) -> Map[String, Bool] {
+pub fn clone_bool_map(src : Map[String, Bool]) -> Map[String, Bool] {
   let out : Map[String, Bool] = {}
   for key, val in src {
     out[key] = val

@@ -1,7 +1,7 @@
 ///|
 /// Pure function result cache (external snapshot)
 pub struct PureCache {
-  entries : Map[String, Value]
+  entries : Map[String, @core.Value]
 } derive(Show, Eq)
 
 ///|
@@ -10,12 +10,16 @@ pub fn PureCache::new() -> PureCache {
 }
 
 ///|
-pub fn PureCache::get(self : PureCache, key : String) -> Value? {
+pub fn PureCache::get(self : PureCache, key : String) -> @core.Value? {
   self.entries.get(key)
 }
 
 ///|
-pub fn PureCache::set(self : PureCache, key : String, value : Value) -> Unit {
+pub fn PureCache::set(
+  self : PureCache,
+  key : String,
+  value : @core.Value,
+) -> Unit {
   self.entries[key] = value
 }
 
@@ -99,85 +103,85 @@ fn split_cache_line(line : String) -> CacheLine? {
 }
 
 ///|
-fn encode_value(value : Value) -> String {
+fn encode_value(value : @core.Value) -> String {
   match value {
-    Value::Int(n) => "i:" + n.to_string()
-    Value::Bool(b) => "b:" + (if b { "1" } else { "0" })
-    Value::String(s) => "s:" + escape_cache(s)
-    Value::Path(p) => "p:" + escape_cache(p.as_string())
-    Value::Unit => "u:"
-    Value::Tuple(items) => "t:" + encode_list(items)
-    Value::Record(fields) => "r:" + encode_record(fields)
-    Value::Array(items) => "a:" + encode_list(items)
-    Value::Map(fields) => "m:" + encode_record(fields)
-    Value::ArrayBuilder(items) => "ab:" + encode_list(items)
-    Value::MapBuilder(fields) => "mb:" + encode_record(fields)
-    Value::Fn(_) => "f:"
+    @core.Value::Int(n) => "i:" + n.to_string()
+    @core.Value::Bool(b) => "b:" + (if b { "1" } else { "0" })
+    @core.Value::String(s) => "s:" + escape_cache(s)
+    @core.Value::Path(p) => "p:" + escape_cache(p.as_string())
+    @core.Value::Unit => "u:"
+    @core.Value::Tuple(items) => "t:" + encode_list(items)
+    @core.Value::Record(fields) => "r:" + encode_record(fields)
+    @core.Value::Array(items) => "a:" + encode_list(items)
+    @core.Value::Map(fields) => "m:" + encode_record(fields)
+    @core.Value::ArrayBuilder(items) => "ab:" + encode_list(items)
+    @core.Value::MapBuilder(fields) => "mb:" + encode_record(fields)
+    @core.Value::Fn(_) => "f:"
   }
 }
 
 ///|
-fn decode_value(encoded : String) -> Value? {
+fn decode_value(encoded : String) -> @core.Value? {
   if encoded.has_prefix("i:") {
     let rest = slice_from(encoded, 2)
     let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
       rest,
     )
     match parsed {
-      Ok(v) => Some(Value::Int(v))
+      Ok(v) => Some(@core.Value::Int(v))
       Err(_) => None
     }
   } else if encoded.has_prefix("s:") {
     let rest = slice_from(encoded, 2)
-    Some(Value::String(unescape_cache(rest)))
+    Some(@core.Value::String(unescape_cache(rest)))
   } else if encoded.has_prefix("b:") {
     let rest = slice_from(encoded, 2)
     if rest == "1" {
-      Some(Value::Bool(true))
+      Some(@core.Value::Bool(true))
     } else if rest == "0" {
-      Some(Value::Bool(false))
+      Some(@core.Value::Bool(false))
     } else {
       None
     }
   } else if encoded.has_prefix("p:") {
     let rest = slice_from(encoded, 2)
-    Some(Value::Path(Path::new(unescape_cache(rest))))
+    Some(@core.Value::Path(@core.Path::new(unescape_cache(rest))))
   } else if encoded == "u:" {
-    Some(Value::Unit)
+    Some(@core.Value::Unit)
   } else if encoded.has_prefix("t:") {
     let rest = slice_from(encoded, 2)
     match decode_list(rest) {
-      Some(items) => Some(Value::Tuple(items))
+      Some(items) => Some(@core.Value::Tuple(items))
       None => None
     }
   } else if encoded.has_prefix("a:") {
     let rest = slice_from(encoded, 2)
     match decode_list(rest) {
-      Some(items) => Some(Value::Array(items))
+      Some(items) => Some(@core.Value::Array(items))
       None => None
     }
   } else if encoded.has_prefix("r:") {
     let rest = slice_from(encoded, 2)
     match decode_record(rest) {
-      Some(fields) => Some(Value::Record(fields))
+      Some(fields) => Some(@core.Value::Record(fields))
       None => None
     }
   } else if encoded.has_prefix("m:") {
     let rest = slice_from(encoded, 2)
     match decode_record(rest) {
-      Some(fields) => Some(Value::Map(fields))
+      Some(fields) => Some(@core.Value::Map(fields))
       None => None
     }
   } else if encoded.has_prefix("ab:") {
     let rest = slice_from(encoded, 3)
     match decode_list(rest) {
-      Some(items) => Some(Value::ArrayBuilder(items))
+      Some(items) => Some(@core.Value::ArrayBuilder(items))
       None => None
     }
   } else if encoded.has_prefix("mb:") {
     let rest = slice_from(encoded, 3)
     match decode_record(rest) {
-      Some(fields) => Some(Value::MapBuilder(fields))
+      Some(fields) => Some(@core.Value::MapBuilder(fields))
       None => None
     }
   } else {
@@ -186,7 +190,7 @@ fn decode_value(encoded : String) -> Value? {
 }
 
 ///|
-fn encode_list(items : Array[Value]) -> String {
+fn encode_list(items : Array[@core.Value]) -> String {
   let buf = StringBuilder::new()
   buf.write_string(items.length().to_string())
   for item in items {
@@ -197,7 +201,7 @@ fn encode_list(items : Array[Value]) -> String {
 }
 
 ///|
-fn encode_record(fields : Map[String, Value]) -> String {
+fn encode_record(fields : Map[String, @core.Value]) -> String {
   let buf = StringBuilder::new()
   buf.write_string(fields.length().to_string())
   for name, value in fields {
@@ -217,7 +221,7 @@ fn write_segment(buf : StringBuilder, s : String) -> Unit {
 }
 
 ///|
-fn decode_list(s : String) -> Array[Value]? {
+fn decode_list(s : String) -> Array[@core.Value]? {
   let chars : Array[Char] = []
   for c in s {
     chars.push(c)
@@ -226,7 +230,7 @@ fn decode_list(s : String) -> Array[Value]? {
     Some(v) => v
     None => return None
   }
-  let out : Array[Value] = []
+  let out : Array[@core.Value] = []
   let mut pos = idx
   for _ in 0..<count {
     let (seg, next_pos) = match read_segment(chars, pos) {
@@ -246,7 +250,7 @@ fn decode_list(s : String) -> Array[Value]? {
 }
 
 ///|
-fn decode_record(s : String) -> Map[String, Value]? {
+fn decode_record(s : String) -> Map[String, @core.Value]? {
   let chars : Array[Char] = []
   for c in s {
     chars.push(c)
@@ -255,7 +259,7 @@ fn decode_record(s : String) -> Map[String, Value]? {
     Some(v) => v
     None => return None
   }
-  let out : Map[String, Value] = {}
+  let out : Map[String, @core.Value] = {}
   let mut pos = idx
   for _ in 0..<count {
     let (name, next_pos) = match read_segment(chars, pos) {

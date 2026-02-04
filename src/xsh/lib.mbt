@@ -1,28 +1,28 @@
 ///|
 /// xsh public API
 suberror XshError {
-  Parse(ParseError)
-  Type(TypeError)
+  Parse(@parser.ParseError)
+  Type(@checker.TypeError)
   Eval(EvalError)
 } derive(Show, Eq)
 
 ///|
 /// Detect xsh by leading keyword token
 pub fn is_xsh_script(script : String) -> Bool {
-  let tokens = tokenize(script)
+  let tokens = @parser.tokenize(script)
   for tok in tokens {
-    if is_trivia(tok.kind()) {
+    if @parser.is_trivia(tok.kind()) {
       continue
     }
     let kind = tok.kind()
-    return kind == let_kw() ||
-      kind == flake_kw() ||
-      kind == alias_kw() ||
-      kind == test_kw() ||
-      kind == type_kw() ||
-      kind == enum_kw() ||
-      kind == map_kw() ||
-      kind == lbracket()
+    return kind == @parser.let_kw() ||
+      kind == @parser.flake_kw() ||
+      kind == @parser.alias_kw() ||
+      kind == @parser.test_kw() ||
+      kind == @parser.type_kw() ||
+      kind == @parser.enum_kw() ||
+      kind == @parser.map_kw() ||
+      kind == @parser.lbracket()
   }
   false
 }
@@ -33,11 +33,17 @@ pub fn Runtime::eval_script(
   self : Runtime,
   script : String,
 ) -> EvalResult raise XshError {
-  let raw_ast = parse_ast(script) catch { e => raise XshError::Parse(e) }
+  let raw_ast = @parser.parse_ast(script) catch {
+    e => raise XshError::Parse(e)
+  }
   let aliases = merge_aliases(self.aliases, raw_ast)
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
-    let next_env = type_check_with_env(self.type_env.clone(), ast, aliases)
+    let next_env = @checker.type_check_with_env(
+      self.type_env.clone(),
+      ast,
+      aliases,
+    )
     self.type_env = next_env
   } catch {
     e => raise XshError::Type(e)
@@ -53,11 +59,13 @@ pub fn Runtime::run_script_tests(
   self : Runtime,
   script : String,
 ) -> TestReport raise XshError {
-  let raw_ast = parse_ast(script) catch { e => raise XshError::Parse(e) }
+  let raw_ast = @parser.parse_ast(script) catch {
+    e => raise XshError::Parse(e)
+  }
   let aliases = merge_aliases(self.aliases, raw_ast)
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
-    let _ = type_check_with_env(self.type_env.clone(), ast, aliases)
+    let _ = @checker.type_check_with_env(self.type_env.clone(), ast, aliases)
 
   } catch {
     e => raise XshError::Type(e)
@@ -68,18 +76,23 @@ pub fn Runtime::run_script_tests(
 }
 
 ///|
-fn merge_aliases(base : Map[String, Ref], ast : Module) -> Map[String, Ref] {
-  let aliases : Map[String, Ref] = {}
+fn merge_aliases(
+  base : Map[String, @core.Ref],
+  ast : @core.Module,
+) -> Map[String, @core.Ref] {
+  let aliases : Map[String, @core.Ref] = {}
   for name, target in base {
     aliases[name] = target
   }
   for stmt in ast.stmts {
     match stmt {
-      Stmt::Alias(name~, target~) =>
+      @core.Stmt::Alias(name~, target~, span~) => {
+        let _ = span
         match target {
-          AliasTarget::Module(r) => aliases[name] = r
-          AliasTarget::Name(_) => ()
+          @core.AliasTarget::Module(r) => aliases[name] = r
+          @core.AliasTarget::Name(_) => ()
         }
+      }
       _ => ()
     }
   }

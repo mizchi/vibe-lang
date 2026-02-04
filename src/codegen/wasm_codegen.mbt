@@ -379,7 +379,7 @@ fn clone_kind_map(src : Map[String, ValueKind]) -> Map[String, ValueKind] {
 ///|
 fn infer_expr_kind(
   ctx : CodegenCtx,
-  expr : Expr,
+  expr : @core.Expr,
 ) -> ValueKind raise WasmGenError {
   if not(ctx.use_js_strings) {
     return ValueKind::I32
@@ -390,22 +390,38 @@ fn infer_expr_kind(
 ///|
 fn infer_expr_kind_with(
   ctx : CodegenCtx,
-  expr : Expr,
+  expr : @core.Expr,
   locals : Map[String, ValueKind],
 ) -> ValueKind raise WasmGenError {
   if not(ctx.use_js_strings) {
     return ValueKind::I32
   }
   match expr {
-    Expr::Int(_) => ValueKind::I32
-    Expr::Bool(_) => ValueKind::I32
-    Expr::String(_) => ValueKind::ExternRef
-    Expr::Ident(name) =>
+    @core.Expr::Int(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::String(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::ExternRef
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
       match locals.get(name) {
         Some(kind) => kind
         None => ValueKind::I32
       }
-    Expr::Call(name~, ..) =>
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = args
+      let _ = span
       match name {
         "string_length" => ValueKind::I32
         "string_char_code_at" => ValueKind::I32
@@ -414,7 +430,9 @@ fn infer_expr_kind_with(
         "string_equals" => ValueKind::I32
         _ => ValueKind::I32
       }
-    Expr::If(cond~, then_body~, else_body~) => {
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
       let _ = cond
       let then_kind = infer_block_kind(ctx, then_body, locals)
       let else_kind = infer_block_kind(ctx, else_body, locals)
@@ -423,8 +441,12 @@ fn infer_expr_kind_with(
       }
       then_kind
     }
-    Expr::Block(body~) => infer_block_kind(ctx, body, locals)
-    Expr::Try(try_body~, catch_body~) => {
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      infer_block_kind(ctx, body, locals)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
       let try_kind = infer_block_kind(ctx, try_body, locals)
       let catch_kind = infer_block_kind(ctx, catch_body, locals)
       if try_kind != catch_kind {
@@ -432,20 +454,51 @@ fn infer_expr_kind_with(
       }
       try_kind
     }
-    Expr::Match(..) => ValueKind::I32
-    Expr::Tuple(_) => ValueKind::I32
-    Expr::Record(_) => ValueKind::I32
-    Expr::Array(_) => ValueKind::I32
-    Expr::Map(_) => ValueKind::I32
-    Expr::Do(body~) => infer_block_kind(ctx, body, locals)
-    Expr::Fn(..) => raise WasmGenError::Unsupported("fn")
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = scrutinee
+      let _ = arms
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = items
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = fields
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Array(items~, span~) => {
+      let _ = items
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = fields
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      infer_block_kind(ctx, body, locals)
+    }
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+      let _ = params
+      let _ = ret
+      let _ = effects
+      let _ = body
+      let _ = span
+      raise WasmGenError::Unsupported("fn")
+    }
   }
 }
 
 ///|
 fn infer_block_kind(
   ctx : CodegenCtx,
-  body : Module,
+  body : @core.Module,
   locals : Map[String, ValueKind],
 ) -> ValueKind raise WasmGenError {
   let kinds = clone_kind_map(locals)
@@ -459,22 +512,39 @@ fn infer_block_kind(
 ///|
 fn infer_stmt_kind(
   ctx : CodegenCtx,
-  stmt : Stmt,
+  stmt : @core.Stmt,
   locals : Map[String, ValueKind],
 ) -> ValueKind raise WasmGenError {
   match stmt {
-    Stmt::Let(rec~, name~, expr~) => {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let _ = span
       let _ = rec
       let kind = infer_expr_kind_with(ctx, expr, locals)
       locals[name] = kind
       kind
     }
-    Stmt::Expr(expr~) => infer_expr_kind_with(ctx, expr, locals)
-    Stmt::EnumDef(..) => ValueKind::I32
-    Stmt::TypeAlias(..) => ValueKind::I32
-    Stmt::Test(name~, body~) => {
+    @core.Stmt::Expr(expr~, span~) => {
+      let _ = span
+      infer_expr_kind_with(ctx, expr, locals)
+    }
+    @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
+      let _ = name
+      let _ = params
+      let _ = ctors
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
+      let _ = name
+      let _ = params
+      let _ = target
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Stmt::Test(name~, body~, span~) => {
       let _ = name
       let _ = body
+      let _ = span
       ValueKind::I32
     }
     _ => ValueKind::I32
@@ -485,7 +555,7 @@ fn infer_stmt_kind(
 fn compile_expr_i32(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  expr : Expr,
+  expr : @core.Expr,
 ) -> Unit raise WasmGenError {
   if ctx.use_js_strings {
     let kind = infer_expr_kind(ctx, expr)
@@ -500,7 +570,7 @@ fn compile_expr_i32(
 fn compile_expr_ref(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  expr : Expr,
+  expr : @core.Expr,
 ) -> Unit raise WasmGenError {
   if ctx.use_js_strings {
     let kind = infer_expr_kind(ctx, expr)
@@ -512,9 +582,10 @@ fn compile_expr_ref(
 }
 
 ///|
-fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
+fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
   match expr {
-    Expr::Call(name~, args~) => {
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
       if name == "sh" {
         ctx.need_sh = true
       } else if name == "path" {
@@ -534,40 +605,47 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
         scan_needs_expr(ctx, arg.expr)
       }
     }
-    Expr::Tuple(items) => {
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
       ctx.need_heap = true
       for item in items {
         scan_needs_expr(ctx, item)
       }
     }
-    Expr::Record(fields) => {
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
       ctx.need_heap = true
       for field in fields {
         scan_needs_expr(ctx, field.expr)
       }
     }
-    Expr::Array(items) => {
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
       ctx.need_heap = true
       for item in items {
         scan_needs_expr(ctx, item)
       }
     }
-    Expr::Map(fields) => {
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
       ctx.need_heap = true
       for field in fields {
         scan_needs_expr(ctx, field.expr)
       }
     }
-    Expr::If(cond~, then_body~, else_body~) => {
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
       scan_needs_expr(ctx, cond)
       scan_needs_block(ctx, then_body)
       scan_needs_block(ctx, else_body)
     }
-    Expr::Try(try_body~, catch_body~) => {
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
       scan_needs_block(ctx, try_body)
       scan_needs_block(ctx, catch_body)
     }
-    Expr::Match(scrutinee~, arms~) => {
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
       scan_needs_expr(ctx, scrutinee)
       for arm in arms {
         scan_needs_expr(ctx, arm.expr)
@@ -577,8 +655,12 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
         }
       }
     }
-    Expr::Do(body~) => scan_needs_block(ctx, body)
-    Expr::Fn(params~, ret~, effects=_, body~) => {
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      scan_needs_block(ctx, body)
+    }
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+      let _ = span
       let _ = params
       let _ = ret
       scan_needs_block(ctx, body)
@@ -588,25 +670,42 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
 }
 
 ///|
-fn scan_needs_block(ctx : CodegenCtx, body : Module) -> Unit {
+fn scan_needs_block(ctx : CodegenCtx, body : @core.Module) -> Unit {
   for stmt in body.stmts {
     scan_needs_stmt(ctx, stmt)
   }
 }
 
 ///|
-fn scan_needs_stmt(ctx : CodegenCtx, stmt : Stmt) -> Unit {
+fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
   match stmt {
-    Stmt::Let(rec~, name~, expr~) => {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let _ = span
       let _ = rec
       let _ = name
       scan_needs_expr(ctx, expr)
     }
-    Stmt::EnumDef(..) => ()
-    Stmt::TypeAlias(..) => ()
-    Stmt::Expr(expr~) => scan_needs_expr(ctx, expr)
-    Stmt::Test(name~, body~) => {
+    @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
       let _ = name
+      let _ = params
+      let _ = ctors
+      let _ = span
+
+    }
+    @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
+      let _ = name
+      let _ = params
+      let _ = target
+      let _ = span
+
+    }
+    @core.Stmt::Expr(expr~, span~) => {
+      let _ = span
+      scan_needs_expr(ctx, expr)
+    }
+    @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = span
       for s in body.stmts {
         scan_needs_stmt(ctx, s)
       }
@@ -616,7 +715,7 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : Stmt) -> Unit {
 }
 
 ///|
-fn scan_needs(ctx : CodegenCtx, ast : Module) -> Unit {
+fn scan_needs(ctx : CodegenCtx, ast : @core.Module) -> Unit {
   for stmt in ast.stmts {
     scan_needs_stmt(ctx, stmt)
   }
@@ -741,12 +840,19 @@ fn import_index_js_equals(ctx : CodegenCtx) -> Int raise WasmGenError {
 fn compile_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  expr : Expr,
+  expr : @core.Expr,
 ) -> Unit raise WasmGenError {
   match expr {
-    Expr::Int(n) => emit_i32_const_tagged(buf, n)
-    Expr::Bool(b) => emit_i32_const_raw(buf, tag_bool_value(b))
-    Expr::String(s) =>
+    @core.Expr::Int(value=n, span~) => {
+      let _ = span
+      emit_i32_const_tagged(buf, n)
+    }
+    @core.Expr::Bool(value=b, span~) => {
+      let _ = span
+      emit_i32_const_raw(buf, tag_bool_value(b))
+    }
+    @core.Expr::String(value=s, span~) => {
+      let _ = span
       if ctx.use_js_strings {
         let idx = ctx.js_strings.intern(s)
         emit_global_get(buf, idx)
@@ -754,7 +860,9 @@ fn compile_expr(
         let offset = ctx.strings.intern(s)
         emit_i32_const_raw(buf, tag_ptr(offset, tag_obj))
       }
-    Expr::Ident(name) => {
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
       if is_qualified_name(name) {
         raise WasmGenError::Unsupported("qualified name: " + name)
       }
@@ -763,7 +871,8 @@ fn compile_expr(
         None => raise WasmGenError::UnknownName(name)
       }
     }
-    Expr::Call(name~, args~) =>
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
       if name == "sh" {
         let pos_args = extract_positional_exprs(args, "sh")
         if pos_args.length() != 1 {
@@ -925,11 +1034,25 @@ fn compile_expr(
         }
         raise WasmGenError::Unsupported("call: " + name)
       }
-    Expr::Tuple(items) => compile_tuple_expr(ctx, buf, items)
-    Expr::Record(fields) => compile_record_expr(ctx, buf, fields)
-    Expr::Array(items) => compile_array_expr(ctx, buf, items)
-    Expr::Map(fields) => compile_map_expr(ctx, buf, fields)
-    Expr::If(cond~, then_body~, else_body~) => {
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
+      compile_tuple_expr(ctx, buf, items)
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
+      compile_record_expr(ctx, buf, fields)
+    }
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
+      compile_array_expr(ctx, buf, items)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
+      compile_map_expr(ctx, buf, fields)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
       let if_kind = if ctx.use_js_strings {
         infer_expr_kind(ctx, expr)
       } else {
@@ -945,8 +1068,12 @@ fn compile_expr(
       compile_block_expr(ctx, buf, else_body)
       buf.push((11).to_byte())
     }
-    Expr::Block(body~) => compile_block_expr(ctx, buf, body)
-    Expr::Match(scrutinee~, arms~) => {
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      compile_block_expr(ctx, buf, body)
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
       let saved = clone_locals(ctx.locals)
       let saved_kinds = clone_kind_map(ctx.local_kinds)
       let scrut_idx = ctx.local_count
@@ -958,18 +1085,33 @@ fn compile_expr(
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
     }
-    Expr::Do(body~) => compile_block_expr(ctx, buf, body)
-    Expr::Try(..) => raise WasmGenError::Unsupported("try")
-    Expr::Fn(..) => raise WasmGenError::Unsupported("fn")
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      compile_block_expr(ctx, buf, body)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = try_body
+      let _ = catch_body
+      let _ = span
+      raise WasmGenError::Unsupported("try")
+    }
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+      let _ = params
+      let _ = ret
+      let _ = effects
+      let _ = body
+      let _ = span
+      raise WasmGenError::Unsupported("fn")
+    }
   }
 }
 
 ///|
 fn extract_positional_exprs(
-  args : Array[CallArg],
+  args : Array[@core.CallArg],
   name : String,
-) -> Array[Expr] raise WasmGenError {
-  let out : Array[Expr] = []
+) -> Array[@core.Expr] raise WasmGenError {
+  let out : Array[@core.Expr] = []
   for arg in args {
     match arg.label {
       Some(_) => raise WasmGenError::Unsupported("labeled arg: " + name)
@@ -983,11 +1125,12 @@ fn extract_positional_exprs(
 fn compile_stmt(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  stmt : Stmt,
+  stmt : @core.Stmt,
   is_last : Bool,
 ) -> Unit raise WasmGenError {
   match stmt {
-    Stmt::Let(rec~, name~, expr~) => {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let _ = span
       let _ = rec
       let kind = infer_expr_kind(ctx, expr)
       let idx = ctx.local_count
@@ -1002,18 +1145,57 @@ fn compile_stmt(
         emit_local_set(buf, idx)
       }
     }
-    Stmt::EnumDef(..) => if is_last { emit_i32_const_tagged(buf, 0) }
-    Stmt::TypeAlias(..) => if is_last { emit_i32_const_tagged(buf, 0) }
-    Stmt::Expr(expr~) => {
+    @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
+      let _ = name
+      let _ = params
+      let _ = ctors
+      let _ = span
+      if is_last {
+        emit_i32_const_tagged(buf, 0)
+      }
+    }
+    @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
+      let _ = name
+      let _ = params
+      let _ = target
+      let _ = span
+      if is_last {
+        emit_i32_const_tagged(buf, 0)
+      }
+    }
+    @core.Stmt::Expr(expr~, span~) => {
+      let _ = span
       compile_expr(ctx, buf, expr)
       if not(is_last) {
         emit_drop(buf)
       }
     }
-    Stmt::Flake(_) => if is_last { emit_i32_const_tagged(buf, 0) }
-    Stmt::Test(..) => if is_last { emit_i32_const_tagged(buf, 0) }
-    Stmt::Alias(..) => raise WasmGenError::Unsupported("alias")
-    Stmt::Import(..) => raise WasmGenError::Unsupported("import")
+    @core.Stmt::Flake(raw~, span~) => {
+      let _ = raw
+      let _ = span
+      if is_last {
+        emit_i32_const_tagged(buf, 0)
+      }
+    }
+    @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = body
+      let _ = span
+      if is_last {
+        emit_i32_const_tagged(buf, 0)
+      }
+    }
+    @core.Stmt::Alias(name~, target~, span~) => {
+      let _ = name
+      let _ = target
+      let _ = span
+      raise WasmGenError::Unsupported("alias")
+    }
+    @core.Stmt::Import(path~, span~) => {
+      let _ = path
+      let _ = span
+      raise WasmGenError::Unsupported("import")
+    }
   }
 }
 
@@ -1021,7 +1203,7 @@ fn compile_stmt(
 fn compile_block_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  body : Module,
+  body : @core.Module,
 ) -> Unit raise WasmGenError {
   let saved = clone_locals(ctx.locals)
   let saved_kinds = clone_kind_map(ctx.local_kinds)
@@ -1049,7 +1231,7 @@ fn require_heap(ctx : CodegenCtx) -> Unit raise WasmGenError {
 fn compile_tuple_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  items : Array[Expr],
+  items : Array[@core.Expr],
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
   let len = items.length()
@@ -1081,7 +1263,7 @@ fn compile_tuple_expr(
 fn compile_record_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  fields : Array[RecordFieldExpr],
+  fields : Array[@core.RecordFieldExpr],
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
   let ordered = sort_record_fields_expr(fields)
@@ -1119,7 +1301,7 @@ fn compile_record_expr(
 fn compile_array_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  items : Array[Expr],
+  items : Array[@core.Expr],
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
   let len = items.length()
@@ -1151,7 +1333,7 @@ fn compile_array_expr(
 fn compile_map_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  fields : Array[MapFieldExpr],
+  fields : Array[@core.MapFieldExpr],
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
   let len = fields.length()
@@ -1186,9 +1368,9 @@ fn compile_map_expr(
 
 ///|
 fn sort_record_fields_expr(
-  fields : Array[RecordFieldExpr],
-) -> Array[RecordFieldExpr] {
-  let out : Array[RecordFieldExpr] = []
+  fields : Array[@core.RecordFieldExpr],
+) -> Array[@core.RecordFieldExpr] {
+  let out : Array[@core.RecordFieldExpr] = []
   for field in fields {
     out.push(field)
     let mut i = out.length() - 1
@@ -1204,9 +1386,9 @@ fn sort_record_fields_expr(
 
 ///|
 fn sort_record_fields_pat(
-  fields : Array[RecordFieldPat],
-) -> Array[RecordFieldPat] {
-  let out : Array[RecordFieldPat] = []
+  fields : Array[@core.RecordFieldPat],
+) -> Array[@core.RecordFieldPat] {
+  let out : Array[@core.RecordFieldPat] = []
   for field in fields {
     out.push(field)
     let mut i = out.length() - 1
@@ -1245,7 +1427,7 @@ fn string_lt(a : String, b : String) -> Bool {
 ///|
 fn compile_body(
   ctx : CodegenCtx,
-  ast : Module,
+  ast : @core.Module,
 ) -> Array[Byte] raise WasmGenError {
   let instr = ByteBuf::new()
   if ctx.use_js_strings {
@@ -1584,8 +1766,8 @@ fn restore_local_kinds(
 ///|
 priv enum PatCont {
   Arm
-  Tuple(Int, Array[Pat], Int, PatCont)
-  Record(Int, Array[RecordFieldPat], Int, PatCont)
+  Tuple(Int, Array[@core.Pat], Int, PatCont)
+  Record(Int, Array[@core.RecordFieldPat], Int, PatCont)
 }
 
 ///|
@@ -1594,9 +1776,9 @@ fn compile_pat_cont(
   buf : ByteBuf,
   cont : PatCont,
   match_scrut_idx : Int,
-  arms : Array[MatchArm],
+  arms : Array[@core.MatchArm],
   start : Int,
-  arm : MatchArm,
+  arm : @core.MatchArm,
   bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   match cont {
@@ -1622,20 +1804,23 @@ fn compile_pat_match(
   ctx : CodegenCtx,
   buf : ByteBuf,
   value_idx : Int,
-  pat : Pat,
+  pat : @core.Pat,
   match_scrut_idx : Int,
-  arms : Array[MatchArm],
+  arms : Array[@core.MatchArm],
   start : Int,
-  arm : MatchArm,
+  arm : @core.MatchArm,
   bindings : Map[String, Int],
   cont : PatCont,
 ) -> Unit raise WasmGenError {
   match pat {
-    Pat::Wildcard =>
+    @core.Pat::Wildcard(span~) => {
+      let _ = span
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
-    Pat::Bind(name) => {
+    }
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
       let idx = bind_local(ctx, name)
       emit_local_get(buf, value_idx)
       emit_local_set(buf, idx)
@@ -1644,7 +1829,9 @@ fn compile_pat_match(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
     }
-    Pat::Int(_) | Pat::Bool(_) | Pat::String(_) => {
+    @core.Pat::Int(value~, span~) => {
+      let _ = value
+      let _ = span
       emit_local_get(buf, value_idx)
       emit_pat_literal(ctx, buf, pat)
       emit_i32_eq(buf)
@@ -1657,22 +1844,56 @@ fn compile_pat_match(
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
     }
-    Pat::Ctor(name~, args~) => {
+    @core.Pat::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+      emit_local_get(buf, value_idx)
+      emit_pat_literal(ctx, buf, pat)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte())
+      buf.push((127).to_byte())
+      compile_pat_cont(
+        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
+    }
+    @core.Pat::String(value~, span~) => {
+      let _ = value
+      let _ = span
+      emit_local_get(buf, value_idx)
+      emit_pat_literal(ctx, buf, pat)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte())
+      buf.push((127).to_byte())
+      compile_pat_cont(
+        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let base_span = span
       let field_pat = if args.length() == 0 {
-        Pat::Wildcard
+        @core.Pat::Wildcard(span=base_span)
       } else if args.length() == 1 {
         args[0]
       } else {
-        Pat::Tuple(args)
+        @core.Pat::Tuple(items=args, span=base_span)
       }
-      let fields = [RecordFieldPat::{ name, pat: field_pat }]
-      let record_pat = Pat::Record(fields)
+      let fields = [
+        @core.RecordFieldPat::{ name, pat: field_pat, span: base_span },
+      ]
+      let record_pat = @core.Pat::Record(fields~, span=base_span)
       compile_pat_match(
         ctx, buf, value_idx, record_pat, match_scrut_idx, arms, start, arm, bindings,
         cont,
       )
     }
-    Pat::Tuple(items) => {
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
       emit_tag_obj_check(buf, value_idx)
       buf.push((4).to_byte())
       buf.push((127).to_byte())
@@ -1699,7 +1920,8 @@ fn compile_pat_match(
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
     }
-    Pat::Record(fields) => {
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
       let ordered = sort_record_fields_pat(fields)
       emit_tag_obj_check(buf, value_idx)
       buf.push((4).to_byte())
@@ -1736,13 +1958,13 @@ fn compile_tuple_items_cont(
   ctx : CodegenCtx,
   buf : ByteBuf,
   tuple_idx : Int,
-  items : Array[Pat],
+  items : Array[@core.Pat],
   index : Int,
   next : PatCont,
   match_scrut_idx : Int,
-  arms : Array[MatchArm],
+  arms : Array[@core.MatchArm],
   start : Int,
-  arm : MatchArm,
+  arm : @core.MatchArm,
   bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   if index >= items.length() {
@@ -1774,13 +1996,13 @@ fn compile_record_fields_cont(
   ctx : CodegenCtx,
   buf : ByteBuf,
   record_idx : Int,
-  fields : Array[RecordFieldPat],
+  fields : Array[@core.RecordFieldPat],
   index : Int,
   next : PatCont,
   match_scrut_idx : Int,
-  arms : Array[MatchArm],
+  arms : Array[@core.MatchArm],
   start : Int,
-  arm : MatchArm,
+  arm : @core.MatchArm,
   bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   if index >= fields.length() {
@@ -1821,17 +2043,44 @@ fn compile_record_fields_cont(
 fn emit_pat_literal(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  pat : Pat,
+  pat : @core.Pat,
 ) -> Unit raise WasmGenError {
   match pat {
-    Pat::Wildcard => raise WasmGenError::Unsupported("wildcard literal")
-    Pat::Bind(_) => raise WasmGenError::Unsupported("bind literal")
-    Pat::Ctor(..) => raise WasmGenError::Unsupported("ctor literal")
-    Pat::Tuple(_) => raise WasmGenError::Unsupported("tuple literal")
-    Pat::Record(_) => raise WasmGenError::Unsupported("record literal")
-    Pat::Int(n) => emit_i32_const_tagged(buf, n)
-    Pat::Bool(b) => emit_i32_const_raw(buf, tag_bool_value(b))
-    Pat::String(s) => {
+    @core.Pat::Wildcard(span~) => {
+      let _ = span
+      raise WasmGenError::Unsupported("wildcard literal")
+    }
+    @core.Pat::Bind(name~, span~) => {
+      let _ = name
+      let _ = span
+      raise WasmGenError::Unsupported("bind literal")
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = name
+      let _ = args
+      let _ = span
+      raise WasmGenError::Unsupported("ctor literal")
+    }
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = items
+      let _ = span
+      raise WasmGenError::Unsupported("tuple literal")
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = fields
+      let _ = span
+      raise WasmGenError::Unsupported("record literal")
+    }
+    @core.Pat::Int(value=n, span~) => {
+      let _ = span
+      emit_i32_const_tagged(buf, n)
+    }
+    @core.Pat::Bool(value=b, span~) => {
+      let _ = span
+      emit_i32_const_raw(buf, tag_bool_value(b))
+    }
+    @core.Pat::String(value=s, span~) => {
+      let _ = span
       if ctx.use_js_strings {
         raise WasmGenError::Unsupported("js-string string pattern")
       }
@@ -1846,7 +2095,7 @@ fn compile_match_chain(
   ctx : CodegenCtx,
   buf : ByteBuf,
   scrut_idx : Int,
-  arms : Array[MatchArm],
+  arms : Array[@core.MatchArm],
   start : Int,
 ) -> Unit raise WasmGenError {
   if start >= arms.length() {
@@ -1878,9 +2127,9 @@ fn compile_guarded_arm_with_bindings(
   ctx : CodegenCtx,
   buf : ByteBuf,
   scrut_idx : Int,
-  arms : Array[MatchArm],
+  arms : Array[@core.MatchArm],
   index : Int,
-  arm : MatchArm,
+  arm : @core.MatchArm,
   bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   let saved = clone_locals(ctx.locals)
@@ -1979,7 +2228,7 @@ fn emit_load_record_value(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
 
 ///|
 /// Emit a WASM module for a typed xsh AST.
-pub fn emit_module_wasm(ast : Module) -> Bytes raise WasmGenError {
+pub fn emit_module_wasm(ast : @core.Module) -> Bytes raise WasmGenError {
   let ctx = CodegenCtx::new(false)
   scan_needs(ctx, ast)
   let body = compile_body(ctx, ast)
@@ -1987,7 +2236,9 @@ pub fn emit_module_wasm(ast : Module) -> Bytes raise WasmGenError {
 }
 
 ///|
-pub fn emit_module_wasm_js_string(ast : Module) -> Bytes raise WasmGenError {
+pub fn emit_module_wasm_js_string(
+  ast : @core.Module,
+) -> Bytes raise WasmGenError {
   let ctx = CodegenCtx::new(true)
   scan_needs(ctx, ast)
   let body = compile_body(ctx, ast)

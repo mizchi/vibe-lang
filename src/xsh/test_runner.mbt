@@ -2,7 +2,7 @@
 /// xsh test runner for `test {}` blocks
 pub struct TestCase {
   name : String?
-  body : Module
+  body : @core.Module
 } derive(Show, Eq)
 
 ///|
@@ -21,11 +21,14 @@ pub struct TestReport {
 
 ///|
 /// Collect top-level test blocks from a module.
-pub fn collect_tests(ast : Module) -> Array[TestCase] {
+pub fn collect_tests(ast : @core.Module) -> Array[TestCase] {
   let out : Array[TestCase] = []
   for stmt in ast.stmts {
     match stmt {
-      Stmt::Test(name~, body~) => out.push(TestCase::{ name, body })
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = span
+        out.push(TestCase::{ name, body })
+      }
       _ => ()
     }
   }
@@ -36,14 +39,14 @@ pub fn collect_tests(ast : Module) -> Array[TestCase] {
 /// Run all tests in a module. Test bodies execute in isolated envs.
 pub fn Runtime::run_tests(
   self : Runtime,
-  ast : Module,
+  ast : @core.Module,
 ) -> TestReport raise EvalError {
   let _ = self.eval_module(ast)
   let cases = collect_tests(ast)
   let failures : Array[TestFailure] = []
   let mut passed = 0
   for case in cases {
-    let cacheable = purity_block(self.type_env, case.body)
+    let cacheable = @checker.purity_block(self.type_env, case.body)
     let key = test_case_key(case)
     let deps = if cacheable { Some(collect_dep_names(case.body)) } else { None }
     let dep_addrs = match deps {
@@ -78,7 +81,7 @@ pub fn Runtime::run_tests(
             Some(dep_snapshot) => {
               let last = match res.last {
                 Some(v) => v
-                None => Value::Unit
+                None => @core.Value::Unit
               }
               let entry = TestCacheEntry::{
                 deps: dep_snapshot,
@@ -116,7 +119,11 @@ fn test_case_key(case : TestCase) -> String {
     Some(n) => n
     None => ""
   }
-  let body_hash = expr_address(Expr::Block(body=case.body), {}, None)
+  let body_hash = @codegen.expr_address(
+    @core.Expr::Block(body=case.body, span=@core.Span::empty(0)),
+    {},
+    None,
+  )
   "test:" + name + ":" + body_hash
 }
 
@@ -162,7 +169,7 @@ fn deps_equal(a : Map[String, String], b : Map[String, String]) -> Bool {
 }
 
 ///|
-fn collect_dep_names(body : Module) -> Map[String, Bool] {
+fn collect_dep_names(body : @core.Module) -> Map[String, Bool] {
   let out : Map[String, Bool] = {}
   collect_dep_block(body, {}, out)
   out
@@ -170,14 +177,15 @@ fn collect_dep_names(body : Module) -> Map[String, Bool] {
 
 ///|
 fn collect_dep_block(
-  body : Module,
+  body : @core.Module,
   bound : Map[String, Bool],
   out : Map[String, Bool],
 ) -> Unit {
-  let scope = clone_bool_map(bound)
+  let scope = @checker.clone_bool_map(bound)
   for stmt in body.stmts {
     match stmt {
-      Stmt::Let(rec~, name~, expr~) => {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
         if rec {
           scope[name] = true
         }
@@ -186,8 +194,16 @@ fn collect_dep_block(
           scope[name] = true
         }
       }
-      Stmt::Expr(expr~) => collect_dep_expr(expr, scope, out)
-      Stmt::Test(..) => ()
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
+        collect_dep_expr(expr, scope, out)
+      }
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = body
+        let _ = span
+
+      }
       _ => ()
     }
   }
@@ -195,53 +211,86 @@ fn collect_dep_block(
 
 ///|
 fn collect_dep_expr(
-  expr : Expr,
+  expr : @core.Expr,
   bound : Map[String, Bool],
   out : Map[String, Bool],
 ) -> Unit {
   match expr {
-    Expr::Int(_) => ()
-    Expr::Bool(_) => ()
-    Expr::String(_) => ()
-    Expr::Ident(name) => add_dep_name(name, bound, out)
-    Expr::Call(name~, args~) => {
+    @core.Expr::Int(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Expr::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Expr::String(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
+      add_dep_name(name, bound, out)
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
       add_dep_name(name, bound, out)
       for arg in args {
         collect_dep_expr(arg.expr, bound, out)
       }
     }
-    Expr::Tuple(items) =>
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
       for item in items {
         collect_dep_expr(item, bound, out)
       }
-    Expr::Record(fields) =>
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
       for field in fields {
         collect_dep_expr(field.expr, bound, out)
       }
-    Expr::Array(items) =>
+    }
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
       for item in items {
         collect_dep_expr(item, bound, out)
       }
-    Expr::Map(fields) =>
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
       for field in fields {
         collect_dep_expr(field.expr, bound, out)
       }
-    Expr::If(cond~, then_body~, else_body~) => {
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
       collect_dep_expr(cond, bound, out)
       collect_dep_block(then_body, bound, out)
       collect_dep_block(else_body, bound, out)
     }
-    Expr::Block(body~) => collect_dep_block(body, bound, out)
-    Expr::Do(body~) => collect_dep_block(body, bound, out)
-    Expr::Try(try_body~, catch_body~) => {
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      collect_dep_block(body, bound, out)
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      collect_dep_block(body, bound, out)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
       collect_dep_block(try_body, bound, out)
       collect_dep_block(catch_body, bound, out)
     }
-    Expr::Match(scrutinee~, arms~) => {
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
       collect_dep_expr(scrutinee, bound, out)
       for arm in arms {
-        let arm_bound = clone_bool_map(bound)
-        bind_pattern_names(arm_bound, arm.pat)
+        let arm_bound = @checker.clone_bool_map(bound)
+        @checker.bind_pattern_names(arm_bound, arm.pat)
         match arm.cond {
           Some(cond) => collect_dep_expr(cond, arm_bound, out)
           None => ()
@@ -249,9 +298,10 @@ fn collect_dep_expr(
         collect_dep_expr(arm.expr, arm_bound, out)
       }
     }
-    Expr::Fn(params~, ret~, effects=_, body~) => {
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+      let _ = span
       let _ = ret
-      let fn_bound = clone_bool_map(bound)
+      let fn_bound = @checker.clone_bool_map(bound)
       for param in params {
         fn_bound[param.name] = true
       }
@@ -269,7 +319,9 @@ fn add_dep_name(
   if bound.contains(name) {
     return
   }
-  if is_builtin_name(name) || is_ctor_name(name) || has_qualified_name(name) {
+  if is_builtin_name(name) ||
+    @core.is_ctor_name(name) ||
+    has_qualified_name(name) {
     return
   }
   out[name] = true
