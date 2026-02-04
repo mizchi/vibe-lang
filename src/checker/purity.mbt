@@ -365,9 +365,5 @@ fn is_pure_builtin_name(name : String) -> Bool {
 
 ///|
 pub fn clone_bool_map(src : Map[String, Bool]) -> Map[String, Bool] {
-  let out : Map[String, Bool] = {}
-  for key, val in src {
-    out[key] = val
-  }
-  out
+  src.copy()
 }

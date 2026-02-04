@@ -655,49 +655,33 @@ pub fn TypeEnv::get_addr_type(self : TypeEnv, addr : String) -> @core.Type? {
 
 ///|
 pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
-  let bindings : Map[String, TypeScheme] = {}
-  for name, scheme in self.bindings {
-    bindings[name] = scheme
-  }
-  let addr_types : Map[String, @core.Type] = {}
-  for addr, ty in self.addr_types {
-    addr_types[addr] = ty
-  }
-  let enum_defs : Map[String, EnumDef] = {}
-  for name, def in self.enum_defs {
-    enum_defs[name] = def
-  }
-  let type_aliases : Map[String, TypeAlias] = {}
-  for name, type_alias in self.type_aliases {
-    type_aliases[name] = type_alias
-  }
-  let ctor_index : Map[String, CtorInfo] = {}
-  for name, info in self.ctor_index {
-    ctor_index[name] = info
-  }
-  let purities : Map[String, Bool] = {}
-  for name, pure in self.purities {
-    purities[name] = pure
-  }
-  let subs : Map[Int, @core.Type] = {}
-  for id, ty in self.subs {
-    subs[id] = ty
-  }
-  let effect_subs : Map[String, Array[@core.EffectAtom]] = {}
-  for name, effects in self.effect_subs {
-    effect_subs[name] = effects
-  }
   {
-    bindings,
-    addr_types,
-    enum_defs,
-    type_aliases,
-    ctor_index,
-    purities,
+    bindings: self.bindings.copy(),
+    addr_types: self.addr_types.copy(),
+    enum_defs: self.enum_defs.copy(),
+    type_aliases: self.type_aliases.copy(),
+    ctor_index: self.ctor_index.copy(),
+    purities: self.purities.copy(),
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
-    subs,
-    effect_subs,
+    subs: self.subs.copy(),
+    effect_subs: self.effect_subs.copy(),
+  }
+}
+
+///|
+pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
+  {
+    bindings: self.bindings.copy(),
+    addr_types: self.addr_types.copy(),
+    enum_defs: self.enum_defs.copy(),
+    type_aliases: self.type_aliases.copy(),
+    ctor_index: self.ctor_index.copy(),
+    purities: self.purities.copy(),
+    next_var: 0,
+    next_effect_var: 0,
+    subs: {},
+    effect_subs: {},
   }
 }
 
@@ -866,7 +850,7 @@ fn type_check_stmts(
 
 ///|
 fn clone_env(env : TypeEnv) -> TypeEnv {
-  env.clone()
+  env.fork_for_check()
 }
 
 ///|
@@ -1030,62 +1014,66 @@ fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> @core.Type {
 
 ///|
 fn resolve_type(env : TypeEnv, ty : @core.Type) -> @core.Type {
-  match ty {
-    @core.Type::Var(id) =>
-      match env.subs.get(id) {
-        Some(t) => {
-          let resolved = resolve_type(env, t)
-          env.subs[id] = resolved
-          resolved
+  if env.subs.is_empty() {
+    ty
+  } else {
+    match ty {
+      @core.Type::Var(id) =>
+        match env.subs.get(id) {
+          Some(t) => {
+            let resolved = resolve_type(env, t)
+            env.subs[id] = resolved
+            resolved
+          }
+          None => ty
         }
-        None => ty
+      @core.Type::Tuple(items) => {
+        let out : Array[@core.Type] = []
+        for item in items {
+          out.push(resolve_type(env, item))
+        }
+        @core.Type::Tuple(out)
       }
-    @core.Type::Tuple(items) => {
-      let out : Array[@core.Type] = []
-      for item in items {
-        out.push(resolve_type(env, item))
+      @core.Type::Record(fields) => {
+        let out : Map[String, @core.Type] = {}
+        for name, item in fields {
+          out[name] = resolve_type(env, item)
+        }
+        @core.Type::Record(out)
       }
-      @core.Type::Tuple(out)
+      @core.Type::Array(inner) => @core.Type::Array(resolve_type(env, inner))
+      @core.Type::Map(inner) => @core.Type::Map(resolve_type(env, inner))
+      @core.Type::ArrayBuilder(inner) =>
+        @core.Type::ArrayBuilder(resolve_type(env, inner))
+      @core.Type::MapBuilder(inner) =>
+        @core.Type::MapBuilder(resolve_type(env, inner))
+      @core.Type::Variant(fields) => {
+        let out : Map[String, @core.Type] = {}
+        for name, item in fields {
+          out[name] = resolve_type(env, item)
+        }
+        @core.Type::Variant(out)
+      }
+      @core.Type::Named(name~, args~) => {
+        let out : Array[@core.Type] = []
+        for arg in args {
+          out.push(resolve_type(env, arg))
+        }
+        @core.Type::Named(name~, args=out)
+      }
+      @core.Type::Func(params~, ret~, effects~) => {
+        let out : Array[@core.FuncParam] = []
+        for param in params {
+          out.push(@core.FuncParam::{
+            name: param.name,
+            label: param.label,
+            ty: resolve_type(env, param.ty),
+          })
+        }
+        @core.Type::Func(params=out, ret=resolve_type(env, ret), effects~)
+      }
+      _ => ty
     }
-    @core.Type::Record(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = resolve_type(env, item)
-      }
-      @core.Type::Record(out)
-    }
-    @core.Type::Array(inner) => @core.Type::Array(resolve_type(env, inner))
-    @core.Type::Map(inner) => @core.Type::Map(resolve_type(env, inner))
-    @core.Type::ArrayBuilder(inner) =>
-      @core.Type::ArrayBuilder(resolve_type(env, inner))
-    @core.Type::MapBuilder(inner) =>
-      @core.Type::MapBuilder(resolve_type(env, inner))
-    @core.Type::Variant(fields) => {
-      let out : Map[String, @core.Type] = {}
-      for name, item in fields {
-        out[name] = resolve_type(env, item)
-      }
-      @core.Type::Variant(out)
-    }
-    @core.Type::Named(name~, args~) => {
-      let out : Array[@core.Type] = []
-      for arg in args {
-        out.push(resolve_type(env, arg))
-      }
-      @core.Type::Named(name~, args=out)
-    }
-    @core.Type::Func(params~, ret~, effects~) => {
-      let out : Array[@core.FuncParam] = []
-      for param in params {
-        out.push(@core.FuncParam::{
-          name: param.name,
-          label: param.label,
-          ty: resolve_type(env, param.ty),
-        })
-      }
-      @core.Type::Func(params=out, ret=resolve_type(env, ret), effects~)
-    }
-    _ => ty
   }
 }
 
@@ -3502,7 +3490,8 @@ fn check_call_args(
 ///|
 fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError {
   let resolved = resolve_type(env, ty)
-  normalize_type_inner(env, resolved, {})
+  let visiting : Map[String, Bool] = {}
+  normalize_type_inner(env, resolved, visiting)
 }
 
 ///|
@@ -3527,12 +3516,8 @@ fn normalize_type_inner(
             )
         }
       } else {
-        let next : Map[String, Bool] = {}
-        for key, val in visiting {
-          next[key] = val
-        }
-        next[name] = true
-        match env.get_type_alias(name) {
+        visiting[name] = true
+        let normalized = match env.get_type_alias(name) {
           Some(type_alias) => {
             if type_alias.params.length() != normalized_args.length() {
               raise TypeError::BadTypeDef(
@@ -3545,7 +3530,7 @@ fn normalize_type_inner(
               mapping[type_alias.params[i]] = normalized_args[i]
             }
             let substituted = substitute_type(type_alias.target, mapping)
-            normalize_type_inner(env, substituted, next)
+            normalize_type_inner(env, substituted, visiting)
           }
           None =>
             match env.get_enum_def(name) {
@@ -3571,7 +3556,7 @@ fn normalize_type_inner(
                   }
                   let substituted = substitute_type(base_payload, mapping)
                   ctor_map[ctor.name] = normalize_type_inner(
-                    env, substituted, next,
+                    env, substituted, visiting,
                   )
                 }
                 @core.Type::Variant(ctor_map)
@@ -3584,6 +3569,8 @@ fn normalize_type_inner(
                 )
             }
         }
+        visiting.remove(name)
+        normalized
       }
     }
     @core.Type::Tuple(items) => {

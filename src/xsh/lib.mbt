@@ -36,11 +36,15 @@ pub fn Runtime::eval_script(
   let raw_ast = @parser.parse_ast(script) catch {
     e => raise XshError::Parse(e)
   }
-  let aliases = merge_aliases(self.aliases, raw_ast)
+  let aliases = if has_alias_stmt(raw_ast) {
+    merge_aliases(self.aliases, raw_ast)
+  } else {
+    self.aliases
+  }
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
     let next_env = @checker.type_check_with_env(
-      self.type_env.clone(),
+      self.type_env.fork_for_check(),
       ast,
       aliases,
     )
@@ -80,10 +84,7 @@ fn merge_aliases(
   base : Map[String, @core.Ref],
   ast : @core.Module,
 ) -> Map[String, @core.Ref] {
-  let aliases : Map[String, @core.Ref] = {}
-  for name, target in base {
-    aliases[name] = target
-  }
+  let aliases = base.copy()
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Alias(name~, target~, span~) => {
@@ -97,4 +98,19 @@ fn merge_aliases(
     }
   }
   aliases
+}
+
+///|
+fn has_alias_stmt(ast : @core.Module) -> Bool {
+  let mut found = false
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Alias(..) => {
+        found = true
+        break
+      }
+      _ => ()
+    }
+  }
+  found
 }
