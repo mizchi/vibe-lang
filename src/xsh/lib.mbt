@@ -41,7 +41,11 @@ pub fn Runtime::eval_script(
   } else {
     self.aliases
   }
-  let ast = desugar_method_calls(raw_ast, aliases)
+  let ast = if script.contains(".") {
+    desugar_method_calls(raw_ast, aliases)
+  } else {
+    raw_ast
+  }
   try {
     let next_env = @checker.type_check_with_env(
       self.type_env.fork_for_check(),
