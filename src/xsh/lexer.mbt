@@ -1,6 +1,7 @@
 ///| Lexer for xsh
 
-///| Lexer state
+///|
+/// Lexer state
 pub struct Lexer {
   input : String
   mut pos : Int
@@ -47,8 +48,33 @@ fn is_alnum(c : Char) -> Bool {
 }
 
 ///|
-fn is_ident_continue(c : Char) -> Bool {
-  is_alnum(c) || c == '#' || c == '.' || c == '/'
+fn is_ident_extra(c : Char) -> Bool {
+  c == '#' || c == '.' || c == '?' || c == '~' || c == '@'
+}
+
+///|
+fn is_ident_delim(c : Char) -> Bool {
+  is_whitespace_char(c) ||
+  c == '\n' ||
+  c == '(' ||
+  c == ')' ||
+  c == '{' ||
+  c == '}' ||
+  c == '[' ||
+  c == ']' ||
+  c == ',' ||
+  c == ';' ||
+  c == '=' ||
+  c == ':' ||
+  c == '+' ||
+  c == '*' ||
+  c == '-' ||
+  c == '/' ||
+  c == '|' ||
+  c == '!' ||
+  c == '<' ||
+  c == '>' ||
+  c == '&'
 }
 
 ///|
@@ -56,17 +82,16 @@ fn is_whitespace_char(c : Char) -> Bool {
   c == ' ' || c == '\t'
 }
 
-///| Lex a string literal ("...") with basic escapes
+///|
+/// Lex a string literal ("...") with basic escapes
 fn Lexer::lex_string(self : Lexer) -> Token {
   let _ = self.advance() // opening quote
   let buf = StringBuilder::new()
-  while {
-    match self.peek() {
-      Some('"') => false
-      Some(_) => true
-      None => false
-    }
-  } {
+  while (match self.peek() {
+          Some('"') => false
+          Some(_) => true
+          None => false
+        }) {
     match self.advance() {
       Some('\\') =>
         match self.advance() {
@@ -90,20 +115,20 @@ fn Lexer::lex_string(self : Lexer) -> Token {
   }
 }
 
-///| Lex a single token
+///|
+/// Lex a single token
 pub fn Lexer::next_token(self : Lexer) -> Token {
   match self.peek() {
     None => Token::new(eof(), "")
     Some(c) => {
       if is_whitespace_char(c) {
         let start = self.pos
-        while {
-          match self.peek() {
-            Some(ch) => is_whitespace_char(ch)
-            None => false
-          }
-        } {
+        while (match self.peek() {
+                Some(ch) => is_whitespace_char(ch)
+                None => false
+              }) {
           let _ = self.advance()
+
         }
         let text = (try! self.input[start:self.pos]).to_string()
         return Token::new(whitespace(), text)
@@ -116,16 +141,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
         return self.lex_string()
       }
       if is_alpha(c) {
-        let start = self.pos
-        while {
-          match self.peek() {
-            Some(ch) => is_ident_continue(ch)
-            None => false
-          }
-        } {
-          let _ = self.advance()
-        }
-        let text = (try! self.input[start:self.pos]).to_string()
+        let text = self.lex_ident()
         let kind = match text {
           "let" => let_kw()
           "flake" => flake_kw()
@@ -137,6 +153,11 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "match" => match_kw()
           "do" => do_kw()
           "record" => record_kw()
+          "map" => map_kw()
+          "fn" => fn_kw()
+          "rec" => rec_kw()
+          "type" => type_kw()
+          "enum" => enum_kw()
           "true" => bool_lit()
           "false" => bool_lit()
           _ => name()
@@ -145,13 +166,12 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
       }
       if is_digit(c) {
         let start = self.pos
-        while {
-          match self.peek() {
-            Some(ch) => is_digit(ch)
-            None => false
-          }
-        } {
+        while (match self.peek() {
+                Some(ch) => is_digit(ch)
+                None => false
+              }) {
           let _ = self.advance()
+
         }
         let text = (try! self.input[start:self.pos]).to_string()
         return Token::new(int_lit(), text)
@@ -164,27 +184,145 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
               let _ = self.advance()
               Token::new(arrow(), "=>")
             }
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(eqeq(), "==")
+            }
             _ => Token::new(eq(), "=")
+          }
+        '-' =>
+          match self.peek() {
+            Some('>') => {
+              let _ = self.advance()
+              Token::new(thin_arrow(), "->")
+            }
+            _ => Token::new(minus(), "-")
           }
         ';' => Token::new(semicolon(), ";")
         '{' => Token::new(lbrace(), "{")
         '}' => Token::new(rbrace(), "}")
         '(' => Token::new(lparen(), "(")
         ')' => Token::new(rparen(), ")")
+        '[' => Token::new(lbracket(), "[")
+        ']' => Token::new(rbracket(), "]")
         ',' => Token::new(comma(), ",")
         ':' => Token::new(colon(), ":")
+        '/' => Token::new(slash(), "/")
+        '+' => Token::new(plus(), "+")
+        '*' => Token::new(star(), "*")
+        '!' =>
+          match self.peek() {
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(neq(), "!=")
+            }
+            _ => Token::new(bang(), "!")
+          }
+        '<' =>
+          match self.peek() {
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(lte(), "<=")
+            }
+            _ => Token::new(lt(), "<")
+          }
+        '>' =>
+          match self.peek() {
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(gte(), ">=")
+            }
+            _ => Token::new(gt(), ">")
+          }
+        '&' =>
+          match self.peek() {
+            Some('&') => {
+              let _ = self.advance()
+              Token::new(and_and(), "&&")
+            }
+            _ => Token::new(error_kind(), "&")
+          }
+        '|' =>
+          match self.peek() {
+            Some('|') => {
+              let _ = self.advance()
+              Token::new(or_or(), "||")
+            }
+            _ => Token::new(pipe(), "|")
+          }
         _ => Token::new(error_kind(), c.to_string())
       }
     }
   }
 }
 
-///| Check if lexer is at end
+///|
+fn Lexer::lex_ident(self : Lexer) -> String {
+  let start = self.pos
+  let mut allow_qual = false
+  while (match self.peek() {
+          Some(_) => true
+          None => false
+        }) {
+    match self.peek() {
+      Some(ch) =>
+        if is_alnum(ch) || ch == '_' {
+          let _ = self.advance()
+
+        } else if is_ident_extra(ch) {
+          if ch == '@' || ch == '.' {
+            allow_qual = true
+          }
+          let _ = self.advance()
+
+        } else if ch == '/' {
+          if allow_qual || self.should_continue_qualified() {
+            allow_qual = true
+            let _ = self.advance()
+
+          } else {
+            break
+          }
+        } else if ch == '-' {
+          if allow_qual {
+            let _ = self.advance()
+
+          } else {
+            break
+          }
+        } else {
+          break
+        }
+      None => break
+    }
+  }
+  (try! self.input[start:self.pos]).to_string()
+}
+
+///|
+fn Lexer::should_continue_qualified(self : Lexer) -> Bool {
+  let mut i = self.pos + 1
+  while i < self.input.length() {
+    let ch = self.input[i].to_int().unsafe_to_char()
+    if is_ident_delim(ch) {
+      break
+    }
+    if ch == '@' || ch == '/' {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+///|
+/// Check if lexer is at end
 pub fn Lexer::is_eof(self : Lexer) -> Bool {
   self.pos >= self.input.length()
 }
 
-///| Tokenize entire input
+///|
+/// Tokenize entire input
 pub fn tokenize(input : String) -> Array[Token] {
   let lexer = Lexer::new(input)
   let tokens : Array[Token] = []

@@ -1,6 +1,7 @@
 ///| SyntaxKind constants for xsh
 
 // Token kinds (0-99)
+
 ///|
 pub fn eof() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(0)
@@ -92,6 +93,31 @@ pub fn record_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn fn_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(34)
+}
+
+///|
+pub fn rec_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(36)
+}
+
+///|
+pub fn type_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(39)
+}
+
+///|
+pub fn enum_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(60)
+}
+
+///|
+pub fn map_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(57)
+}
+
+///|
 pub fn eq() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(30)
 }
@@ -107,8 +133,93 @@ pub fn arrow() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn thin_arrow() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(35)
+}
+
+///|
 pub fn colon() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(33)
+}
+
+///|
+pub fn plus() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(37)
+}
+
+///|
+pub fn star() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(38)
+}
+
+///|
+pub fn minus() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(45)
+}
+
+///|
+pub fn slash() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(46)
+}
+
+///|
+pub fn pipe() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(47)
+}
+
+///|
+pub fn bang() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(48)
+}
+
+///|
+pub fn eqeq() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(49)
+}
+
+///|
+pub fn neq() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(50)
+}
+
+///|
+pub fn lt() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(51)
+}
+
+///|
+pub fn lte() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(52)
+}
+
+///|
+pub fn gt() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(53)
+}
+
+///|
+pub fn gte() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(54)
+}
+
+///|
+pub fn and_and() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(55)
+}
+
+///|
+pub fn or_or() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(56)
+}
+
+///|
+pub fn lbracket() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(58)
+}
+
+///|
+pub fn rbracket() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(59)
 }
 
 ///|
@@ -137,6 +248,7 @@ pub fn comma() -> @cst.SyntaxKind {
 }
 
 // Node kinds (100+)
+
 ///|
 pub fn source_file() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(100)
@@ -170,6 +282,21 @@ pub fn import_stmt() -> @cst.SyntaxKind {
 ///|
 pub fn test_block() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(106)
+}
+
+///|
+pub fn type_def() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(118)
+}
+
+///|
+pub fn enum_def() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(121)
+}
+
+///|
+pub fn type_alias() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(122)
 }
 
 ///|
@@ -222,12 +349,29 @@ pub fn record_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(116)
 }
 
-///| Check if a SyntaxKind is a token (not a node)
+///|
+pub fn fn_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(117)
+}
+
+///|
+pub fn array_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(119)
+}
+
+///|
+pub fn map_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(120)
+}
+
+///|
+/// Check if a SyntaxKind is a token (not a node)
 pub fn is_token(kind : @cst.SyntaxKind) -> Bool {
   kind.raw() < 100
 }
 
-///| Check if a SyntaxKind is trivia (whitespace/newline)
+///|
+/// Check if a SyntaxKind is trivia (whitespace/newline)
 pub fn is_trivia(kind : @cst.SyntaxKind) -> Bool {
   kind == whitespace() || kind == newline()
 }

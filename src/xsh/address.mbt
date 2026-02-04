@@ -1,0 +1,616 @@
+///|
+/// Address computation for normalized expressions.
+pub fn expr_address(
+  expr : Expr,
+  env : Map[String, String],
+  self_name : String?,
+) -> String {
+  let ctx = AddrCtx::new(env, self_name)
+  let sexp = expr_to_addr_sexp(ctx, expr)
+  git_blob_hash_string(sexp)
+}
+
+///|
+priv struct AddrCtx {
+  global_env : Map[String, String]
+  locals : Map[String, String]
+  mut next_local : Int
+  self_name : String?
+}
+
+///|
+fn AddrCtx::new(env : Map[String, String], self_name : String?) -> AddrCtx {
+  {
+    global_env: addr_clone_string_map(env),
+    locals: {},
+    next_local: 0,
+    self_name,
+  }
+}
+
+///|
+fn AddrCtx::clone(self : AddrCtx) -> AddrCtx {
+  {
+    global_env: addr_clone_string_map(self.global_env),
+    locals: addr_clone_string_map(self.locals),
+    next_local: self.next_local,
+    self_name: self.self_name,
+  }
+}
+
+///|
+fn addr_bind_local(ctx : AddrCtx, name : String) -> String {
+  let id = "v" + ctx.next_local.to_string()
+  ctx.next_local += 1
+  ctx.locals[name] = id
+  id
+}
+
+///|
+fn local_ref(ctx : AddrCtx, name : String) -> String? {
+  ctx.locals.get(name)
+}
+
+///|
+fn resolve_ref(ctx : AddrCtx, name : String) -> String {
+  match local_ref(ctx, name) {
+    Some(id) => return "local:" + id
+    None => ()
+  }
+  match ctx.self_name {
+    Some(n) => if n == name { return "$self" }
+    None => ()
+  }
+  match ctx.global_env.get(name) {
+    Some(addr) => addr
+    None => if is_builtin(name) { "builtin:" + name } else { "name:" + name }
+  }
+}
+
+///|
+fn expr_to_addr_sexp(ctx : AddrCtx, expr : Expr) -> String {
+  match expr {
+    Expr::Int(n) => "(lit (int " + n.to_string() + "))"
+    Expr::Bool(b) => "(lit (bool " + (if b { "true" } else { "false" }) + "))"
+    Expr::String(s) => "(lit (string " + addr_escape_string(s) + "))"
+    Expr::Ident(name) =>
+      "(ref " + addr_escape_string(resolve_ref(ctx, name)) + ")"
+    Expr::Call(name~, args~) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(call ")
+      buf.write_string(addr_escape_string(resolve_ref(ctx, name)))
+      buf.write_string(" (args")
+      for arg in args {
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(ctx, arg.expr))
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
+    Expr::Tuple(items) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(tuple")
+      for item in items {
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(ctx, item))
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Expr::Record(fields) => {
+      let ordered = addr_sort_record_fields_expr(fields)
+      let buf = StringBuilder::new()
+      buf.write_string("(record")
+      for field in ordered {
+        buf.write_char(' ')
+        buf.write_string("(field ")
+        buf.write_string(addr_escape_string(field.name))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(ctx, field.expr))
+        buf.write_char(')')
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Expr::Array(items) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(array")
+      for item in items {
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(ctx, item))
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Expr::Map(fields) => {
+      let ordered = addr_sort_map_fields_expr(fields)
+      let buf = StringBuilder::new()
+      buf.write_string("(map")
+      for field in ordered {
+        buf.write_char(' ')
+        buf.write_string("(field ")
+        buf.write_string(addr_escape_string(field.key))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(ctx, field.expr))
+        buf.write_char(')')
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Expr::If(cond~, then_body~, else_body~) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(if ")
+      buf.write_string(expr_to_addr_sexp(ctx, cond))
+      buf.write_char(' ')
+      buf.write_string(block_to_addr_sexp(ctx, then_body))
+      buf.write_char(' ')
+      buf.write_string(block_to_addr_sexp(ctx, else_body))
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Expr::Block(body~) => block_to_addr_sexp(ctx, body)
+    Expr::Match(scrutinee~, arms~) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(match ")
+      buf.write_string(expr_to_addr_sexp(ctx, scrutinee))
+      buf.write_string(" (arms")
+      for arm in arms {
+        buf.write_char(' ')
+        buf.write_string(addr_match_arm_to_sexp(ctx, arm))
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
+    Expr::Do(body~) => "(do " + block_to_addr_sexp(ctx, body) + ")"
+    Expr::Fn(params~, ret~, body~) => {
+      let fn_ctx = ctx.clone()
+      let param_ids : Array[String] = []
+      for param in params {
+        let id = addr_bind_local(fn_ctx, param.name)
+        param_ids.push(id)
+      }
+      let buf = StringBuilder::new()
+      buf.write_string("(fn (params")
+      for i in 0..<params.length() {
+        buf.write_char(' ')
+        buf.write_string(addr_param_to_sexp(params[i], param_ids[i]))
+      }
+      buf.write_string(") (ret ")
+      match ret {
+        Some(r) => buf.write_string(addr_type_to_sexp(r))
+        None => buf.write_string("_")
+      }
+      buf.write_string(") ")
+      buf.write_string(block_to_addr_sexp(fn_ctx, body))
+      buf.write_char(')')
+      buf.to_string()
+    }
+  }
+}
+
+///|
+fn block_to_addr_sexp(ctx : AddrCtx, body : Module) -> String {
+  let block_ctx = ctx.clone()
+  let buf = StringBuilder::new()
+  buf.write_string("(block")
+  for stmt in body.stmts {
+    match stmt {
+      Stmt::Let(rec~, name~, expr~) =>
+        if rec {
+          let _ = addr_bind_local(block_ctx, name)
+          buf.write_string(" (let-rec ")
+          buf.write_string(expr_to_addr_sexp(block_ctx, expr))
+          buf.write_char(')')
+        } else {
+          buf.write_string(" (let ")
+          buf.write_string(expr_to_addr_sexp(block_ctx, expr))
+          buf.write_char(')')
+          let _ = addr_bind_local(block_ctx, name)
+
+        }
+      Stmt::EnumDef(name~, params~, ctors~) => {
+        buf.write_string(" (enum ")
+        buf.write_string(addr_escape_string(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(addr_escape_string(param))
+        }
+        buf.write_string(") (ctors")
+        let sorted = addr_sort_type_ctors(ctors)
+        for ctor in sorted {
+          buf.write_string(" (ctor ")
+          buf.write_string(addr_escape_string(ctor.name))
+          buf.write_char(' ')
+          buf.write_string(addr_type_to_sexp(addr_type_ctor_payload(ctor)))
+          buf.write_char(')')
+        }
+        buf.write_string("))")
+      }
+      Stmt::TypeAlias(name~, params~, target~) => {
+        buf.write_string(" (type-alias ")
+        buf.write_string(addr_escape_string(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(addr_escape_string(param))
+        }
+        buf.write_string(") ")
+        buf.write_string(addr_type_to_sexp(target))
+        buf.write_char(')')
+      }
+      Stmt::Expr(expr~) => {
+        buf.write_string(" (expr ")
+        buf.write_string(expr_to_addr_sexp(block_ctx, expr))
+        buf.write_char(')')
+      }
+      Stmt::Flake(_) => buf.write_string(" (flake)")
+      Stmt::Alias(..) => buf.write_string(" (alias)")
+      Stmt::Import(..) => buf.write_string(" (import)")
+      Stmt::Test(name~, body~) => {
+        let _ = name
+        buf.write_string(" (test ")
+        buf.write_string(block_to_addr_sexp(block_ctx, body))
+        buf.write_char(')')
+      }
+    }
+  }
+  buf.write_char(')')
+  buf.to_string()
+}
+
+///|
+fn addr_match_arm_to_sexp(ctx : AddrCtx, arm : MatchArm) -> String {
+  let arm_ctx = ctx.clone()
+  bind_pattern(arm_ctx, arm.pat)
+  let buf = StringBuilder::new()
+  buf.write_string("(arm ")
+  buf.write_string(addr_pat_to_sexp(arm_ctx, arm.pat))
+  match arm.cond {
+    Some(c) => {
+      buf.write_string(" (guard ")
+      buf.write_string(expr_to_addr_sexp(arm_ctx, c))
+      buf.write_char(')')
+    }
+    None => ()
+  }
+  buf.write_char(' ')
+  buf.write_string(expr_to_addr_sexp(arm_ctx, arm.expr))
+  buf.write_char(')')
+  buf.to_string()
+}
+
+///|
+fn bind_pattern(ctx : AddrCtx, pat : Pat) -> Unit {
+  match pat {
+    Pat::Bind(name) => {
+      let _ = addr_bind_local(ctx, name)
+
+    }
+    Pat::Ctor(name~, args~) => {
+      let _ = name
+      for arg in args {
+        bind_pattern(ctx, arg)
+      }
+    }
+    Pat::Tuple(items) =>
+      for item in items {
+        bind_pattern(ctx, item)
+      }
+    Pat::Record(fields) =>
+      for field in fields {
+        bind_pattern(ctx, field.pat)
+      }
+    _ => ()
+  }
+}
+
+///|
+fn addr_pat_to_sexp(ctx : AddrCtx, pat : Pat) -> String {
+  match pat {
+    Pat::Wildcard => "(pat _)"
+    Pat::Bind(name) =>
+      match local_ref(ctx, name) {
+        Some(id) => "(pat (bind " + addr_escape_string("local:" + id) + "))"
+        None => "(pat (bind " + addr_escape_string(name) + "))"
+      }
+    Pat::Ctor(name~, args~) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(pat (ctor ")
+      buf.write_string(addr_escape_string(name))
+      for arg in args {
+        buf.write_char(' ')
+        buf.write_string(addr_pat_to_sexp(ctx, arg))
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
+    Pat::Tuple(items) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(pat (tuple")
+      for item in items {
+        buf.write_char(' ')
+        buf.write_string(addr_pat_to_sexp(ctx, item))
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
+    Pat::Record(fields) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(pat (record")
+      for field in fields {
+        buf.write_char(' ')
+        buf.write_string("(field ")
+        buf.write_string(addr_escape_string(field.name))
+        buf.write_char(' ')
+        buf.write_string(addr_pat_to_sexp(ctx, field.pat))
+        buf.write_char(')')
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
+    Pat::Int(n) => "(pat (int " + n.to_string() + "))"
+    Pat::Bool(b) => "(pat (bool " + (if b { "true" } else { "false" }) + "))"
+    Pat::String(s) => "(pat (string " + addr_escape_string(s) + "))"
+  }
+}
+
+///|
+fn addr_param_to_sexp(param : FuncParam, id : String) -> String {
+  let buf = StringBuilder::new()
+  buf.write_string("(param ")
+  buf.write_string(addr_escape_string(id))
+  buf.write_char(' ')
+  buf.write_string(addr_label_to_sexp(param.label))
+  buf.write_char(' ')
+  buf.write_string(addr_type_to_sexp(param.ty))
+  buf.write_char(')')
+  buf.to_string()
+}
+
+///|
+fn addr_label_to_sexp(label : ParamLabel) -> String {
+  match label {
+    ParamLabel::Positional => "pos"
+    ParamLabel::Required => "req"
+    ParamLabel::Optional => "opt"
+  }
+}
+
+///|
+fn addr_type_to_sexp(ty : Type) -> String {
+  match ty {
+    Type::Int => "Int"
+    Type::Bool => "Bool"
+    Type::String => "String"
+    Type::Path => "Path"
+    Type::Unit => "Unit"
+    Type::Named(name~, args~) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(Named ")
+      buf.write_string(addr_escape_string(name))
+      for arg in args {
+        buf.write_char(' ')
+        buf.write_string(addr_type_to_sexp(arg))
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Type::Param(name) => "(Param " + addr_escape_string(name) + ")"
+    Type::Var(id) => "(Var " + id.to_string() + ")"
+    Type::Tuple(items) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(Tuple")
+      for item in items {
+        buf.write_char(' ')
+        buf.write_string(addr_type_to_sexp(item))
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Type::Record(fields) => {
+      let keys = addr_sort_record_type_keys(fields)
+      let buf = StringBuilder::new()
+      buf.write_string("(Record")
+      for key in keys {
+        match fields.get(key) {
+          Some(field_ty) => {
+            buf.write_char(' ')
+            buf.write_string("(field ")
+            buf.write_string(addr_escape_string(key))
+            buf.write_char(' ')
+            buf.write_string(addr_type_to_sexp(field_ty))
+            buf.write_char(')')
+          }
+          None => ()
+        }
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Type::Array(inner) => "(Array " + addr_type_to_sexp(inner) + ")"
+    Type::Map(inner) => "(Map " + addr_type_to_sexp(inner) + ")"
+    Type::ArrayBuilder(inner) =>
+      "(ArrayBuilder " + addr_type_to_sexp(inner) + ")"
+    Type::MapBuilder(inner) => "(MapBuilder " + addr_type_to_sexp(inner) + ")"
+    Type::Variant(fields) => {
+      let keys = addr_sort_record_type_keys(fields)
+      let buf = StringBuilder::new()
+      buf.write_string("(Variant")
+      for key in keys {
+        match fields.get(key) {
+          Some(field_ty) => {
+            buf.write_char(' ')
+            buf.write_string("(ctor ")
+            buf.write_string(addr_escape_string(key))
+            buf.write_char(' ')
+            buf.write_string(addr_type_to_sexp(field_ty))
+            buf.write_char(')')
+          }
+          None => ()
+        }
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Type::Func(params~, ret~) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(Func (params")
+      for param in params {
+        buf.write_char(' ')
+        buf.write_string(addr_param_to_sexp(param, "_"))
+      }
+      buf.write_string(") ")
+      buf.write_string(addr_type_to_sexp(ret))
+      buf.write_char(')')
+      buf.to_string()
+    }
+  }
+}
+
+///|
+fn addr_type_ctor_payload(ctor : TypeCtor) -> Type {
+  if ctor.args.length() == 0 {
+    Type::Unit
+  } else if ctor.args.length() == 1 {
+    ctor.args[0]
+  } else {
+    Type::Tuple(ctor.args)
+  }
+}
+
+///|
+fn addr_sort_record_type_keys(fields : Map[String, Type]) -> Array[String] {
+  let out : Array[String] = []
+  for name, _ in fields {
+    out.push(name)
+    let mut i = out.length() - 1
+    while i > 0 && addr_string_lt(out[i], out[i - 1]) {
+      let tmp = out[i - 1]
+      out[i - 1] = out[i]
+      out[i] = tmp
+      i -= 1
+    }
+  }
+  out
+}
+
+///|
+fn addr_sort_type_ctors(ctors : Array[TypeCtor]) -> Array[TypeCtor] {
+  let out : Array[TypeCtor] = []
+  for ctor in ctors {
+    out.push(ctor)
+    let mut i = out.length() - 1
+    while i > 0 && addr_string_lt(out[i].name, out[i - 1].name) {
+      let tmp = out[i - 1]
+      out[i - 1] = out[i]
+      out[i] = tmp
+      i -= 1
+    }
+  }
+  out
+}
+
+///|
+fn addr_sort_record_fields_expr(
+  fields : Array[RecordFieldExpr],
+) -> Array[RecordFieldExpr] {
+  let out : Array[RecordFieldExpr] = []
+  for field in fields {
+    out.push(field)
+    let mut i = out.length() - 1
+    while i > 0 && addr_string_lt(out[i].name, out[i - 1].name) {
+      let tmp = out[i - 1]
+      out[i - 1] = out[i]
+      out[i] = tmp
+      i -= 1
+    }
+  }
+  out
+}
+
+///|
+fn addr_sort_map_fields_expr(
+  fields : Array[MapFieldExpr],
+) -> Array[MapFieldExpr] {
+  let out : Array[MapFieldExpr] = []
+  for field in fields {
+    out.push(field)
+    let mut i = out.length() - 1
+    while i > 0 && addr_string_lt(out[i].key, out[i - 1].key) {
+      let tmp = out[i - 1]
+      out[i - 1] = out[i]
+      out[i] = tmp
+      i -= 1
+    }
+  }
+  out
+}
+
+///|
+fn addr_string_lt(a : String, b : String) -> Bool {
+  let ac : Array[Char] = []
+  for c in a {
+    ac.push(c)
+  }
+  let bc : Array[Char] = []
+  for c in b {
+    bc.push(c)
+  }
+  let min = if ac.length() < bc.length() { ac.length() } else { bc.length() }
+  for i in 0..<min {
+    if ac[i] < bc[i] {
+      return true
+    }
+    if ac[i] > bc[i] {
+      return false
+    }
+  }
+  ac.length() < bc.length()
+}
+
+///|
+fn addr_escape_string(s : String) -> String {
+  let buf = StringBuilder::new()
+  buf.write_char('\"')
+  for ch in s {
+    match ch {
+      '\"' => buf.write_string("\\\"")
+      '\\' => buf.write_string("\\\\")
+      '\n' => buf.write_string("\\n")
+      '\t' => buf.write_string("\\t")
+      _ => buf.write_char(ch)
+    }
+  }
+  buf.write_char('\"')
+  buf.to_string()
+}
+
+///|
+fn addr_clone_string_map(src : Map[String, String]) -> Map[String, String] {
+  let out : Map[String, String] = {}
+  for k, v in src {
+    out[k] = v
+  }
+  out
+}
+
+///|
+fn is_builtin(name : String) -> Bool {
+  name == "path" ||
+  name == "addr" ||
+  name == "sh" ||
+  name == "__add" ||
+  name == "__sub" ||
+  name == "__mul" ||
+  name == "__div" ||
+  name == "__eq" ||
+  name == "__lt" ||
+  name == "__assert" ||
+  name == "array_builder" ||
+  name == "array_builder_push" ||
+  name == "array_builder_freeze" ||
+  name == "map_builder" ||
+  name == "map_builder_set" ||
+  name == "map_builder_freeze"
+}

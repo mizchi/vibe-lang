@@ -118,16 +118,38 @@ Notes:
 Runtime API:
 - `Runtime::run_script_tests(script)` parses, type-checks, and runs tests with isolated envs.
 CLI:
-- `moon run src/cmd/xsh_test -- <file> [file...]` runs test blocks and prints a report.
-- `moon run src/cmd/xsh_test -- --script <file> [file...]` executes each file as a script (ignores `test {}`) and treats it as a single test case.
-- `--cycle-debug` prints raw import strings alongside normalized paths.
+- `moon run --target native src/xsh_cli -- run <file>` executes a script (ignores `test {}`).
+- `moon run --target native src/xsh_cli -- test <file...>` runs test blocks and prints a report.
+- `moon run --target native src/xsh_cli -- compile [--wasm] [-o out] <file>` emits IR (default) or wasm bytes.
+- `moon run --target native src/xsh_cli -- repl` launches the TUI interactive shell (completion + layout, history).
+- `moon run --target native src/xsh_cli -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
+- TUI completion sources: builtins + PATH commands + history.
+- `just install` installs a native binary to `~/.local/bin/xsh` (override with `XSH_PREFIX`).
 - Imports are loaded recursively (imports of imports) for hashing/alias resolution.
-- Import cycles are detected and reported with a cycle path including the `import` strings.
+- Import cycle reporting is TODO.
+
+Fixtures:
+- `fixtures/*.xsh` include a `__DATA__` JSON block and are executed by `moon test`.
+- Fields:
+  - `last`: expected `Value::to_string()` (exact match).
+  - `effects`: expected `Effect::to_string()` list (exact match).
+  - `error_contains` / `compile_error`: substring match for failures.
+  - `TODO`: test must fail; passing means the TODO should be removed.
+  - `skip`: skip the fixture.
+
+Bench:
+- `just bench-wasmtime` builds `xsh_cli`, compiles `bench/bench_simple.xsh` to wasm,
+  then benchmarks `wasmtime run --invoke run`.
+- `just bench-compare` compares interpreter (`xsh_cli run`) vs `wasmtime run`.
+- `xsh bench --n 20000 --warmup 1000 --expr "add(1,2)"` measures per-command latency
+  after startup inside a single process.
+- `just bench-cmd-latency` compares per-command latency between interpreter and a
+  resident wasmtime instance.
 
 ## WASM codegen (prototype)
 
 - `compile_module_wasm(db, path)` emits a minimal wasm-gc compatible module (MVP bytecode).
-- Supported: `let`, expression statements, block expressions `{ ... }`, `do { ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; only inside `do`), `add/sub/eq/lt` on `Int`, `not/and/or` on `Bool`.
+- Supported: `let`, expression statements, block expressions `{ ... }`, `do { ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; only inside `do`), `add/sub/eq/lt` on `Int`, `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
 - Not supported: `import`, `alias`, qualified calls, or external symbols. Tuple/record patterns are supported, but nested tuple/record patterns are not.
 - Exports: `run` (i32) and `memory`. Import: `xsh.sh` when `sh(...)` is used.
 - ABI note:
@@ -142,6 +164,21 @@ CLI:
   - `xsh.path` returns a **tagged pointer** (`ptr | 1`).
   - String literals are emitted as **tagged pointers** (`ptr | 1`).
   - Callers must clear tag bits (`ptr & ~3`) before reading object headers.
+
+### WASM GC fixture backend
+
+`compile_module_wasm_gc(db, path)` emits minimal wasm-gc opcodes for fixture checks. This backend is intentionally tiny and only supports:
+- `record { ... }` literals → `struct.new`
+- `match record { ... } { record { a: x, ... } => x, _ => ... }` → `struct.get`
+- `record_set(record { ... }, "field", value)` → `struct.set`
+
+### WASM backend gaps (for shell usage)
+
+- No persistent evaluator API (only a single `run` export; no REPL-style eval).
+- No `import` / `alias` statements; no qualified names or qualified calls.
+- Builtins are limited to `add/sub/eq/lt/not/and/or/path/sh` with fixed arity.
+- `sh` / `path` depend on host imports (`xsh.sh`, `xsh.path`).
+- No user-defined functions, modules, or recursion in wasm backend yet.
 
 ## Pure result cache (Unison-style)
 

@@ -1,3 +1,4 @@
+///|
 test "MemFs basic operations" {
   let fs = MemFs::new()
 
@@ -24,32 +25,31 @@ test "MemFs basic operations" {
   assert_eq(entries[0].name, "test.txt")
 }
 
+///|
 test "MemFs path operations" {
   assert_eq(normalize_path("/a/b/c"), "/a/b/c")
   assert_eq(normalize_path("/a/./b/../c"), "/a/c")
   assert_eq(normalize_path("//a//b//"), "/a/b")
-
   assert_eq(parent_path("/a/b/c"), "/a/b")
   assert_eq(parent_path("/a"), "/")
   assert_eq(parent_path("/"), "/")
-
   assert_eq(basename("/a/b/c"), "c")
   assert_eq(basename("/a"), "a")
   assert_eq(basename("/"), "")
 }
 
+///|
 test "MemFs mkdir_p" {
   let fs = MemFs::new()
-
   fs.mkdir_p("/a/b/c")
   assert_true(fs.is_dir("/a"))
   assert_true(fs.is_dir("/a/b"))
   assert_true(fs.is_dir("/a/b/c"))
 }
 
+///|
 test "MemFs remove and rmdir" {
   let fs = MemFs::new()
-
   fs.mkdir("/dir")
   fs.write_string("/dir/file.txt", "test")
 
@@ -62,18 +62,18 @@ test "MemFs remove and rmdir" {
   assert_false(fs.exists("/dir"))
 }
 
+///|
 test "MemFs copy_file" {
   let fs = MemFs::new()
-
   fs.write_string("/original.txt", "hello world")
   fs.copy_file("/original.txt", "/copy.txt")
-
   assert_true(fs.exists("/copy.txt"))
   assert_eq(fs.read_string("/copy.txt"), "hello world")
   // Original still exists
   assert_true(fs.exists("/original.txt"))
 }
 
+///|
 test "MemFs rm_rf" {
   let fs = MemFs::new()
 
@@ -85,7 +85,6 @@ test "MemFs rm_rf" {
 
   // Remove recursively
   fs.rm_rf("/a")
-
   assert_false(fs.exists("/a"))
   assert_false(fs.exists("/a/b"))
   assert_false(fs.exists("/a/b/c"))

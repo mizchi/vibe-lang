@@ -1,11 +1,17 @@
 ///| FileSystem backend trait
+
 ///|
+
 ///| This trait abstracts the underlying storage mechanism.
+
 ///| Implementations:
+
 ///| - MemFs: In-memory filesystem (default)
+
 ///| - Future: IndexedDB, host fs adapter, etc.
 
-///| Minimal filesystem operations required by vposix
+///|
+/// Minimal filesystem operations required by vposix
 pub(open) trait FileSystemBackend {
   // Read operations
   read_file(Self, String) -> Bytes raise FsError
@@ -28,7 +34,8 @@ pub(open) trait FileSystemBackend {
   rm_rf(Self, String) -> Unit raise FsError
 }
 
-///| Path utilities
+///|
+/// Path utilities
 pub fn normalize_path(path : String) -> String {
   // Simple normalization: remove trailing slash, handle . and ..
   let parts : Array[String] = []
@@ -39,6 +46,7 @@ pub fn normalize_path(path : String) -> String {
       ".." =>
         if parts.length() > 0 {
           let _ = parts.pop()
+
         }
       _ => parts.push(s)
     }
@@ -46,14 +54,17 @@ pub fn normalize_path(path : String) -> String {
   if parts.is_empty() {
     "/"
   } else {
-    "/" + parts.iter().intersperse("/").map(fn(s) { s.to_string() }).fold(
-      init="",
-      fn(acc, s) { acc + s },
-    )
+    "/" +
+    parts
+    .iter()
+    .intersperse("/")
+    .map(fn(s) { s.to_string() })
+    .fold(init="", fn(acc, s) { acc + s })
   }
 }
 
-///| Get parent directory
+///|
+/// Get parent directory
 pub fn parent_path(path : String) -> String {
   let normalized = normalize_path(path)
   if normalized == "/" {
@@ -80,7 +91,8 @@ pub fn parent_path(path : String) -> String {
   }
 }
 
-///| Get basename
+///|
+/// Get basename
 pub fn basename(path : String) -> String {
   let normalized = normalize_path(path)
   if normalized == "/" {

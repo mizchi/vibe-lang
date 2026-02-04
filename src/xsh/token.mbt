@@ -1,4 +1,5 @@
-///| Token for xsh lexer
+///|
+/// Token for xsh lexer
 pub struct Token {
   kind : @cst.SyntaxKind
   text : String

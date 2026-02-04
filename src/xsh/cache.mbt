@@ -1,5 +1,5 @@
-///| Pure function result cache (external snapshot)
-
+///|
+/// Pure function result cache (external snapshot)
 pub struct PureCache {
   entries : Map[String, Value]
 } derive(Show, Eq)
@@ -25,8 +25,11 @@ pub fn PureCache::len(self : PureCache) -> Int {
 }
 
 ///| Serialize cache to a line-based snapshot.
+
 ///| Format: <hash>\t<encoded-value>
-///| Encoded values use prefixes: i:, s:, p:, u:
+
+///|
+/// Encoded values use prefixes: i:, s:, p:, u:
 pub fn PureCache::snapshot(self : PureCache) -> String {
   let buf = StringBuilder::new()
   let mut first = true
@@ -43,7 +46,8 @@ pub fn PureCache::snapshot(self : PureCache) -> String {
   buf.to_string()
 }
 
-///| Load snapshot entries into the cache (invalid lines are ignored).
+///|
+/// Load snapshot entries into the cache (invalid lines are ignored).
 pub fn PureCache::load(self : PureCache, snapshot : String) -> Unit {
   for line in snapshot.split("\n") {
     let line_str = line.to_string()
@@ -61,11 +65,13 @@ pub fn PureCache::load(self : PureCache, snapshot : String) -> Unit {
   }
 }
 
+///|
 priv struct CacheLine {
   key : String
   value : String
 }
 
+///|
 fn split_cache_line(line : String) -> CacheLine? {
   let chars : Array[Char] = []
   for c in line {
@@ -92,6 +98,7 @@ fn split_cache_line(line : String) -> CacheLine? {
   Some(CacheLine::{ key: left.to_string(), value: right.to_string() })
 }
 
+///|
 fn encode_value(value : Value) -> String {
   match value {
     Value::Int(n) => "i:" + n.to_string()
@@ -101,13 +108,21 @@ fn encode_value(value : Value) -> String {
     Value::Unit => "u:"
     Value::Tuple(items) => "t:" + encode_list(items)
     Value::Record(fields) => "r:" + encode_record(fields)
+    Value::Array(items) => "a:" + encode_list(items)
+    Value::Map(fields) => "m:" + encode_record(fields)
+    Value::ArrayBuilder(items) => "ab:" + encode_list(items)
+    Value::MapBuilder(fields) => "mb:" + encode_record(fields)
+    Value::Fn(_) => "f:"
   }
 }
 
+///|
 fn decode_value(encoded : String) -> Value? {
   if encoded.has_prefix("i:") {
     let rest = slice_from(encoded, 2)
-    let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(rest)
+    let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
+      rest,
+    )
     match parsed {
       Ok(v) => Some(Value::Int(v))
       Err(_) => None
@@ -135,10 +150,34 @@ fn decode_value(encoded : String) -> Value? {
       Some(items) => Some(Value::Tuple(items))
       None => None
     }
+  } else if encoded.has_prefix("a:") {
+    let rest = slice_from(encoded, 2)
+    match decode_list(rest) {
+      Some(items) => Some(Value::Array(items))
+      None => None
+    }
   } else if encoded.has_prefix("r:") {
     let rest = slice_from(encoded, 2)
     match decode_record(rest) {
       Some(fields) => Some(Value::Record(fields))
+      None => None
+    }
+  } else if encoded.has_prefix("m:") {
+    let rest = slice_from(encoded, 2)
+    match decode_record(rest) {
+      Some(fields) => Some(Value::Map(fields))
+      None => None
+    }
+  } else if encoded.has_prefix("ab:") {
+    let rest = slice_from(encoded, 3)
+    match decode_list(rest) {
+      Some(items) => Some(Value::ArrayBuilder(items))
+      None => None
+    }
+  } else if encoded.has_prefix("mb:") {
+    let rest = slice_from(encoded, 3)
+    match decode_record(rest) {
+      Some(fields) => Some(Value::MapBuilder(fields))
       None => None
     }
   } else {
@@ -146,6 +185,7 @@ fn decode_value(encoded : String) -> Value? {
   }
 }
 
+///|
 fn encode_list(items : Array[Value]) -> String {
   let buf = StringBuilder::new()
   buf.write_string(items.length().to_string())
@@ -156,6 +196,7 @@ fn encode_list(items : Array[Value]) -> String {
   buf.to_string()
 }
 
+///|
 fn encode_record(fields : Map[String, Value]) -> String {
   let buf = StringBuilder::new()
   buf.write_string(fields.length().to_string())
@@ -167,6 +208,7 @@ fn encode_record(fields : Map[String, Value]) -> String {
   buf.to_string()
 }
 
+///|
 fn write_segment(buf : StringBuilder, s : String) -> Unit {
   buf.write_char(':')
   buf.write_string(s.length().to_string())
@@ -174,6 +216,7 @@ fn write_segment(buf : StringBuilder, s : String) -> Unit {
   buf.write_string(s)
 }
 
+///|
 fn decode_list(s : String) -> Array[Value]? {
   let chars : Array[Char] = []
   for c in s {
@@ -202,6 +245,7 @@ fn decode_list(s : String) -> Array[Value]? {
   Some(out)
 }
 
+///|
 fn decode_record(s : String) -> Map[String, Value]? {
   let chars : Array[Char] = []
   for c in s {
@@ -234,6 +278,7 @@ fn decode_record(s : String) -> Map[String, Value]? {
   Some(out)
 }
 
+///|
 fn read_number(chars : Array[Char], start : Int) -> (Int, Int)? {
   let mut i = start
   if i >= chars.length() {
@@ -256,6 +301,7 @@ fn read_number(chars : Array[Char], start : Int) -> (Int, Int)? {
   Some((value, i))
 }
 
+///|
 fn read_segment(chars : Array[Char], start : Int) -> (String, Int)? {
   if start >= chars.length() || chars[start] != ':' {
     return None
@@ -279,6 +325,7 @@ fn read_segment(chars : Array[Char], start : Int) -> (String, Int)? {
   Some((buf.to_string(), seg_end))
 }
 
+///|
 fn escape_cache(s : String) -> String {
   let buf = StringBuilder::new()
   for ch in s {
@@ -292,6 +339,7 @@ fn escape_cache(s : String) -> String {
   buf.to_string()
 }
 
+///|
 fn unescape_cache(s : String) -> String {
   let chars : Array[Char] = []
   for c in s {
@@ -318,6 +366,7 @@ fn unescape_cache(s : String) -> String {
   buf.to_string()
 }
 
+///|
 fn slice_from(s : String, start : Int) -> String {
   let chars : Array[Char] = []
   for c in s {

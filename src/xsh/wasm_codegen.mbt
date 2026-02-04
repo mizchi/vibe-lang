@@ -1,52 +1,82 @@
-///| Minimal WASM (wasm-gc compatible) codegen for xsh
-
+///|
+/// Minimal WASM (wasm-gc compatible) codegen for xsh
 suberror WasmGenError {
   UnknownName(String)
   Unsupported(String)
 } derive(Show, Eq)
 
+///|
 priv struct StringSegment {
   offset : Int
   bytes : Array[Byte]
 }
 
+///|
 priv struct StringTable {
   mut next_offset : Int
   map : Map[String, Int]
   segments : Array[StringSegment]
 }
 
+///|
 fn StringTable::new() -> StringTable {
   { next_offset: 0, map: {}, segments: [] }
 }
 
+///|
 fn align4(n : Int) -> Int {
   let rem = n % 4
-  if rem == 0 { n } else { n + (4 - rem) }
+  if rem == 0 {
+    n
+  } else {
+    n + (4 - rem)
+  }
 }
 
+///|
 let tag_mask = 3
+
+///|
 let tag_int = 0
+
+///|
 let tag_obj = 1
+
+///|
 let tag_bool = 3
 
+///|
 let obj_string = 1
+
+///|
 let obj_tuple = 3
+
+///|
 let obj_record = 4
 
+///|
+let obj_array = 5
+
+///|
+let obj_map = 6
+
+///|
 fn tag_ptr(ptr : Int, tag : Int) -> Int {
   ptr | (tag & tag_mask)
 }
 
+///|
 fn tag_int_value(n : Int) -> Int {
   (n << 2) | tag_int
 }
 
+///|
 fn tag_bool_value(b : Bool) -> Int {
   let n = if b { 1 } else { 0 }
   (n << 2) | tag_bool
 }
 
+///|
 fn StringTable::intern(self : StringTable, s : String) -> Int {
   match self.map.get(s) {
     Some(offset) => offset
@@ -69,6 +99,7 @@ fn StringTable::intern(self : StringTable, s : String) -> Int {
   }
 }
 
+///|
 priv struct CodegenCtx {
   locals : Map[String, Int]
   mut local_count : Int
@@ -79,6 +110,7 @@ priv struct CodegenCtx {
   strings : StringTable
 }
 
+///|
 fn CodegenCtx::new() -> CodegenCtx {
   {
     locals: {},
@@ -91,35 +123,42 @@ fn CodegenCtx::new() -> CodegenCtx {
   }
 }
 
+///|
 priv struct ByteBuf {
   data : Array[Byte]
 }
 
+///|
 fn ByteBuf::new() -> ByteBuf {
   { data: [] }
 }
 
+///|
 fn ByteBuf::push(self : ByteBuf, b : Byte) -> Unit {
   self.data.push(b)
 }
 
+///|
 fn ByteBuf::extend(self : ByteBuf, bytes : Array[Byte]) -> Unit {
   for b in bytes {
     self.data.push(b)
   }
 }
 
+///|
 fn ByteBuf::len(self : ByteBuf) -> Int {
   self.data.length()
 }
 
+///|
 fn ByteBuf::to_bytes(self : ByteBuf) -> Bytes {
   Bytes::from_array(self.data)
 }
 
+///|
 fn write_u32_leb(buf : ByteBuf, n : Int) -> Unit {
   let mut value = n
-  while { true } {
+  while true {
     let mut byte = value & 0x7f
     value = value >> 7
     if value != 0 {
@@ -132,6 +171,7 @@ fn write_u32_leb(buf : ByteBuf, n : Int) -> Unit {
   }
 }
 
+///|
 fn write_u32_le_bytes(out : Array[Byte], n : Int) -> Unit {
   let v = n
   out.push((v & 0xff).to_byte())
@@ -140,6 +180,7 @@ fn write_u32_le_bytes(out : Array[Byte], n : Int) -> Unit {
   out.push(((v >> 24) & 0xff).to_byte())
 }
 
+///|
 fn write_name(buf : ByteBuf, s : String) -> Unit {
   let bytes = @utf8.encode(s)
   let arr = bytes.to_array()
@@ -147,15 +188,18 @@ fn write_name(buf : ByteBuf, s : String) -> Unit {
   buf.extend(arr)
 }
 
+///|
 fn emit_i32_const_raw(buf : ByteBuf, n : Int) -> Unit {
   buf.push((65).to_byte())
   write_u32_leb(buf, n)
 }
 
+///|
 fn emit_i32_const_tagged(buf : ByteBuf, n : Int) -> Unit {
   emit_i32_const_raw(buf, tag_int_value(n))
 }
 
+///|
 fn emit_bool_from_i32(buf : ByteBuf) -> Unit {
   emit_i32_const_raw(buf, 2)
   emit_i32_shl(buf)
@@ -163,78 +207,95 @@ fn emit_bool_from_i32(buf : ByteBuf) -> Unit {
   emit_i32_or(buf)
 }
 
+///|
 fn emit_local_get(buf : ByteBuf, idx : Int) -> Unit {
   buf.push((32).to_byte())
   write_u32_leb(buf, idx)
 }
 
+///|
 fn emit_local_set(buf : ByteBuf, idx : Int) -> Unit {
   buf.push((33).to_byte())
   write_u32_leb(buf, idx)
 }
 
+///|
 fn emit_local_tee(buf : ByteBuf, idx : Int) -> Unit {
   buf.push((34).to_byte())
   write_u32_leb(buf, idx)
 }
 
+///|
 fn emit_call(buf : ByteBuf, idx : Int) -> Unit {
   buf.push((16).to_byte())
   write_u32_leb(buf, idx)
 }
 
+///|
 fn emit_drop(buf : ByteBuf) -> Unit {
   buf.push((26).to_byte())
 }
 
+///|
 fn emit_i32_add(buf : ByteBuf) -> Unit {
   buf.push((106).to_byte())
 }
 
+///|
 fn emit_i32_sub(buf : ByteBuf) -> Unit {
   buf.push((107).to_byte())
 }
 
+///|
 fn emit_i32_eq(buf : ByteBuf) -> Unit {
   buf.push((70).to_byte())
 }
 
+///|
 fn emit_i32_lt_s(buf : ByteBuf) -> Unit {
   buf.push((72).to_byte())
 }
 
+///|
 fn emit_i32_shl(buf : ByteBuf) -> Unit {
   buf.push((116).to_byte())
 }
 
+///|
 fn emit_i32_shr_u(buf : ByteBuf) -> Unit {
   buf.push((118).to_byte())
 }
 
+///|
 fn emit_i32_or(buf : ByteBuf) -> Unit {
   buf.push((114).to_byte())
 }
 
+///|
 fn emit_i32_and(buf : ByteBuf) -> Unit {
   buf.push((113).to_byte())
 }
 
+///|
 fn emit_i32_xor(buf : ByteBuf) -> Unit {
   buf.push((115).to_byte())
 }
 
+///|
 fn emit_i32_load(buf : ByteBuf, offset : Int) -> Unit {
   buf.push((40).to_byte())
   write_u32_leb(buf, 2)
   write_u32_leb(buf, offset)
 }
 
+///|
 fn emit_i32_store(buf : ByteBuf, offset : Int) -> Unit {
   buf.push((54).to_byte())
   write_u32_leb(buf, 2)
   write_u32_leb(buf, offset)
 }
 
+///|
 fn is_qualified_name(name : String) -> Bool {
   for c in name {
     if c == '.' || c == '#' {
@@ -244,6 +305,7 @@ fn is_qualified_name(name : String) -> Bool {
   false
 }
 
+///|
 fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
   match expr {
     Expr::Call(name~, args~) => {
@@ -253,7 +315,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
         ctx.need_path = true
       }
       for arg in args {
-        scan_needs_expr(ctx, arg)
+        scan_needs_expr(ctx, arg.expr)
       }
     }
     Expr::Tuple(items) => {
@@ -263,6 +325,18 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
       }
     }
     Expr::Record(fields) => {
+      ctx.need_heap = true
+      for field in fields {
+        scan_needs_expr(ctx, field.expr)
+      }
+    }
+    Expr::Array(items) => {
+      ctx.need_heap = true
+      for item in items {
+        scan_needs_expr(ctx, item)
+      }
+    }
+    Expr::Map(fields) => {
       ctx.need_heap = true
       for field in fields {
         scan_needs_expr(ctx, field.expr)
@@ -283,25 +357,33 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
         }
       }
     }
-    Expr::Do(body~) => {
+    Expr::Do(body~) => scan_needs_block(ctx, body)
+    Expr::Fn(params~, ret~, body~) => {
+      let _ = params
+      let _ = ret
       scan_needs_block(ctx, body)
     }
     _ => ()
   }
 }
 
+///|
 fn scan_needs_block(ctx : CodegenCtx, body : Module) -> Unit {
   for stmt in body.stmts {
     scan_needs_stmt(ctx, stmt)
   }
 }
 
+///|
 fn scan_needs_stmt(ctx : CodegenCtx, stmt : Stmt) -> Unit {
   match stmt {
-    Stmt::Let(name~, expr~) => {
+    Stmt::Let(rec~, name~, expr~) => {
+      let _ = rec
       let _ = name
       scan_needs_expr(ctx, expr)
     }
+    Stmt::EnumDef(..) => ()
+    Stmt::TypeAlias(..) => ()
     Stmt::Expr(expr~) => scan_needs_expr(ctx, expr)
     Stmt::Test(name~, body~) => {
       let _ = name
@@ -313,12 +395,14 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : Stmt) -> Unit {
   }
 }
 
+///|
 fn scan_needs(ctx : CodegenCtx, ast : Module) -> Unit {
   for stmt in ast.stmts {
     scan_needs_stmt(ctx, stmt)
   }
 }
 
+///|
 fn import_index_path(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_path) {
     raise WasmGenError::Unsupported("path import missing")
@@ -326,14 +410,24 @@ fn import_index_path(ctx : CodegenCtx) -> Int raise WasmGenError {
   0
 }
 
+///|
 fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_sh) {
     raise WasmGenError::Unsupported("sh import missing")
   }
-  if ctx.need_path { 1 } else { 0 }
+  if ctx.need_path {
+    1
+  } else {
+    0
+  }
 }
 
-fn compile_expr(ctx : CodegenCtx, buf : ByteBuf, expr : Expr) -> Unit raise WasmGenError {
+///|
+fn compile_expr(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  expr : Expr,
+) -> Unit raise WasmGenError {
   match expr {
     Expr::Int(n) => emit_i32_const_tagged(buf, n)
     Expr::Bool(b) => emit_i32_const_raw(buf, tag_bool_value(b))
@@ -350,71 +444,80 @@ fn compile_expr(ctx : CodegenCtx, buf : ByteBuf, expr : Expr) -> Unit raise Wasm
         None => raise WasmGenError::UnknownName(name)
       }
     }
-    Expr::Call(name~, args~) => {
+    Expr::Call(name~, args~) =>
       if name == "sh" {
-        if args.length() != 1 {
+        let pos_args = extract_positional_exprs(args, "sh")
+        if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("sh arity")
         }
-        compile_expr(ctx, buf, args[0])
+        compile_expr(ctx, buf, pos_args[0])
         emit_call(buf, import_index_sh(ctx))
         emit_drop(buf)
         emit_i32_const_tagged(buf, 0)
       } else if name == "path" {
-        if args.length() != 1 {
+        let pos_args = extract_positional_exprs(args, "path")
+        if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("path arity")
         }
-        compile_expr(ctx, buf, args[0])
+        compile_expr(ctx, buf, pos_args[0])
         emit_call(buf, import_index_path(ctx))
       } else if name == "add" {
-        if args.length() != 2 {
+        let pos_args = extract_positional_exprs(args, "add")
+        if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("add arity")
         }
-        compile_expr(ctx, buf, args[0])
-        compile_expr(ctx, buf, args[1])
+        compile_expr(ctx, buf, pos_args[0])
+        compile_expr(ctx, buf, pos_args[1])
         emit_i32_add(buf)
       } else if name == "sub" {
-        if args.length() != 2 {
+        let pos_args = extract_positional_exprs(args, "sub")
+        if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("sub arity")
         }
-        compile_expr(ctx, buf, args[0])
-        compile_expr(ctx, buf, args[1])
+        compile_expr(ctx, buf, pos_args[0])
+        compile_expr(ctx, buf, pos_args[1])
         emit_i32_sub(buf)
       } else if name == "eq" {
-        if args.length() != 2 {
+        let pos_args = extract_positional_exprs(args, "eq")
+        if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("eq arity")
         }
-        compile_expr(ctx, buf, args[0])
-        compile_expr(ctx, buf, args[1])
+        compile_expr(ctx, buf, pos_args[0])
+        compile_expr(ctx, buf, pos_args[1])
         emit_i32_eq(buf)
         emit_bool_from_i32(buf)
       } else if name == "lt" {
-        if args.length() != 2 {
+        let pos_args = extract_positional_exprs(args, "lt")
+        if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("lt arity")
         }
-        compile_expr(ctx, buf, args[0])
-        compile_expr(ctx, buf, args[1])
+        compile_expr(ctx, buf, pos_args[0])
+        compile_expr(ctx, buf, pos_args[1])
         emit_i32_lt_s(buf)
         emit_bool_from_i32(buf)
       } else if name == "not" {
-        if args.length() != 1 {
+        let pos_args = extract_positional_exprs(args, "not")
+        if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("not arity")
         }
-        compile_expr(ctx, buf, args[0])
+        compile_expr(ctx, buf, pos_args[0])
         emit_i32_const_raw(buf, 4)
         emit_i32_xor(buf)
       } else if name == "and" {
-        if args.length() != 2 {
+        let pos_args = extract_positional_exprs(args, "and")
+        if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("and arity")
         }
-        compile_expr(ctx, buf, args[0])
-        compile_expr(ctx, buf, args[1])
+        compile_expr(ctx, buf, pos_args[0])
+        compile_expr(ctx, buf, pos_args[1])
         emit_i32_and(buf)
       } else if name == "or" {
-        if args.length() != 2 {
+        let pos_args = extract_positional_exprs(args, "or")
+        if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("or arity")
         }
-        compile_expr(ctx, buf, args[0])
-        compile_expr(ctx, buf, args[1])
+        compile_expr(ctx, buf, pos_args[0])
+        compile_expr(ctx, buf, pos_args[1])
         emit_i32_or(buf)
       } else {
         if is_qualified_name(name) {
@@ -422,13 +525,10 @@ fn compile_expr(ctx : CodegenCtx, buf : ByteBuf, expr : Expr) -> Unit raise Wasm
         }
         raise WasmGenError::Unsupported("call: " + name)
       }
-    }
-    Expr::Tuple(items) => {
-      compile_tuple_expr(ctx, buf, items)
-    }
-    Expr::Record(fields) => {
-      compile_record_expr(ctx, buf, fields)
-    }
+    Expr::Tuple(items) => compile_tuple_expr(ctx, buf, items)
+    Expr::Record(fields) => compile_record_expr(ctx, buf, fields)
+    Expr::Array(items) => compile_array_expr(ctx, buf, items)
+    Expr::Map(fields) => compile_map_expr(ctx, buf, fields)
     Expr::If(cond~, then_body~, else_body~) => {
       compile_expr(ctx, buf, cond)
       emit_i32_const_raw(buf, 2)
@@ -440,9 +540,7 @@ fn compile_expr(ctx : CodegenCtx, buf : ByteBuf, expr : Expr) -> Unit raise Wasm
       compile_block_expr(ctx, buf, else_body)
       buf.push((11).to_byte())
     }
-    Expr::Block(body~) => {
-      compile_block_expr(ctx, buf, body)
-    }
+    Expr::Block(body~) => compile_block_expr(ctx, buf, body)
     Expr::Match(scrutinee~, arms~) => {
       let saved = clone_locals(ctx.locals)
       let scrut_idx = ctx.local_count
@@ -452,15 +550,36 @@ fn compile_expr(ctx : CodegenCtx, buf : ByteBuf, expr : Expr) -> Unit raise Wasm
       compile_match_chain(ctx, buf, scrut_idx, arms, 0)
       restore_locals(ctx, saved)
     }
-    Expr::Do(body~) => {
-      compile_block_expr(ctx, buf, body)
-    }
+    Expr::Do(body~) => compile_block_expr(ctx, buf, body)
+    Expr::Fn(..) => raise WasmGenError::Unsupported("fn")
   }
 }
 
-fn compile_stmt(ctx : CodegenCtx, buf : ByteBuf, stmt : Stmt, is_last : Bool) -> Unit raise WasmGenError {
+///|
+fn extract_positional_exprs(
+  args : Array[CallArg],
+  name : String,
+) -> Array[Expr] raise WasmGenError {
+  let out : Array[Expr] = []
+  for arg in args {
+    match arg.label {
+      Some(_) => raise WasmGenError::Unsupported("labeled arg: " + name)
+      None => out.push(arg.expr)
+    }
+  }
+  out
+}
+
+///|
+fn compile_stmt(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  stmt : Stmt,
+  is_last : Bool,
+) -> Unit raise WasmGenError {
   match stmt {
-    Stmt::Let(name~, expr~) => {
+    Stmt::Let(rec~, name~, expr~) => {
+      let _ = rec
       let idx = ctx.local_count
       ctx.local_count += 1
       ctx.locals[name] = idx
@@ -471,28 +590,27 @@ fn compile_stmt(ctx : CodegenCtx, buf : ByteBuf, stmt : Stmt, is_last : Bool) ->
         emit_local_set(buf, idx)
       }
     }
+    Stmt::EnumDef(..) => if is_last { emit_i32_const_tagged(buf, 0) }
+    Stmt::TypeAlias(..) => if is_last { emit_i32_const_tagged(buf, 0) }
     Stmt::Expr(expr~) => {
       compile_expr(ctx, buf, expr)
       if not(is_last) {
         emit_drop(buf)
       }
     }
-    Stmt::Flake(_) => {
-      if is_last {
-        emit_i32_const_tagged(buf, 0)
-      }
-    }
-    Stmt::Test(..) => {
-      if is_last {
-        emit_i32_const_tagged(buf, 0)
-      }
-    }
+    Stmt::Flake(_) => if is_last { emit_i32_const_tagged(buf, 0) }
+    Stmt::Test(..) => if is_last { emit_i32_const_tagged(buf, 0) }
     Stmt::Alias(..) => raise WasmGenError::Unsupported("alias")
     Stmt::Import(..) => raise WasmGenError::Unsupported("import")
   }
 }
 
-fn compile_block_expr(ctx : CodegenCtx, buf : ByteBuf, body : Module) -> Unit raise WasmGenError {
+///|
+fn compile_block_expr(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  body : Module,
+) -> Unit raise WasmGenError {
   let saved = clone_locals(ctx.locals)
   let len = body.stmts.length()
   if len == 0 {
@@ -506,16 +624,18 @@ fn compile_block_expr(ctx : CodegenCtx, buf : ByteBuf, body : Module) -> Unit ra
   restore_locals(ctx, saved)
 }
 
+///|
 fn require_heap(ctx : CodegenCtx) -> Unit raise WasmGenError {
   if ctx.heap_local < 0 {
     raise WasmGenError::Unsupported("heap not initialized")
   }
 }
 
+///|
 fn compile_tuple_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  items : Array[Expr]
+  items : Array[Expr],
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
   let len = items.length()
@@ -527,30 +647,27 @@ fn compile_tuple_expr(
   emit_i32_const_raw(buf, size)
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
-
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_tuple)
   emit_i32_store(buf, 0)
-
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, len)
   emit_i32_store(buf, 4)
-
   for i in 0..<len {
     emit_local_get(buf, obj_local)
     compile_expr(ctx, buf, items[i])
     emit_i32_store(buf, 8 + i * 4)
   }
-
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, tag_obj)
   emit_i32_or(buf)
 }
 
+///|
 fn compile_record_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  fields : Array[RecordFieldExpr]
+  fields : Array[RecordFieldExpr],
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
   let ordered = sort_record_fields_expr(fields)
@@ -563,15 +680,12 @@ fn compile_record_expr(
   emit_i32_const_raw(buf, size)
   emit_i32_add(buf)
   emit_local_set(buf, ctx.heap_local)
-
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_record)
   emit_i32_store(buf, 0)
-
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, len)
   emit_i32_store(buf, 4)
-
   for i in 0..<len {
     let field = ordered[i]
     let name_ptr = ctx.strings.intern(field.name)
@@ -582,13 +696,84 @@ fn compile_record_expr(
     compile_expr(ctx, buf, field.expr)
     emit_i32_store(buf, 8 + i * 8 + 4)
   }
-
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, tag_obj)
   emit_i32_or(buf)
 }
 
-fn sort_record_fields_expr(fields : Array[RecordFieldExpr]) -> Array[RecordFieldExpr] {
+///|
+fn compile_array_expr(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  items : Array[Expr],
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  let len = items.length()
+  let size = align4(8 + len * 4)
+  let obj_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, size)
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, obj_array)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, len)
+  emit_i32_store(buf, 4)
+  for i in 0..<len {
+    emit_local_get(buf, obj_local)
+    compile_expr(ctx, buf, items[i])
+    emit_i32_store(buf, 8 + i * 4)
+  }
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_or(buf)
+}
+
+///|
+fn compile_map_expr(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  fields : Array[MapFieldExpr],
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  let len = fields.length()
+  let size = align4(8 + len * 8)
+  let obj_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, size)
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, obj_map)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, len)
+  emit_i32_store(buf, 4)
+  for i in 0..<len {
+    let field = fields[i]
+    let key_ptr = ctx.strings.intern(field.key)
+    emit_local_get(buf, obj_local)
+    emit_i32_const_raw(buf, key_ptr)
+    emit_i32_store(buf, 8 + i * 8)
+    emit_local_get(buf, obj_local)
+    compile_expr(ctx, buf, field.expr)
+    emit_i32_store(buf, 8 + i * 8 + 4)
+  }
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_or(buf)
+}
+
+///|
+fn sort_record_fields_expr(
+  fields : Array[RecordFieldExpr],
+) -> Array[RecordFieldExpr] {
   let out : Array[RecordFieldExpr] = []
   for field in fields {
     out.push(field)
@@ -603,7 +788,10 @@ fn sort_record_fields_expr(fields : Array[RecordFieldExpr]) -> Array[RecordField
   out
 }
 
-fn sort_record_fields_pat(fields : Array[RecordFieldPat]) -> Array[RecordFieldPat] {
+///|
+fn sort_record_fields_pat(
+  fields : Array[RecordFieldPat],
+) -> Array[RecordFieldPat] {
   let out : Array[RecordFieldPat] = []
   for field in fields {
     out.push(field)
@@ -618,6 +806,7 @@ fn sort_record_fields_pat(fields : Array[RecordFieldPat]) -> Array[RecordFieldPa
   out
 }
 
+///|
 fn string_lt(a : String, b : String) -> Bool {
   let ac : Array[Char] = []
   for c in a {
@@ -639,7 +828,11 @@ fn string_lt(a : String, b : String) -> Bool {
   ac.length() < bc.length()
 }
 
-fn compile_body(ctx : CodegenCtx, ast : Module) -> Array[Byte] raise WasmGenError {
+///|
+fn compile_body(
+  ctx : CodegenCtx,
+  ast : Module,
+) -> Array[Byte] raise WasmGenError {
   let instr = ByteBuf::new()
   if ctx.need_heap {
     ctx.heap_local = ctx.local_count
@@ -659,6 +852,7 @@ fn compile_body(ctx : CodegenCtx, ast : Module) -> Array[Byte] raise WasmGenErro
   }
 }
 
+///|
 fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
   let buf = ByteBuf::new()
   // magic + version
@@ -767,16 +961,17 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
     data_sec.extend(seg.bytes)
   }
   write_section(buf, 11, data_sec.data)
-
   buf.to_bytes()
 }
 
+///|
 fn write_section(buf : ByteBuf, id : Int, content : Array[Byte]) -> Unit {
   buf.push(id.to_byte())
   write_u32_leb(buf, content.length())
   buf.extend(content)
 }
 
+///|
 fn clone_locals(src : Map[String, Int]) -> Map[String, Int] {
   let out : Map[String, Int] = {}
   for k, v in src {
@@ -785,6 +980,7 @@ fn clone_locals(src : Map[String, Int]) -> Map[String, Int] {
   out
 }
 
+///|
 fn restore_locals(ctx : CodegenCtx, saved : Map[String, Int]) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in ctx.locals {
@@ -800,12 +996,14 @@ fn restore_locals(ctx : CodegenCtx, saved : Map[String, Int]) -> Unit {
   }
 }
 
+///|
 priv enum PatCont {
   Arm
   Tuple(Int, Array[Pat], Int, PatCont)
   Record(Int, Array[RecordFieldPat], Int, PatCont)
 }
 
+///|
 fn compile_pat_cont(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -814,21 +1012,27 @@ fn compile_pat_cont(
   arms : Array[MatchArm],
   start : Int,
   arm : MatchArm,
-  bindings : Map[String, Int]
+  bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   match cont {
-    PatCont::Arm => {
-      compile_guarded_arm_with_bindings(ctx, buf, match_scrut_idx, arms, start, arm, bindings)
-    }
-    PatCont::Tuple(tuple_idx, items, index, next) => {
-      compile_tuple_items_cont(ctx, buf, tuple_idx, items, index, next, match_scrut_idx, arms, start, arm, bindings)
-    }
-    PatCont::Record(record_idx, fields, index, next) => {
-      compile_record_fields_cont(ctx, buf, record_idx, fields, index, next, match_scrut_idx, arms, start, arm, bindings)
-    }
+    PatCont::Arm =>
+      compile_guarded_arm_with_bindings(
+        ctx, buf, match_scrut_idx, arms, start, arm, bindings,
+      )
+    PatCont::Tuple(tuple_idx, items, index, next) =>
+      compile_tuple_items_cont(
+        ctx, buf, tuple_idx, items, index, next, match_scrut_idx, arms, start, arm,
+        bindings,
+      )
+    PatCont::Record(record_idx, fields, index, next) =>
+      compile_record_fields_cont(
+        ctx, buf, record_idx, fields, index, next, match_scrut_idx, arms, start,
+        arm, bindings,
+      )
   }
 }
 
+///|
 fn compile_pat_match(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -839,18 +1043,21 @@ fn compile_pat_match(
   start : Int,
   arm : MatchArm,
   bindings : Map[String, Int],
-  cont : PatCont
+  cont : PatCont,
 ) -> Unit raise WasmGenError {
   match pat {
-    Pat::Wildcard => {
-      compile_pat_cont(ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings)
-    }
+    Pat::Wildcard =>
+      compile_pat_cont(
+        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
     Pat::Bind(name) => {
       let idx = bind_local(ctx, name)
       emit_local_get(buf, value_idx)
       emit_local_set(buf, idx)
       bindings[name] = idx
-      compile_pat_cont(ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings)
+      compile_pat_cont(
+        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
     }
     Pat::Int(_) | Pat::Bool(_) | Pat::String(_) => {
       emit_local_get(buf, value_idx)
@@ -858,10 +1065,27 @@ fn compile_pat_match(
       emit_i32_eq(buf)
       buf.push((4).to_byte())
       buf.push((127).to_byte())
-      compile_pat_cont(ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings)
+      compile_pat_cont(
+        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
       buf.push((5).to_byte())
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
+    }
+    Pat::Ctor(name~, args~) => {
+      let field_pat = if args.length() == 0 {
+        Pat::Wildcard
+      } else if args.length() == 1 {
+        args[0]
+      } else {
+        Pat::Tuple(args)
+      }
+      let fields = [RecordFieldPat::{ name, pat: field_pat }]
+      let record_pat = Pat::Record(fields)
+      compile_pat_match(
+        ctx, buf, value_idx, record_pat, match_scrut_idx, arms, start, arm, bindings,
+        cont,
+      )
     }
     Pat::Tuple(items) => {
       emit_tag_obj_check(buf, value_idx)
@@ -877,7 +1101,9 @@ fn compile_pat_match(
       emit_i32_eq(buf)
       buf.push((4).to_byte())
       buf.push((127).to_byte())
-      compile_tuple_items_cont(ctx, buf, value_idx, items, 0, cont, match_scrut_idx, arms, start, arm, bindings)
+      compile_tuple_items_cont(
+        ctx, buf, value_idx, items, 0, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
       buf.push((5).to_byte())
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
@@ -903,7 +1129,10 @@ fn compile_pat_match(
       emit_i32_eq(buf)
       buf.push((4).to_byte())
       buf.push((127).to_byte())
-      compile_record_fields_cont(ctx, buf, value_idx, ordered, 0, cont, match_scrut_idx, arms, start, arm, bindings)
+      compile_record_fields_cont(
+        ctx, buf, value_idx, ordered, 0, cont, match_scrut_idx, arms, start, arm,
+        bindings,
+      )
       buf.push((5).to_byte())
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
@@ -917,6 +1146,7 @@ fn compile_pat_match(
   }
 }
 
+///|
 fn compile_tuple_items_cont(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -928,19 +1158,33 @@ fn compile_tuple_items_cont(
   arms : Array[MatchArm],
   start : Int,
   arm : MatchArm,
-  bindings : Map[String, Int]
+  bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   if index >= items.length() {
-    compile_pat_cont(ctx, buf, next, match_scrut_idx, arms, start, arm, bindings)
+    compile_pat_cont(
+      ctx, buf, next, match_scrut_idx, arms, start, arm, bindings,
+    )
     return
   }
   let tmp = alloc_temp_local(ctx)
   emit_load_tuple_elem(buf, tuple_idx, index)
   emit_local_set(buf, tmp)
   let cont = PatCont::Tuple(tuple_idx, items, index + 1, next)
-  compile_pat_match(ctx, buf, tmp, items[index], match_scrut_idx, arms, start, arm, bindings, cont)
+  compile_pat_match(
+    ctx,
+    buf,
+    tmp,
+    items[index],
+    match_scrut_idx,
+    arms,
+    start,
+    arm,
+    bindings,
+    cont,
+  )
 }
 
+///|
 fn compile_record_fields_cont(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -952,10 +1196,12 @@ fn compile_record_fields_cont(
   arms : Array[MatchArm],
   start : Int,
   arm : MatchArm,
-  bindings : Map[String, Int]
+  bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   if index >= fields.length() {
-    compile_pat_cont(ctx, buf, next, match_scrut_idx, arms, start, arm, bindings)
+    compile_pat_cont(
+      ctx, buf, next, match_scrut_idx, arms, start, arm, bindings,
+    )
     return
   }
   let field = fields[index]
@@ -969,16 +1215,33 @@ fn compile_record_fields_cont(
   emit_load_record_value(buf, record_idx, index)
   emit_local_set(buf, tmp)
   let cont = PatCont::Record(record_idx, fields, index + 1, next)
-  compile_pat_match(ctx, buf, tmp, field.pat, match_scrut_idx, arms, start, arm, bindings, cont)
+  compile_pat_match(
+    ctx,
+    buf,
+    tmp,
+    field.pat,
+    match_scrut_idx,
+    arms,
+    start,
+    arm,
+    bindings,
+    cont,
+  )
   buf.push((5).to_byte())
   compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
   buf.push((11).to_byte())
 }
 
-fn emit_pat_literal(ctx : CodegenCtx, buf : ByteBuf, pat : Pat) -> Unit raise WasmGenError {
+///|
+fn emit_pat_literal(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  pat : Pat,
+) -> Unit raise WasmGenError {
   match pat {
     Pat::Wildcard => raise WasmGenError::Unsupported("wildcard literal")
     Pat::Bind(_) => raise WasmGenError::Unsupported("bind literal")
+    Pat::Ctor(..) => raise WasmGenError::Unsupported("ctor literal")
     Pat::Tuple(_) => raise WasmGenError::Unsupported("tuple literal")
     Pat::Record(_) => raise WasmGenError::Unsupported("record literal")
     Pat::Int(n) => emit_i32_const_tagged(buf, n)
@@ -990,12 +1253,13 @@ fn emit_pat_literal(ctx : CodegenCtx, buf : ByteBuf, pat : Pat) -> Unit raise Wa
   }
 }
 
+///|
 fn compile_match_chain(
   ctx : CodegenCtx,
   buf : ByteBuf,
   scrut_idx : Int,
   arms : Array[MatchArm],
-  start : Int
+  start : Int,
 ) -> Unit raise WasmGenError {
   if start >= arms.length() {
     emit_i32_const_tagged(buf, 0)
@@ -1004,10 +1268,22 @@ fn compile_match_chain(
   let arm = arms[start]
   let saved = clone_locals(ctx.locals)
   let bindings : Map[String, Int] = {}
-  compile_pat_match(ctx, buf, scrut_idx, arm.pat, scrut_idx, arms, start, arm, bindings, PatCont::Arm)
+  compile_pat_match(
+    ctx,
+    buf,
+    scrut_idx,
+    arm.pat,
+    scrut_idx,
+    arms,
+    start,
+    arm,
+    bindings,
+    PatCont::Arm,
+  )
   restore_locals(ctx, saved)
 }
 
+///|
 fn compile_guarded_arm_with_bindings(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -1015,7 +1291,7 @@ fn compile_guarded_arm_with_bindings(
   arms : Array[MatchArm],
   index : Int,
   arm : MatchArm,
-  bindings : Map[String, Int]
+  bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   let saved = clone_locals(ctx.locals)
   for name, idx in bindings {
@@ -1042,18 +1318,21 @@ fn compile_guarded_arm_with_bindings(
   }
 }
 
+///|
 fn bind_local(ctx : CodegenCtx, _name : String) -> Int {
   let idx = ctx.local_count
   ctx.local_count += 1
   idx
 }
 
+///|
 fn alloc_temp_local(ctx : CodegenCtx) -> Int {
   let idx = ctx.local_count
   ctx.local_count += 1
   idx
 }
 
+///|
 fn emit_tag_obj_check(buf : ByteBuf, scrut_idx : Int) -> Unit {
   emit_local_get(buf, scrut_idx)
   emit_i32_const_raw(buf, tag_mask)
@@ -1062,6 +1341,7 @@ fn emit_tag_obj_check(buf : ByteBuf, scrut_idx : Int) -> Unit {
   emit_i32_eq(buf)
 }
 
+///|
 fn emit_untag_ptr(buf : ByteBuf, scrut_idx : Int) -> Unit {
   emit_local_get(buf, scrut_idx)
   emit_local_get(buf, scrut_idx)
@@ -1070,32 +1350,38 @@ fn emit_untag_ptr(buf : ByteBuf, scrut_idx : Int) -> Unit {
   emit_i32_sub(buf)
 }
 
+///|
 fn emit_load_obj_type(buf : ByteBuf, scrut_idx : Int) -> Unit {
   emit_untag_ptr(buf, scrut_idx)
   emit_i32_load(buf, 0)
 }
 
+///|
 fn emit_load_obj_len(buf : ByteBuf, scrut_idx : Int) -> Unit {
   emit_untag_ptr(buf, scrut_idx)
   emit_i32_load(buf, 4)
 }
 
+///|
 fn emit_load_tuple_elem(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
   emit_untag_ptr(buf, scrut_idx)
   emit_i32_load(buf, 8 + index * 4)
 }
 
+///|
 fn emit_load_record_name(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
   emit_untag_ptr(buf, scrut_idx)
   emit_i32_load(buf, 8 + index * 8)
 }
 
+///|
 fn emit_load_record_value(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
   emit_untag_ptr(buf, scrut_idx)
   emit_i32_load(buf, 8 + index * 8 + 4)
 }
 
-///| Emit a WASM module for a typed xsh AST.
+///|
+/// Emit a WASM module for a typed xsh AST.
 pub fn emit_module_wasm(ast : Module) -> Bytes raise WasmGenError {
   let ctx = CodegenCtx::new()
   scan_needs(ctx, ast)

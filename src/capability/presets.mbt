@@ -1,5 +1,6 @@
 ///| Preset capability configurations
 
+///|
 /// Create a minimal capability set (read-only filesystem)
 pub fn CapabilitySet::minimal() -> CapabilitySet {
   CapabilitySet::from_array([
@@ -8,6 +9,7 @@ pub fn CapabilitySet::minimal() -> CapabilitySet {
   ])
 }
 
+///|
 /// Create a sandbox capability set (read-write in /tmp only)
 pub fn CapabilitySet::sandbox() -> CapabilitySet {
   CapabilitySet::from_array([
@@ -20,6 +22,7 @@ pub fn CapabilitySet::sandbox() -> CapabilitySet {
   ])
 }
 
+///|
 /// Create a developer capability set (full filesystem, limited network)
 pub fn CapabilitySet::developer() -> CapabilitySet {
   CapabilitySet::from_array([
@@ -30,6 +33,7 @@ pub fn CapabilitySet::developer() -> CapabilitySet {
     ClockRead,
     ClockMonotonic,
     RandomRead,
+    ProcessSpawn(["sh"]),
     GitSnapshot,
     GitRollback,
     GitBranch,
@@ -37,11 +41,12 @@ pub fn CapabilitySet::developer() -> CapabilitySet {
   ])
 }
 
+///|
 /// Create an agent capability set (with MCP/A2A)
 pub fn CapabilitySet::agent(
   mcp_tools : Array[String],
   a2a_agents : Array[String],
-  allowed_hosts : Array[String]
+  allowed_hosts : Array[String],
 ) -> CapabilitySet {
   let caps : Array[Capability] = [
     FsRead({ pattern: "/**", allow: true }),
@@ -64,6 +69,7 @@ pub fn CapabilitySet::agent(
   CapabilitySet::from_array(caps)
 }
 
+///|
 /// Create an unrestricted capability set (for testing only)
 pub fn CapabilitySet::unrestricted() -> CapabilitySet {
   CapabilitySet::from_array([

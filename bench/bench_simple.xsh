@@ -1,0 +1,4 @@
+let a = add(1, 2)
+let b = add(a, 3)
+let c = sub(b, 1)
+c

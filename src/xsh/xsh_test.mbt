@@ -1,12 +1,14 @@
-///| Tests for xsh prototype
-
+///|
+/// Tests for xsh prototype
 test "xsh detection" {
   assert_true(is_xsh_script("let x = 1"))
   assert_true(is_xsh_script("flake { }"))
   assert_true(is_xsh_script("alias foo = bar#abc"))
+  assert_true(is_xsh_script("enum Option[T] { Some(T), None }"))
   assert_false(is_xsh_script("echo hello"))
 }
 
+///|
 test "xsh eval path normalization" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let p = path(\"a/../b\")")
@@ -16,6 +18,7 @@ test "xsh eval path normalization" {
   }
 }
 
+///|
 test "xsh store gc" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = 1; let y = 2")
@@ -35,6 +38,7 @@ test "xsh store gc" {
   assert_true(rt.store_contains(hy))
 }
 
+///|
 test "xsh alias statement" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("alias foo = bar#abc")
@@ -47,6 +51,7 @@ test "xsh alias statement" {
   }
 }
 
+///|
 test "xsh ripple db" {
   let db = XshDb::new()
   db.set_source("main", "let x = 1")
@@ -57,6 +62,7 @@ test "xsh ripple db" {
   assert_true(diags.is_empty())
 }
 
+///|
 test "xsh import hashes" {
   let db = XshDb::new()
   db.set_source("main", "import foo.xsh\nlet x = 1")
@@ -74,6 +80,7 @@ test "xsh import hashes" {
   }
 }
 
+///|
 test "xsh import alias resolution" {
   let db = XshDb::new()
   db.set_source("main", "import foo.xsh")
@@ -86,6 +93,7 @@ test "xsh import alias resolution" {
   }
 }
 
+///|
 test "xsh compile and run" {
   let db = XshDb::new()
   db.set_source("main", "import foo.xsh\nlet x = 1\nfoo.bar")
@@ -103,9 +111,16 @@ test "xsh compile and run" {
   }
 }
 
-test "xsh builtin add/sub/eq/lt" {
+///|
+test "xsh prelude add/sub/eq/lt" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt.eval_script("let a = add(1, 2)\nlet b = sub(5, 3)\nlet c = eq(2, 2)\nlet d = lt(1, 2)")
+  match rt.get("add") {
+    Some(Value::Fn(_)) => ()
+    _ => fail("add should be fn")
+  }
+  let _ = rt.eval_script(
+    "let a = add(1, 2)\nlet b = sub(5, 3)\nlet c = eq(2, 2)\nlet d = lt(1, 2)",
+  )
   match rt.get("a") {
     Some(Value::Int(v)) => assert_eq(v, 3)
     _ => fail("add")
@@ -124,6 +139,159 @@ test "xsh builtin add/sub/eq/lt" {
   }
 }
 
+///|
+test "xsh fn expression and call" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let f = fn (x: Int, y: Int) -> Int { add(x, y) }\nlet r = f(1, 2)",
+  )
+  match rt.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("fn call")
+  }
+}
+
+///|
+test "xsh fn labeled and optional args" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let f = fn (x: Int, y~: String, z?: Bool) { y }\nlet a = f(1, y=\"ok\")",
+  )
+  match rt.get("a") {
+    Some(Value::String(v)) => assert_eq(v, "ok")
+    _ => fail("labeled arg")
+  }
+  let _ = rt.eval_script(
+    "let g = fn (z?: Bool) { z }\nlet n = g()\nlet s = g(z=true)",
+  )
+  match rt.get("n") {
+    Some(Value::Record(map)) =>
+      match map.get("None") {
+        Some(Value::Unit) => ()
+        _ => fail("optional none")
+      }
+    _ => fail("optional none")
+  }
+  match rt.get("s") {
+    Some(Value::Record(map)) =>
+      match map.get("Some") {
+        Some(Value::Bool(v)) => assert_true(v)
+        _ => fail("optional some")
+      }
+    _ => fail("optional some")
+  }
+}
+
+///|
+test "xsh none is polymorphic" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let x = None\nlet f = fn (v: Option[Int]) { v }\nlet g = fn (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x)",
+  )
+  match result {
+    Err(_) => fail("expected polymorphic None")
+    Ok(_) => ()
+  }
+}
+
+///|
+test "xsh do value restriction allows values" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "do { let x = None\nlet f = fn (v: Option[Int]) { v }\nlet g = fn (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
+  )
+  match result {
+    Err(_) => fail("expected value generalization in do")
+    Ok(_) => ()
+  }
+}
+
+///|
+test "xsh do value restriction blocks expansive" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "do { let x = if true { None } else { None }\nlet f = fn (v: Option[Int]) { v }\nlet g = fn (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected monomorphic let in do")
+  }
+}
+
+///|
+test "xsh repl keeps type env across eval_script calls" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let add2 = fn (x: Int, y: Int) -> Int { add(x, y) }")
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let r = add2(1, 2)",
+  )
+  match result {
+    Err(_) => fail("expected add2 to be callable")
+    Ok(_) => ()
+  }
+  match rt.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("missing r")
+  }
+}
+
+///|
+test "xsh fn missing label is type error" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let f = fn (y~: Int) { y }\nf(1)",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected error")
+  }
+}
+
+///|
+test "xsh let rec function" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let rec sum = fn (n: Int) -> Int { if lt(n, 1) { 0 } else { add(n, sum(sub(n, 1))) } }",
+  )
+  match rt.get_addr("sum") {
+    Some(_) => ()
+    None => fail("missing addr")
+  }
+  let _ = rt.eval_script("let r = sum(3)")
+  match rt.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 6)
+    _ => fail("rec result")
+  }
+}
+
+///|
+test "xsh let rec requires return type" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let rec f = fn (x: Int) { x }",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected error")
+  }
+}
+
+///|
+test "xsh alias publishes name to address" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let f = fn (x: Int) { x }")
+  let addr = match rt.get_addr("f") {
+    Some(a) => a
+    None => fail("missing addr")
+  }
+  let _ = rt.eval_script("alias mizchi/mylib@1.0.0/myfunc = f")
+  match rt.get_name_alias("mizchi/mylib@1.0.0/myfunc") {
+    Some(a) => assert_eq(a, addr)
+    None => fail("missing name alias")
+  }
+}
+
+///|
 test "xsh test block ignored by eval" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("test { let x = 1 }")
@@ -133,6 +301,7 @@ test "xsh test block ignored by eval" {
   }
 }
 
+///|
 test "xsh bool literal" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let t = true\nlet f = false")
@@ -146,9 +315,12 @@ test "xsh bool literal" {
   }
 }
 
+///|
 test "xsh bool ops" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt.eval_script("let a = not(true)\nlet b = and(true, false)\nlet c = or(true, false)")
+  let _ = rt.eval_script(
+    "let a = not(true)\nlet b = and(true, false)\nlet c = or(true, false)",
+  )
   match rt.get("a") {
     Some(Value::Bool(v)) => assert_false(v)
     _ => fail("not")
@@ -163,6 +335,42 @@ test "xsh bool ops" {
   }
 }
 
+///|
+test "xsh assert" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let ok = assert(true)")
+  match rt.get("ok") {
+    Some(Value::Unit) => ()
+    _ => fail("assert true")
+  }
+  let result : Result[EvalResult, Error] = try? rt.eval_script("assert(false)")
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("assert false")
+  }
+}
+
+///|
+test "xsh boolean operators" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let a = true && false\nlet b = true || false\nlet c = !false",
+  )
+  match rt.get("a") {
+    Some(Value::Bool(v)) => assert_false(v)
+    _ => fail("and and")
+  }
+  match rt.get("b") {
+    Some(Value::Bool(v)) => assert_true(v)
+    _ => fail("or or")
+  }
+  match rt.get("c") {
+    Some(Value::Bool(v)) => assert_true(v)
+    _ => fail("not")
+  }
+}
+
+///|
 test "xsh if expression" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = if true { 1 } else { 2 }")
@@ -177,6 +385,7 @@ test "xsh if expression" {
   }
 }
 
+///|
 test "xsh if block scope" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = if true { let y = 1\n y } else { 2 }")
@@ -190,6 +399,7 @@ test "xsh if block scope" {
   }
 }
 
+///|
 test "xsh block expression" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = { let y = 3\n y }")
@@ -203,6 +413,37 @@ test "xsh block expression" {
   }
 }
 
+///|
+test "xsh array and map literals" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let a = [1, 2, 3]")
+  match rt.get("a") {
+    Some(Value::Array(values)) => {
+      assert_eq(values.length(), 3)
+      match values[0] {
+        Value::Int(v) => assert_eq(v, 1)
+        _ => fail("array[0]")
+      }
+    }
+    _ => fail("array literal")
+  }
+  let _ = rt.eval_script("let m = map { a: 1, \"b\": 2 }")
+  match rt.get("m") {
+    Some(Value::Map(map)) => {
+      match map.get("a") {
+        Some(Value::Int(v)) => assert_eq(v, 1)
+        _ => fail("map a")
+      }
+      match map.get("b") {
+        Some(Value::Int(v)) => assert_eq(v, 2)
+        _ => fail("map b")
+      }
+    }
+    _ => fail("map literal")
+  }
+}
+
+///|
 test "xsh match expression" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = match 2 { 1 => 10, 2 => 20, _ => 0 }")
@@ -217,6 +458,128 @@ test "xsh match expression" {
   }
 }
 
+///|
+test "xsh if else expression" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let x = if true {1} else 2")
+  match rt.get("x") {
+    Some(Value::Int(v)) => assert_eq(v, 1)
+    _ => fail("if true")
+  }
+  let _ = rt.eval_script("let y = if false {1} else 2")
+  match rt.get("y") {
+    Some(Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("if false")
+  }
+}
+
+///|
+test "xsh binary operators" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let x = 1 + 2 * 3")
+  match rt.get("x") {
+    Some(Value::Int(v)) => assert_eq(v, 7)
+    _ => fail("binary ops")
+  }
+  let _ = rt.eval_script("let y = 8 - 3 * 2")
+  match rt.get("y") {
+    Some(Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("binary ops sub")
+  }
+  let _ = rt.eval_script("let z = 8 / 2 + 1")
+  match rt.get("z") {
+    Some(Value::Int(v)) => assert_eq(v, 5)
+    _ => fail("binary ops div")
+  }
+  let _ = rt.eval_script("let w = 8/2+1\nlet m = 8-3*2")
+  match rt.get("w") {
+    Some(Value::Int(v)) => assert_eq(v, 5)
+    _ => fail("binary ops div no space")
+  }
+  match rt.get("m") {
+    Some(Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("binary ops sub no space")
+  }
+}
+
+///|
+test "xsh comparison operators" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let a = 1 == 1\nlet b = 1 != 2\nlet c = 1 < 2\nlet d = 2 <= 2\nlet e = 3 > 2\nlet f = 2 >= 2",
+  )
+  match rt.get("a") {
+    Some(Value::Bool(v)) => assert_true(v)
+    _ => fail("eqeq")
+  }
+  match rt.get("b") {
+    Some(Value::Bool(v)) => assert_true(v)
+    _ => fail("neq")
+  }
+  match rt.get("c") {
+    Some(Value::Bool(v)) => assert_true(v)
+    _ => fail("lt")
+  }
+  match rt.get("d") {
+    Some(Value::Bool(v)) => assert_true(v)
+    _ => fail("lte")
+  }
+  match rt.get("e") {
+    Some(Value::Bool(v)) => assert_true(v)
+    _ => fail("gt")
+  }
+  match rt.get("f") {
+    Some(Value::Bool(v)) => assert_true(v)
+    _ => fail("gte")
+  }
+}
+
+///|
+test "xsh ctor match" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let v = Ok(1)")
+  let _ = rt.eval_script("let r = match v { Ok(x) => 1, Err => 0 }")
+  match rt.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 1)
+    _ => fail("match ok")
+  }
+  let _ = rt.eval_script("let n = Err")
+  let _ = rt.eval_script("let r2 = match n { Ok(x) => 1, Err => 0 }")
+  match rt.get("r2") {
+    Some(Value::Int(v)) => assert_eq(v, 0)
+    _ => fail("match none")
+  }
+}
+
+///|
+test "xsh type def and ctor call" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "enum Result[T] { Ok(T), Err }\ntype IntResult = Result[Int]",
+  )
+  let _ = rt.eval_script(
+    "let f = fn (x: IntResult) -> Int { match x { Ok(v) => v, Err => 0 } }",
+  )
+  let _ = rt.eval_script("let r = f(Ok(2))")
+  match rt.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("type def call")
+  }
+}
+
+///|
+test "xsh match exhaustiveness for type def" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "enum Result[T] { Ok(T), Err }\nlet x = match Ok(1) { Ok(v) => v }",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected exhaustiveness error")
+  }
+}
+
+///|
 test "xsh match bind pattern" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = match 3 { v => add(v, 1) }")
@@ -226,6 +589,7 @@ test "xsh match bind pattern" {
   }
 }
 
+///|
 test "xsh match tuple and record patterns" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = match (1, 2) { (a, b) => add(a, b), _ => 0 }")
@@ -233,13 +597,16 @@ test "xsh match tuple and record patterns" {
     Some(Value::Int(v)) => assert_eq(v, 3)
     _ => fail("match tuple")
   }
-  let _ = rt.eval_script("let y = match record { a: 1, b: 2 } { record { a: v } => v, _ => 0 }")
+  let _ = rt.eval_script(
+    "let y = match record { a: 1, b: 2 } { record { a: v } => v, _ => 0 }",
+  )
   match rt.get("y") {
     Some(Value::Int(v)) => assert_eq(v, 1)
     _ => fail("match record")
   }
 }
 
+///|
 test "xsh match guard" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let x = match 2 { v if lt(v, 2) => 1, _ => 9 }")
@@ -254,6 +621,7 @@ test "xsh match guard" {
   }
 }
 
+///|
 test "xsh effect requires do" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script("sh(\"ls\")")
@@ -263,6 +631,82 @@ test "xsh effect requires do" {
   }
 }
 
+///|
+test "xsh builder requires do" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let b = array_builder()",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected type error")
+  }
+}
+
+///|
+test "xsh array builder freeze snapshot" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let a = do { let b = array_builder()\narray_builder_push(b, 1)\nlet x = array_builder_freeze(b)\narray_builder_push(b, 2)\nlet y = array_builder_freeze(b)\n(x, y) }",
+  )
+  match rt.get("a") {
+    Some(Value::Tuple(items)) =>
+      if items.length() != 2 {
+        fail("tuple size")
+      } else {
+        match (items[0], items[1]) {
+          (Value::Array(xs), Value::Array(ys)) => {
+            assert_eq(xs.length(), 1)
+            assert_eq(ys.length(), 2)
+            match (xs[0], ys[0], ys[1]) {
+              (Value::Int(a0), Value::Int(b0), Value::Int(b1)) => {
+                assert_eq(a0, 1)
+                assert_eq(b0, 1)
+                assert_eq(b1, 2)
+              }
+              _ => fail("array contents")
+            }
+          }
+          _ => fail("array freeze")
+        }
+      }
+    _ => fail("missing a")
+  }
+}
+
+///|
+test "xsh map builder freeze snapshot" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let m = do { let b = map_builder()\nmap_builder_set(b, \"a\", 1)\nlet x = map_builder_freeze(b)\nmap_builder_set(b, \"b\", 2)\nlet y = map_builder_freeze(b)\n(x, y) }",
+  )
+  match rt.get("m") {
+    Some(Value::Tuple(items)) =>
+      if items.length() != 2 {
+        fail("tuple size")
+      } else {
+        match (items[0], items[1]) {
+          (Value::Map(xs), Value::Map(ys)) => {
+            match (xs.get("a"), xs.get("b")) {
+              (Some(Value::Int(v)), None) => assert_eq(v, 1)
+              _ => fail("map snapshot a")
+            }
+            match (ys.get("a"), ys.get("b")) {
+              (Some(Value::Int(a0)), Some(Value::Int(b0))) => {
+                assert_eq(a0, 1)
+                assert_eq(b0, 2)
+              }
+              _ => fail("map snapshot b")
+            }
+          }
+          _ => fail("map freeze")
+        }
+      }
+    _ => fail("missing m")
+  }
+}
+
+///|
 test "xsh pure cache snapshot" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let a = path(\"/a\")")
@@ -274,6 +718,7 @@ test "xsh pure cache snapshot" {
   assert_eq(rt2.pure_cache_len(), 1)
 }
 
+///|
 test "xsh compile ignores test block" {
   let db = XshDb::new()
   db.set_source("main", "let x = 1\ntest { let y = 2 }")
@@ -284,6 +729,7 @@ test "xsh compile ignores test block" {
   assert_eq(compiled_with.ir_hash, compiled_plain.ir_hash)
 }
 
+///|
 test "xsh test runner report" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let report = rt.run_script_tests("let x = 1\ntest { let y = x }")
@@ -292,6 +738,22 @@ test "xsh test runner report" {
   assert_eq(report.failed, 0)
 }
 
+///|
+test "xsh test cache invalidates on update" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let report1 = rt.run_script_tests(
+    "let f = fn (x: Int) { x }\n" +
+    "test { if eq(f(1), 1) { 0 } else { div(1, 0) } }",
+  )
+  assert_eq(report1.failed, 0)
+  let _ = rt.eval_script("let f = fn (x: Int) { add(x, 1) }")
+  let report2 = rt.run_script_tests(
+    "test { if eq(f(1), 1) { 0 } else { div(1, 0) } }",
+  )
+  assert_eq(report2.failed, 1)
+}
+
+///|
 test "xsh test runner failure" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let report = rt.run_script_tests("test { do { sh(\"ls\") } }")

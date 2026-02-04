@@ -1,29 +1,40 @@
 ///| Capability set - collection of granted capabilities
 
+///|
 /// Set of capabilities granted to an agent
 pub struct CapabilitySet {
   capabilities : Array[Capability]
 }
 
+///|
 /// Create an empty capability set
 pub fn CapabilitySet::new() -> CapabilitySet {
   { capabilities: [] }
 }
 
+///|
 /// Create a capability set from array
 pub fn CapabilitySet::from_array(caps : Array[Capability]) -> CapabilitySet {
   { capabilities: caps }
 }
 
+///|
 /// Add a capability
-pub fn CapabilitySet::add(self : CapabilitySet, cap : Capability) -> CapabilitySet {
+pub fn CapabilitySet::add(
+  self : CapabilitySet,
+  cap : Capability,
+) -> CapabilitySet {
   let new_caps = self.capabilities.copy()
   new_caps.push(cap)
   { capabilities: new_caps }
 }
 
+///|
 /// Check if a capability is granted
-pub fn CapabilitySet::has(self : CapabilitySet, check : (Capability) -> Bool) -> Bool {
+pub fn CapabilitySet::has(
+  self : CapabilitySet,
+  check : (Capability) -> Bool,
+) -> Bool {
   for cap in self.capabilities {
     if check(cap) {
       return true
@@ -32,6 +43,7 @@ pub fn CapabilitySet::has(self : CapabilitySet, check : (Capability) -> Bool) ->
   false
 }
 
+///|
 /// Check if file read is allowed
 pub fn CapabilitySet::can_read(self : CapabilitySet, path : String) -> Bool {
   self.has(fn(cap) {
@@ -42,6 +54,7 @@ pub fn CapabilitySet::can_read(self : CapabilitySet, path : String) -> Bool {
   })
 }
 
+///|
 /// Check if file write is allowed
 pub fn CapabilitySet::can_write(self : CapabilitySet, path : String) -> Bool {
   self.has(fn(cap) {
@@ -52,6 +65,7 @@ pub fn CapabilitySet::can_write(self : CapabilitySet, path : String) -> Bool {
   })
 }
 
+///|
 /// Check if file delete is allowed
 pub fn CapabilitySet::can_delete(self : CapabilitySet, path : String) -> Bool {
   self.has(fn(cap) {
@@ -62,6 +76,7 @@ pub fn CapabilitySet::can_delete(self : CapabilitySet, path : String) -> Bool {
   })
 }
 
+///|
 /// Check if file execute is allowed
 pub fn CapabilitySet::can_execute(self : CapabilitySet, path : String) -> Bool {
   self.has(fn(cap) {
@@ -72,8 +87,13 @@ pub fn CapabilitySet::can_execute(self : CapabilitySet, path : String) -> Bool {
   })
 }
 
+///|
 /// Check if network connect is allowed
-pub fn CapabilitySet::can_connect(self : CapabilitySet, host : String, port : Int) -> Bool {
+pub fn CapabilitySet::can_connect(
+  self : CapabilitySet,
+  host : String,
+  port : Int,
+) -> Bool {
   self.has(fn(cap) {
     match cap {
       NetConnect(pattern) => {
@@ -89,6 +109,7 @@ pub fn CapabilitySet::can_connect(self : CapabilitySet, host : String, port : In
   })
 }
 
+///|
 /// Check if MCP tool call is allowed
 pub fn CapabilitySet::can_call_mcp(self : CapabilitySet, tool : String) -> Bool {
   self.has(fn(cap) {
@@ -99,8 +120,12 @@ pub fn CapabilitySet::can_call_mcp(self : CapabilitySet, tool : String) -> Bool 
   })
 }
 
+///|
 /// Check if A2A delegation is allowed
-pub fn CapabilitySet::can_delegate_a2a(self : CapabilitySet, agent : String) -> Bool {
+pub fn CapabilitySet::can_delegate_a2a(
+  self : CapabilitySet,
+  agent : String,
+) -> Bool {
   self.has(fn(cap) {
     match cap {
       A2ADelegate(agents) => agents.contains(agent) || agents.contains("*")
@@ -109,6 +134,7 @@ pub fn CapabilitySet::can_delegate_a2a(self : CapabilitySet, agent : String) -> 
   })
 }
 
+///|
 /// Check if git snapshot is allowed
 pub fn CapabilitySet::can_snapshot(self : CapabilitySet) -> Bool {
   self.has(fn(cap) {
@@ -119,6 +145,7 @@ pub fn CapabilitySet::can_snapshot(self : CapabilitySet) -> Bool {
   })
 }
 
+///|
 /// Check if git rollback is allowed
 pub fn CapabilitySet::can_rollback(self : CapabilitySet) -> Bool {
   self.has(fn(cap) {
@@ -129,6 +156,7 @@ pub fn CapabilitySet::can_rollback(self : CapabilitySet) -> Bool {
   })
 }
 
+///|
 /// Check if clock read is allowed
 pub fn CapabilitySet::can_read_clock(self : CapabilitySet) -> Bool {
   self.has(fn(cap) {
@@ -140,6 +168,7 @@ pub fn CapabilitySet::can_read_clock(self : CapabilitySet) -> Bool {
   })
 }
 
+///|
 /// Check if random read is allowed
 pub fn CapabilitySet::can_read_random(self : CapabilitySet) -> Bool {
   self.has(fn(cap) {
@@ -150,8 +179,12 @@ pub fn CapabilitySet::can_read_random(self : CapabilitySet) -> Bool {
   })
 }
 
+///|
 /// Check if env var read is allowed
-pub fn CapabilitySet::can_read_env(self : CapabilitySet, env_var : String) -> Bool {
+pub fn CapabilitySet::can_read_env(
+  self : CapabilitySet,
+  env_var : String,
+) -> Bool {
   self.has(fn(cap) {
     match cap {
       EnvRead(vars) => vars.contains(env_var) || vars.contains("*")
@@ -160,6 +193,7 @@ pub fn CapabilitySet::can_read_env(self : CapabilitySet, env_var : String) -> Bo
   })
 }
 
+///|
 /// Check if process spawn is allowed
 pub fn CapabilitySet::can_spawn(self : CapabilitySet, cmd : String) -> Bool {
   self.has(fn(cap) {
@@ -170,6 +204,7 @@ pub fn CapabilitySet::can_spawn(self : CapabilitySet, cmd : String) -> Bool {
   })
 }
 
+///|
 /// Simple glob matching (supports * and **)
 fn match_glob(pattern : String, path : String) -> Bool {
   // Handle exact match
@@ -199,13 +234,13 @@ fn match_glob(pattern : String, path : String) -> Bool {
   false
 }
 
+///|
 /// Match simple glob with single * wildcards
 fn match_simple_glob(pattern : String, path : String) -> Bool {
   let pattern_chars = pattern.to_array()
   let path_chars = path.to_array()
   let mut pi = 0
   let mut si = 0
-
   while pi < pattern_chars.length() && si < path_chars.length() {
     if pattern_chars[pi] == '*' {
       // Find next non-wildcard character
@@ -229,6 +264,7 @@ fn match_simple_glob(pattern : String, path : String) -> Bool {
   pi >= pattern_chars.length() && si >= path_chars.length()
 }
 
+///|
 /// Match host pattern (supports * prefix for subdomains)
 fn match_host_pattern(pattern : String, host : String) -> Bool {
   if pattern == "*" {

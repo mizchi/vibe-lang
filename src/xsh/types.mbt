@@ -1,5 +1,19 @@
-///| Types and values for xsh
+///|
+/// Types and values for xsh
+pub enum ParamLabel {
+  Positional
+  Required
+  Optional
+} derive(Show, Eq)
 
+///|
+pub struct FuncParam {
+  name : String
+  label : ParamLabel
+  ty : Type
+} derive(Show, Eq)
+
+///|
 pub enum Type {
   Int
   Bool
@@ -8,6 +22,15 @@ pub enum Type {
   Unit
   Tuple(Array[Type])
   Record(Map[String, Type])
+  Array(Type)
+  Map(Type)
+  ArrayBuilder(Type)
+  MapBuilder(Type)
+  Variant(Map[String, Type])
+  Named(name~ : String, args~ : Array[Type])
+  Param(String)
+  Var(Int)
+  Func(params~ : Array[FuncParam], ret~ : Type)
 } derive(Show, Eq)
 
 ///|
@@ -17,13 +40,28 @@ pub struct Path {
 
 ///|
 pub fn Path::new(raw : String) -> Path {
-  Path::{ raw: @fs.normalize_path(raw) }
+  let normalized = @path.Path(raw).normalize().to_string()
+  let resolved = if normalized.has_prefix("/") {
+    normalized
+  } else {
+    "/" + normalized
+  }
+  Path::{ raw: resolved }
 }
 
 ///|
 pub fn Path::as_string(self : Path) -> String {
   self.raw
 }
+
+///|
+pub struct FnValue {
+  params : Array[FuncParam]
+  body : Module
+  env : Map[String, String]
+  addr : String?
+  pure : Bool
+} derive(Show, Eq)
 
 ///|
 pub enum Value {
@@ -34,4 +72,9 @@ pub enum Value {
   Unit
   Tuple(Array[Value])
   Record(Map[String, Value])
+  Array(Array[Value])
+  Map(Map[String, Value])
+  ArrayBuilder(Array[Value])
+  MapBuilder(Map[String, Value])
+  Fn(FnValue)
 } derive(Show, Eq)

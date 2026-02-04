@@ -1,5 +1,5 @@
-///| Integration test for compile + import + run
-
+///|
+/// Integration test for compile + import + run
 test "xsh integration compile/import/run" {
   let db = XshDb::new()
   let lib_source = "let value = 7"

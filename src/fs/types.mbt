@@ -1,6 +1,7 @@
 ///| Virtual filesystem types
 
-///| File system errors
+///|
+/// File system errors
 pub(all) suberror FsError {
   NotFound(String)
   AlreadyExists(String)
@@ -13,26 +14,30 @@ pub(all) suberror FsError {
   IoError(String)
 } derive(Show, Eq)
 
-///| File type enumeration
+///|
+/// File type enumeration
 pub(all) enum FileType {
   File
   Directory
   Symlink
 } derive(Show, Eq)
 
-///| File metadata
+///|
+/// File metadata
 pub(all) struct FileStat {
   file_type : FileType
   size : Int
   // Future: mtime, atime, ctime, mode, etc.
 } derive(Show, Eq)
 
-///| Default file stat
+///|
+/// Default file stat
 pub fn FileStat::default() -> FileStat {
   { file_type: FileType::File, size: 0 }
 }
 
-///| Directory entry
+///|
+/// Directory entry
 pub(all) struct DirEntry {
   name : String
   file_type : FileType
