@@ -10,6 +10,22 @@ fn touch_cli_helpers() -> Unit {
   let _ = detect_completion_context("let x = 1", 5)
   let _ = is_in_fn_param_context("fn(", 2)
   let _ = extract_let_name("let x = 1")
+  match detect_method_completion("t.foo", 5) {
+    Some(info) => {
+      let _ = info.receiver
+      let _ = info.prefix
+
+    }
+    None => ()
+  }
+  match detect_pipe_completion("x |> inc", 9) {
+    Some(info) => {
+      let _ = info.receiver
+      let _ = info.prefix
+
+    }
+    None => ()
+  }
   let editor = @editor.EditorState::new_with_kind(
     "",
     1,

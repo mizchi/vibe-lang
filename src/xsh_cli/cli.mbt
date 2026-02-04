@@ -10,6 +10,7 @@ pub fn run(args : Array[String]) -> Unit {
   match cmd {
     "run" => run_cmd(cmd_args)
     "test" => test_cmd(cmd_args)
+    "fmt" => fmt_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args)
     "bench-file" => bench_file_cmd(cmd_args)
@@ -30,7 +31,10 @@ fn print_usage() -> Unit {
   println("commands:")
   println("  run <file>                 parse/type/eval a script")
   println("  test <file...>             run test blocks in scripts")
-  println("  compile [--wasm] [-o out] <file>  emit IR (default) or wasm bytes")
+  println("  fmt [--write] <file...>    format scripts via CST")
+  println(
+    "  compile [--wasm | --wasm-js-string] [-o out] <file>  emit IR (default) or wasm bytes",
+  )
   println("  bench [--n N] [--warmup N] [--expr EXPR]")
   println("  bench-file [--n N] [--warmup N] <file>")
   println("  repl                        interactive TUI shell")
@@ -59,6 +63,7 @@ fn short_hash(hash : String) -> String {
 enum CompileMode {
   Ir
   Wasm
+  WasmJsString
 }
 
 ///|
@@ -103,6 +108,10 @@ fn compile_cmd(args : Array[String]) -> Unit {
     match arg {
       "--wasm" => {
         mode = CompileMode::Wasm
+        i += 1
+      }
+      "--wasm-js-string" => {
+        mode = CompileMode::WasmJsString
         i += 1
       }
       "-o" | "--out" => {
@@ -156,6 +165,21 @@ fn compile_cmd(args : Array[String]) -> Unit {
                 None => ()
               }
             }
+            CompileMode::WasmJsString => {
+              if out_path is None {
+                abort("compile: --wasm-js-string requires -o <file>")
+              }
+              let wasm_bytes = @xsh_lib.compile_module_wasm_js_string(db, entry) catch {
+                e => abort("compile: " + e.to_string())
+              }
+              match out_path {
+                Some(out) =>
+                  @os_fs.write_bytes_to_file(out, wasm_bytes) catch {
+                    e => abort("compile: " + e.to_string())
+                  }
+                None => ()
+              }
+            }
           }
       }
   }
@@ -185,7 +209,12 @@ fn test_cmd(args : Array[String]) -> Unit {
     abort("test: expected <file...>")
   }
   let mut failed = false
+  let mut total = 0
+  let mut passed = 0
+  let mut failed_count = 0
+  let mut file_count = 0
   for entry_path in args {
+    file_count += 1
     match compile_entry(entry_path) {
       Err(err) => {
         println("[\{entry_path}] compile error: \{err}")
@@ -202,11 +231,51 @@ fn test_cmd(args : Array[String]) -> Unit {
         if !print_test_report(entry_path, report) {
           failed = true
         }
+        total += report.total
+        passed += report.passed
+        failed_count += report.failed
       }
     }
   }
+  println(
+    "summary: files=\{file_count} total=\{total} passed=\{passed} failed=\{failed_count}",
+  )
   if failed {
     abort("test: failures detected")
+  }
+}
+
+///|
+fn fmt_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    abort("fmt: expected <file...>")
+  }
+  let mut write = false
+  let files : Array[String] = []
+  for arg in args {
+    match arg {
+      "--write" | "-w" => write = true
+      _ => files.push(arg)
+    }
+  }
+  if files.length() == 0 {
+    abort("fmt: expected <file...>")
+  }
+  if not(write) && files.length() > 1 {
+    abort("fmt: use --write for multiple files")
+  }
+  for path in files {
+    let src = @os_fs.read_file_to_string(path) catch {
+      e => abort("fmt: " + e.to_string())
+    }
+    let formatted = @xsh_lib.format_script(src)
+    if write {
+      @os_fs.write_string_to_file(path, formatted) catch {
+        e => abort("fmt: " + e.to_string())
+      }
+    } else {
+      println(formatted)
+    }
   }
 }
 
@@ -736,7 +805,53 @@ fn repl_cmd(args : Array[String]) -> Unit {
       return
     }
     let context = detect_completion_context(req.line_text, req.col)
-    if req.prefix.length() == 0 {
+    let method_info = detect_method_completion(req.line_text, req.col)
+    let pipe_info = detect_pipe_completion(req.line_text, req.col)
+    let prefix = match method_info {
+      Some(info) => info.prefix
+      None =>
+        match pipe_info {
+          Some(info) => info.prefix
+          None => req.prefix
+        }
+    }
+    let receiver_name = match method_info {
+      Some(info) => Some(info.receiver)
+      None =>
+        match pipe_info {
+          Some(info) => Some(info.receiver)
+          None => None
+        }
+    }
+    let env = rt.type_env()
+    let receiver_ty = match receiver_name {
+      Some(name) => env.get(name)
+      None => None
+    }
+    fn accepts_receiver(name : String) -> Bool {
+      match receiver_ty {
+        None => true
+        Some(rty) =>
+          match env.get(name) {
+            Some(@xsh_lib.Type::Func(params~, ..)) => {
+              let mut found = false
+              let mut ok = false
+              for param in params {
+                if @xsh_lib.ParamLabel::is_positional(param.label) {
+                  found = true
+                  ok = @xsh_lib.completion_param_matches(env, rty, param.ty)
+                  break
+                }
+              }
+              found && ok
+            }
+            _ => false
+          }
+      }
+    }
+
+    let method_like = method_info is Some(_) || pipe_info is Some(_)
+    if prefix.length() == 0 && not(method_like) {
       completion_session.clear()
       return
     }
@@ -747,36 +862,38 @@ fn repl_cmd(args : Array[String]) -> Unit {
         let mut idx = history.length() - 1
         while idx >= 0 {
           let entry = history[idx]
-          if entry.has_prefix(req.prefix) {
+          if entry.has_prefix(prefix) {
             push_unique(items, entry)
           }
           idx -= 1
         }
         for item in shell_commands {
-          if item.has_prefix(req.prefix) {
+          if item.has_prefix(prefix) {
             push_unique(items, item)
           }
         }
       }
       CompletionContext::XshLetName =>
         for name in xsh_names {
-          if name.has_prefix(req.prefix) {
+          if name.has_prefix(prefix) {
             push_unique(items, name)
           }
         }
       CompletionContext::XshLetExpr | CompletionContext::XshExpr => {
-        for item in xsh_keywords {
-          if item.has_prefix(req.prefix) {
-            push_unique(items, item)
+        if not(method_like) {
+          for item in xsh_keywords {
+            if item.has_prefix(prefix) {
+              push_unique(items, item)
+            }
           }
         }
         for item in xsh_builtins {
-          if item.has_prefix(req.prefix) {
+          if item.has_prefix(prefix) && accepts_receiver(item) {
             push_unique(items, item)
           }
         }
         for name in xsh_names {
-          if name.has_prefix(req.prefix) {
+          if name.has_prefix(prefix) && accepts_receiver(name) {
             push_unique(items, name)
           }
         }
@@ -785,9 +902,18 @@ fn repl_cmd(args : Array[String]) -> Unit {
     let response : @editor.CompletionResponse = {
       id: req.id,
       items: items.map(fn(item) {
+        let insert_text = match method_info {
+          Some(info) =>
+            if req.prefix.contains(".") {
+              info.receiver + "." + item
+            } else {
+              item
+            }
+          None => item
+        }
         @editor.CompletionItem::{
           label: item,
-          insert_text: item,
+          insert_text,
           detail: None,
           documentation: None,
         }
@@ -1047,6 +1173,7 @@ fn print_test_report(path : String, report : @xsh_lib.TestReport) -> Bool {
   let status = if report.failed == 0 { "ok" } else { "fail" }
   println("\{path}: \{status} (\{report.passed}/\{report.total})")
   if report.failed > 0 {
+    println("  failures:")
     for failure in report.failures {
       let name = match failure.name {
         Some(n) => n
@@ -1055,7 +1182,6 @@ fn print_test_report(path : String, report : @xsh_lib.TestReport) -> Bool {
       println("  - " + name + ": " + failure.error)
     }
   }
-  println("report: " + report.to_string())
   report.failed == 0
 }
 

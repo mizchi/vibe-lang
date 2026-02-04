@@ -43,6 +43,11 @@ pub fn bool_lit() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn char_lit() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(14)
+}
+
+///|
 pub fn let_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(20)
 }
@@ -115,6 +120,16 @@ pub fn enum_kw() -> @cst.SyntaxKind {
 ///|
 pub fn map_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(57)
+}
+
+///|
+pub fn try_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(61)
+}
+
+///|
+pub fn catch_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(62)
 }
 
 ///|
@@ -362,6 +377,11 @@ pub fn array_expr() -> @cst.SyntaxKind {
 ///|
 pub fn map_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(120)
+}
+
+///|
+pub fn try_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(123)
 }
 
 ///|

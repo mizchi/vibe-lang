@@ -15,14 +15,15 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 If the first non-trivia token is one of the xsh keywords, treat the script as xsh.
 Otherwise, fall back to the POSIX sh parser.
 
-Reserved leading keywords: `let`, `fn`, `type`, `effect`, `alias`, `import`, `flake`, `test`.
+Reserved leading keywords: `let`, `fn`, `type`, `effect`, `alias`, `import`, `flake`, `test`, `try`.
 
 ## Effects
 
-Effects are explicit and only allowed inside `do { ... }` blocks.
+Effects are explicit in function signatures and only allowed inside `do { ... }`
+blocks.
 
 ```
-fn run() -> Unit !{Shell} {
+let run = fn () -> Unit with {Stdout} {
   do {
     sh("ls")
   }
@@ -31,9 +32,16 @@ fn run() -> Unit !{Shell} {
 
 Rules:
 - Effectful calls outside `do` are type errors.
-- `do` blocks must be contained by a function whose effect set is a superset of
-  the effects used inside.
+- A function's declared effects must be a superset of the effects used inside.
+- `with {}` is optional; omission means pure.
 - Capability mapping is 1:1 with the runtime `CapabilitySet`.
+- Current builtin mapping: `sh(...)` requires `{Stdout}` (in addition to `do`).
+
+Error handling:
+- Calling a function with `{Error}` from a non-`{Error}` function requires
+  `try { ... } catch { ... }`.
+- `try` handles `Error` locally and does not require the caller to declare
+  `{Error}`.
 
 ## let mut and async boundaries
 
@@ -68,6 +76,20 @@ Rules:
 - `y?` is optional: without a default it is `Int?`, with a default it is `Int`.
 - Call arguments are reordered to match the parameter order during lowering.
 - Missing optional args are expanded to defaults in IR.
+
+## Builtins (current)
+
+Array/Map:
+- `array_length(array)` -> `Int`
+- `array_get(array, index)` -> element
+- `map_get(map, key)` -> element (key is `String`)
+
+String (aligned with wasm js-string builtins when using `--wasm-js-string`):
+- `string_length(string)` -> `Int`
+- `string_char_code_at(string, index)` -> `Int`
+- `string_substring(string, start, end)` -> `String`
+- `string_concat(left, right)` -> `String`
+- `string_equals(left, right)` -> `Bool`
 
 ## Names, hashes, and aliases (Unison-style)
 
@@ -120,7 +142,7 @@ Runtime API:
 CLI:
 - `moon run --target native src/xsh_cli -- run <file>` executes a script (ignores `test {}`).
 - `moon run --target native src/xsh_cli -- test <file...>` runs test blocks and prints a report.
-- `moon run --target native src/xsh_cli -- compile [--wasm] [-o out] <file>` emits IR (default) or wasm bytes.
+- `moon run --target native src/xsh_cli -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - `moon run --target native src/xsh_cli -- repl` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/xsh_cli -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
 - TUI completion sources: builtins + PATH commands + history.
@@ -145,13 +167,20 @@ Bench:
   after startup inside a single process.
 - `just bench-cmd-latency` compares per-command latency between interpreter and a
   resident wasmtime instance.
+- `just run-wasm-js-string examples/string_basic.xsh` compiles with `--wasm-js-string`
+  and runs the result using a JS engine (Node/WebAssembly builtins).
 
 ## WASM codegen (prototype)
 
 - `compile_module_wasm(db, path)` emits a minimal wasm-gc compatible module (MVP bytecode).
+- `compile_module_wasm_js_string(db, path)` emits a module that uses wasm js-string builtins.
 - Supported: `let`, expression statements, block expressions `{ ... }`, `do { ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; only inside `do`), `add/sub/eq/lt` on `Int`, `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
 - Not supported: `import`, `alias`, qualified calls, or external symbols. Tuple/record patterns are supported, but nested tuple/record patterns are not.
 - Exports: `run` (i32) and `memory`. Import: `xsh.sh` when `sh(...)` is used.
+- `--wasm-js-string` imports:
+  - `wasm:js-string.length/charCodeAt/substring/concat/equals` (as needed).
+  - `string_constants.<literal>` globals for string literals.
+- `--wasm-js-string` currently treats `String` values as externref, so only string builtins are supported; storing strings inside heap objects (tuple/record/array/map) and returning a top-level string value are not yet supported in this backend.
 - ABI note:
   - Heap objects are stored as `[u32 type][u32 len][payload...]` at 4-byte aligned offsets.
   - `type`: `1 = String`, `2 = Path`, `3 = Tuple`, `4 = Record`.

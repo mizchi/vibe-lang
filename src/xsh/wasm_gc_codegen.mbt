@@ -210,6 +210,7 @@ fn compile_expr_gc(
         _ => raise WasmGenError::Unsupported("match pattern")
       }
     }
+    Expr::Try(..) => raise WasmGenError::Unsupported("try")
     _ => raise WasmGenError::Unsupported("expr")
   }
 }

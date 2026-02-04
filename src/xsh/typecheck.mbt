@@ -35,6 +35,7 @@ pub struct EnumDef {
 ///|
 pub struct TypeScheme {
   vars : Array[Int]
+  effect_vars : Array[String]
   ty : Type
 } derive(Show, Eq)
 
@@ -54,8 +55,455 @@ pub struct TypeEnv {
   ctor_index : Map[String, CtorInfo]
   purities : Map[String, Bool]
   mut next_var : Int
+  mut next_effect_var : Int
   subs : Map[Int, Type]
+  effect_subs : Map[String, Array[EffectAtom]]
 } derive(Show, Eq)
+
+///|
+priv struct EffectSet {
+  consts : Map[String, Bool]
+  rest : String?
+}
+
+///|
+priv struct EffectScope {
+  allow_all : Bool
+  allowed : Map[String, Bool]
+  rest : String?
+}
+
+///|
+fn effect_scope_all() -> EffectScope {
+  EffectScope::{ allow_all: true, allowed: {}, rest: None }
+}
+
+///|
+fn effect_scope_from_list(effects : Array[EffectAtom]) -> EffectScope {
+  let allowed : Map[String, Bool] = {}
+  let mut rest : String? = None
+  for effect in effects {
+    match effect {
+      EffectAtom::Const(name) => allowed[name] = true
+      EffectAtom::Var(name) =>
+        match rest {
+          Some(existing) => if existing != name { () }
+          None => rest = Some(name)
+        }
+    }
+  }
+  EffectScope::{ allow_all: false, allowed, rest }
+}
+
+///|
+fn normalize_effects(
+  effects : Array[EffectAtom],
+) -> Array[EffectAtom] raise TypeError {
+  let out : Array[EffectAtom] = []
+  let seen : Map[String, Bool] = {}
+  let mut seen_var : String? = None
+  for effect in effects {
+    match effect {
+      EffectAtom::Const(name) =>
+        if not(seen.contains(name)) {
+          seen[name] = true
+          out.push(effect)
+        }
+      EffectAtom::Var(name) =>
+        match seen_var {
+          Some(existing) =>
+            if existing != name {
+              raise TypeError::BadTypeDef("multiple effect vars")
+            } else {
+              ()
+            }
+          None => {
+            seen_var = Some(name)
+            out.push(effect)
+          }
+        }
+    }
+  }
+  out
+}
+
+///|
+fn require_effects(
+  env : TypeEnv,
+  scope : EffectScope,
+  effects : Array[EffectAtom],
+) -> Unit raise TypeError {
+  if scope.allow_all {
+    return ()
+  }
+  let scope_set = effect_set_from_scope(scope)
+  let required_set = effect_set_from_atoms(env, effects)
+  match ensure_effects_allowed(env, scope_set, required_set) {
+    Some(name) => raise TypeError::EffectNotAllowed(name)
+    None => ()
+  }
+}
+
+///|
+fn builtin_effects(name : String) -> Array[EffectAtom] {
+  match name {
+    "sh" => [EffectAtom::Const("Stdout")]
+    _ => []
+  }
+}
+
+///|
+fn effect_scope_extend(
+  scope : EffectScope,
+  extra : Array[EffectAtom],
+) -> EffectScope {
+  if scope.allow_all {
+    scope
+  } else {
+    let allowed : Map[String, Bool] = {}
+    let mut rest = scope.rest
+    for key, val in scope.allowed {
+      allowed[key] = val
+    }
+    for effect in extra {
+      match effect {
+        EffectAtom::Const(name) => allowed[name] = true
+        EffectAtom::Var(name) =>
+          match rest {
+            Some(existing) => if existing != name { () }
+            None => rest = Some(name)
+          }
+      }
+    }
+    EffectScope::{ allow_all: false, allowed, rest }
+  }
+}
+
+///|
+fn effect_set_empty() -> EffectSet {
+  EffectSet::{ consts: {}, rest: None }
+}
+
+///|
+fn effect_set_from_scope(scope : EffectScope) -> EffectSet {
+  let consts : Map[String, Bool] = {}
+  for key, val in scope.allowed {
+    consts[key] = val
+  }
+  EffectSet::{ consts, rest: scope.rest }
+}
+
+///|
+fn effect_set_merge(a : EffectSet, b : EffectSet) -> EffectSet raise TypeError {
+  let consts : Map[String, Bool] = {}
+  for key, val in a.consts {
+    consts[key] = val
+  }
+  for key, val in b.consts {
+    consts[key] = val
+  }
+  let rest = match (a.rest, b.rest) {
+    (None, None) => None
+    (Some(v), None) => Some(v)
+    (None, Some(v)) => Some(v)
+    (Some(v1), Some(v2)) =>
+      if v1 == v2 {
+        Some(v1)
+      } else {
+        raise TypeError::BadTypeDef("multiple effect vars")
+      }
+  }
+  EffectSet::{ consts, rest }
+}
+
+///|
+fn effect_set_from_atoms(
+  env : TypeEnv,
+  effects : Array[EffectAtom],
+) -> EffectSet raise TypeError {
+  effect_set_from_atoms_inner(env, effects, {})
+}
+
+///|
+fn effect_set_from_atoms_inner(
+  env : TypeEnv,
+  effects : Array[EffectAtom],
+  visiting : Map[String, Bool],
+) -> EffectSet raise TypeError {
+  let mut out = effect_set_empty()
+  for effect in effects {
+    match effect {
+      EffectAtom::Const(name) => {
+        let consts : Map[String, Bool] = {}
+        consts[name] = true
+        out = effect_set_merge(out, EffectSet::{ consts, rest: None })
+      }
+      EffectAtom::Var(name) => {
+        let resolved = resolve_effect_var(env, name, visiting)
+        out = effect_set_merge(out, resolved)
+      }
+    }
+  }
+  out
+}
+
+///|
+fn resolve_effect_var(
+  env : TypeEnv,
+  name : String,
+  visiting : Map[String, Bool],
+) -> EffectSet raise TypeError {
+  if visiting.contains(name) {
+    EffectSet::{ consts: {}, rest: Some(name) }
+  } else {
+    match env.effect_subs.get(name) {
+      Some(effects) => {
+        let next : Map[String, Bool] = {}
+        for key, val in visiting {
+          next[key] = val
+        }
+        next[name] = true
+        effect_set_from_atoms_inner(env, effects, next)
+      }
+      None => EffectSet::{ consts: {}, rest: Some(name) }
+    }
+  }
+}
+
+///|
+fn effect_set_to_atoms(set : EffectSet) -> Array[EffectAtom] {
+  let out : Array[EffectAtom] = []
+  for name, _ in set.consts {
+    out.push(EffectAtom::Const(name))
+  }
+  match set.rest {
+    Some(name) => out.push(EffectAtom::Var(name))
+    None => ()
+  }
+  out
+}
+
+///|
+fn effect_consts_subset(
+  small : Map[String, Bool],
+  large : Map[String, Bool],
+) -> Bool {
+  for name, _ in small {
+    if not(large.contains(name)) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn effect_consts_equal(
+  left : Map[String, Bool],
+  right : Map[String, Bool],
+) -> Bool {
+  effect_consts_subset(left, right) && effect_consts_subset(right, left)
+}
+
+///|
+fn effect_consts_minus(
+  left : Map[String, Bool],
+  right : Map[String, Bool],
+) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for name, _ in left {
+    if not(right.contains(name)) {
+      out[name] = true
+    }
+  }
+  out
+}
+
+///|
+fn effect_var_occurs(
+  env : TypeEnv,
+  name : String,
+  set : EffectSet,
+) -> Bool raise TypeError {
+  match set.rest {
+    Some(var_name) =>
+      if var_name == name {
+        true
+      } else {
+        match env.effect_subs.get(var_name) {
+          Some(effects) =>
+            effect_var_occurs(env, name, effect_set_from_atoms(env, effects))
+          None => false
+        }
+      }
+    None => false
+  }
+}
+
+///|
+fn bind_effect_var(
+  env : TypeEnv,
+  name : String,
+  set : EffectSet,
+) -> Bool raise TypeError {
+  match set.rest {
+    Some(var_name) =>
+      if var_name == name {
+        if set.consts.length() == 0 {
+          true
+        } else {
+          let rest = fresh_effect_var(env)
+          let updated = EffectSet::{ consts: set.consts, rest: Some(rest) }
+          env.effect_subs[name] = effect_set_to_atoms(updated)
+          true
+        }
+      } else if effect_var_occurs(env, name, set) {
+        false
+      } else {
+        env.effect_subs[name] = effect_set_to_atoms(set)
+        true
+      }
+    None =>
+      if effect_var_occurs(env, name, set) {
+        false
+      } else {
+        env.effect_subs[name] = effect_set_to_atoms(set)
+        true
+      }
+  }
+}
+
+///|
+fn add_const_to_effect_var(
+  env : TypeEnv,
+  name : String,
+  effect : String,
+) -> Unit raise TypeError {
+  match env.effect_subs.get(name) {
+    None => {
+      let rest = fresh_effect_var(env)
+      env.effect_subs[name] = [EffectAtom::Const(effect), EffectAtom::Var(rest)]
+    }
+    Some(effects) => {
+      let current = effect_set_from_atoms(env, effects)
+      let consts : Map[String, Bool] = {}
+      for key, val in current.consts {
+        consts[key] = val
+      }
+      consts[effect] = true
+      let updated = EffectSet::{ consts, rest: current.rest }
+      env.effect_subs[name] = effect_set_to_atoms(updated)
+    }
+  }
+}
+
+///|
+fn ensure_effects_allowed(
+  env : TypeEnv,
+  scope_set : EffectSet,
+  required_set : EffectSet,
+) -> String? raise TypeError {
+  let resolved_scope = effect_set_from_atoms(
+    env,
+    effect_set_to_atoms(scope_set),
+  )
+  let resolved_req = effect_set_from_atoms(
+    env,
+    effect_set_to_atoms(required_set),
+  )
+  let scope_var = scope_set.rest
+  for name, _ in resolved_req.consts {
+    if resolved_scope.consts.contains(name) {
+      ()
+    } else {
+      match scope_var {
+        Some(var_name) => add_const_to_effect_var(env, var_name, name)
+        None => return Some(name)
+      }
+    }
+  }
+  match resolved_req.rest {
+    None => None
+    Some(req_var) =>
+      match scope_var {
+        Some(scope_var_name) =>
+          if req_var == scope_var_name {
+            None
+          } else {
+            let ok = bind_effect_var(env, req_var, EffectSet::{
+              consts: {},
+              rest: Some(scope_var_name),
+            })
+            if ok {
+              None
+            } else {
+              Some("effect")
+            }
+          }
+        None => Some("effect")
+      }
+  }
+}
+
+///|
+fn unify_effects(
+  env : TypeEnv,
+  left : Array[EffectAtom],
+  right : Array[EffectAtom],
+) -> Bool raise TypeError {
+  let a = effect_set_from_atoms(env, left)
+  let b = effect_set_from_atoms(env, right)
+  unify_effect_sets(env, a, b)
+}
+
+///|
+fn unify_effect_sets(
+  env : TypeEnv,
+  left : EffectSet,
+  right : EffectSet,
+) -> Bool raise TypeError {
+  match (left.rest, right.rest) {
+    (None, None) => effect_consts_equal(left.consts, right.consts)
+    (Some(var_name), None) =>
+      if effect_consts_subset(left.consts, right.consts) {
+        let diff = effect_consts_minus(right.consts, left.consts)
+        bind_effect_var(env, var_name, EffectSet::{ consts: diff, rest: None })
+      } else {
+        false
+      }
+    (None, Some(var_name)) =>
+      if effect_consts_subset(right.consts, left.consts) {
+        let diff = effect_consts_minus(left.consts, right.consts)
+        bind_effect_var(env, var_name, EffectSet::{ consts: diff, rest: None })
+      } else {
+        false
+      }
+    (Some(var_left), Some(var_right)) =>
+      if effect_consts_equal(left.consts, right.consts) {
+        if var_left == var_right {
+          true
+        } else {
+          bind_effect_var(env, var_left, EffectSet::{
+            consts: {},
+            rest: Some(var_right),
+          })
+        }
+      } else if effect_consts_subset(left.consts, right.consts) {
+        let diff = effect_consts_minus(right.consts, left.consts)
+        bind_effect_var(env, var_left, EffectSet::{
+          consts: diff,
+          rest: Some(var_right),
+        })
+      } else if effect_consts_subset(right.consts, left.consts) {
+        let diff = effect_consts_minus(left.consts, right.consts)
+        bind_effect_var(env, var_right, EffectSet::{
+          consts: diff,
+          rest: Some(var_left),
+        })
+      } else {
+        false
+      }
+  }
+}
 
 ///|
 pub fn TypeEnv::new() -> TypeEnv {
@@ -67,7 +515,9 @@ pub fn TypeEnv::new() -> TypeEnv {
     ctor_index: {},
     purities: {},
     next_var: 0,
+    next_effect_var: 0,
     subs: {},
+    effect_subs: {},
   }
 }
 
@@ -124,6 +574,10 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
   for id, ty in self.subs {
     subs[id] = ty
   }
+  let effect_subs : Map[String, Array[EffectAtom]] = {}
+  for name, effects in self.effect_subs {
+    effect_subs[name] = effects
+  }
   {
     bindings,
     addr_types,
@@ -132,13 +586,15 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     ctor_index,
     purities,
     next_var: self.next_var,
+    next_effect_var: self.next_effect_var,
     subs,
+    effect_subs,
   }
 }
 
 ///|
 pub fn TypeEnv::set(self : TypeEnv, name : String, ty : Type) -> Unit {
-  self.bindings[name] = TypeScheme::{ vars: [], ty }
+  self.bindings[name] = TypeScheme::{ vars: [], effect_vars: [], ty }
 }
 
 ///|
@@ -216,7 +672,7 @@ pub fn type_check_with_aliases(
   let env = TypeEnv::new()
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
-  type_check_stmts(env, ast.stmts, aliases, false)
+  type_check_stmts(env, ast.stmts, aliases, effect_scope_all(), false)
 }
 
 ///|
@@ -227,7 +683,7 @@ pub fn type_check_with_env(
 ) -> TypeEnv raise TypeError {
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
-  type_check_stmts(env, ast.stmts, aliases, false)
+  type_check_stmts(env, ast.stmts, aliases, effect_scope_all(), false)
 }
 
 ///|
@@ -235,12 +691,15 @@ fn type_check_stmts(
   env : TypeEnv,
   stmts : Array[Stmt],
   aliases : Map[String, Ref],
+  effects : EffectScope,
   allow_effect : Bool,
 ) -> TypeEnv raise TypeError {
   for stmt in stmts {
     match stmt {
       Stmt::Let(rec~, name~, expr~) => {
-        let scheme = type_let_expr(env, rec, name, expr, aliases, allow_effect)
+        let scheme = type_let_expr(
+          env, rec, name, expr, aliases, effects, allow_effect,
+        )
         env.set_scheme(name, scheme)
         let info = purity_for_let(env, rec, name, expr)
         env.set_purity(name, info.value)
@@ -250,7 +709,7 @@ fn type_check_stmts(
       Stmt::TypeAlias(name~, params~, target~) =>
         register_type_alias(env, name, params, target)
       Stmt::Expr(expr~) => {
-        let _ = type_expr_eff(env, expr, aliases, allow_effect)
+        let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
 
       }
       Stmt::Flake(_) => ()
@@ -270,6 +729,7 @@ fn type_check_stmts(
           clone_env(env),
           body.stmts,
           aliases,
+          effects,
           allow_effect,
         )
 
@@ -316,7 +776,13 @@ fn ensure_prelude_functions(
     Some(_) => ()
     None => {
       let prelude = prelude_ast()
-      let _ = type_check_stmts(env, prelude.stmts, aliases, false)
+      let _ = type_check_stmts(
+        env,
+        prelude.stmts,
+        aliases,
+        effect_scope_all(),
+        false,
+      )
       env.set_purity("__prelude_loaded", true)
     }
   }
@@ -330,16 +796,25 @@ fn fresh_type_var(env : TypeEnv) -> Type {
 }
 
 ///|
+fn fresh_effect_var(env : TypeEnv) -> String {
+  let id = env.next_effect_var
+  env.next_effect_var += 1
+  "$e" + id.to_string()
+}
+
+///|
 fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> Type {
-  if scheme.vars.is_empty() {
-    resolve_type(env, scheme.ty)
-  } else {
-    let mapping : Map[Int, Type] = {}
-    for id in scheme.vars {
-      mapping[id] = fresh_type_var(env)
-    }
-    substitute_type_vars(scheme.ty, mapping)
+  let mapping : Map[Int, Type] = {}
+  for id in scheme.vars {
+    mapping[id] = fresh_type_var(env)
   }
+  let effect_mapping : Map[String, String] = {}
+  for name in scheme.effect_vars {
+    effect_mapping[name] = fresh_effect_var(env)
+  }
+  let substituted = substitute_type_vars(scheme.ty, mapping)
+  let replaced = substitute_effect_vars(substituted, effect_mapping)
+  resolve_type(env, replaced)
 }
 
 ///|
@@ -386,7 +861,7 @@ fn resolve_type(env : TypeEnv, ty : Type) -> Type {
       }
       Type::Named(name~, args=out)
     }
-    Type::Func(params~, ret~) => {
+    Type::Func(params~, ret~, effects~) => {
       let out : Array[FuncParam] = []
       for param in params {
         out.push(FuncParam::{
@@ -395,7 +870,7 @@ fn resolve_type(env : TypeEnv, ty : Type) -> Type {
           ty: resolve_type(env, param.ty),
         })
       }
-      Type::Func(params=out, ret=resolve_type(env, ret))
+      Type::Func(params=out, ret=resolve_type(env, ret), effects~)
     }
     _ => ty
   }
@@ -443,7 +918,7 @@ fn substitute_type_vars(ty : Type, subs : Map[Int, Type]) -> Type {
       }
       Type::Named(name~, args=out)
     }
-    Type::Func(params~, ret~) => {
+    Type::Func(params~, ret~, effects~) => {
       let out : Array[FuncParam] = []
       for param in params {
         out.push(FuncParam::{
@@ -452,7 +927,74 @@ fn substitute_type_vars(ty : Type, subs : Map[Int, Type]) -> Type {
           ty: substitute_type_vars(param.ty, subs),
         })
       }
-      Type::Func(params=out, ret=substitute_type_vars(ret, subs))
+      Type::Func(params=out, ret=substitute_type_vars(ret, subs), effects~)
+    }
+    _ => ty
+  }
+}
+
+///|
+fn substitute_effect_vars(ty : Type, subs : Map[String, String]) -> Type {
+  match ty {
+    Type::Tuple(items) => {
+      let out : Array[Type] = []
+      for item in items {
+        out.push(substitute_effect_vars(item, subs))
+      }
+      Type::Tuple(out)
+    }
+    Type::Record(fields) => {
+      let out : Map[String, Type] = {}
+      for name, item in fields {
+        out[name] = substitute_effect_vars(item, subs)
+      }
+      Type::Record(out)
+    }
+    Type::Array(inner) => Type::Array(substitute_effect_vars(inner, subs))
+    Type::Map(inner) => Type::Map(substitute_effect_vars(inner, subs))
+    Type::ArrayBuilder(inner) =>
+      Type::ArrayBuilder(substitute_effect_vars(inner, subs))
+    Type::MapBuilder(inner) =>
+      Type::MapBuilder(substitute_effect_vars(inner, subs))
+    Type::Variant(fields) => {
+      let out : Map[String, Type] = {}
+      for name, item in fields {
+        out[name] = substitute_effect_vars(item, subs)
+      }
+      Type::Variant(out)
+    }
+    Type::Named(name~, args~) => {
+      let out : Array[Type] = []
+      for arg in args {
+        out.push(substitute_effect_vars(arg, subs))
+      }
+      Type::Named(name~, args=out)
+    }
+    Type::Func(params~, ret~, effects~) => {
+      let out : Array[FuncParam] = []
+      for param in params {
+        out.push(FuncParam::{
+          name: param.name,
+          label: param.label,
+          ty: substitute_effect_vars(param.ty, subs),
+        })
+      }
+      let eff_out : Array[EffectAtom] = []
+      for effect in effects {
+        match effect {
+          EffectAtom::Const(_) => eff_out.push(effect)
+          EffectAtom::Var(name) =>
+            match subs.get(name) {
+              Some(mapped) => eff_out.push(EffectAtom::Var(mapped))
+              None => eff_out.push(effect)
+            }
+        }
+      }
+      Type::Func(
+        params=out,
+        ret=substitute_effect_vars(ret, subs),
+        effects=eff_out,
+      )
     }
     _ => ty
   }
@@ -499,7 +1041,7 @@ fn substitute_type(ty : Type, subs : Map[String, Type]) -> Type {
       }
       Type::Named(name~, args=out)
     }
-    Type::Func(params~, ret~) => {
+    Type::Func(params~, ret~, effects~) => {
       let out : Array[FuncParam] = []
       for param in params {
         out.push(FuncParam::{
@@ -508,7 +1050,7 @@ fn substitute_type(ty : Type, subs : Map[String, Type]) -> Type {
           ty: substitute_type(param.ty, subs),
         })
       }
-      Type::Func(params=out, ret=substitute_type(ret, subs))
+      Type::Func(params=out, ret=substitute_type(ret, subs), effects~)
     }
     _ => ty
   }
@@ -542,6 +1084,7 @@ fn register_enum_def(
     raise TypeError::BadTypeDef("empty type: " + name)
   }
   ensure_unique_params(params)
+  env.set_enum_def(name, EnumDef::{ name, params, ctors })
   let ctor_map : Map[String, Type] = {}
   for ctor in ctors {
     if ctor_map.contains(ctor.name) {
@@ -550,7 +1093,6 @@ fn register_enum_def(
     let payload = ctor_payload_type(env, ctor)
     ctor_map[ctor.name] = payload
   }
-  env.set_enum_def(name, EnumDef::{ name, params, ctors })
   for ctor_name, payload in ctor_map {
     if env.get_ctor(ctor_name) is Some(_) {
       raise TypeError::BadTypeDef("ctor already defined: " + ctor_name)
@@ -594,6 +1136,7 @@ fn type_expr_eff(
   env : TypeEnv,
   expr : Expr,
   aliases : Map[String, Ref],
+  effects : EffectScope,
   allow_effect : Bool,
 ) -> Type raise TypeError {
   match expr {
@@ -627,19 +1170,19 @@ fn type_expr_eff(
       if has_alias_prefix(name, aliases) {
         Type::Unit
       } else {
-        type_call(env, name, args, aliases, allow_effect)
+        type_call(env, name, args, aliases, effects, allow_effect)
       }
     Expr::Tuple(items) => {
       let tys : Array[Type] = []
       for item in items {
-        tys.push(type_expr_eff(env, item, aliases, allow_effect))
+        tys.push(type_expr_eff(env, item, aliases, effects, allow_effect))
       }
       Type::Tuple(tys)
     }
     Expr::Record(fields) => {
       let map : Map[String, Type] = {}
       for field in fields {
-        let ty = type_expr_eff(env, field.expr, aliases, allow_effect)
+        let ty = type_expr_eff(env, field.expr, aliases, effects, allow_effect)
         map[field.name] = ty
       }
       Type::Record(map)
@@ -648,10 +1191,16 @@ fn type_expr_eff(
       if items.is_empty() {
         Type::Array(Type::Unit)
       } else {
-        let first = type_expr_eff(env, items[0], aliases, allow_effect)
+        let first = type_expr_eff(env, items[0], aliases, effects, allow_effect)
         let elem_ty = normalize_type(env, first)
         for i in 1..<items.length() {
-          let item_ty = type_expr_eff(env, items[i], aliases, allow_effect)
+          let item_ty = type_expr_eff(
+            env,
+            items[i],
+            aliases,
+            effects,
+            allow_effect,
+          )
           if not(type_equal(env, elem_ty, item_ty)) {
             raise TypeError::Mismatch(expected=elem_ty, actual=item_ty)
           }
@@ -662,13 +1211,20 @@ fn type_expr_eff(
       if fields.is_empty() {
         Type::Map(Type::Unit)
       } else {
-        let first = type_expr_eff(env, fields[0].expr, aliases, allow_effect)
+        let first = type_expr_eff(
+          env,
+          fields[0].expr,
+          aliases,
+          effects,
+          allow_effect,
+        )
         let val_ty = normalize_type(env, first)
         for i in 1..<fields.length() {
           let item_ty = type_expr_eff(
             env,
             fields[i].expr,
             aliases,
+            effects,
             allow_effect,
           )
           if not(type_equal(env, val_ty, item_ty)) {
@@ -678,25 +1234,34 @@ fn type_expr_eff(
         Type::Map(val_ty)
       }
     Expr::If(cond~, then_body~, else_body~) => {
-      let cond_ty = type_expr_eff(env, cond, aliases, allow_effect)
+      let cond_ty = type_expr_eff(env, cond, aliases, effects, allow_effect)
       if not(type_equal(env, cond_ty, Type::Bool)) {
         raise TypeError::Mismatch(expected=Type::Bool, actual=cond_ty)
       }
-      let then_ty = type_block(env, then_body, aliases, allow_effect)
-      let else_ty = type_block(env, else_body, aliases, allow_effect)
+      let then_ty = type_block(env, then_body, aliases, effects, allow_effect)
+      let else_ty = type_block(env, else_body, aliases, effects, allow_effect)
       if not(type_equal(env, then_ty, else_ty)) {
         raise TypeError::Mismatch(expected=then_ty, actual=else_ty)
       }
       then_ty
     }
-    Expr::Block(body~) => type_block(env, body, aliases, allow_effect)
+    Expr::Block(body~) => type_block(env, body, aliases, effects, allow_effect)
+    Expr::Try(try_body~, catch_body~) => {
+      let try_scope = effect_scope_extend(effects, [EffectAtom::Const("Error")])
+      let try_ty = type_block(env, try_body, aliases, try_scope, allow_effect)
+      let catch_ty = type_block(env, catch_body, aliases, effects, allow_effect)
+      if not(type_equal(env, try_ty, catch_ty)) {
+        raise TypeError::Mismatch(expected=try_ty, actual=catch_ty)
+      }
+      try_ty
+    }
     Expr::Match(scrutinee~, arms~) => {
       if arms.is_empty() {
         raise TypeError::BadMatch("empty match")
       }
       let scrutinee_ty = normalize_type(
         env,
-        type_expr_eff(env, scrutinee, aliases, allow_effect),
+        type_expr_eff(env, scrutinee, aliases, effects, allow_effect),
       )
       let mut result : Type? = None
       let mut has_wildcard = false
@@ -720,14 +1285,20 @@ fn type_expr_eff(
         }
         match arm.cond {
           Some(c) => {
-            let g_ty = type_expr_eff(arm_env, c, aliases, allow_effect)
+            let g_ty = type_expr_eff(arm_env, c, aliases, effects, allow_effect)
             if not(type_equal(env, g_ty, Type::Bool)) {
               raise TypeError::Mismatch(expected=Type::Bool, actual=g_ty)
             }
           }
           None => ()
         }
-        let arm_ty = type_expr_eff(arm_env, arm.expr, aliases, allow_effect)
+        let arm_ty = type_expr_eff(
+          arm_env,
+          arm.expr,
+          aliases,
+          effects,
+          allow_effect,
+        )
         match result {
           Some(t) =>
             if not(type_equal(env, t, arm_ty)) {
@@ -758,8 +1329,8 @@ fn type_expr_eff(
         None => Type::Unit
       }
     }
-    Expr::Do(body~) => type_block(env, body, aliases, true)
-    Expr::Fn(params~, ret~, body~) => {
+    Expr::Do(body~) => type_block(env, body, aliases, effects, true)
+    Expr::Fn(params~, ret~, effects=fn_effects, body~) => {
       let scope_env = clone_env(env)
       let resolved_params : Array[FuncParam] = []
       for param in params {
@@ -776,7 +1347,12 @@ fn type_expr_eff(
           ty: resolved,
         })
       }
-      let body_ty = type_block(scope_env, body, aliases, allow_effect)
+      let normalized_effects = normalize_effects(fn_effects)
+      let fn_scope = effect_scope_from_list(normalized_effects)
+      let body_ty = type_block(scope_env, body, aliases, fn_scope, allow_effect)
+      let resolved_effects = effect_set_to_atoms(
+        effect_set_from_atoms(scope_env, normalized_effects),
+      )
       let final_ret = match ret {
         Some(r) => {
           let resolved = normalize_type(env, r)
@@ -787,7 +1363,11 @@ fn type_expr_eff(
         }
         None => body_ty
       }
-      Type::Func(params=resolved_params, ret=final_ret)
+      Type::Func(
+        params=resolved_params,
+        ret=final_ret,
+        effects=resolved_effects,
+      )
     }
   }
 }
@@ -825,7 +1405,15 @@ fn generalize(env : TypeEnv, ty : Type) -> TypeScheme raise TypeError {
       vars.push(id)
     }
   }
-  TypeScheme::{ vars, ty: normalized }
+  let free_effects = free_effect_vars_in_type(env, normalized)
+  let free_effect_env = free_effect_vars_in_env(env)
+  let effect_vars : Array[String] = []
+  for name, _ in free_effects {
+    if not(free_effect_env.contains(name)) {
+      effect_vars.push(name)
+    }
+  }
+  TypeScheme::{ vars, effect_vars, ty: normalized }
 }
 
 ///|
@@ -880,13 +1468,121 @@ fn collect_free_vars(env : TypeEnv, ty : Type, out : Map[Int, Bool]) -> Unit {
       for arg in args {
         collect_free_vars(env, arg, out)
       }
-    Type::Func(params~, ret~) => {
+    Type::Func(params~, ret~, effects=_) => {
       collect_free_vars(env, ret, out)
       for param in params {
         collect_free_vars(env, param.ty, out)
       }
     }
     _ => ()
+  }
+}
+
+///|
+fn free_effect_vars_in_env(env : TypeEnv) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for _, scheme in env.bindings {
+    let vars = free_effect_vars_in_scheme(env, scheme)
+    for name, _ in vars {
+      out[name] = true
+    }
+  }
+  out
+}
+
+///|
+fn free_effect_vars_in_scheme(
+  env : TypeEnv,
+  scheme : TypeScheme,
+) -> Map[String, Bool] {
+  let out = free_effect_vars_in_type(env, scheme.ty)
+  for name in scheme.effect_vars {
+    out.remove(name)
+  }
+  out
+}
+
+///|
+fn free_effect_vars_in_type(env : TypeEnv, ty : Type) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  collect_free_effect_vars(env, ty, out)
+  out
+}
+
+///|
+fn collect_free_effect_vars(
+  env : TypeEnv,
+  ty : Type,
+  out : Map[String, Bool],
+) -> Unit {
+  match resolve_type(env, ty) {
+    Type::Tuple(items) =>
+      for item in items {
+        collect_free_effect_vars(env, item, out)
+      }
+    Type::Record(fields) =>
+      for _, item in fields {
+        collect_free_effect_vars(env, item, out)
+      }
+    Type::Array(inner) => collect_free_effect_vars(env, inner, out)
+    Type::Map(inner) => collect_free_effect_vars(env, inner, out)
+    Type::ArrayBuilder(inner) => collect_free_effect_vars(env, inner, out)
+    Type::MapBuilder(inner) => collect_free_effect_vars(env, inner, out)
+    Type::Variant(fields) =>
+      for _, item in fields {
+        collect_free_effect_vars(env, item, out)
+      }
+    Type::Named(name=_, args~) =>
+      for arg in args {
+        collect_free_effect_vars(env, arg, out)
+      }
+    Type::Func(params~, ret~, effects~) => {
+      collect_free_effect_vars(env, ret, out)
+      for param in params {
+        collect_free_effect_vars(env, param.ty, out)
+      }
+      collect_free_effect_vars_in_effects(env, effects, out, {})
+    }
+    _ => ()
+  }
+}
+
+///|
+fn collect_free_effect_vars_in_effects(
+  env : TypeEnv,
+  effects : Array[EffectAtom],
+  out : Map[String, Bool],
+  visiting : Map[String, Bool],
+) -> Unit {
+  for effect in effects {
+    match effect {
+      EffectAtom::Const(_) => ()
+      EffectAtom::Var(name) => collect_free_effect_var(env, name, out, visiting)
+    }
+  }
+}
+
+///|
+fn collect_free_effect_var(
+  env : TypeEnv,
+  name : String,
+  out : Map[String, Bool],
+  visiting : Map[String, Bool],
+) -> Unit {
+  if visiting.contains(name) {
+    out[name] = true
+  } else {
+    match env.effect_subs.get(name) {
+      Some(effects) => {
+        let next : Map[String, Bool] = {}
+        for key, val in visiting {
+          next[key] = val
+        }
+        next[name] = true
+        collect_free_effect_vars_in_effects(env, effects, out, next)
+      }
+      None => out[name] = true
+    }
   }
 }
 
@@ -1056,6 +1752,7 @@ fn type_block(
   env : TypeEnv,
   body : Module,
   aliases : Map[String, Ref],
+  effects : EffectScope,
   allow_effect : Bool,
 ) -> Type raise TypeError {
   let scope_env = clone_env(env)
@@ -1064,7 +1761,7 @@ fn type_block(
     match stmt {
       Stmt::Let(rec~, name~, expr~) => {
         let scheme = type_let_expr(
-          scope_env, rec, name, expr, aliases, allow_effect,
+          scope_env, rec, name, expr, aliases, effects, allow_effect,
         )
         scope_env.set_scheme(name, scheme)
         last = scheme.ty
@@ -1078,7 +1775,7 @@ fn type_block(
         last = Type::Unit
       }
       Stmt::Expr(expr~) =>
-        last = type_expr_eff(scope_env, expr, aliases, allow_effect)
+        last = type_expr_eff(scope_env, expr, aliases, effects, allow_effect)
       Stmt::Flake(_) => last = Type::Unit
       Stmt::Alias(name~, target~) => {
         match target {
@@ -1094,7 +1791,7 @@ fn type_block(
       Stmt::Import(..) => last = Type::Unit
       Stmt::Test(name~, body~) => {
         let _ = name
-        let _ = type_block(scope_env, body, aliases, allow_effect)
+        let _ = type_block(scope_env, body, aliases, effects, allow_effect)
         last = Type::Unit
       }
     }
@@ -1108,13 +1805,15 @@ fn type_call(
   name : String,
   args : Array[CallArg],
   aliases : Map[String, Ref],
+  effects : EffectScope,
   allow_effect : Bool,
 ) -> Type raise TypeError {
   match env.get(name) {
     Some(ty) =>
       match ty {
-        Type::Func(params~, ret~) => {
-          check_call_args(env, params, args, aliases, allow_effect)
+        Type::Func(params~, ret~, effects=fn_effects) => {
+          check_call_args(env, params, args, aliases, effects, allow_effect)
+          require_effects(env, effects, fn_effects)
           ret
         }
         _ => raise TypeError::BadCall(name)
@@ -1138,6 +1837,7 @@ fn type_call(
                     env,
                     pos_args[i],
                     aliases,
+                    effects,
                     allow_effect,
                   )
                   if not(type_equal(env, arg_ty, items[i])) {
@@ -1153,6 +1853,7 @@ fn type_call(
                   env,
                   pos_args[0],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 if not(type_equal(env, arg_ty, inst.payload)) {
@@ -1171,11 +1872,13 @@ fn type_call(
             let field_ty = if pos_args.length() == 0 {
               Type::Unit
             } else if pos_args.length() == 1 {
-              type_expr_eff(env, pos_args[0], aliases, allow_effect)
+              type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
             } else {
               let tys : Array[Type] = []
               for arg in pos_args {
-                tys.push(type_expr_eff(env, arg, aliases, allow_effect))
+                tys.push(
+                  type_expr_eff(env, arg, aliases, effects, allow_effect),
+                )
               }
               Type::Tuple(tys)
             }
@@ -1193,6 +1896,7 @@ fn type_call(
                   env,
                   pos_args[0],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 if not(type_equal(env, arg_ty, Type::String)) {
@@ -1222,6 +1926,7 @@ fn type_call(
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall("sh")
                 }
+                require_effects(env, effects, builtin_effects("sh"))
                 if not(allow_effect) {
                   raise TypeError::EffectNotAllowed("sh")
                 }
@@ -1229,6 +1934,7 @@ fn type_call(
                   env,
                   pos_args[0],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 if not(type_equal(env, arg_ty, Type::String)) {
@@ -1264,12 +1970,14 @@ fn type_call(
                   env,
                   pos_args[0],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 let value_ty = type_expr_eff(
                   env,
                   pos_args[1],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 let elem_ty = fresh_type_var(env)
@@ -1298,6 +2006,7 @@ fn type_call(
                   env,
                   pos_args[0],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 let elem_ty = fresh_type_var(env)
@@ -1332,18 +2041,21 @@ fn type_call(
                   env,
                   pos_args[0],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 let key_ty = type_expr_eff(
                   env,
                   pos_args[1],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 let value_ty = type_expr_eff(
                   env,
                   pos_args[2],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 if not(type_equal(env, key_ty, Type::String)) {
@@ -1378,6 +2090,7 @@ fn type_call(
                   env,
                   pos_args[0],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 let elem_ty = fresh_type_var(env)
@@ -1389,13 +2102,269 @@ fn type_call(
                 }
                 Type::Map(elem_ty)
               }
+              "array_length" => {
+                let pos_args = extract_positional_args(args, "array_length")
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall("array_length")
+                }
+                let array_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let elem_ty = fresh_type_var(env)
+                if not(type_equal(env, array_ty, Type::Array(elem_ty))) {
+                  raise TypeError::Mismatch(
+                    expected=Type::Array(elem_ty),
+                    actual=array_ty,
+                  )
+                }
+                Type::Int
+              }
+              "array_get" => {
+                let pos_args = extract_positional_args(args, "array_get")
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall("array_get")
+                }
+                let array_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let index_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, index_ty, Type::Int)) {
+                  raise TypeError::Mismatch(expected=Type::Int, actual=index_ty)
+                }
+                let elem_ty = fresh_type_var(env)
+                if not(type_equal(env, array_ty, Type::Array(elem_ty))) {
+                  raise TypeError::Mismatch(
+                    expected=Type::Array(elem_ty),
+                    actual=array_ty,
+                  )
+                }
+                elem_ty
+              }
+              "map_get" => {
+                let pos_args = extract_positional_args(args, "map_get")
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall("map_get")
+                }
+                let map_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let key_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, key_ty, Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=Type::String,
+                    actual=key_ty,
+                  )
+                }
+                let elem_ty = fresh_type_var(env)
+                if not(type_equal(env, map_ty, Type::Map(elem_ty))) {
+                  raise TypeError::Mismatch(
+                    expected=Type::Map(elem_ty),
+                    actual=map_ty,
+                  )
+                }
+                elem_ty
+              }
+              "string_length" => {
+                let pos_args = extract_positional_args(args, "string_length")
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall("string_length")
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=Type::String,
+                    actual=arg_ty,
+                  )
+                }
+                Type::Int
+              }
+              "string_char_code_at" => {
+                let pos_args = extract_positional_args(
+                  args, "string_char_code_at",
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall("string_char_code_at")
+                }
+                let str_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let index_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, str_ty, Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=Type::String,
+                    actual=str_ty,
+                  )
+                }
+                if not(type_equal(env, index_ty, Type::Int)) {
+                  raise TypeError::Mismatch(expected=Type::Int, actual=index_ty)
+                }
+                Type::Int
+              }
+              "string_substring" => {
+                let pos_args = extract_positional_args(args, "string_substring")
+                if pos_args.length() != 3 {
+                  raise TypeError::BadCall("string_substring")
+                }
+                let str_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let start_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let end_ty = type_expr_eff(
+                  env,
+                  pos_args[2],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, str_ty, Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=Type::String,
+                    actual=str_ty,
+                  )
+                }
+                if not(type_equal(env, start_ty, Type::Int)) {
+                  raise TypeError::Mismatch(expected=Type::Int, actual=start_ty)
+                }
+                if not(type_equal(env, end_ty, Type::Int)) {
+                  raise TypeError::Mismatch(expected=Type::Int, actual=end_ty)
+                }
+                Type::String
+              }
+              "string_concat" => {
+                let pos_args = extract_positional_args(args, "string_concat")
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall("string_concat")
+                }
+                let left_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let right_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, left_ty, Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=Type::String,
+                    actual=left_ty,
+                  )
+                }
+                if not(type_equal(env, right_ty, Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=Type::String,
+                    actual=right_ty,
+                  )
+                }
+                Type::String
+              }
+              "string_equals" => {
+                let pos_args = extract_positional_args(args, "string_equals")
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall("string_equals")
+                }
+                let left_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let right_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, left_ty, Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=Type::String,
+                    actual=left_ty,
+                  )
+                }
+                if not(type_equal(env, right_ty, Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=Type::String,
+                    actual=right_ty,
+                  )
+                }
+                Type::Bool
+              }
               "__add" => {
                 let pos_args = extract_positional_args(args, "__add")
                 if pos_args.length() != 2 {
                   raise TypeError::BadCall("__add")
                 }
-                let a = type_expr_eff(env, pos_args[0], aliases, allow_effect)
-                let b = type_expr_eff(env, pos_args[1], aliases, allow_effect)
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
                 if not(type_equal(env, a, Type::Int)) {
                   raise TypeError::Mismatch(expected=Type::Int, actual=a)
                 }
@@ -1409,8 +2378,20 @@ fn type_call(
                 if pos_args.length() != 2 {
                   raise TypeError::BadCall("__sub")
                 }
-                let a = type_expr_eff(env, pos_args[0], aliases, allow_effect)
-                let b = type_expr_eff(env, pos_args[1], aliases, allow_effect)
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
                 if not(type_equal(env, a, Type::Int)) {
                   raise TypeError::Mismatch(expected=Type::Int, actual=a)
                 }
@@ -1424,8 +2405,20 @@ fn type_call(
                 if pos_args.length() != 2 {
                   raise TypeError::BadCall("__mul")
                 }
-                let a = type_expr_eff(env, pos_args[0], aliases, allow_effect)
-                let b = type_expr_eff(env, pos_args[1], aliases, allow_effect)
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
                 if not(type_equal(env, a, Type::Int)) {
                   raise TypeError::Mismatch(expected=Type::Int, actual=a)
                 }
@@ -1439,8 +2432,20 @@ fn type_call(
                 if pos_args.length() != 2 {
                   raise TypeError::BadCall("__div")
                 }
-                let a = type_expr_eff(env, pos_args[0], aliases, allow_effect)
-                let b = type_expr_eff(env, pos_args[1], aliases, allow_effect)
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
                 if not(type_equal(env, a, Type::Int)) {
                   raise TypeError::Mismatch(expected=Type::Int, actual=a)
                 }
@@ -1454,8 +2459,20 @@ fn type_call(
                 if pos_args.length() != 2 {
                   raise TypeError::BadCall("__eq")
                 }
-                let a = type_expr_eff(env, pos_args[0], aliases, allow_effect)
-                let b = type_expr_eff(env, pos_args[1], aliases, allow_effect)
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
                 if not(type_equal(env, a, Type::Int)) {
                   raise TypeError::Mismatch(expected=Type::Int, actual=a)
                 }
@@ -1469,8 +2486,20 @@ fn type_call(
                 if pos_args.length() != 2 {
                   raise TypeError::BadCall("__lt")
                 }
-                let a = type_expr_eff(env, pos_args[0], aliases, allow_effect)
-                let b = type_expr_eff(env, pos_args[1], aliases, allow_effect)
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
                 if not(type_equal(env, a, Type::Int)) {
                   raise TypeError::Mismatch(expected=Type::Int, actual=a)
                 }
@@ -1484,7 +2513,13 @@ fn type_call(
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall("__assert")
                 }
-                let a = type_expr_eff(env, pos_args[0], aliases, allow_effect)
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
                 if not(type_equal(env, a, Type::Bool)) {
                   raise TypeError::Mismatch(expected=Type::Bool, actual=a)
                 }
@@ -1497,12 +2532,19 @@ fn type_call(
                 }
                 let record_ty = normalize_type(
                   env,
-                  type_expr_eff(env, pos_args[0], aliases, allow_effect),
+                  type_expr_eff(
+                    env,
+                    pos_args[0],
+                    aliases,
+                    effects,
+                    allow_effect,
+                  ),
                 )
                 let field_ty = type_expr_eff(
                   env,
                   pos_args[1],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 if not(type_equal(env, field_ty, Type::String)) {
@@ -1515,6 +2557,7 @@ fn type_call(
                   env,
                   pos_args[2],
                   aliases,
+                  effects,
                   allow_effect,
                 )
                 match record_ty {
@@ -1622,39 +2665,45 @@ fn type_let_expr(
   name : String,
   expr : Expr,
   aliases : Map[String, Ref],
+  effects : EffectScope,
   allow_effect : Bool,
 ) -> TypeScheme raise TypeError {
   if rec {
     match expr {
-      Expr::Fn(params~, ret~, body~) =>
+      Expr::Fn(params~, ret~, effects=fn_effects, body~) =>
         match ret {
           None => raise TypeError::BadRec("missing return type")
           Some(r) => {
-            let fn_ty = normalize_type(env, Type::Func(params~, ret=r))
+            let normalized_effects = normalize_effects(fn_effects)
+            let fn_ty = normalize_type(
+              env,
+              Type::Func(params~, ret=r, effects=normalized_effects),
+            )
             env.set(name, fn_ty)
             let ty = type_expr_eff(
               env,
-              Expr::Fn(params~, ret~, body~),
+              Expr::Fn(params~, ret~, effects=normalized_effects, body~),
               aliases,
+              effects,
               allow_effect,
             )
             if not(type_equal(env, ty, fn_ty)) {
               raise TypeError::Mismatch(expected=fn_ty, actual=ty)
             }
-            TypeScheme::{ vars: [], ty: fn_ty }
+            TypeScheme::{ vars: [], effect_vars: [], ty: fn_ty }
           }
         }
       _ => raise TypeError::BadRec("expected fn")
     }
   } else {
-    let ty = type_expr_eff(env, expr, aliases, allow_effect)
+    let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
     if allow_effect {
       if is_non_expansive_expr(env, expr, aliases) {
         generalize(env, ty)
       } else {
         let resolved = resolve_type(env, ty)
         let normalized = normalize_type(env, resolved)
-        TypeScheme::{ vars: [], ty: normalized }
+        TypeScheme::{ vars: [], effect_vars: [], ty: normalized }
       }
     } else {
       generalize(env, ty)
@@ -1689,11 +2738,12 @@ fn check_call_args(
   params : Array[FuncParam],
   args : Array[CallArg],
   aliases : Map[String, Ref],
+  effects : EffectScope,
   allow_effect : Bool,
 ) -> Unit raise TypeError {
   let arg_types : Array[ArgType] = []
   for arg in args {
-    let ty = type_expr_eff(env, arg.expr, aliases, allow_effect)
+    let ty = type_expr_eff(env, arg.expr, aliases, effects, allow_effect)
     arg_types.push(ArgType::{ label: arg.label, ty })
   }
   let positional : Array[FuncParam] = []
@@ -1764,58 +2814,62 @@ fn normalize_type_inner(
 ) -> Type raise TypeError {
   match ty {
     Type::Named(name~, args~) => {
-      if visiting.contains(name) {
-        raise TypeError::BadTypeDef("recursive type: " + name)
-      }
       let normalized_args : Array[Type] = []
       for arg in args {
         normalized_args.push(normalize_type_inner(env, arg, visiting))
       }
-      let next : Map[String, Bool] = {}
-      for key, val in visiting {
-        next[key] = val
-      }
-      next[name] = true
-      match env.get_type_alias(name) {
-        Some(type_alias) => {
-          if type_alias.params.length() != normalized_args.length() {
-            raise TypeError::BadTypeDef("type arity: " + name)
-          }
-          let mapping : Map[String, Type] = {}
-          for i in 0..<type_alias.params.length() {
-            mapping[type_alias.params[i]] = normalized_args[i]
-          }
-          let substituted = substitute_type(type_alias.target, mapping)
-          normalize_type_inner(env, substituted, next)
+      if visiting.contains(name) {
+        match env.get_enum_def(name) {
+          Some(_) => Type::Named(name~, args=normalized_args)
+          None => raise TypeError::BadTypeDef("recursive type: " + name)
         }
-        None =>
-          match env.get_enum_def(name) {
-            Some(def) => {
-              if def.params.length() != normalized_args.length() {
-                raise TypeError::BadTypeDef("type arity: " + name)
-              }
-              let mapping : Map[String, Type] = {}
-              for i in 0..<def.params.length() {
-                mapping[def.params[i]] = normalized_args[i]
-              }
-              let ctor_map : Map[String, Type] = {}
-              for ctor in def.ctors {
-                let base_payload = if ctor.args.length() == 0 {
-                  Type::Unit
-                } else if ctor.args.length() == 1 {
-                  ctor.args[0]
-                } else {
-                  Type::Tuple(ctor.args)
-                }
-                let substituted = substitute_type(base_payload, mapping)
-                ctor_map[ctor.name] = normalize_type_inner(
-                  env, substituted, next,
-                )
-              }
-              Type::Variant(ctor_map)
+      } else {
+        let next : Map[String, Bool] = {}
+        for key, val in visiting {
+          next[key] = val
+        }
+        next[name] = true
+        match env.get_type_alias(name) {
+          Some(type_alias) => {
+            if type_alias.params.length() != normalized_args.length() {
+              raise TypeError::BadTypeDef("type arity: " + name)
             }
-            None => raise TypeError::UnknownType(name)
+            let mapping : Map[String, Type] = {}
+            for i in 0..<type_alias.params.length() {
+              mapping[type_alias.params[i]] = normalized_args[i]
+            }
+            let substituted = substitute_type(type_alias.target, mapping)
+            normalize_type_inner(env, substituted, next)
           }
+          None =>
+            match env.get_enum_def(name) {
+              Some(def) => {
+                if def.params.length() != normalized_args.length() {
+                  raise TypeError::BadTypeDef("type arity: " + name)
+                }
+                let mapping : Map[String, Type] = {}
+                for i in 0..<def.params.length() {
+                  mapping[def.params[i]] = normalized_args[i]
+                }
+                let ctor_map : Map[String, Type] = {}
+                for ctor in def.ctors {
+                  let base_payload = if ctor.args.length() == 0 {
+                    Type::Unit
+                  } else if ctor.args.length() == 1 {
+                    ctor.args[0]
+                  } else {
+                    Type::Tuple(ctor.args)
+                  }
+                  let substituted = substitute_type(base_payload, mapping)
+                  ctor_map[ctor.name] = normalize_type_inner(
+                    env, substituted, next,
+                  )
+                }
+                Type::Variant(ctor_map)
+              }
+              None => raise TypeError::UnknownType(name)
+            }
+        }
       }
     }
     Type::Tuple(items) => {
@@ -1848,7 +2902,7 @@ fn normalize_type_inner(
     }
     Type::Param(_) => ty
     Type::Var(_) => ty
-    Type::Func(params~, ret~) => {
+    Type::Func(params~, ret~, effects~) => {
       let out : Array[FuncParam] = []
       for param in params {
         out.push(FuncParam::{
@@ -1857,7 +2911,11 @@ fn normalize_type_inner(
           ty: normalize_type_inner(env, param.ty, visiting),
         })
       }
-      Type::Func(params=out, ret=normalize_type_inner(env, ret, visiting))
+      Type::Func(
+        params=out,
+        ret=normalize_type_inner(env, ret, visiting),
+        effects~,
+      )
     }
     _ => ty
   }
@@ -1869,10 +2927,48 @@ fn type_equal(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
 }
 
 ///|
+/// Completion helper: true if param type can accept receiver type.
+pub fn completion_param_matches(
+  env : TypeEnv,
+  receiver : Type,
+  param : Type,
+) -> Bool {
+  let recv = normalize_type(env, receiver) catch { _ => receiver }
+  let param_ty = normalize_type(env, param) catch { _ => param }
+  match param_ty {
+    Type::Var(_) | Type::Param(_) => true
+    _ =>
+      match recv {
+        Type::Var(_) | Type::Param(_) => true
+        _ => type_equal(env, recv, param_ty) catch { _ => false }
+      }
+  }
+}
+
+///|
 fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
   let left = resolve_type(env, a)
   let right = resolve_type(env, b)
   match (left, right) {
+    (Type::Named(name=an, args=aa), Type::Named(name=bn, args=bb)) =>
+      if an == bn {
+        if aa.length() != bb.length() {
+          false
+        } else {
+          let mut ok = true
+          for i in 0..<aa.length() {
+            if not(unify_types(env, aa[i], bb[i])) {
+              ok = false
+              break
+            }
+          }
+          ok
+        }
+      } else {
+        let nl = normalize_type(env, left)
+        let nr = normalize_type(env, right)
+        unify_types(env, nl, nr)
+      }
     (Type::Var(id), t) => bind_var(env, id, t)
     (t, Type::Var(id)) => bind_var(env, id, t)
     (Type::Param(a0), Type::Param(b0)) => a0 == b0
@@ -1880,13 +2976,11 @@ fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
     (_, Type::Param(_)) => false
     (Type::Named(..), _) => {
       let nl = normalize_type(env, left)
-      let nr = normalize_type(env, right)
-      unify_types(env, nl, nr)
+      unify_types(env, nl, right)
     }
     (_, Type::Named(..)) => {
-      let nl = normalize_type(env, left)
       let nr = normalize_type(env, right)
-      unify_types(env, nl, nr)
+      unify_types(env, left, nr)
     }
     (Type::Int, Type::Int) => true
     (Type::Bool, Type::Bool) => true
@@ -1950,8 +3044,13 @@ fn unify_types(env : TypeEnv, a : Type, b : Type) -> Bool raise TypeError {
         }
         ok
       }
-    (Type::Func(params=pa, ret=ra), Type::Func(params=pb, ret=rb)) =>
+    (
+      Type::Func(params=pa, ret=ra, effects=ea),
+      Type::Func(params=pb, ret=rb, effects=eb),
+    ) =>
       if pa.length() != pb.length() {
+        false
+      } else if not(unify_effects(env, ea, eb)) {
         false
       } else if not(unify_types(env, ra, rb)) {
         false
@@ -2040,7 +3139,7 @@ fn occurs_in(env : TypeEnv, id : Int, ty : Type) -> Bool {
       }
       found
     }
-    Type::Func(params~, ret~) => {
+    Type::Func(params~, ret~, effects=_) => {
       let mut found = occurs_in(env, id, ret)
       if not(found) {
         for param in params {

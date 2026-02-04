@@ -149,6 +149,112 @@ fn is_in_fn_param_context(line : String, col : Int) -> Bool {
 }
 
 ///|
+struct MethodCompletion {
+  receiver : String
+  prefix : String
+}
+
+///|
+struct PipeCompletion {
+  receiver : String
+  prefix : String
+}
+
+///|
+fn detect_method_completion(line : String, col : Int) -> MethodCompletion? {
+  let chars = line.to_array()
+  let limit = if col < chars.length() { col } else { chars.length() }
+  if limit <= 0 {
+    return None
+  }
+  let mut start = limit
+  while start > 0 && is_ident_char(chars[start - 1]) {
+    start -= 1
+  }
+  if start <= 0 {
+    return None
+  }
+  if chars[start - 1] != '.' {
+    return None
+  }
+  let recv_end = start - 1
+  let mut recv_start = recv_end
+  while recv_start > 0 && is_ident_char(chars[recv_start - 1]) {
+    recv_start -= 1
+  }
+  if recv_start == recv_end {
+    return None
+  }
+  let receiver_chars : Array[Char] = []
+  for i in recv_start..<recv_end {
+    receiver_chars.push(chars[i])
+  }
+  let prefix_chars : Array[Char] = []
+  for i in start..<limit {
+    prefix_chars.push(chars[i])
+  }
+  Some(MethodCompletion::{
+    receiver: String::from_array(receiver_chars),
+    prefix: String::from_array(prefix_chars),
+  })
+}
+
+///|
+fn detect_pipe_completion(line : String, col : Int) -> PipeCompletion? {
+  let chars = line.to_array()
+  let limit = if col < chars.length() { col } else { chars.length() }
+  if limit < 2 {
+    return None
+  }
+  let mut i = limit - 1
+  let mut pipe_pos = -1
+  while i > 0 {
+    if chars[i - 1] == '|' && chars[i] == '>' {
+      pipe_pos = i - 1
+      break
+    }
+    i -= 1
+  }
+  if pipe_pos < 0 {
+    return None
+  }
+  let mut recv_end = pipe_pos
+  while recv_end > 0 && is_space_char(chars[recv_end - 1]) {
+    recv_end -= 1
+  }
+  let mut recv_start = recv_end
+  while recv_start > 0 && is_ident_char(chars[recv_start - 1]) {
+    recv_start -= 1
+  }
+  if recv_start == recv_end {
+    return None
+  }
+  let mut pref_start = pipe_pos + 2
+  while pref_start < limit && is_space_char(chars[pref_start]) {
+    pref_start += 1
+  }
+  if pref_start > limit {
+    return None
+  }
+  let mut pref_end = pref_start
+  while pref_end < limit && is_ident_char(chars[pref_end]) {
+    pref_end += 1
+  }
+  let receiver_chars : Array[Char] = []
+  for idx in recv_start..<recv_end {
+    receiver_chars.push(chars[idx])
+  }
+  let prefix_chars : Array[Char] = []
+  for idx in pref_start..<pref_end {
+    prefix_chars.push(chars[idx])
+  }
+  Some(PipeCompletion::{
+    receiver: String::from_array(receiver_chars),
+    prefix: String::from_array(prefix_chars),
+  })
+}
+
+///|
 fn extract_let_name(line : String) -> String? {
   let trimmed = line.trim().to_string()
   if trimmed.length() < 4 || not(trimmed.has_prefix("let")) {

@@ -14,6 +14,12 @@ let map_value = map { a: 1, "b": 2 }
 let labeled = fn (x: Int, y~: String, z?: Bool) { y }
 let label_call = labeled(1, y="ok")
 
+let effectful = fn (s: String) -> Int with {Error} { string_length(s) }
+let effectful_call = fn (s: String) -> Int with {Error} { effectful(s) }
+let effect_apply = fn (f: fn (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }
+let effectful_int = fn (x: Int) -> Int with {Error} { x }
+let effectful_apply = fn (x: Int) -> Int with {Error} { effect_apply(effectful_int, x) }
+
 let block_value = {
   let x = 1
   add(x, 2)

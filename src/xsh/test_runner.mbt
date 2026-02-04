@@ -233,6 +233,10 @@ fn collect_dep_expr(
     }
     Expr::Block(body~) => collect_dep_block(body, bound, out)
     Expr::Do(body~) => collect_dep_block(body, bound, out)
+    Expr::Try(try_body~, catch_body~) => {
+      collect_dep_block(try_body, bound, out)
+      collect_dep_block(catch_body, bound, out)
+    }
     Expr::Match(scrutinee~, arms~) => {
       collect_dep_expr(scrutinee, bound, out)
       for arm in arms {
@@ -245,7 +249,7 @@ fn collect_dep_expr(
         collect_dep_expr(arm.expr, arm_bound, out)
       }
     }
-    Expr::Fn(params~, ret~, body~) => {
+    Expr::Fn(params~, ret~, effects=_, body~) => {
       let _ = ret
       let fn_bound = clone_bool_map(bound)
       for param in params {

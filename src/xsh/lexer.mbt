@@ -74,7 +74,8 @@ fn is_ident_delim(c : Char) -> Bool {
   c == '!' ||
   c == '<' ||
   c == '>' ||
-  c == '&'
+  c == '&' ||
+  c == '\''
 }
 
 ///|
@@ -116,6 +117,52 @@ fn Lexer::lex_string(self : Lexer) -> Token {
 }
 
 ///|
+/// Lex a char literal ('a') with simple escapes
+fn Lexer::lex_char(self : Lexer) -> Token {
+  let _ = self.advance() // opening quote
+  match self.peek() {
+    None => Token::new(error_kind(), "'")
+    Some('\n') => Token::new(error_kind(), "'")
+    Some('\\') => {
+      let _ = self.advance()
+      match self.peek() {
+        None => Token::new(error_kind(), "'")
+        Some(ch) => {
+          let c = match ch {
+            'n' => '\n'
+            't' => '\t'
+            'r' => '\r'
+            '\'' => '\''
+            '\\' => '\\'
+            _ => ch
+          }
+          let _ = self.advance()
+          if self.peek() == Some('\'') {
+            let _ = self.advance()
+            let buf = StringBuilder::new()
+            buf.write_char(c)
+            Token::new(char_lit(), buf.to_string())
+          } else {
+            Token::new(error_kind(), "'")
+          }
+        }
+      }
+    }
+    Some(ch) => {
+      let _ = self.advance()
+      if self.peek() == Some('\'') {
+        let _ = self.advance()
+        let buf = StringBuilder::new()
+        buf.write_char(ch)
+        Token::new(char_lit(), buf.to_string())
+      } else {
+        Token::new(error_kind(), "'")
+      }
+    }
+  }
+}
+
+///|
 /// Lex a single token
 pub fn Lexer::next_token(self : Lexer) -> Token {
   match self.peek() {
@@ -140,6 +187,9 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
       if c == '"' {
         return self.lex_string()
       }
+      if c == '\'' {
+        return self.lex_char()
+      }
       if is_alpha(c) {
         let text = self.lex_ident()
         let kind = match text {
@@ -152,6 +202,8 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "else" => else_kw()
           "match" => match_kw()
           "do" => do_kw()
+          "try" => try_kw()
+          "catch" => catch_kw()
           "record" => record_kw()
           "map" => map_kw()
           "fn" => fn_kw()

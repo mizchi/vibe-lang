@@ -206,6 +206,10 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
       }
     }
     Expr::Block(body~) => eval_block(rt, body)
+    Expr::Try(try_body~, catch_body~) =>
+      eval_block(rt, try_body) catch {
+        _ => eval_block(rt, catch_body)
+      }
     Expr::Match(scrutinee~, arms~) => {
       let scrutinee_out = eval_expr(rt, scrutinee)
       let effects = scrutinee_out.effects
@@ -244,13 +248,14 @@ fn eval_expr(rt : Runtime, expr : Expr) -> EvalOutput raise EvalError {
       }
     }
     Expr::Do(body~) => eval_block(rt, body)
-    Expr::Fn(params~, ret~, body~) => {
+    Expr::Fn(params~, ret~, effects=fn_effects, body~) => {
       let _ = ret
+      let _ = fn_effects
       let purity = purity_for_let(
         rt.type_env,
         false,
         "_",
-        Expr::Fn(params~, ret~, body~),
+        Expr::Fn(params~, ret~, effects=fn_effects, body~),
       )
       let closure = FnValue::{
         params,
@@ -771,6 +776,14 @@ fn values_from_eval_args(args : Array[EvalArgValue]) -> Array[Value] {
 fn is_pure_builtin(name : String) -> Bool {
   name == "path" ||
   name == "addr" ||
+  name == "array_length" ||
+  name == "array_get" ||
+  name == "map_get" ||
+  name == "string_length" ||
+  name == "string_char_code_at" ||
+  name == "string_substring" ||
+  name == "string_concat" ||
+  name == "string_equals" ||
   name == "__add" ||
   name == "__sub" ||
   name == "__mul" ||
@@ -794,6 +807,111 @@ fn eval_pure_builtin(
       match args[0] {
         Value::String(s) => Value::Path(Path::new(s))
         _ => raise EvalError::BadCall("path")
+      }
+    }
+    "array_length" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("array_length")
+      }
+      match args[0] {
+        Value::Array(items) => Value::Int(items.length())
+        _ => raise EvalError::BadCall("array_length")
+      }
+    }
+    "array_get" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("array_get")
+      }
+      match (args[0], args[1]) {
+        (Value::Array(items), Value::Int(index)) => {
+          if index < 0 || index >= items.length() {
+            raise EvalError::BadCall("array_get")
+          }
+          items[index]
+        }
+        _ => raise EvalError::BadCall("array_get")
+      }
+    }
+    "map_get" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("map_get")
+      }
+      match (args[0], args[1]) {
+        (Value::Map(items), Value::String(key)) =>
+          match items.get(key) {
+            Some(value) => value
+            None => raise EvalError::BadCall("map_get")
+          }
+        _ => raise EvalError::BadCall("map_get")
+      }
+    }
+    "string_length" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_length")
+      }
+      match args[0] {
+        Value::String(s) => Value::Int(String::length(s))
+        _ => raise EvalError::BadCall("string_length")
+      }
+    }
+    "string_char_code_at" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_char_code_at")
+      }
+      match (args[0], args[1]) {
+        (Value::String(s), Value::Int(index)) => {
+          if index < 0 || index >= String::length(s) {
+            raise EvalError::BadCall("string_char_code_at")
+          }
+          let code = String::code_unit_at(s, index)
+          Value::Int(UInt16::to_int(code))
+        }
+        _ => raise EvalError::BadCall("string_char_code_at")
+      }
+    }
+    "string_substring" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall("string_substring")
+      }
+      match (args[0], args[1], args[2]) {
+        (Value::String(s), Value::Int(start), Value::Int(end)) => {
+          let len = String::length(s)
+          let mut a = start
+          let mut b = end
+          if a < 0 {
+            a = 0
+          }
+          if b < 0 {
+            b = 0
+          }
+          if a > len {
+            a = len
+          }
+          if b > len {
+            b = len
+          }
+          let (from, to) = if a <= b { (a, b) } else { (b, a) }
+          Value::String(String::unsafe_substring(s, start=from, end=to))
+        }
+        _ => raise EvalError::BadCall("string_substring")
+      }
+    }
+    "string_concat" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_concat")
+      }
+      match (args[0], args[1]) {
+        (Value::String(a), Value::String(b)) => Value::String(String::add(a, b))
+        _ => raise EvalError::BadCall("string_concat")
+      }
+    }
+    "string_equals" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_equals")
+      }
+      match (args[0], args[1]) {
+        (Value::String(a), Value::String(b)) => Value::Bool(String::equal(a, b))
+        _ => raise EvalError::BadCall("string_equals")
       }
     }
     "__add" => {

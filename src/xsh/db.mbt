@@ -58,16 +58,6 @@ pub fn XshDb::new() -> XshDb {
     }
   })
   ast_query.register(rt)
-  let type_query : @ripple.Query[String, TypeEnv] = db.query(fn(rt, path) {
-    let ast = ast_query.fetch(rt, path)
-    type_check(ast) catch {
-      e => {
-        diags.push(rt, Diagnostic::{ stage: "type", message: e.to_string() })
-        TypeEnv::new()
-      }
-    }
-  })
-  type_query.register(rt)
   let import_query : @ripple.Query[String, Array[ImportSpec]] = db.query(fn(
     rt,
     path,
@@ -108,7 +98,45 @@ pub fn XshDb::new() -> XshDb {
     out
   })
   import_query.register(rt)
+  let type_query : @ripple.Query[String, TypeEnv] = db.query(fn(rt, path) {
+    let ast = ast_query.fetch(rt, path)
+    let imports = import_query.fetch(rt, path)
+    let aliases = build_alias_map_from_ast(ast, imports)
+    let desugared = desugar_method_calls(ast, aliases)
+    type_check_with_aliases(desugared, aliases) catch {
+      e => {
+        diags.push(rt, Diagnostic::{ stage: "type", message: e.to_string() })
+        TypeEnv::new()
+      }
+    }
+  })
+  type_query.register(rt)
   { db, rt, sources, cst_query, ast_query, type_query, import_query, diags }
+}
+
+///|
+fn build_alias_map_from_ast(
+  ast : Module,
+  imports : Array[ImportSpec],
+) -> Map[String, Ref] {
+  let aliases : Map[String, Ref] = {}
+  for imp in imports {
+    match imp.module_ref {
+      Some(m) => aliases[imp.alias_name] = Ref::{ name: m, hash_prefix: None }
+      None => ()
+    }
+  }
+  for stmt in ast.stmts {
+    match stmt {
+      Stmt::Alias(name~, target~) =>
+        match target {
+          AliasTarget::Module(r) => aliases[name] = r
+          AliasTarget::Name(_) => ()
+        }
+      _ => ()
+    }
+  }
+  aliases
 }
 
 ///|

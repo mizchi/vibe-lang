@@ -162,7 +162,13 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : Expr) -> String {
       buf.to_string()
     }
     Expr::Do(body~) => "(do " + block_to_addr_sexp(ctx, body) + ")"
-    Expr::Fn(params~, ret~, body~) => {
+    Expr::Try(try_body~, catch_body~) =>
+      "(try " +
+      block_to_addr_sexp(ctx, try_body) +
+      " " +
+      block_to_addr_sexp(ctx, catch_body) +
+      ")"
+    Expr::Fn(params~, ret~, effects~, body~) => {
       let fn_ctx = ctx.clone()
       let param_ids : Array[String] = []
       for param in params {
@@ -179,6 +185,11 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : Expr) -> String {
       match ret {
         Some(r) => buf.write_string(addr_type_to_sexp(r))
         None => buf.write_string("_")
+      }
+      buf.write_string(") (effects")
+      for effect in effects {
+        buf.write_char(' ')
+        buf.write_string(addr_effect_to_sexp(effect))
       }
       buf.write_string(") ")
       buf.write_string(block_to_addr_sexp(fn_ctx, body))
@@ -453,18 +464,32 @@ fn addr_type_to_sexp(ty : Type) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Type::Func(params~, ret~) => {
+    Type::Func(params~, ret~, effects~) => {
       let buf = StringBuilder::new()
       buf.write_string("(Func (params")
       for param in params {
         buf.write_char(' ')
         buf.write_string(addr_param_to_sexp(param, "_"))
       }
-      buf.write_string(") ")
+      buf.write_string(") (ret ")
       buf.write_string(addr_type_to_sexp(ret))
+      buf.write_string(") (effects")
+      for effect in effects {
+        buf.write_char(' ')
+        buf.write_string(addr_effect_to_sexp(effect))
+      }
+      buf.write_char(')')
       buf.write_char(')')
       buf.to_string()
     }
+  }
+}
+
+///|
+fn addr_effect_to_sexp(effect : EffectAtom) -> String {
+  match effect {
+    EffectAtom::Const(name) => addr_escape_string(name)
+    EffectAtom::Var(name) => addr_escape_string(name)
   }
 }
 

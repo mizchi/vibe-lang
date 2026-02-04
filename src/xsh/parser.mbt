@@ -291,6 +291,8 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_match_expr()
   } else if self.at(do_kw()) {
     self.parse_do_expr()
+  } else if self.at(try_kw()) {
+    self.parse_try_expr()
   } else if self.at(record_kw()) {
     self.parse_record_expr()
   } else if self.at(map_kw()) {
@@ -309,6 +311,22 @@ fn Parser::parse_expr(self : Parser) -> Unit {
 }
 
 ///|
+fn Parser::parse_pipe_expr(self : Parser) -> Unit {
+  self.parse_cmp_expr()
+  while {
+          self.skip_trivia()
+          self.at(pipe()) && self.peek_non_trivia_kind(self.pos + 1) == gt()
+        } {
+    self.bump()
+    self.skip_trivia()
+    if self.at(gt()) {
+      self.bump()
+    }
+    self.parse_cmp_expr()
+  }
+}
+
+///|
 fn Parser::parse_or_expr(self : Parser) -> Unit {
   self.parse_and_expr()
   while {
@@ -322,13 +340,13 @@ fn Parser::parse_or_expr(self : Parser) -> Unit {
 
 ///|
 fn Parser::parse_and_expr(self : Parser) -> Unit {
-  self.parse_cmp_expr()
+  self.parse_pipe_expr()
   while {
           self.skip_trivia()
           self.at(and_and())
         } {
     self.bump()
-    self.parse_cmp_expr()
+    self.parse_pipe_expr()
   }
 }
 
@@ -389,6 +407,19 @@ fn Parser::parse_unary_expr(self : Parser) -> Unit {
 fn Parser::parse_do_expr(self : Parser) -> Unit {
   self.builder.start_node(do_expr())
   self.bump() // do
+  self.skip_trivia()
+  self.parse_brace_block_tokens()
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_try_expr(self : Parser) -> Unit {
+  self.builder.start_node(try_expr())
+  self.bump() // try
+  self.skip_trivia()
+  self.parse_brace_block_tokens()
+  self.skip_trivia()
+  self.expect(catch_kw())
   self.skip_trivia()
   self.parse_brace_block_tokens()
   self.builder.finish_node()
@@ -484,7 +515,13 @@ fn Parser::parse_fn_expr(self : Parser) -> Unit {
   if self.at(thin_arrow()) {
     self.bump()
     self.skip_trivia()
-    self.parse_type_tokens()
+    self.parse_type_tokens_until_effect()
+    self.skip_trivia()
+    if self.at(name()) && self.peek().text() == "with" {
+      self.bump()
+      self.skip_trivia()
+      self.parse_brace_block_tokens()
+    }
   }
   self.skip_trivia()
   self.parse_brace_block_tokens()
@@ -589,6 +626,26 @@ fn Parser::parse_type_tokens(self : Parser) -> Unit {
 }
 
 ///|
+fn Parser::parse_type_tokens_until_effect(self : Parser) -> Unit {
+  let mut depth = 0
+  while not(self.at(eof())) {
+    match self.peek_kind() {
+      k if k == lbrace() && depth == 0 => break
+      k if k == name() && depth == 0 && self.peek().text() == "with" => break
+      k if k == lparen() => {
+        self.bump()
+        depth += 1
+      }
+      k if k == rparen() => {
+        self.bump()
+        depth -= 1
+      }
+      _ => self.bump()
+    }
+  }
+}
+
+///|
 fn Parser::parse_call_or_primary(self : Parser) -> Unit {
   self.skip_trivia()
   let checkpoint = self.builder.checkpoint()
@@ -644,7 +701,10 @@ fn Parser::parse_primary(self : Parser) -> Unit {
       self.bump()
       self.builder.finish_node()
     }
-    k if k == int_lit() || k == string_lit() || k == bool_lit() => {
+    k if k == int_lit() ||
+      k == string_lit() ||
+      k == bool_lit() ||
+      k == char_lit() => {
       self.builder.start_node(literal())
       self.bump()
       self.builder.finish_node()
@@ -1048,6 +1108,8 @@ fn AstParser::parse_expr(self : AstParser) -> Expr raise ParseError {
     self.parse_match_expr()
   } else if self.peek_kind() == do_kw() {
     self.parse_do_expr()
+  } else if self.peek_kind() == try_kw() {
+    self.parse_try_expr()
   } else if self.peek_kind() == record_kw() {
     self.parse_record_expr()
   } else if self.peek_kind() == map_kw() {
@@ -1063,6 +1125,23 @@ fn AstParser::parse_expr(self : AstParser) -> Expr raise ParseError {
   } else {
     self.parse_or_expr()
   }
+}
+
+///|
+fn AstParser::parse_pipe_expr(self : AstParser) -> Expr raise ParseError {
+  let mut left = self.parse_cmp_expr()
+  while {
+          self.skip_trivia()
+          self.peek_kind() == pipe() &&
+          self.peek_non_trivia_kind(self.pos + 1) == gt()
+        } {
+    let _ = self.bump()
+    self.skip_trivia()
+    let _ = self.expect(gt(), ">")
+    let right = self.parse_cmp_expr()
+    left = pipe_apply(left, right)
+  }
+  left
 }
 
 ///|
@@ -1085,13 +1164,13 @@ fn AstParser::parse_or_expr(self : AstParser) -> Expr raise ParseError {
 
 ///|
 fn AstParser::parse_and_expr(self : AstParser) -> Expr raise ParseError {
-  let mut left = self.parse_cmp_expr()
+  let mut left = self.parse_pipe_expr()
   while {
           self.skip_trivia()
           self.peek_kind() == and_and()
         } {
     let _ = self.bump()
-    let right = self.parse_cmp_expr()
+    let right = self.parse_pipe_expr()
     left = Expr::If(
       cond=left,
       then_body=Module::{ stmts: [Stmt::Expr(expr=right)] },
@@ -1145,6 +1224,24 @@ fn call2(name : String, left : Expr, right : Expr) -> Expr {
     CallArg::{ label: None, expr: left },
     CallArg::{ label: None, expr: right },
   ])
+}
+
+///|
+fn pipe_apply(left : Expr, right : Expr) -> Expr raise ParseError {
+  match right {
+    Expr::Ident(name) =>
+      Expr::Call(name~, args=[CallArg::{ label: None, expr: left }])
+    Expr::Call(name~, args~) => {
+      let out : Array[CallArg] = []
+      out.push(CallArg::{ label: None, expr: left })
+      for arg in args {
+        out.push(arg)
+      }
+      Expr::Call(name~, args=out)
+    }
+    _ =>
+      raise ParseError::UnexpectedToken(expected="call", got=right.to_string())
+  }
 }
 
 ///|
@@ -1251,6 +1348,16 @@ fn AstParser::parse_do_expr(self : AstParser) -> Expr raise ParseError {
 }
 
 ///|
+fn AstParser::parse_try_expr(self : AstParser) -> Expr raise ParseError {
+  let _ = self.expect(try_kw(), "try")
+  let try_body = self.parse_block()
+  self.skip_trivia()
+  let _ = self.expect(catch_kw(), "catch")
+  let catch_body = self.parse_block()
+  Expr::Try(try_body~, catch_body~)
+}
+
+///|
 fn AstParser::parse_record_expr(self : AstParser) -> Expr raise ParseError {
   let _ = self.expect(record_kw(), "record")
   let _ = self.expect(lbrace(), "{")
@@ -1325,26 +1432,62 @@ fn AstParser::parse_array_expr(self : AstParser) -> Expr raise ParseError {
 ///|
 fn AstParser::parse_fn_expr(self : AstParser) -> Expr raise ParseError {
   let _ = self.expect(fn_kw(), "fn")
-  let params = self.parse_param_list()
+  let params = self.parse_param_list({})
   self.skip_trivia()
   let mut ret : Type? = None
+  let mut effects : Array[EffectAtom] = []
   if self.peek_kind() == thin_arrow() {
     let _ = self.bump()
     ret = Some(self.parse_type())
+    effects = self.parse_effect_list()
   }
   let body = self.parse_block()
-  Expr::Fn(params~, ret~, body~)
+  Expr::Fn(params~, ret~, effects~, body~)
+}
+
+///|
+fn AstParser::parse_effect_list(
+  self : AstParser,
+) -> Array[EffectAtom] raise ParseError {
+  let effects : Array[EffectAtom] = []
+  self.skip_trivia()
+  if self.peek_kind() == name() && self.peek().text() == "with" {
+    let _ = self.bump()
+    self.skip_trivia()
+    let _ = self.expect(lbrace(), "{")
+    self.skip_trivia()
+    if self.peek_kind() != rbrace() {
+      let name_tok = self.expect(name(), "effect")
+      effects.push(effect_atom_from_name(name_tok.text()))
+      while {
+              self.skip_trivia()
+              self.peek_kind() == comma()
+            } {
+        let _ = self.bump()
+        self.skip_trivia()
+        if self.peek_kind() == rbrace() {
+          break
+        }
+        let tok = self.expect(name(), "effect")
+        effects.push(effect_atom_from_name(tok.text()))
+      }
+    }
+    let _ = self.expect(rbrace(), "}")
+
+  }
+  effects
 }
 
 ///|
 fn AstParser::parse_param_list(
   self : AstParser,
+  params : Map[String, Bool],
 ) -> Array[FuncParam] raise ParseError {
   let _ = self.expect(lparen(), "(")
-  let params : Array[FuncParam] = []
+  let out : Array[FuncParam] = []
   self.skip_trivia()
   if self.peek_kind() != rparen() {
-    params.push(self.parse_param())
+    out.push(self.parse_param(params))
     while {
             self.skip_trivia()
             self.peek_kind() == comma()
@@ -1354,20 +1497,23 @@ fn AstParser::parse_param_list(
       if self.peek_kind() == rparen() {
         break
       }
-      params.push(self.parse_param())
+      out.push(self.parse_param(params))
     }
   }
   let _ = self.expect(rparen(), ")")
-  params
+  out
 }
 
 ///|
-fn AstParser::parse_param(self : AstParser) -> FuncParam raise ParseError {
+fn AstParser::parse_param(
+  self : AstParser,
+  params : Map[String, Bool],
+) -> FuncParam raise ParseError {
   let name_tok = self.expect(name(), "param")
   let (base, label) = split_param_label(name_tok.text())
   self.skip_trivia()
   let _ = self.expect(colon(), ":")
-  let ty = self.parse_type_with_params({})
+  let ty = self.parse_type_with_params(params)
   FuncParam::{ name: base, label, ty }
 }
 
@@ -1413,6 +1559,15 @@ fn AstParser::parse_type_with_params(
   self.skip_trivia()
   let tok = self.peek()
   match tok.kind() {
+    k if k == fn_kw() => {
+      let _ = self.bump()
+      let params_list = self.parse_param_list(params)
+      self.skip_trivia()
+      let _ = self.expect(thin_arrow(), "->")
+      let ret = self.parse_type_with_params(params)
+      let effects = self.parse_effect_list()
+      Type::Func(params=params_list, ret~, effects~)
+    }
     k if k == name() => {
       let _ = self.bump()
       let name = tok.text()
@@ -1491,6 +1646,21 @@ fn AstParser::parse_type_with_params(
     }
     k if k == lparen() => self.parse_tuple_type(params)
     _ => raise ParseError::UnexpectedToken(expected="type", got=tok.text())
+  }
+}
+
+///|
+fn effect_atom_from_name(name : String) -> EffectAtom {
+  if name.length() == 0 {
+    EffectAtom::Const(name)
+  } else {
+    let chars = name.to_array()
+    let c = chars[0]
+    if c >= 'a' && c <= 'z' {
+      EffectAtom::Var(name)
+    } else {
+      EffectAtom::Const(name)
+    }
   }
 }
 
@@ -1779,6 +1949,15 @@ fn AstParser::parse_primary(self : AstParser) -> Expr raise ParseError {
     k if k == string_lit() => {
       let _ = self.bump()
       Expr::String(tok.text())
+    }
+    k if k == char_lit() => {
+      let _ = self.bump()
+      let chars = tok.text().to_array()
+      if chars.length() == 1 {
+        Expr::Int(chars[0].to_int())
+      } else {
+        raise ParseError::UnexpectedToken(expected="char", got=tok.text())
+      }
     }
     k if k == name() => {
       let _ = self.bump()

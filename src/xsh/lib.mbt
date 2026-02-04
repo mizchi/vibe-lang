@@ -33,8 +33,9 @@ pub fn Runtime::eval_script(
   self : Runtime,
   script : String,
 ) -> EvalResult raise XshError {
-  let ast = parse_ast(script) catch { e => raise XshError::Parse(e) }
-  let aliases = merge_aliases(self.aliases, ast)
+  let raw_ast = parse_ast(script) catch { e => raise XshError::Parse(e) }
+  let aliases = merge_aliases(self.aliases, raw_ast)
+  let ast = desugar_method_calls(raw_ast, aliases)
   try {
     let next_env = type_check_with_env(self.type_env.clone(), ast, aliases)
     self.type_env = next_env
@@ -52,8 +53,9 @@ pub fn Runtime::run_script_tests(
   self : Runtime,
   script : String,
 ) -> TestReport raise XshError {
-  let ast = parse_ast(script) catch { e => raise XshError::Parse(e) }
-  let aliases = merge_aliases(self.aliases, ast)
+  let raw_ast = parse_ast(script) catch { e => raise XshError::Parse(e) }
+  let aliases = merge_aliases(self.aliases, raw_ast)
+  let ast = desugar_method_calls(raw_ast, aliases)
   try {
     let _ = type_check_with_env(self.type_env.clone(), ast, aliases)
 

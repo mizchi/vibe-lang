@@ -140,6 +140,65 @@ test "xsh prelude add/sub/eq/lt" {
 }
 
 ///|
+test "xsh method call and pipe" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let inc = fn (a: Int) -> Int { add(a, 1) }
+    #|let x = 2
+    #|let y = x.inc()
+    #|let z = x |> inc
+    #|let w = x |> add(5)
+    #|let r = w |> inc |> inc
+  let _ = rt.eval_script(script)
+  match rt.get("y") {
+    Some(Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("missing y")
+  }
+  match rt.get("z") {
+    Some(Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("missing z")
+  }
+  match rt.get("w") {
+    Some(Value::Int(v)) => assert_eq(v, 7)
+    _ => fail("missing w")
+  }
+  match rt.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 9)
+    _ => fail("missing r")
+  }
+}
+
+///|
+test "xsh char literal" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let a = 'a'\nlet b = '\\n'\nlet c = '\\''")
+  match rt.get("a") {
+    Some(Value::Int(v)) => assert_eq(v, 97)
+    _ => fail("missing a")
+  }
+  match rt.get("b") {
+    Some(Value::Int(v)) => assert_eq(v, 10)
+    _ => fail("missing b")
+  }
+  match rt.get("c") {
+    Some(Value::Int(v)) => assert_eq(v, 39)
+    _ => fail("missing c")
+  }
+}
+
+///|
+test "xsh pipe and logical precedence" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let id = fn (x: Bool) -> Bool { x }\n" + "let v = true |> id && false",
+  )
+  match rt.get("v") {
+    Some(Value::Bool(v)) => assert_false(v)
+    _ => fail("missing v")
+  }
+}
+
+///|
 test "xsh fn expression and call" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
@@ -148,6 +207,64 @@ test "xsh fn expression and call" {
   match rt.get("r") {
     Some(Value::Int(v)) => assert_eq(v, 3)
     _ => fail("fn call")
+  }
+}
+
+///|
+test "xsh fn effect requires declaration" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let f = fn (x: Int) -> Int with {Error} { x }\n" +
+    "let g = fn (y: Int) -> Int { f(y) }",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected effect error")
+  }
+  let rt_ok = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt_ok.eval_script(
+    "let f = fn (x: Int) -> Int with {Error} { x }\n" +
+    "let g = fn (y: Int) -> Int with {Error} { f(y) }\n" +
+    "let r = g(1)",
+  )
+  match rt_ok.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 1)
+    _ => fail("effect ok")
+  }
+  let rt_try = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt_try.eval_script(
+    "let f = fn (x: Int) -> Int with {Error} { x }\n" +
+    "let g = fn (y: Int) -> Int { try { f(y) } catch { 0 } }\n" +
+    "let r = g(1)",
+  )
+  match rt_try.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 1)
+    _ => fail("effect try")
+  }
+}
+
+///|
+test "xsh higher-order effects propagate" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let apply = fn (f: fn (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }\n" +
+    "let boom = fn (x: Int) -> Int with {Error} { x }\n" +
+    "let g = fn (y: Int) -> Int { apply(boom, y) }",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected higher-order effect error")
+  }
+  let rt_ok = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt_ok.eval_script(
+    "let apply = fn (f: fn (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }\n" +
+    "let boom = fn (x: Int) -> Int with {Error} { x }\n" +
+    "let g = fn (y: Int) -> Int with {Error} { apply(boom, y) }\n" +
+    "let r = g(2)",
+  )
+  match rt_ok.get("r") {
+    Some(Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("expected higher-order ok")
   }
 }
 
@@ -179,6 +296,18 @@ test "xsh fn labeled and optional args" {
         _ => fail("optional some")
       }
     _ => fail("optional some")
+  }
+}
+
+///|
+test "xsh stdout permission requires effect" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = fn () -> Unit { do { sh(\"ls\") } }",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected stdout effect error")
   }
 }
 

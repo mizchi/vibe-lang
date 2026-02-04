@@ -17,7 +17,7 @@ pub fn purity_for_let(
     locals[name] = true
   }
   match expr {
-    Expr::Fn(params~, ret~, body~) => {
+    Expr::Fn(params~, ret~, effects=_, body~) => {
       let _ = ret
       let fn_locals : Map[String, Bool] = {}
       for key, val in locals {
@@ -121,6 +121,9 @@ fn purity_expr_inner(
       purity_block_inner(env, then_body, locals) &&
       purity_block_inner(env, else_body, locals)
     Expr::Block(body~) => purity_block_inner(env, body, locals)
+    Expr::Try(try_body~, catch_body~) =>
+      purity_block_inner(env, try_body, locals) &&
+      purity_block_inner(env, catch_body, locals)
     Expr::Match(scrutinee~, arms~) =>
       if not(purity_expr_inner(env, scrutinee, locals)) {
         false
@@ -192,7 +195,7 @@ fn purity_for_let_in_scope(
     scope[name] = true
   }
   match expr {
-    Expr::Fn(params~, ret~, body~) => {
+    Expr::Fn(params~, ret~, effects=_, body~) => {
       let _ = ret
       let fn_locals = clone_bool_map(scope)
       for param in params {
@@ -264,6 +267,14 @@ fn is_effectful_call_name(name : String) -> Bool {
 fn is_pure_builtin_name(name : String) -> Bool {
   name == "path" ||
   name == "addr" ||
+  name == "array_length" ||
+  name == "array_get" ||
+  name == "map_get" ||
+  name == "string_length" ||
+  name == "string_char_code_at" ||
+  name == "string_substring" ||
+  name == "string_concat" ||
+  name == "string_equals" ||
   name == "__add" ||
   name == "__sub" ||
   name == "__mul" ||

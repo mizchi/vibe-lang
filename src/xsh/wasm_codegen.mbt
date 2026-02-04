@@ -61,6 +61,44 @@ let obj_array = 5
 let obj_map = 6
 
 ///|
+enum ValueKind {
+  I32
+  ExternRef
+} derive(Show, Eq)
+
+///|
+fn valtype_byte(kind : ValueKind) -> Byte {
+  match kind {
+    ValueKind::I32 => (127).to_byte()
+    ValueKind::ExternRef => (111).to_byte()
+  }
+}
+
+///|
+priv struct StringConstTable {
+  map : Map[String, Int]
+  names : Array[String]
+}
+
+///|
+fn StringConstTable::new() -> StringConstTable {
+  { map: {}, names: [] }
+}
+
+///|
+fn StringConstTable::intern(self : StringConstTable, s : String) -> Int {
+  match self.map.get(s) {
+    Some(idx) => idx
+    None => {
+      let idx = self.names.length()
+      self.map[s] = idx
+      self.names.push(s)
+      idx
+    }
+  }
+}
+
+///|
 fn tag_ptr(ptr : Int, tag : Int) -> Int {
   ptr | (tag & tag_mask)
 }
@@ -102,24 +140,42 @@ fn StringTable::intern(self : StringTable, s : String) -> Int {
 ///|
 priv struct CodegenCtx {
   locals : Map[String, Int]
+  local_kinds : Map[String, ValueKind]
+  local_types : Array[ValueKind]
   mut local_count : Int
   mut need_sh : Bool
   mut need_path : Bool
+  mut need_js_length : Bool
+  mut need_js_char_code_at : Bool
+  mut need_js_substring : Bool
+  mut need_js_concat : Bool
+  mut need_js_equals : Bool
+  use_js_strings : Bool
   mut need_heap : Bool
   mut heap_local : Int
   strings : StringTable
+  js_strings : StringConstTable
 }
 
 ///|
-fn CodegenCtx::new() -> CodegenCtx {
+fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
   {
     locals: {},
+    local_kinds: {},
+    local_types: [],
     local_count: 0,
     need_sh: false,
     need_path: false,
+    need_js_length: false,
+    need_js_char_code_at: false,
+    need_js_substring: false,
+    need_js_concat: false,
+    need_js_equals: false,
+    use_js_strings,
     need_heap: false,
     heap_local: -1,
     strings: StringTable::new(),
+    js_strings: StringConstTable::new(),
   }
 }
 
@@ -226,6 +282,12 @@ fn emit_local_tee(buf : ByteBuf, idx : Int) -> Unit {
 }
 
 ///|
+fn emit_global_get(buf : ByteBuf, idx : Int) -> Unit {
+  buf.push((35).to_byte())
+  write_u32_leb(buf, idx)
+}
+
+///|
 fn emit_call(buf : ByteBuf, idx : Int) -> Unit {
   buf.push((16).to_byte())
   write_u32_leb(buf, idx)
@@ -306,6 +368,150 @@ fn is_qualified_name(name : String) -> Bool {
 }
 
 ///|
+fn clone_kind_map(src : Map[String, ValueKind]) -> Map[String, ValueKind] {
+  let out : Map[String, ValueKind] = {}
+  for k, v in src {
+    out[k] = v
+  }
+  out
+}
+
+///|
+fn infer_expr_kind(
+  ctx : CodegenCtx,
+  expr : Expr,
+) -> ValueKind raise WasmGenError {
+  if not(ctx.use_js_strings) {
+    return ValueKind::I32
+  }
+  infer_expr_kind_with(ctx, expr, ctx.local_kinds)
+}
+
+///|
+fn infer_expr_kind_with(
+  ctx : CodegenCtx,
+  expr : Expr,
+  locals : Map[String, ValueKind],
+) -> ValueKind raise WasmGenError {
+  if not(ctx.use_js_strings) {
+    return ValueKind::I32
+  }
+  match expr {
+    Expr::Int(_) => ValueKind::I32
+    Expr::Bool(_) => ValueKind::I32
+    Expr::String(_) => ValueKind::ExternRef
+    Expr::Ident(name) =>
+      match locals.get(name) {
+        Some(kind) => kind
+        None => ValueKind::I32
+      }
+    Expr::Call(name~, ..) =>
+      match name {
+        "string_length" => ValueKind::I32
+        "string_char_code_at" => ValueKind::I32
+        "string_substring" => ValueKind::ExternRef
+        "string_concat" => ValueKind::ExternRef
+        "string_equals" => ValueKind::I32
+        _ => ValueKind::I32
+      }
+    Expr::If(cond~, then_body~, else_body~) => {
+      let _ = cond
+      let then_kind = infer_block_kind(ctx, then_body, locals)
+      let else_kind = infer_block_kind(ctx, else_body, locals)
+      if then_kind != else_kind {
+        raise WasmGenError::Unsupported("js-string if kind mismatch")
+      }
+      then_kind
+    }
+    Expr::Block(body~) => infer_block_kind(ctx, body, locals)
+    Expr::Try(try_body~, catch_body~) => {
+      let try_kind = infer_block_kind(ctx, try_body, locals)
+      let catch_kind = infer_block_kind(ctx, catch_body, locals)
+      if try_kind != catch_kind {
+        raise WasmGenError::Unsupported("js-string try kind mismatch")
+      }
+      try_kind
+    }
+    Expr::Match(..) => ValueKind::I32
+    Expr::Tuple(_) => ValueKind::I32
+    Expr::Record(_) => ValueKind::I32
+    Expr::Array(_) => ValueKind::I32
+    Expr::Map(_) => ValueKind::I32
+    Expr::Do(body~) => infer_block_kind(ctx, body, locals)
+    Expr::Fn(..) => raise WasmGenError::Unsupported("fn")
+  }
+}
+
+///|
+fn infer_block_kind(
+  ctx : CodegenCtx,
+  body : Module,
+  locals : Map[String, ValueKind],
+) -> ValueKind raise WasmGenError {
+  let kinds = clone_kind_map(locals)
+  let mut last = ValueKind::I32
+  for stmt in body.stmts {
+    last = infer_stmt_kind(ctx, stmt, kinds)
+  }
+  last
+}
+
+///|
+fn infer_stmt_kind(
+  ctx : CodegenCtx,
+  stmt : Stmt,
+  locals : Map[String, ValueKind],
+) -> ValueKind raise WasmGenError {
+  match stmt {
+    Stmt::Let(rec~, name~, expr~) => {
+      let _ = rec
+      let kind = infer_expr_kind_with(ctx, expr, locals)
+      locals[name] = kind
+      kind
+    }
+    Stmt::Expr(expr~) => infer_expr_kind_with(ctx, expr, locals)
+    Stmt::EnumDef(..) => ValueKind::I32
+    Stmt::TypeAlias(..) => ValueKind::I32
+    Stmt::Test(name~, body~) => {
+      let _ = name
+      let _ = body
+      ValueKind::I32
+    }
+    _ => ValueKind::I32
+  }
+}
+
+///|
+fn compile_expr_i32(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  expr : Expr,
+) -> Unit raise WasmGenError {
+  if ctx.use_js_strings {
+    let kind = infer_expr_kind(ctx, expr)
+    if kind != ValueKind::I32 {
+      raise WasmGenError::Unsupported("js-string i32 expr")
+    }
+  }
+  compile_expr(ctx, buf, expr)
+}
+
+///|
+fn compile_expr_ref(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  expr : Expr,
+) -> Unit raise WasmGenError {
+  if ctx.use_js_strings {
+    let kind = infer_expr_kind(ctx, expr)
+    if kind != ValueKind::ExternRef {
+      raise WasmGenError::Unsupported("js-string ref expr")
+    }
+  }
+  compile_expr(ctx, buf, expr)
+}
+
+///|
 fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
   match expr {
     Expr::Call(name~, args~) => {
@@ -313,6 +519,16 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
         ctx.need_sh = true
       } else if name == "path" {
         ctx.need_path = true
+      } else if name == "string_length" {
+        ctx.need_js_length = true
+      } else if name == "string_char_code_at" {
+        ctx.need_js_char_code_at = true
+      } else if name == "string_substring" {
+        ctx.need_js_substring = true
+      } else if name == "string_concat" {
+        ctx.need_js_concat = true
+      } else if name == "string_equals" {
+        ctx.need_js_equals = true
       }
       for arg in args {
         scan_needs_expr(ctx, arg.expr)
@@ -347,6 +563,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
       scan_needs_block(ctx, then_body)
       scan_needs_block(ctx, else_body)
     }
+    Expr::Try(try_body~, catch_body~) => {
+      scan_needs_block(ctx, try_body)
+      scan_needs_block(ctx, catch_body)
+    }
     Expr::Match(scrutinee~, arms~) => {
       scan_needs_expr(ctx, scrutinee)
       for arm in arms {
@@ -358,7 +578,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : Expr) -> Unit {
       }
     }
     Expr::Do(body~) => scan_needs_block(ctx, body)
-    Expr::Fn(params~, ret~, body~) => {
+    Expr::Fn(params~, ret~, effects=_, body~) => {
       let _ = params
       let _ = ret
       scan_needs_block(ctx, body)
@@ -403,11 +623,32 @@ fn scan_needs(ctx : CodegenCtx, ast : Module) -> Unit {
 }
 
 ///|
+fn js_import_count(ctx : CodegenCtx) -> Int {
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  if ctx.need_js_char_code_at {
+    idx += 1
+  }
+  if ctx.need_js_substring {
+    idx += 1
+  }
+  if ctx.need_js_concat {
+    idx += 1
+  }
+  if ctx.need_js_equals {
+    idx += 1
+  }
+  idx
+}
+
+///|
 fn import_index_path(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_path) {
     raise WasmGenError::Unsupported("path import missing")
   }
-  0
+  js_import_count(ctx)
 }
 
 ///|
@@ -415,11 +656,85 @@ fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_sh) {
     raise WasmGenError::Unsupported("sh import missing")
   }
+  let mut idx = js_import_count(ctx)
   if ctx.need_path {
-    1
-  } else {
-    0
+    idx += 1
   }
+  idx
+}
+
+///|
+fn import_index_js_length(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_length) {
+    raise WasmGenError::Unsupported("js-string length import missing")
+  }
+  0
+}
+
+///|
+fn import_index_js_char_code_at(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_char_code_at) {
+    raise WasmGenError::Unsupported("js-string charCodeAt import missing")
+  }
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_js_substring(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_substring) {
+    raise WasmGenError::Unsupported("js-string substring import missing")
+  }
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  if ctx.need_js_char_code_at {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_js_concat(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_concat) {
+    raise WasmGenError::Unsupported("js-string concat import missing")
+  }
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  if ctx.need_js_char_code_at {
+    idx += 1
+  }
+  if ctx.need_js_substring {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_js_equals(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_equals) {
+    raise WasmGenError::Unsupported("js-string equals import missing")
+  }
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  if ctx.need_js_char_code_at {
+    idx += 1
+  }
+  if ctx.need_js_substring {
+    idx += 1
+  }
+  if ctx.need_js_concat {
+    idx += 1
+  }
+  idx
 }
 
 ///|
@@ -431,10 +746,14 @@ fn compile_expr(
   match expr {
     Expr::Int(n) => emit_i32_const_tagged(buf, n)
     Expr::Bool(b) => emit_i32_const_raw(buf, tag_bool_value(b))
-    Expr::String(s) => {
-      let offset = ctx.strings.intern(s)
-      emit_i32_const_raw(buf, tag_ptr(offset, tag_obj))
-    }
+    Expr::String(s) =>
+      if ctx.use_js_strings {
+        let idx = ctx.js_strings.intern(s)
+        emit_global_get(buf, idx)
+      } else {
+        let offset = ctx.strings.intern(s)
+        emit_i32_const_raw(buf, tag_ptr(offset, tag_obj))
+      }
     Expr::Ident(name) => {
       if is_qualified_name(name) {
         raise WasmGenError::Unsupported("qualified name: " + name)
@@ -450,7 +769,7 @@ fn compile_expr(
         if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("sh arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[0])
         emit_call(buf, import_index_sh(ctx))
         emit_drop(buf)
         emit_i32_const_tagged(buf, 0)
@@ -459,31 +778,31 @@ fn compile_expr(
         if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("path arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[0])
         emit_call(buf, import_index_path(ctx))
       } else if name == "add" {
         let pos_args = extract_positional_exprs(args, "add")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("add arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
-        compile_expr(ctx, buf, pos_args[1])
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_add(buf)
       } else if name == "sub" {
         let pos_args = extract_positional_exprs(args, "sub")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("sub arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
-        compile_expr(ctx, buf, pos_args[1])
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_sub(buf)
       } else if name == "eq" {
         let pos_args = extract_positional_exprs(args, "eq")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("eq arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
-        compile_expr(ctx, buf, pos_args[1])
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_eq(buf)
         emit_bool_from_i32(buf)
       } else if name == "lt" {
@@ -491,8 +810,8 @@ fn compile_expr(
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("lt arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
-        compile_expr(ctx, buf, pos_args[1])
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_lt_s(buf)
         emit_bool_from_i32(buf)
       } else if name == "not" {
@@ -500,7 +819,7 @@ fn compile_expr(
         if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("not arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[0])
         emit_i32_const_raw(buf, 4)
         emit_i32_xor(buf)
       } else if name == "and" {
@@ -508,17 +827,98 @@ fn compile_expr(
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("and arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
-        compile_expr(ctx, buf, pos_args[1])
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_and(buf)
       } else if name == "or" {
         let pos_args = extract_positional_exprs(args, "or")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("or arity")
         }
-        compile_expr(ctx, buf, pos_args[0])
-        compile_expr(ctx, buf, pos_args[1])
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_or(buf)
+      } else if name == "string_length" {
+        if not(ctx.use_js_strings) {
+          raise WasmGenError::Unsupported(
+            "string_length requires --wasm-js-string",
+          )
+        }
+        let pos_args = extract_positional_exprs(args, "string_length")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("string_length arity")
+        }
+        ctx.need_js_length = true
+        compile_expr_ref(ctx, buf, pos_args[0])
+        emit_call(buf, import_index_js_length(ctx))
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shl(buf)
+      } else if name == "string_char_code_at" {
+        if not(ctx.use_js_strings) {
+          raise WasmGenError::Unsupported(
+            "string_char_code_at requires --wasm-js-string",
+          )
+        }
+        let pos_args = extract_positional_exprs(args, "string_char_code_at")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("string_char_code_at arity")
+        }
+        ctx.need_js_char_code_at = true
+        compile_expr_ref(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_u(buf)
+        emit_call(buf, import_index_js_char_code_at(ctx))
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shl(buf)
+      } else if name == "string_substring" {
+        if not(ctx.use_js_strings) {
+          raise WasmGenError::Unsupported(
+            "string_substring requires --wasm-js-string",
+          )
+        }
+        let pos_args = extract_positional_exprs(args, "string_substring")
+        if pos_args.length() != 3 {
+          raise WasmGenError::Unsupported("string_substring arity")
+        }
+        ctx.need_js_substring = true
+        compile_expr_ref(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_u(buf)
+        compile_expr_i32(ctx, buf, pos_args[2])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_u(buf)
+        emit_call(buf, import_index_js_substring(ctx))
+      } else if name == "string_concat" {
+        if not(ctx.use_js_strings) {
+          raise WasmGenError::Unsupported(
+            "string_concat requires --wasm-js-string",
+          )
+        }
+        let pos_args = extract_positional_exprs(args, "string_concat")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("string_concat arity")
+        }
+        ctx.need_js_concat = true
+        compile_expr_ref(ctx, buf, pos_args[0])
+        compile_expr_ref(ctx, buf, pos_args[1])
+        emit_call(buf, import_index_js_concat(ctx))
+      } else if name == "string_equals" {
+        if not(ctx.use_js_strings) {
+          raise WasmGenError::Unsupported(
+            "string_equals requires --wasm-js-string",
+          )
+        }
+        let pos_args = extract_positional_exprs(args, "string_equals")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("string_equals arity")
+        }
+        ctx.need_js_equals = true
+        compile_expr_ref(ctx, buf, pos_args[0])
+        compile_expr_ref(ctx, buf, pos_args[1])
+        emit_call(buf, import_index_js_equals(ctx))
+        emit_bool_from_i32(buf)
       } else {
         if is_qualified_name(name) {
           raise WasmGenError::Unsupported("qualified call: " + name)
@@ -530,11 +930,16 @@ fn compile_expr(
     Expr::Array(items) => compile_array_expr(ctx, buf, items)
     Expr::Map(fields) => compile_map_expr(ctx, buf, fields)
     Expr::If(cond~, then_body~, else_body~) => {
-      compile_expr(ctx, buf, cond)
+      let if_kind = if ctx.use_js_strings {
+        infer_expr_kind(ctx, expr)
+      } else {
+        ValueKind::I32
+      }
+      compile_expr_i32(ctx, buf, cond)
       emit_i32_const_raw(buf, 2)
       emit_i32_shr_u(buf)
       buf.push((4).to_byte())
-      buf.push((127).to_byte())
+      buf.push(valtype_byte(if_kind))
       compile_block_expr(ctx, buf, then_body)
       buf.push((5).to_byte())
       compile_block_expr(ctx, buf, else_body)
@@ -543,14 +948,18 @@ fn compile_expr(
     Expr::Block(body~) => compile_block_expr(ctx, buf, body)
     Expr::Match(scrutinee~, arms~) => {
       let saved = clone_locals(ctx.locals)
+      let saved_kinds = clone_kind_map(ctx.local_kinds)
       let scrut_idx = ctx.local_count
       ctx.local_count += 1
-      compile_expr(ctx, buf, scrutinee)
+      ctx.local_types.push(ValueKind::I32)
+      compile_expr_i32(ctx, buf, scrutinee)
       emit_local_set(buf, scrut_idx)
       compile_match_chain(ctx, buf, scrut_idx, arms, 0)
       restore_locals(ctx, saved)
+      restore_local_kinds(ctx, saved_kinds)
     }
     Expr::Do(body~) => compile_block_expr(ctx, buf, body)
+    Expr::Try(..) => raise WasmGenError::Unsupported("try")
     Expr::Fn(..) => raise WasmGenError::Unsupported("fn")
   }
 }
@@ -580,9 +989,12 @@ fn compile_stmt(
   match stmt {
     Stmt::Let(rec~, name~, expr~) => {
       let _ = rec
+      let kind = infer_expr_kind(ctx, expr)
       let idx = ctx.local_count
       ctx.local_count += 1
+      ctx.local_types.push(kind)
       ctx.locals[name] = idx
+      ctx.local_kinds[name] = kind
       compile_expr(ctx, buf, expr)
       if is_last {
         emit_local_tee(buf, idx)
@@ -612,6 +1024,7 @@ fn compile_block_expr(
   body : Module,
 ) -> Unit raise WasmGenError {
   let saved = clone_locals(ctx.locals)
+  let saved_kinds = clone_kind_map(ctx.local_kinds)
   let len = body.stmts.length()
   if len == 0 {
     emit_i32_const_tagged(buf, 0)
@@ -622,6 +1035,7 @@ fn compile_block_expr(
     }
   }
   restore_locals(ctx, saved)
+  restore_local_kinds(ctx, saved_kinds)
 }
 
 ///|
@@ -655,7 +1069,7 @@ fn compile_tuple_expr(
   emit_i32_store(buf, 4)
   for i in 0..<len {
     emit_local_get(buf, obj_local)
-    compile_expr(ctx, buf, items[i])
+    compile_expr_i32(ctx, buf, items[i])
     emit_i32_store(buf, 8 + i * 4)
   }
   emit_local_get(buf, obj_local)
@@ -693,7 +1107,7 @@ fn compile_record_expr(
     emit_i32_const_raw(buf, name_ptr)
     emit_i32_store(buf, 8 + i * 8)
     emit_local_get(buf, obj_local)
-    compile_expr(ctx, buf, field.expr)
+    compile_expr_i32(ctx, buf, field.expr)
     emit_i32_store(buf, 8 + i * 8 + 4)
   }
   emit_local_get(buf, obj_local)
@@ -725,7 +1139,7 @@ fn compile_array_expr(
   emit_i32_store(buf, 4)
   for i in 0..<len {
     emit_local_get(buf, obj_local)
-    compile_expr(ctx, buf, items[i])
+    compile_expr_i32(ctx, buf, items[i])
     emit_i32_store(buf, 8 + i * 4)
   }
   emit_local_get(buf, obj_local)
@@ -762,7 +1176,7 @@ fn compile_map_expr(
     emit_i32_const_raw(buf, key_ptr)
     emit_i32_store(buf, 8 + i * 8)
     emit_local_get(buf, obj_local)
-    compile_expr(ctx, buf, field.expr)
+    compile_expr_i32(ctx, buf, field.expr)
     emit_i32_store(buf, 8 + i * 8 + 4)
   }
   emit_local_get(buf, obj_local)
@@ -834,9 +1248,16 @@ fn compile_body(
   ast : Module,
 ) -> Array[Byte] raise WasmGenError {
   let instr = ByteBuf::new()
+  if ctx.use_js_strings {
+    let result_kind = infer_block_kind(ctx, ast, ctx.local_kinds)
+    if result_kind != ValueKind::I32 {
+      raise WasmGenError::Unsupported("js-string return kind")
+    }
+  }
   if ctx.need_heap {
     ctx.heap_local = ctx.local_count
     ctx.local_count += 1
+    ctx.local_types.push(ValueKind::I32)
   }
   compile_block_expr(ctx, instr, ast)
   instr.push((11).to_byte())
@@ -867,10 +1288,82 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
 
   // type section
   let type_sec = ByteBuf::new()
-  let has_import_type = ctx.need_sh || ctx.need_path
-  let type_count = if has_import_type { 2 } else { 1 }
+  let ref_type = valtype_byte(ValueKind::ExternRef)
+  let mut type_count = 0
+  let mut js_length_type = -1
+  let mut js_char_code_at_type = -1
+  let mut js_substring_type = -1
+  let mut js_concat_type = -1
+  let mut js_equals_type = -1
+  let mut import_type = -1
+  if ctx.need_js_length {
+    js_length_type = type_count
+    type_count += 1
+  }
+  if ctx.need_js_char_code_at {
+    js_char_code_at_type = type_count
+    type_count += 1
+  }
+  if ctx.need_js_substring {
+    js_substring_type = type_count
+    type_count += 1
+  }
+  if ctx.need_js_concat {
+    js_concat_type = type_count
+    type_count += 1
+  }
+  if ctx.need_js_equals {
+    js_equals_type = type_count
+    type_count += 1
+  }
+  if ctx.need_sh || ctx.need_path {
+    import_type = type_count
+    type_count += 1
+  }
+  let run_type = type_count
+  type_count += 1
   write_u32_leb(type_sec, type_count)
-  if has_import_type {
+  if ctx.need_js_length {
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push(ref_type)
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte())
+  }
+  if ctx.need_js_char_code_at {
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 2)
+    type_sec.push(ref_type)
+    type_sec.push((127).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte())
+  }
+  if ctx.need_js_substring {
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 3)
+    type_sec.push(ref_type)
+    type_sec.push((127).to_byte())
+    type_sec.push((127).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push(ref_type)
+  }
+  if ctx.need_js_concat {
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 2)
+    type_sec.push(ref_type)
+    type_sec.push(ref_type)
+    write_u32_leb(type_sec, 1)
+    type_sec.push(ref_type)
+  }
+  if ctx.need_js_equals {
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 2)
+    type_sec.push(ref_type)
+    type_sec.push(ref_type)
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte())
+  }
+  if ctx.need_sh || ctx.need_path {
     type_sec.push((96).to_byte())
     write_u32_leb(type_sec, 1)
     type_sec.push((127).to_byte())
@@ -884,27 +1377,87 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
   write_section(buf, 1, type_sec.data)
 
   // import section
-  let mut import_count = 0
+  let mut func_import_count = 0
+  if ctx.need_js_length {
+    func_import_count += 1
+  }
+  if ctx.need_js_char_code_at {
+    func_import_count += 1
+  }
+  if ctx.need_js_substring {
+    func_import_count += 1
+  }
+  if ctx.need_js_concat {
+    func_import_count += 1
+  }
+  if ctx.need_js_equals {
+    func_import_count += 1
+  }
   if ctx.need_path {
-    import_count += 1
+    func_import_count += 1
   }
   if ctx.need_sh {
-    import_count += 1
+    func_import_count += 1
   }
+  let global_import_count = if ctx.use_js_strings {
+    ctx.js_strings.names.length()
+  } else {
+    0
+  }
+  let import_count = func_import_count + global_import_count
   if import_count > 0 {
     let import_sec = ByteBuf::new()
     write_u32_leb(import_sec, import_count)
+    if ctx.need_js_length {
+      write_name(import_sec, "wasm:js-string")
+      write_name(import_sec, "length")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, js_length_type)
+    }
+    if ctx.need_js_char_code_at {
+      write_name(import_sec, "wasm:js-string")
+      write_name(import_sec, "charCodeAt")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, js_char_code_at_type)
+    }
+    if ctx.need_js_substring {
+      write_name(import_sec, "wasm:js-string")
+      write_name(import_sec, "substring")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, js_substring_type)
+    }
+    if ctx.need_js_concat {
+      write_name(import_sec, "wasm:js-string")
+      write_name(import_sec, "concat")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, js_concat_type)
+    }
+    if ctx.need_js_equals {
+      write_name(import_sec, "wasm:js-string")
+      write_name(import_sec, "equals")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, js_equals_type)
+    }
     if ctx.need_path {
       write_name(import_sec, "xsh")
       write_name(import_sec, "path")
       import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, 0)
+      write_u32_leb(import_sec, import_type)
     }
     if ctx.need_sh {
       write_name(import_sec, "xsh")
       write_name(import_sec, "sh")
       import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, 0)
+      write_u32_leb(import_sec, import_type)
+    }
+    if ctx.use_js_strings {
+      for name in ctx.js_strings.names {
+        write_name(import_sec, "string_constants")
+        write_name(import_sec, name)
+        import_sec.push((3).to_byte())
+        import_sec.push(ref_type)
+        import_sec.push((0).to_byte())
+      }
     }
     write_section(buf, 2, import_sec.data)
   }
@@ -912,8 +1465,7 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
   // function section
   let func_sec = ByteBuf::new()
   write_u32_leb(func_sec, 1)
-  let run_type_idx = if has_import_type { 1 } else { 0 }
-  write_u32_leb(func_sec, run_type_idx)
+  write_u32_leb(func_sec, run_type)
   write_section(buf, 3, func_sec.data)
 
   // memory section
@@ -928,7 +1480,7 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
   write_u32_leb(export_sec, 2)
   write_name(export_sec, "run")
   export_sec.push((0).to_byte())
-  write_u32_leb(export_sec, import_count)
+  write_u32_leb(export_sec, func_import_count)
   write_name(export_sec, "memory")
   export_sec.push((2).to_byte())
   write_u32_leb(export_sec, 0)
@@ -938,12 +1490,26 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
   let code_sec = ByteBuf::new()
   write_u32_leb(code_sec, 1)
   let func_body = ByteBuf::new()
-  if ctx.local_count == 0 {
+  if ctx.local_types.length() == 0 {
     write_u32_leb(func_body, 0)
   } else {
-    write_u32_leb(func_body, 1)
-    write_u32_leb(func_body, ctx.local_count)
-    func_body.push((127).to_byte())
+    let group_kinds : Array[ValueKind] = []
+    let group_counts : Array[Int] = []
+    for kind in ctx.local_types {
+      if group_kinds.length() == 0 ||
+        group_kinds[group_kinds.length() - 1] != kind {
+        group_kinds.push(kind)
+        group_counts.push(1)
+      } else {
+        let last = group_counts.length() - 1
+        group_counts[last] = group_counts[last] + 1
+      }
+    }
+    write_u32_leb(func_body, group_kinds.length())
+    for i in 0..<group_kinds.length() {
+      write_u32_leb(func_body, group_counts[i])
+      func_body.push(valtype_byte(group_kinds[i]))
+    }
   }
   func_body.extend(body)
   write_u32_leb(code_sec, func_body.len())
@@ -993,6 +1559,25 @@ fn restore_locals(ctx : CodegenCtx, saved : Map[String, Int]) -> Unit {
   }
   for name, idx in saved {
     ctx.locals[name] = idx
+  }
+}
+
+///|
+fn restore_local_kinds(
+  ctx : CodegenCtx,
+  saved : Map[String, ValueKind],
+) -> Unit {
+  let to_remove : Array[String] = []
+  for name, _ in ctx.local_kinds {
+    if not(saved.contains(name)) {
+      to_remove.push(name)
+    }
+  }
+  for name in to_remove {
+    ctx.local_kinds.remove(name)
+  }
+  for name, kind in saved {
+    ctx.local_kinds[name] = kind
   }
 }
 
@@ -1247,6 +1832,9 @@ fn emit_pat_literal(
     Pat::Int(n) => emit_i32_const_tagged(buf, n)
     Pat::Bool(b) => emit_i32_const_raw(buf, tag_bool_value(b))
     Pat::String(s) => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported("js-string string pattern")
+      }
       let offset = ctx.strings.intern(s)
       emit_i32_const_raw(buf, tag_ptr(offset, tag_obj))
     }
@@ -1267,6 +1855,7 @@ fn compile_match_chain(
   }
   let arm = arms[start]
   let saved = clone_locals(ctx.locals)
+  let saved_kinds = clone_kind_map(ctx.local_kinds)
   let bindings : Map[String, Int] = {}
   compile_pat_match(
     ctx,
@@ -1281,6 +1870,7 @@ fn compile_match_chain(
     PatCont::Arm,
   )
   restore_locals(ctx, saved)
+  restore_local_kinds(ctx, saved_kinds)
 }
 
 ///|
@@ -1294,8 +1884,10 @@ fn compile_guarded_arm_with_bindings(
   bindings : Map[String, Int],
 ) -> Unit raise WasmGenError {
   let saved = clone_locals(ctx.locals)
+  let saved_kinds = clone_kind_map(ctx.local_kinds)
   for name, idx in bindings {
     ctx.locals[name] = idx
+    ctx.local_kinds[name] = ValueKind::I32
   }
   match arm.cond {
     Some(c) => {
@@ -1307,13 +1899,16 @@ fn compile_guarded_arm_with_bindings(
       compile_expr(ctx, buf, arm.expr)
       buf.push((5).to_byte())
       restore_locals(ctx, saved)
+      restore_local_kinds(ctx, saved_kinds)
       compile_match_chain(ctx, buf, scrut_idx, arms, index + 1)
       buf.push((11).to_byte())
       restore_locals(ctx, saved)
+      restore_local_kinds(ctx, saved_kinds)
     }
     None => {
       compile_expr(ctx, buf, arm.expr)
       restore_locals(ctx, saved)
+      restore_local_kinds(ctx, saved_kinds)
     }
   }
 }
@@ -1322,6 +1917,7 @@ fn compile_guarded_arm_with_bindings(
 fn bind_local(ctx : CodegenCtx, _name : String) -> Int {
   let idx = ctx.local_count
   ctx.local_count += 1
+  ctx.local_types.push(ValueKind::I32)
   idx
 }
 
@@ -1329,6 +1925,7 @@ fn bind_local(ctx : CodegenCtx, _name : String) -> Int {
 fn alloc_temp_local(ctx : CodegenCtx) -> Int {
   let idx = ctx.local_count
   ctx.local_count += 1
+  ctx.local_types.push(ValueKind::I32)
   idx
 }
 
@@ -1383,7 +1980,15 @@ fn emit_load_record_value(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
 ///|
 /// Emit a WASM module for a typed xsh AST.
 pub fn emit_module_wasm(ast : Module) -> Bytes raise WasmGenError {
-  let ctx = CodegenCtx::new()
+  let ctx = CodegenCtx::new(false)
+  scan_needs(ctx, ast)
+  let body = compile_body(ctx, ast)
+  build_module(ctx, body)
+}
+
+///|
+pub fn emit_module_wasm_js_string(ast : Module) -> Bytes raise WasmGenError {
+  let ctx = CodegenCtx::new(true)
   scan_needs(ctx, ast)
   let body = compile_body(ctx, ast)
   build_module(ctx, body)

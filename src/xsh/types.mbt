@@ -7,10 +7,24 @@ pub enum ParamLabel {
 } derive(Show, Eq)
 
 ///|
+pub fn ParamLabel::is_positional(self : ParamLabel) -> Bool {
+  match self {
+    ParamLabel::Positional => true
+    _ => false
+  }
+}
+
+///|
 pub struct FuncParam {
   name : String
   label : ParamLabel
   ty : Type
+} derive(Show, Eq)
+
+///|
+pub enum EffectAtom {
+  Const(String)
+  Var(String)
 } derive(Show, Eq)
 
 ///|
@@ -30,7 +44,7 @@ pub enum Type {
   Named(name~ : String, args~ : Array[Type])
   Param(String)
   Var(Int)
-  Func(params~ : Array[FuncParam], ret~ : Type)
+  Func(params~ : Array[FuncParam], ret~ : Type, effects~ : Array[EffectAtom])
 } derive(Show, Eq)
 
 ///|

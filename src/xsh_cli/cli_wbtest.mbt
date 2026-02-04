@@ -42,6 +42,50 @@ test "completion suppressed inside fn params" {
 }
 
 ///|
+test "method completion detection" {
+  match detect_method_completion("t.foo", 5) {
+    Some(info) => {
+      assert_eq(info.receiver, "t")
+      assert_eq(info.prefix, "foo")
+    }
+    None => fail("missing method info")
+  }
+  match detect_method_completion("t.", 2) {
+    Some(info) => {
+      assert_eq(info.receiver, "t")
+      assert_eq(info.prefix, "")
+    }
+    None => fail("missing method info for empty prefix")
+  }
+  match detect_method_completion("foo bar", 7) {
+    Some(_) => fail("unexpected method info")
+    None => ()
+  }
+}
+
+///|
+test "pipe completion detection" {
+  match detect_pipe_completion("x |> inc", 9) {
+    Some(info) => {
+      assert_eq(info.receiver, "x")
+      assert_eq(info.prefix, "inc")
+    }
+    None => fail("missing pipe info")
+  }
+  match detect_pipe_completion("x |> ", 5) {
+    Some(info) => {
+      assert_eq(info.receiver, "x")
+      assert_eq(info.prefix, "")
+    }
+    None => fail("missing pipe info for empty prefix")
+  }
+  match detect_pipe_completion("x | inc", 7) {
+    Some(_) => fail("unexpected pipe info")
+    None => ()
+  }
+}
+
+///|
 test "repl input rows grow with height" {
   assert_eq(repl_input_rows_for_height(20), 9)
   assert_eq(repl_input_rows_for_height(10), 5)

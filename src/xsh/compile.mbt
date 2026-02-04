@@ -33,8 +33,9 @@ pub fn compile_module(
     Some(s) => s
     None => raise CompileError::MissingSource(path)
   }
-  let ast = parse_ast(source) catch { e => raise CompileError::Parse(e) }
-  let aliases = build_alias_map(ast, db.import_aliases(path))
+  let raw_ast = parse_ast(source) catch { e => raise CompileError::Parse(e) }
+  let aliases = build_alias_map(raw_ast, db.import_aliases(path))
+  let ast = desugar_method_calls(raw_ast, aliases)
   try {
     let _ = type_check_with_aliases(ast, aliases)
 
@@ -79,6 +80,20 @@ pub fn compile_module_wasm(
     e => raise WasmCompileError::Compile(e)
   }
   emit_module_wasm(compiled.ast) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
+/// Compile a module to WASM using wasm js-string builtins.
+pub fn compile_module_wasm_js_string(
+  db : XshDb,
+  path : String,
+) -> Bytes raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  emit_module_wasm_js_string(compiled.ast) catch {
     e => raise WasmCompileError::Gen(e)
   }
 }
@@ -287,7 +302,16 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Expr::Fn(params~, ret~, body~) => {
+    Expr::Try(try_body~, catch_body~) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(try ")
+      buf.write_string(block_to_sexp(try_body, aliases))
+      buf.write_char(' ')
+      buf.write_string(block_to_sexp(catch_body, aliases))
+      buf.write_char(')')
+      buf.to_string()
+    }
+    Expr::Fn(params~, ret~, effects~, body~) => {
       let buf = StringBuilder::new()
       buf.write_string("(fn (params")
       for param in params {
@@ -298,6 +322,11 @@ fn expr_to_sexp(expr : Expr, aliases : Map[String, Ref]) -> String {
       match ret {
         Some(r) => buf.write_string(type_to_sexp(r))
         None => buf.write_string("_")
+      }
+      buf.write_string(") (effects")
+      for effect in effects {
+        buf.write_char(' ')
+        buf.write_string(effect_atom_to_sexp(effect))
       }
       buf.write_string(") ")
       buf.write_string(block_to_sexp(body, aliases))
@@ -425,18 +454,32 @@ fn type_to_sexp(ty : Type) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    Type::Func(params~, ret~) => {
+    Type::Func(params~, ret~, effects~) => {
       let buf = StringBuilder::new()
       buf.write_string("(Func (params")
       for param in params {
         buf.write_char(' ')
         buf.write_string(param_to_sexp(param))
       }
-      buf.write_string(") ")
+      buf.write_string(") (ret ")
       buf.write_string(type_to_sexp(ret))
+      buf.write_string(") (effects")
+      for effect in effects {
+        buf.write_char(' ')
+        buf.write_string(effect_atom_to_sexp(effect))
+      }
+      buf.write_char(')')
       buf.write_char(')')
       buf.to_string()
     }
+  }
+}
+
+///|
+fn effect_atom_to_sexp(effect : EffectAtom) -> String {
+  match effect {
+    EffectAtom::Const(name) => escape_atom(name)
+    EffectAtom::Var(name) => escape_atom(name)
   }
 }
 

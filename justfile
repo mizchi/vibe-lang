@@ -21,6 +21,7 @@ check:
 # Run tests
 test:
     moon test --target {{target}}
+    moon run src/xsh_cli/main.mbt --target native -- test examples/*.xsh
 
 # Update snapshot tests
 test-update:
@@ -55,6 +56,10 @@ bench-cmd-latency:
 # Measure parse/type/compile+run per command after startup
 bench-cmd-compile:
     scripts/bench_cmd_compile.sh
+
+# Run wasm-js-string backend via JS engine
+run-wasm-js-string *args:
+    node scripts/run_wasm_js_string.mjs {{args}}
 
 # Run fixture tests only
 fixtures:

@@ -85,7 +85,13 @@ pub enum Expr {
   Block(body~ : Module)
   Match(scrutinee~ : Expr, arms~ : Array[MatchArm])
   Do(body~ : Module)
-  Fn(params~ : Array[FuncParam], ret~ : Type?, body~ : Module)
+  Try(try_body~ : Module, catch_body~ : Module)
+  Fn(
+    params~ : Array[FuncParam],
+    ret~ : Type?,
+    effects~ : Array[EffectAtom],
+    body~ : Module
+  )
 } derive(Show, Eq)
 
 ///|
