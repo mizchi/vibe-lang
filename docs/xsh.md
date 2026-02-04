@@ -125,6 +125,71 @@ Import resolution pins to content hash:
 - canonical module ref: `ko-doha/xsh/<hash>`
 - the reference is fixed by hash, not by file name
 
+### Module system (draft)
+
+Goals:
+- Express Nix-like "fixed input + pure output + reproducibility" via imports.
+- Fix dependencies at resolve/build time, not at runtime.
+- Keep syntax close to current xsh where possible.
+
+Core ideas:
+- `import` is a pure expression that returns a module namespace (record-like).
+- Dependency pinning is done via `SourceSpec` + lock file.
+  - `SourceSpec` is an abstract structure; concrete literal syntax is TBD.
+  - Missing lock entry is a compile error.
+  - A separate command (e.g. `xsh fetch`) generates/updates the lock.
+- After resolution, modules are referenced by content hash (aligned with FnId).
+  - Internally, symbols can be tracked as `name#hash` while keeping a human name.
+
+Export model (choose one):
+A. Explicit `export` (recommended)
+```
+let add = fn (x: Int, y: Int) -> Int { x + y }
+let sub = fn (x: Int, y: Int) -> Int { x - y }
+export { add, sub }
+```
+B. Implicit export (all top-level lets/types/enums)
+- Simple, but leaks more than intended.
+C. Convention: `exports` record only
+```
+let exports = record { add, sub }
+```
+- No new syntax; `import` reads only `exports`.
+
+Import syntax extensions (minimal):
+```
+import "path/to/mod.xsh" as mod
+import { add, sub } from "path/to/mod.xsh"
+import mod from "path/to/mod.xsh"
+```
+
+Purity and effects:
+- Import resolution and downloads happen at compile time.
+- Runtime uses only locked content, so `import` stays pure and effect-free.
+
+Example (future):
+```
+import "git:github:NixOS/nixpkgs@rev#hash//pkgs.xsh" as pkgs
+
+let dev_shell = pkgs.mk_shell {
+  packages = [ pkgs.wasm, pkgs.nodejs ]
+}
+
+export { dev_shell }
+```
+
+Open questions:
+- Concrete `SourceSpec` literal syntax (string vs record vs dedicated literal).
+- Export syntax (`export` keyword vs implicit vs convention).
+- Lock file format and location (e.g. `xsh.lock`).
+- Error design for missing/invalid imports.
+
+Next steps:
+1. Decide export model.
+2. Decide minimal import syntax additions.
+3. Decide `SourceSpec` syntax.
+4. Decide lock workflow (generate/update/verify).
+
 ## Test blocks (MoonBit-style)
 
 ```
