@@ -359,7 +359,21 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
         ']' => Token::new(rbracket(), "]")
         ',' => Token::new(comma(), ",")
         ':' => Token::new(colon(), ":")
-        '/' => Token::new(slash(), "/")
+        '/' =>
+          match self.peek() {
+            Some('/') => {
+              let _ = self.advance()
+              while (match self.peek() {
+                      Some('\n') | None => false
+                      _ => true
+                    }) {
+                let _ = self.advance()
+
+              }
+              Token::new(whitespace(), "//")
+            }
+            _ => Token::new(slash(), "/")
+          }
         '+' => Token::new(plus(), "+")
         '*' => Token::new(star(), "*")
         '!' =>

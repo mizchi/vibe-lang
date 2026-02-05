@@ -1,4 +1,4 @@
-let rec repeat = fn (s: String, n: Int) -> String {
+let rec repeat = (s: String, n: Int) -> String {
   if eq(n, 0) {
     ""
   } else {
@@ -6,7 +6,7 @@ let rec repeat = fn (s: String, n: Int) -> String {
   }
 }
 
-let rec sum_codes = fn (s: String, i: Int, acc: Int) -> Int {
+let rec sum_codes = (s: String, i: Int, acc: Int) -> Int {
   if lt(i, string_length(s)) {
     let code = string_char_code_at(s, i)
     sum_codes(s, add(i, 1), add(acc, code))

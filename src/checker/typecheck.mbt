@@ -155,12 +155,12 @@ fn format_bad_match(message : String) -> String {
       if message.has_prefix("duplicate bind: ") {
         "duplicate binding: `" +
         message.to_array()[16:]
-          .iter()
-          .fold(init=StringBuilder::new(), fn(sb, c) {
-            sb.write_char(c)
-            sb
-          })
-          .to_string() +
+        .iter()
+        .fold(init=StringBuilder::new(), fn(sb, c) {
+          sb.write_char(c)
+          sb
+        })
+        .to_string() +
         "`"
       } else {
         message
@@ -3355,6 +3355,159 @@ fn type_call(
                   )
                 }
                 @core.Type::Bool
+              }
+              "string_split" => {
+                let pos_args = extract_positional_args(
+                  args, "string_split", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="string_split",
+                    span=call_span,
+                  )
+                }
+                let str_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let sep_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, str_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=str_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, sep_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=sep_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Array(@core.Type::String)
+              }
+              "string_index_of" => {
+                let pos_args = extract_positional_args(
+                  args, "string_index_of", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="string_index_of",
+                    span=call_span,
+                  )
+                }
+                let str_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let sub_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, str_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=str_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, sub_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=sub_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "string_contains" => {
+                let pos_args = extract_positional_args(
+                  args, "string_contains", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="string_contains",
+                    span=call_span,
+                  )
+                }
+                let str_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let sub_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, str_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=str_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, sub_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=sub_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "string_trim" => {
+                let pos_args = extract_positional_args(
+                  args, "string_trim", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="string_trim",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
               }
               "__add" => {
                 let pos_args = extract_positional_args(args, "__add", call_span)

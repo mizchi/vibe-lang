@@ -405,7 +405,11 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "float_to_double" ||
   name == "double_to_int" ||
   name == "double_to_float" ||
-  name == "__to_string"
+  name == "__to_string" ||
+  name == "string_split" ||
+  name == "string_index_of" ||
+  name == "string_contains" ||
+  name == "string_trim"
 }
 
 ///|

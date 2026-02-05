@@ -1,4 +1,4 @@
-let rec repeat = fn (s: String, n: Int) -> String {
+let rec repeat = (s: String, n: Int) -> String {
   if eq(n, 0) {
     ""
   } else {
@@ -6,7 +6,7 @@ let rec repeat = fn (s: String, n: Int) -> String {
   }
 }
 
-let rec eq_loop = fn (a: String, b: String, i: Int, acc: Int) -> Int {
+let rec eq_loop = (a: String, b: String, i: Int, acc: Int) -> Int {
   if eq(i, 0) {
     acc
   } else {

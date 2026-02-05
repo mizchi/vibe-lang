@@ -974,7 +974,11 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "float_to_double" ||
   name == "double_to_int" ||
   name == "double_to_float" ||
-  name == "__to_string"
+  name == "__to_string" ||
+  name == "string_split" ||
+  name == "string_index_of" ||
+  name == "string_contains" ||
+  name == "string_trim"
 }
 
 ///|
@@ -1097,6 +1101,53 @@ fn eval_pure_builtin(
         (@core.Value::String(a), @core.Value::String(b)) =>
           @core.Value::Bool(String::equal(a, b))
         _ => raise EvalError::BadCall("string_equals")
+      }
+    }
+    "string_split" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_split")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::String(s), @core.Value::String(sep)) => {
+          let parts : Array[@core.Value] = []
+          for part in String::split(s, sep[:]) {
+            parts.push(@core.Value::String(part.to_string()))
+          }
+          @core.Value::Array(parts)
+        }
+        _ => raise EvalError::BadCall("string_split")
+      }
+    }
+    "string_index_of" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_index_of")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::String(s), @core.Value::String(sub)) =>
+          match String::find(s, sub[:]) {
+            Some(idx) => @core.Value::Int(idx)
+            None => @core.Value::Int(-1)
+          }
+        _ => raise EvalError::BadCall("string_index_of")
+      }
+    }
+    "string_contains" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_contains")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::String(s), @core.Value::String(sub)) =>
+          @core.Value::Bool(String::contains(s, sub[:]))
+        _ => raise EvalError::BadCall("string_contains")
+      }
+    }
+    "string_trim" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_trim")
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::String(trim_whitespace(s))
+        _ => raise EvalError::BadCall("string_trim")
       }
     }
     "__add" => {
@@ -1422,4 +1473,29 @@ fn has_alias_prefix_rt(rt : Runtime, name : String) -> Bool {
   }
   let prefix = buf.to_string()
   rt.get_alias(prefix) is Some(_)
+}
+
+///|
+fn is_whitespace(c : Char) -> Bool {
+  c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+///|
+fn trim_whitespace(s : String) -> String {
+  let len = s.length()
+  let mut start = 0
+  while start < len &&
+        is_whitespace(s.unsafe_get(start).to_int().unsafe_to_char()) {
+    start = start + 1
+  }
+  let mut end = len
+  while end > start &&
+        is_whitespace(s.unsafe_get(end - 1).to_int().unsafe_to_char()) {
+    end = end - 1
+  }
+  if start == 0 && end == len {
+    s
+  } else {
+    s.unsafe_substring(start~, end~)
+  }
 }

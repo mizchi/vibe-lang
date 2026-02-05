@@ -1,4 +1,4 @@
-let rec repeat = fn (s: String, n: Int) -> String {
+let rec repeat = (s: String, n: Int) -> String {
   if eq(n, 0) {
     ""
   } else {
@@ -6,7 +6,7 @@ let rec repeat = fn (s: String, n: Int) -> String {
   }
 }
 
-let rec concat_loop = fn (s: String, i: Int) -> String {
+let rec concat_loop = (s: String, i: Int) -> String {
   if eq(i, 0) {
     s
   } else {

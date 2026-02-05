@@ -12,15 +12,15 @@ enum ParseString { OkStr(String, Int), ErrStr(String) }
 enum ParseInt { OkInt(Int, Int), ErrInt(String) }
 enum ParseNumber { OkNum(Double, Int), ErrNum(String) }
 
-let is_ws = fn (c: Int) -> Bool {
+let is_ws = (c: Int) -> Bool {
   c |> eq(' ') |> or(c |> eq('\n') |> or(c |> eq('\t') |> or(c |> eq('\r'))))
 }
 
-let is_digit = fn (c: Int) -> Bool {
+let is_digit = (c: Int) -> Bool {
   c |> lt('0') |> not |> and(c |> lt(':'))
 }
 
-let digit_to_double = fn (c: Int) -> Double {
+let digit_to_double = (c: Int) -> Double {
   if c |> eq('0') { 0.0 }
   else if c |> eq('1') { 1.0 }
   else if c |> eq('2') { 2.0 }
@@ -34,7 +34,7 @@ let digit_to_double = fn (c: Int) -> Double {
   else { 0.0 }
 }
 
-let rec skip_ws = fn (s: String, i: Int) -> Int {
+let rec skip_ws = (s: String, i: Int) -> Int {
   if i |> lt(s |> string_length) {
     let c = s |> string_char_code_at(i)
     if is_ws(c) {
@@ -47,7 +47,7 @@ let rec skip_ws = fn (s: String, i: Int) -> Int {
   }
 }
 
-let starts_with = fn (s: String, i: Int, word: String) -> Bool {
+let starts_with = (s: String, i: Int, word: String) -> Bool {
   let end = i |> add(word |> string_length)
   if end |> lt(s |> string_length |> add(1)) {
     s |> string_substring(i, end) |> string_equals(word)
@@ -56,14 +56,14 @@ let starts_with = fn (s: String, i: Int, word: String) -> Bool {
   }
 }
 
-let parse_string = fn (s: String, i: Int) -> ParseString with {Error} {
+let parse_string = (s: String, i: Int) -> ParseString with {Error} {
   if i |> lt(s |> string_length) |> not {
     ErrStr("unexpected eof")
   } else if s |> string_char_code_at(i) |> eq('"') |> not {
     ErrStr("expected string")
   } else {
     let len = s |> string_length
-    let rec scan = fn (
+    let rec scan = (
       s: String,
       idx: Int,
       start: Int,
@@ -108,7 +108,7 @@ let parse_string = fn (s: String, i: Int) -> ParseString with {Error} {
   }
 }
 
-let rec parse_digits = fn (s: String, i: Int, acc: Int) -> ParseInt with {Error} {
+let rec parse_digits = (s: String, i: Int, acc: Int) -> ParseInt with {Error} {
   if i |> lt(s |> string_length) {
     let c = s |> string_char_code_at(i)
     if is_digit(c) {
@@ -122,7 +122,7 @@ let rec parse_digits = fn (s: String, i: Int, acc: Int) -> ParseInt with {Error}
   }
 }
 
-let rec parse_digits_double = fn (
+let rec parse_digits_double = (
   s: String,
   i: Int,
   acc: Double,
@@ -145,7 +145,7 @@ let rec parse_digits_double = fn (
   }
 }
 
-let parse_int_part = fn (s: String, i: Int) -> ParseNumber with {Error} {
+let parse_int_part = (s: String, i: Int) -> ParseNumber with {Error} {
   let len = s |> string_length
   if i |> lt(len) {
     let c = s |> string_char_code_at(i)
@@ -170,7 +170,7 @@ let parse_int_part = fn (s: String, i: Int) -> ParseNumber with {Error} {
   }
 }
 
-let rec parse_fraction = fn (
+let rec parse_fraction = (
   s: String,
   i: Int,
   acc: Double,
@@ -194,7 +194,7 @@ let rec parse_fraction = fn (
   }
 }
 
-let rec apply_exponent = fn (value: Double, exp: Int) -> Double {
+let rec apply_exponent = (value: Double, exp: Int) -> Double {
   if exp |> eq(0) {
     value
   } else if exp |> lt(0) {
@@ -204,7 +204,7 @@ let rec apply_exponent = fn (value: Double, exp: Int) -> Double {
   }
 }
 
-let parse_fraction_if_any = fn (
+let parse_fraction_if_any = (
   s: String,
   i: Int,
   value: Double,
@@ -224,13 +224,13 @@ let parse_fraction_if_any = fn (
   }
 }
 
-let parse_exponent_if_any = fn (
+let parse_exponent_if_any = (
   s: String,
   i: Int,
   value: Double,
 ) -> ParseNumber with {Error} {
   let len = s |> string_length
-  let parse_exp = fn (exp_sign: Int, exp_idx: Int) -> ParseNumber with {Error} {
+  let parse_exp = (exp_sign: Int, exp_idx: Int) -> ParseNumber with {Error} {
     if exp_idx |> lt(len) {
       if s |> string_char_code_at(exp_idx) |> is_digit {
         match s |> parse_digits(exp_idx, 0) {
@@ -271,7 +271,7 @@ let parse_exponent_if_any = fn (
   }
 }
 
-let parse_number_body = fn (
+let parse_number_body = (
   s: String,
   idx: Int,
   sign: Double,
@@ -290,7 +290,7 @@ let parse_number_body = fn (
   }
 }
 
-let parse_number = fn (s: String, i: Int) -> Parse with {Error} {
+let parse_number = (s: String, i: Int) -> Parse with {Error} {
   if i |> lt(s |> string_length) |> not {
     ErrParse("expected number")
   } else {
@@ -303,8 +303,8 @@ let parse_number = fn (s: String, i: Int) -> Parse with {Error} {
   }
 }
 
-let rec parse_value = fn (s: String, i: Int) -> Parse with {Error} {
-  let parse_array = fn (s: String, i: Int) -> Parse with {Error} {
+let rec parse_value = (s: String, i: Int) -> Parse with {Error} {
+  let parse_array = (s: String, i: Int) -> Parse with {Error} {
     do {
       let len = s |> string_length
       let idx = s |> skip_ws(i |> add(1))
@@ -313,7 +313,7 @@ let rec parse_value = fn (s: String, i: Int) -> Parse with {Error} {
           Ok(JArr(array_builder_freeze(array_builder())), idx |> add(1))
         } else {
           let builder = array_builder()
-          let rec parse_items = fn (s: String, i: Int) -> Parse with {Error} {
+          let rec parse_items = (s: String, i: Int) -> Parse with {Error} {
             match s |> parse_value(i) {
               Ok(value, next) => {
                 array_builder_push(builder, value)
@@ -341,7 +341,7 @@ let rec parse_value = fn (s: String, i: Int) -> Parse with {Error} {
     }
   }
 
-  let parse_object = fn (s: String, i: Int) -> Parse with {Error} {
+  let parse_object = (s: String, i: Int) -> Parse with {Error} {
     do {
       let len = s |> string_length
       let idx = s |> skip_ws(i |> add(1))
@@ -350,7 +350,7 @@ let rec parse_value = fn (s: String, i: Int) -> Parse with {Error} {
           Ok(JObj(map_builder_freeze(map_builder())), idx |> add(1))
         } else {
           let builder = map_builder()
-          let rec parse_members = fn (s: String, i: Int) -> Parse with {Error} {
+          let rec parse_members = (s: String, i: Int) -> Parse with {Error} {
             match s |> parse_string(i) {
               OkStr(key, next) => {
                 let colon_idx = s |> skip_ws(next)
@@ -430,7 +430,7 @@ let rec parse_value = fn (s: String, i: Int) -> Parse with {Error} {
   }
 }
 
-let parse = fn (s: String) -> Parse with {Error} {
+let parse = (s: String) -> Parse with {Error} {
   match s |> parse_value(0) {
     Ok(value, next) => {
       let end = s |> skip_ws(next)
@@ -444,14 +444,14 @@ let parse = fn (s: String) -> Parse with {Error} {
   }
 }
 
-let is_ok = fn (s: String) -> Bool with {Error} {
+let is_ok = (s: String) -> Bool with {Error} {
   match parse(s) {
     Ok(_, _) => true
     _ => false
   }
 }
 
-let is_err = fn (s: String) -> Bool with {Error} {
+let is_err = (s: String) -> Bool with {Error} {
   match parse(s) {
     ErrParse(_) => true
     _ => false

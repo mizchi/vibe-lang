@@ -1,6 +1,6 @@
 ///|
 test "completion context for let" {
-  let line = "let add2 = fn (x: Int, y: Int) { add(x, y) }"
+  let line = "let add2 = (x: Int, y: Int) { add(x, y) }"
   let ctx = detect_completion_context(line, line.length())
   match ctx {
     CompletionContext::XshLetExpr => ()
@@ -23,7 +23,7 @@ test "extract let name" {
     Some(name) => assert_eq(name, "bar")
     None => fail("missing name")
   }
-  match extract_let_name("let rec foo = fn(a: Int) { a }") {
+  match extract_let_name("let rec foo = (a: Int) { a }") {
     Some(name) => assert_eq(name, "foo")
     None => fail("missing rec name")
   }

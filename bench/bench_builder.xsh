@@ -1,4 +1,4 @@
-let rec build = fn (n: Int, b: ArrayBuilder[Int]) -> ArrayBuilder[Int] {
+let rec build = (n: Int, b: ArrayBuilder[Int]) -> ArrayBuilder[Int] {
   if eq(n, 0) {
     b
   } else {
