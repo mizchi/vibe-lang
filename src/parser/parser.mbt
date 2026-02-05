@@ -9,14 +9,21 @@ suberror ParseError {
 ///|
 pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
   match self {
-    ParseError::UnexpectedToken(expected~, got~, span~) =>
+    ParseError::UnexpectedToken(expected~, got~, span~) => {
+      let got_display = if got.is_empty() {
+        "<eof>"
+      } else {
+        let trimmed = got.trim().to_string()
+        if trimmed.is_empty() { "<whitespace>" } else { "`" + trimmed + "`" }
+      }
       @core.Diagnostic::{
         stage: "parse",
-        message: "unexpected token: got " + got + ", expected " + expected,
+        message: "expected " + expected + ", got " + got_display,
         span: Some(span),
         hint: None,
         note: None,
       }
+    }
     ParseError::UnexpectedEof(span~) =>
       @core.Diagnostic::{
         stage: "parse",
@@ -148,6 +155,10 @@ fn Parser::parse_let_stmt(self : Parser) -> Unit {
   self.bump() // let
   self.skip_trivia()
   if self.at(rec_kw()) {
+    self.bump()
+    self.skip_trivia()
+  }
+  if self.at(mut_kw()) {
     self.bump()
     self.skip_trivia()
   }
@@ -317,6 +328,8 @@ fn Parser::parse_expr(self : Parser) -> Unit {
   self.skip_trivia()
   if self.at(if_kw()) {
     self.parse_if_expr()
+  } else if self.at(while_kw()) {
+    self.parse_while_expr()
   } else if self.at(match_kw()) {
     self.parse_match_expr()
   } else if self.at(do_kw()) {
@@ -338,6 +351,17 @@ fn Parser::parse_expr(self : Parser) -> Unit {
   } else {
     self.parse_or_expr()
   }
+}
+
+///|
+fn Parser::parse_while_expr(self : Parser) -> Unit {
+  self.builder.start_node(while_expr())
+  self.bump() // while
+  self.skip_trivia()
+  self.parse_expr()
+  self.skip_trivia()
+  self.parse_brace_block_tokens()
+  self.builder.finish_node()
 }
 
 ///|
@@ -733,6 +757,7 @@ fn Parser::parse_primary(self : Parser) -> Unit {
     }
     k if k == int_lit() ||
       k == string_lit() ||
+      k == string_interp_lit() ||
       k == bool_lit() ||
       k == char_lit() => {
       self.builder.start_node(literal())
@@ -895,6 +920,16 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == import_kw() => self.parse_import_stmt()
     k if k == test_kw() => self.parse_test_stmt()
     k if k == flake_kw() => self.parse_flake_stmt()
+    k if k == name() =>
+      if self.peek_non_trivia_kind(self.pos + 1) == eq() {
+        self.parse_assign_stmt()
+      } else {
+        let start = self.pos
+        let expr = self.parse_expr()
+        let _ = self.eat(semicolon())
+        let span = self.span_from(start)
+        @core.Stmt::Expr(expr~, span~)
+      }
     _ => {
       let start = self.pos
       let expr = self.parse_expr()
@@ -911,16 +946,49 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let _ = self.expect(let_kw(), "let")
   self.skip_trivia()
   let mut rec_flag = false
+  let mut mut_flag = false
   if self.peek_kind() == rec_kw() {
     let _ = self.bump()
     rec_flag = true
+  }
+  if self.peek_kind() == mut_kw() {
+    let _ = self.bump()
+    mut_flag = true
+  }
+  self.skip_trivia()
+  if not(rec_flag) &&
+    not(mut_flag) &&
+    (self.peek_kind() == lparen() || self.peek_kind() == record_kw()) {
+    let pat = self.parse_pattern()
+    let _ = self.expect(eq(), "=")
+    let expr = self.parse_expr()
+    let _ = self.eat(semicolon())
+    let span = self.span_from(start)
+    return @core.Stmt::LetPat(pat~, expr~, span~)
   }
   let name_tok = self.expect(name(), "name")
   let _ = self.expect(eq(), "=")
   let expr = self.parse_expr()
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
-  @core.Stmt::Let(rec=rec_flag, name=name_tok.text(), expr~, span~)
+  if mut_flag {
+    @core.Stmt::LetMut(name=name_tok.text(), expr~, span~)
+  } else {
+    @core.Stmt::Let(rec=rec_flag, name=name_tok.text(), expr~, span~)
+  }
+}
+
+///|
+fn AstParser::parse_assign_stmt(
+  self : AstParser,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let name_tok = self.expect(name(), "name")
+  let _ = self.expect(eq(), "=")
+  let expr = self.parse_expr()
+  let _ = self.eat(semicolon())
+  let span = self.span_from(start)
+  @core.Stmt::Assign(name=name_tok.text(), expr~, span~)
 }
 
 ///|
@@ -1210,6 +1278,8 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
   self.skip_trivia()
   if self.peek_kind() == if_kw() {
     self.parse_if_expr()
+  } else if self.peek_kind() == while_kw() {
+    self.parse_while_expr()
   } else if self.peek_kind() == match_kw() {
     self.parse_match_expr()
   } else if self.peek_kind() == do_kw() {
@@ -1463,6 +1533,16 @@ fn AstParser::parse_if_expr(self : AstParser) -> @core.Expr raise ParseError {
   }
   let span = self.span_from(start)
   @core.Expr::If(cond~, then_body~, else_body~, span~)
+}
+
+///|
+fn AstParser::parse_while_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(while_kw(), "while")
+  let cond = self.parse_expr()
+  let body = self.parse_block()
+  let span = self.span_from(start)
+  @core.Expr::While(cond~, body~, span~)
 }
 
 ///|
@@ -2343,6 +2423,11 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
       let span = self.span_from(start)
       @core.Expr::String(value=tok.text(), span~)
     }
+    k if k == string_interp_lit() => {
+      let _ = self.bump()
+      let span = self.span_from(start)
+      desugar_string_interp(tok.text(), span)
+    }
     k if k == char_lit() => {
       let _ = self.bump()
       let chars = tok.text().to_array()
@@ -2368,6 +2453,105 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
         got=tok.text(),
         span=self.token_span(),
       )
+  }
+}
+
+///|
+fn desugar_string_interp(
+  raw : String,
+  span : @core.Span,
+) -> @core.Expr raise ParseError {
+  let parts : Array[@core.Expr] = []
+  let chars = raw.to_array()
+  let len = chars.length()
+  let mut i = 0
+  let buf = StringBuilder::new()
+  while i < len {
+    if i + 1 < len && chars[i] == '\\' && chars[i + 1] == '(' {
+      if buf.to_string().length() > 0 {
+        parts.push(@core.Expr::String(value=buf.to_string(), span~))
+        buf.reset()
+      }
+      i += 2
+      let expr_buf = StringBuilder::new()
+      let mut depth = 1
+      while i < len && depth > 0 {
+        if chars[i] == '(' {
+          depth += 1
+          expr_buf.write_char(chars[i])
+        } else if chars[i] == ')' {
+          depth -= 1
+          if depth > 0 {
+            expr_buf.write_char(chars[i])
+          }
+        } else {
+          expr_buf.write_char(chars[i])
+        }
+        i += 1
+      }
+      let expr_text = expr_buf.to_string()
+      let expr_ast = parse_ast(expr_text) catch { e => raise e }
+      let inner = if expr_ast.stmts.length() == 1 {
+        match expr_ast.stmts[0] {
+          @core.Stmt::Expr(expr~, span~) => {
+            let _ = span
+            expr
+          }
+          _ =>
+            raise ParseError::UnexpectedToken(
+              expected="expr in interpolation",
+              got=expr_text,
+              span~,
+            )
+        }
+      } else {
+        raise ParseError::UnexpectedToken(
+          expected="single expr in interpolation",
+          got=expr_text,
+          span~,
+        )
+      }
+      parts.push(
+        @core.Expr::Call(
+          name="__to_string",
+          args=[@core.CallArg::{ label: None, expr: inner, span }],
+          span~,
+        ),
+      )
+    } else if chars[i] == '\\' && i + 1 < len {
+      match chars[i + 1] {
+        'n' => buf.write_char('\n')
+        't' => buf.write_char('\t')
+        '"' => buf.write_char('"')
+        '\\' => buf.write_char('\\')
+        c => buf.write_char(c)
+      }
+      i += 2
+    } else {
+      buf.write_char(chars[i])
+      i += 1
+    }
+  }
+  if buf.to_string().length() > 0 {
+    parts.push(@core.Expr::String(value=buf.to_string(), span~))
+  }
+  if parts.length() == 0 {
+    @core.Expr::String(value="", span~)
+  } else if parts.length() == 1 {
+    parts[0]
+  } else {
+    let mut result = parts[0]
+    for j in 1..<parts.length() {
+      result = @core.Expr::Call(
+        name="string_concat",
+        args=[
+          @core.CallArg::{ label: None, expr: result, span },
+          @core.CallArg::{ label: None, expr: parts[j], span },
+        ],
+        span~,
+      )
+    }
+    result
   }
 }
 

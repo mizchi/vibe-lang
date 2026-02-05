@@ -235,6 +235,30 @@ fn stmts_to_sexp(
         let _ = span
 
       }
+      @core.Stmt::LetMut(name~, expr~, span~) => {
+        let _ = span
+        buf.write_string(" (let-mut ")
+        buf.write_string(escape_atom(name))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(expr, aliases))
+        buf.write_char(')')
+      }
+      @core.Stmt::Assign(name~, expr~, span~) => {
+        let _ = span
+        buf.write_string(" (assign ")
+        buf.write_string(escape_atom(name))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(expr, aliases))
+        buf.write_char(')')
+      }
+      @core.Stmt::LetPat(pat~, expr~, span~) => {
+        let _ = span
+        buf.write_string(" (let-pat ")
+        buf.write_string(pat_to_sexp(pat))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(expr, aliases))
+        buf.write_char(')')
+      }
     }
   }
   buf.write_char(')')
@@ -405,6 +429,16 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
         buf.write_string(effect_atom_to_sexp(effect))
       }
       buf.write_string(") ")
+      buf.write_string(block_to_sexp(body, aliases))
+      buf.write_char(')')
+      buf.to_string()
+    }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(while ")
+      buf.write_string(expr_to_sexp(cond, aliases))
+      buf.write_char(' ')
       buf.write_string(block_to_sexp(body, aliases))
       buf.write_char(')')
       buf.to_string()

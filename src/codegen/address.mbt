@@ -231,6 +231,14 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      "(while " +
+      expr_to_addr_sexp(ctx, cond) +
+      " " +
+      block_to_addr_sexp(ctx, body) +
+      ")"
+    }
   }
 }
 
@@ -316,6 +324,31 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         let _ = span
         buf.write_string(" (test ")
         buf.write_string(block_to_addr_sexp(block_ctx, body))
+        buf.write_char(')')
+      }
+      @core.Stmt::LetMut(name~, expr~, span~) => {
+        let _ = span
+        buf.write_string(" (let-mut ")
+        buf.write_string(expr_to_addr_sexp(block_ctx, expr))
+        buf.write_char(')')
+        let _ = addr_bind_local(block_ctx, name)
+
+      }
+      @core.Stmt::Assign(name~, expr~, span~) => {
+        let _ = span
+        buf.write_string(" (assign ")
+        buf.write_string(addr_escape_string(resolve_ref(block_ctx, name)))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(block_ctx, expr))
+        buf.write_char(')')
+      }
+      @core.Stmt::LetPat(pat~, expr~, span~) => {
+        let _ = span
+        bind_pattern(block_ctx, pat)
+        buf.write_string(" (let-pat ")
+        buf.write_string(addr_pat_to_sexp(block_ctx, pat))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(block_ctx, expr))
         buf.write_char(')')
       }
     }
@@ -727,5 +760,16 @@ fn is_builtin(name : String) -> Bool {
   name == "array_builder_freeze" ||
   name == "map_builder" ||
   name == "map_builder_set" ||
-  name == "map_builder_freeze"
+  name == "map_builder_freeze" ||
+  name == "map_keys" ||
+  name == "map_values" ||
+  name == "map_has_key" ||
+  name == "array_slice" ||
+  name == "int_to_float" ||
+  name == "int_to_double" ||
+  name == "float_to_int" ||
+  name == "float_to_double" ||
+  name == "double_to_int" ||
+  name == "double_to_float" ||
+  name == "__to_string"
 }

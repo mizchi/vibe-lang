@@ -88,6 +88,8 @@ fn is_whitespace_char(c : Char) -> Bool {
 fn Lexer::lex_string(self : Lexer) -> Token {
   let _ = self.advance() // opening quote
   let buf = StringBuilder::new()
+  let raw = StringBuilder::new()
+  let mut has_interp = false
   while (match self.peek() {
           Some('"') => false
           Some(_) => true
@@ -95,22 +97,77 @@ fn Lexer::lex_string(self : Lexer) -> Token {
         }) {
     match self.advance() {
       Some('\\') =>
-        match self.advance() {
-          Some('"') => buf.write_char('"')
-          Some('\\') => buf.write_char('\\')
-          Some('n') => buf.write_char('\n')
-          Some('t') => buf.write_char('\t')
-          Some(c) => buf.write_char(c)
-          None => ()
+        match self.peek() {
+          Some('(') => {
+            has_interp = true
+            raw.write_char('\\')
+            raw.write_char('(')
+            let _ = self.advance()
+            let mut depth = 1
+            while depth > 0 {
+              match self.advance() {
+                Some('(') => {
+                  depth += 1
+                  raw.write_char('(')
+                }
+                Some(')') => {
+                  depth -= 1
+                  if depth > 0 {
+                    raw.write_char(')')
+                  } else {
+                    raw.write_char(')')
+                  }
+                }
+                Some(c) => raw.write_char(c)
+                None => break
+              }
+            }
+          }
+          _ =>
+            match self.advance() {
+              Some('"') => {
+                buf.write_char('"')
+                raw.write_char('\\')
+                raw.write_char('"')
+              }
+              Some('\\') => {
+                buf.write_char('\\')
+                raw.write_char('\\')
+                raw.write_char('\\')
+              }
+              Some('n') => {
+                buf.write_char('\n')
+                raw.write_char('\\')
+                raw.write_char('n')
+              }
+              Some('t') => {
+                buf.write_char('\t')
+                raw.write_char('\\')
+                raw.write_char('t')
+              }
+              Some(c) => {
+                buf.write_char(c)
+                raw.write_char('\\')
+                raw.write_char(c)
+              }
+              None => ()
+            }
         }
-      Some(c) => buf.write_char(c)
+      Some(c) => {
+        buf.write_char(c)
+        raw.write_char(c)
+      }
       None => ()
     }
   }
   match self.peek() {
     Some('"') => {
       let _ = self.advance()
-      Token::new(string_lit(), buf.to_string())
+      if has_interp {
+        Token::new(string_interp_lit(), raw.to_string())
+      } else {
+        Token::new(string_lit(), buf.to_string())
+      }
     }
     _ => Token::new(error_kind(), buf.to_string())
   }
@@ -210,6 +267,8 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "rec" => rec_kw()
           "type" => type_kw()
           "enum" => enum_kw()
+          "while" => while_kw()
+          "mut" => mut_kw()
           "true" => bool_lit()
           "false" => bool_lit()
           _ => name()

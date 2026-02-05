@@ -72,3 +72,77 @@ test "match literal bool" { assert(eq(match_literal_bool, 1)) }
 test "if value" { assert(eq(if_value, 1)) }
 test "block value" { assert(eq(block_value, 3)) }
 test "built array" { assert(eq(array_length(built_array), 2)) }
+test "int_to_double" { assert(eq(int_to_double(42), 42.0)) }
+test "double_to_int" { assert(eq(double_to_int(3.14), 3)) }
+test "int_to_float" { assert(eq(int_to_float(42), 42.0f)) }
+test "float_to_int" { assert(eq(float_to_int(3.14f), 3)) }
+test "float_to_double" { assert(eq(float_to_double(1.5f), 1.5)) }
+test "double_to_float" { assert(eq(double_to_float(1.5), 1.5f)) }
+test "array_concat" {
+  let a = array_concat([1, 2], [3, 4])
+  assert(eq(array_length(a), 4))
+  assert(eq(array_get(a, 0), 1))
+  assert(eq(array_get(a, 3), 4))
+}
+test "array_reverse" {
+  let r = array_reverse([1, 2, 3])
+  assert(eq(array_get(r, 0), 3))
+  assert(eq(array_get(r, 2), 1))
+}
+test "map_keys" {
+  let m = map { a: 1, b: 2 }
+  let k = map_keys(m)
+  assert(eq(array_length(k), 2))
+}
+test "map_has_key" {
+  let m = map { x: 10 }
+  assert(map_has_key(m, "x"))
+  assert(not(map_has_key(m, "y")))
+}
+test "array_slice" {
+  let s = array_slice([10, 20, 30, 40], 1, 3)
+  assert(eq(array_length(s), 2))
+  assert(eq(array_get(s, 0), 20))
+  assert(eq(array_get(s, 1), 30))
+}
+let mut counter = 0
+while counter < 5 {
+  counter = counter + 1
+}
+test "while_basic" { assert(eq(counter, 5)) }
+test "let_mut_assign" {
+  let mut x = 10
+  x = x + 5
+  assert(eq(x, 15))
+}
+test "while_sum" {
+  let mut sum = 0
+  let mut i = 1
+  while i <= 10 {
+    sum = sum + i
+    i = i + 1
+  }
+  assert(eq(sum, 55))
+}
+test "let_tuple_destr" {
+  let (a, b) = (10, 20)
+  assert(eq(a + b, 30))
+}
+test "let_record_destr" {
+  let record { x: v, y: w } = record { x: 42, y: 7 }
+  assert(eq(v + w, 49))
+}
+test "string_interp_basic" {
+  let name = "world"
+  let msg = "hello \(name)!"
+  assert(string_equals(msg, "hello world!"))
+}
+test "string_interp_int" {
+  let n = 42
+  let msg = "value: \(n)"
+  assert(string_equals(msg, "value: 42"))
+}
+test "string_interp_expr" {
+  let msg = "sum: \(add(1, 2))"
+  assert(string_equals(msg, "sum: 3"))
+}

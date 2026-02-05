@@ -55,6 +55,12 @@ fn desugar_stmt(
     @core.Stmt::Flake(..) => stmt
     @core.Stmt::Alias(..) => stmt
     @core.Stmt::Import(..) => stmt
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      @core.Stmt::LetMut(name~, expr=desugar_expr(expr, scope, aliases), span~)
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(name~, expr=desugar_expr(expr, scope, aliases), span~)
+    @core.Stmt::LetPat(pat~, expr~, span~) =>
+      @core.Stmt::LetPat(pat~, expr=desugar_expr(expr, scope, aliases), span~)
   }
 }
 

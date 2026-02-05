@@ -378,6 +378,7 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == import_kw() ||
   kind == test_kw() ||
   kind == if_kw() ||
+  kind == while_kw() ||
   kind == match_kw() ||
   kind == do_kw() ||
   kind == try_kw() ||
@@ -629,7 +630,9 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == catch_kw() ||
   kind == record_kw() ||
   kind == map_kw() ||
-  kind == fn_kw()
+  kind == fn_kw() ||
+  kind == while_kw() ||
+  kind == mut_kw()
 }
 
 ///|
@@ -637,6 +640,7 @@ fn is_literal_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == int_lit() ||
   kind == float_lit() ||
   kind == string_lit() ||
+  kind == string_interp_lit() ||
   kind == bool_lit() ||
   kind == char_lit()
 }

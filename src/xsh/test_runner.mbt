@@ -317,6 +317,11 @@ fn collect_dep_expr(
       }
       collect_dep_block(body, fn_bound, out)
     }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      collect_dep_expr(cond, bound, out)
+      collect_dep_block(body, bound, out)
+    }
   }
 }
 

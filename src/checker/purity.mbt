@@ -205,6 +205,7 @@ fn purity_expr_inner(
       let _ = span
       true
     }
+    @core.Expr::While(..) => false
   }
 }
 
@@ -239,6 +240,18 @@ fn purity_block_inner(
         let _ = body
         let _ = span
 
+      }
+      @core.Stmt::LetPat(pat~, expr~, span~) => {
+        let _ = span
+        if not(purity_expr_inner(env, expr, scope)) {
+          ok = false
+          break
+        }
+        bind_pattern_names(scope, pat)
+      }
+      @core.Stmt::LetMut(..) | @core.Stmt::Assign(..) => {
+        ok = false
+        break
       }
       _ => ()
     }
@@ -381,7 +394,18 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "__lt" ||
   name == "__neg" ||
   name == "__assert" ||
-  name == "record_set"
+  name == "record_set" ||
+  name == "map_keys" ||
+  name == "map_values" ||
+  name == "map_has_key" ||
+  name == "array_slice" ||
+  name == "int_to_float" ||
+  name == "int_to_double" ||
+  name == "float_to_int" ||
+  name == "float_to_double" ||
+  name == "double_to_int" ||
+  name == "double_to_float" ||
+  name == "__to_string"
 }
 
 ///|

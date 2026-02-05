@@ -53,6 +53,11 @@ pub fn float_lit() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn string_interp_lit() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(16)
+}
+
+///|
 pub fn let_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(20)
 }
@@ -135,6 +140,21 @@ pub fn try_kw() -> @cst.SyntaxKind {
 ///|
 pub fn catch_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(62)
+}
+
+///|
+pub fn while_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(63)
+}
+
+///|
+pub fn mut_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(64)
+}
+
+///|
+pub fn while_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(124)
 }
 
 ///|

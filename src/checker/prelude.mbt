@@ -49,6 +49,49 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
+  #|let array_foreach = fn (f: fn (x: Num) -> Unit, xs: Array[Num]) -> Unit {
+  #|  let rec loop = fn (i: Int) -> Unit {
+  #|    if i < array_length(xs) {
+  #|      f(array_get(xs, i))
+  #|      loop(i + 1)
+  #|    } else { }
+  #|  }
+  #|  loop(0)
+  #|}
+  #|let array_concat = fn (xs: Array[Num], ys: Array[Num]) -> Array[Num] {
+  #|  do {
+  #|    let b = array_builder()
+  #|    let rec loop1 = fn (i: Int) -> Unit {
+  #|      if i < array_length(xs) {
+  #|        array_builder_push(b, array_get(xs, i))
+  #|        loop1(i + 1)
+  #|      } else { }
+  #|    }
+  #|    loop1(0)
+  #|    let rec loop2 = fn (i: Int) -> Unit {
+  #|      if i < array_length(ys) {
+  #|        array_builder_push(b, array_get(ys, i))
+  #|        loop2(i + 1)
+  #|      } else { }
+  #|    }
+  #|    loop2(0)
+  #|    array_builder_freeze(b)
+  #|  }
+  #|}
+  #|let array_reverse = fn (xs: Array[Num]) -> Array[Num] {
+  #|  do {
+  #|    let b = array_builder()
+  #|    let len = array_length(xs)
+  #|    let rec loop = fn (i: Int) -> Unit {
+  #|      if i >= 0 {
+  #|        array_builder_push(b, array_get(xs, i))
+  #|        loop(i - 1)
+  #|      } else { }
+  #|    }
+  #|    loop(len - 1)
+  #|    array_builder_freeze(b)
+  #|  }
+  #|}
 
 ///|
 pub fn prelude_ast() -> @core.Module {
@@ -59,6 +102,6 @@ pub fn prelude_ast() -> @core.Module {
 pub fn prelude_names() -> Array[String] {
   [
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "array_map",
-    "array_fold", "array_filter",
+    "array_fold", "array_filter", "array_foreach", "array_concat", "array_reverse",
   ]
 }

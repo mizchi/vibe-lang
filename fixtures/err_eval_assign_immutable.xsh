@@ -1,0 +1,5 @@
+let x = 1
+x = 2
+
+__DATA__
+{"error_contains": "assign to immutable"}

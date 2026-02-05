@@ -1316,6 +1316,12 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I32
     }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = cond
+      let _ = body
+      let _ = span
+      ValueKind::I32
+    }
   }
 }
 
@@ -2804,6 +2810,12 @@ fn compile_expr(
         emit_i32_or(buf)
       }
     }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = cond
+      let _ = body
+      let _ = span
+      raise WasmGenError::Unsupported("while")
+    }
   }
 }
 
@@ -2896,6 +2908,24 @@ fn compile_stmt(
       let _ = path
       let _ = span
       raise WasmGenError::Unsupported("import")
+    }
+    @core.Stmt::LetMut(name~, expr~, span~) => {
+      let _ = name
+      let _ = expr
+      let _ = span
+      raise WasmGenError::Unsupported("let mut")
+    }
+    @core.Stmt::Assign(name~, expr~, span~) => {
+      let _ = name
+      let _ = expr
+      let _ = span
+      raise WasmGenError::Unsupported("assign")
+    }
+    @core.Stmt::LetPat(pat~, expr~, span~) => {
+      let _ = pat
+      let _ = expr
+      let _ = span
+      raise WasmGenError::Unsupported("let pat")
     }
   }
 }

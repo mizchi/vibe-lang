@@ -83,6 +83,9 @@ pub(all) enum Stmt {
   Alias(name~ : String, target~ : AliasTarget, span~ : Span)
   Import(path~ : String, span~ : Span)
   Test(name~ : String?, body~ : Module, span~ : Span)
+  LetMut(name~ : String, expr~ : Expr, span~ : Span)
+  Assign(name~ : String, expr~ : Expr, span~ : Span)
+  LetPat(pat~ : Pat, expr~ : Expr, span~ : Span)
 } derive(Show, Eq)
 
 ///|
@@ -110,6 +113,7 @@ pub(all) enum Expr {
     body~ : Module,
     span~ : Span
   )
+  While(cond~ : Expr, body~ : Module, span~ : Span)
 } derive(Show, Eq)
 
 ///|
@@ -212,6 +216,11 @@ pub fn Expr::span(self : Expr) -> Span {
       let _ = body
       span
     }
+    Expr::While(cond~, body~, span~) => {
+      let _ = cond
+      let _ = body
+      span
+    }
   }
 }
 
@@ -300,6 +309,21 @@ pub fn Stmt::span(self : Stmt) -> Span {
     Stmt::Test(name~, body~, span~) => {
       let _ = name
       let _ = body
+      span
+    }
+    Stmt::LetMut(name~, expr~, span~) => {
+      let _ = name
+      let _ = expr
+      span
+    }
+    Stmt::Assign(name~, expr~, span~) => {
+      let _ = name
+      let _ = expr
+      span
+    }
+    Stmt::LetPat(pat~, expr~, span~) => {
+      let _ = pat
+      let _ = expr
       span
     }
   }

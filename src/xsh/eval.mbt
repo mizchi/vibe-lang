@@ -123,6 +123,43 @@ pub fn Runtime::eval_module(
         let _ = span
         last = Some(@core.Value::Unit)
       }
+      @core.Stmt::LetMut(name~, expr~, span~) => {
+        let _ = span
+        let out = eval_expr(self, expr)
+        for eff in out.effects {
+          effects.push(eff)
+        }
+        self.bind(name, out.value) |> ignore
+        self.mut_vars[name] = true
+        last = Some(out.value)
+      }
+      @core.Stmt::Assign(name~, expr~, span~) => {
+        let _ = span
+        if not(self.mut_vars.contains(name)) {
+          raise EvalError::BadCall("assign to immutable: " + name)
+        }
+        let out = eval_expr(self, expr)
+        for eff in out.effects {
+          effects.push(eff)
+        }
+        self.bind(name, out.value) |> ignore
+        last = Some(out.value)
+      }
+      @core.Stmt::LetPat(pat~, expr~, span~) => {
+        let _ = span
+        let out = eval_expr(self, expr)
+        for eff in out.effects {
+          effects.push(eff)
+        }
+        match match_pattern(pat, out.value) {
+          Some(bindings) =>
+            for name, value in bindings {
+              self.bind(name, value) |> ignore
+            }
+          None => raise EvalError::BadCall("let-pat: pattern match failed")
+        }
+        last = Some(out.value)
+      }
     }
   }
   { last, effects }
@@ -330,6 +367,26 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         pure: purity.value,
       }
       { value: @core.Value::Fn(closure), effects: [] }
+    }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      let effects : Array[Effect] = []
+      while {
+              let cond_out = eval_expr(rt, cond)
+              for eff in cond_out.effects {
+                effects.push(eff)
+              }
+              match cond_out.value {
+                @core.Value::Bool(b) => b
+                _ => raise EvalError::BadCall("while cond")
+              }
+            } {
+        let body_res = rt.eval_module(body)
+        for eff in body_res.effects {
+          effects.push(eff)
+        }
+      }
+      { value: @core.Value::Unit, effects }
     }
   }
 }
@@ -906,7 +963,18 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "__lt" ||
   name == "__neg" ||
   name == "__assert" ||
-  name == "record_set"
+  name == "record_set" ||
+  name == "map_keys" ||
+  name == "map_values" ||
+  name == "map_has_key" ||
+  name == "array_slice" ||
+  name == "int_to_float" ||
+  name == "int_to_double" ||
+  name == "float_to_int" ||
+  name == "float_to_double" ||
+  name == "double_to_int" ||
+  name == "double_to_float" ||
+  name == "__to_string"
 }
 
 ///|
@@ -1156,6 +1224,152 @@ fn eval_pure_builtin(
           @core.Value::Record(out)
         }
         _ => raise EvalError::BadCall("record_set")
+      }
+    }
+    "map_keys" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("map_keys")
+      }
+      match args[0] {
+        @core.Value::Map(items) => {
+          let keys : Array[@core.Value] = []
+          for k, _ in items {
+            keys.push(@core.Value::String(k))
+          }
+          @core.Value::Array(keys)
+        }
+        _ => raise EvalError::BadCall("map_keys")
+      }
+    }
+    "map_values" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("map_values")
+      }
+      match args[0] {
+        @core.Value::Map(items) => {
+          let values : Array[@core.Value] = []
+          for _, v in items {
+            values.push(v)
+          }
+          @core.Value::Array(values)
+        }
+        _ => raise EvalError::BadCall("map_values")
+      }
+    }
+    "map_has_key" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("map_has_key")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Map(items), @core.Value::String(key)) =>
+          @core.Value::Bool(items.contains(key))
+        _ => raise EvalError::BadCall("map_has_key")
+      }
+    }
+    "array_slice" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall("array_slice")
+      }
+      match (args[0], args[1], args[2]) {
+        (
+          @core.Value::Array(items),
+          @core.Value::Int(start),
+          @core.Value::Int(end),
+        ) => {
+          let len = items.length()
+          let mut a = start
+          let mut b = end
+          if a < 0 {
+            a = 0
+          }
+          if b < 0 {
+            b = 0
+          }
+          if a > len {
+            a = len
+          }
+          if b > len {
+            b = len
+          }
+          if a > b {
+            a = b
+          }
+          let out : Array[@core.Value] = []
+          for i in a..<b {
+            out.push(items[i])
+          }
+          @core.Value::Array(out)
+        }
+        _ => raise EvalError::BadCall("array_slice")
+      }
+    }
+    "int_to_float" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("int_to_float")
+      }
+      match args[0] {
+        @core.Value::Int(n) => @core.Value::Float(Float::from_int(n))
+        _ => raise EvalError::BadCall("int_to_float")
+      }
+    }
+    "int_to_double" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("int_to_double")
+      }
+      match args[0] {
+        @core.Value::Int(n) => @core.Value::Double(n.to_double())
+        _ => raise EvalError::BadCall("int_to_double")
+      }
+    }
+    "float_to_int" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("float_to_int")
+      }
+      match args[0] {
+        @core.Value::Float(f) => @core.Value::Int(f.to_int())
+        _ => raise EvalError::BadCall("float_to_int")
+      }
+    }
+    "float_to_double" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("float_to_double")
+      }
+      match args[0] {
+        @core.Value::Float(f) => @core.Value::Double(f.to_double())
+        _ => raise EvalError::BadCall("float_to_double")
+      }
+    }
+    "double_to_int" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("double_to_int")
+      }
+      match args[0] {
+        @core.Value::Double(d) => @core.Value::Int(d.to_int())
+        _ => raise EvalError::BadCall("double_to_int")
+      }
+    }
+    "double_to_float" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("double_to_float")
+      }
+      match args[0] {
+        @core.Value::Double(d) => @core.Value::Float(Float::from_double(d))
+        _ => raise EvalError::BadCall("double_to_float")
+      }
+    }
+    "__to_string" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("__to_string")
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::String(s)
+        @core.Value::Int(n) => @core.Value::String(n.to_string())
+        @core.Value::Float(f) => @core.Value::String(f.to_string())
+        @core.Value::Double(d) => @core.Value::String(d.to_string())
+        @core.Value::Bool(b) =>
+          @core.Value::String(if b { "true" } else { "false" })
+        @core.Value::Unit => @core.Value::String("()")
+        _ => raise EvalError::BadCall("__to_string")
       }
     }
     _ => raise EvalError::BadCall(name)

@@ -45,6 +45,7 @@ pub struct Runtime {
   pure_cache : PureCache
   test_cache : TestCache
   mut type_env : @checker.TypeEnv
+  mut_vars : Map[String, Bool]
 }
 
 ///|
@@ -59,6 +60,7 @@ pub fn Runtime::new(caps : @capability.CapabilitySet) -> Runtime {
     pure_cache: PureCache::new(),
     test_cache: TestCache::new(),
     type_env: @checker.TypeEnv::new(),
+    mut_vars: {},
   }
   let env = @checker.TypeEnv::new()
   let _ = try! @checker.ensure_prelude_option(env)
@@ -208,6 +210,7 @@ pub fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     pure_cache: self.pure_cache,
     test_cache: self.test_cache,
     type_env: self.type_env.clone(),
+    mut_vars: self.mut_vars.copy(),
   }
 }
 
@@ -231,6 +234,7 @@ pub fn Runtime::fork_with_env(
     pure_cache: self.pure_cache,
     test_cache: self.test_cache,
     type_env: self.type_env.clone(),
+    mut_vars: self.mut_vars.copy(),
   }
 }
 

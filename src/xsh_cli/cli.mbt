@@ -10,6 +10,7 @@ pub fn run(args : Array[String]) -> Unit {
   match cmd {
     "run" => run_cmd(cmd_args)
     "test" => test_cmd(cmd_args)
+    "check" => check_cmd(cmd_args)
     "fmt" => fmt_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args)
@@ -31,6 +32,7 @@ fn print_usage() -> Unit {
   println("commands:")
   println("  run <file>                 parse/type/eval a script")
   println("  test <file...>             run test blocks in scripts")
+  println("  check <file...>            parse/type check scripts")
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
     "  compile [--wasm | --wasm-js-string | --wasm-gc] [-o out] <file>  emit IR (default) or wasm bytes",
@@ -219,6 +221,93 @@ fn run_cmd(args : Array[String]) -> Unit {
         e => abort("run: " + e.to_string())
       }
       print_eval_result(result)
+    }
+  }
+}
+
+///|
+fn check_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    abort("check: expected <file...>")
+  }
+  let mut total_errors = 0
+  for entry_path in args {
+    let path = resolve_entry_path(entry_path)
+    let source = @os_fs.read_file_to_string(path) catch {
+      e => {
+        println("check: \{entry_path}: \{e}")
+        total_errors += 1
+        continue
+      }
+    }
+    let db = @xsh_lib.XshDb::new()
+    db.set_source(path, source)
+    load_imports_for_check(db, path, source)
+    let _ = db.types(path)
+    let diags = db.diagnostics(path)
+    for diag in diags {
+      println(diag.render(entry_path, source))
+    }
+    if diags.length() == 0 {
+      println("\{entry_path}: ok")
+    }
+    total_errors += diags.length()
+  }
+  if total_errors > 0 {
+    abort("check: \{total_errors} error(s) found")
+  }
+}
+
+///|
+fn load_imports_for_check(
+  db : @xsh_lib.XshDb,
+  path : String,
+  source : String,
+) -> Unit {
+  let ast = @parser.parse_ast(source) catch { _ => return }
+  let base = @xsh_fs.parent_path(path)
+  let visited : Map[String, Bool] = {}
+  visited[path] = true
+  for stmt in ast.stmts {
+    match stmt {
+      @xsh_core.Stmt::Import(path=import_path, ..) => {
+        let resolved = if import_path.has_prefix("/") {
+          @xsh_fs.normalize_path(import_path)
+        } else {
+          @xsh_fs.normalize_path(base + "/" + import_path)
+        }
+        load_import_recursive_for_check(db, resolved, visited)
+      }
+      _ => ()
+    }
+  }
+}
+
+///|
+fn load_import_recursive_for_check(
+  db : @xsh_lib.XshDb,
+  path : String,
+  visited : Map[String, Bool],
+) -> Unit {
+  if visited.contains(path) {
+    return
+  }
+  visited[path] = true
+  let source = @os_fs.read_file_to_string(path) catch { _ => return }
+  db.set_source(path, source)
+  let ast = @parser.parse_ast(source) catch { _ => return }
+  let base = @xsh_fs.parent_path(path)
+  for stmt in ast.stmts {
+    match stmt {
+      @xsh_core.Stmt::Import(path=import_path, ..) => {
+        let resolved = if import_path.has_prefix("/") {
+          @xsh_fs.normalize_path(import_path)
+        } else {
+          @xsh_fs.normalize_path(base + "/" + import_path)
+        }
+        load_import_recursive_for_check(db, resolved, visited)
+      }
+      _ => ()
     }
   }
 }

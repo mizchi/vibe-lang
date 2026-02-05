@@ -69,7 +69,7 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
     TypeError::BadCall(message~, span~) =>
       @core.Diagnostic::{
         stage: "type",
-        message: "bad call: " + message,
+        message: format_bad_call(message),
         span: Some(span),
         hint: None,
         note: None,
@@ -77,7 +77,7 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
     TypeError::BadRec(message~, span~) =>
       @core.Diagnostic::{
         stage: "type",
-        message: "bad rec: " + message,
+        message: format_bad_rec(message),
         span: Some(span),
         hint: None,
         note: None,
@@ -85,7 +85,7 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
     TypeError::BadMatch(message~, span~) =>
       @core.Diagnostic::{
         stage: "type",
-        message: "match error: " + message,
+        message: format_bad_match(message),
         span: Some(span),
         hint: None,
         note: None,
@@ -109,11 +109,76 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
     TypeError::EffectNotAllowed(name~, span~) =>
       @core.Diagnostic::{
         stage: "type",
-        message: "effect not allowed: " + name,
+        message: "effect not allowed: `" + name + "`",
         span: Some(span),
-        hint: None,
+        hint: Some("wrap in `do { ... }` to allow side effects"),
         note: None,
       }
+  }
+}
+
+///|
+fn format_bad_call(message : String) -> String {
+  match message {
+    "missing positional args" => "not enough arguments"
+    "too many positional args" => "too many arguments"
+    _ =>
+      if message.has_prefix("unknown label: ") ||
+        message.has_prefix("duplicate label: ") ||
+        message.has_prefix("missing label: ") {
+        message
+      } else {
+        "unknown function: `" + message + "`"
+      }
+  }
+}
+
+///|
+fn format_bad_rec(message : String) -> String {
+  match message {
+    "expected fn" => "`let rec` requires a `fn` expression"
+    "missing return type" => "`let rec` requires a return type annotation"
+    _ => message
+  }
+}
+
+///|
+fn format_bad_match(message : String) -> String {
+  match message {
+    "expected tuple" => "cannot destructure: value is not a tuple"
+    "expected record" => "cannot destructure: value is not a record"
+    "expected ctor variant" => "cannot destructure: value is not an enum"
+    "empty match" => "`match` requires at least one arm"
+    "tuple arity" => "tuple pattern has wrong number of elements"
+    "ctor arity" => "constructor pattern has wrong number of arguments"
+    _ =>
+      if message.has_prefix("duplicate bind: ") {
+        "duplicate binding: `" +
+        message.to_array()[16:]
+          .iter()
+          .fold(init=StringBuilder::new(), fn(sb, c) {
+            sb.write_char(c)
+            sb
+          })
+          .to_string() +
+        "`"
+      } else {
+        message
+      }
+  }
+}
+
+///|
+fn TypeError::resolve_vars(self : TypeError, env : TypeEnv) -> TypeError {
+  match self {
+    TypeError::Mismatch(expected~, actual~, span~, context~) =>
+      TypeError::Mismatch(
+        expected=resolve_type(env, expected),
+        actual=resolve_type(env, actual),
+        span~,
+        context~,
+      )
+    _ => self
   }
 }
 
@@ -792,7 +857,9 @@ pub fn type_check_with_aliases(
   let env = TypeEnv::new()
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
-  type_check_stmts(env, ast.stmts, aliases, effect_scope_all(), false)
+  type_check_stmts(env, ast.stmts, aliases, effect_scope_all(), false) catch {
+    e => raise e.resolve_vars(env)
+  }
 }
 
 ///|
@@ -803,7 +870,9 @@ pub fn type_check_with_env(
 ) -> TypeEnv raise TypeError {
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
-  type_check_stmts(env, ast.stmts, aliases, effect_scope_all(), false)
+  type_check_stmts(env, ast.stmts, aliases, effect_scope_all(), false) catch {
+    e => raise e.resolve_vars(env)
+  }
 }
 
 ///|
@@ -865,6 +934,50 @@ fn type_check_stmts(
           allow_effect,
         )
 
+      }
+      @core.Stmt::LetMut(name~, expr~, span~) => {
+        let _ = span
+        let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        let scheme = TypeScheme::{ vars: [], num_vars: [], effect_vars: [], ty }
+        env.set_scheme(name, scheme)
+        env.set_purity(name, false)
+      }
+      @core.Stmt::LetPat(pat~, expr~, span~) => {
+        let _ = span
+        let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        let bindings = collect_pattern_bindings(env, pat, ty)
+        for name, bound_ty in bindings {
+          let scheme = TypeScheme::{
+            vars: [],
+            num_vars: [],
+            effect_vars: [],
+            ty: bound_ty,
+          }
+          env.set_scheme(name, scheme)
+          env.set_purity(name, true)
+        }
+      }
+      @core.Stmt::Assign(name~, expr~, span~) => {
+        let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        match env.get_scheme(name) {
+          Some(scheme) => {
+            let expected = instantiate_scheme(env, scheme)
+            if not(type_equal(env, expected, ty)) {
+              raise TypeError::Mismatch(
+                expected~,
+                actual=ty,
+                span~,
+                context=Some("assignment"),
+              )
+            }
+          }
+          None =>
+            raise TypeError::UnknownName(
+              name~,
+              span~,
+              suggestion=find_name_suggestion(env, aliases, name),
+            )
+        }
       }
     }
   }
@@ -1886,6 +1999,20 @@ fn type_expr_eff(
         effects=resolved_effects,
       )
     }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      let cond_ty = type_expr_eff(env, cond, aliases, effects, allow_effect)
+      if not(type_equal(env, cond_ty, @core.Type::Bool)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Bool,
+          actual=cond_ty,
+          span=cond.span(),
+          context=Some("while condition"),
+        )
+      }
+      let _ = type_block(env, body, aliases, effects, allow_effect)
+      @core.Type::Unit
+    }
   }
   record_expr_type(env, expr.span(), ty)
   ty
@@ -2437,6 +2564,53 @@ fn type_block(
         let _ = span
         let _ = name
         let _ = type_block(scope_env, body, aliases, effects, allow_effect)
+        last = @core.Type::Unit
+      }
+      @core.Stmt::LetMut(name~, expr~, span~) => {
+        let _ = span
+        let ty = type_expr_eff(scope_env, expr, aliases, effects, allow_effect)
+        let scheme = TypeScheme::{ vars: [], num_vars: [], effect_vars: [], ty }
+        scope_env.set_scheme(name, scheme)
+        scope_env.set_purity(name, false)
+        last = @core.Type::Unit
+      }
+      @core.Stmt::LetPat(pat~, expr~, span~) => {
+        let _ = span
+        let ty = type_expr_eff(scope_env, expr, aliases, effects, allow_effect)
+        let bindings = collect_pattern_bindings(scope_env, pat, ty)
+        for name, bound_ty in bindings {
+          let scheme = TypeScheme::{
+            vars: [],
+            num_vars: [],
+            effect_vars: [],
+            ty: bound_ty,
+          }
+          scope_env.set_scheme(name, scheme)
+          scope_env.set_purity(name, true)
+        }
+        last = ty
+      }
+      @core.Stmt::Assign(name~, expr~, span~) => {
+        let ty = type_expr_eff(scope_env, expr, aliases, effects, allow_effect)
+        match scope_env.get_scheme(name) {
+          Some(scheme) => {
+            let expected = instantiate_scheme(scope_env, scheme)
+            if not(type_equal(scope_env, expected, ty)) {
+              raise TypeError::Mismatch(
+                expected~,
+                actual=ty,
+                span~,
+                context=Some("assignment"),
+              )
+            }
+          }
+          None =>
+            raise TypeError::UnknownName(
+              name~,
+              span~,
+              suggestion=find_name_suggestion(scope_env, aliases, name),
+            )
+        }
         last = @core.Type::Unit
       }
     }
@@ -3470,11 +3644,276 @@ fn type_call(
                 }
                 record_ty
               }
+              "map_keys" => {
+                let pos_args = extract_positional_args(
+                  args, "map_keys", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="map_keys", span=call_span)
+                }
+                let map_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let resolved = normalize_type(env, map_ty)
+                match resolved {
+                  @core.Type::Map(_) => @core.Type::Array(@core.Type::String)
+                  _ =>
+                    raise TypeError::BadCall(message="map_keys", span=call_span)
+                }
+              }
+              "map_values" => {
+                let pos_args = extract_positional_args(
+                  args, "map_values", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="map_values", span=call_span)
+                }
+                let map_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let resolved = normalize_type(env, map_ty)
+                match resolved {
+                  @core.Type::Map(elem_ty) => @core.Type::Array(elem_ty)
+                  _ =>
+                    raise TypeError::BadCall(
+                      message="map_values",
+                      span=call_span,
+                    )
+                }
+              }
+              "map_has_key" => {
+                let pos_args = extract_positional_args(
+                  args, "map_has_key", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="map_has_key",
+                    span=call_span,
+                  )
+                }
+                let map_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let resolved = normalize_type(env, map_ty)
+                match resolved {
+                  @core.Type::Map(_) => ()
+                  _ =>
+                    raise TypeError::BadCall(
+                      message="map_has_key",
+                      span=call_span,
+                    )
+                }
+                let key_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, key_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=key_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "array_slice" => {
+                let pos_args = extract_positional_args(
+                  args, "array_slice", call_span,
+                )
+                if pos_args.length() != 3 {
+                  raise TypeError::BadCall(
+                    message="array_slice",
+                    span=call_span,
+                  )
+                }
+                let array_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let resolved = normalize_type(env, array_ty)
+                let elem_ty = match resolved {
+                  @core.Type::Array(elem_ty) => elem_ty
+                  _ =>
+                    raise TypeError::BadCall(
+                      message="array_slice",
+                      span=call_span,
+                    )
+                }
+                let start_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, start_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=start_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let end_ty = type_expr_eff(
+                  env,
+                  pos_args[2],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, end_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=end_ty,
+                    span=pos_args[2].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Array(elem_ty)
+              }
+              "int_to_float" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  "int_to_float",
+                  @core.Type::Int,
+                  @core.Type::Float,
+                )
+              "int_to_double" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  "int_to_double",
+                  @core.Type::Int,
+                  @core.Type::Double,
+                )
+              "float_to_int" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  "float_to_int",
+                  @core.Type::Float,
+                  @core.Type::Int,
+                )
+              "float_to_double" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  "float_to_double",
+                  @core.Type::Float,
+                  @core.Type::Double,
+                )
+              "double_to_int" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  "double_to_int",
+                  @core.Type::Double,
+                  @core.Type::Int,
+                )
+              "double_to_float" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  "double_to_float",
+                  @core.Type::Double,
+                  @core.Type::Float,
+                )
+              "__to_string" => {
+                let pos_args = extract_positional_args(
+                  args, "__to_string", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="__to_string",
+                    span=call_span,
+                  )
+                }
+                let _ = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                @core.Type::String
+              }
               _ => raise TypeError::BadCall(message=name, span=call_span)
             }
           }
       }
   }
+}
+
+///|
+fn type_check_unary_convert(
+  env : TypeEnv,
+  args : Array[@core.CallArg],
+  call_span : @core.Span,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+  name : String,
+  from_ty : @core.Type,
+  to_ty : @core.Type,
+) -> @core.Type raise TypeError {
+  let pos_args = extract_positional_args(args, name, call_span)
+  if pos_args.length() != 1 {
+    raise TypeError::BadCall(message=name, span=call_span)
+  }
+  let arg_ty = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+  if not(type_equal(env, arg_ty, from_ty)) {
+    raise TypeError::Mismatch(
+      expected=from_ty,
+      actual=arg_ty,
+      span=pos_args[0].span(),
+      context=Some("argument"),
+    )
+  }
+  to_ty
 }
 
 ///|
