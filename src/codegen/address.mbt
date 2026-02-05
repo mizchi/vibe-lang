@@ -74,6 +74,14 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let _ = span
       "(lit (int " + n.to_string() + "))"
     }
+    @core.Expr::Float(value=n, span~) => {
+      let _ = span
+      "(lit (float " + n.to_string() + "))"
+    }
+    @core.Expr::Double(value=n, span~) => {
+      let _ = span
+      "(lit (double " + n.to_string() + "))"
+    }
     @core.Expr::Bool(value=b, span~) => {
       let _ = span
       "(lit (bool " + (if b { "true" } else { "false" }) + "))"
@@ -424,6 +432,14 @@ fn addr_pat_to_sexp(ctx : AddrCtx, pat : @core.Pat) -> String {
       let _ = span
       "(pat (int " + n.to_string() + "))"
     }
+    @core.Pat::Float(value=n, span~) => {
+      let _ = span
+      "(pat (float " + n.to_string() + "))"
+    }
+    @core.Pat::Double(value=n, span~) => {
+      let _ = span
+      "(pat (double " + n.to_string() + "))"
+    }
     @core.Pat::Bool(value=b, span~) => {
       let _ = span
       "(pat (bool " + (if b { "true" } else { "false" }) + "))"
@@ -461,6 +477,8 @@ fn addr_label_to_sexp(label : @core.ParamLabel) -> String {
 fn addr_type_to_sexp(ty : @core.Type) -> String {
   match ty {
     @core.Type::Int => "Int"
+    @core.Type::Float => "Float"
+    @core.Type::Double => "Double"
     @core.Type::Bool => "Bool"
     @core.Type::String => "String"
     @core.Type::Path => "@core.Path"

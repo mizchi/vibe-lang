@@ -24,6 +24,8 @@ pub(all) enum Pat {
   Tuple(items~ : Array[Pat], span~ : Span)
   Record(fields~ : Array[RecordFieldPat], span~ : Span)
   Int(value~ : Int, span~ : Span)
+  Float(value~ : Float, span~ : Span)
+  Double(value~ : Double, span~ : Span)
   Bool(value~ : Bool, span~ : Span)
   String(value~ : String, span~ : Span)
 } derive(Show, Eq)
@@ -86,6 +88,8 @@ pub(all) enum Stmt {
 ///|
 pub(all) enum Expr {
   Int(value~ : Int, span~ : Span)
+  Float(value~ : Float, span~ : Span)
+  Double(value~ : Double, span~ : Span)
   Bool(value~ : Bool, span~ : Span)
   String(value~ : String, span~ : Span)
   Ident(name~ : String, span~ : Span)
@@ -133,6 +137,14 @@ pub(all) struct CallArg {
 pub fn Expr::span(self : Expr) -> Span {
   match self {
     Expr::Int(value~, span~) => {
+      let _ = value
+      span
+    }
+    Expr::Float(value~, span~) => {
+      let _ = value
+      span
+    }
+    Expr::Double(value~, span~) => {
       let _ = value
       span
     }
@@ -225,6 +237,14 @@ pub fn Pat::span(self : Pat) -> Span {
       span
     }
     Pat::Int(value~, span~) => {
+      let _ = value
+      span
+    }
+    Pat::Float(value~, span~) => {
+      let _ = value
+      span
+    }
+    Pat::Double(value~, span~) => {
       let _ = value
       span
     }

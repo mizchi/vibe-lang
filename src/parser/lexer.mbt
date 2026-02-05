@@ -225,7 +225,48 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           let _ = self.advance()
 
         }
+        let mut is_float = false
+        if self.peek() == Some('.') {
+          is_float = true
+          let _ = self.advance()
+          while (match self.peek() {
+                  Some(ch) => is_digit(ch)
+                  None => false
+                }) {
+            let _ = self.advance()
+
+          }
+        }
+        match self.peek() {
+          Some('e') | Some('E') => {
+            is_float = true
+            let _ = self.advance()
+            match self.peek() {
+              Some('+') | Some('-') => ignore(self.advance())
+              _ => ()
+            }
+            while (match self.peek() {
+                    Some(ch) => is_digit(ch)
+                    None => false
+                  }) {
+              let _ = self.advance()
+
+            }
+          }
+          _ => ()
+        }
+        match self.peek() {
+          Some('f') | Some('F') => {
+            is_float = true
+            let _ = self.advance()
+
+          }
+          _ => ()
+        }
         let text = (try! self.input[start:self.pos]).to_string()
+        if is_float {
+          return Token::new(float_lit(), text)
+        }
         return Token::new(int_lit(), text)
       }
       let _ = self.advance()

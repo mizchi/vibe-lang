@@ -30,6 +30,8 @@ pub(all) enum EffectAtom {
 ///|
 pub(all) enum Type {
   Int
+  Float
+  Double
   Bool
   String
   Path
@@ -80,6 +82,8 @@ pub(all) struct FnValue {
 ///|
 pub(all) enum Value {
   Int(Int)
+  Float(Float)
+  Double(Double)
   Bool(Bool)
   String(String)
   Path(Path)

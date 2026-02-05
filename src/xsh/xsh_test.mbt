@@ -140,6 +140,48 @@ test "xsh prelude add/sub/eq/lt" {
 }
 
 ///|
+test "xsh float and double ops" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let a = 1.25
+    #|let b = 1.5f
+    #|let c = -2.0
+    #|let d = 1.0 + 2.0
+    #|let e = 1.0f + 2.0f
+    #|let f = 1.0 < 2.0
+    #|let g = 1.0 == 1.0
+  let _ = rt.eval_script(script)
+  match rt.get("a") {
+    Some(@core.Value::Double(v)) => assert_true(Double::equal(v, 1.25))
+    _ => fail("a")
+  }
+  match rt.get("b") {
+    Some(@core.Value::Float(v)) => assert_true(Float::equal(v, 1.5))
+    _ => fail("b")
+  }
+  match rt.get("c") {
+    Some(@core.Value::Double(v)) => assert_true(Double::equal(v, -2.0))
+    _ => fail("c")
+  }
+  match rt.get("d") {
+    Some(@core.Value::Double(v)) => assert_true(Double::equal(v, 3.0))
+    _ => fail("d")
+  }
+  match rt.get("e") {
+    Some(@core.Value::Float(v)) => assert_true(Float::equal(v, 3.0))
+    _ => fail("e")
+  }
+  match rt.get("f") {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("f")
+  }
+  match rt.get("g") {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("g")
+  }
+}
+
+///|
 test "xsh method call and pipe" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =

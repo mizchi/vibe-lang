@@ -106,6 +106,8 @@ fn split_cache_line(line : String) -> CacheLine? {
 fn encode_value(value : @core.Value) -> String {
   match value {
     @core.Value::Int(n) => "i:" + n.to_string()
+    @core.Value::Float(n) => "f32:" + n.to_string()
+    @core.Value::Double(n) => "f64:" + n.to_string()
     @core.Value::Bool(b) => "b:" + (if b { "1" } else { "0" })
     @core.Value::String(s) => "s:" + escape_cache(s)
     @core.Value::Path(p) => "p:" + escape_cache(p.as_string())
@@ -129,6 +131,24 @@ fn decode_value(encoded : String) -> @core.Value? {
     )
     match parsed {
       Ok(v) => Some(@core.Value::Int(v))
+      Err(_) => None
+    }
+  } else if encoded.has_prefix("f32:") {
+    let rest = slice_from(encoded, 4)
+    let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+      rest,
+    )
+    match parsed {
+      Ok(v) => Some(@core.Value::Float(Float::from_double(v)))
+      Err(_) => None
+    }
+  } else if encoded.has_prefix("f64:") {
+    let rest = slice_from(encoded, 4)
+    let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+      rest,
+    )
+    match parsed {
+      Ok(v) => Some(@core.Value::Double(v))
       Err(_) => None
     }
   } else if encoded.has_prefix("s:") {

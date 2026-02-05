@@ -1328,13 +1328,13 @@ fn cmp_expr_from_op(
   right : @core.Expr,
 ) -> @core.Expr {
   match op {
-    k if k == eqeq() => call2("eq", left, right)
-    k if k == neq() => call1("not", call2("eq", left, right))
-    k if k == lt() => call2("lt", left, right)
-    k if k == gt() => call2("lt", right, left)
+    k if k == eqeq() => call2("__eq", left, right)
+    k if k == neq() => call1("not", call2("__eq", left, right))
+    k if k == lt() => call2("__lt", left, right)
+    k if k == gt() => call2("__lt", right, left)
     k if k == lte() =>
-      call2("or", call2("lt", left, right), call2("eq", left, right))
-    _ => call2("or", call2("lt", right, left), call2("eq", left, right))
+      call2("or", call2("__lt", left, right), call2("__eq", left, right))
+    _ => call2("or", call2("__lt", right, left), call2("__eq", left, right))
   }
 }
 
@@ -1407,7 +1407,7 @@ fn AstParser::parse_add_expr(self : AstParser) -> @core.Expr raise ParseError {
     let op = self.peek_kind()
     let _ = self.bump()
     let right = self.parse_mul_expr()
-    let name = if op == plus() { "add" } else { "sub" }
+    let name = if op == plus() { "__add" } else { "__sub" }
     left = call2(name, left, right)
   }
   left
@@ -1423,7 +1423,7 @@ fn AstParser::parse_mul_expr(self : AstParser) -> @core.Expr raise ParseError {
     let op = self.peek_kind()
     let _ = self.bump()
     let right = self.parse_unary_expr()
-    let name = if op == star() { "mul" } else { "div" }
+    let name = if op == star() { "__mul" } else { "__div" }
     left = call2(name, left, right)
   }
   left
@@ -1436,8 +1436,7 @@ fn AstParser::parse_unary_expr(self : AstParser) -> @core.Expr raise ParseError 
     k if k == minus() => {
       let _ = self.bump()
       let value = self.parse_unary_expr()
-      let zero_span = value.span()
-      call2("sub", @core.Expr::Int(value=0, span=zero_span), value)
+      call1("__neg", value)
     }
     k if k == bang() => {
       let _ = self.bump()
@@ -1784,6 +1783,26 @@ fn AstParser::parse_type_with_params(
               span=name_span,
             )
           }
+        "Float" =>
+          if args.is_empty() {
+            @core.Type::Float
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
+          }
+        "Double" =>
+          if args.is_empty() {
+            @core.Type::Double
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
+          }
         "Bool" =>
           if args.is_empty() {
             @core.Type::Bool
@@ -2019,6 +2038,39 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
           )
       }
     }
+    k if k == float_lit() => {
+      let _ = self.bump()
+      let text = tok.text()
+      let len = text.length()
+      let mut is_float = false
+      let mut raw = text
+      if len > 0 {
+        let last = text[len - 1]
+        if last == 'f' || last == 'F' {
+          is_float = true
+          raw = (try! text[0:len - 1]).to_string()
+        }
+      }
+      let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+        raw,
+      )
+      match parsed {
+        Ok(v) => {
+          let span = self.span_from(start)
+          if is_float {
+            @core.Pat::Float(value=Float::from_double(v), span~)
+          } else {
+            @core.Pat::Double(value=v, span~)
+          }
+        }
+        Err(_) =>
+          raise ParseError::UnexpectedToken(
+            expected="float",
+            got=tok.text(),
+            span=self.token_span(),
+          )
+      }
+    }
     k if k == bool_lit() => {
       let _ = self.bump()
       if tok.text() == "true" {
@@ -2232,6 +2284,39 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
         Err(_) =>
           raise ParseError::UnexpectedToken(
             expected="int",
+            got=tok.text(),
+            span=self.token_span(),
+          )
+      }
+    }
+    k if k == float_lit() => {
+      let _ = self.bump()
+      let text = tok.text()
+      let len = text.length()
+      let mut is_float = false
+      let mut raw = text
+      if len > 0 {
+        let last = text[len - 1]
+        if last == 'f' || last == 'F' {
+          is_float = true
+          raw = (try! text[0:len - 1]).to_string()
+        }
+      }
+      let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+        raw,
+      )
+      match parsed {
+        Ok(v) => {
+          let span = self.span_from(start)
+          if is_float {
+            @core.Expr::Float(value=Float::from_double(v), span~)
+          } else {
+            @core.Expr::Double(value=v, span~)
+          }
+        }
+        Err(_) =>
+          raise ParseError::UnexpectedToken(
+            expected="float",
             got=tok.text(),
             span=self.token_span(),
           )

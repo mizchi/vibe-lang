@@ -21,6 +21,7 @@ pub struct CompiledModule {
   imports : Array[String]
   aliases : Map[String, @core.Ref]
   ast : @core.Module
+  instantiations : Map[String, Int]
 }
 
 ///|
@@ -38,13 +39,11 @@ pub fn compile_module(
   }
   let aliases = build_alias_map(raw_ast, db.import_aliases(path))
   let ast = desugar_method_calls(raw_ast, aliases)
-  try {
-    let _ = @checker.type_check_with_aliases(ast, aliases)
-
-  } catch {
+  let env = @checker.type_check_with_aliases(ast, aliases) catch {
     e => raise CompileError::Type(e)
   }
-  let ir = module_to_sexp(ast, aliases)
+  let mono = monoify_module(ast, env)
+  let ir = module_to_sexp(mono.ast, aliases)
   let ir_hash = @core.git_blob_hash_string(ir)
   let module_ref = @core.module_ref_from_hash(ir_hash)
   let imports : Array[String] = []
@@ -54,7 +53,16 @@ pub fn compile_module(
       None => ()
     }
   }
-  { path, ir, ir_hash, module_ref, imports, aliases, ast }
+  {
+    path,
+    ir,
+    ir_hash,
+    module_ref,
+    imports,
+    aliases,
+    ast: mono.ast,
+    instantiations: mono.instantiations,
+  }
 }
 
 ///|
@@ -248,6 +256,14 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
     @core.Expr::Int(value=n, span~) => {
       let _ = span
       "(lit (int " + n.to_string() + "))"
+    }
+    @core.Expr::Float(value=n, span~) => {
+      let _ = span
+      "(lit (float " + n.to_string() + "))"
+    }
+    @core.Expr::Double(value=n, span~) => {
+      let _ = span
+      "(lit (double " + n.to_string() + "))"
     }
     @core.Expr::Bool(value=b, span~) => {
       let _ = span
@@ -443,6 +459,8 @@ fn label_to_sexp(label : @core.ParamLabel) -> String {
 fn type_to_sexp(ty : @core.Type) -> String {
   match ty {
     @core.Type::Int => "Int"
+    @core.Type::Float => "Float"
+    @core.Type::Double => "Double"
     @core.Type::Bool => "Bool"
     @core.Type::String => "String"
     @core.Type::Path => "@core.Path"
@@ -719,6 +737,14 @@ fn pat_to_sexp(pat : @core.Pat) -> String {
     @core.Pat::Int(value=n, span~) => {
       let _ = span
       "(pat (int " + n.to_string() + "))"
+    }
+    @core.Pat::Float(value=n, span~) => {
+      let _ = span
+      "(pat (float " + n.to_string() + "))"
+    }
+    @core.Pat::Double(value=n, span~) => {
+      let _ = span
+      "(pat (double " + n.to_string() + "))"
     }
     @core.Pat::Bool(value=b, span~) => {
       let _ = span

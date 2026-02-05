@@ -635,6 +635,7 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
 ///|
 fn is_literal_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == int_lit() ||
+  kind == float_lit() ||
   kind == string_lit() ||
   kind == bool_lit() ||
   kind == char_lit()

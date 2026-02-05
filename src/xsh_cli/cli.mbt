@@ -33,7 +33,7 @@ fn print_usage() -> Unit {
   println("  test <file...>             run test blocks in scripts")
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
-    "  compile [--wasm | --wasm-js-string] [-o out] <file>  emit IR (default) or wasm bytes",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc] [-o out] <file>  emit IR (default) or wasm bytes",
   )
   println("  bench [--n N] [--warmup N] [--expr EXPR]")
   println("  bench-file [--n N] [--warmup N] <file>")
@@ -64,6 +64,7 @@ enum CompileMode {
   Ir
   Wasm
   WasmJsString
+  WasmGc
 }
 
 ///|
@@ -112,6 +113,10 @@ fn compile_cmd(args : Array[String]) -> Unit {
       }
       "--wasm-js-string" => {
         mode = CompileMode::WasmJsString
+        i += 1
+      }
+      "--wasm-gc" => {
+        mode = CompileMode::WasmGc
         i += 1
       }
       "-o" | "--out" => {
@@ -170,6 +175,21 @@ fn compile_cmd(args : Array[String]) -> Unit {
                 abort("compile: --wasm-js-string requires -o <file>")
               }
               let wasm_bytes = @xsh_lib.compile_module_wasm_js_string(db, entry) catch {
+                e => abort("compile: " + e.to_string())
+              }
+              match out_path {
+                Some(out) =>
+                  @os_fs.write_bytes_to_file(out, wasm_bytes) catch {
+                    e => abort("compile: " + e.to_string())
+                  }
+                None => ()
+              }
+            }
+            CompileMode::WasmGc => {
+              if out_path is None {
+                abort("compile: --wasm-gc requires -o <file>")
+              }
+              let wasm_bytes = @xsh_lib.compile_module_wasm_gc(db, entry) catch {
                 e => abort("compile: " + e.to_string())
               }
               match out_path {
@@ -268,7 +288,7 @@ fn fmt_cmd(args : Array[String]) -> Unit {
     let src = @os_fs.read_file_to_string(path) catch {
       e => abort("fmt: " + e.to_string())
     }
-    let formatted = @xsh_lib.format_script(src)
+    let formatted = @parser.format_script(src)
     if write {
       @os_fs.write_string_to_file(path, formatted) catch {
         e => abort("fmt: " + e.to_string())
@@ -474,7 +494,7 @@ fn repl_cmd(args : Array[String]) -> Unit {
   let height = Ref::new(initial_rows)
   let outputs : Array[String] = []
   let history : Array[String] = []
-  let xsh_names : Array[String] = @xsh_lib.prelude_names()
+  let xsh_names : Array[String] = @checker.prelude_names()
   let history_idx = Ref::new(-1)
   let history_draft = Ref::new("")
   let completion_session = @editor.CompletionSession::new()
@@ -833,13 +853,13 @@ fn repl_cmd(args : Array[String]) -> Unit {
         None => true
         Some(rty) =>
           match env.get(name) {
-            Some(@xsh_lib.Type::Func(params~, ..)) => {
+            Some(@xsh_core.Type::Func(params~, ..)) => {
               let mut found = false
               let mut ok = false
               for param in params {
-                if @xsh_lib.ParamLabel::is_positional(param.label) {
+                if @xsh_core.ParamLabel::is_positional(param.label) {
                   found = true
-                  ok = @xsh_lib.completion_param_matches(env, rty, param.ty)
+                  ok = @checker.completion_param_matches(env, rty, param.ty)
                   break
                 }
               }
@@ -1239,13 +1259,13 @@ fn load_sources_recursive(
     e => return Err("io: " + e.to_string())
   }
   db.set_source(norm, source)
-  let ast = @xsh_lib.parse_ast(source) catch {
+  let ast = @parser.parse_ast(source) catch {
     e => return Err("parse: " + e.to_string())
   }
   let base = @xsh_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
-      @xsh_lib.Stmt::Import(path~) => {
+      @xsh_core.Stmt::Import(path~, ..) => {
         let resolved = resolve_import_path(base, path)
         match load_sources_recursive(db, resolved, visited) {
           Ok(_) => ()

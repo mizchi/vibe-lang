@@ -136,6 +136,27 @@ fn block_type_name(code : Int) -> String? {
 }
 
 ///|
+fn bytes_to_u32_le(bytes : Bytes) -> Int {
+  let arr = bytes.to_array()
+  let mut out = 0
+  for i in 0..<arr.length() {
+    out = out | (arr[i].to_int() << (8 * i))
+  }
+  out
+}
+
+///|
+fn bytes_to_u64_le(bytes : Bytes) -> UInt64 {
+  let arr = bytes.to_array()
+  let mut out : UInt64 = 0
+  for i in 0..<arr.length() {
+    let part = arr[i].to_uint64() << (8 * i)
+    out = out | part
+  }
+  out
+}
+
+///|
 fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
   let instrs : Array[Instr] = []
   while cursor.remaining() > 0 {
@@ -144,6 +165,18 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
       0x41 => {
         let value = cursor.read_leb_u32()
         instrs.push(Instr::Simple("i32.const " + value.to_string()))
+      }
+      0x43 => {
+        let bytes = cursor.read_bytes(4)
+        let bits = bytes_to_u32_le(bytes)
+        let value = Float::reinterpret_from_int(bits)
+        instrs.push(Instr::Simple("f32.const " + value.to_string()))
+      }
+      0x44 => {
+        let bytes = cursor.read_bytes(8)
+        let bits = bytes_to_u64_le(bytes)
+        let value = UInt64::reinterpret_as_double(bits)
+        instrs.push(Instr::Simple("f64.const " + value.to_string()))
       }
       0x20 => {
         let idx = cursor.read_leb_u32()
@@ -167,10 +200,22 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
       0x6c => instrs.push(Instr::Simple("i32.mul"))
       0x6d => instrs.push(Instr::Simple("i32.div_s"))
       0x6f => instrs.push(Instr::Simple("i32.rem_s"))
+      0x92 => instrs.push(Instr::Simple("f32.add"))
+      0x93 => instrs.push(Instr::Simple("f32.sub"))
+      0x94 => instrs.push(Instr::Simple("f32.mul"))
+      0x95 => instrs.push(Instr::Simple("f32.div"))
+      0xa0 => instrs.push(Instr::Simple("f64.add"))
+      0xa1 => instrs.push(Instr::Simple("f64.sub"))
+      0xa2 => instrs.push(Instr::Simple("f64.mul"))
+      0xa3 => instrs.push(Instr::Simple("f64.div"))
       0x45 => instrs.push(Instr::Simple("i32.eqz"))
       0x46 => instrs.push(Instr::Simple("i32.eq"))
       0x47 => instrs.push(Instr::Simple("i32.ne"))
       0x48 => instrs.push(Instr::Simple("i32.lt_s"))
+      0x5b => instrs.push(Instr::Simple("f32.eq"))
+      0x5d => instrs.push(Instr::Simple("f32.lt"))
+      0x61 => instrs.push(Instr::Simple("f64.eq"))
+      0x63 => instrs.push(Instr::Simple("f64.lt"))
       0x4a => instrs.push(Instr::Simple("i32.gt_s"))
       0x4c => instrs.push(Instr::Simple("i32.le_s"))
       0x4e => instrs.push(Instr::Simple("i32.ge_s"))
@@ -179,6 +224,8 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
       0x72 => instrs.push(Instr::Simple("i32.or"))
       0x71 => instrs.push(Instr::Simple("i32.and"))
       0x73 => instrs.push(Instr::Simple("i32.xor"))
+      0x8c => instrs.push(Instr::Simple("f32.neg"))
+      0x99 => instrs.push(Instr::Simple("f64.neg"))
       0x28 => {
         let align = cursor.read_leb_u32()
         let offset = cursor.read_leb_u32()
@@ -191,12 +238,60 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
           ),
         )
       }
+      0x2a => {
+        let align = cursor.read_leb_u32()
+        let offset = cursor.read_leb_u32()
+        instrs.push(
+          Instr::Simple(
+            "f32.load align=" +
+            align.to_string() +
+            " offset=" +
+            offset.to_string(),
+          ),
+        )
+      }
+      0x2b => {
+        let align = cursor.read_leb_u32()
+        let offset = cursor.read_leb_u32()
+        instrs.push(
+          Instr::Simple(
+            "f64.load align=" +
+            align.to_string() +
+            " offset=" +
+            offset.to_string(),
+          ),
+        )
+      }
       0x36 => {
         let align = cursor.read_leb_u32()
         let offset = cursor.read_leb_u32()
         instrs.push(
           Instr::Simple(
             "i32.store align=" +
+            align.to_string() +
+            " offset=" +
+            offset.to_string(),
+          ),
+        )
+      }
+      0x38 => {
+        let align = cursor.read_leb_u32()
+        let offset = cursor.read_leb_u32()
+        instrs.push(
+          Instr::Simple(
+            "f32.store align=" +
+            align.to_string() +
+            " offset=" +
+            offset.to_string(),
+          ),
+        )
+      }
+      0x39 => {
+        let align = cursor.read_leb_u32()
+        let offset = cursor.read_leb_u32()
+        instrs.push(
+          Instr::Simple(
+            "f64.store align=" +
             align.to_string() +
             " offset=" +
             offset.to_string(),

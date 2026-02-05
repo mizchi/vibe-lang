@@ -46,6 +46,9 @@ let tag_obj = 1
 let tag_bool = 3
 
 ///|
+let tag_fn = 2
+
+///|
 let obj_string = 1
 
 ///|
@@ -61,15 +64,27 @@ let obj_array = 5
 let obj_map = 6
 
 ///|
+let obj_fn = 7
+
+///|
+let obj_float = 8
+
+///|
+let obj_double = 9
+
+///|
 enum ValueKind {
   I32
+  BoxedF32
+  BoxedF64
   ExternRef
 } derive(Show, Eq)
 
 ///|
 fn valtype_byte(kind : ValueKind) -> Byte {
   match kind {
-    ValueKind::I32 => (127).to_byte()
+    ValueKind::I32 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
+      (127).to_byte()
     ValueKind::ExternRef => (111).to_byte()
   }
 }
@@ -115,6 +130,11 @@ fn tag_bool_value(b : Bool) -> Int {
 }
 
 ///|
+fn tag_fn_value(idx : Int) -> Int {
+  (idx << 2) | tag_fn
+}
+
+///|
 fn StringTable::intern(self : StringTable, s : String) -> Int {
   match self.map.get(s) {
     Some(offset) => offset
@@ -138,11 +158,64 @@ fn StringTable::intern(self : StringTable, s : String) -> Int {
 }
 
 ///|
+fn u32_leb_len(n : Int) -> Int {
+  let mut v = if n < 0 { 0 } else { n }
+  let mut len = 1
+  while v >= 128 {
+    v = v >> 7
+    len += 1
+  }
+  len
+}
+
+///|
+fn data_segment_entry_len(offset : Int, len : Int) -> Int {
+  1 + 1 + u32_leb_len(offset) + 1 + u32_leb_len(len) + len
+}
+
+///|
+fn segmented_data_content_len(strings : StringTable) -> Int {
+  let mut total = u32_leb_len(strings.segments.length())
+  for seg in strings.segments {
+    total += data_segment_entry_len(seg.offset, seg.bytes.length())
+  }
+  total
+}
+
+///|
+fn packed_data_content_len(strings : StringTable) -> Int {
+  let data_len = strings.next_offset
+  u32_leb_len(1) + data_segment_entry_len(0, data_len)
+}
+
+///|
+fn pack_string_segments(strings : StringTable) -> Array[Byte] {
+  let total_len = strings.next_offset
+  let data : Array[Byte] = Array::make(total_len, (0).to_byte())
+  for seg in strings.segments {
+    let seg_len = seg.bytes.length()
+    for i in 0..<seg_len {
+      data[seg.offset + i] = seg.bytes[i]
+    }
+  }
+  data
+}
+
+///|
 priv struct CodegenCtx {
-  locals : Map[String, Int]
-  local_kinds : Map[String, ValueKind]
-  local_types : Array[ValueKind]
+  mut locals : Map[String, Int]
+  mut local_kinds : Map[String, ValueKind]
+  mut local_types : Array[ValueKind]
   mut local_count : Int
+  fn_indices : Map[String, Int]
+  fn_params : Map[String, Array[ValueKind]]
+  fn_returns : Map[String, ValueKind]
+  fn_closure_indices : Map[String, Int]
+  fn_closure_captures : Map[String, Array[String]]
+  mut fn_local_sigs : Map[String, FuncSig]
+  mut fn_sig_type_indices : Map[String, Int]
+  mut fn_sig_order : Array[FuncSig]
+  mut fn_type_indices : Map[String, Int]
   mut need_sh : Bool
   mut need_path : Bool
   mut need_js_length : Bool
@@ -151,6 +224,8 @@ priv struct CodegenCtx {
   mut need_js_concat : Bool
   mut need_js_equals : Bool
   use_js_strings : Bool
+  mut use_heap_global : Bool
+  mut heap_global : Int
   mut need_heap : Bool
   mut heap_local : Int
   strings : StringTable
@@ -164,6 +239,15 @@ fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
     local_kinds: {},
     local_types: [],
     local_count: 0,
+    fn_indices: {},
+    fn_params: {},
+    fn_returns: {},
+    fn_closure_indices: {},
+    fn_closure_captures: {},
+    fn_local_sigs: {},
+    fn_sig_type_indices: {},
+    fn_sig_order: [],
+    fn_type_indices: {},
     need_sh: false,
     need_path: false,
     need_js_length: false,
@@ -172,11 +256,540 @@ fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
     need_js_concat: false,
     need_js_equals: false,
     use_js_strings,
+    use_heap_global: false,
+    heap_global: -1,
     need_heap: false,
     heap_local: -1,
     strings: StringTable::new(),
     js_strings: StringConstTable::new(),
   }
+}
+
+///|
+priv struct FuncDef {
+  name : String?
+  params : Array[@core.FuncParam]
+  ret : @core.Type?
+  body : @core.Module
+  span_key : String
+  captures : Array[String]
+}
+
+///|
+priv struct FuncSig {
+  params : Array[ValueKind]
+  result : ValueKind
+}
+
+///|
+fn span_key(span : @core.Span) -> String {
+  "\{span.start}:\{span.end}"
+}
+
+///|
+fn clone_name_set(src : Map[String, Bool]) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for k, v in src {
+    out[k] = v
+  }
+  out
+}
+
+///|
+fn push_capture(
+  name : String,
+  captures : Array[String],
+  seen : Map[String, Bool],
+) -> Unit {
+  if not(seen.contains(name)) {
+    seen[name] = true
+    captures.push(name)
+  }
+}
+
+///|
+fn collect_pat_bindings_codegen(pat : @core.Pat, out : Array[String]) -> Unit {
+  match pat {
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      out.push(name)
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = name
+      let _ = span
+      for arg in args {
+        collect_pat_bindings_codegen(arg, out)
+      }
+    }
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
+      for item in items {
+        collect_pat_bindings_codegen(item, out)
+      }
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        collect_pat_bindings_codegen(field.pat, out)
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
+fn collect_captures_block(
+  body : @core.Module,
+  bound : Map[String, Bool],
+  outer_bound : Map[String, Bool],
+  captures : Array[String],
+  seen : Map[String, Bool],
+) -> Unit {
+  let scope = clone_name_set(bound)
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
+        if rec {
+          scope[name] = true
+        }
+        collect_captures_expr(expr, scope, outer_bound, captures, seen)
+        scope[name] = true
+      }
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
+        collect_captures_expr(expr, scope, outer_bound, captures, seen)
+      }
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = span
+        collect_captures_block(body, scope, outer_bound, captures, seen)
+      }
+      _ => ()
+    }
+  }
+}
+
+///|
+fn collect_captures_expr(
+  expr : @core.Expr,
+  bound : Map[String, Bool],
+  outer_bound : Map[String, Bool],
+  captures : Array[String],
+  seen : Map[String, Bool],
+) -> Unit {
+  match expr {
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
+      if not(bound.contains(name)) && outer_bound.contains(name) {
+        push_capture(name, captures, seen)
+      }
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = span
+      if not(bound.contains(name)) && outer_bound.contains(name) {
+        push_capture(name, captures, seen)
+      }
+      for arg in args {
+        collect_captures_expr(arg.expr, bound, outer_bound, captures, seen)
+      }
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
+      for item in items {
+        collect_captures_expr(item, bound, outer_bound, captures, seen)
+      }
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        collect_captures_expr(field.expr, bound, outer_bound, captures, seen)
+      }
+    }
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
+      for item in items {
+        collect_captures_expr(item, bound, outer_bound, captures, seen)
+      }
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        collect_captures_expr(field.expr, bound, outer_bound, captures, seen)
+      }
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
+      collect_captures_expr(cond, bound, outer_bound, captures, seen)
+      collect_captures_block(then_body, bound, outer_bound, captures, seen)
+      collect_captures_block(else_body, bound, outer_bound, captures, seen)
+    }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      collect_captures_block(body, bound, outer_bound, captures, seen)
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
+      collect_captures_expr(scrutinee, bound, outer_bound, captures, seen)
+      for arm in arms {
+        let arm_bound = clone_name_set(bound)
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(arm.pat, bindings)
+        for name in bindings {
+          arm_bound[name] = true
+        }
+        match arm.cond {
+          Some(c) =>
+            collect_captures_expr(c, arm_bound, outer_bound, captures, seen)
+          None => ()
+        }
+        collect_captures_expr(arm.expr, arm_bound, outer_bound, captures, seen)
+      }
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      collect_captures_block(body, bound, outer_bound, captures, seen)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
+      collect_captures_block(try_body, bound, outer_bound, captures, seen)
+      collect_captures_block(catch_body, bound, outer_bound, captures, seen)
+    }
+    @core.Expr::Fn(..) => ()
+    _ => ()
+  }
+}
+
+///|
+fn collect_nested_funcs_block(
+  body : @core.Module,
+  bound : Map[String, Bool],
+  funcs : Array[FuncDef],
+  skip_top_level : Bool,
+) -> Unit {
+  let scope = clone_name_set(bound)
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
+        if rec {
+          scope[name] = true
+        }
+        match expr {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+            let _ = effects
+            let key = span_key(span)
+            let captures : Array[String] = []
+            let seen : Map[String, Bool] = {}
+            let fn_bound : Map[String, Bool] = {}
+            for param in params {
+              fn_bound[param.name] = true
+            }
+            collect_captures_block(body, fn_bound, scope, captures, seen)
+            if not(skip_top_level) {
+              funcs.push(FuncDef::{
+                name: Some(name),
+                params,
+                ret,
+                body,
+                span_key: key,
+                captures,
+              })
+            }
+            let inner_bound = clone_name_set(fn_bound)
+            for cap in captures {
+              inner_bound[cap] = true
+            }
+            collect_nested_funcs_block(body, inner_bound, funcs, false)
+          }
+          _ => collect_nested_funcs_expr(expr, scope, funcs)
+        }
+        scope[name] = true
+      }
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
+        collect_nested_funcs_expr(expr, scope, funcs)
+      }
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = body
+        let _ = span
+
+      }
+      _ => ()
+    }
+  }
+}
+
+///|
+fn collect_nested_funcs_expr(
+  expr : @core.Expr,
+  bound : Map[String, Bool],
+  funcs : Array[FuncDef],
+) -> Unit {
+  match expr {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+      let _ = effects
+      let key = span_key(span)
+      let captures : Array[String] = []
+      let seen : Map[String, Bool] = {}
+      let fn_bound : Map[String, Bool] = {}
+      for param in params {
+        fn_bound[param.name] = true
+      }
+      collect_captures_block(body, fn_bound, bound, captures, seen)
+      funcs.push(FuncDef::{
+        name: None,
+        params,
+        ret,
+        body,
+        span_key: key,
+        captures,
+      })
+      let inner_bound = clone_name_set(fn_bound)
+      for cap in captures {
+        inner_bound[cap] = true
+      }
+      collect_nested_funcs_block(body, inner_bound, funcs, false)
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = name
+      let _ = span
+      for arg in args {
+        collect_nested_funcs_expr(arg.expr, bound, funcs)
+      }
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
+      for item in items {
+        collect_nested_funcs_expr(item, bound, funcs)
+      }
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        collect_nested_funcs_expr(field.expr, bound, funcs)
+      }
+    }
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
+      for item in items {
+        collect_nested_funcs_expr(item, bound, funcs)
+      }
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        collect_nested_funcs_expr(field.expr, bound, funcs)
+      }
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
+      collect_nested_funcs_expr(cond, bound, funcs)
+      collect_nested_funcs_block(then_body, bound, funcs, false)
+      collect_nested_funcs_block(else_body, bound, funcs, false)
+    }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      collect_nested_funcs_block(body, bound, funcs, false)
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
+      collect_nested_funcs_expr(scrutinee, bound, funcs)
+      for arm in arms {
+        let arm_bound = clone_name_set(bound)
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(arm.pat, bindings)
+        for name in bindings {
+          arm_bound[name] = true
+        }
+        match arm.cond {
+          Some(c) => collect_nested_funcs_expr(c, arm_bound, funcs)
+          None => ()
+        }
+        collect_nested_funcs_expr(arm.expr, arm_bound, funcs)
+      }
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      collect_nested_funcs_block(body, bound, funcs, false)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
+      collect_nested_funcs_block(try_body, bound, funcs, false)
+      collect_nested_funcs_block(catch_body, bound, funcs, false)
+    }
+    _ => ()
+  }
+}
+
+///|
+fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
+  let funcs : Array[FuncDef] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = span
+        let _ = rec
+        match expr {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+            let _ = effects
+            let key = span_key(span)
+            funcs.push(FuncDef::{
+              name: Some(name),
+              params,
+              ret,
+              body,
+              span_key: key,
+              captures: [],
+            })
+          }
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  let bound : Map[String, Bool] = {}
+  collect_nested_funcs_block(ast, bound, funcs, true)
+  funcs
+}
+
+///|
+priv struct WasmFunc {
+  params : Array[ValueKind]
+  locals : Array[ValueKind]
+  result : ValueKind
+  body : Array[Byte]
+}
+
+///|
+fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
+  if not(ctx.use_js_strings) {
+    return ValueKind::I32
+  }
+  match ty {
+    @core.Type::String => ValueKind::ExternRef
+    @core.Type::Float => ValueKind::BoxedF32
+    @core.Type::Double => ValueKind::BoxedF64
+    _ => ValueKind::I32
+  }
+}
+
+///|
+fn func_sig_key_from_parts(
+  params : Array[ValueKind],
+  result : ValueKind,
+) -> String {
+  let sb = StringBuilder::new()
+  sb.write_char('(')
+  for i in 0..<params.length() {
+    if i > 0 {
+      sb.write_char(',')
+    }
+    let c = if params[i] == ValueKind::ExternRef { 'r' } else { 'i' }
+    sb.write_char(c)
+  }
+  sb.write_string(")->")
+  let rc = if result == ValueKind::ExternRef { 'r' } else { 'i' }
+  sb.write_char(rc)
+  sb.to_string()
+}
+
+///|
+fn func_sig_key(sig : FuncSig) -> String {
+  func_sig_key_from_parts(sig.params, sig.result)
+}
+
+///|
+fn func_sig_with_env(params : Array[ValueKind], result : ValueKind) -> FuncSig {
+  let out : Array[ValueKind] = []
+  for kind in params {
+    out.push(kind)
+  }
+  out.push(ValueKind::I32)
+  FuncSig::{ params: out, result }
+}
+
+///|
+fn func_sig_from_type(ctx : CodegenCtx, ty : @core.Type) -> FuncSig? {
+  match ty {
+    @core.Type::Func(params~, ret~, effects~) => {
+      let _ = effects
+      let param_kinds : Array[ValueKind] = []
+      for param in params {
+        param_kinds.push(value_kind_from_type(ctx, param.ty))
+      }
+      let result = value_kind_from_type(ctx, ret)
+      Some(func_sig_with_env(param_kinds, result))
+    }
+    _ => None
+  }
+}
+
+///|
+fn builtin_type_count(ctx : CodegenCtx) -> Int {
+  let mut count = 0
+  if ctx.need_js_length {
+    count += 1
+  }
+  if ctx.need_js_char_code_at {
+    count += 1
+  }
+  if ctx.need_js_substring {
+    count += 1
+  }
+  if ctx.need_js_concat {
+    count += 1
+  }
+  if ctx.need_js_equals {
+    count += 1
+  }
+  if ctx.need_sh || ctx.need_path {
+    count += 1
+  }
+  count
+}
+
+///|
+fn ensure_sig_index(ctx : CodegenCtx, sig : FuncSig) -> Int {
+  let key = func_sig_key(sig)
+  match ctx.fn_sig_type_indices.get(key) {
+    Some(idx) => idx
+    None => {
+      let idx = builtin_type_count(ctx) + ctx.fn_sig_order.length()
+      ctx.fn_sig_type_indices[key] = idx
+      ctx.fn_sig_order.push(sig)
+      idx
+    }
+  }
+}
+
+///|
+fn func_import_count(ctx : CodegenCtx) -> Int {
+  let mut count = 0
+  if ctx.need_js_length {
+    count += 1
+  }
+  if ctx.need_js_char_code_at {
+    count += 1
+  }
+  if ctx.need_js_substring {
+    count += 1
+  }
+  if ctx.need_js_concat {
+    count += 1
+  }
+  if ctx.need_js_equals {
+    count += 1
+  }
+  if ctx.need_path {
+    count += 1
+  }
+  if ctx.need_sh {
+    count += 1
+  }
+  count
 }
 
 ///|
@@ -228,6 +841,25 @@ fn write_u32_leb(buf : ByteBuf, n : Int) -> Unit {
 }
 
 ///|
+fn write_i32_leb(buf : ByteBuf, n : Int) -> Unit {
+  let mut value = n
+  while true {
+    let mut byte = value & 0x7f
+    value = value >> 7
+    let sign_bit_set = (byte & 0x40) != 0
+    let done = (value == 0 && not(sign_bit_set)) ||
+      (value == -1 && sign_bit_set)
+    if not(done) {
+      byte = byte | 0x80
+    }
+    buf.push(byte.to_byte())
+    if done {
+      break
+    }
+  }
+}
+
+///|
 fn write_u32_le_bytes(out : Array[Byte], n : Int) -> Unit {
   let v = n
   out.push((v & 0xff).to_byte())
@@ -245,9 +877,15 @@ fn write_name(buf : ByteBuf, s : String) -> Unit {
 }
 
 ///|
+fn write_ref_extern(buf : ByteBuf) -> Unit {
+  buf.push((100).to_byte())
+  buf.push((111).to_byte())
+}
+
+///|
 fn emit_i32_const_raw(buf : ByteBuf, n : Int) -> Unit {
   buf.push((65).to_byte())
-  write_u32_leb(buf, n)
+  write_i32_leb(buf, n)
 }
 
 ///|
@@ -288,9 +926,22 @@ fn emit_global_get(buf : ByteBuf, idx : Int) -> Unit {
 }
 
 ///|
+fn emit_global_set(buf : ByteBuf, idx : Int) -> Unit {
+  buf.push((36).to_byte())
+  write_u32_leb(buf, idx)
+}
+
+///|
 fn emit_call(buf : ByteBuf, idx : Int) -> Unit {
   buf.push((16).to_byte())
   write_u32_leb(buf, idx)
+}
+
+///|
+fn emit_call_indirect(buf : ByteBuf, type_idx : Int) -> Unit {
+  buf.push((17).to_byte())
+  write_u32_leb(buf, type_idx)
+  buf.push((0).to_byte())
 }
 
 ///|
@@ -306,6 +957,16 @@ fn emit_i32_add(buf : ByteBuf) -> Unit {
 ///|
 fn emit_i32_sub(buf : ByteBuf) -> Unit {
   buf.push((107).to_byte())
+}
+
+///|
+fn emit_i32_mul(buf : ByteBuf) -> Unit {
+  buf.push((108).to_byte())
+}
+
+///|
+fn emit_i32_div_s(buf : ByteBuf) -> Unit {
+  buf.push((109).to_byte())
 }
 
 ///|
@@ -354,6 +1015,119 @@ fn emit_i32_load(buf : ByteBuf, offset : Int) -> Unit {
 fn emit_i32_store(buf : ByteBuf, offset : Int) -> Unit {
   buf.push((54).to_byte())
   write_u32_leb(buf, 2)
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_f32_const(buf : ByteBuf, n : Float) -> Unit {
+  buf.push((67).to_byte())
+  let bytes = Float::to_le_bytes(n)
+  buf.extend(bytes.to_array())
+}
+
+///|
+fn emit_f64_const(buf : ByteBuf, n : Double) -> Unit {
+  buf.push((68).to_byte())
+  let bits = Double::reinterpret_as_uint64(n)
+  let bytes = UInt64::to_le_bytes(bits)
+  buf.extend(bytes.to_array())
+}
+
+///|
+fn emit_f32_add(buf : ByteBuf) -> Unit {
+  buf.push((146).to_byte())
+}
+
+///|
+fn emit_f32_sub(buf : ByteBuf) -> Unit {
+  buf.push((147).to_byte())
+}
+
+///|
+fn emit_f32_mul(buf : ByteBuf) -> Unit {
+  buf.push((148).to_byte())
+}
+
+///|
+fn emit_f32_div(buf : ByteBuf) -> Unit {
+  buf.push((149).to_byte())
+}
+
+///|
+fn emit_f32_eq(buf : ByteBuf) -> Unit {
+  buf.push((91).to_byte())
+}
+
+///|
+fn emit_f32_lt(buf : ByteBuf) -> Unit {
+  buf.push((93).to_byte())
+}
+
+///|
+fn emit_f32_neg(buf : ByteBuf) -> Unit {
+  buf.push((140).to_byte())
+}
+
+///|
+fn emit_f64_add(buf : ByteBuf) -> Unit {
+  buf.push((160).to_byte())
+}
+
+///|
+fn emit_f64_sub(buf : ByteBuf) -> Unit {
+  buf.push((161).to_byte())
+}
+
+///|
+fn emit_f64_mul(buf : ByteBuf) -> Unit {
+  buf.push((162).to_byte())
+}
+
+///|
+fn emit_f64_div(buf : ByteBuf) -> Unit {
+  buf.push((163).to_byte())
+}
+
+///|
+fn emit_f64_eq(buf : ByteBuf) -> Unit {
+  buf.push((97).to_byte())
+}
+
+///|
+fn emit_f64_lt(buf : ByteBuf) -> Unit {
+  buf.push((99).to_byte())
+}
+
+///|
+fn emit_f64_neg(buf : ByteBuf) -> Unit {
+  buf.push((153).to_byte())
+}
+
+///|
+fn emit_f32_load(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((42).to_byte())
+  write_u32_leb(buf, 2)
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_f64_load(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((43).to_byte())
+  write_u32_leb(buf, 3)
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_f32_store(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((56).to_byte())
+  write_u32_leb(buf, 2)
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_f64_store(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((57).to_byte())
+  write_u32_leb(buf, 3)
   write_u32_leb(buf, offset)
 }
 
@@ -412,6 +1186,16 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::ExternRef
     }
+    @core.Expr::Float(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::BoxedF32
+    }
+    @core.Expr::Double(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::BoxedF64
+    }
     @core.Expr::Ident(name~, span~) => {
       let _ = span
       match locals.get(name) {
@@ -420,15 +1204,55 @@ fn infer_expr_kind_with(
       }
     }
     @core.Expr::Call(name~, args~, span~) => {
-      let _ = args
       let _ = span
+      let pos_args = extract_positional_exprs(args, name)
       match name {
+        "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I32
+        "__add" | "__sub" | "__mul" | "__div" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("js-string arity: " + name)
+          }
+          let left_kind = infer_expr_kind_with(ctx, pos_args[0], locals)
+          let right_kind = infer_expr_kind_with(ctx, pos_args[1], locals)
+          if left_kind != right_kind {
+            raise WasmGenError::Unsupported("js-string numeric kind mismatch")
+          }
+          match left_kind {
+            ValueKind::I32 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
+              left_kind
+            _ => raise WasmGenError::Unsupported("js-string numeric kind")
+          }
+        }
+        "__neg" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("js-string arity: " + name)
+          }
+          let kind = infer_expr_kind_with(ctx, pos_args[0], locals)
+          match kind {
+            ValueKind::I32 | ValueKind::BoxedF32 | ValueKind::BoxedF64 => kind
+            _ => raise WasmGenError::Unsupported("js-string numeric kind")
+          }
+        }
+        "__eq" | "__lt" => ValueKind::I32
         "string_length" => ValueKind::I32
         "string_char_code_at" => ValueKind::I32
         "string_substring" => ValueKind::ExternRef
         "string_concat" => ValueKind::ExternRef
         "string_equals" => ValueKind::I32
-        _ => ValueKind::I32
+        _ if ctx.fn_local_sigs.contains(name) =>
+          match ctx.fn_local_sigs.get(name) {
+            Some(sig) => sig.result
+            None => ValueKind::I32
+          }
+        _ =>
+          if ctx.fn_returns.contains(name) {
+            match ctx.fn_returns.get(name) {
+              Some(kind) => kind
+              None => ValueKind::I32
+            }
+          } else {
+            ValueKind::I32
+          }
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
@@ -490,7 +1314,7 @@ fn infer_expr_kind_with(
       let _ = effects
       let _ = body
       let _ = span
-      raise WasmGenError::Unsupported("fn")
+      ValueKind::I32
     }
   }
 }
@@ -559,7 +1383,7 @@ fn compile_expr_i32(
 ) -> Unit raise WasmGenError {
   if ctx.use_js_strings {
     let kind = infer_expr_kind(ctx, expr)
-    if kind != ValueKind::I32 {
+    if kind == ValueKind::ExternRef {
       raise WasmGenError::Unsupported("js-string i32 expr")
     }
   }
@@ -579,6 +1403,132 @@ fn compile_expr_ref(
     }
   }
   compile_expr(ctx, buf, expr)
+}
+
+///|
+fn emit_boxed_f32(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  emit_value : () -> Unit,
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  let obj_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, align4(8))
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, obj_float)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, obj_local)
+  emit_value()
+  emit_f32_store(buf, 4)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_or(buf)
+}
+
+///|
+fn emit_boxed_f64(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  emit_value : () -> Unit,
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  let obj_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, align4(12))
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, obj_double)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, obj_local)
+  emit_value()
+  emit_f64_store(buf, 4)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_or(buf)
+}
+
+///|
+fn emit_boxed_f32_raise(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  emit_value : () -> Unit raise WasmGenError,
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  let obj_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, align4(8))
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, obj_float)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, obj_local)
+  emit_value()
+  emit_f32_store(buf, 4)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_or(buf)
+}
+
+///|
+fn emit_boxed_f64_raise(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  emit_value : () -> Unit raise WasmGenError,
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  let obj_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, align4(12))
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, obj_double)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, obj_local)
+  emit_value()
+  emit_f64_store(buf, 4)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_or(buf)
+}
+
+///|
+fn emit_unbox_f32_expr(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let tmp = alloc_temp_local(ctx)
+  compile_expr_i32(ctx, buf, expr)
+  emit_local_set(buf, tmp)
+  emit_untag_ptr(buf, tmp)
+  emit_f32_load(buf, 4)
+}
+
+///|
+fn emit_unbox_f64_expr(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let tmp = alloc_temp_local(ctx)
+  compile_expr_i32(ctx, buf, expr)
+  emit_local_set(buf, tmp)
+  emit_untag_ptr(buf, tmp)
+  emit_f64_load(buf, 4)
 }
 
 ///|
@@ -639,6 +1589,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       scan_needs_block(ctx, then_body)
       scan_needs_block(ctx, else_body)
     }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      scan_needs_block(ctx, body)
+    }
     @core.Expr::Try(try_body~, catch_body~, span~) => {
       let _ = span
       scan_needs_block(ctx, try_body)
@@ -663,6 +1617,11 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let _ = span
       let _ = params
       let _ = ret
+      let key = span_key(span)
+      match ctx.fn_closure_captures.get(key) {
+        Some(captures) => if captures.length() > 0 { ctx.need_heap = true }
+        None => ()
+      }
       scan_needs_block(ctx, body)
     }
     _ => ()
@@ -705,10 +1664,9 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
     }
     @core.Stmt::Test(name~, body~, span~) => {
       let _ = name
+      let _ = body
       let _ = span
-      for s in body.stmts {
-        scan_needs_stmt(ctx, s)
-      }
+
     }
     _ => ()
   }
@@ -718,6 +1676,382 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
 fn scan_needs(ctx : CodegenCtx, ast : @core.Module) -> Unit {
   for stmt in ast.stmts {
     scan_needs_stmt(ctx, stmt)
+  }
+}
+
+///|
+fn scan_strings(ctx : CodegenCtx, ast : @core.Module) -> Unit {
+  for stmt in ast.stmts {
+    scan_strings_stmt(ctx, stmt)
+  }
+}
+
+///|
+fn scan_strings_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let _ = rec
+      let _ = name
+      let _ = span
+      scan_strings_expr(ctx, expr)
+    }
+    @core.Stmt::Expr(expr~, span~) => {
+      let _ = span
+      scan_strings_expr(ctx, expr)
+    }
+    @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = span
+      let _ = body
+
+    }
+    _ => ()
+  }
+}
+
+///|
+fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
+  match expr {
+    @core.Expr::String(value=s, span~) => {
+      let _ = span
+      if ctx.use_js_strings {
+        let _ = ctx.js_strings.intern(s)
+
+      } else {
+        let _ = ctx.strings.intern(s)
+
+      }
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = name
+      let _ = span
+      for arg in args {
+        scan_strings_expr(ctx, arg.expr)
+      }
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = span
+      for item in items {
+        scan_strings_expr(ctx, item)
+      }
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = span
+      let ordered = sort_record_fields_expr(fields)
+      for field in ordered {
+        let _ = ctx.strings.intern(field.name)
+        scan_strings_expr(ctx, field.expr)
+      }
+    }
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
+      for item in items {
+        scan_strings_expr(ctx, item)
+      }
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        let _ = ctx.strings.intern(field.key)
+        scan_strings_expr(ctx, field.expr)
+      }
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
+      scan_strings_expr(ctx, cond)
+      scan_strings(ctx, then_body)
+      scan_strings(ctx, else_body)
+    }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      scan_strings(ctx, body)
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
+      scan_strings_expr(ctx, scrutinee)
+      for arm in arms {
+        scan_strings_pat(ctx, arm.pat)
+        scan_strings_expr(ctx, arm.expr)
+        match arm.cond {
+          Some(c) => scan_strings_expr(ctx, c)
+          None => ()
+        }
+      }
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      scan_strings(ctx, body)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
+      scan_strings(ctx, try_body)
+      scan_strings(ctx, catch_body)
+    }
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+      let _ = params
+      let _ = ret
+      let _ = effects
+      let _ = span
+      scan_strings(ctx, body)
+    }
+    _ => ()
+  }
+}
+
+///|
+fn scan_strings_pat(ctx : CodegenCtx, pat : @core.Pat) -> Unit {
+  match pat {
+    @core.Pat::String(value=s, span~) => {
+      let _ = span
+      if not(ctx.use_js_strings) {
+        let _ = ctx.strings.intern(s)
+
+      }
+    }
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
+      for item in items {
+        scan_strings_pat(ctx, item)
+      }
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        scan_strings_pat(ctx, field.pat)
+      }
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = name
+      let _ = span
+      for arg in args {
+        scan_strings_pat(ctx, arg)
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
+fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
+  let out : Array[FuncDef] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = rec
+        let _ = span
+        match expr {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+            let _ = effects
+            let _ = span
+            out.push(FuncDef::{
+              name: Some(name),
+              params,
+              ret,
+              body,
+              span_key: span_key(span),
+              captures: [],
+            })
+          }
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn filter_top_level_funcs(ast : @core.Module) -> @core.Module {
+  let out : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    let skip = match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = rec
+        let _ = name
+        let _ = span
+        match expr {
+          @core.Expr::Fn(..) => true
+          _ => false
+        }
+      }
+      _ => false
+    }
+    if not(skip) {
+      out.push(stmt)
+    }
+  }
+  @core.Module::{ stmts: out }
+}
+
+///|
+fn needs_heap_block(ctx : CodegenCtx, body : @core.Module) -> Bool {
+  for stmt in body.stmts {
+    if needs_heap_stmt(ctx, stmt) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn needs_heap_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Bool {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let _ = rec
+      let _ = name
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Stmt::Expr(expr~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = span
+      needs_heap_block(ctx, body)
+    }
+    _ => false
+  }
+}
+
+///|
+fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
+  match expr {
+    @core.Expr::Float(..) => true
+    @core.Expr::Double(..) => true
+    @core.Expr::Tuple(..) => true
+    @core.Expr::Record(..) => true
+    @core.Expr::Array(..) => true
+    @core.Expr::Map(..) => true
+    @core.Expr::Call(name~, args~, span~) => {
+      let _ = name
+      let _ = span
+      if name == "__add" ||
+        name == "__sub" ||
+        name == "__mul" ||
+        name == "__div" ||
+        name == "__neg" {
+        return true
+      }
+      for arg in args {
+        if needs_heap_expr(ctx, arg.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, cond) ||
+      needs_heap_block(ctx, then_body) ||
+      needs_heap_block(ctx, else_body)
+    }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      needs_heap_block(ctx, body)
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
+      if needs_heap_expr(ctx, scrutinee) {
+        return true
+      }
+      for arm in arms {
+        if needs_heap_expr(ctx, arm.expr) {
+          return true
+        }
+        match arm.cond {
+          Some(c) => if needs_heap_expr(ctx, c) { return true }
+          None => ()
+        }
+      }
+      false
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      needs_heap_block(ctx, body)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
+      needs_heap_block(ctx, try_body) || needs_heap_block(ctx, catch_body)
+    }
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+      let _ = params
+      let _ = ret
+      let _ = effects
+      let _ = body
+      let key = span_key(span)
+      match ctx.fn_closure_captures.get(key) {
+        Some(captures) => captures.length() > 0
+        None => false
+      }
+    }
+    _ => false
+  }
+}
+
+///|
+fn param_kinds(
+  ctx : CodegenCtx,
+  params : Array[@core.FuncParam],
+) -> Array[ValueKind] {
+  let out : Array[ValueKind] = []
+  for param in params {
+    out.push(value_kind_from_type(ctx, param.ty))
+  }
+  out
+}
+
+///|
+fn param_kind_map(
+  params : Array[@core.FuncParam],
+  kinds : Array[ValueKind],
+) -> Map[String, ValueKind] {
+  let out : Map[String, ValueKind] = {}
+  let len = if params.length() < kinds.length() {
+    params.length()
+  } else {
+    kinds.length()
+  }
+  for i in 0..<len {
+    out[params[i].name] = kinds[i]
+  }
+  out
+}
+
+///|
+fn infer_func_return_kind(
+  ctx : CodegenCtx,
+  params : Array[@core.FuncParam],
+  kinds : Array[ValueKind],
+  ret : @core.Type?,
+  body : @core.Module,
+) -> ValueKind raise WasmGenError {
+  let locals = param_kind_map(params, kinds)
+  let saved_fn_locals = ctx.fn_local_sigs
+  ctx.fn_local_sigs = {}
+  for param in params {
+    match func_sig_from_type(ctx, param.ty) {
+      Some(sig) => ctx.fn_local_sigs[param.name] = sig
+      None => ()
+    }
+  }
+  let inferred = if ctx.use_js_strings {
+    infer_block_kind(ctx, body, locals)
+  } else {
+    ValueKind::I32
+  }
+  ctx.fn_local_sigs = saved_fn_locals
+  match ret {
+    Some(r) => {
+      let declared = value_kind_from_type(ctx, r)
+      if ctx.use_js_strings && declared != inferred {
+        raise WasmGenError::Unsupported("fn return kind mismatch")
+      }
+      declared
+    }
+    None => inferred
   }
 }
 
@@ -847,6 +2181,14 @@ fn compile_expr(
       let _ = span
       emit_i32_const_tagged(buf, n)
     }
+    @core.Expr::Float(value=n, span~) => {
+      let _ = span
+      emit_boxed_f32(ctx, buf, () => emit_f32_const(buf, n))
+    }
+    @core.Expr::Double(value=n, span~) => {
+      let _ = span
+      emit_boxed_f64(ctx, buf, () => emit_f64_const(buf, n))
+    }
     @core.Expr::Bool(value=b, span~) => {
       let _ = span
       emit_i32_const_raw(buf, tag_bool_value(b))
@@ -868,12 +2210,75 @@ fn compile_expr(
       }
       match ctx.locals.get(name) {
         Some(idx) => emit_local_get(buf, idx)
-        None => raise WasmGenError::UnknownName(name)
+        None =>
+          match ctx.fn_indices.get(name) {
+            Some(idx) => emit_i32_const_raw(buf, tag_fn_value(idx))
+            None => raise WasmGenError::UnknownName(name)
+          }
       }
     }
     @core.Expr::Call(name~, args~, span~) => {
       let _ = span
-      if name == "sh" {
+      if ctx.fn_local_sigs.contains(name) {
+        let sig = match ctx.fn_local_sigs.get(name) {
+          Some(s) => s
+          None => raise WasmGenError::Unsupported("call: " + name)
+        }
+        let pos_args = extract_positional_exprs(args, name)
+        let sig_param_len = if sig.params.length() > 0 {
+          sig.params.length() - 1
+        } else {
+          0
+        }
+        if pos_args.length() != sig_param_len {
+          raise WasmGenError::Unsupported("arity: " + name)
+        }
+        let fn_value_idx = match ctx.locals.get(name) {
+          Some(idx) => idx
+          None => raise WasmGenError::UnknownName(name)
+        }
+        let env_idx = alloc_temp_local(ctx)
+        let func_idx = alloc_temp_local(ctx)
+        emit_local_get(buf, fn_value_idx)
+        emit_i32_const_raw(buf, tag_mask)
+        emit_i32_and(buf)
+        emit_i32_const_raw(buf, tag_fn)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte())
+        buf.push((64).to_byte())
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, env_idx)
+        emit_local_get(buf, fn_value_idx)
+        emit_i32_const_raw(buf, tag_fn)
+        emit_i32_sub(buf)
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_u(buf)
+        emit_local_set(buf, func_idx)
+        buf.push((5).to_byte())
+        emit_untag_ptr(buf, fn_value_idx)
+        emit_local_set(buf, env_idx)
+        emit_local_get(buf, env_idx)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, func_idx)
+        buf.push((11).to_byte())
+        for i in 0..<sig_param_len {
+          let kind = sig.params[i]
+          if ctx.use_js_strings && kind == ValueKind::ExternRef {
+            compile_expr_ref(ctx, buf, pos_args[i])
+          } else {
+            compile_expr_i32(ctx, buf, pos_args[i])
+          }
+        }
+        emit_local_get(buf, env_idx)
+        emit_local_get(buf, func_idx)
+        let type_idx = match ctx.fn_sig_type_indices.get(func_sig_key(sig)) {
+          Some(idx) => idx
+          None => raise WasmGenError::Unsupported("call: " + name)
+        }
+        emit_call_indirect(buf, type_idx)
+      } else if ctx.locals.contains(name) {
+        raise WasmGenError::Unsupported("call local: " + name)
+      } else if name == "sh" {
         let pos_args = extract_positional_exprs(args, "sh")
         if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("sh arity")
@@ -905,6 +2310,22 @@ fn compile_expr(
         compile_expr_i32(ctx, buf, pos_args[0])
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_sub(buf)
+      } else if name == "mul" {
+        let pos_args = extract_positional_exprs(args, "mul")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("mul arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_mul(buf)
+      } else if name == "div" {
+        let pos_args = extract_positional_exprs(args, "div")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("div arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_div_s(buf)
       } else if name == "eq" {
         let pos_args = extract_positional_exprs(args, "eq")
         if pos_args.length() != 2 {
@@ -923,6 +2344,212 @@ fn compile_expr(
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_lt_s(buf)
         emit_bool_from_i32(buf)
+      } else if name == "__add" {
+        let pos_args = extract_positional_exprs(args, "__add")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__add arity")
+        }
+        let left_kind = infer_expr_kind(ctx, pos_args[0])
+        let right_kind = infer_expr_kind(ctx, pos_args[1])
+        if left_kind != right_kind {
+          raise WasmGenError::Unsupported("numeric kind mismatch")
+        }
+        match left_kind {
+          ValueKind::I32 => {
+            compile_expr_i32(ctx, buf, pos_args[0])
+            compile_expr_i32(ctx, buf, pos_args[1])
+            emit_i32_add(buf)
+          }
+          ValueKind::BoxedF32 =>
+            emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f32_expr(ctx, buf, pos_args[0])
+              emit_unbox_f32_expr(ctx, buf, pos_args[1])
+              emit_f32_add(buf)
+            })
+          ValueKind::BoxedF64 =>
+            emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f64_expr(ctx, buf, pos_args[0])
+              emit_unbox_f64_expr(ctx, buf, pos_args[1])
+              emit_f64_add(buf)
+            })
+          _ => raise WasmGenError::Unsupported("numeric kind")
+        }
+      } else if name == "__sub" {
+        let pos_args = extract_positional_exprs(args, "__sub")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__sub arity")
+        }
+        let left_kind = infer_expr_kind(ctx, pos_args[0])
+        let right_kind = infer_expr_kind(ctx, pos_args[1])
+        if left_kind != right_kind {
+          raise WasmGenError::Unsupported("numeric kind mismatch")
+        }
+        match left_kind {
+          ValueKind::I32 => {
+            compile_expr_i32(ctx, buf, pos_args[0])
+            compile_expr_i32(ctx, buf, pos_args[1])
+            emit_i32_sub(buf)
+          }
+          ValueKind::BoxedF32 =>
+            emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f32_expr(ctx, buf, pos_args[0])
+              emit_unbox_f32_expr(ctx, buf, pos_args[1])
+              emit_f32_sub(buf)
+            })
+          ValueKind::BoxedF64 =>
+            emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f64_expr(ctx, buf, pos_args[0])
+              emit_unbox_f64_expr(ctx, buf, pos_args[1])
+              emit_f64_sub(buf)
+            })
+          _ => raise WasmGenError::Unsupported("numeric kind")
+        }
+      } else if name == "__mul" {
+        let pos_args = extract_positional_exprs(args, "__mul")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__mul arity")
+        }
+        let left_kind = infer_expr_kind(ctx, pos_args[0])
+        let right_kind = infer_expr_kind(ctx, pos_args[1])
+        if left_kind != right_kind {
+          raise WasmGenError::Unsupported("numeric kind mismatch")
+        }
+        match left_kind {
+          ValueKind::I32 => {
+            compile_expr_i32(ctx, buf, pos_args[0])
+            compile_expr_i32(ctx, buf, pos_args[1])
+            emit_i32_mul(buf)
+          }
+          ValueKind::BoxedF32 =>
+            emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f32_expr(ctx, buf, pos_args[0])
+              emit_unbox_f32_expr(ctx, buf, pos_args[1])
+              emit_f32_mul(buf)
+            })
+          ValueKind::BoxedF64 =>
+            emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f64_expr(ctx, buf, pos_args[0])
+              emit_unbox_f64_expr(ctx, buf, pos_args[1])
+              emit_f64_mul(buf)
+            })
+          _ => raise WasmGenError::Unsupported("numeric kind")
+        }
+      } else if name == "__div" {
+        let pos_args = extract_positional_exprs(args, "__div")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__div arity")
+        }
+        let left_kind = infer_expr_kind(ctx, pos_args[0])
+        let right_kind = infer_expr_kind(ctx, pos_args[1])
+        if left_kind != right_kind {
+          raise WasmGenError::Unsupported("numeric kind mismatch")
+        }
+        match left_kind {
+          ValueKind::I32 => {
+            compile_expr_i32(ctx, buf, pos_args[0])
+            compile_expr_i32(ctx, buf, pos_args[1])
+            emit_i32_div_s(buf)
+          }
+          ValueKind::BoxedF32 =>
+            emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f32_expr(ctx, buf, pos_args[0])
+              emit_unbox_f32_expr(ctx, buf, pos_args[1])
+              emit_f32_div(buf)
+            })
+          ValueKind::BoxedF64 =>
+            emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f64_expr(ctx, buf, pos_args[0])
+              emit_unbox_f64_expr(ctx, buf, pos_args[1])
+              emit_f64_div(buf)
+            })
+          _ => raise WasmGenError::Unsupported("numeric kind")
+        }
+      } else if name == "__eq" {
+        let pos_args = extract_positional_exprs(args, "__eq")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__eq arity")
+        }
+        let left_kind = infer_expr_kind(ctx, pos_args[0])
+        let right_kind = infer_expr_kind(ctx, pos_args[1])
+        if left_kind != right_kind {
+          raise WasmGenError::Unsupported("numeric kind mismatch")
+        }
+        match left_kind {
+          ValueKind::I32 => {
+            compile_expr_i32(ctx, buf, pos_args[0])
+            compile_expr_i32(ctx, buf, pos_args[1])
+            emit_i32_eq(buf)
+            emit_bool_from_i32(buf)
+          }
+          ValueKind::BoxedF32 => {
+            emit_unbox_f32_expr(ctx, buf, pos_args[0])
+            emit_unbox_f32_expr(ctx, buf, pos_args[1])
+            emit_f32_eq(buf)
+            emit_bool_from_i32(buf)
+          }
+          ValueKind::BoxedF64 => {
+            emit_unbox_f64_expr(ctx, buf, pos_args[0])
+            emit_unbox_f64_expr(ctx, buf, pos_args[1])
+            emit_f64_eq(buf)
+            emit_bool_from_i32(buf)
+          }
+          _ => raise WasmGenError::Unsupported("numeric kind")
+        }
+      } else if name == "__lt" {
+        let pos_args = extract_positional_exprs(args, "__lt")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__lt arity")
+        }
+        let left_kind = infer_expr_kind(ctx, pos_args[0])
+        let right_kind = infer_expr_kind(ctx, pos_args[1])
+        if left_kind != right_kind {
+          raise WasmGenError::Unsupported("numeric kind mismatch")
+        }
+        match left_kind {
+          ValueKind::I32 => {
+            compile_expr_i32(ctx, buf, pos_args[0])
+            compile_expr_i32(ctx, buf, pos_args[1])
+            emit_i32_lt_s(buf)
+            emit_bool_from_i32(buf)
+          }
+          ValueKind::BoxedF32 => {
+            emit_unbox_f32_expr(ctx, buf, pos_args[0])
+            emit_unbox_f32_expr(ctx, buf, pos_args[1])
+            emit_f32_lt(buf)
+            emit_bool_from_i32(buf)
+          }
+          ValueKind::BoxedF64 => {
+            emit_unbox_f64_expr(ctx, buf, pos_args[0])
+            emit_unbox_f64_expr(ctx, buf, pos_args[1])
+            emit_f64_lt(buf)
+            emit_bool_from_i32(buf)
+          }
+          _ => raise WasmGenError::Unsupported("numeric kind")
+        }
+      } else if name == "__neg" {
+        let pos_args = extract_positional_exprs(args, "__neg")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("__neg arity")
+        }
+        let kind = infer_expr_kind(ctx, pos_args[0])
+        match kind {
+          ValueKind::I32 => {
+            emit_i32_const_raw(buf, tag_int_value(0))
+            compile_expr_i32(ctx, buf, pos_args[0])
+            emit_i32_sub(buf)
+          }
+          ValueKind::BoxedF32 =>
+            emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f32_expr(ctx, buf, pos_args[0])
+              emit_f32_neg(buf)
+            })
+          ValueKind::BoxedF64 =>
+            emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+              emit_unbox_f64_expr(ctx, buf, pos_args[0])
+              emit_f64_neg(buf)
+            })
+          _ => raise WasmGenError::Unsupported("numeric kind")
+        }
       } else if name == "not" {
         let pos_args = extract_positional_exprs(args, "not")
         if pos_args.length() != 1 {
@@ -1028,6 +2655,30 @@ fn compile_expr(
         compile_expr_ref(ctx, buf, pos_args[1])
         emit_call(buf, import_index_js_equals(ctx))
         emit_bool_from_i32(buf)
+      } else if ctx.fn_indices.contains(name) {
+        let pos_args = extract_positional_exprs(args, name)
+        let param_kinds = match ctx.fn_params.get(name) {
+          Some(kinds) => kinds
+          None => []
+        }
+        if pos_args.length() != param_kinds.length() {
+          raise WasmGenError::Unsupported("arity: " + name)
+        }
+        for i in 0..<pos_args.length() {
+          let kind = param_kinds[i]
+          if ctx.use_js_strings && kind == ValueKind::ExternRef {
+            compile_expr_ref(ctx, buf, pos_args[i])
+          } else {
+            compile_expr_i32(ctx, buf, pos_args[i])
+          }
+        }
+        emit_i32_const_raw(buf, 0)
+        let idx = func_import_count(ctx) +
+          (match ctx.fn_indices.get(name) {
+            Some(i) => i
+            None => 0
+          })
+        emit_call(buf, idx)
       } else {
         if is_qualified_name(name) {
           raise WasmGenError::Unsupported("qualified call: " + name)
@@ -1100,8 +2751,58 @@ fn compile_expr(
       let _ = ret
       let _ = effects
       let _ = body
-      let _ = span
-      raise WasmGenError::Unsupported("fn")
+      let key = span_key(span)
+      let func_idx = match ctx.fn_closure_indices.get(key) {
+        Some(idx) => idx
+        None => raise WasmGenError::Unsupported("fn index")
+      }
+      let captures = match ctx.fn_closure_captures.get(key) {
+        Some(list) => list
+        None => []
+      }
+      if captures.length() == 0 {
+        emit_i32_const_raw(buf, tag_fn_value(func_idx))
+      } else {
+        require_heap(ctx)
+        let len = captures.length()
+        let size = align4(8 + len * 4)
+        let obj_local = alloc_temp_local(ctx)
+        emit_local_get(buf, ctx.heap_local)
+        emit_local_set(buf, obj_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_i32_const_raw(buf, size)
+        emit_i32_add(buf)
+        emit_local_set(buf, ctx.heap_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_fn)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, func_idx)
+        emit_i32_store(buf, 4)
+        for i in 0..<len {
+          let name = captures[i]
+          let cap_kind = match ctx.local_kinds.get(name) {
+            Some(kind) => kind
+            None => ValueKind::I32
+          }
+          if ctx.use_js_strings && cap_kind == ValueKind::ExternRef {
+            raise WasmGenError::Unsupported("js-string closure capture")
+          }
+          emit_local_get(buf, obj_local)
+          match ctx.locals.get(name) {
+            Some(idx) => emit_local_get(buf, idx)
+            None =>
+              match ctx.fn_indices.get(name) {
+                Some(idx) => emit_i32_const_raw(buf, tag_fn_value(idx))
+                None => raise WasmGenError::UnknownName(name)
+              }
+          }
+          emit_i32_store(buf, 8 + i * 4)
+        }
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, tag_obj)
+        emit_i32_or(buf)
+      }
     }
   }
 }
@@ -1425,29 +3126,47 @@ fn string_lt(a : String, b : String) -> Bool {
 }
 
 ///|
-fn compile_body(
+fn compile_func_body(
   ctx : CodegenCtx,
   ast : @core.Module,
+  result_kind : ValueKind,
+  need_heap : Bool,
+  prelude : Array[Byte],
 ) -> Array[Byte] raise WasmGenError {
   let instr = ByteBuf::new()
   if ctx.use_js_strings {
-    let result_kind = infer_block_kind(ctx, ast, ctx.local_kinds)
-    if result_kind != ValueKind::I32 {
+    let inferred = infer_block_kind(ctx, ast, ctx.local_kinds)
+    if inferred != result_kind {
       raise WasmGenError::Unsupported("js-string return kind")
     }
   }
+  ctx.need_heap = need_heap
   if ctx.need_heap {
     ctx.heap_local = ctx.local_count
     ctx.local_count += 1
     ctx.local_types.push(ValueKind::I32)
   }
   compile_block_expr(ctx, instr, ast)
+  if ctx.need_heap && ctx.use_heap_global {
+    emit_local_get(instr, ctx.heap_local)
+    emit_global_set(instr, ctx.heap_global)
+  }
   instr.push((11).to_byte())
-  if ctx.need_heap {
+  if ctx.need_heap || prelude.length() > 0 {
     let prologue = ByteBuf::new()
-    let heap_start = align4(ctx.strings.next_offset)
-    emit_i32_const_raw(prologue, heap_start)
-    emit_local_set(prologue, ctx.heap_local)
+    if ctx.need_heap {
+      if ctx.use_heap_global {
+        emit_global_get(prologue, ctx.heap_global)
+        emit_local_set(prologue, ctx.heap_local)
+      } else {
+        let heap_start = align4(ctx.strings.next_offset)
+        emit_i32_const_raw(prologue, heap_start)
+        emit_local_set(prologue, ctx.heap_local)
+      }
+    }
+    if prelude.length() > 0 {
+      prologue.extend(prelude)
+    }
     prologue.extend(instr.data)
     prologue.data
   } else {
@@ -1456,7 +3175,113 @@ fn compile_body(
 }
 
 ///|
-fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
+fn compile_function(
+  ctx : CodegenCtx,
+  params : Array[@core.FuncParam],
+  param_kinds : Array[ValueKind],
+  result_kind : ValueKind,
+  body : @core.Module,
+  need_heap : Bool,
+  captures : Array[String],
+  with_env : Bool,
+) -> WasmFunc raise WasmGenError {
+  let saved_locals = ctx.locals
+  let saved_kinds = ctx.local_kinds
+  let saved_types = ctx.local_types
+  let saved_count = ctx.local_count
+  let saved_need_heap = ctx.need_heap
+  let saved_heap_local = ctx.heap_local
+  let saved_fn_locals = ctx.fn_local_sigs
+  ctx.locals = {}
+  ctx.local_kinds = {}
+  ctx.local_types = []
+  ctx.local_count = 0
+  ctx.need_heap = false
+  ctx.heap_local = -1
+  ctx.fn_local_sigs = {}
+  let param_len = if params.length() < param_kinds.length() {
+    params.length()
+  } else {
+    param_kinds.length()
+  }
+  for i in 0..<param_len {
+    ctx.locals[params[i].name] = i
+    ctx.local_kinds[params[i].name] = param_kinds[i]
+    ctx.local_count += 1
+    match func_sig_from_type(ctx, params[i].ty) {
+      Some(sig) => ctx.fn_local_sigs[params[i].name] = sig
+      None => ()
+    }
+  }
+  let env_idx = if with_env {
+    let idx = ctx.local_count
+    ctx.local_count += 1
+    idx
+  } else {
+    -1
+  }
+  let prelude = ByteBuf::new()
+  if with_env && captures.length() > 0 {
+    for i in 0..<captures.length() {
+      let name = captures[i]
+      let idx = ctx.local_count
+      ctx.local_count += 1
+      ctx.local_types.push(ValueKind::I32)
+      ctx.locals[name] = idx
+      ctx.local_kinds[name] = ValueKind::I32
+      emit_local_get(prelude, env_idx)
+      emit_i32_load(prelude, 8 + i * 4)
+      emit_local_set(prelude, idx)
+    }
+  }
+  let body_bytes = compile_func_body(
+    ctx,
+    body,
+    result_kind,
+    need_heap,
+    prelude.data,
+  )
+  let locals = ctx.local_types
+  let params_with_env : Array[ValueKind] = []
+  for kind in param_kinds {
+    params_with_env.push(kind)
+  }
+  if with_env {
+    params_with_env.push(ValueKind::I32)
+  }
+  let func = WasmFunc::{
+    params: params_with_env,
+    locals,
+    result: result_kind,
+    body: body_bytes,
+  }
+  ctx.locals = saved_locals
+  ctx.local_kinds = saved_kinds
+  ctx.local_types = saved_types
+  ctx.local_count = saved_count
+  ctx.need_heap = saved_need_heap
+  ctx.heap_local = saved_heap_local
+  ctx.fn_local_sigs = saved_fn_locals
+  func
+}
+
+///|
+fn write_func_type(
+  buf : ByteBuf,
+  params : Array[ValueKind],
+  result : ValueKind,
+) -> Unit {
+  buf.push((96).to_byte())
+  write_u32_leb(buf, params.length())
+  for kind in params {
+    buf.push(valtype_byte(kind))
+  }
+  write_u32_leb(buf, 1)
+  buf.push(valtype_byte(result))
+}
+
+///|
+fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let buf = ByteBuf::new()
   // magic + version
   buf.push((0).to_byte())
@@ -1502,9 +3327,18 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
     import_type = type_count
     type_count += 1
   }
-  let run_type = type_count
-  type_count += 1
-  write_u32_leb(type_sec, type_count)
+  let builtin_count = type_count
+  let func_type_indices : Array[Int] = []
+  for func in funcs {
+    let key = func_sig_key_from_parts(func.params, func.result)
+    let idx = match ctx.fn_sig_type_indices.get(key) {
+      Some(i) => i
+      None => builtin_count
+    }
+    func_type_indices.push(idx)
+  }
+  let total_type_count = builtin_count + ctx.fn_sig_order.length()
+  write_u32_leb(type_sec, total_type_count)
   if ctx.need_js_length {
     type_sec.push((96).to_byte())
     write_u32_leb(type_sec, 1)
@@ -1527,7 +3361,7 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
     type_sec.push((127).to_byte())
     type_sec.push((127).to_byte())
     write_u32_leb(type_sec, 1)
-    type_sec.push(ref_type)
+    write_ref_extern(type_sec)
   }
   if ctx.need_js_concat {
     type_sec.push((96).to_byte())
@@ -1535,7 +3369,7 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
     type_sec.push(ref_type)
     type_sec.push(ref_type)
     write_u32_leb(type_sec, 1)
-    type_sec.push(ref_type)
+    write_ref_extern(type_sec)
   }
   if ctx.need_js_equals {
     type_sec.push((96).to_byte())
@@ -1552,10 +3386,9 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
     write_u32_leb(type_sec, 1)
     type_sec.push((127).to_byte())
   }
-  type_sec.push((96).to_byte())
-  write_u32_leb(type_sec, 0)
-  write_u32_leb(type_sec, 1)
-  type_sec.push((127).to_byte())
+  for sig in ctx.fn_sig_order {
+    write_func_type(type_sec, sig.params, sig.result)
+  }
   write_section(buf, 1, type_sec.data)
 
   // import section
@@ -1646,9 +3479,22 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
 
   // function section
   let func_sec = ByteBuf::new()
-  write_u32_leb(func_sec, 1)
-  write_u32_leb(func_sec, run_type)
+  write_u32_leb(func_sec, funcs.length())
+  for idx in func_type_indices {
+    write_u32_leb(func_sec, idx)
+  }
   write_section(buf, 3, func_sec.data)
+
+  // table section (for function values)
+  let user_func_count = if funcs.length() > 0 { funcs.length() - 1 } else { 0 }
+  if user_func_count > 0 {
+    let table_sec = ByteBuf::new()
+    write_u32_leb(table_sec, 1)
+    table_sec.push((112).to_byte())
+    table_sec.push((0).to_byte())
+    write_u32_leb(table_sec, user_func_count)
+    write_section(buf, 4, table_sec.data)
+  }
 
   // memory section
   let mem_sec = ByteBuf::new()
@@ -1657,58 +3503,106 @@ fn build_module(ctx : CodegenCtx, body : Array[Byte]) -> Bytes {
   write_u32_leb(mem_sec, 1)
   write_section(buf, 5, mem_sec.data)
 
+  // global section
+  if ctx.use_heap_global {
+    let global_sec = ByteBuf::new()
+    write_u32_leb(global_sec, 1)
+    global_sec.push((127).to_byte())
+    global_sec.push((1).to_byte())
+    let heap_start = align4(ctx.strings.next_offset)
+    emit_i32_const_raw(global_sec, heap_start)
+    global_sec.push((11).to_byte())
+    write_section(buf, 6, global_sec.data)
+  }
+
   // export section
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, 2)
   write_name(export_sec, "run")
   export_sec.push((0).to_byte())
-  write_u32_leb(export_sec, func_import_count)
+  let run_index = func_import_count + funcs.length() - 1
+  write_u32_leb(export_sec, run_index)
   write_name(export_sec, "memory")
   export_sec.push((2).to_byte())
   write_u32_leb(export_sec, 0)
   write_section(buf, 7, export_sec.data)
 
+  // element section
+  if user_func_count > 0 {
+    let elem_sec = ByteBuf::new()
+    write_u32_leb(elem_sec, 1)
+    elem_sec.push((0).to_byte())
+    emit_i32_const_raw(elem_sec, 0)
+    elem_sec.push((11).to_byte())
+    write_u32_leb(elem_sec, user_func_count)
+    for i in 0..<user_func_count {
+      write_u32_leb(elem_sec, func_import_count + i)
+    }
+    write_section(buf, 9, elem_sec.data)
+  }
+
   // code section
   let code_sec = ByteBuf::new()
-  write_u32_leb(code_sec, 1)
-  let func_body = ByteBuf::new()
-  if ctx.local_types.length() == 0 {
-    write_u32_leb(func_body, 0)
-  } else {
-    let group_kinds : Array[ValueKind] = []
-    let group_counts : Array[Int] = []
-    for kind in ctx.local_types {
-      if group_kinds.length() == 0 ||
-        group_kinds[group_kinds.length() - 1] != kind {
-        group_kinds.push(kind)
-        group_counts.push(1)
-      } else {
-        let last = group_counts.length() - 1
-        group_counts[last] = group_counts[last] + 1
+  write_u32_leb(code_sec, funcs.length())
+  for func in funcs {
+    let func_body = ByteBuf::new()
+    if func.locals.length() == 0 {
+      write_u32_leb(func_body, 0)
+    } else {
+      let group_kinds : Array[ValueKind] = []
+      let group_counts : Array[Int] = []
+      for kind in func.locals {
+        if group_kinds.length() == 0 ||
+          group_kinds[group_kinds.length() - 1] != kind {
+          group_kinds.push(kind)
+          group_counts.push(1)
+        } else {
+          let last = group_counts.length() - 1
+          group_counts[last] = group_counts[last] + 1
+        }
+      }
+      write_u32_leb(func_body, group_kinds.length())
+      for i in 0..<group_kinds.length() {
+        write_u32_leb(func_body, group_counts[i])
+        func_body.push(valtype_byte(group_kinds[i]))
       }
     }
-    write_u32_leb(func_body, group_kinds.length())
-    for i in 0..<group_kinds.length() {
-      write_u32_leb(func_body, group_counts[i])
-      func_body.push(valtype_byte(group_kinds[i]))
-    }
+    func_body.extend(func.body)
+    write_u32_leb(code_sec, func_body.len())
+    code_sec.extend(func_body.data)
   }
-  func_body.extend(body)
-  write_u32_leb(code_sec, func_body.len())
-  code_sec.extend(func_body.data)
   write_section(buf, 10, code_sec.data)
 
   // data section
-  let data_sec = ByteBuf::new()
-  write_u32_leb(data_sec, ctx.strings.segments.length())
-  for seg in ctx.strings.segments {
-    data_sec.push((0).to_byte())
-    emit_i32_const_raw(data_sec, seg.offset)
-    data_sec.push((11).to_byte())
-    write_u32_leb(data_sec, seg.bytes.length())
-    data_sec.extend(seg.bytes)
+  let seg_count = ctx.strings.segments.length()
+  if seg_count > 0 {
+    let data_sec = ByteBuf::new()
+    let use_packed = if seg_count > 1 {
+      packed_data_content_len(ctx.strings) <
+      segmented_data_content_len(ctx.strings)
+    } else {
+      false
+    }
+    if use_packed {
+      let data = pack_string_segments(ctx.strings)
+      write_u32_leb(data_sec, 1)
+      data_sec.push((0).to_byte())
+      emit_i32_const_raw(data_sec, 0)
+      data_sec.push((11).to_byte())
+      write_u32_leb(data_sec, data.length())
+      data_sec.extend(data)
+    } else {
+      write_u32_leb(data_sec, seg_count)
+      for seg in ctx.strings.segments {
+        data_sec.push((0).to_byte())
+        emit_i32_const_raw(data_sec, seg.offset)
+        data_sec.push((11).to_byte())
+        write_u32_leb(data_sec, seg.bytes.length())
+        data_sec.extend(seg.bytes)
+      }
+    }
+    write_section(buf, 11, data_sec.data)
   }
-  write_section(buf, 11, data_sec.data)
   buf.to_bytes()
 }
 
@@ -1840,6 +3734,64 @@ fn compile_pat_match(
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
+    }
+    @core.Pat::Float(value=n, span~) => {
+      let _ = span
+      emit_tag_obj_check(buf, value_idx)
+      buf.push((4).to_byte())
+      buf.push((127).to_byte())
+      emit_load_obj_type(buf, value_idx)
+      emit_i32_const_raw(buf, obj_float)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte())
+      buf.push((127).to_byte())
+      emit_untag_ptr(buf, value_idx)
+      emit_f32_load(buf, 4)
+      emit_f32_const(buf, n)
+      emit_f32_eq(buf)
+      buf.push((4).to_byte())
+      buf.push((127).to_byte())
+      compile_pat_cont(
+        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
+    }
+    @core.Pat::Double(value=n, span~) => {
+      let _ = span
+      emit_tag_obj_check(buf, value_idx)
+      buf.push((4).to_byte())
+      buf.push((127).to_byte())
+      emit_load_obj_type(buf, value_idx)
+      emit_i32_const_raw(buf, obj_double)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte())
+      buf.push((127).to_byte())
+      emit_untag_ptr(buf, value_idx)
+      emit_f64_load(buf, 4)
+      emit_f64_const(buf, n)
+      emit_f64_eq(buf)
+      buf.push((4).to_byte())
+      buf.push((127).to_byte())
+      compile_pat_cont(
+        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
       buf.push((5).to_byte())
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
@@ -2075,6 +4027,16 @@ fn emit_pat_literal(
       let _ = span
       emit_i32_const_tagged(buf, n)
     }
+    @core.Pat::Float(value~, span~) => {
+      let _ = value
+      let _ = span
+      raise WasmGenError::Unsupported("float literal")
+    }
+    @core.Pat::Double(value~, span~) => {
+      let _ = value
+      let _ = span
+      raise WasmGenError::Unsupported("double literal")
+    }
     @core.Pat::Bool(value=b, span~) => {
       let _ = span
       emit_i32_const_raw(buf, tag_bool_value(b))
@@ -2228,11 +4190,139 @@ fn emit_load_record_value(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
 
 ///|
 /// Emit a WASM module for a typed xsh AST.
+fn emit_module(
+  ctx : CodegenCtx,
+  ast : @core.Module,
+) -> Bytes raise WasmGenError {
+  let funcs = collect_func_defs(ast)
+  let top_funcs = collect_top_level_funcs(ast)
+  let top_keys : Map[String, Bool] = {}
+  for f in top_funcs {
+    top_keys[f.span_key] = true
+  }
+  for i in 0..<funcs.length() {
+    let f = funcs[i]
+    ctx.fn_closure_indices[f.span_key] = i
+    ctx.fn_closure_captures[f.span_key] = f.captures
+    if top_keys.contains(f.span_key) {
+      match f.name {
+        Some(name) => ctx.fn_indices[name] = i
+        None => ()
+      }
+    }
+  }
+  scan_needs(ctx, ast)
+  scan_strings(ctx, ast)
+  let func_param_kinds : Array[Array[ValueKind]] = []
+  let func_return_kinds : Array[ValueKind] = []
+  for i in 0..<funcs.length() {
+    let f = funcs[i]
+    let kinds = param_kinds(ctx, f.params)
+    func_param_kinds.push(kinds)
+    if top_keys.contains(f.span_key) {
+      match f.name {
+        Some(name) => {
+          ctx.fn_params[name] = kinds
+          let default_ret = match f.ret {
+            Some(r) => value_kind_from_type(ctx, r)
+            None => ValueKind::I32
+          }
+          ctx.fn_returns[name] = default_ret
+        }
+        None => ()
+      }
+    }
+  }
+  for i in 0..<funcs.length() {
+    let f = funcs[i]
+    let ret_kind = infer_func_return_kind(
+      ctx,
+      f.params,
+      func_param_kinds[i],
+      f.ret,
+      f.body,
+    )
+    func_return_kinds.push(ret_kind)
+    if top_keys.contains(f.span_key) {
+      match f.name {
+        Some(name) => ctx.fn_returns[name] = ret_kind
+        None => ()
+      }
+    }
+  }
+  ctx.fn_sig_type_indices = {}
+  ctx.fn_sig_order = []
+  ctx.fn_type_indices = {}
+  for f in funcs {
+    for param in f.params {
+      match func_sig_from_type(ctx, param.ty) {
+        Some(sig) => ignore(ensure_sig_index(ctx, sig))
+        None => ()
+      }
+    }
+  }
+  for i in 0..<funcs.length() {
+    let sig = func_sig_with_env(func_param_kinds[i], func_return_kinds[i])
+    let type_idx = ensure_sig_index(ctx, sig)
+    ctx.fn_type_indices[funcs[i].span_key] = type_idx
+  }
+  let run_sig = FuncSig::{ params: [], result: ValueKind::I32 }
+  let _ = ensure_sig_index(ctx, run_sig)
+  let run_ast = filter_top_level_funcs(ast)
+  let func_needs_heap : Array[Bool] = []
+  let mut any_user_heap = false
+  for f in funcs {
+    let need = needs_heap_block(ctx, f.body)
+    if need {
+      any_user_heap = true
+    }
+    func_needs_heap.push(need)
+  }
+  let run_need_heap = needs_heap_block(ctx, run_ast)
+  if any_user_heap {
+    ctx.use_heap_global = true
+    let global_imports = if ctx.use_js_strings {
+      ctx.js_strings.names.length()
+    } else {
+      0
+    }
+    ctx.heap_global = global_imports
+  }
+  let compiled_funcs : Array[WasmFunc] = []
+  for i in 0..<funcs.length() {
+    let f = funcs[i]
+    compiled_funcs.push(
+      compile_function(
+        ctx,
+        f.params,
+        func_param_kinds[i],
+        func_return_kinds[i],
+        f.body,
+        func_needs_heap[i],
+        f.captures,
+        true,
+      ),
+    )
+  }
+  compiled_funcs.push(
+    compile_function(
+      ctx,
+      [],
+      [],
+      ValueKind::I32,
+      run_ast,
+      run_need_heap,
+      [],
+      false,
+    ),
+  )
+  build_module(ctx, compiled_funcs)
+}
+
+///|
 pub fn emit_module_wasm(ast : @core.Module) -> Bytes raise WasmGenError {
   let ctx = CodegenCtx::new(false)
-  scan_needs(ctx, ast)
-  let body = compile_body(ctx, ast)
-  build_module(ctx, body)
+  emit_module(ctx, ast)
 }
 
 ///|
@@ -2240,7 +4330,5 @@ pub fn emit_module_wasm_js_string(
   ast : @core.Module,
 ) -> Bytes raise WasmGenError {
   let ctx = CodegenCtx::new(true)
-  scan_needs(ctx, ast)
-  let body = compile_body(ctx, ast)
-  build_module(ctx, body)
+  emit_module(ctx, ast)
 }

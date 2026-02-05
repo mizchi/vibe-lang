@@ -221,6 +221,16 @@ fn collect_dep_expr(
       let _ = span
 
     }
+    @core.Expr::Float(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Expr::Double(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
     @core.Expr::Bool(value~, span~) => {
       let _ = value
       let _ = span

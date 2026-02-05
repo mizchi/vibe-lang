@@ -48,6 +48,11 @@ pub fn char_lit() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn float_lit() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(15)
+}
+
+///|
 pub fn let_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(20)
 }

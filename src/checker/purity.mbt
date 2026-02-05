@@ -59,6 +59,16 @@ fn purity_expr_inner(
       let _ = span
       true
     }
+    @core.Expr::Float(value~, span~) => {
+      let _ = value
+      let _ = span
+      true
+    }
+    @core.Expr::Double(value~, span~) => {
+      let _ = value
+      let _ = span
+      true
+    }
     @core.Expr::Bool(value~, span~) => {
       let _ = value
       let _ = span
@@ -317,6 +327,16 @@ pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
       let _ = span
 
     }
+    @core.Pat::Float(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Pat::Double(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
     @core.Pat::Bool(value~, span~) => {
       let _ = value
       let _ = span
@@ -359,6 +379,7 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "__div" ||
   name == "__eq" ||
   name == "__lt" ||
+  name == "__neg" ||
   name == "__assert" ||
   name == "record_set"
 }

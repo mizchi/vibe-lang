@@ -45,6 +45,20 @@ bench-wasmtime:
 bench-compare:
     scripts/bench_compare.sh
 
+# Compare wasm js-string vs wasm gc on string-heavy workload
+bench-string-compare:
+    scripts/bench_string_compare.sh
+
+# String benchmarks (js-string vs wasm-gc)
+bench-string-concat:
+    scripts/bench_string_compare.sh bench/bench_string_concat.xsh
+
+bench-string-substring:
+    scripts/bench_string_compare.sh bench/bench_string_substring.xsh
+
+bench-string-equals:
+    scripts/bench_string_compare.sh bench/bench_string_equals.xsh
+
 # Benchmark builder-based immutable snapshot
 bench-builder:
     scripts/bench_builder.sh

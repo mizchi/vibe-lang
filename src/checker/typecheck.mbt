@@ -18,6 +18,10 @@ suberror TypeError {
 } derive(Show, Eq)
 
 ///|
+// Global counter to avoid type var id collisions across env forks.
+let global_next_type_var : Ref[Int] = @ref.new(0)
+
+///|
 fn suggestion_hint(suggestion : String?) -> String? {
   match suggestion {
     Some(name) => Some("did you mean `" + name + "`?")
@@ -136,6 +140,7 @@ pub struct EnumDef {
 ///|
 pub struct TypeScheme {
   vars : Array[Int]
+  num_vars : Array[Int]
   effect_vars : Array[String]
   ty : @core.Type
 } derive(Show, Eq)
@@ -155,6 +160,8 @@ pub struct TypeEnv {
   type_aliases : Map[String, TypeAlias]
   ctor_index : Map[String, CtorInfo]
   purities : Map[String, Bool]
+  expr_types : Map[String, @core.Type]
+  num_vars : Map[Int, Bool]
   mut next_var : Int
   mut next_effect_var : Int
   subs : Map[Int, @core.Type]
@@ -623,6 +630,8 @@ pub fn TypeEnv::new() -> TypeEnv {
     type_aliases: {},
     ctor_index: {},
     purities: {},
+    expr_types: {},
+    num_vars: {},
     next_var: 0,
     next_effect_var: 0,
     subs: {},
@@ -654,6 +663,11 @@ pub fn TypeEnv::get_addr_type(self : TypeEnv, addr : String) -> @core.Type? {
 }
 
 ///|
+pub fn TypeEnv::get_expr_type(self : TypeEnv, span : @core.Span) -> @core.Type? {
+  self.expr_types.get(span_key(span))
+}
+
+///|
 pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
   {
     bindings: self.bindings.copy(),
@@ -662,6 +676,8 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     type_aliases: self.type_aliases.copy(),
     ctor_index: self.ctor_index.copy(),
     purities: self.purities.copy(),
+    expr_types: self.expr_types,
+    num_vars: self.num_vars.copy(),
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
     subs: self.subs.copy(),
@@ -678,16 +694,23 @@ pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
     type_aliases: self.type_aliases.copy(),
     ctor_index: self.ctor_index.copy(),
     purities: self.purities.copy(),
-    next_var: 0,
-    next_effect_var: 0,
-    subs: {},
-    effect_subs: {},
+    expr_types: self.expr_types,
+    num_vars: self.num_vars.copy(),
+    next_var: self.next_var,
+    next_effect_var: self.next_effect_var,
+    subs: self.subs.copy(),
+    effect_subs: self.effect_subs.copy(),
   }
 }
 
 ///|
 pub fn TypeEnv::set(self : TypeEnv, name : String, ty : @core.Type) -> Unit {
-  self.bindings[name] = TypeScheme::{ vars: [], effect_vars: [], ty }
+  self.bindings[name] = TypeScheme::{
+    vars: [],
+    num_vars: [],
+    effect_vars: [],
+    ty,
+  }
 }
 
 ///|
@@ -916,6 +939,11 @@ fn unknown_span() -> @core.Span {
 }
 
 ///|
+fn span_key(span : @core.Span) -> String {
+  span.start.to_string() + ":" + span.end.to_string()
+}
+
+///|
 fn find_name_suggestion(
   env : TypeEnv,
   aliases : Map[String, @core.Ref],
@@ -937,8 +965,8 @@ fn find_name_suggestion(
 ///|
 fn find_type_suggestion(env : TypeEnv, name : String) -> String? {
   let candidates : Array[String] = [
-    "Int", "Bool", "String", "@core.Path", "Unit", "Array", "Map", "ArrayBuilder",
-    "MapBuilder",
+    "Int", "Float", "Double", "Bool", "String", "@core.Path", "Unit", "Array", "Map",
+    "ArrayBuilder", "MapBuilder",
   ]
   for key, _ in env.enum_defs {
     candidates.push(key)
@@ -985,9 +1013,32 @@ pub fn ensure_prelude_functions(
 
 ///|
 fn fresh_type_var(env : TypeEnv) -> @core.Type {
-  let id = env.next_var
-  env.next_var += 1
+  let id = global_next_type_var.val
+  global_next_type_var.val += 1
+  if env.next_var <= id {
+    env.next_var = id + 1
+  }
   @core.Type::Var(id)
+}
+
+///|
+fn mark_num_var(env : TypeEnv, id : Int) -> Unit {
+  env.num_vars[id] = true
+}
+
+///|
+fn is_num_var(env : TypeEnv, id : Int) -> Bool {
+  env.num_vars.contains(id)
+}
+
+///|
+fn fresh_num_var(env : TypeEnv) -> @core.Type {
+  let ty = fresh_type_var(env)
+  match ty {
+    @core.Type::Var(id) => mark_num_var(env, id)
+    _ => ()
+  }
+  ty
 }
 
 ///|
@@ -1001,7 +1052,11 @@ fn fresh_effect_var(env : TypeEnv) -> String {
 fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> @core.Type {
   let mapping : Map[Int, @core.Type] = {}
   for id in scheme.vars {
-    mapping[id] = fresh_type_var(env)
+    if scheme.num_vars.contains(id) {
+      mapping[id] = fresh_num_var(env)
+    } else {
+      mapping[id] = fresh_type_var(env)
+    }
   }
   let effect_mapping : Map[String, String] = {}
   for name in scheme.effect_vars {
@@ -1289,6 +1344,137 @@ fn instantiate_ctor(env : TypeEnv, info : CtorInfo) -> CtorInstance {
 }
 
 ///|
+fn has_num_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Named(name~, args~) =>
+      if name == "Num" && args.is_empty() {
+        true
+      } else {
+        let mut found = false
+        for arg in args {
+          if has_num_type(arg) {
+            found = true
+            break
+          }
+        }
+        found
+      }
+    @core.Type::Tuple(items) => {
+      let mut found = false
+      for item in items {
+        if has_num_type(item) {
+          found = true
+          break
+        }
+      }
+      found
+    }
+    @core.Type::Record(fields) => {
+      let mut found = false
+      for _, item in fields {
+        if has_num_type(item) {
+          found = true
+          break
+        }
+      }
+      found
+    }
+    @core.Type::Array(inner)
+    | @core.Type::Map(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::MapBuilder(inner) => has_num_type(inner)
+    @core.Type::Variant(fields) => {
+      let mut found = false
+      for _, item in fields {
+        if has_num_type(item) {
+          found = true
+          break
+        }
+      }
+      found
+    }
+    @core.Type::Func(params~, ret~, ..) => {
+      let mut found = false
+      for param in params {
+        if has_num_type(param.ty) {
+          found = true
+          break
+        }
+      }
+      if found {
+        true
+      } else {
+        has_num_type(ret)
+      }
+    }
+    _ => false
+  }
+}
+
+///|
+fn replace_num_type(ty : @core.Type, num_var : @core.Type) -> @core.Type {
+  match ty {
+    @core.Type::Named(name~, args~) =>
+      if name == "Num" && args.is_empty() {
+        num_var
+      } else {
+        let out : Array[@core.Type] = []
+        for arg in args {
+          out.push(replace_num_type(arg, num_var))
+        }
+        @core.Type::Named(name~, args=out)
+      }
+    @core.Type::Tuple(items) => {
+      let out : Array[@core.Type] = []
+      for item in items {
+        out.push(replace_num_type(item, num_var))
+      }
+      @core.Type::Tuple(out)
+    }
+    @core.Type::Record(fields) => {
+      let out : Map[String, @core.Type] = {}
+      for name, item in fields {
+        out[name] = replace_num_type(item, num_var)
+      }
+      @core.Type::Record(out)
+    }
+    @core.Type::Array(inner) =>
+      @core.Type::Array(replace_num_type(inner, num_var))
+    @core.Type::Map(inner) => @core.Type::Map(replace_num_type(inner, num_var))
+    @core.Type::ArrayBuilder(inner) =>
+      @core.Type::ArrayBuilder(replace_num_type(inner, num_var))
+    @core.Type::MapBuilder(inner) =>
+      @core.Type::MapBuilder(replace_num_type(inner, num_var))
+    @core.Type::Variant(fields) => {
+      let out : Map[String, @core.Type] = {}
+      for name, item in fields {
+        out[name] = replace_num_type(item, num_var)
+      }
+      @core.Type::Variant(out)
+    }
+    @core.Type::Func(params~, ret~, effects~) => {
+      let out : Array[@core.FuncParam] = []
+      for param in params {
+        out.push(@core.FuncParam::{
+          name: param.name,
+          label: param.label,
+          ty: replace_num_type(param.ty, num_var),
+        })
+      }
+      @core.Type::Func(params=out, ret=replace_num_type(ret, num_var), effects~)
+    }
+    _ => ty
+  }
+}
+
+///|
+fn record_expr_type(env : TypeEnv, span : @core.Span, ty : @core.Type) -> Unit {
+  let resolved = resolve_type(env, ty)
+  let normalized = normalize_type(env, resolved) catch { _ => resolved }
+  env.expr_types[span_key(span)] = normalized
+}
+
+///|
 fn register_enum_def(
   env : TypeEnv,
   name : String,
@@ -1368,11 +1554,21 @@ fn type_expr_eff(
   effects : EffectScope,
   allow_effect : Bool,
 ) -> @core.Type raise TypeError {
-  match expr {
+  let ty = match expr {
     @core.Expr::Int(value~, span~) => {
       let _ = value
       let _ = span
       @core.Type::Int
+    }
+    @core.Expr::Float(value~, span~) => {
+      let _ = value
+      let _ = span
+      @core.Type::Float
+    }
+    @core.Expr::Double(value~, span~) => {
+      let _ = value
+      let _ = span
+      @core.Type::Double
     }
     @core.Expr::Bool(value~, span~) => {
       let _ = value
@@ -1625,10 +1821,28 @@ fn type_expr_eff(
       type_block(env, body, aliases, effects, true)
     }
     @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~) => {
+      let mut uses_num = false
+      for param in params {
+        if has_num_type(param.ty) {
+          uses_num = true
+          break
+        }
+      }
+      if not(uses_num) {
+        match ret {
+          Some(r) => uses_num = has_num_type(r)
+          None => ()
+        }
+      }
+      let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }
       let scope_env = clone_env(env)
       let resolved_params : Array[@core.FuncParam] = []
       for param in params {
-        let resolved = normalize_type(env, param.ty)
+        let param_ty = match num_var {
+          Some(n) => replace_num_type(param.ty, n)
+          None => param.ty
+        }
+        let resolved = normalize_type(env, param_ty)
         let binding_ty = if param.label == @core.ParamLabel::Optional {
           @core.Type::Named(name="Option", args=[resolved])
         } else {
@@ -1649,7 +1863,11 @@ fn type_expr_eff(
       )
       let final_ret = match ret {
         Some(r) => {
-          let resolved = normalize_type(env, r)
+          let ret_ty = match num_var {
+            Some(n) => replace_num_type(r, n)
+            None => r
+          }
+          let resolved = normalize_type(env, ret_ty)
           if not(type_equal(env, resolved, body_ty)) {
             raise TypeError::Mismatch(
               expected=resolved,
@@ -1669,6 +1887,8 @@ fn type_expr_eff(
       )
     }
   }
+  record_expr_type(env, expr.span(), ty)
+  ty
 }
 
 ///|
@@ -1704,6 +1924,12 @@ fn generalize(env : TypeEnv, ty : @core.Type) -> TypeScheme raise TypeError {
       vars.push(id)
     }
   }
+  let num_vars : Array[Int] = []
+  for id in vars {
+    if env.num_vars.contains(id) {
+      num_vars.push(id)
+    }
+  }
   let free_effects = free_effect_vars_in_type(env, normalized)
   let free_effect_env = free_effect_vars_in_env(env)
   let effect_vars : Array[String] = []
@@ -1712,7 +1938,7 @@ fn generalize(env : TypeEnv, ty : @core.Type) -> TypeScheme raise TypeError {
       effect_vars.push(name)
     }
   }
-  TypeScheme::{ vars, effect_vars, ty: normalized }
+  TypeScheme::{ vars, num_vars, effect_vars, ty: normalized }
 }
 
 ///|
@@ -2009,6 +2235,28 @@ fn collect_pattern_bindings_inner(
         )
       }
     }
+    @core.Pat::Float(value~, span~) => {
+      let _ = value
+      if not(type_equal(env, scrutinee_ty, @core.Type::Float)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Float,
+          actual=scrutinee_ty,
+          span~,
+          context=Some("pattern"),
+        )
+      }
+    }
+    @core.Pat::Double(value~, span~) => {
+      let _ = value
+      if not(type_equal(env, scrutinee_ty, @core.Type::Double)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Double,
+          actual=scrutinee_ty,
+          span~,
+          context=Some("pattern"),
+        )
+      }
+    }
     @core.Pat::Bool(value~, span~) => {
       let _ = value
       if not(type_equal(env, scrutinee_ty, @core.Type::Bool)) {
@@ -2102,6 +2350,16 @@ fn collect_pattern_bindings_loose(
       let _ = span
 
     }
+    @core.Pat::Float(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
+    @core.Pat::Double(value~, span~) => {
+      let _ = value
+      let _ = span
+
+    }
     @core.Pat::Bool(value~, span~) => {
       let _ = value
       let _ = span
@@ -2184,6 +2442,26 @@ fn type_block(
     }
   }
   last
+}
+
+///|
+fn ensure_num_operand(
+  env : TypeEnv,
+  ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  let resolved = resolve_type(env, ty)
+  match resolved {
+    @core.Type::Int | @core.Type::Float | @core.Type::Double => ()
+    @core.Type::Var(id) => mark_num_var(env, id)
+    _ =>
+      raise TypeError::Mismatch(
+        expected=@core.Type::Int,
+        actual=resolved,
+        span~,
+        context=Some("argument"),
+      )
+  }
 }
 
 ///|
@@ -2923,23 +3201,16 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, @core.Type::Int)) {
+                ensure_num_operand(env, a, pos_args[0].span())
+                if not(type_equal(env, b, a)) {
                   raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
-                    actual=a,
-                    span=pos_args[0].span(),
-                    context=Some("argument"),
-                  )
-                }
-                if not(type_equal(env, b, @core.Type::Int)) {
-                  raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
+                    expected=a,
                     actual=b,
                     span=pos_args[1].span(),
                     context=Some("argument"),
                   )
                 }
-                @core.Type::Int
+                a
               }
               "__sub" => {
                 let pos_args = extract_positional_args(args, "__sub", call_span)
@@ -2960,23 +3231,16 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, @core.Type::Int)) {
+                ensure_num_operand(env, a, pos_args[0].span())
+                if not(type_equal(env, b, a)) {
                   raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
-                    actual=a,
-                    span=pos_args[0].span(),
-                    context=Some("argument"),
-                  )
-                }
-                if not(type_equal(env, b, @core.Type::Int)) {
-                  raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
+                    expected=a,
                     actual=b,
                     span=pos_args[1].span(),
                     context=Some("argument"),
                   )
                 }
-                @core.Type::Int
+                a
               }
               "__mul" => {
                 let pos_args = extract_positional_args(args, "__mul", call_span)
@@ -2997,23 +3261,16 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, @core.Type::Int)) {
+                ensure_num_operand(env, a, pos_args[0].span())
+                if not(type_equal(env, b, a)) {
                   raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
-                    actual=a,
-                    span=pos_args[0].span(),
-                    context=Some("argument"),
-                  )
-                }
-                if not(type_equal(env, b, @core.Type::Int)) {
-                  raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
+                    expected=a,
                     actual=b,
                     span=pos_args[1].span(),
                     context=Some("argument"),
                   )
                 }
-                @core.Type::Int
+                a
               }
               "__div" => {
                 let pos_args = extract_positional_args(args, "__div", call_span)
@@ -3034,23 +3291,16 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, @core.Type::Int)) {
+                ensure_num_operand(env, a, pos_args[0].span())
+                if not(type_equal(env, b, a)) {
                   raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
-                    actual=a,
-                    span=pos_args[0].span(),
-                    context=Some("argument"),
-                  )
-                }
-                if not(type_equal(env, b, @core.Type::Int)) {
-                  raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
+                    expected=a,
                     actual=b,
                     span=pos_args[1].span(),
                     context=Some("argument"),
                   )
                 }
-                @core.Type::Int
+                a
               }
               "__eq" => {
                 let pos_args = extract_positional_args(args, "__eq", call_span)
@@ -3071,17 +3321,10 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, @core.Type::Int)) {
+                ensure_num_operand(env, a, pos_args[0].span())
+                if not(type_equal(env, b, a)) {
                   raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
-                    actual=a,
-                    span=pos_args[0].span(),
-                    context=Some("argument"),
-                  )
-                }
-                if not(type_equal(env, b, @core.Type::Int)) {
-                  raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
+                    expected=a,
                     actual=b,
                     span=pos_args[1].span(),
                     context=Some("argument"),
@@ -3108,23 +3351,31 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, a, @core.Type::Int)) {
+                ensure_num_operand(env, a, pos_args[0].span())
+                if not(type_equal(env, b, a)) {
                   raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
-                    actual=a,
-                    span=pos_args[0].span(),
-                    context=Some("argument"),
-                  )
-                }
-                if not(type_equal(env, b, @core.Type::Int)) {
-                  raise TypeError::Mismatch(
-                    expected=@core.Type::Int,
+                    expected=a,
                     actual=b,
                     span=pos_args[1].span(),
                     context=Some("argument"),
                   )
                 }
                 @core.Type::Bool
+              }
+              "__neg" => {
+                let pos_args = extract_positional_args(args, "__neg", call_span)
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="__neg", span=call_span)
+                }
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                ensure_num_operand(env, a, pos_args[0].span())
+                a
               }
               "__assert" => {
                 let pos_args = extract_positional_args(
@@ -3234,6 +3485,8 @@ fn is_non_expansive_expr(
 ) -> Bool {
   match expr {
     @core.Expr::Int(..) => true
+    @core.Expr::Float(..) => true
+    @core.Expr::Double(..) => true
     @core.Expr::Bool(..) => true
     @core.Expr::String(..) => true
     @core.Expr::Ident(name~, span~) => {
@@ -3323,17 +3576,48 @@ fn type_let_expr(
         match ret {
           None => raise TypeError::BadRec(message="missing return type", span~)
           Some(r) => {
+            let mut uses_num = false
+            for param in params {
+              if has_num_type(param.ty) {
+                uses_num = true
+                break
+              }
+            }
+            if not(uses_num) {
+              uses_num = has_num_type(r)
+            }
+            let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }
+            let replaced_params : Array[@core.FuncParam] = []
+            for param in params {
+              let param_ty = match num_var {
+                Some(n) => replace_num_type(param.ty, n)
+                None => param.ty
+              }
+              replaced_params.push(@core.FuncParam::{
+                name: param.name,
+                label: param.label,
+                ty: param_ty,
+              })
+            }
+            let replaced_ret = match num_var {
+              Some(n) => replace_num_type(r, n)
+              None => r
+            }
             let normalized_effects = normalize_effects(fn_effects, fn_span)
             let fn_ty = normalize_type(
               env,
-              @core.Type::Func(params~, ret=r, effects=normalized_effects),
+              @core.Type::Func(
+                params=replaced_params,
+                ret=replaced_ret,
+                effects=normalized_effects,
+              ),
             )
             env.set(name, fn_ty)
             let ty = type_expr_eff(
               env,
               @core.Expr::Fn(
-                params~,
-                ret~,
+                params=replaced_params,
+                ret=Some(replaced_ret),
                 effects=normalized_effects,
                 body~,
                 span=fn_span,
@@ -3350,7 +3634,7 @@ fn type_let_expr(
                 context=Some("recursive binding"),
               )
             }
-            TypeScheme::{ vars: [], effect_vars: [], ty: fn_ty }
+            TypeScheme::{ vars: [], num_vars: [], effect_vars: [], ty: fn_ty }
           }
         }
       _ => raise TypeError::BadRec(message="expected fn", span~)
@@ -3363,7 +3647,7 @@ fn type_let_expr(
       } else {
         let resolved = resolve_type(env, ty)
         let normalized = normalize_type(env, resolved)
-        TypeScheme::{ vars: [], effect_vars: [], ty: normalized }
+        TypeScheme::{ vars: [], num_vars: [], effect_vars: [], ty: normalized }
       }
     } else {
       generalize(env, ty)
@@ -3693,6 +3977,8 @@ fn unify_types(
       unify_types(env, left, nr)
     }
     (@core.Type::Int, @core.Type::Int) => true
+    (@core.Type::Float, @core.Type::Float) => true
+    (@core.Type::Double, @core.Type::Double) => true
     (@core.Type::Bool, @core.Type::Bool) => true
     (@core.Type::String, @core.Type::String) => true
     (@core.Type::Path, @core.Type::Path) => true
@@ -3797,11 +4083,44 @@ fn param_unify(
 
 ///|
 fn bind_var(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
-  if occurs_in(env, id, ty) {
-    false
+  let resolved = resolve_type(env, ty)
+  if is_num_var(env, id) {
+    match resolved {
+      @core.Type::Var(other) =>
+        if other == id {
+          true
+        } else if occurs_in(env, id, resolved) {
+          false
+        } else {
+          mark_num_var(env, other)
+          env.subs[id] = resolved
+          true
+        }
+      @core.Type::Int | @core.Type::Float | @core.Type::Double => {
+        env.subs[id] = resolved
+        true
+      }
+      _ => false
+    }
   } else {
-    env.subs[id] = ty
-    true
+    match resolved {
+      @core.Type::Var(other) =>
+        if other == id {
+          true
+        } else if occurs_in(env, id, resolved) {
+          false
+        } else {
+          env.subs[id] = resolved
+          true
+        }
+      _ =>
+        if occurs_in(env, id, resolved) {
+          false
+        } else {
+          env.subs[id] = resolved
+          true
+        }
+    }
   }
 }
 

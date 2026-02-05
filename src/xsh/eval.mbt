@@ -153,6 +153,14 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let _ = span
       { value: @core.Value::Int(n), effects: [] }
     }
+    @core.Expr::Float(value=n, span~) => {
+      let _ = span
+      { value: @core.Value::Float(n), effects: [] }
+    }
+    @core.Expr::Double(value=n, span~) => {
+      let _ = span
+      { value: @core.Value::Double(n), effects: [] }
+    }
     @core.Expr::Bool(value=b, span~) => {
       let _ = span
       { value: @core.Value::Bool(b), effects: [] }
@@ -395,6 +403,32 @@ fn match_pattern(
       let _ = span
       match value {
         @core.Value::Int(v) =>
+          if v == n {
+            let bindings : Map[String, @core.Value] = {}
+            Some(bindings)
+          } else {
+            None
+          }
+        _ => None
+      }
+    }
+    @core.Pat::Float(value=n, span~) => {
+      let _ = span
+      match value {
+        @core.Value::Float(v) =>
+          if v == n {
+            let bindings : Map[String, @core.Value] = {}
+            Some(bindings)
+          } else {
+            None
+          }
+        _ => None
+      }
+    }
+    @core.Pat::Double(value=n, span~) => {
+      let _ = span
+      match value {
+        @core.Value::Double(v) =>
           if v == n {
             let bindings : Map[String, @core.Value] = {}
             Some(bindings)
@@ -870,6 +904,7 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "__div" ||
   name == "__eq" ||
   name == "__lt" ||
+  name == "__neg" ||
   name == "__assert" ||
   name == "record_set"
 }
@@ -1002,6 +1037,10 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a + b)
+        (@core.Value::Float(a), @core.Value::Float(b)) =>
+          @core.Value::Float(a + b)
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Double(a + b)
         _ => raise EvalError::BadCall("__add")
       }
     }
@@ -1011,6 +1050,10 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a - b)
+        (@core.Value::Float(a), @core.Value::Float(b)) =>
+          @core.Value::Float(a - b)
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Double(a - b)
         _ => raise EvalError::BadCall("__sub")
       }
     }
@@ -1020,6 +1063,10 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a * b)
+        (@core.Value::Float(a), @core.Value::Float(b)) =>
+          @core.Value::Float(a * b)
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Double(a * b)
         _ => raise EvalError::BadCall("__mul")
       }
     }
@@ -1034,6 +1081,10 @@ fn eval_pure_builtin(
           } else {
             @core.Value::Int(a / b)
           }
+        (@core.Value::Float(a), @core.Value::Float(b)) =>
+          @core.Value::Float(a / b)
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Double(a / b)
         _ => raise EvalError::BadCall("__div")
       }
     }
@@ -1043,6 +1094,10 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Bool(a == b)
+        (@core.Value::Float(a), @core.Value::Float(b)) =>
+          @core.Value::Bool(a == b)
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Bool(a == b)
         _ => raise EvalError::BadCall("__eq")
       }
     }
@@ -1052,7 +1107,22 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Bool(a < b)
+        (@core.Value::Float(a), @core.Value::Float(b)) =>
+          @core.Value::Bool(a < b)
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Bool(a < b)
         _ => raise EvalError::BadCall("__lt")
+      }
+    }
+    "__neg" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("__neg")
+      }
+      match args[0] {
+        @core.Value::Int(a) => @core.Value::Int(-a)
+        @core.Value::Float(a) => @core.Value::Float(-a)
+        @core.Value::Double(a) => @core.Value::Double(-a)
+        _ => raise EvalError::BadCall("__neg")
       }
     }
     "__assert" => {
