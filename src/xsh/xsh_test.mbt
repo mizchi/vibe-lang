@@ -185,7 +185,7 @@ test "xsh float and double ops" {
 test "xsh method call and pipe" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
-    #|let inc = fn (a: Int) -> Int { add(a, 1) }
+    #|let inc = (a: Int) -> Int { add(a, 1) }
     #|let x = 2
     #|let y = x.inc()
     #|let z = x |> inc
@@ -232,7 +232,7 @@ test "xsh char literal" {
 test "xsh pipe and logical precedence" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let id = fn (x: Bool) -> Bool { x }\n" + "let v = true |> id && false",
+    "let id = (x: Bool) -> Bool { x }\n" + "let v = true |> id && false",
   )
   match rt.get("v") {
     Some(@core.Value::Bool(v)) => assert_false(v)
@@ -244,7 +244,7 @@ test "xsh pipe and logical precedence" {
 test "xsh fn expression and call" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let f = fn (x: Int, y: Int) -> Int { add(x, y) }\nlet r = f(1, 2)",
+    "let f = (x: Int, y: Int) -> Int { add(x, y) }\nlet r = f(1, 2)",
   )
   match rt.get("r") {
     Some(@core.Value::Int(v)) => assert_eq(v, 3)
@@ -256,8 +256,8 @@ test "xsh fn expression and call" {
 test "xsh fn effect requires declaration" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let f = fn (x: Int) -> Int with {Error} { x }\n" +
-    "let g = fn (y: Int) -> Int { f(y) }",
+    "let f = (x: Int) -> Int with {Error} { x }\n" +
+    "let g = (y: Int) -> Int { f(y) }",
   )
   match result {
     Err(_) => ()
@@ -265,8 +265,8 @@ test "xsh fn effect requires declaration" {
   }
   let rt_ok = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt_ok.eval_script(
-    "let f = fn (x: Int) -> Int with {Error} { x }\n" +
-    "let g = fn (y: Int) -> Int with {Error} { f(y) }\n" +
+    "let f = (x: Int) -> Int with {Error} { x }\n" +
+    "let g = (y: Int) -> Int with {Error} { f(y) }\n" +
     "let r = g(1)",
   )
   match rt_ok.get("r") {
@@ -275,8 +275,8 @@ test "xsh fn effect requires declaration" {
   }
   let rt_try = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt_try.eval_script(
-    "let f = fn (x: Int) -> Int with {Error} { x }\n" +
-    "let g = fn (y: Int) -> Int { try { f(y) } catch { 0 } }\n" +
+    "let f = (x: Int) -> Int with {Error} { x }\n" +
+    "let g = (y: Int) -> Int { try { f(y) } catch { 0 } }\n" +
     "let r = g(1)",
   )
   match rt_try.get("r") {
@@ -289,9 +289,9 @@ test "xsh fn effect requires declaration" {
 test "xsh higher-order effects propagate" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let apply = fn (f: fn (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }\n" +
-    "let boom = fn (x: Int) -> Int with {Error} { x }\n" +
-    "let g = fn (y: Int) -> Int { apply(boom, y) }",
+    "let apply = (f: (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }\n" +
+    "let boom = (x: Int) -> Int with {Error} { x }\n" +
+    "let g = (y: Int) -> Int { apply(boom, y) }",
   )
   match result {
     Err(_) => ()
@@ -299,9 +299,9 @@ test "xsh higher-order effects propagate" {
   }
   let rt_ok = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt_ok.eval_script(
-    "let apply = fn (f: fn (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }\n" +
-    "let boom = fn (x: Int) -> Int with {Error} { x }\n" +
-    "let g = fn (y: Int) -> Int with {Error} { apply(boom, y) }\n" +
+    "let apply = (f: (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }\n" +
+    "let boom = (x: Int) -> Int with {Error} { x }\n" +
+    "let g = (y: Int) -> Int with {Error} { apply(boom, y) }\n" +
     "let r = g(2)",
   )
   match rt_ok.get("r") {
@@ -314,14 +314,14 @@ test "xsh higher-order effects propagate" {
 test "xsh fn labeled and optional args" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let f = fn (x: Int, y~: String, z?: Bool) { y }\nlet a = f(1, y=\"ok\")",
+    "let f = (x: Int, y~: String, z?: Bool) { y }\nlet a = f(1, y=\"ok\")",
   )
   match rt.get("a") {
     Some(@core.Value::String(v)) => assert_eq(v, "ok")
     _ => fail("labeled arg")
   }
   let _ = rt.eval_script(
-    "let g = fn (z?: Bool) { z }\nlet n = g()\nlet s = g(z=true)",
+    "let g = (z?: Bool) { z }\nlet n = g()\nlet s = g(z=true)",
   )
   match rt.get("n") {
     Some(@core.Value::Record(map)) =>
@@ -345,7 +345,7 @@ test "xsh fn labeled and optional args" {
 test "xsh stdout permission requires effect" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let run = fn () -> Unit { do { sh(\"ls\") } }",
+    "let run = () -> Unit { do { sh(\"ls\") } }",
   )
   match result {
     Err(_) => ()
@@ -357,7 +357,7 @@ test "xsh stdout permission requires effect" {
 test "xsh none is polymorphic" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let x = None\nlet f = fn (v: Option[Int]) { v }\nlet g = fn (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x)",
+    "let x = None\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x)",
   )
   match result {
     Err(_) => fail("expected polymorphic None")
@@ -369,7 +369,7 @@ test "xsh none is polymorphic" {
 test "xsh do value restriction allows values" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "do { let x = None\nlet f = fn (v: Option[Int]) { v }\nlet g = fn (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
+    "do { let x = None\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
   )
   match result {
     Err(_) => fail("expected value generalization in do")
@@ -381,7 +381,7 @@ test "xsh do value restriction allows values" {
 test "xsh do value restriction blocks expansive" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "do { let x = if true { None } else { None }\nlet f = fn (v: Option[Int]) { v }\nlet g = fn (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
+    "do { let x = if true { None } else { None }\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
   )
   match result {
     Err(_) => ()
@@ -392,7 +392,7 @@ test "xsh do value restriction blocks expansive" {
 ///|
 test "xsh repl keeps type env across eval_script calls" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt.eval_script("let add2 = fn (x: Int, y: Int) -> Int { add(x, y) }")
+  let _ = rt.eval_script("let add2 = (x: Int, y: Int) -> Int { add(x, y) }")
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
     "let r = add2(1, 2)",
   )
@@ -410,7 +410,7 @@ test "xsh repl keeps type env across eval_script calls" {
 test "xsh fn missing label is type error" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let f = fn (y~: Int) { y }\nf(1)",
+    "let f = (y~: Int) { y }\nf(1)",
   )
   match result {
     Err(_) => ()
@@ -422,7 +422,7 @@ test "xsh fn missing label is type error" {
 test "xsh let rec function" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let rec sum = fn (n: Int) -> Int { if lt(n, 1) { 0 } else { add(n, sum(sub(n, 1))) } }",
+    "let rec sum = (n: Int) -> Int { if lt(n, 1) { 0 } else { add(n, sum(sub(n, 1))) } }",
   )
   match rt.get_addr("sum") {
     Some(_) => ()
@@ -439,7 +439,7 @@ test "xsh let rec function" {
 test "xsh let rec requires return type" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let rec f = fn (x: Int) { x }",
+    "let rec f = (x: Int) { x }",
   )
   match result {
     Err(_) => ()
@@ -450,7 +450,7 @@ test "xsh let rec requires return type" {
 ///|
 test "xsh alias publishes name to address" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt.eval_script("let f = fn (x: Int) { x }")
+  let _ = rt.eval_script("let f = (x: Int) { x }")
   let addr = match rt.get_addr("f") {
     Some(a) => a
     None => fail("missing addr")
@@ -729,7 +729,7 @@ test "xsh type def and ctor call" {
     "enum Result[T] { Ok(T), Err }\ntype IntResult = Result[Int]",
   )
   let _ = rt.eval_script(
-    "let f = fn (x: IntResult) -> Int { match x { Ok(v) => v, Err => 0 } }",
+    "let f = (x: IntResult) -> Int { match x { Ok(v) => v, Err => 0 } }",
   )
   let _ = rt.eval_script("let r = f(Ok(2))")
   match rt.get("r") {
@@ -913,11 +913,11 @@ test "xsh test runner report" {
 test "xsh test cache invalidates on update" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let report1 = rt.run_script_tests(
-    "let f = fn (x: Int) { x }\n" +
+    "let f = (x: Int) { x }\n" +
     "test { if eq(f(1), 1) { 0 } else { div(1, 0) } }",
   )
   assert_eq(report1.failed, 0)
-  let _ = rt.eval_script("let f = fn (x: Int) { add(x, 1) }")
+  let _ = rt.eval_script("let f = (x: Int) { add(x, 1) }")
   let report2 = rt.run_script_tests(
     "test { if eq(f(1), 1) { 0 } else { div(1, 0) } }",
   )

@@ -14,7 +14,11 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
         "<eof>"
       } else {
         let trimmed = got.trim().to_string()
-        if trimmed.is_empty() { "<whitespace>" } else { "`" + trimmed + "`" }
+        if trimmed.is_empty() {
+          "<whitespace>"
+        } else {
+          "`" + trimmed + "`"
+        }
       }
       @core.Diagnostic::{
         stage: "parse",
@@ -340,8 +344,6 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_record_expr()
   } else if self.at(map_kw()) {
     self.parse_map_expr()
-  } else if self.at(fn_kw()) {
-    self.parse_fn_expr()
   } else if self.at(lparen()) {
     self.parse_paren_expr()
   } else if self.at(lbracket()) {
@@ -560,29 +562,6 @@ fn Parser::parse_array_expr(self : Parser) -> Unit {
 }
 
 ///|
-fn Parser::parse_fn_expr(self : Parser) -> Unit {
-  self.builder.start_node(fn_expr())
-  self.bump() // fn
-  self.skip_trivia()
-  self.parse_paren_tokens()
-  self.skip_trivia()
-  if self.at(thin_arrow()) {
-    self.bump()
-    self.skip_trivia()
-    self.parse_type_tokens_until_effect()
-    self.skip_trivia()
-    if self.at(name()) && self.peek().text() == "with" {
-      self.bump()
-      self.skip_trivia()
-      self.parse_brace_block_tokens()
-    }
-  }
-  self.skip_trivia()
-  self.parse_brace_block_tokens()
-  self.builder.finish_node()
-}
-
-///|
 fn Parser::parse_paren_expr(self : Parser) -> Unit {
   self.builder.start_node(paren_expr())
   self.expect(lparen())
@@ -601,25 +580,6 @@ fn Parser::parse_paren_expr(self : Parser) -> Unit {
     }
   }
   self.builder.finish_node()
-}
-
-///|
-fn Parser::parse_paren_tokens(self : Parser) -> Unit {
-  self.expect(lparen())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lparen() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rparen() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
 }
 
 ///|
@@ -666,26 +626,6 @@ fn Parser::parse_type_tokens(self : Parser) -> Unit {
   while not(self.at(eof())) {
     match self.peek_kind() {
       k if k == lbrace() && depth == 0 => break
-      k if k == lparen() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rparen() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
-}
-
-///|
-fn Parser::parse_type_tokens_until_effect(self : Parser) -> Unit {
-  let mut depth = 0
-  while not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lbrace() && depth == 0 => break
-      k if k == name() && depth == 0 && self.peek().text() == "with" => break
       k if k == lparen() => {
         self.bump()
         depth += 1
@@ -1290,8 +1230,6 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_record_expr()
   } else if self.peek_kind() == map_kw() {
     self.parse_map_expr()
-  } else if self.peek_kind() == fn_kw() {
-    self.parse_fn_expr()
   } else if self.peek_kind() == lparen() {
     self.parse_paren_expr()
   } else if self.peek_kind() == lbracket() {
@@ -1701,24 +1639,6 @@ fn AstParser::parse_array_expr(self : AstParser) -> @core.Expr raise ParseError 
 }
 
 ///|
-fn AstParser::parse_fn_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let start = self.pos
-  let _ = self.expect(fn_kw(), "fn")
-  let params = self.parse_param_list({})
-  self.skip_trivia()
-  let mut ret : @core.Type? = None
-  let mut effects : Array[@core.EffectAtom] = []
-  if self.peek_kind() == thin_arrow() {
-    let _ = self.bump()
-    ret = Some(self.parse_type())
-    effects = self.parse_effect_list()
-  }
-  let body = self.parse_block()
-  let span = self.span_from(start)
-  @core.Expr::Fn(params~, ret~, effects~, body~, span~)
-}
-
-///|
 fn AstParser::parse_effect_list(
   self : AstParser,
 ) -> Array[@core.EffectAtom] raise ParseError {
@@ -1837,15 +1757,6 @@ fn AstParser::parse_type_with_params(
   self.skip_trivia()
   let tok = self.peek()
   match tok.kind() {
-    k if k == fn_kw() => {
-      let _ = self.bump()
-      let params_list = self.parse_param_list(params)
-      self.skip_trivia()
-      let _ = self.expect(thin_arrow(), "->")
-      let ret = self.parse_type_with_params(params)
-      let effects = self.parse_effect_list()
-      @core.Type::Func(params=params_list, ret~, effects~)
-    }
     k if k == name() => {
       let name_start = self.pos
       let _ = self.bump()
@@ -1978,7 +1889,11 @@ fn AstParser::parse_type_with_params(
           }
       }
     }
-    k if k == lparen() => self.parse_tuple_type(params)
+    k if k == lparen() =>
+      match self.try_parse_fn_type(params) {
+        Some(t) => t
+        None => self.parse_tuple_type(params)
+      }
     _ =>
       raise ParseError::UnexpectedToken(
         expected="type",
@@ -1999,6 +1914,38 @@ fn effect_atom_from_name(name : String) -> @core.EffectAtom {
       @core.EffectAtom::Var(name)
     } else {
       @core.EffectAtom::Const(name)
+    }
+  }
+}
+
+///|
+fn AstParser::try_parse_fn_type(
+  self : AstParser,
+  params : Map[String, Bool],
+) -> @core.Type? {
+  let saved = self.pos
+  let result : @core.Type? = try {
+    let params_list = self.parse_param_list(params)
+    self.skip_trivia()
+    if self.peek_kind() != thin_arrow() {
+      raise ParseError::UnexpectedToken(
+        expected="->",
+        got=self.peek().text(),
+        span=self.span_from(saved),
+      )
+    }
+    let _ = self.bump()
+    let ret = self.parse_type_with_params(params)
+    let effects = self.parse_effect_list()
+    Some(@core.Type::Func(params=params_list, ret~, effects~))
+  } catch {
+    _ => None
+  }
+  match result {
+    Some(_) => result
+    None => {
+      self.pos = saved
+      None
     }
   }
 }
@@ -2064,31 +2011,71 @@ fn AstParser::parse_type_args(
 }
 
 ///|
-fn AstParser::parse_paren_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let start = self.pos
-  let _ = self.expect(lparen(), "(")
-  let first = self.parse_expr()
-  self.skip_trivia()
-  if self.peek_kind() == comma() {
-    let items : Array[@core.Expr] = []
-    items.push(first)
-    while {
-            self.skip_trivia()
-            self.peek_kind() == comma()
-          } {
-      let _ = self.bump()
-      self.skip_trivia()
-      if self.peek_kind() == rparen() {
-        break
-      }
-      items.push(self.parse_expr())
+fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
+  let saved = self.pos
+  let result : @core.Expr? = try {
+    let params = self.parse_param_list({})
+    self.skip_trivia()
+    if self.peek_kind() != thin_arrow() && self.peek_kind() != lbrace() {
+      raise ParseError::UnexpectedToken(
+        expected="-> or {",
+        got=self.peek().text(),
+        span=self.span_from(saved),
+      )
     }
-    let _ = self.expect(rparen(), ")")
-    let span = self.span_from(start)
-    @core.Expr::Tuple(items~, span~)
-  } else {
-    let _ = self.expect(rparen(), ")")
-    first
+    let mut ret : @core.Type? = None
+    let mut effects : Array[@core.EffectAtom] = []
+    if self.peek_kind() == thin_arrow() {
+      let _ = self.bump()
+      ret = Some(self.parse_type())
+      effects = self.parse_effect_list()
+    }
+    let body = self.parse_block()
+    let span = self.span_from(saved)
+    Some(@core.Expr::Fn(params~, ret~, effects~, body~, span~))
+  } catch {
+    _ => None
+  }
+  match result {
+    Some(_) => result
+    None => {
+      self.pos = saved
+      None
+    }
+  }
+}
+
+///|
+fn AstParser::parse_paren_expr(self : AstParser) -> @core.Expr raise ParseError {
+  match self.try_parse_arrow_fn() {
+    Some(expr) => expr
+    None => {
+      let start = self.pos
+      let _ = self.expect(lparen(), "(")
+      let first = self.parse_expr()
+      self.skip_trivia()
+      if self.peek_kind() == comma() {
+        let items : Array[@core.Expr] = []
+        items.push(first)
+        while {
+                self.skip_trivia()
+                self.peek_kind() == comma()
+              } {
+          let _ = self.bump()
+          self.skip_trivia()
+          if self.peek_kind() == rparen() {
+            break
+          }
+          items.push(self.parse_expr())
+        }
+        let _ = self.expect(rparen(), ")")
+        let span = self.span_from(start)
+        @core.Expr::Tuple(items~, span~)
+      } else {
+        let _ = self.expect(rparen(), ")")
+        first
+      }
+    }
   }
 }
 

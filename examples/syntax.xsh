@@ -7,8 +7,8 @@ flake {
 enum Result[T] { Ok(T), Err }
 type IntResult = Result[Int]
 
-let add2 = fn (x: Int) -> Int { add(x, 2) }
-let rec fact = fn (n: Int) -> Int {
+let add2 = (x: Int) -> Int { add(x, 2) }
+let rec fact = (n: Int) -> Int {
   if lt(n, 2) { 1 } else { mul(n, fact(sub(n, 1))) }
 }
 
@@ -22,14 +22,14 @@ let float_value = 1.25f
 let float_sum = add(float_value, 2.0f)
 let path_value = path("examples/syntax.xsh")
 
-let labeled = fn (x: Int, y~: String, z?: Bool) { y }
+let labeled = (x: Int, y~: String, z?: Bool) { y }
 let label_call = labeled(1, y="ok")
 
-let effectful = fn (s: String) -> Int with {Error} { string_length(s) }
-let effectful_call = fn (s: String) -> Int with {Error} { effectful(s) }
-let effect_apply = fn (f: fn (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }
-let effectful_int = fn (x: Int) -> Int with {Error} { x }
-let effectful_apply = fn (x: Int) -> Int with {Error} { effect_apply(effectful_int, x) }
+let effectful = (s: String) -> Int with {Error} { string_length(s) }
+let effectful_call = (s: String) -> Int with {Error} { effectful(s) }
+let effect_apply = (f: (x: Int) -> Int with {e}, x: Int) -> Int with {e} { f(x) }
+let effectful_int = (x: Int) -> Int with {Error} { x }
+let effectful_apply = (x: Int) -> Int with {Error} { effect_apply(effectful_int, x) }
 
 let block_value = {
   let x = 1
@@ -145,4 +145,53 @@ test "string_interp_int" {
 test "string_interp_expr" {
   let msg = "sum: \(add(1, 2))"
   assert(string_equals(msg, "sum: 3"))
+}
+
+// line comment test
+test "line_comment" {
+  // this is a comment
+  let x = 1 // inline comment
+  assert(eq(x, 1))
+}
+
+test "array_any" {
+  assert(array_any((x: Int) -> Bool { x > 3 }, [1, 2, 4]))
+  assert(not(array_any((x: Int) -> Bool { x > 5 }, [1, 2, 3])))
+}
+test "array_all" {
+  assert(array_all((x: Int) -> Bool { x > 0 }, [1, 2, 3]))
+  assert(not(array_all((x: Int) -> Bool { x > 1 }, [1, 2, 3])))
+}
+test "array_find" {
+  assert(eq(array_find((x: Int) -> Bool { x > 2 }, [1, 2, 3, 4]), 3))
+  assert(eq(array_find((x: Int) -> Bool { x > 10 }, [1, 2, 3]), -1))
+}
+
+test "cmp_neq" { assert(1 != 2) }
+test "cmp_gt" { assert(3 > 2) }
+test "cmp_gte" { assert(3 >= 3) }
+test "cmp_lte" { assert(2 <= 3) }
+
+// arrow function syntax
+test "arrow_fn_basic" {
+  let double = (x: Int) -> Int { x + x }
+  assert(eq(double(5), 10))
+}
+test "arrow_fn_no_ret_type" {
+  let inc = (x: Int) { x + 1 }
+  assert(eq(inc(3), 4))
+}
+test "arrow_fn_multi_params" {
+  let add2 = (x: Int, y: Int) -> Int { x + y }
+  assert(eq(add2(3, 4), 7))
+}
+test "arrow_fn_in_hof" {
+  let xs = array_map((x: Int) -> Int { x * 2 }, [1, 2, 3])
+  assert(eq(array_get(xs, 0), 2))
+  assert(eq(array_get(xs, 2), 6))
+}
+test "arrow_fn_in_hof_no_ret" {
+  let xs = array_map((x: Int) { x * 2 }, [1, 2, 3])
+  assert(eq(array_get(xs, 0), 2))
+  assert(eq(array_get(xs, 2), 6))
 }
