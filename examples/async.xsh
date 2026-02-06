@@ -1,4 +1,5 @@
-// async/await examples
+// async/await examples (interpreter only)
+// For sleep examples, see sleep_demo.xsh
 
 // Basic async function with {Async} effect
 let async_id = (x: Int) -> Int with {Async} {

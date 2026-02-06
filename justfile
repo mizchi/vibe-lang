@@ -87,5 +87,41 @@ info:
 clean:
     moon clean
 
+# E2E tests for Component Model and WIT
+test-component-e2e:
+    scripts/test_component_e2e.sh
+
+# Tests for WASM codegen unsupported syntax
+test-codegen-unsupported:
+    scripts/test_codegen_unsupported.sh
+
+# Run wasmtime in x86_64 Linux container (for stack-switching support)
+wasmtime-x64 *args:
+    container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\
+      curl -sSf https://wasmtime.dev/install.sh | bash >/dev/null 2>&1 && \
+      export PATH="$HOME/.wasmtime/bin:$PATH" && \
+      cd /work && \
+      wasmtime {{args}}'
+
+# Run wasmtime with stack-switching enabled (x86_64 only)
+wasmtime-stack-switching file *args:
+    container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\
+      curl -sSf https://wasmtime.dev/install.sh | bash >/dev/null 2>&1 && \
+      export PATH="$HOME/.wasmtime/bin:$PATH" && \
+      wasmtime run -W stack-switching=y -W exceptions=y -W function-references=y {{args}} /work/{{file}}'
+
+# Build async host runtime (Rust/wasmtime)
+build-async-host:
+    cargo build --release --manifest-path examples/async_host/Cargo.toml
+
+# Run sleep demo with async host runtime
+sleep-demo: build-async-host
+    moon run --target native src/xsh_cli -- compile --wasm examples/wasm/sleep_demo.xsh -o /tmp/sleep_demo.wasm
+    examples/async_host/target/release/xsh-async-host /tmp/sleep_demo.wasm
+
+# Run WASM file with async host runtime (supports sleep)
+run-wasm-async file: build-async-host
+    examples/async_host/target/release/xsh-async-host {{file}}
+
 # Pre-release check
 release-check: fmt info check test

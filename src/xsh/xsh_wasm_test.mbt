@@ -78,3 +78,16 @@ fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
   }
   false
 }
+
+///|
+test "xsh wasm import sleep" {
+  let db = XshDb::new()
+  db.set_source("main", "do { sleep(100) }")
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "xsh"))
+  assert_true(bytes_contains_ascii(wasm, "sleep"))
+}

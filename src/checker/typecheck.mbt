@@ -323,6 +323,7 @@ fn require_effects(
 fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
   match name {
     "sh" => [@core.EffectAtom::Const("Stdout")]
+    "sleep" => [@core.EffectAtom::Const("Async")]
     _ => []
   }
 }
@@ -1999,7 +2000,11 @@ fn type_expr_eff(
       }
       let normalized_effects = normalize_effects(fn_effects, span)
       let fn_scope = effect_scope_from_list(normalized_effects)
-      let body_ty = type_block(scope_env, body, aliases, fn_scope, allow_effect)
+      // Allow effects in function body if function declares effects
+      let fn_allow_effect = allow_effect || normalized_effects.length() > 0
+      let body_ty = type_block(
+        scope_env, body, aliases, fn_scope, fn_allow_effect,
+      )
       let resolved_effects = effect_set_to_atoms(
         effect_set_from_atoms(scope_env, normalized_effects),
       )
@@ -2878,6 +2883,40 @@ fn type_call(
                 if not(type_equal(env, arg_ty, @core.Type::String)) {
                   raise TypeError::Mismatch(
                     expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "sleep" => {
+                let pos_args = extract_positional_args(args, "sleep", call_span)
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="sleep", span=call_span)
+                }
+                require_effects(
+                  env,
+                  effects,
+                  builtin_effects("sleep"),
+                  call_span,
+                )
+                if not(allow_effect) {
+                  raise TypeError::EffectNotAllowed(
+                    name="sleep",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
                     actual=arg_ty,
                     span=pos_args[0].span(),
                     context=Some("argument"),

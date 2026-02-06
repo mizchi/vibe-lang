@@ -774,6 +774,20 @@ fn eval_call(
           }
         } else {
           match name {
+            "sleep" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "sleep")
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("sleep")
+              }
+              match pos_args[0] {
+                @core.Value::Int(ms) => {
+                  sleep_ms(ms.to_int64())
+                  { value: @core.Value::Unit, effects: out.effects }
+                }
+                _ => raise EvalError::BadCall("sleep")
+              }
+            }
             "sh" => {
               let out = eval_args(rt, args)
               let pos_args = extract_positional_values(out.args, "sh")

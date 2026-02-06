@@ -245,6 +245,16 @@ priv struct CodegenCtx {
   mut extern_table_next_slot : Int
   strings : StringTable
   js_strings : StringConstTable
+  // Stack switching for async
+  mut need_stack_switching : Bool
+  mut await_tag_type_index : Int
+  mut await_tag_index : Int
+  mut sleep_tag_index : Int
+  mut run_func_type_index : Int
+  mut async_result_global_index : Int
+  // Sleep import function
+  mut need_sleep : Bool
+  mut sleep_import_index : Int
 }
 
 ///|
@@ -288,6 +298,16 @@ fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
     extern_table_next_slot: 0,
     strings: StringTable::new(),
     js_strings: StringConstTable::new(),
+    // Stack switching for async
+    need_stack_switching: false,
+    await_tag_type_index: -1,
+    await_tag_index: 0,
+    sleep_tag_index: 0,
+    run_func_type_index: -1,
+    async_result_global_index: -1,
+    // Sleep import function
+    need_sleep: false,
+    sleep_import_index: -1,
   }
 }
 
@@ -696,26 +716,53 @@ fn collect_nested_funcs_expr(
 ///|
 fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
   let funcs : Array[FuncDef] = []
+  // Build outer_bound: all top-level non-function bindings that precede each function
+  let outer_bound : Map[String, Bool] = {}
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) => {
         let _ = span
-        let _ = rec
+        if rec {
+          outer_bound[name] = true
+        }
         match expr {
           @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
             let _ = effects
             let key = span_key(span)
+            // Collect captures: variables used in body but defined in outer scope
+            let captures : Array[String] = []
+            let seen : Map[String, Bool] = {}
+            let fn_bound : Map[String, Bool] = {}
+            for param in params {
+              fn_bound[param.name] = true
+            }
+            collect_captures_block(body, fn_bound, outer_bound, captures, seen)
             funcs.push(FuncDef::{
               name: Some(name),
               params,
               ret,
               body,
               span_key: key,
-              captures: [],
+              captures,
             })
           }
           _ => ()
         }
+        outer_bound[name] = true
+      }
+      @core.Stmt::LetPat(pat~, expr~, span~) => {
+        let _ = expr
+        let _ = span
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(pat, bindings)
+        for b in bindings {
+          outer_bound[b] = true
+        }
+      }
+      @core.Stmt::LetMut(name~, expr~, span~) => {
+        let _ = expr
+        let _ = span
+        outer_bound[name] = true
       }
       _ => ()
     }
@@ -868,6 +915,9 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
   if ctx.need_sh || ctx.need_path {
     count += 1
   }
+  if ctx.need_sleep {
+    count += 1
+  }
   count
 }
 
@@ -907,6 +957,9 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     count += 1
   }
   if ctx.need_sh {
+    count += 1
+  }
+  if ctx.need_sleep {
     count += 1
   }
   count
@@ -1082,6 +1135,46 @@ fn emit_drop(buf : ByteBuf) -> Unit {
 }
 
 ///|
+/// Emit block instruction (blocktype is void for now)
+fn emit_block(buf : ByteBuf) -> Unit {
+  buf.push((2).to_byte()) // block = 0x02
+  buf.push((64).to_byte()) // void blocktype = 0x40
+}
+
+///|
+/// Emit loop instruction (blocktype is void for now)
+fn emit_loop(buf : ByteBuf) -> Unit {
+  buf.push((3).to_byte()) // loop = 0x03
+  buf.push((64).to_byte()) // void blocktype = 0x40
+}
+
+///|
+/// Emit br instruction (unconditional branch)
+fn emit_br(buf : ByteBuf, label_idx : Int) -> Unit {
+  buf.push((12).to_byte()) // br = 0x0c
+  write_u32_leb(buf, label_idx)
+}
+
+///|
+/// Emit br_if instruction (conditional branch)
+fn emit_br_if(buf : ByteBuf, label_idx : Int) -> Unit {
+  buf.push((13).to_byte()) // br_if = 0x0d
+  write_u32_leb(buf, label_idx)
+}
+
+///|
+/// Emit end instruction
+fn emit_end(buf : ByteBuf) -> Unit {
+  buf.push((11).to_byte()) // end = 0x0b
+}
+
+///|
+/// Emit i32.eqz instruction (test if zero)
+fn emit_i32_eqz(buf : ByteBuf) -> Unit {
+  buf.push((69).to_byte()) // i32.eqz = 0x45
+}
+
+///|
 fn emit_i32_add(buf : ByteBuf) -> Unit {
   buf.push((106).to_byte())
 }
@@ -1124,6 +1217,11 @@ fn emit_i32_shl(buf : ByteBuf) -> Unit {
 ///|
 fn emit_i32_shr_u(buf : ByteBuf) -> Unit {
   buf.push((118).to_byte())
+}
+
+///|
+fn emit_i32_shr_s(buf : ByteBuf) -> Unit {
+  buf.push((117).to_byte())
 }
 
 ///|
@@ -1385,6 +1483,7 @@ fn infer_expr_kind_with(
         "array_length" => ValueKind::I32
         "array_get" => ValueKind::I32
         "map_get" => ValueKind::I32
+        "sleep" => ValueKind::I32
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
             Some(sig) => sig.result
@@ -1748,6 +1847,8 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         ctx.need_heap = true
       } else if name == "map_get" {
         ctx.need_js_equals = true
+      } else if name == "sleep" {
+        ctx.need_sleep = true
       }
       for arg in args {
         scan_needs_expr(ctx, arg.expr)
@@ -1826,6 +1927,21 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         Some(captures) => if captures.length() > 0 { ctx.need_heap = true }
         None => ()
       }
+      scan_needs_block(ctx, body)
+    }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      ctx.need_stack_switching = true
+      scan_needs_expr(ctx, expr)
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = span
+      ctx.need_stack_switching = true
+      scan_needs_expr(ctx, expr)
+    }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      scan_needs_expr(ctx, cond)
       scan_needs_block(ctx, body)
     }
     _ => ()
@@ -2103,19 +2219,23 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
 }
 
 ///|
-fn filter_top_level_funcs(ast : @core.Module) -> @core.Module {
+fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module {
   let out : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     let skip = match stmt {
-      @core.Stmt::Let(rec~, name~, expr~, span~) => {
-        let _ = rec
-        let _ = name
-        let _ = span
+      @core.Stmt::Let(rec=_, name=_, expr~, span=_) =>
         match expr {
-          @core.Expr::Fn(..) => true
+          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~) => {
+            // Only skip functions with NO captures
+            // Functions with captures need to be processed in run() to create closure
+            let key = span_key(span)
+            match ctx.fn_closure_captures.get(key) {
+              Some(captures) => captures.length() == 0
+              None => true // No capture info, assume no captures
+            }
+          }
           _ => false
         }
-      }
       _ => false
     }
     if not(skip) {
@@ -2447,12 +2567,115 @@ fn resolve_numeric_kind(
 }
 
 ///|
+/// Tagged integer arithmetic operations
+/// Tagged int format: (n << 2) | tag_int
+/// Since tag_int = 0, add/sub work directly on tagged values
+/// For mul/div: untag both, compute, retag
+fn compile_i32_add_tagged(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> Unit raise WasmGenError {
+  compile_expr_i32(ctx, buf, left)
+  compile_expr_i32(ctx, buf, right)
+  emit_i32_add(buf)
+  // Correction only needed if tag_int != 0
+  // Currently tag_int = 0, so no correction needed
+}
+
+///|
+fn compile_i32_sub_tagged(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> Unit raise WasmGenError {
+  compile_expr_i32(ctx, buf, left)
+  compile_expr_i32(ctx, buf, right)
+  emit_i32_sub(buf)
+  // Correction only needed if tag_int != 0
+  // Currently tag_int = 0, so no correction needed
+}
+
+///|
+fn compile_i32_mul_tagged(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> Unit raise WasmGenError {
+  // Untag first operand
+  compile_expr_i32(ctx, buf, left)
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_s(buf)
+  // Untag second operand
+  compile_expr_i32(ctx, buf, right)
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_s(buf)
+  // Multiply
+  emit_i32_mul(buf)
+  // Retag result
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shl(buf)
+  emit_i32_const_raw(buf, tag_int)
+  emit_i32_or(buf)
+}
+
+///|
+fn compile_i32_div_tagged(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> Unit raise WasmGenError {
+  // Untag first operand
+  compile_expr_i32(ctx, buf, left)
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_s(buf)
+  // Untag second operand
+  compile_expr_i32(ctx, buf, right)
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_s(buf)
+  // Divide (signed)
+  emit_i32_div_s(buf)
+  // Retag result
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shl(buf)
+  emit_i32_const_raw(buf, tag_int)
+  emit_i32_or(buf)
+}
+
+///|
+fn compile_i32_mod_tagged(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> Unit raise WasmGenError {
+  // Untag first operand
+  compile_expr_i32(ctx, buf, left)
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_s(buf)
+  // Untag second operand
+  compile_expr_i32(ctx, buf, right)
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_s(buf)
+  // Remainder (signed)
+  emit_i32_rem_s(buf)
+  // Retag result
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shl(buf)
+  emit_i32_const_raw(buf, tag_int)
+  emit_i32_or(buf)
+}
+
+///|
 fn compile_binary_arith_op(
   ctx : CodegenCtx,
   buf : ByteBuf,
   name : String,
   args : Array[@core.CallArg],
-  emit_i32 : (ByteBuf) -> Unit,
   emit_f32 : (ByteBuf) -> Unit,
   emit_f64 : (ByteBuf) -> Unit,
 ) -> Unit raise WasmGenError {
@@ -2462,11 +2685,10 @@ fn compile_binary_arith_op(
   }
   let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
   match resolved_kind {
-    ValueKind::I32 => {
-      compile_expr_i32(ctx, buf, pos_args[0])
-      compile_expr_i32(ctx, buf, pos_args[1])
-      emit_i32(buf)
-    }
+    ValueKind::I32 =>
+      // Tagged i32 arithmetic is handled by dedicated functions
+      // This branch should not be reached if called correctly
+      raise WasmGenError::Unsupported("i32 arith via compile_binary_arith_op")
     ValueKind::BoxedF32 =>
       emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
         emit_unbox_f32_expr(ctx, buf, pos_args[0])
@@ -2690,33 +2912,25 @@ fn compile_expr(
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("add arity")
         }
-        compile_expr_i32(ctx, buf, pos_args[0])
-        compile_expr_i32(ctx, buf, pos_args[1])
-        emit_i32_add(buf)
+        compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
       } else if name == "sub" {
         let pos_args = extract_positional_exprs(args, "sub")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("sub arity")
         }
-        compile_expr_i32(ctx, buf, pos_args[0])
-        compile_expr_i32(ctx, buf, pos_args[1])
-        emit_i32_sub(buf)
+        compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
       } else if name == "mul" {
         let pos_args = extract_positional_exprs(args, "mul")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("mul arity")
         }
-        compile_expr_i32(ctx, buf, pos_args[0])
-        compile_expr_i32(ctx, buf, pos_args[1])
-        emit_i32_mul(buf)
+        compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
       } else if name == "div" {
         let pos_args = extract_positional_exprs(args, "div")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("div arity")
         }
-        compile_expr_i32(ctx, buf, pos_args[0])
-        compile_expr_i32(ctx, buf, pos_args[1])
-        emit_i32_div_s(buf)
+        compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
       } else if name == "eq" {
         let pos_args = extract_positional_exprs(args, "eq")
         if pos_args.length() != 2 {
@@ -2736,21 +2950,61 @@ fn compile_expr(
         emit_i32_lt_s(buf)
         emit_bool_from_i32(buf)
       } else if name == "__add" {
-        compile_binary_arith_op(
-          ctx, buf, "__add", args, emit_i32_add, emit_f32_add, emit_f64_add,
-        )
+        let pos_args = extract_positional_exprs(args, "__add")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__add arity")
+        }
+        let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+        match resolved_kind {
+          ValueKind::I32 =>
+            compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
+          _ =>
+            compile_binary_arith_op(
+              ctx, buf, "__add", args, emit_f32_add, emit_f64_add,
+            )
+        }
       } else if name == "__sub" {
-        compile_binary_arith_op(
-          ctx, buf, "__sub", args, emit_i32_sub, emit_f32_sub, emit_f64_sub,
-        )
+        let pos_args = extract_positional_exprs(args, "__sub")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__sub arity")
+        }
+        let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+        match resolved_kind {
+          ValueKind::I32 =>
+            compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
+          _ =>
+            compile_binary_arith_op(
+              ctx, buf, "__sub", args, emit_f32_sub, emit_f64_sub,
+            )
+        }
       } else if name == "__mul" {
-        compile_binary_arith_op(
-          ctx, buf, "__mul", args, emit_i32_mul, emit_f32_mul, emit_f64_mul,
-        )
+        let pos_args = extract_positional_exprs(args, "__mul")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__mul arity")
+        }
+        let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+        match resolved_kind {
+          ValueKind::I32 =>
+            compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
+          _ =>
+            compile_binary_arith_op(
+              ctx, buf, "__mul", args, emit_f32_mul, emit_f64_mul,
+            )
+        }
       } else if name == "__div" {
-        compile_binary_arith_op(
-          ctx, buf, "__div", args, emit_i32_div_s, emit_f32_div, emit_f64_div,
-        )
+        let pos_args = extract_positional_exprs(args, "__div")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__div arity")
+        }
+        let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
+        match resolved_kind {
+          ValueKind::I32 =>
+            compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
+          _ =>
+            compile_binary_arith_op(
+              ctx, buf, "__div", args, emit_f32_div, emit_f64_div,
+            )
+        }
       } else if name == "__mod" {
         let pos_args = extract_positional_exprs(args, "__mod")
         if pos_args.length() != 2 {
@@ -2758,11 +3012,8 @@ fn compile_expr(
         }
         let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
         match resolved_kind {
-          ValueKind::I32 => {
-            compile_expr_i32(ctx, buf, pos_args[0])
-            compile_expr_i32(ctx, buf, pos_args[1])
-            emit_i32_rem_s(buf)
-          }
+          ValueKind::I32 =>
+            compile_i32_mod_tagged(ctx, buf, pos_args[0], pos_args[1])
           _ => raise WasmGenError::Unsupported("__mod for float types")
         }
       } else if name == "__eq" {
@@ -3230,6 +3481,19 @@ fn compile_expr(
           buf.push((11).to_byte()) // end loop
           emit_local_get(buf, result_local)
         }
+      } else if name == "sleep" {
+        // sleep(ms) - call imported sleep function
+        let pos_args = extract_positional_exprs(args, "sleep")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("sleep arity")
+        }
+        // Compile the duration argument (tagged int)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        // Call imported sleep function (host will untag: ms >> 2)
+        buf.push((0x10).to_byte()) // call
+        write_u32_leb(buf, ctx.sleep_import_index)
+        // Return Unit (tagged 0)
+        emit_i32_const_raw(buf, tag_int_value(0))
       } else if ctx.fn_indices.contains(name) {
         let pos_args = extract_positional_exprs(args, name)
         let param_kinds = match ctx.fn_params.get(name) {
@@ -3528,10 +3792,46 @@ fn compile_expr(
       }
     }
     @core.Expr::While(cond~, body~, span~) => {
-      let _ = cond
-      let _ = body
       let _ = span
-      raise WasmGenError::Unsupported("while")
+      // WASM while loop structure:
+      // block $exit
+      //   loop $continue
+      //     <cond>
+      //     i32.eqz          ;; invert: if cond is 0 (false), branch
+      //     br_if $exit      ;; exit if condition is false
+      //     <body>
+      //     drop             ;; discard body result
+      //     br $continue     ;; loop back
+      //   end
+      // end
+      // i32.const 0          ;; while returns unit
+
+      emit_block(buf) // block $exit (label 1)
+      emit_loop(buf) // loop $continue (label 0)
+
+      // Evaluate condition
+      compile_expr_i32(ctx, buf, cond)
+      // Extract bool value: (tagged >> 2) & 1
+      emit_i32_const_raw(buf, 2)
+      emit_i32_shr_u(buf)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_and(buf)
+      // If condition is 0, exit loop
+      emit_i32_eqz(buf)
+      emit_br_if(buf, 1) // br_if $exit (label 1 = outer block)
+
+      // Execute body (compile_stmt with is_last=false handles dropping)
+      for i in 0..<body.stmts.length() {
+        compile_stmt(ctx, buf, body.stmts[i], false)
+      }
+
+      // Loop back to continue
+      emit_br(buf, 0) // br $continue (label 0 = inner loop)
+      emit_end(buf) // end loop
+      emit_end(buf) // end block
+
+      // While expression returns unit
+      emit_i32_const_tagged(buf, 0)
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
@@ -3544,14 +3844,28 @@ fn compile_expr(
       write_u32_leb(buf, ctx.error_tag_index) // tag index
     }
     @core.Expr::Await(expr~, span~) => {
-      let _ = expr
       let _ = span
-      raise WasmGenError::Unsupported("await not supported in WASM")
+      // Compile the expression to get the value to yield
+      compile_expr_i32(ctx, buf, expr)
+      // Emit suspend instruction with await tag
+      // suspend opcode = 0xe2, tag_index
+      buf.push((0xe2).to_byte())
+      write_u32_leb(buf, ctx.await_tag_index)
+      // After resume, read resolved value from async_result global
+      // global.get opcode = 0x23
+      buf.push((0x23).to_byte())
+      write_u32_leb(buf, ctx.async_result_global_index)
     }
     @core.Expr::Yield(expr~, span~) => {
-      let _ = expr
       let _ = span
-      raise WasmGenError::Unsupported("yield not supported in WASM")
+      // Compile the expression to get the value to yield
+      compile_expr_i32(ctx, buf, expr)
+      // Emit suspend instruction with await tag (yield uses same tag)
+      buf.push((0xe2).to_byte())
+      write_u32_leb(buf, ctx.await_tag_index)
+      // Yield returns Unit - the suspend result is dropped and we return 0
+      buf.push((26).to_byte()) // drop the suspend result
+      emit_i32_const_raw(buf, tag_int_value(0))
     }
   }
 }
@@ -3752,16 +4066,35 @@ fn compile_stmt(
     | @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..) => raise WasmGenError::Unsupported("export")
     @core.Stmt::LetMut(name~, expr~, span~) => {
-      let _ = name
-      let _ = expr
       let _ = span
-      raise WasmGenError::Unsupported("let mut")
+      // LetMut is similar to Let, but the variable can be reassigned
+      let kind = infer_expr_kind(ctx, expr)
+      let idx = ctx.local_count
+      ctx.local_count += 1
+      ctx.local_types.push(kind)
+      ctx.locals[name] = idx
+      ctx.local_kinds[name] = kind
+      compile_expr(ctx, buf, expr)
+      if is_last {
+        emit_local_tee(buf, idx)
+      } else {
+        emit_local_set(buf, idx)
+      }
     }
     @core.Stmt::Assign(name~, expr~, span~) => {
-      let _ = name
-      let _ = expr
       let _ = span
-      raise WasmGenError::Unsupported("assign")
+      // Assign updates an existing mutable variable
+      match ctx.locals.get(name) {
+        Some(idx) => {
+          compile_expr(ctx, buf, expr)
+          if is_last {
+            emit_local_tee(buf, idx)
+          } else {
+            emit_local_set(buf, idx)
+          }
+        }
+        None => raise UnknownName(name)
+      }
     }
     @core.Stmt::LetPat(pat~, expr~, span~) => {
       let _ = span
@@ -4245,6 +4578,11 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     import_type = type_count
     type_count += 1
   }
+  let mut sleep_type = -1
+  if ctx.need_sleep {
+    sleep_type = type_count
+    type_count += 1
+  }
   let builtin_count = type_count
   let func_type_indices : Array[Int] = []
   for func in funcs {
@@ -4256,9 +4594,11 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     func_type_indices.push(idx)
   }
   let exception_type_count = if ctx.need_exceptions { 1 } else { 0 }
+  let stack_switching_type_count = if ctx.need_stack_switching { 3 } else { 0 }
   let total_type_count = builtin_count +
     ctx.fn_sig_order.length() +
-    exception_type_count
+    exception_type_count +
+    stack_switching_type_count
   write_u32_leb(type_sec, total_type_count)
   if ctx.need_js_length {
     type_sec.push((96).to_byte())
@@ -4307,6 +4647,13 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_u32_leb(type_sec, 1)
     type_sec.push((127).to_byte())
   }
+  if ctx.need_sleep {
+    // sleep type: (func (param i32)) - takes ms, returns nothing
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte()) // i32 param
+    write_u32_leb(type_sec, 0) // no results
+  }
   for sig in ctx.fn_sig_order {
     write_func_type(type_sec, sig.params, sig.result)
   }
@@ -4321,6 +4668,28 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       type_sec.push((127).to_byte()) // i32
     }
     write_u32_leb(type_sec, 0) // result count = 0
+  }
+  // Stack switching types
+  if ctx.need_stack_switching {
+    // Await tag type: (func (param i32)) - one-way, no result
+    // Bidirectional (with result) is not fully supported yet
+    ctx.await_tag_type_index = builtin_count +
+      ctx.fn_sig_order.length() +
+      exception_type_count
+    type_sec.push((96).to_byte()) // func type
+    write_u32_leb(type_sec, 1) // param count = 1
+    type_sec.push((127).to_byte()) // i32
+    write_u32_leb(type_sec, 0) // result count = 0
+    // Run function type: (func (result i32))
+    ctx.run_func_type_index = ctx.await_tag_type_index + 1
+    type_sec.push((96).to_byte()) // func type
+    write_u32_leb(type_sec, 0) // param count = 0
+    write_u32_leb(type_sec, 1) // result count = 1
+    type_sec.push((127).to_byte()) // i32
+    // Run continuation type: (cont $run_func_type)
+    // Type index = ctx.run_func_type_index + 1
+    type_sec.push((0x5d).to_byte()) // cont type (0x5d per stack-switching spec)
+    write_u32_leb(type_sec, ctx.run_func_type_index) // function type index
   }
   write_section(buf, 1, type_sec.data)
 
@@ -4345,6 +4714,10 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     func_import_count += 1
   }
   if ctx.need_sh {
+    func_import_count += 1
+  }
+  if ctx.need_sleep {
+    ctx.sleep_import_index = func_import_count
     func_import_count += 1
   }
   let global_import_count = if ctx.use_js_strings {
@@ -4398,6 +4771,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, import_type)
     }
+    if ctx.need_sleep {
+      write_name(import_sec, "xsh")
+      write_name(import_sec, "sleep")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, sleep_type)
+    }
     if ctx.use_js_strings {
       for name in ctx.js_strings.names {
         write_name(import_sec, "string_constants")
@@ -4449,28 +4828,58 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   write_section(buf, 5, mem_sec.data)
 
   // tag section (section ID 13, placed between memory and global per spec)
-  if ctx.need_exceptions {
+  let tag_count = (if ctx.need_exceptions { 1 } else { 0 }) +
+    (if ctx.need_stack_switching { 2 } else { 0 }) // await + sleep
+  if tag_count > 0 {
     let tag_sec = ByteBuf::new()
-    write_u32_leb(tag_sec, 1) // tag count = 1
-    tag_sec.push((0).to_byte()) // attribute: 0x00 = exception
-    write_u32_leb(tag_sec, ctx.error_tag_type_index) // type index
+    write_u32_leb(tag_sec, tag_count)
+    if ctx.need_exceptions {
+      tag_sec.push((0).to_byte()) // attribute: 0x00 = exception
+      write_u32_leb(tag_sec, ctx.error_tag_type_index) // type index
+    }
+    if ctx.need_stack_switching {
+      // await tag comes after error tag (if present)
+      ctx.await_tag_index = if ctx.need_exceptions { 1 } else { 0 }
+      tag_sec.push((0).to_byte()) // attribute: 0x00
+      write_u32_leb(tag_sec, ctx.await_tag_type_index) // type index
+      // sleep tag comes after await tag
+      ctx.sleep_tag_index = ctx.await_tag_index + 1
+      tag_sec.push((0).to_byte()) // attribute: 0x00
+      write_u32_leb(tag_sec, ctx.await_tag_type_index) // same type as await
+    }
     write_section(buf, 13, tag_sec.data)
   }
 
   // global section
-  if ctx.use_heap_global {
+  let need_globals = ctx.use_heap_global || ctx.need_stack_switching
+  if need_globals {
     let global_sec = ByteBuf::new()
-    write_u32_leb(global_sec, 1)
-    global_sec.push((127).to_byte())
-    global_sec.push((1).to_byte())
-    let heap_start = align4(ctx.strings.next_offset)
-    emit_i32_const_raw(global_sec, heap_start)
-    global_sec.push((11).to_byte())
+    let global_count = (if ctx.use_heap_global { 1 } else { 0 }) +
+      (if ctx.need_stack_switching { 1 } else { 0 })
+    write_u32_leb(global_sec, global_count)
+    // Heap pointer global
+    if ctx.use_heap_global {
+      global_sec.push((127).to_byte()) // i32
+      global_sec.push((1).to_byte()) // mutable
+      let heap_start = align4(ctx.strings.next_offset)
+      emit_i32_const_raw(global_sec, heap_start)
+      global_sec.push((11).to_byte()) // end
+    }
+    // Async result global for stack switching
+    if ctx.need_stack_switching {
+      ctx.async_result_global_index = if ctx.use_heap_global { 1 } else { 0 }
+      global_sec.push((127).to_byte()) // i32
+      global_sec.push((1).to_byte()) // mutable
+      emit_i32_const_raw(global_sec, 0) // initial value = 0
+      global_sec.push((11).to_byte()) // end
+    }
     write_section(buf, 6, global_sec.data)
   }
 
   // export section
-  let export_count = 2 + (if ctx.need_exceptions { 1 } else { 0 })
+  let export_count = 2 +
+    (if ctx.need_exceptions { 1 } else { 0 }) +
+    (if ctx.need_stack_switching { 3 } else { 0 }) // await_tag + sleep_tag + global
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
   write_name(export_sec, "run")
@@ -4485,18 +4894,45 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     export_sec.push((4).to_byte()) // tag export
     write_u32_leb(export_sec, 0) // tag index 0
   }
+  if ctx.need_stack_switching {
+    write_name(export_sec, "await")
+    export_sec.push((4).to_byte()) // tag export
+    write_u32_leb(export_sec, ctx.await_tag_index)
+    // Export sleep tag for runtime to handle sleep operations
+    write_name(export_sec, "sleep")
+    export_sec.push((4).to_byte()) // tag export
+    write_u32_leb(export_sec, ctx.sleep_tag_index)
+    // Export async_result global for runtime to write resolved values
+    write_name(export_sec, "async_result")
+    export_sec.push((3).to_byte()) // global export
+    write_u32_leb(export_sec, ctx.async_result_global_index)
+  }
   write_section(buf, 7, export_sec.data)
 
   // element section
-  if user_func_count > 0 {
+  let need_elem = user_func_count > 0 || ctx.need_stack_switching
+  if need_elem {
     let elem_sec = ByteBuf::new()
-    write_u32_leb(elem_sec, 1)
-    elem_sec.push((0).to_byte())
-    emit_i32_const_raw(elem_sec, 0)
-    elem_sec.push((11).to_byte())
-    write_u32_leb(elem_sec, user_func_count)
-    for i in 0..<user_func_count {
-      write_u32_leb(elem_sec, func_import_count + i)
+    let elem_count = (if user_func_count > 0 { 1 } else { 0 }) +
+      (if ctx.need_stack_switching { 1 } else { 0 })
+    write_u32_leb(elem_sec, elem_count)
+    // Active element segment for indirect calls (table)
+    if user_func_count > 0 {
+      elem_sec.push((0).to_byte())
+      emit_i32_const_raw(elem_sec, 0)
+      elem_sec.push((11).to_byte())
+      write_u32_leb(elem_sec, user_func_count)
+      for i in 0..<user_func_count {
+        write_u32_leb(elem_sec, func_import_count + i)
+      }
+    }
+    // Declarative element segment for stack switching (ref.func $run)
+    if ctx.need_stack_switching {
+      // element kind 3 = declarative, funcref
+      elem_sec.push((3).to_byte()) // declarative
+      elem_sec.push((0).to_byte()) // elemkind = funcref
+      write_u32_leb(elem_sec, 1) // 1 function
+      write_u32_leb(elem_sec, run_index) // run function index
     }
     write_section(buf, 9, elem_sec.data)
   }
@@ -5376,7 +5812,7 @@ fn emit_module(
   }
   let run_sig = FuncSig::{ params: [], result: ValueKind::I32 }
   let _ = ensure_sig_index(ctx, run_sig)
-  let run_ast = filter_top_level_funcs(ast)
+  let run_ast = filter_top_level_funcs(ctx, ast)
   let func_needs_heap : Array[Bool] = []
   let mut any_user_heap = false
   for f in funcs {
@@ -5395,6 +5831,39 @@ fn emit_module(
       0
     }
     ctx.heap_global = global_imports
+  }
+  // Pre-compute stack switching indices
+  if ctx.need_stack_switching {
+    ctx.async_result_global_index = if ctx.use_heap_global { 1 } else { 0 }
+    // Pre-compute tag indices: await and sleep come after error tag (if present)
+    ctx.await_tag_index = if ctx.need_exceptions { 1 } else { 0 }
+    ctx.sleep_tag_index = ctx.await_tag_index + 1
+  }
+  // Pre-compute sleep import index (before function compilation)
+  if ctx.need_sleep {
+    let mut import_count = 0
+    if ctx.need_js_length {
+      import_count += 1
+    }
+    if ctx.need_js_char_code_at {
+      import_count += 1
+    }
+    if ctx.need_js_substring {
+      import_count += 1
+    }
+    if ctx.need_js_concat {
+      import_count += 1
+    }
+    if ctx.need_js_equals {
+      import_count += 1
+    }
+    if ctx.need_path {
+      import_count += 1
+    }
+    if ctx.need_sh {
+      import_count += 1
+    }
+    ctx.sleep_import_index = import_count
   }
   // Pre-compute extern_table_index for externref captures
   let user_func_count = if funcs.length() > 0 { funcs.length() - 1 } else { 0 }
