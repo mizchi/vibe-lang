@@ -1,0 +1,747 @@
+///| AST Deserialization from JSON
+
+///|
+pub(all) suberror DeserializeError {
+  DeserializeError(String)
+} derive(Show)
+
+///|
+let deser_zero_span : Span = Span::{ start: 0, end: 0 }
+
+///|
+/// Deserialize a module from JSON string
+pub fn deserialize_module(json_str : String) -> Module raise DeserializeError {
+  let json = @json.parse(json_str) catch {
+    e => raise DeserializeError("JSON parse error: " + e.to_string())
+  }
+  parse_module(json)
+}
+
+///|
+fn parse_module(json : Json) -> Module raise DeserializeError {
+  let obj = expect_object(json)
+  let stmts_json = get_field(obj, "stmts")
+  let stmts_arr = expect_array(stmts_json)
+  let stmts : Array[Stmt] = []
+  for item in stmts_arr {
+    stmts.push(parse_stmt(item))
+  }
+  Module::{ stmts, }
+}
+
+///|
+fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
+  let obj = expect_object(json)
+  let zero = deser_zero_span
+  // Find the single key
+  for entry in obj.iter() {
+    let (key, value) = entry
+    match key {
+      "Let" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let rec = get_bool(inner, "rec")
+        let expr = parse_expr(get_field(inner, "expr"))
+        return Stmt::Let(rec~, name~, expr~, span=zero)
+      }
+      "LetMut" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let expr = parse_expr(get_field(inner, "expr"))
+        return Stmt::LetMut(name~, expr~, span=zero)
+      }
+      "LetPat" => {
+        let inner = expect_object(value)
+        let pat = parse_pat(get_field(inner, "pat"))
+        let expr = parse_expr(get_field(inner, "expr"))
+        return Stmt::LetPat(pat~, expr~, span=zero)
+      }
+      "Assign" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let expr = parse_expr(get_field(inner, "expr"))
+        return Stmt::Assign(name~, expr~, span=zero)
+      }
+      "Expr" => {
+        let expr = parse_expr(value)
+        return Stmt::Expr(expr~, span=zero)
+      }
+      "Test" => {
+        let inner = expect_object(value)
+        let name = get_string_opt(inner, "name")
+        let body = parse_module(get_field(inner, "body"))
+        return Stmt::Test(name~, body~, span=zero)
+      }
+      "EnumDef" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let ctors = parse_ctors(get_field(inner, "ctors"))
+        return Stmt::EnumDef(name~, params~, ctors~, span=zero)
+      }
+      "TypeAlias" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let target = parse_type(get_field(inner, "target"))
+        return Stmt::TypeAlias(name~, params~, target~, span=zero)
+      }
+      "Flake" => {
+        let raw = expect_string(value)
+        return Stmt::Flake(raw~, span=zero)
+      }
+      "Alias" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let target = parse_alias_target(get_field(inner, "target"))
+        return Stmt::Alias(name~, target~, span=zero)
+      }
+      "Import" => {
+        let inner = expect_object(value)
+        let source = parse_module_ref(get_field(inner, "source"))
+        let spec = parse_import_spec(get_field(inner, "spec"))
+        return Stmt::Import(spec~, source~, span=zero)
+      }
+      "ExportLet" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let rec = get_bool(inner, "rec")
+        let expr = parse_expr(get_field(inner, "expr"))
+        return Stmt::ExportLet(rec~, name~, expr~, span=zero)
+      }
+      "ExportEnumDef" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let ctors = parse_ctors(get_field(inner, "ctors"))
+        return Stmt::ExportEnumDef(name~, params~, ctors~, span=zero)
+      }
+      "ExportTypeAlias" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let target = parse_type(get_field(inner, "target"))
+        return Stmt::ExportTypeAlias(name~, params~, target~, span=zero)
+      }
+      "Export" => {
+        let names = parse_strings(value)
+        return Stmt::Export(names~, span=zero)
+      }
+      "ReExport" => {
+        let inner = expect_object(value)
+        let names = get_strings(inner, "names")
+        let source = parse_module_ref(get_field(inner, "source"))
+        return Stmt::ReExport(names~, source~, span=zero)
+      }
+      _ => raise DeserializeError("Unknown stmt type: " + key)
+    }
+  }
+  raise DeserializeError("Empty stmt object")
+}
+
+///|
+fn parse_expr(json : Json) -> Expr raise DeserializeError {
+  let obj = expect_object(json)
+  let zero = deser_zero_span
+  for entry in obj.iter() {
+    let (key, value) = entry
+    match key {
+      "Int" => {
+        let v = expect_int(value)
+        return Expr::Int(value=v, span=zero)
+      }
+      "Float" => {
+        let v = expect_double(value)
+        return Expr::Float(value=Float::from_double(v), span=zero)
+      }
+      "Double" => {
+        let v = expect_double(value)
+        return Expr::Double(value=v, span=zero)
+      }
+      "Bool" => {
+        let v = expect_bool(value)
+        return Expr::Bool(value=v, span=zero)
+      }
+      "String" => {
+        let v = expect_string(value)
+        return Expr::String(value=v, span=zero)
+      }
+      "Ident" => {
+        let name = expect_string(value)
+        return Expr::Ident(name~, span=zero)
+      }
+      "Call" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let args = parse_call_args(get_field(inner, "args"))
+        return Expr::Call(name~, args~, span=zero)
+      }
+      "Fn" => {
+        let inner = expect_object(value)
+        let params = parse_params(get_field(inner, "params"))
+        let ret = parse_type_opt(inner.get("ret"))
+        let effects = parse_effects(get_field(inner, "effects"))
+        let body = parse_module(get_field(inner, "body"))
+        return Expr::Fn(params~, ret~, effects~, body~, span=zero)
+      }
+      "If" => {
+        let inner = expect_object(value)
+        let cond = parse_expr(get_field(inner, "cond"))
+        let then_body = parse_module(get_field(inner, "then"))
+        let else_body = parse_module(get_field(inner, "else"))
+        return Expr::If(cond~, then_body~, else_body~, span=zero)
+      }
+      "Match" => {
+        let inner = expect_object(value)
+        let scrutinee = parse_expr(get_field(inner, "expr"))
+        let arms = parse_arms(get_field(inner, "arms"))
+        return Expr::Match(scrutinee~, arms~, span=zero)
+      }
+      "Block" => {
+        let body = parse_module(value)
+        return Expr::Block(body~, span=zero)
+      }
+      "Tuple" => {
+        let items = parse_exprs(value)
+        return Expr::Tuple(items~, span=zero)
+      }
+      "Array" => {
+        let items = parse_exprs(value)
+        return Expr::Array(items~, span=zero)
+      }
+      "Record" => {
+        let fields = parse_record_fields(value)
+        return Expr::Record(fields~, span=zero)
+      }
+      "Map" => {
+        let fields = parse_map_fields(value)
+        return Expr::Map(fields~, span=zero)
+      }
+      "Do" => {
+        let body = parse_module(value)
+        return Expr::Do(body~, span=zero)
+      }
+      "While" => {
+        let inner = expect_object(value)
+        let cond = parse_expr(get_field(inner, "cond"))
+        let body = parse_module(get_field(inner, "body"))
+        return Expr::While(cond~, body~, span=zero)
+      }
+      "Try" => {
+        let inner = expect_object(value)
+        let try_body = parse_module(get_field(inner, "try"))
+        let catch_body = parse_module(get_field(inner, "catch"))
+        return Expr::Try(try_body~, catch_body~, span=zero)
+      }
+      "Raise" => {
+        let v = parse_expr(value)
+        return Expr::Raise(value=v, span=zero)
+      }
+      "Await" => {
+        let expr = parse_expr(value)
+        return Expr::Await(expr~, span=zero)
+      }
+      "Yield" => {
+        let expr = parse_expr(value)
+        return Expr::Yield(expr~, span=zero)
+      }
+      _ => raise DeserializeError("Unknown expr type: " + key)
+    }
+  }
+  raise DeserializeError("Empty expr object")
+}
+
+///|
+fn parse_pat(json : Json) -> Pat raise DeserializeError {
+  let obj = expect_object(json)
+  let zero = deser_zero_span
+  for entry in obj.iter() {
+    let (key, value) = entry
+    match key {
+      "Wildcard" => return Pat::Wildcard(span=zero)
+      "Bind" => {
+        let name = expect_string(value)
+        return Pat::Bind(name~, span=zero)
+      }
+      "Int" => {
+        let v = expect_int(value)
+        return Pat::Int(value=v, span=zero)
+      }
+      "Float" => {
+        let v = expect_double(value)
+        return Pat::Float(value=Float::from_double(v), span=zero)
+      }
+      "Double" => {
+        let v = expect_double(value)
+        return Pat::Double(value=v, span=zero)
+      }
+      "String" => {
+        let v = expect_string(value)
+        return Pat::String(value=v, span=zero)
+      }
+      "Bool" => {
+        let v = expect_bool(value)
+        return Pat::Bool(value=v, span=zero)
+      }
+      "Ctor" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let args = parse_pats(get_field(inner, "args"))
+        return Pat::Ctor(name~, args~, span=zero)
+      }
+      "Tuple" => {
+        let items = parse_pats(value)
+        return Pat::Tuple(items~, span=zero)
+      }
+      "Record" => {
+        let fields = parse_record_field_pats(value)
+        return Pat::Record(fields~, span=zero)
+      }
+      "Or" => {
+        let pats = parse_pats(value)
+        return Pat::Or(pats~, span=zero)
+      }
+      _ => raise DeserializeError("Unknown pat type: " + key)
+    }
+  }
+  raise DeserializeError("Empty pat object")
+}
+
+///|
+fn parse_type(json : Json) -> Type raise DeserializeError {
+  let obj = expect_object(json)
+  for entry in obj.iter() {
+    let (key, value) = entry
+    match key {
+      "Int" => return Type::Int
+      "Float" => return Type::Float
+      "Double" => return Type::Double
+      "Bool" => return Type::Bool
+      "String" => return Type::String
+      "Path" => return Type::Path
+      "Unit" => return Type::Unit
+      "Never" => return Type::Never
+      "Named" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let args = parse_types(get_field(inner, "args"))
+        return Type::Named(name~, args~)
+      }
+      "Array" => {
+        let elem = parse_type(value)
+        return Type::Array(elem)
+      }
+      "Map" => {
+        let elem = parse_type(value)
+        return Type::Map(elem)
+      }
+      "ArrayBuilder" => {
+        let elem = parse_type(value)
+        return Type::ArrayBuilder(elem)
+      }
+      "MapBuilder" => {
+        let elem = parse_type(value)
+        return Type::MapBuilder(elem)
+      }
+      "Tuple" => {
+        let items = parse_types(value)
+        return Type::Tuple(items)
+      }
+      "Record" => {
+        let fields = parse_type_map(value)
+        return Type::Record(fields)
+      }
+      "Variant" => {
+        let ctors = parse_type_map(value)
+        return Type::Variant(ctors)
+      }
+      "Func" => {
+        let inner = expect_object(value)
+        let params = parse_func_params(get_field(inner, "params"))
+        let ret = parse_type(get_field(inner, "ret"))
+        let effects = parse_effects(get_field(inner, "effects"))
+        return Type::Func(params~, ret~, effects~)
+      }
+      "Param" => {
+        let name = expect_string(value)
+        return Type::Param(name)
+      }
+      "Var" => {
+        let id = expect_int(value)
+        return Type::Var(id)
+      }
+      _ => raise DeserializeError("Unknown type: " + key)
+    }
+  }
+  raise DeserializeError("Empty type object")
+}
+
+///|
+fn parse_type_map(json : Json) -> Map[String, Type] raise DeserializeError {
+  let obj = expect_object(json)
+  let out : Map[String, Type] = {}
+  for entry in obj.iter() {
+    let (key, value) = entry
+    out.set(key, parse_type(value))
+  }
+  out
+}
+
+///|
+fn parse_func_params(json : Json) -> Array[FuncParam] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[FuncParam] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let name = get_string(obj, "name")
+    let label = parse_param_label(get_field(obj, "label"))
+    let ty = parse_type(get_field(obj, "ty"))
+    out.push(FuncParam::{ name, label, ty })
+  }
+  out
+}
+
+///|
+fn parse_type_opt(json : Json?) -> Type? raise DeserializeError {
+  match json {
+    None => None
+    Some(Json::Null) => None
+    Some(j) => Some(parse_type(j))
+  }
+}
+
+///|
+fn parse_types(json : Json) -> Array[Type] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[Type] = []
+  for item in arr {
+    out.push(parse_type(item))
+  }
+  out
+}
+
+///|
+fn parse_exprs(json : Json) -> Array[Expr] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[Expr] = []
+  for item in arr {
+    out.push(parse_expr(item))
+  }
+  out
+}
+
+///|
+fn parse_pats(json : Json) -> Array[Pat] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[Pat] = []
+  for item in arr {
+    out.push(parse_pat(item))
+  }
+  out
+}
+
+///|
+fn parse_call_args(json : Json) -> Array[CallArg] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[CallArg] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let expr = parse_expr(get_field(obj, "expr"))
+    let label = get_string_opt(obj, "label")
+    out.push(CallArg::{ expr, label, span: deser_zero_span })
+  }
+  out
+}
+
+///|
+fn parse_params(json : Json) -> Array[FuncParam] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[FuncParam] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let name = get_string(obj, "name")
+    let label = parse_param_label(get_field(obj, "label"))
+    let ty = parse_type(get_field(obj, "ty"))
+    out.push(FuncParam::{ name, label, ty })
+  }
+  out
+}
+
+///|
+fn parse_param_label(json : Json) -> ParamLabel raise DeserializeError {
+  match json {
+    Json::String(s) =>
+      match s {
+        "Positional" => return ParamLabel::Positional
+        "Required" => return ParamLabel::Required
+        "Optional" => return ParamLabel::Optional
+        _ => raise DeserializeError("Invalid param label: " + s)
+      }
+    _ => raise DeserializeError("Invalid param label")
+  }
+}
+
+///|
+fn parse_effects(json : Json) -> Array[EffectAtom] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[EffectAtom] = []
+  for item in arr {
+    let obj = expect_object(item)
+    for entry in obj.iter() {
+      let (key, value) = entry
+      match key {
+        "Const" => {
+          let name = expect_string(value)
+          out.push(EffectAtom::Const(name))
+        }
+        "Var" => {
+          let name = expect_string(value)
+          out.push(EffectAtom::Var(name))
+        }
+        _ => ()
+      }
+    }
+  }
+  out
+}
+
+///|
+fn parse_arms(json : Json) -> Array[MatchArm] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[MatchArm] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let pat = parse_pat(get_field(obj, "pat"))
+    let cond = match obj.get("cond") {
+      Some(Json::Null) | None => None
+      Some(j) => Some(parse_expr(j))
+    }
+    let expr = parse_expr(get_field(obj, "expr"))
+    out.push(MatchArm::{ pat, cond, expr, span: deser_zero_span })
+  }
+  out
+}
+
+///|
+fn parse_ctors(json : Json) -> Array[TypeCtor] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[TypeCtor] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let name = get_string(obj, "name")
+    let args = parse_types(get_field(obj, "args"))
+    out.push(TypeCtor::{ name, args, span: deser_zero_span })
+  }
+  out
+}
+
+///|
+fn parse_record_fields(
+  json : Json,
+) -> Array[RecordFieldExpr] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[RecordFieldExpr] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let name = get_string(obj, "name")
+    let expr = parse_expr(get_field(obj, "expr"))
+    out.push(RecordFieldExpr::{ name, expr, span: deser_zero_span })
+  }
+  out
+}
+
+///|
+fn parse_map_fields(json : Json) -> Array[MapFieldExpr] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[MapFieldExpr] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let key = get_string(obj, "key")
+    let expr = parse_expr(get_field(obj, "expr"))
+    out.push(MapFieldExpr::{ key, expr, span: deser_zero_span })
+  }
+  out
+}
+
+///|
+fn parse_record_field_pats(
+  json : Json,
+) -> Array[RecordFieldPat] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[RecordFieldPat] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let name = get_string(obj, "name")
+    let pat = parse_pat(get_field(obj, "pat"))
+    out.push(RecordFieldPat::{ name, pat, span: deser_zero_span })
+  }
+  out
+}
+
+///|
+fn parse_strings(json : Json) -> Array[String] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[String] = []
+  for item in arr {
+    out.push(expect_string(item))
+  }
+  out
+}
+
+///|
+fn parse_module_ref(json : Json) -> ModuleRef raise DeserializeError {
+  let obj = expect_object(json)
+  for entry in obj.iter() {
+    let (key, value) = entry
+    match key {
+      "Path" => {
+        let path = expect_string(value)
+        return ModuleRef::Path(path~)
+      }
+      "Hash" => {
+        let hash = expect_string(value)
+        return ModuleRef::Hash(hash~)
+      }
+      _ => ()
+    }
+  }
+  raise DeserializeError("Invalid module ref")
+}
+
+///|
+fn parse_import_spec(json : Json) -> ImportSpec raise DeserializeError {
+  let arr = expect_array(json)
+  let items : Array[ImportItem] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let name = get_string(obj, "name")
+    let rename = get_string_opt(obj, "rename")
+    items.push(ImportItem::{ name, rename })
+  }
+  ImportSpec::{ items, }
+}
+
+///|
+fn parse_alias_target(json : Json) -> AliasTarget raise DeserializeError {
+  let obj = expect_object(json)
+  for entry in obj.iter() {
+    let (key, value) = entry
+    match key {
+      "Module" => {
+        let r = parse_ref(value)
+        return AliasTarget::Module(r)
+      }
+      "Name" => {
+        let name = expect_string(value)
+        return AliasTarget::Name(name)
+      }
+      _ => ()
+    }
+  }
+  raise DeserializeError("Invalid alias target")
+}
+
+///|
+fn parse_ref(json : Json) -> Ref raise DeserializeError {
+  let obj = expect_object(json)
+  let name = get_string(obj, "name")
+  let hash_prefix = get_string_opt(obj, "hash_prefix")
+  Ref::{ name, hash_prefix }
+}
+
+// Helper functions
+
+///|
+fn expect_object(json : Json) -> Map[String, Json] raise DeserializeError {
+  match json {
+    Json::Object(obj) => obj
+    _ => raise DeserializeError("Expected object, got: " + json.to_string())
+  }
+}
+
+///|
+fn expect_array(json : Json) -> Array[Json] raise DeserializeError {
+  match json {
+    Json::Array(arr) => arr
+    _ => raise DeserializeError("Expected array")
+  }
+}
+
+///|
+fn expect_string(json : Json) -> String raise DeserializeError {
+  match json {
+    Json::String(s) => s
+    _ => raise DeserializeError("Expected string")
+  }
+}
+
+///|
+fn expect_int(json : Json) -> Int raise DeserializeError {
+  match json {
+    Json::Number(n, ..) => n.to_int()
+    _ => raise DeserializeError("Expected number")
+  }
+}
+
+///|
+fn expect_double(json : Json) -> Double raise DeserializeError {
+  match json {
+    Json::Number(n, ..) => n
+    _ => raise DeserializeError("Expected number")
+  }
+}
+
+///|
+fn expect_bool(json : Json) -> Bool raise DeserializeError {
+  match json {
+    Json::True => true
+    Json::False => false
+    _ => raise DeserializeError("Expected boolean")
+  }
+}
+
+///|
+fn get_field(
+  obj : Map[String, Json],
+  key : String,
+) -> Json raise DeserializeError {
+  match obj.get(key) {
+    Some(v) => v
+    None => raise DeserializeError("Missing field: " + key)
+  }
+}
+
+///|
+fn get_string(
+  obj : Map[String, Json],
+  key : String,
+) -> String raise DeserializeError {
+  expect_string(get_field(obj, key))
+}
+
+///|
+fn get_string_opt(
+  obj : Map[String, Json],
+  key : String,
+) -> String? raise DeserializeError {
+  match obj.get(key) {
+    Some(Json::Null) | None => None
+    Some(j) => Some(expect_string(j))
+  }
+}
+
+///|
+fn get_bool(
+  obj : Map[String, Json],
+  key : String,
+) -> Bool raise DeserializeError {
+  expect_bool(get_field(obj, key))
+}
+
+///|
+fn get_strings(
+  obj : Map[String, Json],
+  key : String,
+) -> Array[String] raise DeserializeError {
+  parse_strings(get_field(obj, key))
+}

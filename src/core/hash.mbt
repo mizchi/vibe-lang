@@ -16,3 +16,22 @@ pub fn git_blob_hash_string(content : String) -> String {
 pub fn module_ref_from_hash(hash : String) -> String {
   "ko-doha/xsh/" + hash
 }
+
+///|
+/// Compute content-addressed hash for a module AST.
+/// This normalizes the AST (alpha-conversion, span removal) before hashing.
+pub fn hash_module(m : Module) -> String {
+  let normalized = normalize_module(m)
+  let json = serialize_module(normalized)
+  git_blob_hash_string(json)
+}
+
+///|
+/// Short hash (first 8 characters) for display
+pub fn short_hash(hash : String) -> String {
+  if hash.length() >= 8 {
+    hash.unsafe_substring(start=0, end=8)
+  } else {
+    hash
+  }
+}

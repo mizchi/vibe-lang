@@ -22,6 +22,7 @@ suberror EvalError {
   UnknownName(String)
   PermissionDenied(String)
   BadCall(String)
+  ImportError(String)
 } derive(Show, Eq)
 
 ///|
@@ -115,11 +116,122 @@ pub fn Runtime::eval_module(
         }
         last = Some(@core.Value::Unit)
       }
-      @core.Stmt::Import(path~, span~) => {
-        let _ = path
+      @core.Stmt::Import(spec~, source~, span~) => {
+        let _ = span
+        // Get the module hash
+        let hash = match source {
+          @core.ModuleRef::Hash(hash~) => hash
+          @core.ModuleRef::Path(path~) =>
+            // Path should be resolved to hash before evaluation
+            raise EvalError::ImportError(
+              "Import path not resolved to hash: " + path,
+            )
+        }
+        // Look up module in cache
+        match self.get_module(hash) {
+          None =>
+            raise EvalError::ImportError("Module not found in cache: " + hash)
+          Some(imported_module) => {
+            // Evaluate the imported module to get its bindings
+            let exports = @core.extract_exports(imported_module)
+            // Bind each imported item
+            for item in spec.items {
+              let import_name = item.name
+              let local_name = match item.rename {
+                Some(n) => n
+                None => import_name
+              }
+              // Find the exported value
+              match exports.get(import_name) {
+                None =>
+                  raise EvalError::ImportError(
+                    "Symbol not exported: " + import_name,
+                  )
+                Some(stmt) =>
+                  match stmt {
+                    @core.Stmt::ExportLet(expr~, ..)
+                    | @core.Stmt::Let(expr~, ..) => {
+                      let result = eval_expr(self, expr)
+                      if result.effects.length() > 0 {
+                        raise EvalError::ImportError(
+                          "Cannot import effectful expression",
+                        )
+                      }
+                      let _ = self.bind(local_name, result.value)
+
+                    }
+                    _ =>
+                      // For enum/type definitions, just register them
+                      // (type checking should handle this)
+                      ()
+                  }
+              }
+            }
+          }
+        }
+        last = Some(@core.Value::Unit)
+      }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        let _ = span
+        let info = @checker.purity_for_let(self.type_env, rec, name, expr)
+        let use_addr = rec || info.expr
+        let addr = @codegen.expr_address(
+          expr,
+          self.addr_env,
+          if rec {
+            Some(name)
+          } else {
+            None
+          },
+        )
+        if rec {
+          self.env[name] = addr
+          self.addr_env[name] = addr
+        }
+        if use_addr {
+          match self.type_env.get(name) {
+            Some(ty) => self.type_env.set_addr_type(addr, ty)
+            None => ()
+          }
+        }
+        let out = eval_expr(self, expr)
+        let value = match out.value {
+          @core.Value::Fn(fn_val) => {
+            let updated = @core.FnValue::{
+              params: fn_val.params,
+              body: fn_val.body,
+              env: fn_val.env,
+              addr: Some(addr),
+              pure: fn_val.pure,
+            }
+            @core.Value::Fn(updated)
+          }
+          _ => out.value
+        }
+        extend_effects(effects, out.effects)
+        if use_addr {
+          self.bind_with_addr(name, addr, value)
+        } else {
+          self.bind(name, value) |> ignore
+        }
+        last = Some(value)
+      }
+      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
+        let _ = name
+        let _ = params
+        let _ = ctors
         let _ = span
         last = Some(@core.Value::Unit)
       }
+      @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) => {
+        let _ = name
+        let _ = params
+        let _ = target
+        let _ = span
+        last = Some(@core.Value::Unit)
+      }
+      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
+        last = Some(@core.Value::Unit)
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
         let _ = body

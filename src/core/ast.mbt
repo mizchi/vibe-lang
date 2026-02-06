@@ -65,6 +65,27 @@ pub(all) struct TypeCtor {
 } derive(Show, Eq)
 
 ///|
+/// Import item: `foo` or `foo as bar`
+pub(all) struct ImportItem {
+  name : String
+  rename : String? // alias name if using `as`
+} derive(Show, Eq)
+
+///|
+/// Import specification: only named imports allowed
+/// import { foo, bar as b } from ./path.xsh
+pub(all) struct ImportSpec {
+  items : Array[ImportItem]
+} derive(Show, Eq)
+
+///|
+/// Module reference: path or content hash
+pub(all) enum ModuleRef {
+  Path(path~ : String) // ./foo/bar.xsh
+  Hash(hash~ : String) // #abc12345
+} derive(Show, Eq)
+
+///|
 pub(all) enum Stmt {
   Let(rec~ : Bool, name~ : String, expr~ : Expr, span~ : Span)
   EnumDef(
@@ -82,11 +103,27 @@ pub(all) enum Stmt {
   Expr(expr~ : Expr, span~ : Span)
   Flake(raw~ : String, span~ : Span)
   Alias(name~ : String, target~ : AliasTarget, span~ : Span)
-  Import(path~ : String, span~ : Span)
+  Import(spec~ : ImportSpec, source~ : ModuleRef, span~ : Span)
   Test(name~ : String?, body~ : Module, span~ : Span)
   LetMut(name~ : String, expr~ : Expr, span~ : Span)
   Assign(name~ : String, expr~ : Expr, span~ : Span)
   LetPat(pat~ : Pat, expr~ : Expr, span~ : Span)
+  // Export statements
+  ExportLet(rec~ : Bool, name~ : String, expr~ : Expr, span~ : Span)
+  ExportEnumDef(
+    name~ : String,
+    params~ : Array[String],
+    ctors~ : Array[TypeCtor],
+    span~ : Span
+  )
+  ExportTypeAlias(
+    name~ : String,
+    params~ : Array[String],
+    target~ : Type,
+    span~ : Span
+  )
+  Export(names~ : Array[String], span~ : Span)
+  ReExport(names~ : Array[String], source~ : ModuleRef, span~ : Span)
 } derive(Show, Eq)
 
 ///|
@@ -198,6 +235,11 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::Test(span~, ..)
     | Stmt::LetMut(span~, ..)
     | Stmt::Assign(span~, ..)
-    | Stmt::LetPat(span~, ..) => span
+    | Stmt::LetPat(span~, ..)
+    | Stmt::ExportLet(span~, ..)
+    | Stmt::ExportEnumDef(span~, ..)
+    | Stmt::ExportTypeAlias(span~, ..)
+    | Stmt::Export(span~, ..)
+    | Stmt::ReExport(span~, ..) => span
   }
 }

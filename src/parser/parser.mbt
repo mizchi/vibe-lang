@@ -147,6 +147,7 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
     k if k == type_kw() => self.parse_type_alias_stmt()
     k if k == alias_kw() => self.parse_alias_stmt()
     k if k == import_kw() => self.parse_import_stmt()
+    k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_block()
     k if k == flake_kw() => self.parse_flake_block()
     _ => self.parse_expr_stmt()
@@ -315,6 +316,45 @@ fn Parser::parse_import_stmt(self : Parser) -> Unit {
     }
   } else {
     self.builder.token(error_kind(), "")
+  }
+  self.skip_trivia()
+  if self.at(semicolon()) {
+    self.bump()
+  }
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_export_stmt(self : Parser) -> Unit {
+  self.builder.start_node(export_stmt())
+  self.bump() // export
+  self.skip_trivia()
+  // Check what follows export
+  if self.at(enum_kw()) {
+    // export enum Name { ... }
+    self.parse_enum_stmt()
+  } else if self.at(type_kw()) {
+    // export type Name = ...
+    self.parse_type_alias_stmt()
+  } else if self.at(let_kw()) {
+    // export let name = ...
+    self.parse_let_stmt()
+  } else if self.at(lbrace()) {
+    // export { name1, name2, ... }
+    self.bump()
+    while not(self.at(rbrace())) && not(self.at(eof())) {
+      self.skip_trivia()
+      if self.at(name()) {
+        self.bump()
+      }
+      self.skip_trivia()
+      if self.at(comma()) {
+        self.bump()
+      }
+    }
+    if self.at(rbrace()) {
+      self.bump()
+    }
   }
   self.skip_trivia()
   if self.at(semicolon()) {
@@ -921,6 +961,7 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == type_kw() => self.parse_type_alias_stmt()
     k if k == alias_kw() => self.parse_alias_stmt()
     k if k == import_kw() => self.parse_import_stmt()
+    k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_stmt()
     k if k == flake_kw() => self.parse_flake_stmt()
     k if k == name() => {
@@ -1305,29 +1346,172 @@ fn AstParser::parse_import_stmt(
   let start = self.pos
   let _ = self.expect(import_kw(), "import")
   self.skip_trivia()
-  let tok = self.peek()
-  if tok.kind() != name() && tok.kind() != string_lit() {
-    raise ParseError::UnexpectedToken(
-      expected="path",
-      got=tok.text(),
-      span=self.token_span(),
-    )
+  // Parse import spec: { foo, bar as b }
+  let _ = self.expect(lbrace(), "{")
+  let items : Array[@core.ImportItem] = []
+  while self.peek_kind() != rbrace() {
+    self.skip_trivia()
+    let name_tok = self.expect(name(), "import name")
+    self.skip_trivia()
+    let rename : String? = if self.peek_kind() == as_kw() {
+      let _ = self.bump()
+      self.skip_trivia()
+      let alias_tok = self.expect(name(), "alias name")
+      Some(alias_tok.text())
+    } else {
+      None
+    }
+    items.push(@core.ImportItem::{ name: name_tok.text(), rename })
+    self.skip_trivia()
+    if self.peek_kind() == comma() {
+      let _ = self.bump()
+
+    }
   }
-  let _ = self.bump()
-  // Collect dot-separated segments for path (e.g. foo.xsh)
-  let buf = StringBuilder::new()
-  buf.write_string(tok.text())
-  while self.peek_kind() == dot() {
-    let _ = self.bump()
-    buf.write_char('.')
-    if self.peek_kind() == name() {
+  let _ = self.expect(rbrace(), "}")
+  let spec = @core.ImportSpec::{ items, }
+  // Expect 'from'
+  self.skip_trivia()
+  let _ = self.expect(from_kw(), "from")
+  self.skip_trivia()
+  // Parse module reference: path or hash
+  let source : @core.ModuleRef = if self.peek_kind() == hash_ref() {
+    let hash_tok = self.bump()
+    // Remove leading '#' from hash
+    let hash_text = hash_tok.text()
+    let hash = if hash_text.length() > 1 {
+      hash_text.unsafe_substring(start=1, end=hash_text.length())
+    } else {
+      ""
+    }
+    @core.ModuleRef::Hash(hash~)
+  } else {
+    // Path: ./foo/bar.xsh or foo.xsh
+    let tok = self.peek()
+    if tok.kind() != name() && tok.kind() != string_lit() && tok.kind() != dot() {
+      raise ParseError::UnexpectedToken(
+        expected="path or hash",
+        got=tok.text(),
+        span=self.token_span(),
+      )
+    }
+    let buf = StringBuilder::new()
+    // Handle leading ./ or ../
+    while self.peek_kind() == dot() {
+      let _ = self.bump()
+      buf.write_char('.')
+      if self.peek_kind() == dot() {
+        let _ = self.bump()
+        buf.write_char('.')
+      }
+      if self.peek_kind() == slash() {
+        let _ = self.bump()
+        buf.write_char('/')
+      }
+    }
+    // Path segments
+    if self.peek_kind() == name() || self.peek_kind() == string_lit() {
       let seg = self.bump()
       buf.write_string(seg.text())
     }
+    while self.peek_kind() == dot() || self.peek_kind() == slash() {
+      if self.peek_kind() == dot() {
+        let _ = self.bump()
+        buf.write_char('.')
+      } else {
+        let _ = self.bump()
+        buf.write_char('/')
+      }
+      if self.peek_kind() == name() {
+        let seg = self.bump()
+        buf.write_string(seg.text())
+      }
+    }
+    @core.ModuleRef::Path(path=buf.to_string())
   }
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
-  @core.Stmt::Import(path=buf.to_string(), span~)
+  @core.Stmt::Import(spec~, source~, span~)
+}
+
+///|
+fn AstParser::parse_export_stmt(
+  self : AstParser,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let _ = self.expect(export_kw(), "export")
+  self.skip_trivia()
+  // Check what follows export
+  if self.peek_kind() == enum_kw() {
+    // export enum Name { ... }
+    let enum_stmt = self.parse_enum_stmt()
+    match enum_stmt {
+      @core.Stmt::EnumDef(name~, params~, ctors~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="enum definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == type_kw() {
+    // export type Name = ...
+    let type_stmt = self.parse_type_alias_stmt()
+    match type_stmt {
+      @core.Stmt::TypeAlias(name~, params~, target~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::ExportTypeAlias(name~, params~, target~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="type alias",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == let_kw() {
+    // export let name = ...
+    let let_stmt = self.parse_let_stmt()
+    match let_stmt {
+      @core.Stmt::Let(rec~, name~, expr~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::ExportLet(rec~, name~, expr~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="let statement",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else {
+    // export { name1, name2, ... }
+    let _ = self.expect(lbrace(), "{")
+    let names : Array[String] = []
+    while self.peek_kind() != rbrace() {
+      self.skip_trivia()
+      let name_tok = self.expect(name(), "export name")
+      names.push(name_tok.text())
+      self.skip_trivia()
+      if self.peek_kind() == comma() {
+        let _ = self.bump()
+
+      }
+    }
+    let _ = self.expect(rbrace(), "}")
+    let _ = self.eat(semicolon())
+    let span = self.span_from(start)
+    @core.Stmt::Export(names~, span~)
+  }
 }
 
 ///|
@@ -1704,9 +1888,7 @@ fn AstParser::parse_raise_expr(self : AstParser) -> @core.Expr raise ParseError 
 }
 
 ///|
-fn AstParser::parse_await_expr(
-  self : AstParser,
-) -> @core.Expr raise ParseError {
+fn AstParser::parse_await_expr(self : AstParser) -> @core.Expr raise ParseError {
   let start = self.pos
   let _ = self.expect(await_kw(), "await")
   let expr = self.parse_expr()
@@ -1715,9 +1897,7 @@ fn AstParser::parse_await_expr(
 }
 
 ///|
-fn AstParser::parse_yield_expr(
-  self : AstParser,
-) -> @core.Expr raise ParseError {
+fn AstParser::parse_yield_expr(self : AstParser) -> @core.Expr raise ParseError {
   let start = self.pos
   let _ = self.expect(yield_kw(), "yield")
   let expr = self.parse_expr()

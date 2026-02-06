@@ -2298,9 +2298,9 @@ fn infer_func_return_kind(
       if ctx.use_js_strings && declared != inferred {
         raise WasmGenError::Unsupported(
           "fn return kind mismatch: declared=" +
-            declared.to_string() +
-            " inferred=" +
-            inferred.to_string(),
+          declared.to_string() +
+          " inferred=" +
+          inferred.to_string(),
         )
       }
       declared
@@ -3606,13 +3606,12 @@ fn compile_stmt(
                   Some(sig) => ctx.fn_return_sigs[name] = sig
                   None => ()
                 }
-              None => {
+              None =>
                 // Try to infer from body's last expression
                 match infer_body_return_sig(ctx, fn_body) {
                   Some(sig) => ctx.fn_return_sigs[name] = sig
                   None => ()
                 }
-              }
             }
           }
           let kind = infer_expr_kind(ctx, expr)
@@ -3735,11 +3734,17 @@ fn compile_stmt(
       let _ = span
       raise WasmGenError::Unsupported("alias")
     }
-    @core.Stmt::Import(path~, span~) => {
-      let _ = path
+    @core.Stmt::Import(spec~, source~, span~) => {
+      let _ = spec
+      let _ = source
       let _ = span
       raise WasmGenError::Unsupported("import")
     }
+    @core.Stmt::ExportLet(..)
+    | @core.Stmt::ExportEnumDef(..)
+    | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..) => raise WasmGenError::Unsupported("export")
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = name
       let _ = expr
@@ -5326,7 +5331,9 @@ fn emit_module(
         e =>
           match f.name {
             Some(name) =>
-              raise WasmGenError::Unsupported("in function " + name + ": " + e.to_string())
+              raise WasmGenError::Unsupported(
+                "in function " + name + ": " + e.to_string(),
+              )
             None => raise e
           }
       }

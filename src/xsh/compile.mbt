@@ -3,7 +3,7 @@
 suberror CompileError {
   MissingSource(String)
   Parse(@parser.ParseError)
-  Type(@checker.TypeError)
+  TypeDiag(@core.Diagnostic)
 } derive(Show, Eq)
 
 ///|
@@ -39,8 +39,14 @@ pub fn compile_module(
   }
   let aliases = build_alias_map(raw_ast, db.import_aliases(path))
   let ast = desugar_method_calls(raw_ast, aliases)
-  let env = @checker.type_check_with_aliases(ast, aliases) catch {
-    e => raise CompileError::Type(e)
+  // Use db.types() which handles import type resolution (including imported symbols)
+  let env = db.types(path)
+  // Check for any type errors that were collected as diagnostics
+  let diags = db.diagnostics(path)
+  for diag in diags {
+    if diag.stage == "type" {
+      raise CompileError::TypeDiag(diag)
+    }
   }
   let mono = monoify_module(ast, env)
   let ir = module_to_sexp(mono.ast, aliases)
@@ -89,7 +95,8 @@ pub fn compile_module_wasm(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  @codegen.emit_module_wasm(compiled.ast) catch {
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
+  @codegen.emit_module_wasm(bundled) catch {
     e => raise WasmCompileError::Gen(e)
   }
 }
@@ -103,7 +110,8 @@ pub fn compile_module_wasm_js_string(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  @codegen.emit_module_wasm_js_string(compiled.ast) catch {
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
+  @codegen.emit_module_wasm_js_string(bundled) catch {
     e => raise WasmCompileError::Gen(e)
   }
 }
@@ -117,8 +125,80 @@ pub fn compile_module_wasm_gc(
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  @codegen.emit_module_wasm_gc(compiled.ast) catch {
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
+  @codegen.emit_module_wasm_gc(bundled) catch {
     e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
+/// Bundle a module with all its dependencies for WASM compilation.
+/// This inlines all exported definitions from dependencies and removes imports.
+fn bundle_for_wasm(
+  db : XshDb,
+  path : String,
+  ast : @core.Module,
+) -> @core.Module {
+  let bundled_stmts : Array[@core.Stmt] = []
+  let visited : Map[String, Bool] = {}
+  // Collect all dependency definitions in topological order
+  collect_dependency_defs(db, path, bundled_stmts, visited)
+  // Add main module statements (excluding imports)
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Import(..) => () // Skip imports
+      @core.Stmt::Alias(..) => () // Skip aliases
+      _ => bundled_stmts.push(stmt)
+    }
+  }
+  @core.Module::{ stmts: bundled_stmts }
+}
+
+///|
+/// Recursively collect definitions from dependencies.
+fn collect_dependency_defs(
+  db : XshDb,
+  path : String,
+  out : Array[@core.Stmt],
+  visited : Map[String, Bool],
+) -> Unit {
+  if visited.contains(path) {
+    return
+  }
+  visited[path] = true
+  let imports = db.imports(path)
+  // First, recursively process dependencies
+  for imp in imports {
+    collect_dependency_defs(db, imp.path, out, visited)
+  }
+  // Then add definitions from this module (if it's an imported module)
+  // Skip the entry module itself (it will be added separately)
+  if visited.length() > 1 {
+    let dep_ast = db.ast(path)
+    for stmt in dep_ast.stmts {
+      match stmt {
+        // Convert exports to regular definitions
+        @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+          out.push(@core.Stmt::Let(rec~, name~, expr~, span~))
+        @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+          out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
+        @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+          out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
+        // Also include non-exported definitions that exported ones might depend on
+        @core.Stmt::Let(..)
+        | @core.Stmt::EnumDef(..)
+        | @core.Stmt::TypeAlias(..) => out.push(stmt)
+        // Skip imports, exports, aliases in dependencies
+        @core.Stmt::Import(..)
+        | @core.Stmt::Alias(..)
+        | @core.Stmt::Export(..)
+        | @core.Stmt::ReExport(..) => ()
+        // Skip tests from dependencies
+        @core.Stmt::Test(..) => ()
+        // Other statements are passed through
+        _ => out.push(stmt)
+      }
+    }
   }
 }
 
@@ -224,11 +304,58 @@ fn stmts_to_sexp(
         let _ = span
 
       }
-      @core.Stmt::Import(path~, span~) => {
-        let _ = path
+      @core.Stmt::Import(spec~, source~, span~) => {
+        let _ = spec
+        let _ = source
         let _ = span
 
       }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        let _ = span
+        if rec {
+          buf.write_string(" (export-let-rec ")
+        } else {
+          buf.write_string(" (export-let ")
+        }
+        buf.write_string(escape_atom(name))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(expr, aliases))
+        buf.write_char(')')
+      }
+      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
+        let _ = span
+        buf.write_string(" (export-enum ")
+        buf.write_string(escape_atom(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(escape_atom(param))
+        }
+        buf.write_string(") (ctors")
+        let sorted = sort_type_ctors(ctors)
+        for ctor in sorted {
+          buf.write_string(" (ctor ")
+          buf.write_string(escape_atom(ctor.name))
+          buf.write_char(' ')
+          buf.write_string(type_to_sexp(type_ctor_payload(ctor)))
+          buf.write_char(')')
+        }
+        buf.write_string("))")
+      }
+      @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) => {
+        let _ = span
+        buf.write_string(" (export-type-alias ")
+        buf.write_string(escape_atom(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(escape_atom(param))
+        }
+        buf.write_string(") ")
+        buf.write_string(type_to_sexp(target))
+        buf.write_char(')')
+      }
+      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) => ()
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
         let _ = body

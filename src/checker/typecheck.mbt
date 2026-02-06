@@ -923,6 +923,19 @@ fn type_check_stmts(
             }
         }
       @core.Stmt::Import(..) => ()
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        let scheme = type_let_expr(
+          env, rec, name, expr, span, aliases, effects, allow_effect,
+        )
+        env.set_scheme(name, scheme)
+        let info = purity_for_let(env, rec, name, expr)
+        env.set_purity(name, info.value)
+      }
+      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+        register_enum_def(env, name, params, ctors, span)
+      @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+        register_type_alias(env, name, params, target, span)
+      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) => ()
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = span
         let _ = name
@@ -2600,11 +2613,29 @@ fn type_block(
         }
         last = @core.Type::Unit
       }
-      @core.Stmt::Import(path~, span~) => {
-        let _ = path
+      @core.Stmt::Import(spec~, source~, span~) => {
+        let _ = spec
+        let _ = source
         let _ = span
         last = @core.Type::Unit
       }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        let scheme = type_let_expr(
+          scope_env, rec, name, expr, span, aliases, effects, allow_effect,
+        )
+        scope_env.set_scheme(name, scheme)
+        last = scheme.ty
+      }
+      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
+        register_enum_def(scope_env, name, params, ctors, span)
+        last = @core.Type::Unit
+      }
+      @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) => {
+        register_type_alias(scope_env, name, params, target, span)
+        last = @core.Type::Unit
+      }
+      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
+        last = @core.Type::Unit
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = span
         let _ = name

@@ -17,6 +17,9 @@ pub fn run(args : Array[String]) -> Unit {
     "bench-file" => bench_file_cmd(cmd_args)
     "repl" => repl_cmd(cmd_args)
     "repl-stdin" => repl_stdin_cmd(cmd_args)
+    "hash" => hash_cmd(cmd_args)
+    "save" => save_cmd(cmd_args)
+    "expand" => expand_cmd(cmd_args)
     "help" => print_usage()
     _ => {
       println("unknown command: " + cmd)
@@ -41,6 +44,10 @@ fn print_usage() -> Unit {
   println("  bench-file [--n N] [--warmup N] <file>")
   println("  repl                        interactive TUI shell")
   println("  repl-stdin [--no-prompt]    read-eval-print loop (stdin)")
+  println("  hash <file>                 compute normalized AST hash")
+  println(
+    "  save <file>                 save module to content-addressed store",
+  )
 }
 
 ///|
@@ -213,14 +220,75 @@ fn run_cmd(args : Array[String]) -> Unit {
     abort("run: expected <file>")
   }
   let entry_path = args[0]
-  match compile_entry(entry_path) {
+  match load_db(entry_path) {
     Err(err) => abort("run: " + err)
-    Ok(compiled) => {
+    Ok((db, entry)) => {
+      let compiled = @xsh_lib.compile_module(db, entry) catch {
+        e => abort("run: " + e.to_string())
+      }
       let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
-      let result = rt.run_compiled(compiled) catch {
+      // Build path-to-hash mapping and load imported modules into runtime cache
+      let path_to_hash : Map[String, String] = {}
+      load_imports_into_runtime(rt, db, entry, path_to_hash)
+      // Also add mappings for raw paths from the AST
+      let base_dir = @xsh_fs.parent_path(entry)
+      for stmt in compiled.ast.stmts {
+        match stmt {
+          @xsh_core.Stmt::Import(source~, ..) =>
+            match source {
+              @xsh_core.ModuleRef::Path(path=raw_path) => {
+                // Resolve the path to find the hash
+                let resolved = resolve_import_path(base_dir, raw_path)
+                match path_to_hash.get(resolved) {
+                  Some(hash) => path_to_hash[raw_path] = hash
+                  None => ()
+                }
+              }
+              @xsh_core.ModuleRef::Hash(_) => ()
+            }
+          _ => ()
+        }
+      }
+      // Convert the AST's import paths to hashes
+      let converted_ast = @xsh_core.convert_imports_to_hash(compiled.ast, fn(
+        path,
+      ) {
+        path_to_hash.get(path)
+      })
+      // Set aliases
+      for name, target in compiled.aliases {
+        rt.set_alias(name, target)
+      }
+      // Evaluate the converted module
+      let result = rt.eval_module(converted_ast) catch {
         e => abort("run: " + e.to_string())
       }
       print_eval_result(result)
+    }
+  }
+}
+
+///|
+/// Load all imported modules into runtime's module cache
+fn load_imports_into_runtime(
+  rt : @xsh_lib.Runtime,
+  db : @xsh_lib.XshDb,
+  path : String,
+  path_to_hash : Map[String, String],
+) -> Unit {
+  let imports = db.imports(path)
+  for imp in imports {
+    match imp.hash {
+      Some(hash) => {
+        // Record the path-to-hash mapping
+        path_to_hash[imp.path] = hash
+        // Get the AST for this imported module
+        let ast = db.ast(imp.path)
+        rt.register_module(hash, ast)
+        // Recursively load imports of the imported module
+        load_imports_into_runtime(rt, db, imp.path, path_to_hash)
+      }
+      None => ()
     }
   }
 }
@@ -270,14 +338,18 @@ fn load_imports_for_check(
   visited[path] = true
   for stmt in ast.stmts {
     match stmt {
-      @xsh_core.Stmt::Import(path=import_path, ..) => {
-        let resolved = if import_path.has_prefix("/") {
-          @xsh_fs.normalize_path(import_path)
-        } else {
-          @xsh_fs.normalize_path(base + "/" + import_path)
+      @xsh_core.Stmt::Import(source~, ..) =>
+        match source {
+          @xsh_core.ModuleRef::Path(path=import_path) => {
+            let resolved = if import_path.has_prefix("/") {
+              @xsh_fs.normalize_path(import_path)
+            } else {
+              @xsh_fs.normalize_path(base + "/" + import_path)
+            }
+            load_import_recursive_for_check(db, resolved, visited)
+          }
+          @xsh_core.ModuleRef::Hash(..) => () // Hash references don't need recursive loading
         }
-        load_import_recursive_for_check(db, resolved, visited)
-      }
       _ => ()
     }
   }
@@ -299,14 +371,18 @@ fn load_import_recursive_for_check(
   let base = @xsh_fs.parent_path(path)
   for stmt in ast.stmts {
     match stmt {
-      @xsh_core.Stmt::Import(path=import_path, ..) => {
-        let resolved = if import_path.has_prefix("/") {
-          @xsh_fs.normalize_path(import_path)
-        } else {
-          @xsh_fs.normalize_path(base + "/" + import_path)
+      @xsh_core.Stmt::Import(source~, ..) =>
+        match source {
+          @xsh_core.ModuleRef::Path(path=import_path) => {
+            let resolved = if import_path.has_prefix("/") {
+              @xsh_fs.normalize_path(import_path)
+            } else {
+              @xsh_fs.normalize_path(base + "/" + import_path)
+            }
+            load_import_recursive_for_check(db, resolved, visited)
+          }
+          @xsh_core.ModuleRef::Hash(..) => ()
         }
-        load_import_recursive_for_check(db, resolved, visited)
-      }
       _ => ()
     }
   }
@@ -324,17 +400,51 @@ fn test_cmd(args : Array[String]) -> Unit {
   let mut file_count = 0
   for entry_path in args {
     file_count += 1
-    match compile_entry(entry_path) {
+    match load_db(entry_path) {
       Err(err) => {
-        println("[\{entry_path}] compile error: \{err}")
+        println("[\{entry_path}] load error: \{err}")
         failed = true
       }
-      Ok(compiled) => {
+      Ok((db, entry)) => {
+        let compiled = @xsh_lib.compile_module(db, entry) catch {
+          e => {
+            println("[\{entry_path}] compile error: \{e.to_string()}")
+            failed = true
+            continue
+          }
+        }
         let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+        // Build path-to-hash mapping and load imported modules into runtime cache
+        let path_to_hash : Map[String, String] = {}
+        load_imports_into_runtime(rt, db, entry, path_to_hash)
+        // Also add mappings for raw paths from the AST
+        let base_dir = @xsh_fs.parent_path(entry)
+        for stmt in compiled.ast.stmts {
+          match stmt {
+            @xsh_core.Stmt::Import(source~, ..) =>
+              match source {
+                @xsh_core.ModuleRef::Path(path=raw_path) => {
+                  let resolved = resolve_import_path(base_dir, raw_path)
+                  match path_to_hash.get(resolved) {
+                    Some(hash) => path_to_hash[raw_path] = hash
+                    None => ()
+                  }
+                }
+                @xsh_core.ModuleRef::Hash(_) => ()
+              }
+            _ => ()
+          }
+        }
+        // Convert the AST's import paths to hashes
+        let converted_ast = @xsh_core.convert_imports_to_hash(compiled.ast, fn(
+          path,
+        ) {
+          path_to_hash.get(path)
+        })
         for name, target in compiled.aliases {
           rt.set_alias(name, target)
         }
-        let report = rt.run_tests(compiled.ast) catch {
+        let report = rt.run_tests(converted_ast) catch {
           e => abort("[\{entry_path}] eval error: \{e.to_string()}")
         }
         if !print_test_report(entry_path, report) {
@@ -1354,13 +1464,17 @@ fn load_sources_recursive(
   let base = @xsh_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
-      @xsh_core.Stmt::Import(path~, ..) => {
-        let resolved = resolve_import_path(base, path)
-        match load_sources_recursive(db, resolved, visited) {
-          Ok(_) => ()
-          Err(err) => return Err(err)
+      @xsh_core.Stmt::Import(source~, ..) =>
+        match source {
+          @xsh_core.ModuleRef::Path(path~) => {
+            let resolved = resolve_import_path(base, path)
+            match load_sources_recursive(db, resolved, visited) {
+              Ok(_) => ()
+              Err(err) => return Err(err)
+            }
+          }
+          @xsh_core.ModuleRef::Hash(..) => ()
         }
-      }
       _ => ()
     }
   }
@@ -1374,4 +1488,399 @@ fn resolve_import_path(base : String, import_path : String) -> String {
   } else {
     @xsh_fs.normalize_path(base + "/" + import_path)
   }
+}
+
+///|
+fn hash_cmd(args : Array[String]) -> Unit {
+  if args.length() != 1 {
+    abort("hash: expected <file>")
+  }
+  let path = resolve_entry_path(args[0])
+  let source = @os_fs.read_file_to_string(path) catch {
+    e => abort("hash: " + e.to_string())
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e => abort("hash: " + e.diagnostic().render(args[0], source))
+  }
+  let hash = @xsh_core.hash_module(ast)
+  println(hash)
+}
+
+///|
+fn save_cmd(args : Array[String]) -> Unit {
+  let mut use_git = false
+  let files : Array[String] = []
+  for arg in args {
+    match arg {
+      "--git" => use_git = true
+      _ => files.push(arg)
+    }
+  }
+  if files.length() != 1 {
+    abort("save: expected <file>")
+  }
+  let file_arg = files[0]
+  let path = resolve_entry_path(file_arg)
+  let base_dir = @xsh_fs.parent_path(path)
+  let source = @os_fs.read_file_to_string(path) catch {
+    e => abort("save: " + e.to_string())
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e => abort("save: " + e.diagnostic().render(file_arg, source))
+  }
+  // Build import resolver
+  let resolve_import = fn(import_path : String) -> @xsh_core.Module? {
+    let resolved = if import_path.has_prefix("/") {
+      import_path
+    } else {
+      @xsh_fs.normalize_path(base_dir + "/" + import_path)
+    }
+    let import_source = @os_fs.read_file_to_string(resolved) catch {
+      _ => return None
+    }
+    let parsed = @parser.parse_ast(import_source) catch { _ => return None }
+    Some(parsed)
+  }
+  // Normalize with all imports resolved to hashes
+  let bundle = @xsh_core.normalize_with_imports(ast, resolve_import)
+  // Save all modules in the bundle
+  let mut saved_count = 0
+  for hash, normalized in bundle.modules {
+    let json = @xsh_core.serialize_module(normalized)
+    if use_git {
+      save_module_to_git(json, hash)
+    } else {
+      save_module_to_xsh(path, json, hash)
+    }
+    saved_count += 1
+  }
+  // Update paths.json for the main module
+  if not(use_git) {
+    let base_dir = find_xsh_dir(path)
+    let paths_file = base_dir + "/paths.json"
+    let mappings = load_path_mappings(paths_file)
+    update_path_mapping(mappings, file_arg, bundle.main_hash)
+    let mappings_json = @xsh_core.serialize_path_mappings(mappings)
+    @os_fs.write_string_to_file(paths_file, mappings_json) catch {
+      e => abort("save: write paths: " + e.to_string())
+    }
+  }
+  // Print result
+  let main_short = @xsh_core.short_hash(bundle.main_hash)
+  println("saved: \{file_arg} -> \{main_short} (\{saved_count} module(s))")
+}
+
+///|
+fn save_module_to_xsh(base_path : String, json : String, hash : String) -> Unit {
+  let base_dir = find_xsh_dir(base_path)
+  let obj_dir = @xsh_core.object_dir_from_hash(base_dir, hash)
+  let obj_path = @xsh_core.object_path_from_hash(base_dir, hash)
+  // Create directories if needed
+  let objects_dir = base_dir + "/objects"
+  if not(@os_fs.path_exists(objects_dir)) {
+    @os_fs.create_dir(objects_dir) catch {
+      e => abort("save: mkdir objects: " + e.to_string())
+    }
+  }
+  if not(@os_fs.path_exists(obj_dir)) {
+    @os_fs.create_dir(obj_dir) catch {
+      e => abort("save: mkdir: " + e.to_string())
+    }
+  }
+  // Write blob (skip if already exists - content-addressed)
+  if not(@os_fs.path_exists(obj_path)) {
+    @os_fs.write_string_to_file(obj_path, json) catch {
+      e => abort("save: write: " + e.to_string())
+    }
+  }
+}
+
+///|
+fn save_module_to_git(json : String, hash : String) -> Unit {
+  let git_dir = find_git_dir()
+  let fs = @osfs.OsFs::new()
+  let (blob_id, blob_compressed) = @bit.create_blob_string(json)
+  let _ = blob_id // The hash is computed from normalized content
+  let obj_id = @bit.ObjectId::from_hex(hash) catch {
+    e => abort("save: invalid hash: " + e.to_string())
+  }
+  @gitlib.write_object_bytes(fs, git_dir, obj_id, blob_compressed) catch {
+    e => abort("save: git write: " + e.to_string())
+  }
+}
+
+///|
+fn find_git_dir() -> String {
+  // Walk up from current directory to find .git
+  let mut dir = "."
+  for _ in 0..<20 {
+    let git_path = dir + "/.git"
+    if @os_fs.path_exists(git_path) {
+      return git_path
+    }
+    dir = dir + "/.."
+  }
+  abort("save --git: .git directory not found")
+}
+
+///|
+fn find_xsh_dir(path : String) -> String {
+  // Look for .xsh directory, or create one in current directory
+  let base = @xsh_fs.parent_path(path)
+  let xsh_dir = base + "/.xsh"
+  if @os_fs.path_exists(xsh_dir) {
+    return xsh_dir
+  }
+  // Create .xsh directory
+  @os_fs.create_dir(xsh_dir) catch {
+    _ => {
+      // Try current directory
+      let cwd_xsh = ".xsh"
+      if not(@os_fs.path_exists(cwd_xsh)) {
+        @os_fs.create_dir(cwd_xsh) catch {
+          e => abort("save: mkdir .xsh: " + e.to_string())
+        }
+      }
+      return cwd_xsh
+    }
+  }
+  xsh_dir
+}
+
+///|
+fn load_path_mappings(path : String) -> Array[@xsh_core.PathMapping] {
+  if not(@os_fs.path_exists(path)) {
+    return []
+  }
+  let json = @os_fs.read_file_to_string(path) catch { _ => return [] }
+  @xsh_core.parse_path_mappings(json) catch {
+    _ => []
+  }
+}
+
+///|
+fn update_path_mapping(
+  mappings : Array[@xsh_core.PathMapping],
+  path : String,
+  hash : String,
+) -> Unit {
+  // Remove existing entry for this path if any
+  let mut found = false
+  for i, m in mappings {
+    if m.path == path {
+      mappings[i] = @xsh_core.PathMapping::{ path, hash }
+      found = true
+      break
+    }
+  }
+  if not(found) {
+    mappings.push(@xsh_core.PathMapping::{ path, hash })
+  }
+}
+
+///|
+/// expand <hash|path> [--depth N] [--json] [--source]
+/// Expand a module from storage with its dependencies
+fn expand_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    println("usage: xsh expand <hash|path> [--depth N] [--json] [--source]")
+    return
+  }
+  let mut target = ""
+  let mut depth : Int? = None
+  let mut output_json = false
+  let mut output_source = false
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "--depth" || arg == "-d" {
+      i += 1
+      if i < args.length() {
+        depth = Some(@strconv.parse_int(args[i]) catch { _ => 0 })
+      }
+    } else if arg == "--json" {
+      output_json = true
+    } else if arg == "--source" {
+      output_source = true
+    } else if target == "" {
+      target = arg
+    }
+    i += 1
+  }
+  if target == "" {
+    abort("expand: no target specified")
+  }
+  // Default to source output if nothing specified
+  if not(output_json) && not(output_source) {
+    output_source = true
+  }
+  // Find .xsh directory from target path
+  let base_dir = if is_hash_like(target) {
+    "."
+  } else {
+    // Get parent directory of target file
+    let last_slash = find_last_slash(target)
+    if last_slash > 0 {
+      target_substring(target, 0, last_slash)
+    } else {
+      "."
+    }
+  }
+  let xsh_dir = find_xsh_dir_from(base_dir)
+  // Resolve target to hash
+  let main_hash = resolve_target_to_hash(target, xsh_dir)
+  let load_module = fn(hash : String) -> @xsh_core.Module? {
+    let obj_path = @xsh_core.object_path_from_hash(xsh_dir, hash)
+    let json = @os_fs.read_file_to_string(obj_path) catch { _ => return None }
+    let m = @xsh_core.deserialize_module(json) catch { _ => return None }
+    Some(m)
+  }
+  // Expand the module
+  let bundle = @xsh_core.expand_module(main_hash, load_module, depth)
+  // Output results
+  if output_json {
+    println("{")
+    println("  \"main_hash\": \"" + bundle.main_hash + "\",")
+    println("  \"order\": [")
+    for i, hash in bundle.order {
+      let comma = if i < bundle.order.length() - 1 { "," } else { "" }
+      println("    \"" + hash + "\"" + comma)
+    }
+    println("  ],")
+    println("  \"modules\": {")
+    let mut count = 0
+    let total = bundle.modules.length()
+    for hash, m in bundle.modules {
+      count += 1
+      let comma = if count < total { "," } else { "" }
+      println("    \"" + hash + "\": " + @xsh_core.serialize_module(m) + comma)
+    }
+    println("  }")
+    println("}")
+  }
+  if output_source {
+    println("// Expanded from: " + main_hash)
+    let depth_str = match depth {
+      None => "unlimited"
+      Some(d) => d.to_string()
+    }
+    println("// Depth: " + depth_str)
+    println("// Modules: " + bundle.modules.length().to_string())
+    println("")
+    // Print modules in topological order (dependencies first)
+    for hash in bundle.order {
+      match bundle.modules.get(hash) {
+        None => ()
+        Some(m) => {
+          let short = @xsh_core.short_hash(hash)
+          println("// --- Module: " + short + " ---")
+          // Use JSON format for now since format_ast is not available
+          let json = @xsh_core.serialize_module(m)
+          println(json)
+          println("")
+        }
+      }
+    }
+  }
+}
+
+///|
+fn resolve_target_to_hash(target : String, xsh_dir : String) -> String {
+  // If it looks like a hash (40 hex chars or prefix), use it directly
+  if is_hash_like(target) {
+    return resolve_hash_prefix(target, xsh_dir)
+  }
+  // Otherwise, try to look up as a path in paths.json
+  let paths_file = xsh_dir + "/paths.json"
+  let mappings = load_path_mappings(paths_file)
+  for m in mappings {
+    if m.path == target || m.path.has_suffix(target) {
+      return m.hash
+    }
+  }
+  abort("expand: cannot resolve target: " + target)
+}
+
+///|
+fn is_hash_like(s : String) -> Bool {
+  if s.length() < 4 || s.length() > 40 {
+    return false
+  }
+  for c in s {
+    if not((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn resolve_hash_prefix(prefix : String, xsh_dir : String) -> String {
+  if prefix.length() == 40 {
+    return prefix
+  }
+  // Search for matching hash in objects directory
+  let objects_dir = xsh_dir + "/objects"
+  if prefix.length() >= 2 {
+    let prefix_head = prefix_first_two(prefix)
+    let subdir = objects_dir + "/" + prefix_head
+    if @os_fs.path_exists(subdir) {
+      let entries = @os_fs.read_dir(subdir) catch { _ => return prefix }
+      for entry in entries {
+        let full_hash = prefix_head + entry
+        if full_hash.has_prefix(prefix) {
+          return full_hash
+        }
+      }
+    }
+  }
+  prefix
+}
+
+///|
+fn prefix_first_two(s : String) -> String {
+  let buf = StringBuilder::new()
+  for i, c in s {
+    if i >= 2 {
+      break
+    }
+    buf.write_char(c)
+  }
+  buf.to_string()
+}
+
+///|
+fn find_last_slash(s : String) -> Int {
+  let mut last = -1
+  for i, c in s {
+    if c == '/' {
+      last = i
+    }
+  }
+  last
+}
+
+///|
+fn target_substring(s : String, start : Int, end : Int) -> String {
+  let buf = StringBuilder::new()
+  for i, c in s {
+    if i >= start && i < end {
+      buf.write_char(c)
+    }
+  }
+  buf.to_string()
+}
+
+///|
+fn find_xsh_dir_from(start : String) -> String {
+  // Search for .xsh directory starting from given directory
+  let mut dir = if start == "" { "." } else { start }
+  for _ in 0..<10 {
+    let xsh_path = dir + "/.xsh"
+    if @os_fs.path_exists(xsh_path) {
+      return xsh_path
+    }
+    dir = dir + "/.."
+  }
+  abort("expand: .xsh directory not found (searched from: " + start + ")")
 }

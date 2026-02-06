@@ -46,6 +46,8 @@ pub struct Runtime {
   test_cache : TestCache
   mut type_env : @checker.TypeEnv
   mut_vars : Map[String, Bool]
+  // Module cache for import resolution: hash -> Module
+  module_cache : Map[String, @core.Module]
 }
 
 ///|
@@ -61,6 +63,7 @@ pub fn Runtime::new(caps : @capability.CapabilitySet) -> Runtime {
     test_cache: TestCache::new(),
     type_env: @checker.TypeEnv::new(),
     mut_vars: {},
+    module_cache: {},
   }
   let env = @checker.TypeEnv::new()
   let _ = try! @checker.ensure_prelude_option(env)
@@ -211,6 +214,7 @@ pub fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     test_cache: self.test_cache,
     type_env: self.type_env.clone(),
     mut_vars: self.mut_vars.copy(),
+    module_cache: self.module_cache,
   }
 }
 
@@ -235,6 +239,7 @@ pub fn Runtime::fork_with_env(
     test_cache: self.test_cache,
     type_env: self.type_env.clone(),
     mut_vars: self.mut_vars.copy(),
+    module_cache: self.module_cache,
   }
 }
 
@@ -300,4 +305,26 @@ pub fn value_hash(value : @core.Value) -> String {
   let hasher = @bit.Sha1State::new()
   hasher.update_string(value.to_string())
   hasher.finish().to_hex()
+}
+
+///|
+/// Register a module in the cache by hash
+pub fn Runtime::register_module(
+  self : Runtime,
+  hash : String,
+  mod_ast : @core.Module,
+) -> Unit {
+  self.module_cache.set(hash, mod_ast)
+}
+
+///|
+/// Get a cached module by hash
+pub fn Runtime::get_module(self : Runtime, hash : String) -> @core.Module? {
+  self.module_cache.get(hash)
+}
+
+///|
+/// Check if a module is cached
+pub fn Runtime::has_module(self : Runtime, hash : String) -> Bool {
+  self.module_cache.contains(hash)
 }

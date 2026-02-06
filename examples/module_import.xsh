@@ -1,0 +1,19 @@
+// Import from module_export.xsh
+import { add, mul, pi, double, square } from "./module_export.xsh"
+
+// Use imported functions
+let result1 = add(10, 20)
+let result2 = mul(3, 4)
+let result3 = double(pi)
+let result4 = square(5)
+
+// Compose imported functions
+let sum_of_squares = (a: Int, b: Int) -> Int {
+  add(square(a), square(b))
+}
+
+test "imported add" { assert(eq(result1, 30)) }
+test "imported mul" { assert(eq(result2, 12)) }
+test "imported double with pi" { assert(eq(result3, 6)) }
+test "imported square" { assert(eq(result4, 25)) }
+test "composed sum_of_squares" { assert(eq(sum_of_squares(3, 4), 25)) }

@@ -475,6 +475,31 @@ pub fn try_expr() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn export_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(73)
+}
+
+///|
+pub fn from_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(74)
+}
+
+///|
+pub fn as_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(75)
+}
+
+///|
+pub fn hash_ref() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(76)
+}
+
+///|
+pub fn export_stmt() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(128)
+}
+
+///|
 /// Check if a SyntaxKind is a token (not a node)
 pub fn is_token(kind : @cst.SyntaxKind) -> Bool {
   kind.raw() < 100

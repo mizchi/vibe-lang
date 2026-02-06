@@ -326,11 +326,17 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         let _ = span
         buf.write_string(" (alias)")
       }
-      @core.Stmt::Import(path~, span~) => {
-        let _ = path
+      @core.Stmt::Import(spec~, source~, span~) => {
+        let _ = spec
+        let _ = source
         let _ = span
         buf.write_string(" (import)")
       }
+      @core.Stmt::ExportLet(..)
+      | @core.Stmt::ExportEnumDef(..)
+      | @core.Stmt::ExportTypeAlias(..)
+      | @core.Stmt::Export(..)
+      | @core.Stmt::ReExport(..) => buf.write_string(" (export)")
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
         let _ = span

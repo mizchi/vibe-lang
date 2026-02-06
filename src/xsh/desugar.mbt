@@ -20,7 +20,8 @@ fn desugar_block(
     let next = desugar_stmt(stmt, scope_map, aliases)
     out.push(next)
     match stmt {
-      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      @core.Stmt::Let(rec~, name~, expr~, span~)
+      | @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
         let _ = rec
         let _ = expr
         let _ = span
@@ -55,6 +56,17 @@ fn desugar_stmt(
     @core.Stmt::Flake(..) => stmt
     @core.Stmt::Alias(..) => stmt
     @core.Stmt::Import(..) => stmt
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=desugar_expr(expr, scope, aliases),
+        span~,
+      )
+    @core.Stmt::ExportEnumDef(..)
+    | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..) => stmt
     @core.Stmt::LetMut(name~, expr~, span~) =>
       @core.Stmt::LetMut(name~, expr=desugar_expr(expr, scope, aliases), span~)
     @core.Stmt::Assign(name~, expr~, span~) =>

@@ -274,6 +274,9 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "raise" => raise_kw()
           "await" => await_kw()
           "yield" => yield_kw()
+          "export" => export_kw()
+          "from" => from_kw()
+          "as" => as_kw()
           "true" => bool_lit()
           "false" => bool_lit()
           _ => name()
@@ -452,6 +455,19 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             _ => Token::new(pipe(), "|")
           }
         '.' => Token::new(dot(), ".")
+        '#' => {
+          // Hash reference: #abc12345
+          let start = self.pos - 1
+          while (match self.peek() {
+                  Some(ch) => is_alnum(ch)
+                  None => false
+                }) {
+            let _ = self.advance()
+
+          }
+          let text = self.input.unsafe_substring(start~, end=self.pos)
+          Token::new(hash_ref(), text)
+        }
         _ => Token::new(error_kind(), c.to_string())
       }
     }
