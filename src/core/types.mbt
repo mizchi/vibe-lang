@@ -87,7 +87,112 @@ pub(all) struct FnValue {
   env : Map[String, String]
   addr : String?
   pure : Bool
-} derive(Show, Eq)
+} derive(Eq)
+
+///|
+pub impl Show for FnValue with output(self, logger) {
+  logger.write_string("<fn(")
+  for i, param in self.params {
+    if i > 0 {
+      logger.write_string(", ")
+    }
+    logger.write_string(param.name)
+    logger.write_string(": ")
+    logger.write_string(format_type_compact(param.ty))
+  }
+  logger.write_string(")>")
+}
+
+///|
+fn format_type_compact(ty : Type) -> String {
+  match ty {
+    Type::Int => "Int"
+    Type::Float => "Float"
+    Type::Double => "Double"
+    Type::Bool => "Bool"
+    Type::String => "String"
+    Type::Path => "Path"
+    Type::Unit => "Unit"
+    Type::Never => "Never"
+    Type::Tuple(items) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(")
+      for i, item in items {
+        if i > 0 {
+          buf.write_string(", ")
+        }
+        buf.write_string(format_type_compact(item))
+      }
+      buf.write_string(")")
+      buf.to_string()
+    }
+    Type::Record(fields) => {
+      let buf = StringBuilder::new()
+      buf.write_string("{")
+      let mut first = true
+      for name, ty in fields {
+        if not(first) {
+          buf.write_string(", ")
+        }
+        first = false
+        buf.write_string(name)
+        buf.write_string(": ")
+        buf.write_string(format_type_compact(ty))
+      }
+      buf.write_string("}")
+      buf.to_string()
+    }
+    Type::Array(inner) => "Array[" + format_type_compact(inner) + "]"
+    Type::Map(inner) => "Map[" + format_type_compact(inner) + "]"
+    Type::ArrayBuilder(inner) => "ArrayBuilder[" + format_type_compact(inner) + "]"
+    Type::MapBuilder(inner) => "MapBuilder[" + format_type_compact(inner) + "]"
+    Type::Variant(_) => "Variant"
+    Type::Named(name~, args~) =>
+      if args.length() == 0 {
+        name
+      } else {
+        let buf = StringBuilder::new()
+        buf.write_string(name)
+        buf.write_string("[")
+        for i, arg in args {
+          if i > 0 {
+            buf.write_string(", ")
+          }
+          buf.write_string(format_type_compact(arg))
+        }
+        buf.write_string("]")
+        buf.to_string()
+      }
+    Type::Param(name) => name
+    Type::Var(id) => "?" + id.to_string()
+    Type::Func(params~, ret~, effects~) => {
+      let buf = StringBuilder::new()
+      buf.write_string("(")
+      for i, param in params {
+        if i > 0 {
+          buf.write_string(", ")
+        }
+        buf.write_string(format_type_compact(param.ty))
+      }
+      buf.write_string(") -> ")
+      buf.write_string(format_type_compact(ret))
+      if effects.length() > 0 {
+        buf.write_string(" with {")
+        for i, effect in effects {
+          if i > 0 {
+            buf.write_string(", ")
+          }
+          match effect {
+            EffectAtom::Const(name) => buf.write_string(name)
+            EffectAtom::Var(name) => buf.write_string(name)
+          }
+        }
+        buf.write_string("}")
+      }
+      buf.to_string()
+    }
+  }
+}
 
 ///|
 pub(all) enum Value {
@@ -105,4 +210,100 @@ pub(all) enum Value {
   ArrayBuilder(Array[Value])
   MapBuilder(Map[String, Value])
   Fn(FnValue)
-} derive(Show, Eq)
+} derive(Eq)
+
+///|
+pub impl Show for Value with output(self, logger) {
+  match self {
+    Value::Int(n) => logger.write_string(n.to_string())
+    Value::Float(n) => logger.write_string(n.to_string())
+    Value::Double(n) => logger.write_string(n.to_string())
+    Value::Bool(b) => logger.write_string(if b { "true" } else { "false" })
+    Value::String(s) => {
+      logger.write_string("\"")
+      logger.write_string(s)
+      logger.write_string("\"")
+    }
+    Value::Path(p) => {
+      logger.write_string("path(\"")
+      logger.write_string(p.raw)
+      logger.write_string("\")")
+    }
+    Value::Unit => logger.write_string("()")
+    Value::Tuple(items) => {
+      logger.write_string("(")
+      for i, item in items {
+        if i > 0 {
+          logger.write_string(", ")
+        }
+        item.output(logger)
+      }
+      logger.write_string(")")
+    }
+    Value::Record(fields) => {
+      logger.write_string("{")
+      let mut first = true
+      for name, value in fields {
+        if not(first) {
+          logger.write_string(", ")
+        }
+        first = false
+        logger.write_string(name)
+        logger.write_string(": ")
+        value.output(logger)
+      }
+      logger.write_string("}")
+    }
+    Value::Array(items) => {
+      logger.write_string("[")
+      for i, item in items {
+        if i > 0 {
+          logger.write_string(", ")
+        }
+        item.output(logger)
+      }
+      logger.write_string("]")
+    }
+    Value::Map(fields) => {
+      logger.write_string("{|")
+      let mut first = true
+      for key, value in fields {
+        if not(first) {
+          logger.write_string(", ")
+        }
+        first = false
+        logger.write_string("\"")
+        logger.write_string(key)
+        logger.write_string("\": ")
+        value.output(logger)
+      }
+      logger.write_string("|}")
+    }
+    Value::ArrayBuilder(items) => {
+      logger.write_string("[..builder ")
+      for i, item in items {
+        if i > 0 {
+          logger.write_string(", ")
+        }
+        item.output(logger)
+      }
+      logger.write_string("]")
+    }
+    Value::MapBuilder(fields) => {
+      logger.write_string("{|..builder ")
+      let mut first = true
+      for key, value in fields {
+        if not(first) {
+          logger.write_string(", ")
+        }
+        first = false
+        logger.write_string("\"")
+        logger.write_string(key)
+        logger.write_string("\": ")
+        value.output(logger)
+      }
+      logger.write_string("|}")
+    }
+    Value::Fn(fn_value) => fn_value.output(logger)
+  }
+}

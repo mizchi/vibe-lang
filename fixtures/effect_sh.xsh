@@ -3,4 +3,4 @@ do {
 }
 
 __DATA__
-{"last": "Unit", "effects": ["ShellExec(\"echo hi\")"]}
+{"last": "()", "effects": ["ShellExec(\"echo hi\")"]}
