@@ -2449,17 +2449,21 @@ fn AstParser::is_arrow_expr_body(self : AstParser) -> Bool {
   if tok.kind() != name() {
     return true
   }
-  // Check if this looks like a type annotation (name followed by { or [ for generic)
+  // Check if this looks like a type annotation (name followed by { or [ for generic or "with")
   // Save position to peek ahead
   let saved = self.pos
   let _ = self.bump() // consume the name
   self.skip_trivia()
   let next_kind = self.peek_kind()
+  let next_text = self.peek().text()
   self.pos = saved // restore position
   // If name is followed by { or [ (for generic type), it's likely a type annotation
+  // If name is followed by "with" (for effects), it's also a type annotation
   // Otherwise it's an expression
   if next_kind == lbrace() || next_kind == lbracket() {
     false // type annotation: Int { ... } or Array[Int] { ... }
+  } else if next_kind == name() && next_text == "with" {
+    false // type annotation with effects: Int with {Error} { ... }
   } else {
     true // expression: x + 1, foo(bar), etc.
   }

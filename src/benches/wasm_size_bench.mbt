@@ -63,5 +63,5 @@ test "bench: wasm.size.user_fn" {
 ///|
 test "bench: wasm.size.effect_ho" {
   let snapshot = snapshot_sizes("bench_effect_ho", sample_effect_ho_script)
-  inspect(snapshot, content="{wasm_size: Some(283), ir_size: 930, note: None}")
+  inspect(snapshot, content="{wasm_size: Some(217), ir_size: 930, note: None}")
 }
