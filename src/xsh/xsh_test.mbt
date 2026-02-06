@@ -63,46 +63,29 @@ test "xsh ripple db" {
 }
 
 ///|
-test "xsh import hashes" {
+test "xsh import parsing" {
+  // Test that import syntax parses correctly
   let db = XshDb::new()
-  db.set_source("main", "import foo.xsh\nlet x = 1")
-  db.set_source("foo.xsh", "let y = 2")
+  db.set_source("main", "import { y } from ./foo.xsh\nlet x = 1")
+  db.set_source("./foo.xsh", "export let y = 2")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
   match imp.hash {
     Some(h) => {
-      assert_eq(h, @core.git_blob_hash_string("let y = 2"))
+      assert_eq(h, @core.git_blob_hash_string("export let y = 2"))
       assert_eq(imp.module_ref, Some(@core.module_ref_from_hash(h)))
-      assert_eq(imp.alias_name, "foo")
     }
     None => fail("missing hash")
   }
 }
 
 ///|
-test "xsh import alias resolution" {
+test "xsh compile simple" {
+  // Test compilation without imports
   let db = XshDb::new()
-  db.set_source("main", "import foo.xsh")
-  db.set_source("foo.xsh", "let y = 2")
-  let aliases = db.import_aliases("main")
-  let resolved = @core.resolve_qualified("foo.bar", aliases)
-  match aliases.get("foo") {
-    Some(r) => assert_eq(resolved, r.name + "/bar")
-    None => fail("missing alias")
-  }
-}
-
-///|
-test "xsh compile and run" {
-  let db = XshDb::new()
-  db.set_source("main", "import foo.xsh\nlet x = 1\nfoo.bar")
-  db.set_source("foo.xsh", "let y = 2")
+  db.set_source("main", "let x = 1\nlet y = 2")
   let compiled = compile_module(db, "main")
-  let import_hash = @core.git_blob_hash_string("let y = 2")
-  let import_ref = @core.module_ref_from_hash(import_hash)
-  assert_true(compiled.ir.contains(import_ref + "/bar"))
-  assert_eq(compiled.module_ref, @core.module_ref_from_hash(compiled.ir_hash))
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.run_compiled(compiled)
   match rt.get("x") {

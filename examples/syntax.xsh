@@ -1,4 +1,3 @@
-import "test.xsh"
 alias std = core#deadbeef
 flake {
   inputs = { name = "xsh" }
