@@ -41,7 +41,7 @@ fn print_usage() -> Unit {
     "  compile [--wasm | --wasm-js-string | --wasm-gc | --component] [-o out] <file>",
   )
   println(
-    "                                     emit IR (default), Core WASM, or Component WASM",
+    "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
   )
   println("  bench [--n N] [--warmup N] [--expr EXPR]")
   println("  bench-file [--n N] [--warmup N] <file>")
@@ -112,6 +112,70 @@ fn pick_completion_anchor(
 }
 
 ///|
+/// Get basename from a file path (without extension)
+fn get_basename(path : String) -> String {
+  // Find last slash
+  let mut last_slash = -1
+  for i, c in path {
+    if c == '/' {
+      last_slash = i
+    }
+  }
+  let filename = if last_slash >= 0 {
+    let buf = StringBuilder::new()
+    for i, c in path {
+      if i > last_slash {
+        buf.write_char(c)
+      }
+    }
+    buf.to_string()
+  } else {
+    path
+  }
+  // Remove extension
+  let mut last_dot = -1
+  for i, c in filename {
+    if c == '.' {
+      last_dot = i
+    }
+  }
+  if last_dot > 0 {
+    let buf = StringBuilder::new()
+    for i, c in filename {
+      if i < last_dot {
+        buf.write_char(c)
+      }
+    }
+    buf.to_string()
+  } else {
+    filename
+  }
+}
+
+///|
+/// Ensure dist directory exists
+fn ensure_dist_dir() -> Unit {
+  if not(@os_fs.path_exists("dist")) {
+    @os_fs.create_dir("dist") catch {
+      e => abort("compile: failed to create dist/: " + e.to_string())
+    }
+  }
+}
+
+///|
+/// Get default output path for a given mode and input file
+fn default_output_path(input_path : String, mode : CompileMode) -> String {
+  let basename = get_basename(input_path)
+  match mode {
+    CompileMode::Ir => "dist/" + basename + ".ir"
+    CompileMode::Wasm => "dist/" + basename + ".wasm"
+    CompileMode::WasmJsString => "dist/" + basename + ".wasm"
+    CompileMode::WasmGc => "dist/" + basename + ".wasm"
+    CompileMode::Component => "dist/" + basename + ".component.wasm"
+  }
+}
+
+///|
 fn compile_cmd(args : Array[String]) -> Unit {
   let mut mode = CompileMode::Ir
   let mut out_path : String? = None
@@ -158,81 +222,63 @@ fn compile_cmd(args : Array[String]) -> Unit {
     Some(path) =>
       match load_db(path) {
         Err(err) => abort("compile: " + err)
-        Ok((db, entry)) =>
+        Ok((db, entry)) => {
+          // Resolve output path with default to dist/
+          let resolved_out = match out_path {
+            Some(p) => p
+            None => {
+              ensure_dist_dir()
+              default_output_path(path, mode)
+            }
+          }
           match mode {
             CompileMode::Ir => {
               let compiled = @xsh_lib.compile_module(db, entry) catch {
                 e => abort("compile: " + e.to_string())
               }
-              match out_path {
-                Some(out) =>
-                  @os_fs.write_string_to_file(out, compiled.ir) catch {
-                    e => abort("compile: " + e.to_string())
-                  }
-                None => println(compiled.ir)
+              @os_fs.write_string_to_file(resolved_out, compiled.ir) catch {
+                e => abort("compile: " + e.to_string())
               }
+              println("wrote " + resolved_out)
             }
             CompileMode::Wasm => {
-              if out_path is None {
-                abort("compile: --wasm requires -o <file>")
-              }
               let wasm_bytes = @xsh_lib.compile_module_wasm(db, entry) catch {
                 e => abort("compile: " + e.to_string())
               }
-              match out_path {
-                Some(out) =>
-                  @os_fs.write_bytes_to_file(out, wasm_bytes) catch {
-                    e => abort("compile: " + e.to_string())
-                  }
-                None => ()
+              @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+                e => abort("compile: " + e.to_string())
               }
+              println("wrote " + resolved_out)
             }
             CompileMode::WasmJsString => {
-              if out_path is None {
-                abort("compile: --wasm-js-string requires -o <file>")
-              }
               let wasm_bytes = @xsh_lib.compile_module_wasm_js_string(db, entry) catch {
                 e => abort("compile: " + e.to_string())
               }
-              match out_path {
-                Some(out) =>
-                  @os_fs.write_bytes_to_file(out, wasm_bytes) catch {
-                    e => abort("compile: " + e.to_string())
-                  }
-                None => ()
+              @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+                e => abort("compile: " + e.to_string())
               }
+              println("wrote " + resolved_out)
             }
             CompileMode::WasmGc => {
-              if out_path is None {
-                abort("compile: --wasm-gc requires -o <file>")
-              }
               let wasm_bytes = @xsh_lib.compile_module_wasm_gc(db, entry) catch {
                 e => abort("compile: " + e.to_string())
               }
-              match out_path {
-                Some(out) =>
-                  @os_fs.write_bytes_to_file(out, wasm_bytes) catch {
-                    e => abort("compile: " + e.to_string())
-                  }
-                None => ()
+              @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+                e => abort("compile: " + e.to_string())
               }
+              println("wrote " + resolved_out)
             }
             CompileMode::Component => {
-              if out_path is None {
-                abort("compile: --component requires -o <file>")
-              }
               let wasm_bytes = @xsh_lib.compile_module_component(db, entry) catch {
                 e => abort("compile: " + e.to_string())
               }
-              match out_path {
-                Some(out) =>
-                  @os_fs.write_bytes_to_file(out, wasm_bytes) catch {
-                    e => abort("compile: " + e.to_string())
-                  }
-                None => ()
+              @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+                e => abort("compile: " + e.to_string())
               }
+              println("wrote " + resolved_out)
             }
           }
+        }
       }
   }
 }
