@@ -132,12 +132,64 @@ pub fn compile_module_wasm_gc(
 }
 
 ///|
+/// Compile a module to WASM without DCE (for benchmarking).
+pub fn compile_module_wasm_no_dce(
+  db : XshDb,
+  path : String,
+) -> Bytes raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  let bundled = bundle_for_wasm_no_dce(db, path, compiled.ast)
+  @codegen.emit_module_wasm(bundled) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
+/// Compile a module to Component Model WASM (for wkg/wa.dev compatibility).
+pub fn compile_module_component(
+  db : XshDb,
+  path : String,
+) -> Bytes raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
+  let core_wasm = @codegen.emit_module_wasm(bundled) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+  @codegen.emit_component_wasm(core_wasm)
+}
+
+///|
 /// Bundle a module with all its dependencies for WASM compilation.
 /// This inlines all exported definitions from dependencies and removes imports.
+/// Applies DCE to eliminate unused definitions.
 fn bundle_for_wasm(
   db : XshDb,
   path : String,
   ast : @core.Module,
+) -> @core.Module {
+  bundle_for_wasm_impl(db, path, ast, apply_dce=true)
+}
+
+///|
+/// Bundle without DCE (for benchmarking comparison).
+pub fn bundle_for_wasm_no_dce(
+  db : XshDb,
+  path : String,
+  ast : @core.Module,
+) -> @core.Module {
+  bundle_for_wasm_impl(db, path, ast, apply_dce=false)
+}
+
+///|
+fn bundle_for_wasm_impl(
+  db : XshDb,
+  path : String,
+  ast : @core.Module,
+  apply_dce~ : Bool,
 ) -> @core.Module {
   let bundled_stmts : Array[@core.Stmt] = []
   let visited : Map[String, Bool] = {}
@@ -151,7 +203,12 @@ fn bundle_for_wasm(
       _ => bundled_stmts.push(stmt)
     }
   }
-  @core.Module::{ stmts: bundled_stmts }
+  let bundled = @core.Module::{ stmts: bundled_stmts }
+  if apply_dce {
+    dce_module(bundled)
+  } else {
+    bundled
+  }
 }
 
 ///|
