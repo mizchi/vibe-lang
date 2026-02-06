@@ -1,6 +1,6 @@
 ///|
 /// Component Model codegen for xsh
-/// Wraps Core WASM in Component Model format for wkg/wa.dev compatibility
+/// Wraps Core WASM in Component Model format for wkg/wa.dev/mwac compatibility
 
 ///|
 /// Write unsigned LEB128 encoded integer
@@ -36,8 +36,9 @@ let component_magic : Array[Byte] = [
 ]
 
 ///|
-/// Component section IDs
-let component_section_module : Byte = b'\x00' // core module
+/// Component section IDs (from Component Model Binary Format spec)
+/// https://github.com/WebAssembly/component-model/blob/main/design/mvp/Binary.md
+let component_section_module : Byte = b'\x01' // section_1: core module
 
 ///|
 let component_section_core_instance : Byte = b'\x02' // core instance
@@ -46,20 +47,20 @@ let component_section_core_instance : Byte = b'\x02' // core instance
 let component_section_alias : Byte = b'\x06' // alias
 
 ///|
-let component_section_export : Byte = b'\x0b' // component export
+/// Core sort values for alias
+let core_sort_func : Byte = b'\x00'
 
 ///|
-/// Emit core module section (section id 0)
+let core_sort_mem : Byte = b'\x02'
+
+///|
+/// Emit core module section (section id 1)
+/// Format: section_1(<core:module binary>)
 fn emit_core_module_section(buf : Array[Byte], core_wasm : Bytes) -> Unit {
   buf.push(component_section_module)
-  // Content: 0x00 (module definition kind) + module bytes
-  let content : Array[Byte] = []
-  content.push(b'\x00') // module definition inline
+  // Content: core wasm binary directly
+  component_write_uleb128(buf, core_wasm.length())
   for b in core_wasm.iter() {
-    content.push(b)
-  }
-  component_write_uleb128(buf, content.length())
-  for b in content {
     buf.push(b)
   }
 }
@@ -81,34 +82,26 @@ fn emit_core_instance_section(buf : Array[Byte]) -> Unit {
 }
 
 ///|
-/// Emit alias section to export 'run' function from core instance
-fn emit_alias_section(buf : Array[Byte]) -> Unit {
+/// Emit alias section for run function and memory
+/// Format: 0x00 sort 0x01 instance_idx name (for each alias)
+fn emit_alias_section_run_and_memory(buf : Array[Byte]) -> Unit {
   buf.push(component_section_alias)
-  // Alias: core export from instance 0, function "run"
   let content : Array[Byte] = []
-  component_write_uleb128(content, 1) // count = 1 alias
-  // alias = core export, instance 0, name "run"
-  content.push(b'\x00') // alias kind: core export
-  content.push(b'\x01') // sort: func
+  component_write_uleb128(content, 2) // count = 2 aliases
+
+  // Alias 0: run function from core instance 0
+  content.push(b'\x00') // core export from instance
+  content.push(core_sort_func) // sort: func (0x00)
+  content.push(b'\x01') // aliaskind marker
   component_write_uleb128(content, 0) // instance index 0
   component_write_name(content, "run") // export name
-  component_write_uleb128(buf, content.length())
-  for b in content {
-    buf.push(b)
-  }
-}
 
-///|
-/// Emit component export section
-fn emit_component_export_section(buf : Array[Byte]) -> Unit {
-  buf.push(component_section_export)
-  // Export the aliased function as "run"
-  let content : Array[Byte] = []
-  component_write_uleb128(content, 1) // count = 1 export
-  component_write_name(content, "run") // export name
-  content.push(b'\x01') // sort: func
-  component_write_uleb128(content, 0) // func index 0
-  content.push(b'\x00') // no type ascription
+  // Alias 1: memory from core instance 0
+  content.push(b'\x00') // core export from instance
+  content.push(core_sort_mem) // sort: memory (0x02)
+  content.push(b'\x01') // aliaskind marker
+  component_write_uleb128(content, 0) // instance index 0
+  component_write_name(content, "memory") // export name
   component_write_uleb128(buf, content.length())
   for b in content {
     buf.push(b)
@@ -117,20 +110,20 @@ fn emit_component_export_section(buf : Array[Byte]) -> Unit {
 
 ///|
 /// Emit a Core WASM module wrapped in Component Model format
+/// Creates a component that embeds the core wasm with run and memory aliased.
+/// The aliased run function can be composed with other components using mwac.
 pub fn emit_component_wasm(core_wasm : Bytes) -> Bytes {
   let buf : Array[Byte] = []
   // Component header
   for b in component_magic {
     buf.push(b)
   }
-  // Section 0: Core module (embed the core wasm)
+  // Section 1: Core module (embed the core wasm)
   emit_core_module_section(buf, core_wasm)
   // Section 2: Core instance (instantiate module 0)
   emit_core_instance_section(buf)
-  // Section 6: Alias (export 'run' from core instance)
-  emit_alias_section(buf)
-  // Section 11: Component export
-  emit_component_export_section(buf)
+  // Section 6: Alias run and memory from core instance
+  emit_alias_section_run_and_memory(buf)
   Bytes::from_iter(buf.iter())
 }
 

@@ -38,7 +38,10 @@ fn print_usage() -> Unit {
   println("  check <file...>            parse/type check scripts")
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc] [-o out] <file>  emit IR (default) or wasm bytes",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component] [-o out] <file>",
+  )
+  println(
+    "                                     emit IR (default), Core WASM, or Component WASM",
   )
   println("  bench [--n N] [--warmup N] [--expr EXPR]")
   println("  bench-file [--n N] [--warmup N] <file>")
@@ -74,6 +77,7 @@ enum CompileMode {
   Wasm
   WasmJsString
   WasmGc
+  Component
 }
 
 ///|
@@ -126,6 +130,10 @@ fn compile_cmd(args : Array[String]) -> Unit {
       }
       "--wasm-gc" => {
         mode = CompileMode::WasmGc
+        i += 1
+      }
+      "--component" => {
+        mode = CompileMode::Component
         i += 1
       }
       "-o" | "--out" => {
@@ -199,6 +207,21 @@ fn compile_cmd(args : Array[String]) -> Unit {
                 abort("compile: --wasm-gc requires -o <file>")
               }
               let wasm_bytes = @xsh_lib.compile_module_wasm_gc(db, entry) catch {
+                e => abort("compile: " + e.to_string())
+              }
+              match out_path {
+                Some(out) =>
+                  @os_fs.write_bytes_to_file(out, wasm_bytes) catch {
+                    e => abort("compile: " + e.to_string())
+                  }
+                None => ()
+              }
+            }
+            CompileMode::Component => {
+              if out_path is None {
+                abort("compile: --component requires -o <file>")
+              }
+              let wasm_bytes = @xsh_lib.compile_module_component(db, entry) catch {
                 e => abort("compile: " + e.to_string())
               }
               match out_path {
