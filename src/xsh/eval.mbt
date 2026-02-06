@@ -377,6 +377,18 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         },
       )
     }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      // For now, await just evaluates the expression synchronously
+      // Future: handle Future[T] values and suspend/resume
+      eval_expr(rt, expr)
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = span
+      // For now, yield just evaluates and returns the expression
+      // Future: handle Stream[T] generation
+      eval_expr(rt, expr)
+    }
   }
 }
 

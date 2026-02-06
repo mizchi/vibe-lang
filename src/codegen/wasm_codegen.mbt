@@ -1481,6 +1481,15 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I32
     }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      infer_expr_kind_with(ctx, expr, locals)
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = expr
+      let _ = span
+      ValueKind::I32
+    }
   }
 }
 
@@ -3527,6 +3536,16 @@ fn compile_expr(
       }
       buf.push((8).to_byte()) // throw opcode = 0x08
       write_u32_leb(buf, ctx.error_tag_index) // tag index
+    }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = expr
+      let _ = span
+      raise WasmGenError::Unsupported("await not supported in WASM")
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = expr
+      let _ = span
+      raise WasmGenError::Unsupported("yield not supported in WASM")
     }
   }
 }

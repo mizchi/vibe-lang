@@ -272,6 +272,8 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "while" => while_kw()
           "mut" => mut_kw()
           "raise" => raise_kw()
+          "await" => await_kw()
+          "yield" => yield_kw()
           "true" => bool_lit()
           "false" => bool_lit()
           _ => name()

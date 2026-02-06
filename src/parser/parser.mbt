@@ -349,6 +349,10 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_try_expr()
   } else if self.at(raise_kw()) {
     self.parse_raise_expr()
+  } else if self.at(await_kw()) {
+    self.parse_await_expr()
+  } else if self.at(yield_kw()) {
+    self.parse_yield_expr()
   } else if self.at(record_kw()) {
     self.parse_record_expr()
   } else if self.at(map_kw()) {
@@ -494,6 +498,24 @@ fn Parser::parse_try_expr(self : Parser) -> Unit {
 fn Parser::parse_raise_expr(self : Parser) -> Unit {
   self.builder.start_node(raise_expr())
   self.bump() // raise
+  self.skip_trivia()
+  self.parse_expr()
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_await_expr(self : Parser) -> Unit {
+  self.builder.start_node(await_expr())
+  self.bump() // await
+  self.skip_trivia()
+  self.parse_expr()
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_yield_expr(self : Parser) -> Unit {
+  self.builder.start_node(yield_expr())
+  self.bump() // yield
   self.skip_trivia()
   self.parse_expr()
   self.builder.finish_node()
@@ -1323,6 +1345,10 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_try_expr()
   } else if self.peek_kind() == raise_kw() {
     self.parse_raise_expr()
+  } else if self.peek_kind() == await_kw() {
+    self.parse_await_expr()
+  } else if self.peek_kind() == yield_kw() {
+    self.parse_yield_expr()
   } else if self.peek_kind() == record_kw() {
     self.parse_record_expr()
   } else if self.peek_kind() == map_kw() {
@@ -1675,6 +1701,28 @@ fn AstParser::parse_raise_expr(self : AstParser) -> @core.Expr raise ParseError 
   let value = self.parse_expr()
   let span = self.span_from(start)
   @core.Expr::Raise(value~, span~)
+}
+
+///|
+fn AstParser::parse_await_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(await_kw(), "await")
+  let expr = self.parse_expr()
+  let span = self.span_from(start)
+  @core.Expr::Await(expr~, span~)
+}
+
+///|
+fn AstParser::parse_yield_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(yield_kw(), "yield")
+  let expr = self.parse_expr()
+  let span = self.span_from(start)
+  @core.Expr::Yield(expr~, span~)
 }
 
 ///|

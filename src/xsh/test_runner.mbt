@@ -326,6 +326,14 @@ fn collect_dep_expr(
       let _ = span
       collect_dep_expr(value, bound, out)
     }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      collect_dep_expr(expr, bound, out)
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = span
+      collect_dep_expr(expr, bound, out)
+    }
   }
 }
 

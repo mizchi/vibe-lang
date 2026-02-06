@@ -2036,6 +2036,16 @@ fn type_expr_eff(
       require_effects(env, effects, [@core.EffectAtom::Const("Error")], span)
       @core.Type::Never
     }
+    @core.Expr::Await(expr~, span~) => {
+      let inner_ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+      require_effects(env, effects, [@core.EffectAtom::Const("Async")], span)
+      inner_ty
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
+      require_effects(env, effects, [@core.EffectAtom::Const("Async")], span)
+      @core.Type::Unit
+    }
   }
   record_expr_type(env, expr.span(), ty)
   ty

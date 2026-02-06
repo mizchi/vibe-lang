@@ -447,6 +447,14 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       let _ = span
       "(raise " + expr_to_sexp(value, aliases) + ")"
     }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      "(await " + expr_to_sexp(expr, aliases) + ")"
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = span
+      "(yield " + expr_to_sexp(expr, aliases) + ")"
+    }
   }
 }
 

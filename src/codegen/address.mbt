@@ -243,6 +243,14 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let _ = span
       "(raise " + expr_to_addr_sexp(ctx, value) + ")"
     }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      "(await " + expr_to_addr_sexp(ctx, expr) + ")"
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = span
+      "(yield " + expr_to_addr_sexp(ctx, expr) + ")"
+    }
   }
 }
 

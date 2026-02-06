@@ -210,6 +210,7 @@ fn purity_expr_inner(
       let _ = span
       purity_expr_inner(env, value, locals)
     }
+    @core.Expr::Await(..) | @core.Expr::Yield(..) => false
   }
 }
 
