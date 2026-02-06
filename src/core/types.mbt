@@ -144,7 +144,8 @@ fn format_type_compact(ty : Type) -> String {
     }
     Type::Array(inner) => "Array[" + format_type_compact(inner) + "]"
     Type::Map(inner) => "Map[" + format_type_compact(inner) + "]"
-    Type::ArrayBuilder(inner) => "ArrayBuilder[" + format_type_compact(inner) + "]"
+    Type::ArrayBuilder(inner) =>
+      "ArrayBuilder[" + format_type_compact(inner) + "]"
     Type::MapBuilder(inner) => "MapBuilder[" + format_type_compact(inner) + "]"
     Type::Variant(_) => "Variant"
     Type::Named(name~, args~) =>
@@ -217,7 +218,7 @@ pub impl Show for Value with output(self, logger) {
   match self {
     Value::Int(n) => logger.write_string(n.to_string())
     Value::Float(n) => logger.write_string(n.to_string())
-    Value::Double(n) => logger.write_string(n.to_string())
+    Value::Double(n) => logger.write_string(@fp.double_to_string(n))
     Value::Bool(b) => logger.write_string(if b { "true" } else { "false" })
     Value::String(s) => {
       logger.write_string("\"")
