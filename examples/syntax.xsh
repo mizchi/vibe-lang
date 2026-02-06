@@ -167,6 +167,77 @@ test "array_find" {
   assert(eq(array_find((x: Int) -> Bool { x > 10 }, [1, 2, 3]), -1))
 }
 
+test "modulo" { assert(eq(10 % 3, 1)) }
+test "compound_add" {
+  let mut x = 10
+  x += 5
+  assert(eq(x, 15))
+}
+test "compound_sub" {
+  let mut x = 10
+  x -= 3
+  assert(eq(x, 7))
+}
+test "compound_mul" {
+  let mut x = 3
+  x *= 4
+  assert(eq(x, 12))
+}
+test "compound_div" {
+  let mut x = 20
+  x /= 4
+  assert(eq(x, 5))
+}
+test "compound_mod" {
+  let mut x = 10
+  x %= 3
+  assert(eq(x, 1))
+}
+test "record_shorthand" {
+  let x = 1
+  let y = 2
+  let r = record { x, y }
+  let record { x: a, y: b } = r
+  assert(eq(a + b, 3))
+}
+test "record_shorthand_pat" {
+  let r = record { x: 10, y: 20 }
+  let record { x, y } = r
+  assert(eq(x + y, 30))
+}
+test "or_pattern_enum" {
+  enum Color { Red, Green, Blue }
+  let warm = (c: Color) -> Bool {
+    match c { Red | Green => true, _ => false }
+  }
+  assert(warm(Red))
+  assert(warm(Green))
+  assert(not(warm(Blue)))
+}
+test "or_pattern_int" {
+  let x = match 2 { 1 | 2 | 3 => true, _ => false }
+  assert(x)
+}
+test "method_call" {
+  let s = "hello"
+  assert(eq(s.string_length(), 5))
+}
+test "method_chain" {
+  let s = "hello world"
+  let sub = s.string_substring(0, 5)
+  assert(eq(sub.string_length(), 5))
+}
+test "index_array" {
+  let a = [10, 20, 30]
+  assert(eq(a[0], 10))
+  assert(eq(a[2], 30))
+}
+test "index_chain" {
+  let a = [[1, 2], [3, 4]]
+  let b = a[1]
+  assert(eq(b[0], 3))
+}
+test "modulo_neg" { assert(eq(-7 % 3, -1)) }
 test "cmp_neq" { assert(1 != 2) }
 test "cmp_gt" { assert(3 > 2) }
 test "cmp_gte" { assert(3 >= 3) }

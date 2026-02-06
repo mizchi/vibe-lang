@@ -239,6 +239,10 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       block_to_addr_sexp(ctx, body) +
       ")"
     }
+    @core.Expr::Raise(value~, span~) => {
+      let _ = span
+      "(raise " + expr_to_addr_sexp(ctx, value) + ")"
+    }
   }
 }
 
@@ -481,6 +485,17 @@ fn addr_pat_to_sexp(ctx : AddrCtx, pat : @core.Pat) -> String {
       let _ = span
       "(pat (string " + addr_escape_string(s) + "))"
     }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(pat (or")
+      for p in pats {
+        buf.write_char(' ')
+        buf.write_string(addr_pat_to_sexp(ctx, p))
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
   }
 }
 
@@ -603,6 +618,7 @@ fn addr_type_to_sexp(ty : @core.Type) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Type::Never => "Never"
   }
 }
 
@@ -752,6 +768,8 @@ fn is_builtin(name : String) -> Bool {
   name == "__sub" ||
   name == "__mul" ||
   name == "__div" ||
+  name == "__mod" ||
+  name == "__index" ||
   name == "__eq" ||
   name == "__lt" ||
   name == "__assert" ||

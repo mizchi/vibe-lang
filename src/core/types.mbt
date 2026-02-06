@@ -47,6 +47,7 @@ pub(all) enum Type {
   Param(String)
   Var(Int)
   Func(params~ : Array[FuncParam], ret~ : Type, effects~ : Array[EffectAtom])
+  Never
 } derive(Show, Eq)
 
 ///|

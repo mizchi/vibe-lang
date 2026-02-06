@@ -49,7 +49,7 @@ fn is_alnum(c : Char) -> Bool {
 
 ///|
 fn is_ident_extra(c : Char) -> Bool {
-  c == '#' || c == '.' || c == '?' || c == '~' || c == '@'
+  c == '#' || c == '?' || c == '~' || c == '@'
 }
 
 ///|
@@ -70,6 +70,8 @@ fn is_ident_delim(c : Char) -> Bool {
   c == '*' ||
   c == '-' ||
   c == '/' ||
+  c == '%' ||
+  c == '.' ||
   c == '|' ||
   c == '!' ||
   c == '<' ||
@@ -269,6 +271,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "enum" => enum_kw()
           "while" => while_kw()
           "mut" => mut_kw()
+          "raise" => raise_kw()
           "true" => bool_lit()
           "false" => bool_lit()
           _ => name()
@@ -344,6 +347,10 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           }
         '-' =>
           match self.peek() {
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(minus_eq(), "-=")
+            }
             Some('>') => {
               let _ = self.advance()
               Token::new(thin_arrow(), "->")
@@ -361,6 +368,10 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
         ':' => Token::new(colon(), ":")
         '/' =>
           match self.peek() {
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(slash_eq(), "/=")
+            }
             Some('/') => {
               let _ = self.advance()
               while (match self.peek() {
@@ -374,8 +385,30 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             }
             _ => Token::new(slash(), "/")
           }
-        '+' => Token::new(plus(), "+")
-        '*' => Token::new(star(), "*")
+        '+' =>
+          match self.peek() {
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(plus_eq(), "+=")
+            }
+            _ => Token::new(plus(), "+")
+          }
+        '*' =>
+          match self.peek() {
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(star_eq(), "*=")
+            }
+            _ => Token::new(star(), "*")
+          }
+        '%' =>
+          match self.peek() {
+            Some('=') => {
+              let _ = self.advance()
+              Token::new(percent_eq(), "%=")
+            }
+            _ => Token::new(percent(), "%")
+          }
         '!' =>
           match self.peek() {
             Some('=') => {
@@ -416,6 +449,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             }
             _ => Token::new(pipe(), "|")
           }
+        '.' => Token::new(dot(), ".")
         _ => Token::new(error_kind(), c.to_string())
       }
     }
@@ -435,8 +469,15 @@ fn Lexer::lex_ident(self : Lexer) -> String {
         if is_alnum(ch) || ch == '_' {
           let _ = self.advance()
 
+        } else if ch == '.' {
+          if allow_qual {
+            let _ = self.advance()
+
+          } else {
+            break
+          }
         } else if is_ident_extra(ch) {
-          if ch == '@' || ch == '.' {
+          if ch == '@' {
             allow_qual = true
           }
           let _ = self.advance()

@@ -1866,6 +1866,16 @@ fn type_expr_eff(
             has_ctor = true
             covered[name] = true
           }
+          @core.Pat::Or(pats~, ..) =>
+            for p in pats {
+              match p {
+                @core.Pat::Ctor(name~, ..) => {
+                  has_ctor = true
+                  covered[name] = true
+                }
+                _ => ()
+              }
+            }
           _ => ()
         }
         let arm_env = clone_env(env)
@@ -2012,6 +2022,19 @@ fn type_expr_eff(
       }
       let _ = type_block(env, body, aliases, effects, allow_effect)
       @core.Type::Unit
+    }
+    @core.Expr::Raise(value~, span~) => {
+      let val_ty = type_expr_eff(env, value, aliases, effects, allow_effect)
+      if not(type_equal(env, val_ty, @core.Type::String)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::String,
+          actual=val_ty,
+          span~,
+          context=Some("raise"),
+        )
+      }
+      require_effects(env, effects, [@core.EffectAtom::Const("Error")], span)
+      @core.Type::Never
     }
   }
   record_expr_type(env, expr.span(), ty)
@@ -2434,6 +2457,12 @@ fn collect_pattern_bindings_inner(
           }
         _ => raise TypeError::BadMatch(message="expected record", span~)
       }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      for p in pats {
+        collect_pattern_bindings_inner(env, out, p, scrutinee_ty)
+      }
+    }
   }
 }
 
@@ -2496,6 +2525,12 @@ fn collect_pattern_bindings_loose(
       let _ = value
       let _ = span
 
+    }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      for p in pats {
+        collect_pattern_bindings_loose(out, p)
+      }
     }
   }
 }
@@ -3599,10 +3634,10 @@ fn type_call(
                 }
                 a
               }
-              "__div" => {
-                let pos_args = extract_positional_args(args, "__div", call_span)
+              "__div" | "__mod" => {
+                let pos_args = extract_positional_args(args, name, call_span)
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall(message="__div", span=call_span)
+                  raise TypeError::BadCall(message=name, span=call_span)
                 }
                 let a = type_expr_eff(
                   env,
@@ -3628,6 +3663,85 @@ fn type_call(
                   )
                 }
                 a
+              }
+              "__index" => {
+                let pos_args = extract_positional_args(
+                  args, "__index", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message="__index", span=call_span)
+                }
+                let container_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let index_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let elem_ty = fresh_type_var(env)
+                match container_ty {
+                  @core.Type::Array(_) => {
+                    if not(type_equal(env, index_ty, @core.Type::Int)) {
+                      raise TypeError::Mismatch(
+                        expected=@core.Type::Int,
+                        actual=index_ty,
+                        span=pos_args[1].span(),
+                        context=Some("index"),
+                      )
+                    }
+                    if not(
+                        type_equal(
+                          env,
+                          container_ty,
+                          @core.Type::Array(elem_ty),
+                        ),
+                      ) {
+                      raise TypeError::Mismatch(
+                        expected=@core.Type::Array(elem_ty),
+                        actual=container_ty,
+                        span=pos_args[0].span(),
+                        context=Some("argument"),
+                      )
+                    }
+                    elem_ty
+                  }
+                  @core.Type::Map(_) => {
+                    if not(type_equal(env, index_ty, @core.Type::String)) {
+                      raise TypeError::Mismatch(
+                        expected=@core.Type::String,
+                        actual=index_ty,
+                        span=pos_args[1].span(),
+                        context=Some("index"),
+                      )
+                    }
+                    if not(
+                        type_equal(env, container_ty, @core.Type::Map(elem_ty)),
+                      ) {
+                      raise TypeError::Mismatch(
+                        expected=@core.Type::Map(elem_ty),
+                        actual=container_ty,
+                        span=pos_args[0].span(),
+                        context=Some("argument"),
+                      )
+                    }
+                    elem_ty
+                  }
+                  _ => {
+                    let _ = index_ty
+                    let _ = elem_ty
+                    raise TypeError::BadCall(
+                      message="__index: not indexable",
+                      span=call_span,
+                    )
+                  }
+                }
               }
               "__eq" => {
                 let pos_args = extract_positional_args(args, "__eq", call_span)
@@ -4536,6 +4650,8 @@ fn unify_types(
   let left = resolve_type(env, a)
   let right = resolve_type(env, b)
   match (left, right) {
+    (@core.Type::Never, _) => true
+    (_, @core.Type::Never) => true
     (@core.Type::Named(name=an, args=aa), @core.Type::Named(name=bn, args=bb)) =>
       if an == bn {
         if aa.length() != bb.length() {

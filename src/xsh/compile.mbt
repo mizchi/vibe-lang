@@ -443,6 +443,10 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Expr::Raise(value~, span~) => {
+      let _ = span
+      "(raise " + expr_to_sexp(value, aliases) + ")"
+    }
   }
 }
 
@@ -585,6 +589,7 @@ fn type_to_sexp(ty : @core.Type) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Type::Never => "Never"
   }
 }
 
@@ -613,7 +618,7 @@ fn sort_record_type_keys(fields : Map[String, @core.Type]) -> Array[String] {
   for name, _ in fields {
     out.push(name)
     let mut i = out.length() - 1
-    while i > 0 && string_lt_compile(out[i], out[i - 1]) {
+    while i > 0 && out[i] < out[i - 1] {
       let tmp = out[i - 1]
       out[i - 1] = out[i]
       out[i] = tmp
@@ -631,7 +636,7 @@ fn sort_map_fields_expr(
   for field in fields {
     out.push(field)
     let mut i = out.length() - 1
-    while i > 0 && string_lt_compile(out[i].key, out[i - 1].key) {
+    while i > 0 && out[i].key < out[i - 1].key {
       let tmp = out[i - 1]
       out[i - 1] = out[i]
       out[i] = tmp
@@ -649,7 +654,7 @@ fn sort_record_fields_expr(
   for field in fields {
     out.push(field)
     let mut i = out.length() - 1
-    while i > 0 && string_lt_compile(out[i].name, out[i - 1].name) {
+    while i > 0 && out[i].name < out[i - 1].name {
       let tmp = out[i - 1]
       out[i - 1] = out[i]
       out[i] = tmp
@@ -665,7 +670,7 @@ fn sort_type_ctors(ctors : Array[@core.TypeCtor]) -> Array[@core.TypeCtor] {
   for ctor in ctors {
     out.push(ctor)
     let mut i = out.length() - 1
-    while i > 0 && string_lt_compile(out[i].name, out[i - 1].name) {
+    while i > 0 && out[i].name < out[i - 1].name {
       let tmp = out[i - 1]
       out[i - 1] = out[i]
       out[i] = tmp
@@ -673,28 +678,6 @@ fn sort_type_ctors(ctors : Array[@core.TypeCtor]) -> Array[@core.TypeCtor] {
     }
   }
   out
-}
-
-///|
-fn string_lt_compile(a : String, b : String) -> Bool {
-  let ac : Array[Char] = []
-  for c in a {
-    ac.push(c)
-  }
-  let bc : Array[Char] = []
-  for c in b {
-    bc.push(c)
-  }
-  let min = if ac.length() < bc.length() { ac.length() } else { bc.length() }
-  for i in 0..<min {
-    if ac[i] < bc[i] {
-      return true
-    }
-    if ac[i] > bc[i] {
-      return false
-    }
-  }
-  ac.length() < bc.length()
 }
 
 ///|
@@ -787,6 +770,17 @@ fn pat_to_sexp(pat : @core.Pat) -> String {
     @core.Pat::String(value=s, span~) => {
       let _ = span
       "(pat (string " + escape_string(s) + "))"
+    }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(pat (or")
+      for p in pats {
+        buf.write_char(' ')
+        buf.write_string(pat_to_sexp(p))
+      }
+      buf.write_string("))")
+      buf.to_string()
     }
   }
 }

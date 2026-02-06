@@ -153,8 +153,18 @@ pub fn mut_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn raise_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(65)
+}
+
+///|
 pub fn while_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(124)
+}
+
+///|
+pub fn raise_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(125)
 }
 
 ///|
@@ -200,6 +210,41 @@ pub fn minus() -> @cst.SyntaxKind {
 ///|
 pub fn slash() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(46)
+}
+
+///|
+pub fn percent() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(66)
+}
+
+///|
+pub fn plus_eq() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(67)
+}
+
+///|
+pub fn minus_eq() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(68)
+}
+
+///|
+pub fn star_eq() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(69)
+}
+
+///|
+pub fn slash_eq() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(70)
+}
+
+///|
+pub fn percent_eq() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(71)
+}
+
+///|
+pub fn dot() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(72)
 }
 
 ///|

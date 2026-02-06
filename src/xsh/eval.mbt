@@ -11,6 +11,13 @@ pub struct EvalResult {
 } derive(Show, Eq)
 
 ///|
+fn extend_effects(dest : Array[Effect], src : Array[Effect]) -> Unit {
+  for eff in src {
+    dest.push(eff)
+  }
+}
+
+///|
 suberror EvalError {
   UnknownName(String)
   PermissionDenied(String)
@@ -63,9 +70,7 @@ pub fn Runtime::eval_module(
           }
           _ => out.value
         }
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
         if use_addr {
           self.bind_with_addr(name, addr, value)
         } else {
@@ -90,9 +95,7 @@ pub fn Runtime::eval_module(
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
         let out = eval_expr(self, expr)
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
         last = Some(out.value)
       }
       @core.Stmt::Flake(raw~, span~) => {
@@ -126,9 +129,7 @@ pub fn Runtime::eval_module(
       @core.Stmt::LetMut(name~, expr~, span~) => {
         let _ = span
         let out = eval_expr(self, expr)
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
         self.bind(name, out.value) |> ignore
         self.mut_vars[name] = true
         last = Some(out.value)
@@ -139,18 +140,14 @@ pub fn Runtime::eval_module(
           raise EvalError::BadCall("assign to immutable: " + name)
         }
         let out = eval_expr(self, expr)
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
         self.bind(name, out.value) |> ignore
         last = Some(out.value)
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         let out = eval_expr(self, expr)
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
         match match_pattern(pat, out.value) {
           Some(bindings) =>
             for name, value in bindings {
@@ -233,9 +230,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       for item in items {
         let out = eval_expr(rt, item)
         values.push(out.value)
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
       }
       { value: @core.Value::Tuple(values), effects }
     }
@@ -246,9 +241,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       for field in fields {
         let out = eval_expr(rt, field.expr)
         map[field.name] = out.value
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
       }
       { value: @core.Value::Record(map), effects }
     }
@@ -259,9 +252,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       for item in items {
         let out = eval_expr(rt, item)
         values.push(out.value)
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
       }
       { value: @core.Value::Array(values), effects }
     }
@@ -272,9 +263,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       for field in fields {
         let out = eval_expr(rt, field.expr)
         map[field.key] = out.value
-        for eff in out.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, out.effects)
       }
       { value: @core.Value::Map(map), effects }
     }
@@ -289,9 +278,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
           } else {
             eval_block(rt, else_body)
           }
-          for eff in branch_out.effects {
-            effects.push(eff)
-          }
+          extend_effects(effects, branch_out.effects)
           { value: branch_out.value, effects }
         }
         _ => raise EvalError::BadCall("if")
@@ -318,9 +305,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
             let guard_ok = match arm.cond {
               Some(c) => {
                 let g_out = eval_expr_with_bindings(rt, c, bindings)
-                for eff in g_out.effects {
-                  effects.push(eff)
-                }
+                extend_effects(effects, g_out.effects)
                 match g_out.value {
                   @core.Value::Bool(b) => b
                   _ => raise EvalError::BadCall("guard")
@@ -330,9 +315,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
             }
             if guard_ok {
               let out = eval_expr_with_bindings(rt, arm.expr, bindings)
-              for eff in out.effects {
-                effects.push(eff)
-              }
+              extend_effects(effects, out.effects)
               matched = Some(out.value)
               break
             }
@@ -373,20 +356,26 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let effects : Array[Effect] = []
       while {
               let cond_out = eval_expr(rt, cond)
-              for eff in cond_out.effects {
-                effects.push(eff)
-              }
+              extend_effects(effects, cond_out.effects)
               match cond_out.value {
                 @core.Value::Bool(b) => b
                 _ => raise EvalError::BadCall("while cond")
               }
             } {
         let body_res = rt.eval_module(body)
-        for eff in body_res.effects {
-          effects.push(eff)
-        }
+        extend_effects(effects, body_res.effects)
       }
       { value: @core.Value::Unit, effects }
+    }
+    @core.Expr::Raise(value~, span~) => {
+      let _ = span
+      let v = eval_expr(rt, value)
+      raise EvalError::BadCall(
+        match v.value {
+          @core.Value::String(s) => s
+          _ => "raise"
+        },
+      )
     }
   }
 }
@@ -584,6 +573,20 @@ fn match_pattern(
         }
         _ => None
       }
+    }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      let mut result : Map[String, @core.Value]? = None
+      for p in pats {
+        match match_pattern(p, value) {
+          Some(bindings) => {
+            result = Some(bindings)
+            break
+          }
+          None => ()
+        }
+      }
+      result
     }
   }
 }
@@ -810,9 +813,7 @@ fn eval_args(
   for arg in args {
     let out = eval_expr(rt, arg.expr)
     out_args.push(EvalArgValue::{ label: arg.label, value: out.value })
-    for eff in out.effects {
-      effects.push(eff)
-    }
+    extend_effects(effects, out.effects)
   }
   { args: out_args, effects }
 }
@@ -860,9 +861,7 @@ fn eval_user_call(
   }
   let body_out = eval_block(scope, fn_val.body)
   let effects = out.effects
-  for eff in body_out.effects {
-    effects.push(eff)
-  }
+  extend_effects(effects, body_out.effects)
   if use_cache {
     rt.pure_cache_set(cache_key, body_out.value)
   }
@@ -959,6 +958,8 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "__sub" ||
   name == "__mul" ||
   name == "__div" ||
+  name == "__mod" ||
+  name == "__index" ||
   name == "__eq" ||
   name == "__lt" ||
   name == "__neg" ||
@@ -1205,6 +1206,43 @@ fn eval_pure_builtin(
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(a / b)
         _ => raise EvalError::BadCall("__div")
+      }
+    }
+    "__mod" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("__mod")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Int(a), @core.Value::Int(b)) =>
+          if b == 0 {
+            raise EvalError::BadCall("__mod")
+          } else {
+            @core.Value::Int(a % b)
+          }
+        (@core.Value::Float(a), @core.Value::Float(b)) =>
+          @core.Value::Float(Float::mod(a, b))
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Double(Double::mod(a, b))
+        _ => raise EvalError::BadCall("__mod")
+      }
+    }
+    "__index" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("__index")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Array(arr), @core.Value::Int(i)) =>
+          if i >= 0 && i < arr.length() {
+            arr[i]
+          } else {
+            raise EvalError::BadCall("__index: out of bounds")
+          }
+        (@core.Value::Record(map), @core.Value::String(key)) =>
+          match map.get(key) {
+            Some(v) => v
+            None => raise EvalError::BadCall("__index: missing key")
+          }
+        _ => raise EvalError::BadCall("__index")
       }
     }
     "__eq" => {

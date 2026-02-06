@@ -382,6 +382,7 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == match_kw() ||
   kind == do_kw() ||
   kind == try_kw() ||
+  kind == raise_kw() ||
   kind == enum_kw() ||
   kind == type_kw()
 }
@@ -547,6 +548,9 @@ fn needs_space(
       if prev == lparen() || prev == lbracket() {
         return false
       }
+      if prev == dot() || curr_kind == dot() {
+        return false
+      }
       if prev == lbrace() {
         return true
       }
@@ -600,6 +604,12 @@ fn is_operator_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == minus() ||
   kind == star() ||
   kind == slash() ||
+  kind == percent() ||
+  kind == plus_eq() ||
+  kind == minus_eq() ||
+  kind == star_eq() ||
+  kind == slash_eq() ||
+  kind == percent_eq() ||
   kind == eqeq() ||
   kind == neq() ||
   kind == lt() ||
@@ -632,7 +642,8 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == map_kw() ||
   kind == fn_kw() ||
   kind == while_kw() ||
-  kind == mut_kw()
+  kind == mut_kw() ||
+  kind == raise_kw()
 }
 
 ///|

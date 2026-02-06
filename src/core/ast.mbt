@@ -28,6 +28,7 @@ pub(all) enum Pat {
   Double(value~ : Double, span~ : Span)
   Bool(value~ : Bool, span~ : Span)
   String(value~ : String, span~ : Span)
+  Or(pats~ : Array[Pat], span~ : Span)
 } derive(Show, Eq)
 
 ///|
@@ -114,6 +115,7 @@ pub(all) enum Expr {
     span~ : Span
   )
   While(cond~ : Expr, body~ : Module, span~ : Span)
+  Raise(value~ : Expr, span~ : Span)
 } derive(Show, Eq)
 
 ///|
@@ -140,191 +142,58 @@ pub(all) struct CallArg {
 ///|
 pub fn Expr::span(self : Expr) -> Span {
   match self {
-    Expr::Int(value~, span~) => {
-      let _ = value
-      span
-    }
-    Expr::Float(value~, span~) => {
-      let _ = value
-      span
-    }
-    Expr::Double(value~, span~) => {
-      let _ = value
-      span
-    }
-    Expr::Bool(value~, span~) => {
-      let _ = value
-      span
-    }
-    Expr::String(value~, span~) => {
-      let _ = value
-      span
-    }
-    Expr::Ident(name~, span~) => {
-      let _ = name
-      span
-    }
-    Expr::Call(name~, args~, span~) => {
-      let _ = name
-      let _ = args
-      span
-    }
-    Expr::Tuple(items~, span~) => {
-      let _ = items
-      span
-    }
-    Expr::Record(fields~, span~) => {
-      let _ = fields
-      span
-    }
-    Expr::Array(items~, span~) => {
-      let _ = items
-      span
-    }
-    Expr::Map(fields~, span~) => {
-      let _ = fields
-      span
-    }
-    Expr::If(cond~, then_body~, else_body~, span~) => {
-      let _ = cond
-      let _ = then_body
-      let _ = else_body
-      span
-    }
-    Expr::Block(body~, span~) => {
-      let _ = body
-      span
-    }
-    Expr::Match(scrutinee~, arms~, span~) => {
-      let _ = scrutinee
-      let _ = arms
-      span
-    }
-    Expr::Do(body~, span~) => {
-      let _ = body
-      span
-    }
-    Expr::Try(try_body~, catch_body~, span~) => {
-      let _ = try_body
-      let _ = catch_body
-      span
-    }
-    Expr::Fn(params~, ret~, effects~, body~, span~) => {
-      let _ = params
-      let _ = ret
-      let _ = effects
-      let _ = body
-      span
-    }
-    Expr::While(cond~, body~, span~) => {
-      let _ = cond
-      let _ = body
-      span
-    }
+    Expr::Int(span~, ..)
+    | Expr::Float(span~, ..)
+    | Expr::Double(span~, ..)
+    | Expr::Bool(span~, ..)
+    | Expr::String(span~, ..)
+    | Expr::Ident(span~, ..)
+    | Expr::Call(span~, ..)
+    | Expr::Tuple(span~, ..)
+    | Expr::Record(span~, ..)
+    | Expr::Array(span~, ..)
+    | Expr::Map(span~, ..)
+    | Expr::If(span~, ..)
+    | Expr::Block(span~, ..)
+    | Expr::Match(span~, ..)
+    | Expr::Do(span~, ..)
+    | Expr::Try(span~, ..)
+    | Expr::Fn(span~, ..)
+    | Expr::While(span~, ..)
+    | Expr::Raise(span~, ..) => span
   }
 }
 
 ///|
 pub fn Pat::span(self : Pat) -> Span {
   match self {
-    Pat::Wildcard(span~) => span
-    Pat::Bind(name~, span~) => {
-      let _ = name
-      span
-    }
-    Pat::Ctor(name~, args~, span~) => {
-      let _ = name
-      let _ = args
-      span
-    }
-    Pat::Tuple(items~, span~) => {
-      let _ = items
-      span
-    }
-    Pat::Record(fields~, span~) => {
-      let _ = fields
-      span
-    }
-    Pat::Int(value~, span~) => {
-      let _ = value
-      span
-    }
-    Pat::Float(value~, span~) => {
-      let _ = value
-      span
-    }
-    Pat::Double(value~, span~) => {
-      let _ = value
-      span
-    }
-    Pat::Bool(value~, span~) => {
-      let _ = value
-      span
-    }
-    Pat::String(value~, span~) => {
-      let _ = value
-      span
-    }
+    Pat::Wildcard(span~)
+    | Pat::Bind(span~, ..)
+    | Pat::Ctor(span~, ..)
+    | Pat::Tuple(span~, ..)
+    | Pat::Record(span~, ..)
+    | Pat::Int(span~, ..)
+    | Pat::Float(span~, ..)
+    | Pat::Double(span~, ..)
+    | Pat::Bool(span~, ..)
+    | Pat::String(span~, ..)
+    | Pat::Or(span~, ..) => span
   }
 }
 
 ///|
 pub fn Stmt::span(self : Stmt) -> Span {
   match self {
-    Stmt::Let(rec~, name~, expr~, span~) => {
-      let _ = rec
-      let _ = name
-      let _ = expr
-      span
-    }
-    Stmt::EnumDef(name~, params~, ctors~, span~) => {
-      let _ = name
-      let _ = params
-      let _ = ctors
-      span
-    }
-    Stmt::TypeAlias(name~, params~, target~, span~) => {
-      let _ = name
-      let _ = params
-      let _ = target
-      span
-    }
-    Stmt::Expr(expr~, span~) => {
-      let _ = expr
-      span
-    }
-    Stmt::Flake(raw~, span~) => {
-      let _ = raw
-      span
-    }
-    Stmt::Alias(name~, target~, span~) => {
-      let _ = name
-      let _ = target
-      span
-    }
-    Stmt::Import(path~, span~) => {
-      let _ = path
-      span
-    }
-    Stmt::Test(name~, body~, span~) => {
-      let _ = name
-      let _ = body
-      span
-    }
-    Stmt::LetMut(name~, expr~, span~) => {
-      let _ = name
-      let _ = expr
-      span
-    }
-    Stmt::Assign(name~, expr~, span~) => {
-      let _ = name
-      let _ = expr
-      span
-    }
-    Stmt::LetPat(pat~, expr~, span~) => {
-      let _ = pat
-      let _ = expr
-      span
-    }
+    Stmt::Let(span~, ..)
+    | Stmt::EnumDef(span~, ..)
+    | Stmt::TypeAlias(span~, ..)
+    | Stmt::Expr(span~, ..)
+    | Stmt::Flake(span~, ..)
+    | Stmt::Alias(span~, ..)
+    | Stmt::Import(span~, ..)
+    | Stmt::Test(span~, ..)
+    | Stmt::LetMut(span~, ..)
+    | Stmt::Assign(span~, ..)
+    | Stmt::LetPat(span~, ..) => span
   }
 }

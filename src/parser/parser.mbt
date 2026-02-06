@@ -306,6 +306,13 @@ fn Parser::parse_import_stmt(self : Parser) -> Unit {
   self.skip_trivia()
   if self.at(name()) || self.at(string_lit()) {
     self.bump()
+    // consume dot-separated path segments (e.g. foo.xsh)
+    while self.at(dot()) {
+      self.bump()
+      if self.at(name()) {
+        self.bump()
+      }
+    }
   } else {
     self.builder.token(error_kind(), "")
   }
@@ -340,6 +347,8 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_do_expr()
   } else if self.at(try_kw()) {
     self.parse_try_expr()
+  } else if self.at(raise_kw()) {
+    self.parse_raise_expr()
   } else if self.at(record_kw()) {
     self.parse_record_expr()
   } else if self.at(map_kw()) {
@@ -440,7 +449,7 @@ fn Parser::parse_mul_expr(self : Parser) -> Unit {
   self.parse_unary_expr()
   while {
           self.skip_trivia()
-          self.at(star()) || self.at(slash())
+          self.at(star()) || self.at(slash()) || self.at(percent())
         } {
     self.bump()
     self.parse_unary_expr()
@@ -478,6 +487,15 @@ fn Parser::parse_try_expr(self : Parser) -> Unit {
   self.expect(catch_kw())
   self.skip_trivia()
   self.parse_brace_block_tokens()
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_raise_expr(self : Parser) -> Unit {
+  self.builder.start_node(raise_expr())
+  self.bump() // raise
+  self.skip_trivia()
+  self.parse_expr()
   self.builder.finish_node()
 }
 
@@ -651,6 +669,29 @@ fn Parser::parse_call_or_primary(self : Parser) -> Unit {
     self.parse_args()
     self.expect(rparen())
     self.builder.finish_node()
+  }
+  // Postfix: .method(args), .prop, [index]
+  while true {
+    self.skip_trivia()
+    if self.at(dot()) {
+      self.bump()
+      self.skip_trivia()
+      if self.at(name()) {
+        self.bump()
+      }
+      self.skip_trivia()
+      if self.at(lparen()) {
+        self.bump()
+        self.parse_args()
+        self.expect(rparen())
+      }
+    } else if self.at(lbracket()) {
+      self.bump()
+      self.parse_expr()
+      self.expect(rbracket())
+    } else {
+      break
+    }
   }
 }
 
@@ -860,8 +901,9 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == import_kw() => self.parse_import_stmt()
     k if k == test_kw() => self.parse_test_stmt()
     k if k == flake_kw() => self.parse_flake_stmt()
-    k if k == name() =>
-      if self.peek_non_trivia_kind(self.pos + 1) == eq() {
+    k if k == name() => {
+      let next = self.peek_non_trivia_kind(self.pos + 1)
+      if next == eq() || is_compound_assign(next) {
         self.parse_assign_stmt()
       } else {
         let start = self.pos
@@ -870,6 +912,7 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
         let span = self.span_from(start)
         @core.Stmt::Expr(expr~, span~)
       }
+    }
     _ => {
       let start = self.pos
       let expr = self.parse_expr()
@@ -919,16 +962,57 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
 }
 
 ///|
+fn is_compound_assign(kind : @cst.SyntaxKind) -> Bool {
+  kind == plus_eq() ||
+  kind == minus_eq() ||
+  kind == star_eq() ||
+  kind == slash_eq() ||
+  kind == percent_eq()
+}
+
+///|
+fn compound_to_op(kind : @cst.SyntaxKind) -> String {
+  if kind == plus_eq() {
+    "__add"
+  } else if kind == minus_eq() {
+    "__sub"
+  } else if kind == star_eq() {
+    "__mul"
+  } else if kind == slash_eq() {
+    "__div"
+  } else {
+    "__mod"
+  }
+}
+
+///|
 fn AstParser::parse_assign_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
   let start = self.pos
   let name_tok = self.expect(name(), "name")
-  let _ = self.expect(eq(), "=")
-  let expr = self.parse_expr()
-  let _ = self.eat(semicolon())
-  let span = self.span_from(start)
-  @core.Stmt::Assign(name=name_tok.text(), expr~, span~)
+  self.skip_trivia()
+  let op_kind = self.peek_kind()
+  if op_kind == eq() {
+    let _ = self.bump()
+    let expr = self.parse_expr()
+    let _ = self.eat(semicolon())
+    let span = self.span_from(start)
+    @core.Stmt::Assign(name=name_tok.text(), expr~, span~)
+  } else {
+    let _ = self.bump() // compound assign token
+    let op_name = compound_to_op(op_kind)
+    let rhs = self.parse_expr()
+    let name_span = self.span_from(start)
+    let ident : @core.Expr = @core.Expr::Ident(
+      name=name_tok.text(),
+      span=name_span,
+    )
+    let desugared = call2(op_name, ident, rhs)
+    let _ = self.eat(semicolon())
+    let span = self.span_from(start)
+    @core.Stmt::Assign(name=name_tok.text(), expr=desugared, span~)
+  }
 }
 
 ///|
@@ -1208,9 +1292,20 @@ fn AstParser::parse_import_stmt(
     )
   }
   let _ = self.bump()
+  // Collect dot-separated segments for path (e.g. foo.xsh)
+  let buf = StringBuilder::new()
+  buf.write_string(tok.text())
+  while self.peek_kind() == dot() {
+    let _ = self.bump()
+    buf.write_char('.')
+    if self.peek_kind() == name() {
+      let seg = self.bump()
+      buf.write_string(seg.text())
+    }
+  }
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
-  @core.Stmt::Import(path=tok.text(), span~)
+  @core.Stmt::Import(path=buf.to_string(), span~)
 }
 
 ///|
@@ -1226,6 +1321,8 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_do_expr()
   } else if self.peek_kind() == try_kw() {
     self.parse_try_expr()
+  } else if self.peek_kind() == raise_kw() {
+    self.parse_raise_expr()
   } else if self.peek_kind() == record_kw() {
     self.parse_record_expr()
   } else if self.peek_kind() == map_kw() {
@@ -1426,12 +1523,20 @@ fn AstParser::parse_mul_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_unary_expr()
   while {
           self.skip_trivia()
-          self.peek_kind() == star() || self.peek_kind() == slash()
+          self.peek_kind() == star() ||
+          self.peek_kind() == slash() ||
+          self.peek_kind() == percent()
         } {
     let op = self.peek_kind()
     let _ = self.bump()
     let right = self.parse_unary_expr()
-    let name = if op == star() { "__mul" } else { "__div" }
+    let name = if op == star() {
+      "__mul"
+    } else if op == slash() {
+      "__div"
+    } else {
+      "__mod"
+    }
     left = call2(name, left, right)
   }
   left
@@ -1497,7 +1602,28 @@ fn AstParser::parse_match_expr(self : AstParser) -> @core.Expr raise ParseError 
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
-    let pat = self.parse_pattern()
+    let first_pat = self.parse_pattern()
+    self.skip_trivia()
+    // Check for or-pattern: A | B | C => ...
+    let pat = if self.peek_kind() == pipe() &&
+      self.peek_non_trivia_kind(self.pos + 1) != gt() {
+      let pats : Array[@core.Pat] = [first_pat]
+      while {
+              self.skip_trivia()
+              self.peek_kind() == pipe() &&
+              self.peek_non_trivia_kind(self.pos + 1) != gt()
+            } {
+        let _ = self.bump() // consume |
+        pats.push(self.parse_pattern())
+      }
+      let span = @core.Span::merge(
+        pats[0].span(),
+        pats[pats.length() - 1].span(),
+      )
+      @core.Pat::Or(pats~, span~)
+    } else {
+      first_pat
+    }
     self.skip_trivia()
     let mut cond : @core.Expr? = None
     if self.peek_kind() == if_kw() {
@@ -1543,6 +1669,15 @@ fn AstParser::parse_try_expr(self : AstParser) -> @core.Expr raise ParseError {
 }
 
 ///|
+fn AstParser::parse_raise_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(raise_kw(), "raise")
+  let value = self.parse_expr()
+  let span = self.span_from(start)
+  @core.Expr::Raise(value~, span~)
+}
+
+///|
 fn AstParser::parse_record_expr(
   self : AstParser,
 ) -> @core.Expr raise ParseError {
@@ -1559,8 +1694,14 @@ fn AstParser::parse_record_expr(
     }
     let field_start = self.pos
     let name_tok = self.expect(name(), "field")
-    let _ = self.expect(colon(), ":")
-    let expr = self.parse_expr()
+    self.skip_trivia()
+    let expr = if self.peek_kind() == colon() {
+      let _ = self.bump()
+      self.parse_expr()
+    } else {
+      let ident_span = self.span_from(field_start)
+      @core.Expr::Ident(name=name_tok.text(), span=ident_span)
+    }
     let field_span = self.span_from(field_start)
     fields.push(@core.RecordFieldExpr::{
       name: name_tok.text(),
@@ -2246,8 +2387,14 @@ fn AstParser::parse_record_pattern(
     }
     let field_start = self.pos
     let name_tok = self.expect(name(), "field")
-    let _ = self.expect(colon(), ":")
-    let pat = self.parse_pattern()
+    self.skip_trivia()
+    let pat = if self.peek_kind() == colon() {
+      let _ = self.bump()
+      self.parse_pattern()
+    } else {
+      let bind_span = self.span_from(field_start)
+      @core.Pat::Bind(name=name_tok.text(), span=bind_span)
+    }
     let field_span = self.span_from(field_start)
     fields.push(@core.RecordFieldPat::{
       name: name_tok.text(),
@@ -2268,9 +2415,9 @@ fn AstParser::parse_call_or_primary(
   self : AstParser,
 ) -> @core.Expr raise ParseError {
   self.skip_trivia()
+  let start = self.pos
   let tok = self.peek()
-  if tok.kind() == name() {
-    let start = self.pos
+  let mut expr : @core.Expr = if tok.kind() == name() {
     let name_tok = self.bump()
     self.skip_trivia()
     if self.peek_kind() == lparen() {
@@ -2286,6 +2433,46 @@ fn AstParser::parse_call_or_primary(
   } else {
     self.parse_primary()
   }
+  // Postfix chain: .method(args), .prop, [index]
+  while true {
+    self.skip_trivia()
+    if self.peek_kind() == dot() {
+      let _ = self.bump()
+      let method_tok = self.expect(name(), "method name")
+      self.skip_trivia()
+      if self.peek_kind() == lparen() {
+        let _ = self.bump()
+        let args = self.parse_args()
+        let _ = self.expect(rparen(), ")")
+        let span = self.span_from(start)
+        // desugar: expr.method(a, b) → method(expr, a, b)
+        let merged : Array[@core.CallArg] = []
+        let expr_span = expr.span()
+        merged.push(@core.CallArg::{ label: None, expr, span: expr_span })
+        for arg in args {
+          merged.push(arg)
+        }
+        expr = @core.Expr::Call(name=method_tok.text(), args=merged, span~)
+      } else {
+        // expr.prop → prop(expr) — zero-arg method call
+        let span = self.span_from(start)
+        let expr_span = expr.span()
+        expr = @core.Expr::Call(
+          name=method_tok.text(),
+          args=[@core.CallArg::{ label: None, expr, span: expr_span }],
+          span~,
+        )
+      }
+    } else if self.peek_kind() == lbracket() {
+      let _ = self.bump()
+      let index = self.parse_expr()
+      let _ = self.expect(rbracket(), "]")
+      expr = call2("__index", expr, index)
+    } else {
+      break
+    }
+  }
+  expr
 }
 
 ///|

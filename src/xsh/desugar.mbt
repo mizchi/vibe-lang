@@ -80,6 +80,28 @@ fn desugar_expr(
           span: arg.span,
         })
       }
+      // Handle dot-access desugared by parser: Call("method", [Ident("recv"), ...])
+      // If recv is an alias (imported module), convert to qualified name
+      if next_args.length() >= 1 {
+        match next_args[0].expr {
+          @core.Expr::Ident(name=recv, ..) =>
+            if aliases.contains(recv) && not(scope.contains(recv)) {
+              let qualified = recv + "." + name
+              if next_args.length() == 1 {
+                // foo.bar → Ident("foo.bar")
+                return @core.Expr::Ident(name=qualified, span~)
+              } else {
+                // foo.bar(args) → Call("foo.bar", args)
+                let rest_args : Array[@core.CallArg] = []
+                for i in 1..<next_args.length() {
+                  rest_args.push(next_args[i])
+                }
+                return @core.Expr::Call(name=qualified, args=rest_args, span~)
+              }
+            }
+          _ => ()
+        }
+      }
       match split_method_call_name(name) {
         Some((recv, method_name)) =>
           if scope.contains(recv) && not(aliases.contains(recv)) {
@@ -258,6 +280,12 @@ fn collect_pat_bindings(pat : @core.Pat, out : Array[String]) -> Unit {
       let _ = span
       for field in fields {
         collect_pat_bindings(field.pat, out)
+      }
+    }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      if pats.length() > 0 {
+        collect_pat_bindings(pats[0], out)
       }
     }
     _ => ()

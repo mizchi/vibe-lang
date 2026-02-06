@@ -206,6 +206,10 @@ fn purity_expr_inner(
       true
     }
     @core.Expr::While(..) => false
+    @core.Expr::Raise(value~, span~) => {
+      let _ = span
+      purity_expr_inner(env, value, locals)
+    }
   }
 }
 
@@ -360,6 +364,12 @@ pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
       let _ = span
 
     }
+    @core.Pat::Or(pats~, span~) => {
+      let _ = span
+      for p in pats {
+        bind_pattern_names(bound, p)
+      }
+    }
   }
 }
 
@@ -390,6 +400,8 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "__sub" ||
   name == "__mul" ||
   name == "__div" ||
+  name == "__mod" ||
+  name == "__index" ||
   name == "__eq" ||
   name == "__lt" ||
   name == "__neg" ||

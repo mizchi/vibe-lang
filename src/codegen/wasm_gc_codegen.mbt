@@ -299,6 +299,11 @@ fn emit_i32_div_s_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i32_rem_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x6f)
+}
+
+///|
 fn emit_f32_const_gc(buf : GcByteBuf, n : Float) -> Unit {
   buf.push(0x43)
   let bytes = Float::to_le_bytes(n)
@@ -675,7 +680,8 @@ fn infer_expr_kind_gc(
       let pos_args = extract_positional_exprs(args, name)
       match name {
         "add" | "sub" | "mul" | "div" | "eq" | "lt" => GcValKind::I32
-        "__add" | "__sub" | "__mul" | "__div" => {
+        "__index" => GcValKind::I32
+        "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("arity: " + name)
           }
@@ -1503,6 +1509,22 @@ fn compile_expr_gc(
             GcValKind::F32 => emit_f32_div_gc(buf)
             GcValKind::F64 => emit_f64_div_gc(buf)
             _ => raise WasmGenError::Unsupported("numeric kind")
+          }
+        }
+        "__mod" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("__mod arity")
+          }
+          let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if left_kind != right_kind {
+            raise WasmGenError::Unsupported("numeric kind mismatch")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          match left_kind {
+            GcValKind::I32 => emit_i32_rem_s_gc(buf)
+            _ => raise WasmGenError::Unsupported("__mod for float types")
           }
         }
         "__eq" => {
