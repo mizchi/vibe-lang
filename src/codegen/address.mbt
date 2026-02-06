@@ -94,6 +94,9 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let _ = span
       "(ref " + addr_escape_string(resolve_ref(ctx, name)) + ")"
     }
+    @core.Expr::Placeholder(..) =>
+      // Placeholder should be desugared before codegen
+      "(placeholder)"
     @core.Expr::Call(name~, args~, span~) => {
       let _ = span
       let buf = StringBuilder::new()

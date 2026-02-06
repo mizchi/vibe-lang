@@ -245,6 +245,7 @@ fn collect_dep_expr(
       let _ = span
       add_dep_name(name, bound, out)
     }
+    @core.Expr::Placeholder(..) => ()
     @core.Expr::Call(name~, args~, span~) => {
       let _ = span
       add_dep_name(name, bound, out)

@@ -165,6 +165,9 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
     Expr::String(value~, ..) => Expr::String(value~, span=zero_span)
     Expr::Ident(name~, ..) =>
       Expr::Ident(name=scope.lookup(name), span=zero_span)
+    Expr::Placeholder(index~, ..) =>
+      // Placeholder should be desugared before normalization
+      Expr::Placeholder(index~, span=zero_span)
     Expr::Call(name~, args~, ..) =>
       Expr::Call(
         name=scope.lookup(name),

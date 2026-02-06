@@ -184,6 +184,11 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_string_to(name, buf)
       buf.write_char('}')
     }
+    Expr::Placeholder(index~, ..) => {
+      buf.write_string("{\"Placeholder\":")
+      buf.write_string(index.to_string())
+      buf.write_char('}')
+    }
     Expr::Call(name~, args~, ..) => {
       buf.write_string("{\"Call\":{\"args\":")
       serialize_call_args_to(args, buf)

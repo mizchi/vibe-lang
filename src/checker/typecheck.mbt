@@ -1733,6 +1733,12 @@ fn type_expr_eff(
             }
           }
       }
+    @core.Expr::Placeholder(span~, ..) =>
+      // Placeholder should have been desugared to lambda; error if it reaches here
+      raise TypeError::BadCall(
+        message="placeholder _ can only be used in function arguments",
+        span~,
+      )
     @core.Expr::Call(name~, args~, span~) =>
       if has_alias_prefix(name, aliases) {
         @core.Type::Unit
@@ -4427,6 +4433,141 @@ fn extract_positional_args(
 }
 
 ///|
+/// Check if a lambda expression has placeholder types that need inference
+fn has_infer_placeholder(params : Array[@core.FuncParam]) -> Bool {
+  for param in params {
+    if param.ty.is_infer_placeholder() {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// Type an argument expression with optional expected type context
+fn type_arg_with_context(
+  env : TypeEnv,
+  expr : @core.Expr,
+  expected : @core.Type?,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+) -> @core.Type raise TypeError {
+  match expr {
+    @core.Expr::Fn(params=fn_params, ..) =>
+      match expected {
+        Some(exp_ty) if has_infer_placeholder(fn_params) =>
+          type_lambda_with_context(
+            env, expr, exp_ty, aliases, effects, allow_effect,
+          )
+        _ => type_expr_eff(env, expr, aliases, effects, allow_effect)
+      }
+    _ => type_expr_eff(env, expr, aliases, effects, allow_effect)
+  }
+}
+
+///|
+/// Type a lambda with contextual type information from the expected parameter type
+fn type_lambda_with_context(
+  env : TypeEnv,
+  expr : @core.Expr,
+  expected : @core.Type,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+) -> @core.Type raise TypeError {
+  match expr {
+    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~) => {
+      // Resolve the expected type first
+      let resolved_expected = resolve_type(env, expected)
+      match resolved_expected {
+        @core.Type::Func(params=expected_params, ret=expected_ret, ..) => {
+          let scope_env = clone_env(env)
+          let resolved_params : Array[@core.FuncParam] = []
+          for i in 0..<params.length() {
+            let param = params[i]
+            // Use expected type if param type is placeholder
+            let param_ty = if param.ty.is_infer_placeholder() &&
+              i < expected_params.length() {
+              // Resolve the expected param type (might still be Var, that's ok)
+              resolve_type(env, expected_params[i].ty)
+            } else {
+              normalize_type(env, param.ty)
+            }
+            let binding_ty = if param.label == @core.ParamLabel::Optional {
+              @core.Type::Named(name="Option", args=[param_ty])
+            } else {
+              param_ty
+            }
+            scope_env.set(param.name, binding_ty)
+            resolved_params.push(@core.FuncParam::{
+              name: param.name,
+              label: param.label,
+              ty: param_ty,
+            })
+          }
+          let normalized_effects = normalize_effects(fn_effects, span)
+          let fn_scope = effect_scope_from_list(normalized_effects)
+          let body_ty = type_block(
+            scope_env, body, aliases, fn_scope, allow_effect,
+          )
+          let resolved_effects = effect_set_to_atoms(
+            effect_set_from_atoms(scope_env, normalized_effects),
+          )
+          // Verify or infer return type
+          let final_ret = match ret {
+            Some(r) => {
+              let resolved = normalize_type(env, r)
+              if not(type_equal(env, resolved, body_ty)) {
+                raise TypeError::Mismatch(
+                  expected=resolved,
+                  actual=body_ty,
+                  span~,
+                  context=Some("lambda return"),
+                )
+              }
+              resolved
+            }
+            None => body_ty
+          }
+          // Unify return type with expected (this binds type vars)
+          let _ = unify_types(env, expected_ret, final_ret)
+          // After body type checking, params might have been unified with concrete types
+          // Re-resolve params to get final types
+          let final_params : Array[@core.FuncParam] = []
+          for p in resolved_params {
+            let final_ty = resolve_type(env, p.ty)
+            final_params.push(@core.FuncParam::{
+              name: p.name,
+              label: p.label,
+              ty: final_ty,
+            })
+          }
+          @core.Type::Func(
+            params=final_params,
+            ret=final_ret,
+            effects=resolved_effects,
+          )
+        }
+        @core.Type::Var(id) => {
+          // Expected type is itself a type variable
+          // Type the lambda normally and unify
+          let lambda_ty = type_expr_eff(
+            env, expr, aliases, effects, allow_effect,
+          )
+          let _ = bind_var(env, id, lambda_ty)
+          lambda_ty
+        }
+        _ =>
+          // Expected type is not a function, fall back to normal typing
+          type_expr_eff(env, expr, aliases, effects, allow_effect)
+      }
+    }
+    _ => type_expr_eff(env, expr, aliases, effects, allow_effect)
+  }
+}
+
+///|
 fn check_call_args(
   env : TypeEnv,
   params : Array[@core.FuncParam],
@@ -4436,17 +4577,57 @@ fn check_call_args(
   allow_effect : Bool,
   call_span : @core.Span,
 ) -> Unit raise TypeError {
-  let arg_types : Array[ArgType] = []
-  for arg in args {
-    let ty = type_expr_eff(env, arg.expr, aliases, effects, allow_effect)
-    arg_types.push(ArgType::{ label: arg.label, ty, span: arg.span })
-  }
+  // Build positional params list first for bidirectional inference
   let positional : Array[@core.FuncParam] = []
   for param in params {
     if param.label == @core.ParamLabel::Positional {
       positional.push(param)
     }
   }
+  // Type arguments with contextual information for lambdas
+  let arg_types : Array[ArgType] = []
+  let mut pos_idx = 0
+  for arg in args {
+    let ty = match arg.label {
+      None => {
+        // Positional argument - check if it's a lambda needing inference
+        let expected_ty : @core.Type? = if pos_idx < positional.length() {
+          Some(positional[pos_idx].ty)
+        } else {
+          None
+        }
+        pos_idx += 1
+        type_arg_with_context(
+          env,
+          arg.expr,
+          expected_ty,
+          aliases,
+          effects,
+          allow_effect,
+        )
+      }
+      Some(label) => {
+        // Labeled argument - find expected type
+        let mut expected_ty : @core.Type? = None
+        for param in params {
+          if param.label != @core.ParamLabel::Positional && param.name == label {
+            expected_ty = Some(param.ty)
+            break
+          }
+        }
+        type_arg_with_context(
+          env,
+          arg.expr,
+          expected_ty,
+          aliases,
+          effects,
+          allow_effect,
+        )
+      }
+    }
+    arg_types.push(ArgType::{ label: arg.label, ty, span: arg.span })
+  }
+  // Now check types match
   let mut pos_index = 0
   let used_labels : Map[String, Bool] = {}
   for arg in arg_types {

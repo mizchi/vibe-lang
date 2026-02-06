@@ -331,6 +331,9 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
           }
       }
     }
+    @core.Expr::Placeholder(..) =>
+      // Placeholder should be desugared before eval
+      raise EvalError::UnknownName("_")
     @core.Expr::Call(name~, args~, span~) => {
       let _ = span
       eval_call(rt, name, args)

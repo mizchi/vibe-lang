@@ -429,6 +429,9 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       let resolved = @core.resolve_qualified(name, aliases)
       "(ref " + escape_string(resolved) + ")"
     }
+    @core.Expr::Placeholder(..) =>
+      // Placeholder should be desugared before compile
+      "(placeholder)"
     @core.Expr::Call(name~, args~, span~) => {
       let _ = span
       let resolved = @core.resolve_qualified(name, aliases)

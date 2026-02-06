@@ -134,6 +134,7 @@ pub(all) enum Expr {
   Bool(value~ : Bool, span~ : Span)
   String(value~ : String, span~ : Span)
   Ident(name~ : String, span~ : Span)
+  Placeholder(index~ : Int, span~ : Span) // _ placeholder for lambda shorthand
   Call(name~ : String, args~ : Array[CallArg], span~ : Span)
   Tuple(items~ : Array[Expr], span~ : Span)
   Record(fields~ : Array[RecordFieldExpr], span~ : Span)
@@ -187,6 +188,7 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Bool(span~, ..)
     | Expr::String(span~, ..)
     | Expr::Ident(span~, ..)
+    | Expr::Placeholder(span~, ..)
     | Expr::Call(span~, ..)
     | Expr::Tuple(span~, ..)
     | Expr::Record(span~, ..)

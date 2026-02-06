@@ -90,6 +90,9 @@ fn purity_expr_inner(
           }
       }
     }
+    @core.Expr::Placeholder(..) =>
+      // Placeholder should be desugared; treat as pure
+      true
     @core.Expr::Call(name~, args~, span~) => {
       let _ = span
       if is_effectful_call_name(name) {

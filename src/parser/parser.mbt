@@ -2076,8 +2076,13 @@ fn AstParser::parse_param(
   let name_span = self.span_from(name_start)
   let (base, label) = split_param_label(name_tok.text(), name_span)
   self.skip_trivia()
-  let _ = self.expect(colon(), ":")
-  let ty = self.parse_type_with_params(params)
+  // Type annotation is optional - use Unit as placeholder for inference
+  let ty = if self.peek_kind() == colon() {
+    let _ = self.bump()
+    self.parse_type_with_params(params)
+  } else {
+    @core.Type::Unit // Placeholder for type inference
+  }
   @core.FuncParam::{ name: base, label, ty }
 }
 
@@ -2396,8 +2401,28 @@ fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
     let mut effects : Array[@core.EffectAtom] = []
     if self.peek_kind() == thin_arrow() {
       let _ = self.bump()
-      ret = Some(self.parse_type())
-      effects = self.parse_effect_list()
+      self.skip_trivia()
+      // Check if this is expression body: (x) -> expr (no block)
+      // or type annotation: (x) -> Int { ... }
+      if self.peek_kind() != lbrace() {
+        // Could be expression body OR type annotation
+        // Try to determine: if next token is a type keyword or name followed by {, it's a type
+        let is_expr_body = self.is_arrow_expr_body()
+        if is_expr_body {
+          // Expression body: (x) -> x + 1
+          let expr = self.parse_expr()
+          let span = self.span_from(saved)
+          let body = @core.Module::{
+            stmts: [@core.Stmt::Expr(expr~, span=expr.span())],
+          }
+          return Some(@core.Expr::Fn(params~, ret~, effects~, body~, span~))
+        }
+      }
+      // Type annotation followed by block: (x) -> Int { ... }
+      if self.peek_kind() != lbrace() {
+        ret = Some(self.parse_type())
+        effects = self.parse_effect_list()
+      }
     }
     let body = self.parse_block()
     let span = self.span_from(saved)
@@ -2411,6 +2436,32 @@ fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
       self.pos = saved
       None
     }
+  }
+}
+
+///|
+/// Determine if after -> we have expression body or type annotation
+/// Expression body: any expression that doesn't start with a type-like token followed by {
+fn AstParser::is_arrow_expr_body(self : AstParser) -> Bool {
+  // Look at current token
+  let tok = self.peek()
+  // If it's not a name, it's definitely an expression
+  if tok.kind() != name() {
+    return true
+  }
+  // Check if this looks like a type annotation (name followed by { or [ for generic)
+  // Save position to peek ahead
+  let saved = self.pos
+  let _ = self.bump() // consume the name
+  self.skip_trivia()
+  let next_kind = self.peek_kind()
+  self.pos = saved // restore position
+  // If name is followed by { or [ (for generic type), it's likely a type annotation
+  // Otherwise it's an expression
+  if next_kind == lbrace() || next_kind == lbracket() {
+    false // type annotation: Int { ... } or Array[Int] { ... }
+  } else {
+    true // expression: x + 1, foo(bar), etc.
   }
 }
 
@@ -2648,12 +2699,40 @@ fn AstParser::parse_call_or_primary(
   let mut expr : @core.Expr = if tok.kind() == name() {
     let name_tok = self.bump()
     self.skip_trivia()
-    if self.peek_kind() == lparen() {
+    // Check for single-parameter lambda: x -> expr
+    if self.peek_kind() == thin_arrow() {
+      let _ = self.bump() // consume ->
+      self.skip_trivia()
+      let param = @core.FuncParam::{
+        name: name_tok.text(),
+        label: @core.ParamLabel::Positional,
+        ty: @core.Type::Unit, // Placeholder for inference
+      }
+      // Check if block body or expression body
+      if self.peek_kind() == lbrace() {
+        // Block body: x -> { ... }
+        let body = self.parse_block()
+        let span = self.span_from(start)
+        @core.Expr::Fn(params=[param], ret=None, effects=[], body~, span~)
+      } else {
+        // Expression body: x -> x + 1
+        let body_expr = self.parse_expr()
+        let span = self.span_from(start)
+        let body = @core.Module::{
+          stmts: [@core.Stmt::Expr(expr=body_expr, span=body_expr.span())],
+        }
+        @core.Expr::Fn(params=[param], ret=None, effects=[], body~, span~)
+      }
+    } else if self.peek_kind() == lparen() {
       let _ = self.bump()
       let args = self.parse_args()
       let _ = self.expect(rparen(), ")")
       let span = self.span_from(start)
       @core.Expr::Call(name=name_tok.text(), args~, span~)
+    } else if name_tok.text() == "_" {
+      // Placeholder for lambda shorthand: _ * 2 → x -> x * 2
+      let span = self.span_from(start)
+      @core.Expr::Placeholder(index=0, span~)
     } else {
       let span = self.span_from(start)
       @core.Expr::Ident(name=name_tok.text(), span~)
@@ -2962,5 +3041,394 @@ fn desugar_string_interp(
 pub fn parse_ast(input : String) -> @core.Module raise ParseError {
   let tokens = tokenize(input)
   let parser = AstParser::new(tokens)
-  parser.parse()
+  let parsed = parser.parse()
+  // Desugar placeholders in Call args after parsing
+  desugar_module(parsed)
+}
+
+// ============================================================
+// Placeholder desugar: _ * 2 → x -> x * 2
+// ============================================================
+
+///|
+/// Check if an expression contains any placeholder (_)
+fn contains_placeholder(expr : @core.Expr) -> Bool {
+  match expr {
+    @core.Expr::Placeholder(..) => true
+    @core.Expr::Call(args~, ..) => {
+      for arg in args {
+        if contains_placeholder(arg.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Tuple(items~, ..) => {
+      for item in items {
+        if contains_placeholder(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Array(items~, ..) => {
+      for item in items {
+        if contains_placeholder(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Record(fields~, ..) => {
+      for field in fields {
+        if contains_placeholder(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Map(fields~, ..) => {
+      for field in fields {
+        if contains_placeholder(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::If(cond~, ..) => contains_placeholder(cond)
+    @core.Expr::Block(..)
+    | @core.Expr::Match(..)
+    | @core.Expr::Do(..)
+    | @core.Expr::Try(..)
+    | @core.Expr::Fn(..)
+    | @core.Expr::While(..) => false // Don't look inside blocks/lambdas
+    @core.Expr::Raise(value~, ..) => contains_placeholder(value)
+    @core.Expr::Await(expr~, ..) => contains_placeholder(expr)
+    @core.Expr::Yield(expr~, ..) => contains_placeholder(expr)
+    _ => false
+  }
+}
+
+///|
+/// Count placeholders in an expression and reindex them
+fn reindex_placeholders(expr : @core.Expr, counter : Ref[Int]) -> @core.Expr {
+  match expr {
+    @core.Expr::Placeholder(span~, ..) => {
+      let idx = counter.val
+      counter.val += 1
+      @core.Expr::Placeholder(index=idx, span~)
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let new_args : Array[@core.CallArg] = []
+      for arg in args {
+        new_args.push(@core.CallArg::{
+          label: arg.label,
+          expr: reindex_placeholders(arg.expr, counter),
+          span: arg.span,
+        })
+      }
+      @core.Expr::Call(name~, args=new_args, span~)
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let new_items : Array[@core.Expr] = []
+      for item in items {
+        new_items.push(reindex_placeholders(item, counter))
+      }
+      @core.Expr::Tuple(items=new_items, span~)
+    }
+    @core.Expr::Array(items~, span~) => {
+      let new_items : Array[@core.Expr] = []
+      for item in items {
+        new_items.push(reindex_placeholders(item, counter))
+      }
+      @core.Expr::Array(items=new_items, span~)
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let new_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: reindex_placeholders(field.expr, counter),
+          span: field.span,
+        })
+      }
+      @core.Expr::Record(fields=new_fields, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let new_fields : Array[@core.MapFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.MapFieldExpr::{
+          key: field.key,
+          expr: reindex_placeholders(field.expr, counter),
+          span: field.span,
+        })
+      }
+      @core.Expr::Map(fields=new_fields, span~)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=reindex_placeholders(cond, counter),
+        then_body~,
+        else_body~,
+        span~,
+      )
+    @core.Expr::Raise(value~, span~) =>
+      @core.Expr::Raise(value=reindex_placeholders(value, counter), span~)
+    @core.Expr::Await(expr~, span~) =>
+      @core.Expr::Await(expr=reindex_placeholders(expr, counter), span~)
+    @core.Expr::Yield(expr~, span~) =>
+      @core.Expr::Yield(expr=reindex_placeholders(expr, counter), span~)
+    _ => expr
+  }
+}
+
+///|
+/// Replace placeholders with identifiers
+fn replace_placeholders(expr : @core.Expr) -> @core.Expr {
+  match expr {
+    @core.Expr::Placeholder(index~, span~) => {
+      let name = "__p" + index.to_string()
+      @core.Expr::Ident(name~, span~)
+    }
+    @core.Expr::Call(name~, args~, span~) => {
+      let new_args : Array[@core.CallArg] = []
+      for arg in args {
+        new_args.push(@core.CallArg::{
+          label: arg.label,
+          expr: replace_placeholders(arg.expr),
+          span: arg.span,
+        })
+      }
+      @core.Expr::Call(name~, args=new_args, span~)
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let new_items : Array[@core.Expr] = []
+      for item in items {
+        new_items.push(replace_placeholders(item))
+      }
+      @core.Expr::Tuple(items=new_items, span~)
+    }
+    @core.Expr::Array(items~, span~) => {
+      let new_items : Array[@core.Expr] = []
+      for item in items {
+        new_items.push(replace_placeholders(item))
+      }
+      @core.Expr::Array(items=new_items, span~)
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let new_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: replace_placeholders(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::Record(fields=new_fields, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let new_fields : Array[@core.MapFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.MapFieldExpr::{
+          key: field.key,
+          expr: replace_placeholders(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::Map(fields=new_fields, span~)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=replace_placeholders(cond),
+        then_body~,
+        else_body~,
+        span~,
+      )
+    @core.Expr::Raise(value~, span~) =>
+      @core.Expr::Raise(value=replace_placeholders(value), span~)
+    @core.Expr::Await(expr~, span~) =>
+      @core.Expr::Await(expr=replace_placeholders(expr), span~)
+    @core.Expr::Yield(expr~, span~) =>
+      @core.Expr::Yield(expr=replace_placeholders(expr), span~)
+    _ => expr
+  }
+}
+
+///|
+/// Desugar placeholder expression to lambda: _ * 2 → (__p0) -> __p0 * 2
+pub fn desugar_placeholder_expr(expr : @core.Expr) -> @core.Expr {
+  if not(contains_placeholder(expr)) {
+    return expr
+  }
+  let counter : Ref[Int] = @ref.new(0)
+  let reindexed = reindex_placeholders(expr, counter)
+  let num_params = counter.val
+  let body_expr = replace_placeholders(reindexed)
+  let span = expr.span()
+  // Build params: __p0, __p1, ...
+  let params : Array[@core.FuncParam] = []
+  for i in 0..<num_params {
+    params.push(@core.FuncParam::{
+      name: "__p" + i.to_string(),
+      label: @core.ParamLabel::Positional,
+      ty: @core.Type::Unit, // Placeholder for type inference
+    })
+  }
+  let body = @core.Module::{
+    stmts: [@core.Stmt::Expr(expr=body_expr, span=body_expr.span())],
+  }
+  @core.Expr::Fn(params~, ret=None, effects=[], body~, span~)
+}
+
+// ============================================================
+// Module-level desugar pass: desugar placeholders in Call args
+// ============================================================
+
+///|
+/// Desugar placeholders in module
+fn desugar_module(m : @core.Module) -> @core.Module {
+  let new_stmts : Array[@core.Stmt] = []
+  for stmt in m.stmts {
+    new_stmts.push(desugar_stmt(stmt))
+  }
+  @core.Module::{ stmts: new_stmts }
+}
+
+///|
+fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @core.Stmt::Let(rec~, name~, expr=desugar_expr_deep(expr), span~)
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::ExportLet(rec~, name~, expr=desugar_expr_deep(expr), span~)
+    @core.Stmt::Test(name~, body~, span~) =>
+      @core.Stmt::Test(name~, body=desugar_module(body), span~)
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(expr=desugar_expr_deep(expr), span~)
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      @core.Stmt::LetMut(name~, expr=desugar_expr_deep(expr), span~)
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(name~, expr=desugar_expr_deep(expr), span~)
+    @core.Stmt::LetPat(pat~, expr~, span~) =>
+      @core.Stmt::LetPat(pat~, expr=desugar_expr_deep(expr), span~)
+    // Non-expression statements pass through
+    @core.Stmt::EnumDef(..)
+    | @core.Stmt::TypeAlias(..)
+    | @core.Stmt::Flake(..)
+    | @core.Stmt::Alias(..)
+    | @core.Stmt::Import(..)
+    | @core.Stmt::Export(..)
+    | @core.Stmt::ExportEnumDef(..)
+    | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::ReExport(..) => stmt
+  }
+}
+
+///|
+/// Desugar expression deeply, applying placeholder desugar to Call args
+fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
+  match expr {
+    @core.Expr::Call(name~, args~, span~) => {
+      // Desugar each argument (top-level of Call args)
+      let new_args : Array[@core.CallArg] = []
+      for arg in args {
+        let desugared = desugar_placeholder_expr(arg.expr)
+        let deep = desugar_expr_deep(desugared)
+        new_args.push(@core.CallArg::{
+          label: arg.label,
+          expr: deep,
+          span: arg.span,
+        })
+      }
+      @core.Expr::Call(name~, args=new_args, span~)
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let new_items : Array[@core.Expr] = []
+      for item in items {
+        new_items.push(desugar_expr_deep(item))
+      }
+      @core.Expr::Tuple(items=new_items, span~)
+    }
+    @core.Expr::Array(items~, span~) => {
+      let new_items : Array[@core.Expr] = []
+      for item in items {
+        new_items.push(desugar_expr_deep(item))
+      }
+      @core.Expr::Array(items=new_items, span~)
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let new_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: desugar_expr_deep(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::Record(fields=new_fields, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let new_fields : Array[@core.MapFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.MapFieldExpr::{
+          key: field.key,
+          expr: desugar_expr_deep(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::Map(fields=new_fields, span~)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=desugar_expr_deep(cond),
+        then_body=desugar_module(then_body),
+        else_body=desugar_module(else_body),
+        span~,
+      )
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(body=desugar_module(body), span~)
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let new_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        let new_cond : @core.Expr? = match arm.cond {
+          Some(c) => Some(desugar_expr_deep(c))
+          None => None
+        }
+        new_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: new_cond,
+          expr: desugar_expr_deep(arm.expr),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Match(
+        scrutinee=desugar_expr_deep(scrutinee),
+        arms=new_arms,
+        span~,
+      )
+    }
+    @core.Expr::Do(body~, span~) =>
+      @core.Expr::Do(body=desugar_module(body), span~)
+    @core.Expr::Try(try_body~, catch_body~, span~) =>
+      @core.Expr::Try(
+        try_body=desugar_module(try_body),
+        catch_body=desugar_module(catch_body),
+        span~,
+      )
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~) =>
+      @core.Expr::Fn(params~, ret~, effects~, body=desugar_module(body), span~)
+    @core.Expr::While(cond~, body~, span~) =>
+      @core.Expr::While(
+        cond=desugar_expr_deep(cond),
+        body=desugar_module(body),
+        span~,
+      )
+    @core.Expr::Raise(value~, span~) =>
+      @core.Expr::Raise(value=desugar_expr_deep(value), span~)
+    @core.Expr::Await(expr=e, span~) =>
+      @core.Expr::Await(expr=desugar_expr_deep(e), span~)
+    @core.Expr::Yield(expr=e, span~) =>
+      @core.Expr::Yield(expr=desugar_expr_deep(e), span~)
+    _ => expr
+  }
 }

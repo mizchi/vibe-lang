@@ -51,6 +51,15 @@ pub(all) enum Type {
 } derive(Show, Eq)
 
 ///|
+/// Check if a type is a placeholder for inference (Unit is used as placeholder)
+pub fn Type::is_infer_placeholder(self : Type) -> Bool {
+  match self {
+    Type::Unit => true
+    _ => false
+  }
+}
+
+///|
 pub(all) struct Path {
   raw : String
 } derive(Show, Eq)

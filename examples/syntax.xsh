@@ -265,3 +265,51 @@ test "arrow_fn_in_hof_no_ret" {
   assert(eq(array_get(xs, 0), 2))
   assert(eq(array_get(xs, 2), 6))
 }
+
+// Lambda type inference tests
+test "lambda_single_param_arrow" {
+  // x -> expr form (no parens)
+  let xs = array_map(x -> x + 1, [1, 2, 3])
+  assert(eq(array_get(xs, 0), 2))
+  assert(eq(array_get(xs, 2), 4))
+}
+test "lambda_paren_expr_body" {
+  // (x) -> expr form
+  let xs = array_map((x) -> x * 2, [1, 2, 3])
+  assert(eq(array_get(xs, 2), 6))
+}
+test "lambda_paren_block_body" {
+  // (x) { block } form with inferred type
+  let xs = array_map((x) { x + 1 }, [1, 2, 3])
+  assert(eq(array_get(xs, 0), 2))
+}
+test "lambda_multi_param_inferred" {
+  // (x, y) -> expr form
+  let result = array_fold((acc, x) -> acc + x, 0, [1, 2, 3])
+  assert(eq(result, 6))
+}
+test "lambda_nested_inferred" {
+  // Nested lambdas with type inference
+  let xs = array_map(x -> x * 2, array_map(x -> x + 1, [1, 2, 3]))
+  assert(eq(array_get(xs, 0), 4))  // (1+1)*2 = 4
+  assert(eq(array_get(xs, 1), 6))  // (2+1)*2 = 6
+}
+
+// Placeholder shorthand tests
+test "placeholder_simple" {
+  // _ * 2 → (__p0) -> __p0 * 2
+  let xs = array_map(_ * 2, [1, 2, 3])
+  assert(eq(array_get(xs, 0), 2))
+  assert(eq(array_get(xs, 2), 6))
+}
+test "placeholder_two_params" {
+  // _ + _ → (__p0, __p1) -> __p0 + __p1
+  let result = array_fold(_ + _, 0, [1, 2, 3])
+  assert(eq(result, 6))
+}
+test "placeholder_nested_call" {
+  // add(_, 10) → (__p0) -> add(__p0, 10)
+  let xs = array_map(add(_, 10), [1, 2, 3])
+  assert(eq(array_get(xs, 0), 11))
+  assert(eq(array_get(xs, 2), 13))
+}

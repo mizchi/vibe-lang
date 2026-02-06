@@ -1331,6 +1331,9 @@ fn infer_expr_kind_with(
         None => ValueKind::I32
       }
     }
+    @core.Expr::Placeholder(..) =>
+      // Placeholder should be desugared before codegen
+      ValueKind::I32
     @core.Expr::Call(name~, args~, span~) => {
       let _ = span
       let pos_args = extract_positional_exprs(args, name)
@@ -2592,6 +2595,9 @@ fn compile_expr(
           }
       }
     }
+    @core.Expr::Placeholder(..) =>
+      // Placeholder should be desugared before codegen
+      raise WasmGenError::Unsupported("placeholder in codegen")
     @core.Expr::Call(name~, args~, span~) => {
       let _ = span
       if ctx.fn_local_sigs.contains(name) {
