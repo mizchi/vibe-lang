@@ -1,0 +1,4 @@
+let x = unknown_variable
+
+__DATA__
+{"error_contains": "UnknownName"}
