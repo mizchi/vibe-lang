@@ -17,6 +17,7 @@ pub fn run(args : Array[String]) -> Unit {
     "bench-file" => bench_file_cmd(cmd_args)
     "repl" => repl_cmd(cmd_args)
     "repl-stdin" => repl_stdin_cmd(cmd_args)
+    "wasm-repl-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
     "expand" => expand_cmd(cmd_args)
@@ -38,7 +39,7 @@ fn print_usage() -> Unit {
   println("  check <file...>            parse/type check scripts")
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component] [-o out] <file>",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit] [-o out] <file>",
   )
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
@@ -47,6 +48,7 @@ fn print_usage() -> Unit {
   println("  bench-file [--n N] [--warmup N] <file>")
   println("  repl                        interactive TUI shell")
   println("  repl-stdin [--no-prompt]    read-eval-print loop (stdin)")
+  println("  wasm-repl-stdin [--no-prompt] [-o dir]  compile each expr to WASM")
   println("  hash <file>                 compute normalized AST hash")
   println(
     "  save <file>                 save module to content-addressed store",
@@ -78,6 +80,7 @@ enum CompileMode {
   WasmJsString
   WasmGc
   Component
+  Wit
 }
 
 ///|
@@ -172,6 +175,7 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
     CompileMode::WasmJsString => "dist/" + basename + ".wasm"
     CompileMode::WasmGc => "dist/" + basename + ".wasm"
     CompileMode::Component => "dist/" + basename + ".component.wasm"
+    CompileMode::Wit => "dist/" + basename + ".wit"
   }
 }
 
@@ -198,6 +202,10 @@ fn compile_cmd(args : Array[String]) -> Unit {
       }
       "--component" => {
         mode = CompileMode::Component
+        i += 1
+      }
+      "--wit" => {
+        mode = CompileMode::Wit
         i += 1
       }
       "-o" | "--out" => {
@@ -273,6 +281,21 @@ fn compile_cmd(args : Array[String]) -> Unit {
                 e => abort("compile: " + e.to_string())
               }
               @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+                e => abort("compile: " + e.to_string())
+              }
+              println("wrote " + resolved_out)
+            }
+            CompileMode::Wit => {
+              // Generate WIT with default package/world names derived from filename
+              let basename = get_basename(entry)
+              let package_name = "local:" + basename
+              let world_name = basename
+              let wit_str = @xsh_lib.generate_module_wit(
+                db, entry, package_name, world_name,
+              ) catch {
+                e => abort("compile: " + e.to_string())
+              }
+              @os_fs.write_string_to_file(resolved_out, wit_str) catch {
                 e => abort("compile: " + e.to_string())
               }
               println("wrote " + resolved_out)
@@ -379,7 +402,15 @@ fn check_cmd(args : Array[String]) -> Unit {
     }
     let db = @xsh_lib.XshDb::new()
     db.set_source(path, source)
-    load_imports_for_check(db, path, source)
+    // Check for import cycles
+    match load_imports_for_check_with_cycle(db, path, source) {
+      Some(cycle_err) => {
+        println("check: \{entry_path}: \{cycle_err}")
+        total_errors += 1
+        continue
+      }
+      None => ()
+    }
     let _ = db.types(path)
     let diags = db.diagnostics(path)
     for diag in diags {
@@ -396,15 +427,17 @@ fn check_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn load_imports_for_check(
+fn load_imports_for_check_with_cycle(
   db : @xsh_lib.XshDb,
   path : String,
   source : String,
-) -> Unit {
-  let ast = @parser.parse_ast(source) catch { _ => return }
+) -> String? {
+  let ast = @parser.parse_ast(source) catch { _ => return None }
   let base = @xsh_fs.parent_path(path)
   let visited : Map[String, Bool] = {}
+  let stack : Array[String] = []
   visited[path] = true
+  stack.push(path)
   for stmt in ast.stmts {
     match stmt {
       @xsh_core.Stmt::Import(source~, ..) =>
@@ -415,46 +448,84 @@ fn load_imports_for_check(
             } else {
               @xsh_fs.normalize_path(base + "/" + import_path)
             }
-            load_import_recursive_for_check(db, resolved, visited)
-          }
-          @xsh_core.ModuleRef::Hash(..) => () // Hash references don't need recursive loading
-        }
-      _ => ()
-    }
-  }
-}
-
-///|
-fn load_import_recursive_for_check(
-  db : @xsh_lib.XshDb,
-  path : String,
-  visited : Map[String, Bool],
-) -> Unit {
-  if visited.contains(path) {
-    return
-  }
-  visited[path] = true
-  let source = @os_fs.read_file_to_string(path) catch { _ => return }
-  db.set_source(path, source)
-  let ast = @parser.parse_ast(source) catch { _ => return }
-  let base = @xsh_fs.parent_path(path)
-  for stmt in ast.stmts {
-    match stmt {
-      @xsh_core.Stmt::Import(source~, ..) =>
-        match source {
-          @xsh_core.ModuleRef::Path(path=import_path) => {
-            let resolved = if import_path.has_prefix("/") {
-              @xsh_fs.normalize_path(import_path)
-            } else {
-              @xsh_fs.normalize_path(base + "/" + import_path)
+            match
+              load_import_recursive_for_check_impl(db, resolved, visited, stack) {
+              Some(err) => return Some(err)
+              None => ()
             }
-            load_import_recursive_for_check(db, resolved, visited)
           }
           @xsh_core.ModuleRef::Hash(..) => ()
         }
       _ => ()
     }
   }
+  None
+}
+
+///|
+fn load_import_recursive_for_check_impl(
+  db : @xsh_lib.XshDb,
+  path : String,
+  visited : Map[String, Bool],
+  stack : Array[String],
+) -> String? {
+  // Check for cycle
+  for i, p in stack {
+    if p == path {
+      let cycle_path = StringBuilder::new()
+      for j = i; j < stack.length(); j = j + 1 {
+        cycle_path.write_string(stack[j])
+        cycle_path.write_string(" -> ")
+      }
+      cycle_path.write_string(path)
+      return Some("import cycle detected: " + cycle_path.to_string())
+    }
+  }
+  if visited.contains(path) {
+    return None
+  }
+  stack.push(path)
+  visited[path] = true
+  let source = @os_fs.read_file_to_string(path) catch {
+    _ => {
+      let _ = stack.pop()
+      return None
+    }
+  }
+  db.set_source(path, source)
+  let ast = @parser.parse_ast(source) catch {
+    _ => {
+      let _ = stack.pop()
+      return None
+    }
+  }
+  let base = @xsh_fs.parent_path(path)
+  for stmt in ast.stmts {
+    match stmt {
+      @xsh_core.Stmt::Import(source~, ..) =>
+        match source {
+          @xsh_core.ModuleRef::Path(path=import_path) => {
+            let resolved = if import_path.has_prefix("/") {
+              @xsh_fs.normalize_path(import_path)
+            } else {
+              @xsh_fs.normalize_path(base + "/" + import_path)
+            }
+            match
+              load_import_recursive_for_check_impl(db, resolved, visited, stack) {
+              Some(err) => {
+                let _ = stack.pop()
+                return Some(err)
+              }
+              None => ()
+            }
+          }
+          @xsh_core.ModuleRef::Hash(..) => ()
+        }
+      _ => ()
+    }
+  }
+  let _ = stack.pop()
+  None
 }
 
 ///|
@@ -1446,6 +1517,99 @@ fn repl_stdin_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
+/// WASM REPL: compile each expression to WASM and output to file
+fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
+  let mut prompt_enabled = true
+  let mut out_dir = "/tmp"
+  let mut counter = 0
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "--no-prompt" => {
+        prompt_enabled = false
+        i += 1
+      }
+      "-o" | "--out-dir" => {
+        if i + 1 >= args.length() {
+          abort("wasm-repl-stdin: missing output directory after " + arg)
+        }
+        out_dir = args[i + 1]
+        i += 2
+      }
+      _ => abort("wasm-repl-stdin: unknown arg " + arg)
+    }
+  }
+  // Ensure output directory exists
+  if not(@os_fs.path_exists(out_dir)) {
+    @os_fs.create_dir(out_dir) catch {
+      e =>
+        abort("wasm-repl-stdin: failed to create output dir: " + e.to_string())
+    }
+  }
+  async fn repl_loop() {
+    let prompt = "wasm> "
+    let input = @stdio.stdin
+    if prompt_enabled {
+      @stdio.stdout.write(prompt)
+    }
+    while input.read_until("\n") is Some(line) {
+      let trimmed = line.trim()
+      if trimmed.is_empty() {
+        if prompt_enabled {
+          @stdio.stdout.write(prompt)
+        }
+        continue
+      }
+      let line_str = trimmed.to_string()
+      match line_str {
+        ":q" | ":quit" | ":exit" | "exit" => break
+        _ => {
+          // Create a temporary source for compilation
+          let db = @xsh_lib.XshDb::new()
+          let tmp_path = "/tmp/wasm_repl_" + counter.to_string() + ".xsh"
+          db.set_source(tmp_path, line_str)
+          // Compile to WASM
+          let wasm_bytes = @xsh_lib.compile_module_wasm(db, tmp_path) catch {
+            e => {
+              println("error: " + e.to_string())
+              if prompt_enabled {
+                @stdio.stdout.write(prompt)
+              }
+              continue
+            }
+          }
+          // Write WASM to file
+          let out_path = out_dir + "/expr_" + counter.to_string() + ".wasm"
+          @os_fs.write_bytes_to_file(out_path, wasm_bytes) catch {
+            e => {
+              println("error writing file: " + e.to_string())
+              if prompt_enabled {
+                @stdio.stdout.write(prompt)
+              }
+              continue
+            }
+          }
+          println(
+            "wrote " +
+            out_path +
+            " (" +
+            wasm_bytes.length().to_string() +
+            " bytes)",
+          )
+          counter += 1
+        }
+      }
+      if prompt_enabled {
+        @stdio.stdout.write(prompt)
+      }
+    }
+  }
+
+  @async.run_async_main(repl_loop)
+}
+
+///|
 fn print_eval_result(result : @xsh_lib.EvalResult) -> Unit {
   match result.last {
     Some(value) => println("last: " + value.to_string())
@@ -1518,17 +1682,53 @@ fn load_sources_recursive(
   path : String,
   visited : Map[String, Bool],
 ) -> Result[Unit, String] {
+  // Use stack-based approach for cycle detection
+  let stack : Array[String] = []
+  load_sources_recursive_impl(db, path, visited, stack)
+}
+
+///|
+fn load_sources_recursive_impl(
+  db : @xsh_lib.XshDb,
+  path : String,
+  visited : Map[String, Bool],
+  stack : Array[String],
+) -> Result[Unit, String] {
   let norm = @xsh_fs.normalize_path(path)
+  // Check for cycle: if norm is already in current stack, we have a cycle
+  for i, p in stack {
+    if p == norm {
+      // Build cycle path for error message
+      let cycle_path = StringBuilder::new()
+      for j = i; j < stack.length(); j = j + 1 {
+        cycle_path.write_string(stack[j])
+        cycle_path.write_string(" -> ")
+      }
+      cycle_path.write_string(norm)
+      return Err("import cycle detected: " + cycle_path.to_string())
+    }
+  }
+  // If already visited (and not in stack), we've already processed this module
   if visited.contains(norm) {
     return Ok(())
   }
+  // Add to stack for cycle detection
+  stack.push(norm)
   visited.set(norm, true)
   let source = @os_fs.read_file_to_string(norm) catch {
-    e => return Err("io: " + e.to_string())
+    e => {
+      // Pop from stack before returning error
+      let _ = stack.pop()
+      return Err("io: " + e.to_string())
+    }
   }
   db.set_source(norm, source)
   let ast = @parser.parse_ast(source) catch {
-    e => return Err("parse: " + e.to_string())
+    e => {
+      // Pop from stack before returning error
+      let _ = stack.pop()
+      return Err("parse: " + e.to_string())
+    }
   }
   let base = @xsh_fs.parent_path(norm)
   for stmt in ast.stmts {
@@ -1537,9 +1737,13 @@ fn load_sources_recursive(
         match source {
           @xsh_core.ModuleRef::Path(path~) => {
             let resolved = resolve_import_path(base, path)
-            match load_sources_recursive(db, resolved, visited) {
+            match load_sources_recursive_impl(db, resolved, visited, stack) {
               Ok(_) => ()
-              Err(err) => return Err(err)
+              Err(err) => {
+                // Pop from stack before returning error
+                let _ = stack.pop()
+                return Err(err)
+              }
             }
           }
           @xsh_core.ModuleRef::Hash(..) => ()
@@ -1547,6 +1751,8 @@ fn load_sources_recursive(
       _ => ()
     }
   }
+  // Pop from stack after successful processing
+  let _ = stack.pop()
   Ok(())
 }
 
