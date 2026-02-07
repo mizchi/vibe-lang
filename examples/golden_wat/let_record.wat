@@ -40,14 +40,14 @@
     i32.const 3
     i32.and
     i32.sub
-    i32.load offset=8
+    i32.load offset=12
     local.set 3
     local.get 2
     local.get 2
     i32.const 3
     i32.and
     i32.sub
-    i32.load offset=12
+    i32.load offset=20
     local.set 4
     local.get 3
     local.get 4

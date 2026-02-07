@@ -103,6 +103,10 @@ test-golden-wat:
 test-golden-wat-update:
     scripts/test_golden_wat.sh --update
 
+# Test interpreter vs WASM output consistency
+test-interpreter-wasm:
+    scripts/test_interpreter_wasm_match.sh
+
 # Run wasmtime in x86_64 Linux container (for stack-switching support)
 wasmtime-x64 *args:
     container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\

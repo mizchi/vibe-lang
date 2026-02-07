@@ -4396,8 +4396,8 @@ fn compile_stmt(
                 ctx.local_types.push(ValueKind::I32)
                 ctx.locals[name] = local_idx
                 ctx.local_kinds[name] = ValueKind::I32
-                // Record field is at offset 8 + i * 4 (after type and len)
-                emit_load_tuple_elem(buf, record_local, i)
+                // Record value is at offset 8 + i * 8 + 4 (key-value pairs)
+                emit_load_record_value(buf, record_local, i)
                 if is_last && i == len - 1 {
                   emit_local_tee(buf, local_idx)
                 } else {
@@ -4406,12 +4406,12 @@ fn compile_stmt(
               }
               @core.Pat::Wildcard(..) =>
                 if is_last && i == len - 1 {
-                  emit_load_tuple_elem(buf, record_local, i)
+                  emit_load_record_value(buf, record_local, i)
                 }
               _ => {
                 // Nested pattern - load element and recursively destructure
                 let elem_local = alloc_temp_local(ctx)
-                emit_load_tuple_elem(buf, record_local, i)
+                emit_load_record_value(buf, record_local, i)
                 emit_local_set(buf, elem_local)
                 compile_let_pat_nested(ctx, buf, field.pat, elem_local)
               }
@@ -6120,6 +6120,13 @@ fn emit_load_tuple_elem(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
 fn emit_load_tuple_elem_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
   emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 8 + index * 4)
+}
+
+///|
+/// Load record value (for let destructuring)
+fn emit_load_record_value(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
+  emit_untag_ptr(buf, scrut_idx)
+  emit_i32_load(buf, 8 + index * 8 + 4)
 }
 
 ///|
