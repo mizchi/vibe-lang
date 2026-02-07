@@ -3116,6 +3116,18 @@ fn AstParser::parse_call_or_primary(
     self.skip_trivia()
     if self.peek_kind() == dot() {
       let _ = self.bump()
+      self.skip_trivia()
+      // Check for tuple index access: expr.0, expr.1, etc.
+      if self.peek_kind() == int_lit() {
+        let index_tok = self.bump()
+        let index = @strconv.parse_int(index_tok.text()) catch {
+          // This shouldn't happen for valid int literals
+          _ => 0
+        }
+        let span = self.span_from(start)
+        expr = @core.Expr::TupleIndex(expr~, index~, span~)
+        continue
+      }
       let method_tok = self.expect(name(), "method name")
       self.skip_trivia()
       if self.peek_kind() == lparen() {

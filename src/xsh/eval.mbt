@@ -384,6 +384,19 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Tuple(values), effects }
     }
+    @core.Expr::TupleIndex(expr~, index~, span~) => {
+      let _ = span
+      let out = eval_expr(rt, expr)
+      match out.value {
+        @core.Value::Tuple(values) =>
+          if index >= 0 && index < values.length() {
+            { value: values[index], effects: out.effects }
+          } else {
+            raise EvalError::BadCall("tuple index \{index} out of bounds")
+          }
+        _ => raise EvalError::BadCall("expected tuple for index access")
+      }
+    }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let map : Map[String, @core.Value] = {}

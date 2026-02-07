@@ -1,0 +1,7 @@
+// Unbound variable in closure
+let f = () -> Int {
+  x + 1
+}
+
+__DATA__
+{"error_contains": "UnknownName"}

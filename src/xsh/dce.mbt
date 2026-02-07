@@ -294,6 +294,7 @@ fn collect_refs_expr(
         collect_refs_expr(item, bound, refs)
       }
     }
+    @core.Expr::TupleIndex(expr~, ..) => collect_refs_expr(expr, bound, refs)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       for field in fields {

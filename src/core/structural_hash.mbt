@@ -168,6 +168,12 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       }
       h
     }
+    Expr::TupleIndex(expr~, index~, ..) => {
+      let mut h = 0x54706978 // "Tpix"
+      h = combine_hash(h, expr.structural_hash())
+      h = combine_hash(h, index)
+      h
+    }
     Expr::Record(fields~, ..) => {
       let mut h = 0x5265636f // "Reco"
       for f in fields {

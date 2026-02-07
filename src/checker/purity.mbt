@@ -129,6 +129,7 @@ fn purity_expr_inner(
       let _ = span
       purity_all(env, items, locals)
     }
+    @core.Expr::TupleIndex(expr~, ..) => purity_expr_inner(env, expr, locals)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let mut ok = true

@@ -121,6 +121,11 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Expr::TupleIndex(expr~, index~, span~) => {
+      let _ = span
+      "(tuple-index " + expr_to_addr_sexp(ctx, expr) + " " + index.to_string() +
+      ")"
+    }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let ordered = addr_sort_record_fields_expr(fields)

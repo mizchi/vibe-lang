@@ -259,6 +259,7 @@ fn collect_dep_expr(
         collect_dep_expr(item, bound, out)
       }
     }
+    @core.Expr::TupleIndex(expr~, ..) => collect_dep_expr(expr, bound, out)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       for field in fields {

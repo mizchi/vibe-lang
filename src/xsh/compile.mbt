@@ -631,6 +631,11 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Expr::TupleIndex(expr~, index~, span~) => {
+      let _ = span
+      "(tuple-index " + expr_to_sexp(expr, aliases) + " " + index.to_string() +
+      ")"
+    }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let buf = StringBuilder::new()

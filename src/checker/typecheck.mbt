@@ -1821,6 +1821,28 @@ fn type_expr_eff(
       }
       @core.Type::Tuple(tys)
     }
+    @core.Expr::TupleIndex(expr~, index~, span~) => {
+      let tuple_ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+      let resolved = resolve_type(env, tuple_ty)
+      match resolved {
+        @core.Type::Tuple(items) =>
+          if index < 0 || index >= items.length() {
+            raise TypeError::BadCall(
+              message="tuple index \{index} out of bounds (length \{items.length()})",
+              span~,
+            )
+          } else {
+            items[index]
+          }
+        _ =>
+          raise TypeError::Mismatch(
+            expected=@core.Type::Tuple([]),
+            actual=resolved,
+            span~,
+            context=Some("tuple index"),
+          )
+      }
+    }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let map : Map[String, @core.Type] = {}
@@ -4434,6 +4456,7 @@ fn is_non_expansive_expr(
       }
       ok
     }
+    @core.Expr::TupleIndex(expr~, ..) => is_non_expansive_expr(env, expr, aliases)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let mut ok = true

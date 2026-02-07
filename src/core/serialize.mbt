@@ -236,6 +236,13 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_exprs_to(items, buf)
       buf.write_char('}')
     }
+    Expr::TupleIndex(expr~, index~, ..) => {
+      buf.write_string("{\"TupleIndex\":{\"expr\":")
+      serialize_expr_to(expr, buf)
+      buf.write_string(",\"index\":")
+      buf.write_string(index.to_string())
+      buf.write_string("}}")
+    }
     Expr::Array(items~, ..) => {
       buf.write_string("{\"Array\":")
       serialize_exprs_to(items, buf)

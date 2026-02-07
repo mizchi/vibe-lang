@@ -207,6 +207,12 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
         let items = parse_exprs(value)
         return Expr::Tuple(items~, span=zero)
       }
+      "TupleIndex" => {
+        let inner = expect_object(value)
+        let expr = parse_expr(get_field(inner, "expr"))
+        let index = expect_int(get_field(inner, "index"))
+        return Expr::TupleIndex(expr~, index~, span=zero)
+      }
       "Array" => {
         let items = parse_exprs(value)
         return Expr::Array(items~, span=zero)

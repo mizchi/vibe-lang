@@ -142,6 +142,7 @@ pub(all) enum Expr {
     span~ : Span
   )
   Tuple(items~ : Array[Expr], span~ : Span)
+  TupleIndex(expr~ : Expr, index~ : Int, span~ : Span)
   Record(fields~ : Array[RecordFieldExpr], span~ : Span)
   Array(items~ : Array[Expr], span~ : Span)
   Map(fields~ : Array[MapFieldExpr], span~ : Span)
@@ -197,6 +198,7 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Placeholder(span~, ..)
     | Expr::Call(span~, ..)
     | Expr::Tuple(span~, ..)
+    | Expr::TupleIndex(span~, ..)
     | Expr::Record(span~, ..)
     | Expr::Array(span~, ..)
     | Expr::Map(span~, ..)

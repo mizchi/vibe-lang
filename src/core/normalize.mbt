@@ -207,6 +207,8 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
       )
     Expr::Tuple(items~, ..) =>
       Expr::Tuple(items=normalize_exprs(items, scope), span=zero_span)
+    Expr::TupleIndex(expr~, index~, ..) =>
+      Expr::TupleIndex(expr=normalize_expr(expr, scope), index~, span=zero_span)
     Expr::Array(items~, ..) =>
       Expr::Array(items=normalize_exprs(items, scope), span=zero_span)
     Expr::Record(fields~, ..) =>

@@ -475,6 +475,8 @@ fn collect_captures_expr(
         collect_captures_expr(item, bound, outer_bound, captures, seen)
       }
     }
+    @core.Expr::TupleIndex(expr~, ..) =>
+      collect_captures_expr(expr, bound, outer_bound, captures, seen)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       for field in fields {
@@ -663,6 +665,7 @@ fn collect_nested_funcs_expr(
         collect_nested_funcs_expr(item, bound, funcs)
       }
     }
+    @core.Expr::TupleIndex(expr~, ..) => collect_nested_funcs_expr(expr, bound, funcs)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       for field in fields {
@@ -1592,6 +1595,12 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I32
     }
+    @core.Expr::TupleIndex(expr~, index~, span~) => {
+      let _ = expr
+      let _ = index
+      let _ = span
+      ValueKind::I32
+    }
     @core.Expr::Record(fields~, span~) => {
       let _ = fields
       let _ = span
@@ -1908,6 +1917,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         scan_needs_expr(ctx, item)
       }
     }
+    @core.Expr::TupleIndex(expr~, ..) => {
+      ctx.need_heap = true
+      scan_needs_expr(ctx, expr)
+    }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       ctx.need_heap = true
@@ -2130,6 +2143,7 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         scan_strings_expr(ctx, item)
       }
     }
+    @core.Expr::TupleIndex(expr~, ..) => scan_strings_expr(ctx, expr)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let ordered = sort_record_fields_expr(fields)
@@ -2372,6 +2386,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
     @core.Expr::Float(..) => true
     @core.Expr::Double(..) => true
     @core.Expr::Tuple(..) => true
+    @core.Expr::TupleIndex(..) => true
     @core.Expr::Record(..) => true
     @core.Expr::Array(..) => true
     @core.Expr::Map(..) => true
@@ -3780,6 +3795,14 @@ fn compile_expr(
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
       compile_tuple_expr(ctx, buf, items)
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) => {
+      let _ = span
+      // Compile the tuple expression (puts tuple pointer on stack)
+      compile_expr(ctx, buf, expr)
+      // Load element at index: tuple layout is [type_tag:4][len:4][elem0:4][elem1:4]...
+      // So element i is at offset 8 + i * 4
+      emit_i32_load(buf, 8 + index * 4)
     }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
