@@ -6,11 +6,12 @@ This directory is an attempt to self-host xsh by porting parts of the MoonBit co
 
 | Module | Test Count | Description |
 |--------|-----------:|-------------|
-| `option.xsh` | 8 | Option helpers (`is_some`, `unwrap_or`, `map`, `flatmap`, `filter`) |
+| `trait_api.xsh` | 6 | Trait-oriented generic API (`Eq`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
+| `option.xsh` | 8 | Generic Option helpers (`option_map`, `option_flatmap`, `option_zip`, `option_equals`) |
 | `int.xsh` | 11 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
 | `float.xsh` | 7 | Float helpers (`abs`, `signum`, `clamp`, `square`, `lerp`) |
 | `double.xsh` | 10 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
-| `list.xsh` | 11 | Cons list helpers (`map`, `fold`, `filter`, `reverse`, `append`, `take`, `drop`) |
+| `list.xsh` | 13 | Generic Cons list helpers (`List[T]`, `map`, `fold`, `filter`, `append`, `contains_by`) |
 | `bool.xsh` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
 | `string.xsh` | 10 | String helpers (`head`, `tail`, `take`, `drop`, `repeat`, `pad`, `contains`, `replace`) |
 | `io.xsh` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
@@ -18,71 +19,74 @@ This directory is an attempt to self-host xsh by porting parts of the MoonBit co
 | `wasm/opcodes.xsh` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
 | `wasm/io_stream.xsh` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
-**Total: 83 tests**
+**Total: 91 tests**
 
-## Language Gaps Found During Porting
+## Trait-oriented API Surface
 
-During porting, the following language limitations became visible:
+`trait_api.xsh` provides the canonical trait-first API:
 
-### 1. Generic limitations
-- `Option[Int]` and `Option[(Int, Int)]` are distinct types, but cannot currently be handled by one shared function in all cases.
-- There is no full parametric polymorphism flow yet, so some functions must still be duplicated per type.
+- `cmp_eq`, `cmp_ne` for equality (`T: Eq`)
+- `ord_min`, `ord_max`, `ord_clamp`, `ord_between` for ordering (`T: Ord`)
+- `num_add`, `num_sub`, `num_mul`, `num_div`, `num_abs`, `num_square`, `num_clamp`
 
-**Desired style**
-```xsh
-let option_zip = [A, B](a: Option[A], b: Option[B]) -> Option[(A, B)] { ... }
-```
+`option.xsh` now uses generic signatures:
 
-**Current workaround**
-```xsh
-// define per-type variants
-let option_zip_int = (a: Option[Int], b: Option[Int]) -> Option[Int] { ... }
-```
+- `option_is_some`, `option_is_none`, `option_unwrap_or`
+- `option_map`, `option_flatten`, `option_flatmap`, `option_filter`
+- `option_zip`, `option_equals`
+- Compatibility aliases (`is_some`, `is_none`, `unwrap_or`) are kept.
+
+## Current Language Gaps Found During Porting
+
+### 1. Trait import/export across modules
+
+- Trait definitions and impls are currently most reliable when kept in the same module where they are used.
+- A trait-bounded function imported from another module can require the caller module to re-declare the same trait name.
+- Because of this, `trait_api.xsh` is intentionally self-contained for now.
+
+### 1.5 Polymorphic recursion
+
+- Basic `let rec [T] ...` recursion is supported.
+- Calling the same recursive function at *different* type instantiations inside one body (true polymorphic recursion) is still unsupported.
 
 ### 2. Large negative integer literals
+
 - `-2147483648` can fail to parse (`2147483648` exceeds Int range).
 - Workaround: `0 - 2147483647 - 1`.
 
 ### 3. `loop` expression (unverified)
+
 - MoonBit-style `loop` expression (tail-recursive optimization syntax) is not available.
 - Use `let rec` + pattern matching instead.
 
 ### 4. Mutable tail fields (in-place list updates)
+
 - MoonBit-style mutable fields like `More(_, tail~)` are not available.
 - Use pure recursive reconstruction instead (less efficient).
 
 ## Desired Features (Priority Order)
 
 ### Phase 1: Basic language features
+
 1. **Bitwise operators** (`>>`, `<<`, `&`, `|`, `^`) - already planned
 2. **`loop` expression** - tail recursion optimization
 
 ### Phase 2: Generic improvements
-3. **Type parameters** - `fn[A](x: A) -> A` style
-4. **Trait bounds** - `fn[A: Show](x: A) -> String`
+
+3. **Cross-module trait import/export** - make trait-bounded APIs reusable across module boundaries
+4. **Typeclass-style trait methods** - trait contracts with member APIs
 
 ### Phase 3: Data structure improvements
+
 5. **Mutable fields** - `enum List { Cons(Int, mut tail: List) }`
 6. **Array builtin expansion** - `iter`, `zip`, `flatmap`
-
-## Next Porting Candidates
-
-Candidates that are possible with current language features:
-- `string.xsh` - string utility helpers
-- `tuple.xsh` - tuple helpers
-- `result.xsh` - Result type helpers (already representable with `enum`)
-- `math.xsh` - math helpers (Float/Double variants)
-
-Candidates after stronger generics:
-- `array.xsh` - typed higher-order array helpers
-- `hashmap.xsh` - hash map
-- `set.xsh` - set
 
 ## Running Tests
 
 ```bash
 # Run in interpreter
 just run test \
+  examples/std/trait_api.xsh \
   examples/std/bool.xsh \
   examples/std/int.xsh \
   examples/std/float.xsh \

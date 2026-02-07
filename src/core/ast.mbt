@@ -102,7 +102,13 @@ pub(all) enum Stmt {
     target~ : Type,
     span~ : Span
   )
-  TraitDef(name~ : String, span~ : Span)
+  TraitDef(
+    name~ : String,
+    supertraits~ : Array[String],
+    open_impl~ : Bool,
+    exported~ : Bool,
+    span~ : Span
+  )
   TraitImpl(
     type_params~ : Array[String],
     type_bounds~ : Map[String, Array[String]],

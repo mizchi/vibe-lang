@@ -268,6 +268,13 @@ pub fn extract_exports(ast : Module) -> Map[String, Stmt] {
       Stmt::Let(name~, ..) | Stmt::LetMut(name~, ..) => defined.set(name, stmt)
       Stmt::EnumDef(name~, ..) => defined.set(name, stmt)
       Stmt::TypeAlias(name~, ..) => defined.set(name, stmt)
+      Stmt::TraitDef(name~, exported~, ..) =>
+        if exported {
+          defined.set(name, stmt)
+          exports.set(name, stmt)
+        } else {
+          defined.set(name, stmt)
+        }
       Stmt::ExportLet(name~, ..) => {
         defined.set(name, stmt)
         exports.set(name, stmt)

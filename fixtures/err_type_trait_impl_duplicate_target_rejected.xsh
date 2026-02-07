@@ -1,0 +1,6 @@
+trait Eq
+impl Eq for Int
+impl Eq for Int
+
+__DATA__
+{"error_contains":"overlapping impl: Eq"}

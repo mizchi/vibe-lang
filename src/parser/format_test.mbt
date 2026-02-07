@@ -142,3 +142,13 @@ test "xsh format keeps declaration braces and return type blocks" {
     #|}
   inspect(format_script(input), content=expected)
 }
+
+///|
+test "xsh format derive declarations is idempotent" {
+  let input =
+    #|struct Point { x : Int; y : Int } derive(Eq)
+    #|enum Token { A, B } derive(Eq, Ord)
+  let once = format_script(input)
+  let twice = format_script(once)
+  inspect(twice, content=once)
+}

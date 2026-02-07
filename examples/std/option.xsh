@@ -1,107 +1,135 @@
-// Option utilities - ported from MoonBit core/option
+// Option utilities - trait/generic-oriented std API
 
-// Check if Option is Some
-let is_some = (opt: Option[Int]) -> Bool {
+trait Eq
+impl Eq for Int
+impl Eq for Float
+impl Eq for Double
+impl Eq for Bool
+impl Eq for String
+impl [T: Eq] Eq for Option[T]
+
+let option_is_some = [T](opt: Option[T]) -> Bool {
   match opt { Some(_) => true, _ => false }
 }
 
-// Check if Option is None
-let is_none = (opt: Option[Int]) -> Bool {
-  match opt { None => true, _ => false }
+let option_is_none = [T](opt: Option[T]) -> Bool {
+  not(option_is_some(opt))
 }
 
-// Unwrap with default value
-let unwrap_or = (opt: Option[Int], default: Int) -> Int {
+let option_unwrap_or = [T](opt: Option[T], default: T) -> T {
   match opt { Some(v) => v, _ => default }
 }
 
-// Map over Option
-let option_map = (opt: Option[Int], f: (x: Int) -> Int) -> Option[Int] {
+let option_map = [A, B](opt: Option[A], f: (x: A) -> B) -> Option[B] {
   match opt { Some(v) => Some(f(v)), _ => None }
 }
 
-// Flatten Option[Option[Int]] to Option[Int]
-let option_flatten = (opt: Option[Option[Int]]) -> Option[Int] {
+let option_flatten = [T](opt: Option[Option[T]]) -> Option[T] {
   match opt { Some(inner) => inner, _ => None }
 }
 
-// FlatMap (bind) for Option
-let option_flatmap = (opt: Option[Int], f: (x: Int) -> Option[Int]) -> Option[Int] {
+let option_flatmap = [A, B](opt: Option[A], f: (x: A) -> Option[B]) -> Option[B] {
   match opt { Some(v) => f(v), _ => None }
 }
 
-// Filter Option by predicate
-let option_filter = (opt: Option[Int], pred: (x: Int) -> Bool) -> Option[Int] {
+let option_filter = [T](opt: Option[T], pred: (x: T) -> Bool) -> Option[T] {
   match opt {
     Some(v) => if pred(v) { Some(v) } else { None },
     _ => None
   }
 }
 
-// Zip two Options - returns sum if both Some, else None
-// (Note: true zip returning tuple needs better generics support)
-let option_zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
+let option_zip = [A, B](a: Option[A], b: Option[B]) -> Option[(A, B)] {
   match (a, b) {
-    (Some(x), Some(y)) => Some(x + y),
+    (Some(x), Some(y)) => Some((x, y)),
     _ => None
   }
 }
 
-// Tests
-test "is_some" {
-  assert(is_some(Some(42)))
-  assert(not(is_some(None)))
+let option_equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y,
+    (None, None) => true,
+    _ => false
+  }
 }
 
-test "is_none" {
-  assert(is_none(None))
-  assert(not(is_none(Some(1))))
+// Compatibility helpers kept for old examples
+let is_some = [T](opt: Option[T]) -> Bool { option_is_some(opt) }
+let is_none = [T](opt: Option[T]) -> Bool { option_is_none(opt) }
+let unwrap_or = [T](opt: Option[T], default: T) -> T { option_unwrap_or(opt, default) }
+
+let option_zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
+  match option_zip(a, b) {
+    Some((x, y)) => Some(x + y),
+    _ => None
+  }
 }
 
-test "unwrap_or" {
-  assert(eq(unwrap_or(Some(10), 0), 10))
-  assert(eq(unwrap_or(None, 99), 99))
+test "option_is_some_none" {
+  assert(option_is_some(Some(42)))
+  assert(option_is_none(None))
 }
 
-test "option_map" {
+test "option_unwrap_or_generic" {
+  assert(eq(option_unwrap_or(Some(10), 0), 10))
+  assert(eq(option_unwrap_or(None, 99), 99))
+  assert(string_equals(option_unwrap_or(Some("ok"), "ng"), "ok"))
+}
+
+test "option_map_generic" {
   let doubled = option_map(Some(5), (x: Int) -> Int { x * 2 })
-  assert(eq(unwrap_or(doubled, 0), 10))
+  assert(eq(option_unwrap_or(doubled, 0), 10))
 
-  let none_mapped = option_map(None, (x: Int) -> Int { x * 2 })
-  assert(is_none(none_mapped))
+  let lengths = option_map(Some("xyz"), (s: String) -> Int { string_length(s) })
+  assert(eq(option_unwrap_or(lengths, 0), 3))
 }
 
-test "option_flatten" {
-  assert(eq(unwrap_or(option_flatten(Some(Some(42))), 0), 42))
-  assert(is_none(option_flatten(Some(None))))
-  assert(is_none(option_flatten(None)))
-}
+test "option_flatten_flatmap" {
+  assert(eq(option_unwrap_or(option_flatten(Some(Some(42))), 0), 42))
+  assert(option_is_none(option_flatten(Some(None))))
 
-test "option_flatmap" {
   let safe_div = (x: Int) -> Option[Int] {
     if x == 0 { None } else { Some(100 / x) }
   }
-  assert(eq(unwrap_or(option_flatmap(Some(5), safe_div), 0), 20))
-  assert(is_none(option_flatmap(Some(0), safe_div)))
-  assert(is_none(option_flatmap(None, safe_div)))
+  assert(eq(option_unwrap_or(option_flatmap(Some(5), safe_div), 0), 20))
+  assert(option_is_none(option_flatmap(Some(0), safe_div)))
 }
 
 test "option_filter" {
   let is_even = (x: Int) -> Bool { x % 2 == 0 }
-  assert(eq(unwrap_or(option_filter(Some(4), is_even), 0), 4))
-  assert(is_none(option_filter(Some(3), is_even)))
-  assert(is_none(option_filter(None, is_even)))
+  assert(eq(option_unwrap_or(option_filter(Some(4), is_even), 0), 4))
+  assert(option_is_none(option_filter(Some(3), is_even)))
+  assert(option_is_none(option_filter(None, is_even)))
 }
 
-test "option_zip_sum" {
+test "option_zip" {
+  match option_zip(Some(1), Some("ok")) {
+    Some((n, s)) => {
+      assert(eq(n, 1))
+      assert(string_equals(s, "ok"))
+    },
+    _ => assert(false)
+  }
+  assert(option_is_none(option_zip(None, Some(1))))
+}
+
+test "option_equals" {
+  assert(option_equals(Some(1), Some(1)))
+  assert(not(option_equals(Some(1), Some(2))))
+  assert(option_equals(None, None))
+}
+
+test "option_zip_sum_compat" {
   let zipped = option_zip_sum(Some(1), Some(2))
-  assert(eq(unwrap_or(zipped, 0), 3))
-  assert(is_none(option_zip_sum(None, Some(1))))
-  assert(is_none(option_zip_sum(Some(1), None)))
+  assert(eq(option_unwrap_or(zipped, 0), 3))
+  assert(option_is_none(option_zip_sum(None, Some(1))))
 }
 
-// Export all public functions
 export {
-  is_some, is_none, unwrap_or, option_map, option_flatten,
-  option_flatmap, option_filter, option_zip_sum
+  Eq,
+  option_is_some, option_is_none, option_unwrap_or,
+  option_map, option_flatten, option_flatmap, option_filter,
+  option_zip, option_equals, option_zip_sum,
+  is_some, is_none, unwrap_or
 }

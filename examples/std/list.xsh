@@ -1,35 +1,34 @@
-// List - Cons list implementation for xsh
-// Ported from MoonBit core/list
+// List - generic std API
+// Ported from MoonBit core/list with xsh type-system constraints.
 
-// Define List type as enum
-enum List { Nil, Cons(Int, List) }
+enum List[T] { Nil, Cons(T, List[T]) }
 
 // Create empty list
-let list_empty = () -> List { Nil }
+let list_empty = [T]() -> List[T] { Nil }
 
 // Create single-element list
-let list_singleton = (x: Int) -> List { Cons(x, Nil) }
+let list_singleton = [T](x: T) -> List[T] { Cons(x, Nil) }
 
 // Prepend element (cons)
-let list_cons = (x: Int, xs: List) -> List { Cons(x, xs) }
+let list_cons = [T](x: T, xs: List[T]) -> List[T] { Cons(x, xs) }
 
 // Check if list is empty
-let list_is_empty = (xs: List) -> Bool {
+let list_is_empty = [T](xs: List[T]) -> Bool {
   match xs { Nil => true, _ => false }
 }
 
 // Get head of list (returns Option)
-let list_head = (xs: List) -> Option[Int] {
+let list_head = [T](xs: List[T]) -> Option[T] {
   match xs { Cons(h, _) => Some(h), _ => None }
 }
 
 // Get tail of list
-let list_tail = (xs: List) -> List {
+let list_tail = [T](xs: List[T]) -> List[T] {
   match xs { Cons(_, t) => t, _ => Nil }
 }
 
 // Get length of list
-let rec list_length = (xs: List) -> Int {
+let rec list_length = [T](xs: List[T]) -> Int {
   match xs {
     Nil => 0,
     Cons(_, t) => 1 + list_length(t)
@@ -37,8 +36,8 @@ let rec list_length = (xs: List) -> Int {
 }
 
 // Reverse list
-let list_reverse = (xs: List) -> List {
-  let rec go = (acc: List, rest: List) -> List {
+let list_reverse = [T](xs: List[T]) -> List[T] {
+  let rec go = (acc: List[T], rest: List[T]) -> List[T] {
     match rest {
       Nil => acc,
       Cons(h, t) => go(Cons(h, acc), t)
@@ -48,8 +47,8 @@ let list_reverse = (xs: List) -> List {
 }
 
 // Map over list
-let list_map = (f: (x: Int) -> Int, xs: List) -> List {
-  let rec go = (acc: List, rest: List) -> List {
+let list_map = [A, B](f: (x: A) -> B, xs: List[A]) -> List[B] {
+  let rec go = (acc: List[B], rest: List[A]) -> List[B] {
     match rest {
       Nil => acc,
       Cons(h, t) => go(Cons(f(h), acc), t)
@@ -59,8 +58,8 @@ let list_map = (f: (x: Int) -> Int, xs: List) -> List {
 }
 
 // Fold left
-let list_fold = (f: (acc: Int, x: Int) -> Int, init: Int, xs: List) -> Int {
-  let rec go = (acc: Int, rest: List) -> Int {
+let list_fold = [A, B](f: (acc: B, x: A) -> B, init: B, xs: List[A]) -> B {
+  let rec go = (acc: B, rest: List[A]) -> B {
     match rest {
       Nil => acc,
       Cons(h, t) => go(f(acc, h), t)
@@ -69,14 +68,9 @@ let list_fold = (f: (acc: Int, x: Int) -> Int, init: Int, xs: List) -> Int {
   go(init, xs)
 }
 
-// Sum of list
-let list_sum = (xs: List) -> Int {
-  list_fold((acc: Int, x: Int) -> Int { acc + x }, 0, xs)
-}
-
 // Filter list
-let list_filter = (pred: (x: Int) -> Bool, xs: List) -> List {
-  let rec go = (acc: List, rest: List) -> List {
+let list_filter = [T](pred: (x: T) -> Bool, xs: List[T]) -> List[T] {
+  let rec go = (acc: List[T], rest: List[T]) -> List[T] {
     match rest {
       Nil => acc,
       Cons(h, t) =>
@@ -88,8 +82,8 @@ let list_filter = (pred: (x: Int) -> Bool, xs: List) -> List {
 }
 
 // Append two lists
-let list_append = (xs: List, ys: List) -> List {
-  let rec go = (acc: List, rest: List) -> List {
+let list_append = [T](xs: List[T], ys: List[T]) -> List[T] {
+  let rec go = (acc: List[T], rest: List[T]) -> List[T] {
     match rest {
       Nil => acc,
       Cons(h, t) => go(Cons(h, acc), t)
@@ -99,7 +93,7 @@ let list_append = (xs: List, ys: List) -> List {
 }
 
 // Nth element (0-indexed)
-let rec list_nth = (xs: List, n: Int) -> Option[Int] {
+let rec list_nth = [T](xs: List[T], n: Int) -> Option[T] {
   match xs {
     Nil => None,
     Cons(h, t) => if n == 0 { Some(h) } else { list_nth(t, n - 1) }
@@ -107,8 +101,8 @@ let rec list_nth = (xs: List, n: Int) -> Option[Int] {
 }
 
 // Take first n elements
-let list_take = (n: Int, xs: List) -> List {
-  let rec go = (acc: List, rest: List, count: Int) -> List {
+let list_take = [T](n: Int, xs: List[T]) -> List[T] {
+  let rec go = (acc: List[T], rest: List[T], count: Int) -> List[T] {
     if count <= 0 { acc }
     else {
       match rest {
@@ -121,7 +115,7 @@ let list_take = (n: Int, xs: List) -> List {
 }
 
 // Drop first n elements
-let rec list_drop = (n: Int, xs: List) -> List {
+let rec list_drop = [T](n: Int, xs: List[T]) -> List[T] {
   if n <= 0 { xs }
   else {
     match xs {
@@ -131,12 +125,29 @@ let rec list_drop = (n: Int, xs: List) -> List {
   }
 }
 
+// Membership with explicit comparator
+let rec list_contains_by = [T](
+  eq: (a: T, b: T) -> Bool,
+  value: T,
+  xs: List[T],
+) -> Bool {
+  match xs {
+    Nil => false,
+    Cons(h, t) => if eq(h, value) { true } else { list_contains_by(eq, value, t) }
+  }
+}
+
+// Int-specialized helper kept for convenience
+let list_sum = (xs: List[Int]) -> Int {
+  list_fold((acc: Int, x: Int) -> Int { acc + x }, 0, xs)
+}
+
 // Helper to create list from values
-let list_of3 = (a: Int, b: Int, c: Int) -> List {
+let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
   Cons(a, Cons(b, Cons(c, Nil)))
 }
 
-let list_of5 = (a: Int, b: Int, c: Int, d: Int, e: Int) -> List {
+let list_of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
   Cons(a, Cons(b, Cons(c, Cons(d, Cons(e, Nil)))))
 }
 
@@ -174,6 +185,12 @@ test "list_map" {
   let xs = list_of3(1, 2, 3)
   let doubled = list_map((x: Int) -> Int { x * 2 }, xs)
   assert(eq(list_sum(doubled), 12))
+}
+
+test "list_map_generic" {
+  let xs = list_of3("a", "bb", "ccc")
+  let lengths = list_map((s: String) -> Int { string_length(s) }, xs)
+  assert(eq(list_sum(lengths), 6))
 }
 
 test "list_fold" {
@@ -222,10 +239,17 @@ test "list_drop" {
   assert(eq(list_sum(dropped), 12))
 }
 
+test "list_contains_by" {
+  let xs = list_of3("a", "bb", "ccc")
+  let eq_string = (a: String, b: String) -> Bool { string_equals(a, b) }
+  assert(list_contains_by(eq_string, "bb", xs))
+  assert(not(list_contains_by(eq_string, "z", xs)))
+}
+
 // Export all public functions and types
 export {
   List, list_empty, list_singleton, list_cons, list_is_empty,
   list_head, list_tail, list_length, list_reverse, list_map,
   list_fold, list_sum, list_filter, list_append, list_nth,
-  list_take, list_drop, list_of3, list_of5
+  list_take, list_drop, list_contains_by, list_of3, list_of5
 }

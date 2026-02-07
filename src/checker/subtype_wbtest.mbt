@@ -25,6 +25,20 @@ fn fn_param(name : String, ty : @core.Type) -> @core.FuncParam {
 }
 
 ///|
+fn fn_param_with_bounds(
+  name : String,
+  ty : @core.Type,
+  bounds : Array[String],
+) -> @core.FuncParam {
+  @core.FuncParam::{
+    name,
+    label: @core.ParamLabel::Positional,
+    ty,
+    bounds: bounds.copy(),
+  }
+}
+
+///|
 test "trait subtype basic" {
   let script =
     #|trait Eq
@@ -49,6 +63,19 @@ test "trait subtype generic impl" {
   assert_false(
     is_type_subtype(env, @core.Type::Array(@core.Type::String), trait_ty),
   )
+}
+
+///|
+test "trait subtype supertrait relation" {
+  let script =
+    #|trait Eq
+    #|trait Ord: Eq
+    #|impl Ord for Int
+  let env = parse_and_check(script)
+  let eq_ty = @core.Type::Named(name="Eq", args=[])
+  let ord_ty = @core.Type::Named(name="Ord", args=[])
+  assert_true(is_type_subtype(env, @core.Type::Int, ord_ty))
+  assert_true(is_type_subtype(env, @core.Type::Int, eq_ty))
 }
 
 ///|
@@ -88,6 +115,97 @@ test "api version bump uses subtype relation" {
   assert_eq(
     classify_function_api_change(env, old_ty, breaking_ty),
     ApiVersionBump::Major,
+  )
+}
+
+///|
+test "api version bump is major when parameter bound is tightened" {
+  let old_ty = @core.Type::Func(
+    params=[fn_param_with_bounds("x", @core.Type::Int, ["Eq"])],
+    ret=@core.Type::Int,
+    effects=[],
+  )
+  let new_ty = @core.Type::Func(
+    params=[fn_param_with_bounds("x", @core.Type::Int, ["Eq", "Show"])],
+    ret=@core.Type::Int,
+    effects=[],
+  )
+  let env = TypeEnv::new()
+  assert_eq(
+    classify_function_api_change(env, old_ty, new_ty),
+    ApiVersionBump::Major,
+  )
+}
+
+///|
+test "api version bump is minor when parameter bound is loosened" {
+  let old_ty = @core.Type::Func(
+    params=[fn_param_with_bounds("x", @core.Type::Int, ["Eq", "Show"])],
+    ret=@core.Type::Int,
+    effects=[],
+  )
+  let new_ty = @core.Type::Func(
+    params=[fn_param_with_bounds("x", @core.Type::Int, ["Eq"])],
+    ret=@core.Type::Int,
+    effects=[],
+  )
+  let env = TypeEnv::new()
+  assert_eq(
+    classify_function_api_change(env, old_ty, new_ty),
+    ApiVersionBump::Minor,
+  )
+}
+
+///|
+test "api version bump treats supertrait bound as looser" {
+  let script =
+    #|trait Eq
+    #|trait Ord: Eq
+  let env = parse_and_check(script)
+  let old_ty = @core.Type::Func(
+    params=[fn_param_with_bounds("x", @core.Type::Int, ["Ord"])],
+    ret=@core.Type::Int,
+    effects=[],
+  )
+  let new_ty = @core.Type::Func(
+    params=[fn_param_with_bounds("x", @core.Type::Int, ["Eq"])],
+    ret=@core.Type::Int,
+    effects=[],
+  )
+  assert_eq(
+    classify_function_api_change(env, old_ty, new_ty),
+    ApiVersionBump::Minor,
+  )
+}
+
+///|
+test "fn metadata version reflects generic parameter bound changes" {
+  let env = TypeEnv::new()
+  let base_script =
+    #|trait Eq
+    #|trait Show
+    #|impl Eq for Int
+    #|impl Show for Int
+    #|let f = [T: Eq](x: T) -> Bool { x == x }
+  let base_ast = parse_module(base_script)
+  let env1 = type_check_with_env(env, base_ast, {})
+  assert_eq(
+    env1.get_fn_version("f"),
+    Some(ApiSemver::{ major: 1, minor: 0, patch: 0 }),
+  )
+  let tighten_ast = parse_module(
+    "let f = [T: Eq + Show](x: T) -> Bool { x == x }",
+  )
+  let env2 = type_check_with_env(env1, tighten_ast, {})
+  assert_eq(
+    env2.get_fn_version("f"),
+    Some(ApiSemver::{ major: 2, minor: 0, patch: 0 }),
+  )
+  let loosen_ast = parse_module("let f = [T: Eq](x: T) -> Bool { x == x }")
+  let env3 = type_check_with_env(env2, loosen_ast, {})
+  assert_eq(
+    env3.get_fn_version("f"),
+    Some(ApiSemver::{ major: 2, minor: 1, patch: 0 }),
   )
 }
 

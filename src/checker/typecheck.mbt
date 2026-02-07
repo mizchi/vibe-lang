@@ -229,6 +229,13 @@ pub struct TraitImplDef {
 } derive(Show, Eq)
 
 ///|
+pub struct TraitDefInfo {
+  supertraits : Array[String]
+  open_impl : Bool
+  is_local : Bool
+} derive(Show, Eq)
+
+///|
 pub struct TypeAlias {
   name : String
   params : Array[String]
@@ -266,7 +273,7 @@ pub struct TypeEnv {
   struct_defs : Map[String, StructDef]
   type_aliases : Map[String, TypeAlias]
   ctor_index : Map[String, CtorInfo]
-  traits : Map[String, Bool]
+  traits : Map[String, TraitDefInfo]
   trait_impls : Map[String, Array[TraitImplDef]]
   fn_versions : Map[String, ApiSemver]
   purities : Map[String, Bool]
@@ -952,7 +959,75 @@ pub fn TypeEnv::has_trait(self : TypeEnv, name : String) -> Bool {
 
 ///|
 pub fn TypeEnv::set_trait(self : TypeEnv, name : String) -> Unit {
-  self.traits[name] = true
+  self.set_trait_info(name, TraitDefInfo::{
+    supertraits: [],
+    open_impl: false,
+    is_local: true,
+  })
+}
+
+///|
+pub fn TypeEnv::set_trait_info(
+  self : TypeEnv,
+  name : String,
+  info : TraitDefInfo,
+) -> Unit {
+  self.traits[name] = info
+}
+
+///|
+pub fn TypeEnv::get_trait_info(self : TypeEnv, name : String) -> TraitDefInfo? {
+  self.traits.get(name)
+}
+
+///|
+pub fn TypeEnv::trait_is_open(self : TypeEnv, name : String) -> Bool {
+  match self.traits.get(name) {
+    Some(info) => info.open_impl
+    None => false
+  }
+}
+
+///|
+pub fn TypeEnv::trait_is_local(self : TypeEnv, name : String) -> Bool {
+  match self.traits.get(name) {
+    Some(info) => info.is_local
+    None => false
+  }
+}
+
+///|
+pub fn TypeEnv::import_trait(
+  self : TypeEnv,
+  name : String,
+  open_impl : Bool,
+  supertraits : Array[String],
+) -> Unit {
+  self.set_trait_info(name, TraitDefInfo::{
+    supertraits,
+    open_impl,
+    is_local: false,
+  })
+}
+
+///|
+pub fn TypeEnv::trait_supertraits(
+  self : TypeEnv,
+  name : String,
+) -> Array[String] {
+  match self.traits.get(name) {
+    Some(info) => info.supertraits.copy()
+    None => []
+  }
+}
+
+///|
+pub fn TypeEnv::trait_names(self : TypeEnv) -> Array[String] {
+  let names : Array[String] = []
+  for name, _ in self.traits {
+    names.push(name)
+  }
+  names
 }
 
 ///|
@@ -1047,7 +1122,8 @@ fn type_check_stmts(
         register_enum_def(env, name, params, ctors, span)
       @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
         register_type_alias(env, name, params, target, span)
-      @core.Stmt::TraitDef(name~, span~) => register_trait_def(env, name, span)
+      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) =>
+        register_trait_def(env, name, supertraits, open_impl, exported, span)
       @core.Stmt::TraitImpl(
         type_params~,
         type_bounds~,
@@ -1376,6 +1452,23 @@ fn merge_trait_bounds(
     out.push(bound)
   }
   dedup_trait_bounds(out)
+}
+
+///|
+fn declared_param_bounds(
+  env : TypeEnv,
+  param_ty : @core.Type,
+  explicit_bounds : Array[String],
+) -> Array[String] {
+  let merged = dedup_trait_bounds(explicit_bounds)
+  match resolve_type(env, param_ty) {
+    @core.Type::Var(id) =>
+      match env.var_trait_bounds.get(id) {
+        Some(bounds) => merge_trait_bounds(merged, bounds)
+        None => merged
+      }
+    _ => merged
+  }
 }
 
 ///|
@@ -1904,9 +1997,53 @@ fn record_expr_type(env : TypeEnv, span : @core.Span, ty : @core.Type) -> Unit {
 }
 
 ///|
-fn array_has_string(xs : Array[String], needle : String) -> Bool {
-  for x in xs {
-    if x == needle {
+fn trait_is_subtrait_inner(
+  env : TypeEnv,
+  sub_trait : String,
+  super_trait : String,
+  visiting : Map[String, Bool],
+) -> Bool {
+  if sub_trait == super_trait {
+    return true
+  }
+  if visiting.contains(sub_trait) {
+    return false
+  }
+  match env.get_trait_info(sub_trait) {
+    Some(info) => {
+      let next_visiting = visiting.copy()
+      next_visiting[sub_trait] = true
+      for parent in info.supertraits {
+        if parent == super_trait {
+          return true
+        }
+        if trait_is_subtrait_inner(env, parent, super_trait, next_visiting) {
+          return true
+        }
+      }
+      false
+    }
+    None => false
+  }
+}
+
+///|
+fn trait_is_subtrait(
+  env : TypeEnv,
+  sub_trait : String,
+  super_trait : String,
+) -> Bool {
+  trait_is_subtrait_inner(env, sub_trait, super_trait, {})
+}
+
+///|
+fn trait_bound_satisfied(
+  env : TypeEnv,
+  available : Array[String],
+  required : String,
+) -> Bool {
+  for bound in available {
+    if trait_is_subtrait(env, bound, required) {
       return true
     }
   }
@@ -1931,12 +2068,35 @@ fn ensure_traits_defined(
 fn register_trait_def(
   env : TypeEnv,
   name : String,
+  supertraits : Array[String],
+  open_impl : Bool,
+  exported : Bool,
   span : @core.Span,
 ) -> Unit raise TypeError {
+  if open_impl && not(exported) {
+    raise TypeError::BadTypeDef(
+      message="`open trait` is only allowed with export",
+      span~,
+    )
+  }
   if env.has_trait(name) {
     raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
   }
-  env.set_trait(name)
+  let normalized_supertraits = dedup_trait_bounds(supertraits)
+  for supertrait in normalized_supertraits {
+    if supertrait == name {
+      raise TypeError::BadTypeDef(
+        message="trait cannot inherit itself: " + name,
+        span~,
+      )
+    }
+  }
+  ensure_traits_defined(env, normalized_supertraits, span)
+  env.set_trait_info(name, TraitDefInfo::{
+    supertraits: normalized_supertraits,
+    open_impl,
+    is_local: true,
+  })
 }
 
 ///|
@@ -2094,48 +2254,75 @@ fn type_implements_trait(
   trait_name : String,
 ) -> Bool {
   let resolved = resolve_type(env, ty)
-  if not(env.has_trait(trait_name)) {
-    return false
-  }
   match resolved {
     @core.Type::Var(id) =>
       match env.var_trait_bounds.get(id) {
-        Some(bounds) => array_has_string(bounds, trait_name)
+        Some(bounds) => trait_bound_satisfied(env, bounds, trait_name)
         None => false
       }
     _ => {
-      let impls = env.trait_impls_for(trait_name)
-      for impl_def in impls {
-        let mapping : Map[String, @core.Type] = {}
-        if type_matches_impl_target(env, impl_def.target, resolved, mapping) {
-          let mut ok = true
-          for param in impl_def.type_params {
-            match mapping.get(param) {
-              Some(actual_ty) =>
-                match impl_def.type_bounds.get(param) {
-                  Some(bounds) =>
-                    for bound in bounds {
-                      if not(type_implements_trait(env, actual_ty, bound)) {
-                        ok = false
-                        break
-                      }
-                    }
-                  None => ()
-                }
-              None => ()
-            }
-            if not(ok) {
-              break
-            }
-          }
-          if ok {
-            return true
-          }
+      if type_implements_trait_from_impls(
+          env,
+          resolved,
+          env.trait_impls_for(trait_name),
+        ) {
+        return true
+      }
+      for impl_trait_name in env.trait_names() {
+        if impl_trait_name == trait_name {
+          continue
+        }
+        if not(trait_is_subtrait(env, impl_trait_name, trait_name)) {
+          continue
+        }
+        if type_implements_trait_from_impls(
+            env,
+            resolved,
+            env.trait_impls_for(impl_trait_name),
+          ) {
+          return true
         }
       }
       false
     }
   }
+}
+
+///|
+fn type_implements_trait_from_impls(
+  env : TypeEnv,
+  resolved : @core.Type,
+  impls : Array[TraitImplDef],
+) -> Bool {
+  for impl_def in impls {
+    let mapping : Map[String, @core.Type] = {}
+    if type_matches_impl_target(env, impl_def.target, resolved, mapping) {
+      let mut ok = true
+      for param in impl_def.type_params {
+        match mapping.get(param) {
+          Some(actual_ty) =>
+            match impl_def.type_bounds.get(param) {
+              Some(bounds) =>
+                for bound in bounds {
+                  if not(type_implements_trait(env, actual_ty, bound)) {
+                    ok = false
+                    break
+                  }
+                }
+              None => ()
+            }
+          None => ()
+        }
+        if not(ok) {
+          break
+        }
+      }
+      if ok {
+        return true
+      }
+    }
+  }
+  false
 }
 
 ///|
@@ -2185,16 +2372,75 @@ fn register_trait_impl(
   if not(env.has_trait(trait_name)) {
     raise TypeError::BadTypeDef(message="unknown trait: " + trait_name, span~)
   }
+  if not(env.trait_is_local(trait_name)) && not(env.trait_is_open(trait_name)) {
+    raise TypeError::BadTypeDef(message="trait is sealed: " + trait_name, span~)
+  }
   ensure_unique_params(type_params, span)
-  for _, bounds in type_bounds {
-    ensure_traits_defined(env, bounds, span)
+  let normalized_type_bounds : Map[String, Array[String]] = {}
+  for type_param in type_params {
+    match type_bounds.get(type_param) {
+      Some(bounds) => {
+        let deduped = dedup_trait_bounds(bounds)
+        ensure_traits_defined(env, deduped, span)
+        normalized_type_bounds[type_param] = deduped
+      }
+      None => ()
+    }
   }
   let normalized_target = normalize_type(env, target)
-  env.add_trait_impl(trait_name, TraitImplDef::{
+  let incoming = TraitImplDef::{
     type_params,
-    type_bounds,
+    type_bounds: normalized_type_bounds,
     target: normalized_target,
-  })
+  }
+  for impl_def in env.trait_impls_for(trait_name) {
+    if trait_impls_overlap(env, impl_def, incoming) {
+      raise TypeError::BadTypeDef(
+        message="overlapping impl: " + trait_name,
+        span~,
+      )
+    }
+  }
+  env.add_trait_impl(trait_name, incoming)
+}
+
+///|
+fn instantiate_trait_impl_target(
+  env : TypeEnv,
+  impl_def : TraitImplDef,
+) -> @core.Type {
+  let mapping : Map[String, @core.Type] = {}
+  for type_param in impl_def.type_params {
+    let tv = fresh_type_var(env)
+    mapping[type_param] = tv
+    match tv {
+      @core.Type::Var(id) =>
+        match impl_def.type_bounds.get(type_param) {
+          Some(bounds) => add_var_trait_bounds(env, id, bounds)
+          None => ()
+        }
+      _ => ()
+    }
+  }
+  substitute_type_params(impl_def.target, mapping)
+}
+
+///|
+fn trait_impls_overlap(
+  env : TypeEnv,
+  left : TraitImplDef,
+  right : TraitImplDef,
+) -> Bool {
+  let overlap_env = clone_env(env)
+  let left_target = instantiate_trait_impl_target(overlap_env, left)
+  let right_target = instantiate_trait_impl_target(overlap_env, right)
+  let result : Result[Bool, TypeError] = try? unify_types(
+    overlap_env, left_target, right_target,
+  )
+  match result {
+    Ok(v) => v
+    Err(_) => false
+  }
 }
 
 ///|
@@ -2731,6 +2977,9 @@ fn type_expr_eff(
       let mut has_wildcard = false
       let mut has_ctor = false
       let covered : Map[String, Bool] = {}
+      let mut has_bool_pat = false
+      let mut covered_true = false
+      let mut covered_false = false
       for arm in arms {
         if is_top_wildcard(arm.pat) {
           has_wildcard = true
@@ -2747,9 +2996,25 @@ fn type_expr_eff(
                   has_ctor = true
                   covered[name] = true
                 }
+                @core.Pat::Bool(value~, ..) => {
+                  has_bool_pat = true
+                  if value {
+                    covered_true = true
+                  } else {
+                    covered_false = true
+                  }
+                }
                 _ => ()
               }
             }
+          @core.Pat::Bool(value~, ..) => {
+            has_bool_pat = true
+            if value {
+              covered_true = true
+            } else {
+              covered_false = true
+            }
+          }
           _ => ()
         }
         let arm_env = clone_env(env)
@@ -2805,6 +3070,10 @@ fn type_expr_eff(
               raise TypeError::NonExhaustiveMatch(span~)
             }
           }
+          @core.Type::Bool =>
+            if not(has_bool_pat && covered_true && covered_false) {
+              raise TypeError::NonExhaustiveMatch(span~)
+            }
           _ => if not(has_ctor) { raise TypeError::NonExhaustiveMatch(span~) }
         }
       }
@@ -2898,7 +3167,7 @@ fn type_expr_eff(
           name: param.name,
           label: param.label,
           ty: resolved,
-          bounds: dedup_trait_bounds(param.bounds),
+          bounds: declared_param_bounds(env, resolved, param.bounds),
         })
       }
       let normalized_effects = normalize_effects(fn_effects, span)
@@ -3556,8 +3825,10 @@ fn type_block(
         register_type_alias(scope_env, name, params, target, span)
         last = @core.Type::Unit
       }
-      @core.Stmt::TraitDef(name~, span~) => {
-        register_trait_def(scope_env, name, span)
+      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) => {
+        register_trait_def(
+          scope_env, name, supertraits, open_impl, exported, span,
+        )
         last = @core.Type::Unit
       }
       @core.Stmt::TraitImpl(
@@ -3690,6 +3961,97 @@ fn ensure_num_operand(
   match resolved {
     @core.Type::Int | @core.Type::Float | @core.Type::Double => ()
     @core.Type::Var(id) => mark_num_var(env, id)
+    _ =>
+      raise TypeError::Mismatch(
+        expected=@core.Type::Int,
+        actual=resolved,
+        span~,
+        context=Some("argument"),
+      )
+  }
+}
+
+///|
+fn ensure_eq_operand(
+  env : TypeEnv,
+  ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  let resolved = resolve_type(env, ty)
+  match resolved {
+    @core.Type::Int
+    | @core.Type::Float
+    | @core.Type::Double
+    | @core.Type::Bool
+    | @core.Type::String => ()
+    @core.Type::Var(id) =>
+      if is_num_var(env, id) {
+        ()
+      } else {
+        match env.var_trait_bounds.get(id) {
+          Some(bounds) =>
+            if not(trait_bound_satisfied(env, bounds, "Eq")) {
+              raise TypeError::Mismatch(
+                expected=@core.Type::Named(name="Eq", args=[]),
+                actual=resolved,
+                span~,
+                context=Some("argument"),
+              )
+            }
+          None =>
+            raise TypeError::Mismatch(
+              expected=@core.Type::Named(name="Eq", args=[]),
+              actual=resolved,
+              span~,
+              context=Some("argument"),
+            )
+        }
+      }
+    _ =>
+      raise TypeError::Mismatch(
+        expected=@core.Type::Int,
+        actual=resolved,
+        span~,
+        context=Some("argument"),
+      )
+  }
+}
+
+///|
+fn ensure_ord_operand(
+  env : TypeEnv,
+  ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  let resolved = resolve_type(env, ty)
+  match resolved {
+    @core.Type::Int
+    | @core.Type::Float
+    | @core.Type::Double
+    | @core.Type::String => ()
+    @core.Type::Var(id) =>
+      if is_num_var(env, id) {
+        ()
+      } else {
+        match env.var_trait_bounds.get(id) {
+          Some(bounds) =>
+            if not(trait_bound_satisfied(env, bounds, "Ord")) {
+              raise TypeError::Mismatch(
+                expected=@core.Type::Named(name="Ord", args=[]),
+                actual=resolved,
+                span~,
+                context=Some("argument"),
+              )
+            }
+          None =>
+            raise TypeError::Mismatch(
+              expected=@core.Type::Named(name="Ord", args=[]),
+              actual=resolved,
+              span~,
+              context=Some("argument"),
+            )
+        }
+      }
     _ =>
       raise TypeError::Mismatch(
         expected=@core.Type::Int,
@@ -5040,7 +5402,7 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                ensure_num_operand(env, a, pos_args[0].span())
+                ensure_eq_operand(env, a, pos_args[0].span())
                 if not(type_equal(env, b, a)) {
                   raise TypeError::Mismatch(
                     expected=a,
@@ -5070,7 +5432,7 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                ensure_num_operand(env, a, pos_args[0].span())
+                ensure_ord_operand(env, a, pos_args[0].span())
                 if not(type_equal(env, b, a)) {
                   raise TypeError::Mismatch(
                     expected=a,
@@ -5619,10 +5981,34 @@ fn type_let_expr(
 ) -> TypeScheme raise TypeError {
   if rec {
     match expr {
-      @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span=fn_span, ..) =>
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params~,
+        ret~,
+        effects=fn_effects,
+        body~,
+        span=fn_span
+      ) =>
         match ret {
           None => raise TypeError::BadRec(message="missing return type", span~)
           Some(r) => {
+            let type_param_vars : Map[String, @core.Type] = {}
+            for tp in type_params {
+              type_param_vars[tp] = fresh_type_var(env)
+              match type_bounds.get(tp) {
+                Some(bounds) => {
+                  let deduped = dedup_trait_bounds(bounds)
+                  ensure_traits_defined(env, deduped, fn_span)
+                  match type_param_vars.get(tp) {
+                    Some(@core.Type::Var(id)) =>
+                      add_var_trait_bounds(env, id, deduped)
+                    _ => ()
+                  }
+                }
+                None => ()
+              }
+            }
             let mut uses_num = false
             for param in params {
               if has_num_type(param.ty) {
@@ -5634,63 +6020,95 @@ fn type_let_expr(
               uses_num = has_num_type(r)
             }
             let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }
-            let replaced_params : Array[@core.FuncParam] = []
+            let scope_env = clone_env(env)
+            for tp in type_params {
+              match type_param_vars.get(tp) {
+                Some(ty) =>
+                  scope_env.set_type_alias(tp, TypeAlias::{
+                    name: tp,
+                    params: [],
+                    target: ty,
+                  })
+                None => ()
+              }
+            }
+            let resolved_params : Array[@core.FuncParam] = []
             for param in params {
-              let param_ty = match num_var {
+              let param_ty_with_num = match num_var {
                 Some(n) => replace_num_type(param.ty, n)
                 None => param.ty
               }
-              replaced_params.push(@core.FuncParam::{
+              let param_ty = substitute_type_params(
+                param_ty_with_num, type_param_vars,
+              )
+              let resolved = normalize_type(env, param_ty)
+              let _ = ensure_type_satisfies_bounds(
+                env,
+                resolved,
+                param.bounds,
+                fn_span,
+                "fn param " + param.name,
+              )
+              let binding_ty = if param.label == @core.ParamLabel::Optional {
+                @core.Type::Named(name="Option", args=[resolved])
+              } else {
+                resolved
+              }
+              scope_env.set(param.name, binding_ty)
+              resolved_params.push(@core.FuncParam::{
                 name: param.name,
                 label: param.label,
-                ty: param_ty,
-                bounds: param.bounds,
+                ty: resolved,
+                bounds: declared_param_bounds(env, resolved, param.bounds),
               })
             }
-            let replaced_ret = match num_var {
+            let ret_ty_with_num = match num_var {
               Some(n) => replace_num_type(r, n)
               None => r
             }
+            let ret_ty = substitute_type_params(
+              ret_ty_with_num, type_param_vars,
+            )
+            let resolved_ret = normalize_type(env, ret_ty)
             let normalized_effects = normalize_effects(fn_effects, fn_span)
-            let fn_ty = normalize_type(
-              env,
-              @core.Type::Func(
-                params=replaced_params,
-                ret=replaced_ret,
-                effects=normalized_effects,
-              ),
+            let provisional_fn_ty = @core.Type::Func(
+              params=resolved_params,
+              ret=resolved_ret,
+              effects=normalized_effects,
             )
-            env.set(name, fn_ty)
-            let ty = type_expr_eff(
-              env,
-              @core.Expr::Fn(
-                type_params=[],
-                type_bounds={},
-                params=replaced_params,
-                ret=Some(replaced_ret),
-                effects=normalized_effects,
-                body~,
-                span=fn_span,
-              ),
-              aliases,
-              effects,
-              allow_effect,
+            scope_env.set(name, provisional_fn_ty)
+            let fn_scope = effect_scope_from_list(normalized_effects)
+            let fn_allow_effect = allow_effect ||
+              normalized_effects.length() > 0
+            let body_ty = type_block(
+              scope_env, body, aliases, fn_scope, fn_allow_effect,
             )
-            if not(type_equal(env, ty, fn_ty)) {
+            if not(type_equal(scope_env, resolved_ret, body_ty)) {
               raise TypeError::Mismatch(
-                expected=fn_ty,
-                actual=ty,
+                expected=resolved_ret,
+                actual=body_ty,
                 span=fn_span,
-                context=Some("recursive binding"),
+                context=Some("fn return"),
               )
             }
-            TypeScheme::{
-              vars: [],
-              num_vars: [],
-              effect_vars: [],
-              trait_bounds: {},
-              ty: fn_ty,
+            let resolved_effects = effect_set_to_atoms(
+              effect_set_from_atoms(scope_env, normalized_effects),
+            )
+            let final_params : Array[@core.FuncParam] = []
+            for param in resolved_params {
+              final_params.push(@core.FuncParam::{
+                name: param.name,
+                label: param.label,
+                ty: resolve_type(scope_env, param.ty),
+                bounds: param.bounds,
+              })
             }
+            let final_ty = @core.Type::Func(
+              params=final_params,
+              ret=resolve_type(scope_env, resolved_ret),
+              effects=resolved_effects,
+            )
+            generalize(env, final_ty)
           }
         }
       _ => raise TypeError::BadRec(message="expected fn", span~)
@@ -5820,7 +6238,7 @@ fn type_lambda_with_context(
               name: param.name,
               label: param.label,
               ty: param_ty,
-              bounds: dedup_trait_bounds(param.bounds),
+              bounds: declared_param_bounds(env, param_ty, param.bounds),
             })
           }
           let normalized_effects = normalize_effects(fn_effects, span)
@@ -6256,6 +6674,22 @@ fn effects_subset(
 }
 
 ///|
+fn trait_bounds_subset(
+  env : TypeEnv,
+  small : Array[String],
+  large : Array[String],
+) -> Bool {
+  let required = dedup_trait_bounds(small)
+  let available = dedup_trait_bounds(large)
+  for bound in required {
+    if not(trait_bound_satisfied(env, available, bound)) {
+      return false
+    }
+  }
+  true
+}
+
+///|
 fn try_type_equal(env : TypeEnv, left : @core.Type, right : @core.Type) -> Bool {
   let result : Result[Bool, TypeError] = try? type_equal(env, left, right)
   match result {
@@ -6339,6 +6773,10 @@ pub fn is_type_subtype(
             ok = false
             break
           }
+          if not(trait_bounds_subset(env, sub_param.bounds, sup_param.bounds)) {
+            ok = false
+            break
+          }
           // Function parameter types are contravariant:
           // new <: old requires old_param <: new_param
           if not(is_type_subtype(env, sup_param.ty, sub_param.ty)) {
@@ -6358,10 +6796,14 @@ pub fn classify_function_api_change(
   old_ty : @core.Type,
   new_ty : @core.Type,
 ) -> ApiVersionBump {
-  if try_type_equal(env, old_ty, new_ty) {
-    ApiVersionBump::Patch
-  } else if is_type_subtype(env, new_ty, old_ty) {
-    ApiVersionBump::Minor
+  let check_minor_env = clone_env(env)
+  if is_type_subtype(check_minor_env, new_ty, old_ty) {
+    let check_patch_env = clone_env(env)
+    if is_type_subtype(check_patch_env, old_ty, new_ty) {
+      ApiVersionBump::Patch
+    } else {
+      ApiVersionBump::Minor
+    }
   } else {
     ApiVersionBump::Major
   }
@@ -6529,6 +6971,12 @@ fn param_unify(
     return false
   }
   if a.label != @core.ParamLabel::Positional && a.name != b.name {
+    return false
+  }
+  if not(
+      trait_bounds_subset(env, a.bounds, b.bounds) &&
+      trait_bounds_subset(env, b.bounds, a.bounds),
+    ) {
     return false
   }
   unify_types(env, a.ty, b.ty)

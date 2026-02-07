@@ -1,5 +1,31 @@
 ///|
 /// Integration test for import parsing
+fn register_import_modules(
+  rt : Runtime,
+  db : XshDb,
+  path : String,
+  visited : Map[String, Bool],
+  path_to_hash : Map[String, String],
+) -> Unit {
+  if visited.contains(path) {
+    return
+  }
+  visited[path] = true
+  let imports = db.imports(path)
+  for imp in imports {
+    match imp.hash {
+      Some(hash) => {
+        path_to_hash[imp.path] = hash
+        let ast = db.ast(imp.path)
+        rt.register_module(hash, ast)
+        register_import_modules(rt, db, imp.path, visited, path_to_hash)
+      }
+      None => ()
+    }
+  }
+}
+
+///|
 test "xsh integration import parsing" {
   let db = XshDb::new()
   let lib_source = "export let value = 7"
@@ -12,4 +38,283 @@ test "xsh integration import parsing" {
   assert_eq(compiled.imports.length(), 1)
   assert_eq(compiled.imports[0], import_ref)
   // Note: import bindings are not yet resolved, just check parsing works
+}
+
+///|
+test "xsh integration import alias forwards generic helper" {
+  let db = XshDb::new()
+  let lib_source =
+    #|let option_unwrap_or = [T](opt: Option[T], fallback: T) -> T {
+    #|  match opt { Some(v) => v, _ => fallback }
+    #|}
+    #|export let unwrap_or = [T](opt: Option[T], fallback: T) -> T {
+    #|  option_unwrap_or(opt, fallback)
+    #|}
+  let main_source = "import { unwrap_or } from ./lib.xsh\nunwrap_or(Some(5), 0)"
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 5)
+    _ => fail("expected Int(5)")
+  }
+}
+
+///|
+test "xsh integration cross-module trait-bound eq" {
+  let db = XshDb::new()
+  let lib_source =
+    #|export trait Eq
+    #|impl Eq for String
+    #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool { a == b }
+  let main_source = "import { Eq, cmp_eq } from ./lib.xsh\ncmp_eq(\"a\", \"a\")"
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true)")
+  }
+}
+
+///|
+test "xsh integration cross-module option_equals" {
+  let db = XshDb::new()
+  let lib_source =
+    #|export trait Eq
+    #|impl Eq for Int
+    #|impl [T: Eq] Eq for Option[T]
+    #|export let option_equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool {
+    #|  match (a, b) {
+    #|    (Some(x), Some(y)) => x == y,
+    #|    (None, None) => true,
+    #|    _ => false
+    #|  }
+    #|}
+  let main_source = "import { Eq, option_equals } from ./lib.xsh\noption_equals(Some(1), Some(1))"
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true)")
+  }
+}
+
+///|
+test "xsh integration sealed exported trait rejects external impl" {
+  let db = XshDb::new()
+  let lib_source = "export trait Eq"
+  let main_source = "import { Eq } from ./lib.xsh\nimpl Eq for String"
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled : Result[CompiledModule, CompileError] = try? compile_module(
+    db, "main",
+  )
+  match compiled {
+    Ok(_) => fail("expected sealed trait error")
+    Err(err) => assert_true(err.to_string().contains("trait is sealed: Eq"))
+  }
+}
+
+///|
+test "xsh integration export open trait allows external impl" {
+  let db = XshDb::new()
+  let lib_source = "export open trait Eq"
+  let main_source =
+    #|import { Eq } from ./lib.xsh
+    #|impl Eq for String
+    #|let same = [T: Eq](a: T, b: T) -> Bool { a == b }
+    #|same("a", "a")
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true)")
+  }
+}
+
+///|
+test "xsh integration trait bound requires explicit trait import" {
+  let db = XshDb::new()
+  let lib_source =
+    #|export open trait Eq
+    #|impl Eq for String
+    #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool { a == b }
+  let main_source = "import { cmp_eq } from ./lib.xsh\ncmp_eq(\"a\", \"a\")"
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled : Result[CompiledModule, CompileError] = try? compile_module(
+    db, "main",
+  )
+  match compiled {
+    Ok(_) => fail("expected unknown trait import error")
+    Err(err) => assert_true(err.to_string().contains("Eq"))
+  }
+}
+
+///|
+test "xsh integration explicit trait import enables trait-bounded call" {
+  let db = XshDb::new()
+  let lib_source =
+    #|export open trait Eq
+    #|impl Eq for String
+    #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool { a == b }
+  let main_source = "import { Eq, cmp_eq } from ./lib.xsh\ncmp_eq(\"a\", \"a\")"
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true)")
+  }
+}
+
+///|
+test "xsh integration imported subtrait keeps supertrait relation" {
+  let db = XshDb::new()
+  let lib_source =
+    #|export open trait Eq
+    #|export open trait Ord: Eq
+    #|impl Ord for Int
+  let main_source =
+    #|import { Ord } from ./lib.xsh
+    #|let same = [T: Ord](a: T, b: T) -> Bool { a == b }
+    #|same(1, 1)
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true)")
+  }
+}
+
+///|
+test "xsh integration trait alias import satisfies imported bound" {
+  let db = XshDb::new()
+  let lib_source =
+    #|export open trait Eq
+    #|impl Eq for String
+    #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool { a == b }
+  let main_source =
+    #|import { Eq as Equality, cmp_eq } from ./lib.xsh
+    #|cmp_eq("a", "a")
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true)")
+  }
+}
+
+///|
+test "xsh integration trait alias keeps supertrait chain" {
+  let db = XshDb::new()
+  let lib_source =
+    #|export open trait Eq
+    #|export open trait Ord: Eq
+    #|impl Ord for Int
+    #|export let same_ord = [T: Ord](a: T, b: T) -> Bool { a == b }
+  let main_source =
+    #|import { Eq as Equality, Ord as Ordering, same_ord } from ./lib.xsh
+    #|let same = [T: Ordering](a: T, b: T) -> Bool { a == b }
+    #|same(1, 1) && same_ord(1, 1)
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true)")
+  }
 }

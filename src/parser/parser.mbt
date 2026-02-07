@@ -239,6 +239,7 @@ fn Parser::parse_enum_stmt(self : Parser) -> Unit {
   self.skip_trivia()
   self.expect(lbrace())
   self.skip_balanced_braces()
+  self.parse_optional_derive_clause()
   self.skip_trivia()
   if self.at(semicolon()) {
     self.bump()
@@ -259,11 +260,26 @@ fn Parser::parse_struct_stmt(self : Parser) -> Unit {
   self.skip_trivia()
   self.expect(lbrace())
   self.skip_balanced_braces()
+  self.parse_optional_derive_clause()
   self.skip_trivia()
   if self.at(semicolon()) {
     self.bump()
   }
   self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_optional_derive_clause(self : Parser) -> Unit {
+  self.skip_trivia()
+  if self.at(name()) && self.peek().text() == "derive" {
+    self.bump()
+    self.skip_trivia()
+    if self.at(lparen()) {
+      self.skip_balanced_parens()
+    } else {
+      self.builder.token(error_kind(), "")
+    }
+  }
 }
 
 ///|
@@ -343,6 +359,18 @@ fn Parser::parse_export_stmt(self : Parser) -> Unit {
   } else if self.at(let_kw()) {
     // export let name = ...
     self.parse_let_stmt()
+  } else if self.at(trait_kw()) {
+    // export trait Name
+    self.parse_stmt()
+  } else if self.at(name()) && self.peek().text() == "open" {
+    // export open trait Name
+    self.bump() // open
+    self.skip_trivia()
+    if self.at(trait_kw()) {
+      self.parse_stmt()
+    } else {
+      self.builder.token(error_kind(), "")
+    }
   } else if self.at(lbrace()) {
     // export { name1, name2, ... }
     self.bump()
@@ -824,11 +852,12 @@ pub fn parse_cst(input : String) -> @cst.SyntaxNode {
 pub struct AstParser {
   tokens : Array[Token]
   mut pos : Int
+  mut pending_stmts : Array[@core.Stmt]
 }
 
 ///|
 pub fn AstParser::new(tokens : Array[Token]) -> AstParser {
-  AstParser::{ tokens, pos: 0 }
+  AstParser::{ tokens, pos: 0, pending_stmts: [] }
 }
 
 ///|
@@ -944,6 +973,10 @@ pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
           self.peek_kind() != eof()
         } {
     stmts.push(self.parse_stmt())
+    for pending in self.pending_stmts {
+      stmts.push(pending)
+    }
+    self.pending_stmts = []
   }
   @core.Module::{ stmts, }
 }
@@ -965,6 +998,13 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
       let tok = self.peek()
       let next = self.peek_non_trivia_kind(self.pos + 1)
       let next2 = self.peek_non_trivia_kind(self.pos + 2)
+      if tok.text() == "open" && next == trait_kw() {
+        raise ParseError::UnexpectedToken(
+          expected="`open trait` is only allowed as `export open trait`",
+          got=tok.text(),
+          span=self.token_span(),
+        )
+      }
       if tok.text() == "alias" && next == name() && next2 == eq() {
         raise ParseError::UnexpectedToken(
           expected="`alias` statement is removed; use `type` for type aliases",
@@ -1155,8 +1195,10 @@ fn AstParser::parse_enum_stmt(self : AstParser) -> @core.Stmt raise ParseError {
 
   }
   let _ = self.expect(rbrace(), "}")
+  let derives = self.parse_derive_clause()
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
+  self.queue_derive_impls(name_tok.text(), params, derives, span)
   @core.Stmt::EnumDef(name=name_tok.text(), params~, ctors~, span~)
 }
 
@@ -1193,9 +1235,79 @@ fn AstParser::parse_struct_stmt(
     })
   }
   let _ = self.expect(rbrace(), "}")
+  let derives = self.parse_derive_clause()
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
+  self.queue_derive_impls(name_tok.text(), params, derives, span)
   @core.Stmt::StructDef(name=name_tok.text(), params~, fields~, span~)
+}
+
+///|
+fn AstParser::parse_derive_clause(
+  self : AstParser,
+) -> Array[String] raise ParseError {
+  self.skip_trivia()
+  if self.peek_kind() != name() || self.peek().text() != "derive" {
+    return []
+  }
+  let _ = self.bump()
+  self.skip_trivia()
+  let _ = self.expect(lparen(), "(")
+  let traits : Array[String] = []
+  self.skip_trivia()
+  if self.peek_kind() != rparen() {
+    let first = self.expect(name(), "trait name")
+    traits.push(first.text())
+    while {
+            self.skip_trivia()
+            self.peek_kind() == comma()
+          } {
+      let _ = self.bump()
+      self.skip_trivia()
+      if self.peek_kind() == rparen() {
+        break
+      }
+      let next = self.expect(name(), "trait name")
+      traits.push(next.text())
+    }
+  }
+  let _ = self.expect(rparen(), ")")
+  traits
+}
+
+///|
+fn AstParser::queue_derive_impls(
+  self : AstParser,
+  type_name : String,
+  type_params : Array[String],
+  derives : Array[String],
+  span : @core.Span,
+) -> Unit {
+  let target_args : Array[@core.Type] = []
+  for type_param in type_params {
+    target_args.push(@core.Type::Param(type_param))
+  }
+  let target = @core.Type::Named(name=type_name, args=target_args)
+  let seen : Map[String, Bool] = {}
+  for trait_name in derives {
+    if seen.contains(trait_name) {
+      continue
+    }
+    seen[trait_name] = true
+    let type_bounds : Map[String, Array[String]] = {}
+    for type_param in type_params {
+      type_bounds[type_param] = [trait_name]
+    }
+    self.pending_stmts.push(
+      @core.Stmt::TraitImpl(
+        type_params=type_params.copy(),
+        type_bounds~,
+        trait_name~,
+        target~,
+        span~,
+      ),
+    )
+  }
 }
 
 ///|
@@ -1221,9 +1333,23 @@ fn AstParser::parse_trait_stmt(self : AstParser) -> @core.Stmt raise ParseError 
   let _ = self.expect(trait_kw(), "trait")
   self.skip_trivia()
   let name_tok = self.expect(name(), "trait name")
+  self.skip_trivia()
+  let supertraits = if self.peek_kind() == colon() {
+    let _ = self.bump()
+    self.skip_trivia()
+    self.parse_trait_bounds()
+  } else {
+    []
+  }
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
-  @core.Stmt::TraitDef(name=name_tok.text(), span~)
+  @core.Stmt::TraitDef(
+    name=name_tok.text(),
+    supertraits~,
+    open_impl=false,
+    exported=false,
+    span~,
+  )
 }
 
 ///|
@@ -1543,6 +1669,42 @@ fn AstParser::parse_export_stmt(
         let span = self.span_from(start)
         raise ParseError::UnexpectedToken(
           expected="let statement",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == trait_kw() || self.peek_kind() == name() {
+    let mut open_impl = false
+    if self.peek_kind() == name() && self.peek().text() == "open" {
+      let _ = self.bump()
+      self.skip_trivia()
+      open_impl = true
+    }
+    if self.peek_kind() != trait_kw() {
+      let span = self.span_from(start)
+      raise ParseError::UnexpectedToken(
+        expected="trait definition",
+        got=self.peek().text(),
+        span~,
+      )
+    }
+    let trait_stmt = self.parse_trait_stmt()
+    match trait_stmt {
+      @core.Stmt::TraitDef(name~, supertraits~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::TraitDef(
+          name~,
+          supertraits~,
+          open_impl~,
+          exported=true,
+          span~,
+        )
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="trait definition",
           got="other statement",
           span~,
         )

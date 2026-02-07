@@ -110,7 +110,18 @@ pub fn Runtime::eval_module(
           None =>
             raise EvalError::ImportError("Module not found in cache: " + hash)
           Some(imported_module) => {
-            // Evaluate the imported module to get its bindings
+            // Evaluate imported module in an isolated fork so exported values can
+            // reference internal helpers defined in the same module.
+            let imported_rt = self.fork_for_test()
+            let imported_result = imported_rt.eval_module(imported_module) catch {
+              e =>
+                raise EvalError::ImportError(
+                  "Failed to evaluate imported module: " + e.to_string(),
+                )
+            }
+            if imported_result.effects.length() > 0 {
+              raise EvalError::ImportError("Cannot import effectful module")
+            }
             let exports = @core.extract_exports(imported_module)
             // Bind each imported item
             for item in spec.items {
@@ -126,37 +137,19 @@ pub fn Runtime::eval_module(
                     "Symbol not exported: " + import_name,
                   )
                 Some(stmt) =>
-                  match stmt {
-                    @core.Stmt::ExportLet(rec~, expr~, ..)
-                    | @core.Stmt::Let(rec~, expr~, ..) => {
-                      let addr = @codegen.expr_address(
-                        expr,
-                        self.addr_env,
-                        Some(local_name),
-                      )
-                      // For recursive functions, pre-bind name to address
-                      if rec {
-                        self.env[local_name] = addr
-                        self.addr_env[local_name] = addr
+                  match imported_rt.get(import_name) {
+                    Some(value) => self.bind(local_name, value) |> ignore
+                    None =>
+                      match stmt {
+                        @core.Stmt::ExportLet(..) | @core.Stmt::Let(..) =>
+                          raise EvalError::ImportError(
+                            "Exported value not found: " + import_name,
+                          )
+                        _ =>
+                          // For enum/type definitions, just register them
+                          // (type checking should handle this)
+                          ()
                       }
-                      let result = eval_expr(self, expr)
-                      if result.effects.length() > 0 {
-                        raise EvalError::ImportError(
-                          "Cannot import effectful expression",
-                        )
-                      }
-                      // Attach address to function values
-                      let value = attach_addr_to_fn(result.value, addr)
-                      if rec {
-                        self.bind_with_addr(local_name, addr, value)
-                      } else {
-                        self.bind(local_name, value) |> ignore
-                      }
-                    }
-                    _ =>
-                      // For enum/type definitions, just register them
-                      // (type checking should handle this)
-                      ()
                   }
               }
             }
@@ -1552,6 +1545,10 @@ fn eval_pure_builtin(
           @core.Value::Bool(a == b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Bool(a == b)
+        (@core.Value::Bool(a), @core.Value::Bool(b)) =>
+          @core.Value::Bool(a == b)
+        (@core.Value::String(a), @core.Value::String(b)) =>
+          @core.Value::Bool(a == b)
         _ => raise EvalError::BadCall("__eq")
       }
     }
@@ -1565,6 +1562,8 @@ fn eval_pure_builtin(
           @core.Value::Bool(a < b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Bool(a < b)
+        (@core.Value::String(a), @core.Value::String(b)) =>
+          @core.Value::Bool(String::compare(a, b) < 0)
         _ => raise EvalError::BadCall("__lt")
       }
     }

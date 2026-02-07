@@ -20,6 +20,59 @@ pub struct XshDb {
 }
 
 ///|
+fn array_has_string(xs : Array[String], needle : String) -> Bool {
+  for x in xs {
+    if x == needle {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn collect_import_trait_aliases(
+  spec : @core.ImportSpec,
+  imported_env : @checker.TypeEnv,
+) -> Map[String, String] {
+  let out : Map[String, String] = {}
+  for item in spec.items {
+    if imported_env.has_trait(item.name) {
+      let local_name = match item.rename {
+        Some(rename) => rename
+        None => item.name
+      }
+      out[item.name] = local_name
+    }
+  }
+  out
+}
+
+///|
+fn resolve_imported_trait_supertraits(
+  source_name : String,
+  local_name : String,
+  source_supertraits : Array[String],
+  trait_aliases : Map[String, String],
+) -> Array[String] {
+  let out : Array[String] = []
+  for supertrait in source_supertraits {
+    let local_super = match trait_aliases.get(supertrait) {
+      Some(alias_name) => alias_name
+      None => supertrait
+    }
+    if not(array_has_string(out, local_super)) {
+      out.push(local_super)
+    }
+  }
+  if local_name != source_name && not(array_has_string(out, source_name)) {
+    // Preserve canonical source relation so renamed traits still satisfy
+    // built-in canonical bounds like Eq/Ord.
+    out.push(source_name)
+  }
+  out
+}
+
+///|
 pub fn XshDb::new() -> XshDb {
   let db = @ripple.Database::new()
   let rt = db.runtime()
@@ -180,6 +233,9 @@ pub fn XshDb::new() -> XshDb {
                 // Match with resolved path or original path (for tests)
                 if resolved_import_path == imp.path ||
                   raw_import_path == imp.path {
+                  let trait_aliases = collect_import_trait_aliases(
+                    spec, imported_env,
+                  )
                   // For each imported item, copy its type to current env
                   for item in spec.items {
                     let name = item.name
@@ -189,6 +245,23 @@ pub fn XshDb::new() -> XshDb {
                     }
                     // Only import if the symbol is exported
                     if exported_names.contains(name) {
+                      if imported_env.has_trait(name) {
+                        let local_supertraits = resolve_imported_trait_supertraits(
+                          name,
+                          local_name,
+                          imported_env.trait_supertraits(name),
+                          trait_aliases,
+                        )
+                        env.import_trait(
+                          local_name,
+                          imported_env.trait_is_open(name),
+                          local_supertraits,
+                        )
+                        let impls = imported_env.trait_impls_for(name)
+                        for impl_def in impls {
+                          env.add_trait_impl(local_name, impl_def)
+                        }
+                      }
                       match imported_env.get_scheme(name) {
                         Some(scheme) => env.set_scheme(local_name, scheme)
                         None => ()
@@ -246,6 +319,12 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
         defined[name] = true
       @core.Stmt::EnumDef(name~, ..) => defined[name] = true
       @core.Stmt::TypeAlias(name~, ..) => defined[name] = true
+      @core.Stmt::TraitDef(name~, exported~, ..) => {
+        defined[name] = true
+        if exported {
+          exports[name] = true
+        }
+      }
       @core.Stmt::ExportLet(name~, ..) => {
         defined[name] = true
         exports[name] = true

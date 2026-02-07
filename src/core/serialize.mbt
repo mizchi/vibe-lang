@@ -99,10 +99,16 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_type_to(target, buf)
       buf.write_string("}}")
     }
-    Stmt::TraitDef(name~, ..) => {
-      buf.write_string("{\"TraitDef\":")
+    Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, ..) => {
+      buf.write_string("{\"TraitDef\":{\"name\":")
       serialize_string_to(name, buf)
-      buf.write_char('}')
+      buf.write_string(",\"supertraits\":")
+      serialize_strings_to(supertraits, buf)
+      buf.write_string(",\"open_impl\":")
+      buf.write_string(open_impl.to_string())
+      buf.write_string(",\"exported\":")
+      buf.write_string(exported.to_string())
+      buf.write_string("}}")
     }
     Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) => {
       buf.write_string("{\"TraitImpl\":{\"target\":")

@@ -86,10 +86,40 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let target = parse_type(get_field(inner, "target"))
         return Stmt::TypeAlias(name~, params~, target~, span=zero)
       }
-      "TraitDef" => {
-        let name = expect_string(value)
-        return Stmt::TraitDef(name~, span=zero)
-      }
+      "TraitDef" =>
+        match value {
+          Json::String(name) =>
+            return Stmt::TraitDef(
+              name~,
+              supertraits=[],
+              open_impl=false,
+              exported=false,
+              span=zero,
+            )
+          _ => {
+            let inner = expect_object(value)
+            let name = get_string(inner, "name")
+            let supertraits = match inner.get("supertraits") {
+              Some(v) => parse_strings(v)
+              None => []
+            }
+            let open_impl = match inner.get("open_impl") {
+              Some(v) => expect_bool(v)
+              None => false
+            }
+            let exported = match inner.get("exported") {
+              Some(v) => expect_bool(v)
+              None => false
+            }
+            return Stmt::TraitDef(
+              name~,
+              supertraits~,
+              open_impl~,
+              exported~,
+              span=zero,
+            )
+          }
+        }
       "TraitImpl" => {
         let inner = expect_object(value)
         let type_params = parse_type_params(inner.get("type_params"))

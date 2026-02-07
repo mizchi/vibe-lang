@@ -68,9 +68,14 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, target.structural_hash())
       h
     }
-    Stmt::TraitDef(name~, ..) => {
+    Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, ..) => {
       let mut h = 0x54726169 // "Trai"
       h = combine_hash(h, name.hash())
+      for supertrait in supertraits {
+        h = combine_hash(h, supertrait.hash())
+      }
+      h = combine_hash(h, open_impl.hash())
+      h = combine_hash(h, exported.hash())
       h
     }
     Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) => {
