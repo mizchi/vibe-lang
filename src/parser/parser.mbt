@@ -3,7 +3,6 @@
 suberror ParseError {
   UnexpectedToken(expected~ : String, got~ : String, span~ : @core.Span)
   UnexpectedEof(span~ : @core.Span)
-  InvalidHashSuffix(value~ : String, span~ : @core.Span)
 } derive(Show, Eq)
 
 ///|
@@ -32,14 +31,6 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
       @core.Diagnostic::{
         stage: "parse",
         message: "unexpected end of file",
-        span: Some(span),
-        hint: None,
-        note: None,
-      }
-    ParseError::InvalidHashSuffix(value~, span~) =>
-      @core.Diagnostic::{
-        stage: "parse",
-        message: "invalid hash suffix: " + value,
         span: Some(span),
         hint: None,
         note: None,
@@ -203,11 +194,9 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
     k if k == enum_kw() => self.parse_enum_stmt()
     k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
-    k if k == alias_kw() => self.parse_alias_stmt()
     k if k == import_kw() => self.parse_import_stmt()
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_block()
-    k if k == flake_kw() => self.parse_flake_block()
     _ => self.parse_expr_stmt()
   }
 }
@@ -298,17 +287,6 @@ fn Parser::parse_type_alias_stmt(self : Parser) -> Unit {
   self.builder.finish_node()
 }
 
-///|
-fn Parser::parse_flake_block(self : Parser) -> Unit {
-  self.builder.start_node(flake_block())
-  self.bump() // flake
-  self.skip_trivia()
-  self.expect(lbrace())
-  self.skip_balanced_braces()
-  self.builder.finish_node()
-}
-
-///|
 fn Parser::parse_test_block(self : Parser) -> Unit {
   self.builder.start_node(test_block())
   self.bump() // test
@@ -322,24 +300,6 @@ fn Parser::parse_test_block(self : Parser) -> Unit {
   self.builder.finish_node()
 }
 
-///|
-fn Parser::parse_alias_stmt(self : Parser) -> Unit {
-  self.builder.start_node(alias_stmt())
-  self.bump() // alias
-  self.skip_trivia()
-  self.expect(name())
-  self.skip_trivia()
-  self.expect(eq())
-  self.skip_trivia()
-  self.expect(name())
-  self.skip_trivia()
-  if self.at(semicolon()) {
-    self.bump()
-  }
-  self.builder.finish_node()
-}
-
-///|
 fn Parser::parse_import_stmt(self : Parser) -> Unit {
   self.builder.start_node(import_stmt())
   self.bump() // import
@@ -994,14 +954,29 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == enum_kw() => self.parse_enum_stmt()
     k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
-    k if k == alias_kw() => self.parse_alias_stmt()
     k if k == import_kw() => self.parse_import_stmt()
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_stmt()
-    k if k == flake_kw() => self.parse_flake_stmt()
     k if k == name() => {
+      let tok = self.peek()
       let next = self.peek_non_trivia_kind(self.pos + 1)
-      if next == eq() || is_compound_assign(next) {
+      let next2 = self.peek_non_trivia_kind(self.pos + 2)
+      if tok.text() == "alias" && next == name() && next2 == eq() {
+        raise ParseError::UnexpectedToken(
+          expected="`alias` statement is removed; use `type` for type aliases",
+          got=tok.text(),
+          span=self.token_span(),
+        )
+      }
+      if tok.text() == "flake" && next == lbrace() {
+        raise ParseError::UnexpectedToken(
+          expected="`flake` block is removed",
+          got=tok.text(),
+          span=self.token_span(),
+        )
+      }
+      let assign_next = self.peek_non_trivia_kind(self.pos + 1)
+      if assign_next == eq() || is_compound_assign(assign_next) {
         self.parse_assign_stmt()
       } else {
         self.parse_expr_or_index_assign_stmt()
@@ -1316,34 +1291,6 @@ fn param_set_from_params(params : Array[String]) -> Map[String, Bool] {
   set
 }
 
-///|
-fn AstParser::parse_flake_stmt(self : AstParser) -> @core.Stmt raise ParseError {
-  let start = self.pos
-  let _ = self.expect(flake_kw(), "flake")
-  let _ = self.expect(lbrace(), "{")
-  let buf = StringBuilder::new()
-  let mut depth = 1
-  while depth > 0 {
-    let tok = self.peek()
-    if tok.kind() == eof() {
-      raise ParseError::UnexpectedEof(span=self.token_span())
-    }
-    self.pos += 1
-    if tok.kind() == lbrace() {
-      depth += 1
-    } else if tok.kind() == rbrace() {
-      depth -= 1
-      if depth == 0 {
-        break
-      }
-    }
-    buf.write_string(tok.text())
-  }
-  let span = self.span_from(start)
-  @core.Stmt::Flake(raw=buf.to_string(), span~)
-}
-
-///|
 fn AstParser::parse_test_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let start = self.pos
   let _ = self.expect(test_kw(), "test")
@@ -1376,82 +1323,6 @@ fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
   @core.Module::{ stmts, }
 }
 
-///|
-
-///|
-fn split_hash_optional(
-  name : String,
-  span : @core.Span,
-) -> @core.Ref? raise ParseError {
-  let chars : Array[Char] = []
-  for c in name {
-    chars.push(c)
-  }
-  let mut hash_pos = -1
-  let mut hash_count = 0
-  for i in 0..<chars.length() {
-    if chars[i] == '#' {
-      hash_count += 1
-      if hash_count == 1 {
-        hash_pos = i
-      }
-    }
-  }
-  if hash_count == 0 {
-    return None
-  }
-  if hash_count > 1 || hash_pos <= 0 || hash_pos >= chars.length() - 1 {
-    raise ParseError::InvalidHashSuffix(value=name, span~)
-  }
-  let left = StringBuilder::new()
-  for i in 0..<hash_pos {
-    left.write_char(chars[i])
-  }
-  let right = StringBuilder::new()
-  for i in (hash_pos + 1)..<chars.length() {
-    right.write_char(chars[i])
-  }
-  Some(@core.Ref::{
-    name: left.to_string(),
-    hash_prefix: Some(right.to_string()),
-  })
-}
-
-///|
-fn AstParser::parse_alias_stmt(self : AstParser) -> @core.Stmt raise ParseError {
-  let start = self.pos
-  let _ = self.expect(alias_kw(), "alias")
-  let name_start = self.pos
-  let name_tok = self.expect(name(), "name")
-  let name_span = self.span_from(name_start)
-  let _ = self.expect(eq(), "=")
-  let target_start = self.pos
-  let target_tok = self.expect(name(), "name#hash")
-  let target_span = self.span_from(target_start)
-  let _ = self.eat(semicolon())
-  let target = match split_hash_optional(target_tok.text(), target_span) {
-    Some(r) => {
-      if r.name.is_empty() || r.hash_prefix is None {
-        raise ParseError::InvalidHashSuffix(
-          value=target_tok.text(),
-          span=target_span,
-        )
-      }
-      @core.AliasTarget::Module(r)
-    }
-    None => @core.AliasTarget::Name(target_tok.text())
-  }
-  let name_ref = split_hash_optional(name_tok.text(), name_span)
-  match name_ref {
-    Some(_) =>
-      raise ParseError::InvalidHashSuffix(value=name_tok.text(), span=name_span)
-    None => ()
-  }
-  let span = self.span_from(start)
-  @core.Stmt::Alias(name=name_tok.text(), target~, span~)
-}
-
-///|
 fn AstParser::parse_import_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
@@ -3926,8 +3797,6 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
     // Non-expression statements pass through
     @core.Stmt::EnumDef(..)
     | @core.Stmt::TypeAlias(..)
-    | @core.Stmt::Flake(..)
-    | @core.Stmt::Alias(..)
     | @core.Stmt::Import(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ExportEnumDef(..)

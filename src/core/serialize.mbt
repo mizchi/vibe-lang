@@ -99,18 +99,6 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_type_to(target, buf)
       buf.write_string("}}")
     }
-    Stmt::Flake(raw~, ..) => {
-      buf.write_string("{\"Flake\":")
-      serialize_string_to(raw, buf)
-      buf.write_char('}')
-    }
-    Stmt::Alias(name~, target~, ..) => {
-      buf.write_string("{\"Alias\":{\"name\":")
-      serialize_string_to(name, buf)
-      buf.write_string(",\"target\":")
-      serialize_alias_target_to(target, buf)
-      buf.write_string("}}")
-    }
     Stmt::Import(spec~, source~, ..) => {
       buf.write_string("{\"Import\":{\"source\":")
       serialize_module_ref_to(source, buf)
@@ -767,34 +755,6 @@ fn serialize_struct_fields_to(
     buf.write_char('}')
   }
   buf.write_char(']')
-}
-
-///|
-fn serialize_alias_target_to(target : AliasTarget, buf : StringBuilder) -> Unit {
-  match target {
-    AliasTarget::Module(r) => {
-      buf.write_string("{\"Module\":")
-      serialize_ref_to(r, buf)
-      buf.write_char('}')
-    }
-    AliasTarget::Name(name) => {
-      buf.write_string("{\"Name\":")
-      serialize_string_to(name, buf)
-      buf.write_char('}')
-    }
-  }
-}
-
-///|
-fn serialize_ref_to(r : Ref, buf : StringBuilder) -> Unit {
-  buf.write_string("{\"hash_prefix\":")
-  match r.hash_prefix {
-    Some(h) => serialize_string_to(h, buf)
-    None => buf.write_string("null")
-  }
-  buf.write_string(",\"name\":")
-  serialize_string_to(r.name, buf)
-  buf.write_char('}')
 }
 
 ///|

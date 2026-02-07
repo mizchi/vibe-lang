@@ -73,17 +73,6 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, expr.structural_hash())
       h
     }
-    Stmt::Flake(raw~, ..) => {
-      let mut h = 0x466c616b // "Flak"
-      h = combine_hash(h, raw.hash())
-      h
-    }
-    Stmt::Alias(name~, target~, ..) => {
-      let mut h = 0x416c6961 // "Alia"
-      h = combine_hash(h, name.hash())
-      h = combine_hash(h, target.structural_hash())
-      h
-    }
     Stmt::Import(spec~, source~, ..) => {
       let mut h = 0x496d706f // "Impo"
       h = combine_hash(h, spec.structural_hash())
@@ -499,21 +488,6 @@ fn EffectAtom::structural_hash(self : EffectAtom) -> Int {
     EffectAtom::Const(name) => combine_hash(0x436f6e73, name.hash())
     EffectAtom::Var(name) => combine_hash(0x56617200, name.hash())
   }
-}
-
-///|
-fn AliasTarget::structural_hash(self : AliasTarget) -> Int {
-  match self {
-    AliasTarget::Module(r) => combine_hash(0x4d6f6475, r.structural_hash())
-    AliasTarget::Name(n) => combine_hash(0x4e616d65, n.hash())
-  }
-}
-
-///|
-fn Ref::structural_hash(self : Ref) -> Int {
-  let mut h = self.name.hash()
-  h = combine_hash(h, self.hash_prefix.map(fn(p) { p.hash() }).unwrap_or(0))
-  h
 }
 
 ///|

@@ -11,12 +11,6 @@ pub(all) struct Ref {
 } derive(Show, Eq)
 
 ///|
-pub(all) enum AliasTarget {
-  Module(Ref)
-  Name(String)
-} derive(Show, Eq)
-
-///|
 pub(all) enum Pat {
   Wildcard(span~ : Span)
   Bind(name~ : String, span~ : Span)
@@ -109,8 +103,6 @@ pub(all) enum Stmt {
     span~ : Span
   )
   Expr(expr~ : Expr, span~ : Span)
-  Flake(raw~ : String, span~ : Span)
-  Alias(name~ : String, target~ : AliasTarget, span~ : Span)
   Import(spec~ : ImportSpec, source~ : ModuleRef, span~ : Span)
   Test(name~ : String?, body~ : Module, span~ : Span)
   LetMut(name~ : String, expr~ : Expr, span~ : Span)
@@ -268,8 +260,6 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::EnumDef(span~, ..)
     | Stmt::TypeAlias(span~, ..)
     | Stmt::Expr(span~, ..)
-    | Stmt::Flake(span~, ..)
-    | Stmt::Alias(span~, ..)
     | Stmt::Import(span~, ..)
     | Stmt::Test(span~, ..)
     | Stmt::LetMut(span~, ..)

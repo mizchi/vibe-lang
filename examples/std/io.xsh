@@ -1,14 +1,14 @@
-// High-level stdio API built on wasm/component-friendly char I/O builtins.
+// High-level stdio API.
+// Stream builtins (for TUI-like usage):
+// - stdout_write_stream(text: String) with {Stdout}
+// - stdin_read_stream(max_bytes: Int) -> String with {Stdin}
+// Char builtins (compatibility):
 // - stdout_write_char(code: Int) with {Stdout}
 // - stdin_read_char() -> Int with {Stdin}
 
 export let stdout_write = (s: String) -> Unit with {Stdout} {
   do {
-    let mut i = 0
-    while i < string_length(s) {
-      stdout_write_char(string_char_code_at(s, i))
-      i = i + 1
-    }
+    stdout_write_stream(s)
   }
 }
 
@@ -16,6 +16,12 @@ export let stdout_writeln = (s: String) -> Unit with {Stdout} {
   do {
     stdout_write(s)
     stdout_write_char(10)
+  }
+}
+
+export let stdin_read = (max_bytes: Int) -> String with {Stdin} {
+  do {
+    stdin_read_stream(max_bytes)
   }
 }
 
@@ -50,6 +56,16 @@ test "stdout helpers typecheck" {
     do {
       stdout_write(s)
       stdout_writeln(s)
+    }
+  }
+  assert(true)
+}
+
+test "stream helpers typecheck" {
+  let _ = (n: Int, s: String) -> String with {Stdin, Stdout} {
+    do {
+      stdout_write(s)
+      stdin_read(n)
     }
   }
   assert(true)

@@ -29,7 +29,9 @@ xsh language prototype and runtime (MoonBit).
 | `sh(cmd)` | native only | host import | Execute shell command |
 | `path(str)` | native only | host import | Normalize path |
 | `stdout_write_char(code)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write one char code to stdout |
+| `stdout_write_stream(text)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write a string chunk to stdout |
 | `stdin_read_char()` | returns `-1` on eof | `wasi:cli/stdin` + `wasi:io/streams` import | Read one char code from stdin |
+| `stdin_read_stream(max)` | returns `\"\"` on eof/error | `wasi:cli/stdin` + `wasi:io/streams` import | Read up to `max` bytes as a string chunk |
 | `await expr` | interpreter | stack-switching (x86_64) | Async operation |
 
 ## Development
@@ -46,6 +48,8 @@ just release-check  # full check before release
 
 ```bash
 # Run xsh script
+just run run examples/basics.xsh
+# (comprehensive syntax tour)
 just run run examples/syntax.xsh
 
 # Run tests in script
@@ -77,6 +81,10 @@ just build-repl-wasi-wasm
 just component-run examples/std/test_import.xsh
 # stdin 経由の実行も可能:
 printf 'A' | just component-run your_stdio_script.xsh
+# stream TUI デモ:
+printf 'hello\nworld\n' | just component-run examples/wasm/tui_stream_demo.xsh
+# 簡易デモ実行タスク:
+just demo-tui-stream
 
 # moonix で実行（moonix の CLI 差分はランチャで吸収）
 just component-run-moonix examples/std/test_import.xsh

@@ -1610,7 +1610,9 @@ fn infer_expr_kind_with(
         "map_get" => ValueKind::I32
         "sleep" => ValueKind::I32
         "stdout_write_char" => ValueKind::I32
+        "stdout_write_stream" => ValueKind::I32
         "stdin_read_char" => ValueKind::I32
+        "stdin_read_stream" => ValueKind::I32
         "string_from_char_code" => ValueKind::I32
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
@@ -1991,7 +1993,11 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         ctx.need_sleep = true
       } else if name == "stdout_write_char" {
         ctx.need_stdout_write_char = true
+      } else if name == "stdout_write_stream" {
+        ctx.need_stdout_write_char = true
       } else if name == "stdin_read_char" {
+        ctx.need_stdin_read_char = true
+      } else if name == "stdin_read_stream" {
         ctx.need_stdin_read_char = true
       } else if name == "string_from_char_code" {
         ctx.need_heap = true
@@ -2493,7 +2499,9 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "float_to_double" ||
         name == "double_to_float" ||
         name == "stdout_write_char" ||
+        name == "stdout_write_stream" ||
         name == "stdin_read_char" ||
+        name == "stdin_read_stream" ||
         name == "string_from_char_code" {
         return true
       }
@@ -2546,6 +2554,22 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
     @core.Expr::Try(try_body~, catch_body~, span~) => {
       let _ = span
       needs_heap_block(ctx, try_body) || needs_heap_block(ctx, catch_body)
+    }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, cond) || needs_heap_block(ctx, body)
+    }
+    @core.Expr::Raise(value~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, value)
+    }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, expr)
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
@@ -3895,6 +3919,51 @@ fn compile_expr(
         emit_i32_add(buf)
         emit_call(buf, import_index_stdout_write_stream(ctx))
         emit_i32_const_raw(buf, tag_int_value(0))
+      } else if name == "stdout_write_stream" {
+        if ctx.use_js_strings {
+          raise WasmGenError::Unsupported(
+            "stdout_write_stream requires --wasm backend",
+          )
+        }
+        let pos_args = extract_positional_exprs(args, "stdout_write_stream")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("stdout_write_stream arity")
+        }
+        require_heap(ctx)
+        let raw_local = alloc_temp_local(ctx)
+        let len_local = alloc_temp_local(ctx)
+        let out_stream_local = alloc_temp_local(ctx)
+        let ret_area_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_local_set(buf, raw_local)
+        emit_local_get(buf, raw_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, len_local)
+        emit_local_get(buf, len_local)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_i32_const_raw(buf, tag_int_value(0))
+        buf.push((5).to_byte()) // else
+        emit_call(buf, import_index_stdout_get_stream(ctx))
+        emit_local_set(buf, out_stream_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_local_set(buf, ret_area_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_i32_const_raw(buf, align4(8))
+        emit_i32_add(buf)
+        emit_local_set(buf, ctx.heap_local)
+        emit_local_get(buf, out_stream_local)
+        emit_local_get(buf, raw_local)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_add(buf)
+        emit_local_get(buf, len_local)
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_stdout_write_stream(ctx))
+        emit_i32_const_raw(buf, tag_int_value(0))
+        buf.push((11).to_byte()) // end if
       } else if name == "stdin_read_char" {
         let pos_args = extract_positional_exprs(args, "stdin_read_char")
         if pos_args.length() != 0 {
@@ -3953,6 +4022,129 @@ fn compile_expr(
         buf.push((11).to_byte()) // end if
         buf.push((5).to_byte()) // else
         emit_i32_const_raw(buf, tag_int_value(-1))
+        buf.push((11).to_byte()) // end if
+      } else if name == "stdin_read_stream" {
+        if ctx.use_js_strings {
+          raise WasmGenError::Unsupported(
+            "stdin_read_stream requires --wasm backend",
+          )
+        }
+        let pos_args = extract_positional_exprs(args, "stdin_read_stream")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("stdin_read_stream arity")
+        }
+        require_heap(ctx)
+        let in_stream_local = alloc_temp_local(ctx)
+        let req_len_local = alloc_temp_local(ctx)
+        let ret_area_local = alloc_temp_local(ctx)
+        let data_ptr_local = alloc_temp_local(ctx)
+        let data_len_local = alloc_temp_local(ctx)
+        let obj_local = alloc_temp_local(ctx)
+        let copy_i_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_s(buf)
+        emit_local_set(buf, req_len_local)
+        emit_local_get(buf, req_len_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_lt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // empty result
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, req_len_local)
+        buf.push((11).to_byte()) // end if
+        emit_call(buf, import_index_stdin_get_stream(ctx))
+        emit_local_set(buf, in_stream_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_local_set(buf, ret_area_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_i32_const_raw(buf, align4(16))
+        emit_i32_add(buf)
+        emit_local_set(buf, ctx.heap_local)
+        // imported `blocking-read` may call cabi_realloc; sync local heap first.
+        if ctx.heap_local >= 0 && ctx.use_heap_global {
+          emit_local_get(buf, ctx.heap_local)
+          emit_global_set(buf, ctx.heap_global)
+        }
+        emit_local_get(buf, in_stream_local)
+        emit_local_get(buf, req_len_local)
+        // i64.extend_i32_u
+        buf.push((173).to_byte())
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_stdin_read_stream(ctx))
+        // reload heap in case cabi_realloc bumped it.
+        if ctx.heap_local >= 0 && ctx.use_heap_global {
+          emit_global_get(buf, ctx.heap_global)
+          emit_local_set(buf, ctx.heap_local)
+        }
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, data_ptr_local)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 8)
+        emit_local_set(buf, data_len_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_local_tee(buf, obj_local)
+        emit_local_get(buf, data_len_local)
+        emit_i32_const_raw(buf, 11) // align4(8 + len) == (len + 11) & -4
+        emit_i32_add(buf)
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_i32_add(buf)
+        emit_local_set(buf, ctx.heap_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_local_get(buf, data_len_local)
+        emit_i32_store(buf, 4)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, copy_i_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, copy_i_local)
+        emit_local_get(buf, data_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, obj_local)
+        emit_local_get(buf, copy_i_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, data_ptr_local)
+        emit_local_get(buf, copy_i_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_store8(buf, 8)
+        emit_local_get(buf, copy_i_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, copy_i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, tag_obj)
+        emit_i32_or(buf)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, ctx.heap_local)
+        emit_local_tee(buf, obj_local)
+        emit_i32_const_raw(buf, align4(8))
+        emit_i32_add(buf)
+        emit_local_set(buf, ctx.heap_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, tag_obj)
+        emit_i32_or(buf)
         buf.push((11).to_byte()) // end if
       } else if name == "string_from_char_code" {
         let pos_args = extract_positional_exprs(args, "string_from_char_code")
@@ -4619,13 +4811,6 @@ fn compile_stmt(
         emit_drop(buf)
       }
     }
-    @core.Stmt::Flake(raw~, span~) => {
-      let _ = raw
-      let _ = span
-      if is_last {
-        emit_i32_const_tagged(buf, 0)
-      }
-    }
     @core.Stmt::Test(name~, body~, span~) => {
       let _ = name
       let _ = body
@@ -4633,12 +4818,6 @@ fn compile_stmt(
       if is_last {
         emit_i32_const_tagged(buf, 0)
       }
-    }
-    @core.Stmt::Alias(name~, target~, span~) => {
-      let _ = name
-      let _ = target
-      let _ = span
-      raise WasmGenError::Unsupported("alias")
     }
     @core.Stmt::Import(spec~, source~, span~) => {
       let _ = spec

@@ -2,8 +2,8 @@
 /// Tests for xsh prototype
 test "xsh detection" {
   assert_true(is_xsh_script("let x = 1"))
-  assert_true(is_xsh_script("flake { }"))
-  assert_true(is_xsh_script("alias foo = bar#abc"))
+  assert_false(is_xsh_script("flake { }"))
+  assert_false(is_xsh_script("alias foo = bar#abc"))
   assert_true(is_xsh_script("enum Option[T] { Some(T), None }"))
   assert_false(is_xsh_script("echo hello"))
 }
@@ -39,15 +39,44 @@ test "xsh store gc" {
 }
 
 ///|
-test "xsh alias statement" {
+test "xsh alias statement is removed" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt.eval_script("alias foo = bar#abc")
-  match rt.get_alias("foo") {
-    Some(r) => {
-      assert_eq(r.name, "bar")
-      assert_eq(r.hash_prefix, Some("abc"))
-    }
-    None => fail("missing alias")
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "alias foo = bar#abc",
+  )
+  match result {
+    Err(_) => ()
+    _ => fail("expected parse error")
+  }
+}
+
+///|
+test "xsh flake statement is removed" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script("flake { }")
+  match result {
+    Err(_) => ()
+    _ => fail("expected parse error")
+  }
+}
+
+///|
+test "xsh alias can be used as identifier" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let alias = 41\nlet y = alias + 1")
+  match rt.get("y") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int")
+  }
+}
+
+///|
+test "xsh flake can be used as identifier" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("let flake = 41\nlet y = flake + 1")
+  match rt.get("y") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int")
   }
 }
 
@@ -358,6 +387,25 @@ test "xsh stdio builtins require effects" {
 }
 
 ///|
+test "xsh stdio stream builtins require effects" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result_stdout : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Unit { do { stdout_write_stream(\"hi\") } }",
+  )
+  match result_stdout {
+    Err(_) => ()
+    Ok(_) => fail("expected stdout_write_stream effect error")
+  }
+  let result_stdin : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> String { do { stdin_read_stream(8) } }",
+  )
+  match result_stdin {
+    Err(_) => ()
+    Ok(_) => fail("expected stdin_read_stream effect error")
+  }
+}
+
+///|
 test "xsh string_from_char_code and stdio eval" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
@@ -384,6 +432,26 @@ test "xsh string_from_char_code and stdio eval" {
   match rt.get("d") {
     Some(@core.Value::String(v)) => assert_eq(v, "AB")
     _ => fail("missing d")
+  }
+}
+
+///|
+test "xsh stdio stream builtins eval" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let read_chunk = () -> String with {Stdin} { do { stdin_read_stream(8) } }\n" +
+    "let write_chunk = (s: String) -> Unit with {Stdout} { do { stdout_write_stream(s) } }\n" +
+    "let r = read_chunk()\n" +
+    "let u = write_chunk(\"hi\")\n" +
+    "r",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(r) => assert_eq(r.effects.length(), 2)
+  }
+  match rt.get("r") {
+    Some(@core.Value::String(v)) => assert_eq(v, "")
+    _ => fail("missing r")
   }
 }
 
@@ -482,17 +550,14 @@ test "xsh let rec requires return type" {
 }
 
 ///|
-test "xsh alias publishes name to address" {
+test "xsh type alias still works" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt.eval_script("let f = (x: Int) { x }")
-  let addr = match rt.get_addr("f") {
-    Some(a) => a
-    None => fail("missing addr")
-  }
-  let _ = rt.eval_script("alias mizchi/mylib@1.0.0/myfunc = f")
-  match rt.get_name_alias("mizchi/mylib@1.0.0/myfunc") {
-    Some(a) => assert_eq(a, addr)
-    None => fail("missing name alias")
+  let _ = rt.eval_script(
+    "type MyInt = Int\nlet id = (x: MyInt) -> MyInt { x }\nlet y = id(42)",
+  )
+  match rt.get("y") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int")
   }
 }
 

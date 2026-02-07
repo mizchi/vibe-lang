@@ -291,24 +291,13 @@ fn build_alias_map_from_ast(
   ast : @core.Module,
   imports : Array[ImportSpec],
 ) -> Map[String, @core.Ref] {
+  let _ = ast
   let aliases : Map[String, @core.Ref] = {}
   for imp in imports {
     match imp.module_ref {
       Some(m) =>
         aliases[imp.alias_name] = @core.Ref::{ name: m, hash_prefix: None }
       None => ()
-    }
-  }
-  for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Alias(name~, target~, span~) => {
-        let _ = span
-        match target {
-          @core.AliasTarget::Module(r) => aliases[name] = r
-          @core.AliasTarget::Name(_) => ()
-        }
-      }
-      _ => ()
     }
   }
   aliases

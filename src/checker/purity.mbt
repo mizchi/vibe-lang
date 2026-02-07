@@ -400,7 +400,9 @@ pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
 fn is_effectful_call_name(name : String) -> Bool {
   name == "sh" ||
   name == "stdout_write_char" ||
+  name == "stdout_write_stream" ||
   name == "stdin_read_char" ||
+  name == "stdin_read_stream" ||
   name == "array_builder" ||
   name == "array_builder_push" ||
   name == "array_builder_freeze" ||

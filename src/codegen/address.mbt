@@ -343,17 +343,6 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         buf.write_string(expr_to_addr_sexp(block_ctx, expr))
         buf.write_char(')')
       }
-      @core.Stmt::Flake(raw~, span~) => {
-        let _ = raw
-        let _ = span
-        buf.write_string(" (flake)")
-      }
-      @core.Stmt::Alias(name~, target~, span~) => {
-        let _ = name
-        let _ = target
-        let _ = span
-        buf.write_string(" (alias)")
-      }
       @core.Stmt::Import(spec~, source~, span~) => {
         let _ = spec
         let _ = source
@@ -840,6 +829,10 @@ fn is_builtin(name : String) -> Bool {
   name == "path" ||
   name == "addr" ||
   name == "sh" ||
+  name == "stdout_write_char" ||
+  name == "stdout_write_stream" ||
+  name == "stdin_read_char" ||
+  name == "stdin_read_stream" ||
   name == "__add" ||
   name == "__sub" ||
   name == "__mul" ||

@@ -15,7 +15,7 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 If the first non-trivia token is one of the xsh keywords, treat the script as xsh.
 Otherwise, fall back to the POSIX sh parser.
 
-Reserved leading keywords: `let`, `fn`, `type`, `effect`, `alias`, `import`, `flake`, `test`, `try`.
+Reserved leading keywords: `let`, `fn`, `type`, `effect`, `import`, `test`, `try`.
 
 ## Effects
 
@@ -38,7 +38,9 @@ Rules:
 - Current builtin mapping:
   - `sh(...)` requires `{Stdout}`
   - `stdout_write_char(...)` requires `{Stdout}`
+  - `stdout_write_stream(...)` requires `{Stdout}`
   - `stdin_read_char()` requires `{Stdin}`
+  - `stdin_read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
   (all effectful builtins still require `do { ... }`).
 
@@ -97,12 +99,16 @@ String (aligned with wasm js-string builtins when using `--wasm-js-string`):
 - `string_concat(left, right)` -> `String`
 - `string_equals(left, right)` -> `Bool`
 
-StdIO (char-level primitives for wasm/component-friendly interop):
+StdIO (wasi stream primitives for wasm/component-friendly interop):
 - `stdout_write_char(code)` -> `Unit` with `{Stdout}`
+- `stdout_write_stream(text)` -> `Unit` with `{Stdout}` (chunk write)
 - `stdin_read_char()` -> `Int` with `{Stdin}` (`-1` = EOF)
+- `stdin_read_stream(max-bytes)` -> `String` with `{Stdin}` (`""` = EOF/error)
 - component WIT/wasm import mapping:
   - `stdout_write_char` -> `wasi:cli/stdout@0.2.0#get-stdout` + `wasi:io/streams@0.2.0#[method]output-stream.blocking-write-and-flush`
+  - `stdout_write_stream` -> same as `stdout_write_char` (single host call for whole chunk)
   - `stdin_read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
+  - `stdin_read_stream` -> same as `stdin_read_char` (cabi read-buffer -> xsh string)
 
 ## WASM Primitive Type Aliases
 
@@ -126,8 +132,8 @@ Std module:
 Functions are identified by their content hash (`FnId`), not by names.
 
 - `name#abc` = name with hash suffix prefix (shortest unique allowed).
-- `alias foo = bar#abc` registers `foo` as a module alias to that referent.
-- `name` without a hash is resolved through alias tables. Ambiguity is an error.
+- Module aliases are provided by `import ... as ...` / named import renames.
+- Standalone `alias ... = ...` and `flake { ... }` statements are removed.
 
 Hash prefix resolution:
 - If a prefix uniquely matches a known `FnId`, it resolves.
@@ -247,7 +253,7 @@ CLI:
 - `just bootstrap-moonix [src]` tries to produce `moonix` binary from a local moonix checkout.
 - TUI completion sources: builtins + PATH commands + history.
 - `just install` installs a native binary to `~/.local/bin/xsh` (override with `XSH_PREFIX`).
-- Imports are loaded recursively (imports of imports) for hashing/alias resolution.
+- Imports are loaded recursively (imports of imports) for hashing and import-rename resolution.
 - Import cycle reporting is TODO.
 
 Fixtures:
@@ -275,7 +281,7 @@ Bench:
 - `compile_module_wasm(db, path)` emits a minimal wasm-gc compatible module (MVP bytecode).
 - `compile_module_wasm_js_string(db, path)` emits a module that uses wasm js-string builtins.
 - Supported: `let`, expression statements, block expressions `{ ... }`, `do { ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; only inside `do`), `add/sub/eq/lt` on `Int`, `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
-- Not supported: `import`, `alias`, qualified calls, or external symbols. Tuple/record patterns are supported, but nested tuple/record patterns are not.
+- Not supported: `import`, qualified calls, or external symbols. Tuple/record patterns are supported, but nested tuple/record patterns are not.
 - Exports: `run` (i32) and `memory`. Import: `xsh.sh` when `sh(...)` is used.
 - `--wasm-js-string` imports:
   - `wasm:js-string.length/charCodeAt/substring/concat/equals` (as needed).
@@ -304,7 +310,7 @@ Bench:
 ### WASM backend gaps (for shell usage)
 
 - No persistent evaluator API (only a single `run` export; no REPL-style eval).
-- No `import` / `alias` statements; no qualified names or qualified calls.
+- No `import` statements; no qualified names or qualified calls.
 - Builtins are limited to `add/sub/eq/lt/not/and/or/path/sh` with fixed arity.
 - `sh` / `path` depend on host imports (`xsh.sh`, `xsh.path`).
 - No user-defined functions, modules, or recursion in wasm backend yet.
@@ -329,14 +335,13 @@ Only self recursion is allowed:
 Top-level:
 ```
 (module
-  (defs <def> ...)
-  (aliases <alias> ...))
+  (defs <def> ...))
 ```
 
 Definitions:
 ```
 (def
-  (name foo#abc123)       ; human alias (not hashed)
+  (name foo#abc123)       ; human-readable name (not hashed)
   (id   sha1:deadbeef...) ; content hash
   (params <param> ...)
   (ret <type>)
@@ -433,7 +438,7 @@ IR is produced from typed AST with canonicalization.
 
 - `compile_module(db, path)`:
   - parse + type check
-  - import alias resolution
+  - import rename resolution
   - canonical S-expression IR generation
   - Git blob hash (`FnId`-style) + module ref
 - `Runtime::run_compiled(compiled)`:
@@ -442,11 +447,11 @@ IR is produced from typed AST with canonicalization.
 CST node kinds (minimum set):
 - tokens: keywords, literals, identifiers, punctuation, trivia, error
 - nodes: `source_file`, `let_stmt`, `fn_def`, `param_list`, `param`,
-  `type_def`, `effect_def`, `alias_stmt`, `import_stmt`, `flake_block`, `block`, `expr_stmt`,
+  `type_def`, `effect_def`, `import_stmt`, `block`, `expr_stmt`,
   `do_block`, `if_expr`, `match_expr`, `call_expr`, `arg_list`, `name_ref`,
   `literal`, `assign_stmt`, `async_expr`, `await_expr`
 
 Lowering rules:
-- `alias` nodes register aliases, not hashed.
+- import-alias metadata is not hashed.
 - `name#hash` is parsed as `(name, hash_prefix)` then resolved to `FnId`.
 - `self` uses special IR node.

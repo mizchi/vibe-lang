@@ -227,12 +227,11 @@ fn bundle_for_wasm_impl(
   let visited : Map[String, Bool] = {}
   // Collect all dependency definitions in topological order
   collect_dependency_defs(db, path, bundled_stmts, visited)
-  // Add main module statements (excluding imports, aliases, and expanding re-exports)
+  // Add main module statements (excluding imports and expanding re-exports)
   let base_dir = @path.Path(path).dirname().to_string()
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(..) => () // Skip imports
-      @core.Stmt::Alias(..) => () // Skip aliases
       @core.Stmt::ReExport(names~, source~, span=_) =>
         // Expand re-exports in main module
         collect_reexport_defs(
@@ -287,9 +286,8 @@ fn collect_dependency_defs(
         // Handle re-exports: fetch definitions from source module
         @core.Stmt::ReExport(names~, source~, span=_) =>
           collect_reexport_defs(db, base_dir, names, source, out, visited)
-        // Skip imports, exports, aliases in dependencies
+        // Skip imports and exports in dependencies
         @core.Stmt::Import(..)
-        | @core.Stmt::Alias(..)
         | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
         @core.Stmt::Test(..) => ()
@@ -362,25 +360,13 @@ fn collect_reexport_defs(
 }
 
 ///|
-/// Merge alias statements into import alias map.
+/// Build module alias map from imports only.
 fn build_alias_map(
   ast : @core.Module,
   import_aliases : Map[String, @core.Ref],
 ) -> Map[String, @core.Ref] {
-  let aliases = import_aliases
-  for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Alias(name~, target~, span~) => {
-        let _ = span
-        match target {
-          @core.AliasTarget::Module(r) => aliases[name] = r
-          @core.AliasTarget::Name(_) => ()
-        }
-      }
-      _ => ()
-    }
-  }
-  aliases
+  let _ = ast
+  import_aliases
 }
 
 ///|
@@ -451,17 +437,6 @@ fn stmts_to_sexp(
         buf.write_string(" (expr ")
         buf.write_string(expr_to_sexp(expr, aliases))
         buf.write_char(')')
-      }
-      @core.Stmt::Flake(raw~, span~) => {
-        let _ = raw
-        let _ = span
-        buf.write_string(" (flake)")
-      }
-      @core.Stmt::Alias(name~, target~, span~) => {
-        let _ = name
-        let _ = target
-        let _ = span
-
       }
       @core.Stmt::Import(spec~, source~, span~) => {
         let _ = spec

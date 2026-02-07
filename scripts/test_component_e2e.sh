@@ -326,6 +326,43 @@ EOF
   fi
 }
 
+# Test 9: Component stdio stream chunk I/O
+test_component_stdio_stream_chunk() {
+  log_info "Test: Component stdio stream chunk I/O"
+
+  if ! command -v wasmtime >/dev/null 2>&1; then
+    log_info "wasmtime not found, skipping stream chunk test"
+    return
+  fi
+
+  cat > "$TMP_DIR/stdio_stream_chunk.xsh" << 'EOF'
+let run = () -> Int with {Stdin, Stdout} {
+  do {
+    stdout_write_stream("> ")
+    let chunk = stdin_read_stream(4)
+    stdout_write_stream(chunk)
+    stdout_write_char(10)
+    7
+  }
+}
+run()
+EOF
+
+  scripts/component_wkg_stdio.sh "$TMP_DIR/stdio_stream_chunk.xsh" "$TMP_DIR/stdio_stream_chunk.component.wasm" >/dev/null 2>&1 || {
+    log_fail "failed to build stdio stream component"
+    return
+  }
+
+  RESULT=$(printf 'ABCD' | wasmtime --invoke 'run()' "$TMP_DIR/stdio_stream_chunk.component.wasm" 2>/dev/null || true)
+  LAST_LINE=$(printf '%s\n' "$RESULT" | tail -n 1)
+
+  if printf '%s\n' "$RESULT" | grep -q '^> ABCD$' && [ "$LAST_LINE" = "28" ]; then
+    log_pass "stdin_read_stream/stdout_write_stream handle chunk I/O"
+  else
+    log_fail "stream chunk I/O failed: $RESULT"
+  fi
+}
+
 # Run all tests
 echo "========================================"
 echo "xsh Component Model E2E Tests"
@@ -347,6 +384,8 @@ echo ""
 test_wit_types
 echo ""
 test_component_stdio_roundtrip
+echo ""
+test_component_stdio_stream_chunk
 echo ""
 
 echo "========================================"

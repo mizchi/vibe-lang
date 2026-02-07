@@ -47,6 +47,10 @@ component-run file out="" invoke="run()":
       scripts/run_component_stdio.sh {{file}} '' '{{invoke}}'; \
     fi
 
+# Run sample stream-TUI demo with canned stdin
+demo-tui-stream:
+    printf 'hello\nworld\n' | scripts/run_component_stdio.sh examples/wasm/tui_stream_demo.xsh '' 'run()' | awk 'NR==1{prev=$0;next}{print prev;prev=$0} END{if (prev !~ /^-?[0-9]+$/) print prev}'
+
 # Build + run a stdio component with moonix (`run()` by default)
 component-run-moonix file out="" invoke="run()":
     if [ -n "{{out}}" ]; then \

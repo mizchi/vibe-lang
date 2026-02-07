@@ -351,7 +351,9 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
   match name {
     "sh" => [@core.EffectAtom::Const("Stdout")]
     "stdout_write_char" => [@core.EffectAtom::Const("Stdout")]
+    "stdout_write_stream" => [@core.EffectAtom::Const("Stdout")]
     "stdin_read_char" => [@core.EffectAtom::Const("Stdin")]
+    "stdin_read_stream" => [@core.EffectAtom::Const("Stdin")]
     "sleep" => [@core.EffectAtom::Const("Async")]
     _ => []
   }
@@ -950,25 +952,6 @@ fn type_check_stmts(
         let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
 
       }
-      @core.Stmt::Flake(raw~, span~) => {
-        let _ = raw
-        let _ = span
-
-      }
-      @core.Stmt::Alias(name~, target~, span~) =>
-        match target {
-          @core.AliasTarget::Module(_) => ()
-          @core.AliasTarget::Name(target_name) =>
-            match env.get_scheme(target_name) {
-              Some(scheme) => env.set_scheme(name, scheme)
-              None =>
-                raise TypeError::UnknownName(
-                  name=target_name,
-                  span~,
-                  suggestion=find_name_suggestion(env, aliases, target_name),
-                )
-            }
-        }
       @core.Stmt::Import(..) => ()
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
         let scheme = type_let_expr(
@@ -3079,29 +3062,6 @@ fn type_block(
         let _ = span
         last = type_expr_eff(scope_env, expr, aliases, effects, allow_effect)
       }
-      @core.Stmt::Flake(raw~, span~) => {
-        let _ = raw
-        let _ = span
-        last = @core.Type::Unit
-      }
-      @core.Stmt::Alias(name~, target~, span~) => {
-        match target {
-          @core.AliasTarget::Module(_) => ()
-          @core.AliasTarget::Name(target_name) =>
-            match scope_env.get_scheme(target_name) {
-              Some(scheme) => scope_env.set_scheme(name, scheme)
-              None =>
-                raise TypeError::UnknownName(
-                  name=target_name,
-                  span~,
-                  suggestion=find_name_suggestion(
-                    scope_env, aliases, target_name,
-                  ),
-                )
-            }
-        }
-        last = @core.Type::Unit
-      }
       @core.Stmt::Import(spec~, source~, span~) => {
         let _ = spec
         let _ = source
@@ -3488,6 +3448,84 @@ fn type_call(
                   )
                 }
                 @core.Type::Int
+              }
+              "stdout_write_stream" => {
+                let pos_args = extract_positional_args(
+                  args, "stdout_write_stream", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="stdout_write_stream",
+                    span=call_span,
+                  )
+                }
+                require_effects(
+                  env,
+                  effects,
+                  builtin_effects("stdout_write_stream"),
+                  call_span,
+                )
+                if not(allow_effect) {
+                  raise TypeError::EffectNotAllowed(
+                    name="stdout_write_stream",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "stdin_read_stream" => {
+                let pos_args = extract_positional_args(
+                  args, "stdin_read_stream", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="stdin_read_stream",
+                    span=call_span,
+                  )
+                }
+                require_effects(
+                  env,
+                  effects,
+                  builtin_effects("stdin_read_stream"),
+                  call_span,
+                )
+                if not(allow_effect) {
+                  raise TypeError::EffectNotAllowed(
+                    name="stdin_read_stream",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
               }
               "string_from_char_code" => {
                 let pos_args = extract_positional_args(

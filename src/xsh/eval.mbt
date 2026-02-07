@@ -4,6 +4,8 @@ pub enum Effect {
   ShellExec(String)
   StdoutWriteChar(Int)
   StdinReadChar(Int)
+  StdoutWriteStream(String)
+  StdinReadStream(Int, String)
 } derive(Show, Eq)
 
 ///|
@@ -90,18 +92,6 @@ pub fn Runtime::eval_module(
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)
         last = Some(out.value)
-      }
-      @core.Stmt::Flake(..) => last = Some(@core.Value::Unit)
-      @core.Stmt::Alias(name~, target~, ..) => {
-        match target {
-          @core.AliasTarget::Module(r) => self.set_alias(name, r)
-          @core.AliasTarget::Name(target_name) =>
-            match self.addr_env.get(target_name) {
-              Some(addr) => self.set_name_alias(name, addr)
-              None => raise EvalError::UnknownName(target_name)
-            }
-        }
-        last = Some(@core.Value::Unit)
       }
       @core.Stmt::Import(spec~, source~, ..) => {
         // Get the module hash
@@ -847,6 +837,46 @@ fn eval_call(
               let effects = out.effects
               effects.push(Effect::StdinReadChar(code))
               { value: @core.Value::Int(code), effects }
+            }
+            "stdout_write_stream" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "stdout_write_stream",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("stdout_write_stream")
+              }
+              match pos_args[0] {
+                @core.Value::String(text) => {
+                  let effects = out.effects
+                  effects.push(Effect::StdoutWriteStream(text))
+                  { value: @core.Value::Unit, effects }
+                }
+                _ => raise EvalError::BadCall("stdout_write_stream")
+              }
+            }
+            "stdin_read_stream" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "stdin_read_stream",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("stdin_read_stream")
+              }
+              match pos_args[0] {
+                @core.Value::Int(len) => {
+                  if len < 0 {
+                    raise EvalError::BadCall("stdin_read_stream")
+                  }
+                  let chunk = ""
+                  let effects = out.effects
+                  effects.push(Effect::StdinReadStream(len, chunk))
+                  { value: @core.Value::String(chunk), effects }
+                }
+                _ => raise EvalError::BadCall("stdin_read_stream")
+              }
             }
             "addr" => {
               let out = eval_args(rt, args)

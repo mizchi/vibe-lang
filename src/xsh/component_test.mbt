@@ -86,3 +86,30 @@ test "component wit includes wasi stdio imports when used" {
   assert_false(String::contains(wit, "stdin-read-char"))
   assert_true(String::contains(wit, "export run: func() -> s32;"))
 }
+
+///|
+test "component wit includes wasi stdio imports for stream builtins" {
+  let db = XshDb::new()
+  let src =
+    #|let run = () -> Int with {Stdout, Stdin} {
+    #|  do {
+    #|    stdout_write_stream("hello")
+    #|    stdin_read_stream(16)
+    #|    1
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wit = try
+    generate_module_component_wit(db, "main", "local:main", "main")
+  catch {
+    e => fail("wit error: " + e.to_string())
+  } noraise {
+    w => w
+  }
+  assert_true(String::contains(wit, "world main"))
+  assert_true(String::contains(wit, "import wasi:cli/stdout@0.2.0;"))
+  assert_true(String::contains(wit, "import wasi:cli/stdin@0.2.0;"))
+  assert_true(String::contains(wit, "import wasi:io/streams@0.2.0;"))
+  assert_true(String::contains(wit, "export run: func() -> s32;"))
+}

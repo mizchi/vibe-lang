@@ -104,8 +104,6 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
     }
     // Non-definition statements
     @core.Stmt::Expr(..)
-    | @core.Stmt::Flake(..)
-    | @core.Stmt::Alias(..)
     | @core.Stmt::Import(..)
     | @core.Stmt::Test(..)
     | @core.Stmt::Assign(..)
@@ -155,15 +153,12 @@ fn collect_entry_points(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
         let _ = span
         collect_refs_expr(expr, empty_bound, entries)
       }
-      // Flake statements are entry points
-      @core.Stmt::Flake(..) => ()
       // Last let binding is an entry point (its value is returned by 'run')
       @core.Stmt::Let(name~, ..) => if is_last { entries[name] = true }
       @core.Stmt::LetMut(name~, ..) => if is_last { entries[name] = true }
       @core.Stmt::EnumDef(..)
       | @core.Stmt::TypeAlias(..)
       | @core.Stmt::StructDef(..)
-      | @core.Stmt::Alias(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::Test(..)
       | @core.Stmt::Export(..)
@@ -283,8 +278,6 @@ fn filter_reachable_stmts(
         }
       // Non-definition statements are always kept
       @core.Stmt::Expr(..)
-      | @core.Stmt::Flake(..)
-      | @core.Stmt::Alias(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::Test(..)
       | @core.Stmt::Assign(..)
@@ -520,8 +513,6 @@ fn collect_refs_block(
         }
       }
       @core.Stmt::Test(..)
-      | @core.Stmt::Flake(..)
-      | @core.Stmt::Alias(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => ()
@@ -617,6 +608,10 @@ fn dce_is_builtin_name(name : String) -> Bool {
   name == "not" ||
   name == "and" ||
   name == "or" ||
+  name == "stdout_write_char" ||
+  name == "stdout_write_stream" ||
+  name == "stdin_read_char" ||
+  name == "stdin_read_stream" ||
   name == "array_builder" ||
   name == "array_builder_push" ||
   name == "array_builder_freeze" ||

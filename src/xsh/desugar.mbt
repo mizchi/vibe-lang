@@ -53,8 +53,6 @@ fn desugar_stmt(
       @core.Stmt::Test(name~, body=desugar_block(body, scope, aliases), span~)
     @core.Stmt::EnumDef(..) => stmt
     @core.Stmt::TypeAlias(..) => stmt
-    @core.Stmt::Flake(..) => stmt
-    @core.Stmt::Alias(..) => stmt
     @core.Stmt::Import(..) => stmt
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::ExportLet(

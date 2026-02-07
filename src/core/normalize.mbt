@@ -124,9 +124,6 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       )
     Stmt::TypeAlias(name~, params~, target~, ..) =>
       Stmt::TypeAlias(name~, params~, target~, span=zero_span)
-    Stmt::Flake(raw~, ..) => Stmt::Flake(raw~, span=zero_span)
-    Stmt::Alias(name~, target~, ..) =>
-      Stmt::Alias(name~, target~, span=zero_span)
     Stmt::Import(spec~, source~, ..) =>
       Stmt::Import(spec~, source~, span=zero_span)
     Stmt::ExportLet(rec~, name~, expr~, ..) => {

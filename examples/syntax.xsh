@@ -1,10 +1,33 @@
-alias std = core#deadbeef
-flake {
-  inputs = { name = "xsh" }
-}
-
+// basics are in examples/basics.xsh
 enum Result[T] { Ok(T), Err }
 type IntResult = Result[Int]
+
+// generic syntax
+let identity = [T](x: T) -> T { x }
+let make_pair = [A, B](a: A, b: B) -> (A, B) { (a, b) }
+let swap_pair = [A, B](p: (A, B)) -> (B, A) { (p.1, p.0) }
+
+// struct syntax
+struct Point { x : Int; y : Int }
+let point = Point::{ x: 3, y: 4 }
+let point_sum = match point { Point::{ x, y } => add(x, y), _ => 0 }
+
+// error handling syntax
+let safe_div = (a: Int, b: Int) -> Int with {Error} {
+  if eq(b, 0) {
+    raise "division by zero"
+  } else {
+    a / b
+  }
+}
+let safe_div_or = (a: Int, b: Int, fallback: Int) -> Int {
+  try { safe_div(a, b) } catch { fallback }
+}
+
+// wasm primitive type aliases
+let add_i32 = (a: i32, b: i32) -> i32 { a + b }
+let scale_f32 = (x: f32, k: f32) -> f32 { x * k }
+let half_f64 = (x: f64) -> f64 { x / 2.0 }
 
 let add2 = (x: Int) -> Int { add(x, 2) }
 let rec fact = (n: Int) -> Int {
@@ -54,11 +77,6 @@ let built_array = do {
   array_builder_freeze(b)
 }
 
-test "basic" { assert(eq(add(1, 2), 3)) }
-test "fact" { assert(eq(fact(5), 120)) }
-test "pipe" { assert(eq(pipe_basic, 9)) }
-test "pipe ident" { assert(eq(pipe_ident, 5)) }
-test "float" { assert(eq(float_sum, 3.25f)) }
 test "match value" { assert(eq(match_value, 1)) }
 test "match tuple" { assert(eq(match_tuple, 3)) }
 test "match record" { assert(eq(match_record, 1)) }
@@ -68,8 +86,6 @@ test "match literal str" { assert(eq(match_literal_str, 1)) }
 test "match literal float" { assert(eq(match_literal_float, 1)) }
 test "match literal double" { assert(eq(match_literal_double, 1)) }
 test "match literal bool" { assert(eq(match_literal_bool, 1)) }
-test "if value" { assert(eq(if_value, 1)) }
-test "block value" { assert(eq(block_value, 3)) }
 test "built array" { assert(eq(array_length(built_array), 2)) }
 test "int_to_double" { assert(eq(int_to_double(42), 42.0)) }
 test "double_to_int" { assert(eq(double_to_int(3.14), 3)) }
@@ -77,6 +93,30 @@ test "int_to_float" { assert(eq(int_to_float(42), 42.0f)) }
 test "float_to_int" { assert(eq(float_to_int(3.14f), 3)) }
 test "float_to_double" { assert(eq(float_to_double(1.5f), 1.5)) }
 test "double_to_float" { assert(eq(double_to_float(1.5), 1.5f)) }
+test "label_call" { assert(string_equals(label_call, "ok")) }
+test "effect_apply" { assert(eq(effectful_apply(7), 7)) }
+test "generic_identity_int" { assert(eq(identity(42), 42)) }
+test "generic_identity_string" { assert(string_equals(identity("ok"), "ok")) }
+test "generic_make_pair" {
+  let p = make_pair(10, "x")
+  assert(eq(p.0, 10))
+  assert(string_equals(p.1, "x"))
+}
+test "generic_swap_pair" {
+  let p = swap_pair(make_pair(1, "left"))
+  assert(string_equals(p.0, "left"))
+  assert(eq(p.1, 1))
+}
+test "struct_field_access" {
+  assert(eq(point.x, 3))
+  assert(eq(point.y, 4))
+}
+test "struct_match" { assert(eq(point_sum, 7)) }
+test "error_try_success" { assert(eq(safe_div_or(8, 2, -1), 4)) }
+test "error_try_catch" { assert(eq(safe_div_or(8, 0, -1), -1)) }
+test "wasm_alias_i32" { assert(eq(add_i32(40, 2), 42)) }
+test "wasm_alias_f32" { assert(eq(scale_f32(1.5f, 2.0f), 3.0f)) }
+test "wasm_alias_f64" { assert(eq(half_f64(7.0), 3.5)) }
 test "array_concat" {
   let a = array_concat([1, 2], [3, 4])
   assert(eq(array_length(a), 4))
@@ -103,38 +143,6 @@ test "array_slice" {
   assert(eq(array_length(s), 2))
   assert(eq(array_get(s, 0), 20))
   assert(eq(array_get(s, 1), 30))
-}
-let mut counter = 0
-while counter < 5 {
-  counter = counter + 1
-}
-test "while_basic" { assert(eq(counter, 5)) }
-test "let_mut_assign" {
-  let mut x = 10
-  x = x + 5
-  assert(eq(x, 15))
-}
-test "while_sum" {
-  let mut sum = 0
-  let mut i = 1
-  while i <= 10 {
-    sum = sum + i
-    i = i + 1
-  }
-  assert(eq(sum, 55))
-}
-test "let_tuple_destr" {
-  let (a, b) = (10, 20)
-  assert(eq(a + b, 30))
-}
-test "let_record_destr" {
-  let record { x: v, y: w } = record { x: 42, y: 7 }
-  assert(eq(v + w, 49))
-}
-test "string_interp_basic" {
-  let name = "world"
-  let msg = "hello \(name)!"
-  assert(string_equals(msg, "hello world!"))
 }
 test "string_interp_int" {
   let n = 42
@@ -166,7 +174,6 @@ test "array_find" {
   assert(eq(array_find((x: Int) -> Bool { x > 10 }, [1, 2, 3]), -1))
 }
 
-test "modulo" { assert(eq(10 % 3, 1)) }
 test "compound_add" {
   let mut x = 10
   x += 5
@@ -216,10 +223,6 @@ test "or_pattern_enum" {
 test "or_pattern_int" {
   let x = match 2 { 1 | 2 | 3 => true, _ => false }
   assert(x)
-}
-test "method_call" {
-  let s = "hello"
-  assert(eq(s.string_length(), 5))
 }
 test "method_chain" {
   let s = "hello world"

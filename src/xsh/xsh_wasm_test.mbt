@@ -254,6 +254,62 @@ test "xsh wasm imports stdio char builtins" {
 }
 
 ///|
+test "xsh wasm imports stdio stream builtins" {
+  let db = XshDb::new()
+  let src =
+    #|do {
+    #|  stdout_write_stream("hello")
+    #|  stdin_read_stream(8)
+    #|}
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "wasi:cli/stdout@0.2.0"))
+  assert_true(bytes_contains_ascii(wasm, "get-stdout"))
+  assert_true(bytes_contains_ascii(wasm, "wasi:cli/stdin@0.2.0"))
+  assert_true(bytes_contains_ascii(wasm, "get-stdin"))
+  assert_true(bytes_contains_ascii(wasm, "wasi:io/streams@0.2.0"))
+  assert_true(
+    bytes_contains_ascii(wasm, "[method]output-stream.blocking-write-and-flush"),
+  )
+  assert_true(bytes_contains_ascii(wasm, "[method]input-stream.blocking-read"))
+  assert_true(bytes_contains_ascii(wasm, "cabi_realloc"))
+}
+
+///|
+test "xsh wasm compiles while with stdio char builtins" {
+  let db = XshDb::new()
+  let src =
+    #|let run = () -> Int with {Stdin, Stdout} {
+    #|  do {
+    #|    let mut i = 0
+    #|    while i < 1 {
+    #|      let c = stdin_read_char()
+    #|      if c < 0 {
+    #|        i = 1
+    #|      } else {
+    #|        stdout_write_char(c)
+    #|        i = i + 1
+    #|      }
+    #|    }
+    #|    0
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "wasi:io/streams@0.2.0"))
+}
+
+///|
 test "xsh wasm compiles string_from_char_code builtin" {
   let db = XshDb::new()
   let src =

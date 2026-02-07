@@ -86,16 +86,6 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let target = parse_type(get_field(inner, "target"))
         return Stmt::TypeAlias(name~, params~, target~, span=zero)
       }
-      "Flake" => {
-        let raw = expect_string(value)
-        return Stmt::Flake(raw~, span=zero)
-      }
-      "Alias" => {
-        let inner = expect_object(value)
-        let name = get_string(inner, "name")
-        let target = parse_alias_target(get_field(inner, "target"))
-        return Stmt::Alias(name~, target~, span=zero)
-      }
       "Import" => {
         let inner = expect_object(value)
         let source = parse_module_ref(get_field(inner, "source"))
@@ -653,33 +643,6 @@ fn parse_import_spec(json : Json) -> ImportSpec raise DeserializeError {
 }
 
 ///|
-fn parse_alias_target(json : Json) -> AliasTarget raise DeserializeError {
-  let obj = expect_object(json)
-  for entry in obj.iter() {
-    let (key, value) = entry
-    match key {
-      "Module" => {
-        let r = parse_ref(value)
-        return AliasTarget::Module(r)
-      }
-      "Name" => {
-        let name = expect_string(value)
-        return AliasTarget::Name(name)
-      }
-      _ => ()
-    }
-  }
-  raise DeserializeError("Invalid alias target")
-}
-
-///|
-fn parse_ref(json : Json) -> Ref raise DeserializeError {
-  let obj = expect_object(json)
-  let name = get_string(obj, "name")
-  let hash_prefix = get_string_opt(obj, "hash_prefix")
-  Ref::{ name, hash_prefix }
-}
-
 // Helper functions
 
 ///|

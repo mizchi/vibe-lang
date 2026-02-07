@@ -389,6 +389,10 @@ fn is_builtin_name(name : String) -> Bool {
   name == "not" ||
   name == "and" ||
   name == "or" ||
+  name == "stdout_write_char" ||
+  name == "stdout_write_stream" ||
+  name == "stdin_read_char" ||
+  name == "stdin_read_stream" ||
   name == "array_builder" ||
   name == "array_builder_push" ||
   name == "array_builder_freeze" ||

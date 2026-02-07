@@ -381,7 +381,9 @@ fn scan_component_wit_imports_expr(
         "sh" => acc.need_sh = true
         "sleep" => acc.need_sleep = true
         "stdout_write_char" => acc.need_stdout_write_char = true
+        "stdout_write_stream" => acc.need_stdout_write_char = true
         "stdin_read_char" => acc.need_stdin_read_char = true
+        "stdin_read_stream" => acc.need_stdin_read_char = true
         _ => ()
       }
       for arg in args {
@@ -447,7 +449,7 @@ fn scan_component_wit_imports_expr(
 /// Generate WIT world for `wasm-tools component embed/new`.
 /// Host builtins are split into:
 /// - xsh interface: path/sh/sleep
-/// - wasi interfaces: stdin/stdout/streams for stdio char builtins
+/// - wasi interfaces: stdin/stdout/streams for stdio char/stream builtins
 pub fn generate_component_wit(
   ast : @core.Module,
   package_name : String,

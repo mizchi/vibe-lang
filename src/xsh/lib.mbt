@@ -16,8 +16,6 @@ pub fn is_xsh_script(script : String) -> Bool {
     }
     let kind = tok.kind()
     return kind == @parser.let_kw() ||
-      kind == @parser.flake_kw() ||
-      kind == @parser.alias_kw() ||
       kind == @parser.test_kw() ||
       kind == @parser.type_kw() ||
       kind == @parser.enum_kw() ||
@@ -36,11 +34,7 @@ pub fn Runtime::eval_script(
   let raw_ast = @parser.parse_ast(script) catch {
     e => raise XshError::Parse(e)
   }
-  let aliases = if has_alias_stmt(raw_ast) {
-    merge_aliases(self.aliases, raw_ast)
-  } else {
-    self.aliases
-  }
+  let aliases = self.aliases
   let ast = if script.contains(".") {
     desugar_method_calls(raw_ast, aliases)
   } else {
@@ -70,7 +64,7 @@ pub fn Runtime::run_script_tests(
   let raw_ast = @parser.parse_ast(script) catch {
     e => raise XshError::Parse(e)
   }
-  let aliases = merge_aliases(self.aliases, raw_ast)
+  let aliases = self.aliases
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
     let _ = @checker.type_check_with_env(self.type_env.clone(), ast, aliases)
@@ -81,40 +75,4 @@ pub fn Runtime::run_script_tests(
   self.run_tests(ast) catch {
     e => raise XshError::Eval(e)
   }
-}
-
-///|
-fn merge_aliases(
-  base : Map[String, @core.Ref],
-  ast : @core.Module,
-) -> Map[String, @core.Ref] {
-  let aliases = base.copy()
-  for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Alias(name~, target~, span~) => {
-        let _ = span
-        match target {
-          @core.AliasTarget::Module(r) => aliases[name] = r
-          @core.AliasTarget::Name(_) => ()
-        }
-      }
-      _ => ()
-    }
-  }
-  aliases
-}
-
-///|
-fn has_alias_stmt(ast : @core.Module) -> Bool {
-  let mut found = false
-  for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Alias(..) => {
-        found = true
-        break
-      }
-      _ => ()
-    }
-  }
-  found
 }
