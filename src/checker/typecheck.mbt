@@ -1856,6 +1856,16 @@ fn type_struct_lit(
               effects,
               allow_effect,
             )
+            // Infer type params from field types first (before type check)
+            if type_args.is_empty() {
+              infer_type_params_from_field(
+                env,
+                field_def.ty,
+                field_ty,
+                type_map,
+              )
+            }
+            // Now substitute and check
             let expected = substitute_type_params_by_name(
               field_def.ty,
               type_map,
@@ -1866,15 +1876,6 @@ fn type_struct_lit(
                 actual=field_ty,
                 span=field.span,
                 context=Some("struct field " + field.name),
-              )
-            }
-            // Infer type params from field types if not explicit
-            if type_args.is_empty() {
-              infer_type_params_from_field(
-                env,
-                field_def.ty,
-                field_ty,
-                type_map,
               )
             }
           }
@@ -3212,7 +3213,15 @@ fn type_call(
           require_effects(env, effects, fn_effects, call_span)
           ret
         }
-        _ => raise TypeError::BadCall(message=name, span=call_span)
+        _ =>
+          // Name exists but isn't a function - try field access first
+          match
+            try_field_access(
+              env, name, args, aliases, effects, allow_effect, call_span,
+            ) {
+            Some(field_ty) => field_ty
+            None => raise TypeError::BadCall(message=name, span=call_span)
+          }
       }
     None =>
       match env.get_ctor(name) {
@@ -4789,11 +4798,11 @@ fn try_field_access(
         Some(struct_def) =>
           match struct_def.get_field(field_name) {
             Some(field_def) => {
-              // Substitute type parameters
+              // Substitute type parameters (resolve type args first)
               let type_map : Map[String, @core.Type] = {}
               for i, param in struct_def.params {
                 if i < type_args.length() {
-                  type_map[param] = type_args[i]
+                  type_map[param] = resolve_type(env, type_args[i])
                 }
               }
               let result_ty = substitute_type_params_by_name(

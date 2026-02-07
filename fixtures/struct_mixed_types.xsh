@@ -1,0 +1,33 @@
+struct Person {
+  name : String;
+  age : Int;
+  active : Bool
+}
+
+let alice = Person::{ name: "Alice", age: 30, active: true }
+let bob = Person::{ name: "Bob", age: 25, active: false }
+
+let alice_name = alice.name
+let alice_age = alice.age
+let alice_active = alice.active
+let bob_name = bob.name
+let bob_age = bob.age
+let bob_active = bob.active
+
+test "struct_mixed_string" {
+  assert(string_equals(alice_name, "Alice"))
+  assert(string_equals(bob_name, "Bob"))
+}
+
+test "struct_mixed_int" {
+  assert(eq(alice_age, 30))
+  assert(eq(bob_age, 25))
+}
+
+test "struct_mixed_bool" {
+  assert(alice_active)
+  assert(not(bob_active))
+}
+
+__DATA__
+{}

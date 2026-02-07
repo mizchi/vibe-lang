@@ -1,0 +1,43 @@
+struct Point { x : Int; y : Int }
+struct Size { width : Int; height : Int }
+struct Rect { origin : Point; size : Size }
+
+let p = Point::{ x: 10, y: 20 }
+let s = Size::{ width: 100, height: 50 }
+let r = Rect::{ origin: p, size: s }
+
+let p_x = p.x
+let p_y = p.y
+let s_width = s.width
+let s_height = s.height
+let r_origin = r.origin
+let r_size = r.size
+let r_origin_x = r_origin.x
+let r_origin_y = r_origin.y
+let r_size_width = r_size.width
+let r_size_height = r_size.height
+let area = mul(r_size_width, r_size_height)
+
+test "struct_multiple_point" {
+  assert(eq(p_x, 10))
+  assert(eq(p_y, 20))
+}
+
+test "struct_multiple_size" {
+  assert(eq(s_width, 100))
+  assert(eq(s_height, 50))
+}
+
+test "struct_multiple_rect" {
+  assert(eq(r_origin_x, 10))
+  assert(eq(r_origin_y, 20))
+  assert(eq(r_size_width, 100))
+  assert(eq(r_size_height, 50))
+}
+
+test "struct_multiple_area" {
+  assert(eq(area, 5000))
+}
+
+__DATA__
+{}

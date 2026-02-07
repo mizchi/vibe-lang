@@ -1,0 +1,29 @@
+struct Point { x : Int; y : Int }
+struct Rect { origin : Point; width : Int; height : Int }
+
+let origin = Point::{ x: 0, y: 0 }
+let rect = Rect::{ origin: origin, width: 100, height: 50 }
+
+let rect_width = rect.width
+let rect_height = rect.height
+let inner_origin = rect.origin
+let origin_x = inner_origin.x
+let origin_y = inner_origin.y
+let area = mul(rect_width, rect_height)
+
+test "struct_nested_field_access" {
+  assert(eq(rect_width, 100))
+  assert(eq(rect_height, 50))
+}
+
+test "struct_nested_inner_access" {
+  assert(eq(origin_x, 0))
+  assert(eq(origin_y, 0))
+}
+
+test "struct_nested_area" {
+  assert(eq(area, 5000))
+}
+
+__DATA__
+{}

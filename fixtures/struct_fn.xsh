@@ -1,0 +1,33 @@
+struct Point { x : Int; y : Int }
+
+let make_point = (x: Int, y: Int) -> Point {
+  Point::{ x: x, y: y }
+}
+
+let point_sum = (p: Point) -> Int {
+  add(p.x, p.y)
+}
+
+let p1 = make_point(3, 4)
+let p1_x = p1.x
+let p1_y = p1.y
+let p1_sum = point_sum(p1)
+
+let p2 = Point::{ x: 10, y: 20 }
+let p2_sum = point_sum(p2)
+
+test "struct_fn_create" {
+  assert(eq(p1_x, 3))
+  assert(eq(p1_y, 4))
+}
+
+test "struct_fn_param" {
+  assert(eq(p2_sum, 30))
+}
+
+test "struct_fn_result" {
+  assert(eq(p1_sum, 7))
+}
+
+__DATA__
+{}

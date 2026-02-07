@@ -892,7 +892,23 @@ fn eval_call(
   } else {
     match rt.get(name) {
       Some(@core.Value::Fn(fn_val)) => eval_user_call(rt, fn_val, args)
-      Some(_) => raise EvalError::BadCall(name)
+      Some(_) => {
+        // Name exists but isn't a function - try field access first
+        let field_args_out = eval_args(rt, args)
+        let field_pos = extract_positional_values(field_args_out.args, name)
+        if field_pos.length() == 1 {
+          match field_pos[0] {
+            @core.Value::Record(record_fields) =>
+              match record_fields.get(name) {
+                Some(v) => { value: v, effects: field_args_out.effects }
+                None => raise EvalError::BadCall(name)
+              }
+            _ => raise EvalError::BadCall(name)
+          }
+        } else {
+          raise EvalError::BadCall(name)
+        }
+      }
       None =>
         if @core.is_ctor_name(name) {
           let out = eval_args(rt, args)
