@@ -421,16 +421,48 @@ fn Parser::parse_while_expr(self : Parser) -> Unit {
 
 ///|
 fn Parser::parse_pipe_expr(self : Parser) -> Unit {
+  self.parse_bit_or_expr()
+  while {
+          self.skip_trivia()
+          self.at(pipe_gt())
+        } {
+    self.bump()
+    self.parse_bit_or_expr()
+  }
+}
+
+///|
+fn Parser::parse_bit_or_expr(self : Parser) -> Unit {
+  self.parse_bit_xor_expr()
+  while {
+          self.skip_trivia()
+          self.at(bit_or())
+        } {
+    self.bump()
+    self.parse_bit_xor_expr()
+  }
+}
+
+///|
+fn Parser::parse_bit_xor_expr(self : Parser) -> Unit {
+  self.parse_bit_and_expr()
+  while {
+          self.skip_trivia()
+          self.at(bit_xor())
+        } {
+    self.bump()
+    self.parse_bit_and_expr()
+  }
+}
+
+///|
+fn Parser::parse_bit_and_expr(self : Parser) -> Unit {
   self.parse_cmp_expr()
   while {
           self.skip_trivia()
-          self.at(pipe()) && self.peek_non_trivia_kind(self.pos + 1) == gt()
+          self.at(bit_and())
         } {
     self.bump()
-    self.skip_trivia()
-    if self.at(gt()) {
-      self.bump()
-    }
     self.parse_cmp_expr()
   }
 }
@@ -461,7 +493,7 @@ fn Parser::parse_and_expr(self : Parser) -> Unit {
 
 ///|
 fn Parser::parse_cmp_expr(self : Parser) -> Unit {
-  self.parse_add_expr()
+  self.parse_shift_expr()
   while {
           self.skip_trivia()
           self.at(eqeq()) ||
@@ -470,6 +502,18 @@ fn Parser::parse_cmp_expr(self : Parser) -> Unit {
           self.at(lte()) ||
           self.at(gt()) ||
           self.at(gte())
+        } {
+    self.bump()
+    self.parse_shift_expr()
+  }
+}
+
+///|
+fn Parser::parse_shift_expr(self : Parser) -> Unit {
+  self.parse_add_expr()
+  while {
+          self.skip_trivia()
+          self.at(lshift()) || self.at(rshift())
         } {
     self.bump()
     self.parse_add_expr()
@@ -1002,15 +1046,20 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     mut_flag = true
   }
   self.skip_trivia()
-  if not(rec_flag) &&
-    not(mut_flag) &&
-    (self.peek_kind() == lparen() || self.peek_kind() == record_kw()) {
-    let pat = self.parse_pattern()
-    let _ = self.expect(eq(), "=")
-    let expr = self.parse_expr()
-    let _ = self.eat(semicolon())
-    let span = self.span_from(start)
-    return @core.Stmt::LetPat(pat~, expr~, span~)
+  if not(rec_flag) && not(mut_flag) {
+    // Check if this is a pattern: tuple, record, or ctor
+    let is_pattern = self.peek_kind() == lparen() ||
+      self.peek_kind() == record_kw() ||
+      self.peek_kind() == lbracket() ||
+      (self.peek_kind() == name() && @core.is_ctor_name(self.peek().text()))
+    if is_pattern {
+      let pat = self.parse_pattern()
+      let _ = self.expect(eq(), "=")
+      let expr = self.parse_expr()
+      let _ = self.eat(semicolon())
+      let span = self.span_from(start)
+      return @core.Stmt::LetPat(pat~, expr~, span~)
+    }
   }
   let name_tok = self.expect(name(), "name")
   let _ = self.expect(eq(), "=")
@@ -1375,7 +1424,18 @@ fn AstParser::parse_import_stmt(
   let _ = self.expect(from_kw(), "from")
   self.skip_trivia()
   // Parse module reference: path or hash
-  let source : @core.ModuleRef = if self.peek_kind() == hash_ref() {
+  let source = self.parse_module_ref()
+  let _ = self.eat(semicolon())
+  let span = self.span_from(start)
+  @core.Stmt::Import(spec~, source~, span~)
+}
+
+///|
+/// Parse a module reference: path or hash
+fn AstParser::parse_module_ref(
+  self : AstParser,
+) -> @core.ModuleRef raise ParseError {
+  if self.peek_kind() == hash_ref() {
     let hash_tok = self.bump()
     // Remove leading '#' from hash
     let hash_text = hash_tok.text()
@@ -1429,9 +1489,6 @@ fn AstParser::parse_import_stmt(
     }
     @core.ModuleRef::Path(path=buf.to_string())
   }
-  let _ = self.eat(semicolon())
-  let span = self.span_from(start)
-  @core.Stmt::Import(spec~, source~, span~)
 }
 
 ///|
@@ -1494,7 +1551,7 @@ fn AstParser::parse_export_stmt(
       }
     }
   } else {
-    // export { name1, name2, ... }
+    // export { name1, name2, ... } or export { name1, name2 } from source
     let _ = self.expect(lbrace(), "{")
     let names : Array[String] = []
     while self.peek_kind() != rbrace() {
@@ -1508,9 +1565,20 @@ fn AstParser::parse_export_stmt(
       }
     }
     let _ = self.expect(rbrace(), "}")
-    let _ = self.eat(semicolon())
-    let span = self.span_from(start)
-    @core.Stmt::Export(names~, span~)
+    self.skip_trivia()
+    // Check for re-export: export { ... } from ./path
+    if self.peek_kind() == from_kw() {
+      let _ = self.bump() // consume 'from'
+      self.skip_trivia()
+      let source = self.parse_module_ref()
+      let _ = self.eat(semicolon())
+      let span = self.span_from(start)
+      @core.Stmt::ReExport(names~, source~, span~)
+    } else {
+      let _ = self.eat(semicolon())
+      let span = self.span_from(start)
+      @core.Stmt::Export(names~, span~)
+    }
   }
 }
 
@@ -1553,17 +1621,62 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
 
 ///|
 fn AstParser::parse_pipe_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let mut left = self.parse_bit_or_expr()
+  while {
+          self.skip_trivia()
+          self.peek_kind() == pipe_gt()
+        } {
+    let _ = self.bump()
+    let right = self.parse_bit_or_expr()
+    left = pipe_apply(left, right)
+  }
+  left
+}
+
+///|
+fn AstParser::parse_bit_or_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
+  let mut left = self.parse_bit_xor_expr()
+  while {
+          self.skip_trivia()
+          self.peek_kind() == bit_or()
+        } {
+    let _ = self.bump()
+    let right = self.parse_bit_xor_expr()
+    left = call2("__bit_or", left, right)
+  }
+  left
+}
+
+///|
+fn AstParser::parse_bit_xor_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
+  let mut left = self.parse_bit_and_expr()
+  while {
+          self.skip_trivia()
+          self.peek_kind() == bit_xor()
+        } {
+    let _ = self.bump()
+    let right = self.parse_bit_and_expr()
+    left = call2("__bit_xor", left, right)
+  }
+  left
+}
+
+///|
+fn AstParser::parse_bit_and_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
   let mut left = self.parse_cmp_expr()
   while {
           self.skip_trivia()
-          self.peek_kind() == pipe() &&
-          self.peek_non_trivia_kind(self.pos + 1) == gt()
+          self.peek_kind() == bit_and()
         } {
     let _ = self.bump()
-    self.skip_trivia()
-    let _ = self.expect(gt(), ">")
     let right = self.parse_cmp_expr()
-    left = pipe_apply(left, right)
+    left = call2("__bit_and", left, right)
   }
   left
 }
@@ -1618,7 +1731,7 @@ fn AstParser::parse_and_expr(self : AstParser) -> @core.Expr raise ParseError {
 
 ///|
 fn AstParser::parse_cmp_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let mut left = self.parse_add_expr()
+  let mut left = self.parse_shift_expr()
   while {
           self.skip_trivia()
           self.peek_kind() == eqeq() ||
@@ -1630,8 +1743,24 @@ fn AstParser::parse_cmp_expr(self : AstParser) -> @core.Expr raise ParseError {
         } {
     let op = self.peek_kind()
     let _ = self.bump()
-    let right = self.parse_add_expr()
+    let right = self.parse_shift_expr()
     left = cmp_expr_from_op(op, left, right)
+  }
+  left
+}
+
+///|
+fn AstParser::parse_shift_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let mut left = self.parse_add_expr()
+  while {
+          self.skip_trivia()
+          self.peek_kind() == lshift() || self.peek_kind() == rshift()
+        } {
+    let op = self.peek_kind()
+    let _ = self.bump()
+    let right = self.parse_add_expr()
+    let name = if op == lshift() { "__lshift" } else { "__rshift" }
+    left = call2(name, left, right)
   }
   left
 }
@@ -1815,13 +1944,11 @@ fn AstParser::parse_match_expr(self : AstParser) -> @core.Expr raise ParseError 
     let first_pat = self.parse_pattern()
     self.skip_trivia()
     // Check for or-pattern: A | B | C => ...
-    let pat = if self.peek_kind() == pipe() &&
-      self.peek_non_trivia_kind(self.pos + 1) != gt() {
+    let pat = if self.peek_kind() == bit_or() {
       let pats : Array[@core.Pat] = [first_pat]
       while {
               self.skip_trivia()
-              self.peek_kind() == pipe() &&
-              self.peek_non_trivia_kind(self.pos + 1) != gt()
+              self.peek_kind() == bit_or()
             } {
         let _ = self.bump() // consume |
         pats.push(self.parse_pattern())
@@ -2445,13 +2572,44 @@ fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
 fn AstParser::is_arrow_expr_body(self : AstParser) -> Bool {
   // Look at current token
   let tok = self.peek()
+  let saved = self.pos
+
+  // If it starts with (, could be tuple type or expression
+  // Check if after matching ) there's "with" or "{" for type annotation
+  if tok.kind() == lparen() {
+    // Skip the entire parenthesized part
+    let _ = self.bump() // consume (
+    let mut depth = 1
+    while depth > 0 && self.peek_kind() != eof() {
+      let k = self.peek_kind()
+      if k == lparen() {
+        depth = depth + 1
+      } else if k == rparen() {
+        depth = depth - 1
+      }
+      let _ = self.bump()
+
+    }
+    self.skip_trivia()
+    let after_kind = self.peek_kind()
+    let after_text = self.peek().text()
+    self.pos = saved // restore position
+    // If after () there's "with" or "{", it's a type annotation
+    if after_kind == lbrace() {
+      return false // type annotation: (Int, String) { ... }
+    } else if after_kind == name() && after_text == "with" {
+      return false // type annotation: (Int, String) with {Error} { ... }
+    } else {
+      return true // expression: (a, b).foo() or (x + 1)
+    }
+  }
+
   // If it's not a name, it's definitely an expression
   if tok.kind() != name() {
     return true
   }
   // Check if this looks like a type annotation (name followed by { or [ for generic or "with")
   // Save position to peek ahead
-  let saved = self.pos
   let _ = self.bump() // consume the name
   self.skip_trivia()
   let next_kind = self.peek_kind()
@@ -2741,6 +2899,9 @@ fn AstParser::parse_call_or_primary(
       let span = self.span_from(start)
       @core.Expr::Ident(name=name_tok.text(), span~)
     }
+  } else if tok.kind() == lparen() {
+    // Parenthesized expression or tuple
+    self.parse_paren_expr()
   } else {
     self.parse_primary()
   }
