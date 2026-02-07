@@ -2,6 +2,8 @@
 /// Evaluation for xsh
 pub enum Effect {
   ShellExec(String)
+  StdoutWriteChar(Int)
+  StdinReadChar(Int)
 } derive(Show, Eq)
 
 ///|
@@ -56,7 +58,11 @@ pub fn Runtime::eval_module(
         let addr = @codegen.expr_address(
           expr,
           self.addr_env,
-          if rec { Some(name) } else { None },
+          if rec {
+            Some(name)
+          } else {
+            None
+          },
         )
         if rec {
           self.env[name] = addr
@@ -172,7 +178,11 @@ pub fn Runtime::eval_module(
         let addr = @codegen.expr_address(
           expr,
           self.addr_env,
-          if rec { Some(name) } else { None },
+          if rec {
+            Some(name)
+          } else {
+            None
+          },
         )
         if rec {
           self.env[name] = addr
@@ -267,8 +277,7 @@ priv struct EvalArgValue {
 ///|
 fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
   match expr {
-    @core.Expr::Int(value=n, ..) =>
-      { value: @core.Value::Int(n), effects: [] }
+    @core.Expr::Int(value=n, ..) => { value: @core.Value::Int(n), effects: [] }
     @core.Expr::Float(value=n, ..) =>
       { value: @core.Value::Float(n), effects: [] }
     @core.Expr::Double(value=n, ..) =>
@@ -277,7 +286,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       { value: @core.Value::Bool(b), effects: [] }
     @core.Expr::String(value=s, ..) =>
       { value: @core.Value::String(s), effects: [] }
-    @core.Expr::Ident(name~, ..) => {
+    @core.Expr::Ident(name~, ..) =>
       match rt.get(name) {
         Some(v) => { value: v, effects: [] }
         None =>
@@ -291,7 +300,6 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
             raise EvalError::UnknownName(name)
           }
       }
-    }
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before eval
       raise EvalError::UnknownName("_")
@@ -494,7 +502,7 @@ fn match_pattern(
       bindings[name] = value
       Some(bindings)
     }
-    @core.Pat::Ctor(name~, args~, ..) => {
+    @core.Pat::Ctor(name~, args~, ..) =>
       match value {
         @core.Value::Record(map) =>
           match map.get(name) {
@@ -540,8 +548,7 @@ fn match_pattern(
           }
         _ => None
       }
-    }
-    @core.Pat::Int(value=n, ..) => {
+    @core.Pat::Int(value=n, ..) =>
       match value {
         @core.Value::Int(v) =>
           if v == n {
@@ -552,8 +559,7 @@ fn match_pattern(
           }
         _ => None
       }
-    }
-    @core.Pat::Float(value=n, ..) => {
+    @core.Pat::Float(value=n, ..) =>
       match value {
         @core.Value::Float(v) =>
           if v == n {
@@ -564,8 +570,7 @@ fn match_pattern(
           }
         _ => None
       }
-    }
-    @core.Pat::Double(value=n, ..) => {
+    @core.Pat::Double(value=n, ..) =>
       match value {
         @core.Value::Double(v) =>
           if v == n {
@@ -576,8 +581,7 @@ fn match_pattern(
           }
         _ => None
       }
-    }
-    @core.Pat::Bool(value=b, ..) => {
+    @core.Pat::Bool(value=b, ..) =>
       match value {
         @core.Value::Bool(v) =>
           if v == b {
@@ -588,8 +592,7 @@ fn match_pattern(
           }
         _ => None
       }
-    }
-    @core.Pat::String(value=s, ..) => {
+    @core.Pat::String(value=s, ..) =>
       match value {
         @core.Value::String(v) =>
           if v == s {
@@ -600,8 +603,7 @@ fn match_pattern(
           }
         _ => None
       }
-    }
-    @core.Pat::Tuple(items~, ..) => {
+    @core.Pat::Tuple(items~, ..) =>
       match value {
         @core.Value::Tuple(values) =>
           if items.length() != values.length() {
@@ -629,8 +631,7 @@ fn match_pattern(
           }
         _ => None
       }
-    }
-    @core.Pat::Record(fields~, ..) => {
+    @core.Pat::Record(fields~, ..) =>
       match value {
         @core.Value::Record(map) => {
           let bindings : Map[String, @core.Value] = {}
@@ -662,8 +663,7 @@ fn match_pattern(
         }
         _ => None
       }
-    }
-    @core.Pat::Struct(fields~, ..) => {
+    @core.Pat::Struct(fields~, ..) =>
       // Struct pattern is matched against a record value
       match value {
         @core.Value::Record(map) => {
@@ -696,7 +696,6 @@ fn match_pattern(
         }
         _ => None
       }
-    }
     @core.Pat::Or(pats~, ..) => {
       let mut result : Map[String, @core.Value]? = None
       for p in pats {
@@ -816,6 +815,38 @@ fn eval_call(
                 }
                 _ => raise EvalError::BadCall("sh")
               }
+            }
+            "stdout_write_char" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "stdout_write_char",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("stdout_write_char")
+              }
+              match pos_args[0] {
+                @core.Value::Int(code) => {
+                  let effects = out.effects
+                  effects.push(Effect::StdoutWriteChar(code))
+                  { value: @core.Value::Unit, effects }
+                }
+                _ => raise EvalError::BadCall("stdout_write_char")
+              }
+            }
+            "stdin_read_char" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "stdin_read_char",
+              )
+              if pos_args.length() != 0 {
+                raise EvalError::BadCall("stdin_read_char")
+              }
+              let code = -1
+              let effects = out.effects
+              effects.push(Effect::StdinReadChar(code))
+              { value: @core.Value::Int(code), effects }
             }
             "addr" => {
               let out = eval_args(rt, args)
@@ -1152,6 +1183,7 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "string_index_of" ||
   name == "string_contains" ||
   name == "string_trim" ||
+  name == "string_from_char_code" ||
   name == "__lshift" ||
   name == "__rshift" ||
   name == "__bit_and" ||
@@ -1326,6 +1358,23 @@ fn eval_pure_builtin(
       match args[0] {
         @core.Value::String(s) => @core.Value::String(trim_whitespace(s))
         _ => raise EvalError::BadCall("string_trim")
+      }
+    }
+    "string_from_char_code" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_from_char_code")
+      }
+      match args[0] {
+        @core.Value::Int(code) =>
+          if code < 0 || code > 1114111 {
+            raise EvalError::BadCall("string_from_char_code")
+          } else {
+            match Int::to_char(code) {
+              Some(ch) => @core.Value::String(ch.to_string())
+              None => raise EvalError::BadCall("string_from_char_code")
+            }
+          }
+        _ => raise EvalError::BadCall("string_from_char_code")
       }
     }
     "__add" => {

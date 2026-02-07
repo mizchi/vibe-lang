@@ -35,7 +35,12 @@ Rules:
 - A function's declared effects must be a superset of the effects used inside.
 - `with {}` is optional; omission means pure.
 - Capability mapping is 1:1 with the runtime `CapabilitySet`.
-- Current builtin mapping: `sh(...)` requires `{Stdout}` (in addition to `do`).
+- Current builtin mapping:
+  - `sh(...)` requires `{Stdout}`
+  - `stdout_write_char(...)` requires `{Stdout}`
+  - `stdin_read_char()` requires `{Stdin}`
+  - `sleep(...)` requires `{Async}`
+  (all effectful builtins still require `do { ... }`).
 
 Error handling:
 - Calling a function with `{Error}` from a non-`{Error}` function requires
@@ -87,9 +92,34 @@ Array/Map:
 String (aligned with wasm js-string builtins when using `--wasm-js-string`):
 - `string_length(string)` -> `Int`
 - `string_char_code_at(string, index)` -> `Int`
+- `string_from_char_code(code)` -> `String`
 - `string_substring(string, start, end)` -> `String`
 - `string_concat(left, right)` -> `String`
 - `string_equals(left, right)` -> `Bool`
+
+StdIO (char-level primitives for wasm/component-friendly interop):
+- `stdout_write_char(code)` -> `Unit` with `{Stdout}`
+- `stdin_read_char()` -> `Int` with `{Stdin}` (`-1` = EOF)
+- component WIT/wasm import mapping:
+  - `stdout_write_char` -> `wasi:cli/stdout@0.2.0#get-stdout` + `wasi:io/streams@0.2.0#[method]output-stream.blocking-write-and-flush`
+  - `stdin_read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
+
+## WASM Primitive Type Aliases
+
+Type positions accept wasm-style primitive aliases:
+- `i32` == `Int`
+- `f32` == `Float`
+- `f64` == `Double`
+
+Rules:
+- These aliases are parser-level synonyms and normalize to canonical xsh types.
+- `i32`/`f32`/`f64` are reserved type names and cannot be redefined with `type`, `enum`, or `struct`.
+- Canonical type names (`Int`/`Float`/`Double`) remain the public spec baseline.
+
+Std module:
+- `examples/std/wasm/types.xsh` provides an official wasm-facing entrypoint (`I32`/`F32`/`F64` aliases and helpers).
+- `examples/std/wasm/opcodes.xsh` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
+  - Naming rule: wasm `i32.add` is exposed as xsh `i32_add` (dot replaced with `_`).
 
 ## Names, hashes, and aliases (Unison-style)
 
@@ -210,6 +240,11 @@ CLI:
 - `moon run --target native src/xsh_cli -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - `moon run --target native src/xsh_cli -- repl` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/xsh_cli -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
+- `moon run --target native src/xsh_cli -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.
+- `moon build --target wasm src/xsh_wasi_cli` builds a wasm line REPL wired to preview2 imports (`wasi:cli/stdin|stdout`, `wasi:io/streams`).
+- `just component-run script.xsh` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
+- `just component-run-moonix script.xsh` builds the same component and runs it via moonix.
+- `just bootstrap-moonix [src]` tries to produce `moonix` binary from a local moonix checkout.
 - TUI completion sources: builtins + PATH commands + history.
 - `just install` installs a native binary to `~/.local/bin/xsh` (override with `XSH_PREFIX`).
 - Imports are loaded recursively (imports of imports) for hashing/alias resolution.
@@ -321,6 +356,9 @@ Types:
 (type (record (field <name> <type>) ...))
 (type (fn (params <type>...) (ret <type>) (eff <effset>)))
 ```
+
+Notes:
+- `i32`/`f32`/`f64` are surface aliases and canonicalized to `Int`/`Float`/`Double` in IR.
 
 Effect set:
 ```

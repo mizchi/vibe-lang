@@ -114,3 +114,63 @@ test "editor content start col reflects gutter" {
   )
   assert_eq(editor_content_start_col(editor2), 3)
 }
+
+///|
+test "line repl options parse default" {
+  let parsed = parse_line_repl_options([], "repl-stdin", "xsh> ")
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.prompt, "xsh> ")
+      assert_true(opts.prompt_enabled)
+      match opts.io_mode {
+        LineReplIoMode::Plain => ()
+        _ => fail("expected plain mode")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "line repl options parse tty and no prompt" {
+  let parsed = parse_line_repl_options(
+    ["--no-prompt", "--tty"],
+    "repl-stdin",
+    "xsh> ",
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_false(opts.prompt_enabled)
+      match opts.io_mode {
+        LineReplIoMode::Tty => ()
+        _ => fail("expected tty mode")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "line repl options reject unknown arg" {
+  let parsed = parse_line_repl_options(["--wat"], "repl-stdin", "xsh> ")
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "repl-stdin: unknown arg --wat")
+  }
+}
+
+///|
+test "line repl extract let name" {
+  match extract_let_name_line("let foo = 1") {
+    Some(name) => assert_eq(name, "foo")
+    None => fail("missing foo")
+  }
+  match extract_let_name_line("let rec bar = (x: Int) { x }") {
+    Some(name) => assert_eq(name, "bar")
+    None => fail("missing bar")
+  }
+  match extract_let_name_line("add(1,2)") {
+    Some(_) => fail("unexpected let name")
+    None => ()
+  }
+}

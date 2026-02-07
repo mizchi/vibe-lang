@@ -35,6 +35,34 @@ test-update:
 run *args:
     moon run --target native src/xsh_cli -- {{args}}
 
+# Build wasm line REPL package (wasi preview2 imports)
+build-repl-wasi-wasm:
+    moon build --target wasm src/xsh_wasi_cli
+
+# Build + run a stdio component (`run()` by default)
+component-run file out="" invoke="run()":
+    if [ -n "{{out}}" ]; then \
+      scripts/run_component_stdio.sh {{file}} {{out}} '{{invoke}}'; \
+    else \
+      scripts/run_component_stdio.sh {{file}} '' '{{invoke}}'; \
+    fi
+
+# Build + run a stdio component with moonix (`run()` by default)
+component-run-moonix file out="" invoke="run()":
+    if [ -n "{{out}}" ]; then \
+      scripts/run_component_moonix.sh {{file}} {{out}} '{{invoke}}'; \
+    else \
+      scripts/run_component_moonix.sh {{file}} '' '{{invoke}}'; \
+    fi
+
+# Try to bootstrap moonix binary from local moonix source checkout
+bootstrap-moonix src="":
+    if [ -n "{{src}}" ]; then \
+      scripts/bootstrap_moonix_bin.sh {{src}}; \
+    else \
+      scripts/bootstrap_moonix_bin.sh; \
+    fi
+
 # Install native CLI to $XSH_PREFIX/bin (default: ~/.local/bin)
 install:
     moon build --target native --release src/xsh_cli
@@ -90,6 +118,14 @@ clean:
 # E2E tests for Component Model and WIT
 test-component-e2e:
     scripts/test_component_e2e.sh
+
+# Build a Component Model artifact using wkg + wasm-tools
+component-wkg file out="":
+    if [ -n "{{out}}" ]; then \
+      scripts/component_wkg_stdio.sh {{file}} {{out}}; \
+    else \
+      scripts/component_wkg_stdio.sh {{file}}; \
+    fi
 
 # Tests for WASM codegen unsupported syntax
 test-codegen-unsupported:

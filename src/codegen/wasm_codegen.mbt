@@ -256,6 +256,9 @@ priv struct CodegenCtx {
   // Sleep import function
   mut need_sleep : Bool
   mut sleep_import_index : Int
+  // StdIO char-level import functions
+  mut need_stdout_write_char : Bool
+  mut need_stdin_read_char : Bool
   // Exported user functions (export let ...)
   exported_fns : Map[String, Bool]
 }
@@ -323,6 +326,9 @@ fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
     // Sleep import function
     need_sleep: false,
     sleep_import_index: -1,
+    // StdIO char-level import functions
+    need_stdout_write_char: false,
+    need_stdin_read_char: false,
     // Exported user functions
     exported_fns: {},
   }
@@ -975,6 +981,15 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
   if ctx.need_sleep {
     count += 1
   }
+  if ctx.need_stdout_write_char || ctx.need_stdin_read_char {
+    count += 1
+  }
+  if ctx.need_stdout_write_char {
+    count += 1
+  }
+  if ctx.need_stdin_read_char {
+    count += 1
+  }
   count
 }
 
@@ -1018,6 +1033,12 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
   }
   if ctx.need_sleep {
     count += 1
+  }
+  if ctx.need_stdout_write_char {
+    count += 2
+  }
+  if ctx.need_stdin_read_char {
+    count += 2
   }
   count
 }
@@ -1304,9 +1325,23 @@ fn emit_i32_load(buf : ByteBuf, offset : Int) -> Unit {
 }
 
 ///|
+fn emit_i32_load8_u(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((45).to_byte())
+  write_u32_leb(buf, 0)
+  write_u32_leb(buf, offset)
+}
+
+///|
 fn emit_i32_store(buf : ByteBuf, offset : Int) -> Unit {
   buf.push((54).to_byte())
   write_u32_leb(buf, 2)
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_i32_store8(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((58).to_byte())
+  write_u32_leb(buf, 0)
   write_u32_leb(buf, offset)
 }
 
@@ -1393,6 +1428,36 @@ fn emit_f64_lt(buf : ByteBuf) -> Unit {
 ///|
 fn emit_f64_neg(buf : ByteBuf) -> Unit {
   buf.push((153).to_byte())
+}
+
+///|
+fn emit_i32_trunc_f32_s(buf : ByteBuf) -> Unit {
+  buf.push((168).to_byte())
+}
+
+///|
+fn emit_i32_trunc_f64_s(buf : ByteBuf) -> Unit {
+  buf.push((170).to_byte())
+}
+
+///|
+fn emit_f32_convert_i32_s(buf : ByteBuf) -> Unit {
+  buf.push((178).to_byte())
+}
+
+///|
+fn emit_f32_demote_f64(buf : ByteBuf) -> Unit {
+  buf.push((182).to_byte())
+}
+
+///|
+fn emit_f64_convert_i32_s(buf : ByteBuf) -> Unit {
+  buf.push((183).to_byte())
+}
+
+///|
+fn emit_f64_promote_f32(buf : ByteBuf) -> Unit {
+  buf.push((187).to_byte())
 }
 
 ///|
@@ -1527,6 +1592,9 @@ fn infer_expr_kind_with(
             _ => raise WasmGenError::Unsupported("js-string numeric kind")
           }
         }
+        "int_to_float" | "double_to_float" => ValueKind::BoxedF32
+        "int_to_double" | "float_to_double" => ValueKind::BoxedF64
+        "float_to_int" | "double_to_int" => ValueKind::I32
         "__eq" | "__lt" => ValueKind::I32
         "string_length" => ValueKind::I32
         "string_char_code_at" => ValueKind::I32
@@ -1541,6 +1609,9 @@ fn infer_expr_kind_with(
         "array_get" => ValueKind::I32
         "map_get" => ValueKind::I32
         "sleep" => ValueKind::I32
+        "stdout_write_char" => ValueKind::I32
+        "stdin_read_char" => ValueKind::I32
+        "string_from_char_code" => ValueKind::I32
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
             Some(sig) => sig.result
@@ -1918,6 +1989,12 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         ctx.need_js_equals = true
       } else if name == "sleep" {
         ctx.need_sleep = true
+      } else if name == "stdout_write_char" {
+        ctx.need_stdout_write_char = true
+      } else if name == "stdin_read_char" {
+        ctx.need_stdin_read_char = true
+      } else if name == "string_from_char_code" {
+        ctx.need_heap = true
       }
       for arg in args {
         scan_needs_expr(ctx, arg.expr)
@@ -2410,7 +2487,14 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "__mul" ||
         name == "__div" ||
         name == "__mod" ||
-        name == "__neg" {
+        name == "__neg" ||
+        name == "int_to_float" ||
+        name == "int_to_double" ||
+        name == "float_to_double" ||
+        name == "double_to_float" ||
+        name == "stdout_write_char" ||
+        name == "stdin_read_char" ||
+        name == "string_from_char_code" {
         return true
       }
       // Enum constructor call needs heap
@@ -2660,6 +2744,57 @@ fn import_index_js_equals(ctx : CodegenCtx) -> Int raise WasmGenError {
     idx += 1
   }
   idx
+}
+
+///|
+fn import_index_after_sleep(ctx : CodegenCtx) -> Int {
+  let mut idx = js_import_count(ctx)
+  if ctx.need_path {
+    idx += 1
+  }
+  if ctx.need_sh {
+    idx += 1
+  }
+  if ctx.need_sleep {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_stdout_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_stdout_write_char) {
+    raise WasmGenError::Unsupported("stdout stream import missing")
+  }
+  import_index_after_sleep(ctx)
+}
+
+///|
+fn import_index_stdout_write_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_stdout_write_char) {
+    raise WasmGenError::Unsupported("stdout stream import missing")
+  }
+  import_index_after_sleep(ctx) + 1
+}
+
+///|
+fn import_index_stdin_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_stdin_read_char) {
+    raise WasmGenError::Unsupported("stdin stream import missing")
+  }
+  let mut idx = import_index_after_sleep(ctx)
+  if ctx.need_stdout_write_char {
+    idx += 2
+  }
+  idx
+}
+
+///|
+fn import_index_stdin_read_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_stdin_read_char) {
+    raise WasmGenError::Unsupported("stdin stream import missing")
+  }
+  import_index_stdin_get_stream(ctx) + 1
 }
 
 ///|
@@ -3224,6 +3359,68 @@ fn compile_expr(
             })
           _ => raise WasmGenError::Unsupported("numeric kind")
         }
+      } else if name == "int_to_float" {
+        let pos_args = extract_positional_exprs(args, "int_to_float")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("int_to_float arity")
+        }
+        emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i32_const_raw(buf, 2)
+          emit_i32_shr_s(buf)
+          emit_f32_convert_i32_s(buf)
+        })
+      } else if name == "int_to_double" {
+        let pos_args = extract_positional_exprs(args, "int_to_double")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("int_to_double arity")
+        }
+        emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i32_const_raw(buf, 2)
+          emit_i32_shr_s(buf)
+          emit_f64_convert_i32_s(buf)
+        })
+      } else if name == "float_to_int" {
+        let pos_args = extract_positional_exprs(args, "float_to_int")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("float_to_int arity")
+        }
+        emit_unbox_f32_expr(ctx, buf, pos_args[0])
+        emit_i32_trunc_f32_s(buf)
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shl(buf)
+        emit_i32_const_raw(buf, tag_int)
+        emit_i32_or(buf)
+      } else if name == "double_to_int" {
+        let pos_args = extract_positional_exprs(args, "double_to_int")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("double_to_int arity")
+        }
+        emit_unbox_f64_expr(ctx, buf, pos_args[0])
+        emit_i32_trunc_f64_s(buf)
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shl(buf)
+        emit_i32_const_raw(buf, tag_int)
+        emit_i32_or(buf)
+      } else if name == "float_to_double" {
+        let pos_args = extract_positional_exprs(args, "float_to_double")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("float_to_double arity")
+        }
+        emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+          emit_unbox_f32_expr(ctx, buf, pos_args[0])
+          emit_f64_promote_f32(buf)
+        })
+      } else if name == "double_to_float" {
+        let pos_args = extract_positional_exprs(args, "double_to_float")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("double_to_float arity")
+        }
+        emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+          emit_unbox_f64_expr(ctx, buf, pos_args[0])
+          emit_f32_demote_f64(buf)
+        })
       } else if name == "not" {
         let pos_args = extract_positional_exprs(args, "not")
         if pos_args.length() != 1 {
@@ -3670,6 +3867,122 @@ fn compile_expr(
         write_u32_leb(buf, ctx.sleep_import_index)
         // Return Unit (tagged 0)
         emit_i32_const_raw(buf, tag_int_value(0))
+      } else if name == "stdout_write_char" {
+        let pos_args = extract_positional_exprs(args, "stdout_write_char")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("stdout_write_char arity")
+        }
+        require_heap(ctx)
+        let code_local = alloc_temp_local(ctx)
+        let out_stream_local = alloc_temp_local(ctx)
+        let scratch_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_s(buf)
+        emit_local_set(buf, code_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_local_set(buf, scratch_local)
+        emit_local_get(buf, scratch_local)
+        emit_local_get(buf, code_local)
+        emit_i32_store8(buf, 0)
+        emit_call(buf, import_index_stdout_get_stream(ctx))
+        emit_local_set(buf, out_stream_local)
+        emit_local_get(buf, out_stream_local)
+        emit_local_get(buf, scratch_local)
+        emit_i32_const_raw(buf, 1)
+        emit_local_get(buf, scratch_local)
+        emit_i32_const_raw(buf, 4)
+        emit_i32_add(buf)
+        emit_call(buf, import_index_stdout_write_stream(ctx))
+        emit_i32_const_raw(buf, tag_int_value(0))
+      } else if name == "stdin_read_char" {
+        let pos_args = extract_positional_exprs(args, "stdin_read_char")
+        if pos_args.length() != 0 {
+          raise WasmGenError::Unsupported("stdin_read_char arity")
+        }
+        require_heap(ctx)
+        let in_stream_local = alloc_temp_local(ctx)
+        let ret_area_local = alloc_temp_local(ctx)
+        let data_ptr_local = alloc_temp_local(ctx)
+        let data_len_local = alloc_temp_local(ctx)
+        emit_call(buf, import_index_stdin_get_stream(ctx))
+        emit_local_set(buf, in_stream_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_local_set(buf, ret_area_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_i32_const_raw(buf, align4(16))
+        emit_i32_add(buf)
+        emit_local_set(buf, ctx.heap_local)
+        // imported `blocking-read` may call cabi_realloc; sync local heap first.
+        if ctx.heap_local >= 0 && ctx.use_heap_global {
+          emit_local_get(buf, ctx.heap_local)
+          emit_global_set(buf, ctx.heap_global)
+        }
+        emit_local_get(buf, in_stream_local)
+        // i64.const 1 (len=1)
+        buf.push((66).to_byte())
+        buf.push((1).to_byte())
+        emit_local_get(buf, ret_area_local)
+        emit_call(buf, import_index_stdin_read_stream(ctx))
+        // reload heap in case cabi_realloc bumped it.
+        if ctx.heap_local >= 0 && ctx.use_heap_global {
+          emit_global_get(buf, ctx.heap_global)
+          emit_local_set(buf, ctx.heap_local)
+        }
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, data_ptr_local)
+        emit_local_get(buf, ret_area_local)
+        emit_i32_load(buf, 8)
+        emit_local_set(buf, data_len_local)
+        emit_local_get(buf, data_len_local)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_i32_const_raw(buf, tag_int_value(-1))
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, data_ptr_local)
+        emit_i32_load8_u(buf, 0)
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shl(buf)
+        buf.push((11).to_byte()) // end if
+        buf.push((5).to_byte()) // else
+        emit_i32_const_raw(buf, tag_int_value(-1))
+        buf.push((11).to_byte()) // end if
+      } else if name == "string_from_char_code" {
+        let pos_args = extract_positional_exprs(args, "string_from_char_code")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("string_from_char_code arity")
+        }
+        require_heap(ctx)
+        let raw_local = alloc_temp_local(ctx)
+        let code_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_s(buf)
+        emit_local_set(buf, code_local)
+        emit_local_get(buf, ctx.heap_local)
+        emit_local_tee(buf, raw_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, raw_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, raw_local)
+        emit_local_get(buf, code_local)
+        emit_i32_store8(buf, 8)
+        emit_local_get(buf, raw_local)
+        emit_i32_const_raw(buf, tag_obj)
+        emit_i32_or(buf)
+        emit_local_get(buf, raw_local)
+        emit_i32_const_raw(buf, 12)
+        emit_i32_add(buf)
+        emit_local_set(buf, ctx.heap_local)
       } else if ctx.fn_indices.contains(name) {
         // Resolve labeled arguments for user-defined functions
         let pos_args = resolve_args_with_labels(ctx, args, name)
@@ -4976,6 +5289,63 @@ fn compile_function(
 }
 
 ///|
+fn compile_cabi_realloc_function(
+  ctx : CodegenCtx,
+) -> WasmFunc raise WasmGenError {
+  if ctx.heap_global < 0 {
+    raise WasmGenError::Unsupported("cabi_realloc requires heap global")
+  }
+  let body = ByteBuf::new()
+  let ptr_local = 4
+  let align_mask_local = 5
+  // if new_size == 0: return align
+  emit_local_get(body, 3)
+  emit_i32_eqz(body)
+  body.push((4).to_byte()) // if
+  body.push((127).to_byte()) // result i32
+  emit_local_get(body, 2)
+  body.push((5).to_byte()) // else
+  emit_global_get(body, ctx.heap_global)
+  emit_local_set(body, ptr_local)
+  // canonical ABI passes an alignment (power of two) in param[2].
+  emit_local_get(body, 2)
+  emit_i32_const_raw(body, 1)
+  emit_i32_sub(body)
+  emit_local_set(body, align_mask_local)
+  emit_local_get(body, align_mask_local)
+  emit_i32_eqz(body)
+  body.push((4).to_byte()) // if
+  body.push((64).to_byte()) // empty block
+  body.push((5).to_byte()) // else
+  emit_local_get(body, ptr_local)
+  emit_local_get(body, align_mask_local)
+  emit_i32_add(body)
+  emit_local_get(body, align_mask_local)
+  emit_i32_const_raw(body, -1)
+  emit_i32_xor(body)
+  emit_i32_and(body)
+  emit_local_set(body, ptr_local)
+  body.push((11).to_byte()) // end if
+  emit_local_get(body, ptr_local)
+  emit_local_get(body, 3)
+  emit_i32_add(body)
+  emit_i32_const_raw(body, 3)
+  emit_i32_add(body)
+  emit_i32_const_raw(body, -4)
+  emit_i32_and(body)
+  emit_global_set(body, ctx.heap_global)
+  emit_local_get(body, ptr_local)
+  body.push((11).to_byte()) // end if
+  body.push((11).to_byte()) // end func
+  WasmFunc::{
+    params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
+    locals: [ValueKind::I32, ValueKind::I32],
+    result: ValueKind::I32,
+    body: body.data,
+  }
+}
+
+///|
 fn write_func_type(
   buf : ByteBuf,
   params : Array[ValueKind],
@@ -5013,6 +5383,10 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let mut js_concat_type = -1
   let mut js_equals_type = -1
   let mut import_type = -1
+  let mut sleep_type = -1
+  let mut wasi_stream_get_type = -1
+  let mut stdout_write_char_type = -1
+  let mut stdin_read_char_type = -1
   if ctx.need_js_length {
     js_length_type = type_count
     type_count += 1
@@ -5037,9 +5411,20 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     import_type = type_count
     type_count += 1
   }
-  let mut sleep_type = -1
   if ctx.need_sleep {
     sleep_type = type_count
+    type_count += 1
+  }
+  if ctx.need_stdout_write_char || ctx.need_stdin_read_char {
+    wasi_stream_get_type = type_count
+    type_count += 1
+  }
+  if ctx.need_stdout_write_char {
+    stdout_write_char_type = type_count
+    type_count += 1
+  }
+  if ctx.need_stdin_read_char {
+    stdin_read_char_type = type_count
     type_count += 1
   }
   let builtin_count = type_count
@@ -5113,6 +5498,33 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_sec.push((127).to_byte()) // i32 param
     write_u32_leb(type_sec, 0) // no results
   }
+  if ctx.need_stdout_write_char || ctx.need_stdin_read_char {
+    // stream getter type: (func (result i32))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 0)
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte())
+  }
+  if ctx.need_stdout_write_char {
+    // wasi stdout method type:
+    // (func (param i32 stream i32 ptr i32 len i32 retptr))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 4)
+    type_sec.push((127).to_byte())
+    type_sec.push((127).to_byte())
+    type_sec.push((127).to_byte())
+    type_sec.push((127).to_byte())
+    write_u32_leb(type_sec, 0)
+  }
+  if ctx.need_stdin_read_char {
+    // wasi stdin method type: (func (param i32 stream i64 len i32 retptr))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 3)
+    type_sec.push((127).to_byte())
+    type_sec.push((126).to_byte())
+    type_sec.push((127).to_byte())
+    write_u32_leb(type_sec, 0)
+  }
   for sig in ctx.fn_sig_order {
     write_func_type(type_sec, sig.params, sig.result)
   }
@@ -5179,6 +5591,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     ctx.sleep_import_index = func_import_count
     func_import_count += 1
   }
+  if ctx.need_stdout_write_char {
+    func_import_count += 2
+  }
+  if ctx.need_stdin_read_char {
+    func_import_count += 2
+  }
   let global_import_count = if ctx.use_js_strings {
     ctx.js_strings.names.length()
   } else {
@@ -5236,6 +5654,26 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, sleep_type)
     }
+    if ctx.need_stdout_write_char {
+      write_name(import_sec, "wasi:cli/stdout@0.2.0")
+      write_name(import_sec, "get-stdout")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, wasi_stream_get_type)
+      write_name(import_sec, "wasi:io/streams@0.2.0")
+      write_name(import_sec, "[method]output-stream.blocking-write-and-flush")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, stdout_write_char_type)
+    }
+    if ctx.need_stdin_read_char {
+      write_name(import_sec, "wasi:cli/stdin@0.2.0")
+      write_name(import_sec, "get-stdin")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, wasi_stream_get_type)
+      write_name(import_sec, "wasi:io/streams@0.2.0")
+      write_name(import_sec, "[method]input-stream.blocking-read")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, stdin_read_char_type)
+    }
     if ctx.use_js_strings {
       for name in ctx.js_strings.names {
         write_name(import_sec, "string_constants")
@@ -5257,7 +5695,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   write_section(buf, 3, func_sec.data)
 
   // table section (for function values + optional externref table)
-  let user_func_count = if funcs.length() > 0 { funcs.length() - 1 } else { 0 }
+  let helper_func_count = if ctx.need_stdin_read_char { 1 } else { 0 }
+  let user_func_count = if funcs.length() > helper_func_count + 1 {
+    funcs.length() - helper_func_count - 1
+  } else {
+    0
+  }
   let has_extern_table = ctx.need_extern_table && ctx.extern_table_next_slot > 0
   let table_count = (if user_func_count > 0 { 1 } else { 0 }) +
     (if has_extern_table { 1 } else { 0 })
@@ -5339,6 +5782,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let user_export_count = ctx.exported_fns.length()
   let export_count = 2 +
     user_export_count +
+    (if ctx.need_stdin_read_char { 1 } else { 0 }) +
     (if ctx.need_exceptions { 1 } else { 0 }) +
     (if ctx.need_stack_switching { 3 } else { 0 }) // await_tag + sleep_tag + global
   let export_sec = ByteBuf::new()
@@ -5347,6 +5791,11 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   export_sec.push((0).to_byte()) // func export
   let run_index = func_import_count + funcs.length() - 1
   write_u32_leb(export_sec, run_index)
+  if ctx.need_stdin_read_char {
+    write_name(export_sec, "cabi_realloc")
+    export_sec.push((0).to_byte()) // func export
+    write_u32_leb(export_sec, run_index - 1)
+  }
   write_name(export_sec, "memory")
   export_sec.push((2).to_byte()) // memory export
   write_u32_leb(export_sec, 0)
@@ -6401,7 +6850,7 @@ fn emit_module(
     func_needs_heap.push(need)
   }
   let run_need_heap = needs_heap_block(ctx, run_ast)
-  if any_user_heap {
+  if any_user_heap || ctx.need_stdin_read_char {
     ctx.use_heap_global = true
     let global_imports = if ctx.use_js_strings {
       ctx.js_strings.names.length()
@@ -6466,6 +6915,14 @@ fn emit_module(
         true,
       ),
     )
+  }
+  if ctx.need_stdin_read_char {
+    let cabi_realloc_sig = FuncSig::{
+      params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
+      result: ValueKind::I32,
+    }
+    let _ = ensure_sig_index(ctx, cabi_realloc_sig)
+    compiled_funcs.push(compile_cabi_realloc_function(ctx))
   }
   compiled_funcs.push(
     compile_function(

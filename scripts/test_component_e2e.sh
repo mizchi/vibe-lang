@@ -246,7 +246,7 @@ EOF
   # This should parse and run without error
   RESULT=$($XSH run "$TMP_DIR/tuple_effects.xsh" 2>&1)
 
-  if echo "$RESULT" | grep -q 'Tuple.*String.*"test".*Int(6)'; then
+  if echo "$RESULT" | grep -q -e 'Tuple.*String.*"test".*Int(6)' -e 'last: ("test", 6)'; then
     log_pass "Tuple with effects parses and runs correctly"
   else
     log_fail "Tuple with effects failed: $RESULT"
@@ -285,6 +285,47 @@ EOF
   fi
 }
 
+# Test 8: Component stdio roundtrip (wasi:io streams)
+test_component_stdio_roundtrip() {
+  log_info "Test: Component stdio roundtrip"
+
+  if ! command -v wasmtime >/dev/null 2>&1; then
+    log_info "wasmtime not found, skipping stdio roundtrip"
+    return
+  fi
+
+  cat > "$TMP_DIR/stdio_roundtrip.xsh" << 'EOF'
+let run = () -> Int with {Stdin, Stdout} {
+  do {
+    stdout_write_char(62)
+    stdout_write_char(32)
+    let c = stdin_read_char()
+    if c < 0 {
+      -1
+    } else {
+      stdout_write_char(c)
+      stdout_write_char(10)
+      c
+    }
+  }
+}
+run()
+EOF
+
+  scripts/component_wkg_stdio.sh "$TMP_DIR/stdio_roundtrip.xsh" "$TMP_DIR/stdio_roundtrip.component.wasm" >/dev/null 2>&1 || {
+    log_fail "failed to build stdio component"
+    return
+  }
+
+  RESULT=$(printf 'A' | wasmtime --invoke 'run()' "$TMP_DIR/stdio_roundtrip.component.wasm" 2>/dev/null || true)
+  LAST_LINE=$(printf '%s\n' "$RESULT" | tail -n 1)
+  if [ "$LAST_LINE" = "260" ]; then
+    log_pass "stdin_read_char reads one byte and returns tagged int (260 for 'A')"
+  else
+    log_fail "stdio roundtrip returned '$LAST_LINE', expected 260"
+  fi
+}
+
 # Run all tests
 echo "========================================"
 echo "xsh Component Model E2E Tests"
@@ -304,6 +345,8 @@ echo ""
 test_tuple_with_effects
 echo ""
 test_wit_types
+echo ""
+test_component_stdio_roundtrip
 echo ""
 
 echo "========================================"

@@ -17,6 +17,7 @@ pub fn run(args : Array[String]) -> Unit {
     "bench-file" => bench_file_cmd(cmd_args)
     "repl" => repl_cmd(cmd_args)
     "repl-stdin" => repl_stdin_cmd(cmd_args)
+    "repl-wasi" => repl_wasi_cmd(cmd_args)
     "wasm-repl-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
@@ -40,7 +41,7 @@ fn print_usage() -> Unit {
   println("  check <file...>            parse/type check scripts")
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit] [-o out] <file>",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [-o out] <file>",
   )
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
@@ -48,7 +49,12 @@ fn print_usage() -> Unit {
   println("  bench [--n N] [--warmup N] [--expr EXPR]")
   println("  bench-file [--n N] [--warmup N] <file>")
   println("  repl                        interactive TUI shell")
-  println("  repl-stdin [--no-prompt]    read-eval-print loop (stdin)")
+  println(
+    "  repl-stdin [--no-prompt] [--tty|--no-tty]  read-eval-print loop (stdin)",
+  )
+  println(
+    "  repl-wasi [--no-prompt] [--tty|--no-tty]   wasi-friendly line repl",
+  )
   println("  wasm-repl-stdin [--no-prompt] [-o dir]  compile each expr to WASM")
   println("  hash <file>                 compute normalized AST hash")
   println(
@@ -83,6 +89,7 @@ enum CompileMode {
   WasmGc
   Component
   Wit
+  WitComponent
 }
 
 ///|
@@ -158,6 +165,46 @@ fn get_basename(path : String) -> String {
 }
 
 ///|
+/// WIT identifier sanitizer for component-facing package/world names.
+/// - lowercase
+/// - `_` and invalid chars become `-`
+/// - leading non-letter gets `x-` prefix
+fn sanitize_wit_ident(raw : String) -> String {
+  let out = StringBuilder::new()
+  let mut last_dash = false
+  for _, c in raw {
+    let mut ch = c
+    if Char::is_ascii_uppercase(ch) {
+      ch = Char::to_ascii_lowercase(ch)
+    }
+    if Char::is_ascii_lowercase(ch) || Char::is_ascii_digit(ch) || ch == '-' {
+      out.write_char(ch)
+      last_dash = ch == '-'
+    } else if ch == '_' || ch == '.' || ch == ' ' {
+      if not(last_dash) {
+        out.write_char('-')
+        last_dash = true
+      }
+    } else if not(last_dash) {
+      out.write_char('-')
+      last_dash = true
+    }
+  }
+  let normalized = out.to_string().trim().to_string()
+  let candidate = if normalized.length() == 0 { "main" } else { normalized }
+  let mut first = 'a'
+  for _, c in candidate {
+    first = c
+    break
+  }
+  if first >= 'a' && first <= 'z' {
+    candidate
+  } else {
+    "x-" + candidate
+  }
+}
+
+///|
 /// Ensure dist directory exists
 fn ensure_dist_dir() -> Unit {
   if not(@os_fs.path_exists("dist")) {
@@ -178,6 +225,7 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
     CompileMode::WasmGc => "dist/" + basename + ".wasm"
     CompileMode::Component => "dist/" + basename + ".component.wasm"
     CompileMode::Wit => "dist/" + basename + ".wit"
+    CompileMode::WitComponent => "dist/" + basename + ".component.wit"
   }
 }
 
@@ -208,6 +256,10 @@ fn compile_cmd(args : Array[String]) -> Unit {
       }
       "--wit" => {
         mode = CompileMode::Wit
+        i += 1
+      }
+      "--wit-component" => {
+        mode = CompileMode::WitComponent
         i += 1
       }
       "-o" | "--out" => {
@@ -293,6 +345,21 @@ fn compile_cmd(args : Array[String]) -> Unit {
               let package_name = "local:" + basename
               let world_name = basename
               let wit_str = @xsh_lib.generate_module_wit(
+                db, entry, package_name, world_name,
+              ) catch {
+                e => abort("compile: " + e.to_string())
+              }
+              @os_fs.write_string_to_file(resolved_out, wit_str) catch {
+                e => abort("compile: " + e.to_string())
+              }
+              println("wrote " + resolved_out)
+            }
+            CompileMode::WitComponent => {
+              let basename = get_basename(entry)
+              let wit_ident = sanitize_wit_ident(basename)
+              let package_name = "local:" + wit_ident
+              let world_name = wit_ident
+              let wit_str = @xsh_lib.generate_module_component_wit(
                 db, entry, package_name, world_name,
               ) catch {
                 e => abort("compile: " + e.to_string())
@@ -1458,30 +1525,47 @@ fn repl_cmd(args : Array[String]) -> Unit {
 
 ///|
 fn repl_stdin_cmd(args : Array[String]) -> Unit {
-  let mut prompt_enabled = true
-  let mut i = 0
-  while i < args.length() {
-    let arg = args[i]
-    match arg {
-      "--no-prompt" => {
-        prompt_enabled = false
-        i += 1
-      }
-      _ => abort("repl-stdin: unknown arg " + arg)
-    }
+  run_eval_line_repl_with_prompt(args, "repl-stdin", "xsh> ")
+}
+
+///|
+fn repl_wasi_cmd(args : Array[String]) -> Unit {
+  run_eval_line_repl_with_prompt(args, "repl-wasi", "wasi> ")
+}
+
+///|
+fn print_line_repl_tty_mode(mode : LineReplIoMode) -> Unit {
+  match mode {
+    LineReplIoMode::Tty =>
+      println(
+        "note: --tty mode is enabled (line backend; PTY is not enabled yet)",
+      )
+    LineReplIoMode::Plain => ()
+  }
+}
+
+///|
+fn run_eval_line_repl_with_prompt(
+  args : Array[String],
+  cmd_name : String,
+  prompt : String,
+) -> Unit {
+  let options = match parse_line_repl_options(args, cmd_name, prompt) {
+    Ok(opts) => opts
+    Err(msg) => abort(msg)
   }
   async fn repl_loop() {
-    let prompt = "xsh> "
     let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
     let input = @stdio.stdin
-    if prompt_enabled {
-      @stdio.stdout.write(prompt)
+    print_line_repl_tty_mode(options.io_mode)
+    if options.prompt_enabled {
+      @stdio.stdout.write(options.prompt)
     }
     while input.read_until("\n") is Some(line) {
       let trimmed = line.trim()
       if trimmed.is_empty() {
-        if prompt_enabled {
-          @stdio.stdout.write(prompt)
+        if options.prompt_enabled {
+          @stdio.stdout.write(options.prompt)
         }
         continue
       }
@@ -1492,8 +1576,8 @@ fn repl_stdin_cmd(args : Array[String]) -> Unit {
           let result = rt.eval_script(line_str) catch {
             e => {
               println("error: " + e.to_string())
-              if prompt_enabled {
-                @stdio.stdout.write(prompt)
+              if options.prompt_enabled {
+                @stdio.stdout.write(options.prompt)
               }
               continue
             }
@@ -1509,8 +1593,8 @@ fn repl_stdin_cmd(args : Array[String]) -> Unit {
           }
         }
       }
-      if prompt_enabled {
-        @stdio.stdout.write(prompt)
+      if options.prompt_enabled {
+        @stdio.stdout.write(options.prompt)
       }
     }
   }

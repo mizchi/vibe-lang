@@ -161,3 +161,109 @@ test "xsh wasm export user functions" {
   assert_true(bytes_contains_ascii(wasm, "add"))
   assert_true(bytes_contains_ascii(wasm, "mul"))
 }
+
+///|
+test "xsh wasm accepts i32/f32/f64 type aliases" {
+  let db = XshDb::new()
+  let src =
+    #|let id_i32 = (x: i32) -> i32 { x }
+    #|let id_f64 = (x: f64) -> f64 { x }
+    #|let id_f32 = (x: f32) -> f32 { x }
+    #|let _ = id_i32(42)
+    #|let _ = id_f64(1.25)
+    #|let _ = id_f32(2.5f)
+    #|42
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "memory"))
+}
+
+///|
+test "xsh wasm compiles std wasm opcode module" {
+  let src = try
+    @os_fs.read_file_to_string("examples/std/wasm/opcodes.xsh")
+  catch {
+    e => fail("read error: " + e.to_string())
+  } noraise {
+    s => s
+  }
+  let db = XshDb::new()
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "memory"))
+}
+
+///|
+test "xsh wasm compiles numeric conversion builtins" {
+  let db = XshDb::new()
+  let src =
+    #|let a = int_to_float(42)
+    #|let b = int_to_double(42)
+    #|let c = float_to_int(a)
+    #|let d = double_to_int(b)
+    #|let e = float_to_double(a)
+    #|let f = double_to_float(b)
+    #|c + d + float_to_int(f) + double_to_int(e)
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "memory"))
+}
+
+///|
+test "xsh wasm imports stdio char builtins" {
+  let db = XshDb::new()
+  let src =
+    #|do {
+    #|  stdout_write_char(65)
+    #|  stdin_read_char()
+    #|}
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "wasi:cli/stdout@0.2.0"))
+  assert_true(bytes_contains_ascii(wasm, "get-stdout"))
+  assert_true(bytes_contains_ascii(wasm, "wasi:cli/stdin@0.2.0"))
+  assert_true(bytes_contains_ascii(wasm, "get-stdin"))
+  assert_true(bytes_contains_ascii(wasm, "wasi:io/streams@0.2.0"))
+  assert_true(
+    bytes_contains_ascii(wasm, "[method]output-stream.blocking-write-and-flush"),
+  )
+  assert_true(bytes_contains_ascii(wasm, "[method]input-stream.blocking-read"))
+  assert_true(bytes_contains_ascii(wasm, "cabi_realloc"))
+}
+
+///|
+test "xsh wasm compiles string_from_char_code builtin" {
+  let db = XshDb::new()
+  let src =
+    #|string_from_char_code(65)
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}

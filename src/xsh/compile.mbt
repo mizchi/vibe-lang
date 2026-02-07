@@ -119,10 +119,7 @@ pub fn compile_module_wasm_js_string(
   path : String,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(
-    db,
-    path,
-    bundle_for_wasm,
-    @codegen.emit_module_wasm_js_string,
+    db, path, bundle_for_wasm, @codegen.emit_module_wasm_js_string,
   )
 }
 
@@ -133,10 +130,7 @@ pub fn compile_module_wasm_gc(
   path : String,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(
-    db,
-    path,
-    bundle_for_wasm,
-    @codegen.emit_module_wasm_gc,
+    db, path, bundle_for_wasm, @codegen.emit_module_wasm_gc,
   )
 }
 
@@ -147,10 +141,7 @@ pub fn compile_module_wasm_no_dce(
   path : String,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(
-    db,
-    path,
-    bundle_for_wasm_no_dce,
-    @codegen.emit_module_wasm,
+    db, path, bundle_for_wasm_no_dce, @codegen.emit_module_wasm,
   )
 }
 
@@ -185,6 +176,22 @@ pub fn generate_module_wit(
   }
   // Use pre-bundling AST to preserve Export statements and all Let definitions
   @codegen.generate_wit(compiled.ast, package_name, world_name)
+}
+
+///|
+/// Generate WIT world for component embedding (`wasm-tools component embed/new`).
+/// Uses bundled AST so builtins used through imports are reflected in the interface.
+pub fn generate_module_component_wit(
+  db : XshDb,
+  path : String,
+  package_name : String,
+  world_name : String,
+) -> String raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  let bundled = bundle_for_wasm(db, path, compiled.ast)
+  @codegen.generate_component_wit(bundled, package_name, world_name)
 }
 
 ///|

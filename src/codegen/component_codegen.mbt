@@ -315,6 +315,175 @@ pub fn generate_wit(
 }
 
 ///|
+pub(all) struct ComponentWitImports {
+  mut need_path : Bool
+  mut need_sh : Bool
+  mut need_sleep : Bool
+  mut need_stdout_write_char : Bool
+  mut need_stdin_read_char : Bool
+}
+
+///|
+fn collect_component_wit_imports(ast : @core.Module) -> ComponentWitImports {
+  let acc = ComponentWitImports::{
+    need_path: false,
+    need_sh: false,
+    need_sleep: false,
+    need_stdout_write_char: false,
+    need_stdin_read_char: false,
+  }
+  scan_component_wit_imports_block(ast, acc)
+  acc
+}
+
+///|
+fn scan_component_wit_imports_block(
+  body : @core.Module,
+  acc : ComponentWitImports,
+) -> Unit {
+  for stmt in body.stmts {
+    scan_component_wit_imports_stmt(stmt, acc)
+  }
+}
+
+///|
+fn scan_component_wit_imports_stmt(
+  stmt : @core.Stmt,
+  acc : ComponentWitImports,
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
+    @core.Stmt::ExportLet(expr~, ..) =>
+      scan_component_wit_imports_expr(expr, acc)
+    @core.Stmt::Expr(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
+    @core.Stmt::LetPat(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
+    @core.Stmt::LetMut(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
+    @core.Stmt::Assign(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      scan_component_wit_imports_expr(target, acc)
+      scan_component_wit_imports_expr(index, acc)
+      scan_component_wit_imports_expr(value, acc)
+    }
+    @core.Stmt::Test(body~, ..) => scan_component_wit_imports_block(body, acc)
+    _ => ()
+  }
+}
+
+///|
+fn scan_component_wit_imports_expr(
+  expr : @core.Expr,
+  acc : ComponentWitImports,
+) -> Unit {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      match name {
+        "path" => acc.need_path = true
+        "sh" => acc.need_sh = true
+        "sleep" => acc.need_sleep = true
+        "stdout_write_char" => acc.need_stdout_write_char = true
+        "stdin_read_char" => acc.need_stdin_read_char = true
+        _ => ()
+      }
+      for arg in args {
+        scan_component_wit_imports_expr(arg.expr, acc)
+      }
+    }
+    @core.Expr::Tuple(items~, ..) =>
+      for item in items {
+        scan_component_wit_imports_expr(item, acc)
+      }
+    @core.Expr::TupleIndex(expr~, ..) =>
+      scan_component_wit_imports_expr(expr, acc)
+    @core.Expr::Record(fields~, ..) =>
+      for field in fields {
+        scan_component_wit_imports_expr(field.expr, acc)
+      }
+    @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        scan_component_wit_imports_expr(field.expr, acc)
+      }
+    @core.Expr::Array(items~, ..) =>
+      for item in items {
+        scan_component_wit_imports_expr(item, acc)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for field in fields {
+        scan_component_wit_imports_expr(field.expr, acc)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      scan_component_wit_imports_expr(cond, acc)
+      scan_component_wit_imports_block(then_body, acc)
+      scan_component_wit_imports_block(else_body, acc)
+    }
+    @core.Expr::Block(body~, ..) => scan_component_wit_imports_block(body, acc)
+    @core.Expr::Try(try_body~, catch_body~, ..) => {
+      scan_component_wit_imports_block(try_body, acc)
+      scan_component_wit_imports_block(catch_body, acc)
+    }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      scan_component_wit_imports_expr(scrutinee, acc)
+      for arm in arms {
+        scan_component_wit_imports_expr(arm.expr, acc)
+        match arm.cond {
+          Some(cond) => scan_component_wit_imports_expr(cond, acc)
+          None => ()
+        }
+      }
+    }
+    @core.Expr::Do(body~, ..) => scan_component_wit_imports_block(body, acc)
+    @core.Expr::Fn(body~, ..) => scan_component_wit_imports_block(body, acc)
+    @core.Expr::While(cond~, body~, ..) => {
+      scan_component_wit_imports_expr(cond, acc)
+      scan_component_wit_imports_block(body, acc)
+    }
+    @core.Expr::Raise(value~, ..) => scan_component_wit_imports_expr(value, acc)
+    @core.Expr::Await(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
+    @core.Expr::Yield(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
+    _ => ()
+  }
+}
+
+///|
+/// Generate WIT world for `wasm-tools component embed/new`.
+/// Host builtins are split into:
+/// - xsh interface: path/sh/sleep
+/// - wasi interfaces: stdin/stdout/streams for stdio char builtins
+pub fn generate_component_wit(
+  ast : @core.Module,
+  package_name : String,
+  world_name : String,
+) -> String {
+  let imports = collect_component_wit_imports(ast)
+  let mut wit = "package " + package_name + ";\n\n"
+  wit = wit + "world " + world_name + " {\n"
+  if imports.need_path || imports.need_sh || imports.need_sleep {
+    wit = wit + "  import xsh: interface {\n"
+    if imports.need_path {
+      wit = wit + "    path: func(value: s32) -> s32;\n"
+    }
+    if imports.need_sh {
+      wit = wit + "    sh: func(cmd: s32) -> s32;\n"
+    }
+    if imports.need_sleep {
+      wit = wit + "    sleep: func(ms: s32);\n"
+    }
+    wit = wit + "  }\n"
+  }
+  if imports.need_stdout_write_char {
+    wit = wit + "  import wasi:cli/stdout@0.2.0;\n"
+  }
+  if imports.need_stdin_read_char {
+    wit = wit + "  import wasi:cli/stdin@0.2.0;\n"
+  }
+  if imports.need_stdout_write_char || imports.need_stdin_read_char {
+    wit = wit + "  import wasi:io/streams@0.2.0;\n"
+  }
+  wit = wit + "  export run: func() -> s32;\n"
+  wit = wit + "}\n"
+  wit
+}
+
+///|
 /// Component section IDs for canon and export
 /// Reference: https://github.com/WebAssembly/component-model/blob/main/design/mvp/Binary.md
 let component_section_type : Byte = b'\x07' // component type section

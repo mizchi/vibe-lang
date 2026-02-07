@@ -339,6 +339,55 @@ test "xsh stdout permission requires effect" {
 }
 
 ///|
+test "xsh stdio builtins require effects" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result_stdout : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Unit { do { stdout_write_char(65) } }",
+  )
+  match result_stdout {
+    Err(_) => ()
+    Ok(_) => fail("expected stdout_write_char effect error")
+  }
+  let result_stdin : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Int { do { stdin_read_char() } }",
+  )
+  match result_stdin {
+    Err(_) => ()
+    Ok(_) => fail("expected stdin_read_char effect error")
+  }
+}
+
+///|
+test "xsh string_from_char_code and stdio eval" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let a = string_from_char_code(65)\n" +
+    "let readc = () -> Int with {Stdin} { do { stdin_read_char() } }\n" +
+    "let writec = (x: Int) -> Unit with {Stdout} { do { stdout_write_char(x) } }\n" +
+    "let b = readc()\n" +
+    "let c = writec(66)\n" +
+    "let d = string_concat(a, string_from_char_code(66))\n" +
+    "d",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(r) => assert_eq(r.effects.length(), 2)
+  }
+  match rt.get("a") {
+    Some(@core.Value::String(v)) => assert_eq(v, "A")
+    _ => fail("missing a")
+  }
+  match rt.get("b") {
+    Some(@core.Value::Int(v)) => assert_eq(v, -1)
+    _ => fail("missing b")
+  }
+  match rt.get("d") {
+    Some(@core.Value::String(v)) => assert_eq(v, "AB")
+    _ => fail("missing d")
+  }
+}
+
+///|
 test "xsh none is polymorphic" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(

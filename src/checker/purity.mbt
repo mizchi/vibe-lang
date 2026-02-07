@@ -399,6 +399,8 @@ pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
 ///|
 fn is_effectful_call_name(name : String) -> Bool {
   name == "sh" ||
+  name == "stdout_write_char" ||
+  name == "stdin_read_char" ||
   name == "array_builder" ||
   name == "array_builder_push" ||
   name == "array_builder_freeze" ||
@@ -444,7 +446,8 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "string_split" ||
   name == "string_index_of" ||
   name == "string_contains" ||
-  name == "string_trim"
+  name == "string_trim" ||
+  name == "string_from_char_code"
 }
 
 ///|

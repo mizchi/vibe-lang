@@ -1,7 +1,8 @@
 ///|
 fn main {
   touch_cli_helpers()
-  println("xsh_cli is native-only; use --target native or the installed binary")
+  let _ = @sys.get_cli_args()
+  print_js_usage()
 }
 
 ///|
@@ -44,4 +45,16 @@ fn touch_cli_helpers() -> Unit {
   let _ = repl_cursor_pos(view, editor)
   let _ = node
 
+}
+
+///|
+fn print_js_usage() -> Unit {
+  println("xsh_cli is native-only for interactive I/O right now.")
+  println(
+    "reason: moonbit async stdio lacks stdin/stdout values on js/wasm targets.",
+  )
+  println("use: --target native + `repl-stdin` / `repl-wasi`")
+  println(
+    "for wasm stdio repl build: `moon build --target wasm src/xsh_wasi_cli`",
+  )
 }

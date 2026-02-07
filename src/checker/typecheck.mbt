@@ -350,6 +350,8 @@ fn require_effects(
 fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
   match name {
     "sh" => [@core.EffectAtom::Const("Stdout")]
+    "stdout_write_char" => [@core.EffectAtom::Const("Stdout")]
+    "stdin_read_char" => [@core.EffectAtom::Const("Stdin")]
     "sleep" => [@core.EffectAtom::Const("Async")]
     _ => []
   }
@@ -1150,7 +1152,7 @@ fn find_name_suggestion(
 fn find_type_suggestion(env : TypeEnv, name : String) -> String? {
   let candidates : Array[String] = [
     "Int", "Float", "Double", "Bool", "String", "@core.Path", "Unit", "Array", "Map",
-    "ArrayBuilder", "MapBuilder",
+    "ArrayBuilder", "MapBuilder", "i32", "f32", "f64",
   ]
   for key, _ in env.enum_defs {
     candidates.push(key)
@@ -1159,6 +1161,24 @@ fn find_type_suggestion(env : TypeEnv, name : String) -> String? {
     candidates.push(key)
   }
   best_suggestion(candidates, name)
+}
+
+///|
+fn is_reserved_wasm_type_name(name : String) -> Bool {
+  name == "i32" || name == "f32" || name == "f64"
+}
+
+///|
+fn ensure_not_reserved_wasm_type_name(
+  name : String,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if is_reserved_wasm_type_name(name) {
+    raise TypeError::BadTypeDef(
+      message="reserved wasm type name: " + name,
+      span~,
+    )
+  }
 }
 
 ///|
@@ -1733,6 +1753,7 @@ fn register_enum_def(
   ctors : Array[@core.TypeCtor],
   span : @core.Span,
 ) -> Unit raise TypeError {
+  ensure_not_reserved_wasm_type_name(name, span)
   if env.get_enum_def(name) is Some(_) || env.get_type_alias(name) is Some(_) {
     raise TypeError::BadTypeDef(message="duplicate type: " + name, span~)
   }
@@ -1771,6 +1792,7 @@ fn register_type_alias(
   target : @core.Type,
   span : @core.Span,
 ) -> Unit raise TypeError {
+  ensure_not_reserved_wasm_type_name(name, span)
   if env.get_enum_def(name) is Some(_) || env.get_type_alias(name) is Some(_) {
     raise TypeError::BadTypeDef(message="duplicate type: " + name, span~)
   }
@@ -1787,6 +1809,7 @@ fn register_struct_def(
   fields : Array[@core.StructField],
   span : @core.Span,
 ) -> Unit raise TypeError {
+  ensure_not_reserved_wasm_type_name(name, span)
   if env.get_enum_def(name) is Some(_) ||
     env.get_type_alias(name) is Some(_) ||
     env.get_struct(name) is Some(_) {
@@ -3402,6 +3425,96 @@ fn type_call(
                   )
                 }
                 @core.Type::Unit
+              }
+              "stdout_write_char" => {
+                let pos_args = extract_positional_args(
+                  args, "stdout_write_char", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="stdout_write_char",
+                    span=call_span,
+                  )
+                }
+                require_effects(
+                  env,
+                  effects,
+                  builtin_effects("stdout_write_char"),
+                  call_span,
+                )
+                if not(allow_effect) {
+                  raise TypeError::EffectNotAllowed(
+                    name="stdout_write_char",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "stdin_read_char" => {
+                let pos_args = extract_positional_args(
+                  args, "stdin_read_char", call_span,
+                )
+                if pos_args.length() != 0 {
+                  raise TypeError::BadCall(
+                    message="stdin_read_char",
+                    span=call_span,
+                  )
+                }
+                require_effects(
+                  env,
+                  effects,
+                  builtin_effects("stdin_read_char"),
+                  call_span,
+                )
+                if not(allow_effect) {
+                  raise TypeError::EffectNotAllowed(
+                    name="stdin_read_char",
+                    span=call_span,
+                  )
+                }
+                @core.Type::Int
+              }
+              "string_from_char_code" => {
+                let pos_args = extract_positional_args(
+                  args, "string_from_char_code", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="string_from_char_code",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
               }
               "array_builder" => {
                 let pos_args = extract_positional_args(

@@ -2471,6 +2471,16 @@ fn AstParser::parse_type_with_params(
               span=name_span,
             )
           }
+        "i32" =>
+          if args.is_empty() {
+            @core.Type::Int
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
+          }
         "Float" =>
           if args.is_empty() {
             @core.Type::Float
@@ -2481,7 +2491,27 @@ fn AstParser::parse_type_with_params(
               span=name_span,
             )
           }
+        "f32" =>
+          if args.is_empty() {
+            @core.Type::Float
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
+          }
         "Double" =>
+          if args.is_empty() {
+            @core.Type::Double
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
+          }
+        "f64" =>
           if args.is_empty() {
             @core.Type::Double
           } else {

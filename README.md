@@ -28,6 +28,8 @@ xsh language prototype and runtime (MoonBit).
 | `sleep(ms)` | native only | host runtime | Sleep for milliseconds |
 | `sh(cmd)` | native only | host import | Execute shell command |
 | `path(str)` | native only | host import | Normalize path |
+| `stdout_write_char(code)` | effect trace | `wasi:cli/stdout` + `wasi:io/streams` import | Write one char code to stdout |
+| `stdin_read_char()` | returns `-1` on eof | `wasi:cli/stdin` + `wasi:io/streams` import | Read one char code from stdin |
 | `await expr` | interpreter | stack-switching (x86_64) | Async operation |
 
 ## Development
@@ -55,12 +57,43 @@ just run compile --wasm examples/wasm/sleep_demo.xsh -o /tmp/out.wasm
 # Compile to Component Model WASM
 just run compile --component script.xsh -o out.component.wasm
 
+# Generate component embedding WIT for wasm-tools/wkg pipeline
+just run compile --wit-component script.xsh -o out.component.wit
+
+# Build validated component via wkg + wasm-tools
+just component-wkg script.xsh
+# (stdio builtins are wired through wasi:cli/stdin|stdout + wasi:io/streams)
+
 # Interactive REPL
 just run repl
+
+# Line REPL for stdio/wasi-like environments
+just run repl-wasi --no-prompt
+
+# Build wasm line REPL (preview2 stdio imports)
+just build-repl-wasi-wasm
+
+# Build component + run with wasmtime (explicit invoke for non-command component)
+just component-run examples/std/test_import.xsh
+# stdin 経由の実行も可能:
+printf 'A' | just component-run your_stdio_script.xsh
+
+# moonix で実行（moonix の CLI 差分はランチャで吸収）
+just component-run-moonix examples/std/test_import.xsh
+# moonix バイナリが無い場合の手動 bootstrap
+just bootstrap-moonix
 
 # Install CLI to ~/.local/bin/xsh
 just install
 ```
+
+`build-repl-wasi-wasm` output:
+- `_build/wasm/release/build/xsh_wasi_cli/xsh_wasi_cli.wasm`
+- this binary imports `wasi:cli/stdin|stdout@0.2.0` and `wasi:io/streams@0.2.0` directly
+- run it with a component/p3-compatible host (for example moon-component/mwac integration), not `moon run --target wasm`
+- for script-level stdio execution, use `just component-run <file.xsh>`
+- moonix 実行は `just component-run-moonix <file.xsh>`（必要なら `MOONIX_BIN=/path/to/moonix`）
+- `component-run-moonix` は `moonix` 未導入時に `scripts/bootstrap_moonix_bin.sh` を自動試行
 
 ## WASM Execution
 

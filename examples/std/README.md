@@ -8,11 +8,16 @@ MoonBit core library からの移植を通じて xsh をセルフホストする
 |-----------|---------|------|
 | `option.xsh` | 8 | Option 操作 (is_some, unwrap_or, map, flatmap, filter) |
 | `int.xsh` | 11 | 整数操作 (abs, max, min, clamp, pow, gcd, lcm, factorial, fibonacci) |
+| `float.xsh` | 7 | Float 操作 (abs, signum, clamp, square, lerp) |
+| `double.xsh` | 10 | Double 操作 (abs, signum, floor/ceil/round, lerp) |
 | `list.xsh` | 11 | Cons リスト (map, fold, filter, reverse, append, take, drop) |
 | `bool.xsh` | 8 | 論理演算 (to_int, implies, xor, nand, nor) |
 | `string.xsh` | 10 | 文字列操作 (head, tail, take, drop, repeat, pad, contains, replace) |
+| `io.xsh` | 3 | 高水準 stdio (`stdout_write`, `stdout_writeln`, `stdin_read_line`) |
+| `wasm/types.xsh` | 6 | WASM 型別名入口 (`i32`/`f32`/`f64`, `I32`/`F32`/`F64`) |
+| `wasm/opcodes.xsh` | 5 | 命令名準拠 API (`i32_add`, `i32_div_s`, `f64_promote_f32` など) |
 
-**合計: 48 テスト**
+**合計: 79 テスト**
 
 ## 発見した言語機能の制限
 
@@ -76,7 +81,17 @@ let option_zip_int = (a: Option[Int], b: Option[Int]) -> Option[Int] { ... }
 
 ```bash
 # インタプリタでテスト
-just run test examples/std/bool.xsh examples/std/int.xsh examples/std/list.xsh examples/std/option.xsh examples/std/string.xsh
+just run test \
+  examples/std/bool.xsh \
+  examples/std/int.xsh \
+  examples/std/float.xsh \
+  examples/std/double.xsh \
+  examples/std/list.xsh \
+  examples/std/option.xsh \
+  examples/std/string.xsh \
+  examples/std/io.xsh \
+  examples/std/wasm/types.xsh \
+  examples/std/wasm/opcodes.xsh
 
 # WASM コンパイル確認（import/export 使用）
 just run compile --wasm examples/std/test_import.xsh -o /tmp/test.wasm
@@ -85,6 +100,5 @@ wasmtime run --invoke run /tmp/test.wasm  # → 484 (untagged: 121)
 
 ## 注意事項
 
-- `export` 文を含むモジュールは単体 WASM コンパイルでエラーになる
-- `import` 経由で使用すると bundling されて正常動作
-- テスト時は `test_import.xsh` を除外（コンパイル専用）
+- `examples/std/test_import.xsh` はコンパイル確認用（`test` ブロックなし）
+- `examples/std/io.xsh` は `string_*` builtins に依存するため、現状の Core WASM (`--wasm`) ではなく主にインタプリタ向け
