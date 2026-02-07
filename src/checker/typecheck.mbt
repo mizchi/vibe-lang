@@ -3750,6 +3750,47 @@ fn type_call(
                 }
                 a
               }
+              "__lshift"
+              | "__rshift"
+              | "__bit_and"
+              | "__bit_or"
+              | "__bit_xor" => {
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, a, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("bit operation"),
+                  )
+                }
+                if not(type_equal(env, b, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("bit operation"),
+                  )
+                }
+                @core.Type::Int
+              }
               "__index" => {
                 let pos_args = extract_positional_args(
                   args, "__index", call_span,

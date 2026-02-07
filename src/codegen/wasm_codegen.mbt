@@ -4059,9 +4059,7 @@ fn resolve_args_with_labels(
   // Get parameter names for this function
   match ctx.fn_param_names.get(func_name) {
     None =>
-      raise WasmGenError::Unsupported(
-        "labeled arg unknown fn: " + func_name,
-      )
+      raise WasmGenError::Unsupported("labeled arg unknown fn: " + func_name)
     Some(param_names) => {
       // Initialize result array
       let result : Array[@core.Expr?] = Array::make(param_names.length(), None)
@@ -4104,9 +4102,7 @@ fn resolve_args_with_labels(
         match opt {
           Some(e) => out.push(e)
           None =>
-            raise WasmGenError::Unsupported(
-              "missing arg: " + param_names[i],
-            )
+            raise WasmGenError::Unsupported("missing arg: " + param_names[i])
         }
       }
       out
@@ -4303,22 +4299,18 @@ fn compile_stmt(
         @core.Stmt::Let(rec~, name~, expr~, span~),
         is_last,
       )
-    @core.Stmt::ExportEnumDef(..)
-    | @core.Stmt::ExportTypeAlias(..) => {
+    @core.Stmt::ExportEnumDef(..) | @core.Stmt::ExportTypeAlias(..) =>
       // Type exports have no runtime representation in WASM
       // If this is the last statement, push unit
       if is_last {
         emit_i32_const_raw(buf, 0)
       }
-    }
-    @core.Stmt::Export(..)
-    | @core.Stmt::ReExport(..) => {
+    @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
       // export { ... } statements are handled during bundling
       // At codegen time, they are no-ops
       if is_last {
         emit_i32_const_raw(buf, 0)
       }
-    }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = span
       // LetMut is similar to Let, but the variable can be reassigned
@@ -5673,8 +5665,8 @@ fn compile_pat_match(
         )
       } else {
         compile_ctor_args_cont(
-          ctx, buf, raw_ptr, args, 0, name, cont, match_scrut_idx, arms, start,
-          arm, bindings,
+          ctx, buf, raw_ptr, args, 0, name, cont, match_scrut_idx, arms, start, arm,
+          bindings,
         )
       }
       buf.push((5).to_byte()) // else
@@ -5724,8 +5716,7 @@ fn compile_pat_match(
       buf.push((4).to_byte()) // if
       buf.push((127).to_byte()) // result i32
       compile_record_fields_cont(
-        ctx, buf, raw_ptr, ordered, 0, cont, match_scrut_idx, arms, start, arm,
-        bindings,
+        ctx, buf, raw_ptr, ordered, 0, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
@@ -6129,7 +6120,11 @@ fn emit_load_tuple_elem(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
 
 ///|
 /// Load tuple element using cached raw pointer
-fn emit_load_tuple_elem_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
+fn emit_load_tuple_elem_raw(
+  buf : ByteBuf,
+  raw_ptr_idx : Int,
+  index : Int,
+) -> Unit {
   emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 8 + index * 4)
 }
@@ -6143,14 +6138,22 @@ fn emit_load_record_value(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
 
 ///|
 /// Load record name using cached raw pointer
-fn emit_load_record_name_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
+fn emit_load_record_name_raw(
+  buf : ByteBuf,
+  raw_ptr_idx : Int,
+  index : Int,
+) -> Unit {
   emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 8 + index * 8)
 }
 
 ///|
 /// Load record value using cached raw pointer
-fn emit_load_record_value_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
+fn emit_load_record_value_raw(
+  buf : ByteBuf,
+  raw_ptr_idx : Int,
+  index : Int,
+) -> Unit {
   emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 8 + index * 8 + 4)
 }
@@ -6164,7 +6167,11 @@ fn emit_load_ctor_tag_raw(buf : ByteBuf, raw_ptr_idx : Int) -> Unit {
 
 ///|
 /// Load ctor arg using cached raw pointer
-fn emit_load_ctor_arg_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
+fn emit_load_ctor_arg_raw(
+  buf : ByteBuf,
+  raw_ptr_idx : Int,
+  index : Int,
+) -> Unit {
   emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 8 + index * 4)
 }

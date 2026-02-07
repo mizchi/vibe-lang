@@ -41,7 +41,7 @@ fn snapshot_sizes(
 ///|
 test "bench: wasm.size.pipeline" {
   let snapshot = snapshot_sizes("bench_pipeline", sample_pipeline_script)
-  inspect(snapshot, content="{wasm_size: Some(62), ir_size: 237, note: None}")
+  inspect(snapshot, content="{wasm_size: Some(74), ir_size: 237, note: None}")
 }
 
 ///|
@@ -51,17 +51,17 @@ test "bench: wasm.size.pipeline_js_string" {
     sample_pipeline_js_string_script,
     use_js_strings=true,
   )
-  inspect(snapshot, content="{wasm_size: Some(119), ir_size: 184, note: None}")
+  inspect(snapshot, content="{wasm_size: Some(131), ir_size: 184, note: None}")
 }
 
 ///|
 test "bench: wasm.size.user_fn" {
   let snapshot = snapshot_sizes("bench_user_fn", sample_user_fn_script)
-  inspect(snapshot, content="{wasm_size: Some(96), ir_size: 344, note: None}")
+  inspect(snapshot, content="{wasm_size: Some(199), ir_size: 344, note: None}")
 }
 
 ///|
 test "bench: wasm.size.effect_ho" {
   let snapshot = snapshot_sizes("bench_effect_ho", sample_effect_ho_script)
-  inspect(snapshot, content="{wasm_size: Some(217), ir_size: 930, note: None}")
+  inspect(snapshot, content="{wasm_size: Some(333), ir_size: 930, note: None}")
 }

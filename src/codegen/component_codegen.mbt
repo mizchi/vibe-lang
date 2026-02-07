@@ -172,7 +172,8 @@ fn infer_export_type(expr : @core.Expr) -> @core.Type {
 fn find_let_expr(ast : @core.Module, name : String) -> @core.Expr? {
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Let(name=n, expr~, ..) | @core.Stmt::ExportLet(name=n, expr~, ..) =>
+      @core.Stmt::Let(name=n, expr~, ..)
+      | @core.Stmt::ExportLet(name=n, expr~, ..) =>
         if n == name {
           return Some(expr)
         }
@@ -189,12 +190,11 @@ pub fn collect_exports(ast : @core.Module) -> Array[ExportInfo] {
   let seen : Map[String, Bool] = {}
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::ExportLet(name~, expr~, ..) => {
+      @core.Stmt::ExportLet(name~, expr~, ..) =>
         if not(seen.contains(name)) {
           exports.push(ExportInfo::{ name, ty: infer_export_type(expr) })
           seen[name] = true
         }
-      }
       @core.Stmt::Export(names~, ..) =>
         for name in names {
           if not(seen.contains(name)) {

@@ -495,6 +495,36 @@ pub fn hash_ref() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn bit_and() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(77)
+}
+
+///|
+pub fn bit_or() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(78)
+}
+
+///|
+pub fn bit_xor() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(79)
+}
+
+///|
+pub fn lshift() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(80)
+}
+
+///|
+pub fn rshift() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(81)
+}
+
+///|
+pub fn pipe_gt() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(82)
+}
+
+///|
 pub fn export_stmt() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(128)
 }

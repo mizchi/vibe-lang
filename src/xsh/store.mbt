@@ -301,9 +301,36 @@ pub fn Runtime::gc(self : Runtime) -> Unit {
 
 ///|
 /// Hash a value for content-addressed storage
+/// Includes type tag to distinguish Float(1.0) from Double(1.0) from Int(1)
+/// For Fn values, includes body hash to distinguish functions with same signature
 pub fn value_hash(value : @core.Value) -> String {
   let hasher = @bit.Sha1State::new()
-  hasher.update_string(value.to_string())
+  let type_tag = match value {
+    @core.Value::Int(_) => "i:"
+    @core.Value::Float(_) => "f:"
+    @core.Value::Double(_) => "d:"
+    @core.Value::Bool(_) => "b:"
+    @core.Value::String(_) => "s:"
+    @core.Value::Path(_) => "p:"
+    @core.Value::Unit => "u:"
+    @core.Value::Tuple(_) => "t:"
+    @core.Value::Record(_) => "r:"
+    @core.Value::Array(_) => "a:"
+    @core.Value::Map(_) => "m:"
+    @core.Value::ArrayBuilder(_) => "ab:"
+    @core.Value::MapBuilder(_) => "mb:"
+    @core.Value::Fn(_) => "fn:"
+  }
+  hasher.update_string(type_tag)
+  // For Fn values, include body in hash since Show only outputs params
+  match value {
+    @core.Value::Fn(fn_val) => {
+      hasher.update_string(value.to_string())
+      hasher.update_string("\nbody:")
+      hasher.update_string(fn_val.body.to_string())
+    }
+    _ => hasher.update_string(value.to_string())
+  }
   hasher.finish().to_hex()
 }
 

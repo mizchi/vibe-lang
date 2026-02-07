@@ -95,7 +95,9 @@ test "bench: dce.many_unused" {
   // Print results for inspection
   inspect(
     result,
-    content="{name: \"many_unused\", stmts_before: 18, stmts_after: 3, wasm_no_dce: Some(267), wasm_with_dce: Some(114), reduction_percent: Some(57.30337078651685)}",
+    content=(
+      #|{name: "many_unused", stmts_before: 18, stmts_after: 3, wasm_no_dce: Some(440), wasm_with_dce: Some(229), reduction_percent: Some(47.95454545454545)}
+    ),
   )
 }
 
@@ -115,7 +117,9 @@ test "bench: dce.single_module" {
   assert_true(result.stmts_after < result.stmts_before)
   inspect(
     result,
-    content="{name: \"single_module\", stmts_before: 6, stmts_after: 3, wasm_no_dce: Some(127), wasm_with_dce: Some(113), reduction_percent: Some(11.023622047244094)}",
+    content=(
+      #|{name: "single_module", stmts_before: 6, stmts_after: 3, wasm_no_dce: Some(240), wasm_with_dce: Some(228), reduction_percent: Some(5)}
+    ),
   )
 }
 
@@ -140,7 +144,9 @@ test "bench: dce.dependency_chain" {
   assert_true(result.stmts_after < result.stmts_before)
   inspect(
     result,
-    content="{name: \"dependency_chain\", stmts_before: 7, stmts_after: 6, wasm_no_dce: Some(227), wasm_with_dce: Some(205), reduction_percent: Some(9.691629955947137)}",
+    content=(
+      #|{name: "dependency_chain", stmts_before: 7, stmts_after: 6, wasm_no_dce: Some(524), wasm_with_dce: Some(491), reduction_percent: Some(6.297709923664121)}
+    ),
   )
 }
 
@@ -161,6 +167,8 @@ test "bench: dce.all_used" {
   // No reduction when all definitions are used
   inspect(
     result,
-    content="{name: \"all_used\", stmts_before: 4, stmts_after: 4, wasm_no_dce: Some(185), wasm_with_dce: Some(185), reduction_percent: Some(0)}",
+    content=(
+      #|{name: "all_used", stmts_before: 4, stmts_after: 4, wasm_no_dce: Some(185), wasm_with_dce: Some(185), reduction_percent: Some(0)}
+    ),
   )
 }

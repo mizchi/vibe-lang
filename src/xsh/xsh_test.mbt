@@ -139,7 +139,8 @@ test "xsh float and double ops" {
     _ => fail("a")
   }
   match rt.get("b") {
-    Some(@core.Value::Float(v)) => assert_true(Float::equal(v, 1.5))
+    Some(@core.Value::Float(v)) =>
+      assert_true(Float::equal(v, Float::from_double(1.5)))
     _ => fail("b")
   }
   match rt.get("c") {
@@ -151,7 +152,8 @@ test "xsh float and double ops" {
     _ => fail("d")
   }
   match rt.get("e") {
-    Some(@core.Value::Float(v)) => assert_true(Float::equal(v, 3.0))
+    Some(@core.Value::Float(v)) =>
+      assert_true(Float::equal(v, Float::from_double(3.0)))
     _ => fail("e")
   }
   match rt.get("f") {

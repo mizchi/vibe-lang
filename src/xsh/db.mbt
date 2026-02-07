@@ -262,7 +262,7 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
       _ => ()
     }
   }
-  // Second pass: handle export statements
+  // Second pass: handle export and re-export statements
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Export(names~, ..) =>
@@ -270,6 +270,11 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
           if defined.contains(name) {
             exports[name] = true
           }
+        }
+      // Re-export: mark names as exported (actual definitions come from source module)
+      @core.Stmt::ReExport(names~, ..) =>
+        for name in names {
+          exports[name] = true
         }
       _ => ()
     }

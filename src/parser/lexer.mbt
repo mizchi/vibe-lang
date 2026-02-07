@@ -77,6 +77,7 @@ fn is_ident_delim(c : Char) -> Bool {
   c == '<' ||
   c == '>' ||
   c == '&' ||
+  c == '^' ||
   c == '\''
 }
 
@@ -424,6 +425,10 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           }
         '<' =>
           match self.peek() {
+            Some('<') => {
+              let _ = self.advance()
+              Token::new(lshift(), "<<")
+            }
             Some('=') => {
               let _ = self.advance()
               Token::new(lte(), "<=")
@@ -432,6 +437,10 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           }
         '>' =>
           match self.peek() {
+            Some('>') => {
+              let _ = self.advance()
+              Token::new(rshift(), ">>")
+            }
             Some('=') => {
               let _ = self.advance()
               Token::new(gte(), ">=")
@@ -444,7 +453,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
               let _ = self.advance()
               Token::new(and_and(), "&&")
             }
-            _ => Token::new(error_kind(), "&")
+            _ => Token::new(bit_and(), "&")
           }
         '|' =>
           match self.peek() {
@@ -452,8 +461,13 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
               let _ = self.advance()
               Token::new(or_or(), "||")
             }
-            _ => Token::new(pipe(), "|")
+            Some('>') => {
+              let _ = self.advance()
+              Token::new(pipe_gt(), "|>")
+            }
+            _ => Token::new(bit_or(), "|")
           }
+        '^' => Token::new(bit_xor(), "^")
         '.' => Token::new(dot(), ".")
         '#' => {
           // Hash reference: #abc12345

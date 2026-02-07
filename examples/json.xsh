@@ -392,7 +392,7 @@ let rec parse_value = (s: String, i: Int) -> (Json, Int) with {Error} {
   }
 }
 
-let parse = (s: String) -> (Json, Int) with {Error} {
+export let parse = (s: String) -> (Json, Int) with {Error} {
   let (value, next) = parse_value(s, 0)
   let end = skip_ws(s, next)
   if end == s.string_length() {

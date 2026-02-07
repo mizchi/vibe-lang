@@ -202,14 +202,40 @@ fn filter_reachable_stmts(
         if reachable.contains(name) {
           out.push(stmt)
         }
-      @core.Stmt::EnumDef(name~, ..) =>
-        if reachable.contains(name) {
+      @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
+        let _ = params
+        let _ = span
+        // Keep if type name is reachable OR any constructor is reachable
+        let mut keep = reachable.contains(name)
+        if not(keep) {
+          for ctor in ctors {
+            if reachable.contains(ctor.name) {
+              keep = true
+              break
+            }
+          }
+        }
+        if keep {
           out.push(stmt)
         }
-      @core.Stmt::ExportEnumDef(name~, ..) =>
-        if reachable.contains(name) {
+      }
+      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
+        let _ = params
+        let _ = span
+        // Keep if type name is reachable OR any constructor is reachable
+        let mut keep = reachable.contains(name)
+        if not(keep) {
+          for ctor in ctors {
+            if reachable.contains(ctor.name) {
+              keep = true
+              break
+            }
+          }
+        }
+        if keep {
           out.push(stmt)
         }
+      }
       @core.Stmt::TypeAlias(name~, ..) =>
         if reachable.contains(name) {
           out.push(stmt)
@@ -494,9 +520,9 @@ fn add_ref_name(
   if bound.contains(name) {
     return
   }
-  if dce_is_builtin_name(name) ||
-    @core.is_ctor_name(name) ||
-    dce_has_qualified_name(name) {
+  // Note: enum constructors (is_ctor_name) ARE added as refs
+  // so that DCE keeps the enum definition when a constructor is used
+  if dce_is_builtin_name(name) || dce_has_qualified_name(name) {
     return
   }
   refs[name] = true
