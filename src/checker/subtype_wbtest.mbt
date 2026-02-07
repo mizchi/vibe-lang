@@ -186,7 +186,7 @@ test "fn metadata version reflects generic parameter bound changes" {
     #|trait Show
     #|impl Eq for Int
     #|impl Show for Int
-    #|let f = [T: Eq](x: T) -> Bool { x == x }
+    #|export let f = [T: Eq](x: T) -> Bool { x == x }
   let base_ast = parse_module(base_script)
   let env1 = type_check_with_env(env, base_ast, {})
   assert_eq(
@@ -194,14 +194,16 @@ test "fn metadata version reflects generic parameter bound changes" {
     Some(ApiSemver::{ major: 1, minor: 0, patch: 0 }),
   )
   let tighten_ast = parse_module(
-    "let f = [T: Eq + Show](x: T) -> Bool { x == x }",
+    "export let f = [T: Eq + Show](x: T) -> Bool { x == x }",
   )
   let env2 = type_check_with_env(env1, tighten_ast, {})
   assert_eq(
     env2.get_fn_version("f"),
     Some(ApiSemver::{ major: 2, minor: 0, patch: 0 }),
   )
-  let loosen_ast = parse_module("let f = [T: Eq](x: T) -> Bool { x == x }")
+  let loosen_ast = parse_module(
+    "export let f = [T: Eq](x: T) -> Bool { x == x }",
+  )
   let env3 = type_check_with_env(env2, loosen_ast, {})
   assert_eq(
     env3.get_fn_version("f"),
@@ -213,23 +215,34 @@ test "fn metadata version reflects generic parameter bound changes" {
 test "fn metadata version auto bump" {
   let env = TypeEnv::new()
   let base_script =
-    #|let f = (x: Int) -> Int { x }
+    #|export let f = (x: Int) -> Int { x }
   let base_ast = parse_module(base_script)
   let env1 = type_check_with_env(env, base_ast, {})
   assert_eq(
     env1.get_fn_version("f"),
     Some(ApiSemver::{ major: 1, minor: 0, patch: 0 }),
   )
-  let patch_ast = parse_module("let f = (x: Int) -> Int { x }")
+  let patch_ast = parse_module("export let f = (x: Int) -> Int { x }")
   let env2 = type_check_with_env(env1, patch_ast, {})
   assert_eq(
     env2.get_fn_version("f"),
     Some(ApiSemver::{ major: 1, minor: 0, patch: 1 }),
   )
-  let major_ast = parse_module("let f = (x: Int) -> String { \"x\" }")
+  let major_ast = parse_module("export let f = (x: Int) -> String { \"x\" }")
   let env3 = type_check_with_env(env2, major_ast, {})
   assert_eq(
     env3.get_fn_version("f"),
     Some(ApiSemver::{ major: 2, minor: 0, patch: 0 }),
   )
+}
+
+///|
+test "fn metadata version is not tracked for non-exported function" {
+  let env = TypeEnv::new()
+  let base_ast = parse_module("let f = (x: Int) -> Int { x }")
+  let env1 = type_check_with_env(env, base_ast, {})
+  assert_eq(env1.get_fn_version("f"), None)
+  let next_ast = parse_module("let f = (x: Int) -> String { \"x\" }")
+  let env2 = type_check_with_env(env1, next_ast, {})
+  assert_eq(env2.get_fn_version("f"), None)
 }

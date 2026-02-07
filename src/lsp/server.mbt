@@ -101,6 +101,26 @@ pub fn LspServer::handle_message(
       }
       (None, notifications)
     }
+    "textDocument/codeAction" =>
+      match req.id {
+        Some(id) => {
+          let result = match req.params {
+            Some(Json::Object(obj)) =>
+              match parse_text_document_identifier(obj.get("textDocument")) {
+                Some(doc_id) =>
+                  match self.documents.get(doc_id.uri) {
+                    Some(source) =>
+                      trait_import_code_actions(doc_id.uri, source)
+                    None => Json::array([])
+                  }
+                None => Json::array([])
+              }
+            _ => Json::array([])
+          }
+          (Some(make_response(Some(id), result)), notifications)
+        }
+        None => (None, notifications)
+      }
     _ =>
       // Unknown method
       match req.id {

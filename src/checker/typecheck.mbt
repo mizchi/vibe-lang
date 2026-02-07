@@ -858,6 +858,15 @@ pub fn TypeEnv::set_scheme(
   name : String,
   scheme : TypeScheme,
 ) -> Unit {
+  self.bindings[name] = scheme
+}
+
+///|
+pub fn TypeEnv::set_exported_scheme(
+  self : TypeEnv,
+  name : String,
+  scheme : TypeScheme,
+) -> Unit {
   let next_ty = resolve_type(self, scheme.ty)
   match self.bindings.get(name) {
     Some(prev_scheme) => {
@@ -1081,7 +1090,15 @@ pub fn type_check_with_aliases(
   let env = TypeEnv::new()
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
-  type_check_stmts(env, ast.stmts, aliases, effect_scope_all(), false) catch {
+  let exported_names = collect_exported_names(ast.stmts)
+  type_check_stmts(
+    env,
+    ast.stmts,
+    aliases,
+    effect_scope_all(),
+    false,
+    exported_names,
+  ) catch {
     e => raise e.resolve_vars(env)
   }
 }
@@ -1094,7 +1111,15 @@ pub fn type_check_with_env(
 ) -> TypeEnv raise TypeError {
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
-  type_check_stmts(env, ast.stmts, aliases, effect_scope_all(), false) catch {
+  let exported_names = collect_exported_names(ast.stmts)
+  type_check_stmts(
+    env,
+    ast.stmts,
+    aliases,
+    effect_scope_all(),
+    false,
+    exported_names,
+  ) catch {
     e => raise e.resolve_vars(env)
   }
 }
@@ -1106,6 +1131,7 @@ fn type_check_stmts(
   aliases : Map[String, @core.Ref],
   effects : EffectScope,
   allow_effect : Bool,
+  exported_names : Map[String, Bool],
 ) -> TypeEnv raise TypeError {
   for stmt in stmts {
     match stmt {
@@ -1114,7 +1140,11 @@ fn type_check_stmts(
         let scheme = type_let_expr(
           env, rec, name, expr, span, aliases, effects, allow_effect,
         )
-        env.set_scheme(name, scheme)
+        if exported_names.contains(name) {
+          env.set_exported_scheme(name, scheme)
+        } else {
+          env.set_scheme(name, scheme)
+        }
         let info = purity_for_let(env, rec, name, expr)
         env.set_purity(name, info.value)
       }
@@ -1144,7 +1174,7 @@ fn type_check_stmts(
         let scheme = type_let_expr(
           env, rec, name, expr, span, aliases, effects, allow_effect,
         )
-        env.set_scheme(name, scheme)
+        env.set_exported_scheme(name, scheme)
         let info = purity_for_let(env, rec, name, expr)
         env.set_purity(name, info.value)
       }
@@ -1162,6 +1192,7 @@ fn type_check_stmts(
           aliases,
           effects,
           allow_effect,
+          {},
         )
 
       }
@@ -1175,7 +1206,11 @@ fn type_check_stmts(
           trait_bounds: {},
           ty,
         }
-        env.set_scheme(name, scheme)
+        if exported_names.contains(name) {
+          env.set_exported_scheme(name, scheme)
+        } else {
+          env.set_scheme(name, scheme)
+        }
         env.set_purity(name, false)
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
@@ -1190,7 +1225,11 @@ fn type_check_stmts(
             trait_bounds: {},
             ty: bound_ty,
           }
-          env.set_scheme(name, scheme)
+          if exported_names.contains(name) {
+            env.set_exported_scheme(name, scheme)
+          } else {
+            env.set_scheme(name, scheme)
+          }
           env.set_purity(name, true)
         }
       }
@@ -1232,6 +1271,63 @@ fn type_check_stmts(
     }
   }
   env
+}
+
+///|
+fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
+  let exports : Map[String, Bool] = {}
+  let defined : Map[String, Bool] = {}
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, ..) => {
+        let _ = rec
+        defined[name] = true
+      }
+      @core.Stmt::LetMut(name~, ..) => defined[name] = true
+      @core.Stmt::EnumDef(name~, ..) => defined[name] = true
+      @core.Stmt::TypeAlias(name~, ..) => defined[name] = true
+      @core.Stmt::TraitDef(name~, ..) => defined[name] = true
+      @core.Stmt::StructDef(name~, ..) => defined[name] = true
+      @core.Stmt::ExportLet(rec~, name~, ..) => {
+        let _ = rec
+        defined[name] = true
+        exports[name] = true
+      }
+      @core.Stmt::ExportEnumDef(name~, ctors~, ..) => {
+        defined[name] = true
+        exports[name] = true
+        for ctor in ctors {
+          defined[ctor.name] = true
+          exports[ctor.name] = true
+        }
+      }
+      @core.Stmt::ExportTypeAlias(name~, ..) => {
+        defined[name] = true
+        exports[name] = true
+      }
+      @core.Stmt::ExportStructDef(name~, ..) => {
+        defined[name] = true
+        exports[name] = true
+      }
+      _ => ()
+    }
+  }
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::Export(names~, ..) =>
+        for name in names {
+          if defined.contains(name) {
+            exports[name] = true
+          }
+        }
+      @core.Stmt::ReExport(names~, ..) =>
+        for name in names {
+          exports[name] = true
+        }
+      _ => ()
+    }
+  }
+  exports
 }
 
 ///|
@@ -1386,6 +1482,7 @@ pub fn ensure_prelude_functions(
         aliases,
         effect_scope_all(),
         false,
+        {},
       )
       env.set_purity("__prelude_loaded", true)
     }

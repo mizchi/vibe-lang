@@ -85,6 +85,78 @@ test "LspServer/handle_message/initialize" {
 }
 
 ///|
+test "LspServer/handle_message/codeAction trait import quickfix" {
+  let server = LspServer::new()
+  let uri = "file://test.xsh"
+  let source = "let same = [T: Eq](x: T, y: T) -> Bool { x == y }"
+  let open_json = Json::object({
+    "jsonrpc": Json::string("2.0"),
+    "method": Json::string("textDocument/didOpen"),
+    "params": Json::object({
+      "textDocument": Json::object({
+        "uri": Json::string(uri),
+        "languageId": Json::string("xsh"),
+        "version": Json::number(1.0),
+        "text": Json::string(source),
+      }),
+    }),
+  })
+  let _ = server.handle_message(open_json)
+  let action_json = Json::object({
+    "jsonrpc": Json::string("2.0"),
+    "id": Json::number(10.0),
+    "method": Json::string("textDocument/codeAction"),
+    "params": Json::object({
+      "textDocument": Json::object({ "uri": Json::string(uri) }),
+      "range": Json::object({
+        "start": Json::object({
+          "line": Json::number(0.0),
+          "character": Json::number(0.0),
+        }),
+        "end": Json::object({
+          "line": Json::number(0.0),
+          "character": Json::number(0.0),
+        }),
+      }),
+      "context": Json::object({ "diagnostics": Json::array([]) }),
+    }),
+  })
+  let (resp, notifications) = server.handle_message(action_json)
+  assert_eq(notifications.length(), 0)
+  match resp {
+    Some(response) =>
+      match response.result {
+        Some(Json::Array(actions)) => {
+          assert_true(actions.length() > 0)
+          match actions[0] {
+            Json::Object(obj) =>
+              match obj.get("title") {
+                Some(Json::String(title)) =>
+                  assert_true(title.contains("Import Eq"))
+                _ => fail("missing title")
+              }
+            _ => fail("code action must be object")
+          }
+        }
+        _ => fail("expected code actions")
+      }
+    None => fail("expected response")
+  }
+}
+
+///|
+test "trait_import_code_actions skips already imported trait" {
+  let source =
+    #|import { Eq } from "./examples/std/trait_api.xsh"
+    #|let same = [T: Eq](x: T, y: T) -> Bool { x == y }
+  let actions = trait_import_code_actions("file://test.xsh", source)
+  match actions {
+    Json::Array(items) => assert_eq(items.length(), 0)
+    _ => fail("expected array")
+  }
+}
+
+///|
 test "offset_to_position/simple" {
   let source = "abc\ndef\nghi"
   // Position at start of second line

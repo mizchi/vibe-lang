@@ -142,9 +142,167 @@ fn parse_spec(data : String, path : String) -> FixtureSpec raise {
 }
 
 ///|
-fn eval_fixture(script : String) -> Result[EvalResult, String] {
+fn fixture_entry_path(path : String) -> String {
+  let mut base = path
+  for part in path.split("/") {
+    let s = part.to_string()
+    if s.length() > 0 {
+      base = s
+    }
+  }
+  base
+}
+
+///|
+fn resolve_import_fs_path(from_path : String, raw_path : String) -> String? {
+  let is_file = fn(path : String) -> Bool {
+    @os_fs.is_file(path) catch {
+      _ => false
+    }
+  }
+  if raw_path.has_prefix("/") {
+    if is_file(raw_path) {
+      return Some(raw_path)
+    }
+    return None
+  }
+  let from_dir = @path.Path(from_path).dirname().to_string()
+  let resolved = @path.Path(from_dir)
+    .join(@path.Path(raw_path))
+    .normalize()
+    .to_string()
+  if is_file(resolved) {
+    return Some(resolved)
+  }
+  let root_resolved = @path.Path(".")
+    .join(@path.Path(raw_path))
+    .normalize()
+    .to_string()
+  if is_file(root_resolved) {
+    return Some(root_resolved)
+  }
+  None
+}
+
+///|
+fn preload_module_sources(
+  db : XshDb,
+  module_path : String,
+  source : String,
+  visited : Map[String, Bool],
+) -> Unit raise {
+  if visited.contains(module_path) {
+    return
+  }
+  visited[module_path] = true
+  db.set_source(module_path, source)
+  let normalized_path = @path.Path(module_path).normalize().to_string()
+  if normalized_path != module_path {
+    db.set_source(normalized_path, source)
+  }
+  if not(normalized_path.has_prefix("/")) &&
+    not(normalized_path.has_prefix("./")) {
+    let dotted_path = "./" + normalized_path
+    if dotted_path != module_path {
+      db.set_source(dotted_path, source)
+    }
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e => fail("[\{module_path}] parse failed: \{e.to_string()}")
+  }
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Import(source~, ..) =>
+        match source {
+          @core.ModuleRef::Path(path~) => {
+            let import_path = path
+            match resolve_import_fs_path(module_path, import_path) {
+              Some(resolved_path) => {
+                let dep_source = @os_fs.read_file_to_string(resolved_path) catch {
+                  e =>
+                    fail(
+                      "[\{module_path}] read import failed (\{resolved_path}): \{e.to_string()}",
+                    )
+                }
+                preload_module_sources(db, resolved_path, dep_source, visited)
+              }
+              None =>
+                fail("[\{module_path}] unresolved import path: \{import_path}")
+            }
+          }
+          @core.ModuleRef::Hash(_) => ()
+        }
+      _ => ()
+    }
+  }
+}
+
+///|
+fn register_fixture_import_modules(
+  rt : Runtime,
+  db : XshDb,
+  path : String,
+  visited : Map[String, Bool],
+  path_to_hash : Map[String, String],
+) -> Unit {
+  if visited.contains(path) {
+    return
+  }
+  visited[path] = true
+  let imports = db.imports(path)
+  for imp in imports {
+    match imp.hash {
+      Some(hash) => {
+        path_to_hash[imp.path] = hash
+        let ast = db.ast(imp.path)
+        rt.register_module(hash, ast)
+        register_fixture_import_modules(rt, db, imp.path, visited, path_to_hash)
+      }
+      None => ()
+    }
+  }
+}
+
+///|
+fn eval_fixture(path : String, script : String) -> Result[EvalResult, String] {
+  if not(script.contains("import ")) {
+    let rt = Runtime::new(@capability.CapabilitySet::developer())
+    return Ok(rt.eval_script(script)) catch { e => Err(e.to_string()) }
+  }
+  let entry = fixture_entry_path(path)
+  let db = XshDb::new()
+  let preload_visited : Map[String, Bool] = {}
+  let preload = Ok(preload_module_sources(db, entry, script, preload_visited)) catch {
+    e => Err(e.to_string())
+  }
+  match preload {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let compiled = Ok(compile_module(db, entry)) catch { e => Err(e.to_string()) }
+  let compiled = match compiled {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
   let rt = Runtime::new(@capability.CapabilitySet::developer())
-  Ok(rt.eval_script(script)) catch {
+  let import_visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_fixture_import_modules(rt, db, entry, import_visited, path_to_hash)
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(
+    import_path,
+  ) {
+    match path_to_hash.get(import_path) {
+      Some(hash) => Some(hash)
+      None => {
+        let normalized = @path.Path(import_path).normalize().to_string()
+        path_to_hash.get(normalized)
+      }
+    }
+  })
+  Ok(rt.eval_module(converted_ast)) catch {
     e => Err(e.to_string())
   }
 }
@@ -160,7 +318,7 @@ fn run_fixture(path : String) -> Unit raise {
     println("[\{path}] skipped")
     return
   }
-  let result = eval_fixture(script)
+  let result = eval_fixture(path, script)
   if spec.todo {
     match result {
       Ok(_) => fail("[\{path}] TODO fixture passed (remove TODO flag)")

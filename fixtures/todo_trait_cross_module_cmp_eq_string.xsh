@@ -1,5 +1,5 @@
-import { cmp_eq } from "./examples/std/trait_api.xsh"
-cmp_eq("a", "a")
+import { Eq, option_equals } from "./examples/std/option.xsh"
+option_equals(Some("a"), Some("a"))
 
 __DATA__
-{"TODO": true}
+{"last":"true"}
