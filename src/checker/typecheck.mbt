@@ -5961,8 +5961,8 @@ fn check_call_args(
         pos_index += 1
         if not(type_equal(env, param.ty, arg.ty)) {
           raise TypeError::Mismatch(
-            expected=param.ty,
-            actual=arg.ty,
+            expected=argument_mismatch_expected_type(env, param.ty, arg.ty),
+            actual=resolve_type(env, arg.ty),
             span=arg.span,
             context=Some("argument"),
           )
@@ -5987,8 +5987,8 @@ fn check_call_args(
             used_labels[label] = true
             if not(type_equal(env, param.ty, arg.ty)) {
               raise TypeError::Mismatch(
-                expected=param.ty,
-                actual=arg.ty,
+                expected=argument_mismatch_expected_type(env, param.ty, arg.ty),
+                actual=resolve_type(env, arg.ty),
                 span=arg.span,
                 context=Some("argument"),
               )
@@ -6014,6 +6014,32 @@ fn check_call_args(
         span=call_span,
       )
     }
+  }
+}
+
+///|
+fn argument_mismatch_expected_type(
+  env : TypeEnv,
+  expected : @core.Type,
+  actual : @core.Type,
+) -> @core.Type {
+  let resolved_expected = resolve_type(env, expected)
+  let resolved_actual = resolve_type(env, actual)
+  match resolved_expected {
+    @core.Type::Var(id) =>
+      match env.var_trait_bounds.get(id) {
+        Some(bounds) => {
+          let deduped = dedup_trait_bounds(bounds)
+          for bound in deduped {
+            if not(type_implements_trait(env, resolved_actual, bound)) {
+              return @core.Type::Named(name=bound, args=[])
+            }
+          }
+          resolved_expected
+        }
+        None => resolved_expected
+      }
+    _ => resolved_expected
   }
 }
 

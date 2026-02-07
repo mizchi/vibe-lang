@@ -9,12 +9,18 @@ let swap_pair = [A, B](p: (A, B)) -> (B, A) { (p.1, p.0) }
 
 // trait syntax and bounds
 trait Eq
+trait Show
 impl Eq for Int
+impl Show for Int
 impl[T: Eq] Eq for Array[T]
 let trait_identity = [T: Eq](x: T) -> T { x }
 let trait_keep = [T](x: T: Eq) -> T { x }
+let trait_identity2 = [T: Eq + Show](x: T) -> T { x }
+let trait_keep2 = [T](x: T: Eq + Show) -> T { x }
 let trait_value = trait_identity(42)
 let trait_keep_value = trait_keep(7)
+let trait_value2 = trait_identity2(42)
+let trait_keep_value2 = trait_keep2(7)
 let trait_array = trait_identity([1, 2, 3])
 
 // struct syntax
@@ -119,6 +125,8 @@ test "generic_swap_pair" {
 }
 test "trait_bound_generic" { assert(eq(trait_value, 42)) }
 test "trait_bound_inline_param" { assert(eq(trait_keep_value, 7)) }
+test "trait_bound_multi_generic" { assert(eq(trait_value2, 42)) }
+test "trait_bound_multi_inline_param" { assert(eq(trait_keep_value2, 7)) }
 test "trait_bound_generic_impl" { assert(eq(array_length(trait_array), 3)) }
 test "struct_field_access" {
   assert(eq(point.x, 3))
