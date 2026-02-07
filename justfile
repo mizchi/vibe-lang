@@ -95,6 +95,14 @@ test-component-e2e:
 test-codegen-unsupported:
     scripts/test_codegen_unsupported.sh
 
+# Golden tests for WAT output
+test-golden-wat:
+    scripts/test_golden_wat.sh
+
+# Update golden WAT snapshots
+test-golden-wat-update:
+    scripts/test_golden_wat.sh --update
+
 # Run wasmtime in x86_64 Linux container (for stack-switching support)
 wasmtime-x64 *args:
     container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\

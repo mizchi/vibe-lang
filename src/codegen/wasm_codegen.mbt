@@ -212,6 +212,7 @@ priv struct CodegenCtx {
   mut local_count : Int
   fn_indices : Map[String, Int]
   fn_params : Map[String, Array[ValueKind]]
+  fn_param_names : Map[String, Array[String]] // function name -> param names
   fn_returns : Map[String, ValueKind]
   fn_return_sigs : Map[String, FuncSig] // return sig if function returns a function
   fn_closure_indices : Map[String, Int]
@@ -255,10 +256,23 @@ priv struct CodegenCtx {
   // Sleep import function
   mut need_sleep : Bool
   mut sleep_import_index : Int
+  // Exported user functions (export let ...)
+  exported_fns : Map[String, Bool]
 }
 
 ///|
 fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
+  // Register builtin enum constructors
+  let enum_ctor_tags : Map[String, Int] = {}
+  let enum_ctor_arities : Map[String, Int] = {}
+  let enum_ctor_arg_kinds : Map[String, Array[ValueKind]] = {}
+  // Option type: None = 0, Some = 1
+  enum_ctor_tags["None"] = 0
+  enum_ctor_tags["Some"] = 1
+  enum_ctor_arities["None"] = 0
+  enum_ctor_arities["Some"] = 1
+  enum_ctor_arg_kinds["None"] = []
+  enum_ctor_arg_kinds["Some"] = [ValueKind::I32]
   {
     locals: {},
     local_kinds: {},
@@ -266,14 +280,15 @@ fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
     local_count: 0,
     fn_indices: {},
     fn_params: {},
+    fn_param_names: {},
     fn_returns: {},
     fn_return_sigs: {},
     fn_closure_indices: {},
     fn_closure_captures: {},
     fn_closure_capture_kinds: {},
-    enum_ctor_tags: {},
-    enum_ctor_arities: {},
-    enum_ctor_arg_kinds: {},
+    enum_ctor_tags,
+    enum_ctor_arities,
+    enum_ctor_arg_kinds,
     fn_local_sigs: {},
     fn_sig_type_indices: {},
     fn_sig_order: [],
@@ -308,6 +323,8 @@ fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
     // Sleep import function
     need_sleep: false,
     sleep_import_index: -1,
+    // Exported user functions
+    exported_fns: {},
   }
 }
 
@@ -762,6 +779,36 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
       @core.Stmt::LetMut(name~, expr~, span~) => {
         let _ = expr
         let _ = span
+        outer_bound[name] = true
+      }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        // ExportLet is treated like Let for function collection
+        let _ = span
+        if rec {
+          outer_bound[name] = true
+        }
+        match expr {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+            let _ = effects
+            let key = span_key(span)
+            let captures : Array[String] = []
+            let seen : Map[String, Bool] = {}
+            let fn_bound : Map[String, Bool] = {}
+            for param in params {
+              fn_bound[param.name] = true
+            }
+            collect_captures_block(body, fn_bound, outer_bound, captures, seen)
+            funcs.push(FuncDef::{
+              name: Some(name),
+              params,
+              ret,
+              body,
+              span_key: key,
+              captures,
+            })
+          }
+          _ => ()
+        }
         outer_bound[name] = true
       }
       _ => ()
@@ -2212,6 +2259,26 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
           _ => ()
         }
       }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        // ExportLet is treated like Let for top-level function collection
+        let _ = rec
+        let _ = span
+        match expr {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+            let _ = effects
+            let _ = span
+            out.push(FuncDef::{
+              name: Some(name),
+              params,
+              ret,
+              body,
+              span_key: span_key(span),
+              captures: [],
+            })
+          }
+          _ => ()
+        }
+      }
       _ => ()
     }
   }
@@ -2232,6 +2299,18 @@ fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module 
             match ctx.fn_closure_captures.get(key) {
               Some(captures) => captures.length() == 0
               None => true // No capture info, assume no captures
+            }
+          }
+          _ => false
+        }
+      @core.Stmt::ExportLet(rec=_, name=_, expr~, span=_) =>
+        // ExportLet functions are also skipped if they have no captures
+        match expr {
+          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~) => {
+            let key = span_key(span)
+            match ctx.fn_closure_captures.get(key) {
+              Some(captures) => captures.length() == 0
+              None => true
             }
           }
           _ => false
@@ -2297,7 +2376,6 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
     @core.Expr::Array(..) => true
     @core.Expr::Map(..) => true
     @core.Expr::Call(name~, args~, span~) => {
-      let _ = name
       let _ = span
       if name == "__add" ||
         name == "__sub" ||
@@ -2307,12 +2385,21 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "__neg" {
         return true
       }
+      // Enum constructor call needs heap
+      if ctx.enum_ctor_tags.contains(name) {
+        return true
+      }
       for arg in args {
         if needs_heap_expr(ctx, arg.expr) {
           return true
         }
       }
       false
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
+      // Nullary enum constructor needs heap
+      ctx.enum_ctor_tags.contains(name)
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
       let _ = span
@@ -3016,6 +3103,67 @@ fn compile_expr(
             compile_i32_mod_tagged(ctx, buf, pos_args[0], pos_args[1])
           _ => raise WasmGenError::Unsupported("__mod for float types")
         }
+      } else if name == "__lshift" {
+        let pos_args = extract_positional_exprs(args, "__lshift")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__lshift arity")
+        }
+        // (a >> 2) << (b >> 2), then tag result
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_s(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_s(buf)
+        emit_i32_shl(buf)
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shl(buf)
+        emit_i32_const_raw(buf, tag_int)
+        emit_i32_or(buf)
+      } else if name == "__rshift" {
+        let pos_args = extract_positional_exprs(args, "__rshift")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__rshift arity")
+        }
+        // (a >> 2) >> (b >> 2), then tag result
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_s(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_s(buf)
+        emit_i32_shr_s(buf)
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shl(buf)
+        emit_i32_const_raw(buf, tag_int)
+        emit_i32_or(buf)
+      } else if name == "__bit_and" {
+        let pos_args = extract_positional_exprs(args, "__bit_and")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__bit_and arity")
+        }
+        // Tagged ints: (a & b) works directly since tag bits are 0
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_and(buf)
+      } else if name == "__bit_or" {
+        let pos_args = extract_positional_exprs(args, "__bit_or")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__bit_or arity")
+        }
+        // Tagged ints: (a | b) works directly since tag bits are 0
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_or(buf)
+      } else if name == "__bit_xor" {
+        let pos_args = extract_positional_exprs(args, "__bit_xor")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("__bit_xor arity")
+        }
+        // Tagged ints: (a ^ b) works directly since tag bits are 0
+        compile_expr_i32(ctx, buf, pos_args[0])
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_xor(buf)
       } else if name == "__eq" {
         compile_binary_cmp_op(
           ctx, buf, "__eq", args, emit_i32_eq, emit_f32_eq, emit_f64_eq,
@@ -3495,7 +3643,8 @@ fn compile_expr(
         // Return Unit (tagged 0)
         emit_i32_const_raw(buf, tag_int_value(0))
       } else if ctx.fn_indices.contains(name) {
-        let pos_args = extract_positional_exprs(args, name)
+        // Resolve labeled arguments for user-defined functions
+        let pos_args = resolve_args_with_labels(ctx, args, name)
         let param_kinds = match ctx.fn_params.get(name) {
           Some(kinds) => kinds
           None => []
@@ -3886,6 +4035,86 @@ fn extract_positional_exprs(
 }
 
 ///|
+fn resolve_args_with_labels(
+  ctx : CodegenCtx,
+  args : Array[@core.CallArg],
+  func_name : String,
+) -> Array[@core.Expr] raise WasmGenError {
+  // Check if any labeled args exist
+  let mut has_labeled = false
+  for arg in args {
+    if arg.label is Some(_) {
+      has_labeled = true
+      break
+    }
+  }
+  // If no labeled args, just return positional
+  if not(has_labeled) {
+    let out : Array[@core.Expr] = []
+    for arg in args {
+      out.push(arg.expr)
+    }
+    return out
+  }
+  // Get parameter names for this function
+  match ctx.fn_param_names.get(func_name) {
+    None =>
+      raise WasmGenError::Unsupported(
+        "labeled arg unknown fn: " + func_name,
+      )
+    Some(param_names) => {
+      // Initialize result array
+      let result : Array[@core.Expr?] = Array::make(param_names.length(), None)
+      let mut pos_idx = 0
+      for arg in args {
+        match arg.label {
+          Some(label) => {
+            // Find parameter position by name
+            let mut found = -1
+            for i, pname in param_names {
+              if pname == label {
+                found = i
+                break
+              }
+            }
+            if found < 0 {
+              raise WasmGenError::Unsupported("unknown label: " + label)
+            }
+            if result[found] is Some(_) {
+              raise WasmGenError::Unsupported("duplicate label: " + label)
+            }
+            result[found] = Some(arg.expr)
+          }
+          None => {
+            // Find next available positional slot
+            while pos_idx < result.length() && result[pos_idx] is Some(_) {
+              pos_idx += 1
+            }
+            if pos_idx >= result.length() {
+              raise WasmGenError::Unsupported("too many positional args")
+            }
+            result[pos_idx] = Some(arg.expr)
+            pos_idx += 1
+          }
+        }
+      }
+      // Check all slots are filled and extract exprs
+      let out : Array[@core.Expr] = []
+      for i, opt in result {
+        match opt {
+          Some(e) => out.push(e)
+          None =>
+            raise WasmGenError::Unsupported(
+              "missing arg: " + param_names[i],
+            )
+        }
+      }
+      out
+    }
+  }
+}
+
+///|
 fn compile_stmt(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -3914,6 +4143,12 @@ fn compile_stmt(
             ctx.fn_indices[name] = func_idx
             let kinds = param_kinds(ctx, fn_params)
             ctx.fn_params[name] = kinds
+            // Save parameter names for labeled args resolution
+            let names : Array[String] = []
+            for p in fn_params {
+              names.push(p.name)
+            }
+            ctx.fn_param_names[name] = names
             let ret_kind = match fn_ret {
               Some(r) => value_kind_from_type(ctx, r)
               None => ValueKind::I32
@@ -4060,8 +4295,15 @@ fn compile_stmt(
       let _ = span
       raise WasmGenError::Unsupported("import")
     }
-    @core.Stmt::ExportLet(..)
-    | @core.Stmt::ExportEnumDef(..)
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      // ExportLet is compiled like Let - the export is handled at module level
+      compile_stmt(
+        ctx,
+        buf,
+        @core.Stmt::Let(rec~, name~, expr~, span~),
+        is_last,
+      )
+    @core.Stmt::ExportEnumDef(..)
     | @core.Stmt::ExportTypeAlias(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..) => raise WasmGenError::Unsupported("export")
@@ -4125,16 +4367,166 @@ fn compile_stmt(
                 if is_last && i == len - 1 {
                   emit_load_tuple_elem(buf, tuple_local, i)
                 }
-              _ => raise WasmGenError::Unsupported("let pat: non-bind element")
+              _ => {
+                // Nested pattern - load element and recursively destructure
+                let elem_local = alloc_temp_local(ctx)
+                emit_load_tuple_elem(buf, tuple_local, i)
+                emit_local_set(buf, elem_local)
+                compile_let_pat_nested(ctx, buf, items[i], elem_local)
+              }
             }
           }
           if is_last && len == 0 {
             emit_i32_const_tagged(buf, 0)
           }
         }
-        _ => raise WasmGenError::Unsupported("let pat: non-tuple")
+        @core.Pat::Record(fields~, span=pat_span) => {
+          let _ = pat_span
+          compile_expr_i32(ctx, buf, expr) // record pointer (tagged i32)
+          let record_local = alloc_temp_local(ctx)
+          emit_local_set(buf, record_local)
+          let sorted = sort_record_fields_pat(fields)
+          let len = sorted.length()
+          for i, field in sorted {
+            match field.pat {
+              @core.Pat::Bind(name~, span=bind_span) => {
+                let _ = bind_span
+                let local_idx = ctx.local_count
+                ctx.local_count += 1
+                ctx.local_types.push(ValueKind::I32)
+                ctx.locals[name] = local_idx
+                ctx.local_kinds[name] = ValueKind::I32
+                // Record field is at offset 8 + i * 4 (after type and len)
+                emit_load_tuple_elem(buf, record_local, i)
+                if is_last && i == len - 1 {
+                  emit_local_tee(buf, local_idx)
+                } else {
+                  emit_local_set(buf, local_idx)
+                }
+              }
+              @core.Pat::Wildcard(..) =>
+                if is_last && i == len - 1 {
+                  emit_load_tuple_elem(buf, record_local, i)
+                }
+              _ => {
+                // Nested pattern - load element and recursively destructure
+                let elem_local = alloc_temp_local(ctx)
+                emit_load_tuple_elem(buf, record_local, i)
+                emit_local_set(buf, elem_local)
+                compile_let_pat_nested(ctx, buf, field.pat, elem_local)
+              }
+            }
+          }
+          if is_last && len == 0 {
+            emit_i32_const_tagged(buf, 0)
+          }
+        }
+        @core.Pat::Ctor(name~, args~, span=pat_span) => {
+          let _ = name
+          let _ = pat_span
+          compile_expr_i32(ctx, buf, expr) // enum pointer (tagged i32)
+          let ctor_local = alloc_temp_local(ctx)
+          emit_local_set(buf, ctor_local)
+          let len = args.length()
+          for i, arg_pat in args {
+            match arg_pat {
+              @core.Pat::Bind(name~, span=bind_span) => {
+                let _ = bind_span
+                let local_idx = ctx.local_count
+                ctx.local_count += 1
+                ctx.local_types.push(ValueKind::I32)
+                ctx.locals[name] = local_idx
+                ctx.local_kinds[name] = ValueKind::I32
+                // Load from enum payload: offset 8 + i * 4
+                emit_untag_ptr(buf, ctor_local)
+                emit_i32_load(buf, 8 + i * 4)
+                if is_last && i == len - 1 {
+                  emit_local_tee(buf, local_idx)
+                } else {
+                  emit_local_set(buf, local_idx)
+                }
+              }
+              @core.Pat::Wildcard(..) =>
+                if is_last && i == len - 1 {
+                  emit_untag_ptr(buf, ctor_local)
+                  emit_i32_load(buf, 8 + i * 4)
+                }
+              _ => {
+                // Nested pattern
+                let elem_local = alloc_temp_local(ctx)
+                emit_untag_ptr(buf, ctor_local)
+                emit_i32_load(buf, 8 + i * 4)
+                emit_local_set(buf, elem_local)
+                compile_let_pat_nested(ctx, buf, arg_pat, elem_local)
+              }
+            }
+          }
+          if is_last && len == 0 {
+            emit_i32_const_tagged(buf, 0)
+          }
+        }
+        _ => raise WasmGenError::Unsupported("let pat: non-tuple/record/ctor")
       }
     }
+  }
+}
+
+///|
+/// Recursively compile a let pattern element.
+/// value_local contains the tagged i32 value to destructure.
+fn compile_let_pat_nested(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  pat : @core.Pat,
+  value_local : Int,
+) -> Unit raise WasmGenError {
+  match pat {
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      let local_idx = ctx.local_count
+      ctx.local_count += 1
+      ctx.local_types.push(ValueKind::I32)
+      ctx.locals[name] = local_idx
+      ctx.local_kinds[name] = ValueKind::I32
+      emit_local_get(buf, value_local)
+      emit_local_set(buf, local_idx)
+    }
+    @core.Pat::Wildcard(..) => ()
+    @core.Pat::Tuple(items~, span~) => {
+      let _ = span
+      // value_local contains tuple pointer
+      for i, item in items {
+        let elem_local = alloc_temp_local(ctx)
+        emit_load_tuple_elem(buf, value_local, i)
+        emit_local_set(buf, elem_local)
+        compile_let_pat_nested(ctx, buf, item, elem_local)
+      }
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let _ = span
+      let sorted = sort_record_fields_pat(fields)
+      for i, field in sorted {
+        let elem_local = alloc_temp_local(ctx)
+        emit_load_tuple_elem(buf, value_local, i)
+        emit_local_set(buf, elem_local)
+        compile_let_pat_nested(ctx, buf, field.pat, elem_local)
+      }
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = name
+      let _ = span
+      // Ctor payload starts at offset 8 (after obj_type and tag)
+      // Each arg is at offset 8 + i * 4
+      for i, arg_pat in args {
+        let elem_local = alloc_temp_local(ctx)
+        // Load from enum payload: untag ptr, load at offset 8 + i * 4
+        emit_untag_ptr(buf, value_local)
+        emit_i32_load(buf, 8 + i * 4)
+        emit_local_set(buf, elem_local)
+        compile_let_pat_nested(ctx, buf, arg_pat, elem_local)
+      }
+    }
+    _ => raise WasmGenError::Unsupported("let pat nested: unsupported pattern")
   }
 }
 
@@ -4877,7 +5269,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
 
   // export section
+  let user_export_count = ctx.exported_fns.length()
   let export_count = 2 +
+    user_export_count +
     (if ctx.need_exceptions { 1 } else { 0 }) +
     (if ctx.need_stack_switching { 3 } else { 0 }) // await_tag + sleep_tag + global
   let export_sec = ByteBuf::new()
@@ -4889,6 +5283,17 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   write_name(export_sec, "memory")
   export_sec.push((2).to_byte()) // memory export
   write_u32_leb(export_sec, 0)
+  // Export user functions (export let ...)
+  for name, _ in ctx.exported_fns {
+    match ctx.fn_indices.get(name) {
+      Some(idx) => {
+        write_name(export_sec, name)
+        export_sec.push((0).to_byte()) // func export
+        write_u32_leb(export_sec, func_import_count + idx)
+      }
+      None => ()
+    }
+  }
   if ctx.need_exceptions {
     write_name(export_sec, "error")
     export_sec.push((4).to_byte()) // tag export
@@ -5047,9 +5452,9 @@ fn restore_local_kinds(
 ///|
 priv enum PatCont {
   Arm
-  Tuple(Int, Array[@core.Pat], Int, PatCont)
-  Record(Int, Array[@core.RecordFieldPat], Int, PatCont)
-  Ctor(Int, Array[@core.Pat], Int, String, PatCont) // ctor_idx, args, index, ctor_name, next
+  Tuple(Int, Array[@core.Pat], Int, PatCont) // raw_ptr, items, index, next
+  Record(Int, Array[@core.RecordFieldPat], Int, PatCont) // raw_ptr, fields, index, next
+  Ctor(Int, Array[@core.Pat], Int, String, PatCont) // raw_ptr, args, index, ctor_name, next
 }
 
 ///|
@@ -5133,61 +5538,49 @@ fn compile_pat_match(
     }
     @core.Pat::Float(value=n, span~) => {
       let _ = span
+      // Combined check: tag_obj AND type==obj_float AND value==n
       emit_tag_obj_check(buf, value_idx)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
       emit_load_obj_type(buf, value_idx)
       emit_i32_const_raw(buf, obj_float)
       emit_i32_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
+      emit_i32_and(buf)
       emit_untag_ptr(buf, value_idx)
       emit_f32_load(buf, 4)
       emit_f32_const(buf, n)
       emit_f32_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
+      emit_i32_and(buf)
+      // Single if-else
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
-      buf.push((5).to_byte())
+      buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
+      buf.push((11).to_byte()) // end
     }
     @core.Pat::Double(value=n, span~) => {
       let _ = span
+      // Combined check: tag_obj AND type==obj_double AND value==n
       emit_tag_obj_check(buf, value_idx)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
       emit_load_obj_type(buf, value_idx)
       emit_i32_const_raw(buf, obj_double)
       emit_i32_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
+      emit_i32_and(buf)
       emit_untag_ptr(buf, value_idx)
       emit_f64_load(buf, 4)
       emit_f64_const(buf, n)
       emit_f64_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
+      emit_i32_and(buf)
+      // Single if-else
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
-      buf.push((5).to_byte())
+      buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
+      buf.push((11).to_byte()) // end
     }
     @core.Pat::Bool(value~, span~) => {
       let _ = value
@@ -5204,20 +5597,41 @@ fn compile_pat_match(
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
     }
-    @core.Pat::String(value~, span~) => {
-      let _ = value
+    @core.Pat::String(value=s, span~) => {
       let _ = span
-      emit_local_get(buf, value_idx)
-      emit_pat_literal(ctx, buf, pat)
-      emit_i32_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
-      compile_pat_cont(
-        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
-      )
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
+      if ctx.use_js_strings {
+        // js-string mode: use js_equals to compare externref strings
+        ctx.need_js_equals = true
+        // Load scrutinee (externref)
+        emit_local_get(buf, value_idx)
+        // Load pattern string constant (externref from global)
+        let str_idx = ctx.js_strings.intern(s)
+        emit_global_get(buf, str_idx)
+        // Call js_equals
+        emit_call(buf, import_index_js_equals(ctx))
+        // Result is i32 (0 or 1)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        compile_pat_cont(
+          ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+        )
+        buf.push((5).to_byte())
+        compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+        buf.push((11).to_byte())
+      } else {
+        // Non-js-string mode: compare tagged pointers
+        emit_local_get(buf, value_idx)
+        emit_pat_literal(ctx, buf, pat)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte())
+        buf.push((127).to_byte())
+        compile_pat_cont(
+          ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+        )
+        buf.push((5).to_byte())
+        compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+        buf.push((11).to_byte())
+      }
     }
     @core.Pat::Ctor(name~, args~, span~) => {
       let _ = span
@@ -5225,20 +5639,19 @@ fn compile_pat_match(
         Some(t) => t
         None => raise WasmGenError::Unsupported("unknown ctor: " + name)
       }
-      // Check: is obj_enum?
+      // Cache raw pointer for repeated use
+      let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
+      // Combined header check: tag_obj AND type==obj_enum AND tag matches
       emit_tag_obj_check(buf, value_idx)
-      buf.push((4).to_byte()) // if
-      buf.push((127).to_byte()) // result i32
-      emit_load_obj_type(buf, value_idx)
+      emit_load_obj_type_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, obj_enum)
       emit_i32_eq(buf)
-      buf.push((4).to_byte()) // if
-      buf.push((127).to_byte()) // result i32
-      // Check: tag matches?
-      emit_untag_ptr(buf, value_idx)
-      emit_i32_load(buf, 4) // load tag
+      emit_i32_and(buf)
+      emit_load_ctor_tag_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, tag)
       emit_i32_eq(buf)
+      emit_i32_and(buf)
+      // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((127).to_byte()) // result i32
       // Bind args
@@ -5248,77 +5661,63 @@ fn compile_pat_match(
         )
       } else {
         compile_ctor_args_cont(
-          ctx, buf, value_idx, args, 0, name, cont, match_scrut_idx, arms, start,
+          ctx, buf, raw_ptr, args, 0, name, cont, match_scrut_idx, arms, start,
           arm, bindings,
         )
       }
-      buf.push((5).to_byte()) // else (tag mismatch)
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte()) // end
-      buf.push((5).to_byte()) // else (not obj_enum)
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte()) // end
-      buf.push((5).to_byte()) // else (not tagged obj)
+      buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte()) // end
     }
     @core.Pat::Tuple(items~, span~) => {
       let _ = span
+      // Cache raw pointer for repeated use
+      let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
+      // Combined header check: tag_obj AND type==obj_tuple AND length matches
       emit_tag_obj_check(buf, value_idx)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
-      emit_load_obj_type(buf, value_idx)
+      emit_load_obj_type_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, obj_tuple)
       emit_i32_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
-      emit_load_obj_len(buf, value_idx)
+      emit_i32_and(buf)
+      emit_load_obj_len_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, items.length())
       emit_i32_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
+      emit_i32_and(buf)
+      // Single if-else
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       compile_tuple_items_cont(
-        ctx, buf, value_idx, items, 0, cont, match_scrut_idx, arms, start, arm, bindings,
+        ctx, buf, raw_ptr, items, 0, cont, match_scrut_idx, arms, start, arm, bindings,
       )
-      buf.push((5).to_byte())
+      buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
+      buf.push((11).to_byte()) // end
     }
     @core.Pat::Record(fields~, span~) => {
       let _ = span
       let ordered = sort_record_fields_pat(fields)
+      // Cache raw pointer for repeated use
+      let raw_ptr = emit_untag_ptr_cached(ctx, buf, value_idx)
+      // Combined header check: tag_obj AND type==obj_record AND length matches
       emit_tag_obj_check(buf, value_idx)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
-      emit_load_obj_type(buf, value_idx)
+      emit_load_obj_type_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, obj_record)
       emit_i32_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
-      emit_load_obj_len(buf, value_idx)
+      emit_i32_and(buf)
+      emit_load_obj_len_raw(buf, raw_ptr)
       emit_i32_const_raw(buf, ordered.length())
       emit_i32_eq(buf)
-      buf.push((4).to_byte())
-      buf.push((127).to_byte())
+      emit_i32_and(buf)
+      // Single if-else
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
       compile_record_fields_cont(
-        ctx, buf, value_idx, ordered, 0, cont, match_scrut_idx, arms, start, arm,
+        ctx, buf, raw_ptr, ordered, 0, cont, match_scrut_idx, arms, start, arm,
         bindings,
       )
-      buf.push((5).to_byte())
+      buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
-      buf.push((5).to_byte())
-      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
-      buf.push((11).to_byte())
+      buf.push((11).to_byte()) // end
     }
     @core.Pat::Or(pats~, span~) => {
       let _ = span
@@ -5346,7 +5745,7 @@ fn compile_pat_match(
 fn compile_ctor_args_cont(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  ctor_idx : Int,
+  raw_ptr : Int, // cached untagged pointer
   args : Array[@core.Pat],
   index : Int,
   ctor_name : String,
@@ -5375,11 +5774,10 @@ fn compile_ctor_args_cont(
   if ctx.use_js_strings && field_kind == ValueKind::ExternRef {
     // ExternRef field: load table slot index, then table.get
     let tmp = alloc_temp_local_with_kind(ctx, ValueKind::ExternRef)
-    emit_untag_ptr(buf, ctor_idx)
-    emit_i32_load(buf, 8 + index * 4) // slot index
+    emit_load_ctor_arg_raw(buf, raw_ptr, index)
     emit_table_get(buf, ctx.extern_table_index)
     emit_local_set(buf, tmp)
-    let cont = PatCont::Ctor(ctor_idx, args, index + 1, ctor_name, next)
+    let cont = PatCont::Ctor(raw_ptr, args, index + 1, ctor_name, next)
     compile_pat_match(
       ctx,
       buf,
@@ -5394,10 +5792,9 @@ fn compile_ctor_args_cont(
     )
   } else {
     let tmp = alloc_temp_local(ctx)
-    emit_untag_ptr(buf, ctor_idx)
-    emit_i32_load(buf, 8 + index * 4)
+    emit_load_ctor_arg_raw(buf, raw_ptr, index)
     emit_local_set(buf, tmp)
-    let cont = PatCont::Ctor(ctor_idx, args, index + 1, ctor_name, next)
+    let cont = PatCont::Ctor(raw_ptr, args, index + 1, ctor_name, next)
     compile_pat_match(
       ctx,
       buf,
@@ -5417,7 +5814,7 @@ fn compile_ctor_args_cont(
 fn compile_tuple_items_cont(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  tuple_idx : Int,
+  raw_ptr : Int, // cached untagged pointer
   items : Array[@core.Pat],
   index : Int,
   next : PatCont,
@@ -5434,9 +5831,9 @@ fn compile_tuple_items_cont(
     return
   }
   let tmp = alloc_temp_local(ctx)
-  emit_load_tuple_elem(buf, tuple_idx, index)
+  emit_load_tuple_elem_raw(buf, raw_ptr, index)
   emit_local_set(buf, tmp)
-  let cont = PatCont::Tuple(tuple_idx, items, index + 1, next)
+  let cont = PatCont::Tuple(raw_ptr, items, index + 1, next)
   compile_pat_match(
     ctx,
     buf,
@@ -5455,7 +5852,7 @@ fn compile_tuple_items_cont(
 fn compile_record_fields_cont(
   ctx : CodegenCtx,
   buf : ByteBuf,
-  record_idx : Int,
+  raw_ptr : Int, // cached untagged pointer
   fields : Array[@core.RecordFieldPat],
   index : Int,
   next : PatCont,
@@ -5473,15 +5870,15 @@ fn compile_record_fields_cont(
   }
   let field = fields[index]
   let name_ptr = ctx.strings.intern(field.name)
-  emit_load_record_name(buf, record_idx, index)
+  emit_load_record_name_raw(buf, raw_ptr, index)
   emit_i32_const_raw(buf, name_ptr)
   emit_i32_eq(buf)
   buf.push((4).to_byte())
   buf.push((127).to_byte())
   let tmp = alloc_temp_local(ctx)
-  emit_load_record_value(buf, record_idx, index)
+  emit_load_record_value_raw(buf, raw_ptr, index)
   emit_local_set(buf, tmp)
-  let cont = PatCont::Record(record_idx, fields, index + 1, next)
+  let cont = PatCont::Record(raw_ptr, fields, index + 1, next)
   compile_pat_match(
     ctx,
     buf,
@@ -5680,14 +6077,35 @@ fn emit_untag_ptr(buf : ByteBuf, scrut_idx : Int) -> Unit {
 }
 
 ///|
+/// Compute untagged pointer and store in a new temp local, returning the local index
+fn emit_untag_ptr_cached(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  scrut_idx : Int,
+) -> Int {
+  let raw_ptr = alloc_temp_local(ctx)
+  emit_untag_ptr(buf, scrut_idx)
+  emit_local_set(buf, raw_ptr)
+  raw_ptr
+}
+
+///|
 fn emit_load_obj_type(buf : ByteBuf, scrut_idx : Int) -> Unit {
   emit_untag_ptr(buf, scrut_idx)
   emit_i32_load(buf, 0)
 }
 
 ///|
-fn emit_load_obj_len(buf : ByteBuf, scrut_idx : Int) -> Unit {
-  emit_untag_ptr(buf, scrut_idx)
+/// Load object type using cached raw pointer
+fn emit_load_obj_type_raw(buf : ByteBuf, raw_ptr_idx : Int) -> Unit {
+  emit_local_get(buf, raw_ptr_idx)
+  emit_i32_load(buf, 0)
+}
+
+///|
+/// Load object length using cached raw pointer
+fn emit_load_obj_len_raw(buf : ByteBuf, raw_ptr_idx : Int) -> Unit {
+  emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 4)
 }
 
@@ -5698,15 +6116,38 @@ fn emit_load_tuple_elem(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
 }
 
 ///|
-fn emit_load_record_name(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
-  emit_untag_ptr(buf, scrut_idx)
+/// Load tuple element using cached raw pointer
+fn emit_load_tuple_elem_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
+  emit_local_get(buf, raw_ptr_idx)
+  emit_i32_load(buf, 8 + index * 4)
+}
+
+///|
+/// Load record name using cached raw pointer
+fn emit_load_record_name_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
+  emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 8 + index * 8)
 }
 
 ///|
-fn emit_load_record_value(buf : ByteBuf, scrut_idx : Int, index : Int) -> Unit {
-  emit_untag_ptr(buf, scrut_idx)
+/// Load record value using cached raw pointer
+fn emit_load_record_value_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
+  emit_local_get(buf, raw_ptr_idx)
   emit_i32_load(buf, 8 + index * 8 + 4)
+}
+
+///|
+/// Load ctor tag using cached raw pointer
+fn emit_load_ctor_tag_raw(buf : ByteBuf, raw_ptr_idx : Int) -> Unit {
+  emit_local_get(buf, raw_ptr_idx)
+  emit_i32_load(buf, 4)
+}
+
+///|
+/// Load ctor arg using cached raw pointer
+fn emit_load_ctor_arg_raw(buf : ByteBuf, raw_ptr_idx : Int, index : Int) -> Unit {
+  emit_local_get(buf, raw_ptr_idx)
+  emit_i32_load(buf, 8 + index * 4)
 }
 
 ///|
@@ -5715,6 +6156,17 @@ fn emit_module(
   ctx : CodegenCtx,
   ast : @core.Module,
 ) -> Bytes raise WasmGenError {
+  // Collect exported function names
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(rec=_, name~, expr~, span=_) =>
+        match expr {
+          @core.Expr::Fn(..) => ctx.exported_fns[name] = true
+          _ => ()
+        }
+      _ => ()
+    }
+  }
   let funcs = collect_func_defs(ast)
   let top_funcs = collect_top_level_funcs(ast)
   let top_keys : Map[String, Bool] = {}
@@ -5741,6 +6193,12 @@ fn emit_module(
     match f.name {
       Some(name) => {
         ctx.fn_params[name] = kinds
+        // Save parameter names for labeled args resolution
+        let names : Array[String] = []
+        for p in f.params {
+          names.push(p.name)
+        }
+        ctx.fn_param_names[name] = names
         if top_keys.contains(f.span_key) {
           let default_ret = match f.ret {
             Some(r) => value_kind_from_type(ctx, r)
