@@ -966,8 +966,7 @@ fn repl_cmd(args : Array[String]) -> Unit {
   let shell_commands = collect_shell_commands()
   let xsh_builtins = ["sh", "path", "addr", "exit"]
   let xsh_keywords = [
-    "let", "rec", "if", "match", "do", "record", "test", "import",
-    "true", "false",
+    "let", "rec", "if", "match", "do", "record", "test", "import", "true", "false",
   ]
   fn completion_visible() -> Bool {
     completion_session.is_visible() &&

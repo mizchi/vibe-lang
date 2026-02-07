@@ -562,6 +562,51 @@ test "xsh type alias still works" {
 }
 
 ///|
+test "xsh trait bound on type parameter" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|trait Eq
+    #|impl Eq for Int
+    #|let id = [T: Eq](x: T) -> T { x }
+    #|let y = id(42)
+  let _ = rt.eval_script(script)
+  match rt.get("y") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int")
+  }
+}
+
+///|
+test "xsh trait bound violation is type error" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|trait Eq
+    #|impl Eq for Int
+    #|let id = [T: Eq](x: T) -> T { x }
+    #|id("nope")
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(script)
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected trait bound error")
+  }
+}
+
+///|
+test "xsh inline param trait bound" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|trait Show
+    #|impl Show for String
+    #|let keep = [T](x: T: Show) -> T { x }
+    #|let out = keep("ok")
+  let _ = rt.eval_script(script)
+  match rt.get("out") {
+    Some(@core.Value::String(v)) => assert_eq(v, "ok")
+    _ => fail("expected String")
+  }
+}
+
+///|
 test "xsh test block ignored by eval" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("test { let x = 1 }")

@@ -102,6 +102,14 @@ pub(all) enum Stmt {
     target~ : Type,
     span~ : Span
   )
+  TraitDef(name~ : String, span~ : Span)
+  TraitImpl(
+    type_params~ : Array[String],
+    type_bounds~ : Map[String, Array[String]],
+    trait_name~ : String,
+    target~ : Type,
+    span~ : Span
+  )
   Expr(expr~ : Expr, span~ : Span)
   Import(spec~ : ImportSpec, source~ : ModuleRef, span~ : Span)
   Test(name~ : String?, body~ : Module, span~ : Span)
@@ -166,6 +174,7 @@ pub(all) enum Expr {
   Try(try_body~ : Module, catch_body~ : Module, span~ : Span)
   Fn(
     type_params~ : Array[String],
+    type_bounds~ : Map[String, Array[String]],
     params~ : Array[FuncParam],
     ret~ : Type?,
     effects~ : Array[EffectAtom],
@@ -259,6 +268,8 @@ pub fn Stmt::span(self : Stmt) -> Span {
     Stmt::Let(span~, ..)
     | Stmt::EnumDef(span~, ..)
     | Stmt::TypeAlias(span~, ..)
+    | Stmt::TraitDef(span~, ..)
+    | Stmt::TraitImpl(span~, ..)
     | Stmt::Expr(span~, ..)
     | Stmt::Import(span~, ..)
     | Stmt::Test(span~, ..)

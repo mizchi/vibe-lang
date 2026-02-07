@@ -8,6 +8,8 @@ import {
 // Values
 pub fn bind_pattern_names(Map[String, Bool], @core.Pat) -> Unit
 
+pub fn classify_function_api_change(TypeEnv, @core.Type, @core.Type) -> ApiVersionBump
+
 pub fn clone_bool_map(Map[String, Bool]) -> Map[String, Bool]
 
 pub fn completion_param_matches(TypeEnv, @core.Type, @core.Type) -> Bool
@@ -15,6 +17,8 @@ pub fn completion_param_matches(TypeEnv, @core.Type, @core.Type) -> Bool
 pub fn ensure_prelude_functions(TypeEnv, Map[String, @core.Ref]) -> Unit raise TypeError
 
 pub fn ensure_prelude_option(TypeEnv) -> Unit raise TypeError
+
+pub fn is_type_subtype(TypeEnv, @core.Type, @core.Type) -> Bool
 
 pub fn prelude_ast() -> @core.Module
 
@@ -39,6 +43,22 @@ pub impl Eq for TypeError
 pub impl Show for TypeError
 
 // Types and methods
+pub struct ApiSemver {
+  major : Int
+  minor : Int
+  patch : Int
+}
+pub impl Eq for ApiSemver
+pub impl Show for ApiSemver
+
+pub enum ApiVersionBump {
+  Patch
+  Minor
+  Major
+}
+pub impl Eq for ApiVersionBump
+pub impl Show for ApiVersionBump
+
 pub struct CtorInfo {
   type_name : String
   params : Array[String]
@@ -78,6 +98,14 @@ pub struct StructFieldDef {
 pub impl Eq for StructFieldDef
 pub impl Show for StructFieldDef
 
+pub struct TraitImplDef {
+  type_params : Array[String]
+  type_bounds : Map[String, Array[String]]
+  target : @core.Type
+}
+pub impl Eq for TraitImplDef
+pub impl Show for TraitImplDef
+
 pub struct TypeAlias {
   name : String
   params : Array[String]
@@ -93,14 +121,19 @@ pub struct TypeEnv {
   struct_defs : Map[String, StructDef]
   type_aliases : Map[String, TypeAlias]
   ctor_index : Map[String, CtorInfo]
+  traits : Map[String, Bool]
+  trait_impls : Map[String, Array[TraitImplDef]]
+  fn_versions : Map[String, ApiSemver]
   purities : Map[String, Bool]
   expr_types : Map[String, @core.Type]
   num_vars : Map[Int, Bool]
+  var_trait_bounds : Map[Int, Array[String]]
   mut next_var : Int
   mut next_effect_var : Int
   subs : Map[Int, @core.Type]
   effect_subs : Map[String, Array[@core.EffectAtom]]
 }
+pub fn TypeEnv::add_trait_impl(Self, String, TraitImplDef) -> Unit
 pub fn TypeEnv::clone(Self) -> Self
 pub fn TypeEnv::fork_for_check(Self) -> Self
 pub fn TypeEnv::get(Self, String) -> @core.Type?
@@ -108,10 +141,12 @@ pub fn TypeEnv::get_addr_type(Self, String) -> @core.Type?
 pub fn TypeEnv::get_ctor(Self, String) -> CtorInfo?
 pub fn TypeEnv::get_enum_def(Self, String) -> EnumDef?
 pub fn TypeEnv::get_expr_type(Self, @core.Span) -> @core.Type?
+pub fn TypeEnv::get_fn_version(Self, String) -> ApiSemver?
 pub fn TypeEnv::get_purity(Self, String) -> Bool?
 pub fn TypeEnv::get_scheme(Self, String) -> TypeScheme?
 pub fn TypeEnv::get_struct(Self, String) -> StructDef?
 pub fn TypeEnv::get_type_alias(Self, String) -> TypeAlias?
+pub fn TypeEnv::has_trait(Self, String) -> Bool
 pub fn TypeEnv::new() -> Self
 pub fn TypeEnv::set(Self, String, @core.Type) -> Unit
 pub fn TypeEnv::set_addr_type(Self, String, @core.Type) -> Unit
@@ -120,7 +155,9 @@ pub fn TypeEnv::set_enum_def(Self, String, EnumDef) -> Unit
 pub fn TypeEnv::set_purity(Self, String, Bool) -> Unit
 pub fn TypeEnv::set_scheme(Self, String, TypeScheme) -> Unit
 pub fn TypeEnv::set_struct(Self, String, StructDef) -> Unit
+pub fn TypeEnv::set_trait(Self, String) -> Unit
 pub fn TypeEnv::set_type_alias(Self, String, TypeAlias) -> Unit
+pub fn TypeEnv::trait_impls_for(Self, String) -> Array[TraitImplDef]
 pub impl Eq for TypeEnv
 pub impl Show for TypeEnv
 
@@ -128,6 +165,7 @@ pub struct TypeScheme {
   vars : Array[Int]
   num_vars : Array[Int]
   effect_vars : Array[String]
+  trait_bounds : Map[Int, Array[String]]
   ty : @core.Type
 }
 pub impl Eq for TypeScheme

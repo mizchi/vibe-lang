@@ -287,8 +287,7 @@ fn collect_dependency_defs(
         @core.Stmt::ReExport(names~, source~, span=_) =>
           collect_reexport_defs(db, base_dir, names, source, out, visited)
         // Skip imports and exports in dependencies
-        @core.Stmt::Import(..)
-        | @core.Stmt::Export(..) => ()
+        @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
         @core.Stmt::Test(..) => ()
         // Other statements are passed through
@@ -432,6 +431,8 @@ fn stmts_to_sexp(
         buf.write_string(type_to_sexp(target))
         buf.write_char(')')
       }
+      @core.Stmt::TraitDef(..) => ()
+      @core.Stmt::TraitImpl(..) => ()
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
         buf.write_string(" (expr ")

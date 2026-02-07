@@ -88,6 +88,8 @@ pub fn Runtime::eval_module(
       }
       @core.Stmt::EnumDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::TypeAlias(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::TraitDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::TraitImpl(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Expr(expr~, ..) => {
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)
@@ -414,6 +416,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
     @core.Expr::Do(body~, ..) => eval_block(rt, body)
     @core.Expr::Fn(
       type_params=_,
+      type_bounds=_,
       params~,
       ret~,
       effects=fn_effects,
@@ -429,6 +432,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         "_",
         @core.Expr::Fn(
           type_params=[],
+          type_bounds={},
           params~,
           ret~,
           effects=fn_effects,

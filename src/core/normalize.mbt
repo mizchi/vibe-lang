@@ -124,6 +124,15 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       )
     Stmt::TypeAlias(name~, params~, target~, ..) =>
       Stmt::TypeAlias(name~, params~, target~, span=zero_span)
+    Stmt::TraitDef(name~, ..) => Stmt::TraitDef(name~, span=zero_span)
+    Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) =>
+      Stmt::TraitImpl(
+        type_params~,
+        type_bounds~,
+        trait_name~,
+        target~,
+        span=zero_span,
+      )
     Stmt::Import(spec~, source~, ..) =>
       Stmt::Import(spec~, source~, span=zero_span)
     Stmt::ExportLet(rec~, name~, expr~, ..) => {
@@ -207,11 +216,12 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         args=normalize_call_args(args, scope),
         span=zero_span,
       )
-    Expr::Fn(type_params~, params~, ret~, effects~, body~, ..) => {
+    Expr::Fn(type_params~, type_bounds~, params~, ret~, effects~, body~, ..) => {
       let child = scope.child()
       let norm_params = normalize_params(params, child)
       Expr::Fn(
         type_params~,
+        type_bounds~,
         params=norm_params,
         ret~,
         effects~,
@@ -314,7 +324,12 @@ fn normalize_params(
   let out : Array[FuncParam] = []
   for p in params {
     let norm_name = scope.bind(p.name)
-    out.push(FuncParam::{ name: norm_name, label: p.label, ty: p.ty })
+    out.push(FuncParam::{
+      name: norm_name,
+      label: p.label,
+      ty: p.ty,
+      bounds: p.bounds,
+    })
   }
   out
 }

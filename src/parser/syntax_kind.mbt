@@ -535,6 +535,16 @@ pub fn struct_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn trait_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(85)
+}
+
+///|
+pub fn impl_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(86)
+}
+
+///|
 pub fn struct_def() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(129)
 }

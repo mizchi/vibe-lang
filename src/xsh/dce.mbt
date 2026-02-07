@@ -106,6 +106,8 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
     @core.Stmt::Expr(..)
     | @core.Stmt::Import(..)
     | @core.Stmt::Test(..)
+    | @core.Stmt::TraitDef(..)
+    | @core.Stmt::TraitImpl(..)
     | @core.Stmt::Assign(..)
     | @core.Stmt::IndexAssign(..)
     | @core.Stmt::LetPat(..)
@@ -161,6 +163,8 @@ fn collect_entry_points(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
       | @core.Stmt::StructDef(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::Test(..)
+      | @core.Stmt::TraitDef(..)
+      | @core.Stmt::TraitImpl(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => ()
       @core.Stmt::ExportStructDef(name~, ..) => entries[name] = true
@@ -280,6 +284,8 @@ fn filter_reachable_stmts(
       @core.Stmt::Expr(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::Test(..)
+      | @core.Stmt::TraitDef(..)
+      | @core.Stmt::TraitImpl(..)
       | @core.Stmt::Assign(..)
       | @core.Stmt::IndexAssign(..)
       | @core.Stmt::LetPat(..)
@@ -514,6 +520,8 @@ fn collect_refs_block(
       }
       @core.Stmt::Test(..)
       | @core.Stmt::Import(..)
+      | @core.Stmt::TraitDef(..)
+      | @core.Stmt::TraitImpl(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => ()
     }

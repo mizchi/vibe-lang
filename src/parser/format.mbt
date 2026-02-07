@@ -168,11 +168,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       paren_depth == enum_paren_base_stack[enum_paren_base_stack.length() - 1]
     let curr_prefix = is_prefix_op(kind, prev_kind)
     let insert_struct_double_colon = should_insert_struct_double_colon(
-      prev_prev_kind,
-      prev_kind,
-      prev_text,
-      kind,
-      in_type_context,
+      prev_prev_kind, prev_kind, prev_text, kind, in_type_context,
     )
     if not(insert_struct_double_colon) &&
       needs_space(prev_kind, kind, prev_prefix, prev_pipe) {
@@ -564,7 +560,8 @@ fn should_insert_struct_double_colon(
   }
   match prev_prev_kind {
     Some(prev_prev) =>
-      if prev_prev == struct_kw() || prev_prev == enum_kw() ||
+      if prev_prev == struct_kw() ||
+        prev_prev == enum_kw() ||
         prev_prev == type_kw() {
         return false
       }

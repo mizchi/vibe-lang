@@ -354,6 +354,8 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
       | @core.Stmt::ExportTypeAlias(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..)
+      | @core.Stmt::TraitDef(..)
+      | @core.Stmt::TraitImpl(..)
       | @core.Stmt::StructDef(..)
       | @core.Stmt::ExportStructDef(..) => buf.write_string(" (export)")
       @core.Stmt::Test(name~, body~, span~) => {

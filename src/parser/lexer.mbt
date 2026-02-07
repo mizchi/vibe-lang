@@ -277,6 +277,8 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "from" => from_kw()
           "as" => as_kw()
           "struct" => struct_kw()
+          "trait" => trait_kw()
+          "impl" => impl_kw()
           "true" => bool_lit()
           "false" => bool_lit()
           _ => name()

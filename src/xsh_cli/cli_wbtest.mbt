@@ -180,7 +180,9 @@ test "resolve test entry paths includes top-level xsh files" {
   let root = wbtest_make_temp_dir("resolve_tests")
   let sub = root + "/sub"
   let deep = sub + "/deep"
-  @os_fs.create_dir(sub) catch { e => fail("create sub dir failed: " + e.to_string()) }
+  @os_fs.create_dir(sub) catch {
+    e => fail("create sub dir failed: " + e.to_string())
+  }
   @os_fs.create_dir(deep) catch {
     e => fail("create deep dir failed: " + e.to_string())
   }

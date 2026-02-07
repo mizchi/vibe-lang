@@ -189,11 +189,13 @@ test "dce: keeps function dependencies" {
       name="helper",
       expr=@core.Expr::Fn(
         type_params=[],
+        type_bounds={},
         params=[
           @core.FuncParam::{
             name: "x",
             label: @core.ParamLabel::Positional,
             ty: @core.Type::Int,
+            bounds: [],
           },
         ],
         ret=Some(@core.Type::Int),
@@ -208,11 +210,13 @@ test "dce: keeps function dependencies" {
       name="main",
       expr=@core.Expr::Fn(
         type_params=[],
+        type_bounds={},
         params=[
           @core.FuncParam::{
             name: "y",
             label: @core.ParamLabel::Positional,
             ty: @core.Type::Int,
+            bounds: [],
           },
         ],
         ret=Some(@core.Type::Int),

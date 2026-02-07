@@ -68,6 +68,32 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, target.structural_hash())
       h
     }
+    Stmt::TraitDef(name~, ..) => {
+      let mut h = 0x54726169 // "Trai"
+      h = combine_hash(h, name.hash())
+      h
+    }
+    Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) => {
+      let mut h = 0x54696d70 // "Timp"
+      h = combine_hash(h, trait_name.hash())
+      h = combine_hash(h, target.structural_hash())
+      for tp in type_params {
+        h = combine_hash(h, tp.hash())
+      }
+      let keys = type_bounds.keys().collect()
+      keys.sort()
+      for key in keys {
+        h = combine_hash(h, key.hash())
+        match type_bounds.get(key) {
+          Some(bounds) =>
+            for bound in bounds {
+              h = combine_hash(h, bound.hash())
+            }
+          None => ()
+        }
+      }
+      h
+    }
     Stmt::Expr(expr~, ..) => {
       let mut h = 0x45787072 // "Expr"
       h = combine_hash(h, expr.structural_hash())
@@ -244,10 +270,22 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       h = combine_hash(h, catch_body.structural_hash())
       h
     }
-    Expr::Fn(type_params~, params~, ret~, effects~, body~, ..) => {
+    Expr::Fn(type_params~, type_bounds~, params~, ret~, effects~, body~, ..) => {
       let mut h = 0x466e0000 // "Fn\0\0"
       for tp in type_params {
         h = combine_hash(h, tp.hash())
+      }
+      let keys = type_bounds.keys().collect()
+      keys.sort()
+      for key in keys {
+        h = combine_hash(h, key.hash())
+        match type_bounds.get(key) {
+          Some(bounds) =>
+            for bound in bounds {
+              h = combine_hash(h, bound.hash())
+            }
+          None => ()
+        }
       }
       for p in params {
         h = combine_hash(h, p.structural_hash())
@@ -470,6 +508,9 @@ fn FuncParam::structural_hash(self : FuncParam) -> Int {
   let mut h = self.name.hash()
   h = combine_hash(h, self.label.structural_hash())
   h = combine_hash(h, self.ty.structural_hash())
+  for bound in self.bounds {
+    h = combine_hash(h, bound.hash())
+  }
   h
 }
 

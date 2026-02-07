@@ -86,6 +86,24 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let target = parse_type(get_field(inner, "target"))
         return Stmt::TypeAlias(name~, params~, target~, span=zero)
       }
+      "TraitDef" => {
+        let name = expect_string(value)
+        return Stmt::TraitDef(name~, span=zero)
+      }
+      "TraitImpl" => {
+        let inner = expect_object(value)
+        let type_params = parse_type_params(inner.get("type_params"))
+        let type_bounds = parse_type_bounds(inner.get("type_bounds"))
+        let trait_name = get_string(inner, "trait_name")
+        let target = parse_type(get_field(inner, "target"))
+        return Stmt::TraitImpl(
+          type_params~,
+          type_bounds~,
+          trait_name~,
+          target~,
+          span=zero,
+        )
+      }
       "Import" => {
         let inner = expect_object(value)
         let source = parse_module_ref(get_field(inner, "source"))
@@ -170,11 +188,20 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
       "Fn" => {
         let inner = expect_object(value)
         let type_params = parse_type_params(inner.get("type_params"))
+        let type_bounds = parse_type_bounds(inner.get("type_bounds"))
         let params = parse_params(get_field(inner, "params"))
         let ret = parse_type_opt(inner.get("ret"))
         let effects = parse_effects(get_field(inner, "effects"))
         let body = parse_module(get_field(inner, "body"))
-        return Expr::Fn(type_params~, params~, ret~, effects~, body~, span=zero)
+        return Expr::Fn(
+          type_params~,
+          type_bounds~,
+          params~,
+          ret~,
+          effects~,
+          body~,
+          span=zero,
+        )
       }
       "If" => {
         let inner = expect_object(value)
@@ -394,7 +421,8 @@ fn parse_func_params(json : Json) -> Array[FuncParam] raise DeserializeError {
     let name = get_string(obj, "name")
     let label = parse_param_label(get_field(obj, "label"))
     let ty = parse_type(get_field(obj, "ty"))
-    out.push(FuncParam::{ name, label, ty })
+    let bounds = parse_strings_opt(obj.get("bounds"))
+    out.push(FuncParam::{ name, label, ty, bounds })
   }
   out
 }
@@ -442,6 +470,32 @@ fn parse_type_params(json : Json?) -> Array[String] raise DeserializeError {
 }
 
 ///|
+fn parse_type_bounds(
+  json : Json?,
+) -> Map[String, Array[String]] raise DeserializeError {
+  match json {
+    None | Some(Json::Null) => {}
+    Some(j) => {
+      let obj = expect_object(j)
+      let out : Map[String, Array[String]] = {}
+      for entry in obj.iter() {
+        let (key, value) = entry
+        out[key] = parse_strings(value)
+      }
+      out
+    }
+  }
+}
+
+///|
+fn parse_strings_opt(json : Json?) -> Array[String] raise DeserializeError {
+  match json {
+    None | Some(Json::Null) => []
+    Some(j) => parse_strings(j)
+  }
+}
+
+///|
 fn parse_exprs(json : Json) -> Array[Expr] raise DeserializeError {
   let arr = expect_array(json)
   let out : Array[Expr] = []
@@ -483,7 +537,8 @@ fn parse_params(json : Json) -> Array[FuncParam] raise DeserializeError {
     let name = get_string(obj, "name")
     let label = parse_param_label(get_field(obj, "label"))
     let ty = parse_type(get_field(obj, "ty"))
-    out.push(FuncParam::{ name, label, ty })
+    let bounds = parse_strings_opt(obj.get("bounds"))
+    out.push(FuncParam::{ name, label, ty, bounds })
   }
   out
 }

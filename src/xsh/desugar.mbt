@@ -53,6 +53,8 @@ fn desugar_stmt(
       @core.Stmt::Test(name~, body=desugar_block(body, scope, aliases), span~)
     @core.Stmt::EnumDef(..) => stmt
     @core.Stmt::TypeAlias(..) => stmt
+    @core.Stmt::TraitDef(..) => stmt
+    @core.Stmt::TraitImpl(..) => stmt
     @core.Stmt::Import(..) => stmt
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::ExportLet(
@@ -219,13 +221,22 @@ fn desugar_expr(
         catch_body=desugar_block(catch_body, clone_scope(scope), aliases),
         span~,
       )
-    @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
       let next_scope = clone_scope(scope)
       for param in params {
         next_scope[param.name] = true
       }
       @core.Expr::Fn(
         type_params~,
+        type_bounds~,
         params~,
         ret~,
         effects~,

@@ -287,6 +287,7 @@ fn Parser::parse_type_alias_stmt(self : Parser) -> Unit {
   self.builder.finish_node()
 }
 
+///|
 fn Parser::parse_test_block(self : Parser) -> Unit {
   self.builder.start_node(test_block())
   self.bump() // test
@@ -300,6 +301,7 @@ fn Parser::parse_test_block(self : Parser) -> Unit {
   self.builder.finish_node()
 }
 
+///|
 fn Parser::parse_import_stmt(self : Parser) -> Unit {
   self.builder.start_node(import_stmt())
   self.bump() // import
@@ -954,6 +956,8 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == enum_kw() => self.parse_enum_stmt()
     k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
+    k if k == trait_kw() => self.parse_trait_stmt()
+    k if k == impl_kw() => self.parse_impl_stmt()
     k if k == import_kw() => self.parse_import_stmt()
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_stmt()
@@ -1212,6 +1216,47 @@ fn AstParser::parse_type_alias_stmt(
 }
 
 ///|
+fn AstParser::parse_trait_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let _ = self.expect(trait_kw(), "trait")
+  self.skip_trivia()
+  let name_tok = self.expect(name(), "trait name")
+  let _ = self.eat(semicolon())
+  let span = self.span_from(start)
+  @core.Stmt::TraitDef(name=name_tok.text(), span~)
+}
+
+///|
+fn AstParser::parse_impl_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let _ = self.expect(impl_kw(), "impl")
+  let parsed = self.parse_fn_type_params()
+  let type_params = parsed.names
+  let type_bounds = parsed.bounds
+  self.skip_trivia()
+  let trait_tok = self.expect(name(), "trait name")
+  self.skip_trivia()
+  let for_tok = self.expect(name(), "for")
+  if for_tok.text() != "for" {
+    raise ParseError::UnexpectedToken(
+      expected="for",
+      got=for_tok.text(),
+      span=self.token_span(),
+    )
+  }
+  let target = self.parse_type_with_params(param_set_from_params(type_params))
+  let _ = self.eat(semicolon())
+  let span = self.span_from(start)
+  @core.Stmt::TraitImpl(
+    type_params~,
+    type_bounds~,
+    trait_name=trait_tok.text(),
+    target~,
+    span~,
+  )
+}
+
+///|
 fn AstParser::parse_type_ctor(
   self : AstParser,
   params : Map[String, Bool],
@@ -1291,6 +1336,7 @@ fn param_set_from_params(params : Array[String]) -> Map[String, Bool] {
   set
 }
 
+///|
 fn AstParser::parse_test_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let start = self.pos
   let _ = self.expect(test_kw(), "test")
@@ -1323,6 +1369,7 @@ fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
   @core.Module::{ stmts, }
 }
 
+///|
 fn AstParser::parse_import_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
@@ -2249,6 +2296,7 @@ fn AstParser::parse_fn_type_param(
             name: param_name,
             label: @core.ParamLabel::Positional,
             ty,
+            bounds: [],
           }
         }
         // Has colon, restore and use normal parsing
@@ -2277,7 +2325,15 @@ fn AstParser::parse_param(
   } else {
     @core.Type::Unit // Placeholder for type inference
   }
-  @core.FuncParam::{ name: base, label, ty }
+  self.skip_trivia()
+  let bounds : Array[String] = if self.peek_kind() == colon() {
+    let _ = self.bump()
+    self.skip_trivia()
+    self.parse_trait_bounds()
+  } else {
+    []
+  }
+  @core.FuncParam::{ name: base, label, ty, bounds }
 }
 
 ///|
@@ -2610,11 +2666,37 @@ fn AstParser::parse_type_args(
 
 ///|
 /// Parse type parameters for generic functions: [T, U]
-/// Returns array of type parameter names
-fn AstParser::parse_fn_type_params(
+/// Supports optional trait bounds: [T: Eq, U: Show]
+priv struct ParsedTypeParams {
+  names : Array[String]
+  bounds : Map[String, Array[String]]
+}
+
+///|
+fn AstParser::parse_trait_bounds(
   self : AstParser,
 ) -> Array[String] raise ParseError {
+  let bounds : Array[String] = []
+  let first = self.expect(name(), "trait")
+  bounds.push(first.text())
+  while {
+          self.skip_trivia()
+          self.peek_kind() == plus()
+        } {
+    let _ = self.bump()
+    self.skip_trivia()
+    let next = self.expect(name(), "trait")
+    bounds.push(next.text())
+  }
+  bounds
+}
+
+///|
+fn AstParser::parse_fn_type_params(
+  self : AstParser,
+) -> ParsedTypeParams raise ParseError {
   let type_params : Array[String] = []
+  let type_bounds : Map[String, Array[String]] = {}
   self.skip_trivia()
   if self.peek_kind() == lbracket() {
     let _ = self.bump()
@@ -2622,6 +2704,12 @@ fn AstParser::parse_fn_type_params(
     if self.peek_kind() != rbracket() {
       let name_tok = self.expect(name(), "type parameter name")
       type_params.push(name_tok.text())
+      self.skip_trivia()
+      if self.peek_kind() == colon() {
+        let _ = self.bump()
+        self.skip_trivia()
+        type_bounds[name_tok.text()] = self.parse_trait_bounds()
+      }
       while {
               self.skip_trivia()
               self.peek_kind() == comma()
@@ -2633,12 +2721,18 @@ fn AstParser::parse_fn_type_params(
         }
         let name_tok = self.expect(name(), "type parameter name")
         type_params.push(name_tok.text())
+        self.skip_trivia()
+        if self.peek_kind() == colon() {
+          let _ = self.bump()
+          self.skip_trivia()
+          type_bounds[name_tok.text()] = self.parse_trait_bounds()
+        }
       }
     }
     let _ = self.expect(rbracket(), "]")
 
   }
-  type_params
+  ParsedTypeParams::{ names: type_params, bounds: type_bounds }
 }
 
 ///|
@@ -2699,8 +2793,10 @@ fn AstParser::is_type_arg_context(self : AstParser) -> Bool {
 fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
   let saved = self.pos
   let result : @core.Expr? = try {
-    // Try to parse type parameters: [T, U]
-    let type_params = self.parse_fn_type_params()
+    // Try to parse type parameters: [T, U] / [T: Trait]
+    let parsed = self.parse_fn_type_params()
+    let type_params = parsed.names
+    let type_bounds = parsed.bounds
     let params = self.parse_param_list(param_set_from_params(type_params))
     self.skip_trivia()
     if self.peek_kind() != thin_arrow() && self.peek_kind() != lbrace() {
@@ -2729,7 +2825,15 @@ fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
             stmts: [@core.Stmt::Expr(expr~, span=expr.span())],
           }
           return Some(
-            @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~),
+            @core.Expr::Fn(
+              type_params~,
+              type_bounds~,
+              params~,
+              ret~,
+              effects~,
+              body~,
+              span~,
+            ),
           )
         }
       }
@@ -2743,7 +2847,17 @@ fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
     }
     let body = self.parse_block()
     let span = self.span_from(saved)
-    Some(@core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~))
+    Some(
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params~,
+        ret~,
+        effects~,
+        body~,
+        span~,
+      ),
+    )
   } catch {
     _ => None
   }
@@ -3109,6 +3223,7 @@ fn AstParser::parse_call_or_primary(
         name: name_tok.text(),
         label: @core.ParamLabel::Positional,
         ty: @core.Type::Unit, // Placeholder for inference
+        bounds: [],
       }
       // Check if block body or expression body
       if self.peek_kind() == lbrace() {
@@ -3117,6 +3232,7 @@ fn AstParser::parse_call_or_primary(
         let span = self.span_from(start)
         @core.Expr::Fn(
           type_params=[],
+          type_bounds={},
           params=[param],
           ret=None,
           effects=[],
@@ -3132,6 +3248,7 @@ fn AstParser::parse_call_or_primary(
         }
         @core.Expr::Fn(
           type_params=[],
+          type_bounds={},
           params=[param],
           ret=None,
           effects=[],
@@ -3748,12 +3865,21 @@ pub fn desugar_placeholder_expr(expr : @core.Expr) -> @core.Expr {
       name: "__p" + i.to_string(),
       label: @core.ParamLabel::Positional,
       ty: @core.Type::Unit, // Placeholder for type inference
+      bounds: [],
     })
   }
   let body = @core.Module::{
     stmts: [@core.Stmt::Expr(expr=body_expr, span=body_expr.span())],
   }
-  @core.Expr::Fn(type_params=[], params~, ret=None, effects=[], body~, span~)
+  @core.Expr::Fn(
+    type_params=[],
+    type_bounds={},
+    params~,
+    ret=None,
+    effects=[],
+    body~,
+    span~,
+  )
 }
 
 // ============================================================
@@ -3797,6 +3923,8 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
     // Non-expression statements pass through
     @core.Stmt::EnumDef(..)
     | @core.Stmt::TypeAlias(..)
+    | @core.Stmt::TraitDef(..)
+    | @core.Stmt::TraitImpl(..)
     | @core.Stmt::Import(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ExportEnumDef(..)
@@ -3898,9 +4026,18 @@ fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
         catch_body=desugar_module(catch_body),
         span~,
       )
-    @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~) =>
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) =>
       @core.Expr::Fn(
         type_params~,
+        type_bounds~,
         params~,
         ret~,
         effects~,

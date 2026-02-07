@@ -99,6 +99,22 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_type_to(target, buf)
       buf.write_string("}}")
     }
+    Stmt::TraitDef(name~, ..) => {
+      buf.write_string("{\"TraitDef\":")
+      serialize_string_to(name, buf)
+      buf.write_char('}')
+    }
+    Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) => {
+      buf.write_string("{\"TraitImpl\":{\"target\":")
+      serialize_type_to(target, buf)
+      buf.write_string(",\"trait_name\":")
+      serialize_string_to(trait_name, buf)
+      buf.write_string(",\"type_bounds\":")
+      serialize_string_array_map_to(type_bounds, buf)
+      buf.write_string(",\"type_params\":")
+      serialize_strings_to(type_params, buf)
+      buf.write_string("}}")
+    }
     Stmt::Import(spec~, source~, ..) => {
       buf.write_string("{\"Import\":{\"source\":")
       serialize_module_ref_to(source, buf)
@@ -211,7 +227,7 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_string_to(name, buf)
       buf.write_string("}}")
     }
-    Expr::Fn(params~, ret~, effects~, body~, ..) => {
+    Expr::Fn(type_params~, type_bounds~, params~, ret~, effects~, body~, ..) => {
       buf.write_string("{\"Fn\":{\"body\":")
       serialize_module_to(body, buf)
       buf.write_string(",\"effects\":")
@@ -223,6 +239,10 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
         Some(t) => serialize_type_to(t, buf)
         None => buf.write_string("null")
       }
+      buf.write_string(",\"type_bounds\":")
+      serialize_string_array_map_to(type_bounds, buf)
+      buf.write_string(",\"type_params\":")
+      serialize_strings_to(type_params, buf)
       buf.write_string("}}")
     }
     Expr::If(cond~, then_body~, else_body~, ..) => {
@@ -391,6 +411,8 @@ fn serialize_params_to(params : Array[FuncParam], buf : StringBuilder) -> Unit {
     serialize_string_to(p.name, buf)
     buf.write_string(",\"ty\":")
     serialize_type_to(p.ty, buf)
+    buf.write_string(",\"bounds\":")
+    serialize_strings_to(p.bounds, buf)
     buf.write_char('}')
   }
   buf.write_char(']')
@@ -664,9 +686,33 @@ fn serialize_func_params_to(
     serialize_string_to(p.name, buf)
     buf.write_string(",\"ty\":")
     serialize_type_to(p.ty, buf)
+    buf.write_string(",\"bounds\":")
+    serialize_strings_to(p.bounds, buf)
     buf.write_char('}')
   }
   buf.write_char(']')
+}
+
+///|
+fn serialize_string_array_map_to(
+  fields : Map[String, Array[String]],
+  buf : StringBuilder,
+) -> Unit {
+  buf.write_char('{')
+  let keys = fields.keys().collect()
+  keys.sort()
+  for i, key in keys {
+    if i > 0 {
+      buf.write_char(',')
+    }
+    serialize_string_to(key, buf)
+    buf.write_char(':')
+    match fields.get(key) {
+      Some(values) => serialize_strings_to(values, buf)
+      None => buf.write_string("[]")
+    }
+  }
+  buf.write_char('}')
 }
 
 ///|

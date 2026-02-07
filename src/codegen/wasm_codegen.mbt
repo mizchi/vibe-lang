@@ -4841,6 +4841,8 @@ fn compile_stmt(
       }
     @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..)
+    | @core.Stmt::TraitDef(..)
+    | @core.Stmt::TraitImpl(..)
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..) =>
       // export { ... } statements and struct definitions are handled during bundling/typechecking

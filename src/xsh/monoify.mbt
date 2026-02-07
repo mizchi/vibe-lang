@@ -577,13 +577,22 @@ fn monoify_expr(
       }
       @core.Expr::Match(scrutinee=scrut, arms=next_arms, span~)
     }
-    @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
       let fn_scope = clone_scope(scope)
       for param in params {
         fn_scope[param.name] = true
       }
       @core.Expr::Fn(
         type_params~,
+        type_bounds~,
         params~,
         ret~,
         effects~,
@@ -607,7 +616,15 @@ fn specialize_fn_expr(
   specializable : Map[String, @core.Expr],
 ) -> @core.Expr {
   match expr {
-    @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
       let concrete = tag_to_type(tag)
       let updated_params : Array[@core.FuncParam] = []
       for param in params {
@@ -615,6 +632,7 @@ fn specialize_fn_expr(
           name: param.name,
           label: param.label,
           ty: replace_num_type(param.ty, concrete),
+          bounds: param.bounds,
         })
       }
       let updated_ret = match ret {
@@ -629,6 +647,7 @@ fn specialize_fn_expr(
       current_spec[name] = specialized_name(name, tag)
       @core.Expr::Fn(
         type_params~,
+        type_bounds~,
         params=updated_params,
         ret=updated_ret,
         effects~,
@@ -933,6 +952,7 @@ fn replace_num_type(ty : @core.Type, concrete : @core.Type) -> @core.Type {
           name: param.name,
           label: param.label,
           ty: replace_num_type(param.ty, concrete),
+          bounds: param.bounds,
         })
       }
       @core.Type::Func(

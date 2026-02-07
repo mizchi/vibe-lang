@@ -7,6 +7,16 @@ let identity = [T](x: T) -> T { x }
 let make_pair = [A, B](a: A, b: B) -> (A, B) { (a, b) }
 let swap_pair = [A, B](p: (A, B)) -> (B, A) { (p.1, p.0) }
 
+// trait syntax and bounds
+trait Eq
+impl Eq for Int
+impl[T: Eq] Eq for Array[T]
+let trait_identity = [T: Eq](x: T) -> T { x }
+let trait_keep = [T](x: T: Eq) -> T { x }
+let trait_value = trait_identity(42)
+let trait_keep_value = trait_keep(7)
+let trait_array = trait_identity([1, 2, 3])
+
 // struct syntax
 struct Point { x : Int; y : Int }
 let point = Point::{ x: 3, y: 4 }
@@ -107,6 +117,9 @@ test "generic_swap_pair" {
   assert(string_equals(p.0, "left"))
   assert(eq(p.1, 1))
 }
+test "trait_bound_generic" { assert(eq(trait_value, 42)) }
+test "trait_bound_inline_param" { assert(eq(trait_keep_value, 7)) }
+test "trait_bound_generic_impl" { assert(eq(array_length(trait_array), 3)) }
 test "struct_field_access" {
   assert(eq(point.x, 3))
   assert(eq(point.y, 4))

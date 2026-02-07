@@ -19,6 +19,7 @@ pub(all) struct FuncParam {
   name : String
   label : ParamLabel
   ty : Type
+  bounds : Array[String]
 } derive(Show, Eq)
 
 ///|
