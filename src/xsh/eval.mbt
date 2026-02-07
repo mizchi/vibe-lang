@@ -149,16 +149,51 @@ pub fn Runtime::eval_module(
                   )
                 Some(stmt) =>
                   match stmt {
-                    @core.Stmt::ExportLet(expr~, ..)
-                    | @core.Stmt::Let(expr~, ..) => {
+                    @core.Stmt::ExportLet(rec~, expr~, ..)
+                    | @core.Stmt::Let(rec~, expr~, ..) => {
+                      // For recursive functions, bind name first
+                      if rec {
+                        let addr = @codegen.expr_address(
+                          expr,
+                          self.addr_env,
+                          Some(local_name),
+                        )
+                        self.env[local_name] = addr
+                        self.addr_env[local_name] = addr
+                      }
                       let result = eval_expr(self, expr)
                       if result.effects.length() > 0 {
                         raise EvalError::ImportError(
                           "Cannot import effectful expression",
                         )
                       }
-                      let _ = self.bind(local_name, result.value)
-
+                      // For recursive functions, attach the addr and use bind_with_addr
+                      if rec {
+                        match result.value {
+                          @core.Value::Fn(fn_val) => {
+                            let addr = @codegen.expr_address(
+                              expr,
+                              self.addr_env,
+                              Some(local_name),
+                            )
+                            let value = @core.Value::Fn(
+                              @core.FnValue::{
+                                params: fn_val.params,
+                                body: fn_val.body,
+                                env: fn_val.env,
+                                addr: Some(addr),
+                                pure: fn_val.pure,
+                              },
+                            )
+                            self.bind_with_addr(local_name, addr, value)
+                          }
+                          _ => {
+                            let _ = self.bind(local_name, result.value)
+                          }
+                        }
+                      } else {
+                        let _ = self.bind(local_name, result.value)
+                      }
                     }
                     _ =>
                       // For enum/type definitions, just register them
@@ -1120,7 +1155,12 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "string_split" ||
   name == "string_index_of" ||
   name == "string_contains" ||
-  name == "string_trim"
+  name == "string_trim" ||
+  name == "__lshift" ||
+  name == "__rshift" ||
+  name == "__bit_and" ||
+  name == "__bit_or" ||
+  name == "__bit_xor"
 }
 
 ///|
@@ -1421,6 +1461,51 @@ fn eval_pure_builtin(
         @core.Value::Float(a) => @core.Value::Float(-a)
         @core.Value::Double(a) => @core.Value::Double(-a)
         _ => raise EvalError::BadCall("__neg")
+      }
+    }
+    "__lshift" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("__lshift")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a << b)
+        _ => raise EvalError::BadCall("__lshift")
+      }
+    }
+    "__rshift" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("__rshift")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a >> b)
+        _ => raise EvalError::BadCall("__rshift")
+      }
+    }
+    "__bit_and" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("__bit_and")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a & b)
+        _ => raise EvalError::BadCall("__bit_and")
+      }
+    }
+    "__bit_or" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("__bit_or")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a | b)
+        _ => raise EvalError::BadCall("__bit_or")
+      }
+    }
+    "__bit_xor" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("__bit_xor")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a ^ b)
+        _ => raise EvalError::BadCall("__bit_xor")
       }
     }
     "__assert" => {

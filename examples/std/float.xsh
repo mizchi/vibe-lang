@@ -1,79 +1,67 @@
 // Float utilities - ported from MoonBit core/float
 
-// Float equality check (using double conversion)
+// Float equality check
 let float_eq = (a: Float, b: Float) -> Bool {
-  float_to_double(a) == float_to_double(b)
+  a == b
 }
 
 // Absolute value
 let float_abs = (x: Float) -> Float {
-  if float_to_double(x) < 0.0 {
-    double_to_float(0.0 - float_to_double(x))
-  } else {
-    x
-  }
+  if x < 0.0f { 0.0f - x } else { x }
 }
 
 // Sign of float: -1.0f, 0.0f, or 1.0f
 let float_signum = (x: Float) -> Float {
-  let xd = float_to_double(x)
-  if xd < 0.0 { double_to_float(0.0 - 1.0) }
-  else if xd > 0.0 { double_to_float(1.0) }
-  else { double_to_float(0.0) }
+  if x < 0.0f { 0.0f - 1.0f }
+  else if x > 0.0f { 1.0f }
+  else { 0.0f }
 }
 
 // Check if NaN (x != x is only true for NaN)
 let float_is_nan = (x: Float) -> Bool {
-  let xd = float_to_double(x)
-  not(xd == xd)
+  not(x == x)
 }
 
 // Check if positive
 let float_is_positive = (x: Float) -> Bool {
-  float_to_double(x) > 0.0
+  x > 0.0f
 }
 
 // Check if negative
 let float_is_negative = (x: Float) -> Bool {
-  float_to_double(x) < 0.0
+  x < 0.0f
 }
 
 // Check if zero
 let float_is_zero = (x: Float) -> Bool {
-  float_to_double(x) == 0.0
+  x == 0.0f
 }
 
 // Maximum of two floats
 let float_max = (a: Float, b: Float) -> Float {
-  if float_to_double(a) > float_to_double(b) { a } else { b }
+  if a > b { a } else { b }
 }
 
 // Minimum of two floats
 let float_min = (a: Float, b: Float) -> Float {
-  if float_to_double(a) < float_to_double(b) { a } else { b }
+  if a < b { a } else { b }
 }
 
 // Clamp value between min and max
 let float_clamp = (x: Float, min_val: Float, max_val: Float) -> Float {
-  let xd = float_to_double(x)
-  let mind = float_to_double(min_val)
-  let maxd = float_to_double(max_val)
-  if xd < mind { min_val }
-  else if xd > maxd { max_val }
+  if x < min_val { min_val }
+  else if x > max_val { max_val }
   else { x }
 }
 
 // Square
 let float_square = (x: Float) -> Float {
-  double_to_float(float_to_double(x) * float_to_double(x))
+  x * x
 }
 
 // Linear interpolation (lerp)
 let float_lerp = (a: Float, b: Float, t: Float) -> Float {
-  let ad = float_to_double(a)
-  let bd = float_to_double(b)
-  let td = float_to_double(t)
-  double_to_float(ad + (bd - ad) * td)
+  a + (b - a) * t
 }
 
 // Tests
@@ -84,8 +72,8 @@ test "float_abs" {
 }
 
 test "float_signum" {
-  assert(float_to_double(float_signum(5.0f)) > 0.0)
-  assert(float_to_double(float_signum(-5.0f)) < 0.0)
+  assert(float_signum(5.0f) > 0.0f)
+  assert(float_signum(-5.0f) < 0.0f)
   assert(float_eq(float_signum(0.0f), 0.0f))
 }
 
@@ -113,11 +101,9 @@ test "float_square" {
 
 test "float_lerp" {
   let result = float_lerp(0.0f, 10.0f, 0.5f)
-  let expected = 5.0
-  let actual = float_to_double(result)
   // Use tolerance check
-  assert(actual > 4.9)
-  assert(actual < 5.1)
+  assert(result > 4.9f)
+  assert(result < 5.1f)
 }
 
 // Export
