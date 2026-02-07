@@ -1,0 +1,315 @@
+#!/bin/bash
+# E2E tests for Component Model and WIT generation
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+TMP_DIR="/tmp/xsh_component_e2e_$$"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Counters
+PASSED=0
+FAILED=0
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+mkdir -p "$TMP_DIR"
+
+log_pass() {
+  echo -e "${GREEN}PASS${NC}: $1"
+  PASSED=$((PASSED + 1))
+}
+
+log_fail() {
+  echo -e "${RED}FAIL${NC}: $1"
+  FAILED=$((FAILED + 1))
+}
+
+log_info() {
+  echo -e "${YELLOW}INFO${NC}: $1"
+}
+
+# Build the CLI first
+log_info "Building xsh CLI..."
+cd "$PROJECT_ROOT"
+moon build src/xsh_cli/main.mbt --target native -q 2>/dev/null || {
+  log_fail "Failed to build xsh CLI"
+  exit 1
+}
+
+XSH="moon run src/xsh_cli/main.mbt --target native --"
+
+# Test 1: Simple WASM compilation with while loop
+test_while_loop() {
+  log_info "Test: While loop WASM compilation"
+
+  cat > "$TMP_DIR/while_test.xsh" << 'EOF'
+let mut i = 0
+let mut sum = 0
+while i < 5 {
+  sum = sum + i
+  i = i + 1
+}
+sum
+EOF
+
+  $XSH compile --wasm "$TMP_DIR/while_test.xsh" -o "$TMP_DIR/while_test.wasm" 2>/dev/null
+
+  if [ ! -f "$TMP_DIR/while_test.wasm" ]; then
+    log_fail "While loop WASM not generated"
+    return
+  fi
+
+  # Run with Node.js and check result
+  RESULT=$(node -e "
+    const fs = require('fs');
+    const wasm = fs.readFileSync('$TMP_DIR/while_test.wasm');
+    WebAssembly.instantiate(wasm, {}).then(({instance}) => {
+      const result = instance.exports.run();
+      const value = result >> 2;  // tag_int = 0, so just shift
+      console.log(value);
+    });
+  " 2>/dev/null)
+
+  if [ "$RESULT" = "10" ]; then
+    log_pass "While loop returns correct value (10)"
+  else
+    log_fail "While loop returns $RESULT, expected 10"
+  fi
+}
+
+# Test 2: WIT generation for simple function
+test_wit_generation() {
+  log_info "Test: WIT generation"
+
+  cat > "$TMP_DIR/wit_test.xsh" << 'EOF'
+export let add = (x: Int, y: Int) -> Int {
+  x + y
+}
+export let multiply = (a: Int, b: Int) -> Int {
+  a * b
+}
+add(1, 2)
+EOF
+
+  $XSH compile --wit "$TMP_DIR/wit_test.xsh" -o "$TMP_DIR/wit_test.wit" 2>/dev/null
+
+  if [ ! -f "$TMP_DIR/wit_test.wit" ]; then
+    log_fail "WIT file not generated"
+    return
+  fi
+
+  # Check WIT content
+  if grep -q "package local:wit_test" "$TMP_DIR/wit_test.wit"; then
+    log_pass "WIT contains correct package name"
+  else
+    log_fail "WIT missing package name"
+  fi
+
+  if grep -q "export add: func(x: s32, y: s32) -> s32" "$TMP_DIR/wit_test.wit"; then
+    log_pass "WIT contains add function signature"
+  else
+    log_fail "WIT missing add function"
+  fi
+
+  if grep -q "export multiply: func(a: s32, b: s32) -> s32" "$TMP_DIR/wit_test.wit"; then
+    log_pass "WIT contains multiply function signature"
+  else
+    log_fail "WIT missing multiply function"
+  fi
+}
+
+# Test 3: Component WASM generation and validation
+test_component_generation() {
+  log_info "Test: Component WASM generation"
+
+  cat > "$TMP_DIR/component_test.xsh" << 'EOF'
+let square = (x: Int) -> Int {
+  x * x
+}
+square(7)
+EOF
+
+  $XSH compile --component "$TMP_DIR/component_test.xsh" -o "$TMP_DIR/component_test.component.wasm" 2>/dev/null
+
+  if [ ! -f "$TMP_DIR/component_test.component.wasm" ]; then
+    log_fail "Component WASM not generated"
+    return
+  fi
+
+  # Validate with wasm-tools
+  if command -v wasm-tools &> /dev/null; then
+    if wasm-tools validate "$TMP_DIR/component_test.component.wasm" 2>/dev/null; then
+      log_pass "Component WASM validates with wasm-tools"
+    else
+      log_fail "Component WASM validation failed"
+    fi
+
+    # Check component structure
+    COMPONENT_TEXT=$(wasm-tools print "$TMP_DIR/component_test.component.wasm" 2>/dev/null)
+
+    if echo "$COMPONENT_TEXT" | grep -q "(component"; then
+      log_pass "Output is a valid component"
+    else
+      log_fail "Output is not a component"
+    fi
+
+    if echo "$COMPONENT_TEXT" | grep -q "(canon lift"; then
+      log_pass "Component contains canon lift"
+    else
+      log_fail "Component missing canon lift"
+    fi
+
+    if echo "$COMPONENT_TEXT" | grep -q '(export.*"run"'; then
+      log_pass "Component exports 'run' function"
+    else
+      log_fail "Component missing 'run' export"
+    fi
+  else
+    log_info "wasm-tools not found, skipping validation"
+  fi
+}
+
+# Test 4: Arithmetic operations in WASM
+test_arithmetic() {
+  log_info "Test: Arithmetic operations"
+
+  cat > "$TMP_DIR/arith_test.xsh" << 'EOF'
+let a = 10
+let b = 3
+let sum = a + b
+let diff = a - b
+let prod = a * b
+let quot = a / b
+prod
+EOF
+
+  $XSH compile --wasm "$TMP_DIR/arith_test.xsh" -o "$TMP_DIR/arith_test.wasm" 2>/dev/null
+
+  RESULT=$(node -e "
+    const fs = require('fs');
+    const wasm = fs.readFileSync('$TMP_DIR/arith_test.wasm');
+    WebAssembly.instantiate(wasm, {}).then(({instance}) => {
+      const result = instance.exports.run();
+      const value = result >> 2;
+      console.log(value);
+    });
+  " 2>/dev/null)
+
+  if [ "$RESULT" = "30" ]; then
+    log_pass "Multiplication returns correct value (10 * 3 = 30)"
+  else
+    log_fail "Multiplication returns $RESULT, expected 30"
+  fi
+}
+
+# Test 5: Default output directory (dist/)
+test_default_output() {
+  log_info "Test: Default output directory"
+
+  # Create a test file in project root's dist/
+  cat > "$TMP_DIR/default_out.xsh" << 'EOF'
+42
+EOF
+
+  # Ensure dist/ exists and run from project root
+  mkdir -p "$PROJECT_ROOT/dist"
+  $XSH compile --wasm "$TMP_DIR/default_out.xsh" 2>/dev/null || true
+
+  if [ -f "$PROJECT_ROOT/dist/default_out.wasm" ]; then
+    log_pass "WASM generated in default dist/ directory"
+    rm -f "$PROJECT_ROOT/dist/default_out.wasm"  # cleanup
+  else
+    log_fail "WASM not in dist/ directory"
+  fi
+}
+
+# Test 6: Tuple return type with effects
+test_tuple_with_effects() {
+  log_info "Test: Tuple return type with effects"
+
+  cat > "$TMP_DIR/tuple_effects.xsh" << 'EOF'
+let parse = (s: String, i: Int) -> (String, Int) with {Error} {
+  (s, i + 1)
+}
+parse("test", 5)
+EOF
+
+  # This should parse and run without error
+  RESULT=$($XSH run "$TMP_DIR/tuple_effects.xsh" 2>&1)
+
+  if echo "$RESULT" | grep -q 'Tuple.*String.*"test".*Int(6)'; then
+    log_pass "Tuple with effects parses and runs correctly"
+  else
+    log_fail "Tuple with effects failed: $RESULT"
+  fi
+}
+
+# Test 7: WIT with different types
+test_wit_types() {
+  log_info "Test: WIT type mappings"
+
+  cat > "$TMP_DIR/wit_types.xsh" << 'EOF'
+export let get_bool = () -> Bool { true }
+export let get_string = () -> String { "hello" }
+export let identity = (x: Int) -> Int { x }
+1
+EOF
+
+  $XSH compile --wit "$TMP_DIR/wit_types.xsh" -o "$TMP_DIR/wit_types.wit" 2>/dev/null
+
+  if grep -q -- "-> bool" "$TMP_DIR/wit_types.wit"; then
+    log_pass "WIT maps Bool to bool"
+  else
+    log_fail "WIT Bool mapping failed"
+  fi
+
+  if grep -q -- "-> string" "$TMP_DIR/wit_types.wit"; then
+    log_pass "WIT maps String to string"
+  else
+    log_fail "WIT String mapping failed"
+  fi
+
+  if grep -q -- "-> s32" "$TMP_DIR/wit_types.wit"; then
+    log_pass "WIT maps Int to s32"
+  else
+    log_fail "WIT Int mapping failed"
+  fi
+}
+
+# Run all tests
+echo "========================================"
+echo "xsh Component Model E2E Tests"
+echo "========================================"
+echo ""
+
+test_while_loop
+echo ""
+test_wit_generation
+echo ""
+test_component_generation
+echo ""
+test_arithmetic
+echo ""
+test_default_output
+echo ""
+test_tuple_with_effects
+echo ""
+test_wit_types
+echo ""
+
+echo "========================================"
+echo -e "Results: ${GREEN}$PASSED passed${NC}, ${RED}$FAILED failed${NC}"
+echo "========================================"
+
+if [ $FAILED -gt 0 ]; then
+  exit 1
+fi
