@@ -148,6 +148,7 @@ pub fn compile_module_wasm_no_dce(
 
 ///|
 /// Compile a module to Component Model WASM (for wkg/wa.dev compatibility).
+/// Uses Canon lift to properly expose the run function as a component export.
 pub fn compile_module_component(
   db : XshDb,
   path : String,
@@ -159,7 +160,23 @@ pub fn compile_module_component(
   let core_wasm = @codegen.emit_module_wasm(bundled) catch {
     e => raise WasmCompileError::Gen(e)
   }
-  @codegen.emit_component_wasm(core_wasm)
+  @codegen.emit_component_wasm_with_lift(core_wasm, "run")
+}
+
+///|
+/// Generate WIT interface definition for a module.
+/// Uses pre-bundling AST to preserve all export declarations.
+pub fn generate_module_wit(
+  db : XshDb,
+  path : String,
+  package_name : String,
+  world_name : String,
+) -> String raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  // Use pre-bundling AST to preserve Export statements and all Let definitions
+  @codegen.generate_wit(compiled.ast, package_name, world_name)
 }
 
 ///|
@@ -195,11 +212,17 @@ fn bundle_for_wasm_impl(
   let visited : Map[String, Bool] = {}
   // Collect all dependency definitions in topological order
   collect_dependency_defs(db, path, bundled_stmts, visited)
-  // Add main module statements (excluding imports)
+  // Add main module statements (excluding imports, aliases, and expanding re-exports)
+  let base_dir = @path.Path(path).dirname().to_string()
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(..) => () // Skip imports
       @core.Stmt::Alias(..) => () // Skip aliases
+      @core.Stmt::ReExport(names~, source~, span=_) =>
+        // Expand re-exports in main module
+        collect_reexport_defs(
+          db, base_dir, names, source, bundled_stmts, visited,
+        )
       _ => bundled_stmts.push(stmt)
     }
   }
@@ -232,6 +255,7 @@ fn collect_dependency_defs(
   // Skip the entry module itself (it will be added separately)
   if visited.length() > 1 {
     let dep_ast = db.ast(path)
+    let base_dir = @path.Path(path).dirname().to_string()
     for stmt in dep_ast.stmts {
       match stmt {
         // Convert exports to regular definitions
@@ -245,16 +269,79 @@ fn collect_dependency_defs(
         @core.Stmt::Let(..)
         | @core.Stmt::EnumDef(..)
         | @core.Stmt::TypeAlias(..) => out.push(stmt)
+        // Handle re-exports: fetch definitions from source module
+        @core.Stmt::ReExport(names~, source~, span=_) =>
+          collect_reexport_defs(db, base_dir, names, source, out, visited)
         // Skip imports, exports, aliases in dependencies
         @core.Stmt::Import(..)
         | @core.Stmt::Alias(..)
-        | @core.Stmt::Export(..)
-        | @core.Stmt::ReExport(..) => ()
+        | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
         @core.Stmt::Test(..) => ()
         // Other statements are passed through
         _ => out.push(stmt)
       }
+    }
+  }
+}
+
+///|
+/// Collect definitions for re-export statement.
+fn collect_reexport_defs(
+  db : XshDb,
+  base_dir : String,
+  names : Array[String],
+  source : @core.ModuleRef,
+  out : Array[@core.Stmt],
+  visited : Map[String, Bool],
+) -> Unit {
+  // Resolve source module path
+  let source_path = match source {
+    @core.ModuleRef::Path(path~) =>
+      if path.has_prefix("/") {
+        path
+      } else {
+        @path.Path(base_dir).join(@path.Path(path)).normalize().to_string()
+      }
+    @core.ModuleRef::Hash(hash~) => hash // Use hash as path for now
+  }
+  // Recursively process the source module's dependencies first
+  collect_dependency_defs(db, source_path, out, visited)
+  // Get the source module AST
+  let source_ast = db.ast(source_path)
+  // Build a set of requested names for quick lookup
+  let requested : Map[String, Bool] = {}
+  for name in names {
+    requested[name] = true
+  }
+  // Extract matching definitions from source module
+  for stmt in source_ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+        if requested.contains(name) {
+          out.push(@core.Stmt::Let(rec~, name~, expr~, span~))
+        }
+      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+        if requested.contains(name) {
+          out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
+        }
+      @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+        if requested.contains(name) {
+          out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
+        }
+      @core.Stmt::Let(rec~, name~, expr~, span~) =>
+        if requested.contains(name) {
+          out.push(@core.Stmt::Let(rec~, name~, expr~, span~))
+        }
+      @core.Stmt::EnumDef(name~, params~, ctors~, span~) =>
+        if requested.contains(name) {
+          out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
+        }
+      @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
+        if requested.contains(name) {
+          out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
+        }
+      _ => ()
     }
   }
 }

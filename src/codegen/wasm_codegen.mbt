@@ -4304,9 +4304,21 @@ fn compile_stmt(
         is_last,
       )
     @core.Stmt::ExportEnumDef(..)
-    | @core.Stmt::ExportTypeAlias(..)
-    | @core.Stmt::Export(..)
-    | @core.Stmt::ReExport(..) => raise WasmGenError::Unsupported("export")
+    | @core.Stmt::ExportTypeAlias(..) => {
+      // Type exports have no runtime representation in WASM
+      // If this is the last statement, push unit
+      if is_last {
+        emit_i32_const_raw(buf, 0)
+      }
+    }
+    @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..) => {
+      // export { ... } statements are handled during bundling
+      // At codegen time, they are no-ops
+      if is_last {
+        emit_i32_const_raw(buf, 0)
+      }
+    }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = span
       // LetMut is similar to Let, but the variable can be reassigned
