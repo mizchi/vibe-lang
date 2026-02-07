@@ -1013,19 +1013,11 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
       if next == eq() || is_compound_assign(next) {
         self.parse_assign_stmt()
       } else {
-        let start = self.pos
-        let expr = self.parse_expr()
-        let _ = self.eat(semicolon())
-        let span = self.span_from(start)
-        @core.Stmt::Expr(expr~, span~)
+        self.parse_expr_or_index_assign_stmt()
       }
     }
     _ => {
-      let start = self.pos
-      let expr = self.parse_expr()
-      let _ = self.eat(semicolon())
-      let span = self.span_from(start)
-      @core.Stmt::Expr(expr~, span~)
+      self.parse_expr_or_index_assign_stmt()
     }
   }
 }
@@ -1124,6 +1116,50 @@ fn AstParser::parse_assign_stmt(
     let _ = self.eat(semicolon())
     let span = self.span_from(start)
     @core.Stmt::Assign(name=name_tok.text(), expr=desugared, span~)
+  }
+}
+
+///|
+/// Parse an expression statement, or an indexed assignment if `=` follows.
+fn AstParser::parse_expr_or_index_assign_stmt(
+  self : AstParser,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let expr = self.parse_expr()
+  self.skip_trivia()
+  // Check if this is an indexed assignment: expr[index] = value
+  if self.peek_kind() == eq() {
+    match expr {
+      @core.Expr::Call(name="__index", args~, ..) =>
+        if args.length() == 2 {
+          let _ = self.bump() // consume =
+          let value = self.parse_expr()
+          let _ = self.eat(semicolon())
+          let span = self.span_from(start)
+          @core.Stmt::IndexAssign(
+            target=args[0].expr,
+            index=args[1].expr,
+            value~,
+            span~,
+          )
+        } else {
+          raise ParseError::UnexpectedToken(
+            expected="indexed expression",
+            got="=",
+            span=self.token_span(),
+          )
+        }
+      _ =>
+        raise ParseError::UnexpectedToken(
+          expected="assignment target",
+          got="=",
+          span=self.token_span(),
+        )
+    }
+  } else {
+    let _ = self.eat(semicolon())
+    let span = self.span_from(start)
+    @core.Stmt::Expr(expr~, span~)
   }
 }
 
@@ -3700,6 +3736,13 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
       @core.Stmt::LetMut(name~, expr=desugar_expr_deep(expr), span~)
     @core.Stmt::Assign(name~, expr~, span~) =>
       @core.Stmt::Assign(name~, expr=desugar_expr_deep(expr), span~)
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=desugar_expr_deep(target),
+        index=desugar_expr_deep(index),
+        value=desugar_expr_deep(value),
+        span~,
+      )
     @core.Stmt::LetPat(pat~, expr~, span~) =>
       @core.Stmt::LetPat(pat~, expr=desugar_expr_deep(expr), span~)
     // Non-expression statements pass through

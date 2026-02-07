@@ -41,6 +41,13 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, expr.structural_hash())
       h
     }
+    Stmt::IndexAssign(target~, index~, value~, ..) => {
+      let mut h = 0x49647841 // "IdxA"
+      h = combine_hash(h, target.structural_hash())
+      h = combine_hash(h, index.structural_hash())
+      h = combine_hash(h, value.structural_hash())
+      h
+    }
     Stmt::EnumDef(name~, params~, ctors~, ..) => {
       let mut h = 0x456e756d // "Enum"
       h = combine_hash(h, name.hash())

@@ -93,6 +93,7 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
     | @core.Stmt::Import(..)
     | @core.Stmt::Test(..)
     | @core.Stmt::Assign(..)
+    | @core.Stmt::IndexAssign(..)
     | @core.Stmt::LetPat(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..) => (None, refs)
@@ -125,6 +126,12 @@ fn collect_entry_points(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
         let _ = span
         entries[name] = true
         collect_refs_expr(expr, empty_bound, entries)
+      }
+      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+        let _ = span
+        collect_refs_expr(target, empty_bound, entries)
+        collect_refs_expr(index, empty_bound, entries)
+        collect_refs_expr(value, empty_bound, entries)
       }
       // Let patterns with side effects - collect refs from expr
       @core.Stmt::LetPat(pat~, expr~, span~) => {
@@ -255,6 +262,7 @@ fn filter_reachable_stmts(
       | @core.Stmt::Import(..)
       | @core.Stmt::Test(..)
       | @core.Stmt::Assign(..)
+      | @core.Stmt::IndexAssign(..)
       | @core.Stmt::LetPat(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => out.push(stmt)
@@ -413,6 +421,12 @@ fn collect_refs_block(
         let _ = span
         add_ref_name(name, scope, refs)
         collect_refs_expr(expr, scope, refs)
+      }
+      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+        let _ = span
+        collect_refs_expr(target, scope, refs)
+        collect_refs_expr(index, scope, refs)
+        collect_refs_expr(value, scope, refs)
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span

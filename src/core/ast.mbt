@@ -107,6 +107,7 @@ pub(all) enum Stmt {
   Test(name~ : String?, body~ : Module, span~ : Span)
   LetMut(name~ : String, expr~ : Expr, span~ : Span)
   Assign(name~ : String, expr~ : Expr, span~ : Span)
+  IndexAssign(target~ : Expr, index~ : Expr, value~ : Expr, span~ : Span)
   LetPat(pat~ : Pat, expr~ : Expr, span~ : Span)
   // Export statements
   ExportLet(rec~ : Bool, name~ : String, expr~ : Expr, span~ : Span)
@@ -245,6 +246,7 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::Test(span~, ..)
     | Stmt::LetMut(span~, ..)
     | Stmt::Assign(span~, ..)
+    | Stmt::IndexAssign(span~, ..)
     | Stmt::LetPat(span~, ..)
     | Stmt::ExportLet(span~, ..)
     | Stmt::ExportEnumDef(span~, ..)

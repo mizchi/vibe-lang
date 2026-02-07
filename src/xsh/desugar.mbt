@@ -71,6 +71,13 @@ fn desugar_stmt(
       @core.Stmt::LetMut(name~, expr=desugar_expr(expr, scope, aliases), span~)
     @core.Stmt::Assign(name~, expr~, span~) =>
       @core.Stmt::Assign(name~, expr=desugar_expr(expr, scope, aliases), span~)
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=desugar_expr(target, scope, aliases),
+        index=desugar_expr(index, scope, aliases),
+        value=desugar_expr(value, scope, aliases),
+        span~,
+      )
     @core.Stmt::LetPat(pat~, expr~, span~) =>
       @core.Stmt::LetPat(pat~, expr=desugar_expr(expr, scope, aliases), span~)
   }

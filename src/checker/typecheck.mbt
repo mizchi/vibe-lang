@@ -993,6 +993,15 @@ fn type_check_stmts(
             )
         }
       }
+      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+        // Type check target[index] = value as __set_index(target, index, value)
+        let _ = type_expr_eff(env, target, aliases, effects, allow_effect)
+        let _ = type_expr_eff(env, index, aliases, effects, allow_effect)
+        let _ = type_expr_eff(env, value, aliases, effects, allow_effect)
+        let _ = span
+        // For now, just check that all sub-expressions type check
+        // More precise checking would verify target is array/map compatible
+      }
     }
   }
   env
@@ -2817,6 +2826,14 @@ fn type_block(
               suggestion=find_name_suggestion(scope_env, aliases, name),
             )
         }
+        last = @core.Type::Unit
+      }
+      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+        // Type check target[index] = value
+        let _ = type_expr_eff(scope_env, target, aliases, effects, allow_effect)
+        let _ = type_expr_eff(scope_env, index, aliases, effects, allow_effect)
+        let _ = type_expr_eff(scope_env, value, aliases, effects, allow_effect)
+        let _ = span
         last = @core.Type::Unit
       }
     }

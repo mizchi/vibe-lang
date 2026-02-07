@@ -368,6 +368,16 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         buf.write_string(expr_to_addr_sexp(block_ctx, expr))
         buf.write_char(')')
       }
+      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+        let _ = span
+        buf.write_string(" (index-assign ")
+        buf.write_string(expr_to_addr_sexp(block_ctx, target))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(block_ctx, index))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(block_ctx, value))
+        buf.write_char(')')
+      }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         bind_pattern(block_ctx, pat)

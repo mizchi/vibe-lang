@@ -291,6 +291,19 @@ pub fn Runtime::eval_module(
         self.bind(name, out.value) |> ignore
         last = Some(out.value)
       }
+      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+        let _ = span
+        let target_out = eval_expr(self, target)
+        let index_out = eval_expr(self, index)
+        let value_out = eval_expr(self, value)
+        extend_effects(effects, target_out.effects)
+        extend_effects(effects, index_out.effects)
+        extend_effects(effects, value_out.effects)
+        // Call __set_index builtin
+        let args = [target_out.value, index_out.value, value_out.value]
+        let result = eval_pure_builtin("__set_index", args)
+        last = Some(result)
+      }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         let out = eval_expr(self, expr)
@@ -1163,6 +1176,7 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "__div" ||
   name == "__mod" ||
   name == "__index" ||
+  name == "__set_index" ||
   name == "__eq" ||
   name == "__lt" ||
   name == "__neg" ||
@@ -1450,7 +1464,44 @@ fn eval_pure_builtin(
             Some(v) => v
             None => raise EvalError::BadCall("__index: missing key")
           }
+        (@core.Value::Map(map), @core.Value::String(key)) =>
+          match map.get(key) {
+            Some(v) => v
+            None => raise EvalError::BadCall("__index: missing key")
+          }
+        (@core.Value::MapBuilder(map), @core.Value::String(key)) =>
+          match map.get(key) {
+            Some(v) => v
+            None => raise EvalError::BadCall("__index: missing key")
+          }
         _ => raise EvalError::BadCall("__index")
+      }
+    }
+    "__set_index" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall("__set_index")
+      }
+      match (args[0], args[1], args[2]) {
+        (@core.Value::Array(arr), @core.Value::Int(i), value) =>
+          if i >= 0 && i < arr.length() {
+            arr[i] = value
+            value
+          } else {
+            raise EvalError::BadCall("__set_index: out of bounds")
+          }
+        (@core.Value::Record(map), @core.Value::String(key), value) => {
+          map[key] = value
+          value
+        }
+        (@core.Value::Map(map), @core.Value::String(key), value) => {
+          map[key] = value
+          value
+        }
+        (@core.Value::MapBuilder(map), @core.Value::String(key), value) => {
+          map[key] = value
+          value
+        }
+        _ => raise EvalError::BadCall("__set_index")
       }
     }
     "__eq" => {

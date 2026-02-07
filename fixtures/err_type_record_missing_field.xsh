@@ -1,4 +1,4 @@
-// Record pattern mismatch
+// Record pattern with extra field not in value
 let p = record { a: 1 }
 match p {
   record { a: x, b: y } => x + y
@@ -6,4 +6,4 @@ match p {
 }
 
 __DATA__
-{"error_contains": "Mismatch", "todo": true}
+{"error_contains": "missing field"}

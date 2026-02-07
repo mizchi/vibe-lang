@@ -1,8 +1,9 @@
-// Type parameter escaping scope
+// Type parameter T correctly captured in nested function
 let make = [T]() -> T {
-  let inner = () -> T { ??? }
+  let inner = () -> T { 0 }
   inner()
 }
+make()
 
 __DATA__
-{"error_contains": "unknown", "todo": true}
+{"last": "0"}

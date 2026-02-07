@@ -57,6 +57,15 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_string_to(name, buf)
       buf.write_string("}}")
     }
+    Stmt::IndexAssign(target~, index~, value~, ..) => {
+      buf.write_string("{\"IndexAssign\":{\"target\":")
+      serialize_expr_to(target, buf)
+      buf.write_string(",\"index\":")
+      serialize_expr_to(index, buf)
+      buf.write_string(",\"value\":")
+      serialize_expr_to(value, buf)
+      buf.write_string("}}")
+    }
     Stmt::Expr(expr~, ..) => {
       buf.write_string("{\"Expr\":")
       serialize_expr_to(expr, buf)

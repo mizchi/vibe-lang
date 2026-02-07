@@ -98,6 +98,17 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       let norm_expr = normalize_expr(expr, scope)
       Stmt::Assign(name=norm_name, expr=norm_expr, span=zero_span)
     }
+    Stmt::IndexAssign(target~, index~, value~, ..) => {
+      let norm_target = normalize_expr(target, scope)
+      let norm_index = normalize_expr(index, scope)
+      let norm_value = normalize_expr(value, scope)
+      Stmt::IndexAssign(
+        target=norm_target,
+        index=norm_index,
+        value=norm_value,
+        span=zero_span,
+      )
+    }
     Stmt::Expr(expr~, ..) =>
       Stmt::Expr(expr=normalize_expr(expr, scope), span=zero_span)
     Stmt::Test(name~, body~, ..) => {

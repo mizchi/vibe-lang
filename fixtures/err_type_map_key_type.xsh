@@ -1,6 +1,6 @@
-// Map with wrong key type
-let m: Map[String, Int] = {}
-m[42] = 1
+// Map with wrong key type (Int instead of String)
+let m = map { "a": 1 }
+m[42] = 2
 
 __DATA__
-{"error_contains": "Mismatch", "todo": true}
+{"error_contains": "__set_index"}

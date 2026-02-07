@@ -440,6 +440,12 @@ fn collect_captures_block(
         }
         collect_captures_expr(expr, scope, outer_bound, captures, seen)
       }
+      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+        let _ = span
+        collect_captures_expr(target, scope, outer_bound, captures, seen)
+        collect_captures_expr(index, scope, outer_bound, captures, seen)
+        collect_captures_expr(value, scope, outer_bound, captures, seen)
+      }
       _ => ()
     }
   }
@@ -4364,6 +4370,24 @@ fn compile_stmt(
           }
         }
         None => raise UnknownName(name)
+      }
+    }
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+      // IndexAssign: target[index] = value → __set_index(target, index, value)
+      // Desugar to call expression
+      let call_expr = @core.Expr::Call(
+        name="__set_index",
+        type_args=[],
+        args=[
+          @core.CallArg::{ label: None, expr: target, span: target.span() },
+          @core.CallArg::{ label: None, expr: index, span: index.span() },
+          @core.CallArg::{ label: None, expr: value, span: value.span() },
+        ],
+        span~,
+      )
+      compile_expr(ctx, buf, call_expr)
+      if not(is_last) {
+        emit_drop(buf)
       }
     }
     @core.Stmt::LetPat(pat~, expr~, span~) => {

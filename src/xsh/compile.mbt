@@ -522,6 +522,16 @@ fn stmts_to_sexp(
         buf.write_string(expr_to_sexp(expr, aliases))
         buf.write_char(')')
       }
+      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
+        let _ = span
+        buf.write_string(" (index-assign ")
+        buf.write_string(expr_to_sexp(target, aliases))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(index, aliases))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(value, aliases))
+        buf.write_char(')')
+      }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         buf.write_string(" (let-pat ")

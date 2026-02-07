@@ -1,8 +1,8 @@
-// Recursive type that should fail
-let rec = [T](x: T) -> T {
-  rec(x)
+// Recursive call before function is defined
+let recurse = [T](x: T) -> T {
+  recurse(x)
 }
-rec(42)
+recurse(42)
 
 __DATA__
-{"last": "42", "todo": true}
+{"error_contains": "recurse"}
