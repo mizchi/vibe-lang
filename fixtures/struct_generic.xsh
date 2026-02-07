@@ -1,0 +1,29 @@
+struct Pair[A, B] { fst : A; snd : B }
+
+let int_pair = Pair::{ fst: 1, snd: 2 }
+let int_sum = add(int_pair.fst, int_pair.snd)
+
+let mixed = Pair::{ fst: 42, snd: "hello" }
+let mixed_fst = mixed.fst
+let mixed_snd = mixed.snd
+
+struct Box[T] { value : T }
+let boxed = Box::{ value: Pair::{ fst: 10, snd: 20 } }
+
+test "generic_int_pair" {
+  assert(eq(int_sum, 3))
+}
+
+test "generic_mixed_pair" {
+  assert(eq(mixed_fst, 42))
+  assert(string_equals(mixed_snd, "hello"))
+}
+
+test "generic_nested" {
+  let inner = boxed.value
+  assert(eq(inner.fst, 10))
+  assert(eq(inner.snd, 20))
+}
+
+__DATA__
+{}
