@@ -18,6 +18,22 @@ fn extend_effects(dest : Array[Effect], src : Array[Effect]) -> Unit {
 }
 
 ///|
+/// Helper to update a function value with an address for recursive binding
+fn attach_addr_to_fn(value : @core.Value, addr : String) -> @core.Value {
+  match value {
+    @core.Value::Fn(fn_val) =>
+      @core.Value::Fn(@core.FnValue::{
+        params: fn_val.params,
+        body: fn_val.body,
+        env: fn_val.env,
+        addr: Some(addr),
+        pure: fn_val.pure,
+      })
+    _ => value
+  }
+}
+
+///|
 suberror EvalError {
   UnknownName(String)
   PermissionDenied(String)
@@ -34,18 +50,13 @@ pub fn Runtime::eval_module(
   let mut last : @core.Value? = None
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Let(rec~, name~, expr~, span~) => {
-        let _ = span
+      @core.Stmt::Let(rec~, name~, expr~, ..) => {
         let info = @checker.purity_for_let(self.type_env, rec, name, expr)
         let use_addr = rec || info.expr
         let addr = @codegen.expr_address(
           expr,
           self.addr_env,
-          if rec {
-            Some(name)
-          } else {
-            None
-          },
+          if rec { Some(name) } else { None },
         )
         if rec {
           self.env[name] = addr
@@ -58,19 +69,7 @@ pub fn Runtime::eval_module(
           }
         }
         let out = eval_expr(self, expr)
-        let value = match out.value {
-          @core.Value::Fn(fn_val) => {
-            let updated = @core.FnValue::{
-              params: fn_val.params,
-              body: fn_val.body,
-              env: fn_val.env,
-              addr: Some(addr),
-              pure: fn_val.pure,
-            }
-            @core.Value::Fn(updated)
-          }
-          _ => out.value
-        }
+        let value = attach_addr_to_fn(out.value, addr)
         extend_effects(effects, out.effects)
         if use_addr {
           self.bind_with_addr(name, addr, value)
@@ -79,33 +78,15 @@ pub fn Runtime::eval_module(
         }
         last = Some(value)
       }
-      @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
-        let _ = name
-        let _ = params
-        let _ = ctors
-        let _ = span
-        last = Some(@core.Value::Unit)
-      }
-      @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
-        let _ = name
-        let _ = params
-        let _ = target
-        let _ = span
-        last = Some(@core.Value::Unit)
-      }
-      @core.Stmt::Expr(expr~, span~) => {
-        let _ = span
+      @core.Stmt::EnumDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::TypeAlias(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::Expr(expr~, ..) => {
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)
         last = Some(out.value)
       }
-      @core.Stmt::Flake(raw~, span~) => {
-        let _ = raw
-        let _ = span
-        last = Some(@core.Value::Unit)
-      }
-      @core.Stmt::Alias(name~, target~, span~) => {
-        let _ = span
+      @core.Stmt::Flake(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::Alias(name~, target~, ..) => {
         match target {
           @core.AliasTarget::Module(r) => self.set_alias(name, r)
           @core.AliasTarget::Name(target_name) =>
@@ -116,8 +97,7 @@ pub fn Runtime::eval_module(
         }
         last = Some(@core.Value::Unit)
       }
-      @core.Stmt::Import(spec~, source~, span~) => {
-        let _ = span
+      @core.Stmt::Import(spec~, source~, ..) => {
         // Get the module hash
         let hash = match source {
           @core.ModuleRef::Hash(hash~) => hash
@@ -151,13 +131,13 @@ pub fn Runtime::eval_module(
                   match stmt {
                     @core.Stmt::ExportLet(rec~, expr~, ..)
                     | @core.Stmt::Let(rec~, expr~, ..) => {
-                      // For recursive functions, bind name first
+                      let addr = @codegen.expr_address(
+                        expr,
+                        self.addr_env,
+                        Some(local_name),
+                      )
+                      // For recursive functions, pre-bind name to address
                       if rec {
-                        let addr = @codegen.expr_address(
-                          expr,
-                          self.addr_env,
-                          Some(local_name),
-                        )
                         self.env[local_name] = addr
                         self.addr_env[local_name] = addr
                       }
@@ -167,32 +147,12 @@ pub fn Runtime::eval_module(
                           "Cannot import effectful expression",
                         )
                       }
-                      // For recursive functions, attach the addr and use bind_with_addr
+                      // Attach address to function values
+                      let value = attach_addr_to_fn(result.value, addr)
                       if rec {
-                        match result.value {
-                          @core.Value::Fn(fn_val) => {
-                            let addr = @codegen.expr_address(
-                              expr,
-                              self.addr_env,
-                              Some(local_name),
-                            )
-                            let value = @core.Value::Fn(@core.FnValue::{
-                              params: fn_val.params,
-                              body: fn_val.body,
-                              env: fn_val.env,
-                              addr: Some(addr),
-                              pure: fn_val.pure,
-                            })
-                            self.bind_with_addr(local_name, addr, value)
-                          }
-                          _ => {
-                            let _ = self.bind(local_name, result.value)
-
-                          }
-                        }
+                        self.bind_with_addr(local_name, addr, value)
                       } else {
-                        let _ = self.bind(local_name, result.value)
-
+                        self.bind(local_name, value) |> ignore
                       }
                     }
                     _ =>
@@ -206,18 +166,13 @@ pub fn Runtime::eval_module(
         }
         last = Some(@core.Value::Unit)
       }
-      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
-        let _ = span
+      @core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
         let info = @checker.purity_for_let(self.type_env, rec, name, expr)
         let use_addr = rec || info.expr
         let addr = @codegen.expr_address(
           expr,
           self.addr_env,
-          if rec {
-            Some(name)
-          } else {
-            None
-          },
+          if rec { Some(name) } else { None },
         )
         if rec {
           self.env[name] = addr
@@ -230,19 +185,7 @@ pub fn Runtime::eval_module(
           }
         }
         let out = eval_expr(self, expr)
-        let value = match out.value {
-          @core.Value::Fn(fn_val) => {
-            let updated = @core.FnValue::{
-              params: fn_val.params,
-              body: fn_val.body,
-              env: fn_val.env,
-              addr: Some(addr),
-              pure: fn_val.pure,
-            }
-            @core.Value::Fn(updated)
-          }
-          _ => out.value
-        }
+        let value = attach_addr_to_fn(out.value, addr)
         extend_effects(effects, out.effects)
         if use_addr {
           self.bind_with_addr(name, addr, value)
@@ -251,38 +194,19 @@ pub fn Runtime::eval_module(
         }
         last = Some(value)
       }
-      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
-        let _ = name
-        let _ = params
-        let _ = ctors
-        let _ = span
-        last = Some(@core.Value::Unit)
-      }
-      @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) => {
-        let _ = name
-        let _ = params
-        let _ = target
-        let _ = span
-        last = Some(@core.Value::Unit)
-      }
+      @core.Stmt::ExportEnumDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::ExportTypeAlias(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
         last = Some(@core.Value::Unit)
-      @core.Stmt::Test(name~, body~, span~) => {
-        let _ = name
-        let _ = body
-        let _ = span
-        last = Some(@core.Value::Unit)
-      }
-      @core.Stmt::LetMut(name~, expr~, span~) => {
-        let _ = span
+      @core.Stmt::Test(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::LetMut(name~, expr~, ..) => {
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)
         self.bind(name, out.value) |> ignore
         self.mut_vars[name] = true
         last = Some(out.value)
       }
-      @core.Stmt::Assign(name~, expr~, span~) => {
-        let _ = span
+      @core.Stmt::Assign(name~, expr~, ..) => {
         if not(self.mut_vars.contains(name)) {
           raise EvalError::BadCall("assign to immutable: " + name)
         }
@@ -291,8 +215,7 @@ pub fn Runtime::eval_module(
         self.bind(name, out.value) |> ignore
         last = Some(out.value)
       }
-      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
-        let _ = span
+      @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
         let target_out = eval_expr(self, target)
         let index_out = eval_expr(self, index)
         let value_out = eval_expr(self, value)
@@ -304,8 +227,7 @@ pub fn Runtime::eval_module(
         let result = eval_pure_builtin("__set_index", args)
         last = Some(result)
       }
-      @core.Stmt::LetPat(pat~, expr~, span~) => {
-        let _ = span
+      @core.Stmt::LetPat(pat~, expr~, ..) => {
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)
         match match_pattern(pat, out.value) {
@@ -317,20 +239,8 @@ pub fn Runtime::eval_module(
         }
         last = Some(out.value)
       }
-      @core.Stmt::StructDef(name~, params~, fields~, span~) => {
-        let _ = name
-        let _ = params
-        let _ = fields
-        let _ = span
-        last = Some(@core.Value::Unit)
-      }
-      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
-        let _ = name
-        let _ = params
-        let _ = fields
-        let _ = span
-        last = Some(@core.Value::Unit)
-      }
+      @core.Stmt::StructDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::ExportStructDef(..) => last = Some(@core.Value::Unit)
     }
   }
   { last, effects }
@@ -357,28 +267,17 @@ priv struct EvalArgValue {
 ///|
 fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
   match expr {
-    @core.Expr::Int(value=n, span~) => {
-      let _ = span
+    @core.Expr::Int(value=n, ..) =>
       { value: @core.Value::Int(n), effects: [] }
-    }
-    @core.Expr::Float(value=n, span~) => {
-      let _ = span
+    @core.Expr::Float(value=n, ..) =>
       { value: @core.Value::Float(n), effects: [] }
-    }
-    @core.Expr::Double(value=n, span~) => {
-      let _ = span
+    @core.Expr::Double(value=n, ..) =>
       { value: @core.Value::Double(n), effects: [] }
-    }
-    @core.Expr::Bool(value=b, span~) => {
-      let _ = span
+    @core.Expr::Bool(value=b, ..) =>
       { value: @core.Value::Bool(b), effects: [] }
-    }
-    @core.Expr::String(value=s, span~) => {
-      let _ = span
+    @core.Expr::String(value=s, ..) =>
       { value: @core.Value::String(s), effects: [] }
-    }
-    @core.Expr::Ident(name~, span~) => {
-      let _ = span
+    @core.Expr::Ident(name~, ..) => {
       match rt.get(name) {
         Some(v) => { value: v, effects: [] }
         None =>
@@ -396,12 +295,8 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before eval
       raise EvalError::UnknownName("_")
-    @core.Expr::Call(name~, args~, span~, ..) => {
-      let _ = span
-      eval_call(rt, name, args)
-    }
-    @core.Expr::Tuple(items~, span~) => {
-      let _ = span
+    @core.Expr::Call(name~, args~, ..) => eval_call(rt, name, args)
+    @core.Expr::Tuple(items~, ..) => {
       let values : Array[@core.Value] = []
       let effects : Array[Effect] = []
       for item in items {
@@ -411,8 +306,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Tuple(values), effects }
     }
-    @core.Expr::TupleIndex(expr~, index~, span~) => {
-      let _ = span
+    @core.Expr::TupleIndex(expr~, index~, ..) => {
       let out = eval_expr(rt, expr)
       match out.value {
         @core.Value::Tuple(values) =>
@@ -424,8 +318,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         _ => raise EvalError::BadCall("expected tuple for index access")
       }
     }
-    @core.Expr::Record(fields~, span~) => {
-      let _ = span
+    @core.Expr::Record(fields~, ..) => {
       let map : Map[String, @core.Value] = {}
       let effects : Array[Effect] = []
       for field in fields {
@@ -435,10 +328,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Record(map), effects }
     }
-    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
-      let _ = name
-      let _ = type_args
-      let _ = span
+    @core.Expr::StructLit(fields~, ..) => {
       // Struct is evaluated as record
       let map : Map[String, @core.Value] = {}
       let effects : Array[Effect] = []
@@ -449,8 +339,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Record(map), effects }
     }
-    @core.Expr::Array(items~, span~) => {
-      let _ = span
+    @core.Expr::Array(items~, ..) => {
       let values : Array[@core.Value] = []
       let effects : Array[Effect] = []
       for item in items {
@@ -460,8 +349,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Array(values), effects }
     }
-    @core.Expr::Map(fields~, span~) => {
-      let _ = span
+    @core.Expr::Map(fields~, ..) => {
       let map : Map[String, @core.Value] = {}
       let effects : Array[Effect] = []
       for field in fields {
@@ -471,8 +359,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Map(map), effects }
     }
-    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
-      let _ = span
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
       let cond_out = eval_expr(rt, cond)
       let effects = cond_out.effects
       match cond_out.value {
@@ -488,18 +375,12 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         _ => raise EvalError::BadCall("if")
       }
     }
-    @core.Expr::Block(body~, span~) => {
-      let _ = span
-      eval_block(rt, body)
-    }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
-      let _ = span
+    @core.Expr::Block(body~, ..) => eval_block(rt, body)
+    @core.Expr::Try(try_body~, catch_body~, ..) =>
       eval_block(rt, try_body) catch {
         _ => eval_block(rt, catch_body)
       }
-    }
-    @core.Expr::Match(scrutinee~, arms~, span~) => {
-      let _ = span
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
       let scrutinee_out = eval_expr(rt, scrutinee)
       let effects = scrutinee_out.effects
       let mut matched : @core.Value? = None
@@ -532,10 +413,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         None => { value: @core.Value::Unit, effects }
       }
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      eval_block(rt, body)
-    }
+    @core.Expr::Do(body~, ..) => eval_block(rt, body)
     @core.Expr::Fn(
       type_params=_,
       params~,
@@ -569,8 +447,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Fn(closure), effects: [] }
     }
-    @core.Expr::While(cond~, body~, span~) => {
-      let _ = span
+    @core.Expr::While(cond~, body~, ..) => {
       let effects : Array[Effect] = []
       while {
               let cond_out = eval_expr(rt, cond)
@@ -585,8 +462,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Unit, effects }
     }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
+    @core.Expr::Raise(value~, ..) => {
       let v = eval_expr(rt, value)
       raise EvalError::BadCall(
         match v.value {
@@ -595,18 +471,14 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         },
       )
     }
-    @core.Expr::Await(expr~, span~) => {
-      let _ = span
+    @core.Expr::Await(expr~, ..) =>
       // For now, await just evaluates the expression synchronously
       // Future: handle Future[T] values and suspend/resume
       eval_expr(rt, expr)
-    }
-    @core.Expr::Yield(expr~, span~) => {
-      let _ = span
+    @core.Expr::Yield(expr~, ..) =>
       // For now, yield just evaluates and returns the expression
       // Future: handle Stream[T] generation
       eval_expr(rt, expr)
-    }
   }
 }
 
@@ -616,19 +488,13 @@ fn match_pattern(
   value : @core.Value,
 ) -> Map[String, @core.Value]? {
   match pat {
-    @core.Pat::Wildcard(span~) => {
-      let _ = span
-      let bindings : Map[String, @core.Value] = {}
-      Some(bindings)
-    }
-    @core.Pat::Bind(name~, span~) => {
-      let _ = span
+    @core.Pat::Wildcard(..) => Some({})
+    @core.Pat::Bind(name~, ..) => {
       let bindings : Map[String, @core.Value] = {}
       bindings[name] = value
       Some(bindings)
     }
-    @core.Pat::Ctor(name~, args~, span~) => {
-      let _ = span
+    @core.Pat::Ctor(name~, args~, ..) => {
       match value {
         @core.Value::Record(map) =>
           match map.get(name) {
@@ -675,8 +541,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::Int(value=n, span~) => {
-      let _ = span
+    @core.Pat::Int(value=n, ..) => {
       match value {
         @core.Value::Int(v) =>
           if v == n {
@@ -688,8 +553,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::Float(value=n, span~) => {
-      let _ = span
+    @core.Pat::Float(value=n, ..) => {
       match value {
         @core.Value::Float(v) =>
           if v == n {
@@ -701,8 +565,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::Double(value=n, span~) => {
-      let _ = span
+    @core.Pat::Double(value=n, ..) => {
       match value {
         @core.Value::Double(v) =>
           if v == n {
@@ -714,8 +577,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::Bool(value=b, span~) => {
-      let _ = span
+    @core.Pat::Bool(value=b, ..) => {
       match value {
         @core.Value::Bool(v) =>
           if v == b {
@@ -727,8 +589,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::String(value=s, span~) => {
-      let _ = span
+    @core.Pat::String(value=s, ..) => {
       match value {
         @core.Value::String(v) =>
           if v == s {
@@ -740,8 +601,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::Tuple(items~, span~) => {
-      let _ = span
+    @core.Pat::Tuple(items~, ..) => {
       match value {
         @core.Value::Tuple(values) =>
           if items.length() != values.length() {
@@ -770,8 +630,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::Record(fields~, span~) => {
-      let _ = span
+    @core.Pat::Record(fields~, ..) => {
       match value {
         @core.Value::Record(map) => {
           let bindings : Map[String, @core.Value] = {}
@@ -804,9 +663,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::Struct(name~, fields~, span~) => {
-      let _ = name
-      let _ = span
+    @core.Pat::Struct(fields~, ..) => {
       // Struct pattern is matched against a record value
       match value {
         @core.Value::Record(map) => {
@@ -840,8 +697,7 @@ fn match_pattern(
         _ => None
       }
     }
-    @core.Pat::Or(pats~, span~) => {
-      let _ = span
+    @core.Pat::Or(pats~, ..) => {
       let mut result : Map[String, @core.Value]? = None
       for p in pats {
         match match_pattern(p, value) {

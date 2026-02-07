@@ -87,18 +87,29 @@ pub fn Runtime::run_compiled(
 }
 
 ///|
+/// Internal helper for compile_module_wasm_* functions
+fn compile_module_wasm_with(
+  db : XshDb,
+  path : String,
+  bundler : (XshDb, String, @core.Module) -> @core.Module,
+  emitter : (@core.Module) -> Bytes raise @codegen.WasmGenError,
+) -> Bytes raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  let bundled = bundler(db, path, compiled.ast)
+  emitter(bundled) catch {
+    e => raise WasmCompileError::Gen(e)
+  }
+}
+
+///|
 /// Compile a module to WASM (wasm-gc compatible, minimal MVP).
 pub fn compile_module_wasm(
   db : XshDb,
   path : String,
 ) -> Bytes raise WasmCompileError {
-  let compiled = compile_module(db, path) catch {
-    e => raise WasmCompileError::Compile(e)
-  }
-  let bundled = bundle_for_wasm(db, path, compiled.ast)
-  @codegen.emit_module_wasm(bundled) catch {
-    e => raise WasmCompileError::Gen(e)
-  }
+  compile_module_wasm_with(db, path, bundle_for_wasm, @codegen.emit_module_wasm)
 }
 
 ///|
@@ -107,13 +118,12 @@ pub fn compile_module_wasm_js_string(
   db : XshDb,
   path : String,
 ) -> Bytes raise WasmCompileError {
-  let compiled = compile_module(db, path) catch {
-    e => raise WasmCompileError::Compile(e)
-  }
-  let bundled = bundle_for_wasm(db, path, compiled.ast)
-  @codegen.emit_module_wasm_js_string(bundled) catch {
-    e => raise WasmCompileError::Gen(e)
-  }
+  compile_module_wasm_with(
+    db,
+    path,
+    bundle_for_wasm,
+    @codegen.emit_module_wasm_js_string,
+  )
 }
 
 ///|
@@ -122,13 +132,12 @@ pub fn compile_module_wasm_gc(
   db : XshDb,
   path : String,
 ) -> Bytes raise WasmCompileError {
-  let compiled = compile_module(db, path) catch {
-    e => raise WasmCompileError::Compile(e)
-  }
-  let bundled = bundle_for_wasm(db, path, compiled.ast)
-  @codegen.emit_module_wasm_gc(bundled) catch {
-    e => raise WasmCompileError::Gen(e)
-  }
+  compile_module_wasm_with(
+    db,
+    path,
+    bundle_for_wasm,
+    @codegen.emit_module_wasm_gc,
+  )
 }
 
 ///|
@@ -137,13 +146,12 @@ pub fn compile_module_wasm_no_dce(
   db : XshDb,
   path : String,
 ) -> Bytes raise WasmCompileError {
-  let compiled = compile_module(db, path) catch {
-    e => raise WasmCompileError::Compile(e)
-  }
-  let bundled = bundle_for_wasm_no_dce(db, path, compiled.ast)
-  @codegen.emit_module_wasm(bundled) catch {
-    e => raise WasmCompileError::Gen(e)
-  }
+  compile_module_wasm_with(
+    db,
+    path,
+    bundle_for_wasm_no_dce,
+    @codegen.emit_module_wasm,
+  )
 }
 
 ///|

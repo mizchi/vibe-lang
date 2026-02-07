@@ -125,6 +125,63 @@ fn Parser::expect(self : Parser, kind : @cst.SyntaxKind) -> Unit {
 }
 
 ///|
+/// Skip tokens until braces {} are balanced (assumes opening brace was already consumed)
+fn Parser::skip_balanced_braces(self : Parser) -> Unit {
+  let mut depth = 1
+  while depth > 0 && not(self.at(eof())) {
+    match self.peek_kind() {
+      k if k == lbrace() => {
+        self.bump()
+        depth += 1
+      }
+      k if k == rbrace() => {
+        self.bump()
+        depth -= 1
+      }
+      _ => self.bump()
+    }
+  }
+}
+
+///|
+/// Skip tokens until brackets [] are balanced (assumes opening bracket was already consumed)
+fn Parser::skip_balanced_brackets(self : Parser) -> Unit {
+  let mut depth = 1
+  while depth > 0 && not(self.at(eof())) {
+    match self.peek_kind() {
+      k if k == lbracket() => {
+        self.bump()
+        depth += 1
+      }
+      k if k == rbracket() => {
+        self.bump()
+        depth -= 1
+      }
+      _ => self.bump()
+    }
+  }
+}
+
+///|
+/// Skip tokens until parens () are balanced (assumes opening paren was already consumed)
+fn Parser::skip_balanced_parens(self : Parser) -> Unit {
+  let mut depth = 1
+  while depth > 0 && not(self.at(eof())) {
+    match self.peek_kind() {
+      k if k == lparen() => {
+        self.bump()
+        depth += 1
+      }
+      k if k == rparen() => {
+        self.bump()
+        depth -= 1
+      }
+      _ => self.bump()
+    }
+  }
+}
+
+///|
 pub fn Parser::parse(self : Parser) -> @cst.GreenNode {
   self.builder.start_node(source_file())
   while not(self.at(eof())) {
@@ -192,20 +249,7 @@ fn Parser::parse_enum_stmt(self : Parser) -> Unit {
   }
   self.skip_trivia()
   self.expect(lbrace())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lbrace() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rbrace() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
+  self.skip_balanced_braces()
   self.skip_trivia()
   if self.at(semicolon()) {
     self.bump()
@@ -225,20 +269,7 @@ fn Parser::parse_struct_stmt(self : Parser) -> Unit {
   }
   self.skip_trivia()
   self.expect(lbrace())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lbrace() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rbrace() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
+  self.skip_balanced_braces()
   self.skip_trivia()
   if self.at(semicolon()) {
     self.bump()
@@ -273,20 +304,7 @@ fn Parser::parse_flake_block(self : Parser) -> Unit {
   self.bump() // flake
   self.skip_trivia()
   self.expect(lbrace())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lbrace() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rbrace() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
+  self.skip_balanced_braces()
   self.builder.finish_node()
 }
 
@@ -300,20 +318,7 @@ fn Parser::parse_test_block(self : Parser) -> Unit {
     self.skip_trivia()
   }
   self.expect(lbrace())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lbrace() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rbrace() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
+  self.skip_balanced_braces()
   self.builder.finish_node()
 }
 
@@ -705,20 +710,7 @@ fn Parser::parse_map_expr(self : Parser) -> Unit {
 fn Parser::parse_array_expr(self : Parser) -> Unit {
   self.builder.start_node(array_expr())
   self.expect(lbracket())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lbracket() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rbracket() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
+  self.skip_balanced_brackets()
   self.builder.finish_node()
 }
 
@@ -726,59 +718,20 @@ fn Parser::parse_array_expr(self : Parser) -> Unit {
 fn Parser::parse_paren_expr(self : Parser) -> Unit {
   self.builder.start_node(paren_expr())
   self.expect(lparen())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lparen() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rparen() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
+  self.skip_balanced_parens()
   self.builder.finish_node()
 }
 
 ///|
 fn Parser::parse_bracket_tokens(self : Parser) -> Unit {
   self.expect(lbracket())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lbracket() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rbracket() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
+  self.skip_balanced_brackets()
 }
 
 ///|
 fn Parser::parse_brace_block_tokens(self : Parser) -> Unit {
   self.expect(lbrace())
-  let mut depth = 1
-  while depth > 0 && not(self.at(eof())) {
-    match self.peek_kind() {
-      k if k == lbrace() => {
-        self.bump()
-        depth += 1
-      }
-      k if k == rbrace() => {
-        self.bump()
-        depth -= 1
-      }
-      _ => self.bump()
-    }
-  }
+  self.skip_balanced_braces()
 }
 
 ///|

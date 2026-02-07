@@ -151,20 +151,23 @@ fn format_bad_match(message : String) -> String {
     "empty match" => "`match` requires at least one arm"
     "tuple arity" => "tuple pattern has wrong number of elements"
     "ctor arity" => "constructor pattern has wrong number of arguments"
-    _ =>
-      if message.has_prefix("duplicate bind: ") {
-        "duplicate binding: `" +
-        message.to_array()[16:]
-        .iter()
-        .fold(init=StringBuilder::new(), fn(sb, c) {
-          sb.write_char(c)
-          sb
-        })
-        .to_string() +
-        "`"
+    _ => {
+      // "duplicate bind: " has length 16
+      let prefix = "duplicate bind: "
+      if message.has_prefix(prefix) {
+        let chars = message.to_array()
+        let name = chars[prefix.length():]
+          .iter()
+          .fold(init=StringBuilder::new(), fn(sb, c) {
+            sb.write_char(c)
+            sb
+          })
+          .to_string()
+        "duplicate binding: `" + name + "`"
       } else {
         message
       }
+    }
   }
 }
 
