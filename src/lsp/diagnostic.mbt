@@ -1,0 +1,66 @@
+///|
+/// Diagnostic conversion utilities
+
+///|
+/// Convert source position to LSP line/character
+pub fn span_to_range(source : String, span : @core.Span) -> LspRange {
+  let start_pos = offset_to_position(source, span.start)
+  let end_pos = offset_to_position(source, span.end)
+  LspRange::{ start: start_pos, end: end_pos }
+}
+
+///|
+fn offset_to_position(source : String, offset : Int) -> LspPosition {
+  let mut line = 0
+  let mut col = 0
+  let mut pos = 0
+  let chars = source.to_array()
+  while pos < offset && pos < chars.length() {
+    if chars[pos] == '\n' {
+      line += 1
+      col = 0
+    } else {
+      col += 1
+    }
+    pos += 1
+  }
+  LspPosition::{ line, character: col }
+}
+
+///|
+/// Convert xsh Diagnostic to LSP Diagnostic
+pub fn to_lsp_diagnostic(
+  diag : @core.Diagnostic,
+  source : String,
+) -> LspDiagnostic {
+  let range = match diag.span {
+    Some(span) => span_to_range(source, span)
+    None =>
+      LspRange::{
+        start: LspPosition::{ line: 0, character: 0 },
+        end: LspPosition::{ line: 0, character: 0 },
+      }
+  }
+  let severity = match diag.stage {
+    "parse" | "type" => Some(1) // Error
+    "warning" => Some(2) // Warning
+    _ => Some(1)
+  }
+  LspDiagnostic::{ range, severity, source: Some("xsh"), message: diag.message }
+}
+
+///|
+/// Create publish diagnostics notification JSON
+pub fn publish_diagnostics_json(
+  uri : String,
+  diagnostics : Array[LspDiagnostic],
+) -> Json {
+  let diag_arr : Array[Json] = []
+  for d in diagnostics {
+    diag_arr.push(diagnostic_to_json(d))
+  }
+  let params : Map[String, Json] = {}
+  params["uri"] = Json::string(uri)
+  params["diagnostics"] = Json::array(diag_arr)
+  notification_to_json("textDocument/publishDiagnostics", Json::object(params))
+}
