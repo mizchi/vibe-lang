@@ -157,6 +157,24 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_module_ref_to(source, buf)
       buf.write_string("}}")
     }
+    Stmt::StructDef(name~, params~, fields~, ..) => {
+      buf.write_string("{\"StructDef\":{\"fields\":")
+      serialize_struct_fields_to(fields, buf)
+      buf.write_string(",\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"params\":")
+      serialize_strings_to(params, buf)
+      buf.write_string("}}")
+    }
+    Stmt::ExportStructDef(name~, params~, fields~, ..) => {
+      buf.write_string("{\"ExportStructDef\":{\"fields\":")
+      serialize_struct_fields_to(fields, buf)
+      buf.write_string(",\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"params\":")
+      serialize_strings_to(params, buf)
+      buf.write_string("}}")
+    }
   }
 }
 
@@ -300,6 +318,15 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       buf.write_string("{\"Yield\":")
       serialize_expr_to(inner, buf)
       buf.write_char('}')
+    }
+    Expr::StructLit(name~, type_args~, fields~, ..) => {
+      buf.write_string("{\"StructLit\":{\"fields\":")
+      serialize_record_fields_to(fields, buf)
+      buf.write_string(",\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"type_args\":")
+      serialize_types_to(type_args, buf)
+      buf.write_string("}}")
     }
   }
 }
@@ -466,6 +493,13 @@ fn serialize_pat_to(pat : Pat, buf : StringBuilder) -> Unit {
       buf.write_string("{\"Or\":")
       serialize_pats_to(pats, buf)
       buf.write_char('}')
+    }
+    Pat::Struct(name~, fields~, ..) => {
+      buf.write_string("{\"Struct\":{\"fields\":")
+      serialize_record_field_pats_to(fields, buf)
+      buf.write_string(",\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string("}}")
     }
   }
 }
@@ -711,6 +745,25 @@ fn serialize_ctors_to(ctors : Array[TypeCtor], buf : StringBuilder) -> Unit {
     serialize_types_to(c.args, buf)
     buf.write_string(",\"name\":")
     serialize_string_to(c.name, buf)
+    buf.write_char('}')
+  }
+  buf.write_char(']')
+}
+
+///|
+fn serialize_struct_fields_to(
+  fields : Array[StructField],
+  buf : StringBuilder,
+) -> Unit {
+  buf.write_char('[')
+  for i, f in fields {
+    if i > 0 {
+      buf.write_char(',')
+    }
+    buf.write_string("{\"name\":")
+    serialize_string_to(f.name, buf)
+    buf.write_string(",\"ty\":")
+    serialize_type_to(f.ty, buf)
     buf.write_char('}')
   }
   buf.write_char(']')

@@ -540,6 +540,44 @@ fn stmts_to_sexp(
         buf.write_string(expr_to_sexp(expr, aliases))
         buf.write_char(')')
       }
+      @core.Stmt::StructDef(name~, params~, fields~, span~) => {
+        let _ = span
+        buf.write_string(" (struct ")
+        buf.write_string(escape_atom(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(escape_atom(param))
+        }
+        buf.write_string(") (fields")
+        for field in fields {
+          buf.write_string(" (field ")
+          buf.write_string(escape_atom(field.name))
+          buf.write_char(' ')
+          buf.write_string(type_to_sexp(field.ty))
+          buf.write_char(')')
+        }
+        buf.write_string("))")
+      }
+      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
+        let _ = span
+        buf.write_string(" (export-struct ")
+        buf.write_string(escape_atom(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(escape_atom(param))
+        }
+        buf.write_string(") (fields")
+        for field in fields {
+          buf.write_string(" (field ")
+          buf.write_string(escape_atom(field.name))
+          buf.write_char(' ')
+          buf.write_string(type_to_sexp(field.ty))
+          buf.write_char(')')
+        }
+        buf.write_string("))")
+      }
     }
   }
   buf.write_char(')')
@@ -643,13 +681,34 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
     }
     @core.Expr::TupleIndex(expr~, index~, span~) => {
       let _ = span
-      "(tuple-index " + expr_to_sexp(expr, aliases) + " " + index.to_string() +
+      "(tuple-index " +
+      expr_to_sexp(expr, aliases) +
+      " " +
+      index.to_string() +
       ")"
     }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(record")
+      let sorted = sort_record_fields_expr(fields)
+      for field in sorted {
+        buf.write_char(' ')
+        buf.write_string("(field ")
+        buf.write_string(escape_string(field.name))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(field.expr, aliases))
+        buf.write_char(')')
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let _ = span
+      let _ = type_args // Type args are inferred, not needed in sexp
+      let buf = StringBuilder::new()
+      buf.write_string("(struct-lit ")
+      buf.write_string(escape_string(name))
       let sorted = sort_record_fields_expr(fields)
       for field in sorted {
         buf.write_char(' ')
@@ -1037,6 +1096,22 @@ fn pat_to_sexp(pat : @core.Pat) -> String {
       let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(pat (record")
+      for field in fields {
+        buf.write_char(' ')
+        buf.write_string("(field ")
+        buf.write_string(escape_string(field.name))
+        buf.write_char(' ')
+        buf.write_string(pat_to_sexp(field.pat))
+        buf.write_char(')')
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(pat (struct ")
+      buf.write_string(escape_string(name))
       for field in fields {
         buf.write_char(' ')
         buf.write_string("(field ")

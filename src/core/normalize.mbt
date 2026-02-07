@@ -147,6 +147,20 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
     Stmt::Export(names~, ..) => Stmt::Export(names~, span=zero_span)
     Stmt::ReExport(names~, source~, ..) =>
       Stmt::ReExport(names~, source~, span=zero_span)
+    Stmt::StructDef(name~, params~, fields~, ..) =>
+      Stmt::StructDef(
+        name~,
+        params~,
+        fields=normalize_struct_fields(fields),
+        span=zero_span,
+      )
+    Stmt::ExportStructDef(name~, params~, fields~, ..) =>
+      Stmt::ExportStructDef(
+        name~,
+        params~,
+        fields=normalize_struct_fields(fields),
+        span=zero_span,
+      )
   }
 }
 
@@ -161,6 +175,16 @@ fn normalize_ctors(ctors : Array[TypeCtor]) -> Array[TypeCtor] {
   let zero_span = Span::{ start: 0, end: 0 }
   for ctor in ctors {
     out.push(TypeCtor::{ name: ctor.name, args: ctor.args, span: zero_span })
+  }
+  out
+}
+
+///|
+fn normalize_struct_fields(fields : Array[StructField]) -> Array[StructField] {
+  let out : Array[StructField] = []
+  let zero_span = Span::{ start: 0, end: 0 }
+  for field in fields {
+    out.push(StructField::{ name: field.name, ty: field.ty, span: zero_span })
   }
   out
 }
@@ -249,6 +273,13 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
       Expr::Await(expr=normalize_expr(expr, scope), span=zero_span)
     Expr::Yield(expr~, ..) =>
       Expr::Yield(expr=normalize_expr(expr, scope), span=zero_span)
+    Expr::StructLit(name~, type_args~, fields~, ..) =>
+      Expr::StructLit(
+        name~,
+        type_args~,
+        fields=normalize_record_fields(fields, scope),
+        span=zero_span,
+      )
   }
 }
 
@@ -334,6 +365,12 @@ fn normalize_pat(pat : Pat, scope : NormScope) -> Pat {
     Pat::String(value~, ..) => Pat::String(value~, span=zero_span)
     Pat::Or(pats~, ..) =>
       Pat::Or(pats=normalize_pats(pats, scope), span=zero_span)
+    Pat::Struct(name~, fields~, ..) =>
+      Pat::Struct(
+        name~,
+        fields=normalize_record_field_pats(fields, scope),
+        span=zero_span,
+      )
   }
 }
 

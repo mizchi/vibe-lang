@@ -530,6 +530,21 @@ pub fn export_stmt() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn struct_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(83)
+}
+
+///|
+pub fn struct_def() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(129)
+}
+
+///|
+pub fn double_colon() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(84)
+}
+
+///|
 /// Check if a SyntaxKind is a token (not a node)
 pub fn is_token(kind : @cst.SyntaxKind) -> Bool {
   kind.raw() < 100

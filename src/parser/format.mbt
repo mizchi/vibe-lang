@@ -384,7 +384,8 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == try_kw() ||
   kind == raise_kw() ||
   kind == enum_kw() ||
-  kind == type_kw()
+  kind == type_kw() ||
+  kind == struct_kw()
 }
 
 ///|
@@ -643,7 +644,8 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == fn_kw() ||
   kind == while_kw() ||
   kind == mut_kw() ||
-  kind == raise_kw()
+  kind == raise_kw() ||
+  kind == struct_kw()
 }
 
 ///|

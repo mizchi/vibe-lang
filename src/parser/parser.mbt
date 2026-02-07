@@ -144,6 +144,7 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
   match self.peek_kind() {
     k if k == let_kw() => self.parse_let_stmt()
     k if k == enum_kw() => self.parse_enum_stmt()
+    k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
     k if k == alias_kw() => self.parse_alias_stmt()
     k if k == import_kw() => self.parse_import_stmt()
@@ -183,6 +184,39 @@ fn Parser::parse_let_stmt(self : Parser) -> Unit {
 fn Parser::parse_enum_stmt(self : Parser) -> Unit {
   self.builder.start_node(enum_def())
   self.bump() // enum
+  self.skip_trivia()
+  self.expect(name())
+  self.skip_trivia()
+  if self.at(lbracket()) {
+    self.parse_bracket_tokens()
+  }
+  self.skip_trivia()
+  self.expect(lbrace())
+  let mut depth = 1
+  while depth > 0 && not(self.at(eof())) {
+    match self.peek_kind() {
+      k if k == lbrace() => {
+        self.bump()
+        depth += 1
+      }
+      k if k == rbrace() => {
+        self.bump()
+        depth -= 1
+      }
+      _ => self.bump()
+    }
+  }
+  self.skip_trivia()
+  if self.at(semicolon()) {
+    self.bump()
+  }
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_struct_stmt(self : Parser) -> Unit {
+  self.builder.start_node(struct_def())
+  self.bump() // struct
   self.skip_trivia()
   self.expect(name())
   self.skip_trivia()
@@ -333,6 +367,9 @@ fn Parser::parse_export_stmt(self : Parser) -> Unit {
   if self.at(enum_kw()) {
     // export enum Name { ... }
     self.parse_enum_stmt()
+  } else if self.at(struct_kw()) {
+    // export struct Name { ... }
+    self.parse_struct_stmt()
   } else if self.at(type_kw()) {
     // export type Name = ...
     self.parse_type_alias_stmt()
@@ -1002,6 +1039,7 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   match self.peek_kind() {
     k if k == let_kw() => self.parse_let_stmt()
     k if k == enum_kw() => self.parse_enum_stmt()
+    k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
     k if k == alias_kw() => self.parse_alias_stmt()
     k if k == import_kw() => self.parse_import_stmt()
@@ -1016,9 +1054,7 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
         self.parse_expr_or_index_assign_stmt()
       }
     }
-    _ => {
-      self.parse_expr_or_index_assign_stmt()
-    }
+    _ => self.parse_expr_or_index_assign_stmt()
   }
 }
 
@@ -1190,6 +1226,44 @@ fn AstParser::parse_enum_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
   @core.Stmt::EnumDef(name=name_tok.text(), params~, ctors~, span~)
+}
+
+///|
+fn AstParser::parse_struct_stmt(
+  self : AstParser,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let _ = self.expect(struct_kw(), "struct")
+  self.skip_trivia()
+  let name_tok = self.expect(name(), "struct name")
+  let params = self.parse_type_params()
+  let param_set = param_set_from_params(params)
+  self.skip_trivia()
+  let _ = self.expect(lbrace(), "{")
+  let fields : Array[@core.StructField] = []
+  while {
+          self.skip_trivia()
+          self.peek_kind() != rbrace()
+        } {
+    if self.peek_kind() == eof() {
+      raise ParseError::UnexpectedEof(span=self.token_span())
+    }
+    let field_start = self.pos
+    let field_name = self.expect(name(), "field name")
+    self.skip_trivia()
+    let _ = self.expect(colon(), ":")
+    let field_ty = self.parse_type_with_params(param_set)
+    let _ = self.eat(semicolon())
+    fields.push(@core.StructField::{
+      name: field_name.text(),
+      ty: field_ty,
+      span: self.span_from(field_start),
+    })
+  }
+  let _ = self.expect(rbrace(), "}")
+  let _ = self.eat(semicolon())
+  let span = self.span_from(start)
+  @core.Stmt::StructDef(name=name_tok.text(), params~, fields~, span~)
 }
 
 ///|
@@ -1547,6 +1621,23 @@ fn AstParser::parse_export_stmt(
         let span = self.span_from(start)
         raise ParseError::UnexpectedToken(
           expected="enum definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == struct_kw() {
+    // export struct Name { ... }
+    let struct_stmt = self.parse_struct_stmt()
+    match struct_stmt {
+      @core.Stmt::StructDef(name~, params~, fields~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::ExportStructDef(name~, params~, fields~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="struct definition",
           got="other statement",
           span~,
         )
@@ -2113,6 +2204,41 @@ fn AstParser::parse_record_expr(
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
   @core.Expr::Record(fields~, span~)
+}
+
+///|
+fn AstParser::parse_struct_lit_fields(
+  self : AstParser,
+) -> Array[@core.RecordFieldExpr] raise ParseError {
+  let fields : Array[@core.RecordFieldExpr] = []
+  while {
+          self.skip_trivia()
+          self.peek_kind() != rbrace()
+        } {
+    if self.peek_kind() == eof() {
+      raise ParseError::UnexpectedEof(span=self.token_span())
+    }
+    let field_start = self.pos
+    let name_tok = self.expect(name(), "field")
+    self.skip_trivia()
+    let expr = if self.peek_kind() == colon() {
+      let _ = self.bump()
+      self.parse_expr()
+    } else {
+      let ident_span = self.span_from(field_start)
+      @core.Expr::Ident(name=name_tok.text(), span=ident_span)
+    }
+    let field_span = self.span_from(field_start)
+    fields.push(@core.RecordFieldExpr::{
+      name: name_tok.text(),
+      expr,
+      span: field_span,
+    })
+    let _ = self.eat(comma())
+    let _ = self.eat(semicolon())
+
+  }
+  fields
 }
 
 ///|
@@ -2959,25 +3085,38 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
         let span = self.span_from(start)
         @core.Pat::Wildcard(span~)
       } else if @core.is_ctor_name(tok.text()) {
-        let args : Array[@core.Pat] = []
-        if self.peek_kind() == lparen() {
-          let _ = self.bump()
+        self.skip_trivia()
+        // Check for struct pattern: Name::{ x, y }
+        if self.peek_kind() == double_colon() {
+          let _ = self.bump() // consume ::
           self.skip_trivia()
-          if self.peek_kind() != rparen() {
-            args.push(self.parse_pattern())
-            while {
-                    self.skip_trivia()
-                    self.peek_kind() == comma()
-                  } {
-              let _ = self.bump()
+          let _ = self.expect(lbrace(), "{")
+          let fields = self.parse_struct_pat_fields()
+          let _ = self.expect(rbrace(), "}")
+          let span = self.span_from(start)
+          @core.Pat::Struct(name=tok.text(), fields~, span~)
+        } else {
+          // Enum constructor pattern: Name(args)
+          let args : Array[@core.Pat] = []
+          if self.peek_kind() == lparen() {
+            let _ = self.bump()
+            self.skip_trivia()
+            if self.peek_kind() != rparen() {
               args.push(self.parse_pattern())
+              while {
+                      self.skip_trivia()
+                      self.peek_kind() == comma()
+                    } {
+                let _ = self.bump()
+                args.push(self.parse_pattern())
+              }
             }
-          }
-          let _ = self.expect(rparen(), ")")
+            let _ = self.expect(rparen(), ")")
 
+          }
+          let span = self.span_from(start)
+          @core.Pat::Ctor(name=tok.text(), args~, span~)
         }
-        let span = self.span_from(start)
-        @core.Pat::Ctor(name=tok.text(), args~, span~)
       } else {
         let span = self.span_from(start)
         @core.Pat::Bind(name=tok.text(), span~)
@@ -3064,6 +3203,41 @@ fn AstParser::parse_record_pattern(
 }
 
 ///|
+fn AstParser::parse_struct_pat_fields(
+  self : AstParser,
+) -> Array[@core.RecordFieldPat] raise ParseError {
+  let fields : Array[@core.RecordFieldPat] = []
+  while {
+          self.skip_trivia()
+          self.peek_kind() != rbrace()
+        } {
+    if self.peek_kind() == eof() {
+      raise ParseError::UnexpectedEof(span=self.token_span())
+    }
+    let field_start = self.pos
+    let name_tok = self.expect(name(), "field")
+    self.skip_trivia()
+    let pat = if self.peek_kind() == colon() {
+      let _ = self.bump()
+      self.parse_pattern()
+    } else {
+      let bind_span = self.span_from(field_start)
+      @core.Pat::Bind(name=name_tok.text(), span=bind_span)
+    }
+    let field_span = self.span_from(field_start)
+    fields.push(@core.RecordFieldPat::{
+      name: name_tok.text(),
+      pat,
+      span: field_span,
+    })
+    let _ = self.eat(comma())
+    let _ = self.eat(semicolon())
+
+  }
+  fields
+}
+
+///|
 fn AstParser::parse_call_or_primary(
   self : AstParser,
 ) -> @core.Expr raise ParseError {
@@ -3115,7 +3289,17 @@ fn AstParser::parse_call_or_primary(
       // name[Type, ...] - explicit type arguments (only if next token looks like a type)
       let type_args = self.parse_call_type_args()
       self.skip_trivia()
-      if self.peek_kind() == lparen() {
+      if self.peek_kind() == double_colon() &&
+        @core.is_ctor_name(name_tok.text()) {
+        // StructName[T]::{ field: value }
+        let _ = self.bump() // consume ::
+        self.skip_trivia()
+        let _ = self.expect(lbrace(), "{")
+        let fields = self.parse_struct_lit_fields()
+        let _ = self.expect(rbrace(), "}")
+        let span = self.span_from(start)
+        @core.Expr::StructLit(name=name_tok.text(), type_args~, fields~, span~)
+      } else if self.peek_kind() == lparen() {
         // name[Type](args) - generic function call
         let _ = self.bump()
         let args = self.parse_args()
@@ -3133,6 +3317,17 @@ fn AstParser::parse_call_or_primary(
       let _ = self.expect(rparen(), ")")
       let span = self.span_from(start)
       @core.Expr::Call(name=name_tok.text(), type_args=[], args~, span~)
+    } else if self.peek_kind() == double_colon() &&
+      @core.is_ctor_name(name_tok.text()) {
+      // StructName::{ field: value } or StructName[T]::{ field: value }
+      let type_args : Array[@core.Type] = []
+      let _ = self.bump() // consume ::
+      self.skip_trivia()
+      let _ = self.expect(lbrace(), "{")
+      let fields = self.parse_struct_lit_fields()
+      let _ = self.expect(rbrace(), "}")
+      let span = self.span_from(start)
+      @core.Expr::StructLit(name=name_tok.text(), type_args~, fields~, span~)
     } else if name_tok.text() == "_" {
       // Placeholder for lambda shorthand: _ * 2 → x -> x * 2
       let span = self.span_from(start)
@@ -3754,7 +3949,9 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
     | @core.Stmt::Export(..)
     | @core.Stmt::ExportEnumDef(..)
     | @core.Stmt::ExportTypeAlias(..)
-    | @core.Stmt::ReExport(..) => stmt
+    | @core.Stmt::ReExport(..)
+    | @core.Stmt::StructDef(..)
+    | @core.Stmt::ExportStructDef(..) => stmt
   }
 }
 

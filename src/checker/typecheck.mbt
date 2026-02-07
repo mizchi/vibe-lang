@@ -218,10 +218,34 @@ pub struct TypeAlias {
 } derive(Show, Eq)
 
 ///|
+pub struct StructFieldDef {
+  name : String
+  ty : @core.Type
+} derive(Show, Eq)
+
+///|
+pub struct StructDef {
+  name : String
+  params : Array[String]
+  fields : Array[StructFieldDef]
+} derive(Show, Eq)
+
+///|
+pub fn StructDef::get_field(self : StructDef, name : String) -> StructFieldDef? {
+  for field in self.fields {
+    if field.name == name {
+      return Some(field)
+    }
+  }
+  None
+}
+
+///|
 pub struct TypeEnv {
   bindings : Map[String, TypeScheme]
   addr_types : Map[String, @core.Type]
   enum_defs : Map[String, EnumDef]
+  struct_defs : Map[String, StructDef]
   type_aliases : Map[String, TypeAlias]
   ctor_index : Map[String, CtorInfo]
   purities : Map[String, Bool]
@@ -693,6 +717,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     bindings: {},
     addr_types: {},
     enum_defs: {},
+    struct_defs: {},
     type_aliases: {},
     ctor_index: {},
     purities: {},
@@ -739,6 +764,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     bindings: self.bindings.copy(),
     addr_types: self.addr_types.copy(),
     enum_defs: self.enum_defs.copy(),
+    struct_defs: self.struct_defs.copy(),
     type_aliases: self.type_aliases.copy(),
     ctor_index: self.ctor_index.copy(),
     purities: self.purities.copy(),
@@ -757,6 +783,7 @@ pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
     bindings: self.bindings.copy(),
     addr_types: self.addr_types.copy(),
     enum_defs: self.enum_defs.copy(),
+    struct_defs: self.struct_defs.copy(),
     type_aliases: self.type_aliases.copy(),
     ctor_index: self.ctor_index.copy(),
     purities: self.purities.copy(),
@@ -805,6 +832,20 @@ pub fn TypeEnv::set_enum_def(
   def : EnumDef,
 ) -> Unit {
   self.enum_defs[name] = def
+}
+
+///|
+pub fn TypeEnv::get_struct(self : TypeEnv, name : String) -> StructDef? {
+  self.struct_defs.get(name)
+}
+
+///|
+pub fn TypeEnv::set_struct(
+  self : TypeEnv,
+  name : String,
+  def : StructDef,
+) -> Unit {
+  self.struct_defs[name] = def
 }
 
 ///|
@@ -1002,6 +1043,10 @@ fn type_check_stmts(
         // For now, just check that all sub-expressions type check
         // More precise checking would verify target is array/map compatible
       }
+      @core.Stmt::StructDef(name~, params~, fields~, span~) =>
+        register_struct_def(env, name, params, fields, span)
+      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
+        register_struct_def(env, name, params, fields, span)
     }
   }
   env
@@ -1732,6 +1777,233 @@ fn register_type_alias(
 }
 
 ///|
+fn register_struct_def(
+  env : TypeEnv,
+  name : String,
+  params : Array[String],
+  fields : Array[@core.StructField],
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if env.get_enum_def(name) is Some(_) ||
+    env.get_type_alias(name) is Some(_) ||
+    env.get_struct(name) is Some(_) {
+    raise TypeError::BadTypeDef(message="duplicate type: " + name, span~)
+  }
+  ensure_unique_params(params, span)
+  // Check for duplicate field names
+  let seen : Map[String, Bool] = {}
+  for field in fields {
+    if seen.contains(field.name) {
+      raise TypeError::BadTypeDef(
+        message="duplicate field: " + field.name,
+        span=field.span,
+      )
+    }
+    seen[field.name] = true
+  }
+  // Convert fields
+  let field_defs : Array[StructFieldDef] = []
+  for field in fields {
+    let normalized = normalize_type(env, field.ty)
+    field_defs.push(StructFieldDef::{ name: field.name, ty: normalized })
+  }
+  env.set_struct(name, StructDef::{ name, params, fields: field_defs })
+}
+
+///|
+fn type_struct_lit(
+  env : TypeEnv,
+  name : String,
+  type_args : Array[@core.Type],
+  fields : Array[@core.RecordFieldExpr],
+  span : @core.Span,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+) -> @core.Type raise TypeError {
+  match env.get_struct(name) {
+    Some(struct_def) => {
+      // Build type argument mapping
+      let type_map : Map[String, @core.Type] = {}
+      if type_args.length() > 0 {
+        // Explicit type arguments
+        if type_args.length() != struct_def.params.length() {
+          raise TypeError::BadTypeDef(
+            message="wrong number of type arguments for struct " + name,
+            span~,
+          )
+        }
+        for i, param in struct_def.params {
+          type_map[param] = type_args[i]
+        }
+      }
+      // Check each field
+      let provided : Map[String, Bool] = {}
+      for field in fields {
+        if provided.contains(field.name) {
+          raise TypeError::BadTypeDef(
+            message="duplicate field: " + field.name,
+            span=field.span,
+          )
+        }
+        provided[field.name] = true
+        match struct_def.get_field(field.name) {
+          Some(field_def) => {
+            let field_ty = type_expr_eff(
+              env,
+              field.expr,
+              aliases,
+              effects,
+              allow_effect,
+            )
+            let expected = substitute_type_params_by_name(
+              field_def.ty,
+              type_map,
+            )
+            if not(type_equal(env, expected, field_ty)) {
+              raise TypeError::Mismatch(
+                expected~,
+                actual=field_ty,
+                span=field.span,
+                context=Some("struct field " + field.name),
+              )
+            }
+            // Infer type params from field types if not explicit
+            if type_args.is_empty() {
+              infer_type_params_from_field(
+                env,
+                field_def.ty,
+                field_ty,
+                type_map,
+              )
+            }
+          }
+          None =>
+            raise TypeError::BadTypeDef(
+              message="struct " + name + " has no field: " + field.name,
+              span=field.span,
+            )
+        }
+      }
+      // Check all required fields are provided
+      for field_def in struct_def.fields {
+        if not(provided.contains(field_def.name)) {
+          raise TypeError::BadTypeDef(
+            message="missing field: " + field_def.name,
+            span~,
+          )
+        }
+      }
+      // Build result type
+      let result_args : Array[@core.Type] = []
+      for param in struct_def.params {
+        match type_map.get(param) {
+          Some(ty) => result_args.push(ty)
+          None => result_args.push(fresh_type_var(env))
+        }
+      }
+      @core.Type::Named(name~, args=result_args)
+    }
+    None => raise TypeError::UnknownName(name~, span~, suggestion=None)
+  }
+}
+
+///|
+fn infer_type_params_from_field(
+  env : TypeEnv,
+  expected : @core.Type,
+  actual : @core.Type,
+  type_map : Map[String, @core.Type],
+) -> Unit {
+  match expected {
+    @core.Type::Param(param_name) =>
+      if not(type_map.contains(param_name)) {
+        type_map[param_name] = actual
+      }
+    @core.Type::Array(inner) =>
+      match actual {
+        @core.Type::Array(actual_inner) =>
+          infer_type_params_from_field(env, inner, actual_inner, type_map)
+        _ => ()
+      }
+    @core.Type::Tuple(items) =>
+      match actual {
+        @core.Type::Tuple(actual_items) =>
+          for i, item in items {
+            if i < actual_items.length() {
+              infer_type_params_from_field(env, item, actual_items[i], type_map)
+            }
+          }
+        _ => ()
+      }
+    @core.Type::Named(args~, ..) =>
+      match actual {
+        @core.Type::Named(args=actual_args, ..) =>
+          for i, arg in args {
+            if i < actual_args.length() {
+              infer_type_params_from_field(env, arg, actual_args[i], type_map)
+            }
+          }
+        _ => ()
+      }
+    _ => ()
+  }
+}
+
+///|
+fn substitute_type_params_by_name(
+  ty : @core.Type,
+  type_map : Map[String, @core.Type],
+) -> @core.Type {
+  match ty {
+    @core.Type::Param(name) =>
+      match type_map.get(name) {
+        Some(t) => t
+        None => ty
+      }
+    @core.Type::Array(inner) =>
+      @core.Type::Array(substitute_type_params_by_name(inner, type_map))
+    @core.Type::Tuple(items) => {
+      let new_items : Array[@core.Type] = []
+      for item in items {
+        new_items.push(substitute_type_params_by_name(item, type_map))
+      }
+      @core.Type::Tuple(new_items)
+    }
+    @core.Type::Named(name~, args~) => {
+      let new_args : Array[@core.Type] = []
+      for arg in args {
+        new_args.push(substitute_type_params_by_name(arg, type_map))
+      }
+      @core.Type::Named(name~, args=new_args)
+    }
+    @core.Type::Record(fields) => {
+      let new_fields : Map[String, @core.Type] = {}
+      for name, field_ty in fields {
+        new_fields[name] = substitute_type_params_by_name(field_ty, type_map)
+      }
+      @core.Type::Record(new_fields)
+    }
+    @core.Type::Func(params~, ret~, effects~) => {
+      let new_params : Array[@core.FuncParam] = []
+      for param in params {
+        new_params.push(@core.FuncParam::{
+          name: param.name,
+          label: param.label,
+          ty: substitute_type_params_by_name(param.ty, type_map),
+        })
+      }
+      @core.Type::Func(
+        params=new_params,
+        ret=substitute_type_params_by_name(ret, type_map),
+        effects~,
+      )
+    }
+    _ => ty
+  }
+}
+
+///|
 fn ctor_payload_type(
   env : TypeEnv,
   ctor : @core.TypeCtor,
@@ -1861,6 +2133,10 @@ fn type_expr_eff(
       }
       @core.Type::Record(map)
     }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) =>
+      type_struct_lit(
+        env, name, type_args, fields, span, aliases, effects, allow_effect,
+      )
     @core.Expr::Array(items~, span~) => {
       let _ = span
       if items.is_empty() {
@@ -2619,6 +2895,46 @@ fn collect_pattern_bindings_inner(
           }
         _ => raise TypeError::BadMatch(message="expected record", span~)
       }
+    @core.Pat::Struct(name=struct_name, fields~, span~) =>
+      match env.get_struct(struct_name) {
+        Some(struct_def) => {
+          // Create type argument mapping from scrutinee type
+          let type_map : Map[String, @core.Type] = {}
+          match scrutinee_ty {
+            @core.Type::Named(args~, ..) =>
+              for i, param in struct_def.params {
+                if i < args.length() {
+                  type_map[param] = args[i]
+                }
+              }
+            _ => ()
+          }
+          for field in fields {
+            match struct_def.get_field(field.name) {
+              Some(field_def) => {
+                let field_ty = substitute_type_params_by_name(
+                  field_def.ty,
+                  type_map,
+                )
+                collect_pattern_bindings_inner(env, out, field.pat, field_ty)
+              }
+              None =>
+                raise TypeError::BadMatch(
+                  message="struct " +
+                    struct_name +
+                    " has no field: " +
+                    field.name,
+                  span=field.span,
+                )
+            }
+          }
+        }
+        None =>
+          raise TypeError::BadMatch(
+            message="unknown struct: " + struct_name,
+            span~,
+          )
+      }
     @core.Pat::Or(pats~, span~) => {
       let _ = span
       for p in pats {
@@ -2658,6 +2974,13 @@ fn collect_pattern_bindings_loose(
       }
     }
     @core.Pat::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        collect_pattern_bindings_loose(out, field.pat)
+      }
+    }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let _ = name
       let _ = span
       for field in fields {
         collect_pattern_bindings_loose(out, field.pat)
@@ -2834,6 +3157,14 @@ fn type_block(
         let _ = type_expr_eff(scope_env, index, aliases, effects, allow_effect)
         let _ = type_expr_eff(scope_env, value, aliases, effects, allow_effect)
         let _ = span
+        last = @core.Type::Unit
+      }
+      @core.Stmt::StructDef(name~, params~, fields~, span~) => {
+        register_struct_def(scope_env, name, params, fields, span)
+        last = @core.Type::Unit
+      }
+      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
+        register_struct_def(scope_env, name, params, fields, span)
         last = @core.Type::Unit
       }
     }
@@ -4411,10 +4742,71 @@ fn type_call(
                 )
                 @core.Type::String
               }
-              _ => raise TypeError::BadCall(message=name, span=call_span)
+              _ =>
+                // Try to interpret as field access: x(p) where p is a record/struct
+                // and x is a field name
+                match
+                  try_field_access(
+                    env, name, args, aliases, effects, allow_effect, call_span,
+                  ) {
+                  Some(ty) => ty
+                  None => raise TypeError::BadCall(message=name, span=call_span)
+                }
             }
           }
       }
+  }
+}
+
+///|
+fn try_field_access(
+  env : TypeEnv,
+  field_name : String,
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+  call_span : @core.Span,
+) -> @core.Type? raise TypeError {
+  // Field access is desugared from p.field to field(p)
+  // So we expect exactly one positional argument
+  let pos_args = extract_positional_args(args, field_name, call_span)
+  if pos_args.length() != 1 {
+    return None
+  }
+  let arg_ty = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+  let resolved = resolve_type(env, arg_ty)
+  // Try Record field access
+  match resolved {
+    @core.Type::Record(fields) =>
+      match fields.get(field_name) {
+        Some(field_ty) => return Some(field_ty)
+        None => return None
+      }
+    @core.Type::Named(name~, args=type_args) =>
+      // Try Struct field access
+      match env.get_struct(name) {
+        Some(struct_def) =>
+          match struct_def.get_field(field_name) {
+            Some(field_def) => {
+              // Substitute type parameters
+              let type_map : Map[String, @core.Type] = {}
+              for i, param in struct_def.params {
+                if i < type_args.length() {
+                  type_map[param] = type_args[i]
+                }
+              }
+              let result_ty = substitute_type_params_by_name(
+                field_def.ty,
+                type_map,
+              )
+              return Some(result_ty)
+            }
+            None => return None
+          }
+        None => return None
+      }
+    _ => return None
   }
 }
 
@@ -4473,7 +4865,8 @@ fn is_non_expansive_expr(
       }
       ok
     }
-    @core.Expr::TupleIndex(expr~, ..) => is_non_expansive_expr(env, expr, aliases)
+    @core.Expr::TupleIndex(expr~, ..) =>
+      is_non_expansive_expr(env, expr, aliases)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       let mut ok = true
@@ -4992,11 +5385,24 @@ fn normalize_type_inner(
                 @core.Type::Variant(ctor_map)
               }
               None =>
-                raise TypeError::UnknownType(
-                  name~,
-                  span=unknown_span(),
-                  suggestion=find_type_suggestion(env, name),
-                )
+                match env.get_struct(name) {
+                  Some(struct_def) => {
+                    if struct_def.params.length() != normalized_args.length() {
+                      raise TypeError::BadTypeDef(
+                        message="type arity: " + name,
+                        span=unknown_span(),
+                      )
+                    }
+                    // For struct types, return Named type with normalized args
+                    @core.Type::Named(name~, args=normalized_args)
+                  }
+                  None =>
+                    raise TypeError::UnknownType(
+                      name~,
+                      span=unknown_span(),
+                      suggestion=find_type_suggestion(env, name),
+                    )
+                }
             }
         }
         visiting.remove(name)

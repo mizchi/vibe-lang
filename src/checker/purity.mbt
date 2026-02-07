@@ -141,6 +141,17 @@ fn purity_expr_inner(
       }
       ok
     }
+    @core.Expr::StructLit(fields~, span~, ..) => {
+      let _ = span
+      let mut ok = true
+      for field in fields {
+        if not(purity_expr_inner(env, field.expr, locals)) {
+          ok = false
+          break
+        }
+      }
+      ok
+    }
     @core.Expr::Array(items~, span~) => {
       let _ = span
       purity_all(env, items, locals)
@@ -339,6 +350,13 @@ pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
       }
     }
     @core.Pat::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        bind_pattern_names(bound, field.pat)
+      }
+    }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let _ = name
       let _ = span
       for field in fields {
         bind_pattern_names(bound, field.pat)

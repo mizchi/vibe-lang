@@ -278,6 +278,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "export" => export_kw()
           "from" => from_kw()
           "as" => as_kw()
+          "struct" => struct_kw()
           "true" => bool_lit()
           "false" => bool_lit()
           _ => name()
@@ -371,7 +372,14 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
         '[' => Token::new(lbracket(), "[")
         ']' => Token::new(rbracket(), "]")
         ',' => Token::new(comma(), ",")
-        ':' => Token::new(colon(), ":")
+        ':' =>
+          match self.peek() {
+            Some(':') => {
+              let _ = self.advance()
+              Token::new(double_colon(), "::")
+            }
+            _ => Token::new(colon(), ":")
+          }
         '/' =>
           match self.peek() {
             Some('=') => {

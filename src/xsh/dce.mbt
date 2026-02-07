@@ -86,6 +86,22 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
       collect_refs_expr(expr, bound, refs)
       (Some(name), refs)
     }
+    @core.Stmt::StructDef(name~, params~, fields~, span~) => {
+      let _ = params
+      let _ = span
+      for field in fields {
+        collect_refs_type(field.ty, refs)
+      }
+      (Some(name), refs)
+    }
+    @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
+      let _ = params
+      let _ = span
+      for field in fields {
+        collect_refs_type(field.ty, refs)
+      }
+      (Some(name), refs)
+    }
     // Non-definition statements
     @core.Stmt::Expr(..)
     | @core.Stmt::Flake(..)
@@ -146,11 +162,13 @@ fn collect_entry_points(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
       @core.Stmt::LetMut(name~, ..) => if is_last { entries[name] = true }
       @core.Stmt::EnumDef(..)
       | @core.Stmt::TypeAlias(..)
+      | @core.Stmt::StructDef(..)
       | @core.Stmt::Alias(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::Test(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => ()
+      @core.Stmt::ExportStructDef(name~, ..) => entries[name] = true
     }
   }
   entries
@@ -255,6 +273,14 @@ fn filter_reachable_stmts(
         if reachable.contains(name) {
           out.push(stmt)
         }
+      @core.Stmt::StructDef(name~, ..) =>
+        if reachable.contains(name) {
+          out.push(stmt)
+        }
+      @core.Stmt::ExportStructDef(name~, ..) =>
+        if reachable.contains(name) {
+          out.push(stmt)
+        }
       // Non-definition statements are always kept
       @core.Stmt::Expr(..)
       | @core.Stmt::Flake(..)
@@ -305,6 +331,14 @@ fn collect_refs_expr(
     @core.Expr::TupleIndex(expr~, ..) => collect_refs_expr(expr, bound, refs)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
+      for field in fields {
+        collect_refs_expr(field.expr, bound, refs)
+      }
+    }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let _ = span
+      let _ = type_args
+      add_ref_name(name, bound, refs)
       for field in fields {
         collect_refs_expr(field.expr, bound, refs)
       }
@@ -469,6 +503,22 @@ fn collect_refs_block(
         scope[name] = true
         collect_refs_type(target, refs)
       }
+      @core.Stmt::StructDef(name~, params~, fields~, span~) => {
+        let _ = params
+        let _ = span
+        scope[name] = true
+        for field in fields {
+          collect_refs_type(field.ty, refs)
+        }
+      }
+      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
+        let _ = params
+        let _ = span
+        scope[name] = true
+        for field in fields {
+          collect_refs_type(field.ty, refs)
+        }
+      }
       @core.Stmt::Test(..)
       | @core.Stmt::Flake(..)
       | @core.Stmt::Alias(..)
@@ -606,6 +656,13 @@ fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
       }
     }
     @core.Pat::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        bind_pattern_names(bound, field.pat)
+      }
+    }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let _ = name
       let _ = span
       for field in fields {
         bind_pattern_names(bound, field.pat)

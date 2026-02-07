@@ -23,6 +23,7 @@ pub(all) enum Pat {
   Ctor(name~ : String, args~ : Array[Pat], span~ : Span)
   Tuple(items~ : Array[Pat], span~ : Span)
   Record(fields~ : Array[RecordFieldPat], span~ : Span)
+  Struct(name~ : String, fields~ : Array[RecordFieldPat], span~ : Span)
   Int(value~ : Int, span~ : Span)
   Float(value~ : Float, span~ : Span)
   Double(value~ : Double, span~ : Span)
@@ -61,6 +62,13 @@ pub(all) struct MatchArm {
 pub(all) struct TypeCtor {
   name : String
   args : Array[Type]
+  span : Span
+} derive(Show, Eq)
+
+///|
+pub(all) struct StructField {
+  name : String
+  ty : Type
   span : Span
 } derive(Show, Eq)
 
@@ -125,6 +133,18 @@ pub(all) enum Stmt {
   )
   Export(names~ : Array[String], span~ : Span)
   ReExport(names~ : Array[String], source~ : ModuleRef, span~ : Span)
+  StructDef(
+    name~ : String,
+    params~ : Array[String],
+    fields~ : Array[StructField],
+    span~ : Span
+  )
+  ExportStructDef(
+    name~ : String,
+    params~ : Array[String],
+    fields~ : Array[StructField],
+    span~ : Span
+  )
 } derive(Show, Eq)
 
 ///|
@@ -164,6 +184,12 @@ pub(all) enum Expr {
   Raise(value~ : Expr, span~ : Span)
   Await(expr~ : Expr, span~ : Span)
   Yield(expr~ : Expr, span~ : Span)
+  StructLit(
+    name~ : String,
+    type_args~ : Array[Type],
+    fields~ : Array[RecordFieldExpr],
+    span~ : Span
+  )
 } derive(Show, Eq)
 
 ///|
@@ -212,7 +238,8 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::While(span~, ..)
     | Expr::Raise(span~, ..)
     | Expr::Await(span~, ..)
-    | Expr::Yield(span~, ..) => span
+    | Expr::Yield(span~, ..)
+    | Expr::StructLit(span~, ..) => span
   }
 }
 
@@ -224,6 +251,7 @@ pub fn Pat::span(self : Pat) -> Span {
     | Pat::Ctor(span~, ..)
     | Pat::Tuple(span~, ..)
     | Pat::Record(span~, ..)
+    | Pat::Struct(span~, ..)
     | Pat::Int(span~, ..)
     | Pat::Float(span~, ..)
     | Pat::Double(span~, ..)
@@ -252,6 +280,8 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::ExportEnumDef(span~, ..)
     | Stmt::ExportTypeAlias(span~, ..)
     | Stmt::Export(span~, ..)
-    | Stmt::ReExport(span~, ..) => span
+    | Stmt::ReExport(span~, ..)
+    | Stmt::StructDef(span~, ..)
+    | Stmt::ExportStructDef(span~, ..) => span
   }
 }

@@ -317,6 +317,20 @@ pub fn Runtime::eval_module(
         }
         last = Some(out.value)
       }
+      @core.Stmt::StructDef(name~, params~, fields~, span~) => {
+        let _ = name
+        let _ = params
+        let _ = fields
+        let _ = span
+        last = Some(@core.Value::Unit)
+      }
+      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
+        let _ = name
+        let _ = params
+        let _ = fields
+        let _ = span
+        last = Some(@core.Value::Unit)
+      }
     }
   }
   { last, effects }
@@ -412,6 +426,20 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
     }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
+      let map : Map[String, @core.Value] = {}
+      let effects : Array[Effect] = []
+      for field in fields {
+        let out = eval_expr(rt, field.expr)
+        map[field.name] = out.value
+        extend_effects(effects, out.effects)
+      }
+      { value: @core.Value::Record(map), effects }
+    }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let _ = name
+      let _ = type_args
+      let _ = span
+      // Struct is evaluated as record
       let map : Map[String, @core.Value] = {}
       let effects : Array[Effect] = []
       for field in fields {
@@ -776,6 +804,42 @@ fn match_pattern(
         _ => None
       }
     }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let _ = name
+      let _ = span
+      // Struct pattern is matched against a record value
+      match value {
+        @core.Value::Record(map) => {
+          let bindings : Map[String, @core.Value] = {}
+          let mut ok = true
+          for field in fields {
+            match map.get(field.name) {
+              Some(field_val) =>
+                match match_pattern(field.pat, field_val) {
+                  Some(field_bindings) =>
+                    for k, v in field_bindings {
+                      bindings[k] = v
+                    }
+                  None => {
+                    ok = false
+                    break
+                  }
+                }
+              None => {
+                ok = false
+                break
+              }
+            }
+          }
+          if ok {
+            Some(bindings)
+          } else {
+            None
+          }
+        }
+        _ => None
+      }
+    }
     @core.Pat::Or(pats~, span~) => {
       let _ = span
       let mut result : Map[String, @core.Value]? = None
@@ -983,7 +1047,26 @@ fn eval_call(
                 _ => raise EvalError::BadCall("map_builder_freeze")
               }
             }
-            _ => raise EvalError::BadCall(name)
+            _ => {
+              // Try field access: field_name(value) where value is a record
+              let field_args_out = eval_args(rt, args)
+              let field_pos = extract_positional_values(
+                field_args_out.args,
+                name,
+              )
+              if field_pos.length() == 1 {
+                match field_pos[0] {
+                  @core.Value::Record(record_fields) =>
+                    match record_fields.get(name) {
+                      Some(v) => { value: v, effects: field_args_out.effects }
+                      None => raise EvalError::BadCall(name)
+                    }
+                  _ => raise EvalError::BadCall(name)
+                }
+              } else {
+                raise EvalError::BadCall(name)
+              }
+            }
           }
         }
     }

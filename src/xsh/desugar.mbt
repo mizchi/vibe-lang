@@ -65,6 +65,8 @@ fn desugar_stmt(
       )
     @core.Stmt::ExportEnumDef(..)
     | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::StructDef(..)
+    | @core.Stmt::ExportStructDef(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..) => stmt
     @core.Stmt::LetMut(name~, expr~, span~) =>

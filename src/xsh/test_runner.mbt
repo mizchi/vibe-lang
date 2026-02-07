@@ -266,6 +266,14 @@ fn collect_dep_expr(
         collect_dep_expr(field.expr, bound, out)
       }
     }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let _ = span
+      let _ = type_args
+      add_dep_name(name, bound, out)
+      for field in fields {
+        collect_dep_expr(field.expr, bound, out)
+      }
+    }
     @core.Expr::Array(items~, span~) => {
       let _ = span
       for item in items {

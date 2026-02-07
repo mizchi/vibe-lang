@@ -736,6 +736,8 @@ fn infer_expr_kind_gc(
     @core.Expr::Do(body~, ..) => infer_block_kind_gc(ctx, fctx, body)
     @core.Expr::Tuple(items~, ..) => infer_tuple_kind_gc(ctx, fctx, items)
     @core.Expr::Record(fields~, ..) => infer_record_kind_gc(ctx, fctx, fields)
+    @core.Expr::StructLit(fields~, ..) =>
+      infer_record_kind_gc(ctx, fctx, fields)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       if arms.length() == 0 {
         raise WasmGenError::Unsupported("match arms")
@@ -1381,6 +1383,20 @@ fn compile_expr_gc(
       let type_idx = match kind {
         GcValKind::Ref(idx) => idx
         _ => raise WasmGenError::Unsupported("record kind")
+      }
+      for field in ordered {
+        compile_expr_gc(ctx, fctx, buf, field.expr)
+      }
+      emit_struct_new_gc(buf, type_idx)
+    }
+    @core.Expr::StructLit(fields~, span~, ..) => {
+      // StructLit uses same layout as Record
+      let _ = span
+      let ordered = sort_record_fields_expr(fields)
+      let kind = infer_record_kind_gc(ctx, fctx, fields)
+      let type_idx = match kind {
+        GcValKind::Ref(idx) => idx
+        _ => raise WasmGenError::Unsupported("struct kind")
       }
       for field in ordered {
         compile_expr_gc(ctx, fctx, buf, field.expr)

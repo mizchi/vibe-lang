@@ -671,7 +671,8 @@ fn collect_nested_funcs_expr(
         collect_nested_funcs_expr(item, bound, funcs)
       }
     }
-    @core.Expr::TupleIndex(expr~, ..) => collect_nested_funcs_expr(expr, bound, funcs)
+    @core.Expr::TupleIndex(expr~, ..) =>
+      collect_nested_funcs_expr(expr, bound, funcs)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       for field in fields {
@@ -1652,6 +1653,12 @@ fn infer_expr_kind_with(
     @core.Expr::Yield(expr~, span~) => {
       let _ = expr
       let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::StructLit(fields~, span~, ..) => {
+      let _ = fields
+      let _ = span
+      // Struct is compiled as record - same layout (pointer)
       ValueKind::I32
     }
   }
@@ -4045,6 +4052,11 @@ fn compile_expr(
       buf.push((26).to_byte()) // drop the suspend result
       emit_i32_const_raw(buf, tag_int_value(0))
     }
+    @core.Expr::StructLit(fields~, span~, ..) => {
+      let _ = span
+      // StructLit is compiled as record - same memory layout
+      compile_record_expr(ctx, buf, fields)
+    }
   }
 }
 
@@ -4335,8 +4347,11 @@ fn compile_stmt(
       if is_last {
         emit_i32_const_raw(buf, 0)
       }
-    @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
-      // export { ... } statements are handled during bundling
+    @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..)
+    | @core.Stmt::StructDef(..)
+    | @core.Stmt::ExportStructDef(..) =>
+      // export { ... } statements and struct definitions are handled during bundling/typechecking
       // At codegen time, they are no-ops
       if is_last {
         emit_i32_const_raw(buf, 0)
@@ -5789,6 +5804,32 @@ fn compile_pat_match(
       }
       compile_match_chain(ctx, buf, match_scrut_idx, expanded_arms, 0)
     }
+    @core.Pat::Struct(fields~, span~, ..) => {
+      let _ = span
+      // Struct pattern is same as Record pattern
+      let ordered = sort_record_fields_pat(fields)
+      let raw_ptr = alloc_temp_local(ctx)
+      // Untag pointer and cache
+      emit_local_get(buf, value_idx)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      emit_local_set(buf, raw_ptr)
+      // Check object type
+      emit_local_get(buf, value_idx)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_and(buf)
+      emit_i32_const_raw(buf, tag_obj)
+      emit_i32_eq(buf)
+      // Single if-else
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
+      compile_record_fields_cont(
+        ctx, buf, raw_ptr, ordered, 0, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
+      buf.push((5).to_byte()) // else
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte()) // end
+    }
   }
 }
 
@@ -6009,6 +6050,11 @@ fn emit_pat_literal(
       let _ = pats
       let _ = span
       raise WasmGenError::Unsupported("or pattern literal")
+    }
+    @core.Pat::Struct(fields~, span~, ..) => {
+      let _ = fields
+      let _ = span
+      raise WasmGenError::Unsupported("struct pattern literal")
     }
   }
 }

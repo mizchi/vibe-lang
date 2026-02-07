@@ -123,7 +123,10 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
     }
     @core.Expr::TupleIndex(expr~, index~, span~) => {
       let _ = span
-      "(tuple-index " + expr_to_addr_sexp(ctx, expr) + " " + index.to_string() +
+      "(tuple-index " +
+      expr_to_addr_sexp(ctx, expr) +
+      " " +
+      index.to_string() +
       ")"
     }
     @core.Expr::Record(fields~, span~) => {
@@ -259,6 +262,23 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let _ = span
       "(yield " + expr_to_addr_sexp(ctx, expr) + ")"
     }
+    @core.Expr::StructLit(name~, fields~, span~, ..) => {
+      let _ = span
+      let ordered = addr_sort_record_fields_expr(fields)
+      let buf = StringBuilder::new()
+      buf.write_string("(struct ")
+      buf.write_string(addr_escape_string(name))
+      for field in ordered {
+        buf.write_char(' ')
+        buf.write_string("(field ")
+        buf.write_string(addr_escape_string(field.name))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(ctx, field.expr))
+        buf.write_char(')')
+      }
+      buf.write_char(')')
+      buf.to_string()
+    }
   }
 }
 
@@ -344,7 +364,9 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
       | @core.Stmt::ExportEnumDef(..)
       | @core.Stmt::ExportTypeAlias(..)
       | @core.Stmt::Export(..)
-      | @core.Stmt::ReExport(..) => buf.write_string(" (export)")
+      | @core.Stmt::ReExport(..)
+      | @core.Stmt::StructDef(..)
+      | @core.Stmt::ExportStructDef(..) => buf.write_string(" (export)")
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
         let _ = span
@@ -441,6 +463,12 @@ fn bind_pattern(ctx : AddrCtx, pat : @core.Pat) -> Unit {
         bind_pattern(ctx, field.pat)
       }
     }
+    @core.Pat::Struct(fields~, span~, ..) => {
+      let _ = span
+      for field in fields {
+        bind_pattern(ctx, field.pat)
+      }
+    }
     _ => ()
   }
 }
@@ -524,6 +552,22 @@ fn addr_pat_to_sexp(ctx : AddrCtx, pat : @core.Pat) -> String {
       for p in pats {
         buf.write_char(' ')
         buf.write_string(addr_pat_to_sexp(ctx, p))
+      }
+      buf.write_string("))")
+      buf.to_string()
+    }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(pat (struct ")
+      buf.write_string(addr_escape_string(name))
+      for field in fields {
+        buf.write_char(' ')
+        buf.write_string("(field ")
+        buf.write_string(addr_escape_string(field.name))
+        buf.write_char(' ')
+        buf.write_string(addr_pat_to_sexp(ctx, field.pat))
+        buf.write_char(')')
       }
       buf.write_string("))")
       buf.to_string()

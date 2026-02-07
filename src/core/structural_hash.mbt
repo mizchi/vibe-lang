@@ -138,6 +138,28 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, source.structural_hash())
       h
     }
+    Stmt::StructDef(name~, params~, fields~, ..) => {
+      let mut h = 0x53747275 // "Stru"
+      h = combine_hash(h, name.hash())
+      for p in params {
+        h = combine_hash(h, p.hash())
+      }
+      for f in fields {
+        h = combine_hash(h, f.structural_hash())
+      }
+      h
+    }
+    Stmt::ExportStructDef(name~, params~, fields~, ..) => {
+      let mut h = 0x45785374 // "ExSt"
+      h = combine_hash(h, name.hash())
+      for p in params {
+        h = combine_hash(h, p.hash())
+      }
+      for f in fields {
+        h = combine_hash(h, f.structural_hash())
+      }
+      h
+    }
   }
 }
 
@@ -269,6 +291,17 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       h = combine_hash(h, expr.structural_hash())
       h
     }
+    Expr::StructLit(name~, type_args~, fields~, ..) => {
+      let mut h = 0x53747243 // "StrC"
+      h = combine_hash(h, name.hash())
+      for t in type_args {
+        h = combine_hash(h, t.structural_hash())
+      }
+      for f in fields {
+        h = combine_hash(h, f.structural_hash())
+      }
+      h
+    }
   }
 }
 
@@ -380,6 +413,14 @@ pub fn Pat::structural_hash(self : Pat) -> Int {
       }
       h
     }
+    Pat::Struct(name~, fields~, ..) => {
+      let mut h = 0x53747250 // "StrP"
+      h = combine_hash(h, name.hash())
+      for f in fields {
+        h = combine_hash(h, f.structural_hash())
+      }
+      h
+    }
   }
 }
 
@@ -425,6 +466,13 @@ fn TypeCtor::structural_hash(self : TypeCtor) -> Int {
   for a in self.args {
     h = combine_hash(h, a.structural_hash())
   }
+  h
+}
+
+///|
+fn StructField::structural_hash(self : StructField) -> Int {
+  let mut h = self.name.hash()
+  h = combine_hash(h, self.ty.structural_hash())
   h
 }
 
