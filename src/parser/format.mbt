@@ -7,6 +7,7 @@ enum ContainerKind {
   BraceRecord
   BraceMap
   BraceMatch
+  BraceEnum
   BracketArray
   BracketTypeArgs
   BracketIndex
@@ -69,6 +70,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
   let mut indent = 0
   let mut pending_newlines = 0
   let container_stack : Array[ContainerKind] = []
+  let enum_paren_base_stack : Array[Int] = []
   let mut paren_depth = 0
   let mut brace_depth = 0
   let mut bracket_depth = 0
@@ -77,7 +79,9 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
   let mut type_decl_header = TypeDeclMode::DeclNone
   let mut type_decl_rhs_active = false
   let mut saw_newline = false
+  let mut prev_prev_kind : @cst.SyntaxKind? = None
   let mut prev_kind : @cst.SyntaxKind? = None
+  let mut prev_text : String? = None
   let mut prev_prefix = false
   let mut prev_pipe = false
   let mut i = 0
@@ -142,7 +146,9 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       }
       pending_newlines = 0
       format_write_indent(buf, indent, indent_size)
+      prev_prev_kind = None
       prev_kind = None
+      prev_text = None
       prev_prefix = false
       prev_pipe = false
     }
@@ -152,11 +158,34 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
         Some(k) => k == gt()
         None => false
       })
+    let in_type_context = type_context_stack.length() > 0 ||
+      type_decl_header != TypeDeclMode::DeclNone ||
+      type_decl_rhs_active
+    let in_enum_container = container_stack.length() > 0 &&
+      container_stack[container_stack.length() - 1] == ContainerKind::BraceEnum
+    let enum_top_level = in_enum_container &&
+      enum_paren_base_stack.length() > 0 &&
+      paren_depth == enum_paren_base_stack[enum_paren_base_stack.length() - 1]
     let curr_prefix = is_prefix_op(kind, prev_kind)
-    if needs_space(prev_kind, kind, prev_prefix, prev_pipe) {
+    let insert_struct_double_colon = should_insert_struct_double_colon(
+      prev_prev_kind,
+      prev_kind,
+      prev_text,
+      kind,
+      in_type_context,
+    )
+    if not(insert_struct_double_colon) &&
+      needs_space(prev_kind, kind, prev_prefix, prev_pipe) {
       buf.write_char(' ')
     }
-    buf.write_string(tok.text())
+    if insert_struct_double_colon {
+      buf.write_string("::")
+    }
+    if kind == comma() && enum_top_level {
+      buf.write_char(';')
+    } else {
+      buf.write_string(tok.text())
+    }
     if kind == type_kw() {
       type_decl_header = TypeDeclMode::DeclTypeAlias
     } else if kind == enum_kw() {
@@ -184,7 +213,9 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
     }
     if kind == lbrace() || kind == lbracket() {
       if kind == lbrace() {
-        let container = if is_match_brace(
+        let container = if type_decl_header == TypeDeclMode::DeclEnum {
+          ContainerKind::BraceEnum
+        } else if is_match_brace(
             pending_match, paren_depth, brace_depth, bracket_depth, prev_kind,
           ) {
           ignore(pending_match.pop())
@@ -197,6 +228,9 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
           type_decl_header = TypeDeclMode::DeclNone
         }
         container_stack.push(container)
+        if container == ContainerKind::BraceEnum {
+          enum_paren_base_stack.push(paren_depth)
+        }
         if container_indents(container) {
           indent += 1
           if pending_newlines == 0 {
@@ -237,7 +271,14 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
         }
       }
       if container_stack.length() > 0 {
-        ignore(container_stack.pop())
+        match container_stack.pop() {
+          Some(container) =>
+            if container == ContainerKind::BraceEnum &&
+              enum_paren_base_stack.length() > 0 {
+              ignore(enum_paren_base_stack.pop())
+            }
+          None => ()
+        }
       }
     } else if kind == comma() || kind == semicolon() {
       if container_stack.length() > 0 &&
@@ -258,7 +299,9 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
     maybe_end_type_context(
       kind, type_context_stack, paren_depth, brace_depth, bracket_depth,
     )
+    prev_prev_kind = prev_kind
     prev_kind = Some(kind)
+    prev_text = Some(tok.text())
     prev_prefix = curr_prefix
     prev_pipe = curr_pipe
     i += 1
@@ -330,6 +373,7 @@ fn container_indents(kind : ContainerKind) -> Bool {
     ContainerKind::BraceRecord => true
     ContainerKind::BraceMap => true
     ContainerKind::BraceMatch => true
+    ContainerKind::BraceEnum => true
     ContainerKind::BracketArray => true
     ContainerKind::BracketTypeArgs => false
     ContainerKind::BracketIndex => false
@@ -342,6 +386,7 @@ fn container_forces_list_newlines(kind : ContainerKind) -> Bool {
     ContainerKind::BraceRecord => true
     ContainerKind::BraceMap => true
     ContainerKind::BraceMatch => true
+    ContainerKind::BraceEnum => true
     ContainerKind::BracketArray => true
     _ => false
   }
@@ -507,6 +552,42 @@ fn next_non_trivia_kind(
 }
 
 ///|
+fn should_insert_struct_double_colon(
+  prev_prev_kind : @cst.SyntaxKind?,
+  prev_kind : @cst.SyntaxKind?,
+  prev_text : String?,
+  curr_kind : @cst.SyntaxKind,
+  in_type_context : Bool,
+) -> Bool {
+  if curr_kind != lbrace() || in_type_context {
+    return false
+  }
+  match prev_prev_kind {
+    Some(prev_prev) =>
+      if prev_prev == struct_kw() || prev_prev == enum_kw() ||
+        prev_prev == type_kw() {
+        return false
+      }
+    None => ()
+  }
+  if prev_prev_kind == Some(thin_arrow()) {
+    return false
+  }
+  match prev_kind {
+    Some(prev) =>
+      if prev != name() {
+        false
+      } else {
+        match prev_text {
+          Some(text) => @core.is_ctor_name(text)
+          None => false
+        }
+      }
+    None => false
+  }
+}
+
+///|
 fn needs_space(
   prev_kind : @cst.SyntaxKind?,
   curr_kind : @cst.SyntaxKind,
@@ -532,6 +613,9 @@ fn needs_space(
       if curr_kind == colon() {
         return false
       }
+      if prev == name() && curr_kind == name() {
+        return true
+      }
       if curr_kind == lparen() || curr_kind == lbracket() {
         if prev == name() ||
           is_literal_kind(prev) ||
@@ -542,7 +626,7 @@ fn needs_space(
         }
       }
       if curr_kind == lbrace() {
-        if prev == lparen() || prev == lbracket() {
+        if prev == lparen() || prev == lbracket() || prev == double_colon() {
           return false
         }
       }

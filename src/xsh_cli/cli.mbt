@@ -37,7 +37,7 @@ fn print_usage() -> Unit {
   println("")
   println("commands:")
   println("  run <file>                 parse/type/eval a script")
-  println("  test <file...>             run test blocks in scripts")
+  println("  test <file|dir...>         run test blocks in scripts")
   println("  check <file...>            parse/type check scripts")
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
@@ -600,15 +600,18 @@ fn load_import_recursive_for_check_impl(
 ///|
 fn test_cmd(args : Array[String]) -> Unit {
   if args.length() == 0 {
-    abort("test: expected <file...>")
+    abort("test: expected <file|dir...>")
+  }
+  let entry_paths = resolve_test_entry_paths(args)
+  if entry_paths.length() == 0 {
+    abort("test: no test files found")
   }
   let mut failed = false
   let mut total = 0
   let mut passed = 0
   let mut failed_count = 0
-  let mut file_count = 0
-  for entry_path in args {
-    file_count += 1
+  let file_count = entry_paths.length()
+  for entry_path in entry_paths {
     match load_db(entry_path) {
       Err(err) => {
         println("[\{entry_path}] load error: \{err}")

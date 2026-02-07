@@ -21,7 +21,7 @@ check:
 # Run tests (includes fixtures and examples)
 test:
     moon test --target {{target}}
-    moon run src/xsh_cli/main.mbt --target native -- test examples/*.xsh
+    moon run src/xsh_cli/main.mbt --target native -- test examples
 
 # Run fixture tests only
 test-fixtures:

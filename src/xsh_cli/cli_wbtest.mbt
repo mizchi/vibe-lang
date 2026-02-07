@@ -174,3 +174,89 @@ test "line repl extract let name" {
     None => ()
   }
 }
+
+///|
+test "resolve test entry paths includes top-level xsh files" {
+  let root = wbtest_make_temp_dir("resolve_tests")
+  let sub = root + "/sub"
+  let deep = sub + "/deep"
+  @os_fs.create_dir(sub) catch { e => fail("create sub dir failed: " + e.to_string()) }
+  @os_fs.create_dir(deep) catch {
+    e => fail("create deep dir failed: " + e.to_string())
+  }
+  let top = root + "/top.xsh"
+  let nested = sub + "/nested.xsh"
+  let deep_nested = deep + "/deep_nested.xsh"
+  let ignored = deep + "/ignored.txt"
+  @os_fs.write_string_to_file(top, "") catch {
+    e => fail("write top failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(nested, "") catch {
+    e => fail("write nested failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(deep_nested, "") catch {
+    e => fail("write deep nested failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(ignored, "") catch {
+    e => fail("write ignored failed: " + e.to_string())
+  }
+  let files = resolve_test_entry_paths([root])
+  assert_eq(files.length(), 1)
+  assert_true(wbtest_contains(files, top))
+  assert_false(wbtest_contains(files, nested))
+  assert_false(wbtest_contains(files, deep_nested))
+  assert_false(wbtest_contains(files, ignored))
+  let files2 = resolve_test_entry_paths([root, nested])
+  assert_eq(files2.length(), 2)
+  assert_true(wbtest_contains(files2, top))
+  assert_true(wbtest_contains(files2, nested))
+  wbtest_remove_if_exists(ignored)
+  wbtest_remove_if_exists(deep_nested)
+  wbtest_remove_if_exists(nested)
+  wbtest_remove_if_exists(top)
+  wbtest_remove_if_exists(deep)
+  wbtest_remove_if_exists(sub)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+fn wbtest_make_temp_dir(prefix : String) -> String {
+  let base = "/tmp/xsh_cli_wbtest_" + prefix + "_" + @env.now().to_string()
+  for i in 0..<1000 {
+    let path = if i == 0 { base } else { base + "_" + i.to_string() }
+    if not(@os_fs.path_exists(path)) {
+      @os_fs.create_dir(path) catch {
+        e => abort("create temp dir failed: " + e.to_string())
+      }
+      return path
+    }
+  }
+  abort("failed to allocate temp dir")
+  base
+}
+
+///|
+fn wbtest_contains(paths : Array[String], target : String) -> Bool {
+  for path in paths {
+    if path == target {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn wbtest_remove_if_exists(path : String) -> Unit {
+  if not(@os_fs.path_exists(path)) {
+    return
+  }
+  let is_file = @os_fs.is_file(path) catch { _ => false }
+  if is_file {
+    ignore(@os_fs.remove_file(path) catch { _ => () })
+    return
+  }
+  let is_dir = @os_fs.is_dir(path) catch { _ => false }
+  if is_dir {
+    ignore(@os_fs.remove_dir(path) catch { _ => () })
+  }
+}
