@@ -13,7 +13,7 @@ pub struct XshDb {
   rt : @ripple.Runtime
   sources : @ripple.Input[String, String]
   cst_query : @ripple.Query[String, @cst.SyntaxNode]
-  ast_query : @ripple.Query[String, @core.Module]
+  ast_query : @ripple.Query[String, HashedModule] // Uses structural hash for Eq
   type_query : @ripple.Query[String, @checker.TypeEnv]
   import_query : @ripple.Query[String, Array[ImportSpec]]
   diags : @ripple.Accumulator[@core.Diagnostic]
@@ -36,16 +36,20 @@ pub fn XshDb::new() -> XshDb {
     }
   })
   cst_query.register(rt)
-  let ast_query : @ripple.Query[String, @core.Module] = db.query(fn(rt, path) {
+  // AST query wrapped in HashedModule for structural equality comparison
+  // This enables backdate when only whitespace changes (same structural hash)
+  let ast_query : @ripple.Query[String, HashedModule] = db.query(fn(rt, path) {
     match sources.get(rt, path) {
-      Some(content) =>
-        @parser.parse_ast(content) catch {
+      Some(content) => {
+        let parsed = @parser.parse_ast(content) catch {
           e => {
             diags.push(rt, e.diagnostic())
             { stmts: [] }
           }
         }
-      None => { stmts: [] }
+        HashedModule::new(parsed)
+      }
+      None => HashedModule::new({ stmts: [] })
     }
   })
   ast_query.register(rt)
@@ -53,7 +57,7 @@ pub fn XshDb::new() -> XshDb {
     rt,
     file_path,
   ) {
-    let ast = ast_query.fetch(rt, file_path)
+    let ast = ast_query.fetch(rt, file_path).unwrap()
     let base_dir = @path.Path(file_path).dirname().to_string()
     let out : Array[ImportSpec] = []
     for stmt in ast.stmts {
@@ -120,7 +124,7 @@ pub fn XshDb::new() -> XshDb {
     rt,
     path,
   ) {
-    let ast = ast_query.fetch(rt, path)
+    let ast = ast_query.fetch(rt, path).unwrap()
     let imports = import_query.fetch(rt, path)
     let aliases = build_alias_map_from_ast(ast, imports)
     let desugared = desugar_method_calls(ast, aliases)
@@ -137,7 +141,7 @@ pub fn XshDb::new() -> XshDb {
     rt,
     file_path,
   ) {
-    let ast = ast_query.fetch(rt, file_path)
+    let ast = ast_query.fetch(rt, file_path).unwrap()
     let imports = import_query.fetch(rt, file_path)
     let aliases = build_alias_map_from_ast(ast, imports)
     let desugared = desugar_method_calls(ast, aliases)
@@ -154,7 +158,7 @@ pub fn XshDb::new() -> XshDb {
           // Use simple_type_query to get the imported module's type environment
           let imported_env = simple_type_query.fetch(rt, imp.path)
           // Get the AST of the imported module to find exports
-          let imported_ast = ast_query.fetch(rt, imp.path)
+          let imported_ast = ast_query.fetch(rt, imp.path).unwrap()
           let exported_names = collect_exported_names(imported_ast)
           // Now look up the import items in the main AST's Import statement
           for stmt in ast.stmts {
@@ -323,7 +327,7 @@ pub fn XshDb::cst(self : XshDb, path : String) -> @cst.SyntaxNode {
 
 ///|
 pub fn XshDb::ast(self : XshDb, path : String) -> @core.Module {
-  self.ast_query.fetch(self.rt, path)
+  self.ast_query.fetch(self.rt, path).unwrap()
 }
 
 ///|
