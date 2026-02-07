@@ -576,7 +576,7 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before compile
       "(placeholder)"
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       let resolved = @core.resolve_qualified(name, aliases)
       let buf = StringBuilder::new()
@@ -684,7 +684,7 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(fn (params")

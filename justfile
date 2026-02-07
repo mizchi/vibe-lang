@@ -18,10 +18,14 @@ fmt:
 check:
     moon check --deny-warn --target {{target}}
 
-# Run tests
+# Run tests (includes fixtures and examples)
 test:
     moon test --target {{target}}
     moon run src/xsh_cli/main.mbt --target native -- test examples/*.xsh
+
+# Run fixture tests only
+test-fixtures:
+    moon test -p xsh --filter "fixtures" --target {{target}}
 
 # Update snapshot tests
 test-update:
@@ -74,10 +78,6 @@ bench-cmd-compile:
 # Run wasm-js-string backend via JS engine
 run-wasm-js-string *args:
     node scripts/run_wasm_js_string.mjs {{args}}
-
-# Run fixture tests only
-fixtures:
-    moon test --filter "fixtures" --target {{target}}
 
 # Generate type definition files
 info:

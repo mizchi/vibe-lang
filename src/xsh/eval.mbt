@@ -176,23 +176,23 @@ pub fn Runtime::eval_module(
                               self.addr_env,
                               Some(local_name),
                             )
-                            let value = @core.Value::Fn(
-                              @core.FnValue::{
-                                params: fn_val.params,
-                                body: fn_val.body,
-                                env: fn_val.env,
-                                addr: Some(addr),
-                                pure: fn_val.pure,
-                              },
-                            )
+                            let value = @core.Value::Fn(@core.FnValue::{
+                              params: fn_val.params,
+                              body: fn_val.body,
+                              env: fn_val.env,
+                              addr: Some(addr),
+                              pure: fn_val.pure,
+                            })
                             self.bind_with_addr(local_name, addr, value)
                           }
                           _ => {
                             let _ = self.bind(local_name, result.value)
+
                           }
                         }
                       } else {
                         let _ = self.bind(local_name, result.value)
+
                       }
                     }
                     _ =>
@@ -369,7 +369,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before eval
       raise EvalError::UnknownName("_")
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       eval_call(rt, name, args)
     }
@@ -482,7 +482,14 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       let _ = span
       eval_block(rt, body)
     }
-    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~) => {
+    @core.Expr::Fn(
+      type_params=_,
+      params~,
+      ret~,
+      effects=fn_effects,
+      body~,
+      span~
+    ) => {
       let _ = span
       let _ = ret
       let _ = fn_effects
@@ -490,7 +497,14 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         rt.type_env,
         false,
         "_",
-        @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~),
+        @core.Expr::Fn(
+          type_params=[],
+          params~,
+          ret~,
+          effects=fn_effects,
+          body~,
+          span~,
+        ),
       )
       let closure = @core.FnValue::{
         params,

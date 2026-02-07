@@ -97,7 +97,7 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before codegen
       "(placeholder)"
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       let buf = StringBuilder::new()
       buf.write_string("(call ")
@@ -205,7 +205,7 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       block_to_addr_sexp(ctx, catch_body) +
       ")"
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = span
       let fn_ctx = ctx.clone()
       let param_ids : Array[String] = []

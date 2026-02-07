@@ -135,7 +135,12 @@ pub(all) enum Expr {
   String(value~ : String, span~ : Span)
   Ident(name~ : String, span~ : Span)
   Placeholder(index~ : Int, span~ : Span) // _ placeholder for lambda shorthand
-  Call(name~ : String, args~ : Array[CallArg], span~ : Span)
+  Call(
+    name~ : String,
+    type_args~ : Array[Type],
+    args~ : Array[CallArg],
+    span~ : Span
+  )
   Tuple(items~ : Array[Expr], span~ : Span)
   Record(fields~ : Array[RecordFieldExpr], span~ : Span)
   Array(items~ : Array[Expr], span~ : Span)
@@ -146,6 +151,7 @@ pub(all) enum Expr {
   Do(body~ : Module, span~ : Span)
   Try(try_body~ : Module, catch_body~ : Module, span~ : Span)
   Fn(
+    type_params~ : Array[String],
     params~ : Array[FuncParam],
     ret~ : Type?,
     effects~ : Array[EffectAtom],

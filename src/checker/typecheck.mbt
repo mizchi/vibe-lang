@@ -1595,6 +1595,73 @@ fn replace_num_type(ty : @core.Type, num_var : @core.Type) -> @core.Type {
 }
 
 ///|
+/// Substitute type parameters (Type::Param) with their corresponding type variables
+fn substitute_type_params(
+  ty : @core.Type,
+  mapping : Map[String, @core.Type],
+) -> @core.Type {
+  match ty {
+    @core.Type::Param(name) =>
+      match mapping.get(name) {
+        Some(var_ty) => var_ty
+        None => ty // Keep as is if not in mapping
+      }
+    @core.Type::Named(name~, args~) => {
+      let out : Array[@core.Type] = []
+      for arg in args {
+        out.push(substitute_type_params(arg, mapping))
+      }
+      @core.Type::Named(name~, args=out)
+    }
+    @core.Type::Tuple(items) => {
+      let out : Array[@core.Type] = []
+      for item in items {
+        out.push(substitute_type_params(item, mapping))
+      }
+      @core.Type::Tuple(out)
+    }
+    @core.Type::Record(fields) => {
+      let out : Map[String, @core.Type] = {}
+      for name, item in fields {
+        out[name] = substitute_type_params(item, mapping)
+      }
+      @core.Type::Record(out)
+    }
+    @core.Type::Array(inner) =>
+      @core.Type::Array(substitute_type_params(inner, mapping))
+    @core.Type::Map(inner) =>
+      @core.Type::Map(substitute_type_params(inner, mapping))
+    @core.Type::ArrayBuilder(inner) =>
+      @core.Type::ArrayBuilder(substitute_type_params(inner, mapping))
+    @core.Type::MapBuilder(inner) =>
+      @core.Type::MapBuilder(substitute_type_params(inner, mapping))
+    @core.Type::Variant(fields) => {
+      let out : Map[String, @core.Type] = {}
+      for name, item in fields {
+        out[name] = substitute_type_params(item, mapping)
+      }
+      @core.Type::Variant(out)
+    }
+    @core.Type::Func(params~, ret~, effects~) => {
+      let out : Array[@core.FuncParam] = []
+      for param in params {
+        out.push(@core.FuncParam::{
+          name: param.name,
+          label: param.label,
+          ty: substitute_type_params(param.ty, mapping),
+        })
+      }
+      @core.Type::Func(
+        params=out,
+        ret=substitute_type_params(ret, mapping),
+        effects~,
+      )
+    }
+    _ => ty
+  }
+}
+
+///|
 fn record_expr_type(env : TypeEnv, span : @core.Span, ty : @core.Type) -> Unit {
   let resolved = resolve_type(env, ty)
   let normalized = normalize_type(env, resolved) catch { _ => resolved }
@@ -1740,7 +1807,7 @@ fn type_expr_eff(
         message="placeholder _ can only be used in function arguments",
         span~,
       )
-    @core.Expr::Call(name~, args~, span~) =>
+    @core.Expr::Call(name~, args~, span~, ..) =>
       if has_alias_prefix(name, aliases) {
         @core.Type::Unit
       } else {
@@ -1963,7 +2030,19 @@ fn type_expr_eff(
       let _ = span
       type_block(env, body, aliases, effects, true)
     }
-    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~) => {
+    @core.Expr::Fn(
+      type_params~,
+      params~,
+      ret~,
+      effects=fn_effects,
+      body~,
+      span~
+    ) => {
+      // Create fresh type variables for each type parameter
+      let type_param_vars : Map[String, @core.Type] = {}
+      for tp in type_params {
+        type_param_vars[tp] = fresh_type_var(env)
+      }
       let mut uses_num = false
       for param in params {
         if has_num_type(param.ty) {
@@ -1979,12 +2058,28 @@ fn type_expr_eff(
       }
       let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }
       let scope_env = clone_env(env)
+      // Add type parameters as type aliases so inner functions can access them
+      for tp in type_params {
+        match type_param_vars.get(tp) {
+          Some(ty) =>
+            scope_env.set_type_alias(tp, TypeAlias::{
+              name: tp,
+              params: [],
+              target: ty,
+            })
+          None => ()
+        }
+      }
       let resolved_params : Array[@core.FuncParam] = []
       for param in params {
-        let param_ty = match num_var {
+        let param_ty_with_num = match num_var {
           Some(n) => replace_num_type(param.ty, n)
           None => param.ty
         }
+        // Replace type parameters with their type variables
+        let param_ty = substitute_type_params(
+          param_ty_with_num, type_param_vars,
+        )
         let resolved = normalize_type(env, param_ty)
         let binding_ty = if param.label == @core.ParamLabel::Optional {
           @core.Type::Named(name="Option", args=[resolved])
@@ -2010,10 +2105,12 @@ fn type_expr_eff(
       )
       let final_ret = match ret {
         Some(r) => {
-          let ret_ty = match num_var {
+          let ret_ty_with_num = match num_var {
             Some(n) => replace_num_type(r, n)
             None => r
           }
+          // Replace type parameters with their type variables
+          let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
           let resolved = normalize_type(env, ret_ty)
           if not(type_equal(env, resolved, body_ty)) {
             raise TypeError::Mismatch(
@@ -4371,7 +4468,7 @@ fn is_non_expansive_expr(
       ok
     }
     @core.Expr::Fn(..) => true
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if has_alias_prefix(name, aliases) {
         false
@@ -4405,7 +4502,7 @@ fn type_let_expr(
 ) -> TypeScheme raise TypeError {
   if rec {
     match expr {
-      @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span=fn_span) =>
+      @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span=fn_span, ..) =>
         match ret {
           None => raise TypeError::BadRec(message="missing return type", span~)
           Some(r) => {
@@ -4449,6 +4546,7 @@ fn type_let_expr(
             let ty = type_expr_eff(
               env,
               @core.Expr::Fn(
+                type_params=[],
                 params=replaced_params,
                 ret=Some(replaced_ret),
                 effects=normalized_effects,
@@ -4557,7 +4655,7 @@ fn type_lambda_with_context(
   allow_effect : Bool,
 ) -> @core.Type raise TypeError {
   match expr {
-    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~, ..) => {
       // Resolve the expected type first
       let resolved_expected = resolve_type(env, expected)
       match resolved_expected {

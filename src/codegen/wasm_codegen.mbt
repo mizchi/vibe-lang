@@ -460,7 +460,7 @@ fn collect_captures_expr(
         push_capture(name, captures, seen)
       }
     }
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if not(bound.contains(name)) && outer_bound.contains(name) {
         push_capture(name, captures, seen)
@@ -560,7 +560,7 @@ fn collect_nested_funcs_block(
           scope[name] = true
         }
         match expr {
-          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
             let key = span_key(span)
             let captures : Array[String] = []
@@ -626,7 +626,7 @@ fn collect_nested_funcs_expr(
   funcs : Array[FuncDef],
 ) -> Unit {
   match expr {
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = effects
       let key = span_key(span)
       let captures : Array[String] = []
@@ -650,7 +650,7 @@ fn collect_nested_funcs_expr(
       }
       collect_nested_funcs_block(body, inner_bound, funcs, false)
     }
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = name
       let _ = span
       for arg in args {
@@ -743,7 +743,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
           outer_bound[name] = true
         }
         match expr {
-          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
             let key = span_key(span)
             // Collect captures: variables used in body but defined in outer scope
@@ -788,7 +788,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
           outer_bound[name] = true
         }
         match expr {
-          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
             let key = span_key(span)
             let captures : Array[String] = []
@@ -894,7 +894,7 @@ fn func_sig_from_type(ctx : CodegenCtx, ty : @core.Type) -> FuncSig? {
 ///|
 fn infer_expr_func_sig(ctx : CodegenCtx, expr : @core.Expr) -> FuncSig? {
   match expr {
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = effects
       let _ = body
       let _ = span
@@ -1479,7 +1479,7 @@ fn infer_expr_kind_with(
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before codegen
       ValueKind::I32
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       let pos_args = extract_positional_exprs(args, name)
       match name {
@@ -1611,7 +1611,7 @@ fn infer_expr_kind_with(
       let _ = span
       infer_block_kind(ctx, body, locals)
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
       let _ = ret
       let _ = effects
@@ -1874,7 +1874,7 @@ fn emit_unbox_f64_expr(
 ///|
 fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
   match expr {
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if name == "sh" {
         ctx.need_sh = true
@@ -1965,7 +1965,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let _ = span
       scan_needs_block(ctx, body)
     }
-    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = params
       let _ = ret
@@ -2117,7 +2117,7 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
 
       }
     }
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = name
       let _ = span
       for arg in args {
@@ -2182,7 +2182,7 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       scan_strings(ctx, try_body)
       scan_strings(ctx, catch_body)
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
       let _ = ret
       let _ = effects
@@ -2244,7 +2244,7 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
         let _ = rec
         let _ = span
         match expr {
-          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
             let _ = span
             out.push(FuncDef::{
@@ -2264,7 +2264,7 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
         let _ = rec
         let _ = span
         match expr {
-          @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
             let _ = effects
             let _ = span
             out.push(FuncDef::{
@@ -2292,7 +2292,7 @@ fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module 
     let skip = match stmt {
       @core.Stmt::Let(rec=_, name=_, expr~, span=_) =>
         match expr {
-          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~) => {
+          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~, ..) => {
             // Only skip functions with NO captures
             // Functions with captures need to be processed in run() to create closure
             let key = span_key(span)
@@ -2306,7 +2306,7 @@ fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module 
       @core.Stmt::ExportLet(rec=_, name=_, expr~, span=_) =>
         // ExportLet functions are also skipped if they have no captures
         match expr {
-          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~) => {
+          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~, ..) => {
             let key = span_key(span)
             match ctx.fn_closure_captures.get(key) {
               Some(captures) => captures.length() == 0
@@ -2375,7 +2375,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
     @core.Expr::Record(..) => true
     @core.Expr::Array(..) => true
     @core.Expr::Map(..) => true
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if name == "__add" ||
         name == "__sub" ||
@@ -2435,7 +2435,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       let _ = span
       needs_heap_block(ctx, try_body) || needs_heap_block(ctx, catch_body)
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
       let _ = ret
       let _ = effects
@@ -2907,7 +2907,7 @@ fn compile_expr(
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before codegen
       raise WasmGenError::Unsupported("placeholder in codegen")
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if ctx.fn_local_sigs.contains(name) {
         let sig = match ctx.fn_local_sigs.get(name) {
@@ -3864,7 +3864,7 @@ fn compile_expr(
       // end $outer
       buf.push((11).to_byte())
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
       let _ = ret
       let _ = effects
@@ -4126,7 +4126,8 @@ fn compile_stmt(
           ret=fn_ret,
           effects~,
           body=fn_body,
-          span=fn_span
+          span=fn_span,
+          ..
         ) => {
           let _ = effects
           let key = span_key(fn_span)
@@ -4209,7 +4210,7 @@ fn compile_stmt(
           ctx.local_kinds[name] = kind
           // If the expression is a Call that returns a function, register in fn_local_sigs
           match expr {
-            @core.Expr::Call(name=call_name, args~, span~) => {
+            @core.Expr::Call(name=call_name, args~, span~, ..) => {
               let _ = args
               let _ = span
               match ctx.fn_return_sigs.get(call_name) {

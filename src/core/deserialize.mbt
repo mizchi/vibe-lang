@@ -173,16 +173,18 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
       "Call" => {
         let inner = expect_object(value)
         let name = get_string(inner, "name")
+        let type_args = parse_type_args(inner.get("type_args"))
         let args = parse_call_args(get_field(inner, "args"))
-        return Expr::Call(name~, args~, span=zero)
+        return Expr::Call(name~, type_args~, args~, span=zero)
       }
       "Fn" => {
         let inner = expect_object(value)
+        let type_params = parse_type_params(inner.get("type_params"))
         let params = parse_params(get_field(inner, "params"))
         let ret = parse_type_opt(inner.get("ret"))
         let effects = parse_effects(get_field(inner, "effects"))
         let body = parse_module(get_field(inner, "body"))
-        return Expr::Fn(params~, ret~, effects~, body~, span=zero)
+        return Expr::Fn(type_params~, params~, ret~, effects~, body~, span=zero)
       }
       "If" => {
         let inner = expect_object(value)
@@ -418,6 +420,29 @@ fn parse_types(json : Json) -> Array[Type] raise DeserializeError {
     out.push(parse_type(item))
   }
   out
+}
+
+///|
+fn parse_type_args(json : Json?) -> Array[Type] raise DeserializeError {
+  match json {
+    None | Some(Json::Null) => []
+    Some(j) => parse_types(j)
+  }
+}
+
+///|
+fn parse_type_params(json : Json?) -> Array[String] raise DeserializeError {
+  match json {
+    None | Some(Json::Null) => []
+    Some(j) => {
+      let arr = expect_array(j)
+      let out : Array[String] = []
+      for item in arr {
+        out.push(expect_string(item))
+      }
+      out
+    }
+  }
 }
 
 ///|

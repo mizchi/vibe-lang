@@ -1387,7 +1387,7 @@ fn compile_expr_gc(
       }
       emit_struct_new_gc(buf, type_idx)
     }
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       let pos_args = extract_positional_exprs(args, name)
       match name {

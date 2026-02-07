@@ -21,6 +21,7 @@ pub fn run(args : Array[String]) -> Unit {
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
     "expand" => expand_cmd(cmd_args)
+    "lsp" => lsp_cmd(cmd_args)
     "help" => print_usage()
     _ => {
       println("unknown command: " + cmd)
@@ -53,6 +54,7 @@ fn print_usage() -> Unit {
   println(
     "  save <file>                 save module to content-addressed store",
   )
+  println("  lsp                         start LSP server (stdin/stdout)")
 }
 
 ///|
@@ -2158,4 +2160,88 @@ fn find_xsh_dir_from(start : String) -> String {
     dir = dir + "/.."
   }
   abort("expand: .xsh directory not found (searched from: " + start + ")")
+}
+
+///|
+/// LSP server command - reads JSON-RPC from stdin, writes to stdout
+fn lsp_cmd(_args : Array[String]) -> Unit {
+  // Run LSP server asynchronously
+  @async.run_async_main(lsp_main_loop)
+}
+
+///|
+/// Main LSP loop - reads Content-Length framed messages from stdin
+async fn lsp_main_loop() -> Unit {
+  let server = @lsp.LspServer::new()
+  let stdin = @stdio.stdin
+  let stdout = @stdio.stdout
+
+  // Simple Content-Length based message reader
+  while true {
+    // Read Content-Length header
+    match stdin.read_until("\n") {
+      None => break
+      Some(header_line) => {
+        let header_str = header_line.to_string()
+        if not(header_str.has_prefix("Content-Length:")) {
+          continue
+        }
+        // Parse content length
+        let len_part = header_str[15:].to_string()
+        let len_str = trim_whitespace(len_part)
+        let content_length = @strconv.parse_int(len_str) catch { _ => continue }
+
+        // Skip empty line after headers
+        let _ = stdin.read_until("\n")
+
+        // Read content bytes
+        let content = stdin.read_exactly(content_length)
+        let json : Json = @json.parse(content.to_string()) catch {
+          _ => continue
+        }
+
+        // Handle message
+        let (response, notifications) = server.handle_message(json)
+
+        // Send notifications first
+        for notif in notifications {
+          let msg = notif.stringify()
+          let header = "Content-Length: " +
+            msg.length().to_string() +
+            "\r\n\r\n"
+          stdout.write(header)
+          stdout.write(msg)
+        }
+
+        // Send response
+        match response {
+          Some(resp) => {
+            let json_str = @lsp.response_to_json(resp).stringify()
+            let header = "Content-Length: " +
+              json_str.length().to_string() +
+              "\r\n\r\n"
+            stdout.write(header)
+            stdout.write(json_str)
+          }
+          None => ()
+        }
+
+        // Check for exit
+        if server.is_exit_requested() {
+          break
+        }
+      }
+    }
+  }
+}
+
+///|
+fn trim_whitespace(s : String) -> String {
+  let buf = StringBuilder::new()
+  for c in s {
+    if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+      buf.write_char(c)
+    }
+  }
+  buf.to_string()
 }

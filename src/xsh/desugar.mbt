@@ -83,7 +83,7 @@ fn desugar_expr(
   aliases : Map[String, @core.Ref],
 ) -> @core.Expr {
   match expr {
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
       let next_args : Array[@core.CallArg] = []
       for arg in args {
         next_args.push(@core.CallArg::{
@@ -108,7 +108,12 @@ fn desugar_expr(
                 for i in 1..<next_args.length() {
                   rest_args.push(next_args[i])
                 }
-                return @core.Expr::Call(name=qualified, args=rest_args, span~)
+                return @core.Expr::Call(
+                  name=qualified,
+                  type_args~,
+                  args=rest_args,
+                  span~,
+                )
               }
             }
           _ => ()
@@ -123,11 +128,11 @@ fn desugar_expr(
             for arg in next_args {
               merged.push(arg)
             }
-            @core.Expr::Call(name=method_name, args=merged, span~)
+            @core.Expr::Call(name=method_name, type_args~, args=merged, span~)
           } else {
-            @core.Expr::Call(name~, args=next_args, span~)
+            @core.Expr::Call(name~, type_args~, args=next_args, span~)
           }
-        None => @core.Expr::Call(name~, args=next_args, span~)
+        None => @core.Expr::Call(name~, type_args~, args=next_args, span~)
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) =>
@@ -207,12 +212,13 @@ fn desugar_expr(
         catch_body=desugar_block(catch_body, clone_scope(scope), aliases),
         span~,
       )
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~) => {
       let next_scope = clone_scope(scope)
       for param in params {
         next_scope[param.name] = true
       }
       @core.Expr::Fn(
+        type_params~,
         params~,
         ret~,
         effects~,

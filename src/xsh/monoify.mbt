@@ -27,7 +27,7 @@ fn collect_specializable_defs(ast : @core.Module) -> Map[String, @core.Expr] {
         let _ = rec
         let _ = span
         match expr {
-          @core.Expr::Fn(params~, ret~, effects~, body~, span~) =>
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) =>
             if fn_has_num(params, ret) {
               let _ = effects
               let _ = body
@@ -112,7 +112,7 @@ fn collect_instantiations_expr(
   scope : Map[String, Bool],
 ) -> Unit {
   match expr {
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if specializable.contains(name) && not(scope.contains(name)) {
         match tag_for_call(env, name, args) {
@@ -231,7 +231,7 @@ fn collect_instantiations_expr(
         )
       }
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = span
       let _ = ret
       let _ = effects
@@ -259,7 +259,7 @@ fn monoify_module_top(
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) =>
         match expr {
-          @core.Expr::Fn(params~, ret~, effects~, body~, span=fn_span) if specializable.contains(
+          @core.Expr::Fn(params~, ret~, effects~, body~, span=fn_span, ..) if specializable.contains(
               name,
             ) => {
             let _ = params
@@ -387,7 +387,7 @@ fn monoify_expr(
   current_spec : Map[String, String],
 ) -> @core.Expr {
   match expr {
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
       let next_args : Array[@core.CallArg] = []
       for arg in args {
         let rewritten = monoify_expr(
@@ -405,7 +405,8 @@ fn monoify_expr(
         })
       }
       match current_spec.get(name) {
-        Some(mapped) => @core.Expr::Call(name=mapped, args=next_args, span~)
+        Some(mapped) =>
+          @core.Expr::Call(name=mapped, type_args~, args=next_args, span~)
         None =>
           if specializable.contains(name) && not(scope.contains(name)) {
             match tag_for_call(env, name, args) {
@@ -427,14 +428,19 @@ fn monoify_expr(
                     })
                   }
                   let new_name = specialized_name(name, tag)
-                  @core.Expr::Call(name=new_name, args=updated_args, span~)
+                  @core.Expr::Call(
+                    name=new_name,
+                    type_args~,
+                    args=updated_args,
+                    span~,
+                  )
                 } else {
-                  @core.Expr::Call(name~, args=next_args, span~)
+                  @core.Expr::Call(name~, type_args~, args=next_args, span~)
                 }
-              None => @core.Expr::Call(name~, args=next_args, span~)
+              None => @core.Expr::Call(name~, type_args~, args=next_args, span~)
             }
           } else {
-            @core.Expr::Call(name~, args=next_args, span~)
+            @core.Expr::Call(name~, type_args~, args=next_args, span~)
           }
       }
     }
@@ -571,12 +577,13 @@ fn monoify_expr(
       }
       @core.Expr::Match(scrutinee=scrut, arms=next_arms, span~)
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~) => {
       let fn_scope = clone_scope(scope)
       for param in params {
         fn_scope[param.name] = true
       }
       @core.Expr::Fn(
+        type_params~,
         params~,
         ret~,
         effects~,
@@ -600,7 +607,7 @@ fn specialize_fn_expr(
   specializable : Map[String, @core.Expr],
 ) -> @core.Expr {
   match expr {
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~) => {
       let concrete = tag_to_type(tag)
       let updated_params : Array[@core.FuncParam] = []
       for param in params {
@@ -621,6 +628,7 @@ fn specialize_fn_expr(
       let current_spec : Map[String, String] = {}
       current_spec[name] = specialized_name(name, tag)
       @core.Expr::Fn(
+        type_params~,
         params=updated_params,
         ret=updated_ret,
         effects~,

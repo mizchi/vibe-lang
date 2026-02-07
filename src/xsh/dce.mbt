@@ -281,7 +281,7 @@ fn collect_refs_expr(
       let _ = span
       add_ref_name(name, bound, refs)
     }
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       add_ref_name(name, bound, refs)
       for arg in args {
@@ -344,7 +344,7 @@ fn collect_refs_expr(
         collect_refs_expr(arm.expr, arm_bound, refs)
       }
     }
-    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = ret
       let fn_bound = clone_bool_map(bound)

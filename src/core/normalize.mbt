@@ -168,16 +168,18 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
     Expr::Placeholder(index~, ..) =>
       // Placeholder should be desugared before normalization
       Expr::Placeholder(index~, span=zero_span)
-    Expr::Call(name~, args~, ..) =>
+    Expr::Call(name~, type_args~, args~, ..) =>
       Expr::Call(
         name=scope.lookup(name),
+        type_args~,
         args=normalize_call_args(args, scope),
         span=zero_span,
       )
-    Expr::Fn(params~, ret~, effects~, body~, ..) => {
+    Expr::Fn(type_params~, params~, ret~, effects~, body~, ..) => {
       let child = scope.child()
       let norm_params = normalize_params(params, child)
       Expr::Fn(
+        type_params~,
         params=norm_params,
         ret~,
         effects~,

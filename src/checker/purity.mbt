@@ -17,7 +17,7 @@ pub fn purity_for_let(
     locals[name] = true
   }
   match expr {
-    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = ret
       let fn_locals : Map[String, Bool] = {}
@@ -93,7 +93,7 @@ fn purity_expr_inner(
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared; treat as pure
       true
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if is_effectful_call_name(name) {
         false
@@ -200,7 +200,7 @@ fn purity_expr_inner(
       let _ = span
       false
     }
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
       let _ = ret
       let _ = effects
@@ -280,7 +280,7 @@ fn purity_for_let_in_scope(
     scope[name] = true
   }
   match expr {
-    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = ret
       let fn_locals = clone_bool_map(scope)

@@ -246,7 +246,7 @@ fn collect_dep_expr(
       add_dep_name(name, bound, out)
     }
     @core.Expr::Placeholder(..) => ()
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       add_dep_name(name, bound, out)
       for arg in args {
@@ -309,7 +309,7 @@ fn collect_dep_expr(
         collect_dep_expr(arm.expr, arm_bound, out)
       }
     }
-    @core.Expr::Fn(params~, ret~, effects=_, body~, span~) => {
+    @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = ret
       let fn_bound = @checker.clone_bool_map(bound)

@@ -169,6 +169,7 @@ test "dce: keeps function dependencies" {
       @core.Stmt::Expr(
         expr=@core.Expr::Call(
           name="helper",
+          type_args=[],
           args=[
             @core.CallArg::{
               label: None,
@@ -187,6 +188,7 @@ test "dce: keeps function dependencies" {
       rec=false,
       name="helper",
       expr=@core.Expr::Fn(
+        type_params=[],
         params=[
           @core.FuncParam::{
             name: "x",
@@ -205,6 +207,7 @@ test "dce: keeps function dependencies" {
       rec=false,
       name="main",
       expr=@core.Expr::Fn(
+        type_params=[],
         params=[
           @core.FuncParam::{
             name: "y",
@@ -222,6 +225,7 @@ test "dce: keeps function dependencies" {
     @core.Stmt::Expr(
       expr=@core.Expr::Call(
         name="main",
+        type_args=[],
         args=[
           @core.CallArg::{
             label: None,

@@ -1608,7 +1608,11 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
   } else if self.peek_kind() == lparen() {
     self.parse_paren_expr()
   } else if self.peek_kind() == lbracket() {
-    self.parse_array_expr()
+    // Could be array literal or generic function: [T](x: T) -> T { x }
+    match self.try_parse_arrow_fn() {
+      Some(fn_expr) => fn_expr
+      None => self.parse_array_expr()
+    }
   } else if self.peek_kind() == lbrace() {
     let start = self.pos
     let body = self.parse_block()
@@ -1787,6 +1791,7 @@ fn call1(name : String, value : @core.Expr) -> @core.Expr {
   let span = value.span()
   @core.Expr::Call(
     name~,
+    type_args=[],
     args=[@core.CallArg::{ label: None, expr: value, span }],
     span~,
   )
@@ -1799,6 +1804,7 @@ fn call2(name : String, left : @core.Expr, right : @core.Expr) -> @core.Expr {
   let span = @core.Span::merge(left_span, right_span)
   @core.Expr::Call(
     name~,
+    type_args=[],
     args=[
       @core.CallArg::{ label: None, expr: left, span: left_span },
       @core.CallArg::{ label: None, expr: right, span: right_span },
@@ -1818,11 +1824,12 @@ fn pipe_apply(
       let call_span = @core.Span::merge(left_span, span)
       @core.Expr::Call(
         name~,
+        type_args=[],
         args=[@core.CallArg::{ label: None, expr: left, span: left_span }],
         span=call_span,
       )
     }
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
       let left_span = left.span()
       let call_span = @core.Span::merge(left_span, span)
       let out : Array[@core.CallArg] = []
@@ -1830,7 +1837,7 @@ fn pipe_apply(
       for arg in args {
         out.push(arg)
       }
-      @core.Expr::Call(name~, args=out, span=call_span)
+      @core.Expr::Call(name~, type_args~, args=out, span=call_span)
     }
     _ =>
       raise ParseError::UnexpectedToken(
@@ -2194,6 +2201,80 @@ fn AstParser::parse_param_list(
 }
 
 ///|
+/// Parse parameter list for function type signatures.
+/// Supports both `(x: T)` and `(T)` syntax where uppercase names are treated as types.
+fn AstParser::parse_fn_type_param_list(
+  self : AstParser,
+  params : Map[String, Bool],
+) -> Array[@core.FuncParam] raise ParseError {
+  let _ = self.expect(lparen(), "(")
+  let out : Array[@core.FuncParam] = []
+  let mut idx = 0
+  self.skip_trivia()
+  if self.peek_kind() != rparen() {
+    out.push(self.parse_fn_type_param(params, idx))
+    idx += 1
+    while {
+            self.skip_trivia()
+            self.peek_kind() == comma()
+          } {
+      let _ = self.bump()
+      self.skip_trivia()
+      if self.peek_kind() == rparen() {
+        break
+      }
+      out.push(self.parse_fn_type_param(params, idx))
+      idx += 1
+    }
+  }
+  let _ = self.expect(rparen(), ")")
+  out
+}
+
+///|
+/// Parse a single parameter for function type signatures.
+/// If the token is an uppercase name without `:`, treat it as a type-only parameter.
+fn AstParser::parse_fn_type_param(
+  self : AstParser,
+  params : Map[String, Bool],
+  idx : Int,
+) -> @core.FuncParam raise ParseError {
+  let saved = self.pos
+  let tok = self.peek()
+  if tok.kind() == name() {
+    let text = tok.text()
+    let chars : Array[Char] = []
+    for c in text {
+      chars.push(c)
+    }
+    if chars.length() > 0 {
+      let first = chars[0]
+      // Check if it's an uppercase name (type) without `:`
+      if first >= 'A' && first <= 'Z' {
+        // Look ahead for colon
+        let _ = self.bump()
+        self.skip_trivia()
+        if self.peek_kind() != colon() {
+          // This is a type-only parameter like `(Int)` or `(A)`
+          self.pos = saved
+          let ty = self.parse_type_with_params(params)
+          let param_name = "_" + idx.to_string()
+          return @core.FuncParam::{
+            name: param_name,
+            label: @core.ParamLabel::Positional,
+            ty,
+          }
+        }
+        // Has colon, restore and use normal parsing
+        self.pos = saved
+      }
+    }
+  }
+  // Fall back to normal param parsing
+  self.parse_param(params)
+}
+
+///|
 fn AstParser::parse_param(
   self : AstParser,
   params : Map[String, Bool],
@@ -2426,7 +2507,7 @@ fn AstParser::try_parse_fn_type(
 ) -> @core.Type? {
   let saved = self.pos
   let result : @core.Type? = try {
-    let params_list = self.parse_param_list(params)
+    let params_list = self.parse_fn_type_param_list(params)
     self.skip_trivia()
     if self.peek_kind() != thin_arrow() {
       raise ParseError::UnexpectedToken(
@@ -2512,10 +2593,99 @@ fn AstParser::parse_type_args(
 }
 
 ///|
+/// Parse type parameters for generic functions: [T, U]
+/// Returns array of type parameter names
+fn AstParser::parse_fn_type_params(
+  self : AstParser,
+) -> Array[String] raise ParseError {
+  let type_params : Array[String] = []
+  self.skip_trivia()
+  if self.peek_kind() == lbracket() {
+    let _ = self.bump()
+    self.skip_trivia()
+    if self.peek_kind() != rbracket() {
+      let name_tok = self.expect(name(), "type parameter name")
+      type_params.push(name_tok.text())
+      while {
+              self.skip_trivia()
+              self.peek_kind() == comma()
+            } {
+        let _ = self.bump()
+        self.skip_trivia()
+        if self.peek_kind() == rbracket() {
+          break
+        }
+        let name_tok = self.expect(name(), "type parameter name")
+        type_params.push(name_tok.text())
+      }
+    }
+    let _ = self.expect(rbracket(), "]")
+
+  }
+  type_params
+}
+
+///|
+/// Parse type arguments for function calls: [Int, String]
+/// Returns array of types
+fn AstParser::parse_call_type_args(
+  self : AstParser,
+) -> Array[@core.Type] raise ParseError {
+  let type_args : Array[@core.Type] = []
+  self.skip_trivia()
+  if self.peek_kind() == lbracket() {
+    let _ = self.bump()
+    self.skip_trivia()
+    if self.peek_kind() != rbracket() {
+      type_args.push(self.parse_type())
+      while {
+              self.skip_trivia()
+              self.peek_kind() == comma()
+            } {
+        let _ = self.bump()
+        self.skip_trivia()
+        if self.peek_kind() == rbracket() {
+          break
+        }
+        type_args.push(self.parse_type())
+      }
+    }
+    let _ = self.expect(rbracket(), "]")
+
+  }
+  type_args
+}
+
+///|
+/// Check if the next tokens after [ look like type arguments (e.g., [Int])
+/// rather than an index expression (e.g., [0] or ["hello"])
+/// Type arguments start with uppercase letter (Int, String, etc.)
+fn AstParser::is_type_arg_context(self : AstParser) -> Bool {
+  let saved = self.pos
+  let _ = self.bump() // consume [
+  self.skip_trivia()
+  let result = if self.peek_kind() == name() {
+    let text = self.peek().text()
+    if text.length() > 0 {
+      let first = text.to_array()[0]
+      first >= 'A' && first <= 'Z'
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+  self.pos = saved
+  result
+}
+
+///|
 fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
   let saved = self.pos
   let result : @core.Expr? = try {
-    let params = self.parse_param_list({})
+    // Try to parse type parameters: [T, U]
+    let type_params = self.parse_fn_type_params()
+    let params = self.parse_param_list(param_set_from_params(type_params))
     self.skip_trivia()
     if self.peek_kind() != thin_arrow() && self.peek_kind() != lbrace() {
       raise ParseError::UnexpectedToken(
@@ -2542,18 +2712,22 @@ fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
           let body = @core.Module::{
             stmts: [@core.Stmt::Expr(expr~, span=expr.span())],
           }
-          return Some(@core.Expr::Fn(params~, ret~, effects~, body~, span~))
+          return Some(
+            @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~),
+          )
         }
       }
       // Type annotation followed by block: (x) -> Int { ... }
       if self.peek_kind() != lbrace() {
-        ret = Some(self.parse_type())
+        ret = Some(
+          self.parse_type_with_params(param_set_from_params(type_params)),
+        )
         effects = self.parse_effect_list()
       }
     }
     let body = self.parse_block()
     let span = self.span_from(saved)
-    Some(@core.Expr::Fn(params~, ret~, effects~, body~, span~))
+    Some(@core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~))
   } catch {
     _ => None
   }
@@ -2594,11 +2768,13 @@ fn AstParser::is_arrow_expr_body(self : AstParser) -> Bool {
     let after_kind = self.peek_kind()
     let after_text = self.peek().text()
     self.pos = saved // restore position
-    // If after () there's "with" or "{", it's a type annotation
+    // If after () there's "with", "{", or "->", it's a type annotation
     if after_kind == lbrace() {
       return false // type annotation: (Int, String) { ... }
     } else if after_kind == name() && after_text == "with" {
       return false // type annotation: (Int, String) with {Error} { ... }
+    } else if after_kind == thin_arrow() {
+      return false // function type: (A) -> C { ... }
     } else {
       return true // expression: (a, b).foo() or (x + 1)
     }
@@ -2875,7 +3051,14 @@ fn AstParser::parse_call_or_primary(
         // Block body: x -> { ... }
         let body = self.parse_block()
         let span = self.span_from(start)
-        @core.Expr::Fn(params=[param], ret=None, effects=[], body~, span~)
+        @core.Expr::Fn(
+          type_params=[],
+          params=[param],
+          ret=None,
+          effects=[],
+          body~,
+          span~,
+        )
       } else {
         // Expression body: x -> x + 1
         let body_expr = self.parse_expr()
@@ -2883,14 +3066,37 @@ fn AstParser::parse_call_or_primary(
         let body = @core.Module::{
           stmts: [@core.Stmt::Expr(expr=body_expr, span=body_expr.span())],
         }
-        @core.Expr::Fn(params=[param], ret=None, effects=[], body~, span~)
+        @core.Expr::Fn(
+          type_params=[],
+          params=[param],
+          ret=None,
+          effects=[],
+          body~,
+          span~,
+        )
+      }
+    } else if self.peek_kind() == lbracket() && self.is_type_arg_context() {
+      // name[Type, ...] - explicit type arguments (only if next token looks like a type)
+      let type_args = self.parse_call_type_args()
+      self.skip_trivia()
+      if self.peek_kind() == lparen() {
+        // name[Type](args) - generic function call
+        let _ = self.bump()
+        let args = self.parse_args()
+        let _ = self.expect(rparen(), ")")
+        let span = self.span_from(start)
+        @core.Expr::Call(name=name_tok.text(), type_args~, args~, span~)
+      } else {
+        // name[Type] without parens - might be generic function reference
+        let span = self.span_from(start)
+        @core.Expr::Call(name=name_tok.text(), type_args~, args=[], span~)
       }
     } else if self.peek_kind() == lparen() {
       let _ = self.bump()
       let args = self.parse_args()
       let _ = self.expect(rparen(), ")")
       let span = self.span_from(start)
-      @core.Expr::Call(name=name_tok.text(), args~, span~)
+      @core.Expr::Call(name=name_tok.text(), type_args=[], args~, span~)
     } else if name_tok.text() == "_" {
       // Placeholder for lambda shorthand: _ * 2 → x -> x * 2
       let span = self.span_from(start)
@@ -2924,13 +3130,19 @@ fn AstParser::parse_call_or_primary(
         for arg in args {
           merged.push(arg)
         }
-        expr = @core.Expr::Call(name=method_tok.text(), args=merged, span~)
+        expr = @core.Expr::Call(
+          name=method_tok.text(),
+          type_args=[],
+          args=merged,
+          span~,
+        )
       } else {
         // expr.prop → prop(expr) — zero-arg method call
         let span = self.span_from(start)
         let expr_span = expr.span()
         expr = @core.Expr::Call(
           name=method_tok.text(),
+          type_args=[],
           args=[@core.CallArg::{ label: None, expr, span: expr_span }],
           span~,
         )
@@ -3160,6 +3372,7 @@ fn desugar_string_interp(
       parts.push(
         @core.Expr::Call(
           name="__to_string",
+          type_args=[],
           args=[@core.CallArg::{ label: None, expr: inner, span }],
           span~,
         ),
@@ -3190,6 +3403,7 @@ fn desugar_string_interp(
     for j in 1..<parts.length() {
       result = @core.Expr::Call(
         name="string_concat",
+        type_args=[],
         args=[
           @core.CallArg::{ label: None, expr: result, span },
           @core.CallArg::{ label: None, expr: parts[j], span },
@@ -3283,7 +3497,7 @@ fn reindex_placeholders(expr : @core.Expr, counter : Ref[Int]) -> @core.Expr {
       counter.val += 1
       @core.Expr::Placeholder(index=idx, span~)
     }
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
       let new_args : Array[@core.CallArg] = []
       for arg in args {
         new_args.push(@core.CallArg::{
@@ -3292,7 +3506,7 @@ fn reindex_placeholders(expr : @core.Expr, counter : Ref[Int]) -> @core.Expr {
           span: arg.span,
         })
       }
-      @core.Expr::Call(name~, args=new_args, span~)
+      @core.Expr::Call(name~, type_args~, args=new_args, span~)
     }
     @core.Expr::Tuple(items~, span~) => {
       let new_items : Array[@core.Expr] = []
@@ -3355,7 +3569,7 @@ fn replace_placeholders(expr : @core.Expr) -> @core.Expr {
       let name = "__p" + index.to_string()
       @core.Expr::Ident(name~, span~)
     }
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
       let new_args : Array[@core.CallArg] = []
       for arg in args {
         new_args.push(@core.CallArg::{
@@ -3364,7 +3578,7 @@ fn replace_placeholders(expr : @core.Expr) -> @core.Expr {
           span: arg.span,
         })
       }
-      @core.Expr::Call(name~, args=new_args, span~)
+      @core.Expr::Call(name~, type_args~, args=new_args, span~)
     }
     @core.Expr::Tuple(items~, span~) => {
       let new_items : Array[@core.Expr] = []
@@ -3442,7 +3656,7 @@ pub fn desugar_placeholder_expr(expr : @core.Expr) -> @core.Expr {
   let body = @core.Module::{
     stmts: [@core.Stmt::Expr(expr=body_expr, span=body_expr.span())],
   }
-  @core.Expr::Fn(params~, ret=None, effects=[], body~, span~)
+  @core.Expr::Fn(type_params=[], params~, ret=None, effects=[], body~, span~)
 }
 
 // ============================================================
@@ -3493,7 +3707,7 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
 /// Desugar expression deeply, applying placeholder desugar to Call args
 fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
   match expr {
-    @core.Expr::Call(name~, args~, span~) => {
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
       // Desugar each argument (top-level of Call args)
       let new_args : Array[@core.CallArg] = []
       for arg in args {
@@ -3505,7 +3719,7 @@ fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
           span: arg.span,
         })
       }
-      @core.Expr::Call(name~, args=new_args, span~)
+      @core.Expr::Call(name~, type_args~, args=new_args, span~)
     }
     @core.Expr::Tuple(items~, span~) => {
       let new_items : Array[@core.Expr] = []
@@ -3580,8 +3794,15 @@ fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
         catch_body=desugar_module(catch_body),
         span~,
       )
-    @core.Expr::Fn(params~, ret~, effects~, body~, span~) =>
-      @core.Expr::Fn(params~, ret~, effects~, body=desugar_module(body), span~)
+    @core.Expr::Fn(type_params~, params~, ret~, effects~, body~, span~) =>
+      @core.Expr::Fn(
+        type_params~,
+        params~,
+        ret~,
+        effects~,
+        body=desugar_module(body),
+        span~,
+      )
     @core.Expr::While(cond~, body~, span~) =>
       @core.Expr::While(
         cond=desugar_expr_deep(cond),
