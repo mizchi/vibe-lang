@@ -1,0 +1,6 @@
+// Recursive function without return type annotation
+let rec fib = (n) { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }
+fib(10)
+
+__DATA__
+{"error_contains": "missing return type"}

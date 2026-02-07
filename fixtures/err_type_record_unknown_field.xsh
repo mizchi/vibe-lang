@@ -1,0 +1,6 @@
+// Access unknown field on record
+let p = record { x: 1, y: 2 }
+p.z
+
+__DATA__
+{"error_contains": "BadCall"}

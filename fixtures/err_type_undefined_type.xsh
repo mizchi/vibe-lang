@@ -1,0 +1,5 @@
+// Reference to undefined type in function parameter
+let f = (x: NonExistent) -> Int { 0 }
+
+__DATA__
+{"error_contains": "UnknownType"}

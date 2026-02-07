@@ -1,0 +1,6 @@
+// Push wrong type to array
+let arr = [1, 2, 3]
+array_push(arr, "hello")
+
+__DATA__
+{"error_contains": "BadCall"}
