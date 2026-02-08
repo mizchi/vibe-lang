@@ -34,6 +34,8 @@ pub fn run(args : Array[String]) -> Unit {
     "fetch" => fetch_cmd(cmd_args)
     "update-lock" => fetch_cmd(cmd_args)
     "expand" => expand_cmd(cmd_args)
+    "ide" => ide_cmd(cmd_args)
+    "lsif" => lsif_cmd(cmd_args)
     "lsp" => lsp_cmd(cmd_args)
     "help" => print_usage()
     _ => {
@@ -74,6 +76,8 @@ fn print_usage() -> Unit {
   )
   println("  fetch <file>                resolve imports and write xsh.lock")
   println("  update-lock <file>          alias for fetch")
+  println("  ide <outline|peek-def|search> ...  symbol/type index queries")
+  println("  lsif [-o out.lsif] <file>   emit LSIF via shared symbol index")
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax xsh|posix (default: xsh)")
 }
@@ -2080,6 +2084,16 @@ fn fetch_cmd(args : Array[String]) -> Unit {
 
 ///|
 fn load_db(entry_path : String) -> Result[(@xsh_lib.XshDb, String), String] {
+  match load_db_with_paths(entry_path) {
+    Ok((db, entry, _)) => Ok((db, entry))
+    Err(err) => Err(err)
+  }
+}
+
+///|
+fn load_db_with_paths(
+  entry_path : String,
+) -> Result[(@xsh_lib.XshDb, String, Array[String]), String] {
   let db = @xsh_lib.XshDb::new()
   let entry = resolve_entry_path(entry_path)
   match apply_lock_to_db(db, entry) {
@@ -2088,7 +2102,14 @@ fn load_db(entry_path : String) -> Result[(@xsh_lib.XshDb, String), String] {
   }
   let visited : Map[String, Bool] = {}
   match load_sources_recursive(db, entry, visited) {
-    Ok(_) => Ok((db, entry))
+    Ok(_) => {
+      let paths : Array[String] = []
+      for path, _ in visited {
+        paths.push(path)
+      }
+      paths.sort()
+      Ok((db, entry, paths))
+    }
     Err(err) => Err(err)
   }
 }
@@ -2590,6 +2611,258 @@ fn find_xsh_dir_from(start : String) -> String {
     dir = dir + "/.."
   }
   abort("expand: .xsh directory not found (searched from: " + start + ")")
+}
+
+///|
+fn zero_pad_number(value : Int, width : Int) -> String {
+  let raw = value.to_string()
+  if raw.length() >= width {
+    return raw
+  }
+  let buf = StringBuilder::new()
+  for _ in 0..<(width - raw.length()) {
+    buf.write_char('0')
+  }
+  buf.write_string(raw)
+  buf.to_string()
+}
+
+///|
+fn symbol_line_col(source : String, span : @xsh_core.Span) -> (Int, Int) {
+  let (pos, _, _) = @xsh_core.line_info(source, span.start)
+  (pos.line, pos.column)
+}
+
+///|
+fn symbol_line_text(source : String, span : @xsh_core.Span) -> String {
+  let (_, line_start, line_end) = @xsh_core.line_info(source, span.start)
+  try source[line_start:line_end] catch {
+    _ => ""
+  } noraise {
+    s => s.to_string()
+  }
+}
+
+///|
+fn print_ide_outline_entry(
+  entry : @xsh_lib.SymbolEntry,
+  source : String,
+) -> Unit {
+  let (line, _) = symbol_line_col(source, entry.span)
+  println(
+    "L" +
+    zero_pad_number(line, 3) +
+    " | " +
+    @xsh_lib.symbol_kind_name(entry.kind) +
+    " " +
+    entry.name +
+    " : " +
+    entry.signature,
+  )
+}
+
+///|
+fn ide_outline_cmd(args : Array[String]) -> Unit {
+  if args.length() != 1 {
+    abort("ide outline: expected <file>")
+  }
+  match load_db_with_paths(args[0]) {
+    Ok((db, entry, _)) => {
+      let index = @xsh_lib.build_symbol_index(db, [entry])
+      if index.entries.length() == 0 {
+        println("No symbols found in " + entry)
+        return
+      }
+      println("Outline: " + entry)
+      for symbol in index.entries {
+        match db.get_source(symbol.path) {
+          Some(source) => print_ide_outline_entry(symbol, source)
+          None => ()
+        }
+      }
+    }
+    Err(err) => abort("ide outline: " + err)
+  }
+}
+
+///|
+fn print_ide_search_entry(
+  entry : @xsh_lib.SymbolEntry,
+  source : String,
+) -> Unit {
+  let (line, column) = symbol_line_col(source, entry.span)
+  println(
+    entry.path +
+    ":" +
+    line.to_string() +
+    ":" +
+    column.to_string() +
+    "  " +
+    @xsh_lib.symbol_kind_name(entry.kind) +
+    " " +
+    entry.name +
+    " : " +
+    entry.signature,
+  )
+}
+
+///|
+fn ide_peek_def_cmd(args : Array[String]) -> Unit {
+  if args.length() != 2 {
+    abort("ide peek-def: expected <symbol> <entry-file>")
+  }
+  let symbol = args[0]
+  let entry_file = args[1]
+  match load_db_with_paths(entry_file) {
+    Ok((db, _, paths)) => {
+      let index = @xsh_lib.build_symbol_index(db, paths)
+      let matches = index.find_exact(symbol)
+      if matches.length() == 0 {
+        println("No symbols found matching `" + symbol + "`")
+        return
+      }
+      println(
+        "Found " +
+        matches.length().to_string() +
+        " symbols matching `" +
+        symbol +
+        "`:",
+      )
+      for entry in matches {
+        match db.get_source(entry.path) {
+          Some(source) => {
+            let (line, column) = symbol_line_col(source, entry.span)
+            println("")
+            println(
+              @xsh_lib.symbol_kind_name(entry.kind) +
+              " " +
+              entry.name +
+              " at " +
+              entry.path +
+              ":" +
+              line.to_string() +
+              ":" +
+              column.to_string(),
+            )
+            let snippet = symbol_line_text(source, entry.span)
+            if snippet.length() > 0 {
+              println(snippet)
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    Err(err) => abort("ide peek-def: " + err)
+  }
+}
+
+///|
+fn ide_search_cmd(args : Array[String]) -> Unit {
+  if args.length() != 2 {
+    abort("ide search: expected <query> <entry-file>")
+  }
+  let query = args[0]
+  let entry_file = args[1]
+  match load_db_with_paths(entry_file) {
+    Ok((db, _, paths)) => {
+      let index = @xsh_lib.build_symbol_index(db, paths)
+      let matches = index.search(query)
+      if matches.length() == 0 {
+        println("No symbols found for query `" + query + "`")
+        return
+      }
+      println(
+        "Found " +
+        matches.length().to_string() +
+        " symbols for query `" +
+        query +
+        "`:",
+      )
+      for entry in matches {
+        match db.get_source(entry.path) {
+          Some(source) => print_ide_search_entry(entry, source)
+          None => ()
+        }
+      }
+    }
+    Err(err) => abort("ide search: " + err)
+  }
+}
+
+///|
+fn ide_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    abort("ide: expected subcommand (outline|peek-def|search)")
+  }
+  let sub = args[0]
+  let sub_args = args_tail(args, 1)
+  match sub {
+    "outline" => ide_outline_cmd(sub_args)
+    "peek-def" => ide_peek_def_cmd(sub_args)
+    "search" => ide_search_cmd(sub_args)
+    _ => abort("ide: unknown subcommand: " + sub)
+  }
+}
+
+///|
+fn lsif_lines_to_text(lines : Array[String]) -> String {
+  let buf = StringBuilder::new()
+  for i in 0..<lines.length() {
+    if i > 0 {
+      buf.write_char('\n')
+    }
+    buf.write_string(lines[i])
+  }
+  buf.to_string()
+}
+
+///|
+fn lsif_cmd(args : Array[String]) -> Unit {
+  let entries : Array[String] = []
+  let mut out_path : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "-o" || arg == "--out" {
+      i += 1
+      if i >= args.length() {
+        abort("lsif: missing output path after " + arg)
+      }
+      out_path = Some(args[i])
+      i += 1
+      continue
+    }
+    entries.push(arg)
+    i += 1
+  }
+  if entries.length() != 1 {
+    abort("lsif: expected <entry-file>")
+  }
+  match load_db_with_paths(entries[0]) {
+    Ok((db, _, paths)) => {
+      let index = @xsh_lib.build_symbol_index(db, paths)
+      let lines = @xsh_lib.symbol_index_to_lsif_lines(index, fn(path) {
+        db.get_source(path)
+      })
+      match out_path {
+        Some(path) => {
+          let text = lsif_lines_to_text(lines)
+          @os_fs.write_string_to_file(path, text) catch {
+            e => abort("lsif: " + e.to_string())
+          }
+          println(
+            "wrote " + path + " (" + lines.length().to_string() + " lines)",
+          )
+        }
+        None =>
+          for line in lines {
+            println(line)
+          }
+      }
+    }
+    Err(err) => abort("lsif: " + err)
+  }
 }
 
 ///|

@@ -74,6 +74,14 @@ just run repl
 # Line REPL for stdio/wasi-like environments
 just run repl-wasi --no-prompt
 
+# IDE-like symbol queries
+just run ide outline examples/syntax.xsh
+just run ide peek-def some_fn examples/syntax.xsh
+just run ide search Option examples/syntax.xsh
+
+# Emit LSIF from the same symbol index backend
+just run lsif -o /tmp/xsh.lsif examples/syntax.xsh
+
 # Build wasm line REPL (preview2 stdio imports)
 just build-repl-wasi-wasm
 
@@ -175,6 +183,7 @@ WASM GC fixtures live in `fixtures/wasm_gc/*.xsh` and check for `struct.new/get/
 just bench-wasmtime
 just bench-compare
 just bench-cmd-latency
+just bench-symbol-index
 ```
 
 ## License

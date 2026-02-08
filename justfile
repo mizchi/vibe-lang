@@ -107,6 +107,10 @@ bench-cmd-latency:
 bench-cmd-compile:
     scripts/bench_cmd_compile.sh
 
+# Benchmark symbol index + LSIF backend
+bench-symbol-index:
+    moon bench -p benches -f symbol_index_bench.mbt
+
 # Run wasm-js-string backend via JS engine
 run-wasm-js-string *args:
     node scripts/run_wasm_js_string.mjs {{args}}

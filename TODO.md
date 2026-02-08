@@ -111,6 +111,9 @@
   `|` is text-lane only, `|>` is object-lane only, and text/object boundary
   crossing must be explicit conversion calls.
   Design memo is tracked in `spec/xshell.md`.
+- Symbol/type/signature indexing backend is implemented and shared:
+  `xsh ide` (`outline`/`peek-def`/`search`) and `xsh lsif` consume the same
+  module-level symbol index (`src/xsh/symbol_index.mbt`).
 
 ## Next Up (Priority Order)
 
