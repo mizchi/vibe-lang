@@ -2937,7 +2937,7 @@ fn index_build_cmd(args : Array[String]) -> Unit {
       let index = @xsh_lib.build_advanced_graph_index(
         db,
         paths,
-        base_commit=base_commit,
+        base_commit~,
         created_at=@env.now().to_string(),
       )
       match @xsh_lib.write_advanced_graph_index(out_path, index) {
@@ -2994,17 +2994,13 @@ fn index_verify_cmd(args : Array[String]) -> Unit {
   let index = index_load_file(args[0])
   let issues = index.verify()
   if issues.length() == 0 {
-    println(
-      "index verify: ok (" + index.defs.length().to_string() + " defs)",
-    )
+    println("index verify: ok (" + index.defs.length().to_string() + " defs)")
     return
   }
   for issue in issues {
     println("index verify: " + issue)
   }
-  abort(
-    "index verify: failed (" + issues.length().to_string() + " issues)",
-  )
+  abort("index verify: failed (" + issues.length().to_string() + " issues)")
 }
 
 ///|

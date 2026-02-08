@@ -32,7 +32,10 @@ pub fn FbStringBuilder::new(builder : @flatbuffers.Builder) -> FbStringBuilder {
 }
 
 ///|
-pub fn FbStringBuilder::set_value(self : FbStringBuilder, value : String) -> FbStringBuilder {
+pub fn FbStringBuilder::set_value(
+  self : FbStringBuilder,
+  value : String,
+) -> FbStringBuilder {
   let offset = self.builder.create_string(value)
   self.string_offsets.set("value", offset)
   self
@@ -133,7 +136,10 @@ pub fn FbDefBuilder::start(self : FbDefBuilder) -> Unit {
 }
 
 ///|
-pub fn FbDefBuilder::add_def_id(self : FbDefBuilder, value : Int) -> FbDefBuilder {
+pub fn FbDefBuilder::add_def_id(
+  self : FbDefBuilder,
+  value : Int,
+) -> FbDefBuilder {
   self.builder.add_int32(0, value, 0)
   self
 }
@@ -151,7 +157,10 @@ pub fn FbDefBuilder::add_kind(self : FbDefBuilder, value : Int) -> FbDefBuilder 
 }
 
 ///|
-pub fn FbDefBuilder::add_signature(self : FbDefBuilder, value : Int) -> FbDefBuilder {
+pub fn FbDefBuilder::add_signature(
+  self : FbDefBuilder,
+  value : Int,
+) -> FbDefBuilder {
   self.builder.add_int32(3, value, 0)
   self
 }
@@ -163,7 +172,10 @@ pub fn FbDefBuilder::add_path(self : FbDefBuilder, value : Int) -> FbDefBuilder 
 }
 
 ///|
-pub fn FbDefBuilder::add_start(self : FbDefBuilder, value : Int) -> FbDefBuilder {
+pub fn FbDefBuilder::add_start(
+  self : FbDefBuilder,
+  value : Int,
+) -> FbDefBuilder {
   self.builder.add_int32(5, value, 0)
   self
 }
@@ -175,7 +187,10 @@ pub fn FbDefBuilder::add_end(self : FbDefBuilder, value : Int) -> FbDefBuilder {
 }
 
 ///|
-pub fn FbDefBuilder::add_module_hash(self : FbDefBuilder, value : Int) -> FbDefBuilder {
+pub fn FbDefBuilder::add_module_hash(
+  self : FbDefBuilder,
+  value : Int,
+) -> FbDefBuilder {
   self.builder.add_int32(7, value, 0)
   self
 }
@@ -232,12 +247,17 @@ pub struct FbIndexEntryBuilder {
 }
 
 ///|
-pub fn FbIndexEntryBuilder::new(builder : @flatbuffers.Builder) -> FbIndexEntryBuilder {
+pub fn FbIndexEntryBuilder::new(
+  builder : @flatbuffers.Builder,
+) -> FbIndexEntryBuilder {
   { builder, string_offsets: {}, vector_offsets: {} }
 }
 
 ///|
-pub fn FbIndexEntryBuilder::set_values_offset(self : FbIndexEntryBuilder, offset : Int) -> FbIndexEntryBuilder {
+pub fn FbIndexEntryBuilder::set_values_offset(
+  self : FbIndexEntryBuilder,
+  offset : Int,
+) -> FbIndexEntryBuilder {
   self.vector_offsets.set("values", offset)
   self
 }
@@ -248,7 +268,10 @@ pub fn FbIndexEntryBuilder::start(self : FbIndexEntryBuilder) -> Unit {
 }
 
 ///|
-pub fn FbIndexEntryBuilder::add_key(self : FbIndexEntryBuilder, value : Int) -> FbIndexEntryBuilder {
+pub fn FbIndexEntryBuilder::add_key(
+  self : FbIndexEntryBuilder,
+  value : Int,
+) -> FbIndexEntryBuilder {
   self.builder.add_int32(0, value, 0)
   self
 }
@@ -335,7 +358,10 @@ pub fn FbIndex::symbol_index_length(self : FbIndex) -> Int {
 }
 
 ///|
-pub fn FbIndex::symbol_index_table(self : FbIndex, index : Int) -> @flatbuffers.Table? {
+pub fn FbIndex::symbol_index_table(
+  self : FbIndex,
+  index : Int,
+) -> @flatbuffers.Table? {
   self.table.get_vector_table(6, index)
 }
 
@@ -345,7 +371,10 @@ pub fn FbIndex::type_index_length(self : FbIndex) -> Int {
 }
 
 ///|
-pub fn FbIndex::type_index_table(self : FbIndex, index : Int) -> @flatbuffers.Table? {
+pub fn FbIndex::type_index_table(
+  self : FbIndex,
+  index : Int,
+) -> @flatbuffers.Table? {
   self.table.get_vector_table(7, index)
 }
 
@@ -355,7 +384,10 @@ pub fn FbIndex::strings_length(self : FbIndex) -> Int {
 }
 
 ///|
-pub fn FbIndex::strings_table(self : FbIndex, index : Int) -> @flatbuffers.Table? {
+pub fn FbIndex::strings_table(
+  self : FbIndex,
+  index : Int,
+) -> @flatbuffers.Table? {
   self.table.get_vector_table(8, index)
 }
 
@@ -373,37 +405,55 @@ pub fn FbIndexBuilder::new(builder : @flatbuffers.Builder) -> FbIndexBuilder {
 }
 
 ///|
-pub fn FbIndexBuilder::set_features_offset(self : FbIndexBuilder, offset : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::set_features_offset(
+  self : FbIndexBuilder,
+  offset : Int,
+) -> FbIndexBuilder {
   self.vector_offsets.set("features", offset)
   self
 }
 
 ///|
-pub fn FbIndexBuilder::set_chunk_roots_offset(self : FbIndexBuilder, offset : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::set_chunk_roots_offset(
+  self : FbIndexBuilder,
+  offset : Int,
+) -> FbIndexBuilder {
   self.vector_offsets.set("chunk_roots", offset)
   self
 }
 
 ///|
-pub fn FbIndexBuilder::set_defs_offset(self : FbIndexBuilder, offset : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::set_defs_offset(
+  self : FbIndexBuilder,
+  offset : Int,
+) -> FbIndexBuilder {
   self.vector_offsets.set("defs", offset)
   self
 }
 
 ///|
-pub fn FbIndexBuilder::set_symbol_index_offset(self : FbIndexBuilder, offset : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::set_symbol_index_offset(
+  self : FbIndexBuilder,
+  offset : Int,
+) -> FbIndexBuilder {
   self.vector_offsets.set("symbol_index", offset)
   self
 }
 
 ///|
-pub fn FbIndexBuilder::set_type_index_offset(self : FbIndexBuilder, offset : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::set_type_index_offset(
+  self : FbIndexBuilder,
+  offset : Int,
+) -> FbIndexBuilder {
   self.vector_offsets.set("type_index", offset)
   self
 }
 
 ///|
-pub fn FbIndexBuilder::set_strings_offset(self : FbIndexBuilder, offset : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::set_strings_offset(
+  self : FbIndexBuilder,
+  offset : Int,
+) -> FbIndexBuilder {
   self.vector_offsets.set("strings", offset)
   self
 }
@@ -414,19 +464,28 @@ pub fn FbIndexBuilder::start(self : FbIndexBuilder) -> Unit {
 }
 
 ///|
-pub fn FbIndexBuilder::add_schema_version(self : FbIndexBuilder, value : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::add_schema_version(
+  self : FbIndexBuilder,
+  value : Int,
+) -> FbIndexBuilder {
   self.builder.add_int32(0, value, 0)
   self
 }
 
 ///|
-pub fn FbIndexBuilder::add_base_commit(self : FbIndexBuilder, value : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::add_base_commit(
+  self : FbIndexBuilder,
+  value : Int,
+) -> FbIndexBuilder {
   self.builder.add_int32(1, value, 0)
   self
 }
 
 ///|
-pub fn FbIndexBuilder::add_created_at(self : FbIndexBuilder, value : Int) -> FbIndexBuilder {
+pub fn FbIndexBuilder::add_created_at(
+  self : FbIndexBuilder,
+  value : Int,
+) -> FbIndexBuilder {
   self.builder.add_int32(2, value, 0)
   self
 }
@@ -573,7 +632,10 @@ pub fn FbDelta::upsert_defs_length(self : FbDelta) -> Int {
 }
 
 ///|
-pub fn FbDelta::upsert_defs_table(self : FbDelta, index : Int) -> @flatbuffers.Table? {
+pub fn FbDelta::upsert_defs_table(
+  self : FbDelta,
+  index : Int,
+) -> @flatbuffers.Table? {
   self.table.get_vector_table(12, index)
 }
 
@@ -583,7 +645,10 @@ pub fn FbDelta::symbol_upserts_length(self : FbDelta) -> Int {
 }
 
 ///|
-pub fn FbDelta::symbol_upserts_table(self : FbDelta, index : Int) -> @flatbuffers.Table? {
+pub fn FbDelta::symbol_upserts_table(
+  self : FbDelta,
+  index : Int,
+) -> @flatbuffers.Table? {
   self.table.get_vector_table(13, index)
 }
 
@@ -603,7 +668,10 @@ pub fn FbDelta::type_upserts_length(self : FbDelta) -> Int {
 }
 
 ///|
-pub fn FbDelta::type_upserts_table(self : FbDelta, index : Int) -> @flatbuffers.Table? {
+pub fn FbDelta::type_upserts_table(
+  self : FbDelta,
+  index : Int,
+) -> @flatbuffers.Table? {
   self.table.get_vector_table(15, index)
 }
 
@@ -623,7 +691,10 @@ pub fn FbDelta::strings_length(self : FbDelta) -> Int {
 }
 
 ///|
-pub fn FbDelta::strings_table(self : FbDelta, index : Int) -> @flatbuffers.Table? {
+pub fn FbDelta::strings_table(
+  self : FbDelta,
+  index : Int,
+) -> @flatbuffers.Table? {
   self.table.get_vector_table(17, index)
 }
 
@@ -641,67 +712,100 @@ pub fn FbDeltaBuilder::new(builder : @flatbuffers.Builder) -> FbDeltaBuilder {
 }
 
 ///|
-pub fn FbDeltaBuilder::set_base_features_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_base_features_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("base_features", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_base_chunk_roots_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_base_chunk_roots_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("base_chunk_roots", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_target_features_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_target_features_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("target_features", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_target_chunk_roots_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_target_chunk_roots_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("target_chunk_roots", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_removed_def_ids_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_removed_def_ids_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("removed_def_ids", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_upsert_defs_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_upsert_defs_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("upsert_defs", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_symbol_upserts_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_symbol_upserts_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("symbol_upserts", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_symbol_removes_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_symbol_removes_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("symbol_removes", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_type_upserts_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_type_upserts_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("type_upserts", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_type_removes_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_type_removes_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("type_removes", offset)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::set_strings_offset(self : FbDeltaBuilder, offset : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::set_strings_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
   self.vector_offsets.set("strings", offset)
   self
 }
@@ -712,43 +816,64 @@ pub fn FbDeltaBuilder::start(self : FbDeltaBuilder) -> Unit {
 }
 
 ///|
-pub fn FbDeltaBuilder::add_schema_version(self : FbDeltaBuilder, value : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::add_schema_version(
+  self : FbDeltaBuilder,
+  value : Int,
+) -> FbDeltaBuilder {
   self.builder.add_int32(0, value, 0)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::add_base_schema_version(self : FbDeltaBuilder, value : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::add_base_schema_version(
+  self : FbDeltaBuilder,
+  value : Int,
+) -> FbDeltaBuilder {
   self.builder.add_int32(1, value, 0)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::add_base_base_commit(self : FbDeltaBuilder, value : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::add_base_base_commit(
+  self : FbDeltaBuilder,
+  value : Int,
+) -> FbDeltaBuilder {
   self.builder.add_int32(2, value, 0)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::add_base_created_at(self : FbDeltaBuilder, value : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::add_base_created_at(
+  self : FbDeltaBuilder,
+  value : Int,
+) -> FbDeltaBuilder {
   self.builder.add_int32(3, value, 0)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::add_target_schema_version(self : FbDeltaBuilder, value : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::add_target_schema_version(
+  self : FbDeltaBuilder,
+  value : Int,
+) -> FbDeltaBuilder {
   self.builder.add_int32(6, value, 0)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::add_target_base_commit(self : FbDeltaBuilder, value : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::add_target_base_commit(
+  self : FbDeltaBuilder,
+  value : Int,
+) -> FbDeltaBuilder {
   self.builder.add_int32(7, value, 0)
   self
 }
 
 ///|
-pub fn FbDeltaBuilder::add_target_created_at(self : FbDeltaBuilder, value : Int) -> FbDeltaBuilder {
+pub fn FbDeltaBuilder::add_target_created_at(
+  self : FbDeltaBuilder,
+  value : Int,
+) -> FbDeltaBuilder {
   self.builder.add_int32(8, value, 0)
   self
 }

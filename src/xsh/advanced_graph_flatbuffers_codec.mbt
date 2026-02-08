@@ -96,7 +96,8 @@ fn fb_pool_index_or_abort(
 ) -> Int {
   match pool_index.get(value) {
     Some(id) => id
-    None => abort("flatbuffers encode missing string[" + context + "]: " + value)
+    None =>
+      abort("flatbuffers encode missing string[" + context + "]: " + value)
   }
 }
 
@@ -148,21 +149,33 @@ fn fb_build_def_offsets(
         let db = FbDefBuilder::new(builder)
         db.start()
         ignore(
-          db.add_def_id(fb_pool_index_or_abort(pool_index, def.def_id, "defs.def_id")),
+          db.add_def_id(
+            fb_pool_index_or_abort(pool_index, def.def_id, "defs.def_id"),
+          ),
         )
-        ignore(db.add_name(fb_pool_index_or_abort(pool_index, def.name, "defs.name")))
-        ignore(db.add_kind(fb_pool_index_or_abort(pool_index, def.kind, "defs.kind")))
+        ignore(
+          db.add_name(fb_pool_index_or_abort(pool_index, def.name, "defs.name")),
+        )
+        ignore(
+          db.add_kind(fb_pool_index_or_abort(pool_index, def.kind, "defs.kind")),
+        )
         ignore(
           db.add_signature(
             fb_pool_index_or_abort(pool_index, def.signature, "defs.signature"),
           ),
         )
-        ignore(db.add_path(fb_pool_index_or_abort(pool_index, def.path, "defs.path")))
+        ignore(
+          db.add_path(fb_pool_index_or_abort(pool_index, def.path, "defs.path")),
+        )
         ignore(db.add_start(def.start))
         ignore(db.add_end(def.end))
         ignore(
           db.add_module_hash(
-            fb_pool_index_or_abort(pool_index, def.module_hash, "defs.module_hash"),
+            fb_pool_index_or_abort(
+              pool_index,
+              def.module_hash,
+              "defs.module_hash",
+            ),
           ),
         )
         offsets.push(db.end())
@@ -226,28 +239,32 @@ fn fb_string_from_pool(
 }
 
 ///|
-fn fb_decode_string_pool_from_index(root : FbIndex) -> Result[Array[String], String] {
+fn fb_decode_string_pool_from_index(
+  root : FbIndex,
+) -> Result[Array[String], String] {
   let pool_values : Array[String] = []
   for i in 0..<root.strings_length() {
     let table = match root.strings_table(i) {
       Some(v) => v
       None => return Err("index.strings[" + i.to_string() + "]: missing table")
     }
-    let fb_value = FbString::{ table }
+    let fb_value = FbString::{ table, }
     pool_values.push(fb_value.value())
   }
   Ok(pool_values)
 }
 
 ///|
-fn fb_decode_string_pool_from_delta(root : FbDelta) -> Result[Array[String], String] {
+fn fb_decode_string_pool_from_delta(
+  root : FbDelta,
+) -> Result[Array[String], String] {
   let pool_values : Array[String] = []
   for i in 0..<root.strings_length() {
     let table = match root.strings_table(i) {
       Some(v) => v
       None => return Err("delta.strings[" + i.to_string() + "]: missing table")
     }
-    let fb_value = FbString::{ table }
+    let fb_value = FbString::{ table, }
     pool_values.push(fb_value.value())
   }
   Ok(pool_values)
@@ -261,11 +278,12 @@ fn fb_decode_string_array_from_index_entry(
 ) -> Result[Array[String], String] {
   let out : Array[String] = []
   for i in 0..<entry.values_length() {
-    let value = match fb_string_from_pool(
-      pool_values,
-      entry.values(i),
-      context + "[" + i.to_string() + "]",
-    ) {
+    let value = match
+      fb_string_from_pool(
+        pool_values,
+        entry.values(i),
+        context + "[" + i.to_string() + "]",
+      ) {
       Ok(v) => v
       Err(err) => return Err(err)
     }
@@ -283,11 +301,12 @@ fn fb_decode_string_array_from_index_vector(
 ) -> Result[Array[String], String] {
   let out : Array[String] = []
   for i in 0..<len {
-    let value = match fb_string_from_pool(
-      pool_values,
-      get(i),
-      context + "[" + i.to_string() + "]",
-    ) {
+    let value = match
+      fb_string_from_pool(
+        pool_values,
+        get(i),
+        context + "[" + i.to_string() + "]",
+      ) {
       Ok(v) => v
       Err(err) => return Err(err)
     }
@@ -297,7 +316,9 @@ fn fb_decode_string_array_from_index_vector(
 }
 
 ///|
-fn fb_sorted_defs_for_delta(defs : Array[AdvancedGraphDef]) -> Array[AdvancedGraphDef] {
+fn fb_sorted_defs_for_delta(
+  defs : Array[AdvancedGraphDef],
+) -> Array[AdvancedGraphDef] {
   let out : Array[AdvancedGraphDef] = []
   for def in defs {
     let mut inserted = false
@@ -330,10 +351,11 @@ fn fb_sorted_unique_strings(values : Array[String]) -> Array[String] {
 }
 
 ///|
-fn advanced_graph_index_to_flatbuffer_bytes(index : AdvancedGraphIndex) -> Bytes {
+fn advanced_graph_index_to_flatbuffer_bytes(
+  index : AdvancedGraphIndex,
+) -> Bytes {
   let pool_values : Array[String] = []
   let pool_index : Map[String, Int] = {}
-
   fb_collect_manifest_strings(index.manifest, pool_values, pool_index)
   for key in fb_sorted_def_keys(index.defs) {
     match index.defs.get(key) {
@@ -343,7 +365,6 @@ fn advanced_graph_index_to_flatbuffer_bytes(index : AdvancedGraphIndex) -> Bytes
   }
   fb_collect_index_map_strings(index.symbol_index, pool_values, pool_index)
   fb_collect_index_map_strings(index.type_index, pool_values, pool_index)
-
   let builder = @flatbuffers.Builder::new()
   let features_offset = fb_build_int_vector_from_strings(
     builder,
@@ -379,7 +400,6 @@ fn advanced_graph_index_to_flatbuffer_bytes(index : AdvancedGraphIndex) -> Bytes
   let strings_offset = builder.create_offset_vector(
     fb_build_string_offsets(builder, pool_values),
   )
-
   let root = FbIndexBuilder::new(builder)
   ignore(root.set_features_offset(features_offset))
   ignore(root.set_chunk_roots_offset(chunk_roots_offset))
@@ -425,38 +445,41 @@ fn advanced_graph_index_from_flatbuffer_bytes(
     Ok(v) => v
     Err(err) => return Err("index flatbuffer: " + err)
   }
-
-  let base_commit = match fb_string_from_pool(
-    pool_values,
-    root.base_commit(),
-    "index.manifest.base_commit",
-  ) {
+  let base_commit = match
+    fb_string_from_pool(
+      pool_values,
+      root.base_commit(),
+      "index.manifest.base_commit",
+    ) {
     Ok(v) => v
     Err(err) => return Err("index flatbuffer: " + err)
   }
-  let created_at = match fb_string_from_pool(
-    pool_values,
-    root.created_at(),
-    "index.manifest.created_at",
-  ) {
+  let created_at = match
+    fb_string_from_pool(
+      pool_values,
+      root.created_at(),
+      "index.manifest.created_at",
+    ) {
     Ok(v) => v
     Err(err) => return Err("index flatbuffer: " + err)
   }
-  let features = match fb_decode_string_array_from_index_vector(
-    root.features_length(),
-    i => root.features(i),
-    pool_values,
-    "index.manifest.features",
-  ) {
+  let features = match
+    fb_decode_string_array_from_index_vector(
+      root.features_length(),
+      i => root.features(i),
+      pool_values,
+      "index.manifest.features",
+    ) {
     Ok(v) => v
     Err(err) => return Err("index flatbuffer: " + err)
   }
-  let chunk_roots = match fb_decode_string_array_from_index_vector(
-    root.chunk_roots_length(),
-    i => root.chunk_roots(i),
-    pool_values,
-    "index.manifest.chunk_roots",
-  ) {
+  let chunk_roots = match
+    fb_decode_string_array_from_index_vector(
+      root.chunk_roots_length(),
+      i => root.chunk_roots(i),
+      pool_values,
+      "index.manifest.chunk_roots",
+    ) {
     Ok(v) => v
     Err(err) => return Err("index flatbuffer: " + err)
   }
@@ -467,59 +490,67 @@ fn advanced_graph_index_from_flatbuffer_bytes(
     features,
     chunk_roots,
   }
-
   let defs : Map[String, AdvancedGraphDef] = {}
   for i in 0..<root.defs_length() {
     let table = match root.defs_table(i) {
       Some(v) => v
-      None => return Err("index flatbuffer: defs[" + i.to_string() + "] missing table")
+      None =>
+        return Err(
+          "index flatbuffer: defs[" + i.to_string() + "] missing table",
+        )
     }
-    let def_row = FbDef::{ table }
-    let def_id = match fb_string_from_pool(
-      pool_values,
-      def_row.def_id(),
-      "index.defs[" + i.to_string() + "].def_id",
-    ) {
+    let def_row = FbDef::{ table, }
+    let def_id = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.def_id(),
+        "index.defs[" + i.to_string() + "].def_id",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
-    let name = match fb_string_from_pool(
-      pool_values,
-      def_row.name(),
-      "index.defs[" + i.to_string() + "].name",
-    ) {
+    let name = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.name(),
+        "index.defs[" + i.to_string() + "].name",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
-    let kind = match fb_string_from_pool(
-      pool_values,
-      def_row.kind(),
-      "index.defs[" + i.to_string() + "].kind",
-    ) {
+    let kind = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.kind(),
+        "index.defs[" + i.to_string() + "].kind",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
-    let signature = match fb_string_from_pool(
-      pool_values,
-      def_row.signature(),
-      "index.defs[" + i.to_string() + "].signature",
-    ) {
+    let signature = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.signature(),
+        "index.defs[" + i.to_string() + "].signature",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
-    let path = match fb_string_from_pool(
-      pool_values,
-      def_row.path(),
-      "index.defs[" + i.to_string() + "].path",
-    ) {
+    let path = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.path(),
+        "index.defs[" + i.to_string() + "].path",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
-    let module_hash = match fb_string_from_pool(
-      pool_values,
-      def_row.module_hash(),
-      "index.defs[" + i.to_string() + "].module_hash",
-    ) {
+    let module_hash = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.module_hash(),
+        "index.defs[" + i.to_string() + "].module_hash",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
@@ -534,7 +565,6 @@ fn advanced_graph_index_from_flatbuffer_bytes(
       module_hash,
     }
   }
-
   let symbol_index : Map[String, Array[String]] = {}
   for i in 0..<root.symbol_index_length() {
     let table = match root.symbol_index_table(i) {
@@ -544,26 +574,27 @@ fn advanced_graph_index_from_flatbuffer_bytes(
           "index flatbuffer: symbol_index[" + i.to_string() + "] missing table",
         )
     }
-    let entry = FbIndexEntry::{ table }
-    let key = match fb_string_from_pool(
-      pool_values,
-      entry.key(),
-      "index.symbol_index[" + i.to_string() + "].key",
-    ) {
+    let entry = FbIndexEntry::{ table, }
+    let key = match
+      fb_string_from_pool(
+        pool_values,
+        entry.key(),
+        "index.symbol_index[" + i.to_string() + "].key",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
-    let values = match fb_decode_string_array_from_index_entry(
-      entry,
-      pool_values,
-      "index.symbol_index[" + i.to_string() + "].values",
-    ) {
+    let values = match
+      fb_decode_string_array_from_index_entry(
+        entry,
+        pool_values,
+        "index.symbol_index[" + i.to_string() + "].values",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
     symbol_index[key] = values
   }
-
   let type_index : Map[String, Array[String]] = {}
   for i in 0..<root.type_index_length() {
     let table = match root.type_index_table(i) {
@@ -573,31 +604,34 @@ fn advanced_graph_index_from_flatbuffer_bytes(
           "index flatbuffer: type_index[" + i.to_string() + "] missing table",
         )
     }
-    let entry = FbIndexEntry::{ table }
-    let key = match fb_string_from_pool(
-      pool_values,
-      entry.key(),
-      "index.type_index[" + i.to_string() + "].key",
-    ) {
+    let entry = FbIndexEntry::{ table, }
+    let key = match
+      fb_string_from_pool(
+        pool_values,
+        entry.key(),
+        "index.type_index[" + i.to_string() + "].key",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
-    let values = match fb_decode_string_array_from_index_entry(
-      entry,
-      pool_values,
-      "index.type_index[" + i.to_string() + "].values",
-    ) {
+    let values = match
+      fb_decode_string_array_from_index_entry(
+        entry,
+        pool_values,
+        "index.type_index[" + i.to_string() + "].values",
+      ) {
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
     type_index[key] = values
   }
-
   Ok(AdvancedGraphIndex::{ manifest, defs, symbol_index, type_index })
 }
 
 ///|
-fn advanced_graph_delta_to_flatbuffer_bytes(delta : AdvancedGraphDelta) -> Bytes {
+fn advanced_graph_delta_to_flatbuffer_bytes(
+  delta : AdvancedGraphDelta,
+) -> Bytes {
   let pool_values : Array[String] = []
   let pool_index : Map[String, Int] = {}
   fb_collect_manifest_strings(delta.base_manifest, pool_values, pool_index)
@@ -610,7 +644,6 @@ fn advanced_graph_delta_to_flatbuffer_bytes(delta : AdvancedGraphDelta) -> Bytes
   fb_collect_string_array(delta.symbol_removes, pool_values, pool_index)
   fb_collect_index_map_strings(delta.type_upserts, pool_values, pool_index)
   fb_collect_string_array(delta.type_removes, pool_values, pool_index)
-
   let builder = @flatbuffers.Builder::new()
   let base_features_offset = fb_build_int_vector_from_strings(
     builder,
@@ -680,7 +713,6 @@ fn advanced_graph_delta_to_flatbuffer_bytes(delta : AdvancedGraphDelta) -> Bytes
   let strings_offset = builder.create_offset_vector(
     fb_build_string_offsets(builder, pool_values),
   )
-
   let root = FbDeltaBuilder::new(builder)
   ignore(root.set_base_features_offset(base_features_offset))
   ignore(root.set_base_chunk_roots_offset(base_chunk_roots_offset))
@@ -751,38 +783,41 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-
-  let base_commit = match fb_string_from_pool(
-    pool_values,
-    root.base_base_commit(),
-    "delta.base.base_commit",
-  ) {
+  let base_commit = match
+    fb_string_from_pool(
+      pool_values,
+      root.base_base_commit(),
+      "delta.base.base_commit",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-  let base_created_at = match fb_string_from_pool(
-    pool_values,
-    root.base_created_at(),
-    "delta.base.created_at",
-  ) {
+  let base_created_at = match
+    fb_string_from_pool(
+      pool_values,
+      root.base_created_at(),
+      "delta.base.created_at",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-  let base_features = match fb_decode_string_array_from_index_vector(
-    root.base_features_length(),
-    i => root.base_features(i),
-    pool_values,
-    "delta.base.features",
-  ) {
+  let base_features = match
+    fb_decode_string_array_from_index_vector(
+      root.base_features_length(),
+      i => root.base_features(i),
+      pool_values,
+      "delta.base.features",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-  let base_chunk_roots = match fb_decode_string_array_from_index_vector(
-    root.base_chunk_roots_length(),
-    i => root.base_chunk_roots(i),
-    pool_values,
-    "delta.base.chunk_roots",
-  ) {
+  let base_chunk_roots = match
+    fb_decode_string_array_from_index_vector(
+      root.base_chunk_roots_length(),
+      i => root.base_chunk_roots(i),
+      pool_values,
+      "delta.base.chunk_roots",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
@@ -793,38 +828,41 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
     features: base_features,
     chunk_roots: base_chunk_roots,
   }
-
-  let target_commit = match fb_string_from_pool(
-    pool_values,
-    root.target_base_commit(),
-    "delta.target.base_commit",
-  ) {
+  let target_commit = match
+    fb_string_from_pool(
+      pool_values,
+      root.target_base_commit(),
+      "delta.target.base_commit",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-  let target_created_at = match fb_string_from_pool(
-    pool_values,
-    root.target_created_at(),
-    "delta.target.created_at",
-  ) {
+  let target_created_at = match
+    fb_string_from_pool(
+      pool_values,
+      root.target_created_at(),
+      "delta.target.created_at",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-  let target_features = match fb_decode_string_array_from_index_vector(
-    root.target_features_length(),
-    i => root.target_features(i),
-    pool_values,
-    "delta.target.features",
-  ) {
+  let target_features = match
+    fb_decode_string_array_from_index_vector(
+      root.target_features_length(),
+      i => root.target_features(i),
+      pool_values,
+      "delta.target.features",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-  let target_chunk_roots = match fb_decode_string_array_from_index_vector(
-    root.target_chunk_roots_length(),
-    i => root.target_chunk_roots(i),
-    pool_values,
-    "delta.target.chunk_roots",
-  ) {
+  let target_chunk_roots = match
+    fb_decode_string_array_from_index_vector(
+      root.target_chunk_roots_length(),
+      i => root.target_chunk_roots(i),
+      pool_values,
+      "delta.target.chunk_roots",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
@@ -835,17 +873,16 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
     features: target_features,
     chunk_roots: target_chunk_roots,
   }
-
-  let removed_def_ids = match fb_decode_string_array_from_index_vector(
-    root.removed_def_ids_length(),
-    i => root.removed_def_ids(i),
-    pool_values,
-    "delta.removed_def_ids",
-  ) {
+  let removed_def_ids = match
+    fb_decode_string_array_from_index_vector(
+      root.removed_def_ids_length(),
+      i => root.removed_def_ids(i),
+      pool_values,
+      "delta.removed_def_ids",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-
   let upsert_defs : Array[AdvancedGraphDef] = []
   for i in 0..<root.upsert_defs_length() {
     let table = match root.upsert_defs_table(i) {
@@ -855,52 +892,58 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
           "delta flatbuffer: upsert_defs[" + i.to_string() + "] missing table",
         )
     }
-    let def_row = FbDef::{ table }
-    let def_id = match fb_string_from_pool(
-      pool_values,
-      def_row.def_id(),
-      "delta.upsert_defs[" + i.to_string() + "].def_id",
-    ) {
+    let def_row = FbDef::{ table, }
+    let def_id = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.def_id(),
+        "delta.upsert_defs[" + i.to_string() + "].def_id",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
-    let name = match fb_string_from_pool(
-      pool_values,
-      def_row.name(),
-      "delta.upsert_defs[" + i.to_string() + "].name",
-    ) {
+    let name = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.name(),
+        "delta.upsert_defs[" + i.to_string() + "].name",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
-    let kind = match fb_string_from_pool(
-      pool_values,
-      def_row.kind(),
-      "delta.upsert_defs[" + i.to_string() + "].kind",
-    ) {
+    let kind = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.kind(),
+        "delta.upsert_defs[" + i.to_string() + "].kind",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
-    let signature = match fb_string_from_pool(
-      pool_values,
-      def_row.signature(),
-      "delta.upsert_defs[" + i.to_string() + "].signature",
-    ) {
+    let signature = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.signature(),
+        "delta.upsert_defs[" + i.to_string() + "].signature",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
-    let path = match fb_string_from_pool(
-      pool_values,
-      def_row.path(),
-      "delta.upsert_defs[" + i.to_string() + "].path",
-    ) {
+    let path = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.path(),
+        "delta.upsert_defs[" + i.to_string() + "].path",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
-    let module_hash = match fb_string_from_pool(
-      pool_values,
-      def_row.module_hash(),
-      "delta.upsert_defs[" + i.to_string() + "].module_hash",
-    ) {
+    let module_hash = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.module_hash(),
+        "delta.upsert_defs[" + i.to_string() + "].module_hash",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
@@ -915,46 +958,48 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
       module_hash,
     })
   }
-
   let symbol_upserts : Map[String, Array[String]] = {}
   for i in 0..<root.symbol_upserts_length() {
     let table = match root.symbol_upserts_table(i) {
       Some(v) => v
       None =>
         return Err(
-          "delta flatbuffer: symbol_upserts[" + i.to_string() + "] missing table",
+          "delta flatbuffer: symbol_upserts[" +
+          i.to_string() +
+          "] missing table",
         )
     }
-    let entry = FbIndexEntry::{ table }
-    let key = match fb_string_from_pool(
-      pool_values,
-      entry.key(),
-      "delta.symbol_upserts[" + i.to_string() + "].key",
-    ) {
+    let entry = FbIndexEntry::{ table, }
+    let key = match
+      fb_string_from_pool(
+        pool_values,
+        entry.key(),
+        "delta.symbol_upserts[" + i.to_string() + "].key",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
-    let values = match fb_decode_string_array_from_index_entry(
-      entry,
-      pool_values,
-      "delta.symbol_upserts[" + i.to_string() + "].values",
-    ) {
+    let values = match
+      fb_decode_string_array_from_index_entry(
+        entry,
+        pool_values,
+        "delta.symbol_upserts[" + i.to_string() + "].values",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
     symbol_upserts[key] = values
   }
-
-  let symbol_removes = match fb_decode_string_array_from_index_vector(
-    root.symbol_removes_length(),
-    i => root.symbol_removes(i),
-    pool_values,
-    "delta.symbol_removes",
-  ) {
+  let symbol_removes = match
+    fb_decode_string_array_from_index_vector(
+      root.symbol_removes_length(),
+      i => root.symbol_removes(i),
+      pool_values,
+      "delta.symbol_removes",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-
   let type_upserts : Map[String, Array[String]] = {}
   for i in 0..<root.type_upserts_length() {
     let table = match root.type_upserts_table(i) {
@@ -964,36 +1009,37 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
           "delta flatbuffer: type_upserts[" + i.to_string() + "] missing table",
         )
     }
-    let entry = FbIndexEntry::{ table }
-    let key = match fb_string_from_pool(
-      pool_values,
-      entry.key(),
-      "delta.type_upserts[" + i.to_string() + "].key",
-    ) {
+    let entry = FbIndexEntry::{ table, }
+    let key = match
+      fb_string_from_pool(
+        pool_values,
+        entry.key(),
+        "delta.type_upserts[" + i.to_string() + "].key",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
-    let values = match fb_decode_string_array_from_index_entry(
-      entry,
-      pool_values,
-      "delta.type_upserts[" + i.to_string() + "].values",
-    ) {
+    let values = match
+      fb_decode_string_array_from_index_entry(
+        entry,
+        pool_values,
+        "delta.type_upserts[" + i.to_string() + "].values",
+      ) {
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
     type_upserts[key] = values
   }
-
-  let type_removes = match fb_decode_string_array_from_index_vector(
-    root.type_removes_length(),
-    i => root.type_removes(i),
-    pool_values,
-    "delta.type_removes",
-  ) {
+  let type_removes = match
+    fb_decode_string_array_from_index_vector(
+      root.type_removes_length(),
+      i => root.type_removes(i),
+      pool_values,
+      "delta.type_removes",
+    ) {
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
-
   Ok(AdvancedGraphDelta::{
     schema_version: root.schema_version(),
     base_manifest,
