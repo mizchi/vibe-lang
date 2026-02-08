@@ -130,6 +130,40 @@ let string_index_of = (s: String, sub: String) -> Int {
   }
 }
 
+// Find last index of substring (-1 if not found)
+let string_last_index_of = (s: String, sub: String) -> Int {
+  let s_len = string_length(s)
+  let sub_len = string_length(sub)
+  if sub_len > s_len { -1 }
+  else if sub_len == 0 { s_len }
+  else {
+    let rec find = (i: Int) -> Int {
+      if i < 0 { -1 }
+      else if string_equals(string_substring(s, i, i + sub_len), sub) { i }
+      else { find(i - 1) }
+    }
+    find(s_len - sub_len)
+  }
+}
+
+// Count non-overlapping occurrences of substring
+let string_count = (s: String, sub: String) -> Int {
+  let s_len = string_length(s)
+  let sub_len = string_length(sub)
+  if sub_len == 0 || sub_len > s_len { 0 }
+  else {
+    let rec go = (i: Int, acc: Int) -> Int {
+      if i > s_len - sub_len { acc }
+      else if string_equals(string_substring(s, i, i + sub_len), sub) {
+        go(i + sub_len, acc + 1)
+      } else {
+        go(i + 1, acc)
+      }
+    }
+    go(0, 0)
+  }
+}
+
 // Replace first occurrence of pattern with replacement
 let string_replace = (s: String, pattern: String, replacement: String) -> String {
   let idx = string_index_of(s, pattern)
@@ -138,6 +172,28 @@ let string_replace = (s: String, pattern: String, replacement: String) -> String
     let before = string_substring(s, 0, idx)
     let after = string_substring(s, idx + string_length(pattern), string_length(s))
     string_concat(string_concat(before, replacement), after)
+  }
+}
+
+// Replace all non-overlapping occurrences of pattern with replacement
+let string_replace_all = (s: String, pattern: String, replacement: String) -> String {
+  let pat_len = string_length(pattern)
+  let s_len = string_length(s)
+  if pat_len == 0 || pat_len > s_len { s }
+  else {
+    let rec go = (start: Int, acc: String) -> String {
+      let rest = string_substring(s, start, s_len)
+      let idx = string_index_of(rest, pattern)
+      if idx < 0 {
+        string_concat(acc, rest)
+      } else {
+        let split = start + idx
+        let before = string_substring(s, start, split)
+        let next_acc = string_concat(string_concat(acc, before), replacement)
+        go(split + pat_len, next_acc)
+      }
+    }
+    go(0, "")
   }
 }
 
@@ -206,10 +262,29 @@ test "string_replace" {
   assert(string_equals(string_replace("hello", "x", "y"), "hello"))
 }
 
+test "string_last_index_of" {
+  assert(eq(string_last_index_of("hello", "l"), 3))
+  assert(eq(string_last_index_of("hello", "x"), -1))
+  assert(eq(string_last_index_of("hello", ""), 5))
+}
+
+test "string_count" {
+  assert(eq(string_count("hello", "l"), 2))
+  assert(eq(string_count("aaaa", "aa"), 2))
+  assert(eq(string_count("abc", ""), 0))
+}
+
+test "string_replace_all" {
+  assert(string_equals(string_replace_all("foo bar foo", "foo", "x"), "x bar x"))
+  assert(string_equals(string_replace_all("aaaa", "aa", "b"), "bb"))
+  assert(string_equals(string_replace_all("abc", "", "z"), "abc"))
+}
+
 // Export all public functions
 export {
   string_is_empty, string_is_not_empty, string_head, string_tail,
   string_last, string_init, string_take, string_drop, string_repeat,
   string_pad_left, string_pad_right, string_starts_with, string_ends_with,
-  string_contains, string_index_of, string_replace
+  string_contains, string_index_of, string_last_index_of, string_count,
+  string_replace, string_replace_all
 }

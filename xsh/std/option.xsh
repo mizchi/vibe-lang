@@ -20,8 +20,16 @@ let option_unwrap_or = [T](opt: Option[T], default: T) -> T {
   match opt { Some(v) => v, _ => default }
 }
 
+let option_unwrap_or_else = [T](opt: Option[T], fallback: () -> T) -> T {
+  match opt { Some(v) => v, _ => fallback() }
+}
+
 let option_map = [A, B](opt: Option[A], f: (x: A) -> B) -> Option[B] {
   match opt { Some(v) => Some(f(v)), _ => None }
+}
+
+let option_map_or = [A, B](opt: Option[A], default: B, f: (x: A) -> B) -> B {
+  match opt { Some(v) => f(v), _ => default }
 }
 
 let option_flatten = [T](opt: Option[Option[T]]) -> Option[T] {
@@ -44,6 +52,18 @@ let option_zip = [A, B](a: Option[A], b: Option[B]) -> Option[(A, B)] {
     (Some(x), Some(y)) => Some((x, y)),
     _ => None
   }
+}
+
+let option_and = [A, B](a: Option[A], b: Option[B]) -> Option[B] {
+  match a { Some(_) => b, _ => None }
+}
+
+let option_or = [T](a: Option[T], b: Option[T]) -> Option[T] {
+  match a { Some(_) => a, _ => b }
+}
+
+let option_or_else = [T](a: Option[T], fallback: () -> Option[T]) -> Option[T] {
+  match a { Some(_) => a, _ => fallback() }
 }
 
 let option_equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool {
@@ -120,6 +140,35 @@ test "option_equals" {
   assert(option_equals(None, None))
 }
 
+test "option_unwrap_or_else" {
+  let fallback = () -> Int { 99 }
+  assert(eq(option_unwrap_or_else(Some(10), fallback), 10))
+  assert(eq(option_unwrap_or_else(None, fallback), 99))
+}
+
+test "option_or_and" {
+  assert(option_is_some(option_or(Some(1), Some(2))))
+  assert(option_is_some(option_or(None, Some(2))))
+  assert(option_is_none(option_or(None, None)))
+
+  assert(option_is_some(option_and(Some(1), Some("ok"))))
+  assert(option_is_none(option_and(None, Some("ok"))))
+}
+
+test "option_or_else" {
+  let fallback_some = () -> Option[Int] { Some(42) }
+  let fallback_none = () -> Option[Int] { None }
+  assert(eq(option_unwrap_or(option_or_else(Some(1), fallback_some), 0), 1))
+  assert(eq(option_unwrap_or(option_or_else(None, fallback_some), 0), 42))
+  assert(option_is_none(option_or_else(None, fallback_none)))
+}
+
+test "option_map_or" {
+  let len = (s: String) -> Int { string_length(s) }
+  assert(eq(option_map_or(Some("abc"), 0, len), 3))
+  assert(eq(option_map_or(None, 7, len), 7))
+}
+
 test "option_zip_sum_compat" {
   let zipped = option_zip_sum(Some(1), Some(2))
   assert(eq(option_unwrap_or(zipped, 0), 3))
@@ -129,6 +178,7 @@ test "option_zip_sum_compat" {
 export {
   Eq,
   option_is_some, option_is_none, option_unwrap_or,
+  option_unwrap_or_else, option_or, option_or_else, option_and, option_map_or,
   option_map, option_flatten, option_flatmap, option_filter,
   option_zip, option_equals, option_zip_sum,
   is_some, is_none, unwrap_or
