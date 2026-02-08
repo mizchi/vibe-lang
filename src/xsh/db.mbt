@@ -272,7 +272,10 @@ fn stack_index_of_path(stack : Array[String], path : String) -> Int? {
 }
 
 ///|
-fn cycle_path_from_stack(stack : Array[String], start_idx : Int) -> Array[String] {
+fn cycle_path_from_stack(
+  stack : Array[String],
+  start_idx : Int,
+) -> Array[String] {
   let out : Array[String] = []
   for i in start_idx..<stack.length() {
     out.push(stack[i])
@@ -434,14 +437,13 @@ pub fn XshDb::new() -> XshDb {
                         if expected_hash != hash {
                           diags.push(rt, @core.Diagnostic::{
                             stage: "import",
-                            message:
-                              "lock mismatch for path: " +
-                              path_obj.normalized +
-                              " (expected " +
-                              expected_hash +
-                              ", got " +
-                              hash +
-                              ")",
+                            message: "lock mismatch for path: " +
+                            path_obj.normalized +
+                            " (expected " +
+                            expected_hash +
+                            ", got " +
+                            hash +
+                            ")",
                             span: Some(span),
                             hint: Some(
                               "run `xsh fetch <entry>` to refresh xsh.lock",
@@ -455,9 +457,8 @@ pub fn XshDb::new() -> XshDb {
                       None => {
                         diags.push(rt, @core.Diagnostic::{
                           stage: "import",
-                          message:
-                            "missing lock entry for path: " +
-                            path_obj.normalized,
+                          message: "missing lock entry for path: " +
+                          path_obj.normalized,
                           span: Some(span),
                           hint: Some(
                             "run `xsh fetch <entry>` to create xsh.lock",
@@ -869,13 +870,13 @@ pub fn XshDb::set_version_ref(
 }
 
 ///|
-pub fn XshDb::set_path_ref(
-  self : XshDb,
-  path : String,
-  hash : String,
-) -> Unit {
+pub fn XshDb::set_path_ref(self : XshDb, path : String, hash : String) -> Unit {
   let normalized = normalize_lock_path(path)
-  let _ = self.sources.set(self.rt, path_ref_key(normalized), normalize_hash(hash))
+  let _ = self.sources.set(
+    self.rt,
+    path_ref_key(normalized),
+    normalize_hash(hash),
+  )
 
 }
 

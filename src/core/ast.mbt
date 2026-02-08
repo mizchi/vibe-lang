@@ -190,6 +190,8 @@ pub(all) enum Expr {
     span~ : Span
   )
   While(cond~ : Expr, body~ : Module, span~ : Span)
+  Break(span~ : Span)
+  Continue(span~ : Span)
   Raise(value~ : Expr, span~ : Span)
   Await(expr~ : Expr, span~ : Span)
   Yield(expr~ : Expr, span~ : Span)
@@ -245,6 +247,8 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Try(span~, ..)
     | Expr::Fn(span~, ..)
     | Expr::While(span~, ..)
+    | Expr::Break(span~)
+    | Expr::Continue(span~)
     | Expr::Raise(span~, ..)
     | Expr::Await(span~, ..)
     | Expr::Yield(span~, ..)

@@ -168,6 +168,16 @@ pub fn yield_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn break_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(89)
+}
+
+///|
+pub fn continue_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(90)
+}
+
+///|
 pub fn while_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(124)
 }
@@ -185,6 +195,16 @@ pub fn await_expr() -> @cst.SyntaxKind {
 ///|
 pub fn yield_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(127)
+}
+
+///|
+pub fn break_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(130)
+}
+
+///|
+pub fn continue_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(131)
 }
 
 ///|

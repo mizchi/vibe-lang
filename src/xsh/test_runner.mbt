@@ -332,6 +332,14 @@ fn collect_dep_expr(
       collect_dep_expr(cond, bound, out)
       collect_dep_block(body, bound, out)
     }
+    @core.Expr::Break(span~) => {
+      let _ = span
+
+    }
+    @core.Expr::Continue(span~) => {
+      let _ = span
+
+    }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
       collect_dep_expr(value, bound, out)

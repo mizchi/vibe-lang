@@ -311,6 +311,8 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_expr_to(cond, buf)
       buf.write_string("}}")
     }
+    Expr::Break(..) => buf.write_string("{\"Break\":null}")
+    Expr::Continue(..) => buf.write_string("{\"Continue\":null}")
     Expr::Try(try_body~, catch_body~, ..) => {
       buf.write_string("{\"Try\":{\"catch\":")
       serialize_module_to(catch_body, buf)

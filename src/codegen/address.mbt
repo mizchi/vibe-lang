@@ -250,6 +250,14 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       block_to_addr_sexp(ctx, body) +
       ")"
     }
+    @core.Expr::Break(span~) => {
+      let _ = span
+      "(break)"
+    }
+    @core.Expr::Continue(span~) => {
+      let _ = span
+      "(continue)"
+    }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
       "(raise " + expr_to_addr_sexp(ctx, value) + ")"

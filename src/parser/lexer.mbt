@@ -273,6 +273,8 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "raise" => raise_kw()
           "await" => await_kw()
           "yield" => yield_kw()
+          "break" => break_kw()
+          "continue" => continue_kw()
           "export" => export_kw()
           "from" => from_kw()
           "as" => as_kw()

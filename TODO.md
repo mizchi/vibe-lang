@@ -96,11 +96,12 @@
 - SyntaxKind token id uniqueness is fixed for parser stability:
   keyword and operator token kinds must not share raw ids
   (guarded by parser tests for `await`/`yield` vs `%`/`+=`).
+- Loop control semantics are implemented end-to-end:
+  `break` / `continue` parse as dedicated expressions, are type-checked
+  as while-only controls, and are supported in evaluator + canonical IR/docs.
 
 ## Next Up (Priority Order)
 
-- Implement `break`/`continue` in `while` loops end-to-end
-  (parser/AST/typecheck/eval/IR/codegen + docs update).
 - Decide and spec parser dispatch strategy for POSIX compatibility
   (explicit mode switch vs future fallback).
 

@@ -282,6 +282,7 @@ pub struct TypeEnv {
   var_trait_bounds : Map[Int, Array[String]]
   mut next_var : Int
   mut next_effect_var : Int
+  mut loop_depth : Int
   subs : Map[Int, @core.Type]
   effect_subs : Map[String, Array[@core.EffectAtom]]
 } derive(Show, Eq)
@@ -762,6 +763,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     var_trait_bounds: {},
     next_var: 0,
     next_effect_var: 0,
+    loop_depth: 0,
     subs: {},
     effect_subs: {},
   }
@@ -813,6 +815,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     var_trait_bounds: self.var_trait_bounds.copy(),
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
+    loop_depth: self.loop_depth,
     subs: self.subs.copy(),
     effect_subs: self.effect_subs.copy(),
   }
@@ -836,6 +839,7 @@ pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
     var_trait_bounds: self.var_trait_bounds.copy(),
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
+    loop_depth: self.loop_depth,
     subs: self.subs.copy(),
     effect_subs: self.effect_subs.copy(),
   }
@@ -3315,7 +3319,30 @@ fn type_expr_eff(
           context=Some("while condition"),
         )
       }
-      let _ = type_block(env, body, aliases, effects, allow_effect)
+      env.loop_depth += 1
+      let body_ty_result : Result[@core.Type, TypeError] = try? type_block(
+        env, body, aliases, effects, allow_effect,
+      )
+      env.loop_depth -= 1
+      match body_ty_result {
+        Ok(_) => ()
+        Err(err) => raise err
+      }
+      @core.Type::Unit
+    }
+    @core.Expr::Break(span~) => {
+      if env.loop_depth <= 0 {
+        raise TypeError::BadCall(message="break used outside while loop", span~)
+      }
+      @core.Type::Unit
+    }
+    @core.Expr::Continue(span~) => {
+      if env.loop_depth <= 0 {
+        raise TypeError::BadCall(
+          message="continue used outside while loop",
+          span~,
+        )
+      }
       @core.Type::Unit
     }
     @core.Expr::Raise(value~, span~) => {

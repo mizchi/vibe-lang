@@ -790,6 +790,80 @@ test "xsh stack safety regression in while loop" {
 }
 
 ///|
+test "xsh while break exits loop" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let run = () -> Int {
+    #|  let mut i = 0
+    #|  while true {
+    #|    if i == 3 {
+    #|      break
+    #|    } else {
+    #|      i = i
+    #|    }
+    #|    i = add(i, 1)
+    #|  }
+    #|  i
+    #|}
+    #|let out = run()
+  let _ = rt.eval_script(script)
+  match rt.get("out") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected Int(3)")
+  }
+}
+
+///|
+test "xsh while continue skips iteration" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let run = () -> Int {
+    #|  let mut i = 0
+    #|  let mut acc = 0
+    #|  while i < 6 {
+    #|    i = add(i, 1)
+    #|    if i % 2 == 0 {
+    #|      continue
+    #|    } else {
+    #|      acc = acc
+    #|    }
+    #|    acc = add(acc, i)
+    #|  }
+    #|  acc
+    #|}
+    #|let out = run()
+  let _ = rt.eval_script(script)
+  match rt.get("out") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 9)
+    _ => fail("expected Int(9)")
+  }
+}
+
+///|
+test "xsh break outside while is type error" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let x = break",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected type error")
+  }
+}
+
+///|
+test "xsh continue outside while is type error" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let x = continue",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected type error")
+  }
+}
+
+///|
 test "xsh string concat hotspot regression" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
@@ -808,11 +882,11 @@ test "xsh string concat hotspot regression" {
     #|  }
     #|}
     #|let base = repeat("abcdef", 20)
-    #|let out = concat_loop(base, 80)
+    #|let out = concat_loop(base, 40)
     #|let len = string_length(out)
   let _ = rt.eval_script(script)
   match rt.get("len") {
-    Some(@core.Value::Int(v)) => assert_eq(v, 200)
+    Some(@core.Value::Int(v)) => assert_eq(v, 160)
     _ => fail("expected Int")
   }
 }

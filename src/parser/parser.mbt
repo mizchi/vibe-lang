@@ -428,6 +428,10 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_do_expr()
   } else if self.at(try_kw()) {
     self.parse_try_expr()
+  } else if self.at(break_kw()) {
+    self.parse_break_expr()
+  } else if self.at(continue_kw()) {
+    self.parse_continue_expr()
   } else if self.at(raise_kw()) {
     self.parse_raise_expr()
   } else if self.at(await_kw()) {
@@ -616,6 +620,20 @@ fn Parser::parse_try_expr(self : Parser) -> Unit {
   self.expect(catch_kw())
   self.skip_trivia()
   self.parse_brace_block_tokens()
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_break_expr(self : Parser) -> Unit {
+  self.builder.start_node(break_expr())
+  self.bump() // break
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_continue_expr(self : Parser) -> Unit {
+  self.builder.start_node(continue_expr())
+  self.bump() // continue
   self.builder.finish_node()
 }
 
@@ -1843,6 +1861,10 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_do_expr()
   } else if self.peek_kind() == try_kw() {
     self.parse_try_expr()
+  } else if self.peek_kind() == break_kw() {
+    self.parse_break_expr()
+  } else if self.peek_kind() == continue_kw() {
+    self.parse_continue_expr()
   } else if self.peek_kind() == raise_kw() {
     self.parse_raise_expr()
   } else if self.peek_kind() == await_kw() {
@@ -2258,6 +2280,24 @@ fn AstParser::parse_try_expr(self : AstParser) -> @core.Expr raise ParseError {
   let catch_body = self.parse_block()
   let span = self.span_from(start)
   @core.Expr::Try(try_body~, catch_body~, span~)
+}
+
+///|
+fn AstParser::parse_break_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(break_kw(), "break")
+  let span = self.span_from(start)
+  @core.Expr::Break(span~)
+}
+
+///|
+fn AstParser::parse_continue_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(continue_kw(), "continue")
+  let span = self.span_from(start)
+  @core.Expr::Continue(span~)
 }
 
 ///|

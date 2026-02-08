@@ -1748,6 +1748,14 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I32
     }
+    @core.Expr::Break(span~) => {
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Continue(span~) => {
+      let _ = span
+      ValueKind::I32
+    }
     @core.Expr::Raise(value~, span~) => {
       let _ = value
       let _ = span
@@ -4689,6 +4697,14 @@ fn compile_expr(
 
       // While expression returns unit
       emit_i32_const_tagged(buf, 0)
+    }
+    @core.Expr::Break(span~) => {
+      let _ = span
+      raise WasmGenError::Unsupported("break")
+    }
+    @core.Expr::Continue(span~) => {
+      let _ = span
+      raise WasmGenError::Unsupported("continue")
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span

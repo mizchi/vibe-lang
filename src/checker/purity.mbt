@@ -221,6 +221,7 @@ fn purity_expr_inner(
       true
     }
     @core.Expr::While(..) => false
+    @core.Expr::Break(..) | @core.Expr::Continue(..) => false
     @core.Expr::Raise(value~, span~) => {
       let _ = span
       purity_expr_inner(env, value, locals)

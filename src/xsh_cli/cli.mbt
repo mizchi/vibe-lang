@@ -1704,7 +1704,8 @@ fn parse_lock_ref_map(
       for key, value in entries {
         match value {
           Json::String(hash) => out[key] = normalize_lock_hash(hash)
-          _ => return Err("xsh.lock: \{field_name}.\{key} must be a string hash")
+          _ =>
+            return Err("xsh.lock: \{field_name}.\{key} must be a string hash")
         }
       }
       Ok(out)
@@ -1730,7 +1731,8 @@ fn parse_lock_data(
         Ok(v) => v
         Err(err) => return Err(err)
       }
-      let version_refs = match parse_lock_ref_map(obj.get("version"), "version") {
+      let version_refs = match
+        parse_lock_ref_map(obj.get("version"), "version") {
         Ok(v) => v
         Err(err) => return Err(err)
       }
@@ -1783,8 +1785,8 @@ fn relativize_lock_path(base_dir : String, target_path : String) -> String {
   let target_parts = split_path_parts(target)
   let mut common = 0
   while common < base_parts.length() &&
-    common < target_parts.length() &&
-    base_parts[common] == target_parts[common] {
+        common < target_parts.length() &&
+        base_parts[common] == target_parts[common] {
     common += 1
   }
   let rel_buf = StringBuilder::new()

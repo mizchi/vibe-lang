@@ -308,6 +308,8 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       h = combine_hash(h, body.structural_hash())
       h
     }
+    Expr::Break(..) => 0x42726561 // "Brea"
+    Expr::Continue(..) => 0x436f6e74 // "Cont"
     Expr::Raise(value~, ..) => {
       let mut h = 0x52616973 // "Rais"
       h = combine_hash(h, value.structural_hash())

@@ -400,6 +400,14 @@ fn collect_refs_expr(
       collect_refs_expr(cond, bound, refs)
       collect_refs_block(body, bound, refs)
     }
+    @core.Expr::Break(span~) => {
+      let _ = span
+
+    }
+    @core.Expr::Continue(span~) => {
+      let _ = span
+
+    }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
       collect_refs_expr(value, bound, refs)

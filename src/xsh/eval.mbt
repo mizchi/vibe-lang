@@ -43,6 +43,8 @@ suberror EvalError {
   PermissionDenied(String)
   BadCall(String)
   ImportError(String)
+  LoopBreak
+  LoopContinue
 } derive(Show, Eq)
 
 ///|
@@ -450,21 +452,9 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
       { value: @core.Value::Fn(closure), effects: [] }
     }
-    @core.Expr::While(cond~, body~, ..) => {
-      let effects : Array[Effect] = []
-      while {
-              let cond_out = eval_expr(rt, cond)
-              extend_effects(effects, cond_out.effects)
-              match cond_out.value {
-                @core.Value::Bool(b) => b
-                _ => raise EvalError::BadCall("while cond")
-              }
-            } {
-        let body_res = rt.eval_module(body)
-        extend_effects(effects, body_res.effects)
-      }
-      { value: @core.Value::Unit, effects }
-    }
+    @core.Expr::While(cond~, body~, ..) => eval_while_expr(rt, cond, body)
+    @core.Expr::Break(..) => raise EvalError::LoopBreak
+    @core.Expr::Continue(..) => raise EvalError::LoopContinue
     @core.Expr::Raise(value~, ..) => {
       let v = eval_expr(rt, value)
       raise EvalError::BadCall(
@@ -483,6 +473,32 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       // Future: handle Stream[T] generation
       eval_expr(rt, expr)
   }
+}
+
+///|
+fn eval_while_expr(
+  rt : Runtime,
+  cond : @core.Expr,
+  body : @core.Module,
+) -> EvalOutput raise EvalError {
+  let effects : Array[Effect] = []
+  while {
+          let cond_out = eval_expr(rt, cond)
+          extend_effects(effects, cond_out.effects)
+          match cond_out.value {
+            @core.Value::Bool(b) => b
+            _ => raise EvalError::BadCall("while cond")
+          }
+        } {
+    let body_result : Result[EvalResult, EvalError] = try? rt.eval_module(body)
+    match body_result {
+      Ok(body_res) => extend_effects(effects, body_res.effects)
+      Err(EvalError::LoopBreak) => break
+      Err(EvalError::LoopContinue) => continue
+      Err(e) => raise e
+    }
+  }
+  { value: @core.Value::Unit, effects }
 }
 
 ///|

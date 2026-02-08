@@ -800,6 +800,14 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
+    @core.Expr::Break(span~) => {
+      let _ = span
+      "(break)"
+    }
+    @core.Expr::Continue(span~) => {
+      let _ = span
+      "(continue)"
+    }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
       "(raise " + expr_to_sexp(value, aliases) + ")"

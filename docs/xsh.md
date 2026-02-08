@@ -446,13 +446,15 @@ Rules:
 - Field-access fallback currently supports record and struct fields, requiring
   exactly one positional argument.
 
-## while / await / yield (current)
+## while / break / continue / await / yield (current)
 
 ```xsh
 while cond {
   step()
 }
 
+break
+continue
 await task()
 yield value
 ```
@@ -460,9 +462,12 @@ yield value
 Rules:
 - `while` condition must be `Bool`.
 - `while` body is type-checked, and the expression result type is always `Unit`.
+- `break` and `continue` are valid only inside `while` loop bodies.
+- Using `break`/`continue` outside `while` is a type error.
+- Runtime loop control uses `break` to exit the nearest loop and `continue` to
+  start the next iteration.
 - `await expr` requires `{Async}` and returns the inner expression type.
 - `yield expr` requires `{Async}` and returns `Unit`.
-- `break`/`continue` are not implemented.
 
 ## Test blocks (MoonBit-style)
 

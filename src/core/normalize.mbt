@@ -269,6 +269,8 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         body=normalize_block(body, scope.child_block()),
         span=zero_span,
       )
+    Expr::Break(..) => Expr::Break(span=zero_span)
+    Expr::Continue(..) => Expr::Continue(span=zero_span)
     Expr::Try(try_body~, catch_body~, ..) =>
       Expr::Try(
         try_body=normalize_block(try_body, scope.child_block()),
