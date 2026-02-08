@@ -9,6 +9,27 @@ test "xsh detection" {
 }
 
 ///|
+test "xsh parser mode dispatch is explicit" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let ok : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let x = 1",
+    ParserMode::XshMode,
+  )
+  match ok {
+    Ok(_) => ()
+    Err(err) => fail("unexpected xsh mode error: " + err.to_string())
+  }
+  let ng : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "echo hello",
+    ParserMode::PosixMode,
+  )
+  match ng {
+    Err(err) => assert_true(err.to_string().contains("posix"))
+    _ => fail("expected unsupported syntax error")
+  }
+}
+
+///|
 test "xsh eval path normalization" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let p = path(\"a/../b\")")

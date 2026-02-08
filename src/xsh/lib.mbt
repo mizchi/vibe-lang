@@ -4,6 +4,13 @@ suberror XshError {
   Parse(@parser.ParseError)
   Type(@checker.TypeError)
   Eval(EvalError)
+  UnsupportedSyntax(String)
+} derive(Show, Eq)
+
+///|
+pub(all) enum ParserMode {
+  XshMode
+  PosixMode
 } derive(Show, Eq)
 
 ///|
@@ -26,14 +33,30 @@ pub fn is_xsh_script(script : String) -> Bool {
 }
 
 ///|
-/// Parse, type-check, and evaluate xsh script
-pub fn Runtime::eval_script(
+fn parse_script_with_mode(
+  script : String,
+  mode : ParserMode,
+) -> @core.Module raise XshError {
+  match mode {
+    ParserMode::XshMode =>
+      @parser.parse_ast(script) catch {
+        e => raise XshError::Parse(e)
+      }
+    ParserMode::PosixMode =>
+      raise XshError::UnsupportedSyntax(
+        "posix parser is not implemented; use --syntax xsh",
+      )
+  }
+}
+
+///|
+/// Parse, type-check, and evaluate script with explicit parser mode.
+pub fn Runtime::eval_script_with_mode(
   self : Runtime,
   script : String,
+  mode : ParserMode,
 ) -> EvalResult raise XshError {
-  let raw_ast = @parser.parse_ast(script) catch {
-    e => raise XshError::Parse(e)
-  }
+  let raw_ast = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = if script.contains(".") {
     desugar_method_calls(raw_ast, aliases)
@@ -56,14 +79,22 @@ pub fn Runtime::eval_script(
 }
 
 ///|
-/// Parse, type-check, and run xsh test blocks.
-pub fn Runtime::run_script_tests(
+/// Parse, type-check, and evaluate xsh script.
+pub fn Runtime::eval_script(
   self : Runtime,
   script : String,
+) -> EvalResult raise XshError {
+  self.eval_script_with_mode(script, ParserMode::XshMode)
+}
+
+///|
+/// Parse, type-check, and run xsh test blocks.
+pub fn Runtime::run_script_tests_with_mode(
+  self : Runtime,
+  script : String,
+  mode : ParserMode,
 ) -> TestReport raise XshError {
-  let raw_ast = @parser.parse_ast(script) catch {
-    e => raise XshError::Parse(e)
-  }
+  let raw_ast = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
@@ -75,4 +106,13 @@ pub fn Runtime::run_script_tests(
   self.run_tests(ast) catch {
     e => raise XshError::Eval(e)
   }
+}
+
+///|
+/// Parse, type-check, and run xsh test blocks.
+pub fn Runtime::run_script_tests(
+  self : Runtime,
+  script : String,
+) -> TestReport raise XshError {
+  self.run_script_tests_with_mode(script, ParserMode::XshMode)
 }

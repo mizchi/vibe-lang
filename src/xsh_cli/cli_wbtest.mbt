@@ -160,6 +160,50 @@ test "line repl options reject unknown arg" {
 }
 
 ///|
+test "cli syntax mode parse default" {
+  let parsed = parse_cli_syntax_args(["main.xsh"], "run")
+  match parsed {
+    Ok((mode, rest)) => {
+      assert_eq(mode, @xsh_lib.ParserMode::XshMode)
+      assert_eq(rest, ["main.xsh"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli syntax mode parse explicit posix" {
+  let parsed = parse_cli_syntax_args(["--syntax", "posix", "main.xsh"], "run")
+  match parsed {
+    Ok((mode, rest)) => {
+      assert_eq(mode, @xsh_lib.ParserMode::PosixMode)
+      assert_eq(rest, ["main.xsh"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli syntax mode parse rejects unknown value" {
+  let parsed = parse_cli_syntax_args(["--syntax", "foo"], "run")
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(msg, "run: unsupported syntax `foo` (expected: xsh|posix)")
+  }
+}
+
+///|
+test "cli syntax mode parse rejects missing value" {
+  let parsed = parse_cli_syntax_args(["--syntax"], "run")
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(msg, "run: missing value for --syntax (expected: xsh|posix)")
+  }
+}
+
+///|
 test "line repl extract let name" {
   match extract_let_name_line("let foo = 1") {
     Some(name) => assert_eq(name, "foo")

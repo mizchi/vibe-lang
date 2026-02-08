@@ -22,12 +22,14 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 
 ## Syntax dispatch
 
-Current runtime/CLI behavior parses scripts as xsh only.
-Automatic POSIX parser fallback is not implemented.
+Parser dispatch is explicit:
+- parser-consuming CLI commands accept `--syntax xsh|posix`.
+- default is `--syntax xsh`.
+- `--syntax posix` is reserved for future support and currently fails with an
+  explicit "not implemented" error.
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
-`test`, `try`) exists as helper logic only and does not currently switch parser
-modes.
+`test`, `try`) exists as helper logic only and does not switch parser modes.
 
 ## Effects
 
@@ -487,6 +489,9 @@ CLI:
 - `moon run --target native src/xsh_cli -- run <file>` executes a script (ignores `test {}`).
 - `moon run --target native src/xsh_cli -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/xsh_cli -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
+- Parser-consuming commands support `--syntax xsh|posix` (default `xsh`);
+  `posix` is currently a reserved mode and returns an explicit unsupported
+  error.
 - `moon run --target native src/xsh_cli -- repl` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/xsh_cli -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
 - `moon run --target native src/xsh_cli -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.

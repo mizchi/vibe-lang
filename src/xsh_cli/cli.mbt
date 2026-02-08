@@ -6,7 +6,17 @@ pub fn run(args : Array[String]) -> Unit {
     return
   }
   let cmd = args[1]
-  let cmd_args = args_tail(args, 2)
+  let raw_cmd_args = args_tail(args, 2)
+  let (syntax_mode, cmd_args) = match parse_cli_syntax_args(raw_cmd_args, cmd) {
+    Ok(v) => v
+    Err(msg) => abort(msg)
+  }
+  if command_requires_parser(cmd) {
+    match ensure_cli_parser_mode_supported(syntax_mode, cmd) {
+      Ok(_) => ()
+      Err(msg) => abort(msg)
+    }
+  }
   match cmd {
     "run" => run_cmd(cmd_args)
     "test" => test_cmd(cmd_args)
@@ -65,6 +75,7 @@ fn print_usage() -> Unit {
   println("  fetch <file>                resolve imports and write xsh.lock")
   println("  update-lock <file>          alias for fetch")
   println("  lsp                         start LSP server (stdin/stdout)")
+  println("  parser commands: --syntax xsh|posix (default: xsh)")
 }
 
 ///|
@@ -74,6 +85,27 @@ fn args_tail(args : Array[String], start : Int) -> Array[String] {
     out.push(args[i])
   }
   out
+}
+
+///|
+fn command_requires_parser(cmd : String) -> Bool {
+  match cmd {
+    "run"
+    | "test"
+    | "check"
+    | "compile"
+    | "bench"
+    | "bench-file"
+    | "repl"
+    | "repl-stdin"
+    | "repl-wasi"
+    | "wasm-repl-stdin"
+    | "hash"
+    | "save"
+    | "fetch"
+    | "update-lock" => true
+    _ => false
+  }
 }
 
 ///|

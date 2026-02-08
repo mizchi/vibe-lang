@@ -68,8 +68,10 @@
 - Module syntax documentation is aligned with implementation:
   named import + explicit export forms are canonical; legacy bare import forms
   are non-spec.
-- Parser dispatch policy is fixed in spec:
-  runtime/CLI are xsh-only; automatic POSIX fallback is not implemented.
+- Parser dispatch policy is fixed in spec and CLI behavior:
+  parser-consuming commands use explicit `--syntax xsh|posix` switch
+  (default `xsh`), no automatic fallback, and `posix` currently reports
+  explicit unsupported-mode error.
 - Docs index references are fixed:
   `README.md` now points to existing language/design documents with status.
 - Effects semantics are fixed in spec:
@@ -102,8 +104,7 @@
 
 ## Next Up (Priority Order)
 
-- Decide and spec parser dispatch strategy for POSIX compatibility
-  (explicit mode switch vs future fallback).
+- none
 
 ## Deferred
 
