@@ -64,7 +64,7 @@ let ord_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
   else { x }
 }
 
-let ord_between = [T: Ord](x: T, min_val: T, max_val: T) -> Bool {
+let ord_between = [T: Ord + Eq](x: T, min_val: T, max_val: T) -> Bool {
   x >= min_val && x <= max_val
 }
 

@@ -20,12 +20,12 @@ just run test examples/syntax.xsh
 - `module_types_export.xsh`, `module_types_import.xsh`: importing types from modules
 - `pattern_coverage.xsh`: exhaustive pattern coverage examples
 
-## Standard Library Draft
+## Core Library
 
-- `std/`: self-hosted std modules (`int`, `float`, `list`, `option`, `string`, ...)
-- `std/wasm/types.xsh`: wasm-facing type aliases (`I32`/`F32`/`F64`)
-- `std/wasm/opcodes.xsh`: wasm opcode-style APIs (`i32_add`, `f64_promote_f32`, ...)
-- `std/wasm/io_stream.xsh`: component-friendly stream I/O helpers
+- `xsh/std/`: xsh core library (self-hosted std modules)
+- `xsh/std/wasm/types.xsh`: wasm-facing type aliases (`I32`/`F32`/`F64`)
+- `xsh/std/wasm/opcodes.xsh`: wasm opcode-style APIs (`i32_add`, `f64_promote_f32`, ...)
+- `xsh/std/wasm/io_stream.xsh`: component-friendly stream I/O helpers
 
 ## WASM / Component Demos
 

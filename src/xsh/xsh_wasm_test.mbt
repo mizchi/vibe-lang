@@ -187,7 +187,7 @@ test "xsh wasm accepts i32/f32/f64 type aliases" {
 ///|
 test "xsh wasm compiles std wasm opcode module" {
   let src = try
-    @os_fs.read_file_to_string("examples/std/wasm/opcodes.xsh")
+    @os_fs.read_file_to_string("xsh/std/wasm/opcodes.xsh")
   catch {
     e => fail("read error: " + e.to_string())
   } noraise {

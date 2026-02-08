@@ -184,9 +184,9 @@ Rules:
 - `i32`/`f32`/`f64` are reserved type names and cannot be redefined with `type`, `enum`, or `struct`.
 - Canonical type names (`Int`/`Float`/`Double`) remain the public spec baseline.
 
-Std module:
-- `examples/std/wasm/types.xsh` provides an official wasm-facing entrypoint (`I32`/`F32`/`F64` aliases and helpers).
-- `examples/std/wasm/opcodes.xsh` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
+Core std module:
+- `xsh/std/wasm/types.xsh` provides an official wasm-facing entrypoint (`I32`/`F32`/`F64` aliases and helpers).
+- `xsh/std/wasm/opcodes.xsh` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
   - Naming rule: wasm `i32.add` is exposed as xsh `i32_add` (dot replaced with `_`).
 
 ## Names, hashes, versions, and symbols (Unison-style)

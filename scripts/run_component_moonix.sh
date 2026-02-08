@@ -3,8 +3,8 @@ set -euo pipefail
 
 usage() {
   echo "usage: $0 <input.xsh> [output.component.wasm] [invoke-signature]" >&2
-  echo "example: $0 examples/std/test_import.xsh" >&2
-  echo "example: $0 examples/std/test_import.xsh /tmp/out.component.wasm 'run()'" >&2
+  echo "example: $0 xsh/std/test_import.xsh" >&2
+  echo "example: $0 xsh/std/test_import.xsh /tmp/out.component.wasm 'run()'" >&2
 }
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then

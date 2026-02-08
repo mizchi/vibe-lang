@@ -1,6 +1,6 @@
-# xsh Standard Library (Self-hosted)
+# xsh Core Library (Self-hosted std)
 
-This directory is an attempt to self-host xsh by porting parts of the MoonBit core library.
+This directory is the xsh core library, self-hosted by porting selected parts of the MoonBit core library.
 
 ## Implemented Modules
 
@@ -87,26 +87,26 @@ This directory is an attempt to self-host xsh by porting parts of the MoonBit co
 ```bash
 # Run in interpreter
 just run test \
-  examples/std/trait_api.xsh \
-  examples/std/bool.xsh \
-  examples/std/int.xsh \
-  examples/std/float.xsh \
-  examples/std/double.xsh \
-  examples/std/list.xsh \
-  examples/std/option.xsh \
-  examples/std/string.xsh \
-  examples/std/io.xsh \
-  examples/std/wasm/types.xsh \
-  examples/std/wasm/opcodes.xsh \
-  examples/std/wasm/io_stream.xsh
+  xsh/std/trait_api.xsh \
+  xsh/std/bool.xsh \
+  xsh/std/int.xsh \
+  xsh/std/float.xsh \
+  xsh/std/double.xsh \
+  xsh/std/list.xsh \
+  xsh/std/option.xsh \
+  xsh/std/string.xsh \
+  xsh/std/io.xsh \
+  xsh/std/wasm/types.xsh \
+  xsh/std/wasm/opcodes.xsh \
+  xsh/std/wasm/io_stream.xsh
 
 # Validate WASM compilation (import/export usage)
-just run compile --wasm examples/std/test_import.xsh -o /tmp/test.wasm
+just run compile --wasm xsh/std/test_import.xsh -o /tmp/test.wasm
 wasmtime run --invoke run /tmp/test.wasm  # -> 484 (untagged: 121)
 ```
 
 ## Notes
 
-- `examples/std/test_import.xsh` is only for compilation validation (no `test` blocks).
-- `examples/std/io.xsh` depends on `string_*` builtins, so it is primarily interpreter-oriented rather than pure Core WASM (`--wasm`) today.
-- `examples/std/wasm/io_stream.xsh` is a stream I/O / TUI helper API for Core WASM components.
+- `xsh/std/test_import.xsh` is only for compilation validation (no `test` blocks).
+- `xsh/std/io.xsh` depends on `string_*` builtins, so it is primarily interpreter-oriented rather than pure Core WASM (`--wasm`) today.
+- `xsh/std/wasm/io_stream.xsh` is a stream I/O / TUI helper API for Core WASM components.

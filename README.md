@@ -78,7 +78,7 @@ just run repl-wasi --no-prompt
 just build-repl-wasi-wasm
 
 # Build component + run with wasmtime (explicit invoke for non-command component)
-just component-run examples/std/test_import.xsh
+just component-run xsh/std/test_import.xsh
 # stdin 経由の実行も可能:
 printf 'A' | just component-run your_stdio_script.xsh
 # stream TUI デモ:
@@ -87,7 +87,7 @@ printf 'hello\nworld\n' | just component-run examples/wasm/tui_stream_demo.xsh
 just demo-tui-stream
 
 # moonix で実行（moonix の CLI 差分はランチャで吸収）
-just component-run-moonix examples/std/test_import.xsh
+just component-run-moonix xsh/std/test_import.xsh
 # moonix バイナリが無い場合の手動 bootstrap
 just bootstrap-moonix
 
@@ -147,6 +147,9 @@ src/
 examples/
 ├── *.xsh           # Example scripts (interpreter)
 └── wasm/           # WASM-only examples (require host)
+
+xsh/
+└── std/            # xsh core library (self-hosted std modules)
 
 examples/async_host/  # Rust/wasmtime host runtime
 ```

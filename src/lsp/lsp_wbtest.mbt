@@ -147,7 +147,7 @@ test "LspServer/handle_message/codeAction trait import quickfix" {
 ///|
 test "trait_import_code_actions skips already imported trait" {
   let source =
-    #|import { Eq } from "./examples/std/trait_api.xsh"
+    #|import { Eq } from "./xsh/std/trait_api.xsh"
     #|let same = [T: Eq](x: T, y: T) -> Bool { x == y }
   let actions = trait_import_code_actions("file://test.xsh", source)
   match actions {

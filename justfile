@@ -18,10 +18,10 @@ fmt:
 check:
     moon check --deny-warn --target {{target}}
 
-# Run tests (includes fixtures and examples)
+# Run tests (includes fixtures, examples, and core std library)
 test:
     moon test --target {{target}}
-    moon run src/xsh_cli/main.mbt --target native -- test examples
+    moon run src/xsh_cli/main.mbt --target native -- test examples xsh/std
 
 # Run fixture tests only
 test-fixtures:
