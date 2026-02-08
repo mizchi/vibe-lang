@@ -70,8 +70,14 @@
   are non-spec.
 - Parser dispatch policy is fixed in spec and CLI behavior:
   parser-consuming commands use explicit `--syntax xsh|posix` switch
-  (default `xsh`), no automatic fallback, and `posix` currently reports
-  explicit unsupported-mode error.
+  (default `xsh`) with no automatic fallback.
+  `posix` is preview-enabled only for runtime-eval commands
+  (`run`/`repl`/`repl-stdin`/`repl-wasi`/`bench`) and rejected on
+  static/compile-oriented commands.
+- PosixMode runtime preview semantics are fixed:
+  `Runtime::eval_script_with_mode(..., PosixMode)` desugars unresolved
+  command-like bare identifiers to `sh_lines("<name>")`, while preserving bound
+  identifiers (`let`/params/pattern/import names).
 - Docs index references are fixed:
   `README.md` now points to existing language/design documents with status.
 - Effects semantics are fixed in spec:

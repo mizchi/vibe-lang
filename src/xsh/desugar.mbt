@@ -9,6 +9,357 @@ pub fn desugar_method_calls(
 }
 
 ///|
+/// Desugar xshell command heads in PosixMode:
+/// unresolved bare identifiers like `ls` become `sh_lines("ls")`.
+pub fn desugar_xshell_commands(ast : @core.Module) -> @core.Module {
+  let scope : Map[String, Bool] = {}
+  let known_non_cmd = known_xsh_non_command_names()
+  desugar_xshell_block(ast, scope, known_non_cmd)
+}
+
+///|
+fn known_xsh_non_command_names() -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for name in @checker.prelude_names() {
+    out[name] = true
+  }
+  let builtins = [
+    "path", "addr", "sh", "sh_lines", "sleep", "stdin_read_char", "stdin_read_stream",
+    "stdout_write_char", "stdout_write_stream", "string_from_char_code", "string_length",
+    "string_char_code_at", "string_substring", "string_concat", "string_equals",
+    "string_split", "string_index_of", "string_contains", "string_trim", "array_length",
+    "array_get", "array_slice", "array_builder", "array_builder_push", "array_builder_freeze",
+    "map_builder", "map_builder_set", "map_builder_freeze", "map_keys", "map_values",
+    "map_has_key", "record_set",
+  ]
+  for name in builtins {
+    out[name] = true
+  }
+  out
+}
+
+///|
+fn is_command_like_name(name : String) -> Bool {
+  let chars = name.to_array()
+  if chars.length() == 0 {
+    return false
+  }
+  let first = chars[0]
+  if first < 'a' || first > 'z' {
+    return false
+  }
+  for c in chars {
+    if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+      continue
+    }
+    return false
+  }
+  true
+}
+
+///|
+fn is_xshell_command_candidate(
+  name : String,
+  scope : Map[String, Bool],
+  known_non_cmd : Map[String, Bool],
+) -> Bool {
+  not(scope.contains(name)) &&
+  not(known_non_cmd.contains(name)) &&
+  is_command_like_name(name)
+}
+
+///|
+fn sh_lines_expr(name : String, span : @core.Span) -> @core.Expr {
+  let cmd_expr = @core.Expr::String(value=name, span~)
+  let cmd_arg = @core.CallArg::{ label: None, expr: cmd_expr, span }
+  @core.Expr::Call(name="sh_lines", type_args=[], args=[cmd_arg], span~)
+}
+
+///|
+fn desugar_xshell_block(
+  body : @core.Module,
+  scope : Map[String, Bool],
+  known_non_cmd : Map[String, Bool],
+) -> @core.Module {
+  let scope_map = clone_scope(scope)
+  let out : Array[@core.Stmt] = []
+  for stmt in body.stmts {
+    let next = desugar_xshell_stmt(stmt, scope_map, known_non_cmd)
+    out.push(next)
+    match stmt {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::LetMut(name~, ..) => scope_map[name] = true
+      @core.Stmt::LetPat(pat~, ..) => {
+        let bindings : Array[String] = []
+        collect_pat_bindings(pat, bindings)
+        for name in bindings {
+          scope_map[name] = true
+        }
+      }
+      @core.Stmt::Import(spec~, ..) =>
+        for item in spec.items {
+          match item.rename {
+            Some(local_name) => scope_map[local_name] = true
+            None => scope_map[item.name] = true
+          }
+        }
+      _ => ()
+    }
+  }
+  @core.Module::{ stmts: out }
+}
+
+///|
+fn desugar_xshell_stmt(
+  stmt : @core.Stmt,
+  scope : Map[String, Bool],
+  known_non_cmd : Map[String, Bool],
+) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @core.Stmt::Let(
+        rec~,
+        name~,
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        span~,
+      )
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        span~,
+      )
+    @core.Stmt::Test(name~, body~, span~) =>
+      @core.Stmt::Test(
+        name~,
+        body=desugar_xshell_block(body, scope, known_non_cmd),
+        span~,
+      )
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        span~,
+      )
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      @core.Stmt::LetMut(
+        name~,
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        span~,
+      )
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(
+        name~,
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        span~,
+      )
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=desugar_xshell_expr(target, scope, known_non_cmd),
+        index=desugar_xshell_expr(index, scope, known_non_cmd),
+        value=desugar_xshell_expr(value, scope, known_non_cmd),
+        span~,
+      )
+    @core.Stmt::LetPat(pat~, expr~, span~) =>
+      @core.Stmt::LetPat(
+        pat~,
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        span~,
+      )
+    _ => stmt
+  }
+}
+
+///|
+fn desugar_xshell_expr(
+  expr : @core.Expr,
+  scope : Map[String, Bool],
+  known_non_cmd : Map[String, Bool],
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Ident(name~, span~) =>
+      if is_xshell_command_candidate(name, scope, known_non_cmd) {
+        sh_lines_expr(name, span)
+      } else {
+        expr
+      }
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
+      let next_args : Array[@core.CallArg] = []
+      for arg in args {
+        next_args.push(@core.CallArg::{
+          label: arg.label,
+          expr: desugar_xshell_expr(arg.expr, scope, known_non_cmd),
+          span: arg.span,
+        })
+      }
+      @core.Expr::Call(name~, type_args~, args=next_args, span~)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=desugar_xshell_expr(cond, scope, known_non_cmd),
+        then_body=desugar_xshell_block(
+          then_body,
+          clone_scope(scope),
+          known_non_cmd,
+        ),
+        else_body=desugar_xshell_block(
+          else_body,
+          clone_scope(scope),
+          known_non_cmd,
+        ),
+        span~,
+      )
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(
+        body=desugar_xshell_block(body, clone_scope(scope), known_non_cmd),
+        span~,
+      )
+    @core.Expr::Do(body~, span~) =>
+      @core.Expr::Do(
+        body=desugar_xshell_block(body, clone_scope(scope), known_non_cmd),
+        span~,
+      )
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let next_arms : Array[@core.MatchArm] = []
+      let next_scrut = desugar_xshell_expr(scrutinee, scope, known_non_cmd)
+      for arm in arms {
+        let arm_scope = clone_scope(scope)
+        let bindings : Array[String] = []
+        collect_pat_bindings(arm.pat, bindings)
+        for name in bindings {
+          arm_scope[name] = true
+        }
+        let next_cond = match arm.cond {
+          Some(c) => Some(desugar_xshell_expr(c, arm_scope, known_non_cmd))
+          None => None
+        }
+        let next_expr = desugar_xshell_expr(arm.expr, arm_scope, known_non_cmd)
+        next_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: next_cond,
+          expr: next_expr,
+          span: arm.span,
+        })
+      }
+      @core.Expr::Match(scrutinee=next_scrut, arms=next_arms, span~)
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let out : Array[@core.Expr] = []
+      for item in items {
+        out.push(desugar_xshell_expr(item, scope, known_non_cmd))
+      }
+      @core.Expr::Tuple(items=out, span~)
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) =>
+      @core.Expr::TupleIndex(
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        index~,
+        span~,
+      )
+    @core.Expr::Record(fields~, span~) => {
+      let out : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        out.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: desugar_xshell_expr(field.expr, scope, known_non_cmd),
+          span: field.span,
+        })
+      }
+      @core.Expr::Record(fields=out, span~)
+    }
+    @core.Expr::Array(items~, span~) => {
+      let out : Array[@core.Expr] = []
+      for item in items {
+        out.push(desugar_xshell_expr(item, scope, known_non_cmd))
+      }
+      @core.Expr::Array(items=out, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let out : Array[@core.MapFieldExpr] = []
+      for field in fields {
+        out.push(@core.MapFieldExpr::{
+          key: field.key,
+          expr: desugar_xshell_expr(field.expr, scope, known_non_cmd),
+          span: field.span,
+        })
+      }
+      @core.Expr::Map(fields=out, span~)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) =>
+      @core.Expr::Try(
+        try_body=desugar_xshell_block(
+          try_body,
+          clone_scope(scope),
+          known_non_cmd,
+        ),
+        catch_body=desugar_xshell_block(
+          catch_body,
+          clone_scope(scope),
+          known_non_cmd,
+        ),
+        span~,
+      )
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
+      let next_scope = clone_scope(scope)
+      for param in params {
+        next_scope[param.name] = true
+      }
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params~,
+        ret~,
+        effects~,
+        body=desugar_xshell_block(body, next_scope, known_non_cmd),
+        span~,
+      )
+    }
+    @core.Expr::While(cond~, body~, span~) =>
+      @core.Expr::While(
+        cond=desugar_xshell_expr(cond, scope, known_non_cmd),
+        body=desugar_xshell_block(body, clone_scope(scope), known_non_cmd),
+        span~,
+      )
+    @core.Expr::Raise(value~, span~) =>
+      @core.Expr::Raise(
+        value=desugar_xshell_expr(value, scope, known_non_cmd),
+        span~,
+      )
+    @core.Expr::Await(expr~, span~) =>
+      @core.Expr::Await(
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        span~,
+      )
+    @core.Expr::Yield(expr~, span~) =>
+      @core.Expr::Yield(
+        expr=desugar_xshell_expr(expr, scope, known_non_cmd),
+        span~,
+      )
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let out : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        out.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: desugar_xshell_expr(field.expr, scope, known_non_cmd),
+          span: field.span,
+        })
+      }
+      @core.Expr::StructLit(name~, type_args~, fields=out, span~)
+    }
+    _ => expr
+  }
+}
+
+///|
 fn desugar_block(
   body : @core.Module,
   scope : Map[String, Bool],

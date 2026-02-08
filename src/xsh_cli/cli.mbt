@@ -18,16 +18,16 @@ pub fn run(args : Array[String]) -> Unit {
     }
   }
   match cmd {
-    "run" => run_cmd(cmd_args)
+    "run" => run_cmd(cmd_args, syntax_mode)
     "test" => test_cmd(cmd_args)
     "check" => check_cmd(cmd_args)
     "fmt" => fmt_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
-    "bench" => bench_cmd(cmd_args)
+    "bench" => bench_cmd(cmd_args, syntax_mode)
     "bench-file" => bench_file_cmd(cmd_args)
-    "repl" => repl_cmd(cmd_args)
-    "repl-stdin" => repl_stdin_cmd(cmd_args)
-    "repl-wasi" => repl_wasi_cmd(cmd_args)
+    "repl" => repl_cmd(cmd_args, syntax_mode)
+    "repl-stdin" => repl_stdin_cmd(cmd_args, syntax_mode)
+    "repl-wasi" => repl_wasi_cmd(cmd_args, syntax_mode)
     "wasm-repl-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
@@ -412,54 +412,68 @@ fn compile_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn run_cmd(args : Array[String]) -> Unit {
+fn run_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
   if args.length() != 1 {
     abort("run: expected <file>")
   }
   let entry_path = args[0]
-  match load_db(entry_path) {
-    Err(err) => abort("run: " + err)
-    Ok((db, entry)) => {
-      let compiled = @xsh_lib.compile_module(db, entry) catch {
+  match syntax_mode {
+    @xsh_lib.ParserMode::XshMode =>
+      match load_db(entry_path) {
+        Err(err) => abort("run: " + err)
+        Ok((db, entry)) => {
+          let compiled = @xsh_lib.compile_module(db, entry) catch {
+            e => abort("run: " + e.to_string())
+          }
+          let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+          // Build path-to-hash mapping and load imported modules into runtime cache
+          let path_to_hash : Map[String, String] = {}
+          load_imports_into_runtime(rt, db, entry, path_to_hash)
+          // Also add mappings for raw paths from the AST
+          let base_dir = @xsh_fs.parent_path(entry)
+          for stmt in compiled.ast.stmts {
+            match stmt {
+              @xsh_core.Stmt::Import(source~, ..) =>
+                match source {
+                  @xsh_core.ModuleRef::Path(path=raw_path) => {
+                    // Resolve the path to find the hash
+                    let resolved = resolve_import_path(base_dir, raw_path)
+                    match path_to_hash.get(resolved) {
+                      Some(hash) => path_to_hash[raw_path] = hash
+                      None => ()
+                    }
+                  }
+                  @xsh_core.ModuleRef::Hash(_)
+                  | @xsh_core.ModuleRef::Version(_)
+                  | @xsh_core.ModuleRef::Symbol(_) => ()
+                }
+              _ => ()
+            }
+          }
+          // Convert the AST's import paths to hashes
+          let converted_ast = @xsh_core.convert_imports_to_hash(compiled.ast, fn(
+            path,
+          ) {
+            path_to_hash.get(path)
+          })
+          // Set aliases
+          for name, target in compiled.aliases {
+            rt.set_alias(name, target)
+          }
+          // Evaluate the converted module
+          let result = rt.eval_module(converted_ast) catch {
+            e => abort("run: " + e.to_string())
+          }
+          print_eval_result(result)
+        }
+      }
+    @xsh_lib.ParserMode::PosixMode => {
+      let resolved = resolve_entry_path(entry_path)
+      let source = @os_fs.read_file_to_string(resolved) catch {
         e => abort("run: " + e.to_string())
       }
       let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
-      // Build path-to-hash mapping and load imported modules into runtime cache
-      let path_to_hash : Map[String, String] = {}
-      load_imports_into_runtime(rt, db, entry, path_to_hash)
-      // Also add mappings for raw paths from the AST
-      let base_dir = @xsh_fs.parent_path(entry)
-      for stmt in compiled.ast.stmts {
-        match stmt {
-          @xsh_core.Stmt::Import(source~, ..) =>
-            match source {
-              @xsh_core.ModuleRef::Path(path=raw_path) => {
-                // Resolve the path to find the hash
-                let resolved = resolve_import_path(base_dir, raw_path)
-                match path_to_hash.get(resolved) {
-                  Some(hash) => path_to_hash[raw_path] = hash
-                  None => ()
-                }
-              }
-              @xsh_core.ModuleRef::Hash(_)
-              | @xsh_core.ModuleRef::Version(_)
-              | @xsh_core.ModuleRef::Symbol(_) => ()
-            }
-          _ => ()
-        }
-      }
-      // Convert the AST's import paths to hashes
-      let converted_ast = @xsh_core.convert_imports_to_hash(compiled.ast, fn(
-        path,
-      ) {
-        path_to_hash.get(path)
-      })
-      // Set aliases
-      for name, target in compiled.aliases {
-        rt.set_alias(name, target)
-      }
-      // Evaluate the converted module
-      let result = rt.eval_module(converted_ast) catch {
+      let result = rt.eval_script_with_mode(source, syntax_mode) catch {
         e => abort("run: " + e.to_string())
       }
       print_eval_result(result)
@@ -646,7 +660,7 @@ fn fmt_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn bench_cmd(args : Array[String]) -> Unit {
+fn bench_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
   let mut count = 20000
   let mut warmup = 1000
   let mut expr = "add(1,2)"
@@ -690,12 +704,16 @@ fn bench_cmd(args : Array[String]) -> Unit {
   }
   let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
   for _ in 0..<warmup {
-    let _ = rt.eval_script(expr) catch { e => abort("bench: " + e.to_string()) }
+    let _ = rt.eval_script_with_mode(expr, syntax_mode) catch {
+      e => abort("bench: " + e.to_string())
+    }
 
   }
   let start = @env.now()
   for _ in 0..<count {
-    let _ = rt.eval_script(expr) catch { e => abort("bench: " + e.to_string()) }
+    let _ = rt.eval_script_with_mode(expr, syntax_mode) catch {
+      e => abort("bench: " + e.to_string())
+    }
 
   }
   let end = @env.now()
@@ -827,7 +845,7 @@ fn OverlayRect::eq(self : OverlayRect, other : OverlayRect) -> Bool {
 }
 
 ///|
-fn repl_cmd(args : Array[String]) -> Unit {
+fn repl_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
   if args.length() != 0 {
     abort("repl: no args supported")
   }
@@ -1134,7 +1152,7 @@ fn repl_cmd(args : Array[String]) -> Unit {
       _ => ()
     }
     push_output_line("> " + trimmed)
-    let result = rt.eval_script(trimmed) catch {
+    let result = rt.eval_script_with_mode(trimmed, syntax_mode) catch {
       e => {
         push_output_line("error: " + e.to_string())
         return true
@@ -1461,13 +1479,19 @@ fn repl_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn repl_stdin_cmd(args : Array[String]) -> Unit {
-  run_eval_line_repl_with_prompt(args, "repl-stdin", "xsh> ")
+fn repl_stdin_cmd(
+  args : Array[String],
+  syntax_mode : @xsh_lib.ParserMode,
+) -> Unit {
+  run_eval_line_repl_with_prompt(args, "repl-stdin", "xsh> ", syntax_mode)
 }
 
 ///|
-fn repl_wasi_cmd(args : Array[String]) -> Unit {
-  run_eval_line_repl_with_prompt(args, "repl-wasi", "wasi> ")
+fn repl_wasi_cmd(
+  args : Array[String],
+  syntax_mode : @xsh_lib.ParserMode,
+) -> Unit {
+  run_eval_line_repl_with_prompt(args, "repl-wasi", "wasi> ", syntax_mode)
 }
 
 ///|
@@ -1486,6 +1510,7 @@ fn run_eval_line_repl_with_prompt(
   args : Array[String],
   cmd_name : String,
   prompt : String,
+  syntax_mode : @xsh_lib.ParserMode,
 ) -> Unit {
   let options = match parse_line_repl_options(args, cmd_name, prompt) {
     Ok(opts) => opts
@@ -1510,7 +1535,7 @@ fn run_eval_line_repl_with_prompt(
       match line_str {
         ":q" | ":quit" | ":exit" | "exit" => break
         _ => {
-          let result = rt.eval_script(line_str) catch {
+          let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
             e => {
               println("error: " + e.to_string())
               if options.prompt_enabled {

@@ -4,7 +4,6 @@ suberror XshError {
   Parse(@parser.ParseError)
   Type(@checker.TypeError)
   Eval(EvalError)
-  UnsupportedSyntax(String)
 } derive(Show, Eq)
 
 ///|
@@ -42,10 +41,12 @@ fn parse_script_with_mode(
       @parser.parse_ast(script) catch {
         e => raise XshError::Parse(e)
       }
-    ParserMode::PosixMode =>
-      raise XshError::UnsupportedSyntax(
-        "posix parser is not implemented; use --syntax xsh",
-      )
+    ParserMode::PosixMode => {
+      let parsed = @parser.parse_ast(script) catch {
+        e => raise XshError::Parse(e)
+      }
+      desugar_xshell_commands(parsed)
+    }
   }
 }
 

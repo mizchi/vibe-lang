@@ -59,6 +59,13 @@ pub fn ensure_cli_parser_mode_supported(
   match mode {
     @xsh_lib.ParserMode::XshMode => Ok(())
     @xsh_lib.ParserMode::PosixMode =>
-      Err(cmd_name + ": --syntax posix is not implemented yet")
+      match cmd_name {
+        "run" | "repl" | "repl-stdin" | "repl-wasi" | "bench" => Ok(())
+        _ =>
+          Err(
+            cmd_name +
+            ": --syntax posix is supported only for run/repl/repl-stdin/repl-wasi/bench",
+          )
+      }
   }
 }

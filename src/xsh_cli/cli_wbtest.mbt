@@ -204,6 +204,28 @@ test "cli syntax mode parse rejects missing value" {
 }
 
 ///|
+test "cli syntax mode support matrix" {
+  match
+    ensure_cli_parser_mode_supported(@xsh_lib.ParserMode::PosixMode, "run") {
+    Ok(_) => ()
+    Err(msg) => fail("unexpected run error: " + msg)
+  }
+  match
+    ensure_cli_parser_mode_supported(@xsh_lib.ParserMode::PosixMode, "repl") {
+    Ok(_) => ()
+    Err(msg) => fail("unexpected repl error: " + msg)
+  }
+  match
+    ensure_cli_parser_mode_supported(@xsh_lib.ParserMode::PosixMode, "compile") {
+    Ok(_) => fail("expected compile rejection")
+    Err(msg) => {
+      assert_true(msg.contains("compile"))
+      assert_true(msg.contains("supported only"))
+    }
+  }
+}
+
+///|
 test "line repl extract let name" {
   match extract_let_name_line("let foo = 1") {
     Some(name) => assert_eq(name, "foo")

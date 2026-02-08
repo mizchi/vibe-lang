@@ -377,6 +377,7 @@ fn require_effects(
 fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
   match name {
     "sh" => [@core.EffectAtom::Const("Stdout")]
+    "sh_lines" => [@core.EffectAtom::Const("Stdout")]
     "stdout_write_char" => [@core.EffectAtom::Const("Stdout")]
     "stdout_write_stream" => [@core.EffectAtom::Const("Stdout")]
     "stdin_read_char" => [@core.EffectAtom::Const("Stdin")]
@@ -4358,6 +4359,42 @@ fn type_call(
                   )
                 }
                 @core.Type::Unit
+              }
+              "sh_lines" => {
+                let pos_args = extract_positional_args(
+                  args, "sh_lines", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="sh_lines", span=call_span)
+                }
+                require_effects(
+                  env,
+                  effects,
+                  builtin_effects("sh_lines"),
+                  call_span,
+                )
+                if not(allow_effect) {
+                  raise TypeError::EffectNotAllowed(
+                    name="sh_lines",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Array(@core.Type::String)
               }
               "sleep" => {
                 let pos_args = extract_positional_args(args, "sleep", call_span)

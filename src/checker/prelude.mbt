@@ -117,6 +117,22 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
+  #|let where = (xs: Array[String], pred: (x: String) -> Bool) -> Array[String] {
+  #|  do {
+  #|    let b = array_builder()
+  #|    let rec loop = (i: Int) -> Unit {
+  #|      if i < array_length(xs) {
+  #|        let v = array_get(xs, i)
+  #|        if pred(v) {
+  #|          array_builder_push(b, v)
+  #|        } else { }
+  #|        loop(i + 1)
+  #|      } else { }
+  #|    }
+  #|    loop(0)
+  #|    array_builder_freeze(b)
+  #|  }
+  #|}
 
 ///|
 pub fn prelude_ast() -> @core.Module {
@@ -128,6 +144,6 @@ pub fn prelude_names() -> Array[String] {
   [
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "array_map",
     "array_fold", "array_filter", "array_foreach", "array_concat", "array_reverse",
-    "array_any", "array_all", "array_find",
+    "array_any", "array_all", "array_find", "where",
   ]
 }

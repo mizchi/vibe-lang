@@ -19,13 +19,93 @@ test "xsh parser mode dispatch is explicit" {
     Ok(_) => ()
     Err(err) => fail("unexpected xsh mode error: " + err.to_string())
   }
-  let ng : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
-    "echo hello",
+}
+
+///|
+test "xsh posix mode command pipeline with where" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let run = () -> Array[String] with {Stdout} {\n" +
+    "  do {\n" +
+    "    ls |> where((line: String) -> Bool { string_contains(line, \"x\") })\n" +
+    "  }\n" +
+    "}\n" +
+    "let out = run()",
     ParserMode::PosixMode,
   )
-  match ng {
-    Err(err) => assert_true(err.to_string().contains("posix"))
-    _ => fail("expected unsupported syntax error")
+  match result {
+    Err(err) => fail("unexpected posix mode error: " + err.to_string())
+    Ok(eval_result) => {
+      assert_eq(eval_result.effects.length(), 1)
+      match eval_result.effects[0] {
+        Effect::ShellExec(cmd) => assert_eq(cmd, "ls")
+        _ => fail("expected shell effect")
+      }
+    }
+  }
+  match rt.get("out") {
+    Some(@core.Value::Array(_)) => ()
+    _ => fail("expected out array")
+  }
+}
+
+///|
+test "xsh posix mode keeps bound identifiers" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let ls = [\"a\", \"bb\"]\n" +
+    "let ys = where(ls, (line: String) -> Bool { string_contains(line, \"b\") })\n" +
+    "let n = array_length(ys)",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) => assert_eq(eval_result.effects.length(), 0)
+  }
+  match rt.get("n") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
+    _ => fail("expected filtered size")
+  }
+}
+
+///|
+test "xsh where prelude filters strings" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let xs = [\"a\", \"bb\", \"ccc\"]\n" +
+    "let ys = where(xs, (line: String) -> Bool { string_contains(line, \"b\") })\n" +
+    "let n = array_length(ys)",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("n") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
+    _ => fail("expected filtered size")
+  }
+}
+
+///|
+test "xsh sh_lines returns command output lines" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Array[String] with {Stdout} { do { sh_lines(\"echo hello\") } }\n" +
+    "let lines = run()\n" +
+    "let line0 = array_get(lines, 0)\n" +
+    "let n = array_length(lines)",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) => assert_eq(eval_result.effects.length(), 1)
+  }
+  match rt.get("line0") {
+    Some(@core.Value::String(line)) => assert_eq(line, "hello")
+    _ => fail("expected line0")
+  }
+  match rt.get("n") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 1)
+    _ => fail("expected line count")
   }
 }
 

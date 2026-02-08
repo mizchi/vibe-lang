@@ -827,6 +827,31 @@ fn eval_call(
                 _ => raise EvalError::BadCall("sh")
               }
             }
+            "sh_lines" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "sh_lines")
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("sh_lines")
+              }
+              match pos_args[0] {
+                @core.Value::String(cmd) => {
+                  if not(rt.caps().can_spawn("sh")) {
+                    raise EvalError::PermissionDenied("process_spawn")
+                  }
+                  let effects = out.effects
+                  effects.push(Effect::ShellExec(cmd))
+                  let lines = execute_shell_lines(cmd) catch {
+                    _ => raise EvalError::BadCall("sh_lines")
+                  }
+                  let values : Array[@core.Value] = []
+                  for line in lines {
+                    values.push(@core.Value::String(line))
+                  }
+                  { value: @core.Value::Array(values), effects }
+                }
+                _ => raise EvalError::BadCall("sh_lines")
+              }
+            }
             "stdout_write_char" => {
               let out = eval_args(rt, args)
               let pos_args = extract_positional_values(
@@ -1827,6 +1852,78 @@ fn eval_pure_builtin(
       }
     }
     _ => raise EvalError::BadCall(name)
+  }
+}
+
+///|
+fn split_shell_args(cmd : String) -> Array[String] {
+  let out : Array[String] = []
+  let trimmed = trim_whitespace(cmd)
+  for part in trimmed.split(" ") {
+    let token = part.trim().to_string()
+    if token.length() > 0 {
+      out.push(token)
+    }
+  }
+  out
+}
+
+///|
+fn join_shell_args(parts : Array[String], start : Int) -> String {
+  let out = StringBuilder::new()
+  for i in start..<parts.length() {
+    if i > start {
+      out.write_char(' ')
+    }
+    out.write_string(parts[i])
+  }
+  out.to_string()
+}
+
+///|
+fn split_output_lines(text : String) -> Array[String] {
+  let out : Array[String] = []
+  for part in text.split("\n") {
+    out.push(part.to_string())
+  }
+  if out.length() > 0 && out[out.length() - 1] == "" {
+    ignore(out.pop())
+  }
+  out
+}
+
+///|
+fn execute_shell_lines(cmd : String) -> Array[String] raise EvalError {
+  let parts = split_shell_args(cmd)
+  if parts.length() == 0 {
+    raise EvalError::BadCall("sh_lines")
+  }
+  match parts[0] {
+    "ls" => {
+      if parts.length() > 2 {
+        raise EvalError::BadCall("sh_lines")
+      }
+      let dir = if parts.length() == 2 { parts[1] } else { "." }
+      @os_fs.read_dir(dir) catch {
+        _ => raise EvalError::BadCall("sh_lines")
+      }
+    }
+    "cat" => {
+      if parts.length() != 2 {
+        raise EvalError::BadCall("sh_lines")
+      }
+      let content = @os_fs.read_file_to_string(parts[1]) catch {
+        _ => raise EvalError::BadCall("sh_lines")
+      }
+      split_output_lines(content)
+    }
+    "echo" =>
+      if parts.length() <= 1 {
+        [""]
+      } else {
+        [join_shell_args(parts, 1)]
+      }
+    _ => raise EvalError::BadCall("sh_lines")
   }
 }
 

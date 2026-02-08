@@ -25,8 +25,13 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 Parser dispatch is explicit:
 - parser-consuming CLI commands accept `--syntax xsh|posix`.
 - default is `--syntax xsh`.
-- `--syntax posix` is reserved for future support and currently fails with an
-  explicit "not implemented" error.
+- `--syntax posix` is a preview mode for runtime-eval commands
+  (`run`, `repl`, `repl-stdin`, `repl-wasi`, `bench`).
+- static/compile-oriented commands (`check`, `test`, `compile`, `hash`, `save`,
+  `fetch`, `update-lock`, `bench-file`, `wasm-repl-stdin`) remain xsh-only.
+- Runtime API preview:
+  `Runtime::eval_script_with_mode(script, PosixMode)` supports xshell-style
+  command-head desugaring (`ls` -> `sh_lines("ls")`).
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
 `test`, `try`) exists as helper logic only and does not switch parser modes.
@@ -54,6 +59,7 @@ Rules:
 - Capability mapping is 1:1 with the runtime `CapabilitySet`.
 - Current builtin mapping:
   - `sh(...)` requires `{Stdout}`
+  - `sh_lines(...)` requires `{Stdout}`
   - `stdout_write_char(...)` requires `{Stdout}`
   - `stdout_write_stream(...)` requires `{Stdout}`
   - `stdin_read_char()` requires `{Stdin}`
@@ -149,6 +155,9 @@ String (aligned with wasm js-string builtins when using `--wasm-js-string`):
 - `string_equals(left, right)` -> `Bool`
 
 StdIO (wasi stream primitives for wasm/component-friendly interop):
+- `sh_lines(cmd)` -> `Array[String]` with `{Stdout}`.
+  Current interpreter executes a builtin command subset (`ls`, `cat`, `echo`)
+  and returns output lines while also recording `ShellExec(cmd)` effect.
 - `stdout_write_char(code)` -> `Unit` with `{Stdout}`
 - `stdout_write_stream(text)` -> `Unit` with `{Stdout}` (chunk write)
 - `stdin_read_char()` -> `Int` with `{Stdin}` (`-1` = EOF)
@@ -448,6 +457,24 @@ Rules:
 - Field-access fallback currently supports record and struct fields, requiring
   exactly one positional argument.
 
+## xshell command pipeline (PosixMode preview)
+
+```xsh
+let run = () -> Array[String] with {Stdout} {
+  do {
+    ls |> where((line: String) -> Bool { string_contains(line, "xsh") })
+  }
+}
+```
+
+Rules:
+- In `PosixMode`, unresolved bare identifier expressions are desugared to
+  `sh_lines("<ident>")`.
+- Bound names (`let`, function params, pattern bindings, imported names) are
+  preserved and not desugared as commands.
+- `where(xs, pred)` is available in prelude for `Array[String]` stream-style
+  filtering.
+
 ## while / break / continue / await / yield (current)
 
 ```xsh
@@ -485,13 +512,15 @@ Notes:
 - Optional name form: `test "name" { ... }` (label only).
 Runtime API:
 - `Runtime::run_script_tests(script)` parses, type-checks, and runs tests with isolated envs.
+- `Runtime::eval_script_with_mode(script, PosixMode)` enables preview xshell
+  command-head desugaring.
 CLI:
 - `moon run --target native src/xsh_cli -- run <file>` executes a script (ignores `test {}`).
 - `moon run --target native src/xsh_cli -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/xsh_cli -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - Parser-consuming commands support `--syntax xsh|posix` (default `xsh`);
-  `posix` is currently a reserved mode and returns an explicit unsupported
-  error.
+  `posix` is preview-enabled for `run/repl/repl-stdin/repl-wasi/bench` and is
+  rejected on static/compile-oriented commands.
 - `moon run --target native src/xsh_cli -- repl` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/xsh_cli -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
 - `moon run --target native src/xsh_cli -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.
