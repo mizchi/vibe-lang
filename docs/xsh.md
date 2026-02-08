@@ -104,6 +104,26 @@ Error handling:
   `try { ... } catch { ... }`.
 - `try` handles `Error` locally and does not require the caller to declare
   `{Error}`.
+- `raise` accepts values that satisfy the `Error` trait.
+- `String` is a built-in `Error`, and user code can define new error types with
+  `suberror`.
+
+`suberror` declarations:
+- `suberror MyError(String)` is shorthand for an enum-like error type with a
+  single constructor `MyError(String)`.
+- `suberror AppError { Io(String); Parse(Int); }` uses enum-style constructors.
+- `suberror` auto-registers `impl Error for <Type>`.
+
+```xsh
+suberror AppError {
+  Io(String);
+  Parse(Int);
+}
+
+let fail = () -> Unit with {Error} {
+  raise Io("io")
+}
+```
 
 ### Generics with effects (current)
 

@@ -201,6 +201,8 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
   match self.peek_kind() {
     k if k == let_kw() => self.parse_let_stmt()
     k if k == enum_kw() => self.parse_enum_stmt()
+    k if k == name() && self.peek().text() == "suberror" =>
+      self.parse_suberror_stmt()
     k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
     k if k == import_kw() => self.parse_import_stmt()
@@ -248,6 +250,32 @@ fn Parser::parse_enum_stmt(self : Parser) -> Unit {
   self.skip_trivia()
   self.expect(lbrace())
   self.skip_balanced_braces()
+  self.parse_optional_derive_clause()
+  self.skip_trivia()
+  if self.at(semicolon()) {
+    self.bump()
+  }
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_suberror_stmt(self : Parser) -> Unit {
+  self.builder.start_node(enum_def())
+  self.bump() // suberror
+  self.skip_trivia()
+  self.expect(name())
+  self.skip_trivia()
+  if self.at(lbracket()) {
+    self.parse_bracket_tokens()
+  }
+  self.skip_trivia()
+  if self.at(lparen()) {
+    self.skip_balanced_parens()
+  } else if self.at(lbrace()) {
+    self.skip_balanced_braces()
+  } else {
+    self.builder.token(error_kind(), "")
+  }
   self.parse_optional_derive_clause()
   self.skip_trivia()
   if self.at(semicolon()) {
@@ -359,6 +387,9 @@ fn Parser::parse_export_stmt(self : Parser) -> Unit {
   if self.at(enum_kw()) {
     // export enum Name { ... }
     self.parse_enum_stmt()
+  } else if self.at(name()) && self.peek().text() == "suberror" {
+    // export suberror Name(...)
+    self.parse_suberror_stmt()
   } else if self.at(struct_kw()) {
     // export struct Name { ... }
     self.parse_struct_stmt()
@@ -1023,34 +1054,38 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == test_kw() => self.parse_test_stmt()
     k if k == name() => {
       let tok = self.peek()
-      let next = self.peek_non_trivia_kind(self.pos + 1)
-      let next2 = self.peek_non_trivia_kind(self.pos + 2)
-      if tok.text() == "open" && next == trait_kw() {
-        raise ParseError::UnexpectedToken(
-          expected="`open trait` is only allowed as `export open trait`",
-          got=tok.text(),
-          span=self.token_span(),
-        )
-      }
-      if tok.text() == "alias" && next == name() && next2 == eq() {
-        raise ParseError::UnexpectedToken(
-          expected="`alias` statement is removed; use `type` for type aliases",
-          got=tok.text(),
-          span=self.token_span(),
-        )
-      }
-      if tok.text() == "flake" && next == lbrace() {
-        raise ParseError::UnexpectedToken(
-          expected="`flake` block is removed",
-          got=tok.text(),
-          span=self.token_span(),
-        )
-      }
-      let assign_next = self.peek_non_trivia_kind(self.pos + 1)
-      if assign_next == eq() || is_compound_assign(assign_next) {
-        self.parse_assign_stmt()
+      if tok.text() == "suberror" {
+        self.parse_suberror_stmt()
       } else {
-        self.parse_expr_or_index_assign_stmt()
+        let next = self.peek_non_trivia_kind(self.pos + 1)
+        let next2 = self.peek_non_trivia_kind(self.pos + 2)
+        if tok.text() == "open" && next == trait_kw() {
+          raise ParseError::UnexpectedToken(
+            expected="`open trait` is only allowed as `export open trait`",
+            got=tok.text(),
+            span=self.token_span(),
+          )
+        }
+        if tok.text() == "alias" && next == name() && next2 == eq() {
+          raise ParseError::UnexpectedToken(
+            expected="`alias` statement is removed; use `type` for type aliases",
+            got=tok.text(),
+            span=self.token_span(),
+          )
+        }
+        if tok.text() == "flake" && next == lbrace() {
+          raise ParseError::UnexpectedToken(
+            expected="`flake` block is removed",
+            got=tok.text(),
+            span=self.token_span(),
+          )
+        }
+        let assign_next = self.peek_non_trivia_kind(self.pos + 1)
+        if assign_next == eq() || is_compound_assign(assign_next) {
+          self.parse_assign_stmt()
+        } else {
+          self.parse_expr_or_index_assign_stmt()
+        }
       }
     }
     _ => self.parse_expr_or_index_assign_stmt()
@@ -1256,6 +1291,72 @@ fn AstParser::parse_enum_stmt(self : AstParser) -> @core.Stmt raise ParseError {
 }
 
 ///|
+fn AstParser::parse_suberror_stmt(
+  self : AstParser,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let _ = self.expect(name(), "suberror")
+  self.skip_trivia()
+  let name_tok = self.expect(name(), "suberror name")
+  let params = self.parse_type_params()
+  let param_set = param_set_from_params(params)
+  self.skip_trivia()
+  let ctors : Array[@core.TypeCtor] = []
+  if self.peek_kind() == lparen() {
+    let ctor_start = self.pos
+    let _ = self.bump()
+    self.skip_trivia()
+    let args : Array[@core.Type] = []
+    if self.peek_kind() != rparen() {
+      args.push(self.parse_type_with_params(param_set))
+      while {
+              self.skip_trivia()
+              self.peek_kind() == comma()
+            } {
+        let _ = self.bump()
+        self.skip_trivia()
+        if self.peek_kind() == rparen() {
+          break
+        }
+        args.push(self.parse_type_with_params(param_set))
+      }
+    }
+    let _ = self.expect(rparen(), ")")
+    ctors.push(@core.TypeCtor::{
+      name: name_tok.text(),
+      args,
+      span: self.span_from(ctor_start),
+    })
+  } else if self.peek_kind() == lbrace() {
+    let _ = self.bump()
+    while {
+            self.skip_trivia()
+            self.peek_kind() != rbrace()
+          } {
+      if self.peek_kind() == eof() {
+        raise ParseError::UnexpectedEof(span=self.token_span())
+      }
+      ctors.push(self.parse_type_ctor(param_set))
+      self.expect_decl_separator("suberror variant separator")
+    }
+    let _ = self.expect(rbrace(), "}")
+
+  } else {
+    raise ParseError::UnexpectedToken(
+      expected="suberror payload",
+      got=self.peek().text(),
+      span=self.token_span(),
+    )
+  }
+  let derives = self.parse_derive_clause()
+  let _ = self.eat(semicolon())
+  let span = self.span_from(start)
+  self.queue_derive_impls(name_tok.text(), params, derives, span)
+  self.queue_suberror_impl(name_tok.text(), params, span)
+  @core.Stmt::EnumDef(name=name_tok.text(), params~, ctors~, span~)
+}
+
+///|
 fn AstParser::parse_struct_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
@@ -1361,6 +1462,29 @@ fn AstParser::queue_derive_impls(
       ),
     )
   }
+}
+
+///|
+fn AstParser::queue_suberror_impl(
+  self : AstParser,
+  type_name : String,
+  type_params : Array[String],
+  span : @core.Span,
+) -> Unit {
+  let target_args : Array[@core.Type] = []
+  for type_param in type_params {
+    target_args.push(@core.Type::Param(type_param))
+  }
+  let target = @core.Type::Named(name=type_name, args=target_args)
+  self.pending_stmts.push(
+    @core.Stmt::TraitImpl(
+      type_params=type_params.copy(),
+      type_bounds={},
+      trait_name="Error",
+      target~,
+      span~,
+    ),
+  )
 }
 
 ///|
@@ -1724,6 +1848,23 @@ fn AstParser::parse_export_stmt(
         let span = self.span_from(start)
         raise ParseError::UnexpectedToken(
           expected="enum definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == name() && self.peek().text() == "suberror" {
+    // export suberror Name(...)
+    let suberror_stmt = self.parse_suberror_stmt()
+    match suberror_stmt {
+      @core.Stmt::EnumDef(name~, params~, ctors~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="suberror definition",
           got="other statement",
           span~,
         )

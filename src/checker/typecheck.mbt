@@ -1520,10 +1520,22 @@ pub fn ensure_prelude_option(env : TypeEnv) -> Unit raise TypeError {
 }
 
 ///|
+fn ensure_prelude_error_trait(env : TypeEnv) -> Unit raise TypeError {
+  let span = @core.Span::empty(0)
+  if not(env.has_trait("Error")) {
+    register_trait_def(env, "Error", [], true, true, span)
+  }
+  if not(type_implements_trait(env, @core.Type::String, "Error")) {
+    register_trait_impl(env, [], {}, "Error", @core.Type::String, span)
+  }
+}
+
+///|
 pub fn ensure_prelude_functions(
   env : TypeEnv,
   aliases : Map[String, @core.Ref],
 ) -> Unit raise TypeError {
+  ensure_prelude_error_trait(env)
   match env.get_purity("__prelude_loaded") {
     Some(_) => ()
     None => {
@@ -2541,7 +2553,7 @@ fn register_trait_impl(
       None => ()
     }
   }
-  let normalized_target = normalize_type(env, target)
+  let normalized_target = resolve_type(env, target)
   let incoming = TraitImplDef::{
     type_params,
     type_bounds: normalized_type_bounds,
@@ -3400,14 +3412,13 @@ fn type_expr_eff(
     }
     @core.Expr::Raise(value~, span~) => {
       let val_ty = type_expr_eff(env, value, aliases, effects, allow_effect)
-      if not(type_equal(env, val_ty, @core.Type::String)) {
-        raise TypeError::Mismatch(
-          expected=@core.Type::String,
-          actual=val_ty,
-          span~,
-          context=Some("raise"),
-        )
-      }
+      let _ = ensure_type_satisfies_bounds(
+        env,
+        val_ty,
+        ["Error"],
+        span,
+        "raise",
+      )
       require_effects(env, effects, [@core.EffectAtom::Const("Error")], span)
       @core.Type::Never
     }
