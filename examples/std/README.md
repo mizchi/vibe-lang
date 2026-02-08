@@ -51,7 +51,8 @@ This directory is an attempt to self-host xsh by porting parts of the MoonBit co
 
 ### 2. Large negative integer literals
 
-- `-2147483648` can fail to parse (`2147483648` exceeds Int range).
+- `-2147483648` is rejected with an overflow parse error
+  (`2147483648` exceeds Int range).
 - Workaround: `0 - 2147483647 - 1`.
 
 ### 3. `loop` expression (unverified)
@@ -78,7 +79,7 @@ This directory is an attempt to self-host xsh by porting parts of the MoonBit co
 
 ### Phase 3: Data structure improvements
 
-5. **Mutable fields** - `enum List { Cons(Int, mut tail: List) }`
+5. **Mutable fields** - `enum List { Cons(Int, mut tail: List); Nil }`
 6. **Array builtin expansion** - `iter`, `zip`, `flatmap`
 
 ## Running Tests

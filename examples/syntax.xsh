@@ -1,5 +1,5 @@
 // basics are in examples/basics.xsh
-enum Result[T] { Ok(T), Err }
+enum Result[T] { Ok(T); Err }
 type IntResult = Result[Int]
 
 // generic syntax
@@ -233,7 +233,7 @@ test "record_shorthand_pat" {
   assert(eq(x + y, 30))
 }
 test "or_pattern_enum" {
-  enum Color { Red, Green, Blue }
+  enum Color { Red; Green; Blue }
   let warm = (c: Color) -> Bool {
     match c { Red | Green => true, _ => false }
   }

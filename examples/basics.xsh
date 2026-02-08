@@ -1,5 +1,5 @@
 type Pair = (Int, Int)
-enum MaybeInt { Hit(Int), Miss }
+enum MaybeInt { Hit(Int); Miss }
 
 let inc = (x: Int) -> Int { x + 1 }
 let pair_sum = (p: Pair) -> Int { p.0 + p.1 }

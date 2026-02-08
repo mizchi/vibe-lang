@@ -3,6 +3,7 @@
 suberror ParseError {
   UnexpectedToken(expected~ : String, got~ : String, span~ : @core.Span)
   UnexpectedEof(span~ : @core.Span)
+  IntLiteralOverflow(literal~ : String, span~ : @core.Span)
 } derive(Show, Eq)
 
 ///|
@@ -33,6 +34,14 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
         message: "unexpected end of file",
         span: Some(span),
         hint: None,
+        note: None,
+      }
+    ParseError::IntLiteralOverflow(literal~, span~) =>
+      @core.Diagnostic::{
+        stage: "parse",
+        message: "int literal overflow: `" + literal + "` is out of Int range",
+        span: Some(span),
+        hint: Some("use a smaller literal or rewrite as `0 - 2147483647 - 1`"),
         note: None,
       }
   }
@@ -1172,6 +1181,34 @@ fn AstParser::parse_expr_or_index_assign_stmt(
 }
 
 ///|
+fn AstParser::expect_decl_separator(
+  self : AstParser,
+  separator_name : String,
+) -> Unit raise ParseError {
+  self.skip_trivia()
+  match self.peek_kind() {
+    k if k == semicolon() => {
+      let _ = self.bump()
+
+    }
+    k if k == comma() =>
+      raise ParseError::UnexpectedToken(
+        expected="; (" + separator_name + ")",
+        got=self.peek().text(),
+        span=self.token_span(),
+      )
+    k if k == rbrace() => ()
+    k if k == eof() => raise ParseError::UnexpectedEof(span=self.token_span())
+    _ =>
+      raise ParseError::UnexpectedToken(
+        expected="; (" + separator_name + ")",
+        got=self.peek().text(),
+        span=self.token_span(),
+      )
+  }
+}
+
+///|
 fn AstParser::parse_enum_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let start = self.pos
   let _ = self.expect(enum_kw(), "enum")
@@ -1190,9 +1227,7 @@ fn AstParser::parse_enum_stmt(self : AstParser) -> @core.Stmt raise ParseError {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
     ctors.push(self.parse_type_ctor(param_set))
-    let _ = self.eat(comma())
-    let _ = self.eat(semicolon())
-
+    self.expect_decl_separator("enum variant separator")
   }
   let _ = self.expect(rbrace(), "}")
   let derives = self.parse_derive_clause()
@@ -1227,12 +1262,12 @@ fn AstParser::parse_struct_stmt(
     self.skip_trivia()
     let _ = self.expect(colon(), ":")
     let field_ty = self.parse_type_with_params(param_set)
-    let _ = self.eat(semicolon())
     fields.push(@core.StructField::{
       name: field_name.text(),
       ty: field_ty,
       span: self.span_from(field_start),
     })
+    self.expect_decl_separator("struct field separator")
   }
   let _ = self.expect(rbrace(), "}")
   let derives = self.parse_derive_clause()
@@ -3130,6 +3165,20 @@ fn AstParser::parse_paren_expr(self : AstParser) -> @core.Expr raise ParseError 
 }
 
 ///|
+fn parse_int_literal_token(
+  tok : Token,
+  span : @core.Span,
+) -> Int raise ParseError {
+  let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
+    tok.text(),
+  )
+  match parsed {
+    Ok(v) => v
+    Err(_) => raise ParseError::IntLiteralOverflow(literal=tok.text(), span~)
+  }
+}
+
+///|
 fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
   self.skip_trivia()
   let start = self.pos
@@ -3139,21 +3188,9 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
     k if k == record_kw() => self.parse_record_pattern()
     k if k == int_lit() => {
       let _ = self.bump()
-      let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
-        tok.text(),
-      )
-      match parsed {
-        Ok(v) => {
-          let span = self.span_from(start)
-          @core.Pat::Int(value=v, span~)
-        }
-        Err(_) =>
-          raise ParseError::UnexpectedToken(
-            expected="int",
-            got=tok.text(),
-            span=self.token_span(),
-          )
-      }
+      let span = self.span_from(start)
+      let value = parse_int_literal_token(tok, span)
+      @core.Pat::Int(value~, span~)
     }
     k if k == float_lit() => {
       let _ = self.bump()
@@ -3587,21 +3624,9 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
   match tok.kind() {
     k if k == int_lit() => {
       let _ = self.bump()
-      let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
-        tok.text(),
-      )
-      match parsed {
-        Ok(v) => {
-          let span = self.span_from(start)
-          @core.Expr::Int(value=v, span~)
-        }
-        Err(_) =>
-          raise ParseError::UnexpectedToken(
-            expected="int",
-            got=tok.text(),
-            span=self.token_span(),
-          )
-      }
+      let span = self.span_from(start)
+      let value = parse_int_literal_token(tok, span)
+      @core.Expr::Int(value~, span~)
     }
     k if k == float_lit() => {
       let _ = self.bump()

@@ -28,7 +28,7 @@ import { foo } from #abc12345
 export let foo = 1
 export let add = (x: Int, y: Int) -> Int { x + y }
 export type Point = record { x: Int, y: Int }
-export enum Color { Red, Green, Blue }
+export enum Color { Red; Green; Blue }
 
 // Re-export
 export { foo, bar } from ./other.xsh

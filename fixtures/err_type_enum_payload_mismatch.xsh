@@ -1,5 +1,5 @@
 // Enum payload type mismatch
-enum Result { Ok(Int), Err(String) }
+enum Result { Ok(Int); Err(String) }
 let r = Ok("hello")
 
 __DATA__

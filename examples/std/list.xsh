@@ -1,7 +1,7 @@
 // List - generic std API
 // Ported from MoonBit core/list with xsh type-system constraints.
 
-enum List[T] { Nil, Cons(T, List[T]) }
+enum List[T] { Nil; Cons(T, List[T]) }
 
 // Create empty list
 let list_empty = [T]() -> List[T] { Nil }

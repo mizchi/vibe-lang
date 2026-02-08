@@ -96,7 +96,7 @@ test "xsh wasm import sleep" {
 test "xsh wasm enum and match" {
   let db = XshDb::new()
   let src =
-    #|enum MyResult { Ok(Int), Err }
+    #|enum MyResult { Ok(Int); Err }
     #|let x = Ok(42)
     #|match x {
     #|  Ok(n) => n
@@ -117,7 +117,7 @@ test "xsh wasm enum and match" {
 test "xsh wasm enum import and match" {
   let db = XshDb::new()
   let lib_src =
-    #|export enum Json { JNull, JBool(Bool), JNum(Double), JStr(String) }
+    #|export enum Json { JNull; JBool(Bool); JNum(Double); JStr(String) }
     #|export let is_null = (j: Json) -> Bool {
     #|  match j {
     #|    JNull => true

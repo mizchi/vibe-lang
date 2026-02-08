@@ -2,7 +2,7 @@
 
 // Constants
 let int_max_value = 2147483647
-// Note: -2147483648 cannot be represented directly due to parser limitation
+// Note: -2147483648 is rejected with an overflow parse error
 // Use int_max_value + 1 with negation trick
 let int_min_value = 0 - 2147483647 - 1
 

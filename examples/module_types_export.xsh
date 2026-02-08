@@ -1,6 +1,6 @@
 // Exported types and enum
-export enum Color { Red, Green, Blue }
-export enum Maybe[T] { Just(T), Nothing }
+export enum Color { Red; Green; Blue }
+export enum Maybe[T] { Just(T); Nothing }
 export type IntPair = (Int, Int)
 
 export let make_pair = (a: Int, b: Int) -> IntPair { (a, b) }

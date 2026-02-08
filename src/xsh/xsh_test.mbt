@@ -4,7 +4,7 @@ test "xsh detection" {
   assert_true(is_xsh_script("let x = 1"))
   assert_false(is_xsh_script("flake { }"))
   assert_false(is_xsh_script("alias foo = bar#abc"))
-  assert_true(is_xsh_script("enum Option[T] { Some(T), None }"))
+  assert_true(is_xsh_script("enum Option[T] { Some(T); None }"))
   assert_false(is_xsh_script("echo hello"))
 }
 
@@ -870,7 +870,7 @@ test "xsh ctor match" {
 test "xsh type def and ctor call" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "enum Result[T] { Ok(T), Err }\ntype IntResult = Result[Int]",
+    "enum Result[T] { Ok(T); Err }\ntype IntResult = Result[Int]",
   )
   let _ = rt.eval_script(
     "let f = (x: IntResult) -> Int { match x { Ok(v) => v, Err => 0 } }",
@@ -886,7 +886,7 @@ test "xsh type def and ctor call" {
 test "xsh match exhaustiveness for type def" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "enum Result[T] { Ok(T), Err }\nlet x = match Ok(1) { Ok(v) => v }",
+    "enum Result[T] { Ok(T); Err }\nlet x = match Ok(1) { Ok(v) => v }",
   )
   match result {
     Err(_) => ()

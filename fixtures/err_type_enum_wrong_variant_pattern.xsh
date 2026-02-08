@@ -1,5 +1,5 @@
 // Match on enum with wrong variant
-enum Color { Red, Green, Blue }
+enum Color { Red; Green; Blue }
 let c = Red
 match c {
   Yellow => 1

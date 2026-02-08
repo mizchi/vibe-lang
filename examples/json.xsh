@@ -1,9 +1,9 @@
 enum Json {
-  JNull,
-  JBool(Bool),
-  JNum(Double),
-  JStr(String),
-  JArr(Array[Json]),
+  JNull;
+  JBool(Bool);
+  JNum(Double);
+  JStr(String);
+  JArr(Array[Json]);
   JObj(Map[Json])
 }
 

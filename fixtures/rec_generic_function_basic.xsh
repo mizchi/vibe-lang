@@ -1,4 +1,4 @@
-enum List[T] { Nil, Cons(T, List[T]) }
+enum List[T] { Nil; Cons(T, List[T]) }
 
 let rec list_length = [T](xs: List[T]) -> Int {
   match xs {

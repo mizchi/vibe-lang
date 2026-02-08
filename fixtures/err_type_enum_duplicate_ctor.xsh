@@ -1,5 +1,5 @@
 // Enum with duplicate constructor names
-enum Status { Active, Pending, Active }
+enum Status { Active; Pending; Active }
 let s = Active
 
 __DATA__

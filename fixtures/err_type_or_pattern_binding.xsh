@@ -1,4 +1,4 @@
-enum Val { A(Int), B(String) }
+enum Val { A(Int); B(String) }
 let x = match A(1) {
   A(n) | B(n) => n
   _ => 0

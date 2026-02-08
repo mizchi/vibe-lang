@@ -28,6 +28,15 @@
   enum variant separator is canonicalized to `;`,
   struct literal style is canonicalized to `Type::{ ... }`,
   formatter must be idempotent.
+- Declaration separator policy is fixed:
+  `enum` variants and `struct` fields use `;`.
+  Comma separators are parse errors (formatter may still normalize CST input).
+- `Int` min-literal boundary policy is fixed:
+  `-2147483648` is rejected as parse-time overflow
+  (unary minus does not extend positive literal range).
+- WASM stdio target policy is fixed:
+  standard I/O APIs are defined against `wasi:io` (preview2/component path),
+  not split across dual core/component profiles.
 - API semver checks target exported symbols only.
 - LSP provides trait import quickfixes for unresolved bounds
   (`Eq`/`Ord` and alias-like names mapped to them).
@@ -36,21 +45,14 @@
 
 ## Next Up (Priority Order)
 
-1. Split wasm stdio profiles (`core-wasm` vs `component-wasm`) and add
-   compile/eval conformance tests for each profile.
-2. Finalize `Int` min-literal boundary behavior
-   (`-2147483648` parse policy + diagnostics) and replace
-   `fixtures/todo_int_min_literal.xsh` with a concrete expectation.
+1. Expand remaining wasm primitive opcode wrappers
+   (`i32`/`f32`/`f64`/conversion/memory-level ops).
+2. Add optimization-oriented regression tests for recursion depth,
+   stack safety, and string-concat hotspots.
+3. Audit stale `fixtures/todo_*.xsh` files.
+   If superseded by integration tests, remove them.
+   If still needed, convert them to concrete RED expectations.
 
 ## Deferred
 
-- Expand remaining wasm primitive opcode wrappers
-  (`i32`/`f32`/`f64`/conversion/memory-level ops).
-- Add optimization-oriented regression tests for recursion depth,
-  stack safety, and string-concat hotspots.
-
-## Cleanup
-
-- Audit stale `fixtures/todo_*.xsh` files.
-  If superseded by integration tests, remove them.
-  If still needed, convert them to concrete RED expectations.
+- none
