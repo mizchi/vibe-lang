@@ -1,7 +1,15 @@
 ///|
+priv enum WarningBindingKind {
+  Variable
+  Import
+  MutableVariable
+}
+
+///|
 priv struct WarningBinding {
   name : String
   span : @core.Span
+  kind : WarningBindingKind
   suppress : Bool
   exported : Bool
 }
@@ -11,6 +19,7 @@ priv struct WarningScope {
   bindings : Array[WarningBinding]
   name_index : Map[String, Array[Int]]
   used_ids : Map[Int, Bool]
+  assigned_ids : Map[Int, Bool]
 }
 
 ///|
@@ -21,7 +30,7 @@ priv struct PatternBinding {
 
 ///|
 fn warning_scope_new() -> WarningScope {
-  { bindings: [], name_index: {}, used_ids: {} }
+  { bindings: [], name_index: {}, used_ids: {}, assigned_ids: {} }
 }
 
 ///|
@@ -30,6 +39,7 @@ fn warning_scope_declare(
   name : String,
   span : @core.Span,
   exported : Bool,
+  kind : WarningBindingKind,
 ) -> Unit {
   if scopes.length() == 0 {
     return
@@ -40,6 +50,7 @@ fn warning_scope_declare(
   scope.bindings.push({
     name,
     span,
+    kind,
     suppress: name.has_prefix("_"),
     exported,
   })
@@ -73,6 +84,28 @@ fn warning_scope_mark_use(scopes : Array[WarningScope], name : String) -> Unit {
 }
 
 ///|
+fn warning_scope_mark_assign(
+  scopes : Array[WarningScope],
+  name : String,
+) -> Unit {
+  let mut i = scopes.length()
+  while i > 0 {
+    i -= 1
+    let scope = scopes[i]
+    match scope.name_index.get(name) {
+      Some(ids) =>
+        if ids.length() > 0 {
+          let binding_id = ids[ids.length() - 1]
+          scope.assigned_ids[binding_id] = true
+          scopes[i] = scope
+          return
+        }
+      None => ()
+    }
+  }
+}
+
+///|
 fn warning_scope_pop(
   scopes : Array[WarningScope],
   out : Array[@core.Diagnostic],
@@ -85,20 +118,45 @@ fn warning_scope_pop(
     None => return
   }
   for i in 0..<scope.bindings.length() {
-    if scope.used_ids.contains(i) {
-      continue
-    }
     let binding = scope.bindings[i]
     if binding.suppress || binding.exported {
       continue
     }
-    out.push(@core.Diagnostic::{
-      stage: "warning",
-      message: "unused variable: " + binding.name,
-      span: Some(binding.span),
-      hint: Some("prefix with `_` if intentionally unused"),
-      note: None,
-    })
+    if !scope.used_ids.contains(i) {
+      let (message, hint) = match binding.kind {
+        WarningBindingKind::Import =>
+          (
+            "unused import: " + binding.name,
+            Some("remove import or use it in expression"),
+          )
+        _ =>
+          (
+            "unused variable: " + binding.name,
+            Some("prefix with `_` if intentionally unused"),
+          )
+      }
+      out.push(@core.Diagnostic::{
+        stage: "warning",
+        message,
+        span: Some(binding.span),
+        hint,
+        note: None,
+      })
+      continue
+    }
+    match binding.kind {
+      WarningBindingKind::MutableVariable =>
+        if !scope.assigned_ids.contains(i) {
+          out.push(@core.Diagnostic::{
+            stage: "warning",
+            message: "unnecessary `mut` binding: " + binding.name,
+            span: Some(binding.span),
+            hint: Some("use `let` instead of `let mut`"),
+            note: None,
+          })
+        }
+      _ => ()
+    }
   }
 }
 
@@ -148,7 +206,13 @@ fn declare_pattern_bindings(
   let bindings : Array[PatternBinding] = []
   warning_collect_pattern_bindings(pat, seen, bindings)
   for binding in bindings {
-    warning_scope_declare(scopes, binding.name, binding.span, false)
+    warning_scope_declare(
+      scopes,
+      binding.name,
+      binding.span,
+      false,
+      WarningBindingKind::Variable,
+    )
   }
 }
 
@@ -172,29 +236,59 @@ fn walk_stmt(
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) => {
       if rec {
-        warning_scope_declare(scopes, name, span, false)
+        warning_scope_declare(
+          scopes,
+          name,
+          span,
+          false,
+          WarningBindingKind::Variable,
+        )
       }
       walk_expr(expr, scopes, out)
       if !rec {
-        warning_scope_declare(scopes, name, span, false)
+        warning_scope_declare(
+          scopes,
+          name,
+          span,
+          false,
+          WarningBindingKind::Variable,
+        )
       }
     }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
       if rec {
-        warning_scope_declare(scopes, name, span, true)
+        warning_scope_declare(
+          scopes,
+          name,
+          span,
+          true,
+          WarningBindingKind::Variable,
+        )
       }
       walk_expr(expr, scopes, out)
       if !rec {
-        warning_scope_declare(scopes, name, span, true)
+        warning_scope_declare(
+          scopes,
+          name,
+          span,
+          true,
+          WarningBindingKind::Variable,
+        )
       }
     }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       walk_expr(expr, scopes, out)
-      warning_scope_declare(scopes, name, span, false)
+      warning_scope_declare(
+        scopes,
+        name,
+        span,
+        false,
+        WarningBindingKind::MutableVariable,
+      )
     }
     @core.Stmt::Assign(name~, expr~, ..) => {
       walk_expr(expr, scopes, out)
-      warning_scope_mark_use(scopes, name)
+      warning_scope_mark_assign(scopes, name)
     }
     @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
       walk_expr(target, scopes, out)
@@ -206,6 +300,20 @@ fn walk_stmt(
       declare_pattern_bindings(scopes, pat)
     }
     @core.Stmt::Expr(expr~, ..) => walk_expr(expr, scopes, out)
+    @core.Stmt::Import(spec~, span~, ..) =>
+      for item in spec.items {
+        let local_name = match item.rename {
+          Some(rename) => rename
+          None => item.name
+        }
+        warning_scope_declare(
+          scopes,
+          local_name,
+          span,
+          false,
+          WarningBindingKind::Import,
+        )
+      }
     @core.Stmt::Export(names~, ..) =>
       for name in names {
         warning_scope_mark_use(scopes, name)
@@ -215,8 +323,7 @@ fn walk_stmt(
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
     }
-    @core.Stmt::Import(..)
-    | @core.Stmt::EnumDef(..)
+    @core.Stmt::EnumDef(..)
     | @core.Stmt::TypeAlias(..)
     | @core.Stmt::TraitDef(..)
     | @core.Stmt::TraitImpl(..)
@@ -297,7 +404,13 @@ fn walk_expr(
     @core.Expr::Fn(params~, body~, span~, ..) => {
       scopes.push(warning_scope_new())
       for param in params {
-        warning_scope_declare(scopes, param.name, span, false)
+        warning_scope_declare(
+          scopes,
+          param.name,
+          span,
+          false,
+          WarningBindingKind::Variable,
+        )
       }
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)

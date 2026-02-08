@@ -213,6 +213,29 @@ test "xsh warning ignores underscore-prefixed name" {
 }
 
 ///|
+test "xsh warning reports unnecessary mut binding" {
+  let db = XshDb::new()
+  db.set_source("main", "let mut value = 1\nvalue")
+  let _ = db.types("main")
+  let warnings = db.warnings("main")
+  assert_eq(warnings.length(), 1)
+  assert_true(warnings[0].message.contains("unnecessary `mut` binding: value"))
+}
+
+///|
+test "xsh warning reports unused import local name" {
+  let db = XshDb::new()
+  db.set_source("./lib.xsh", "export let foo = 1")
+  db.set_source(
+    "main", "import { foo as local_foo } from ./lib.xsh\nlet x = 1\nx",
+  )
+  let _ = db.types("main")
+  let warnings = db.warnings("main")
+  assert_eq(warnings.length(), 1)
+  assert_true(warnings[0].message.contains("unused import: local_foo"))
+}
+
+///|
 test "xsh import parsing" {
   // Test that import syntax parses correctly
   let db = XshDb::new()
