@@ -36,6 +36,7 @@ pub fn run(args : Array[String]) -> Unit {
     "expand" => expand_cmd(cmd_args)
     "ide" => ide_cmd(cmd_args)
     "lsif" => lsif_cmd(cmd_args)
+    "index" => index_cmd(cmd_args)
     "lsp" => lsp_cmd(cmd_args)
     "help" => print_usage()
     _ => {
@@ -78,6 +79,7 @@ fn print_usage() -> Unit {
   println("  update-lock <file>          alias for fetch")
   println("  ide <outline|peek-def|search> ...  symbol/type index queries")
   println("  lsif [-o out.lsif] <file>   emit LSIF via shared symbol index")
+  println("  index <build|query|verify> ...  advanced graph index (POC)")
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax xsh|posix (default: xsh)")
 }
@@ -2862,6 +2864,161 @@ fn lsif_cmd(args : Array[String]) -> Unit {
       }
     }
     Err(err) => abort("lsif: " + err)
+  }
+}
+
+///|
+fn index_load_file(path : String) -> @xsh_lib.AdvancedGraphIndex {
+  match @xsh_lib.read_advanced_graph_index(path) {
+    Ok(index) => index
+    Err(err) => abort("index: " + err)
+  }
+}
+
+///|
+fn print_graph_def_entry(def : @xsh_lib.AdvancedGraphDef) -> Unit {
+  println(
+    def.path +
+    "@" +
+    def.start.to_string() +
+    ".." +
+    def.end.to_string() +
+    "  " +
+    def.kind +
+    " " +
+    def.name +
+    " : " +
+    def.signature +
+    "  #" +
+    short_hash(def.def_id),
+  )
+}
+
+///|
+fn index_build_cmd(args : Array[String]) -> Unit {
+  let mut out_path = "dist/advanced-graph-index.json"
+  let mut base_commit = ""
+  let mut entry : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "-o" | "--out" => {
+        i += 1
+        if i >= args.length() {
+          abort("index build: missing output path after " + arg)
+        }
+        out_path = args[i]
+      }
+      "--base-commit" => {
+        i += 1
+        if i >= args.length() {
+          abort("index build: missing value after --base-commit")
+        }
+        base_commit = args[i]
+      }
+      _ =>
+        match entry {
+          Some(_) => abort("index build: unexpected extra arg: " + arg)
+          None => entry = Some(arg)
+        }
+    }
+    i += 1
+  }
+  let entry_path = match entry {
+    Some(path) => path
+    None => abort("index build: expected <entry-file>")
+  }
+  if out_path.has_prefix("dist/") {
+    ensure_dist_dir()
+  }
+  match load_db_with_paths(entry_path) {
+    Ok((db, _, paths)) => {
+      let index = @xsh_lib.build_advanced_graph_index(
+        db,
+        paths,
+        base_commit=base_commit,
+        created_at=@env.now().to_string(),
+      )
+      match @xsh_lib.write_advanced_graph_index(out_path, index) {
+        Ok(_) =>
+          println(
+            "index build: wrote " +
+            out_path +
+            " (" +
+            index.defs.length().to_string() +
+            " defs)",
+          )
+        Err(err) => abort("index build: " + err)
+      }
+    }
+    Err(err) => abort("index build: " + err)
+  }
+}
+
+///|
+fn index_query_cmd(args : Array[String]) -> Unit {
+  if args.length() != 3 {
+    abort("index query: expected <symbol|type> <query> <index-file>")
+  }
+  let lane = args[0]
+  let query = args[1]
+  let index_path = args[2]
+  let index = index_load_file(index_path)
+  let matches = match lane {
+    "symbol" => index.query_symbol(query)
+    "type" => index.query_type(query)
+    _ => abort("index query: unknown lane: " + lane)
+  }
+  if matches.length() == 0 {
+    println("index query: no matches")
+    return
+  }
+  println(
+    "index query: " +
+    matches.length().to_string() +
+    " matches for `" +
+    query +
+    "`",
+  )
+  for def in matches {
+    print_graph_def_entry(def)
+  }
+}
+
+///|
+fn index_verify_cmd(args : Array[String]) -> Unit {
+  if args.length() != 1 {
+    abort("index verify: expected <index-file>")
+  }
+  let index = index_load_file(args[0])
+  let issues = index.verify()
+  if issues.length() == 0 {
+    println(
+      "index verify: ok (" + index.defs.length().to_string() + " defs)",
+    )
+    return
+  }
+  for issue in issues {
+    println("index verify: " + issue)
+  }
+  abort(
+    "index verify: failed (" + issues.length().to_string() + " issues)",
+  )
+}
+
+///|
+fn index_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    abort("index: expected subcommand (build|query|verify)")
+  }
+  let sub = args[0]
+  let sub_args = args_tail(args, 1)
+  match sub {
+    "build" => index_build_cmd(sub_args)
+    "query" => index_query_cmd(sub_args)
+    "verify" => index_verify_cmd(sub_args)
+    _ => abort("index: unknown subcommand: " + sub)
   }
 }
 

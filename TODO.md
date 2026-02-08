@@ -114,6 +114,10 @@
 - Symbol/type/signature indexing backend is implemented and shared:
   `xsh ide` (`outline`/`peek-def`/`search`) and `xsh lsif` consume the same
   module-level symbol index (`src/xsh/symbol_index.mbt`).
+- Advanced graph extension PoC is implemented on xsh side:
+  `xsh index` (`build`/`query`/`verify`) provides a sidecar JSON index
+  (`src/xsh/advanced_graph_poc.mbt`) that models manifest + def graph +
+  symbol/type lookup tables.
 
 ## Next Up (Priority Order)
 

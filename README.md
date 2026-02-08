@@ -79,6 +79,11 @@ just run ide outline examples/syntax.xsh
 just run ide peek-def some_fn examples/syntax.xsh
 just run ide search Option examples/syntax.xsh
 
+# Advanced graph index PoC (build/query/verify)
+just run index build examples/syntax.xsh -o /tmp/advanced-graph-index.json
+just run index query symbol add /tmp/advanced-graph-index.json
+just run index verify /tmp/advanced-graph-index.json
+
 # Emit LSIF from the same symbol index backend
 just run lsif -o /tmp/xsh.lsif examples/syntax.xsh
 
