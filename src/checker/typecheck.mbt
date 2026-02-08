@@ -22,6 +22,9 @@ suberror TypeError {
 let global_next_type_var : Ref[Int] = @ref.new(0)
 
 ///|
+let cached_prelude_env : Ref[TypeEnv?] = @ref.new(None)
+
+///|
 fn suggestion_hint(suggestion : String?) -> String? {
   match suggestion {
     Some(name) => Some("did you mean `" + name + "`?")
@@ -847,6 +850,32 @@ pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
 }
 
 ///|
+/// Clone as an independent module-check environment.
+/// Unlike `clone`/`fork_for_check`, this does not share `expr_types`.
+pub fn TypeEnv::clone_for_module(self : TypeEnv) -> TypeEnv {
+  {
+    bindings: self.bindings.copy(),
+    addr_types: {},
+    enum_defs: self.enum_defs.copy(),
+    struct_defs: self.struct_defs.copy(),
+    type_aliases: self.type_aliases.copy(),
+    ctor_index: self.ctor_index.copy(),
+    traits: self.traits.copy(),
+    trait_impls: self.trait_impls.copy(),
+    fn_versions: self.fn_versions.copy(),
+    purities: self.purities.copy(),
+    expr_types: {},
+    num_vars: {},
+    var_trait_bounds: {},
+    next_var: 0,
+    next_effect_var: 0,
+    loop_depth: 0,
+    subs: {},
+    effect_subs: {},
+  }
+}
+
+///|
 pub fn TypeEnv::set(self : TypeEnv, name : String, ty : @core.Type) -> Unit {
   self.set_scheme(name, TypeScheme::{
     vars: [],
@@ -1092,9 +1121,7 @@ pub fn type_check_with_aliases(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
 ) -> TypeEnv raise TypeError {
-  let env = TypeEnv::new()
-  ensure_prelude_option(env)
-  ensure_prelude_functions(env, aliases)
+  let env = get_cached_prelude_env_for_module()
   let exported_names = collect_exported_names(ast.stmts)
   type_check_stmts(
     env,
@@ -1105,6 +1132,20 @@ pub fn type_check_with_aliases(
     exported_names,
   ) catch {
     e => raise e.resolve_vars(env)
+  }
+}
+
+///|
+pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
+  match cached_prelude_env.val {
+    Some(seed) => seed.clone_for_module()
+    None => {
+      let seed = TypeEnv::new()
+      ensure_prelude_option(seed)
+      ensure_prelude_functions(seed, {})
+      cached_prelude_env.val = Some(seed)
+      seed.clone_for_module()
+    }
   }
 }
 
@@ -1282,6 +1323,7 @@ fn type_check_stmts(
 fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
   let exports : Map[String, Bool] = {}
   let defined : Map[String, Bool] = {}
+  let mut has_late_exports = false
   for stmt in stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, ..) => {
@@ -1314,8 +1356,13 @@ fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
         defined[name] = true
         exports[name] = true
       }
+      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
+        has_late_exports = true
       _ => ()
     }
+  }
+  if not(has_late_exports) {
+    return exports
   }
   for stmt in stmts {
     match stmt {
@@ -1591,6 +1638,9 @@ fn add_var_trait_bounds(
 
 ///|
 fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> @core.Type {
+  if scheme.vars.is_empty() && scheme.effect_vars.is_empty() {
+    return resolve_type(env, scheme.ty)
+  }
   let mapping : Map[Int, @core.Type] = {}
   for id in scheme.vars {
     if scheme.num_vars.contains(id) {
@@ -1599,14 +1649,16 @@ fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> @core.Type {
       mapping[id] = fresh_type_var(env)
     }
   }
-  for id in scheme.vars {
-    match mapping.get(id) {
-      Some(@core.Type::Var(new_id)) =>
-        match scheme.trait_bounds.get(id) {
-          Some(bounds) => add_var_trait_bounds(env, new_id, bounds)
-          None => ()
-        }
-      _ => ()
+  if not(scheme.trait_bounds.is_empty()) {
+    for id in scheme.vars {
+      match mapping.get(id) {
+        Some(@core.Type::Var(new_id)) =>
+          match scheme.trait_bounds.get(id) {
+            Some(bounds) => add_var_trait_bounds(env, new_id, bounds)
+            None => ()
+          }
+        _ => ()
+      }
     }
   }
   let effect_mapping : Map[String, String] = {}

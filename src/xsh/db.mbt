@@ -406,9 +406,11 @@ pub fn XshDb::new() -> XshDb {
     let ast = ast_query.fetch(rt, file_path).unwrap()
     let base_dir = @path.Path(file_path).dirname().to_string()
     let out : Array[ImportSpec] = []
+    let mut has_imports = false
     for stmt in ast.stmts {
       match stmt {
-        @core.Stmt::Import(source~, span~, ..) =>
+        @core.Stmt::Import(source~, span~, ..) => {
+          has_imports = true
           match source {
             @core.ModuleRef::Path(path~) => {
               let path_obj = normalize_path_obj(base_dir, path)
@@ -606,37 +608,107 @@ pub fn XshDb::new() -> XshDb {
               }
             }
           }
+        }
         _ => ()
       }
     }
-    match detect_import_cycle(rt, sources, ast_query, file_path) {
-      Some(cycle) =>
-        diags.push(rt, @core.Diagnostic::{
-          stage: "import",
-          message: "import cycle: " + render_import_cycle(cycle),
-          span: None,
-          hint: Some("break the cycle by extracting shared definitions"),
-          note: None,
-        })
-      None => ()
+    if has_imports {
+      match detect_import_cycle(rt, sources, ast_query, file_path) {
+        Some(cycle) =>
+          diags.push(rt, @core.Diagnostic::{
+            stage: "import",
+            message: "import cycle: " + render_import_cycle(cycle),
+            span: None,
+            hint: Some("break the cycle by extracting shared definitions"),
+            note: None,
+          })
+        None => ()
+      }
     }
     out
   })
   import_query.register(rt)
+  let no_import_type_query : @ripple.Query[String, @checker.TypeEnv?] = db.query(fn(
+      rt,
+      hash,
+    ) {
+      match sources.get(rt, hash_source_key(hash)) {
+        None => None
+        Some(content) => {
+          let ast_opt = try @parser.parse_ast(content) catch {
+            _ => None
+          } noraise {
+            ast => Some(ast)
+          }
+          match ast_opt {
+            None => None
+            Some(ast) => {
+              let mut has_import = false
+              for stmt in ast.stmts {
+                match stmt {
+                  @core.Stmt::Import(..) => has_import = true
+                  _ => ()
+                }
+              }
+              if has_import {
+                None
+              } else {
+                let desugared = desugar_method_calls(ast, {})
+                let env = try
+                  @checker.type_check_with_aliases(desugared, {})
+                catch {
+                  _ => None
+                } noraise {
+                  typed => Some(typed)
+                }
+                env
+              }
+            }
+          }
+        }
+      }
+    },
+  )
+  no_import_type_query.register(rt)
   // First, create a simple type query that only type checks a single module
   let simple_type_query : @ripple.Query[String, @checker.TypeEnv] = db.query(fn(
     rt,
     path,
   ) {
-    let ast = ast_query.fetch(rt, path).unwrap()
-    let imports = import_query.fetch(rt, path)
-    let aliases = build_alias_map_from_ast(ast, imports)
-    let desugared = desugar_method_calls(ast, aliases)
-    @checker.type_check_with_aliases(desugared, aliases) catch {
-      e => {
-        diags.push(rt, e.diagnostic())
-        @checker.TypeEnv::new()
-      }
+    match sources.get(rt, path) {
+      None => @checker.TypeEnv::new()
+      Some(content) =>
+        if not(content.contains("import")) {
+          let hash = @core.git_blob_hash_string(content)
+          match no_import_type_query.fetch(rt, hash) {
+            Some(env) => env
+            None => {
+              let imports = import_query.fetch(rt, path)
+              let ast = ast_query.fetch(rt, path).unwrap()
+              let aliases = build_alias_map_from_ast(ast, imports)
+              let desugared = desugar_method_calls(ast, aliases)
+              let env = try! @checker.get_cached_prelude_env_for_module()
+              @checker.type_check_with_env(env, desugared, aliases) catch {
+                e => {
+                  diags.push(rt, e.diagnostic())
+                  @checker.TypeEnv::new()
+                }
+              }
+            }
+          }
+        } else {
+          let imports = import_query.fetch(rt, path)
+          let ast = ast_query.fetch(rt, path).unwrap()
+          let aliases = build_alias_map_from_ast(ast, imports)
+          let desugared = desugar_method_calls(ast, aliases)
+          let env = try! @checker.get_cached_prelude_env_for_module()
+          @checker.type_check_with_env(env, desugared, aliases) catch {
+            e => {
+              diags.push(rt, e.diagnostic())
+              @checker.TypeEnv::new()
+            }
+          }
+        }
     }
   })
   simple_type_query.register(rt)
@@ -645,15 +717,22 @@ pub fn XshDb::new() -> XshDb {
     rt,
     file_path,
   ) {
-    let ast = ast_query.fetch(rt, file_path).unwrap()
+    match sources.get(rt, file_path) {
+      Some(content) =>
+        if not(content.contains("import")) {
+          return simple_type_query.fetch(rt, file_path)
+        }
+      None => ()
+    }
     let imports = import_query.fetch(rt, file_path)
+    if imports.length() == 0 {
+      return simple_type_query.fetch(rt, file_path)
+    }
+    let ast = ast_query.fetch(rt, file_path).unwrap()
     let aliases = build_alias_map_from_ast(ast, imports)
     let desugared = desugar_method_calls(ast, aliases)
     let base_dir = @path.Path(file_path).dirname().to_string()
-    // Create base environment with prelude
-    let env = @checker.TypeEnv::new()
-    let _ = try! @checker.ensure_prelude_option(env)
-    let _ = try! @checker.ensure_prelude_functions(env, aliases)
+    let env = try! @checker.get_cached_prelude_env_for_module()
     // Import types from imported modules
     for imp in imports {
       match sources.get(rt, imp.path) {
@@ -747,6 +826,7 @@ pub fn XshDb::new() -> XshDb {
 fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
   let exports : Map[String, Bool] = {}
   let defined : Map[String, Bool] = {}
+  let mut has_late_exports = false
   // First pass: collect all definitions
   for stmt in ast.stmts {
     match stmt {
@@ -777,8 +857,13 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
         defined[name] = true
         exports[name] = true
       }
+      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
+        has_late_exports = true
       _ => ()
     }
+  }
+  if not(has_late_exports) {
+    return exports
   }
   // Second pass: handle export and re-export statements
   for stmt in ast.stmts {

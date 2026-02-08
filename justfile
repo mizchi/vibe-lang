@@ -111,6 +111,10 @@ bench-cmd-compile:
 bench-symbol-index:
     moon bench -p benches -f symbol_index_bench.mbt
 
+# Benchmark typechecker and ripple type-cache behavior
+bench-typechecker:
+    moon bench -p benches -f checker_bench.mbt
+
 # Run wasm-js-string backend via JS engine
 run-wasm-js-string *args:
     node scripts/run_wasm_js_string.mjs {{args}}
