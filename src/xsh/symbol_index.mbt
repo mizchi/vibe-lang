@@ -23,6 +23,9 @@ pub struct SymbolEntry {
 ///|
 pub struct SymbolIndex {
   entries : Array[SymbolEntry]
+  name_index : Map[String, Int]
+  name_dup_index : Map[String, Array[Int]]
+  xsh_query_index : Map[String, Array[Int]]
 } derive(Show, Eq)
 
 ///|
@@ -254,6 +257,236 @@ fn ctor_signature(
 }
 
 ///|
+fn si_push_unique_int(values : Array[Int], value : Int) -> Unit {
+  for existing in values {
+    if existing == value {
+      return
+    }
+  }
+  values.push(value)
+}
+
+///|
+fn si_push_index_id(
+  index_map : Map[String, Array[Int]],
+  key : String,
+  id : Int,
+) -> Unit {
+  match index_map.get(key) {
+    Some(existing) => {
+      si_push_unique_int(existing, id)
+      index_map[key] = existing
+    }
+    None => index_map[key] = [id]
+  }
+}
+
+///|
+fn si_collect_entries_by_ids(
+  entries : Array[SymbolEntry],
+  ids : Array[Int],
+) -> Array[SymbolEntry] {
+  let out : Array[SymbolEntry] = []
+  for id in ids {
+    if id >= 0 && id < entries.length() {
+      out.push(entries[id])
+    }
+  }
+  out
+}
+
+///|
+fn si_is_identifier_char(c : Char) -> Bool {
+  c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_' || c == '?'
+}
+
+///|
+fn si_signature_tokens(signature : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut current = ""
+  for _, c in signature {
+    if c == '+' {
+      if current.length() > 0 {
+        out.push(current)
+        current = ""
+      }
+      out.push("+")
+      continue
+    }
+    if si_is_identifier_char(c) {
+      current = current + c.to_string()
+    } else if current.length() > 0 {
+      out.push(current)
+      current = ""
+    }
+  }
+  if current.length() > 0 {
+    out.push(current)
+  }
+  out
+}
+
+///|
+fn si_is_bound_atom(token : String) -> Bool {
+  if token.length() == 0 {
+    return false
+  }
+  match token.get_char(0) {
+    Some(first) => first.is_ascii_uppercase() || first == '?'
+    None => false
+  }
+}
+
+///|
+fn si_collect_plus_bound_fragments(
+  signature : String,
+  out : Array[String],
+) -> Unit {
+  let tokens = si_signature_tokens(signature)
+  let mut i = 0
+  while i < tokens.length() {
+    if i + 2 >= tokens.length() {
+      i += 1
+      continue
+    }
+    if tokens[i + 1] != "+" ||
+      not(si_is_bound_atom(tokens[i])) ||
+      not(si_is_bound_atom(tokens[i + 2])) {
+      i += 1
+      continue
+    }
+    let atoms : Array[String] = [tokens[i]]
+    let mut j = i
+    while j + 2 < tokens.length() {
+      if tokens[j + 1] != "+" || not(si_is_bound_atom(tokens[j + 2])) {
+        break
+      }
+      atoms.push(tokens[j + 2])
+      j += 2
+    }
+    for start in 0..<atoms.length() {
+      if start + 1 >= atoms.length() {
+        continue
+      }
+      let mut fragment = atoms[start]
+      for end in (start + 1)..<atoms.length() {
+        fragment = fragment + " + " + atoms[end]
+        out.push(fragment)
+      }
+    }
+    i = j + 1
+  }
+}
+
+///|
+fn si_collect_effect_fragments(signature : String, out : Array[String]) -> Unit {
+  let chunks : Array[String] = []
+  for part_view in signature.split("with {") {
+    chunks.push(part_view.to_string())
+  }
+  if chunks.length() <= 1 {
+    return
+  }
+  for i in 1..<chunks.length() {
+    let tail = chunks[i]
+    match tail.find("}") {
+      Some(end_pos) => {
+        let inner_raw = tail.unsafe_substring(start=0, end=end_pos)
+        let inner = inner_raw.trim().to_string()
+        if inner.length() == 0 {
+          continue
+        }
+        out.push("with {" + inner + "}")
+        for effect_view in inner.split(",") {
+          let effect = effect_view.to_string().trim().to_string()
+          if effect.length() > 0 {
+            out.push("with {" + effect + "}")
+          }
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+///|
+fn si_collect_xsh_query_fragments(signature : String) -> Array[String] {
+  let raw : Array[String] = []
+  if signature.contains(" + ") {
+    si_collect_plus_bound_fragments(signature, raw)
+  }
+  if signature.contains("with {") {
+    si_collect_effect_fragments(signature, raw)
+  }
+  let seen : Map[String, Bool] = {}
+  let out : Array[String] = []
+  for item in raw {
+    if item.length() == 0 || seen.contains(item) {
+      continue
+    }
+    seen[item] = true
+    out.push(item)
+  }
+  out
+}
+
+///|
+fn si_build_name_index(
+  entries : Array[SymbolEntry],
+) -> (Map[String, Int], Map[String, Array[Int]]) {
+  let primary : Map[String, Int] = {}
+  let dups : Map[String, Array[Int]] = {}
+  for i in 0..<entries.length() {
+    let name = entries[i].name
+    match primary.get(name) {
+      None => primary[name] = i
+      Some(first_id) =>
+        match dups.get(name) {
+          Some(ids) => {
+            si_push_unique_int(ids, i)
+            dups[name] = ids
+          }
+          None => dups[name] = [first_id, i]
+        }
+    }
+  }
+  (primary, dups)
+}
+
+///|
+fn si_build_xsh_query_index(
+  entries : Array[SymbolEntry],
+) -> Map[String, Array[Int]] {
+  let out : Map[String, Array[Int]] = {}
+  for i in 0..<entries.length() {
+    let signature = entries[i].signature
+    if not(signature.contains(" + ") || signature.contains("with {")) {
+      continue
+    }
+    for key in si_collect_xsh_query_fragments(signature) {
+      si_push_index_id(out, key, i)
+    }
+  }
+  out
+}
+
+///|
+fn si_build_symbol_index(entries : Array[SymbolEntry]) -> SymbolIndex {
+  let (name_index, name_dup_index) = si_build_name_index(entries)
+  SymbolIndex::{
+    entries,
+    name_index,
+    name_dup_index,
+    xsh_query_index: si_build_xsh_query_index(entries),
+  }
+}
+
+///|
+fn si_should_use_xsh_fast_path(query : String) -> Bool {
+  query.has_prefix("with {") || query.contains(" + ")
+}
+
+///|
 pub fn build_symbol_index_for_module(
   path : String,
   ast : @core.Module,
@@ -368,7 +601,7 @@ pub fn build_symbol_index_for_module(
       | @core.Stmt::ReExport(..) => ()
     }
   }
-  SymbolIndex::{ entries, }
+  si_build_symbol_index(entries)
 }
 
 ///|
@@ -382,7 +615,7 @@ pub fn build_symbol_index(db : XshDb, paths : Array[String]) -> SymbolIndex {
       entries.push(entry)
     }
   }
-  SymbolIndex::{ entries, }
+  si_build_symbol_index(entries)
 }
 
 ///|
@@ -390,13 +623,19 @@ pub fn SymbolIndex::find_exact(
   self : SymbolIndex,
   name : String,
 ) -> Array[SymbolEntry] {
-  let out : Array[SymbolEntry] = []
-  for entry in self.entries {
-    if entry.name == name {
-      out.push(entry)
-    }
+  match self.name_dup_index.get(name) {
+    Some(ids) => si_collect_entries_by_ids(self.entries, ids)
+    None =>
+      match self.name_index.get(name) {
+        Some(id) =>
+          if id >= 0 && id < self.entries.length() {
+            [self.entries[id]]
+          } else {
+            []
+          }
+        None => []
+      }
   }
-  out
 }
 
 ///|
@@ -404,13 +643,20 @@ pub fn SymbolIndex::search(
   self : SymbolIndex,
   query : String,
 ) -> Array[SymbolEntry] {
-  let out : Array[SymbolEntry] = []
   if query.length() == 0 {
+    let out : Array[SymbolEntry] = []
     for entry in self.entries {
       out.push(entry)
     }
     return out
   }
+  if si_should_use_xsh_fast_path(query) {
+    match self.xsh_query_index.get(query) {
+      Some(ids) => return si_collect_entries_by_ids(self.entries, ids)
+      None => ()
+    }
+  }
+  let out : Array[SymbolEntry] = []
   for entry in self.entries {
     if entry.name.contains(query) || entry.signature.contains(query) {
       out.push(entry)

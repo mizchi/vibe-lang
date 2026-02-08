@@ -56,7 +56,7 @@ fn print_usage() -> Unit {
   println("  check <file...>            parse/type check scripts")
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [-o out] <file>",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [-o out] <file>",
   )
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
@@ -79,7 +79,7 @@ fn print_usage() -> Unit {
   println("  update-lock <file>          alias for fetch")
   println("  ide <outline|peek-def|search> ...  symbol/type index queries")
   println("  lsif [-o out.lsif] <file>   emit LSIF via shared symbol index")
-  println("  index <build|query|verify> ...  advanced graph index (POC)")
+  println("  index <build|query|verify|wal> ...  advanced graph index (POC)")
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax xsh|posix (default: xsh)")
 }
@@ -274,6 +274,7 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
 ///|
 fn compile_cmd(args : Array[String]) -> Unit {
   let mut mode = CompileMode::Ir
+  let mut no_dce = false
   let mut out_path : String? = None
   let mut entry_path : String? = None
   let mut i = 0
@@ -304,6 +305,10 @@ fn compile_cmd(args : Array[String]) -> Unit {
         mode = CompileMode::WitComponent
         i += 1
       }
+      "--no-dce" => {
+        no_dce = true
+        i += 1
+      }
       "-o" | "--out" => {
         if i + 1 >= args.length() {
           abort("compile: missing output path after " + arg)
@@ -323,7 +328,16 @@ fn compile_cmd(args : Array[String]) -> Unit {
   }
   match entry_path {
     None => abort("compile: missing <file>")
-    Some(path) =>
+    Some(path) => {
+      if no_dce {
+        match mode {
+          CompileMode::Wasm | CompileMode::WasmJsString | CompileMode::WasmGc => ()
+          _ =>
+            abort(
+              "compile: --no-dce is only supported with --wasm, --wasm-js-string, or --wasm-gc",
+            )
+        }
+      }
       match load_db(path) {
         Err(err) => abort("compile: " + err)
         Ok((db, entry)) => {
@@ -346,7 +360,11 @@ fn compile_cmd(args : Array[String]) -> Unit {
               println("wrote " + resolved_out)
             }
             CompileMode::Wasm => {
-              let wasm_bytes = @xsh_lib.compile_module_wasm(db, entry) catch {
+              let wasm_bytes = (if no_dce {
+                @xsh_lib.compile_module_wasm_no_dce(db, entry)
+              } else {
+                @xsh_lib.compile_module_wasm(db, entry)
+              }) catch {
                 e => abort("compile: " + e.to_string())
               }
               @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
@@ -355,7 +373,11 @@ fn compile_cmd(args : Array[String]) -> Unit {
               println("wrote " + resolved_out)
             }
             CompileMode::WasmJsString => {
-              let wasm_bytes = @xsh_lib.compile_module_wasm_js_string(db, entry) catch {
+              let wasm_bytes = (if no_dce {
+                @xsh_lib.compile_module_wasm_js_string_no_dce(db, entry)
+              } else {
+                @xsh_lib.compile_module_wasm_js_string(db, entry)
+              }) catch {
                 e => abort("compile: " + e.to_string())
               }
               @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
@@ -364,7 +386,11 @@ fn compile_cmd(args : Array[String]) -> Unit {
               println("wrote " + resolved_out)
             }
             CompileMode::WasmGc => {
-              let wasm_bytes = @xsh_lib.compile_module_wasm_gc(db, entry) catch {
+              let wasm_bytes = (if no_dce {
+                @xsh_lib.compile_module_wasm_gc_no_dce(db, entry)
+              } else {
+                @xsh_lib.compile_module_wasm_gc(db, entry)
+              }) catch {
                 e => abort("compile: " + e.to_string())
               }
               @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
@@ -414,6 +440,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
           }
         }
       }
+    }
   }
 }
 
@@ -526,6 +553,40 @@ fn check_cmd(args : Array[String]) -> Unit {
         total_errors += 1
         continue
       }
+    }
+    let parsed : Result[@xsh_core.Module, @parser.ParseError] = try?
+      @parser.parse_ast(source)
+    let ast = match parsed {
+      Err(e) => {
+        let diag = e.diagnostic()
+        println(diag.render(entry_path, source))
+        total_errors += 1
+        continue
+      }
+      Ok(ast) => ast
+    }
+    let mut has_import_stmt = false
+    for stmt in ast.stmts {
+      match stmt {
+        @xsh_core.Stmt::Import(..) => {
+          has_import_stmt = true
+          break
+        }
+        _ => ()
+      }
+    }
+    if !has_import_stmt {
+      let desugared = @xsh_lib.desugar_method_calls(ast, {})
+      let typed : Result[@checker.TypeEnv, @checker.TypeError] = try?
+        @checker.type_check_with_aliases(desugared, {})
+      match typed {
+        Ok(_) => println("\{entry_path}: ok")
+        Err(e) => {
+          println(e.diagnostic().render(entry_path, source))
+          total_errors += 1
+        }
+      }
+      continue
     }
     match load_db(entry_path) {
       Err(err) => {
@@ -2876,6 +2937,160 @@ fn index_load_file(path : String) -> @x_exp.AdvancedGraphIndex {
 }
 
 ///|
+enum IndexWalAction {
+  Stats(String)
+  Append(String, String, String)
+  Replay(String, String, String)
+  Compact(String, String)
+}
+
+///|
+fn parse_index_wal_args(args : Array[String]) -> Result[IndexWalAction, String] {
+  if args.length() == 0 {
+    return Err("index wal: expected subcommand (stats|append|replay|compact)")
+  }
+  let sub = args[0]
+  let sub_args = args_tail(args, 1)
+  match sub {
+    "stats" =>
+      if sub_args.length() != 1 {
+        Err("index wal stats: expected <wal-file>")
+      } else {
+        Ok(IndexWalAction::Stats(sub_args[0]))
+      }
+    "append" =>
+      if sub_args.length() != 3 {
+        Err(
+          "index wal append: expected <wal-file> <base-index-file> <target-index-file>",
+        )
+      } else {
+        Ok(IndexWalAction::Append(sub_args[0], sub_args[1], sub_args[2]))
+      }
+    "replay" => {
+      let mut out_path = "dist/advanced-graph-index.replayed.json"
+      let mut snapshot_path : String? = None
+      let mut wal_path : String? = None
+      let mut i = 0
+      while i < sub_args.length() {
+        let arg = sub_args[i]
+        match arg {
+          "-o" | "--out" => {
+            i += 1
+            if i >= sub_args.length() {
+              return Err("index wal replay: missing output path after " + arg)
+            }
+            out_path = sub_args[i]
+          }
+          _ =>
+            match snapshot_path {
+              None => snapshot_path = Some(arg)
+              Some(_) =>
+                match wal_path {
+                  None => wal_path = Some(arg)
+                  Some(_) =>
+                    return Err("index wal replay: unexpected extra arg: " + arg)
+                }
+            }
+        }
+        i += 1
+      }
+      let snapshot_path = match snapshot_path {
+        Some(v) => v
+        None => return Err("index wal replay: expected <snapshot-file> <wal-file>")
+      }
+      let wal_path = match wal_path {
+        Some(v) => v
+        None => return Err("index wal replay: expected <snapshot-file> <wal-file>")
+      }
+      Ok(IndexWalAction::Replay(snapshot_path, wal_path, out_path))
+    }
+    "compact" =>
+      if sub_args.length() != 2 {
+        Err("index wal compact: expected <snapshot-file> <wal-file>")
+      } else {
+        Ok(IndexWalAction::Compact(sub_args[0], sub_args[1]))
+      }
+    _ => Err("index wal: unknown subcommand: " + sub)
+  }
+}
+
+///|
+fn index_wal_cmd(args : Array[String]) -> Unit {
+  let action = match parse_index_wal_args(args) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  match action {
+    IndexWalAction::Stats(wal_path) => {
+      let stats = match @x_exp.advanced_graph_wal_stats(wal_path) {
+        Ok(v) => v
+        Err(err) => abort("index wal stats: " + err)
+      }
+      println(
+        "index wal stats: records=" +
+        stats.record_count.to_string() +
+        " bytes=" +
+        stats.byte_size.to_string(),
+      )
+    }
+    IndexWalAction::Append(wal_path, base_path, target_path) => {
+      let base = index_load_file(base_path)
+      let target = index_load_file(target_path)
+      let delta = @x_exp.advanced_graph_diff(base, target)
+      match @x_exp.append_advanced_graph_delta_jsonl(wal_path, delta) {
+        Ok(_) =>
+          println(
+            "index wal append: wrote 1 record to " +
+            wal_path +
+            " (upsert_defs=" +
+            delta.upsert_defs.length().to_string() +
+            ", removed_defs=" +
+            delta.removed_def_ids.length().to_string() +
+            ")",
+          )
+        Err(err) => abort("index wal append: " + err)
+      }
+    }
+    IndexWalAction::Replay(snapshot_path, wal_path, out_path) => {
+      if out_path.has_prefix("dist/") {
+        ensure_dist_dir()
+      }
+      let index = match
+        @x_exp.load_advanced_graph_index_with_wal(snapshot_path, wal_path) {
+        Ok(v) => v
+        Err(err) => abort("index wal replay: " + err)
+      }
+      match @x_exp.write_advanced_graph_index(out_path, index) {
+        Ok(_) =>
+          println(
+            "index wal replay: wrote " +
+            out_path +
+            " (" +
+            index.defs.length().to_string() +
+            " defs)",
+          )
+        Err(err) => abort("index wal replay: " + err)
+      }
+    }
+    IndexWalAction::Compact(snapshot_path, wal_path) => {
+      let latest = match
+        @x_exp.compact_advanced_graph_snapshot_wal(snapshot_path, wal_path) {
+        Ok(v) => v
+        Err(err) => abort("index wal compact: " + err)
+      }
+      println(
+        "index wal compact: wrote " +
+        snapshot_path +
+        " (" +
+        latest.defs.length().to_string() +
+        " defs), cleared " +
+        wal_path,
+      )
+    }
+  }
+}
+
+///|
 fn print_graph_def_entry(def : @x_exp.AdvancedGraphDef) -> Unit {
   println(
     def.path +
@@ -3006,7 +3221,7 @@ fn index_verify_cmd(args : Array[String]) -> Unit {
 ///|
 fn index_cmd(args : Array[String]) -> Unit {
   if args.length() == 0 {
-    abort("index: expected subcommand (build|query|verify)")
+    abort("index: expected subcommand (build|query|verify|wal)")
   }
   let sub = args[0]
   let sub_args = args_tail(args, 1)
@@ -3014,6 +3229,7 @@ fn index_cmd(args : Array[String]) -> Unit {
     "build" => index_build_cmd(sub_args)
     "query" => index_query_cmd(sub_args)
     "verify" => index_verify_cmd(sub_args)
+    "wal" => index_wal_cmd(sub_args)
     _ => abort("index: unknown subcommand: " + sub)
   }
 }

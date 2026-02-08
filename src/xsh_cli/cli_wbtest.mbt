@@ -225,7 +225,6 @@ test "cli syntax mode support matrix" {
   }
 }
 
-///|
 test "line repl extract let name" {
   match extract_let_name_line("let foo = 1") {
     Some(name) => assert_eq(name, "foo")

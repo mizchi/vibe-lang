@@ -19,6 +19,27 @@ fn build_test_graph_index(source : String) -> AdvancedGraphIndex {
 }
 
 ///|
+fn remove_file_if_exists(path : String) -> Unit {
+  if @os_fs.path_exists(path) {
+    @os_fs.remove_file(path) catch {
+      _ => ()
+    }
+  }
+}
+
+///|
+fn build_graph_index_for_wal(
+  db : @xsh.XshDb,
+  path : String,
+  source : String,
+  base_commit : String,
+  created_at : String,
+) -> AdvancedGraphIndex {
+  db.set_source(path, source)
+  build_advanced_graph_index(db, [path], base_commit~, created_at~)
+}
+
+///|
 test "advanced graph poc builds symbol/type indices" {
   let source =
     #|type UserId = Int
@@ -164,6 +185,59 @@ test "advanced graph poc diff/apply roundtrip" {
 }
 
 ///|
+test "advanced graph poc incremental update no-op for empty changed paths" {
+  let source =
+    #|let id = (x: Int) -> Int { x }
+  let base = build_test_graph_index(source)
+  let untouched = update_advanced_graph_index_incremental(
+    base,
+    @xsh.XshDb::new(),
+    [],
+  )
+  assert_eq(untouched.to_json().stringify(), base.to_json().stringify())
+}
+
+///|
+test "advanced graph poc incremental update matches full rebuild" {
+  let path_a = "/tmp/advanced_graph_inc_a.xsh"
+  let path_b = "/tmp/advanced_graph_inc_b.xsh"
+  let base_a =
+    #|let keep_a = (x: Int) -> Int { x }
+    #|let removed_a = 1
+  let next_a =
+    #|let keep_a = (x: Int) -> Int { x + 1 }
+    #|let added_a = 2
+  let source_b =
+    #|let keep_b = (x: Int) -> Int { x * 2 }
+  let db = @xsh.XshDb::new()
+  db.set_source(path_a, base_a)
+  db.set_source(path_b, source_b)
+  let base = build_advanced_graph_index(
+    db,
+    [path_a, path_b],
+    base_commit="base",
+    created_at="2026-02-08T00:00:00Z",
+  )
+  db.set_source(path_a, next_a)
+  let incremental = update_advanced_graph_index_incremental(
+    base,
+    db,
+    [path_a],
+    base_commit="next",
+    created_at="2026-02-08T00:00:01Z",
+  )
+  let full = build_advanced_graph_index(
+    db,
+    [path_a, path_b],
+    base_commit="next",
+    created_at="2026-02-08T00:00:01Z",
+  )
+  assert_eq(incremental.verify().length(), 0)
+  assert_eq(full.verify().length(), 0)
+  assert_eq(incremental.to_json().stringify(), full.to_json().stringify())
+}
+
+///|
 test "advanced graph poc delta cbor/flexbuffer roundtrip" {
   let base_source =
     #|let keep = (x: Int) -> Int { x }
@@ -292,4 +366,203 @@ test "advanced graph poc remote query reports missing module hashes" {
     }
   }
   assert_true(found_extra)
+}
+
+///|
+test "advanced graph poc wal jsonl replay roundtrip" {
+  let path = "/tmp/advanced_graph_wal_replay_main.xsh"
+  let wal_path = "/tmp/advanced_graph_replay.wal.jsonl"
+  remove_file_if_exists(wal_path)
+  let db = @xsh.XshDb::new()
+  let base_source =
+    #|let value = 1
+    #|let keep = (x: Int) -> Int { x }
+  let next_source =
+    #|let value = 2
+    #|let keep = (x: Int) -> Int { x }
+    #|let added = 3
+  let next2_source =
+    #|let value = 2
+    #|let keep = (x: Int) -> Int { x + 1 }
+    #|let added = 3
+  let base = build_graph_index_for_wal(
+    db, path, base_source, "b0", "2026-02-08T00:00:00Z",
+  )
+  let next = build_graph_index_for_wal(
+    db, path, next_source, "b1", "2026-02-08T00:00:01Z",
+  )
+  let next2 = build_graph_index_for_wal(
+    db, path, next2_source, "b2", "2026-02-08T00:00:02Z",
+  )
+  let d1 = advanced_graph_diff(base, next)
+  let d2 = advanced_graph_diff(next, next2)
+  match append_advanced_graph_delta_jsonl(wal_path, d1) {
+    Ok(_) => ()
+    Err(err) => fail("wal append d1 failed: " + err)
+  }
+  match append_advanced_graph_delta_jsonl(wal_path, d2) {
+    Ok(_) => ()
+    Err(err) => fail("wal append d2 failed: " + err)
+  }
+  let replayed = match replay_advanced_graph_delta_jsonl(base, wal_path) {
+    Ok(v) => v
+    Err(err) => fail("wal replay failed: " + err)
+  }
+  assert_eq(replayed.to_json().stringify(), next2.to_json().stringify())
+  remove_file_if_exists(wal_path)
+}
+
+///|
+test "advanced graph poc snapshot plus wal load and compact" {
+  let path = "/tmp/advanced_graph_wal_snapshot_main.xsh"
+  let snapshot_path = "/tmp/advanced_graph_snapshot.json"
+  let wal_path = "/tmp/advanced_graph_snapshot.wal.jsonl"
+  remove_file_if_exists(snapshot_path)
+  remove_file_if_exists(wal_path)
+  let db = @xsh.XshDb::new()
+  let base_source =
+    #|let value = 1
+    #|let keep = (x: Int) -> Int { x }
+  let next_source =
+    #|let value = 2
+    #|let keep = (x: Int) -> Int { x + 1 }
+    #|let added = 3
+  let base = build_graph_index_for_wal(
+    db, path, base_source, "s0", "2026-02-08T00:00:00Z",
+  )
+  let next = build_graph_index_for_wal(
+    db, path, next_source, "s1", "2026-02-08T00:00:01Z",
+  )
+  let delta = advanced_graph_diff(base, next)
+  match write_advanced_graph_index(snapshot_path, base) {
+    Ok(_) => ()
+    Err(err) => fail("write snapshot failed: " + err)
+  }
+  match append_advanced_graph_delta_jsonl(wal_path, delta) {
+    Ok(_) => ()
+    Err(err) => fail("append wal failed: " + err)
+  }
+  let loaded = match
+    load_advanced_graph_index_with_wal(snapshot_path, wal_path) {
+    Ok(v) => v
+    Err(err) => fail("load with wal failed: " + err)
+  }
+  assert_eq(loaded.to_json().stringify(), next.to_json().stringify())
+  let compacted = match
+    compact_advanced_graph_snapshot_wal(snapshot_path, wal_path) {
+    Ok(v) => v
+    Err(err) => fail("compact wal failed: " + err)
+  }
+  assert_eq(compacted.to_json().stringify(), next.to_json().stringify())
+  let stored = match read_advanced_graph_index(snapshot_path) {
+    Ok(v) => v
+    Err(err) => fail("read compacted snapshot failed: " + err)
+  }
+  assert_eq(stored.to_json().stringify(), next.to_json().stringify())
+  let wal_content = @os_fs.read_file_to_string(wal_path) catch {
+    e => fail("read compacted wal failed: " + e.to_string())
+  }
+  assert_eq(wal_content.length(), 0)
+  remove_file_if_exists(snapshot_path)
+  remove_file_if_exists(wal_path)
+}
+
+///|
+test "advanced graph poc wal batch append and stats" {
+  let path = "/tmp/advanced_graph_wal_batch_main.xsh"
+  let wal_path = "/tmp/advanced_graph_batch.wal.jsonl"
+  remove_file_if_exists(wal_path)
+  let db = @xsh.XshDb::new()
+  let base_source =
+    #|let v = 1
+  let next_source =
+    #|let v = 2
+    #|let added = 1
+  let next2_source =
+    #|let v = 3
+    #|let added = 1
+  let base = build_graph_index_for_wal(
+    db, path, base_source, "w0", "2026-02-08T00:00:00Z",
+  )
+  let next = build_graph_index_for_wal(
+    db, path, next_source, "w1", "2026-02-08T00:00:01Z",
+  )
+  let next2 = build_graph_index_for_wal(
+    db, path, next2_source, "w2", "2026-02-08T00:00:02Z",
+  )
+  let d1 = advanced_graph_diff(base, next)
+  let d2 = advanced_graph_diff(next, next2)
+  match append_advanced_graph_deltas_jsonl(wal_path, [d1, d2]) {
+    Ok(_) => ()
+    Err(err) => fail("batch append wal failed: " + err)
+  }
+  let stats = match advanced_graph_wal_stats(wal_path) {
+    Ok(v) => v
+    Err(err) => fail("wal stats failed: " + err)
+  }
+  assert_eq(stats.record_count, 2)
+  assert_true(stats.byte_size > 0)
+  let deltas = match read_advanced_graph_delta_jsonl(wal_path) {
+    Ok(v) => v
+    Err(err) => fail("wal read records failed: " + err)
+  }
+  assert_eq(deltas.length(), 2)
+  let replayed = match replay_advanced_graph_delta_jsonl(base, wal_path) {
+    Ok(v) => v
+    Err(err) => fail("wal replay failed: " + err)
+  }
+  assert_eq(replayed.to_json().stringify(), next2.to_json().stringify())
+  remove_file_if_exists(wal_path)
+}
+
+///|
+test "advanced graph poc wal load with threshold compaction" {
+  let path = "/tmp/advanced_graph_wal_compact_main.xsh"
+  let snapshot_path = "/tmp/advanced_graph_wal_threshold_snapshot.json"
+  let wal_path = "/tmp/advanced_graph_wal_threshold.wal.jsonl"
+  remove_file_if_exists(snapshot_path)
+  remove_file_if_exists(wal_path)
+  let db = @xsh.XshDb::new()
+  let base_source =
+    #|let v = 1
+  let next_source =
+    #|let v = 2
+    #|let added = 1
+  let base = build_graph_index_for_wal(
+    db, path, base_source, "c0", "2026-02-08T00:00:00Z",
+  )
+  let next = build_graph_index_for_wal(
+    db, path, next_source, "c1", "2026-02-08T00:00:01Z",
+  )
+  let delta = advanced_graph_diff(base, next)
+  match write_advanced_graph_index(snapshot_path, base) {
+    Ok(_) => ()
+    Err(err) => fail("write snapshot failed: " + err)
+  }
+  match append_advanced_graph_delta_jsonl(wal_path, delta) {
+    Ok(_) => ()
+    Err(err) => fail("append wal failed: " + err)
+  }
+  let no_compact = match
+    load_advanced_graph_index_with_wal_compaction(snapshot_path, wal_path, 2) {
+    Ok(v) => v
+    Err(err) => fail("load wal without compact failed: " + err)
+  }
+  assert_false(no_compact.compacted)
+  assert_eq(no_compact.wal_stats.record_count, 1)
+  assert_eq(no_compact.index.to_json().stringify(), next.to_json().stringify())
+  let compacted = match
+    load_advanced_graph_index_with_wal_compaction(snapshot_path, wal_path, 1) {
+    Ok(v) => v
+    Err(err) => fail("load wal with compact failed: " + err)
+  }
+  assert_true(compacted.compacted)
+  assert_eq(compacted.wal_stats.record_count, 0)
+  assert_eq(compacted.index.to_json().stringify(), next.to_json().stringify())
+  let wal_content = @os_fs.read_file_to_string(wal_path) catch {
+    e => fail("read wal content failed: " + e.to_string())
+  }
+  assert_eq(wal_content.length(), 0)
+  remove_file_if_exists(snapshot_path)
+  remove_file_if_exists(wal_path)
 }

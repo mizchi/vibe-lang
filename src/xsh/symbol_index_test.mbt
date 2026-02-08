@@ -59,6 +59,23 @@ test "symbol index supports exact and fuzzy search" {
 }
 
 ///|
+test "symbol index supports xsh-specific bound and effect queries" {
+  let source =
+    #|trait BenchEq
+    #|trait BenchShow
+    #|let id_bound = [T: BenchEq + BenchShow](x: T) -> T { x }
+    #|let id_effect = (x: Int) -> Int with {Error} { x }
+    #|enum BenchOption[T] { BenchSome(T); BenchNone }
+  let index = parse_index_source("main.xsh", source)
+  let bound_hits = index.search("BenchEq + BenchShow")
+  assert_eq(bound_hits.length(), 1)
+  assert_eq(bound_hits[0].name, "id_bound")
+  let effect_hits = index.search("with {Error}")
+  assert_eq(effect_hits.length(), 1)
+  assert_eq(effect_hits[0].name, "id_effect")
+}
+
+///|
 test "symbol index lsif output includes metadata and documents" {
   let path = "/workspace/main.xsh"
   let source =

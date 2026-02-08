@@ -125,6 +125,17 @@ pub fn compile_module_wasm_js_string(
 }
 
 ///|
+/// Compile a module to WASM using wasm js-string builtins without DCE.
+pub fn compile_module_wasm_js_string_no_dce(
+  db : XshDb,
+  path : String,
+) -> Bytes raise WasmCompileError {
+  compile_module_wasm_with(
+    db, path, bundle_for_wasm_no_dce, @codegen.emit_module_wasm_js_string,
+  )
+}
+
+///|
 /// Compile a module to WASM using wasm-gc opcodes (fixture-focused).
 pub fn compile_module_wasm_gc(
   db : XshDb,
@@ -132,6 +143,17 @@ pub fn compile_module_wasm_gc(
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(
     db, path, bundle_for_wasm, @codegen.emit_module_wasm_gc,
+  )
+}
+
+///|
+/// Compile a module to WASM using wasm-gc opcodes without DCE.
+pub fn compile_module_wasm_gc_no_dce(
+  db : XshDb,
+  path : String,
+) -> Bytes raise WasmCompileError {
+  compile_module_wasm_with(
+    db, path, bundle_for_wasm_no_dce, @codegen.emit_module_wasm_gc,
   )
 }
 

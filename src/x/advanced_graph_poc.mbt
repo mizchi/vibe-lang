@@ -55,6 +55,19 @@ pub struct AdvancedGraphRemoteQueryResult {
 } derive(Show, Eq)
 
 ///|
+pub struct AdvancedGraphWalStats {
+  record_count : Int
+  byte_size : Int
+} derive(Show, Eq)
+
+///|
+pub struct AdvancedGraphWalLoadResult {
+  index : AdvancedGraphIndex
+  wal_stats : AdvancedGraphWalStats
+  compacted : Bool
+} derive(Show, Eq)
+
+///|
 fn ag_json_int(value : Int) -> Json {
   Json::number(value.to_double())
 }
@@ -107,9 +120,34 @@ fn push_index_id(
   match index_map.get(key) {
     Some(existing) => {
       push_unique_string(existing, def_id)
+      existing.sort()
       index_map[key] = existing
     }
     None => index_map[key] = [def_id]
+  }
+}
+
+///|
+fn remove_index_id(
+  index_map : Map[String, Array[String]],
+  key : String,
+  def_id : String,
+) -> Unit {
+  match index_map.get(key) {
+    Some(ids) => {
+      let out : Array[String] = []
+      for id in ids {
+        if id != def_id {
+          out.push(id)
+        }
+      }
+      if out.length() == 0 {
+        index_map.remove(key)
+      } else {
+        index_map[key] = out
+      }
+    }
+    None => ()
   }
 }
 
@@ -167,6 +205,35 @@ pub fn advanced_graph_semantic_id(def : AdvancedGraphDef) -> String {
 }
 
 ///|
+fn graph_def_from_entry(
+  db : @xsh.XshDb,
+  entry : @xsh.SymbolEntry,
+) -> AdvancedGraphDef {
+  let module_hash = module_hash_for_path(db, entry.path)
+  let def_id = def_id_from_entry(entry)
+  AdvancedGraphDef::{
+    def_id,
+    name: entry.name,
+    kind: @xsh.symbol_kind_name(entry.kind),
+    signature: entry.signature,
+    path: entry.path,
+    start: entry.span.start,
+    end: entry.span.end,
+    module_hash,
+  }
+}
+
+///|
+fn remove_def_from_indexes(
+  symbols : Map[String, Array[String]],
+  types : Map[String, Array[String]],
+  def : AdvancedGraphDef,
+) -> Unit {
+  remove_index_id(symbols, def.name, def.def_id)
+  remove_index_id(types, def.signature, def.def_id)
+}
+
+///|
 fn default_graph_features() -> Array[String] {
   ["symbols", "types", "refs", "imports"]
 }
@@ -191,30 +258,11 @@ pub fn build_advanced_graph_index(
   let defs : Map[String, AdvancedGraphDef] = {}
   let symbols : Map[String, Array[String]] = {}
   let types : Map[String, Array[String]] = {}
-  let module_hash_cache : Map[String, String] = {}
   for entry in symbol_index.entries {
-    let module_hash = match module_hash_cache.get(entry.path) {
-      Some(value) => value
-      None => {
-        let value = module_hash_for_path(db, entry.path)
-        module_hash_cache[entry.path] = value
-        value
-      }
-    }
-    let def_id = def_id_from_entry(entry)
-    let node = AdvancedGraphDef::{
-      def_id,
-      name: entry.name,
-      kind: @xsh.symbol_kind_name(entry.kind),
-      signature: entry.signature,
-      path: entry.path,
-      start: entry.span.start,
-      end: entry.span.end,
-      module_hash,
-    }
-    defs[def_id] = node
-    push_index_id(symbols, entry.name, def_id)
-    push_index_id(types, entry.signature, def_id)
+    let node = graph_def_from_entry(db, entry)
+    defs[node.def_id] = node
+    push_index_id(symbols, node.name, node.def_id)
+    push_index_id(types, node.signature, node.def_id)
   }
   let manifest = AdvancedGraphManifest::{
     schema_version: 1,
@@ -225,6 +273,64 @@ pub fn build_advanced_graph_index(
   }
   AdvancedGraphIndex::{
     manifest,
+    defs,
+    symbol_index: symbols,
+    type_index: types,
+  }
+}
+
+///|
+/// Incrementally update index for changed paths only.
+/// Unchanged paths retain existing defs/index entries.
+pub fn update_advanced_graph_index_incremental(
+  base : AdvancedGraphIndex,
+  db : @xsh.XshDb,
+  changed_paths : Array[String],
+  base_commit? : String = "",
+  created_at? : String = "",
+) -> AdvancedGraphIndex {
+  if changed_paths.length() == 0 {
+    return base
+  }
+  let changed : Map[String, Bool] = {}
+  for path in changed_paths {
+    changed[path] = true
+  }
+  let defs = base.defs.copy()
+  let symbols = base.symbol_index.copy()
+  let types = base.type_index.copy()
+  for def_id, def in base.defs {
+    if changed.contains(def.path) {
+      defs.remove(def_id)
+      remove_def_from_indexes(symbols, types, def)
+    }
+  }
+  let next_entries = @xsh.build_symbol_index(db, changed_paths)
+  for entry in next_entries.entries {
+    let node = graph_def_from_entry(db, entry)
+    defs[node.def_id] = node
+    push_index_id(symbols, node.name, node.def_id)
+    push_index_id(types, node.signature, node.def_id)
+  }
+  let next_base_commit = if base_commit.length() > 0 {
+    base_commit
+  } else {
+    base.manifest.base_commit
+  }
+  let next_created_at = if created_at.length() > 0 {
+    created_at
+  } else {
+    base.manifest.created_at
+  }
+  let next_manifest = AdvancedGraphManifest::{
+    schema_version: base.manifest.schema_version,
+    base_commit: next_base_commit,
+    created_at: next_created_at,
+    features: base.manifest.features,
+    chunk_roots: base.manifest.chunk_roots,
+  }
+  AdvancedGraphIndex::{
+    manifest: next_manifest,
     defs,
     symbol_index: symbols,
     type_index: types,
@@ -1208,4 +1314,279 @@ pub fn advanced_graph_delta_from_flexbuffer_bytes(
   payload : Bytes,
 ) -> Result[AdvancedGraphDelta, String] {
   advanced_graph_delta_from_flatbuffer_bytes(payload)
+}
+
+///|
+priv struct AdvancedGraphWalRecord {
+  line_no : Int
+  delta : AdvancedGraphDelta
+}
+
+///|
+fn advanced_graph_wal_record_to_json(delta : AdvancedGraphDelta) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["record_version"] = ag_json_int(1)
+  obj["record_kind"] = Json::string("delta")
+  obj["delta"] = delta.to_json()
+  Json::object(obj)
+}
+
+///|
+fn parse_advanced_graph_wal_record(
+  record : Json,
+  line_no : Int,
+) -> Result[AdvancedGraphDelta, String] {
+  let context = "wal line " + line_no.to_string()
+  let root = match record {
+    Json::Object(obj) => obj
+    _ => return Err(context + ": record must be object")
+  }
+  if not(root.contains("record_kind")) {
+    return match advanced_graph_delta_from_json(record) {
+      Ok(delta) => Ok(delta)
+      Err(err) => Err(context + ": " + err)
+    }
+  }
+  let record_version = match
+    get_object_int_field(root, "record_version", context) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  if record_version != 1 {
+    return Err(
+      context + ": unsupported record_version: " + record_version.to_string(),
+    )
+  }
+  let record_kind = match
+    get_object_string_field(root, "record_kind", context) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  if record_kind != "delta" {
+    return Err(context + ": unsupported record_kind: " + record_kind)
+  }
+  let delta_json = match get_object_field(root, "delta", context) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  match advanced_graph_delta_from_json(delta_json) {
+    Ok(delta) => Ok(delta)
+    Err(err) => Err(context + ": " + err)
+  }
+}
+
+///|
+fn read_advanced_graph_wal_content(wal_path : String) -> Result[String, String] {
+  if not(@os_fs.path_exists(wal_path)) {
+    return Ok("")
+  }
+  let content = @os_fs.read_file_to_string(wal_path) catch {
+    e => return Err("wal read: " + e.to_string())
+  }
+  Ok(content)
+}
+
+///|
+fn parse_advanced_graph_wal_records(
+  content : String,
+) -> Result[Array[AdvancedGraphWalRecord], String] {
+  let records : Array[AdvancedGraphWalRecord] = []
+  let mut line_no = 0
+  for line_view in content.split("\n") {
+    line_no += 1
+    let line = line_view.to_string().trim().to_string()
+    if line.length() == 0 {
+      continue
+    }
+    let parsed = @json.parse(line) catch {
+      e =>
+        return Err(
+          "wal line " + line_no.to_string() + ": parse json: " + e.to_string(),
+        )
+    }
+    let delta = match parse_advanced_graph_wal_record(parsed, line_no) {
+      Ok(v) => v
+      Err(err) => return Err(err)
+    }
+    records.push(AdvancedGraphWalRecord::{ line_no, delta })
+  }
+  Ok(records)
+}
+
+///|
+pub fn append_advanced_graph_deltas_jsonl(
+  wal_path : String,
+  deltas : Array[AdvancedGraphDelta],
+) -> Result[Unit, String] {
+  if deltas.length() == 0 {
+    return Ok(())
+  }
+  let content = match read_advanced_graph_wal_content(wal_path) {
+    Ok(v) => v
+    Err(err) => return Err("wal append read: " + err)
+  }
+  let buf = StringBuilder::new()
+  if content.length() > 0 {
+    buf.write_string(content)
+    if not(content.has_suffix("\n")) {
+      buf.write_char('\n')
+    }
+  }
+  for delta in deltas {
+    buf.write_string(advanced_graph_wal_record_to_json(delta).stringify())
+    buf.write_char('\n')
+  }
+  @os_fs.write_string_to_file(wal_path, buf.to_string()) catch {
+    e => return Err("wal append write: " + e.to_string())
+  }
+  Ok(())
+}
+
+///|
+pub fn append_advanced_graph_delta_jsonl(
+  wal_path : String,
+  delta : AdvancedGraphDelta,
+) -> Result[Unit, String] {
+  append_advanced_graph_deltas_jsonl(wal_path, [delta])
+}
+
+///|
+pub fn read_advanced_graph_delta_jsonl(
+  wal_path : String,
+) -> Result[Array[AdvancedGraphDelta], String] {
+  let content = match read_advanced_graph_wal_content(wal_path) {
+    Ok(v) => v
+    Err(err) => return Err("wal read records: " + err)
+  }
+  let records = match parse_advanced_graph_wal_records(content) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let deltas : Array[AdvancedGraphDelta] = []
+  for record in records {
+    deltas.push(record.delta)
+  }
+  Ok(deltas)
+}
+
+///|
+pub fn advanced_graph_wal_stats(
+  wal_path : String,
+) -> Result[AdvancedGraphWalStats, String] {
+  let content = match read_advanced_graph_wal_content(wal_path) {
+    Ok(v) => v
+    Err(err) => return Err("wal stats: " + err)
+  }
+  if content.length() == 0 {
+    return Ok(AdvancedGraphWalStats::{ record_count: 0, byte_size: 0 })
+  }
+  let mut count = 0
+  for line_view in content.split("\n") {
+    let line = line_view.to_string().trim().to_string()
+    if line.length() > 0 {
+      count += 1
+    }
+  }
+  Ok(AdvancedGraphWalStats::{ record_count: count, byte_size: content.length() })
+}
+
+///|
+pub fn replay_advanced_graph_delta_jsonl(
+  base : AdvancedGraphIndex,
+  wal_path : String,
+) -> Result[AdvancedGraphIndex, String] {
+  let content = match read_advanced_graph_wal_content(wal_path) {
+    Ok(v) => v
+    Err(err) => return Err("wal replay read: " + err)
+  }
+  if content.length() == 0 {
+    return Ok(base)
+  }
+  let records = match parse_advanced_graph_wal_records(content) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let mut state = base
+  for record in records {
+    if not(
+        advanced_graph_manifest_equal(
+          record.delta.base_manifest,
+          state.manifest,
+        ),
+      ) {
+      return Err(
+        "wal line " + record.line_no.to_string() + ": base manifest mismatch",
+      )
+    }
+    state = apply_advanced_graph_delta(state, record.delta)
+  }
+  Ok(state)
+}
+
+///|
+pub fn load_advanced_graph_index_with_wal(
+  snapshot_path : String,
+  wal_path : String,
+) -> Result[AdvancedGraphIndex, String] {
+  let base = match read_advanced_graph_index(snapshot_path) {
+    Ok(v) => v
+    Err(err) => return Err("load snapshot: " + err)
+  }
+  replay_advanced_graph_delta_jsonl(base, wal_path)
+}
+
+///|
+pub fn compact_advanced_graph_snapshot_wal(
+  snapshot_path : String,
+  wal_path : String,
+) -> Result[AdvancedGraphIndex, String] {
+  let latest = match
+    load_advanced_graph_index_with_wal(snapshot_path, wal_path) {
+    Ok(v) => v
+    Err(err) => return Err("compact wal load: " + err)
+  }
+  match write_advanced_graph_index(snapshot_path, latest) {
+    Ok(_) => ()
+    Err(err) => return Err("compact wal snapshot write: " + err)
+  }
+  @os_fs.write_string_to_file(wal_path, "") catch {
+    e => return Err("compact wal clear: " + e.to_string())
+  }
+  Ok(latest)
+}
+
+///|
+pub fn load_advanced_graph_index_with_wal_compaction(
+  snapshot_path : String,
+  wal_path : String,
+  compact_record_threshold : Int,
+) -> Result[AdvancedGraphWalLoadResult, String] {
+  if compact_record_threshold <= 0 {
+    return Err("load wal compaction: threshold must be > 0")
+  }
+  let wal_stats = match advanced_graph_wal_stats(wal_path) {
+    Ok(v) => v
+    Err(err) => return Err("load wal compaction: " + err)
+  }
+  let index = match
+    load_advanced_graph_index_with_wal(snapshot_path, wal_path) {
+    Ok(v) => v
+    Err(err) => return Err("load wal compaction: " + err)
+  }
+  if wal_stats.record_count >= compact_record_threshold &&
+    wal_stats.record_count > 0 {
+    match write_advanced_graph_index(snapshot_path, index) {
+      Ok(_) => ()
+      Err(err) => return Err("load wal compaction: write snapshot: " + err)
+    }
+    @os_fs.write_string_to_file(wal_path, "") catch {
+      e => return Err("load wal compaction: clear wal: " + e.to_string())
+    }
+    return Ok(AdvancedGraphWalLoadResult::{
+      index,
+      wal_stats: AdvancedGraphWalStats::{ record_count: 0, byte_size: 0 },
+      compacted: true,
+    })
+  }
+  Ok(AdvancedGraphWalLoadResult::{ index, wal_stats, compacted: false })
 }
