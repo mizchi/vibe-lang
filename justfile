@@ -35,6 +35,14 @@ test-typecheck-fixtures:
 test-typecheck-fixtures-update:
     scripts/typecheck_fixtures.sh --update
 
+# Run warning diagnostic fixture tests
+test-warning-fixtures:
+    moon test -p checker -f warning_fixture_test.mbt --target {{target}}
+
+# Update warning diagnostic fixtures
+test-warning-fixtures-update:
+    scripts/warning_fixtures.sh --update
+
 # Update snapshot tests
 test-update:
     moon test --update --target {{target}}

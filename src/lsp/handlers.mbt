@@ -46,7 +46,13 @@ pub fn check_document(
       diagnostics.push(to_lsp_diagnostic(diag, source))
       (diagnostics, false)
     }
-    Ok(_) => (diagnostics, true)
+    Ok(_) => {
+      let warnings = @checker.collect_warnings(ast)
+      for warning in warnings {
+        diagnostics.push(to_lsp_diagnostic(warning, source))
+      }
+      (diagnostics, true)
+    }
   }
 }
 

@@ -580,7 +580,15 @@ fn check_cmd(args : Array[String]) -> Unit {
       let typed : Result[@checker.TypeEnv, @checker.TypeError] = try?
         @checker.type_check_with_aliases(desugared, {})
       match typed {
-        Ok(_) => println("\{entry_path}: ok")
+        Ok(_) => {
+          let warnings = @checker.collect_warnings(ast)
+          for warning in warnings {
+            println(warning.render(entry_path, source))
+          }
+          if warnings.length() == 0 {
+            println("\{entry_path}: ok")
+          }
+        }
         Err(e) => {
           println(e.diagnostic().render(entry_path, source))
           total_errors += 1
@@ -599,7 +607,11 @@ fn check_cmd(args : Array[String]) -> Unit {
         for diag in diags {
           println(diag.render(entry_path, source))
         }
-        if diags.length() == 0 {
+        let warnings = db.warnings(entry)
+        for warning in warnings {
+          println(warning.render(entry_path, source))
+        }
+        if diags.length() == 0 && warnings.length() == 0 {
           println("\{entry_path}: ok")
         }
         total_errors += diags.length()

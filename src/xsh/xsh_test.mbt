@@ -193,6 +193,26 @@ test "xsh ripple db" {
 }
 
 ///|
+test "xsh warning reports unused let binding" {
+  let db = XshDb::new()
+  db.set_source("main", "let unused = 1\nlet x = 2\nx")
+  let _ = db.types("main")
+  let warnings = db.warnings("main")
+  assert_eq(warnings.length(), 1)
+  assert_eq(warnings[0].stage, "warning")
+  assert_true(warnings[0].message.contains("unused variable: unused"))
+}
+
+///|
+test "xsh warning ignores underscore-prefixed name" {
+  let db = XshDb::new()
+  db.set_source("main", "let _unused = 1\nlet x = 2\nx")
+  let _ = db.types("main")
+  let warnings = db.warnings("main")
+  assert_eq(warnings.length(), 0)
+}
+
+///|
 test "xsh import parsing" {
   // Test that import syntax parses correctly
   let db = XshDb::new()

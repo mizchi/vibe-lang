@@ -19,10 +19,21 @@ test "check_document/type_error" {
 
 ///|
 test "check_document/valid" {
-  let source = "let x = 42"
+  let source = "let x = 42\nx"
   let (diagnostics, ok) = check_document("file://test.xsh", source)
   assert_true(ok)
   assert_eq(diagnostics.length(), 0)
+}
+
+///|
+test "check_document/warning" {
+  let source = "let unused = 42"
+  let (diagnostics, ok) = check_document("file://test.xsh", source)
+  assert_true(ok)
+  assert_eq(diagnostics.length(), 1)
+  let diag = diagnostics[0]
+  assert_eq(diag.severity, Some(2))
+  assert_true(diag.message.contains("unused variable: unused"))
 }
 
 ///|

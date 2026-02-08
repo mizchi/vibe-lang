@@ -1063,3 +1063,10 @@ pub fn XshDb::diagnostics(
   }
   out
 }
+
+///|
+/// Collect non-fatal diagnostics such as warnings.
+pub fn XshDb::warnings(self : XshDb, path : String) -> Array[@core.Diagnostic] {
+  let ast = self.ast_query.fetch(self.rt, path).unwrap()
+  @checker.collect_warnings(ast)
+}
