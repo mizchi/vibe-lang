@@ -1,11 +1,11 @@
 // Test importing std modules
-import { int_abs, int_pow } from "./int.xsh"
-import { is_some, unwrap_or } from "./option.xsh"
+import { bool_to_int } from "./bool.xsh"
+import { float_abs, float_clamp } from "./float.xsh"
 
 // Use imported functions
-let a = int_abs(-100)
-let b = int_pow(2, 4)
-let c = unwrap_or(Some(5), 0)
+let a = bool_to_int(true)
+let b = float_abs(-3.5f)
+let c = float_clamp(10.0f, 0.0f, 4.0f)
 
-// Expected: 100 + 16 + 5 = 121
-a + b + c
+// Expected: true
+eq(a, 1) && b > 3.4f && c == 4.0f

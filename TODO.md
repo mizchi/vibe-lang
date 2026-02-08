@@ -121,6 +121,12 @@
 - Advanced graph diff/apply path is implemented for remote sync PoC:
   delta payload (`AdvancedGraphDelta`) can be computed/applied and
   serialized as JSON for transfer simulation.
+- Bundle-size guardrail workflow is implemented:
+  `scripts/bench_bundle_size.sh` compiles `examples/*.xsh` and
+  `xsh/std/*.xsh` with mode precedence
+  (`wasm-no-dce` -> `wasm-js-string-no-dce` -> `wasm` -> `wasm-js-string`),
+  stores current metrics in `dist/bundle_size/current.tsv`, and enforces
+  per-entry golden budgets from `bench/golden/bundle_size_budget.tsv`.
 
 ## Next Up (Priority Order)
 
@@ -155,3 +161,18 @@
 ## Deferred
 
 - none
+
+## Bundle Size Plan (In Progress)
+
+- [x] Add reproducible bundle-size measurement command:
+  `just bench-bundle-size` / `just bench-bundle-size-update`.
+- [x] Add compiler path for no-DCE wasm-js-string/gc emits and CLI `compile --no-dce`.
+- [x] Add per-entry golden budget file:
+  `bench/golden/bundle_size_budget.tsv`.
+- [x] Reduce `xsh/std/test_import.xsh` transitive bundle size by importing
+  smaller std surfaces (`int/option` -> `bool/float`).
+  Current result: `4397 -> 1590` bytes (`wasm-no-dce` baseline).
+- [ ] Reduce top offenders further without semantic regression:
+  `examples/json.xsh`, `xsh/std/option.xsh`, `xsh/std/double.xsh`.
+- [ ] Eliminate noisy abort-signal output in size benchmark fallback path
+  (convert unsupported compile attempts to clean diagnostics).

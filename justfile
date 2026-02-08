@@ -27,6 +27,14 @@ test:
 test-fixtures:
     moon test -p xsh --filter "fixtures" --target {{target}}
 
+# Run typecheck diagnostic fixture tests
+test-typecheck-fixtures:
+    moon test -p checker -f typecheck_fixture_test.mbt --target {{target}}
+
+# Update typecheck diagnostic fixtures
+test-typecheck-fixtures-update:
+    scripts/typecheck_fixtures.sh --update
+
 # Update snapshot tests
 test-update:
     moon test --update --target {{target}}
@@ -118,6 +126,14 @@ bench-advanced-graph:
 # Benchmark typechecker and ripple type-cache behavior
 bench-typechecker:
     moon bench -p benches -f checker_bench.mbt
+
+# Benchmark bundle size for examples/ and xsh/std/ with no-DCE builds
+bench-bundle-size:
+    scripts/bench_bundle_size.sh
+
+# Update bundle-size golden budgets
+bench-bundle-size-update:
+    scripts/bench_bundle_size.sh --update
 
 # Regenerate advanced graph flatbuffers schema bindings
 gen-advanced-graph-fb:
