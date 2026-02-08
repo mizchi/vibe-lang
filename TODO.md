@@ -118,12 +118,19 @@
   `xsh index` (`build`/`query`/`verify`) provides a sidecar JSON index
   (`src/xsh/advanced_graph_poc.mbt`) that models manifest + def graph +
   symbol/type lookup tables.
+- Advanced graph diff/apply path is implemented for remote sync PoC:
+  delta payload (`AdvancedGraphDelta`) can be computed/applied and
+  serialized as JSON for transfer simulation.
 
 ## Next Up (Priority Order)
 
 - Implement explicit Text/Object conversion builtins:
   `from_lines` / `to_lines` and JSON-oriented variants (`from_json[l]`,
   `to_json[l]`) with typecheck + eval + docs + fixtures.
+- Measure graph-index gains against current search path and remote transfer:
+  run `just bench-advanced-graph`, collect
+  `current_cli_like` vs `graph_snapshot/json_load`, and
+  `apply_full_snapshot` vs `apply_delta` ratios on CI fixture sizes.
 - Expand object pipeline operators on typed rows:
   add first-class `where/select` contracts over record-like objects and align
   parser/desugar/typecheck behavior for `|>` chains.

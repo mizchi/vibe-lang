@@ -70,3 +70,57 @@ test "advanced graph poc verify detects missing defs" {
   assert_true(issues.length() >= 1)
   assert_true(issues[0].contains("missing def"))
 }
+
+///|
+test "advanced graph poc diff/apply roundtrip" {
+  let base_source =
+    #|let keep = (x: Int) -> Int { x }
+    #|let removed = 1
+  let next_source =
+    #|let keep = (x: Int) -> Int { x + 1 }
+    #|let added = 2
+  let base = build_test_graph_index(base_source)
+  let next = build_test_graph_index(next_source)
+  let delta = advanced_graph_diff(base, next)
+  let applied = apply_advanced_graph_delta(base, delta)
+  assert_eq(applied.query_symbol("added").length(), 1)
+  assert_eq(applied.query_symbol("removed").length(), 0)
+  assert_true(applied.query_symbol("keep")[0].signature.contains("Int"))
+  assert_eq(applied.verify().length(), 0)
+}
+
+///|
+test "advanced graph poc remote delta payload smaller than full snapshot" {
+  let base_buf = StringBuilder::new()
+  for i in 0..<300 {
+    base_buf.write_string("let v" + i.to_string() + " = " + i.to_string() + "\n")
+  }
+  let next_buf = StringBuilder::new()
+  for i in 0..<300 {
+    let value = if i == 120 { "121" } else { i.to_string() }
+    next_buf.write_string("let v" + i.to_string() + " = " + value + "\n")
+  }
+  next_buf.write_string("let v_extra = 1\n")
+  let base_source = base_buf.to_string()
+  let next_source = next_buf.to_string()
+  let base = build_test_graph_index(base_source)
+  let next = build_test_graph_index(next_source)
+  let delta = advanced_graph_diff(base, next)
+  let restored_delta = match advanced_graph_delta_from_json(delta.to_json()) {
+    Ok(v) => v
+    Err(err) => fail("delta json roundtrip failed: " + err)
+  }
+  let full_bytes = next.to_json().stringify().length()
+  let delta_bytes = restored_delta.to_json().stringify().length()
+  assert_true(delta_bytes < full_bytes)
+  let applied = apply_advanced_graph_delta(base, restored_delta)
+  let matches = applied.query_symbol("v_extra")
+  let mut found = false
+  for def in matches {
+    if def.name == "v_extra" {
+      found = true
+      break
+    }
+  }
+  assert_true(found)
+}

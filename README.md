@@ -189,6 +189,7 @@ just bench-wasmtime
 just bench-compare
 just bench-cmd-latency
 just bench-symbol-index
+just bench-advanced-graph
 just bench-typechecker
 ```
 

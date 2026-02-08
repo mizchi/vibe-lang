@@ -111,6 +111,10 @@ bench-cmd-compile:
 bench-symbol-index:
     moon bench -p benches -f symbol_index_bench.mbt
 
+# Benchmark advanced graph index PoC (search + remote delta apply)
+bench-advanced-graph:
+    moon bench -p benches -f advanced_graph_bench.mbt
+
 # Benchmark typechecker and ripple type-cache behavior
 bench-typechecker:
     moon bench -p benches -f checker_bench.mbt
