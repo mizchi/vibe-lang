@@ -68,6 +68,33 @@ fn parse_graph_delta_json(source : String) -> @xsh.AdvancedGraphDelta {
 }
 
 ///|
+test "bench: graph_build.current_symbol_index_cold" (b : @bench.T) {
+  let source = gen_advanced_graph_source(600, None, 0)
+  b.bench(fn() {
+    let db = @xsh.XshDb::new()
+    db.set_source(bench_graph_path, source)
+    let index = @xsh.build_symbol_index(db, [bench_graph_path])
+    b.keep(index.entries.length())
+  })
+}
+
+///|
+test "bench: graph_build.advanced_graph_index_cold" (b : @bench.T) {
+  let source = gen_advanced_graph_source(600, None, 0)
+  b.bench(fn() {
+    let db = @xsh.XshDb::new()
+    db.set_source(bench_graph_path, source)
+    let index = @xsh.build_advanced_graph_index(
+      db,
+      [bench_graph_path],
+      base_commit="bench",
+      created_at="2026-02-08T00:00:00Z",
+    )
+    b.keep(index.defs.length())
+  })
+}
+
+///|
 test "bench: graph_search.current_cli_like" (b : @bench.T) {
   let source = gen_advanced_graph_source(600, None, 0)
   b.bench(fn() {

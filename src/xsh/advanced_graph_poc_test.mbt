@@ -124,3 +124,35 @@ test "advanced graph poc remote delta payload smaller than full snapshot" {
   }
   assert_true(found)
 }
+
+///|
+test "advanced graph poc remote network profiles favor delta" {
+  let base_buf = StringBuilder::new()
+  for i in 0..<600 {
+    base_buf.write_string("let v" + i.to_string() + " = " + i.to_string() + "\n")
+  }
+  let next_buf = StringBuilder::new()
+  for i in 0..<600 {
+    let value = if i == 320 { "321" } else { i.to_string() }
+    next_buf.write_string("let v" + i.to_string() + " = " + value + "\n")
+  }
+  next_buf.write_string("let v_extra = 1\n")
+  let base = build_test_graph_index(base_buf.to_string())
+  let next = build_test_graph_index(next_buf.to_string())
+  let delta = advanced_graph_diff(base, next)
+  let full_bytes = next.to_json().stringify().length()
+  let delta_bytes = delta.to_json().stringify().length()
+  assert_true(delta_bytes < full_bytes)
+
+  let lan_full = estimate_transfer_time_ms(full_bytes, 1000.0, 2.0, 1)
+  let lan_delta = estimate_transfer_time_ms(delta_bytes, 1000.0, 2.0, 1)
+  assert_true(lan_delta < lan_full)
+
+  let ci_full = estimate_transfer_time_ms(full_bytes, 100.0, 30.0, 1)
+  let ci_delta = estimate_transfer_time_ms(delta_bytes, 100.0, 30.0, 1)
+  assert_true(ci_delta < ci_full)
+
+  let mobile_full = estimate_transfer_time_ms(full_bytes, 10.0, 80.0, 1)
+  let mobile_delta = estimate_transfer_time_ms(delta_bytes, 10.0, 80.0, 1)
+  assert_true(mobile_delta < mobile_full)
+}

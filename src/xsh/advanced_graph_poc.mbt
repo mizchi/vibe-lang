@@ -558,6 +558,21 @@ fn parse_string_array_map(
 }
 
 ///|
+/// Estimate one-way transfer time with RTT penalty.
+/// - payload bytes are transferred once
+/// - RTT penalty is multiplied by logical round trips
+pub fn estimate_transfer_time_ms(
+  payload_bytes : Int,
+  bandwidth_mbps : Double,
+  rtt_ms : Double,
+  round_trips : Int,
+) -> Double {
+  let bw = if bandwidth_mbps <= 0.0 { 0.001 } else { bandwidth_mbps }
+  let payload_ms = payload_bytes.to_double() * 8.0 / (bw * 1000000.0) * 1000.0
+  payload_ms + rtt_ms * round_trips.to_double()
+}
+
+///|
 fn advanced_graph_def_to_json(def : AdvancedGraphDef) -> Json {
   let item : Map[String, Json] = {}
   item["def_id"] = Json::string(def.def_id)
