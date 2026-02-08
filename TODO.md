@@ -93,10 +93,16 @@
   `xsh fetch`/`xsh update-lock` maintain `xsh.lock` (`path`/`version`/`symbol`
   maps), path imports are validated against lock entries when enabled, and
   import diagnostics are compile-fatal.
+- SyntaxKind token id uniqueness is fixed for parser stability:
+  keyword and operator token kinds must not share raw ids
+  (guarded by parser tests for `await`/`yield` vs `%`/`+=`).
 
 ## Next Up (Priority Order)
 
-- none
+- Implement `break`/`continue` in `while` loops end-to-end
+  (parser/AST/typecheck/eval/IR/codegen + docs update).
+- Decide and spec parser dispatch strategy for POSIX compatibility
+  (explicit mode switch vs future fallback).
 
 ## Deferred
 

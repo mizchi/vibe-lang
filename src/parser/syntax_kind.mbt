@@ -159,12 +159,12 @@ pub fn raise_kw() -> @cst.SyntaxKind {
 
 ///|
 pub fn await_kw() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(66)
+  @cst.SyntaxKind::new(87)
 }
 
 ///|
 pub fn yield_kw() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(67)
+  @cst.SyntaxKind::new(88)
 }
 
 ///|
