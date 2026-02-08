@@ -1,10 +1,22 @@
 ///|
 /// Incremental xsh database using ripple
+pub struct PathObj {
+  raw : String
+  base : String
+  normalized : String
+} derive(Show, Eq)
+
+///|
+/// Resolved import metadata used by compile/type phases.
 pub struct ImportSpec {
   path : String
   alias_name : String
   hash : String?
   module_ref : String?
+  path_obj : PathObj?
+  source_hash : String?
+  source_version : String?
+  source_symbol : String?
 } derive(Show, Eq)
 
 ///|
@@ -73,6 +85,258 @@ fn resolve_imported_trait_supertraits(
 }
 
 ///|
+fn hash_source_key(hash : String) -> String {
+  "__hash__/" + hash
+}
+
+///|
+fn version_ref_key(name : String) -> String {
+  "__ref__/version/" + name
+}
+
+///|
+fn symbol_ref_key(name : String) -> String {
+  "__ref__/symbol/" + name
+}
+
+///|
+fn normalize_hash(hash : String) -> String {
+  if hash.has_prefix("#") && hash.length() > 1 {
+    hash.unsafe_substring(start=1, end=hash.length())
+  } else {
+    hash
+  }
+}
+
+///|
+fn sanitize_alias(name : String) -> String {
+  let buf = StringBuilder::new()
+  for c in name {
+    let ok = (c >= 'a' && c <= 'z') ||
+      (c >= 'A' && c <= 'Z') ||
+      (c >= '0' && c <= '9') ||
+      c == '_'
+    if ok {
+      buf.write_char(c)
+    } else {
+      buf.write_char('_')
+    }
+  }
+  let out = buf.to_string()
+  if out.length() == 0 {
+    "ref"
+  } else {
+    out
+  }
+}
+
+///|
+fn hash_alias_name(hash : String) -> String {
+  let short = if hash.length() > 8 {
+    hash.unsafe_substring(start=0, end=8)
+  } else {
+    hash
+  }
+  "hash_" + short
+}
+
+///|
+fn version_alias_name(name : String) -> String {
+  "version_" + sanitize_alias(name)
+}
+
+///|
+fn symbol_alias_name(name : String) -> String {
+  "symbol_" + sanitize_alias(name)
+}
+
+///|
+fn normalize_path_obj(base_dir : String, raw_path : String) -> PathObj {
+  let normalized = if raw_path.has_prefix("/") {
+    @path.Path(raw_path).normalize().to_string()
+  } else {
+    @path.Path(base_dir).join(@path.Path(raw_path)).normalize().to_string()
+  }
+  PathObj::{ raw: raw_path, base: base_dir, normalized }
+}
+
+///|
+fn resolve_hash_import(
+  rt : @ripple.Runtime,
+  sources : @ripple.Input[String, String],
+  diags : @ripple.Accumulator[@core.Diagnostic],
+  hash_text : String,
+  span : @core.Span,
+) -> (String, String?) {
+  let hash = normalize_hash(hash_text)
+  let snapshot_key = hash_source_key(hash)
+  match sources.get(rt, snapshot_key) {
+    Some(content) => {
+      let actual_hash = @core.git_blob_hash_string(content)
+      if actual_hash == hash {
+        (snapshot_key, Some(hash))
+      } else {
+        diags.push(rt, @core.Diagnostic::{
+          stage: "import",
+          message: "hash mismatch: expected " + hash + ", got " + actual_hash,
+          span: Some(span),
+          hint: None,
+          note: None,
+        })
+        (snapshot_key, None)
+      }
+    }
+    None => {
+      diags.push(rt, @core.Diagnostic::{
+        stage: "import",
+        message: "missing hash import: " + hash,
+        span: Some(span),
+        hint: None,
+        note: None,
+      })
+      (snapshot_key, None)
+    }
+  }
+}
+
+///|
+fn import_stmt_matches_spec(
+  base_dir : String,
+  source : @core.ModuleRef,
+  imp : ImportSpec,
+) -> Bool {
+  match source {
+    @core.ModuleRef::Path(path~) => {
+      let path_obj = normalize_path_obj(base_dir, path)
+      if path_obj.normalized == imp.path || path == imp.path {
+        true
+      } else {
+        match imp.path_obj {
+          Some(obj) => obj.normalized == path_obj.normalized || obj.raw == path
+          None => false
+        }
+      }
+    }
+    @core.ModuleRef::Hash(hash~) =>
+      match imp.source_hash {
+        Some(source_hash) => source_hash == hash
+        None => false
+      }
+    @core.ModuleRef::Version(name~) =>
+      match imp.source_version {
+        Some(source_version) => source_version == name
+        None => false
+      }
+    @core.ModuleRef::Symbol(name~) =>
+      match imp.source_symbol {
+        Some(source_symbol) => source_symbol == name
+        None => false
+      }
+  }
+}
+
+///|
+fn stack_index_of_path(stack : Array[String], path : String) -> Int? {
+  for i, p in stack {
+    if p == path {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
+fn cycle_path_from_stack(stack : Array[String], start_idx : Int) -> Array[String] {
+  let out : Array[String] = []
+  for i in start_idx..<stack.length() {
+    out.push(stack[i])
+  }
+  if start_idx >= 0 && start_idx < stack.length() {
+    out.push(stack[start_idx])
+  }
+  out
+}
+
+///|
+fn render_import_cycle(cycle : Array[String]) -> String {
+  let mut out = ""
+  for i, p in cycle {
+    if i > 0 {
+      out += " -> "
+    }
+    out += p
+  }
+  out
+}
+
+///|
+fn detect_import_cycle_from(
+  rt : @ripple.Runtime,
+  sources : @ripple.Input[String, String],
+  ast_query : @ripple.Query[String, HashedModule],
+  path : String,
+  stack : Array[String],
+  done : Map[String, Bool],
+) -> Array[String]? {
+  match stack_index_of_path(stack, path) {
+    Some(idx) => return Some(cycle_path_from_stack(stack, idx))
+    None => ()
+  }
+  if done.contains(path) {
+    return None
+  }
+  stack.push(path)
+  let ast = ast_query.fetch(rt, path).unwrap()
+  let base_dir = @path.Path(path).dirname().to_string()
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Import(source~, ..) =>
+        match source {
+          @core.ModuleRef::Path(path=raw_path) => {
+            let path_obj = normalize_path_obj(base_dir, raw_path)
+            let next_path = match sources.get(rt, path_obj.normalized) {
+              Some(_) => Some(path_obj.normalized)
+              None =>
+                match sources.get(rt, raw_path) {
+                  Some(_) => Some(raw_path)
+                  None => None
+                }
+            }
+            match next_path {
+              Some(next) =>
+                match
+                  detect_import_cycle_from(
+                    rt, sources, ast_query, next, stack, done,
+                  ) {
+                  Some(cycle) => return Some(cycle)
+                  None => ()
+                }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  let _ = stack.pop()
+  done[path] = true
+  None
+}
+
+///|
+fn detect_import_cycle(
+  rt : @ripple.Runtime,
+  sources : @ripple.Input[String, String],
+  ast_query : @ripple.Query[String, HashedModule],
+  root_path : String,
+) -> Array[String]? {
+  let stack : Array[String] = []
+  let done : Map[String, Bool] = {}
+  detect_import_cycle_from(rt, sources, ast_query, root_path, stack, done)
+}
+
+///|
 pub fn XshDb::new() -> XshDb {
   let db = @ripple.Database::new()
   let rt = db.runtime()
@@ -115,59 +379,173 @@ pub fn XshDb::new() -> XshDb {
     let out : Array[ImportSpec] = []
     for stmt in ast.stmts {
       match stmt {
-        @core.Stmt::Import(source~, span~, ..) => {
-          let import_path = match source {
-            @core.ModuleRef::Path(path~) => path
-            @core.ModuleRef::Hash(hash~) => hash // Use hash as path for now
-          }
-          // Resolve relative path to absolute
-          let resolved_path = if import_path.has_prefix("/") {
-            import_path
-          } else {
-            @path.Path(base_dir)
-            .join(@path.Path(import_path))
-            .normalize()
-            .to_string()
-          }
-          let alias_name = @core.import_alias_name(import_path)
-          // Try resolved path first, then fall back to original import path (for tests)
-          let (final_path, content_opt) = match sources.get(rt, resolved_path) {
-            Some(c) => (resolved_path, Some(c))
-            None =>
-              match sources.get(rt, import_path) {
-                Some(c) => (import_path, Some(c))
-                None => (resolved_path, None)
+        @core.Stmt::Import(source~, span~, ..) =>
+          match source {
+            @core.ModuleRef::Path(path~) => {
+              let path_obj = normalize_path_obj(base_dir, path)
+              let alias_name = @core.import_alias_name(path)
+              // Try normalized path first, then fall back to raw import path (for tests).
+              let (final_path, content_opt) = match
+                sources.get(rt, path_obj.normalized) {
+                Some(c) => (path_obj.normalized, Some(c))
+                None =>
+                  match sources.get(rt, path) {
+                    Some(c) => (path, Some(c))
+                    None => (path_obj.normalized, None)
+                  }
               }
-          }
-          match content_opt {
-            Some(content) => {
-              let hash = @core.git_blob_hash_string(content)
+              match content_opt {
+                Some(content) => {
+                  let hash = @core.git_blob_hash_string(content)
+                  out.push(ImportSpec::{
+                    path: final_path,
+                    alias_name,
+                    hash: Some(hash),
+                    module_ref: Some(@core.module_ref_from_hash(hash)),
+                    path_obj: Some(path_obj),
+                    source_hash: None,
+                    source_version: None,
+                    source_symbol: None,
+                  })
+                }
+                None => {
+                  diags.push(rt, @core.Diagnostic::{
+                    stage: "import",
+                    message: "missing: " + path_obj.normalized,
+                    span: Some(span),
+                    hint: None,
+                    note: None,
+                  })
+                  out.push(ImportSpec::{
+                    path: final_path,
+                    alias_name,
+                    hash: None,
+                    module_ref: None,
+                    path_obj: Some(path_obj),
+                    source_hash: None,
+                    source_version: None,
+                    source_symbol: None,
+                  })
+                }
+              }
+            }
+            @core.ModuleRef::Hash(hash~) => {
+              let alias_name = hash_alias_name(hash)
+              let (snapshot_key, resolved_hash) = resolve_hash_import(
+                rt, sources, diags, hash, span,
+              )
               out.push(ImportSpec::{
-                path: final_path,
+                path: snapshot_key,
                 alias_name,
-                hash: Some(hash),
-                module_ref: Some(@core.module_ref_from_hash(hash)),
+                hash: resolved_hash,
+                module_ref: match resolved_hash {
+                  Some(h) => Some(@core.module_ref_from_hash(h))
+                  None => None
+                },
+                path_obj: None,
+                source_hash: Some(normalize_hash(hash)),
+                source_version: None,
+                source_symbol: None,
               })
             }
-            None => {
-              diags.push(rt, @core.Diagnostic::{
-                stage: "import",
-                message: "missing: " + resolved_path,
-                span: Some(span),
-                hint: None,
-                note: None,
-              })
-              out.push(ImportSpec::{
-                path: final_path,
-                alias_name,
-                hash: None,
-                module_ref: None,
-              })
+            @core.ModuleRef::Version(name~) => {
+              let alias_name = version_alias_name(name)
+              match sources.get(rt, version_ref_key(name)) {
+                Some(hash_text) => {
+                  let (snapshot_key, resolved_hash) = resolve_hash_import(
+                    rt, sources, diags, hash_text, span,
+                  )
+                  out.push(ImportSpec::{
+                    path: snapshot_key,
+                    alias_name,
+                    hash: resolved_hash,
+                    module_ref: match resolved_hash {
+                      Some(h) => Some(@core.module_ref_from_hash(h))
+                      None => None
+                    },
+                    path_obj: None,
+                    source_hash: None,
+                    source_version: Some(name),
+                    source_symbol: None,
+                  })
+                }
+                None => {
+                  diags.push(rt, @core.Diagnostic::{
+                    stage: "import",
+                    message: "missing version ref: " + name,
+                    span: Some(span),
+                    hint: None,
+                    note: None,
+                  })
+                  out.push(ImportSpec::{
+                    path: version_ref_key(name),
+                    alias_name,
+                    hash: None,
+                    module_ref: None,
+                    path_obj: None,
+                    source_hash: None,
+                    source_version: Some(name),
+                    source_symbol: None,
+                  })
+                }
+              }
+            }
+            @core.ModuleRef::Symbol(name~) => {
+              let alias_name = symbol_alias_name(name)
+              match sources.get(rt, symbol_ref_key(name)) {
+                Some(hash_text) => {
+                  let (snapshot_key, resolved_hash) = resolve_hash_import(
+                    rt, sources, diags, hash_text, span,
+                  )
+                  out.push(ImportSpec::{
+                    path: snapshot_key,
+                    alias_name,
+                    hash: resolved_hash,
+                    module_ref: match resolved_hash {
+                      Some(h) => Some(@core.module_ref_from_hash(h))
+                      None => None
+                    },
+                    path_obj: None,
+                    source_hash: None,
+                    source_version: None,
+                    source_symbol: Some(name),
+                  })
+                }
+                None => {
+                  diags.push(rt, @core.Diagnostic::{
+                    stage: "import",
+                    message: "missing symbol ref: " + name,
+                    span: Some(span),
+                    hint: None,
+                    note: None,
+                  })
+                  out.push(ImportSpec::{
+                    path: symbol_ref_key(name),
+                    alias_name,
+                    hash: None,
+                    module_ref: None,
+                    path_obj: None,
+                    source_hash: None,
+                    source_version: None,
+                    source_symbol: Some(name),
+                  })
+                }
+              }
             }
           }
-        }
         _ => ()
       }
+    }
+    match detect_import_cycle(rt, sources, ast_query, file_path) {
+      Some(cycle) =>
+        diags.push(rt, @core.Diagnostic::{
+          stage: "import",
+          message: "import cycle: " + render_import_cycle(cycle),
+          span: None,
+          hint: Some("break the cycle by extracting shared definitions"),
+          note: None,
+        })
+      None => ()
     }
     out
   })
@@ -216,23 +594,8 @@ pub fn XshDb::new() -> XshDb {
           // Now look up the import items in the main AST's Import statement
           for stmt in ast.stmts {
             match stmt {
-              @core.Stmt::Import(spec~, source~, ..) => {
-                let raw_import_path = match source {
-                  @core.ModuleRef::Path(path~) => path
-                  @core.ModuleRef::Hash(hash~) => hash
-                }
-                // Resolve the import path the same way as import_query
-                let resolved_import_path = if raw_import_path.has_prefix("/") {
-                  raw_import_path
-                } else {
-                  @path.Path(base_dir)
-                  .join(@path.Path(raw_import_path))
-                  .normalize()
-                  .to_string()
-                }
-                // Match with resolved path or original path (for tests)
-                if resolved_import_path == imp.path ||
-                  raw_import_path == imp.path {
+              @core.Stmt::Import(spec~, source~, ..) =>
+                if import_stmt_matches_spec(base_dir, source, imp) {
                   let trait_aliases = collect_import_trait_aliases(
                     spec, imported_env,
                   )
@@ -289,7 +652,6 @@ pub fn XshDb::new() -> XshDb {
                     }
                   }
                 }
-              }
               _ => ()
             }
           }
@@ -366,6 +728,40 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
 }
 
 ///|
+fn rewrite_import_sources(
+  ast : @core.Module,
+  imports : Array[ImportSpec],
+) -> @core.Module {
+  let stmts : Array[@core.Stmt] = []
+  let mut import_idx = 0
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Import(spec~, source~, span~) => {
+        let _ = source
+        let next_stmt = if import_idx < imports.length() {
+          let resolved = imports[import_idx]
+          import_idx += 1
+          match resolved.hash {
+            Some(hash) =>
+              @core.Stmt::Import(
+                spec~,
+                source=@core.ModuleRef::Hash(hash~),
+                span~,
+              )
+            None => stmt
+          }
+        } else {
+          stmt
+        }
+        stmts.push(next_stmt)
+      }
+      _ => stmts.push(stmt)
+    }
+  }
+  @core.Module::{ stmts, }
+}
+
+///|
 fn build_alias_map_from_ast(
   ast : @core.Module,
   imports : Array[ImportSpec],
@@ -385,6 +781,28 @@ fn build_alias_map_from_ast(
 ///|
 pub fn XshDb::set_source(self : XshDb, path : String, content : String) -> Unit {
   let _ = self.sources.set(self.rt, path, content)
+  let hash = @core.git_blob_hash_string(content)
+  let _ = self.sources.set(self.rt, hash_source_key(hash), content)
+
+}
+
+///|
+pub fn XshDb::set_version_ref(
+  self : XshDb,
+  name : String,
+  hash : String,
+) -> Unit {
+  let _ = self.sources.set(self.rt, version_ref_key(name), normalize_hash(hash))
+
+}
+
+///|
+pub fn XshDb::set_symbol_ref(
+  self : XshDb,
+  name : String,
+  hash : String,
+) -> Unit {
+  let _ = self.sources.set(self.rt, symbol_ref_key(name), normalize_hash(hash))
 
 }
 
@@ -396,6 +814,23 @@ pub fn XshDb::cst(self : XshDb, path : String) -> @cst.SyntaxNode {
 ///|
 pub fn XshDb::ast(self : XshDb, path : String) -> @core.Module {
   self.ast_query.fetch(self.rt, path).unwrap()
+}
+
+///|
+pub fn XshDb::ast_with_hash_imports(
+  self : XshDb,
+  path : String,
+) -> @core.Module {
+  rewrite_import_sources(self.ast(path), self.import_query.fetch(self.rt, path))
+}
+
+///|
+pub fn XshDb::rewrite_imports_to_hash(
+  self : XshDb,
+  path : String,
+  ast : @core.Module,
+) -> @core.Module {
+  rewrite_import_sources(ast, self.import_query.fetch(self.rt, path))
 }
 
 ///|

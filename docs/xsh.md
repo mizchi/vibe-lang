@@ -1,26 +1,38 @@
-# xsh specification (draft)
+# xsh language specification
 
 This document captures the current xsh design: a Rust/MoonBit-like, statically
 typed, pure functional language with explicit effects, built for WASM/wasip3.
 
+## Status and authority
+
+- `docs/xsh.md` is the normative spec for implemented behavior.
+- Items explicitly marked as "future", "proposal", or "draft" are non-normative.
+- Design explorations live in separate documents:
+  - `docs/module_design.md`
+  - `docs/module_system.md`
+  - `docs/async_design.md`
+
 ## Goals
 
 - POSIX sh superset with a clear syntactic split.
-- Pure by default; effects are explicit and only allowed in `do { ... }`.
+- Pure by default; effects are explicit and checked in two layers:
+  effect-set compatibility and effect-boundary (`do`) rules.
 - Content-addressed functions (Git blob compatible) with Unison-style aliases.
-- Incremental pipeline: CST -> AST -> typed IR -> hash + dependency DAG.
+- Incremental pipeline: CST -> AST -> monomorphized AST -> canonical S-expression -> hash.
 
 ## Syntax dispatch
 
-If the first non-trivia token is one of the xsh keywords, treat the script as xsh.
-Otherwise, fall back to the POSIX sh parser.
+Current runtime/CLI behavior parses scripts as xsh only.
+Automatic POSIX parser fallback is not implemented.
 
-Reserved leading keywords: `let`, `fn`, `type`, `effect`, `import`, `test`, `try`.
+Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
+`test`, `try`) exists as helper logic only and does not currently switch parser
+modes.
 
 ## Effects
 
-Effects are explicit in function signatures and only allowed inside `do { ... }`
-blocks.
+Effects are explicit in function signatures and validated by two independent
+checks.
 
 ```
 let run = fn () -> Unit with {Stdout} {
@@ -31,8 +43,11 @@ let run = fn () -> Unit with {Stdout} {
 ```
 
 Rules:
-- Effectful calls outside `do` are type errors.
-- A function's declared effects must be a superset of the effects used inside.
+- Effect-set requirement:
+  a function's declared effects must be a superset of the effects used inside.
+  (`with { ... }` is the capability contract.)
+- Effect-boundary requirement:
+  some operations require an "effect-allowed" context (`do` boundary).
 - `with {}` is optional; omission means pure.
 - Capability mapping is 1:1 with the runtime `CapabilitySet`.
 - Current builtin mapping:
@@ -42,7 +57,39 @@ Rules:
   - `stdin_read_char()` requires `{Stdin}`
   - `stdin_read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
-  (all effectful builtins still require `do { ... }`).
+
+### Effect-set vs do-boundary (current implementation)
+
+`effect-set` checks and `do` checks are independent.
+
+1. Effect-set check:
+   - Calls to functions with effects, `raise`, `await`, and `yield` are checked
+     against the current effect scope.
+   - `try { ... } catch { ... }` extends only the `try` branch scope with
+     `{Error}`.
+2. Do-boundary check:
+   - Direct effectful builtins (`sh`, stdio, `sleep`) and mutable builder APIs
+     (`array_builder*`, `map_builder*`) require an effect-allowed context.
+   - Effect-allowed context is enabled inside `do { ... }`, and also inside
+     function bodies that already declare non-empty effects.
+
+Examples:
+
+```xsh
+// ok: declared effect allows direct builtin call
+let run = () -> Unit with {Stdout} { sh("ls") }
+
+// error: do alone does not add missing effect declaration
+let run = () -> Unit { do { sh("ls") } }
+
+// error: do alone does not satisfy called function's effect-set requirement
+let f = (x: Int) -> Int with {Error} { x }
+let g = (y: Int) -> Int { do { f(y) } }
+
+// ok: effect-set is declared; do is not required for this call shape
+let f = (x: Int) -> Int with {Error} { x }
+let g = (y: Int) -> Int with {Error} { f(y) }
+```
 
 Error handling:
 - Calling a function with `{Error}` from a non-`{Error}` function requires
@@ -110,6 +157,10 @@ StdIO (wasi stream primitives for wasm/component-friendly interop):
   - `stdin_read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
   - `stdin_read_stream` -> same as `stdin_read_char` (cabi read-buffer -> xsh string)
 
+Generated contract table:
+- `docs/builtin_contract_table.generated.md`
+- regenerate with: `node scripts/gen_builtin_contract_table.mjs`
+
 ## WASM Primitive Type Aliases
 
 Type positions accept wasm-style primitive aliases:
@@ -127,104 +178,276 @@ Std module:
 - `examples/std/wasm/opcodes.xsh` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
   - Naming rule: wasm `i32.add` is exposed as xsh `i32_add` (dot replaced with `_`).
 
-## Names, hashes, and aliases (Unison-style)
+## Names, hashes, versions, and symbols (Unison-style)
 
-Functions are identified by their content hash (`FnId`), not by names.
+xsh uses a layered reference model:
 
-- `name#abc` = name with hash suffix prefix (shortest unique allowed).
-- Module aliases are provided by `import ... as ...` / named import renames.
-- Standalone `alias ... = ...` and `flake { ... }` statements are removed.
+- `HashRef`: immutable content address of canonical S-expression IR (source of truth).
+- `VersionRef`: mutable namespace/branch pointer to hashes.
+- `SymbolRef`: mutable human-readable name pointer to hashes.
 
-Hash prefix resolution:
-- If a prefix uniquely matches a known `FnId`, it resolves.
-- 0 or >1 matches is an error.
+Execution and dependency identity are hash-based. `VersionRef`/`SymbolRef` are
+authoring/navigation aliases that normalize to hash before evaluation.
 
-## Content address (Git blob compatible)
+### Canonical reference schema
 
-FnId is computed from canonicalized typed IR:
+Reference forms accepted by parser and importer:
+
+- `PathRef`: `./foo.xsh`, `../foo.xsh`, `/abs/foo.xsh`, `"./foo.xsh"`
+- `HashRef`: `#<hash>`
+- `VersionRef`: `version@<name>` (canonical), `version:<name>` (compat)
+- `SymbolRef`: `symbol@<name>` (canonical), `symbol:<name>` (compat)
+
+Normalization rules:
+
+1. `PathRef` resolves to content and is mapped to a hash.
+2. `VersionRef` resolves through `version -> hash` lock metadata.
+3. `SymbolRef` resolves through `symbol -> hash` lock metadata.
+4. All resolved imports are rewritten to `HashRef` in compiled AST.
+5. Runtime evaluation only accepts hash-resolved imports.
+
+Current in-memory lock key conventions:
+
+- hash snapshot: `__hash__/<hash>`
+- version binding: `__ref__/version/<name>`
+- symbol binding: `__ref__/symbol/<name>`
+
+Current shorthand:
+- `name#abc` = symbol with hash prefix (shortest unique allowed).
+- Hash prefix resolution: unique match resolves; 0 or >1 matches is an error.
+
+### Immutability rule for pure definitions
+
+- Once a pure function is stored under a hash, it is never mutated in place.
+- Source edits produce a new hash.
+- "Updating" a function means rebinding symbol/version refs to the new hash.
+
+### Edit/readability rule
+
+`edit` should reconstruct readable code from namespace/lock metadata:
+
+1. Prefer symbol names when mapping is unambiguous.
+2. Use `name#hashprefix` when disambiguation is needed.
+3. Fall back to raw hash refs when no symbol mapping exists.
+
+Standalone `alias ... = ...` and `flake { ... }` statements are removed.
+
+## Content address and hash layers
+
+Current module identity uses Git blob compatible `sha1` over canonical
+S-expression bytes:
 
 ```
-sha1("blob " + len + "\0" + ir_bytes)
+ir = module_to_sexp(resolved_ast, aliases)
+hash = sha1("blob " + len(ir_bytes) + "\0" + ir_bytes)
+module_ref = "ko-doha/xsh/" + hash
 ```
 
-The hash does not include aliases or the human-friendly name.
+- Content hash input is canonical S-expression IR produced by compiler pipeline.
+- Human-facing metadata (path aliases, formatting trivia, spans) is excluded.
+- There is no `sha256` content hash path in the current compiler.
 
-## Imports
+Separate internal hash:
+- `Module::structural_hash() -> Int` is used only for incremental query equality
+  (`HashedModule`) and backdate optimization; it is not a persistent content ID.
+
+## Imports and exports
+
+### Surface syntax (current)
+
+Imports are named imports only:
 
 ```
-import foo.xsh
-import "foo.xsh"
+import { foo, bar as b } from ./path/to/mod.xsh
+import { foo } from "./path/to/mod.xsh"
+import { foo } from #abc12345
+import { foo } from version@main
+import { foo } from symbol@std/math
 ```
 
-Import resolution pins to content hash:
-- compute `hash = git_blob_hash(source)`
-- canonical module ref: `ko-doha/xsh/<hash>`
-- the reference is fixed by hash, not by file name
+Parser compatibility:
+- `version:<name>` / `symbol:<name>` are accepted, but `@` form is canonical.
 
-### Module system (draft)
+Exports are explicit:
 
-Goals:
-- Express Nix-like "fixed input + pure output + reproducibility" via imports.
-- Fix dependencies at resolve/build time, not at runtime.
-- Keep syntax close to current xsh where possible.
-
-Core ideas:
-- `import` is a pure expression that returns a module namespace (record-like).
-- Dependency pinning is done via `SourceSpec` + lock file.
-  - `SourceSpec` is an abstract structure; concrete literal syntax is TBD.
-  - Missing lock entry is a compile error.
-  - A separate command (e.g. `xsh fetch`) generates/updates the lock.
-- After resolution, modules are referenced by content hash (aligned with FnId).
-  - Internally, symbols can be tracked as `name#hash` while keeping a human name.
-
-Export model (choose one):
-A. Explicit `export` (recommended)
 ```
-let add = fn (x: Int, y: Int) -> Int { x + y }
-let sub = fn (x: Int, y: Int) -> Int { x - y }
-export { add, sub }
-```
-B. Implicit export (all top-level lets/types/enums)
-- Simple, but leaks more than intended.
-C. Convention: `exports` record only
-```
-let exports = record { add, sub }
-```
-- No new syntax; `import` reads only `exports`.
-
-Import syntax extensions (minimal):
-```
-import "path/to/mod.xsh" as mod
-import { add, sub } from "path/to/mod.xsh"
-import mod from "path/to/mod.xsh"
+export let add = (x: Int, y: Int) -> Int { x + y }
+export enum Color { Red; Green; Blue }
+export type IntPair = (Int, Int)
+export { add, Color, IntPair }
+export { foo } from "./other.xsh"
 ```
 
-Purity and effects:
-- Import resolution and downloads happen at compile time.
-- Runtime uses only locked content, so `import` stays pure and effect-free.
+Rules:
+- No implicit "export all".
+- Non-exported top-level names are module-private.
+- `import "foo.xsh"` (bare import) and default import forms are not part of the
+  current spec.
 
-Example (future):
+### Module refs and normalization
+
+`import ... from <module-ref>` accepts:
+- `PathRef`: local/module path literal.
+- `HashRef`: content hash literal (`#...`).
+- `VersionRef`: namespace pointer.
+- `SymbolRef`: symbol pointer.
+
+Dependency resolution is Nix-like: path inputs are handled as typed path objects
+instead of raw strings.
+
+Normative `PathObj` shape:
+- `raw`: user-written path literal.
+- `base`: importer module directory.
+- `normalized`: canonical path used for identity and lock lookup.
+
+Path normalization rules:
+- Resolve relative paths against importer module directory.
+- Collapse `.` and `..`.
+- Remove duplicated separators.
+- Canonicalize separators to `/`.
+- Keep semantic path components stable (no lossy rewriting of names).
+
+### Lock and resolution flow
+
+Resolution pipeline:
+
+1. Parse `module-ref` (`PathRef`/`HashRef`/`VersionRef`/`SymbolRef`).
+2. For `PathRef`, build `PathObj` and load source by `normalized` key.
+3. Resolve to hash:
+   - `PathRef`: compute content hash and store/read `__hash__/<hash>`.
+   - `HashRef`: read/verify `__hash__/<hash>`.
+   - `VersionRef`: lookup `__ref__/version/<name>` then resolve hash snapshot.
+   - `SymbolRef`: lookup `__ref__/symbol/<name>` then resolve hash snapshot.
+4. Rewrite import source to `HashRef` for compiled/eval paths.
+5. Bind imported symbols to local names.
+
+Invariants:
+- Runtime evaluation uses locked hash refs only.
+- Missing required lock metadata or hash mismatch is a compile error.
+- Dependency updates are explicit workflow steps (fetch/update-lock), not
+  implicit side effects during execution.
+
+## Trait and impl rules (current)
+
+```xsh
+trait Eq;
+trait Ord: Eq;
+
+export trait Eq;
+export open trait Ord: Eq;
+
+impl Eq for Int;
+impl [T: Eq] Eq for Array[T];
+impl [T: Ord + Eq] Ord for Box[T];
 ```
-import "git:github:NixOS/nixpkgs@rev#hash//pkgs.xsh" as pkgs
 
-let dev_shell = pkgs.mk_shell {
-  packages = [ pkgs.wasm, pkgs.nodejs ]
+Rules:
+- Trait names are unique in an environment; duplicate definitions are errors.
+- Supertraits must already be defined and cannot include the trait itself.
+- `open trait` is valid only with `export` (`export open trait ...`).
+- `export trait ...` is sealed outside the defining module.
+- External impls are allowed only for traits imported as `open`.
+- `impl` type parameters must be unique.
+- Bounds in `impl [T: A + B]` are deduplicated and each bound must be a known
+  trait.
+- Overlapping impls for the same trait are rejected.
+- Supertrait satisfaction is transitive (`impl Ord for T` also satisfies `Eq`
+  when `trait Ord: Eq`).
+- Trait imports are explicit (`import { Eq } from ...`), and only exported
+  traits can be imported across modules.
+- Import renaming preserves canonical source identity for supertrait checks
+  (`Eq as MyEq` keeps relation to canonical `Eq`).
+
+## Struct and enum details (current)
+
+```xsh
+enum Option[T] {
+  None;
+  Some(T);
+} derive(Eq)
+
+struct Pair[T] {
+  left: T;
+  right: T;
 }
 
-export { dev_shell }
+let p = Pair[Int]::{ left: 1, right: 2 }
+let q = Pair::{ left, right } // shorthand for { left: left, right: right }
 ```
 
-Open questions:
-- Concrete `SourceSpec` literal syntax (string vs record vs dedicated literal).
-- Export syntax (`export` keyword vs implicit vs convention).
-- Lock file format and location (e.g. `xsh.lock`).
-- Error design for missing/invalid imports.
+Rules:
+- Declaration separators are `;` for both enum variants and struct fields.
+  Commas are parse errors in declarations.
+- Enum/variant constructor names must start with uppercase.
+- Enum definitions must have at least one variant.
+- Constructor names are globally unique in the current environment.
+- Duplicate type parameters, duplicate variants, and duplicate struct fields are
+  errors.
+- Struct literals require all declared fields exactly once.
+  Missing/unknown/duplicate fields are errors.
+- Struct type arguments can be explicit (`Pair[Int]::{ ... }`) or inferred from
+  provided field expressions.
+- `derive(TraitA, TraitB)` expands to corresponding `impl` entries for the
+  declared type (duplicates ignored).
+  Unknown traits or sealed-trait derive targets are rejected at type check.
+- Enum constructor payload typing:
+  - no args => `Unit`
+  - one arg => that type
+  - multiple args => tuple payload
 
-Next steps:
-1. Decide export model.
-2. Decide minimal import syntax additions.
-3. Decide `SourceSpec` syntax.
-4. Decide lock workflow (generate/update/verify).
+## Placeholder lambda shorthand (current)
+
+```xsh
+map(xs, add(_, 1))        // => map(xs, (__p0) -> add(__p0, 1))
+zip_with(xs, ys, f(_, _)) // => zip_with(xs, ys, (__p0, __p1) -> f(__p0, __p1))
+```
+
+Rules:
+- `_` is parsed as a placeholder expression.
+- Placeholder desugaring runs on call arguments (`Expr::Call` arg expressions).
+- Placeholders are reindexed left-to-right and replaced with generated params
+  (`__p0`, `__p1`, ...).
+- Desugaring does not cross block/lambda boundaries.
+- A placeholder that survives desugaring is a type error
+  (`placeholder _ can only be used in function arguments`).
+
+## Method-call and index desugaring (current)
+
+```xsh
+value.method(a, b) // => method(value, a, b)
+value.prop         // => prop(value)
+t.0                // tuple index
+arr[i]             // => __index(arr, i)
+```
+
+Rules:
+- Postfix chains are parsed left-to-right.
+- `expr.method(...)` inserts `expr` as the first positional argument.
+- `expr.prop` desugars to a one-argument call (`prop(expr)`).
+- `.0`, `.1`, ... are parsed as tuple index expressions.
+- `expr[index]` desugars to `__index(expr, index)`.
+- Type checking resolves calls first as normal functions/ctors/builtins.
+  Field-access typing (`prop(expr)`) is fallback behavior.
+- Field-access fallback currently supports record and struct fields, requiring
+  exactly one positional argument.
+
+## while / await / yield (current)
+
+```xsh
+while cond {
+  step()
+}
+
+await task()
+yield value
+```
+
+Rules:
+- `while` condition must be `Bool`.
+- `while` body is type-checked, and the expression result type is always `Unit`.
+- `await expr` requires `{Async}` and returns the inner expression type.
+- `yield expr` requires `{Async}` and returns `Unit`.
+- `break`/`continue` are not implemented.
 
 ## Test blocks (MoonBit-style)
 
@@ -254,7 +477,8 @@ CLI:
 - TUI completion sources: builtins + PATH commands + history.
 - `just install` installs a native binary to `~/.local/bin/xsh` (override with `XSH_PREFIX`).
 - Imports are loaded recursively (imports of imports) for hashing and import-rename resolution.
-- Import cycle reporting is TODO.
+- Import cycle reporting is implemented for path-based import graphs
+  (diagnostic stage: `import`, message prefix: `import cycle:`).
 
 Fixtures:
 - `fixtures/*.xsh` include a `__DATA__` JSON block and are executed by `moon test`.
@@ -323,135 +547,118 @@ Pure function results are cached by content-derived keys.
 - Cache snapshots live in a separate file and are loaded externally.
 - Snapshot format is line-based: `<hash>\\t<encoded-value>`.
 
-## Self recursion only
+## Canonical S-expression IR (current serializer output)
 
-Only self recursion is allowed:
-- `self` is a special IR node for self calls.
-- Dependencies exclude `self`.
-- Any SCC of size >1 is an error.
+Current hash input is the exact output of `module_to_sexp`:
 
-## S-expression IR (canonical form)
-
-Top-level:
-```
-(module
-  (defs <def> ...))
+```sexp
+(module (stmts ...))
 ```
 
-Definitions:
-```
-(def
-  (name foo#abc123)       ; human-readable name (not hashed)
-  (id   sha1:deadbeef...) ; content hash
-  (params <param> ...)
-  (ret <type>)
-  (eff <effset>)
-  (body <expr>))
+There are no top-level `def/id/global/self` nodes in the current serializer.
+Module identity is computed outside the IR text as Git blob `sha1`.
+
+### Statement forms
+
+```sexp
+(let "name" <expr>)
+(let-rec "name" <expr>)
+(expr <expr>)
+(enum "Name" (params "T" ...) (ctors (ctor "Some" <type>) ...))
+(type-alias "Name" (params "T" ...) <type>)
+(export-let "name" <expr>)
+(export-let-rec "name" <expr>)
+(export-enum "Name" (params ...) (ctors ...))
+(export-type-alias "Name" (params ...) <type>)
+(let-mut "name" <expr>)
+(assign "name" <expr>)
+(index-assign <expr> <expr> <expr>)
+(let-pat <pat> <expr>)
+(struct "Name" (params ...) (fields (field "x" <type>) ...))
+(export-struct "Name" (params ...) (fields ...))
 ```
 
-Params:
-```
-(param (name x) (label req|opt|plain) (type <type>) (default <expr>)?)
-```
+Current hashing behavior for statements:
+- `Import`, `Export`, `ReExport`, `Test`, `TraitDef`, `TraitImpl` are omitted.
+- `Span`/location info is omitted.
 
-Types:
-```
-(type Int|Bool|String|Path|Unit)
-(type (tuple <type>...))
-(type (record (field <name> <type>) ...))
-(type (fn (params <type>...) (ret <type>) (eff <effset>)))
-```
+### Expression forms
 
-Notes:
-- `i32`/`f32`/`f64` are surface aliases and canonicalized to `Int`/`Float`/`Double` in IR.
-
-Effect set:
-```
-(eff (Shell FsWrite ...)) ; empty: (eff ())
-```
-
-Expr:
-```
+```sexp
 (lit (int 1))
+(lit (float 1.0))
+(lit (double 1.0))
+(lit (bool true))
 (lit (string "abc"))
-(lit (path "/a/b"))
-(lit unit)
-
-(local 0)
-(self)
-(global sha1:...)
-
-(call <callee> (args <expr>...))
-
-(let <local> <expr> <expr>)
-(letmut <local> <expr> <expr>)
-(assign <local> <expr>)
-
-(if <expr> <block> <block>)
-(match <expr> (arms (arm <pat> (guard <expr>)? <expr>) ...))
-
-(do <block>)
-(async <expr>)
-(await <expr>)
-
+(ref "name-or-qualified-name")
+(call "callee" (args (arg _ <expr>) (arg "label" <expr>) ...))
+(if <expr> (block (stmts ...)) (block (stmts ...)))
 (block (stmts ...))
-(tuple <expr>...)
-(record (field <name> <expr>) ...)
-
-Match pattern (prototype):
-- literals: `int`, `bool`, `string`
-- wildcard: `_` (required for exhaustiveness)
-- bind: `name` (binds scrutinee, counts as exhaustive)
-- tuple: `(p1, p2, ...)`
-- record: `record { a: p1, b: p2 }`
-- guard: `pat if <expr> => <expr>` (guard must be `Bool`)
+(match <expr> (arms (arm <pat> (guard <expr>)? <expr>) ...))
+(do (block (stmts ...)))
+(tuple <expr> ...)
+(tuple-index <expr> 0)
+(record (field "k" <expr>) ...)
+(struct-lit "Type" (field "k" <expr>) ...)
+(array <expr> ...)
+(map (field "k" <expr>) ...)
+(try (block (stmts ...)) (block (stmts ...)))
+(fn (params (param "x" pos <type>) ...) (ret <type>|_) (effects <eff> ...) (block (stmts ...)))
+(while <expr> (block (stmts ...)))
+(raise <expr>)
+(await <expr>)
+(yield <expr>)
 ```
 
-Stmt:
+### Pattern forms
+
+```sexp
+(pat _)
+(pat (bind "x"))
+(pat (ctor "Some" <pat> ...))
+(pat (tuple <pat> ...))
+(pat (record (field "k" <pat>) ...))
+(pat (struct "Type" (field "k" <pat>) ...))
+(pat (int 1))
+(pat (float 1.0))
+(pat (double 1.0))
+(pat (bool true))
+(pat (string "x"))
+(pat (or <pat> ...))
 ```
-(stmt <expr>)
-(stmt (let ...))
-(stmt (letmut ...))
-(stmt (assign ...))
+
+### Type forms
+
+```sexp
+Int | Float | Double | Bool | String | @core.Path | Unit | Never
+(Named "Option" <type> ...)
+(Param "T")
+(Var 1)
+(Tuple <type> ...)
+(Record (field "k" <type>) ...)
+(Variant (ctor "Some" <type>) ...)
+(Array <type>)
+(Map <type>)
+(ArrayBuilder <type>)
+(MapBuilder <type>)
+(Func (params (param "x" pos <type>) ...) (ret <type>) (effects <eff> ...))
 ```
 
-Canonicalization rules:
-- Local variables are normalized (de Bruijn/SSA).
-- Call args are reordered by parameter order.
-- Optional args are expanded to defaults.
-- Effect sets are sorted.
-- `do/async/await` are explicit nodes.
+### Canonicalization rules (current)
 
-## Dependency DAG
-
-Dependencies are extracted from `global` references in IR:
-- `self` is excluded.
-- Dependencies are unique + sorted.
-- SCC size >1 is an error (self recursion only).
-
-## CST -> AST -> IR
-
-Parsing builds a CST (using `mizchi/cst`), then lowers to AST.
-IR is produced from typed AST with canonicalization.
+- Import sources are resolved to hash refs before IR generation.
+- Alias resolution is applied to identifier/callee references (`ref`/`call`).
+- Record/map/record-type/variant ctor and enum ctor ordering is canonicalized.
+- Tests and import/export metadata are excluded from hash input.
+- `i32`/`f32`/`f64` surface aliases normalize to `Int`/`Float`/`Double`.
 
 ## Compile + run (prototype)
 
 - `compile_module(db, path)`:
   - parse + type check
-  - import rename resolution
-  - canonical S-expression IR generation
-  - Git blob hash (`FnId`-style) + module ref
+  - desugar + monomorphize AST
+  - rewrite imports to hash refs
+  - serialize canonical S-expression IR
+  - compute Git blob `sha1` and module ref
 - `Runtime::run_compiled(compiled)`:
   - executes via interpreter (WASM backend is a prototype codegen)
-
-CST node kinds (minimum set):
-- tokens: keywords, literals, identifiers, punctuation, trivia, error
-- nodes: `source_file`, `let_stmt`, `fn_def`, `param_list`, `param`,
-  `type_def`, `effect_def`, `import_stmt`, `block`, `expr_stmt`,
-  `do_block`, `if_expr`, `match_expr`, `call_expr`, `arg_list`, `name_ref`,
-  `literal`, `assign_stmt`, `async_expr`, `await_expr`
-
-Lowering rules:
-- import-alias metadata is not hashed.
-- `name#hash` is parsed as `(name, hash_prefix)` then resolved to `FnId`.
-- `self` uses special IR node.

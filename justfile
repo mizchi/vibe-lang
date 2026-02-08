@@ -111,6 +111,10 @@ bench-cmd-compile:
 run-wasm-js-string *args:
     node scripts/run_wasm_js_string.mjs {{args}}
 
+# Generate builtin contract markdown table
+gen-builtin-contract-table:
+    node scripts/gen_builtin_contract_table.mjs
+
 # Generate type definition files
 info:
     moon info

@@ -110,6 +110,125 @@ test "xsh import parsing" {
 }
 
 ///|
+test "xsh hash import resolves by content hash" {
+  let db = XshDb::new()
+  let lib_source = "export let y = 2"
+  let lib_hash = @core.git_blob_hash_string(lib_source)
+  db.set_source("./foo.xsh", lib_source)
+  db.set_source("main", "import { y } from #\{lib_hash}\nlet x = y")
+  let imports = db.imports("main")
+  assert_eq(imports.length(), 1)
+  let imp = imports[0]
+  match imp.hash {
+    Some(h) => {
+      assert_eq(h, lib_hash)
+      assert_eq(imp.module_ref, Some(@core.module_ref_from_hash(h)))
+    }
+    None => fail("missing hash for hash import")
+  }
+  let _ = db.types("main")
+  let diags = db.diagnostics("main")
+  assert_true(diags.is_empty())
+}
+
+///|
+test "xsh import cycle reports diagnostic" {
+  let db = XshDb::new()
+  db.set_source("main", "import { a } from ./a.xsh\nlet x = a")
+  db.set_source("./a.xsh", "import { b } from ./b.xsh\nexport let a = b")
+  db.set_source("./b.xsh", "import { a } from ./a.xsh\nexport let b = a")
+  let _ = db.imports("main")
+  let diags = db.diagnostics("main")
+  let mut found = false
+  for diag in diags {
+    if diag.stage == "import" && diag.message.contains("import cycle:") {
+      found = true
+    }
+  }
+  assert_true(found)
+}
+
+///|
+test "xsh import keeps normalized path object" {
+  let db = XshDb::new()
+  db.set_source("/project/lib/util.xsh", "export let y = 2")
+  db.set_source(
+    "/project/main.xsh", "import { y } from ./lib/./util.xsh\nlet x = y",
+  )
+  let imports = db.imports("/project/main.xsh")
+  assert_eq(imports.length(), 1)
+  let imp = imports[0]
+  assert_eq(imp.path, "/project/lib/util.xsh")
+  match imp.path_obj {
+    Some(path_obj) => {
+      assert_eq(path_obj.raw, "./lib/./util.xsh")
+      assert_eq(path_obj.base, "/project")
+      assert_eq(path_obj.normalized, "/project/lib/util.xsh")
+    }
+    None => fail("missing path object")
+  }
+}
+
+///|
+test "xsh hash import keeps immutable snapshot after source update" {
+  let db = XshDb::new()
+  let lib_v1 = "export let y = 2"
+  let lib_v2 = "export let y = 3"
+  let hash_v1 = @core.git_blob_hash_string(lib_v1)
+  db.set_source("./foo.xsh", lib_v1)
+  db.set_source("./foo.xsh", lib_v2)
+  db.set_source("main", "import { y } from #\{hash_v1}\nlet x = y")
+  let imports = db.imports("main")
+  assert_eq(imports.length(), 1)
+  let imp = imports[0]
+  assert_eq(imp.hash, Some(hash_v1))
+  assert_eq(imp.source_hash, Some(hash_v1))
+  match db.get_source(imp.path) {
+    Some(snapshot) => assert_eq(snapshot, lib_v1)
+    None => fail("missing immutable hash snapshot")
+  }
+  let _ = db.types("main")
+  let diags = db.diagnostics("main")
+  assert_true(diags.is_empty())
+}
+
+///|
+test "xsh version import resolves through lock ref" {
+  let db = XshDb::new()
+  let lib_source = "export let y = 2"
+  let lib_hash = @core.git_blob_hash_string(lib_source)
+  db.set_source("./foo.xsh", lib_source)
+  db.set_version_ref("main", lib_hash)
+  db.set_source("entry", "import { y } from version@main\nlet x = y")
+  let imports = db.imports("entry")
+  assert_eq(imports.length(), 1)
+  let imp = imports[0]
+  assert_eq(imp.source_version, Some("main"))
+  assert_eq(imp.hash, Some(lib_hash))
+  let _ = db.types("entry")
+  let diags = db.diagnostics("entry")
+  assert_true(diags.is_empty())
+}
+
+///|
+test "xsh symbol import resolves through lock ref" {
+  let db = XshDb::new()
+  let lib_source = "export let y = 2"
+  let lib_hash = @core.git_blob_hash_string(lib_source)
+  db.set_source("./foo.xsh", lib_source)
+  db.set_symbol_ref("std/math", lib_hash)
+  db.set_source("entry", "import { y } from symbol@std/math\nlet x = y")
+  let imports = db.imports("entry")
+  assert_eq(imports.length(), 1)
+  let imp = imports[0]
+  assert_eq(imp.source_symbol, Some("std/math"))
+  assert_eq(imp.hash, Some(lib_hash))
+  let _ = db.types("entry")
+  let diags = db.diagnostics("entry")
+  assert_true(diags.is_empty())
+}
+
+///|
 test "xsh compile simple" {
   // Test compilation without imports
   let db = XshDb::new()
@@ -296,6 +415,31 @@ test "xsh fn effect requires declaration" {
   match rt_try.get("r") {
     Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("effect try")
+  }
+}
+
+///|
+test "xsh declared effects allow direct builtin call without do" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Unit with {Stdout} { sh(\"ls\") }",
+  )
+  match result {
+    Ok(_) => ()
+    Err(_) => fail("expected declared effect to allow direct builtin call")
+  }
+}
+
+///|
+test "xsh do does not grant missing function effect declaration" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let f = (x: Int) -> Int with {Error} { x }\n" +
+    "let g = (y: Int) -> Int { do { f(y) } }",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected missing effect declaration error")
   }
 }
 
