@@ -105,6 +105,32 @@ Error handling:
 - `try` handles `Error` locally and does not require the caller to declare
   `{Error}`.
 
+### Generics with effects (current)
+
+Effect polymorphism and type polymorphism are checked together.
+
+Rules:
+- Effect row variables (for example `with {e}`) can appear with generic type
+  parameters in higher-order function signatures.
+- At call sites, type variables and effect variables are instantiated together.
+- If a callee's effect requirement escapes through a wrapper, the wrapper must
+  declare a compatible effect set.
+- `try { ... } catch { ... }` can localize `{Error}` even inside generic wrappers.
+- Trait bounds and effect checks are independent constraints; either can fail
+  first depending on the call shape.
+
+Examples:
+
+```xsh
+// error: wrapper body calls effect-polymorphic callback without declaring {e}
+let apply = [T](f: (x: T) -> T with {e}, x: T) -> T { f(x) }
+
+// ok: Error is localized by try/catch in generic wrapper
+let apply_safe = [T](f: (x: T) -> T with {Error}, x: T) -> T {
+  try { f(x) } catch { x }
+}
+```
+
 ## let mut and async boundaries
 
 `let mut` is allowed only for local, block-scoped re-assignment.
