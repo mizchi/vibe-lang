@@ -21,14 +21,14 @@ fn postprocess_generated(src : String) -> String {
 ///|
 fn main {
   let schema_src = @os_fs.read_file_to_string(
-    "src/xsh/advanced_graph_flatbuffers.fbs",
+    "src/x/advanced_graph_flatbuffers.fbs",
   ) catch {
     e => abort("read schema failed: " + e.to_string())
   }
   let schema = @flatbuffers.parse_schema(schema_src)
   let generated = postprocess_generated(@flatbuffers.generate_moonbit(schema))
   @os_fs.write_string_to_file(
-    "src/xsh/advanced_graph_flatbuffers_generated.mbt", generated,
+    "src/x/advanced_graph_flatbuffers_generated.mbt", generated,
   ) catch {
     e => abort("write generated failed: " + e.to_string())
   }

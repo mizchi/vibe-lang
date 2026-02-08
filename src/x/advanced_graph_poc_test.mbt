@@ -1,7 +1,9 @@
 ///|
-fn build_test_graph_index(source : String) -> AdvancedGraphIndex {
-  let db = XshDb::new()
-  let path = "/tmp/advanced_graph_poc_test_main.xsh"
+fn build_test_graph_index_at(
+  path : String,
+  source : String,
+) -> AdvancedGraphIndex {
+  let db = @xsh.XshDb::new()
   db.set_source(path, source)
   build_advanced_graph_index(
     db,
@@ -9,6 +11,11 @@ fn build_test_graph_index(source : String) -> AdvancedGraphIndex {
     base_commit="deadbeef",
     created_at="2026-02-08T00:00:00Z",
   )
+}
+
+///|
+fn build_test_graph_index(source : String) -> AdvancedGraphIndex {
+  build_test_graph_index_at("/tmp/advanced_graph_poc_test_main.xsh", source)
 }
 
 ///|
@@ -27,6 +34,43 @@ test "advanced graph poc builds symbol/type indices" {
   assert_true(int_defs.length() >= 2)
   let issues = index.verify()
   assert_eq(issues.length(), 0)
+}
+
+///|
+test "advanced graph poc module hash uses normalized ast hash" {
+  let path = "/tmp/advanced_graph_hash_main.xsh"
+  let source =
+    #|let id = (x: Int) -> Int { x }
+    #|let add = (x: Int, y: Int) -> Int { x + y }
+  let db = @xsh.XshDb::new()
+  db.set_source(path, source)
+  let expected = @core.hash_module(db.ast(path))
+  let index = build_advanced_graph_index(
+    db,
+    [path],
+    base_commit="deadbeef",
+    created_at="2026-02-08T00:00:00Z",
+  )
+  let defs = index.query_symbol("id")
+  assert_eq(defs.length(), 1)
+  assert_eq(defs[0].module_hash, expected)
+}
+
+///|
+test "advanced graph poc semantic id stable across path rebinding" {
+  let source =
+    #|let map_id = (xs: Array[Int]) -> Array[Int] { xs }
+  let index_a = build_test_graph_index_at("/tmp/path_a.xsh", source)
+  let index_b = build_test_graph_index_at("/tmp/path_b.xsh", source)
+  let a_defs = index_a.query_symbol("map_id")
+  let b_defs = index_b.query_symbol("map_id")
+  assert_eq(a_defs.length(), 1)
+  assert_eq(b_defs.length(), 1)
+  assert_true(a_defs[0].def_id != b_defs[0].def_id)
+  assert_eq(
+    advanced_graph_semantic_id(a_defs[0]),
+    advanced_graph_semantic_id(b_defs[0]),
+  )
 }
 
 ///|
@@ -218,4 +262,34 @@ test "advanced graph poc remote network profiles favor delta" {
   let mobile_full = estimate_transfer_time_ms(full_bytes, 10.0, 80.0, 1)
   let mobile_delta = estimate_transfer_time_ms(delta_bytes, 10.0, 80.0, 1)
   assert_true(mobile_delta < mobile_full)
+}
+
+///|
+test "advanced graph poc remote query reports missing module hashes" {
+  let base_source =
+    #|let keep = (x: Int) -> Int { x }
+  let target_source =
+    #|let keep = (x: Int) -> Int { x + 1 }
+    #|let v_extra = 1
+  let local_index = build_test_graph_index(base_source)
+  let remote = build_test_graph_index(target_source)
+  let result = advanced_graph_remote_query_symbol(
+    local_index, remote, "v_extra",
+  )
+  assert_eq(result.query, "v_extra")
+  assert_eq(result.lane, "symbol")
+  assert_eq(result.hits.length(), 1)
+  assert_true(result.requested_module_hashes.length() >= 1)
+  assert_true(result.missing_module_hashes.length() >= 1)
+  let fetched = remote.collect_defs_by_module_hashes(
+    result.missing_module_hashes,
+  )
+  let mut found_extra = false
+  for def in fetched {
+    if def.name == "v_extra" {
+      found_extra = true
+      break
+    }
+  }
+  assert_true(found_extra)
 }

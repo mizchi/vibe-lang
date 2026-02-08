@@ -2868,15 +2868,15 @@ fn lsif_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn index_load_file(path : String) -> @xsh_lib.AdvancedGraphIndex {
-  match @xsh_lib.read_advanced_graph_index(path) {
+fn index_load_file(path : String) -> @x_exp.AdvancedGraphIndex {
+  match @x_exp.read_advanced_graph_index(path) {
     Ok(index) => index
     Err(err) => abort("index: " + err)
   }
 }
 
 ///|
-fn print_graph_def_entry(def : @xsh_lib.AdvancedGraphDef) -> Unit {
+fn print_graph_def_entry(def : @x_exp.AdvancedGraphDef) -> Unit {
   println(
     def.path +
     "@" +
@@ -2934,13 +2934,13 @@ fn index_build_cmd(args : Array[String]) -> Unit {
   }
   match load_db_with_paths(entry_path) {
     Ok((db, _, paths)) => {
-      let index = @xsh_lib.build_advanced_graph_index(
+      let index = @x_exp.build_advanced_graph_index(
         db,
         paths,
         base_commit~,
         created_at=@env.now().to_string(),
       )
-      match @xsh_lib.write_advanced_graph_index(out_path, index) {
+      match @x_exp.write_advanced_graph_index(out_path, index) {
         Ok(_) =>
           println(
             "index build: wrote " +

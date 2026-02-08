@@ -45,6 +45,16 @@ pub struct AdvancedGraphDelta {
 } derive(Show, Eq)
 
 ///|
+/// Symbol/type query result used for remote lookup + lazy fetch planning.
+pub struct AdvancedGraphRemoteQueryResult {
+  query : String
+  lane : String
+  hits : Array[AdvancedGraphDef]
+  requested_module_hashes : Array[String]
+  missing_module_hashes : Array[String]
+} derive(Show, Eq)
+
+///|
 fn ag_json_int(value : Int) -> Json {
   Json::number(value.to_double())
 }
@@ -123,15 +133,12 @@ fn collect_defs_by_ids(
 }
 
 ///|
-fn module_hash_for_path(db : XshDb, path : String) -> String {
-  match db.get_source(path) {
-    Some(source) => @core.git_blob_hash_string(source)
-    None => @core.git_blob_hash_string(path)
-  }
+fn module_hash_for_path(db : @xsh.XshDb, path : String) -> String {
+  @core.hash_module(db.ast(path))
 }
 
 ///|
-fn def_id_from_entry(entry : SymbolEntry) -> String {
+fn def_id_from_entry(entry : @xsh.SymbolEntry) -> String {
   let key = entry.path +
     "|" +
     entry.span.start.to_string() +
@@ -140,9 +147,22 @@ fn def_id_from_entry(entry : SymbolEntry) -> String {
     "|" +
     entry.name +
     "|" +
-    symbol_kind_name(entry.kind) +
+    @xsh.symbol_kind_name(entry.kind) +
     "|" +
     entry.signature
+  @core.git_blob_hash_string(key)
+}
+
+///|
+/// Stable semantic identifier that ignores path/span rebinding.
+pub fn advanced_graph_semantic_id(def : AdvancedGraphDef) -> String {
+  let key = def.module_hash +
+    "|" +
+    def.name +
+    "|" +
+    def.kind +
+    "|" +
+    def.signature
   @core.git_blob_hash_string(key)
 }
 
@@ -162,22 +182,30 @@ fn advanced_graph_manifest_equal(
 ///|
 /// Build POC sidecar index from the existing shared symbol index backend.
 pub fn build_advanced_graph_index(
-  db : XshDb,
+  db : @xsh.XshDb,
   paths : Array[String],
   base_commit? : String = "",
   created_at? : String = "",
 ) -> AdvancedGraphIndex {
-  let symbol_index = build_symbol_index(db, paths)
+  let symbol_index = @xsh.build_symbol_index(db, paths)
   let defs : Map[String, AdvancedGraphDef] = {}
   let symbols : Map[String, Array[String]] = {}
   let types : Map[String, Array[String]] = {}
+  let module_hash_cache : Map[String, String] = {}
   for entry in symbol_index.entries {
-    let module_hash = module_hash_for_path(db, entry.path)
+    let module_hash = match module_hash_cache.get(entry.path) {
+      Some(value) => value
+      None => {
+        let value = module_hash_for_path(db, entry.path)
+        module_hash_cache[entry.path] = value
+        value
+      }
+    }
     let def_id = def_id_from_entry(entry)
     let node = AdvancedGraphDef::{
       def_id,
       name: entry.name,
-      kind: symbol_kind_name(entry.kind),
+      kind: @xsh.symbol_kind_name(entry.kind),
       signature: entry.signature,
       path: entry.path,
       start: entry.span.start,
@@ -308,6 +336,96 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
     }
   }
   issues
+}
+
+///|
+/// Build a deduplicated set of module hashes contained in this index.
+pub fn AdvancedGraphIndex::collect_module_hashes(
+  self : AdvancedGraphIndex,
+) -> Map[String, Bool] {
+  let hashes : Map[String, Bool] = {}
+  for _, def in self.defs {
+    hashes[def.module_hash] = true
+  }
+  hashes
+}
+
+///|
+/// Collect defs that belong to any of the requested module hashes.
+pub fn AdvancedGraphIndex::collect_defs_by_module_hashes(
+  self : AdvancedGraphIndex,
+  module_hashes : Array[String],
+) -> Array[AdvancedGraphDef] {
+  let wanted : Map[String, Bool] = {}
+  for hash in module_hashes {
+    wanted[hash] = true
+  }
+  let out : Array[AdvancedGraphDef] = []
+  for def_id in sorted_string_keys_def(self.defs) {
+    match self.defs.get(def_id) {
+      Some(def) => if wanted.contains(def.module_hash) { out.push(def) }
+      None => ()
+    }
+  }
+  out
+}
+
+///|
+fn remote_query_from_hits(
+  local_index : AdvancedGraphIndex,
+  query : String,
+  lane : String,
+  hits : Array[AdvancedGraphDef],
+) -> AdvancedGraphRemoteQueryResult {
+  let local_hashes = local_index.collect_module_hashes()
+  let requested_hashes : Array[String] = []
+  for def in hits {
+    requested_hashes.push(def.module_hash)
+  }
+  let requested_module_hashes = sorted_unique_strings(requested_hashes)
+  let missing_module_hashes : Array[String] = []
+  for hash in requested_module_hashes {
+    if not(local_hashes.contains(hash)) {
+      missing_module_hashes.push(hash)
+    }
+  }
+  AdvancedGraphRemoteQueryResult::{
+    query,
+    lane,
+    hits,
+    requested_module_hashes,
+    missing_module_hashes,
+  }
+}
+
+///|
+/// Query remote symbol index and compute missing module hashes for lazy fetch.
+pub fn advanced_graph_remote_query_symbol(
+  local_index : AdvancedGraphIndex,
+  remote_index : AdvancedGraphIndex,
+  query : String,
+) -> AdvancedGraphRemoteQueryResult {
+  remote_query_from_hits(
+    local_index,
+    query,
+    "symbol",
+    remote_index.query_symbol(query),
+  )
+}
+
+///|
+/// Query remote type index and compute missing module hashes for lazy fetch.
+pub fn advanced_graph_remote_query_type(
+  local_index : AdvancedGraphIndex,
+  remote_index : AdvancedGraphIndex,
+  query : String,
+) -> AdvancedGraphRemoteQueryResult {
+  remote_query_from_hits(
+    local_index,
+    query,
+    "type",
+    remote_index.query_type(query),
+  )
 }
 
 ///|
