@@ -61,7 +61,9 @@ fn print_usage() -> Unit {
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
   )
-  println("  bench [--n N] [--warmup N] [--expr EXPR]")
+  println(
+    "  bench [--n N] [--warmup N] [--expr EXPR] [--case NAME=EXPR]... [--cases FILE]",
+  )
   println("  bench-file [--n N] [--warmup N] <file>")
   println("  repl                        interactive TUI shell")
   println(
@@ -331,7 +333,8 @@ fn compile_cmd(args : Array[String]) -> Unit {
     Some(path) => {
       if no_dce {
         match mode {
-          CompileMode::Wasm | CompileMode::WasmJsString | CompileMode::WasmGc => ()
+          CompileMode::Wasm | CompileMode::WasmJsString | CompileMode::WasmGc =>
+            ()
           _ =>
             abort(
               "compile: --no-dce is only supported with --wasm, --wasm-js-string, or --wasm-gc",
@@ -360,11 +363,13 @@ fn compile_cmd(args : Array[String]) -> Unit {
               println("wrote " + resolved_out)
             }
             CompileMode::Wasm => {
-              let wasm_bytes = (if no_dce {
-                @xsh_lib.compile_module_wasm_no_dce(db, entry)
-              } else {
-                @xsh_lib.compile_module_wasm(db, entry)
-              }) catch {
+              let wasm_bytes = try {
+                if no_dce {
+                  @xsh_lib.compile_module_wasm_no_dce(db, entry)
+                } else {
+                  @xsh_lib.compile_module_wasm(db, entry)
+                }
+              } catch {
                 e => abort("compile: " + e.to_string())
               }
               @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
@@ -373,11 +378,13 @@ fn compile_cmd(args : Array[String]) -> Unit {
               println("wrote " + resolved_out)
             }
             CompileMode::WasmJsString => {
-              let wasm_bytes = (if no_dce {
-                @xsh_lib.compile_module_wasm_js_string_no_dce(db, entry)
-              } else {
-                @xsh_lib.compile_module_wasm_js_string(db, entry)
-              }) catch {
+              let wasm_bytes = try {
+                if no_dce {
+                  @xsh_lib.compile_module_wasm_js_string_no_dce(db, entry)
+                } else {
+                  @xsh_lib.compile_module_wasm_js_string(db, entry)
+                }
+              } catch {
                 e => abort("compile: " + e.to_string())
               }
               @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
@@ -386,11 +393,13 @@ fn compile_cmd(args : Array[String]) -> Unit {
               println("wrote " + resolved_out)
             }
             CompileMode::WasmGc => {
-              let wasm_bytes = (if no_dce {
-                @xsh_lib.compile_module_wasm_gc_no_dce(db, entry)
-              } else {
-                @xsh_lib.compile_module_wasm_gc(db, entry)
-              }) catch {
+              let wasm_bytes = try {
+                if no_dce {
+                  @xsh_lib.compile_module_wasm_gc_no_dce(db, entry)
+                } else {
+                  @xsh_lib.compile_module_wasm_gc(db, entry)
+                }
+              } catch {
                 e => abort("compile: " + e.to_string())
               }
               @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
@@ -554,8 +563,9 @@ fn check_cmd(args : Array[String]) -> Unit {
         continue
       }
     }
-    let parsed : Result[@xsh_core.Module, @parser.ParseError] = try?
-      @parser.parse_ast(source)
+    let parsed : Result[@xsh_core.Module, @parser.ParseError] = try? @parser.parse_ast(
+      source,
+    )
     let ast = match parsed {
       Err(e) => {
         let diag = e.diagnostic()
@@ -577,8 +587,10 @@ fn check_cmd(args : Array[String]) -> Unit {
     }
     if !has_import_stmt {
       let desugared = @xsh_lib.desugar_method_calls(ast, {})
-      let typed : Result[@checker.TypeEnv, @checker.TypeError] = try?
-        @checker.type_check_with_aliases(desugared, {})
+      let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check_with_aliases(
+        desugared,
+        {},
+      )
       match typed {
         Ok(_) => {
           let warnings = @checker.collect_warnings(ast)
@@ -739,10 +751,49 @@ fn fmt_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
+fn load_bench_cases(
+  path : String,
+  start_case_index : Int,
+) -> Result[Array[BenchCase], String] {
+  let source = @os_fs.read_file_to_string(path) catch {
+    e => return Err("read failed: " + e.to_string())
+  }
+  parse_bench_case_source(source, start_case_index)
+}
+
+///|
+fn run_bench_case(
+  case_item : BenchCase,
+  count : Int,
+  warmup : Int,
+  syntax_mode : @xsh_lib.ParserMode,
+) -> (Double, Double) {
+  let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+  for _ in 0..<warmup {
+    let _ = rt.eval_script_with_mode(case_item.expr, syntax_mode) catch {
+      e => abort("bench: " + case_item.name + ": " + e.to_string())
+    }
+
+  }
+  let start = @env.now()
+  for _ in 0..<count {
+    let _ = rt.eval_script_with_mode(case_item.expr, syntax_mode) catch {
+      e => abort("bench: " + case_item.name + ": " + e.to_string())
+    }
+
+  }
+  let end = @env.now()
+  let elapsed_ms = (end - start).to_double()
+  let per_us = elapsed_ms * 1000.0 / count.to_double()
+  (elapsed_ms, per_us)
+}
+
+///|
 fn bench_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
   let mut count = 20000
   let mut warmup = 1000
-  let mut expr = "add(1,2)"
+  let mut expr : String? = None
+  let cases : Array[BenchCase] = []
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
@@ -769,7 +820,31 @@ fn bench_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
         if i + 1 >= args.length() {
           abort("bench: missing value for --expr")
         }
-        expr = args[i + 1]
+        expr = Some(args[i + 1])
+        i += 2
+      }
+      "--case" => {
+        if i + 1 >= args.length() {
+          abort("bench: missing value for --case")
+        }
+        match parse_bench_case_arg(args[i + 1], cases.length() + 1) {
+          Ok(case_item) => cases.push(case_item)
+          Err(msg) => abort("bench: invalid --case: " + msg)
+        }
+        i += 2
+      }
+      "--cases" => {
+        if i + 1 >= args.length() {
+          abort("bench: missing value for --cases")
+        }
+        let case_path = args[i + 1]
+        let loaded = match load_bench_cases(case_path, cases.length() + 1) {
+          Ok(items) => items
+          Err(msg) => abort("bench: " + case_path + ": " + msg)
+        }
+        for case_item in loaded {
+          cases.push(case_item)
+        }
         i += 2
       }
       _ => abort("bench: unknown arg " + arg)
@@ -781,36 +856,61 @@ fn bench_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
   if warmup < 0 {
     abort("bench: --warmup must be >= 0")
   }
-  let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
-  for _ in 0..<warmup {
-    let _ = rt.eval_script_with_mode(expr, syntax_mode) catch {
-      e => abort("bench: " + e.to_string())
+  match expr {
+    Some(expr_text) => cases.push({ name: "expr", expr: expr_text })
+    None =>
+      if cases.length() == 0 {
+        cases.push({ name: "expr", expr: "add(1,2)" })
+      }
+  }
+  let multi_case = cases.length() > 1
+  let mut total_ms = 0.0
+  for case_item in cases {
+    let (elapsed_ms, per_us) = run_bench_case(
+      case_item, count, warmup, syntax_mode,
+    )
+    total_ms += elapsed_ms
+    if elapsed_ms <= 0.0 {
+      println(
+        "bench: " +
+        case_item.name +
+        ": elapsed_ms=0; increase --n for measurable time",
+      )
     }
-
-  }
-  let start = @env.now()
-  for _ in 0..<count {
-    let _ = rt.eval_script_with_mode(expr, syntax_mode) catch {
-      e => abort("bench: " + e.to_string())
+    if multi_case || case_item.name != "expr" {
+      println(
+        "bench: name=\"" +
+        case_item.name +
+        "\" expr=\"" +
+        case_item.expr +
+        "\" count=" +
+        count.to_string() +
+        " total_ms=" +
+        elapsed_ms.to_string() +
+        " per_us=" +
+        per_us.to_string(),
+      )
+    } else {
+      println(
+        "bench: expr=\"" +
+        case_item.expr +
+        "\" count=" +
+        count.to_string() +
+        " total_ms=" +
+        elapsed_ms.to_string() +
+        " per_us=" +
+        per_us.to_string(),
+      )
     }
-
   }
-  let end = @env.now()
-  let elapsed_ms = (end - start).to_double()
-  let per_us = elapsed_ms * 1000.0 / count.to_double()
-  if elapsed_ms <= 0.0 {
-    println("bench: elapsed_ms=0; increase --n for measurable time")
+  if multi_case {
+    println(
+      "bench: cases=" +
+      cases.length().to_string() +
+      " total_ms=" +
+      total_ms.to_string(),
+    )
   }
-  println(
-    "bench: expr=\"" +
-    expr +
-    "\" count=" +
-    count.to_string() +
-    " total_ms=" +
-    elapsed_ms.to_string() +
-    " per_us=" +
-    per_us.to_string(),
-  )
 }
 
 ///|
@@ -3008,11 +3108,13 @@ fn parse_index_wal_args(args : Array[String]) -> Result[IndexWalAction, String] 
       }
       let snapshot_path = match snapshot_path {
         Some(v) => v
-        None => return Err("index wal replay: expected <snapshot-file> <wal-file>")
+        None =>
+          return Err("index wal replay: expected <snapshot-file> <wal-file>")
       }
       let wal_path = match wal_path {
         Some(v) => v
-        None => return Err("index wal replay: expected <snapshot-file> <wal-file>")
+        None =>
+          return Err("index wal replay: expected <snapshot-file> <wal-file>")
       }
       Ok(IndexWalAction::Replay(snapshot_path, wal_path, out_path))
     }

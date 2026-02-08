@@ -595,6 +595,10 @@ Bench:
 - `just bench-compare` compares interpreter (`xsh_cli run`) vs `wasmtime run`.
 - `xsh bench --n 20000 --warmup 1000 --expr "add(1,2)"` measures per-command latency
   after startup inside a single process.
+- `xsh bench --case sum=add(1,2) --case "eq(1,1) == true"` runs multiple named
+  expression benchmarks in one invocation.
+- `xsh bench --cases bench/cases.txt` loads benchmark cases from file
+  (one case per line, `name=expr` or plain `expr`; blank/comment lines are ignored).
 - `just bench-cmd-latency` compares per-command latency between interpreter and a
   resident wasmtime instance.
 - `just run-wasm-js-string examples/string_basic.xsh` compiles with `--wasm-js-string`

@@ -225,6 +225,64 @@ test "cli syntax mode support matrix" {
   }
 }
 
+///|
+test "bench case arg parse named" {
+  let parsed = parse_bench_case_arg("sum=add(1,2)", 1)
+  match parsed {
+    Ok(case_item) => {
+      assert_eq(case_item.name, "sum")
+      assert_eq(case_item.expr, "add(1,2)")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "bench case arg parse unnamed expression" {
+  let parsed = parse_bench_case_arg("add(1,2)", 2)
+  match parsed {
+    Ok(case_item) => {
+      assert_eq(case_item.name, "case2")
+      assert_eq(case_item.expr, "add(1,2)")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "bench case arg keeps equality expression" {
+  let parsed = parse_bench_case_arg("eq(1,1) == true", 3)
+  match parsed {
+    Ok(case_item) => {
+      assert_eq(case_item.name, "case3")
+      assert_eq(case_item.expr, "eq(1,1) == true")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "bench case source parse skips comments and blanks" {
+  let source =
+    #|# warm paths
+    #|
+    #|sum = add(1,2)
+    #|eq(1,1) == true
+    #|   # trailing comment line
+  let parsed = parse_bench_case_source(source, 1)
+  match parsed {
+    Ok(cases) => {
+      assert_eq(cases.length(), 2)
+      assert_eq(cases[0].name, "sum")
+      assert_eq(cases[0].expr, "add(1,2)")
+      assert_eq(cases[1].name, "case2")
+      assert_eq(cases[1].expr, "eq(1,1) == true")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
 test "line repl extract let name" {
   match extract_let_name_line("let foo = 1") {
     Some(name) => assert_eq(name, "foo")
