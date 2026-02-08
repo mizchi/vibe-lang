@@ -131,6 +131,14 @@
   run `just bench-advanced-graph`, collect
   `current_cli_like` vs `graph_snapshot/json_load`, and
   `apply_full_snapshot` vs `apply_delta` ratios on CI fixture sizes.
+- Generalize symbol/type/signature indexing beyond xsh:
+  extract language-agnostic graph IR (`symbol/type/signature/ref/call/import`),
+  add `language_id`-aware storage keys, and define stable hash/id contracts for
+  incremental updates.
+- Add multi-language frontend adapters:
+  implement a tree-sitter-based extractor as baseline and layer optional
+  semantic providers (compiler/LSP) for type-resolution gaps; keep
+  `xsh ide`/`xsh lsif` on the shared backend API.
 - Expand object pipeline operators on typed rows:
   add first-class `where/select` contracts over record-like objects and align
   parser/desugar/typecheck behavior for `|>` chains.
