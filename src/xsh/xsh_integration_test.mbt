@@ -16,7 +16,7 @@ fn register_import_modules(
     match imp.hash {
       Some(hash) => {
         path_to_hash[imp.path] = hash
-        let ast = db.ast(imp.path)
+        let ast = db.ast_with_hash_imports(imp.path)
         rt.register_module(hash, ast)
         register_import_modules(rt, db, imp.path, visited, path_to_hash)
       }
@@ -38,6 +38,64 @@ test "xsh integration import parsing" {
   assert_eq(compiled.imports.length(), 1)
   assert_eq(compiled.imports[0], import_ref)
   // Note: import bindings are not yet resolved, just check parsing works
+}
+
+///|
+test "xsh integration hash import parsing" {
+  let db = XshDb::new()
+  let lib_source = "export let value = 7"
+  let import_hash = @core.git_blob_hash_string(lib_source)
+  let main_source = "import { value } from #\{import_hash}\nlet x = value"
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let import_ref = @core.module_ref_from_hash(import_hash)
+  assert_eq(compiled.imports.length(), 1)
+  assert_eq(compiled.imports[0], import_ref)
+}
+
+///|
+test "xsh integration version import parsing" {
+  let db = XshDb::new()
+  let lib_source = "export let value = 7"
+  let import_hash = @core.git_blob_hash_string(lib_source)
+  db.set_source("./lib.xsh", lib_source)
+  db.set_version_ref("main", import_hash)
+  db.set_source("main", "import { value } from version@main\nlet x = value")
+  let compiled = compile_module(db, "main")
+  let import_ref = @core.module_ref_from_hash(import_hash)
+  assert_eq(compiled.imports.length(), 1)
+  assert_eq(compiled.imports[0], import_ref)
+  match compiled.ast.stmts[0] {
+    @core.Stmt::Import(source~, ..) =>
+      match source {
+        @core.ModuleRef::Hash(hash~) => assert_eq(hash, import_hash)
+        _ => fail("version import should normalize to hash ref")
+      }
+    _ => fail("expected import stmt")
+  }
+}
+
+///|
+test "xsh integration symbol import parsing" {
+  let db = XshDb::new()
+  let lib_source = "export let value = 7"
+  let import_hash = @core.git_blob_hash_string(lib_source)
+  db.set_source("./lib.xsh", lib_source)
+  db.set_symbol_ref("std/math", import_hash)
+  db.set_source("main", "import { value } from symbol@std/math\nlet x = value")
+  let compiled = compile_module(db, "main")
+  let import_ref = @core.module_ref_from_hash(import_hash)
+  assert_eq(compiled.imports.length(), 1)
+  assert_eq(compiled.imports[0], import_ref)
+  match compiled.ast.stmts[0] {
+    @core.Stmt::Import(source~, ..) =>
+      match source {
+        @core.ModuleRef::Hash(hash~) => assert_eq(hash, import_hash)
+        _ => fail("symbol import should normalize to hash ref")
+      }
+    _ => fail("expected import stmt")
+  }
 }
 
 ///|

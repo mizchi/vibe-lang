@@ -1,5 +1,8 @@
 # xsh Module System Design (Phase 1)
 
+> Historical design draft (non-normative).
+> Current implemented hashing/IR behavior is specified in `docs/xsh.md`.
+
 ## Goals
 
 1. Content-addressable modules based on **AST hash** (not text)

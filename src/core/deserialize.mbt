@@ -708,6 +708,14 @@ fn parse_module_ref(json : Json) -> ModuleRef raise DeserializeError {
         let hash = expect_string(value)
         return ModuleRef::Hash(hash~)
       }
+      "Version" => {
+        let name = expect_string(value)
+        return ModuleRef::Version(name~)
+      }
+      "Symbol" => {
+        let name = expect_string(value)
+        return ModuleRef::Symbol(name~)
+      }
       _ => ()
     }
   }

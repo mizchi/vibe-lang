@@ -506,7 +506,8 @@ fn collect_and_normalize_imports(
                 None => ()
               }
             }
-          ModuleRef::Hash(_) => ()
+          ModuleRef::Hash(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
+            ()
         }
       _ => ()
     }
@@ -531,7 +532,8 @@ pub fn collect_import_hashes(m : Module) -> Array[String] {
       Stmt::Import(source~, ..) =>
         match source {
           ModuleRef::Hash(hash~) => hashes.push(hash)
-          ModuleRef::Path(_) => ()
+          ModuleRef::Path(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
+            ()
         }
       _ => ()
     }

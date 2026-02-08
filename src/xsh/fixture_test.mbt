@@ -230,7 +230,9 @@ fn preload_module_sources(
                 fail("[\{module_path}] unresolved import path: \{import_path}")
             }
           }
-          @core.ModuleRef::Hash(_) => ()
+          @core.ModuleRef::Hash(_)
+          | @core.ModuleRef::Version(_)
+          | @core.ModuleRef::Symbol(_) => ()
         }
       _ => ()
     }
@@ -254,7 +256,7 @@ fn register_fixture_import_modules(
     match imp.hash {
       Some(hash) => {
         path_to_hash[imp.path] = hash
-        let ast = db.ast(imp.path)
+        let ast = db.ast_with_hash_imports(imp.path)
         rt.register_module(hash, ast)
         register_fixture_import_modules(rt, db, imp.path, visited, path_to_hash)
       }

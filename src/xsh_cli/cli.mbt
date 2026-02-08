@@ -405,7 +405,9 @@ fn run_cmd(args : Array[String]) -> Unit {
                   None => ()
                 }
               }
-              @xsh_core.ModuleRef::Hash(_) => ()
+              @xsh_core.ModuleRef::Hash(_)
+              | @xsh_core.ModuleRef::Version(_)
+              | @xsh_core.ModuleRef::Symbol(_) => ()
             }
           _ => ()
         }
@@ -444,7 +446,7 @@ fn load_imports_into_runtime(
         // Record the path-to-hash mapping
         path_to_hash[imp.path] = hash
         // Get the AST for this imported module
-        let ast = db.ast(imp.path)
+        let ast = db.ast_with_hash_imports(imp.path)
         rt.register_module(hash, ast)
         // Recursively load imports of the imported module
         load_imports_into_runtime(rt, db, imp.path, path_to_hash)
@@ -523,7 +525,9 @@ fn load_imports_for_check_with_cycle(
               None => ()
             }
           }
-          @xsh_core.ModuleRef::Hash(..) => ()
+          @xsh_core.ModuleRef::Hash(..)
+          | @xsh_core.ModuleRef::Version(..)
+          | @xsh_core.ModuleRef::Symbol(..) => ()
         }
       _ => ()
     }
@@ -588,7 +592,9 @@ fn load_import_recursive_for_check_impl(
               None => ()
             }
           }
-          @xsh_core.ModuleRef::Hash(..) => ()
+          @xsh_core.ModuleRef::Hash(..)
+          | @xsh_core.ModuleRef::Version(..)
+          | @xsh_core.ModuleRef::Symbol(..) => ()
         }
       _ => ()
     }
@@ -642,7 +648,9 @@ fn test_cmd(args : Array[String]) -> Unit {
                     None => ()
                   }
                 }
-                @xsh_core.ModuleRef::Hash(_) => ()
+                @xsh_core.ModuleRef::Hash(_)
+                | @xsh_core.ModuleRef::Version(_)
+                | @xsh_core.ModuleRef::Symbol(_) => ()
               }
             _ => ()
           }
@@ -1834,7 +1842,9 @@ fn load_sources_recursive_impl(
               }
             }
           }
-          @xsh_core.ModuleRef::Hash(..) => ()
+          @xsh_core.ModuleRef::Hash(..)
+          | @xsh_core.ModuleRef::Version(..)
+          | @xsh_core.ModuleRef::Symbol(..) => ()
         }
       _ => ()
     }

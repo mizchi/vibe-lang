@@ -153,8 +153,10 @@ examples/async_host/  # Rust/wasmtime host runtime
 
 ## Docs
 
-- `docs/xsh.md` - Language/spec notes
-- `docs/module.md` - Module system design
+- `docs/xsh.md` - Language specification (normative for implemented behavior)
+- `docs/module_design.md` - Module design proposals (non-normative)
+- `docs/module_system.md` - Legacy module draft notes (non-normative)
+- `docs/async_design.md` - Async design proposals (non-normative)
 
 ## Fixtures
 

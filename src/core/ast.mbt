@@ -81,10 +81,12 @@ pub(all) struct ImportSpec {
 } derive(Show, Eq)
 
 ///|
-/// Module reference: path or content hash
+/// Module reference: path, content hash, or lock-managed ref
 pub(all) enum ModuleRef {
   Path(path~ : String) // ./foo/bar.xsh
   Hash(hash~ : String) // #abc12345
+  Version(name~ : String) // version@main
+  Symbol(name~ : String) // symbol@std/math
 } derive(Show, Eq)
 
 ///|

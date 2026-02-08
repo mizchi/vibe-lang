@@ -841,5 +841,15 @@ fn serialize_module_ref_to(r : ModuleRef, buf : StringBuilder) -> Unit {
       serialize_string_to(hash, buf)
       buf.write_char('}')
     }
+    ModuleRef::Version(name~) => {
+      buf.write_string("{\"Version\":")
+      serialize_string_to(name, buf)
+      buf.write_char('}')
+    }
+    ModuleRef::Symbol(name~) => {
+      buf.write_string("{\"Symbol\":")
+      serialize_string_to(name, buf)
+      buf.write_char('}')
+    }
   }
 }

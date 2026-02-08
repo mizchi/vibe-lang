@@ -1573,7 +1573,7 @@ fn AstParser::parse_import_stmt(
 }
 
 ///|
-/// Parse a module reference: path or hash
+/// Parse a module reference: path, hash, version ref, or symbol ref.
 fn AstParser::parse_module_ref(
   self : AstParser,
 ) -> @core.ModuleRef raise ParseError {
@@ -1587,49 +1587,102 @@ fn AstParser::parse_module_ref(
       ""
     }
     @core.ModuleRef::Hash(hash~)
-  } else {
-    // Path: ./foo/bar.xsh or foo.xsh
+  } else if self.peek_kind() == name() || self.peek_kind() == string_lit() {
     let tok = self.peek()
-    if tok.kind() != name() && tok.kind() != string_lit() && tok.kind() != dot() {
+    let text = tok.text()
+    if text.has_prefix("version@") && text.length() > 8 {
+      let _ = self.bump()
+      let name = text.unsafe_substring(start=8, end=text.length())
+      @core.ModuleRef::Version(name~)
+    } else if text.has_prefix("symbol@") && text.length() > 7 {
+      let _ = self.bump()
+      let name = text.unsafe_substring(start=7, end=text.length())
+      @core.ModuleRef::Symbol(name~)
+    } else if text.has_prefix("version:") && text.length() > 8 {
+      let _ = self.bump()
+      let name = text.unsafe_substring(start=8, end=text.length())
+      @core.ModuleRef::Version(name~)
+    } else if text.has_prefix("symbol:") && text.length() > 7 {
+      let _ = self.bump()
+      let name = text.unsafe_substring(start=7, end=text.length())
+      @core.ModuleRef::Symbol(name~)
+    } else {
+      // Path: ./foo/bar.xsh or foo.xsh
+      let buf = StringBuilder::new()
+      // Handle leading ./ or ../
+      while self.peek_kind() == dot() {
+        let _ = self.bump()
+        buf.write_char('.')
+        if self.peek_kind() == dot() {
+          let _ = self.bump()
+          buf.write_char('.')
+        }
+        if self.peek_kind() == slash() {
+          let _ = self.bump()
+          buf.write_char('/')
+        }
+      }
+      // Path segments
+      if self.peek_kind() == name() || self.peek_kind() == string_lit() {
+        let seg = self.bump()
+        buf.write_string(seg.text())
+      }
+      while self.peek_kind() == dot() || self.peek_kind() == slash() {
+        if self.peek_kind() == dot() {
+          let _ = self.bump()
+          buf.write_char('.')
+        } else {
+          let _ = self.bump()
+          buf.write_char('/')
+        }
+        if self.peek_kind() == name() {
+          let seg = self.bump()
+          buf.write_string(seg.text())
+        }
+      }
+      @core.ModuleRef::Path(path=buf.to_string())
+    }
+  } else {
+    let tok = self.peek()
+    if tok.kind() == dot() {
+      let buf = StringBuilder::new()
+      while self.peek_kind() == dot() {
+        let _ = self.bump()
+        buf.write_char('.')
+        if self.peek_kind() == dot() {
+          let _ = self.bump()
+          buf.write_char('.')
+        }
+        if self.peek_kind() == slash() {
+          let _ = self.bump()
+          buf.write_char('/')
+        }
+      }
+      if self.peek_kind() == name() || self.peek_kind() == string_lit() {
+        let seg = self.bump()
+        buf.write_string(seg.text())
+      }
+      while self.peek_kind() == dot() || self.peek_kind() == slash() {
+        if self.peek_kind() == dot() {
+          let _ = self.bump()
+          buf.write_char('.')
+        } else {
+          let _ = self.bump()
+          buf.write_char('/')
+        }
+        if self.peek_kind() == name() {
+          let seg = self.bump()
+          buf.write_string(seg.text())
+        }
+      }
+      @core.ModuleRef::Path(path=buf.to_string())
+    } else {
       raise ParseError::UnexpectedToken(
-        expected="path or hash",
+        expected="path, hash, version ref, or symbol ref",
         got=tok.text(),
         span=self.token_span(),
       )
     }
-    let buf = StringBuilder::new()
-    // Handle leading ./ or ../
-    while self.peek_kind() == dot() {
-      let _ = self.bump()
-      buf.write_char('.')
-      if self.peek_kind() == dot() {
-        let _ = self.bump()
-        buf.write_char('.')
-      }
-      if self.peek_kind() == slash() {
-        let _ = self.bump()
-        buf.write_char('/')
-      }
-    }
-    // Path segments
-    if self.peek_kind() == name() || self.peek_kind() == string_lit() {
-      let seg = self.bump()
-      buf.write_string(seg.text())
-    }
-    while self.peek_kind() == dot() || self.peek_kind() == slash() {
-      if self.peek_kind() == dot() {
-        let _ = self.bump()
-        buf.write_char('.')
-      } else {
-        let _ = self.bump()
-        buf.write_char('/')
-      }
-      if self.peek_kind() == name() {
-        let seg = self.bump()
-        buf.write_string(seg.text())
-      }
-    }
-    @core.ModuleRef::Path(path=buf.to_string())
   }
 }
 

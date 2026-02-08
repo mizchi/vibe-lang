@@ -49,7 +49,8 @@ pub fn compile_module(
     }
   }
   let mono = monoify_module(ast, env)
-  let ir = module_to_sexp(mono.ast, aliases)
+  let resolved_ast = db.rewrite_imports_to_hash(path, mono.ast)
+  let ir = module_to_sexp(resolved_ast, aliases)
   let ir_hash = @core.git_blob_hash_string(ir)
   let module_ref = @core.module_ref_from_hash(ir_hash)
   let imports : Array[String] = []
@@ -66,7 +67,7 @@ pub fn compile_module(
     module_ref,
     imports,
     aliases,
-    ast: mono.ast,
+    ast: resolved_ast,
     instantiations: mono.instantiations,
   }
 }
@@ -268,7 +269,7 @@ fn collect_dependency_defs(
   // Then add definitions from this module (if it's an imported module)
   // Skip the entry module itself (it will be added separately)
   if visited.length() > 1 {
-    let dep_ast = db.ast(path)
+    let dep_ast = db.ast_with_hash_imports(path)
     let base_dir = @path.Path(path).dirname().to_string()
     for stmt in dep_ast.stmts {
       match stmt {
@@ -307,6 +308,13 @@ fn collect_reexport_defs(
   out : Array[@core.Stmt],
   visited : Map[String, Bool],
 ) -> Unit {
+  let normalize_hash_ref = fn(hash : String) {
+    if hash.has_prefix("#") && hash.length() > 1 {
+      hash.unsafe_substring(start=1, end=hash.length())
+    } else {
+      hash
+    }
+  }
   // Resolve source module path
   let source_path = match source {
     @core.ModuleRef::Path(path~) =>
@@ -315,12 +323,22 @@ fn collect_reexport_defs(
       } else {
         @path.Path(base_dir).join(@path.Path(path)).normalize().to_string()
       }
-    @core.ModuleRef::Hash(hash~) => hash // Use hash as path for now
+    @core.ModuleRef::Hash(hash~) => "__hash__/" + normalize_hash_ref(hash)
+    @core.ModuleRef::Version(name~) =>
+      match db.get_source("__ref__/version/" + name) {
+        Some(hash_text) => "__hash__/" + normalize_hash_ref(hash_text)
+        None => "__missing__/version/" + name
+      }
+    @core.ModuleRef::Symbol(name~) =>
+      match db.get_source("__ref__/symbol/" + name) {
+        Some(hash_text) => "__hash__/" + normalize_hash_ref(hash_text)
+        None => "__missing__/symbol/" + name
+      }
   }
   // Recursively process the source module's dependencies first
   collect_dependency_defs(db, source_path, out, visited)
   // Get the source module AST
-  let source_ast = db.ast(source_path)
+  let source_ast = db.ast_with_hash_imports(source_path)
   // Build a set of requested names for quick lookup
   let requested : Map[String, Bool] = {}
   for name in names {

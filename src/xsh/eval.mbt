@@ -104,6 +104,14 @@ pub fn Runtime::eval_module(
             raise EvalError::ImportError(
               "Import path not resolved to hash: " + path,
             )
+          @core.ModuleRef::Version(name~) =>
+            raise EvalError::ImportError(
+              "Import version ref not resolved to hash: " + name,
+            )
+          @core.ModuleRef::Symbol(name~) =>
+            raise EvalError::ImportError(
+              "Import symbol ref not resolved to hash: " + name,
+            )
         }
         // Look up module in cache
         match self.get_module(hash) {

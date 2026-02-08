@@ -120,7 +120,9 @@ fn is_trait_imported(
       @core.Stmt::Import(spec~, source~, ..) => {
         let import_path = match source {
           @core.ModuleRef::Path(path~) => Some(path)
-          @core.ModuleRef::Hash(_) => None
+          @core.ModuleRef::Hash(_)
+          | @core.ModuleRef::Version(_)
+          | @core.ModuleRef::Symbol(_) => None
         }
         for item in spec.items {
           let local_name = match item.rename {
