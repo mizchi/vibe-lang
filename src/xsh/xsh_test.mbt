@@ -538,6 +538,74 @@ test "xsh let rec function" {
 }
 
 ///|
+test "xsh recursion depth regression" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let rec sum = (n: Int) -> Int {
+    #|  if eq(n, 0) {
+    #|    0
+    #|  } else {
+    #|    add(n, sum(sub(n, 1)))
+    #|  }
+    #|}
+    #|let out = sum(40)
+  let _ = rt.eval_script(script)
+  match rt.get("out") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 820)
+    _ => fail("expected Int")
+  }
+}
+
+///|
+test "xsh stack safety regression in while loop" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let run = () -> Int {
+    #|  let mut i = 0
+    #|  let mut acc = 0
+    #|  while i < 5000 {
+    #|    acc = add(acc, i)
+    #|    i = add(i, 1)
+    #|  }
+    #|  acc
+    #|}
+    #|let out = run()
+  let _ = rt.eval_script(script)
+  match rt.get("out") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 12497500)
+    _ => fail("expected Int")
+  }
+}
+
+///|
+test "xsh string concat hotspot regression" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let rec repeat = (s: String, n: Int) -> String {
+    #|  if eq(n, 0) {
+    #|    ""
+    #|  } else {
+    #|    string_concat(s, repeat(s, sub(n, 1)))
+    #|  }
+    #|}
+    #|let rec concat_loop = (s: String, i: Int) -> String {
+    #|  if eq(i, 0) {
+    #|    s
+    #|  } else {
+    #|    concat_loop(string_concat(s, "x"), sub(i, 1))
+    #|  }
+    #|}
+    #|let base = repeat("abcdef", 20)
+    #|let out = concat_loop(base, 80)
+    #|let len = string_length(out)
+  let _ = rt.eval_script(script)
+  match rt.get("len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 200)
+    _ => fail("expected Int")
+  }
+}
+
+///|
 test "xsh let rec requires return type" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(

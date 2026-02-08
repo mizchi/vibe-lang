@@ -45,13 +45,7 @@
 
 ## Next Up (Priority Order)
 
-1. Expand remaining wasm primitive opcode wrappers
-   (`i32`/`f32`/`f64`/conversion/memory-level ops).
-2. Add optimization-oriented regression tests for recursion depth,
-   stack safety, and string-concat hotspots.
-3. Audit stale `fixtures/todo_*.xsh` files.
-   If superseded by integration tests, remove them.
-   If still needed, convert them to concrete RED expectations.
+- none
 
 ## Deferred
 

@@ -323,3 +323,33 @@ test "xsh wasm compiles string_from_char_code builtin" {
   assert_true(wasm.length() >= 8)
   assert_true(bytes_contains_ascii(wasm, "run"))
 }
+
+///|
+test "xsh wasm compiles wasm primitive memory and conversion builtins" {
+  let db = XshDb::new()
+  let src =
+    #|let base = 128
+    #|do {
+    #|  i32_store(base, 0, 42)
+    #|  i32_store8(base, 1, 255)
+    #|  f32_store(base, 8, f32_convert_i32_s(3))
+    #|  f64_store(base, 16, f64_convert_i32_s(4))
+    #|}
+    #|let a = i32_load(base, 0)
+    #|let b = i32_load8_u(base, 1)
+    #|let c = i32_shr_u(84, 1)
+    #|let d = f32_neg(f32_load(base, 8))
+    #|let e = f64_neg(f64_load(base, 16))
+    #|let f = i32_trunc_f32_s(f32_demote_f64(f64_promote_f32(d)))
+    #|let g = i32_trunc_f64_s(e)
+    #|a + b + c + f + g
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "memory"))
+}

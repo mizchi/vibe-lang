@@ -1153,6 +1153,20 @@ fn emit_bool_from_i32(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_untag_i32(buf : ByteBuf) -> Unit {
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shr_s(buf)
+}
+
+///|
+fn emit_tag_i32(buf : ByteBuf) -> Unit {
+  emit_i32_const_raw(buf, 2)
+  emit_i32_shl(buf)
+  emit_i32_const_raw(buf, tag_int)
+  emit_i32_or(buf)
+}
+
+///|
 fn emit_local_get(buf : ByteBuf, idx : Int) -> Unit {
   buf.push((32).to_byte())
   write_u32_leb(buf, idx)
@@ -1592,9 +1606,29 @@ fn infer_expr_kind_with(
             _ => raise WasmGenError::Unsupported("js-string numeric kind")
           }
         }
-        "int_to_float" | "double_to_float" => ValueKind::BoxedF32
-        "int_to_double" | "float_to_double" => ValueKind::BoxedF64
-        "float_to_int" | "double_to_int" => ValueKind::I32
+        "int_to_float"
+        | "f32_convert_i32_s"
+        | "double_to_float"
+        | "f32_demote_f64"
+        | "f32_neg"
+        | "f32_load" => ValueKind::BoxedF32
+        "int_to_double"
+        | "f64_convert_i32_s"
+        | "float_to_double"
+        | "f64_promote_f32"
+        | "f64_neg"
+        | "f64_load" => ValueKind::BoxedF64
+        "float_to_int"
+        | "i32_trunc_f32_s"
+        | "double_to_int"
+        | "i32_trunc_f64_s"
+        | "i32_shr_u"
+        | "i32_load"
+        | "i32_load8_u"
+        | "i32_store"
+        | "i32_store8"
+        | "f32_store"
+        | "f64_store" => ValueKind::I32
         "__eq" | "__lt" => ValueKind::I32
         "string_length" => ValueKind::I32
         "string_char_code_at" => ValueKind::I32
@@ -2495,9 +2529,17 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "__mod" ||
         name == "__neg" ||
         name == "int_to_float" ||
+        name == "f32_convert_i32_s" ||
         name == "int_to_double" ||
+        name == "f64_convert_i32_s" ||
         name == "float_to_double" ||
+        name == "f64_promote_f32" ||
         name == "double_to_float" ||
+        name == "f32_demote_f64" ||
+        name == "f32_neg" ||
+        name == "f64_neg" ||
+        name == "f32_load" ||
+        name == "f64_load" ||
         name == "stdout_write_char" ||
         name == "stdout_write_stream" ||
         name == "stdin_read_char" ||
@@ -3324,6 +3366,17 @@ fn compile_expr(
         emit_i32_shl(buf)
         emit_i32_const_raw(buf, tag_int)
         emit_i32_or(buf)
+      } else if name == "i32_shr_u" {
+        let pos_args = extract_positional_exprs(args, "i32_shr_u")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("i32_shr_u arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_i32(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_i32(buf)
+        emit_i32_shr_u(buf)
+        emit_tag_i32(buf)
       } else if name == "__bit_and" {
         let pos_args = extract_positional_exprs(args, "__bit_and")
         if pos_args.length() != 2 {
@@ -3383,68 +3436,182 @@ fn compile_expr(
             })
           _ => raise WasmGenError::Unsupported("numeric kind")
         }
-      } else if name == "int_to_float" {
-        let pos_args = extract_positional_exprs(args, "int_to_float")
+      } else if name == "f32_neg" {
+        let pos_args = extract_positional_exprs(args, "f32_neg")
         if pos_args.length() != 1 {
-          raise WasmGenError::Unsupported("int_to_float arity")
+          raise WasmGenError::Unsupported("f32_neg arity")
+        }
+        emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+          emit_unbox_f32_expr(ctx, buf, pos_args[0])
+          emit_f32_neg(buf)
+        })
+      } else if name == "f64_neg" {
+        let pos_args = extract_positional_exprs(args, "f64_neg")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("f64_neg arity")
+        }
+        emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+          emit_unbox_f64_expr(ctx, buf, pos_args[0])
+          emit_f64_neg(buf)
+        })
+      } else if name == "int_to_float" || name == "f32_convert_i32_s" {
+        let pos_args = extract_positional_exprs(args, name)
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported(name + " arity")
         }
         emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
           compile_expr_i32(ctx, buf, pos_args[0])
-          emit_i32_const_raw(buf, 2)
-          emit_i32_shr_s(buf)
+          emit_untag_i32(buf)
           emit_f32_convert_i32_s(buf)
         })
-      } else if name == "int_to_double" {
-        let pos_args = extract_positional_exprs(args, "int_to_double")
+      } else if name == "int_to_double" || name == "f64_convert_i32_s" {
+        let pos_args = extract_positional_exprs(args, name)
         if pos_args.length() != 1 {
-          raise WasmGenError::Unsupported("int_to_double arity")
+          raise WasmGenError::Unsupported(name + " arity")
         }
         emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
           compile_expr_i32(ctx, buf, pos_args[0])
-          emit_i32_const_raw(buf, 2)
-          emit_i32_shr_s(buf)
+          emit_untag_i32(buf)
           emit_f64_convert_i32_s(buf)
         })
-      } else if name == "float_to_int" {
-        let pos_args = extract_positional_exprs(args, "float_to_int")
+      } else if name == "float_to_int" || name == "i32_trunc_f32_s" {
+        let pos_args = extract_positional_exprs(args, name)
         if pos_args.length() != 1 {
-          raise WasmGenError::Unsupported("float_to_int arity")
+          raise WasmGenError::Unsupported(name + " arity")
         }
         emit_unbox_f32_expr(ctx, buf, pos_args[0])
         emit_i32_trunc_f32_s(buf)
-        emit_i32_const_raw(buf, 2)
-        emit_i32_shl(buf)
-        emit_i32_const_raw(buf, tag_int)
-        emit_i32_or(buf)
-      } else if name == "double_to_int" {
-        let pos_args = extract_positional_exprs(args, "double_to_int")
+        emit_tag_i32(buf)
+      } else if name == "double_to_int" || name == "i32_trunc_f64_s" {
+        let pos_args = extract_positional_exprs(args, name)
         if pos_args.length() != 1 {
-          raise WasmGenError::Unsupported("double_to_int arity")
+          raise WasmGenError::Unsupported(name + " arity")
         }
         emit_unbox_f64_expr(ctx, buf, pos_args[0])
         emit_i32_trunc_f64_s(buf)
-        emit_i32_const_raw(buf, 2)
-        emit_i32_shl(buf)
-        emit_i32_const_raw(buf, tag_int)
-        emit_i32_or(buf)
-      } else if name == "float_to_double" {
-        let pos_args = extract_positional_exprs(args, "float_to_double")
+        emit_tag_i32(buf)
+      } else if name == "float_to_double" || name == "f64_promote_f32" {
+        let pos_args = extract_positional_exprs(args, name)
         if pos_args.length() != 1 {
-          raise WasmGenError::Unsupported("float_to_double arity")
+          raise WasmGenError::Unsupported(name + " arity")
         }
         emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
           emit_unbox_f32_expr(ctx, buf, pos_args[0])
           emit_f64_promote_f32(buf)
         })
-      } else if name == "double_to_float" {
-        let pos_args = extract_positional_exprs(args, "double_to_float")
+      } else if name == "double_to_float" || name == "f32_demote_f64" {
+        let pos_args = extract_positional_exprs(args, name)
         if pos_args.length() != 1 {
-          raise WasmGenError::Unsupported("double_to_float arity")
+          raise WasmGenError::Unsupported(name + " arity")
         }
         emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
           emit_unbox_f64_expr(ctx, buf, pos_args[0])
           emit_f32_demote_f64(buf)
         })
+      } else if name == "i32_load" {
+        let pos_args = extract_positional_exprs(args, "i32_load")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("i32_load arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_i32(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_i32(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 0)
+        emit_tag_i32(buf)
+      } else if name == "i32_load8_u" {
+        let pos_args = extract_positional_exprs(args, "i32_load8_u")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("i32_load8_u arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_i32(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_i32(buf)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 0)
+        emit_tag_i32(buf)
+      } else if name == "i32_store" {
+        let pos_args = extract_positional_exprs(args, "i32_store")
+        if pos_args.length() != 3 {
+          raise WasmGenError::Unsupported("i32_store arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_i32(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_i32(buf)
+        emit_i32_add(buf)
+        compile_expr_i32(ctx, buf, pos_args[2])
+        emit_untag_i32(buf)
+        emit_i32_store(buf, 0)
+        emit_i32_const_tagged(buf, 0)
+      } else if name == "i32_store8" {
+        let pos_args = extract_positional_exprs(args, "i32_store8")
+        if pos_args.length() != 3 {
+          raise WasmGenError::Unsupported("i32_store8 arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_i32(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_i32(buf)
+        emit_i32_add(buf)
+        compile_expr_i32(ctx, buf, pos_args[2])
+        emit_untag_i32(buf)
+        emit_i32_store8(buf, 0)
+        emit_i32_const_tagged(buf, 0)
+      } else if name == "f32_load" {
+        let pos_args = extract_positional_exprs(args, "f32_load")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("f32_load arity")
+        }
+        emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_untag_i32(buf)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_untag_i32(buf)
+          emit_i32_add(buf)
+          emit_f32_load(buf, 0)
+        })
+      } else if name == "f64_load" {
+        let pos_args = extract_positional_exprs(args, "f64_load")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("f64_load arity")
+        }
+        emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_untag_i32(buf)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_untag_i32(buf)
+          emit_i32_add(buf)
+          emit_f64_load(buf, 0)
+        })
+      } else if name == "f32_store" {
+        let pos_args = extract_positional_exprs(args, "f32_store")
+        if pos_args.length() != 3 {
+          raise WasmGenError::Unsupported("f32_store arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_i32(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_i32(buf)
+        emit_i32_add(buf)
+        emit_unbox_f32_expr(ctx, buf, pos_args[2])
+        emit_f32_store(buf, 0)
+        emit_i32_const_tagged(buf, 0)
+      } else if name == "f64_store" {
+        let pos_args = extract_positional_exprs(args, "f64_store")
+        if pos_args.length() != 3 {
+          raise WasmGenError::Unsupported("f64_store arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_i32(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_untag_i32(buf)
+        emit_i32_add(buf)
+        emit_unbox_f64_expr(ctx, buf, pos_args[2])
+        emit_f64_store(buf, 0)
+        emit_i32_const_tagged(buf, 0)
       } else if name == "not" {
         let pos_args = extract_positional_exprs(args, "not")
         if pos_args.length() != 1 {

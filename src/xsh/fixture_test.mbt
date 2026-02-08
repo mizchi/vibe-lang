@@ -403,3 +403,29 @@ test "fixtures" {
     run_fixture(path)
   }
 }
+
+///|
+test "fixtures has no stale todo files" {
+  let fixture_dir = "fixtures"
+  let entries = @os_fs.read_dir(fixture_dir) catch {
+    e => fail("[fixtures] read_dir failed: \{e.to_string()}")
+  }
+  let stale : Array[String] = []
+  for entry in entries {
+    let path = if entry.has_prefix(fixture_dir) {
+      entry
+    } else {
+      fixture_dir + "/" + entry
+    }
+    let is_file = @os_fs.is_file(path) catch {
+      e => fail("[fixtures] stat failed: \{e.to_string()}")
+    }
+    if is_file && entry.has_prefix("todo_") && entry.has_suffix(".xsh") {
+      stale.push(path)
+    }
+  }
+  sort_strings(stale)
+  if stale.length() > 0 {
+    fail("[fixtures] stale todo fixtures found: \{stale.to_string()}")
+  }
+}
