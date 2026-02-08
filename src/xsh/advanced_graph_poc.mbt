@@ -195,7 +195,12 @@ pub fn build_advanced_graph_index(
     features: default_graph_features(),
     chunk_roots: ["inline://chunk0"],
   }
-  AdvancedGraphIndex::{ manifest, defs, symbol_index: symbols, type_index: types }
+  AdvancedGraphIndex::{
+    manifest,
+    defs,
+    symbol_index: symbols,
+    type_index: types,
+  }
 }
 
 ///|
@@ -297,14 +302,18 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
       None => ()
     }
     if not(has_type_link) {
-      issues.push("def missing type link: " + def_id + " (" + def.signature + ")")
+      issues.push(
+        "def missing type link: " + def_id + " (" + def.signature + ")",
+      )
     }
   }
   issues
 }
 
 ///|
-fn advanced_graph_index_keys(index : Map[String, Array[String]]) -> Array[String] {
+fn advanced_graph_index_keys(
+  index : Map[String, Array[String]],
+) -> Array[String] {
   let keys : Array[String] = []
   for key, _ in index {
     keys.push(key)
@@ -314,7 +323,9 @@ fn advanced_graph_index_keys(index : Map[String, Array[String]]) -> Array[String
 }
 
 ///|
-fn sorted_defs_for_delta(defs : Array[AdvancedGraphDef]) -> Array[AdvancedGraphDef] {
+fn sorted_defs_for_delta(
+  defs : Array[AdvancedGraphDef],
+) -> Array[AdvancedGraphDef] {
   let out = defs.copy()
   out.sort_by(fn(a, b) {
     if a.def_id < b.def_id {
@@ -365,7 +376,6 @@ pub fn advanced_graph_diff(
       None => upsert_defs.push(target_def)
     }
   }
-
   let symbol_upserts : Map[String, Array[String]] = {}
   let symbol_removes : Array[String] = []
   for key in advanced_graph_index_keys(target.symbol_index) {
@@ -386,7 +396,6 @@ pub fn advanced_graph_diff(
       symbol_removes.push(key)
     }
   }
-
   let type_upserts : Map[String, Array[String]] = {}
   let type_removes : Array[String] = []
   for key in advanced_graph_index_keys(target.type_index) {
@@ -407,7 +416,6 @@ pub fn advanced_graph_diff(
       type_removes.push(key)
     }
   }
-
   AdvancedGraphDelta::{
     schema_version: 1,
     base_manifest: base.manifest,
@@ -430,28 +438,24 @@ pub fn apply_advanced_graph_delta(
   let defs = base.defs.copy()
   let symbol_index = base.symbol_index.copy()
   let type_index = base.type_index.copy()
-
   for def_id in delta.removed_def_ids {
     defs.remove(def_id)
   }
   for def in delta.upsert_defs {
     defs[def.def_id] = def
   }
-
   for key in delta.symbol_removes {
     symbol_index.remove(key)
   }
   for key, ids in delta.symbol_upserts {
     symbol_index[key] = ids
   }
-
   for key in delta.type_removes {
     type_index.remove(key)
   }
   for key, ids in delta.type_upserts {
     type_index[key] = ids
   }
-
   let mut next_manifest = delta.target_manifest
   if not(advanced_graph_manifest_equal(delta.base_manifest, base.manifest)) {
     next_manifest = AdvancedGraphManifest::{
@@ -462,7 +466,12 @@ pub fn apply_advanced_graph_delta(
       chunk_roots: base.manifest.chunk_roots,
     }
   }
-  AdvancedGraphIndex::{ manifest: next_manifest, defs, symbol_index, type_index }
+  AdvancedGraphIndex::{
+    manifest: next_manifest,
+    defs,
+    symbol_index,
+    type_index,
+  }
 }
 
 ///|
@@ -483,7 +492,10 @@ fn map_string_array_to_json(map : Map[String, Array[String]]) -> Json {
 }
 
 ///|
-fn parse_json_string_array(json : Json, context : String) -> Result[Array[String], String] {
+fn parse_json_string_array(
+  json : Json,
+  context : String,
+) -> Result[Array[String], String] {
   match json {
     Json::Array(items) => {
       let out : Array[String] = []
@@ -555,6 +567,113 @@ fn parse_string_array_map(
     }
     _ => Err(context + ": expected object")
   }
+}
+
+///|
+fn sorted_json_object_keys(obj : Map[String, Json]) -> Array[String] {
+  let keys : Array[String] = []
+  for key, _ in obj {
+    keys.push(key)
+  }
+  keys.sort()
+  keys
+}
+
+///|
+fn json_to_cbor_value(json : Json) -> @cbor.CborValue {
+  match json {
+    Json::Null => @cbor.vnull()
+    Json::True => @cbor.vbool(true)
+    Json::False => @cbor.vbool(false)
+    Json::Number(value, ..) => {
+      let int_value = value.to_int()
+      if int_value.to_double() == value {
+        @cbor.vint(int_value.to_int64())
+      } else {
+        @cbor.vdouble(value)
+      }
+    }
+    Json::String(value) => @cbor.vstring(value)
+    Json::Array(items) => {
+      let out : Array[@cbor.CborValue] = []
+      for item in items {
+        out.push(json_to_cbor_value(item))
+      }
+      @cbor.varray(out)
+    }
+    Json::Object(obj) => {
+      let out : Array[(@cbor.CborValue, @cbor.CborValue)] = []
+      for key in sorted_json_object_keys(obj) {
+        match obj.get(key) {
+          Some(value) =>
+            out.push((@cbor.vstring(key), json_to_cbor_value(value)))
+          None => ()
+        }
+      }
+      @cbor.vmap(out)
+    }
+  }
+}
+
+///|
+fn cbor_value_to_json(
+  value : @cbor.CborValue,
+  context : String,
+) -> Result[Json, String] {
+  match value {
+    @cbor.CborValue::VNull => Ok(Json::null())
+    @cbor.CborValue::VUndefined => Ok(Json::null())
+    @cbor.CborValue::VBool(v) => Ok(Json::boolean(v))
+    @cbor.CborValue::VInt(v) => Ok(Json::number(v.to_double()))
+    @cbor.CborValue::VUInt(v) => Ok(Json::number(v.to_double()))
+    @cbor.CborValue::VDouble(v) => Ok(Json::number(v))
+    @cbor.CborValue::VString(v) => Ok(Json::string(v))
+    @cbor.CborValue::VBytes(_) => Err(context + ": cbor bytes unsupported")
+    @cbor.CborValue::VArray(items) => {
+      let out : Array[Json] = []
+      for i, item in items {
+        let parsed = match
+          cbor_value_to_json(item, context + "[" + i.to_string() + "]") {
+          Ok(v) => v
+          Err(err) => return Err(err)
+        }
+        out.push(parsed)
+      }
+      Ok(Json::array(out))
+    }
+    @cbor.CborValue::VMap(entries) => {
+      let obj : Map[String, Json] = {}
+      for i, entry in entries {
+        let key = match entry.0 {
+          @cbor.CborValue::VString(v) => v
+          _ =>
+            return Err(
+              context + "[" + i.to_string() + "]: cbor map key must be string",
+            )
+        }
+        let parsed = match cbor_value_to_json(entry.1, context + "." + key) {
+          Ok(v) => v
+          Err(err) => return Err(err)
+        }
+        obj[key] = parsed
+      }
+      Ok(Json::object(obj))
+    }
+    @cbor.CborValue::VTag(_, inner) => cbor_value_to_json(inner, context)
+  }
+}
+
+///|
+fn json_to_cbor_bytes(json : Json) -> Bytes {
+  @cbor.encode(json_to_cbor_value(json))
+}
+
+///|
+fn json_from_cbor_bytes(payload : Bytes) -> Result[Json, String] {
+  let decoded = @cbor.decode(payload) catch {
+    _ => return Err("decode cbor failed")
+  }
+  cbor_value_to_json(decoded, "root")
 }
 
 ///|
@@ -659,7 +778,8 @@ fn parse_advanced_graph_manifest(
     Json::Object(v) => v
     _ => return Err(context + ": must be object")
   }
-  let schema_version = match get_object_int_field(obj, "schema_version", context) {
+  let schema_version = match
+    get_object_int_field(obj, "schema_version", context) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -705,7 +825,6 @@ pub fn AdvancedGraphIndex::to_json(self : AdvancedGraphIndex) -> Json {
       None => ()
     }
   }
-
   let out : Map[String, Json] = {}
   out["manifest"] = advanced_graph_manifest_to_json(self.manifest)
   out["defs"] = Json::array(defs_arr)
@@ -715,7 +834,9 @@ pub fn AdvancedGraphIndex::to_json(self : AdvancedGraphIndex) -> Json {
 }
 
 ///|
-pub fn advanced_graph_index_from_json(json : Json) -> Result[AdvancedGraphIndex, String] {
+pub fn advanced_graph_index_from_json(
+  json : Json,
+) -> Result[AdvancedGraphIndex, String] {
   let root = match json {
     Json::Object(obj) => obj
     _ => return Err("advanced graph json: root must be object")
@@ -728,7 +849,6 @@ pub fn advanced_graph_index_from_json(json : Json) -> Result[AdvancedGraphIndex,
       }
     Err(err) => return Err(err)
   }
-
   let defs_json = match get_object_field(root, "defs", "root") {
     Ok(v) => v
     Err(err) => return Err(err)
@@ -746,7 +866,6 @@ pub fn advanced_graph_index_from_json(json : Json) -> Result[AdvancedGraphIndex,
       }
     _ => return Err("root.defs: must be array")
   }
-
   let symbol_index = match get_object_field(root, "symbol_index", "root") {
     Ok(v) =>
       match parse_string_array_map(v, "root.symbol_index") {
@@ -763,13 +882,37 @@ pub fn advanced_graph_index_from_json(json : Json) -> Result[AdvancedGraphIndex,
       }
     Err(err) => return Err(err)
   }
+  Ok(AdvancedGraphIndex::{ manifest, defs, symbol_index, type_index })
+}
 
-  Ok(AdvancedGraphIndex::{
-    manifest,
-    defs,
-    symbol_index,
-    type_index,
-  })
+///|
+pub fn AdvancedGraphIndex::to_cbor_bytes(self : AdvancedGraphIndex) -> Bytes {
+  json_to_cbor_bytes(self.to_json())
+}
+
+///|
+pub fn advanced_graph_index_from_cbor_bytes(
+  payload : Bytes,
+) -> Result[AdvancedGraphIndex, String] {
+  let parsed = match json_from_cbor_bytes(payload) {
+    Ok(v) => v
+    Err(err) => return Err("index cbor: " + err)
+  }
+  advanced_graph_index_from_json(parsed)
+}
+
+///|
+pub fn AdvancedGraphIndex::to_flexbuffer_bytes(
+  self : AdvancedGraphIndex,
+) -> Bytes {
+  advanced_graph_index_to_flatbuffer_bytes(self)
+}
+
+///|
+pub fn advanced_graph_index_from_flexbuffer_bytes(
+  payload : Bytes,
+) -> Result[AdvancedGraphIndex, String] {
+  advanced_graph_index_from_flatbuffer_bytes(payload)
 }
 
 ///|
@@ -784,7 +927,9 @@ pub fn write_advanced_graph_index(
 }
 
 ///|
-pub fn read_advanced_graph_index(path : String) -> Result[AdvancedGraphIndex, String] {
+pub fn read_advanced_graph_index(
+  path : String,
+) -> Result[AdvancedGraphIndex, String] {
   let content = @os_fs.read_file_to_string(path) catch {
     e => return Err("read index: " + e.to_string())
   }
@@ -814,20 +959,20 @@ pub fn AdvancedGraphDelta::to_json(self : AdvancedGraphDelta) -> Json {
 }
 
 ///|
-pub fn advanced_graph_delta_from_json(json : Json) -> Result[AdvancedGraphDelta, String] {
+pub fn advanced_graph_delta_from_json(
+  json : Json,
+) -> Result[AdvancedGraphDelta, String] {
   let root = match json {
     Json::Object(obj) => obj
     _ => return Err("advanced graph delta json: root must be object")
   }
-  let schema_version = match get_object_int_field(
-    root,
-    "schema_version",
-    "delta.root",
-  ) {
+  let schema_version = match
+    get_object_int_field(root, "schema_version", "delta.root") {
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  let base_manifest = match get_object_field(root, "base_manifest", "delta.root") {
+  let base_manifest = match
+    get_object_field(root, "base_manifest", "delta.root") {
     Ok(v) =>
       match parse_advanced_graph_manifest(v, "delta.root.base_manifest") {
         Ok(m) => m
@@ -886,7 +1031,8 @@ pub fn advanced_graph_delta_from_json(json : Json) -> Result[AdvancedGraphDelta,
       }
     Err(err) => return Err(err)
   }
-  let type_upserts = match get_object_field(root, "type_upserts", "delta.root") {
+  let type_upserts = match
+    get_object_field(root, "type_upserts", "delta.root") {
     Ok(v) =>
       match parse_string_array_map(v, "delta.root.type_upserts") {
         Ok(map) => map
@@ -894,7 +1040,8 @@ pub fn advanced_graph_delta_from_json(json : Json) -> Result[AdvancedGraphDelta,
       }
     Err(err) => return Err(err)
   }
-  let type_removes = match get_object_field(root, "type_removes", "delta.root") {
+  let type_removes = match
+    get_object_field(root, "type_removes", "delta.root") {
     Ok(v) =>
       match parse_json_string_array(v, "delta.root.type_removes") {
         Ok(values) => values
@@ -913,4 +1060,34 @@ pub fn advanced_graph_delta_from_json(json : Json) -> Result[AdvancedGraphDelta,
     type_upserts,
     type_removes: sorted_unique_strings(type_removes),
   })
+}
+
+///|
+pub fn AdvancedGraphDelta::to_cbor_bytes(self : AdvancedGraphDelta) -> Bytes {
+  json_to_cbor_bytes(self.to_json())
+}
+
+///|
+pub fn advanced_graph_delta_from_cbor_bytes(
+  payload : Bytes,
+) -> Result[AdvancedGraphDelta, String] {
+  let parsed = match json_from_cbor_bytes(payload) {
+    Ok(v) => v
+    Err(err) => return Err("delta cbor: " + err)
+  }
+  advanced_graph_delta_from_json(parsed)
+}
+
+///|
+pub fn AdvancedGraphDelta::to_flexbuffer_bytes(
+  self : AdvancedGraphDelta,
+) -> Bytes {
+  advanced_graph_delta_to_flatbuffer_bytes(self)
+}
+
+///|
+pub fn advanced_graph_delta_from_flexbuffer_bytes(
+  payload : Bytes,
+) -> Result[AdvancedGraphDelta, String] {
+  advanced_graph_delta_from_flatbuffer_bytes(payload)
 }

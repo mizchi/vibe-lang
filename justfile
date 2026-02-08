@@ -119,6 +119,10 @@ bench-advanced-graph:
 bench-typechecker:
     moon bench -p benches -f checker_bench.mbt
 
+# Regenerate advanced graph flatbuffers schema bindings
+gen-advanced-graph-fb:
+    moon run src/cmd/fbgen/main.mbt --target js
+
 # Run wasm-js-string backend via JS engine
 run-wasm-js-string *args:
     node scripts/run_wasm_js_string.mjs {{args}}

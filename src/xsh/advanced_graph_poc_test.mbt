@@ -45,6 +45,36 @@ test "advanced graph poc json roundtrip" {
 }
 
 ///|
+test "advanced graph poc cbor roundtrip" {
+  let source =
+    #|let map_id = (xs: Array[Int]) -> Array[Int] { xs }
+  let index = build_test_graph_index(source)
+  let payload = index.to_cbor_bytes()
+  let restored = match advanced_graph_index_from_cbor_bytes(payload) {
+    Ok(v) => v
+    Err(err) => fail("cbor roundtrip failed: " + err)
+  }
+  assert_eq(restored.query_symbol("map_id").length(), 1)
+  assert_true(restored.query_type("Array[Int]").length() >= 1)
+  assert_eq(restored.verify().length(), 0)
+}
+
+///|
+test "advanced graph poc flexbuffer roundtrip" {
+  let source =
+    #|let map_id = (xs: Array[Int]) -> Array[Int] { xs }
+  let index = build_test_graph_index(source)
+  let payload = index.to_flexbuffer_bytes()
+  let restored = match advanced_graph_index_from_flexbuffer_bytes(payload) {
+    Ok(v) => v
+    Err(err) => fail("flexbuffer roundtrip failed: " + err)
+  }
+  assert_eq(restored.query_symbol("map_id").length(), 1)
+  assert_true(restored.query_type("Array[Int]").length() >= 1)
+  assert_eq(restored.verify().length(), 0)
+}
+
+///|
 test "advanced graph poc verify detects missing defs" {
   let manifest_obj : Map[String, Json] = {}
   manifest_obj["schema_version"] = Json::number(1.0)
@@ -90,10 +120,44 @@ test "advanced graph poc diff/apply roundtrip" {
 }
 
 ///|
+test "advanced graph poc delta cbor/flexbuffer roundtrip" {
+  let base_source =
+    #|let keep = (x: Int) -> Int { x }
+    #|let removed = 1
+  let next_source =
+    #|let keep = (x: Int) -> Int { x + 1 }
+    #|let added = 2
+  let base = build_test_graph_index(base_source)
+  let next = build_test_graph_index(next_source)
+  let delta = advanced_graph_diff(base, next)
+  let cbor_payload = delta.to_cbor_bytes()
+  let cbor_delta = match advanced_graph_delta_from_cbor_bytes(cbor_payload) {
+    Ok(v) => v
+    Err(err) => fail("delta cbor roundtrip failed: " + err)
+  }
+  let cbor_applied = apply_advanced_graph_delta(base, cbor_delta)
+  assert_eq(cbor_applied.query_symbol("added").length(), 1)
+  assert_eq(cbor_applied.query_symbol("removed").length(), 0)
+  assert_eq(cbor_applied.verify().length(), 0)
+  let flex_payload = delta.to_flexbuffer_bytes()
+  let flex_delta = match
+    advanced_graph_delta_from_flexbuffer_bytes(flex_payload) {
+    Ok(v) => v
+    Err(err) => fail("delta flexbuffer roundtrip failed: " + err)
+  }
+  let flex_applied = apply_advanced_graph_delta(base, flex_delta)
+  assert_eq(flex_applied.query_symbol("added").length(), 1)
+  assert_eq(flex_applied.query_symbol("removed").length(), 0)
+  assert_eq(flex_applied.verify().length(), 0)
+}
+
+///|
 test "advanced graph poc remote delta payload smaller than full snapshot" {
   let base_buf = StringBuilder::new()
   for i in 0..<300 {
-    base_buf.write_string("let v" + i.to_string() + " = " + i.to_string() + "\n")
+    base_buf.write_string(
+      "let v" + i.to_string() + " = " + i.to_string() + "\n",
+    )
   }
   let next_buf = StringBuilder::new()
   for i in 0..<300 {
@@ -129,7 +193,9 @@ test "advanced graph poc remote delta payload smaller than full snapshot" {
 test "advanced graph poc remote network profiles favor delta" {
   let base_buf = StringBuilder::new()
   for i in 0..<600 {
-    base_buf.write_string("let v" + i.to_string() + " = " + i.to_string() + "\n")
+    base_buf.write_string(
+      "let v" + i.to_string() + " = " + i.to_string() + "\n",
+    )
   }
   let next_buf = StringBuilder::new()
   for i in 0..<600 {
@@ -143,15 +209,12 @@ test "advanced graph poc remote network profiles favor delta" {
   let full_bytes = next.to_json().stringify().length()
   let delta_bytes = delta.to_json().stringify().length()
   assert_true(delta_bytes < full_bytes)
-
   let lan_full = estimate_transfer_time_ms(full_bytes, 1000.0, 2.0, 1)
   let lan_delta = estimate_transfer_time_ms(delta_bytes, 1000.0, 2.0, 1)
   assert_true(lan_delta < lan_full)
-
   let ci_full = estimate_transfer_time_ms(full_bytes, 100.0, 30.0, 1)
   let ci_delta = estimate_transfer_time_ms(delta_bytes, 100.0, 30.0, 1)
   assert_true(ci_delta < ci_full)
-
   let mobile_full = estimate_transfer_time_ms(full_bytes, 10.0, 80.0, 1)
   let mobile_delta = estimate_transfer_time_ms(delta_bytes, 10.0, 80.0, 1)
   assert_true(mobile_delta < mobile_full)

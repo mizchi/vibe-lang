@@ -2,7 +2,11 @@
 let bench_graph_path = "/bench/advanced_graph.xsh"
 
 ///|
-fn gen_advanced_graph_source(def_count : Int, mutate_i : Int?, extra_defs : Int) -> String {
+fn gen_advanced_graph_source(
+  def_count : Int,
+  mutate_i : Int?,
+  extra_defs : Int,
+) -> String {
   let buf = StringBuilder::new()
   buf.write_string("type BenchId = Int\n")
   buf.write_string("struct BenchRow { id: Int; name: String }\n")
@@ -26,7 +30,9 @@ fn gen_advanced_graph_source(def_count : Int, mutate_i : Int?, extra_defs : Int)
       "let extra_fn_" + i_str + " = (x: Int) -> Int { x + " + i_str + " }\n",
     )
   }
-  buf.write_string("let target = needle_fn_" + (def_count - 1).to_string() + "(1)\n")
+  buf.write_string(
+    "let target = needle_fn_" + (def_count - 1).to_string() + "(1)\n",
+  )
   buf.to_string()
 }
 
@@ -40,7 +46,7 @@ fn build_graph_index_from_source(
   @xsh.build_advanced_graph_index(
     db,
     [bench_graph_path],
-    base_commit=base_commit,
+    base_commit~,
     created_at="2026-02-08T00:00:00Z",
   )
 }
@@ -64,6 +70,38 @@ fn parse_graph_delta_json(source : String) -> @xsh.AdvancedGraphDelta {
   match @xsh.advanced_graph_delta_from_json(parsed) {
     Ok(delta) => delta
     Err(err) => abort("graph delta decode failed: " + err)
+  }
+}
+
+///|
+fn parse_graph_index_cbor(payload : Bytes) -> @xsh.AdvancedGraphIndex {
+  match @xsh.advanced_graph_index_from_cbor_bytes(payload) {
+    Ok(index) => index
+    Err(err) => abort("graph index cbor decode failed: " + err)
+  }
+}
+
+///|
+fn parse_graph_delta_cbor(payload : Bytes) -> @xsh.AdvancedGraphDelta {
+  match @xsh.advanced_graph_delta_from_cbor_bytes(payload) {
+    Ok(delta) => delta
+    Err(err) => abort("graph delta cbor decode failed: " + err)
+  }
+}
+
+///|
+fn parse_graph_index_flexbuffer(payload : Bytes) -> @xsh.AdvancedGraphIndex {
+  match @xsh.advanced_graph_index_from_flexbuffer_bytes(payload) {
+    Ok(index) => index
+    Err(err) => abort("graph index flexbuffer decode failed: " + err)
+  }
+}
+
+///|
+fn parse_graph_delta_flexbuffer(payload : Bytes) -> @xsh.AdvancedGraphDelta {
+  match @xsh.advanced_graph_delta_from_flexbuffer_bytes(payload) {
+    Ok(delta) => delta
+    Err(err) => abort("graph delta flexbuffer decode failed: " + err)
   }
 }
 
@@ -129,12 +167,58 @@ test "bench: graph_search.graph_json_load_query" (b : @bench.T) {
 }
 
 ///|
+test "bench: graph_search.graph_cbor_load_query" (b : @bench.T) {
+  let source = gen_advanced_graph_source(600, None, 0)
+  let index = build_graph_index_from_source(source, "base")
+  let snapshot_cbor = index.to_cbor_bytes()
+  b.bench(fn() {
+    let loaded = parse_graph_index_cbor(snapshot_cbor)
+    let matches = loaded.query_symbol("needle_fn_599")
+    b.keep(matches.length())
+  })
+}
+
+///|
+test "bench: graph_search.graph_flexbuffer_load_query" (b : @bench.T) {
+  let source = gen_advanced_graph_source(600, None, 0)
+  let index = build_graph_index_from_source(source, "base")
+  let snapshot_flex = index.to_flexbuffer_bytes()
+  b.bench(fn() {
+    let loaded = parse_graph_index_flexbuffer(snapshot_flex)
+    let matches = loaded.query_symbol("needle_fn_599")
+    b.keep(matches.length())
+  })
+}
+
+///|
 test "bench: graph_remote.apply_full_snapshot" (b : @bench.T) {
   let source = gen_advanced_graph_source(600, Some(320), 4)
   let target = build_graph_index_from_source(source, "target")
   let full_payload = target.to_json().stringify()
   b.bench(fn() {
     let loaded = parse_graph_index_json(full_payload)
+    b.keep(loaded.defs.length())
+  })
+}
+
+///|
+test "bench: graph_remote.apply_full_snapshot_cbor" (b : @bench.T) {
+  let source = gen_advanced_graph_source(600, Some(320), 4)
+  let target = build_graph_index_from_source(source, "target")
+  let full_payload = target.to_cbor_bytes()
+  b.bench(fn() {
+    let loaded = parse_graph_index_cbor(full_payload)
+    b.keep(loaded.defs.length())
+  })
+}
+
+///|
+test "bench: graph_remote.apply_full_snapshot_flexbuffer" (b : @bench.T) {
+  let source = gen_advanced_graph_source(600, Some(320), 4)
+  let target = build_graph_index_from_source(source, "target")
+  let full_payload = target.to_flexbuffer_bytes()
+  b.bench(fn() {
+    let loaded = parse_graph_index_flexbuffer(full_payload)
     b.keep(loaded.defs.length())
   })
 }
@@ -149,6 +233,36 @@ test "bench: graph_remote.apply_delta" (b : @bench.T) {
   let delta_payload = delta.to_json().stringify()
   b.bench(fn() {
     let loaded_delta = parse_graph_delta_json(delta_payload)
+    let applied = @xsh.apply_advanced_graph_delta(base, loaded_delta)
+    b.keep(applied.defs.length())
+  })
+}
+
+///|
+test "bench: graph_remote.apply_delta_cbor" (b : @bench.T) {
+  let base_source = gen_advanced_graph_source(600, None, 0)
+  let target_source = gen_advanced_graph_source(600, Some(320), 4)
+  let base = build_graph_index_from_source(base_source, "base")
+  let target = build_graph_index_from_source(target_source, "target")
+  let delta = @xsh.advanced_graph_diff(base, target)
+  let delta_payload = delta.to_cbor_bytes()
+  b.bench(fn() {
+    let loaded_delta = parse_graph_delta_cbor(delta_payload)
+    let applied = @xsh.apply_advanced_graph_delta(base, loaded_delta)
+    b.keep(applied.defs.length())
+  })
+}
+
+///|
+test "bench: graph_remote.apply_delta_flexbuffer" (b : @bench.T) {
+  let base_source = gen_advanced_graph_source(600, None, 0)
+  let target_source = gen_advanced_graph_source(600, Some(320), 4)
+  let base = build_graph_index_from_source(base_source, "base")
+  let target = build_graph_index_from_source(target_source, "target")
+  let delta = @xsh.advanced_graph_diff(base, target)
+  let delta_payload = delta.to_flexbuffer_bytes()
+  b.bench(fn() {
+    let loaded_delta = parse_graph_delta_flexbuffer(delta_payload)
     let applied = @xsh.apply_advanced_graph_delta(base, loaded_delta)
     b.keep(applied.defs.length())
   })
