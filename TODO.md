@@ -107,10 +107,28 @@
 - Loop control semantics are implemented end-to-end:
   `break` / `continue` parse as dedicated expressions, are type-checked
   as while-only controls, and are supported in evaluator + canonical IR/docs.
+- xshell object pipeline compatibility model is fixed:
+  `|` is text-lane only, `|>` is object-lane only, and text/object boundary
+  crossing must be explicit conversion calls.
+  Design memo is tracked in `spec/xshell.md`.
 
 ## Next Up (Priority Order)
 
-- none
+- Implement explicit Text/Object conversion builtins:
+  `from_lines` / `to_lines` and JSON-oriented variants (`from_json[l]`,
+  `to_json[l]`) with typecheck + eval + docs + fixtures.
+- Expand object pipeline operators on typed rows:
+  add first-class `where/select` contracts over record-like objects and align
+  parser/desugar/typecheck behavior for `|>` chains.
+- Harden PosixMode compatibility guardrails:
+  add regression fixture set for POSIX-text behavior (`|`, quoting, redirects),
+  and ensure object ops require explicit `|>` + conversion boundaries.
+- Replace `sh_lines` preview backend with host-backed execution strategy:
+  native target uses real process output capture; non-native targets keep
+  deterministic fallback semantics with explicit capability diagnostics.
+- Add syntax profile controls:
+  evaluate `--syntax posix-strict` vs `posix-ext` split and wire diagnostics so
+  teams can enforce strict compatibility in CI.
 
 ## Deferred
 
