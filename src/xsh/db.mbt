@@ -85,6 +85,54 @@ fn resolve_imported_trait_supertraits(
 }
 
 ///|
+fn maybe_add_trait_impl(
+  env : @checker.TypeEnv,
+  trait_name : String,
+  impl_def : @checker.TraitImplDef,
+) -> Unit {
+  for existing in env.trait_impls_for(trait_name) {
+    if existing == impl_def {
+      return
+    }
+  }
+  env.add_trait_impl(trait_name, impl_def)
+}
+
+///|
+fn impl_target_root_name(ty : @core.Type) -> String? {
+  match ty {
+    @core.Type::Named(name~, ..) => Some(name)
+    _ => None
+  }
+}
+
+fn import_trait_impls_for_type(
+  env : @checker.TypeEnv,
+  imported_env : @checker.TypeEnv,
+  source_type_name : String,
+  trait_aliases : Map[String, String],
+) -> Unit {
+  for source_trait_name in imported_env.trait_names() {
+    let local_trait_name = match trait_aliases.get(source_trait_name) {
+      Some(alias_name) => alias_name
+      None => source_trait_name
+    }
+    if env.has_trait(local_trait_name) {
+      for impl_def in imported_env.trait_impls_for(source_trait_name) {
+        match impl_target_root_name(impl_def.target) {
+          Some(root_name) => {
+            if root_name == source_type_name {
+              maybe_add_trait_impl(env, local_trait_name, impl_def)
+            }
+          }
+          None => ()
+        }
+      }
+    }
+  }
+}
+
+///|
 fn hash_source_key(hash : String) -> String {
   "__hash__/" + hash
 }
@@ -785,6 +833,12 @@ pub fn XshDb::new() -> XshDb {
                       match imported_env.get_enum_def(name) {
                         Some(enum_def) => {
                           env.set_enum_def(local_name, enum_def)
+                          import_trait_impls_for_type(
+                            env,
+                            imported_env,
+                            name,
+                            trait_aliases,
+                          )
                           // Import all constructors of this enum
                           for ctor in enum_def.ctors {
                             match imported_env.get_ctor(ctor.name) {

@@ -376,3 +376,36 @@ test "xsh integration trait alias keeps supertrait chain" {
     _ => fail("expected Bool(true)")
   }
 }
+
+///|
+test "xsh integration imported suberror can be raised as Error" {
+  let db = XshDb::new()
+  let lib_source = "export suberror AppError(String);"
+  let main_source =
+    #|import { AppError } from ./lib.xsh
+    #|let fail = () -> Unit with {Error} {
+    #|  raise AppError("boom")
+    #|}
+    #|let run = () -> String {
+    #|  try { fail(); "ok" } catch { "caught" }
+    #|}
+    #|run()
+  db.set_source("./lib.xsh", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::String(v)) => assert_eq(v, "caught")
+    _ => fail("expected String(\"caught\")")
+  }
+}

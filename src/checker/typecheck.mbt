@@ -33,6 +33,41 @@ fn suggestion_hint(suggestion : String?) -> String? {
 }
 
 ///|
+fn is_do_boundary_operation(name : String) -> Bool {
+  match name {
+    "sh"
+    | "sh_lines"
+    | "sleep"
+    | "stdout_write_char"
+    | "stdin_read_char"
+    | "stdout_write_stream"
+    | "stdin_read_stream"
+    | "array_builder"
+    | "array_builder_push"
+    | "array_builder_freeze"
+    | "map_builder"
+    | "map_builder_set"
+    | "map_builder_freeze" => true
+    _ => false
+  }
+}
+
+///|
+fn effect_not_allowed_hint(name : String) -> String? {
+  if is_do_boundary_operation(name) {
+    Some("wrap in `do { ... }` to allow side effects")
+  } else if name == "Error" {
+    Some("declare `with {Error}` or handle with `try { ... } catch { ... }`")
+  } else if name == "effect" {
+    Some("declare a compatible `with { ... }` effect set on this function")
+  } else {
+    Some(
+      "declare `with {" + name + "}` (or a compatible effect row) on this function",
+    )
+  }
+}
+
+///|
 pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
   match self {
     TypeError::UnknownName(name~, span~, suggestion~) =>
@@ -114,7 +149,7 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         stage: "type",
         message: "effect not allowed: `" + name + "`",
         span: Some(span),
-        hint: Some("wrap in `do { ... }` to allow side effects"),
+        hint: effect_not_allowed_hint(name),
         note: None,
       }
   }
