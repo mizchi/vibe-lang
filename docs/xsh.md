@@ -327,6 +327,21 @@ Invariants:
 - Dependency updates are explicit workflow steps (fetch/update-lock), not
   implicit side effects during execution.
 
+Current lock file:
+
+- `xsh.lock` (JSON object) is loaded from the entry file directory.
+- Shape:
+  - `path`: `{ "<path-key>": "<hash>" }`
+  - `version`: `{ "<name>": "<hash>" }`
+  - `symbol`: `{ "<name>": "<hash>" }`
+- `path` keys are written as lock-dir-relative paths (`./foo.xsh`) and resolved
+  to normalized absolute paths when loading (absolute keys are also accepted).
+- CLI:
+  - `xsh fetch <entry>` (or `xsh update-lock <entry>`) resolves recursive
+    path imports and updates `xsh.lock`.
+  - `xsh run/check/compile/test` require lock entries for path imports;
+    missing/mismatch emits import diagnostics and fails compile.
+
 ## Trait and impl rules (current)
 
 ```xsh

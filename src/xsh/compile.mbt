@@ -44,7 +44,7 @@ pub fn compile_module(
   // Check for any type errors that were collected as diagnostics
   let diags = db.diagnostics(path)
   for diag in diags {
-    if diag.stage == "type" {
+    if diag.stage == "type" || diag.stage == "import" {
       raise CompileError::TypeDiag(diag)
     }
   }

@@ -89,6 +89,10 @@
 - Import cycle reporting is implemented for path imports:
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.
+- Lock workflow is implemented in CLI/runtime flow:
+  `xsh fetch`/`xsh update-lock` maintain `xsh.lock` (`path`/`version`/`symbol`
+  maps), path imports are validated against lock entries when enabled, and
+  import diagnostics are compile-fatal.
 
 ## Next Up (Priority Order)
 

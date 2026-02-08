@@ -170,6 +170,74 @@ test "xsh import keeps normalized path object" {
 }
 
 ///|
+test "xsh path import lock missing reports diagnostic when required" {
+  let db = XshDb::new()
+  db.require_path_lock(true)
+  db.set_source("main", "import { y } from ./foo.xsh\nlet x = y")
+  db.set_source("./foo.xsh", "export let y = 2")
+  let _ = db.imports("main")
+  let diags = db.diagnostics("main")
+  let mut found = false
+  for diag in diags {
+    if diag.stage == "import" && diag.message.contains("missing lock entry") {
+      found = true
+    }
+  }
+  assert_true(found)
+}
+
+///|
+test "xsh path import lock mismatch reports diagnostic when required" {
+  let db = XshDb::new()
+  db.require_path_lock(true)
+  db.set_source("main", "import { y } from ./foo.xsh\nlet x = y")
+  let lib_source = "export let y = 2"
+  db.set_source("./foo.xsh", lib_source)
+  db.set_path_ref("./foo.xsh", "0000000000000000000000000000000000000000")
+  let _ = db.imports("main")
+  let diags = db.diagnostics("main")
+  let mut found = false
+  for diag in diags {
+    if diag.stage == "import" && diag.message.contains("lock mismatch") {
+      found = true
+    }
+  }
+  assert_true(found)
+}
+
+///|
+test "xsh path import lock accepts matching hash" {
+  let db = XshDb::new()
+  db.require_path_lock(true)
+  db.set_source("main", "import { y } from ./foo.xsh\nlet x = y")
+  let lib_source = "export let y = 2"
+  db.set_source("./foo.xsh", lib_source)
+  let lib_hash = @core.git_blob_hash_string(lib_source)
+  db.set_path_ref("./foo.xsh", lib_hash)
+  let imports = db.imports("main")
+  assert_eq(imports.length(), 1)
+  assert_eq(imports[0].hash, Some(lib_hash))
+  let _ = db.types("main")
+  let diags = db.diagnostics("main")
+  assert_true(diags.is_empty())
+}
+
+///|
+test "xsh compile fails on import diagnostics" {
+  let db = XshDb::new()
+  db.require_path_lock(true)
+  db.set_source("main", "import { y } from ./foo.xsh\nlet x = y")
+  db.set_source("./foo.xsh", "export let y = 2")
+  let result : Result[CompiledModule, CompileError] = try? compile_module(
+    db, "main",
+  )
+  match result {
+    Ok(_) => fail("expected compile error for missing lock")
+    Err(err) => assert_true(err.to_string().contains("missing lock entry"))
+  }
+}
+
+///|
 test "xsh hash import keeps immutable snapshot after source update" {
   let db = XshDb::new()
   let lib_v1 = "export let y = 2"

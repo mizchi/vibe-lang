@@ -100,6 +100,32 @@ fn symbol_ref_key(name : String) -> String {
 }
 
 ///|
+fn path_ref_key(path : String) -> String {
+  "__ref__/path/" + path
+}
+
+///|
+fn require_path_lock_config_key() -> String {
+  "__config__/require_path_lock"
+}
+
+///|
+fn normalize_lock_path(path : String) -> String {
+  @path.Path(path).normalize().to_string()
+}
+
+///|
+fn path_lock_required(
+  rt : @ripple.Runtime,
+  sources : @ripple.Input[String, String],
+) -> Bool {
+  match sources.get(rt, require_path_lock_config_key()) {
+    Some(flag) => flag == "1"
+    None => false
+  }
+}
+
+///|
 fn normalize_hash(hash : String) -> String {
   if hash.has_prefix("#") && hash.length() > 1 {
     hash.unsafe_substring(start=1, end=hash.length())
@@ -397,11 +423,57 @@ pub fn XshDb::new() -> XshDb {
               match content_opt {
                 Some(content) => {
                   let hash = @core.git_blob_hash_string(content)
+                  let mut resolved_hash : String? = Some(hash)
+                  let mut module_ref : String? = Some(
+                    @core.module_ref_from_hash(hash),
+                  )
+                  if path_lock_required(rt, sources) {
+                    match sources.get(rt, path_ref_key(path_obj.normalized)) {
+                      Some(expected_hash_text) => {
+                        let expected_hash = normalize_hash(expected_hash_text)
+                        if expected_hash != hash {
+                          diags.push(rt, @core.Diagnostic::{
+                            stage: "import",
+                            message:
+                              "lock mismatch for path: " +
+                              path_obj.normalized +
+                              " (expected " +
+                              expected_hash +
+                              ", got " +
+                              hash +
+                              ")",
+                            span: Some(span),
+                            hint: Some(
+                              "run `xsh fetch <entry>` to refresh xsh.lock",
+                            ),
+                            note: None,
+                          })
+                          resolved_hash = None
+                          module_ref = None
+                        }
+                      }
+                      None => {
+                        diags.push(rt, @core.Diagnostic::{
+                          stage: "import",
+                          message:
+                            "missing lock entry for path: " +
+                            path_obj.normalized,
+                          span: Some(span),
+                          hint: Some(
+                            "run `xsh fetch <entry>` to create xsh.lock",
+                          ),
+                          note: None,
+                        })
+                        resolved_hash = None
+                        module_ref = None
+                      }
+                    }
+                  }
                   out.push(ImportSpec::{
                     path: final_path,
                     alias_name,
-                    hash: Some(hash),
-                    module_ref: Some(@core.module_ref_from_hash(hash)),
+                    hash: resolved_hash,
+                    module_ref,
                     path_obj: Some(path_obj),
                     source_hash: None,
                     source_version: None,
@@ -793,6 +865,24 @@ pub fn XshDb::set_version_ref(
   hash : String,
 ) -> Unit {
   let _ = self.sources.set(self.rt, version_ref_key(name), normalize_hash(hash))
+
+}
+
+///|
+pub fn XshDb::set_path_ref(
+  self : XshDb,
+  path : String,
+  hash : String,
+) -> Unit {
+  let normalized = normalize_lock_path(path)
+  let _ = self.sources.set(self.rt, path_ref_key(normalized), normalize_hash(hash))
+
+}
+
+///|
+pub fn XshDb::require_path_lock(self : XshDb, required : Bool) -> Unit {
+  let value = if required { "1" } else { "0" }
+  let _ = self.sources.set(self.rt, require_path_lock_config_key(), value)
 
 }
 
