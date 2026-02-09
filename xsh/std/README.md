@@ -6,24 +6,26 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 
 | Module | Test Count | Description |
 |--------|-----------:|-------------|
-| `trait_api.xsh` | 7 | Trait-oriented generic API (`Eq`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
+| `builtin_traits.xsh` | 7 | Trait-oriented generic API (`Eq`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
 | `option.xsh` | 13 | Generic Option helpers (`is_some`, `unwrap_or`, `map_opt`, `map_or`, `or_else`, `equals`) |
-| `int.xsh` | 13 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
+| `int.xsh` | 14 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
 | `float.xsh` | 7 | Float helpers (`abs`, `signum`, `clamp`, `square`, `lerp`) |
-| `double.xsh` | 11 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
+| `double.xsh` | 12 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
 | `list.xsh` | 13 | Generic Cons list helpers (`List[T]`, `map`, `fold`, `filter`, `append`, `contains_by`) |
 | `bool.xsh` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
-| `string.xsh` | 14 | String helpers (`head`, `tail`, `take`, `drop`, `contains`, `count`, `replace`, `replace_all`) |
+| `string.xsh` | 16 | String helpers (`head`, `tail`, `take`, `drop`, `contains`, `count`, `replace`, `replace_all`) |
 | `io.xsh` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
 | `wasm/types.xsh` | 6 | WASM type alias entrypoint (`i32`/`f32`/`f64`, `I32`/`F32`/`F64`) |
 | `wasm/opcodes.xsh` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
 | `wasm/io_stream.xsh` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
-**Total: 104 tests**
+**Total: 108 tests**
+
+Tests are separated into `*_test.xsh` files (for example, `string_test.xsh` for `string.xsh`).
 
 ## Trait-oriented API Surface
 
-`trait_api.xsh` provides the canonical trait-first API:
+`builtin_traits.xsh` provides the canonical trait-first API:
 
 - `cmp_eq`, `cmp_ne` for equality (`T: Eq`)
 - `ord_min`, `ord_max`, `ord_clamp`, `ord_between` for ordering (`T: Ord`)
@@ -51,7 +53,7 @@ let v = None.unwrap_or(0)
 
 - Trait definitions and impls are currently most reliable when kept in the same module where they are used.
 - A trait-bounded function imported from another module can require the caller module to re-declare the same trait name.
-- Because of this, `trait_api.xsh` is intentionally self-contained for now.
+- Because of this, `builtin_traits.xsh` is intentionally self-contained for now.
 
 ### 1.5 Polymorphic recursion
 
@@ -96,18 +98,18 @@ let v = None.unwrap_or(0)
 ```bash
 # Run in interpreter
 just run test \
-  xsh/std/trait_api.xsh \
-  xsh/std/bool.xsh \
-  xsh/std/int.xsh \
-  xsh/std/float.xsh \
-  xsh/std/double.xsh \
-  xsh/std/list.xsh \
-  xsh/std/option.xsh \
-  xsh/std/string.xsh \
-  xsh/std/io.xsh \
-  xsh/std/wasm/types.xsh \
-  xsh/std/wasm/opcodes.xsh \
-  xsh/std/wasm/io_stream.xsh
+  xsh/std/builtin_traits_test.xsh \
+  xsh/std/bool_test.xsh \
+  xsh/std/int_test.xsh \
+  xsh/std/float_test.xsh \
+  xsh/std/double_test.xsh \
+  xsh/std/list_test.xsh \
+  xsh/std/option_test.xsh \
+  xsh/std/string_test.xsh \
+  xsh/std/io_test.xsh \
+  xsh/std/wasm/types_test.xsh \
+  xsh/std/wasm/opcodes_test.xsh \
+  xsh/std/wasm/io_stream_test.xsh
 
 # Validate WASM compilation (import/export usage)
 just run compile --wasm xsh/std/test_import.xsh -o /tmp/test.wasm

@@ -185,6 +185,37 @@
 - Add syntax profile controls:
   evaluate `--syntax posix-strict` vs `posix-ext` split and wire diagnostics so
   teams can enforce strict compatibility in CI.
+- Grammar/language cleanup candidates (from std refactor & test split):
+  - P0: Fix `xsh fmt --write` parse-stability bugs for `*.xsh`.
+    Formatter output must remain parser-equivalent.
+    Reproduced breakages include:
+    `trait Eq` -> `traitEq`, `impl Eq for Int` -> `implEq for Int`,
+    `test "name"` -> `test name`, string literal quote loss,
+    and malformed import joins (`}from "./mod.xsh"`).
+  - P0: Add regression fixtures for formatter round-trip on xsh syntax forms:
+    `import`, `trait/impl`, `test`, effect signatures (`with {..}`),
+    and string-heavy assertions.
+  - P1: Allow trailing commas in import lists:
+    `import { a, b, } from "./m.xsh"`.
+    Current parser rejects this and creates noisy edit churn.
+  - P1: Support local variable type annotations in bindings:
+    `let x: T = expr`.
+    Current parser rejects `:` in local `let`.
+  - P1: Improve test-declaration UX:
+    either accept unquoted test names or keep quoted-only syntax but provide
+    precise diagnostics and formatter-safe canonicalization.
+  - P1: Reduce keyword collision friction (for example `map`) via
+    contextual keyword handling or explicit escape syntax.
+  - P2: Improve import-parse diagnostics with targeted hints:
+    distinguish trailing-comma, missing `from`, and malformed list separators.
+  - P2: Track existing syntax-adjacent gaps discovered during std port:
+    cross-module trait import/export robustness,
+    polymorphic recursion,
+    `loop` expression,
+    and mutable enum field syntax.
+  - P2: Revisit negative literal boundary UX for `Int` minimum value
+    (`-2147483648`) with clearer parser error + optional future grammar design
+    note.
 
 ## Deferred
 

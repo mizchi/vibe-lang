@@ -62,39 +62,59 @@ let string_repeat = (s: String, n: Int) -> String {
   go("", n)
 }
 
-// Pad left with a pad string to reach exact target length
-let string_pad_left = (s: String, target_len: Int, pad_char: String) -> String {
-  let len = string_length(s)
-  if len >= target_len { s }
+// Build a pad string with exact length.
+let string_build_pad = (pad_char: String, pad_len: Int) -> String {
+  if pad_len <= 0 { "" }
   else {
-    let pad_len = target_len - len
     let unit_len = string_length(pad_char)
-    if unit_len == 0 { s } else {
+    if unit_len == 0 { "" } else {
       let rec fill_pad = (acc: String) -> String {
         if string_length(acc) >= pad_len { acc }
         else { fill_pad(string_concat(acc, pad_char)) }
       }
-      let pad = string_take(fill_pad(""), pad_len)
-      string_concat(pad, s)
+      string_take(fill_pad(""), pad_len)
     }
+  }
+}
+
+// Pad left with a pad string to reach exact target length
+let string_pad_left = (s: String, target_len: Int, pad_char: String) -> String {
+  let len = string_length(s)
+  let pad_len = target_len - len
+  if pad_len <= 0 { s }
+  else {
+    let pad = string_build_pad(pad_char, pad_len)
+    if string_length(pad) == 0 { s } else { string_concat(pad, s) }
   }
 }
 
 // Pad right with a pad string to reach exact target length
 let string_pad_right = (s: String, target_len: Int, pad_char: String) -> String {
   let len = string_length(s)
-  if len >= target_len { s }
+  let pad_len = target_len - len
+  if pad_len <= 0 { s }
   else {
-    let pad_len = target_len - len
-    let unit_len = string_length(pad_char)
-    if unit_len == 0 { s } else {
-      let rec fill_pad = (acc: String) -> String {
-        if string_length(acc) >= pad_len { acc }
-        else { fill_pad(string_concat(acc, pad_char)) }
-      }
-      let pad = string_take(fill_pad(""), pad_len)
-      string_concat(s, pad)
+    let pad = string_build_pad(pad_char, pad_len)
+    if string_length(pad) == 0 { s } else { string_concat(s, pad) }
+  }
+}
+
+// Find index of substring starting from `start` (-1 if not found).
+let string_index_of_from = (s: String, sub: String, start: Int) -> Int {
+  let s_len = string_length(s)
+  let sub_len = string_length(sub)
+  if start < 0 { -1 }
+  else if sub_len == 0 {
+    if start <= s_len { start } else { -1 }
+  }
+  else if sub_len > s_len || start > s_len - sub_len { -1 }
+  else {
+    let rec find = (i: Int) -> Int {
+      if i > s_len - sub_len { -1 }
+      else if string_equals(string_substring(s, i, i + sub_len), sub) { i }
+      else { find(i + 1) }
     }
+    find(start)
   }
 }
 
@@ -116,34 +136,12 @@ let string_ends_with = (s: String, suffix: String) -> Bool {
 
 // Check if string contains substring
 let string_contains = (s: String, sub: String) -> Bool {
-  let s_len = string_length(s)
-  let sub_len = string_length(sub)
-  if sub_len > s_len { false }
-  else if sub_len == 0 { true }
-  else {
-    let rec check = (i: Int) -> Bool {
-      if i > s_len - sub_len { false }
-      else if string_equals(string_substring(s, i, i + sub_len), sub) { true }
-      else { check(i + 1) }
-    }
-    check(0)
-  }
+  string_index_of_from(s, sub, 0) >= 0
 }
 
 // Find index of substring (-1 if not found)
 let string_index_of = (s: String, sub: String) -> Int {
-  let s_len = string_length(s)
-  let sub_len = string_length(sub)
-  if sub_len > s_len { -1 }
-  else if sub_len == 0 { 0 }
-  else {
-    let rec find = (i: Int) -> Int {
-      if i > s_len - sub_len { -1 }
-      else if string_equals(string_substring(s, i, i + sub_len), sub) { i }
-      else { find(i + 1) }
-    }
-    find(0)
-  }
+  string_index_of_from(s, sub, 0)
 }
 
 // Find last index of substring (-1 if not found)
@@ -202,15 +200,14 @@ let string_replace_all = (s: String, pattern: String, replacement: String) -> St
   if pat_len == 0 || pat_len > s_len { s }
   else {
     let rec go = (start: Int, acc: String) -> String {
-      let rest = string_substring(s, start, s_len)
-      let idx = string_index_of(rest, pattern)
+      let idx = string_index_of_from(s, pattern, start)
       if idx < 0 {
+        let rest = string_substring(s, start, s_len)
         string_concat(acc, rest)
       } else {
-        let split = start + idx
-        let before = string_substring(s, start, split)
+        let before = string_substring(s, start, idx)
         let next_acc = string_concat(string_concat(acc, before), replacement)
-        go(split + pat_len, next_acc)
+        go(idx + pat_len, next_acc)
       }
     }
     go(0, "")
@@ -244,96 +241,4 @@ export let replace = (s: String, pattern: String, replacement: String) -> String
 }
 export let replace_all = (s: String, pattern: String, replacement: String) -> String {
   string_replace_all(s, pattern, replacement)
-}
-
-// Tests
-test "string_is_empty" {
-  assert(string_is_empty(""))
-  assert(not(string_is_empty("a")))
-}
-
-test "string_head_tail" {
-  assert(string_equals(string_head("hello"), "h"))
-  assert(string_equals(string_tail("hello"), "ello"))
-  assert(string_equals(string_head(""), ""))
-  assert(string_equals(string_tail(""), ""))
-  assert(string_equals(string_tail("x"), ""))
-}
-
-test "string_last_init" {
-  assert(string_equals(string_last("hello"), "o"))
-  assert(string_equals(string_init("hello"), "hell"))
-  assert(string_equals(string_last(""), ""))
-  assert(string_equals(string_init("x"), ""))
-}
-
-test "string_take_drop" {
-  assert(string_equals(string_take("hello", 3), "hel"))
-  assert(string_equals(string_drop("hello", 2), "llo"))
-  assert(string_equals(string_take("hi", 10), "hi"))
-  assert(string_equals(string_drop("hi", 10), ""))
-}
-
-test "string_repeat" {
-  assert(string_equals(string_repeat("ab", 3), "ababab"))
-  assert(string_equals(string_repeat("x", 0), ""))
-  assert(string_equals(string_repeat("", 5), ""))
-}
-
-test "string_pad" {
-  assert(string_equals(string_pad_left("42", 5, "0"), "00042"))
-  assert(string_equals(string_pad_right("hi", 5, "."), "hi..."))
-  assert(string_equals(string_pad_left("hello", 3, "x"), "hello"))
-  assert(string_equals(string_pad_left("a", 3, "xy"), "xya"))
-  assert(string_equals(string_pad_right("a", 3, "xy"), "axy"))
-}
-
-test "string_starts_ends_with" {
-  assert(string_starts_with("hello world", "hello"))
-  assert(not(string_starts_with("hello", "world")))
-  assert(string_ends_with("hello world", "world"))
-  assert(not(string_ends_with("hello", "world")))
-}
-
-test "string_contains" {
-  assert(string_contains("hello world", "lo wo"))
-  assert(string_contains("abc", ""))
-  assert(not(string_contains("abc", "xyz")))
-}
-
-test "string_index_of" {
-  assert(eq(string_index_of("hello", "ll"), 2))
-  assert(eq(string_index_of("hello", "x"), -1))
-  assert(eq(string_index_of("hello", ""), 0))
-}
-
-test "string_replace" {
-  assert(string_equals(string_replace("hello world", "world", "xsh"), "hello xsh"))
-  assert(string_equals(string_replace("aaa", "a", "b"), "baa"))
-  assert(string_equals(string_replace("hello", "x", "y"), "hello"))
-  assert(string_equals(string_replace("abc", "", "X"), "abc"))
-}
-
-test "string_last_index_of" {
-  assert(eq(string_last_index_of("hello", "l"), 3))
-  assert(eq(string_last_index_of("hello", "x"), -1))
-  assert(eq(string_last_index_of("hello", ""), 5))
-}
-
-test "string_count" {
-  assert(eq(string_count("hello", "l"), 2))
-  assert(eq(string_count("aaaa", "aa"), 2))
-  assert(eq(string_count("abc", ""), 0))
-}
-
-test "string_replace_all" {
-  assert(string_equals(string_replace_all("foo bar foo", "foo", "x"), "x bar x"))
-  assert(string_equals(string_replace_all("aaaa", "aa", "b"), "bb"))
-  assert(string_equals(string_replace_all("abc", "", "z"), "abc"))
-}
-
-test "string_short_aliases" {
-  assert(is_empty(""))
-  assert(contains("hello", "ell"))
-  assert(string_equals(replace_all("foo foo", "foo", "x"), "x x"))
 }

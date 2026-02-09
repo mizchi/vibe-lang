@@ -233,7 +233,7 @@ fn make_trait_import_action(
 
 ///|
 pub fn trait_import_code_actions(uri : String, source : String) -> Json {
-  let module_path = "./xsh/std/trait_api.xsh"
+  let module_path = "./xsh/std/builtin_traits.xsh"
   let (diagnostics, _) = check_document(uri, source)
   let insert_line = import_insert_line(source)
   let seen : Map[String, Bool] = {}
