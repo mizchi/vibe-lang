@@ -24,7 +24,7 @@ for xsh_file in "$GOLDEN_DIR"/*.xsh; do
   actual_wat="$TEMP_DIR/${name}.wat"
 
   # Compile to WASM
-  if ! moon run src/xsh_cli/main.mbt --target native -- compile --wasm "$xsh_file" -o "$actual_wasm" 2>/dev/null; then
+  if ! moon run src/cmd/xsh/main.mbt --target native -- compile --wasm "$xsh_file" -o "$actual_wasm" 2>/dev/null; then
     echo "FAIL: $name (compilation error)"
     failed=$((failed + 1))
     continue

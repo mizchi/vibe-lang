@@ -43,7 +43,7 @@ WIT_WORLD="${WIT_DIR}/world.wit"
 EMBEDDED_WASM="${TMP_DIR}/${BASE}.embedded.wasm"
 WIT_PKG="${TMP_DIR}/${BASE}.wit.wasm"
 
-XSH_CMD=(moon run --target native src/xsh_cli -- compile)
+XSH_CMD=(moon run --target native src/cmd/xsh -- compile)
 
 "${XSH_CMD[@]}" --wasm "$INPUT" -o "$CORE_WASM"
 "${XSH_CMD[@]}" --wit-component "$INPUT" -o "$WIT_WORLD"

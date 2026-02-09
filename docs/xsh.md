@@ -656,16 +656,16 @@ Runtime API:
 - `Runtime::eval_script_with_mode(script, PosixMode)` enables preview xshell
   command-head desugaring.
 CLI:
-- `moon run --target native src/xsh_cli -- run <file>` executes a script (ignores `test {}`).
-- `moon run --target native src/xsh_cli -- test <file...>` runs test blocks and prints a report.
-- `moon run --target native src/xsh_cli -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
+- `moon run --target native src/cmd/xsh -- run <file>` executes a script (ignores `test {}`).
+- `moon run --target native src/cmd/xsh -- test <file...>` runs test blocks and prints a report.
+- `moon run --target native src/cmd/xsh -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - Parser-consuming commands support `--syntax xsh|posix` (default `xsh`);
   `posix` is preview-enabled for `run/repl/repl-stdin/repl-wasi/bench` and is
   rejected on static/compile-oriented commands.
-- `moon run --target native src/xsh_cli -- repl` launches the TUI interactive shell (completion + layout, history).
-- `moon run --target native src/xsh_cli -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
-- `moon run --target native src/xsh_cli -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.
-- `moon build --target wasm src/xsh_wasi_cli` builds a wasm line REPL wired to preview2 imports (`wasi:cli/stdin|stdout`, `wasi:io/streams`).
+- `moon run --target native src/cmd/xsh -- repl` launches the TUI interactive shell (completion + layout, history).
+- `moon run --target native src/cmd/xsh -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
+- `moon run --target native src/cmd/xsh -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.
+- `moon build --target wasm src/cmd/xsh_wasi` builds a wasm line REPL wired to preview2 imports (`wasi:cli/stdin|stdout`, `wasi:io/streams`).
 - `just component-run script.xsh` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
 - `just component-run-moonix script.xsh` builds the same component and runs it via moonix.
 - `just bootstrap-moonix [src]` tries to produce `moonix` binary from a local moonix checkout.
@@ -691,9 +691,9 @@ Fixtures:
     module path whose content hash is used.
 
 Bench:
-- `just bench-wasmtime` builds `xsh_cli`, compiles `bench/bench_simple.xsh` to wasm,
+- `just bench-wasmtime` builds `cmd/xsh`, compiles `bench/bench_simple.xsh` to wasm,
   then benchmarks `wasmtime run --invoke run`.
-- `just bench-compare` compares interpreter (`xsh_cli run`) vs `wasmtime run`.
+- `just bench-compare` compares interpreter (`cmd/xsh run`) vs `wasmtime run`.
 - `xsh bench --n 20000 --warmup 1000 --expr "add(1,2)"` measures per-command latency
   after startup inside a single process.
 - `xsh bench --case sum=add(1,2) --case "eq(1,1) == true"` runs multiple named

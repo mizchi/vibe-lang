@@ -46,7 +46,7 @@ if (outPath === null) {
 function compileWasm(flag, output) {
   const args = [
     "run",
-    "src/xsh_cli/main.mbt",
+    "src/cmd/xsh/main.mbt",
     "--target",
     "native",
     "--",

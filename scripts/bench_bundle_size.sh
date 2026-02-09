@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/xsh_cli/xsh_cli.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
 REPORT_DIR="$ROOT_DIR/dist/bundle_size"
 REPORT_FILE="$REPORT_DIR/current.tsv"
 BUDGET_FILE="$ROOT_DIR/bench/golden/bundle_size_budget.tsv"
@@ -21,7 +21,7 @@ fi
 
 mkdir -p "$REPORT_DIR" "$OUT_DIR"
 
-moon build --target native --release src/xsh_cli >/dev/null
+moon build --target native --release src/cmd/xsh >/dev/null
 
 printf 'group\tpath\tmode\tbytes\n' > "$REPORT_FILE"
 

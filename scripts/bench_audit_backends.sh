@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/xsh_cli/xsh_cli.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
 OUT_DIR="$ROOT_DIR/target/bench/audit"
 
 is_expected_failure() {
@@ -90,7 +90,7 @@ run_compile_check() {
 
 mkdir -p "$OUT_DIR"
 
-moon build --target native --release src/xsh_cli
+moon build --target native --release src/cmd/xsh
 
 status=0
 for src in "$ROOT_DIR"/bench/*.xsh; do

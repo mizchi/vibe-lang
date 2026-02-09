@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/xsh_cli/xsh_cli.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
 OUT_DIR="$ROOT_DIR/target/bench"
 SCRIPT_PATH="$OUT_DIR/bench_builder.xsh"
 N="${XSH_BUILDER_N:-200}"
@@ -28,7 +28,7 @@ let result = do {
 result
 EOF_SCRIPT
 
-moon build --target native --release src/xsh_cli
+moon build --target native --release src/cmd/xsh
 
 RUN_CMD="$CLI_BIN run $SCRIPT_PATH >/dev/null"
 

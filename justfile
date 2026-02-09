@@ -5,7 +5,7 @@ target := "js"
 home := env_var_or_default("HOME", "/tmp")
 prefix := env_var_or_default("XSH_PREFIX", home + "/.local")
 bindir := prefix + "/bin"
-cli_bin := "target/native/release/build/xsh_cli/xsh_cli.exe"
+cli_bin := "target/native/release/build/cmd/xsh/xsh.exe"
 
 # Default task: check and test
 default: check test
@@ -21,7 +21,7 @@ check:
 # Run tests (includes fixtures, examples, and core std library)
 test:
     moon test --target {{target}}
-    moon run src/xsh_cli/main.mbt --target native -- test examples xsh/std
+    moon run src/cmd/xsh/main.mbt --target native -- test examples xsh/std
 
 # Run fixture tests only
 test-fixtures:
@@ -49,11 +49,11 @@ test-update:
 
 # Run CLI
 run *args:
-    moon run --target native src/xsh_cli -- {{args}}
+    moon run --target native src/cmd/xsh -- {{args}}
 
 # Build wasm line REPL package (wasi preview2 imports)
 build-repl-wasi-wasm:
-    moon build --target wasm src/xsh_wasi_cli
+    moon build --target wasm src/cmd/xsh_wasi
 
 # Build + run a stdio component (`run()` by default)
 component-run file out="" invoke="run()":
@@ -85,7 +85,7 @@ bootstrap-moonix src="":
 
 # Install native CLI to $XSH_PREFIX/bin (default: ~/.local/bin)
 install:
-    moon build --target native --release src/xsh_cli
+    moon build --target native --release src/cmd/xsh
     mkdir -p {{bindir}}
     cp {{cli_bin}} {{bindir}}/xsh
 
@@ -220,7 +220,7 @@ build-async-host:
 
 # Run sleep demo with async host runtime
 sleep-demo: build-async-host
-    moon run --target native src/xsh_cli -- compile --wasm examples/wasm/sleep_demo.xsh -o /tmp/sleep_demo.wasm
+    moon run --target native src/cmd/xsh -- compile --wasm examples/wasm/sleep_demo.xsh -o /tmp/sleep_demo.wasm
     examples/async_host/target/release/xsh-async-host /tmp/sleep_demo.wasm
 
 # Run WASM file with async host runtime (supports sleep)

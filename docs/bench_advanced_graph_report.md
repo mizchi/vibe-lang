@@ -56,12 +56,12 @@
 - ただし decode path は依然として JSON load より重く、型変換・string pool 展開の最適化余地が残る。
 
 ## リモート差分シナリオ
-- `AdvancedGraphDelta` の diff/apply と JSON roundtrip は `src/xsh/advanced_graph_poc_test.mbt` で検証済み。
+- `AdvancedGraphDelta` の diff/apply と JSON roundtrip は `src/x/module_graph/advanced_graph_poc_test.mbt` で検証済み。
 - 転送時間の簡易推定 API:
   - `estimate_transfer_time_ms(payload_bytes, bandwidth_mbps, rtt_ms, round_trips)`
 - テストでは LAN/CI/mobile 相当プロファイルで `delta < full` を確認。
 
 ## 再現メモ
 - ベンチワークロード定義: `src/benches/advanced_graph_bench.mbt`
-- 実装: `src/xsh/advanced_graph_poc.mbt`
-- テスト: `src/xsh/advanced_graph_poc_test.mbt`
+- 実装: `src/x/module_graph/advanced_graph_poc.mbt`
+- テスト: `src/x/module_graph/advanced_graph_poc_test.mbt`

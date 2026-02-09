@@ -408,7 +408,7 @@ test "resolve test entry paths includes top-level xsh files" {
 
 ///|
 fn wbtest_make_temp_dir(prefix : String) -> String {
-  let base = "/tmp/xsh_cli_wbtest_" + prefix + "_" + @env.now().to_string()
+  let base = "/tmp/cmd_xsh_wbtest_" + prefix + "_" + @env.now().to_string()
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
     if not(@os_fs.path_exists(path)) {

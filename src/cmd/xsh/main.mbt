@@ -1,4 +1,4 @@
 ///|
 fn main {
-  @xsh_cli.run(@env.args())
+  run(@env.args())
 }

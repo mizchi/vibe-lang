@@ -113,7 +113,7 @@ just install
 ```
 
 `build-repl-wasi-wasm` output:
-- `_build/wasm/release/build/xsh_wasi_cli/xsh_wasi_cli.wasm`
+- `_build/wasm/release/build/xsh_wasi/xsh_wasi.wasm`
 - this binary imports `wasi:cli/stdin|stdout@0.2.0` and `wasi:io/streams@0.2.0` directly
 - run it with a component/p3-compatible host (for example moon-component/mwac integration), not `moon run --target wasm`
 - for script-level stdio execution, use `just component-run <file.xsh>`
@@ -159,7 +159,9 @@ src/
 ├── checker/        # Type checker with effects
 ├── codegen/        # WASM code generation
 ├── xsh/            # Interpreter and compilation
-└── xsh_cli/        # CLI application
+├── x/module_graph/ # Experimental module graph index and codecs
+├── cmd/xsh/        # CLI command implementation (native/js)
+└── cmd/xsh_wasi/   # WASI line-REPL command (wasm)
 
 examples/
 ├── *.xsh           # Example scripts (interpreter)

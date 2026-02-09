@@ -40,12 +40,12 @@ log_info() {
 # Build the CLI first
 log_info "Building xsh CLI..."
 cd "$PROJECT_ROOT"
-moon build src/xsh_cli/main.mbt --target native -q 2>/dev/null || {
+moon build src/cmd/xsh/main.mbt --target native -q 2>/dev/null || {
   log_fail "Failed to build xsh CLI"
   exit 1
 }
 
-XSH="moon run src/xsh_cli/main.mbt --target native --"
+XSH="moon run src/cmd/xsh/main.mbt --target native --"
 
 # Helper: expect compilation to fail with specific error
 expect_compile_error() {
