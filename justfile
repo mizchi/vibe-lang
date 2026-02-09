@@ -25,7 +25,7 @@ test:
 
 # Run fixture tests only
 test-fixtures:
-    moon test -p xsh --filter "fixtures" --target {{target}}
+    moon test -p tests --filter "fixtures" --target {{target}}
 
 # Run typecheck diagnostic fixture tests
 test-typecheck-fixtures:

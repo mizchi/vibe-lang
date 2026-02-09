@@ -161,7 +161,8 @@ src/
 ├── xsh/            # Interpreter and compilation
 ├── x/module_graph/ # Experimental module graph index and codecs
 ├── cmd/xsh/        # CLI command implementation (native/js)
-└── cmd/xsh_wasi/   # WASI line-REPL command (wasm)
+├── cmd/xsh_wasi/   # WASI line-REPL command (wasm)
+└── tests/          # Integration-like blackbox tests
 
 examples/
 ├── *.xsh           # Example scripts (interpreter)
@@ -183,7 +184,7 @@ examples/async_host/  # Rust/wasmtime host runtime
 ## Fixtures
 
 Fixtures live in `fixtures/*.xsh` and include a `__DATA__` JSON section.
-`moon test` runs them via `src/xsh/fixture_test.mbt`.
+`moon test` runs them via `src/tests/fixture_test.mbt`.
 
 WASM fixtures live in `fixtures/wasm/*.xsh` and compare expected WAT.
 WASM GC fixtures live in `fixtures/wasm_gc/*.xsh` and check for `struct.new/get/set`.
