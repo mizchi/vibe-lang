@@ -133,33 +133,74 @@ pub fn Runtime::eval_module(
               raise EvalError::ImportError("Cannot import effectful module")
             }
             let exports = @core.extract_exports(imported_module)
-            // Bind each imported item
-            for item in spec.items {
-              let import_name = item.name
-              let local_name = match item.rename {
-                Some(n) => n
-                None => import_name
-              }
-              // Find the exported value
-              match exports.get(import_name) {
+            let bind_import = fn(
+              source_name : String,
+              target_name : String,
+            ) raise EvalError {
+              match exports.get(source_name) {
                 None =>
                   raise EvalError::ImportError(
-                    "Symbol not exported: " + import_name,
+                    "Symbol not exported: " + source_name,
                   )
                 Some(stmt) =>
-                  match imported_rt.get(import_name) {
-                    Some(value) => self.bind(local_name, value) |> ignore
+                  match imported_rt.get(source_name) {
+                    Some(value) => self.bind(target_name, value) |> ignore
                     None =>
                       match stmt {
                         @core.Stmt::ExportLet(..) | @core.Stmt::Let(..) =>
                           raise EvalError::ImportError(
-                            "Exported value not found: " + import_name,
+                            "Exported value not found: " + source_name,
                           )
                         _ =>
                           // For enum/type definitions, just register them
                           // (type checking should handle this)
                           ()
                       }
+                  }
+              }
+            }
+            // Bind each imported item
+            let should_bind_runtime_value = fn(
+              item : @core.ImportItem,
+              symbol_name : String,
+            ) -> Bool {
+              item.kind == @core.ImportKind::Value ||
+              (item.kind == @core.ImportKind::Type &&
+              symbol_name.contains("::"))
+            }
+            for item in spec.items {
+              let import_name = item.name
+              let local_name = match item.rename {
+                Some(n) => n
+                None => import_name
+              }
+              match exports.get(import_name) {
+                Some(_) =>
+                  if should_bind_runtime_value(item, import_name) {
+                    bind_import(import_name, local_name)
+                  }
+                None =>
+                  if item.rename is None {
+                    // Namespace import: `import { Int }` brings `Int::...`.
+                    let prefix = import_name + "::"
+                    let mut imported_any = false
+                    for exported_name, _ in exports {
+                      if exported_name.has_prefix(prefix) {
+                        imported_any = true
+                        if should_bind_runtime_value(item, exported_name) {
+                          bind_import(exported_name, exported_name)
+                        }
+                      }
+                    }
+                    if not(imported_any) {
+                      raise EvalError::ImportError(
+                        "Symbol not exported: " + import_name,
+                      )
+                    }
+                  } else {
+                    raise EvalError::ImportError(
+                      "Symbol not exported: " + import_name,
+                    )
                   }
               }
             }
@@ -748,11 +789,68 @@ fn eval_block(rt : Runtime, body : @core.Module) -> EvalOutput raise EvalError {
 }
 
 ///|
+fn namespace_root_from_runtime_type(ty : @core.Type) -> String? {
+  match ty {
+    @core.Type::Int => Some("Int")
+    @core.Type::Float => Some("Float")
+    @core.Type::Double => Some("Double")
+    @core.Type::Bool => Some("Bool")
+    @core.Type::String => Some("String")
+    @core.Type::Path => Some("Path")
+    @core.Type::Named(name~, ..) => Some(name)
+    _ => None
+  }
+}
+
+///|
+fn resolve_type_member_call_name_rt(
+  rt : Runtime,
+  name : String,
+  args : Array[@core.CallArg],
+) -> String? {
+  if name.contains("::") || name.contains(".") {
+    return None
+  }
+  let mut recv_expr : @core.Expr? = None
+  for arg in args {
+    match arg.label {
+      Some(_) => ()
+      None =>
+        if recv_expr is None {
+          recv_expr = Some(arg.expr)
+        }
+    }
+  }
+  match recv_expr {
+    None => None
+    Some(expr) =>
+      match rt.type_env.get_expr_type(expr.span()) {
+        Some(recv_ty) =>
+          match namespace_root_from_runtime_type(recv_ty) {
+            Some(root) => {
+              let candidate = root + "::" + name
+              match rt.get(candidate) {
+                Some(_) => Some(candidate)
+                None => None
+              }
+            }
+            None => None
+          }
+        None => None
+      }
+  }
+}
+
+///|
 fn eval_call(
   rt : Runtime,
   name : String,
   args : Array[@core.CallArg],
 ) -> EvalOutput raise EvalError {
+  let name = match resolve_type_member_call_name_rt(rt, name, args) {
+    Some(candidate) => candidate
+    None => name
+  }
   if has_alias_prefix_rt(rt, name) {
     { value: @core.Value::Unit, effects: [] }
   } else {

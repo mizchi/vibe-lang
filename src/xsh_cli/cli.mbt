@@ -468,6 +468,7 @@ fn run_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
             e => abort("run: " + e.to_string())
           }
           let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+          rt.set_type_env(compiled.type_env)
           // Build path-to-hash mapping and load imported modules into runtime cache
           let path_to_hash : Map[String, String] = {}
           load_imports_into_runtime(rt, db, entry, path_to_hash)
@@ -664,6 +665,7 @@ fn test_cmd(args : Array[String]) -> Unit {
           }
         }
         let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+        rt.set_type_env(compiled.type_env)
         // Build path-to-hash mapping and load imported modules into runtime cache
         let path_to_hash : Map[String, String] = {}
         load_imports_into_runtime(rt, db, entry, path_to_hash)

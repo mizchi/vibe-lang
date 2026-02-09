@@ -21,6 +21,7 @@ pub struct CompiledModule {
   imports : Array[String]
   aliases : Map[String, @core.Ref]
   ast : @core.Module
+  type_env : @checker.TypeEnv
   instantiations : Map[String, Int]
 }
 
@@ -68,6 +69,7 @@ pub fn compile_module(
     imports,
     aliases,
     ast: resolved_ast,
+    type_env: env,
     instantiations: mono.instantiations,
   }
 }
@@ -78,7 +80,7 @@ pub fn Runtime::run_compiled(
   self : Runtime,
   compiled : CompiledModule,
 ) -> EvalResult raise XshError {
-  let _ = compiled // keep for future wasm backend
+  self.set_type_env(compiled.type_env)
   for name, target in compiled.aliases {
     self.set_alias(name, target)
   }

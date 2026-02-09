@@ -5,6 +5,8 @@ struct FixtureSpec {
   error_contains : String?
   todo : Bool
   skip : Bool
+  version_refs : Map[String, String]
+  symbol_refs : Map[String, String]
 }
 
 ///|
@@ -119,6 +121,28 @@ fn json_string_array_field(
 }
 
 ///|
+fn json_string_map_field(
+  obj : Map[String, Json],
+  key : String,
+  path : String,
+) -> Map[String, String] raise {
+  match obj.get(key) {
+    Some(Json::Null) | None => {}
+    Some(Json::Object(values)) => {
+      let out : Map[String, String] = {}
+      for item_key, item_value in values {
+        match item_value {
+          Json::String(value) => out[item_key] = value
+          _ => fail("[\{path}] __DATA__.{key} must be an object of strings")
+        }
+      }
+      out
+    }
+    Some(_) => fail("[\{path}] __DATA__.{key} must be an object of strings")
+  }
+}
+
+///|
 fn parse_spec(data : String, path : String) -> FixtureSpec raise {
   let json = @json.parse(data) catch {
     e => fail("[\{path}] invalid __DATA__ JSON: \{e.to_string()}")
@@ -135,7 +159,9 @@ fn parse_spec(data : String, path : String) -> FixtureSpec raise {
       let todo = json_bool_field(obj, "TODO", path) ||
         json_bool_field(obj, "todo", path)
       let skip = json_bool_field(obj, "skip", path)
-      { last, effects, error_contains, todo, skip }
+      let version_refs = json_string_map_field(obj, "version_refs", path)
+      let symbol_refs = json_string_map_field(obj, "symbol_refs", path)
+      { last, effects, error_contains, todo, skip, version_refs, symbol_refs }
     }
     _ => fail("[\{path}] __DATA__ must be a JSON object")
   }
@@ -240,6 +266,70 @@ fn preload_module_sources(
 }
 
 ///|
+fn normalize_hash_literal(text : String) -> String? {
+  let raw = if text.has_prefix("#") && text.length() > 1 {
+    text.unsafe_substring(start=1, end=text.length())
+  } else {
+    text
+  }
+  if raw.length() != 40 {
+    return None
+  }
+  for c in raw {
+    let is_hex = (c >= 'a' && c <= 'f') ||
+      (c >= 'A' && c <= 'F') ||
+      (c >= '0' && c <= '9')
+    if !is_hex {
+      return None
+    }
+  }
+  Some(raw)
+}
+
+///|
+fn resolve_ref_target_hash(
+  db : XshDb,
+  entry_path : String,
+  target : String,
+  preload_visited : Map[String, Bool],
+) -> String raise {
+  match normalize_hash_literal(target) {
+    Some(hash) => hash
+    None =>
+      match resolve_import_fs_path(entry_path, target) {
+        Some(resolved_path) => {
+          let source = @os_fs.read_file_to_string(resolved_path) catch {
+            e =>
+              fail(
+                "[\{entry_path}] read ref target failed (\{resolved_path}): \{e.to_string()}",
+              )
+          }
+          preload_module_sources(db, resolved_path, source, preload_visited)
+          @core.git_blob_hash_string(source)
+        }
+        None => fail("[\{entry_path}] unresolved ref target: \{target}")
+      }
+  }
+}
+
+///|
+fn apply_fixture_refs(
+  db : XshDb,
+  entry_path : String,
+  spec : FixtureSpec,
+  preload_visited : Map[String, Bool],
+) -> Unit raise {
+  for name, target in spec.version_refs {
+    let hash = resolve_ref_target_hash(db, entry_path, target, preload_visited)
+    db.set_version_ref(name, hash)
+  }
+  for name, target in spec.symbol_refs {
+    let hash = resolve_ref_target_hash(db, entry_path, target, preload_visited)
+    db.set_symbol_ref(name, hash)
+  }
+}
+
+///|
 fn register_fixture_import_modules(
   rt : Runtime,
   db : XshDb,
@@ -266,7 +356,11 @@ fn register_fixture_import_modules(
 }
 
 ///|
-fn eval_fixture(path : String, script : String) -> Result[EvalResult, String] {
+fn eval_fixture(
+  path : String,
+  script : String,
+  spec : FixtureSpec,
+) -> Result[EvalResult, String] {
   if not(script.contains("import ")) {
     let rt = Runtime::new(@capability.CapabilitySet::developer())
     return Ok(rt.eval_script(script)) catch { e => Err(e.to_string()) }
@@ -281,12 +375,20 @@ fn eval_fixture(path : String, script : String) -> Result[EvalResult, String] {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
+  let refs = Ok(apply_fixture_refs(db, entry, spec, preload_visited)) catch {
+    e => Err(e.to_string())
+  }
+  match refs {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
   let compiled = Ok(compile_module(db, entry)) catch { e => Err(e.to_string()) }
   let compiled = match compiled {
     Ok(c) => c
     Err(e) => return Err(e)
   }
   let rt = Runtime::new(@capability.CapabilitySet::developer())
+  rt.set_type_env(compiled.type_env)
   let import_visited : Map[String, Bool] = {}
   let path_to_hash : Map[String, String] = {}
   register_fixture_import_modules(rt, db, entry, import_visited, path_to_hash)
@@ -320,7 +422,7 @@ fn run_fixture(path : String) -> Unit raise {
     println("[\{path}] skipped")
     return
   }
-  let result = eval_fixture(path, script)
+  let result = eval_fixture(path, script, spec)
   if spec.todo {
     match result {
       Ok(_) => fail("[\{path}] TODO fixture passed (remove TODO flag)")

@@ -11,7 +11,7 @@ fn trim_trailing_newlines_warning(text : String) -> String {
     return text
   }
   if text.has_suffix("\n") || text.has_suffix("\r") {
-    let next = try text[:(text.length() - 1)] catch {
+    let next = try text[:text.length() - 1] catch {
       _ => return text
     } noraise {
       view => view.to_string()
@@ -91,15 +91,15 @@ pub fn update_warning_fixtures(fixture_dir : String) -> Result[Int, String] {
       e => return Err("[\{entry.source_path}] read failed: \{e.to_string()}")
     }
     let next_content = trim_trailing_newlines_warning(
-      render_warning_fixture_result(entry.source_path, source),
-    ) + "\n"
+        render_warning_fixture_result(entry.source_path, source),
+      ) +
+      "\n"
     let current_content = @os_fs.read_file_to_string(entry.diag_path) catch {
       _ => ""
     }
     if current_content != next_content {
       @os_fs.write_string_to_file(entry.diag_path, next_content) catch {
-        e =>
-          return Err("[\{entry.diag_path}] write failed: \{e.to_string()}")
+        e => return Err("[\{entry.diag_path}] write failed: \{e.to_string()}")
       }
       updated += 1
     }

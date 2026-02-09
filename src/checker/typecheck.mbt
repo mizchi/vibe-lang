@@ -15,6 +15,12 @@ suberror TypeError {
   NonExhaustiveMatch(span~ : @core.Span)
   BadTypeDef(message~ : String, span~ : @core.Span)
   EffectNotAllowed(name~ : String, span~ : @core.Span)
+  EffectGuardNotSatisfied(
+    operation~ : String,
+    missing_effect~ : String?,
+    missing_do_boundary~ : Bool,
+    span~ : @core.Span
+  )
 } derive(Show, Eq)
 
 ///|
@@ -62,8 +68,65 @@ fn effect_not_allowed_hint(name : String) -> String? {
     Some("declare a compatible `with { ... }` effect set on this function")
   } else {
     Some(
-      "declare `with {" + name + "}` (or a compatible effect row) on this function",
+      "declare `with {" +
+      name +
+      "}` (or a compatible effect row) on this function",
     )
+  }
+}
+
+///|
+fn effect_guard_hint(
+  operation : String,
+  missing_effect : String?,
+  missing_do_boundary : Bool,
+) -> String? {
+  match missing_effect {
+    Some(effect_name) =>
+      if missing_do_boundary {
+        Some(
+          "declare `with {" +
+          effect_name +
+          "}` (or a compatible effect row) and wrap in `do { ... }`",
+        )
+      } else {
+        effect_not_allowed_hint(effect_name)
+      }
+    None =>
+      if missing_do_boundary {
+        effect_not_allowed_hint(operation)
+      } else {
+        None
+      }
+  }
+}
+
+///|
+fn effect_guard_note(
+  operation : String,
+  missing_effect : String?,
+  missing_do_boundary : Bool,
+) -> String? {
+  let mut note = ""
+  match missing_effect {
+    Some(effect_name) =>
+      note = "missing effect declaration: `" + effect_name + "`"
+    None => ()
+  }
+  if missing_do_boundary {
+    let do_note = "missing effect boundary: wrap `" +
+      operation +
+      "(...)` in `do { ... }`"
+    if note == "" {
+      note = do_note
+    } else {
+      note = note + "\n" + do_note
+    }
+  }
+  if note == "" {
+    None
+  } else {
+    Some(note)
   }
 }
 
@@ -151,6 +214,19 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: effect_not_allowed_hint(name),
         note: None,
+      }
+    TypeError::EffectGuardNotSatisfied(
+      operation~,
+      missing_effect~,
+      missing_do_boundary~,
+      span~
+    ) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "effect requirements not satisfied: `" + operation + "`",
+        span: Some(span),
+        hint: effect_guard_hint(operation, missing_effect, missing_do_boundary),
+        note: effect_guard_note(operation, missing_effect, missing_do_boundary),
       }
   }
 }
@@ -400,14 +476,47 @@ fn require_effects(
   effects : Array[@core.EffectAtom],
   span : @core.Span,
 ) -> Unit raise TypeError {
+  match find_missing_effect(env, scope, effects) {
+    Some(name) => raise TypeError::EffectNotAllowed(name~, span~)
+    None => ()
+  }
+}
+
+///|
+fn find_missing_effect(
+  env : TypeEnv,
+  scope : EffectScope,
+  effects : Array[@core.EffectAtom],
+) -> String? raise TypeError {
   if scope.allow_all {
-    return ()
+    return None
   }
   let scope_set = effect_set_from_scope(scope)
   let required_set = effect_set_from_atoms(env, effects)
-  match ensure_effects_allowed(env, scope_set, required_set) {
-    Some(name) => raise TypeError::EffectNotAllowed(name~, span~)
-    None => ()
+  ensure_effects_allowed(env, scope_set, required_set)
+}
+
+///|
+fn require_effect_guard(
+  env : TypeEnv,
+  scope : EffectScope,
+  allow_effect : Bool,
+  operation : String,
+  required_effects : Array[@core.EffectAtom],
+  span : @core.Span,
+) -> Unit raise TypeError {
+  let missing_effect = find_missing_effect(env, scope, required_effects)
+  let missing_do_boundary = is_do_boundary_operation(operation) &&
+    not(allow_effect)
+  if missing_effect == None && not(missing_do_boundary) {
+    ()
+  } else {
+    raise TypeError::EffectGuardNotSatisfied(
+      operation~,
+      missing_effect~,
+      missing_do_boundary~,
+      span~,
+    )
   }
 }
 
@@ -4286,6 +4395,71 @@ fn ensure_ord_operand(
 }
 
 ///|
+fn namespace_root_from_type(
+  env : TypeEnv,
+  ty : @core.Type,
+) -> String? {
+  match resolve_type(env, ty) {
+    @core.Type::Int => Some("Int")
+    @core.Type::Float => Some("Float")
+    @core.Type::Double => Some("Double")
+    @core.Type::Bool => Some("Bool")
+    @core.Type::String => Some("String")
+    @core.Type::Path => Some("Path")
+    @core.Type::Named(name~, ..) => Some(name)
+    _ => None
+  }
+}
+
+///|
+fn resolve_type_member_call_name(
+  env : TypeEnv,
+  name : String,
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+  call_span : @core.Span,
+) -> String? raise TypeError {
+  if name.contains("::") || name.contains(".") {
+    return None
+  }
+  let _ = call_span
+  let mut recv_expr : @core.Expr? = None
+  for arg in args {
+    match arg.label {
+      Some(_) => ()
+      None =>
+        if recv_expr is None {
+          recv_expr = Some(arg.expr)
+        }
+    }
+  }
+  match recv_expr {
+    None => return None
+    Some(expr) => {
+      let recv_ty = type_expr_eff(
+        env,
+        expr,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      match namespace_root_from_type(env, recv_ty) {
+        Some(root) => {
+          let candidate = root + "::" + name
+          match env.get(candidate) {
+            Some(_) => Some(candidate)
+            None => None
+          }
+        }
+        None => None
+      }
+    }
+  }
+}
+
+///|
 fn type_call(
   env : TypeEnv,
   name : String,
@@ -4295,7 +4469,20 @@ fn type_call(
   allow_effect : Bool,
   call_span : @core.Span,
 ) -> @core.Type raise TypeError {
-  match env.get(name) {
+  let lookup_name = match
+      resolve_type_member_call_name(
+        env,
+        name,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+      ) {
+      Some(candidate) => candidate
+      None => name
+    }
+  match env.get(lookup_name) {
     Some(ty) =>
       match ty {
         @core.Type::Func(params~, ret~, effects=fn_effects) => {
@@ -4309,10 +4496,17 @@ fn type_call(
           // Name exists but isn't a function - try field access first
           match
             try_field_access(
-              env, name, args, aliases, effects, allow_effect, call_span,
+              env,
+              lookup_name,
+              args,
+              aliases,
+              effects,
+              allow_effect,
+              call_span,
             ) {
             Some(field_ty) => field_ty
-            None => raise TypeError::BadCall(message=name, span=call_span)
+            None =>
+              raise TypeError::BadCall(message=lookup_name, span=call_span)
           }
       }
     None =>
@@ -4437,10 +4631,14 @@ fn type_call(
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall(message="sh", span=call_span)
                 }
-                require_effects(env, effects, builtin_effects("sh"), call_span)
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(name="sh", span=call_span)
-                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "sh",
+                  builtin_effects("sh"),
+                  call_span,
+                )
                 let arg_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4465,18 +4663,14 @@ fn type_call(
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall(message="sh_lines", span=call_span)
                 }
-                require_effects(
+                require_effect_guard(
                   env,
                   effects,
+                  allow_effect,
+                  "sh_lines",
                   builtin_effects("sh_lines"),
                   call_span,
                 )
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="sh_lines",
-                    span=call_span,
-                  )
-                }
                 let arg_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4499,18 +4693,14 @@ fn type_call(
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall(message="sleep", span=call_span)
                 }
-                require_effects(
+                require_effect_guard(
                   env,
                   effects,
+                  allow_effect,
+                  "sleep",
                   builtin_effects("sleep"),
                   call_span,
                 )
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="sleep",
-                    span=call_span,
-                  )
-                }
                 let arg_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4538,18 +4728,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                require_effects(
+                require_effect_guard(
                   env,
                   effects,
+                  allow_effect,
+                  "stdout_write_char",
                   builtin_effects("stdout_write_char"),
                   call_span,
                 )
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="stdout_write_char",
-                    span=call_span,
-                  )
-                }
                 let arg_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4577,18 +4763,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                require_effects(
+                require_effect_guard(
                   env,
                   effects,
+                  allow_effect,
+                  "stdin_read_char",
                   builtin_effects("stdin_read_char"),
                   call_span,
                 )
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="stdin_read_char",
-                    span=call_span,
-                  )
-                }
                 @core.Type::Int
               }
               "stdout_write_stream" => {
@@ -4601,18 +4783,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                require_effects(
+                require_effect_guard(
                   env,
                   effects,
+                  allow_effect,
+                  "stdout_write_stream",
                   builtin_effects("stdout_write_stream"),
                   call_span,
                 )
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="stdout_write_stream",
-                    span=call_span,
-                  )
-                }
                 let arg_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4640,18 +4818,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                require_effects(
+                require_effect_guard(
                   env,
                   effects,
+                  allow_effect,
+                  "stdin_read_stream",
                   builtin_effects("stdin_read_stream"),
                   call_span,
                 )
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="stdin_read_stream",
-                    span=call_span,
-                  )
-                }
                 let arg_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4706,12 +4880,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="array_builder",
-                    span=call_span,
-                  )
-                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "array_builder",
+                  [],
+                  call_span,
+                )
                 let elem = fresh_type_var(env)
                 @core.Type::ArrayBuilder(elem)
               }
@@ -4725,12 +4901,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="array_builder_push",
-                    span=call_span,
-                  )
-                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "array_builder_push",
+                  [],
+                  call_span,
+                )
                 let builder_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4780,12 +4958,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="array_builder_freeze",
-                    span=call_span,
-                  )
-                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "array_builder_freeze",
+                  [],
+                  call_span,
+                )
                 let builder_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4820,12 +5000,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="map_builder",
-                    span=call_span,
-                  )
-                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "map_builder",
+                  [],
+                  call_span,
+                )
                 let value = fresh_type_var(env)
                 @core.Type::MapBuilder(value)
               }
@@ -4839,12 +5021,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="map_builder_set",
-                    span=call_span,
-                  )
-                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "map_builder_set",
+                  [],
+                  call_span,
+                )
                 let builder_ty = type_expr_eff(
                   env,
                   pos_args[0],
@@ -4905,12 +5089,14 @@ fn type_call(
                     span=call_span,
                   )
                 }
-                if not(allow_effect) {
-                  raise TypeError::EffectNotAllowed(
-                    name="map_builder_freeze",
-                    span=call_span,
-                  )
-                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "map_builder_freeze",
+                  [],
+                  call_span,
+                )
                 let builder_ty = type_expr_eff(
                   env,
                   pos_args[0],

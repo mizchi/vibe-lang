@@ -314,13 +314,22 @@ Separate internal hash:
 
 Imports are named imports only:
 
-```
+```xsh
 import { foo, bar as b } from ./path/to/mod.xsh
+import { type IntPair, trait Show, foo, bar } from ./path/to/mod.xsh
 import { foo } from "./path/to/mod.xsh"
 import { foo } from #abc12345
 import { foo } from version@main
 import { foo } from symbol@std/math
 ```
+
+Per-item import kind:
+- `foo` / `foo as alias`: value import (default)
+- `type T`: type import (type alias / enum namespace)
+- `trait Eq`: trait import
+- `type Int` can be used as namespace activation for `Int::...` exports.
+- If a non-default qualifier (`type` / `trait`) does not match the exported
+  symbol category, compiler emits an `import` diagnostic.
 
 Parser compatibility:
 - `version:<name>` / `symbol:<name>` are accepted, but `@` form is canonical.
@@ -340,6 +349,33 @@ Rules:
 - Non-exported top-level names are module-private.
 - `import "foo.xsh"` (bare import) and default import forms are not part of the
   current spec.
+
+### Type-member imports (proposal)
+
+Namespace-explicit style (ESM/Python-like) is adopted for type-attached
+functions.
+
+Proposed forms:
+
+```xsh
+import { type Int } from "./xsh/std/int.xsh"             // also imports Int::*
+import { Int } from "./xsh/std/int.xsh"                  // backward-compatible
+import { Int::to_string } from "./xsh/std/int.xsh"       // single member
+import { Int::to_string as int_to_string } from "./xsh/std/int.xsh"
+```
+
+Rules:
+- `import { Int } from <module-ref>` activates namespace binding `Int:: ->
+  <module-ref>` in the current module scope.
+- Activated `Int::` resolves `Int::*` only from the bound `<module-ref>`.
+  Example: if target is `std/int`, only exported `Int::...` symbols in
+  `std/int` become resolution candidates.
+- `import { Int::name } from <module-ref>` imports only that member from that
+  `<module-ref>`.
+- Overwrite is forbidden:
+  if an already-bound namespace or symbol key (`Int::` or `Int::name`) is
+  bound to a different target module, it is a compile error.
+- Re-importing an identical binding for the same namespace key is idempotent.
 
 ### Module refs and normalization
 
@@ -503,6 +539,65 @@ Rules:
 - Field-access fallback currently supports record and struct fields, requiring
   exactly one positional argument.
 
+### Type-qualified method symbols (proposal)
+
+To avoid global-name collisions such as multiple `to_string` definitions, xsh
+plans to add type-qualified method symbols.
+
+Proposed declaration syntax:
+
+```xsh
+let Int::to_string = (x: Int) -> String { "int" }
+let String::to_string = (x: String) -> String { x }
+export let Option::unwrap_or = [T](opt: Option[T], fallback: T) -> T {
+  match opt {
+    Some(v) => v
+    None => fallback
+  }
+}
+```
+
+Design notes:
+- Canonical separator is `::` (`Type::method`).
+- `Type/method` is not adopted because `/` is already used by module-qualified
+  symbol paths and hash/module refs.
+- `Type::method` is treated as one function symbol key; this is not trait
+  syntax.
+- Receiver genericity is represented by root type name (for example
+  `Option::unwrap_or`), while type parameters remain in function signature.
+
+Evaluation policy:
+- Simple global desugar (`recv.method(...) -> method(recv, ...)`) is not used
+  for extension methods.
+- `Type::method(recv, ...)` is the canonical call form.
+- `recv.method(...)` is allowed as sugar only when it resolves to an imported
+  `Type::method` member.
+
+Proposed resolution order for `recv.method(args...)`:
+1. Infer receiver type `T`.
+2. Find active namespace binding `T:: -> <module-ref>`.
+3. Resolve `T::method` from that `<module-ref>` exports.
+4. If exactly one match exists, lower to `T::method(recv, ...)`.
+5. If zero matches, emit `method not found`.
+6. If multiple matches exist, emit ambiguity error.
+7. Do not fall back to global `method(recv, ...)`.
+
+Import/export behavior (proposal):
+- `Type::method` participates in normal named import/export as a symbol.
+- Example:
+
+```xsh
+export { Int::to_string, String::to_string }
+import { Int::to_string as int_to_string } from "./std/stringify.xsh"
+```
+
+### Prelude and `--nostd` (proposal)
+
+- Default mode preloads std namespaces/members through prelude imports.
+  This includes type-member namespaces used by method sugar.
+- `--nostd` disables all implicit prelude imports.
+- In `--nostd`, all type/member namespaces must be imported explicitly.
+
 ## xshell command pipeline (PosixMode preview)
 
 ```xsh
@@ -588,6 +683,12 @@ Fixtures:
   - `error_contains` / `compile_error`: substring match for failures.
   - `TODO`: test must fail; passing means the TODO should be removed.
   - `skip`: skip the fixture.
+  - `version_refs`: optional map `{ "<name>": "<hash-or-path>" }` to seed
+    `version@<name>` in fixture evaluation.
+  - `symbol_refs`: optional map `{ "<name>": "<hash-or-path>" }` to seed
+    `symbol@<name>` in fixture evaluation.
+    `"<hash-or-path>"` accepts a raw hash (`40` hex chars), `#<hash>`, or a
+    module path whose content hash is used.
 
 Bench:
 - `just bench-wasmtime` builds `xsh_cli`, compiles `bench/bench_simple.xsh` to wasm,

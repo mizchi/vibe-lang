@@ -90,7 +90,9 @@ fn main {
       for mismatch in mismatches {
         print_mismatch(mismatch)
       }
-      abort("warning-fixture: " + mismatches.length().to_string() + " mismatch(es)")
+      abort(
+        "warning-fixture: " + mismatches.length().to_string() + " mismatch(es)",
+      )
     }
     Err(err) => abort("warning-fixture: " + err)
   }

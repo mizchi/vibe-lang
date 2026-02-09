@@ -96,6 +96,10 @@ let num_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
   ord_clamp(x, min_val, max_val)
 }
 
+let to_string = [T: Show](x: T) -> String {
+  __to_string(x)
+}
+
 test "cmp_eq generic" {
   assert(cmp_eq(1, 1))
   assert(not(cmp_eq(1, 2)))
@@ -129,9 +133,15 @@ test "num_square generic" {
   assert(eq(num_square(5), 25))
 }
 
+test "to_string generic" {
+  assert(string_equals(to_string(42), "42"))
+  assert(string_equals(to_string(true), "true"))
+}
+
 export {
   Eq, Ord, Show, Add, Sub, Mul, Div, Signed,
   cmp_eq, cmp_ne,
   ord_min, ord_max, ord_clamp, ord_between,
-  num_add, num_sub, num_mul, num_div, num_abs, num_square, num_clamp
+  num_add, num_sub, num_mul, num_div, num_abs, num_square, num_clamp,
+  to_string
 }

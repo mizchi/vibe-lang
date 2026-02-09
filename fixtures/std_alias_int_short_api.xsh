@@ -1,0 +1,12 @@
+import { abs, clamp, is_even } from "./xsh/std/int.xsh"
+
+let a = abs(-5)
+let x = 12
+let y = 4
+let b = x.clamp(0, 9)
+let c = y.is_even()
+
+if eq(a, 5) && eq(b, 9) && c { "ok" } else { "ng" }
+
+__DATA__
+{"last":"\"ok\""}

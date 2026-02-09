@@ -818,7 +818,9 @@ fn serialize_import_spec_to(spec : ImportSpec, buf : StringBuilder) -> Unit {
     if i > 0 {
       buf.write_char(',')
     }
-    buf.write_string("{\"name\":")
+    buf.write_string("{\"kind\":")
+    serialize_import_kind_to(item.kind, buf)
+    buf.write_string(",\"name\":")
     serialize_string_to(item.name, buf)
     buf.write_string(",\"rename\":")
     match item.rename {
@@ -828,6 +830,15 @@ fn serialize_import_spec_to(spec : ImportSpec, buf : StringBuilder) -> Unit {
     buf.write_char('}')
   }
   buf.write_char(']')
+}
+
+///|
+fn serialize_import_kind_to(kind : ImportKind, buf : StringBuilder) -> Unit {
+  match kind {
+    ImportKind::Value => serialize_string_to("value", buf)
+    ImportKind::Type => serialize_string_to("type", buf)
+    ImportKind::Trait => serialize_string_to("trait", buf)
+  }
 }
 
 ///|

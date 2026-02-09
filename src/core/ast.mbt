@@ -67,8 +67,17 @@ pub(all) struct StructField {
 } derive(Show, Eq)
 
 ///|
-/// Import item: `foo` or `foo as bar`
+/// Import item kind for explicit import namespaces.
+pub(all) enum ImportKind {
+  Value
+  Type
+  Trait
+} derive(Show, Eq)
+
+///|
+/// Import item: `foo`, `foo as bar`, `type Foo`, or `trait Eq`
 pub(all) struct ImportItem {
+  kind : ImportKind
   name : String
   rename : String? // alias name if using `as`
 } derive(Show, Eq)

@@ -1,0 +1,81 @@
+// Base64 encode throughput benchmark (pure xsh)
+
+let table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+let to_b64 = (table: String, i: Int) -> String {
+  string_substring(table, i, add(i, 1))
+}
+
+let encode_triplet = (table: String, a: Int, b: Int, c: Int) -> String {
+  let c0 = to_b64(table, div(a, 4))
+  let x1 = mul(a % 4, 16)
+  let y1 = div(b, 16)
+  let c1 = to_b64(table, add(x1, y1))
+  let x2 = mul(b % 16, 4)
+  let y2 = div(c, 64)
+  let c2 = to_b64(table, add(x2, y2))
+  let c3 = to_b64(table, c % 64)
+  string_concat(string_concat(string_concat(c0, c1), c2), c3)
+}
+
+let encode_pair = (table: String, a: Int, b: Int) -> String {
+  let c0 = to_b64(table, div(a, 4))
+  let x1 = mul(a % 4, 16)
+  let y1 = div(b, 16)
+  let c1 = to_b64(table, add(x1, y1))
+  let c2 = to_b64(table, mul(b % 16, 4))
+  string_concat(string_concat(string_concat(c0, c1), c2), "=")
+}
+
+let encode_single = (table: String, a: Int) -> String {
+  let c0 = to_b64(table, div(a, 4))
+  let c1 = to_b64(table, mul(a % 4, 16))
+  string_concat(string_concat(c0, c1), "==")
+}
+
+let rec encode_loop = (table: String, s: String, i: Int, out: String) -> String {
+  let len = string_length(s)
+  if lt(add(i, 2), len) {
+    let j = add(i, 1)
+    let k = add(i, 2)
+    let a = string_char_code_at(s, i)
+    let b = string_char_code_at(s, j)
+    let c = string_char_code_at(s, k)
+    let next = string_concat(out, encode_triplet(table, a, b, c))
+    encode_loop(table, s, add(i, 3), next)
+  } else if lt(add(i, 1), len) {
+    let j = add(i, 1)
+    let a = string_char_code_at(s, i)
+    let b = string_char_code_at(s, j)
+    string_concat(out, encode_pair(table, a, b))
+  } else if lt(i, len) {
+    let a = string_char_code_at(s, i)
+    string_concat(out, encode_single(table, a))
+  } else {
+    out
+  }
+}
+
+let encode = (table: String, s: String) -> String {
+  encode_loop(table, s, 0, "")
+}
+
+let rec repeat = (s: String, n: Int) -> String {
+  if eq(n, 0) {
+    ""
+  } else {
+    string_concat(s, repeat(s, sub(n, 1)))
+  }
+}
+
+let rec bench_loop = (table: String, payload: String, n: Int, acc: Int) -> Int {
+  if eq(n, 0) {
+    acc
+  } else {
+    let encoded = encode(table, payload)
+    bench_loop(table, payload, sub(n, 1), add(acc, string_length(encoded)))
+  }
+}
+
+let payload = repeat("abcdefghijklmnopqrstuvwxyz0123456789", 8)
+bench_loop(table, payload, 10, 0)

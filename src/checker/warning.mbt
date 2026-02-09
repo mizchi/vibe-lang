@@ -313,6 +313,10 @@ fn walk_stmt(
           false,
           WarningBindingKind::Import,
         )
+        if item.kind != @core.ImportKind::Value {
+          // Type/trait imports are consumed in type space; avoid false positives.
+          warning_scope_mark_use(scopes, local_name)
+        }
       }
     @core.Stmt::Export(names~, ..) =>
       for name in names {

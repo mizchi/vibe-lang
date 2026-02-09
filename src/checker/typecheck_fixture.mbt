@@ -35,7 +35,7 @@ fn sort_strings_typecheck_fixture(arr : Array[String]) -> Unit {
 ///|
 fn diag_path_for_fixture(path : String) -> String {
   if path.has_suffix(".xsh") {
-    let stem = try path[:(path.length() - 4)] catch {
+    let stem = try path[:path.length() - 4] catch {
       _ => return path + ".diag"
     } noraise {
       view => view.to_string()
@@ -52,7 +52,7 @@ fn trim_trailing_newlines(text : String) -> String {
     return text
   }
   if text.has_suffix("\n") || text.has_suffix("\r") {
-    let next = try text[:(text.length() - 1)] catch {
+    let next = try text[:text.length() - 1] catch {
       _ => return text
     } noraise {
       view => view.to_string()
@@ -64,7 +64,10 @@ fn trim_trailing_newlines(text : String) -> String {
 }
 
 ///|
-pub fn render_typecheck_fixture_result(path : String, source : String) -> String {
+pub fn render_typecheck_fixture_result(
+  path : String,
+  source : String,
+) -> String {
   let ast = @parser.parse_ast(source) catch {
     e => return e.diagnostic().render(path, source)
   }
@@ -102,10 +105,7 @@ pub fn collect_typecheck_fixture_entries(
   }
   let out : Array[TypecheckFixtureEntry] = []
   for source_path in files {
-    out.push({
-      source_path,
-      diag_path: diag_path_for_fixture(source_path),
-    })
+    out.push({ source_path, diag_path: diag_path_for_fixture(source_path) })
   }
   Ok(out)
 }
@@ -160,15 +160,15 @@ pub fn update_typecheck_fixtures(fixture_dir : String) -> Result[Int, String] {
       e => return Err("[\{entry.source_path}] read failed: \{e.to_string()}")
     }
     let next_content = trim_trailing_newlines(
-      render_typecheck_fixture_result(entry.source_path, source),
-    ) + "\n"
+        render_typecheck_fixture_result(entry.source_path, source),
+      ) +
+      "\n"
     let current_content = @os_fs.read_file_to_string(entry.diag_path) catch {
       _ => ""
     }
     if current_content != next_content {
       @os_fs.write_string_to_file(entry.diag_path, next_content) catch {
-        e =>
-          return Err("[\{entry.diag_path}] write failed: \{e.to_string()}")
+        e => return Err("[\{entry.diag_path}] write failed: \{e.to_string()}")
       }
       updated += 1
     }

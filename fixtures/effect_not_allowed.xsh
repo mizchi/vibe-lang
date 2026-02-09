@@ -1,4 +1,4 @@
 sh("echo hi")
 
 __DATA__
-{"error_contains": "EffectNotAllowed"}
+{"error_contains": "EffectGuardNotSatisfied"}

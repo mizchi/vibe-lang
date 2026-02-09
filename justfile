@@ -111,6 +111,14 @@ bench-string-substring:
 bench-string-equals:
     scripts/bench_string_compare.sh bench/bench_string_equals.xsh
 
+# Base64 benchmark (js-string vs wasm-gc)
+bench-base64:
+    scripts/bench_string_compare.sh bench/bench_base64_encode.xsh
+
+# Audit bench/*.xsh backend compatibility
+bench-audit-backends:
+    scripts/bench_audit_backends.sh
+
 # Benchmark builder-based immutable snapshot
 bench-builder:
     scripts/bench_builder.sh

@@ -131,6 +131,11 @@ fn is_trait_imported(
           | @core.ModuleRef::Symbol(_) => None
         }
         for item in spec.items {
+          let trait_compatible = item.kind == @core.ImportKind::Value ||
+            item.kind == @core.ImportKind::Trait
+          if not(trait_compatible) {
+            continue
+          }
           let local_name = match item.rename {
             Some(rename) => rename
             None => item.name

@@ -1,0 +1,10 @@
+import { is_some, unwrap_or, map_or } from "./xsh/std/option.xsh"
+
+let a = Some(1).is_some()
+let b = None.unwrap_or(7)
+let c = Some("abc").map_or(0, (s) -> string_length(s))
+
+if a && eq(b, 7) && eq(c, 3) { "ok" } else { "ng" }
+
+__DATA__
+{"last":"\"ok\""}

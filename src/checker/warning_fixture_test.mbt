@@ -1,5 +1,7 @@
 ///|
-fn render_warning_mismatch_for_test(mismatch : WarningFixtureMismatch) -> String {
+fn render_warning_mismatch_for_test(
+  mismatch : WarningFixtureMismatch,
+) -> String {
   "[\{mismatch.source_path}] warning mismatch\nexpected:\n\{mismatch.expected}\n\nactual:\n\{mismatch.actual}"
 }
 

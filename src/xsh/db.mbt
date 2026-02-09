@@ -48,7 +48,7 @@ fn collect_import_trait_aliases(
 ) -> Map[String, String] {
   let out : Map[String, String] = {}
   for item in spec.items {
-    if imported_env.has_trait(item.name) {
+    if import_item_accepts_trait(item) && imported_env.has_trait(item.name) {
       let local_name = match item.rename {
         Some(rename) => rename
         None => item.name
@@ -57,6 +57,31 @@ fn collect_import_trait_aliases(
     }
   }
   out
+}
+
+///|
+fn import_item_accepts_value(item : @core.ImportItem, name : String) -> Bool {
+  item.kind == @core.ImportKind::Value ||
+  (item.kind == @core.ImportKind::Type && name.contains("::"))
+}
+
+///|
+fn import_item_accepts_type(item : @core.ImportItem) -> Bool {
+  item.kind == @core.ImportKind::Value || item.kind == @core.ImportKind::Type
+}
+
+///|
+fn import_item_accepts_trait(item : @core.ImportItem) -> Bool {
+  item.kind == @core.ImportKind::Value || item.kind == @core.ImportKind::Trait
+}
+
+///|
+fn import_kind_expected_label(kind : @core.ImportKind) -> String {
+  match kind {
+    @core.ImportKind::Value => "value"
+    @core.ImportKind::Type => "type"
+    @core.ImportKind::Trait => "trait"
+  }
 }
 
 ///|
@@ -106,6 +131,7 @@ fn impl_target_root_name(ty : @core.Type) -> String? {
   }
 }
 
+///|
 fn import_trait_impls_for_type(
   env : @checker.TypeEnv,
   imported_env : @checker.TypeEnv,
@@ -120,11 +146,10 @@ fn import_trait_impls_for_type(
     if env.has_trait(local_trait_name) {
       for impl_def in imported_env.trait_impls_for(source_trait_name) {
         match impl_target_root_name(impl_def.target) {
-          Some(root_name) => {
+          Some(root_name) =>
             if root_name == source_type_name {
               maybe_add_trait_impl(env, local_trait_name, impl_def)
             }
-          }
           None => ()
         }
       }
@@ -794,59 +819,70 @@ pub fn XshDb::new() -> XshDb {
           // Now look up the import items in the main AST's Import statement
           for stmt in ast.stmts {
             match stmt {
-              @core.Stmt::Import(spec~, source~, ..) =>
+              @core.Stmt::Import(spec~, source~, span~) =>
                 if import_stmt_matches_spec(base_dir, source, imp) {
                   let trait_aliases = collect_import_trait_aliases(
                     spec, imported_env,
                   )
-                  // For each imported item, copy its type to current env
-                  for item in spec.items {
-                    let name = item.name
-                    let local_name = match item.rename {
-                      Some(n) => n
-                      None => name
-                    }
-                    // Only import if the symbol is exported
-                    if exported_names.contains(name) {
-                      if imported_env.has_trait(name) {
-                        let local_supertraits = resolve_imported_trait_supertraits(
-                          name,
-                          local_name,
-                          imported_env.trait_supertraits(name),
-                          trait_aliases,
-                        )
-                        env.import_trait(
-                          local_name,
-                          imported_env.trait_is_open(name),
-                          local_supertraits,
-                        )
-                        let impls = imported_env.trait_impls_for(name)
-                        for impl_def in impls {
-                          env.add_trait_impl(local_name, impl_def)
-                        }
+                  let import_symbol = fn(
+                    item : @core.ImportItem,
+                    source_name : String,
+                    target_name : String,
+                  ) -> Bool {
+                    let mut imported_any = false
+                    if import_item_accepts_trait(item) &&
+                      imported_env.has_trait(source_name) {
+                      let local_supertraits = resolve_imported_trait_supertraits(
+                        source_name,
+                        target_name,
+                        imported_env.trait_supertraits(source_name),
+                        trait_aliases,
+                      )
+                      env.import_trait(
+                        target_name,
+                        imported_env.trait_is_open(source_name),
+                        local_supertraits,
+                      )
+                      let impls = imported_env.trait_impls_for(source_name)
+                      for impl_def in impls {
+                        env.add_trait_impl(target_name, impl_def)
                       }
-                      match imported_env.get_scheme(name) {
-                        Some(scheme) => env.set_scheme(local_name, scheme)
+                      imported_any = true
+                    }
+                    if import_item_accepts_value(item, source_name) {
+                      match imported_env.get_scheme(source_name) {
+                        Some(scheme) => {
+                          env.set_scheme(target_name, scheme)
+                          imported_any = true
+                        }
                         None => ()
                       }
-                      // If it's an enum, also import the enum definition and all constructors
-                      match imported_env.get_enum_def(name) {
+                    }
+                    if import_item_accepts_type(item) {
+                      match imported_env.get_type_alias(source_name) {
+                        Some(type_alias) => {
+                          env.set_type_alias(target_name, type_alias)
+                          imported_any = true
+                        }
+                        None => ()
+                      }
+                    }
+                    // If it's an enum, also import the enum definition and all constructors.
+                    // Constructors always keep canonical names.
+                    if import_item_accepts_type(item) {
+                      match imported_env.get_enum_def(source_name) {
                         Some(enum_def) => {
-                          env.set_enum_def(local_name, enum_def)
+                          env.set_enum_def(target_name, enum_def)
+                          imported_any = true
                           import_trait_impls_for_type(
-                            env,
-                            imported_env,
-                            name,
-                            trait_aliases,
+                            env, imported_env, source_name, trait_aliases,
                           )
-                          // Import all constructors of this enum
                           for ctor in enum_def.ctors {
                             match imported_env.get_ctor(ctor.name) {
                               Some(ctor_info) =>
                                 env.set_ctor(ctor.name, ctor_info)
                               None => ()
                             }
-                            // Also import the constructor's scheme
                             match imported_env.get_scheme(ctor.name) {
                               Some(scheme) => env.set_scheme(ctor.name, scheme)
                               None => ()
@@ -854,6 +890,54 @@ pub fn XshDb::new() -> XshDb {
                           }
                         }
                         None => ()
+                      }
+                    }
+                    imported_any
+                  }
+                  let report_kind_mismatch = fn(
+                    item : @core.ImportItem,
+                    name : String,
+                  ) {
+                    if item.kind == @core.ImportKind::Value {
+                      return
+                    }
+                    diags.push(rt, @core.Diagnostic::{
+                      stage: "import",
+                      message: "expected " +
+                      import_kind_expected_label(item.kind) +
+                      " export: " +
+                      name,
+                      span: Some(span),
+                      hint: None,
+                      note: None,
+                    })
+                  }
+                  // For each imported item, copy symbols by declared kind.
+                  for item in spec.items {
+                    let name = item.name
+                    let local_name = match item.rename {
+                      Some(n) => n
+                      None => name
+                    }
+                    if exported_names.contains(name) {
+                      if not(import_symbol(item, name, local_name)) {
+                        report_kind_mismatch(item, name)
+                      }
+                    } else if item.rename is None {
+                      // Namespace import: `import { Int }` or `import { type Int }`
+                      // brings all `Int::...` exports.
+                      let prefix = name + "::"
+                      let mut imported_any = false
+                      for exported_name, _ in exported_names {
+                        if exported_name.has_prefix(prefix) {
+                          imported_any = true
+                          if not(import_symbol(item, exported_name, exported_name)) {
+                            report_kind_mismatch(item, exported_name)
+                          }
+                        }
+                      }
+                      if item.kind != @core.ImportKind::Value && not(imported_any) {
+                        report_kind_mismatch(item, name)
                       }
                     }
                   }

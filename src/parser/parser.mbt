@@ -1110,10 +1110,15 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   self.skip_trivia()
   if not(rec_flag) && not(mut_flag) {
     // Check if this is a pattern: tuple, record, or ctor
+    let next_kind = self.peek_non_trivia_kind(self.pos + 1)
+    let next2_kind = self.peek_non_trivia_kind(self.pos + 2)
     let is_pattern = self.peek_kind() == lparen() ||
       self.peek_kind() == record_kw() ||
       self.peek_kind() == lbracket() ||
-      (self.peek_kind() == name() && @core.is_ctor_name(self.peek().text()))
+      (self.peek_kind() == name() &&
+      @core.is_ctor_name(self.peek().text()) &&
+      (next_kind != double_colon() ||
+      (next_kind == double_colon() && next2_kind == lbrace())))
     if is_pattern {
       let pat = self.parse_pattern()
       let _ = self.expect(eq(), "=")
@@ -1123,16 +1128,33 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
       return @core.Stmt::LetPat(pat~, expr~, span~)
     }
   }
-  let name_tok = self.expect(name(), "name")
+  let binding_name = self.parse_type_member_name("name")
   let _ = self.expect(eq(), "=")
   let expr = self.parse_expr()
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
   if mut_flag {
-    @core.Stmt::LetMut(name=name_tok.text(), expr~, span~)
+    @core.Stmt::LetMut(name=binding_name, expr~, span~)
   } else {
-    @core.Stmt::Let(rec=rec_flag, name=name_tok.text(), expr~, span~)
+    @core.Stmt::Let(rec=rec_flag, name=binding_name, expr~, span~)
   }
+}
+
+///|
+fn AstParser::parse_type_member_name(
+  self : AstParser,
+  label : String,
+) -> String raise ParseError {
+  let base_tok = self.expect(name(), label)
+  let mut out = base_tok.text()
+  self.skip_trivia()
+  if self.peek_kind() == double_colon() {
+    let _ = self.bump()
+    self.skip_trivia()
+    let member_tok = self.expect(name(), label + " member")
+    out = out + "::" + member_tok.text()
+  }
+  out
 }
 
 ///|
@@ -1684,7 +1706,9 @@ fn AstParser::parse_import_stmt(
   let items : Array[@core.ImportItem] = []
   while self.peek_kind() != rbrace() {
     self.skip_trivia()
-    let name_tok = self.expect(name(), "import name")
+    let kind = self.parse_import_item_kind()
+    self.skip_trivia()
+    let import_name = self.parse_type_member_name("import name")
     self.skip_trivia()
     let rename : String? = if self.peek_kind() == as_kw() {
       let _ = self.bump()
@@ -1694,7 +1718,7 @@ fn AstParser::parse_import_stmt(
     } else {
       None
     }
-    items.push(@core.ImportItem::{ name: name_tok.text(), rename })
+    items.push(@core.ImportItem::{ kind, name: import_name, rename })
     self.skip_trivia()
     if self.peek_kind() == comma() {
       let _ = self.bump()
@@ -1712,6 +1736,21 @@ fn AstParser::parse_import_stmt(
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
   @core.Stmt::Import(spec~, source~, span~)
+}
+
+///|
+fn AstParser::parse_import_item_kind(
+  self : AstParser,
+) -> @core.ImportKind {
+  if self.peek_kind() == type_kw() {
+    let _ = self.bump()
+    @core.ImportKind::Type
+  } else if self.peek_kind() == trait_kw() {
+    let _ = self.bump()
+    @core.ImportKind::Trait
+  } else {
+    @core.ImportKind::Value
+  }
 }
 
 ///|
@@ -1963,8 +2002,7 @@ fn AstParser::parse_export_stmt(
     let names : Array[String] = []
     while self.peek_kind() != rbrace() {
       self.skip_trivia()
-      let name_tok = self.expect(name(), "export name")
-      names.push(name_tok.text())
+      names.push(self.parse_type_member_name("export name"))
       self.skip_trivia()
       if self.peek_kind() == comma() {
         let _ = self.bump()
@@ -3647,13 +3685,15 @@ fn AstParser::parse_call_or_primary(
   let tok = self.peek()
   let mut expr : @core.Expr = if tok.kind() == name() {
     let name_tok = self.bump()
+    let base_name = name_tok.text()
+    let mut qualified_name = base_name
     self.skip_trivia()
     // Check for single-parameter lambda: x -> expr
     if self.peek_kind() == thin_arrow() {
       let _ = self.bump() // consume ->
       self.skip_trivia()
       let param = @core.FuncParam::{
-        name: name_tok.text(),
+        name: base_name,
         label: @core.ParamLabel::Positional,
         ty: @core.Type::Unit, // Placeholder for inference
         bounds: [],
@@ -3694,7 +3734,7 @@ fn AstParser::parse_call_or_primary(
       let type_args = self.parse_call_type_args()
       self.skip_trivia()
       if self.peek_kind() == double_colon() &&
-        @core.is_ctor_name(name_tok.text()) {
+        @core.is_ctor_name(base_name) {
         // StructName[T]::{ field: value }
         let _ = self.bump() // consume ::
         self.skip_trivia()
@@ -3702,27 +3742,22 @@ fn AstParser::parse_call_or_primary(
         let fields = self.parse_struct_lit_fields()
         let _ = self.expect(rbrace(), "}")
         let span = self.span_from(start)
-        @core.Expr::StructLit(name=name_tok.text(), type_args~, fields~, span~)
+        @core.Expr::StructLit(name=base_name, type_args~, fields~, span~)
       } else if self.peek_kind() == lparen() {
         // name[Type](args) - generic function call
         let _ = self.bump()
         let args = self.parse_args()
         let _ = self.expect(rparen(), ")")
         let span = self.span_from(start)
-        @core.Expr::Call(name=name_tok.text(), type_args~, args~, span~)
+        @core.Expr::Call(name=qualified_name, type_args~, args~, span~)
       } else {
         // name[Type] without parens - might be generic function reference
         let span = self.span_from(start)
-        @core.Expr::Call(name=name_tok.text(), type_args~, args=[], span~)
+        @core.Expr::Call(name=qualified_name, type_args~, args=[], span~)
       }
-    } else if self.peek_kind() == lparen() {
-      let _ = self.bump()
-      let args = self.parse_args()
-      let _ = self.expect(rparen(), ")")
-      let span = self.span_from(start)
-      @core.Expr::Call(name=name_tok.text(), type_args=[], args~, span~)
     } else if self.peek_kind() == double_colon() &&
-      @core.is_ctor_name(name_tok.text()) {
+      @core.is_ctor_name(base_name) &&
+      self.peek_non_trivia_kind(self.pos + 1) == lbrace() {
       // StructName::{ field: value } or StructName[T]::{ field: value }
       let type_args : Array[@core.Type] = []
       let _ = self.bump() // consume ::
@@ -3731,14 +3766,38 @@ fn AstParser::parse_call_or_primary(
       let fields = self.parse_struct_lit_fields()
       let _ = self.expect(rbrace(), "}")
       let span = self.span_from(start)
-      @core.Expr::StructLit(name=name_tok.text(), type_args~, fields~, span~)
-    } else if name_tok.text() == "_" {
+      @core.Expr::StructLit(name=base_name, type_args~, fields~, span~)
+    } else if self.peek_kind() == double_colon() &&
+      self.peek_non_trivia_kind(self.pos + 1) == name() {
+      // Type-qualified symbol: Type::member
+      let _ = self.bump()
+      self.skip_trivia()
+      let member_tok = self.expect(name(), "member name")
+      qualified_name = base_name + "::" + member_tok.text()
+      self.skip_trivia()
+      if self.peek_kind() == lparen() {
+        let _ = self.bump()
+        let args = self.parse_args()
+        let _ = self.expect(rparen(), ")")
+        let span = self.span_from(start)
+        @core.Expr::Call(name=qualified_name, type_args=[], args~, span~)
+      } else {
+        let span = self.span_from(start)
+        @core.Expr::Ident(name=qualified_name, span~)
+      }
+    } else if self.peek_kind() == lparen() {
+      let _ = self.bump()
+      let args = self.parse_args()
+      let _ = self.expect(rparen(), ")")
+      let span = self.span_from(start)
+      @core.Expr::Call(name=qualified_name, type_args=[], args~, span~)
+    } else if base_name == "_" {
       // Placeholder for lambda shorthand: _ * 2 → x -> x * 2
       let span = self.span_from(start)
       @core.Expr::Placeholder(index=0, span~)
     } else {
       let span = self.span_from(start)
-      @core.Expr::Ident(name=name_tok.text(), span~)
+      @core.Expr::Ident(name=qualified_name, span~)
     }
   } else if tok.kind() == lparen() {
     // Parenthesized expression or tuple

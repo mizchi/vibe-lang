@@ -549,9 +549,19 @@ fn ImportSpec::structural_hash(self : ImportSpec) -> Int {
 
 ///|
 fn ImportItem::structural_hash(self : ImportItem) -> Int {
-  let mut h = self.name.hash()
+  let mut h = self.kind.structural_hash()
+  h = combine_hash(h, self.name.hash())
   h = combine_hash(h, self.rename.map(fn(r) { r.hash() }).unwrap_or(0))
   h
+}
+
+///|
+fn ImportKind::structural_hash(self : ImportKind) -> Int {
+  match self {
+    ImportKind::Value => 0
+    ImportKind::Type => 1
+    ImportKind::Trait => 2
+  }
 }
 
 ///|

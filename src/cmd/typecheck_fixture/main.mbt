@@ -1,7 +1,9 @@
 ///|
 fn usage() -> Unit {
   println("typecheck-fixture [--update] [--dir <path>]")
-  println("  --update      rewrite fixtures/*.diag from current typecheck output")
+  println(
+    "  --update      rewrite fixtures/*.diag from current typecheck output",
+  )
   println("  --dir <path>  fixture directory (default: fixtures/typecheck)")
 }
 

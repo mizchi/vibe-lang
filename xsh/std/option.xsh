@@ -74,12 +74,36 @@ let option_equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool {
   }
 }
 
-// Compatibility helpers kept for old examples
+// Short names (preferred): use with method-call desugar, e.g. opt.unwrap_or(0)
 let is_some = [T](opt: Option[T]) -> Bool { option_is_some(opt) }
 let is_none = [T](opt: Option[T]) -> Bool { option_is_none(opt) }
 let unwrap_or = [T](opt: Option[T], default: T) -> T { option_unwrap_or(opt, default) }
+let unwrap_or_else = [T](opt: Option[T], fallback: () -> T) -> T {
+  option_unwrap_or_else(opt, fallback)
+}
+// NOTE: `map` is currently a reserved keyword, so this short API uses `map_opt`.
+let map_opt = [A, B](opt: Option[A], f: (x: A) -> B) -> Option[B] {
+  option_map(opt, f)
+}
+let map_or = [A, B](opt: Option[A], default: B, f: (x: A) -> B) -> B {
+  option_map_or(opt, default, f)
+}
+let flatten = [T](opt: Option[Option[T]]) -> Option[T] { option_flatten(opt) }
+let flatmap = [A, B](opt: Option[A], f: (x: A) -> Option[B]) -> Option[B] {
+  option_flatmap(opt, f)
+}
+let filter = [T](opt: Option[T], pred: (x: T) -> Bool) -> Option[T] {
+  option_filter(opt, pred)
+}
+let zip = [A, B](a: Option[A], b: Option[B]) -> Option[(A, B)] { option_zip(a, b) }
+let and = [A, B](a: Option[A], b: Option[B]) -> Option[B] { option_and(a, b) }
+let or = [T](a: Option[T], b: Option[T]) -> Option[T] { option_or(a, b) }
+let or_else = [T](a: Option[T], fallback: () -> Option[T]) -> Option[T] {
+  option_or_else(a, fallback)
+}
+let equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool { option_equals(a, b) }
 
-let option_zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
+let zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
   match option_zip(a, b) {
     Some((x, y)) => Some(x + y),
     _ => None
@@ -169,17 +193,23 @@ test "option_map_or" {
   assert(eq(option_map_or(None, 7, len), 7))
 }
 
-test "option_zip_sum_compat" {
-  let zipped = option_zip_sum(Some(1), Some(2))
+test "option_zip_sum" {
+  let zipped = zip_sum(Some(1), Some(2))
   assert(eq(option_unwrap_or(zipped, 0), 3))
-  assert(option_is_none(option_zip_sum(None, Some(1))))
+  assert(option_is_none(zip_sum(None, Some(1))))
+}
+
+test "option_short_aliases" {
+  let len = (s: String) -> Int { string_length(s) }
+  let mapped = map_opt(Some("xy"), len)
+  assert(eq(unwrap_or(mapped, 0), 2))
+  assert(eq(map_or(None, 9, len), 9))
+  assert(equals(or(Some(1), None), Some(1)))
 }
 
 export {
   Eq,
-  option_is_some, option_is_none, option_unwrap_or,
-  option_unwrap_or_else, option_or, option_or_else, option_and, option_map_or,
-  option_map, option_flatten, option_flatmap, option_filter,
-  option_zip, option_equals, option_zip_sum,
-  is_some, is_none, unwrap_or
+  is_some, is_none, unwrap_or, unwrap_or_else,
+  map_opt, map_or, flatten, flatmap, filter, zip, and, or, or_else, equals,
+  zip_sum
 }

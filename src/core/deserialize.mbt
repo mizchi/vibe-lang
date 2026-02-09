@@ -728,11 +728,24 @@ fn parse_import_spec(json : Json) -> ImportSpec raise DeserializeError {
   let items : Array[ImportItem] = []
   for item in arr {
     let obj = expect_object(item)
+    let kind = parse_import_kind(get_string_opt(obj, "kind"))
     let name = get_string(obj, "name")
     let rename = get_string_opt(obj, "rename")
-    items.push(ImportItem::{ name, rename })
+    items.push(ImportItem::{ kind, name, rename })
   }
   ImportSpec::{ items, }
+}
+
+///|
+fn parse_import_kind(kind : String?) -> ImportKind raise DeserializeError {
+  match kind {
+    None => ImportKind::Value
+    Some("value") => ImportKind::Value
+    Some("type") => ImportKind::Type
+    Some("trait") => ImportKind::Trait
+    Some(other) =>
+      raise DeserializeError("Unknown import kind: " + other)
+  }
 }
 
 ///|

@@ -1,0 +1,10 @@
+import { is_empty, contains, replace_all } from "./xsh/std/string.xsh"
+
+let a = "".is_empty()
+let b = "hello world".contains("lo wo")
+let c = "foo bar foo".replace_all("foo", "x")
+
+if a && b && string_equals(c, "x bar x") { "ok" } else { "ng" }
+
+__DATA__
+{"last":"\"ok\""}

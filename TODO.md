@@ -130,6 +130,34 @@
 
 ## Next Up (Priority Order)
 
+- Language UX hard-point triage (spec/examples review):
+  - P0: Unify effect diagnostics for `effect-set` vs `do` boundary failures.
+    Emit a single grouped diagnostic that explains both missing declarations and
+    missing effect-allowed context with one fix path.
+    Coverage targets: `examples/effects.xsh` style wrappers and
+    `docs/xsh.md` effect examples.
+  - P0: Add a generics+effects fixture matrix (success/failure pairs).
+    Include higher-order wrappers with `with {e}`, localized `try/catch`, and
+    mixed trait-bound + effect-bound failures so users can see minimal patterns.
+  - P0: Add PosixMode command-head desugar diagnostics.
+    In `--syntax posix`, when an unresolved bare identifier is desugared to a
+    command head (`sh_lines("<name>")`), surface an explicit note so behavior is
+    predictable during migration.
+  - P1: Add desugar ambiguity diagnostics for postfix/property access.
+    When `expr.prop` can resolve as function-call desugar vs field access
+    fallback, emit candidate-aware diagnostics and suggested disambiguation.
+  - P1: Add `xsh explain-import <entry>` to visualize
+    `PathRef/HashRef/VersionRef/SymbolRef -> HashRef` normalization and lock
+    lookups (`xsh.lock` hit/miss reasons).
+  - P1: Improve trait openness diagnostics.
+    Distinguish sealed-trait, non-exported trait, and overlapping-impl failures
+    with dedicated error codes/messages.
+  - P2: Add formatter/lint quickfixes for grammar sharp edges.
+    Auto-fix declaration separators (`;`), placeholder misuse context hints, and
+    labeled-argument mistakes (`x~`/`y?`) where deterministic rewrites exist.
+  - P2: Split backend capability errors from language-level errors.
+    `compile` diagnostics should clearly classify unsupported backend features
+    (for example wasm-js-string storage limits) vs invalid xsh programs.
 - Implement explicit Text/Object conversion builtins:
   `from_lines` / `to_lines` and JSON-oriented variants (`from_json[l]`,
   `to_json[l]`) with typecheck + eval + docs + fixtures.
