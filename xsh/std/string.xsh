@@ -218,31 +218,31 @@ let string_replace_all = (s: String, pattern: String, replacement: String) -> St
 }
 
 // Short names (preferred): use with method-call desugar, e.g. "abc".contains("a")
-let is_empty = (s: String) -> Bool { string_is_empty(s) }
-let is_not_empty = (s: String) -> Bool { string_is_not_empty(s) }
-let head = (s: String) -> String { string_head(s) }
-let tail = (s: String) -> String { string_tail(s) }
-let last = (s: String) -> String { string_last(s) }
-let init = (s: String) -> String { string_init(s) }
-let take = (s: String, n: Int) -> String { string_take(s, n) }
-let drop = (s: String, n: Int) -> String { string_drop(s, n) }
-let repeat = (s: String, n: Int) -> String { string_repeat(s, n) }
-let pad_left = (s: String, target_len: Int, pad_char: String) -> String {
+export let is_empty = (s: String) -> Bool { string_is_empty(s) }
+export let is_not_empty = (s: String) -> Bool { string_is_not_empty(s) }
+export let head = (s: String) -> String { string_head(s) }
+export let tail = (s: String) -> String { string_tail(s) }
+export let last = (s: String) -> String { string_last(s) }
+export let init = (s: String) -> String { string_init(s) }
+export let take = (s: String, n: Int) -> String { string_take(s, n) }
+export let drop = (s: String, n: Int) -> String { string_drop(s, n) }
+export let repeat = (s: String, n: Int) -> String { string_repeat(s, n) }
+export let pad_left = (s: String, target_len: Int, pad_char: String) -> String {
   string_pad_left(s, target_len, pad_char)
 }
-let pad_right = (s: String, target_len: Int, pad_char: String) -> String {
+export let pad_right = (s: String, target_len: Int, pad_char: String) -> String {
   string_pad_right(s, target_len, pad_char)
 }
-let starts_with = (s: String, prefix: String) -> Bool { string_starts_with(s, prefix) }
-let ends_with = (s: String, suffix: String) -> Bool { string_ends_with(s, suffix) }
-let contains = (s: String, sub: String) -> Bool { string_contains(s, sub) }
-let index_of = (s: String, sub: String) -> Int { string_index_of(s, sub) }
-let last_index_of = (s: String, sub: String) -> Int { string_last_index_of(s, sub) }
-let count = (s: String, sub: String) -> Int { string_count(s, sub) }
-let replace = (s: String, pattern: String, replacement: String) -> String {
+export let starts_with = (s: String, prefix: String) -> Bool { string_starts_with(s, prefix) }
+export let ends_with = (s: String, suffix: String) -> Bool { string_ends_with(s, suffix) }
+export let contains = (s: String, sub: String) -> Bool { string_contains(s, sub) }
+export let index_of = (s: String, sub: String) -> Int { string_index_of(s, sub) }
+export let last_index_of = (s: String, sub: String) -> Int { string_last_index_of(s, sub) }
+export let count = (s: String, sub: String) -> Int { string_count(s, sub) }
+export let replace = (s: String, pattern: String, replacement: String) -> String {
   string_replace(s, pattern, replacement)
 }
-let replace_all = (s: String, pattern: String, replacement: String) -> String {
+export let replace_all = (s: String, pattern: String, replacement: String) -> String {
   string_replace_all(s, pattern, replacement)
 }
 
@@ -336,11 +336,4 @@ test "string_short_aliases" {
   assert(is_empty(""))
   assert(contains("hello", "ell"))
   assert(string_equals(replace_all("foo foo", "foo", "x"), "x x"))
-}
-
-// Export all public functions
-export {
-  is_empty, is_not_empty, head, tail, last, init, take, drop, repeat,
-  pad_left, pad_right, starts_with, ends_with, contains,
-  index_of, last_index_of, count, replace, replace_all
 }

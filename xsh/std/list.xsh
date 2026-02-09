@@ -1,34 +1,34 @@
 // List - generic std API
 // Ported from MoonBit core/list with xsh type-system constraints.
 
-enum List[T] { Nil; Cons(T, List[T]) }
+export enum List[T] { Nil; Cons(T, List[T]) }
 
 // Create empty list
-let list_empty = [T]() -> List[T] { Nil }
+export let list_empty = [T]() -> List[T] { Nil }
 
 // Create single-element list
-let list_singleton = [T](x: T) -> List[T] { Cons(x, Nil) }
+export let list_singleton = [T](x: T) -> List[T] { Cons(x, Nil) }
 
 // Prepend element (cons)
-let list_cons = [T](x: T, xs: List[T]) -> List[T] { Cons(x, xs) }
+export let list_cons = [T](x: T, xs: List[T]) -> List[T] { Cons(x, xs) }
 
 // Check if list is empty
-let list_is_empty = [T](xs: List[T]) -> Bool {
+export let list_is_empty = [T](xs: List[T]) -> Bool {
   match xs { Nil => true, _ => false }
 }
 
 // Get head of list (returns Option)
-let list_head = [T](xs: List[T]) -> Option[T] {
+export let list_head = [T](xs: List[T]) -> Option[T] {
   match xs { Cons(h, _) => Some(h), _ => None }
 }
 
 // Get tail of list
-let list_tail = [T](xs: List[T]) -> List[T] {
+export let list_tail = [T](xs: List[T]) -> List[T] {
   match xs { Cons(_, t) => t, _ => Nil }
 }
 
 // Get length of list
-let rec list_length = [T](xs: List[T]) -> Int {
+export let rec list_length = [T](xs: List[T]) -> Int {
   match xs {
     Nil => 0,
     Cons(_, t) => 1 + list_length(t)
@@ -36,7 +36,7 @@ let rec list_length = [T](xs: List[T]) -> Int {
 }
 
 // Reverse list
-let list_reverse = [T](xs: List[T]) -> List[T] {
+export let list_reverse = [T](xs: List[T]) -> List[T] {
   let rec go = (acc: List[T], rest: List[T]) -> List[T] {
     match rest {
       Nil => acc,
@@ -47,7 +47,7 @@ let list_reverse = [T](xs: List[T]) -> List[T] {
 }
 
 // Map over list
-let list_map = [A, B](f: (x: A) -> B, xs: List[A]) -> List[B] {
+export let list_map = [A, B](f: (x: A) -> B, xs: List[A]) -> List[B] {
   let rec go = (acc: List[B], rest: List[A]) -> List[B] {
     match rest {
       Nil => acc,
@@ -58,7 +58,7 @@ let list_map = [A, B](f: (x: A) -> B, xs: List[A]) -> List[B] {
 }
 
 // Fold left
-let list_fold = [A, B](f: (acc: B, x: A) -> B, init: B, xs: List[A]) -> B {
+export let list_fold = [A, B](f: (acc: B, x: A) -> B, init: B, xs: List[A]) -> B {
   let rec go = (acc: B, rest: List[A]) -> B {
     match rest {
       Nil => acc,
@@ -69,7 +69,7 @@ let list_fold = [A, B](f: (acc: B, x: A) -> B, init: B, xs: List[A]) -> B {
 }
 
 // Filter list
-let list_filter = [T](pred: (x: T) -> Bool, xs: List[T]) -> List[T] {
+export let list_filter = [T](pred: (x: T) -> Bool, xs: List[T]) -> List[T] {
   let rec go = (acc: List[T], rest: List[T]) -> List[T] {
     match rest {
       Nil => acc,
@@ -82,7 +82,7 @@ let list_filter = [T](pred: (x: T) -> Bool, xs: List[T]) -> List[T] {
 }
 
 // Append two lists
-let list_append = [T](xs: List[T], ys: List[T]) -> List[T] {
+export let list_append = [T](xs: List[T], ys: List[T]) -> List[T] {
   let rec go = (acc: List[T], rest: List[T]) -> List[T] {
     match rest {
       Nil => acc,
@@ -93,7 +93,7 @@ let list_append = [T](xs: List[T], ys: List[T]) -> List[T] {
 }
 
 // Nth element (0-indexed)
-let rec list_nth = [T](xs: List[T], n: Int) -> Option[T] {
+export let rec list_nth = [T](xs: List[T], n: Int) -> Option[T] {
   match xs {
     Nil => None,
     Cons(h, t) => if n == 0 { Some(h) } else { list_nth(t, n - 1) }
@@ -101,7 +101,7 @@ let rec list_nth = [T](xs: List[T], n: Int) -> Option[T] {
 }
 
 // Take first n elements
-let list_take = [T](n: Int, xs: List[T]) -> List[T] {
+export let list_take = [T](n: Int, xs: List[T]) -> List[T] {
   let rec go = (acc: List[T], rest: List[T], count: Int) -> List[T] {
     if count <= 0 { acc }
     else {
@@ -115,7 +115,7 @@ let list_take = [T](n: Int, xs: List[T]) -> List[T] {
 }
 
 // Drop first n elements
-let rec list_drop = [T](n: Int, xs: List[T]) -> List[T] {
+export let rec list_drop = [T](n: Int, xs: List[T]) -> List[T] {
   if n <= 0 { xs }
   else {
     match xs {
@@ -126,7 +126,7 @@ let rec list_drop = [T](n: Int, xs: List[T]) -> List[T] {
 }
 
 // Membership with explicit comparator
-let rec list_contains_by = [T](
+export let rec list_contains_by = [T](
   eq: (a: T, b: T) -> Bool,
   value: T,
   xs: List[T],
@@ -138,16 +138,16 @@ let rec list_contains_by = [T](
 }
 
 // Int-specialized helper kept for convenience
-let list_sum = (xs: List[Int]) -> Int {
+export let list_sum = (xs: List[Int]) -> Int {
   list_fold((acc: Int, x: Int) -> Int { acc + x }, 0, xs)
 }
 
 // Helper to create list from values
-let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
+export let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
   Cons(a, Cons(b, Cons(c, Nil)))
 }
 
-let list_of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
+export let list_of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
   Cons(a, Cons(b, Cons(c, Cons(d, Cons(e, Nil)))))
 }
 
@@ -244,12 +244,4 @@ test "list_contains_by" {
   let eq_string = (a: String, b: String) -> Bool { string_equals(a, b) }
   assert(list_contains_by(eq_string, "bb", xs))
   assert(not(list_contains_by(eq_string, "z", xs)))
-}
-
-// Export all public functions and types
-export {
-  List, list_empty, list_singleton, list_cons, list_is_empty,
-  list_head, list_tail, list_length, list_reverse, list_map,
-  list_fold, list_sum, list_filter, list_append, list_nth,
-  list_take, list_drop, list_contains_by, list_of3, list_of5
 }

@@ -113,25 +113,25 @@ export let Int::to_double = (x: Int) -> Double {
 }
 
 // Short names (preferred): use with method-call desugar, e.g. x.abs()
-let max_value = int_max_value
-let min_value = int_min_value
-let abs = (x: Int) -> Int { int_abs(x) }
-let max = (a: Int, b: Int) -> Int { int_max(a, b) }
-let min = (a: Int, b: Int) -> Int { int_min(a, b) }
-let clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
+export let max_value = int_max_value
+export let min_value = int_min_value
+export let abs = (x: Int) -> Int { int_abs(x) }
+export let max = (a: Int, b: Int) -> Int { int_max(a, b) }
+export let min = (a: Int, b: Int) -> Int { int_min(a, b) }
+export let clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
   int_clamp(x, min_val, max_val)
 }
-let signum = (x: Int) -> Int { int_signum(x) }
-let is_even = (x: Int) -> Bool { int_is_even(x) }
-let is_odd = (x: Int) -> Bool { int_is_odd(x) }
-let is_positive = (x: Int) -> Bool { int_is_positive(x) }
-let is_negative = (x: Int) -> Bool { int_is_negative(x) }
-let is_zero = (x: Int) -> Bool { int_is_zero(x) }
-let pow = (base: Int, exp: Int) -> Int { int_pow(base, exp) }
-let gcd = (a: Int, b: Int) -> Int { int_gcd(a, b) }
-let lcm = (a: Int, b: Int) -> Int { int_lcm(a, b) }
-let factorial = (n: Int) -> Int { int_factorial(n) }
-let fibonacci = (n: Int) -> Int { int_fibonacci(n) }
+export let signum = (x: Int) -> Int { int_signum(x) }
+export let is_even = (x: Int) -> Bool { int_is_even(x) }
+export let is_odd = (x: Int) -> Bool { int_is_odd(x) }
+export let is_positive = (x: Int) -> Bool { int_is_positive(x) }
+export let is_negative = (x: Int) -> Bool { int_is_negative(x) }
+export let is_zero = (x: Int) -> Bool { int_is_zero(x) }
+export let pow = (base: Int, exp: Int) -> Int { int_pow(base, exp) }
+export let gcd = (a: Int, b: Int) -> Int { int_gcd(a, b) }
+export let lcm = (a: Int, b: Int) -> Int { int_lcm(a, b) }
+export let factorial = (n: Int) -> Int { int_factorial(n) }
+export let fibonacci = (n: Int) -> Int { int_fibonacci(n) }
 
 // Tests
 test "int_abs" {
@@ -222,12 +222,4 @@ test "int_type_member_to_double" {
   let v = 7
   let d = v.to_double()
   assert(eq(double_to_int(d), 7))
-}
-
-// Export all public functions
-export {
-  max_value, min_value,
-  abs, max, min, clamp, signum,
-  is_even, is_odd, is_positive, is_negative, is_zero,
-  pow, gcd, lcm, factorial, fibonacci
 }

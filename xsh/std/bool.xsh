@@ -1,42 +1,42 @@
 // Bool utilities - ported from MoonBit core/bool
 
 // Convert bool to int (true=1, false=0)
-let bool_to_int = (b: Bool) -> Int {
+export let bool_to_int = (b: Bool) -> Int {
   if b { 1 } else { 0 }
 }
 
 // Convert int to bool (0=false, else=true)
-let int_to_bool = (n: Int) -> Bool {
+export let int_to_bool = (n: Int) -> Bool {
   n != 0
 }
 
 // Logical implication: a implies b
-let bool_implies = (a: Bool, b: Bool) -> Bool {
+export let bool_implies = (a: Bool, b: Bool) -> Bool {
   if a { b } else { true }
 }
 
 // Exclusive or
-let bool_xor = (a: Bool, b: Bool) -> Bool {
+export let bool_xor = (a: Bool, b: Bool) -> Bool {
   if a { not(b) } else { b }
 }
 
 // NAND (not and)
-let bool_nand = (a: Bool, b: Bool) -> Bool {
+export let bool_nand = (a: Bool, b: Bool) -> Bool {
   not(a && b)
 }
 
 // NOR (not or)
-let bool_nor = (a: Bool, b: Bool) -> Bool {
+export let bool_nor = (a: Bool, b: Bool) -> Bool {
   not(a || b)
 }
 
 // All predicates true
-let bool_all3 = (a: Bool, b: Bool, c: Bool) -> Bool {
+export let bool_all3 = (a: Bool, b: Bool, c: Bool) -> Bool {
   a && b && c
 }
 
 // Any predicate true
-let bool_any3 = (a: Bool, b: Bool, c: Bool) -> Bool {
+export let bool_any3 = (a: Bool, b: Bool, c: Bool) -> Bool {
   a || b || c
 }
 
@@ -92,10 +92,4 @@ test "bool_any3" {
   assert(bool_any3(true, false, false))
   assert(bool_any3(false, true, false))
   assert(not(bool_any3(false, false, false)))
-}
-
-// Export all public functions
-export {
-  bool_to_int, int_to_bool, bool_implies, bool_xor,
-  bool_nand, bool_nor, bool_all3, bool_any3
 }

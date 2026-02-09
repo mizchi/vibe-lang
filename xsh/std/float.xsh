@@ -1,66 +1,66 @@
 // Float utilities - ported from MoonBit core/float
 
 // Float equality check
-let float_eq = (a: Float, b: Float) -> Bool {
+export let float_eq = (a: Float, b: Float) -> Bool {
   a == b
 }
 
 // Absolute value
-let float_abs = (x: Float) -> Float {
+export let float_abs = (x: Float) -> Float {
   if x < 0.0f { 0.0f - x } else { x }
 }
 
 // Sign of float: -1.0f, 0.0f, or 1.0f
-let float_signum = (x: Float) -> Float {
+export let float_signum = (x: Float) -> Float {
   if x < 0.0f { 0.0f - 1.0f }
   else if x > 0.0f { 1.0f }
   else { 0.0f }
 }
 
 // Check if NaN (x != x is only true for NaN)
-let float_is_nan = (x: Float) -> Bool {
+export let float_is_nan = (x: Float) -> Bool {
   not(x == x)
 }
 
 // Check if positive
-let float_is_positive = (x: Float) -> Bool {
+export let float_is_positive = (x: Float) -> Bool {
   x > 0.0f
 }
 
 // Check if negative
-let float_is_negative = (x: Float) -> Bool {
+export let float_is_negative = (x: Float) -> Bool {
   x < 0.0f
 }
 
 // Check if zero
-let float_is_zero = (x: Float) -> Bool {
+export let float_is_zero = (x: Float) -> Bool {
   x == 0.0f
 }
 
 // Maximum of two floats
-let float_max = (a: Float, b: Float) -> Float {
+export let float_max = (a: Float, b: Float) -> Float {
   if a > b { a } else { b }
 }
 
 // Minimum of two floats
-let float_min = (a: Float, b: Float) -> Float {
+export let float_min = (a: Float, b: Float) -> Float {
   if a < b { a } else { b }
 }
 
 // Clamp value between min and max
-let float_clamp = (x: Float, min_val: Float, max_val: Float) -> Float {
+export let float_clamp = (x: Float, min_val: Float, max_val: Float) -> Float {
   if x < min_val { min_val }
   else if x > max_val { max_val }
   else { x }
 }
 
 // Square
-let float_square = (x: Float) -> Float {
+export let float_square = (x: Float) -> Float {
   x * x
 }
 
 // Linear interpolation (lerp)
-let float_lerp = (a: Float, b: Float, t: Float) -> Float {
+export let float_lerp = (a: Float, b: Float, t: Float) -> Float {
   a + (b - a) * t
 }
 
@@ -107,10 +107,3 @@ test "float_lerp" {
 }
 
 // Export
-export {
-  float_eq,
-  float_abs, float_signum, float_is_nan,
-  float_is_positive, float_is_negative, float_is_zero,
-  float_max, float_min, float_clamp,
-  float_square, float_lerp
-}

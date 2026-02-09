@@ -1,6 +1,6 @@
 // Option utilities - trait/generic-oriented std API
 
-trait Eq
+export trait Eq
 impl Eq for Int
 impl Eq for Float
 impl Eq for Double
@@ -75,35 +75,35 @@ let option_equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool {
 }
 
 // Short names (preferred): use with method-call desugar, e.g. opt.unwrap_or(0)
-let is_some = [T](opt: Option[T]) -> Bool { option_is_some(opt) }
-let is_none = [T](opt: Option[T]) -> Bool { option_is_none(opt) }
-let unwrap_or = [T](opt: Option[T], default: T) -> T { option_unwrap_or(opt, default) }
-let unwrap_or_else = [T](opt: Option[T], fallback: () -> T) -> T {
+export let is_some = [T](opt: Option[T]) -> Bool { option_is_some(opt) }
+export let is_none = [T](opt: Option[T]) -> Bool { option_is_none(opt) }
+export let unwrap_or = [T](opt: Option[T], default: T) -> T { option_unwrap_or(opt, default) }
+export let unwrap_or_else = [T](opt: Option[T], fallback: () -> T) -> T {
   option_unwrap_or_else(opt, fallback)
 }
 // NOTE: `map` is currently a reserved keyword, so this short API uses `map_opt`.
-let map_opt = [A, B](opt: Option[A], f: (x: A) -> B) -> Option[B] {
+export let map_opt = [A, B](opt: Option[A], f: (x: A) -> B) -> Option[B] {
   option_map(opt, f)
 }
-let map_or = [A, B](opt: Option[A], default: B, f: (x: A) -> B) -> B {
+export let map_or = [A, B](opt: Option[A], default: B, f: (x: A) -> B) -> B {
   option_map_or(opt, default, f)
 }
-let flatten = [T](opt: Option[Option[T]]) -> Option[T] { option_flatten(opt) }
-let flatmap = [A, B](opt: Option[A], f: (x: A) -> Option[B]) -> Option[B] {
+export let flatten = [T](opt: Option[Option[T]]) -> Option[T] { option_flatten(opt) }
+export let flatmap = [A, B](opt: Option[A], f: (x: A) -> Option[B]) -> Option[B] {
   option_flatmap(opt, f)
 }
-let filter = [T](opt: Option[T], pred: (x: T) -> Bool) -> Option[T] {
+export let filter = [T](opt: Option[T], pred: (x: T) -> Bool) -> Option[T] {
   option_filter(opt, pred)
 }
-let zip = [A, B](a: Option[A], b: Option[B]) -> Option[(A, B)] { option_zip(a, b) }
-let and = [A, B](a: Option[A], b: Option[B]) -> Option[B] { option_and(a, b) }
-let or = [T](a: Option[T], b: Option[T]) -> Option[T] { option_or(a, b) }
-let or_else = [T](a: Option[T], fallback: () -> Option[T]) -> Option[T] {
+export let zip = [A, B](a: Option[A], b: Option[B]) -> Option[(A, B)] { option_zip(a, b) }
+export let and = [A, B](a: Option[A], b: Option[B]) -> Option[B] { option_and(a, b) }
+export let or = [T](a: Option[T], b: Option[T]) -> Option[T] { option_or(a, b) }
+export let or_else = [T](a: Option[T], fallback: () -> Option[T]) -> Option[T] {
   option_or_else(a, fallback)
 }
-let equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool { option_equals(a, b) }
+export let equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool { option_equals(a, b) }
 
-let zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
+export let zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
   match option_zip(a, b) {
     Some((x, y)) => Some(x + y),
     _ => None
@@ -207,9 +207,3 @@ test "option_short_aliases" {
   assert(equals(or(Some(1), None), Some(1)))
 }
 
-export {
-  Eq,
-  is_some, is_none, unwrap_or, unwrap_or_else,
-  map_opt, map_or, flatten, flatmap, filter, zip, and, or, or_else, equals,
-  zip_sum
-}

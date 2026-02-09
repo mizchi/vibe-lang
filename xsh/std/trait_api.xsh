@@ -1,13 +1,13 @@
 // Trait-oriented core API for std modules.
 
-trait Eq
-trait Ord
-trait Show
-trait Add
-trait Sub
-trait Mul
-trait Div
-trait Signed
+export trait Eq
+export trait Ord
+export trait Show
+export trait Add
+export trait Sub
+export trait Mul
+export trait Div
+export trait Signed
 
 impl Eq for Int
 impl Eq for Float
@@ -42,61 +42,61 @@ impl Signed for Int
 impl Signed for Float
 impl Signed for Double
 
-let cmp_eq = [T: Eq](a: T, b: T) -> Bool {
+export let cmp_eq = [T: Eq](a: T, b: T) -> Bool {
   a == b
 }
 
-let cmp_ne = [T: Eq](a: T, b: T) -> Bool {
+export let cmp_ne = [T: Eq](a: T, b: T) -> Bool {
   not(cmp_eq(a, b))
 }
 
-let ord_min = [T: Ord](a: T, b: T) -> T {
+export let ord_min = [T: Ord](a: T, b: T) -> T {
   if a < b { a } else { b }
 }
 
-let ord_max = [T: Ord](a: T, b: T) -> T {
+export let ord_max = [T: Ord](a: T, b: T) -> T {
   if a > b { a } else { b }
 }
 
-let ord_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
+export let ord_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
   if x < min_val { min_val }
   else if x > max_val { max_val }
   else { x }
 }
 
-let ord_between = [T: Ord + Eq](x: T, min_val: T, max_val: T) -> Bool {
+export let ord_between = [T: Ord + Eq](x: T, min_val: T, max_val: T) -> Bool {
   x >= min_val && x <= max_val
 }
 
-let num_add = [T: Add](a: T, b: T) -> T {
+export let num_add = [T: Add](a: T, b: T) -> T {
   a + b
 }
 
-let num_sub = [T: Sub](a: T, b: T) -> T {
+export let num_sub = [T: Sub](a: T, b: T) -> T {
   a - b
 }
 
-let num_mul = [T: Mul](a: T, b: T) -> T {
+export let num_mul = [T: Mul](a: T, b: T) -> T {
   a * b
 }
 
-let num_div = [T: Div](a: T, b: T) -> T {
+export let num_div = [T: Div](a: T, b: T) -> T {
   a / b
 }
 
-let num_abs = [T: Signed + Ord + Sub](x: T) -> T {
+export let num_abs = [T: Signed + Ord + Sub](x: T) -> T {
   if x < 0 { 0 - x } else { x }
 }
 
-let num_square = [T: Mul](x: T) -> T {
+export let num_square = [T: Mul](x: T) -> T {
   x * x
 }
 
-let num_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
+export let num_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
   ord_clamp(x, min_val, max_val)
 }
 
-let to_string = [T: Show](x: T) -> String {
+export let to_string = [T: Show](x: T) -> String {
   __to_string(x)
 }
 
@@ -138,10 +138,3 @@ test "to_string generic" {
   assert(string_equals(to_string(true), "true"))
 }
 
-export {
-  Eq, Ord, Show, Add, Sub, Mul, Div, Signed,
-  cmp_eq, cmp_ne,
-  ord_min, ord_max, ord_clamp, ord_between,
-  num_add, num_sub, num_mul, num_div, num_abs, num_square, num_clamp,
-  to_string
-}
