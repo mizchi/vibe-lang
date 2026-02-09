@@ -15,11 +15,12 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 | `bool.xsh` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
 | `string.xsh` | 16 | String helpers (`head`, `tail`, `take`, `drop`, `contains`, `count`, `replace`, `replace_all`) |
 | `io.xsh` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
+| `threads.xsh` | 7 | Experimental threads contracts (`task/channel/actor/deployment_plan`) + runtime wrappers (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`) |
 | `wasm/types.xsh` | 6 | WASM type alias entrypoint (`i32`/`f32`/`f64`, `I32`/`F32`/`F64`) |
 | `wasm/opcodes.xsh` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
 | `wasm/io_stream.xsh` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
-**Total: 108 tests**
+**Total: 115 tests**
 
 Tests are separated into `*_test.xsh` files (for example, `string_test.xsh` for `string.xsh`).
 
@@ -107,6 +108,7 @@ just run test \
   xsh/std/option_test.xsh \
   xsh/std/string_test.xsh \
   xsh/std/io_test.xsh \
+  xsh/std/threads_test.xsh \
   xsh/std/wasm/types_test.xsh \
   xsh/std/wasm/opcodes_test.xsh \
   xsh/std/wasm/io_stream_test.xsh
@@ -120,4 +122,8 @@ wasmtime run --invoke run /tmp/test.wasm  # -> 484 (untagged: 121)
 
 - `xsh/std/test_import.xsh` is only for compilation validation (no `test` blocks).
 - `xsh/std/io.xsh` depends on `string_*` builtins, so it is primarily interpreter-oriented rather than pure Core WASM (`--wasm`) today.
+- `xsh/std/threads.xsh` では runtime wrappers
+  (`probe_wat` / `runtime_hints` / `channel_new` / `spawn` / `send` / `recv` / `wait`)
+  の実行に `--unstable-threads` が必要。
+  `task_spec` / `channel_spec` / `actor_spec` / `deployment_plan` / `recommended_*` は通常テストで実行可能。
 - `xsh/std/wasm/io_stream.xsh` is a stream I/O / TUI helper API for Core WASM components.

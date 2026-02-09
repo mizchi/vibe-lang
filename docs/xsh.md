@@ -65,6 +65,12 @@ Rules:
   - `stdin_read_char()` requires `{Stdin}`
   - `stdin_read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
+- Runtime gate (current CLI behavior):
+  - `sleep(...)`, `await`, `yield` execution is disabled by default.
+  - enable with `--unstable-async` (`xsh run/test/repl/bench ...`).
+  - `threads_probe_wat()` execution is disabled by default.
+  - `threads_runtime_hints()` execution is disabled by default.
+  - enable with `--unstable-threads`.
 
 ### Effect-set vs do-boundary (current implementation)
 
@@ -162,6 +168,11 @@ Constraints:
 
 This is equivalent to "borrow across await" being forbidden.
 
+Discard binding (`let _ = ...`):
+- `_` is a wildcard discard binding and is not stored in value/type namespaces.
+- `let _ = ...` can be used multiple times in the same scope.
+- `let rec _ = ...` is rejected.
+
 ## Labeled arguments (MoonBit-style)
 
 Definition:
@@ -213,6 +224,21 @@ StdIO (wasi stream primitives for wasm/component-friendly interop):
   - `stdout_write_stream` -> same as `stdout_write_char` (single host call for whole chunk)
   - `stdin_read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
   - `stdin_read_stream` -> same as `stdin_read_char` (cabi read-buffer -> xsh string)
+
+Threads (experimental, runtime-gated by `--unstable-threads`):
+- `threads_probe_wat()` -> `String`
+- `threads_runtime_hints()` -> `{ wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String }`
+- `threads_channel_new(capacity: Int)` -> `Int` (channel id)
+- `threads_send(channel_id: Int, message: String)` -> `Bool`
+- `threads_recv(channel_id: Int)` -> `String` (`""` when empty)
+- `threads_spawn(name: String, channel_id: Int)` -> `Int` (task id)
+- `threads_wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
+- `xsh/std/threads.xsh` は test-safe な pure contract 層を分離:
+  - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
+  - これらは通常 `xsh test` で実行可能
+  - runtime 呼び出し
+    (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`)
+    のみ `--unstable-threads` 必須
 
 Generated contract table:
 - `docs/builtin_contract_table.generated.md`
@@ -638,6 +664,8 @@ Rules:
   start the next iteration.
 - `await expr` requires `{Async}` and returns the inner expression type.
 - `yield expr` requires `{Async}` and returns `Unit`.
+- Runtime execution for `await` / `yield` is gated by `--unstable-async`
+  (disabled by default in CLI entrypoints).
 
 ## Test blocks (MoonBit-style)
 

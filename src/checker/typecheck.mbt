@@ -1367,14 +1367,16 @@ fn type_check_stmts(
         let scheme = type_let_expr(
           env, rec, name, expr, span, aliases, effects, allow_effect,
         )
-        if exported_names.contains(name) {
-          env.set_exported_scheme(name, scheme)
-        } else {
-          env.set_scheme(name, scheme)
+        if name != "_" {
+          if exported_names.contains(name) {
+            env.set_exported_scheme(name, scheme)
+          } else {
+            env.set_scheme(name, scheme)
+          }
+          let info = purity_for_let(env, rec, name, expr)
+          env.set_purity(name, info.value)
+          record_value_binding(name)
         }
-        let info = purity_for_let(env, rec, name, expr)
-        env.set_purity(name, info.value)
-        record_value_binding(name)
       }
       @core.Stmt::EnumDef(name~, params~, ctors~, span~) =>
         register_enum_def(env, name, params, ctors, span)
@@ -1403,10 +1405,12 @@ fn type_check_stmts(
         let scheme = type_let_expr(
           env, rec, name, expr, span, aliases, effects, allow_effect,
         )
-        env.set_exported_scheme(name, scheme)
-        let info = purity_for_let(env, rec, name, expr)
-        env.set_purity(name, info.value)
-        record_value_binding(name)
+        if name != "_" {
+          env.set_exported_scheme(name, scheme)
+          let info = purity_for_let(env, rec, name, expr)
+          env.set_purity(name, info.value)
+          record_value_binding(name)
+        }
       }
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
         register_enum_def(env, name, params, ctors, span)
@@ -1429,20 +1433,22 @@ fn type_check_stmts(
       @core.Stmt::LetMut(name~, expr~, span~) => {
         ensure_fresh_value_binding(name, span)
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
-        let scheme = TypeScheme::{
-          vars: [],
-          num_vars: [],
-          effect_vars: [],
-          trait_bounds: {},
-          ty,
+        if name != "_" {
+          let scheme = TypeScheme::{
+            vars: [],
+            num_vars: [],
+            effect_vars: [],
+            trait_bounds: {},
+            ty,
+          }
+          if exported_names.contains(name) {
+            env.set_exported_scheme(name, scheme)
+          } else {
+            env.set_scheme(name, scheme)
+          }
+          env.set_purity(name, false)
+          record_value_binding(name)
         }
-        if exported_names.contains(name) {
-          env.set_exported_scheme(name, scheme)
-        } else {
-          env.set_scheme(name, scheme)
-        }
-        env.set_purity(name, false)
-        record_value_binding(name)
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
@@ -4512,14 +4518,7 @@ fn type_call(
       match ty {
         @core.Type::Func(params~, ret~, effects=fn_effects) => {
           check_call_args(
-            env,
-            lookup_name,
-            params,
-            args,
-            aliases,
-            effects,
-            allow_effect,
-            call_span,
+            env, lookup_name, params, args, aliases, effects, allow_effect, call_span,
           )
           require_effects(env, effects, fn_effects, call_span)
           ret
@@ -4743,6 +4742,214 @@ fn type_call(
                   )
                 }
                 @core.Type::Unit
+              }
+              "threads_probe_wat" => {
+                let pos_args = extract_positional_args(
+                  args,
+                  "threads_probe_wat",
+                  call_span,
+                )
+                if pos_args.length() != 0 {
+                  raise TypeError::BadCall(
+                    message="threads_probe_wat",
+                    span=call_span,
+                  )
+                }
+                @core.Type::String
+              }
+              "threads_runtime_hints" => {
+                let pos_args = extract_positional_args(
+                  args,
+                  "threads_runtime_hints",
+                  call_span,
+                )
+                if pos_args.length() != 0 {
+                  raise TypeError::BadCall(
+                    message="threads_runtime_hints",
+                    span=call_span,
+                  )
+                }
+                let fields : Map[String, @core.Type] = {}
+                fields["wasm_flags"] = @core.Type::Array(@core.Type::String)
+                fields["wasi_flags"] = @core.Type::Array(@core.Type::String)
+                fields["wasm_env"] = @core.Type::String
+                fields["wasi_env"] = @core.Type::String
+                @core.Type::Record(fields)
+              }
+              "threads_channel_new" => {
+                let pos_args = extract_positional_args(
+                  args,
+                  "threads_channel_new",
+                  call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="threads_channel_new",
+                    span=call_span,
+                  )
+                }
+                let cap_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, cap_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=cap_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "threads_send" => {
+                let pos_args = extract_positional_args(
+                  args,
+                  "threads_send",
+                  call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="threads_send",
+                    span=call_span,
+                  )
+                }
+                let channel_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, channel_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=channel_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let message_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, message_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=message_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "threads_recv" => {
+                let pos_args = extract_positional_args(
+                  args,
+                  "threads_recv",
+                  call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="threads_recv",
+                    span=call_span,
+                  )
+                }
+                let channel_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, channel_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=channel_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "threads_spawn" => {
+                let pos_args = extract_positional_args(
+                  args,
+                  "threads_spawn",
+                  call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="threads_spawn",
+                    span=call_span,
+                  )
+                }
+                let name_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, name_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=name_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let mailbox_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, mailbox_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=mailbox_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "threads_wait" => {
+                let pos_args = extract_positional_args(
+                  args,
+                  "threads_wait",
+                  call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="threads_wait",
+                    span=call_span,
+                  )
+                }
+                let task_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, task_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=task_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
               }
               "stdout_write_char" => {
                 let pos_args = extract_positional_args(
@@ -6778,6 +6985,9 @@ fn type_let_expr(
   effects : EffectScope,
   allow_effect : Bool,
 ) -> TypeScheme raise TypeError {
+  if rec && name == "_" {
+    raise TypeError::BadRec(message="wildcard binding cannot be recursive", span~)
+  }
   if rec {
     match expr {
       @core.Expr::Fn(

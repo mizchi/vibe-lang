@@ -150,8 +150,7 @@ pub fn prelude_ast() -> @core.Module {
 pub fn prelude_names() -> Array[String] {
   [
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "to_string",
-    "array_map",
-    "array_fold", "array_filter", "array_foreach", "array_concat", "array_reverse",
+    "array_map", "array_fold", "array_filter", "array_foreach", "array_concat", "array_reverse",
     "array_any", "array_all", "array_find", "where",
   ]
 }

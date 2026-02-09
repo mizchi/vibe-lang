@@ -1,16 +1,20 @@
 ///|
 /// CLI entry logic for xsh
 pub fn run(args : Array[String]) -> Unit {
-  if args.length() <= 1 {
-    print_usage()
-    return
-  }
-  let cmd = args[1]
-  let raw_cmd_args = args_tail(args, 2)
-  let (syntax_mode, cmd_args) = match parse_cli_syntax_args(raw_cmd_args, cmd) {
+  let parsed = match parse_cli_dispatch_args(args) {
     Ok(v) => v
-    Err(msg) => abort(msg)
+    Err(_) => {
+      print_usage()
+      return
+    }
   }
+  let cmd = parsed.cmd
+  let cmd_args = parsed.cmd_args
+  let syntax_mode = parsed.syntax_mode
+  let runtime_features = @xsh_lib.RuntimeFeatureFlags::new(
+    parsed.unstable_async,
+    parsed.unstable_threads,
+  )
   if command_requires_parser(cmd) {
     match ensure_cli_parser_mode_supported(syntax_mode, cmd) {
       Ok(_) => ()
@@ -18,16 +22,16 @@ pub fn run(args : Array[String]) -> Unit {
     }
   }
   match cmd {
-    "run" => run_cmd(cmd_args, syntax_mode)
-    "test" => test_cmd(cmd_args)
+    "run" => run_cmd(cmd_args, syntax_mode, runtime_features)
+    "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
     "fmt" => fmt_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
-    "bench" => bench_cmd(cmd_args, syntax_mode)
-    "bench-file" => bench_file_cmd(cmd_args)
-    "repl" => repl_cmd(cmd_args, syntax_mode)
-    "repl-stdin" => repl_stdin_cmd(cmd_args, syntax_mode)
-    "repl-wasi" => repl_wasi_cmd(cmd_args, syntax_mode)
+    "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
+    "bench-file" => bench_file_cmd(cmd_args, runtime_features)
+    "repl" => repl_cmd(cmd_args, syntax_mode, runtime_features)
+    "repl-stdin" => repl_stdin_cmd(cmd_args, syntax_mode, runtime_features)
+    "repl-wasi" => repl_wasi_cmd(cmd_args, syntax_mode, runtime_features)
     "wasm-repl-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
@@ -84,6 +88,7 @@ fn print_usage() -> Unit {
   println("  index <build|query|verify|wal> ...  advanced graph index (POC)")
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax xsh|posix (default: xsh)")
+  println("  runtime flags: --unstable-async --unstable-threads")
 }
 
 ///|
@@ -93,6 +98,16 @@ fn args_tail(args : Array[String], start : Int) -> Array[String] {
     out.push(args[i])
   }
   out
+}
+
+///|
+fn new_runtime_with_features(
+  features : @xsh_lib.RuntimeFeatureFlags,
+) -> @xsh_lib.Runtime {
+  @xsh_lib.Runtime::new_with_features(
+    @capability.CapabilitySet::developer(),
+    features,
+  )
 }
 
 ///|
@@ -380,7 +395,11 @@ fn compile_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn run_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
+fn run_cmd(
+  args : Array[String],
+  syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
+) -> Unit {
   if args.length() != 1 {
     abort("run: expected <file>")
   }
@@ -393,7 +412,7 @@ fn run_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
           let compiled = @xsh_lib.compile_module(db, entry) catch {
             e => abort("run: " + e.to_string())
           }
-          let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+          let rt = new_runtime_with_features(features)
           rt.set_type_env(compiled.type_env)
           // Build path-to-hash mapping and load imported modules into runtime cache
           let path_to_hash : Map[String, String] = {}
@@ -443,7 +462,7 @@ fn run_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
       let source = @os_fs.read_file_to_string(resolved) catch {
         e => abort("run: " + e.to_string())
       }
-      let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+      let rt = new_runtime_with_features(features)
       let result = rt.eval_script_with_mode(source, syntax_mode) catch {
         e => abort("run: " + e.to_string())
       }
@@ -565,7 +584,10 @@ fn check_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn test_cmd(args : Array[String]) -> Unit {
+fn test_cmd(
+  args : Array[String],
+  features : @xsh_lib.RuntimeFeatureFlags,
+) -> Unit {
   if args.length() == 0 {
     abort("test: expected <file|dir...>")
   }
@@ -592,7 +614,7 @@ fn test_cmd(args : Array[String]) -> Unit {
             continue
           }
         }
-        let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+        let rt = new_runtime_with_features(features)
         rt.set_type_env(compiled.type_env)
         // Build path-to-hash mapping and load imported modules into runtime cache
         let path_to_hash : Map[String, String] = {}
@@ -697,8 +719,9 @@ fn run_bench_case(
   count : Int,
   warmup : Int,
   syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
 ) -> (Double, Double) {
-  let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+  let rt = new_runtime_with_features(features)
   for _ in 0..<warmup {
     let _ = rt.eval_script_with_mode(case_item.expr, syntax_mode) catch {
       e => abort("bench: " + case_item.name + ": " + e.to_string())
@@ -719,7 +742,11 @@ fn run_bench_case(
 }
 
 ///|
-fn bench_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
+fn bench_cmd(
+  args : Array[String],
+  syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
+) -> Unit {
   let mut count = 20000
   let mut warmup = 1000
   let mut expr : String? = None
@@ -797,7 +824,7 @@ fn bench_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
   let mut total_ms = 0.0
   for case_item in cases {
     let (elapsed_ms, per_us) = run_bench_case(
-      case_item, count, warmup, syntax_mode,
+      case_item, count, warmup, syntax_mode, features,
     )
     total_ms += elapsed_ms
     if elapsed_ms <= 0.0 {
@@ -844,7 +871,10 @@ fn bench_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
 }
 
 ///|
-fn bench_file_cmd(args : Array[String]) -> Unit {
+fn bench_file_cmd(
+  args : Array[String],
+  features : @xsh_lib.RuntimeFeatureFlags,
+) -> Unit {
   let mut count = 1000
   let mut warmup = 10
   let mut entry_path : String? = None
@@ -895,7 +925,7 @@ fn bench_file_cmd(args : Array[String]) -> Unit {
   match entry_path {
     None => abort("bench-file: missing <file>")
     Some(path) => {
-      let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+      let rt = new_runtime_with_features(features)
       for _ in 0..<warmup {
         let compiled = match compile_entry(path) {
           Err(err) => abort("bench-file: " + err)
@@ -954,11 +984,15 @@ fn OverlayRect::eq(self : OverlayRect, other : OverlayRect) -> Bool {
 }
 
 ///|
-fn repl_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
+fn repl_cmd(
+  args : Array[String],
+  syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
+) -> Unit {
   if args.length() != 0 {
     abort("repl: no args supported")
   }
-  let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+  let rt = new_runtime_with_features(features)
   let (initial_cols, initial_rows) = @tui.get_terminal_size()
   let (app, cleanup) = @tui.init_vnode_terminal(
     initial_cols, initial_rows, @tui.print_raw,
@@ -1591,16 +1625,22 @@ fn repl_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
 fn repl_stdin_cmd(
   args : Array[String],
   syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
 ) -> Unit {
-  run_eval_line_repl_with_prompt(args, "repl-stdin", "xsh> ", syntax_mode)
+  run_eval_line_repl_with_prompt(
+    args, "repl-stdin", "xsh> ", syntax_mode, features,
+  )
 }
 
 ///|
 fn repl_wasi_cmd(
   args : Array[String],
   syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
 ) -> Unit {
-  run_eval_line_repl_with_prompt(args, "repl-wasi", "wasi> ", syntax_mode)
+  run_eval_line_repl_with_prompt(
+    args, "repl-wasi", "wasi> ", syntax_mode, features,
+  )
 }
 
 ///|
@@ -1620,13 +1660,14 @@ fn run_eval_line_repl_with_prompt(
   cmd_name : String,
   prompt : String,
   syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
 ) -> Unit {
   let options = match parse_line_repl_options(args, cmd_name, prompt) {
     Ok(opts) => opts
     Err(msg) => abort(msg)
   }
   async fn repl_loop() {
-    let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+    let rt = new_runtime_with_features(features)
     let input = @stdio.stdin
     print_line_repl_tty_mode(options.io_mode)
     if options.prompt_enabled {

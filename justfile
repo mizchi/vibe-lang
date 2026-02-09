@@ -27,7 +27,7 @@ check:
 # Run tests (includes fixtures, examples, and core std library)
 test:
     moon test --target {{target}}
-    moon run src/cmd/xsh/main.mbt --target native -- test examples xsh/std
+    moon run src/cmd/xsh/main.mbt --target native -- test --unstable-async examples xsh/std
 
 # Run fixture tests only
 test-fixtures:

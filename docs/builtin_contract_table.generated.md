@@ -32,9 +32,9 @@ Legend:
 | `__sub` | `(Num, Num) -> Num` | `-` | yes | yes | yes |
 | `__to_string` | `(Any) -> String` | `-` | yes | no | no |
 | `addr` | `(String literal) -> T  // address lookup` | `-` | yes | no | no |
-| `array_builder` | `() -> ArrayBuilder[T]` | `- (do required)` | yes | yes | yes |
-| `array_builder_freeze` | `(ArrayBuilder[T]) -> Array[T]` | `- (do required)` | yes | yes | yes |
-| `array_builder_push` | `(ArrayBuilder[T], T) -> Unit` | `- (do required)` | yes | yes | yes |
+| `array_builder` | `() -> ArrayBuilder[T]` | `-` | yes | yes | yes |
+| `array_builder_freeze` | `(ArrayBuilder[T]) -> Array[T]` | `-` | yes | yes | yes |
+| `array_builder_push` | `(ArrayBuilder[T], T) -> Unit` | `-` | yes | yes | yes |
 | `array_get` | `(Array[T], Int) -> T` | `-` | yes | yes | yes |
 | `array_length` | `(Array[T]) -> Int` | `-` | yes | yes | yes |
 | `array_slice` | `(Array[T], Int, Int) -> Array[T]` | `-` | yes | no | no |
@@ -61,9 +61,9 @@ Legend:
 | `i32_trunc_f64_s` | `(Double) -> Int` | `-` | no | yes | yes |
 | `int_to_double` | `(Int) -> Double` | `-` | yes | yes | yes |
 | `int_to_float` | `(Int) -> Float` | `-` | yes | yes | yes |
-| `map_builder` | `() -> MapBuilder[T]` | `- (do required)` | yes | yes | yes |
-| `map_builder_freeze` | `(MapBuilder[T]) -> Map[T]` | `- (do required)` | yes | yes | yes |
-| `map_builder_set` | `(MapBuilder[T], String, T) -> Unit` | `- (do required)` | yes | yes | yes |
+| `map_builder` | `() -> MapBuilder[T]` | `-` | yes | yes | yes |
+| `map_builder_freeze` | `(MapBuilder[T]) -> Map[T]` | `-` | yes | yes | yes |
+| `map_builder_set` | `(MapBuilder[T], String, T) -> Unit` | `-` | yes | yes | yes |
 | `map_get` | `(Map[T], String) -> T` | `-` | yes | yes | yes |
 | `map_has_key` | `(Map[T], String) -> Bool` | `-` | yes | no | no |
 | `map_keys` | `(Map[T]) -> Array[String]` | `-` | yes | no | no |
@@ -71,6 +71,7 @@ Legend:
 | `path` | `(String) -> Path` | `-` | yes | yes | yes |
 | `record_set` | `(Record{...}, String, V) -> Record{...}` | `-` | yes | no | no |
 | `sh` | `(String) -> Unit` | `{Stdout}` | yes | yes | yes |
+| `sh_lines` | `(String) -> Array[String]` | `{Stdout}` | yes | no | no |
 | `sleep` | `(Int) -> Unit` | `{Async}` | yes | yes | yes |
 | `stdin_read_char` | `() -> Int` | `{Stdin}` | yes | yes | yes |
 | `stdin_read_stream` | `(Int) -> String` | `{Stdin}` | yes | yes | yes |
@@ -86,3 +87,10 @@ Legend:
 | `string_split` | `(String, String) -> Array[String]` | `-` | yes | no | no |
 | `string_substring` | `(String, Int, Int) -> String` | `-` | yes | yes | yes |
 | `string_trim` | `(String) -> String` | `-` | yes | no | no |
+| `threads_channel_new` | `(Int) -> Int` | `-` | yes | no | no |
+| `threads_probe_wat` | `() -> String` | `-` | yes | no | no |
+| `threads_recv` | `(Int) -> String` | `-` | yes | no | no |
+| `threads_runtime_hints` | `() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}` | `-` | yes | no | no |
+| `threads_send` | `(Int, String) -> Bool` | `-` | yes | no | no |
+| `threads_spawn` | `(String, Int) -> Int` | `-` | yes | no | no |
+| `threads_wait` | `(Int) -> Int` | `-` | yes | no | no |

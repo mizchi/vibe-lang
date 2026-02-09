@@ -493,7 +493,10 @@ test "xsh stdout permission requires effect" {
 
 ///|
 test "xsh sleep requires runtime capability" {
-  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let rt = Runtime::new_with_features(
+    @capability.CapabilitySet::new(),
+    RuntimeFeatureFlags::unstable_async_only(),
+  )
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
     "let run = () -> Unit with {Async} { do { sleep(1) } }\n" + "run()",
   )
@@ -505,13 +508,248 @@ test "xsh sleep requires runtime capability" {
 
 ///|
 test "xsh sleep succeeds with developer capability" {
-  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let rt = Runtime::new_with_features(
+    @capability.CapabilitySet::developer(),
+    RuntimeFeatureFlags::unstable_async_only(),
+  )
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
     "let run = () -> Unit with {Async} { do { sleep(1) } }\n" + "run()",
   )
   match result {
     Err(err) => fail(err.to_string())
     Ok(eval_result) => assert_eq(eval_result.effects.length(), 0)
+  }
+}
+
+///|
+test "xsh sleep requires unstable async flag" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Unit with {Async} { do { sleep(1) } }\n" + "run()",
+  )
+  match result {
+    Err(err) => assert_true(err.to_string().contains("--unstable-async"))
+    Ok(_) => fail("expected unstable async gate error")
+  }
+}
+
+///|
+test "xsh await requires unstable async flag" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Int with {Async} { await 1 }\n" + "run()",
+  )
+  match result {
+    Err(err) => assert_true(err.to_string().contains("--unstable-async"))
+    Ok(_) => fail("expected unstable async gate error")
+  }
+}
+
+///|
+test "xsh await works when unstable async is enabled" {
+  let rt = Runtime::new_with_features(
+    @capability.CapabilitySet::developer(),
+    RuntimeFeatureFlags::unstable_async_only(),
+  )
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Int with {Async} { await 1 }\n" + "run()",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) =>
+      match eval_result.last {
+        Some(@core.Value::Int(v)) => assert_eq(v, 1)
+        _ => fail("expected last int value")
+      }
+  }
+}
+
+///|
+test "xsh runtime feature flags default to stable" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let flags = rt.feature_flags()
+  assert_false(flags.is_unstable_async_enabled())
+  assert_false(flags.is_unstable_threads_enabled())
+}
+
+///|
+test "xsh runtime feature flags enable threads when requested" {
+  let rt = Runtime::new_with_features(
+    @capability.CapabilitySet::new(),
+    RuntimeFeatureFlags::unstable_threads_only(),
+  )
+  let flags = rt.feature_flags()
+  assert_false(flags.is_unstable_async_enabled())
+  assert_true(flags.is_unstable_threads_enabled())
+}
+
+///|
+test "xsh let underscore can be reused and is not bound" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let _ = 1\n" + "let _ = 2\n" + "42",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) =>
+      match eval_result.last {
+        Some(@core.Value::Int(v)) => assert_eq(v, 42)
+        _ => fail("expected last int value")
+      }
+  }
+  match rt.get("_") {
+    Some(_) => fail("`_` must not be stored in runtime env")
+    None => ()
+  }
+  match rt.type_env().get("_") {
+    Some(_) => fail("`_` must not be stored in type env")
+    None => ()
+  }
+}
+
+///|
+test "xsh let rec underscore is rejected" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let rec _ = (x: Int) -> Int { x }",
+  )
+  match result {
+    Err(err) =>
+      assert_true(err.to_string().contains("wildcard binding cannot be recursive"))
+    Ok(_) => fail("expected let rec _ to fail")
+  }
+}
+
+///|
+test "xsh threads probe builtin requires unstable threads flag" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "threads_probe_wat()",
+  )
+  match result {
+    Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
+    Ok(_) => fail("expected unstable threads gate error")
+  }
+}
+
+///|
+test "xsh threads probe builtin works when unstable threads is enabled" {
+  let rt = Runtime::new_with_features(
+    @capability.CapabilitySet::developer(),
+    RuntimeFeatureFlags::unstable_threads_only(),
+  )
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "threads_probe_wat()",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) =>
+      match eval_result.last {
+        Some(@core.Value::String(wat)) =>
+          assert_true(wat.contains("(import \"wasi\" \"thread-spawn\""))
+        _ => fail("expected wat string")
+      }
+  }
+}
+
+///|
+test "xsh threads runtime hints requires unstable threads flag" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "threads_runtime_hints()",
+  )
+  match result {
+    Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
+    Ok(_) => fail("expected unstable threads gate error")
+  }
+}
+
+///|
+test "xsh threads runtime hints returns recommended flags" {
+  let rt = Runtime::new_with_features(
+    @capability.CapabilitySet::developer(),
+    RuntimeFeatureFlags::unstable_threads_only(),
+  )
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "threads_runtime_hints()",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) =>
+      match eval_result.last {
+        Some(@core.Value::Record(fields)) => {
+          match fields.get("wasm_env") {
+            Some(@core.Value::String(v)) =>
+              assert_eq(v, "threads=y shared-memory=y")
+            _ => fail("expected wasm_env string")
+          }
+          match fields.get("wasi_env") {
+            Some(@core.Value::String(v)) => assert_eq(v, "threads=y")
+            _ => fail("expected wasi_env string")
+          }
+        }
+        _ => fail("expected record value")
+      }
+  }
+}
+
+///|
+test "xsh threads runtime queue builtins require unstable threads flag" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let ch = threads_channel_new(1)\n" +
+    "threads_send(ch, \"hello\")",
+  )
+  match result {
+    Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
+    Ok(_) => fail("expected unstable threads gate error")
+  }
+}
+
+///|
+test "xsh threads runtime queue builtins work when unstable threads is enabled" {
+  let rt = Runtime::new_with_features(
+    @capability.CapabilitySet::developer(),
+    RuntimeFeatureFlags::unstable_threads_only(),
+  )
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let ch = threads_channel_new(2)\n" +
+    "let task = threads_spawn(\"worker\", ch)\n" +
+    "let ok = threads_send(ch, \"hello\")\n" +
+    "let msg = threads_recv(ch)\n" +
+    "let status = threads_wait(task)\n" +
+    "ok && msg == \"hello\" && status == 0",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) =>
+      match eval_result.last {
+        Some(@core.Value::Bool(v)) => assert_true(v)
+        _ => fail("expected bool result")
+      }
+  }
+}
+
+///|
+test "xsh threads send returns false when channel is full" {
+  let rt = Runtime::new_with_features(
+    @capability.CapabilitySet::developer(),
+    RuntimeFeatureFlags::unstable_threads_only(),
+  )
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let ch = threads_channel_new(1)\n" +
+    "let first = threads_send(ch, \"a\")\n" +
+    "let second = threads_send(ch, \"b\")\n" +
+    "let got = threads_recv(ch)\n" +
+    "first && not(second) && got == \"a\"",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) =>
+      match eval_result.last {
+        Some(@core.Value::Bool(v)) => assert_true(v)
+        _ => fail("expected bool result")
+      }
   }
 }
 

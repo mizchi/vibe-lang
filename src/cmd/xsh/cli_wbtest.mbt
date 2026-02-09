@@ -184,6 +184,94 @@ test "cli syntax mode parse explicit posix" {
 }
 
 ///|
+test "cli runtime flags parse default" {
+  let parsed = parse_cli_runtime_args(["main.xsh"], "run")
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.syntax_mode, @xsh_lib.ParserMode::XshMode)
+      assert_eq(opts.cmd_args, ["main.xsh"])
+      assert_false(opts.unstable_async)
+      assert_false(opts.unstable_threads)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli runtime flags parse with unstable flags" {
+  let parsed = parse_cli_runtime_args(
+    ["--unstable-async", "--syntax", "posix", "--unstable-threads", "main.xsh"],
+    "run",
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.syntax_mode, @xsh_lib.ParserMode::PosixMode)
+      assert_eq(opts.cmd_args, ["main.xsh"])
+      assert_true(opts.unstable_async)
+      assert_true(opts.unstable_threads)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli dispatch args parse leading unstable flags" {
+  let parsed = parse_cli_dispatch_args([
+    "xsh",
+    "--unstable-async",
+    "--unstable-threads",
+    "run",
+    "main.xsh",
+  ])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "run")
+      assert_eq(v.syntax_mode, @xsh_lib.ParserMode::XshMode)
+      assert_eq(v.cmd_args, ["main.xsh"])
+      assert_true(v.unstable_async)
+      assert_true(v.unstable_threads)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli dispatch args merges leading and trailing unstable flags" {
+  let parsed = parse_cli_dispatch_args([
+    "xsh",
+    "--unstable-async",
+    "run",
+    "--unstable-threads",
+    "--syntax",
+    "posix",
+    "main.xsh",
+  ])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "run")
+      assert_eq(v.syntax_mode, @xsh_lib.ParserMode::PosixMode)
+      assert_eq(v.cmd_args, ["main.xsh"])
+      assert_true(v.unstable_async)
+      assert_true(v.unstable_threads)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli dispatch args rejects missing command" {
+  let parsed = parse_cli_dispatch_args([
+    "xsh",
+    "--unstable-async",
+    "--unstable-threads",
+  ])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "missing command")
+  }
+}
+
+///|
 test "cli syntax mode parse rejects unknown value" {
   let parsed = parse_cli_syntax_args(["--syntax", "foo"], "run")
   match parsed {

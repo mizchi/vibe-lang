@@ -9,6 +9,7 @@ pub struct LineReplOptions {
   prompt : String
   prompt_enabled : Bool
   io_mode : LineReplIoMode
+  features : @xsh_lib.RuntimeFeatureFlags
 }
 
 ///|
@@ -19,6 +20,8 @@ fn parse_line_repl_options(
 ) -> Result[LineReplOptions, String] {
   let mut prompt_enabled = true
   let mut io_mode = LineReplIoMode::Plain
+  let mut unstable_async = false
+  let mut unstable_threads = false
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
@@ -35,10 +38,25 @@ fn parse_line_repl_options(
         io_mode = LineReplIoMode::Plain
         i += 1
       }
+      "--unstable-async" => {
+        unstable_async = true
+        i += 1
+      }
+      "--unstable-threads" => {
+        unstable_threads = true
+        i += 1
+      }
       _ => return Err(cmd_name + ": unknown arg " + arg)
     }
   }
-  Ok({ prompt, prompt_enabled, io_mode })
+  Ok({
+    prompt,
+    prompt_enabled,
+    io_mode,
+    features: @xsh_lib.RuntimeFeatureFlags::new(
+      unstable_async, unstable_threads,
+    ),
+  })
 }
 
 ///|
@@ -257,7 +275,10 @@ fn parse_cmd_args() -> Result[LineReplOptions, String] {
 ///|
 fn run_repl(options : LineReplOptions) -> Unit {
   let io = WasiLineIo::new()
-  let rt = @xsh_lib.Runtime::new(@capability.CapabilitySet::developer())
+  let rt = @xsh_lib.Runtime::new_with_features(
+    @capability.CapabilitySet::developer(),
+    options.features,
+  )
   match options.io_mode {
     LineReplIoMode::Tty =>
       io.writeln(

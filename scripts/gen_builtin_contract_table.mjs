@@ -73,7 +73,16 @@ const signatures = {
   path: "(String) -> Path",
   addr: "(String literal) -> T  // address lookup",
   sh: "(String) -> Unit",
+  sh_lines: "(String) -> Array[String]",
   sleep: "(Int) -> Unit",
+  threads_probe_wat: "() -> String",
+  threads_runtime_hints:
+    "() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}",
+  threads_channel_new: "(Int) -> Int",
+  threads_send: "(Int, String) -> Bool",
+  threads_recv: "(Int) -> String",
+  threads_spawn: "(String, Int) -> Int",
+  threads_wait: "(Int) -> Int",
   stdout_write_char: "(Int) -> Unit",
   stdout_write_stream: "(String) -> Unit",
   stdin_read_char: "() -> Int",
@@ -145,6 +154,7 @@ const signatures = {
 
 const checker = read_text("src/checker/typecheck.mbt");
 const eval_src = read_text("src/xsh/eval.mbt");
+const eval_builtins_src = read_text("src/xsh/eval_builtins.mbt");
 const wasm_codegen = read_text("src/codegen/wasm_codegen.mbt");
 
 const checker_type_call = slice_between(
@@ -158,7 +168,7 @@ const checker_builtin_effects = slice_between(
   "fn effect_scope_extend(",
 );
 const eval_is_pure = slice_between(
-  eval_src,
+  eval_builtins_src,
   "fn is_pure_builtin(",
   "fn eval_pure_builtin(",
 );

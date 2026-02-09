@@ -5,6 +5,54 @@ pub struct Store {
 } derive(Show, Eq)
 
 ///|
+pub struct RuntimeFeatureFlags {
+  unstable_async : Bool
+  unstable_threads : Bool
+} derive(Show, Eq)
+
+///|
+pub fn RuntimeFeatureFlags::new(
+  unstable_async : Bool,
+  unstable_threads : Bool,
+) -> RuntimeFeatureFlags {
+  { unstable_async, unstable_threads }
+}
+
+///|
+pub fn RuntimeFeatureFlags::stable() -> RuntimeFeatureFlags {
+  RuntimeFeatureFlags::new(false, false)
+}
+
+///|
+pub fn RuntimeFeatureFlags::unstable_async_only() -> RuntimeFeatureFlags {
+  RuntimeFeatureFlags::new(true, false)
+}
+
+///|
+pub fn RuntimeFeatureFlags::unstable_threads_only() -> RuntimeFeatureFlags {
+  RuntimeFeatureFlags::new(false, true)
+}
+
+///|
+pub fn RuntimeFeatureFlags::unstable_all() -> RuntimeFeatureFlags {
+  RuntimeFeatureFlags::new(true, true)
+}
+
+///|
+pub fn RuntimeFeatureFlags::is_unstable_async_enabled(
+  self : RuntimeFeatureFlags,
+) -> Bool {
+  self.unstable_async
+}
+
+///|
+pub fn RuntimeFeatureFlags::is_unstable_threads_enabled(
+  self : RuntimeFeatureFlags,
+) -> Bool {
+  self.unstable_threads
+}
+
+///|
 fn Store::new() -> Store {
   { values: {} }
 }
@@ -30,34 +78,161 @@ fn Store::remove(self : Store, hash : String) -> Unit {
 }
 
 ///|
+pub struct ThreadChannel {
+  capacity : Int
+  queue : Array[String]
+} derive(Show, Eq)
+
+///|
+pub struct ThreadTask {
+  name : String
+  mailbox : Int
+  done : Bool
+} derive(Show, Eq)
+
+///|
+pub struct ThreadRuntime {
+  mut next_channel_id : Int
+  mut next_task_id : Int
+  channels : Map[String, ThreadChannel]
+  tasks : Map[String, ThreadTask]
+} derive(Show, Eq)
+
+///|
+fn thread_runtime_key(id : Int) -> String {
+  id.to_string()
+}
+
+///|
+fn ThreadRuntime::new() -> ThreadRuntime {
+  {
+    next_channel_id: 0,
+    next_task_id: 0,
+    channels: {},
+    tasks: {},
+  }
+}
+
+///|
+fn ThreadRuntime::channel_new(self : ThreadRuntime, capacity : Int) -> Int {
+  let normalized = if capacity < 0 { 0 } else { capacity }
+  let id = self.next_channel_id
+  self.next_channel_id = id + 1
+  self.channels[thread_runtime_key(id)] = { capacity: normalized, queue: [] }
+  id
+}
+
+///|
+fn ThreadRuntime::send(
+  self : ThreadRuntime,
+  channel_id : Int,
+  message : String,
+) -> Bool? {
+  let key = thread_runtime_key(channel_id)
+  match self.channels.get(key) {
+    None => None
+    Some(channel) =>
+      if channel.queue.length() >= channel.capacity {
+        Some(false)
+      } else {
+        channel.queue.push(message)
+        self.channels[key] = channel
+        Some(true)
+      }
+  }
+}
+
+///|
+fn ThreadRuntime::recv(self : ThreadRuntime, channel_id : Int) -> String? {
+  let key = thread_runtime_key(channel_id)
+  match self.channels.get(key) {
+    None => None
+    Some(channel) =>
+      if channel.queue.length() == 0 {
+        Some("")
+      } else {
+        let next_queue = channel.queue
+        let value = next_queue.remove(0)
+        self.channels[key] = { capacity: channel.capacity, queue: next_queue }
+        Some(value)
+      }
+  }
+}
+
+///|
+fn ThreadRuntime::spawn(
+  self : ThreadRuntime,
+  name : String,
+  mailbox : Int,
+) -> Int? {
+  let channel_key = thread_runtime_key(mailbox)
+  if not(self.channels.contains(channel_key)) {
+    None
+  } else {
+    let id = self.next_task_id
+    self.next_task_id = id + 1
+    self.tasks[thread_runtime_key(id)] = { name, mailbox, done: false }
+    Some(id)
+  }
+}
+
+///|
+fn ThreadRuntime::wait(self : ThreadRuntime, task_id : Int) -> Int? {
+  let key = thread_runtime_key(task_id)
+  match self.tasks.get(key) {
+    None => None
+    Some(task) => {
+      self.tasks[key] = {
+        name: task.name,
+        mailbox: task.mailbox,
+        done: true,
+      }
+      Some(0)
+    }
+  }
+}
+
+///|
 pub struct Runtime {
   store : Store
   env : Map[String, String]
   addr_env : Map[String, String]
   names : Map[String, String]
   caps : @capability.CapabilitySet
+  features : RuntimeFeatureFlags
   aliases : Map[String, @core.Ref]
   pure_cache : PureCache
   test_cache : TestCache
   mut type_env : @checker.TypeEnv
   mut_vars : Map[String, Bool]
+  thread_runtime : ThreadRuntime
   // Module cache for import resolution: hash -> Module
   module_cache : Map[String, @core.Module]
 }
 
 ///|
 pub fn Runtime::new(caps : @capability.CapabilitySet) -> Runtime {
+  Runtime::new_with_features(caps, RuntimeFeatureFlags::stable())
+}
+
+///|
+pub fn Runtime::new_with_features(
+  caps : @capability.CapabilitySet,
+  features : RuntimeFeatureFlags,
+) -> Runtime {
   let rt = {
     store: Store::new(),
     env: {},
     addr_env: {},
     names: {},
     caps,
+    features,
     aliases: {},
     pure_cache: PureCache::new(),
     test_cache: TestCache::new(),
     type_env: @checker.TypeEnv::new(),
     mut_vars: {},
+    thread_runtime: ThreadRuntime::new(),
     module_cache: {},
   }
   let env = @checker.TypeEnv::new()
@@ -71,6 +246,44 @@ pub fn Runtime::new(caps : @capability.CapabilitySet) -> Runtime {
 ///|
 fn Runtime::caps(self : Runtime) -> @capability.CapabilitySet {
   self.caps
+}
+
+///|
+pub fn Runtime::feature_flags(self : Runtime) -> RuntimeFeatureFlags {
+  self.features
+}
+
+///|
+fn Runtime::threads_channel_new(self : Runtime, capacity : Int) -> Int {
+  self.thread_runtime.channel_new(capacity)
+}
+
+///|
+fn Runtime::threads_send(
+  self : Runtime,
+  channel_id : Int,
+  message : String,
+) -> Bool? {
+  self.thread_runtime.send(channel_id, message)
+}
+
+///|
+fn Runtime::threads_recv(self : Runtime, channel_id : Int) -> String? {
+  self.thread_runtime.recv(channel_id)
+}
+
+///|
+fn Runtime::threads_spawn(
+  self : Runtime,
+  name : String,
+  mailbox : Int,
+) -> Int? {
+  self.thread_runtime.spawn(name, mailbox)
+}
+
+///|
+fn Runtime::threads_wait(self : Runtime, task_id : Int) -> Int? {
+  self.thread_runtime.wait(task_id)
 }
 
 ///|
@@ -181,11 +394,13 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     addr_env: clone_string_map(self.addr_env),
     names: clone_string_map(self.names),
     caps: self.caps,
+    features: self.features,
     aliases: clone_ref_map(self.aliases),
     pure_cache: self.pure_cache,
     test_cache: self.test_cache,
     type_env: self.type_env.clone(),
     mut_vars: self.mut_vars.copy(),
+    thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
   }
 }
@@ -203,11 +418,13 @@ fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime 
     addr_env: clone_string_map(self.addr_env),
     names: clone_string_map(self.names),
     caps: self.caps,
+    features: self.features,
     aliases: clone_ref_map(self.aliases),
     pure_cache: self.pure_cache,
     test_cache: self.test_cache,
     type_env: self.type_env.clone(),
     mut_vars: self.mut_vars.copy(),
+    thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
   }
 }

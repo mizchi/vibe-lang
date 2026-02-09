@@ -43,6 +43,7 @@ suberror EvalError {
   PermissionDenied(String)
   BadCall(String)
   ImportError(String)
+  FeatureDisabled(feature~ : String, operation~ : String, flag~ : String)
   LoopBreak
   LoopContinue
 } derive(Show, Eq)
@@ -57,36 +58,42 @@ pub fn Runtime::eval_module(
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, ..) => {
-        let info = @checker.purity_for_let(self.type_env, rec, name, expr)
-        let use_addr = rec || info.expr
-        let addr = @codegen.expr_address(
-          expr,
-          self.addr_env,
-          if rec {
-            Some(name)
-          } else {
-            None
-          },
-        )
-        if rec {
-          self.env[name] = addr
-          self.addr_env[name] = addr
-        }
-        if use_addr {
-          match self.type_env.get(name) {
-            Some(ty) => self.type_env.set_addr_type(addr, ty)
-            None => ()
-          }
-        }
-        let out = eval_expr(self, expr)
-        let value = attach_addr_to_fn(out.value, addr)
-        extend_effects(effects, out.effects)
-        if use_addr {
-          self.bind_with_addr(name, addr, value)
+        if name == "_" {
+          let out = eval_expr(self, expr)
+          extend_effects(effects, out.effects)
+          last = Some(out.value)
         } else {
-          self.bind(name, value) |> ignore
+          let info = @checker.purity_for_let(self.type_env, rec, name, expr)
+          let use_addr = rec || info.expr
+          let addr = @codegen.expr_address(
+            expr,
+            self.addr_env,
+            if rec {
+              Some(name)
+            } else {
+              None
+            },
+          )
+          if rec {
+            self.env[name] = addr
+            self.addr_env[name] = addr
+          }
+          if use_addr {
+            match self.type_env.get(name) {
+              Some(ty) => self.type_env.set_addr_type(addr, ty)
+              None => ()
+            }
+          }
+          let out = eval_expr(self, expr)
+          let value = attach_addr_to_fn(out.value, addr)
+          extend_effects(effects, out.effects)
+          if use_addr {
+            self.bind_with_addr(name, addr, value)
+          } else {
+            self.bind(name, value) |> ignore
+          }
+          last = Some(value)
         }
-        last = Some(value)
       }
       @core.Stmt::EnumDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::TypeAlias(..) => last = Some(@core.Value::Unit)
@@ -211,36 +218,42 @@ pub fn Runtime::eval_module(
         last = Some(@core.Value::Unit)
       }
       @core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
-        let info = @checker.purity_for_let(self.type_env, rec, name, expr)
-        let use_addr = rec || info.expr
-        let addr = @codegen.expr_address(
-          expr,
-          self.addr_env,
-          if rec {
-            Some(name)
-          } else {
-            None
-          },
-        )
-        if rec {
-          self.env[name] = addr
-          self.addr_env[name] = addr
-        }
-        if use_addr {
-          match self.type_env.get(name) {
-            Some(ty) => self.type_env.set_addr_type(addr, ty)
-            None => ()
-          }
-        }
-        let out = eval_expr(self, expr)
-        let value = attach_addr_to_fn(out.value, addr)
-        extend_effects(effects, out.effects)
-        if use_addr {
-          self.bind_with_addr(name, addr, value)
+        if name == "_" {
+          let out = eval_expr(self, expr)
+          extend_effects(effects, out.effects)
+          last = Some(out.value)
         } else {
-          self.bind(name, value) |> ignore
+          let info = @checker.purity_for_let(self.type_env, rec, name, expr)
+          let use_addr = rec || info.expr
+          let addr = @codegen.expr_address(
+            expr,
+            self.addr_env,
+            if rec {
+              Some(name)
+            } else {
+              None
+            },
+          )
+          if rec {
+            self.env[name] = addr
+            self.addr_env[name] = addr
+          }
+          if use_addr {
+            match self.type_env.get(name) {
+              Some(ty) => self.type_env.set_addr_type(addr, ty)
+              None => ()
+            }
+          }
+          let out = eval_expr(self, expr)
+          let value = attach_addr_to_fn(out.value, addr)
+          extend_effects(effects, out.effects)
+          if use_addr {
+            self.bind_with_addr(name, addr, value)
+          } else {
+            self.bind(name, value) |> ignore
+          }
+          last = Some(value)
         }
-        last = Some(value)
       }
       @core.Stmt::ExportEnumDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::ExportTypeAlias(..) => last = Some(@core.Value::Unit)
@@ -250,8 +263,10 @@ pub fn Runtime::eval_module(
       @core.Stmt::LetMut(name~, expr~, ..) => {
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)
-        self.bind(name, out.value) |> ignore
-        self.mut_vars[name] = true
+        if name != "_" {
+          self.bind(name, out.value) |> ignore
+          self.mut_vars[name] = true
+        }
         last = Some(out.value)
       }
       @core.Stmt::Assign(name~, expr~, ..) => {
@@ -507,14 +522,52 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         },
       )
     }
-    @core.Expr::Await(expr~, ..) =>
+    @core.Expr::Await(expr~, ..) => {
+      require_unstable_async(rt, "await")
       // For now, await just evaluates the expression synchronously
       // Future: handle Future[T] values and suspend/resume
       eval_expr(rt, expr)
-    @core.Expr::Yield(expr~, ..) =>
+    }
+    @core.Expr::Yield(expr~, ..) => {
+      require_unstable_async(rt, "yield")
       // For now, yield just evaluates and returns the expression
       // Future: handle Stream[T] generation
       eval_expr(rt, expr)
+    }
+  }
+}
+
+///|
+fn require_unstable_async(
+  rt : Runtime,
+  operation : String,
+) -> Unit raise EvalError {
+  let flags = rt.feature_flags()
+  if flags.is_unstable_async_enabled() {
+    ()
+  } else {
+    raise EvalError::FeatureDisabled(
+      feature="async",
+      operation~,
+      flag="--unstable-async",
+    )
+  }
+}
+
+///|
+fn require_unstable_threads(
+  rt : Runtime,
+  operation : String,
+) -> Unit raise EvalError {
+  let flags = rt.feature_flags()
+  if flags.is_unstable_threads_enabled() {
+    ()
+  } else {
+    raise EvalError::FeatureDisabled(
+      feature="threads",
+      operation~,
+      flag="--unstable-threads",
+    )
   }
 }
 
@@ -893,6 +946,7 @@ fn eval_call(
         } else {
           match name {
             "sleep" => {
+              require_unstable_async(rt, "sleep")
               let out = eval_args(rt, args)
               let pos_args = extract_positional_values(out.args, "sleep")
               if pos_args.length() != 1 {
@@ -907,6 +961,149 @@ fn eval_call(
                   { value: @core.Value::Unit, effects: out.effects }
                 }
                 _ => raise EvalError::BadCall("sleep")
+              }
+            }
+            "threads_probe_wat" => {
+              require_unstable_threads(rt, "threads_probe_wat")
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "threads_probe_wat",
+              )
+              if pos_args.length() != 0 {
+                raise EvalError::BadCall("threads_probe_wat")
+              }
+              { value: @core.Value::String(@x_threads.probe_wat()), effects: out.effects }
+            }
+            "threads_runtime_hints" => {
+              require_unstable_threads(rt, "threads_runtime_hints")
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "threads_runtime_hints",
+              )
+              if pos_args.length() != 0 {
+                raise EvalError::BadCall("threads_runtime_hints")
+              }
+              let wasm_flags = @x_threads.recommended_wasm_flags()
+              let wasi_flags = @x_threads.recommended_wasi_flags()
+              let wasm_values : Array[@core.Value] = []
+              for flag in wasm_flags {
+                wasm_values.push(@core.Value::String(flag))
+              }
+              let wasi_values : Array[@core.Value] = []
+              for flag in wasi_flags {
+                wasi_values.push(@core.Value::String(flag))
+              }
+              let fields : Map[String, @core.Value] = {}
+              fields["wasm_flags"] = @core.Value::Array(wasm_values)
+              fields["wasi_flags"] = @core.Value::Array(wasi_values)
+              fields["wasm_env"] = @core.Value::String(
+                @x_threads.flags_to_env_value(wasm_flags),
+              )
+              fields["wasi_env"] = @core.Value::String(
+                @x_threads.flags_to_env_value(wasi_flags),
+              )
+              { value: @core.Value::Record(fields), effects: out.effects }
+            }
+            "threads_channel_new" => {
+              require_unstable_threads(rt, "threads_channel_new")
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "threads_channel_new",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("threads_channel_new")
+              }
+              match pos_args[0] {
+                @core.Value::Int(capacity) =>
+                  {
+                    value: @core.Value::Int(
+                      rt.threads_channel_new(capacity),
+                    ),
+                    effects: out.effects,
+                  }
+                _ => raise EvalError::BadCall("threads_channel_new")
+              }
+            }
+            "threads_send" => {
+              require_unstable_threads(rt, "threads_send")
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "threads_send")
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("threads_send")
+              }
+              match (pos_args[0], pos_args[1]) {
+                (@core.Value::Int(channel_id), @core.Value::String(message)) =>
+                  match rt.threads_send(channel_id, message) {
+                    Some(ok) => {
+                      value: @core.Value::Bool(ok),
+                      effects: out.effects,
+                    }
+                    None => raise EvalError::BadCall("threads_send")
+                  }
+                _ => raise EvalError::BadCall("threads_send")
+              }
+            }
+            "threads_recv" => {
+              require_unstable_threads(rt, "threads_recv")
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "threads_recv")
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("threads_recv")
+              }
+              match pos_args[0] {
+                @core.Value::Int(channel_id) =>
+                  match rt.threads_recv(channel_id) {
+                    Some(message) => {
+                      value: @core.Value::String(message),
+                      effects: out.effects,
+                    }
+                    None => raise EvalError::BadCall("threads_recv")
+                  }
+                _ => raise EvalError::BadCall("threads_recv")
+              }
+            }
+            "threads_spawn" => {
+              require_unstable_threads(rt, "threads_spawn")
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "threads_spawn",
+              )
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("threads_spawn")
+              }
+              match (pos_args[0], pos_args[1]) {
+                (@core.Value::String(name), @core.Value::Int(mailbox)) =>
+                  match rt.threads_spawn(name, mailbox) {
+                    Some(task_id) => {
+                      value: @core.Value::Int(task_id),
+                      effects: out.effects,
+                    }
+                    None => raise EvalError::BadCall("threads_spawn")
+                  }
+                _ => raise EvalError::BadCall("threads_spawn")
+              }
+            }
+            "threads_wait" => {
+              require_unstable_threads(rt, "threads_wait")
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "threads_wait")
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("threads_wait")
+              }
+              match pos_args[0] {
+                @core.Value::Int(task_id) =>
+                  match rt.threads_wait(task_id) {
+                    Some(status) => {
+                      value: @core.Value::Int(status),
+                      effects: out.effects,
+                    }
+                    None => raise EvalError::BadCall("threads_wait")
+                  }
+                _ => raise EvalError::BadCall("threads_wait")
               }
             }
             "sh" => {

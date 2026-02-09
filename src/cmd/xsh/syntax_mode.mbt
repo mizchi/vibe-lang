@@ -14,6 +14,23 @@ fn parse_cli_syntax_mode(
 }
 
 ///|
+pub struct CliRuntimeArgs {
+  syntax_mode : @xsh_lib.ParserMode
+  cmd_args : Array[String]
+  unstable_async : Bool
+  unstable_threads : Bool
+} derive(Show, Eq)
+
+///|
+pub struct CliDispatchArgs {
+  cmd : String
+  syntax_mode : @xsh_lib.ParserMode
+  cmd_args : Array[String]
+  unstable_async : Bool
+  unstable_threads : Bool
+} derive(Show, Eq)
+
+///|
 pub fn parse_cli_syntax_args(
   args : Array[String],
   cmd_name : String,
@@ -49,6 +66,76 @@ pub fn parse_cli_syntax_args(
     i += 1
   }
   Ok((mode, rest))
+}
+
+///|
+pub fn parse_cli_runtime_args(
+  args : Array[String],
+  cmd_name : String,
+) -> Result[CliRuntimeArgs, String] {
+  let filtered : Array[String] = []
+  let mut unstable_async = false
+  let mut unstable_threads = false
+  for arg in args {
+    match arg {
+      "--unstable-async" => unstable_async = true
+      "--unstable-threads" => unstable_threads = true
+      _ => filtered.push(arg)
+    }
+  }
+  match parse_cli_syntax_args(filtered, cmd_name) {
+    Ok((syntax_mode, cmd_args)) =>
+      Ok({ syntax_mode, cmd_args, unstable_async, unstable_threads })
+    Err(err) => Err(err)
+  }
+}
+
+///|
+fn cli_args_tail(args : Array[String], start : Int) -> Array[String] {
+  let out : Array[String] = []
+  for i in start..<args.length() {
+    out.push(args[i])
+  }
+  out
+}
+
+///|
+pub fn parse_cli_dispatch_args(args : Array[String]) -> Result[CliDispatchArgs, String] {
+  if args.length() <= 1 {
+    return Err("missing command")
+  }
+  let mut global_unstable_async = false
+  let mut global_unstable_threads = false
+  let mut cmd_index = 1
+  while cmd_index < args.length() {
+    match args[cmd_index] {
+      "--unstable-async" => {
+        global_unstable_async = true
+        cmd_index += 1
+      }
+      "--unstable-threads" => {
+        global_unstable_threads = true
+        cmd_index += 1
+      }
+      _ => break
+    }
+  }
+  if cmd_index >= args.length() {
+    return Err("missing command")
+  }
+  let cmd = args[cmd_index]
+  let raw_cmd_args = cli_args_tail(args, cmd_index + 1)
+  match parse_cli_runtime_args(raw_cmd_args, cmd) {
+    Ok(cli_args) =>
+      Ok({
+        cmd,
+        syntax_mode: cli_args.syntax_mode,
+        cmd_args: cli_args.cmd_args,
+        unstable_async: cli_args.unstable_async || global_unstable_async,
+        unstable_threads: cli_args.unstable_threads || global_unstable_threads,
+      })
+    Err(err) => Err(err)
+  }
 }
 
 ///|

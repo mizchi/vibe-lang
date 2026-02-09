@@ -965,9 +965,7 @@ fn Parser::parse_arg(self : Parser) -> Unit {
 fn Parser::parse_primary(self : Parser) -> Unit {
   self.skip_trivia()
   match self.peek_kind() {
-    k if k == lparen() => {
-      self.parse_paren_expr()
-    }
+    k if k == lparen() => self.parse_paren_expr()
     k if k == name() => {
       self.builder.start_node(name_ref())
       self.bump()
@@ -2602,7 +2600,10 @@ fn AstParser::parse_loop_expr(self : AstParser) -> @core.Expr raise ParseError {
   let loop_tok = self.expect(loop_kw(), "loop")
   let body = self.parse_block()
   let span = self.span_from(start)
-  let cond_span = @core.Span::new(span.start, span.start + loop_tok.text().length())
+  let cond_span = @core.Span::new(
+    span.start,
+    span.start + loop_tok.text().length(),
+  )
   let cond = @core.Expr::Bool(value=true, span=cond_span)
   @core.Expr::While(cond~, body~, span~)
 }

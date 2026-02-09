@@ -8,7 +8,7 @@ xsh language prototype and runtime (MoonBit).
 - Type inference with effects (`with {Async}`, `with {Error}`)
 - Pattern matching and destructuring
 - Module system with import/export
-- Async/await syntax
+- Async/await syntax (runtime gate: `--unstable-async`)
 - Lambda expressions with placeholder shorthand (`_+1`)
 
 ### Runtime Targets
@@ -52,8 +52,19 @@ just run run examples/basics.xsh
 # (comprehensive syntax tour)
 just run run examples/syntax.xsh
 
+# Run unstable async examples (required for await/sleep/yield runtime execution)
+just run run --unstable-async examples/async.xsh
+# flags can also be placed before command
+just run --unstable-async run examples/async.xsh
+# unstable threads probe builtin (via line repl)
+printf 'threads_probe_wat()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
+# unstable threads runtime hints (recommended -W/-S flags)
+printf 'threads_runtime_hints()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
+
 # Run tests in script
 just run test examples/*.xsh
+# For async tests
+just run test --unstable-async examples/async.xsh
 
 # Compile to WASM
 just run compile --wasm examples/wasm/sleep_demo.xsh -o /tmp/out.wasm
@@ -77,6 +88,8 @@ just run repl
 
 # Line REPL for stdio/wasi-like environments
 just run repl-wasi --no-prompt
+# Enable unstable async in REPL
+just run repl-wasi --unstable-async
 
 # IDE-like symbol queries
 just run ide outline examples/syntax.xsh
@@ -222,6 +235,7 @@ examples/async_host/  # Rust/wasmtime host runtime
 - `docs/module_design.md` - Module design proposals (non-normative)
 - `docs/module_system.md` - Legacy module draft notes (non-normative)
 - `docs/async_design.md` - Async design proposals (non-normative)
+- `docs/unstable_features.md` - Unstable runtime feature flags (`--unstable-async`, `--unstable-threads`)
 
 ## Fixtures
 
