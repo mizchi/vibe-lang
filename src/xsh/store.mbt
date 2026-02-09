@@ -5,32 +5,27 @@ pub struct Store {
 } derive(Show, Eq)
 
 ///|
-pub fn Store::new() -> Store {
+fn Store::new() -> Store {
   { values: {} }
 }
 
 ///|
-pub fn Store::put(self : Store, hash : String, value : @core.Value) -> Unit {
+fn Store::put(self : Store, hash : String, value : @core.Value) -> Unit {
   self.values[hash] = value
 }
 
 ///|
-pub fn Store::get(self : Store, hash : String) -> @core.Value? {
+fn Store::get(self : Store, hash : String) -> @core.Value? {
   self.values.get(hash)
 }
 
 ///|
-pub fn Store::contains(self : Store, hash : String) -> Bool {
+fn Store::contains(self : Store, hash : String) -> Bool {
   self.values.contains(hash)
 }
 
 ///|
-pub fn Store::len(self : Store) -> Int {
-  self.values.length()
-}
-
-///|
-pub fn Store::remove(self : Store, hash : String) -> Unit {
+fn Store::remove(self : Store, hash : String) -> Unit {
   self.values.remove(hash)
 }
 
@@ -74,16 +69,12 @@ pub fn Runtime::new(caps : @capability.CapabilitySet) -> Runtime {
 }
 
 ///|
-pub fn Runtime::caps(self : Runtime) -> @capability.CapabilitySet {
+fn Runtime::caps(self : Runtime) -> @capability.CapabilitySet {
   self.caps
 }
 
 ///|
-pub fn Runtime::bind(
-  self : Runtime,
-  name : String,
-  value : @core.Value,
-) -> String {
+fn Runtime::bind(self : Runtime, name : String, value : @core.Value) -> String {
   let hash = value_hash(value)
   self.store.put(hash, value)
   self.env[name] = hash
@@ -91,7 +82,7 @@ pub fn Runtime::bind(
 }
 
 ///|
-pub fn Runtime::bind_with_addr(
+fn Runtime::bind_with_addr(
   self : Runtime,
   name : String,
   addr : String,
@@ -111,18 +102,18 @@ pub fn Runtime::get(self : Runtime, name : String) -> @core.Value? {
 }
 
 ///|
-pub fn Runtime::get_by_addr(self : Runtime, addr : String) -> @core.Value? {
+fn Runtime::get_by_addr(self : Runtime, addr : String) -> @core.Value? {
   self.store.get(addr)
-}
-
-///|
-pub fn Runtime::get_hash(self : Runtime, name : String) -> String? {
-  self.env.get(name)
 }
 
 ///|
 pub fn Runtime::get_addr(self : Runtime, name : String) -> String? {
   self.addr_env.get(name)
+}
+
+///|
+pub fn Runtime::get_hash(self : Runtime, name : String) -> String? {
+  self.env.get(name)
 }
 
 ///|
@@ -143,36 +134,22 @@ pub fn Runtime::set_alias(
 }
 
 ///|
-pub fn Runtime::get_alias(self : Runtime, name : String) -> @core.Ref? {
+fn Runtime::get_alias(self : Runtime, name : String) -> @core.Ref? {
   self.aliases.get(name)
 }
 
 ///|
-pub fn Runtime::set_name_alias(
-  self : Runtime,
-  name : String,
-  addr : String,
-) -> Unit {
-  self.names[name] = addr
-}
-
-///|
-pub fn Runtime::get_name_alias(self : Runtime, name : String) -> String? {
+fn Runtime::get_name_alias(self : Runtime, name : String) -> String? {
   self.names.get(name)
 }
 
 ///|
-pub fn Runtime::alias_count(self : Runtime) -> Int {
-  self.aliases.length()
-}
-
-///|
-pub fn Runtime::pure_cache_get(self : Runtime, key : String) -> @core.Value? {
+fn Runtime::pure_cache_get(self : Runtime, key : String) -> @core.Value? {
   self.pure_cache.get(key)
 }
 
 ///|
-pub fn Runtime::pure_cache_set(
+fn Runtime::pure_cache_set(
   self : Runtime,
   key : String,
   value : @core.Value,
@@ -183,11 +160,6 @@ pub fn Runtime::pure_cache_set(
 ///|
 pub fn Runtime::pure_cache_len(self : Runtime) -> Int {
   self.pure_cache.len()
-}
-
-///|
-pub fn Runtime::test_cache_len(self : Runtime) -> Int {
-  self.test_cache.len()
 }
 
 ///|
@@ -202,7 +174,7 @@ pub fn Runtime::load_pure_cache(self : Runtime, snapshot : String) -> Unit {
 
 ///|
 /// Fork runtime for test execution (isolated env, shared store/cache).
-pub fn Runtime::fork_for_test(self : Runtime) -> Runtime {
+fn Runtime::fork_for_test(self : Runtime) -> Runtime {
   {
     store: self.store,
     env: clone_string_map(self.env),
@@ -219,15 +191,12 @@ pub fn Runtime::fork_for_test(self : Runtime) -> Runtime {
 }
 
 ///|
-pub fn Runtime::env_snapshot(self : Runtime) -> Map[String, String] {
+fn Runtime::env_snapshot(self : Runtime) -> Map[String, String] {
   clone_string_map(self.env)
 }
 
 ///|
-pub fn Runtime::fork_with_env(
-  self : Runtime,
-  env : Map[String, String],
-) -> Runtime {
+fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime {
   {
     store: self.store,
     env: clone_string_map(env),
@@ -277,12 +246,7 @@ pub fn Runtime::store_contains(self : Runtime, hash : String) -> Bool {
 }
 
 ///|
-pub fn Runtime::store_len(self : Runtime) -> Int {
-  self.store.len()
-}
-
-///|
-/// Garbage collect unreferenced store entries
+/// Garbage collect unreferenced store entries.
 pub fn Runtime::gc(self : Runtime) -> Unit {
   let live : Map[String, Bool] = {}
   for _, hash in self.env {
@@ -303,7 +267,7 @@ pub fn Runtime::gc(self : Runtime) -> Unit {
 /// Hash a value for content-addressed storage
 /// Includes type tag to distinguish Float(1.0) from Double(1.0) from Int(1)
 /// For Fn values, includes body hash to distinguish functions with same signature
-pub fn value_hash(value : @core.Value) -> String {
+fn value_hash(value : @core.Value) -> String {
   let hasher = @bit.Sha1State::new()
   let type_tag = match value {
     @core.Value::Int(_) => "i:"
@@ -346,12 +310,6 @@ pub fn Runtime::register_module(
 
 ///|
 /// Get a cached module by hash
-pub fn Runtime::get_module(self : Runtime, hash : String) -> @core.Module? {
+fn Runtime::get_module(self : Runtime, hash : String) -> @core.Module? {
   self.module_cache.get(hash)
-}
-
-///|
-/// Check if a module is cached
-pub fn Runtime::has_module(self : Runtime, hash : String) -> Bool {
-  self.module_cache.contains(hash)
 }

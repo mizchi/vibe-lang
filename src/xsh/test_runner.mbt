@@ -1,6 +1,6 @@
 ///|
 /// xsh test runner for `test {}` blocks
-pub struct TestCase {
+struct TestCase {
   name : String?
   body : @core.Module
 } derive(Show, Eq)
@@ -21,7 +21,7 @@ pub struct TestReport {
 
 ///|
 /// Collect top-level test blocks from a module.
-pub fn collect_tests(ast : @core.Module) -> Array[TestCase] {
+fn collect_tests(ast : @core.Module) -> Array[TestCase] {
   let out : Array[TestCase] = []
   for stmt in ast.stmts {
     match stmt {
