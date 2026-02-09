@@ -180,7 +180,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
     if kind == comma() && enum_top_level {
       buf.write_char(';')
     } else {
-      buf.write_string(tok.text())
+      buf.write_string(token_text_for_output(tok))
     }
     if kind == type_kw() {
       type_decl_header = TypeDeclMode::DeclTypeAlias
@@ -311,6 +311,79 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
 }
 
 ///|
+fn token_text_for_output(tok : @cst.SyntaxToken) -> String {
+  let kind = tok.kind()
+  if kind == string_lit() {
+    quote_string_literal(tok.text())
+  } else if kind == string_interp_lit() {
+    quote_string_interp_literal(tok.text())
+  } else if kind == char_lit() {
+    quote_char_literal(tok.text())
+  } else {
+    tok.text()
+  }
+}
+
+///|
+fn quote_string_literal(text : String) -> String {
+  let buf = StringBuilder::new()
+  buf.write_char('"')
+  for c in text {
+    write_escaped_char(buf, c, false)
+  }
+  buf.write_char('"')
+  buf.to_string()
+}
+
+///|
+fn quote_string_interp_literal(raw_text : String) -> String {
+  let buf = StringBuilder::new()
+  buf.write_char('"')
+  buf.write_string(raw_text)
+  buf.write_char('"')
+  buf.to_string()
+}
+
+///|
+fn quote_char_literal(text : String) -> String {
+  let chars = text.to_array()
+  let buf = StringBuilder::new()
+  buf.write_char('\'')
+  if chars.length() > 0 {
+    write_escaped_char(buf, chars[0], true)
+  }
+  buf.write_char('\'')
+  buf.to_string()
+}
+
+///|
+fn write_escaped_char(
+  buf : StringBuilder,
+  c : Char,
+  for_char_literal : Bool,
+) -> Unit {
+  match c {
+    '\n' => buf.write_string("\\n")
+    '\t' => buf.write_string("\\t")
+    '\r' => buf.write_string("\\r")
+    '\\' => buf.write_string("\\\\")
+    '"' =>
+      if for_char_literal {
+        buf.write_char('"')
+      } else {
+        buf.write_string("\\\"")
+      }
+    '\'' =>
+      if for_char_literal {
+        buf.write_string("\\'")
+      } else {
+        buf.write_char('\'')
+      }
+    _ => buf.write_char(c)
+  }
+}
+
+///|
 fn should_force_newline_before(
   kind : @cst.SyntaxKind,
   container_stack : Array[ContainerKind],
@@ -428,7 +501,10 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == raise_kw() ||
   kind == enum_kw() ||
   kind == type_kw() ||
-  kind == struct_kw()
+  kind == struct_kw() ||
+  kind == trait_kw() ||
+  kind == impl_kw() ||
+  kind == export_kw()
 }
 
 ///|
@@ -715,6 +791,9 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == type_kw() ||
   kind == alias_kw() ||
   kind == import_kw() ||
+  kind == export_kw() ||
+  kind == from_kw() ||
+  kind == as_kw() ||
   kind == test_kw() ||
   kind == if_kw() ||
   kind == else_kw() ||
@@ -730,7 +809,12 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == continue_kw() ||
   kind == mut_kw() ||
   kind == raise_kw() ||
-  kind == struct_kw()
+  kind == await_kw() ||
+  kind == yield_kw() ||
+  kind == struct_kw() ||
+  kind == trait_kw() ||
+  kind == impl_kw() ||
+  kind == flake_kw()
 }
 
 ///|

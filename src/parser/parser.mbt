@@ -227,6 +227,11 @@ fn Parser::parse_let_stmt(self : Parser) -> Unit {
   }
   self.expect(name())
   self.skip_trivia()
+  if self.at(colon()) {
+    self.bump()
+    self.parse_binding_type_until_eq()
+    self.skip_trivia()
+  }
   self.expect(eq())
   self.skip_trivia()
   self.parse_expr()
@@ -345,7 +350,7 @@ fn Parser::parse_test_block(self : Parser) -> Unit {
   self.builder.start_node(test_block())
   self.bump() // test
   self.skip_trivia()
-  if self.at(string_lit()) {
+  if self.at(string_lit()) || self.at(name()) {
     self.bump()
     self.skip_trivia()
   }
@@ -359,15 +364,18 @@ fn Parser::parse_import_stmt(self : Parser) -> Unit {
   self.builder.start_node(import_stmt())
   self.bump() // import
   self.skip_trivia()
-  if self.at(name()) || self.at(string_lit()) {
-    self.bump()
-    // consume dot-separated path segments (e.g. foo.xsh)
-    while self.at(dot()) {
+  if self.at(lbrace()) {
+    self.parse_brace_block_tokens()
+    self.skip_trivia()
+    self.expect(from_kw())
+    self.skip_trivia()
+    while not(self.at(eof())) &&
+          not(self.at(semicolon())) &&
+          not(self.at(newline())) {
       self.bump()
-      if self.at(name()) {
-        self.bump()
-      }
     }
+  } else if self.at(name()) || self.at(string_lit()) {
+    self.bump()
   } else {
     self.builder.token(error_kind(), "")
   }
@@ -802,6 +810,55 @@ fn Parser::parse_type_tokens(self : Parser) -> Unit {
 }
 
 ///|
+fn Parser::parse_binding_type_until_eq(self : Parser) -> Unit {
+  let mut paren_depth = 0
+  let mut bracket_depth = 0
+  let mut brace_depth = 0
+  while not(self.at(eof())) {
+    let kind = self.peek_kind()
+    if paren_depth == 0 &&
+      bracket_depth == 0 &&
+      brace_depth == 0 &&
+      kind == eq() {
+      break
+    }
+    match kind {
+      k if k == lparen() => {
+        paren_depth += 1
+        self.bump()
+      }
+      k if k == rparen() => {
+        if paren_depth > 0 {
+          paren_depth -= 1
+        }
+        self.bump()
+      }
+      k if k == lbracket() => {
+        bracket_depth += 1
+        self.bump()
+      }
+      k if k == rbracket() => {
+        if bracket_depth > 0 {
+          bracket_depth -= 1
+        }
+        self.bump()
+      }
+      k if k == lbrace() => {
+        brace_depth += 1
+        self.bump()
+      }
+      k if k == rbrace() => {
+        if brace_depth > 0 {
+          brace_depth -= 1
+        }
+        self.bump()
+      }
+      _ => self.bump()
+    }
+  }
+}
+
+///|
 fn Parser::parse_call_or_primary(self : Parser) -> Unit {
   self.skip_trivia()
   let checkpoint = self.builder.checkpoint()
@@ -1117,6 +1174,7 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
       self.peek_kind() == lbracket() ||
       (
         self.peek_kind() == name() &&
+        next_kind != colon() &&
         @core.is_ctor_name(self.peek().text()) &&
         (
           next_kind != double_colon() ||
@@ -1133,15 +1191,79 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     }
   }
   let binding_name = self.parse_type_member_name("name")
+  let ann_ty : @core.Type? = if self.peek_kind() == colon() {
+    let _ = self.bump()
+    self.skip_trivia()
+    Some(self.parse_type())
+  } else {
+    None
+  }
   let _ = self.expect(eq(), "=")
-  let expr = self.parse_expr()
+  let raw_expr = self.parse_expr()
   let _ = self.eat(semicolon())
   let span = self.span_from(start)
+  let expr = match ann_ty {
+    Some(ty) =>
+      if rec_flag {
+        raw_expr
+      } else {
+        wrap_local_let_with_annotation(ty, raw_expr, span)
+      }
+    None => raw_expr
+  }
   if mut_flag {
     @core.Stmt::LetMut(name=binding_name, expr~, span~)
   } else {
     @core.Stmt::Let(rec=rec_flag, name=binding_name, expr~, span~)
   }
+}
+
+///|
+fn wrap_local_let_with_annotation(
+  ann_ty : @core.Type,
+  raw_expr : @core.Expr,
+  span : @core.Span,
+) -> @core.Expr {
+  let helper_name = "__xsh_local_type_assert_" + span.start.to_string()
+  let helper_param_name = "__xsh_local_type_assert_value"
+  let helper_param = @core.FuncParam::{
+    name: helper_param_name,
+    label: @core.ParamLabel::Positional,
+    ty: ann_ty,
+    bounds: [],
+  }
+  let helper_body_expr = @core.Expr::Ident(name=helper_param_name, span~)
+  let helper_body = @core.Module::{
+    stmts: [@core.Stmt::Expr(expr=helper_body_expr, span~)],
+  }
+  let helper_expr = @core.Expr::Fn(
+    type_params=[],
+    type_bounds={},
+    params=[helper_param],
+    ret=Some(ann_ty),
+    effects=[],
+    body=helper_body,
+    span~,
+  )
+  let helper_stmt = @core.Stmt::Let(
+    rec=false,
+    name=helper_name,
+    expr=helper_expr,
+    span~,
+  )
+  let call_arg_span = raw_expr.span()
+  let call_expr = @core.Expr::Call(
+    name=helper_name,
+    type_args=[],
+    args=[@core.CallArg::{ label: None, expr: raw_expr, span: call_arg_span }],
+    span~,
+  )
+  @core.Expr::Block(
+    body=@core.Module::{
+      stmts: [helper_stmt, @core.Stmt::Expr(expr=call_expr, span~)],
+    },
+    span~,
+  )
 }
 
 ///|
@@ -1670,15 +1792,15 @@ fn AstParser::parse_test_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let start = self.pos
   let _ = self.expect(test_kw(), "test")
   self.skip_trivia()
-  let mut name : String? = None
-  if self.peek_kind() == string_lit() {
+  let mut test_name : String? = None
+  if self.peek_kind() == string_lit() || self.peek_kind() == name() {
     let name_tok = self.bump()
-    name = Some(name_tok.text())
+    test_name = Some(name_tok.text())
     self.skip_trivia()
   }
   let body = self.parse_block()
   let span = self.span_from(start)
-  @core.Stmt::Test(name~, body~, span~)
+  @core.Stmt::Test(name=test_name, body~, span~)
 }
 
 ///|
@@ -1708,8 +1830,18 @@ fn AstParser::parse_import_stmt(
   // Parse import spec: { foo, bar as b }
   let _ = self.expect(lbrace(), "{")
   let items : Array[@core.ImportItem] = []
-  while self.peek_kind() != rbrace() {
+  while true {
     self.skip_trivia()
+    if self.peek_kind() == rbrace() {
+      break
+    }
+    if self.peek_kind() == comma() {
+      raise ParseError::UnexpectedToken(
+        expected="import name after `,`",
+        got=self.peek().text(),
+        span=self.token_span(),
+      )
+    }
     let kind = self.parse_import_item_kind()
     self.skip_trivia()
     let import_name = self.parse_type_member_name("import name")
@@ -1726,14 +1858,38 @@ fn AstParser::parse_import_stmt(
     self.skip_trivia()
     if self.peek_kind() == comma() {
       let _ = self.bump()
-
+      self.skip_trivia()
+      if self.peek_kind() == rbrace() {
+        break
+      }
+    } else if self.peek_kind() != rbrace() {
+      raise ParseError::UnexpectedToken(
+        expected="`,` or `}` in import list",
+        got=self.peek().text(),
+        span=self.token_span(),
+      )
     }
   }
   let _ = self.expect(rbrace(), "}")
   let spec = @core.ImportSpec::{ items, }
   // Expect 'from'
   self.skip_trivia()
-  let _ = self.expect(from_kw(), "from")
+  if self.peek_kind() != from_kw() {
+    let expected = if self.peek_kind() == string_lit() ||
+      self.peek_kind() == name() ||
+      self.peek_kind() == dot() ||
+      self.peek_kind() == hash_ref() {
+      "`from` before import source"
+    } else {
+      "from"
+    }
+    raise ParseError::UnexpectedToken(
+      expected~,
+      got=self.peek().text(),
+      span=self.token_span(),
+    )
+  }
+  let _ = self.bump()
   self.skip_trivia()
   // Parse module reference: path or hash
   let source = self.parse_module_ref()

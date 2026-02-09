@@ -1,5 +1,174 @@
 ///|
 /// Formatter tests
+
+///|
+test "xsh format roundtrip regression: trait impl import test and literals" {
+  let input =
+    #|import { type Option, trait Eq, eq } from "./mod.xsh"
+    #|trait Eq
+    #|impl Eq for Int
+    #|test "quoted case" {
+    #|  let msg = "hello world"
+    #|  let escaped = "\"ok\""
+    #|  let ch = 'z'
+    #|  let f = () -> Int with { Error } { 1 }
+    #|  assert_true(msg == "hello world")
+    #|}
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+  if not(formatted.contains("trait Eq")) {
+    fail("[trait spacing] missing trait Eq\n---\n\{formatted}")
+  }
+  if not(formatted.contains("impl Eq for Int")) {
+    fail("[impl spacing] missing impl Eq for Int\n---\n\{formatted}")
+  }
+  if not(formatted.contains("test \"quoted case\"")) {
+    fail("[test quoted name] missing quoted test name\n---\n\{formatted}")
+  }
+  if not(formatted.contains("from \"./mod.xsh\"")) {
+    fail("[import from spacing] missing from clause spacing\n---\n\{formatted}")
+  }
+  if not(formatted.contains("\"hello world\"")) {
+    fail("[string quotes] missing quoted string literal\n---\n\{formatted}")
+  }
+  if not(formatted.contains("'z'")) {
+    fail("[char quotes] missing quoted char literal\n---\n\{formatted}")
+  }
+  if formatted.contains("traitEq") {
+    fail("[trait join regression] found traitEq\n---\n\{formatted}")
+  }
+  if formatted.contains("implEq") {
+    fail("[impl join regression] found implEq\n---\n\{formatted}")
+  }
+  if formatted.contains("}from") {
+    fail("[import join regression] found }from\n---\n\{formatted}")
+  }
+}
+
+///|
+test "xsh format roundtrip regression: effect signatures stay parse-equivalent" {
+  let input =
+    #|let run = (f: () -> Int with { Error, Io }) -> Int with { Error } {
+    #|  f()
+    #|}
+    #|let g = () -> Int with { Error } { 0 }
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+}
+
+///|
+test "xsh format keeps import list forms parse-equivalent" {
+  let input =
+    #|import { type Option, trait Eq, value as value_alias } from "./mod.xsh"
+    #|import { value_alias } from "./mod.xsh"
+  let formatted = format_script(input)
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
+  }
+  let after = parse_ast(formatted) catch {
+    e =>
+      fail("[after-format] parse failed: \{e.to_string()}\n---\n\{formatted}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+  if not(formatted.contains("trait Eq")) {
+    fail("[import trait item spacing] missing trait Eq\n---\n\{formatted}")
+  }
+  if formatted.contains("}from") {
+    fail("[import from spacing] found }from\n---\n\{formatted}")
+  }
+}
+
+///|
+test "xsh parse/format import list allows trailing comma" {
+  let input =
+    #|import { type Option, trait Eq, value as value_alias, } from "./mod.xsh"
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] import trailing comma failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] import trailing comma format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
+test "xsh parse/format local let annotation is parser-equivalent" {
+  let input =
+    #|let x: Int = 1
+    #|let mut y: Int = x
+    #|let z: String = "ok"
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] let annotation failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] let annotation format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
+test "xsh parse/format test declaration accepts unquoted names" {
+  let input =
+    #|test smoke_case {
+    #|  let x = 1
+    #|}
+    #|test "quoted case" {
+    #|  let y = 2
+    #|}
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] unquoted test name failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] unquoted test name format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
+test "xsh parse/format map keyword is contextual in identifier positions" {
+  let input =
+    #|let map = (x: Int) -> Int { x }
+    #|let y = map(1)
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] contextual map identifier failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] contextual map identifier format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
 test "xsh format basic" {
   let input =
     #|let x=1

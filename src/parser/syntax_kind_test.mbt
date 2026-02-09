@@ -57,3 +57,19 @@ test "lexer distinguishes await/yield from operators" {
     fail("continue and / must not share SyntaxKind")
   }
 }
+
+///|
+test "lexer treats map as contextual keyword" {
+  let map_lit_tokens = tokenize("map { a: 1 }")
+  if map_lit_tokens[0].kind() != map_kw() {
+    fail("map before { must lex as map_kw")
+  }
+  let map_ident_tokens = tokenize("let map = 1\nmap(1)")
+  if map_ident_tokens[2].kind() != name() {
+    fail("map binding must lex as name")
+  }
+  let map_call_tokens = tokenize("map(1)")
+  if map_call_tokens[0].kind() != name() {
+    fail("map before ( must lex as name")
+  }
+}

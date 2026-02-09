@@ -263,7 +263,12 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "try" => try_kw()
           "catch" => catch_kw()
           "record" => record_kw()
-          "map" => map_kw()
+          "map" =>
+            if self.peek_next_significant_char() == Some('{') {
+              map_kw()
+            } else {
+              name()
+            }
           "fn" => fn_kw()
           "rec" => rec_kw()
           "type" => type_kw()
@@ -562,6 +567,33 @@ fn Lexer::should_continue_qualified(self : Lexer) -> Bool {
     i += 1
   }
   false
+}
+
+///|
+fn Lexer::peek_next_significant_char(self : Lexer) -> Char? {
+  let mut i = self.pos
+  while i < self.input.length() {
+    let ch = self.input[i].to_int().unsafe_to_char()
+    if is_whitespace_char(ch) || ch == '\n' {
+      i += 1
+      continue
+    }
+    if ch == '/' &&
+      i + 1 < self.input.length() &&
+      self.input[i + 1].to_int().unsafe_to_char() == '/' {
+      i += 2
+      while i < self.input.length() {
+        let c = self.input[i].to_int().unsafe_to_char()
+        if c == '\n' {
+          break
+        }
+        i += 1
+      }
+      continue
+    }
+    return Some(ch)
+  }
+  None
 }
 
 ///|

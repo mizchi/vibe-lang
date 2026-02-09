@@ -186,28 +186,31 @@
   evaluate `--syntax posix-strict` vs `posix-ext` split and wire diagnostics so
   teams can enforce strict compatibility in CI.
 - Grammar/language cleanup candidates (from std refactor & test split):
-  - P0: Fix `xsh fmt --write` parse-stability bugs for `*.xsh`.
-    Formatter output must remain parser-equivalent.
-    Reproduced breakages include:
-    `trait Eq` -> `traitEq`, `impl Eq for Int` -> `implEq for Int`,
-    `test "name"` -> `test name`, string literal quote loss,
-    and malformed import joins (`}from "./mod.xsh"`).
-  - P0: Add regression fixtures for formatter round-trip on xsh syntax forms:
+  - P0 [done 2026-02-09]: Fix `xsh fmt --write` parse-stability bugs for `*.xsh`.
+    Formatter output is now parser-equivalent for the reproduced cases:
+    `trait Eq` / `impl Eq for Int` spacing, quoted `test "name"`,
+    string/char literal quote preservation, and import join spacing
+    (`} from "./mod.xsh"`).
+  - P0 [done 2026-02-09]: Add regression fixtures for formatter round-trip on xsh syntax forms:
     `import`, `trait/impl`, `test`, effect signatures (`with {..}`),
-    and string-heavy assertions.
-  - P1: Allow trailing commas in import lists:
+    and string-heavy assertions (see `src/parser/format_test.mbt`).
+  - P1 [done 2026-02-09]: Allow trailing commas in import lists:
     `import { a, b, } from "./m.xsh"`.
-    Current parser rejects this and creates noisy edit churn.
-  - P1: Support local variable type annotations in bindings:
+    Parser now accepts trailing comma with trivia/newlines in named import lists.
+  - P1 [done 2026-02-09]: Support local variable type annotations in bindings:
     `let x: T = expr`.
-    Current parser rejects `:` in local `let`.
-  - P1: Improve test-declaration UX:
-    either accept unquoted test names or keep quoted-only syntax but provide
-    precise diagnostics and formatter-safe canonicalization.
-  - P1: Reduce keyword collision friction (for example `map`) via
-    contextual keyword handling or explicit escape syntax.
-  - P2: Improve import-parse diagnostics with targeted hints:
-    distinguish trailing-comma, missing `from`, and malformed list separators.
+    Parser now accepts annotated local `let` bindings; fixtures cover both
+    success and mismatch diagnostics.
+  - P1 [done 2026-02-09]: Improve test-declaration UX:
+    unquoted test names are now accepted (`test smoke_case { ... }`) while
+    quoted names remain supported.
+  - P1 [done 2026-02-09]: Reduce keyword collision friction (for `map`) via
+    contextual keyword handling.
+    `map { ... }` stays keyword syntax, while identifier positions
+    (`let map = ...`, `map(...)`) now lex as `name`.
+  - P2 [done 2026-02-09]: Improve import-parse diagnostics with targeted hints:
+    import parser now distinguishes missing `from`, malformed list separators,
+    and extra commas in import lists; trailing comma form is accepted.
   - P2: Track existing syntax-adjacent gaps discovered during std port:
     cross-module trait import/export robustness,
     polymorphic recursion,
