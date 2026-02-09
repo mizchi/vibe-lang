@@ -2514,6 +2514,12 @@ fn needs_heap_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Bool {
       let _ = span
       needs_heap_expr(ctx, expr)
     }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      let _ = rec
+      let _ = name
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
     _ => false
   }
 }
