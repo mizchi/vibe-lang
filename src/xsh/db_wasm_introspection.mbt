@@ -75,16 +75,15 @@ fn wasm_skip_limits(cursor : WasmCursor) -> Bool {
     Some(v) => v
     None => return false
   }
-  let _ = match cursor.read_u32_leb() {
-    Some(v) => v
+  match cursor.read_u32_leb() {
+    Some(_) => ()
     None => return false
   }
   if (flags & 0x01) != 0 {
-    let _ = match cursor.read_u32_leb() {
-      Some(v) => v
+    match cursor.read_u32_leb() {
+      Some(_) => ()
       None => return false
     }
-
   }
   true
 }
