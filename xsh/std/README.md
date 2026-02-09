@@ -6,20 +6,20 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 
 | Module | Test Count | Description |
 |--------|-----------:|-------------|
-| `trait_api.xsh` | 6 | Trait-oriented generic API (`Eq`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
-| `option.xsh` | 12 | Generic Option helpers (`option_map`, `option_map_or`, `option_or`, `option_or_else`, `option_equals`) |
-| `int.xsh` | 11 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
+| `trait_api.xsh` | 7 | Trait-oriented generic API (`Eq`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
+| `option.xsh` | 13 | Generic Option helpers (`is_some`, `unwrap_or`, `map_opt`, `map_or`, `or_else`, `equals`) |
+| `int.xsh` | 13 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
 | `float.xsh` | 7 | Float helpers (`abs`, `signum`, `clamp`, `square`, `lerp`) |
-| `double.xsh` | 10 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
+| `double.xsh` | 11 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
 | `list.xsh` | 13 | Generic Cons list helpers (`List[T]`, `map`, `fold`, `filter`, `append`, `contains_by`) |
 | `bool.xsh` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
-| `string.xsh` | 13 | String helpers (`head`, `tail`, `take`, `drop`, `contains`, `count`, `replace`, `replace_all`) |
+| `string.xsh` | 14 | String helpers (`head`, `tail`, `take`, `drop`, `contains`, `count`, `replace`, `replace_all`) |
 | `io.xsh` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
 | `wasm/types.xsh` | 6 | WASM type alias entrypoint (`i32`/`f32`/`f64`, `I32`/`F32`/`F64`) |
 | `wasm/opcodes.xsh` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
 | `wasm/io_stream.xsh` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
-**Total: 98 tests**
+**Total: 104 tests**
 
 ## Trait-oriented API Surface
 
@@ -29,13 +29,21 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 - `ord_min`, `ord_max`, `ord_clamp`, `ord_between` for ordering (`T: Ord`)
 - `num_add`, `num_sub`, `num_mul`, `num_div`, `num_abs`, `num_square`, `num_clamp`
 
-`option.xsh` now uses generic signatures:
+`option.xsh` now exposes short names as the preferred API:
 
-- `option_is_some`, `option_is_none`, `option_unwrap_or`
-- `option_unwrap_or_else`, `option_map`, `option_map_or`
-- `option_flatten`, `option_flatmap`, `option_filter`
-- `option_zip`, `option_and`, `option_or`, `option_or_else`, `option_equals`
-- Compatibility aliases (`is_some`, `is_none`, `unwrap_or`) are kept.
+- `is_some`, `is_none`, `unwrap_or`, `unwrap_or_else`
+- `map_opt`, `map_or`, `flatten`, `flatmap`, `filter`, `zip`
+- `and`, `or`, `or_else`, `equals`, `zip_sum`
+- `option_*` prefixes are no longer exported.
+- `map` itself is reserved in xsh syntax, so Option map is named `map_opt`.
+
+Recommended usage (collision-safe, method-style):
+
+```xsh
+import { is_some, unwrap_or } from "./xsh/std/option.xsh"
+let ok = Some(1).is_some()
+let v = None.unwrap_or(0)
+```
 
 ## Current Language Gaps Found During Porting
 

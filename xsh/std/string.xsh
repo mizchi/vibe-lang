@@ -62,23 +62,39 @@ let string_repeat = (s: String, n: Int) -> String {
   go("", n)
 }
 
-// Pad left with character to reach target length
+// Pad left with a pad string to reach exact target length
 let string_pad_left = (s: String, target_len: Int, pad_char: String) -> String {
   let len = string_length(s)
   if len >= target_len { s }
   else {
-    let pad = string_repeat(pad_char, target_len - len)
-    string_concat(pad, s)
+    let pad_len = target_len - len
+    let unit_len = string_length(pad_char)
+    if unit_len == 0 { s } else {
+      let rec fill_pad = (acc: String) -> String {
+        if string_length(acc) >= pad_len { acc }
+        else { fill_pad(string_concat(acc, pad_char)) }
+      }
+      let pad = string_take(fill_pad(""), pad_len)
+      string_concat(pad, s)
+    }
   }
 }
 
-// Pad right with character to reach target length
+// Pad right with a pad string to reach exact target length
 let string_pad_right = (s: String, target_len: Int, pad_char: String) -> String {
   let len = string_length(s)
   if len >= target_len { s }
   else {
-    let pad = string_repeat(pad_char, target_len - len)
-    string_concat(s, pad)
+    let pad_len = target_len - len
+    let unit_len = string_length(pad_char)
+    if unit_len == 0 { s } else {
+      let rec fill_pad = (acc: String) -> String {
+        if string_length(acc) >= pad_len { acc }
+        else { fill_pad(string_concat(acc, pad_char)) }
+      }
+      let pad = string_take(fill_pad(""), pad_len)
+      string_concat(s, pad)
+    }
   }
 }
 
@@ -166,12 +182,16 @@ let string_count = (s: String, sub: String) -> Int {
 
 // Replace first occurrence of pattern with replacement
 let string_replace = (s: String, pattern: String, replacement: String) -> String {
-  let idx = string_index_of(s, pattern)
-  if idx < 0 { s }
+  let pat_len = string_length(pattern)
+  if pat_len == 0 { s }
   else {
-    let before = string_substring(s, 0, idx)
-    let after = string_substring(s, idx + string_length(pattern), string_length(s))
-    string_concat(string_concat(before, replacement), after)
+    let idx = string_index_of(s, pattern)
+    if idx < 0 { s }
+    else {
+      let before = string_substring(s, 0, idx)
+      let after = string_substring(s, idx + pat_len, string_length(s))
+      string_concat(string_concat(before, replacement), after)
+    }
   }
 }
 
@@ -195,6 +215,35 @@ let string_replace_all = (s: String, pattern: String, replacement: String) -> St
     }
     go(0, "")
   }
+}
+
+// Short names (preferred): use with method-call desugar, e.g. "abc".contains("a")
+let is_empty = (s: String) -> Bool { string_is_empty(s) }
+let is_not_empty = (s: String) -> Bool { string_is_not_empty(s) }
+let head = (s: String) -> String { string_head(s) }
+let tail = (s: String) -> String { string_tail(s) }
+let last = (s: String) -> String { string_last(s) }
+let init = (s: String) -> String { string_init(s) }
+let take = (s: String, n: Int) -> String { string_take(s, n) }
+let drop = (s: String, n: Int) -> String { string_drop(s, n) }
+let repeat = (s: String, n: Int) -> String { string_repeat(s, n) }
+let pad_left = (s: String, target_len: Int, pad_char: String) -> String {
+  string_pad_left(s, target_len, pad_char)
+}
+let pad_right = (s: String, target_len: Int, pad_char: String) -> String {
+  string_pad_right(s, target_len, pad_char)
+}
+let starts_with = (s: String, prefix: String) -> Bool { string_starts_with(s, prefix) }
+let ends_with = (s: String, suffix: String) -> Bool { string_ends_with(s, suffix) }
+let contains = (s: String, sub: String) -> Bool { string_contains(s, sub) }
+let index_of = (s: String, sub: String) -> Int { string_index_of(s, sub) }
+let last_index_of = (s: String, sub: String) -> Int { string_last_index_of(s, sub) }
+let count = (s: String, sub: String) -> Int { string_count(s, sub) }
+let replace = (s: String, pattern: String, replacement: String) -> String {
+  string_replace(s, pattern, replacement)
+}
+let replace_all = (s: String, pattern: String, replacement: String) -> String {
+  string_replace_all(s, pattern, replacement)
 }
 
 // Tests
@@ -235,6 +284,8 @@ test "string_pad" {
   assert(string_equals(string_pad_left("42", 5, "0"), "00042"))
   assert(string_equals(string_pad_right("hi", 5, "."), "hi..."))
   assert(string_equals(string_pad_left("hello", 3, "x"), "hello"))
+  assert(string_equals(string_pad_left("a", 3, "xy"), "xya"))
+  assert(string_equals(string_pad_right("a", 3, "xy"), "axy"))
 }
 
 test "string_starts_ends_with" {
@@ -260,6 +311,7 @@ test "string_replace" {
   assert(string_equals(string_replace("hello world", "world", "xsh"), "hello xsh"))
   assert(string_equals(string_replace("aaa", "a", "b"), "baa"))
   assert(string_equals(string_replace("hello", "x", "y"), "hello"))
+  assert(string_equals(string_replace("abc", "", "X"), "abc"))
 }
 
 test "string_last_index_of" {
@@ -280,11 +332,15 @@ test "string_replace_all" {
   assert(string_equals(string_replace_all("abc", "", "z"), "abc"))
 }
 
+test "string_short_aliases" {
+  assert(is_empty(""))
+  assert(contains("hello", "ell"))
+  assert(string_equals(replace_all("foo foo", "foo", "x"), "x x"))
+}
+
 // Export all public functions
 export {
-  string_is_empty, string_is_not_empty, string_head, string_tail,
-  string_last, string_init, string_take, string_drop, string_repeat,
-  string_pad_left, string_pad_right, string_starts_with, string_ends_with,
-  string_contains, string_index_of, string_last_index_of, string_count,
-  string_replace, string_replace_all
+  is_empty, is_not_empty, head, tail, last, init, take, drop, repeat,
+  pad_left, pad_right, starts_with, ends_with, contains,
+  index_of, last_index_of, count, replace, replace_all
 }

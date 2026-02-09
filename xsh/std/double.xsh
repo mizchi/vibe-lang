@@ -4,6 +4,8 @@
 let double_max_value = 1.7976931348623157e308
 let double_min_value = 2.2250738585072014e-308
 let double_epsilon = 2.220446049250313e-16
+let double_int_max_value = 2147483647.0
+let double_int_min_value = -2147483648.0
 
 // Absolute value
 let double_abs = (x: Double) -> Double {
@@ -56,16 +58,24 @@ let double_clamp = (x: Double, min_val: Double, max_val: Double) -> Double {
 
 // Floor - largest integer less than or equal to x
 let double_floor = (x: Double) -> Double {
-  let i = double_to_int(x)
-  let d = int_to_double(i)
-  if d > x { int_to_double(i - 1) } else { d }
+  if x >= double_int_max_value { double_int_max_value }
+  else if x <= double_int_min_value { double_int_min_value }
+  else {
+    let i = double_to_int(x)
+    let d = int_to_double(i)
+    if d > x { int_to_double(i - 1) } else { d }
+  }
 }
 
 // Ceiling - smallest integer greater than or equal to x
 let double_ceil = (x: Double) -> Double {
-  let i = double_to_int(x)
-  let d = int_to_double(i)
-  if d < x { int_to_double(i + 1) } else { d }
+  if x >= double_int_max_value { double_int_max_value }
+  else if x <= double_int_min_value { double_int_min_value }
+  else {
+    let i = double_to_int(x)
+    let d = int_to_double(i)
+    if d < x { int_to_double(i + 1) } else { d }
+  }
 }
 
 // Round to nearest integer (half away from zero)
@@ -79,7 +89,9 @@ let double_round = (x: Double) -> Double {
 
 // Truncate - remove fractional part
 let double_trunc = (x: Double) -> Double {
-  int_to_double(double_to_int(x))
+  if x >= double_int_max_value { double_int_max_value }
+  else if x <= double_int_min_value { double_int_min_value }
+  else { int_to_double(double_to_int(x)) }
 }
 
 // Fractional part
@@ -160,6 +172,15 @@ test "double_trunc_fract" {
   let f = double_fract(3.75)
   assert(f > 0.74)
   assert(f < 0.76)
+}
+
+test "double_floor_ceil_trunc_saturate_int_range" {
+  assert(eq(double_floor(1.0e20), double_int_max_value))
+  assert(eq(double_ceil(1.0e20), double_int_max_value))
+  assert(eq(double_trunc(1.0e20), double_int_max_value))
+  assert(eq(double_floor(-1.0e20), double_int_min_value))
+  assert(eq(double_ceil(-1.0e20), double_int_min_value))
+  assert(eq(double_trunc(-1.0e20), double_int_min_value))
 }
 
 test "double_square_cube" {

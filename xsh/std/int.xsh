@@ -6,9 +6,12 @@ let int_max_value = 2147483647
 // Use int_max_value + 1 with negation trick
 let int_min_value = 0 - 2147483647 - 1
 
-// Absolute value
+// Absolute value (saturates at int_max_value for int_min_value)
 let int_abs = (x: Int) -> Int {
-  if x < 0 { 0 - x } else { x }
+  // Saturate at max to avoid overflow for min_value.
+  if x == int_min_value { int_max_value }
+  else if x < 0 { 0 - x }
+  else { x }
 }
 
 // Maximum of two integers
@@ -83,7 +86,11 @@ let rec int_gcd = (a: Int, b: Int) -> Int {
 // Least Common Multiple
 let int_lcm = (a: Int, b: Int) -> Int {
   if a == 0 || b == 0 { 0 }
-  else { int_abs(a * b) / int_gcd(a, b) }
+  else {
+    let g = int_gcd(a, b)
+    let scaled = a / g
+    int_abs(scaled * b)
+  }
 }
 
 // Factorial
@@ -101,11 +108,37 @@ let int_fibonacci = (n: Int) -> Int {
   fib(0, 1, n)
 }
 
+export let Int::to_double = (x: Int) -> Double {
+  int_to_double(x)
+}
+
+// Short names (preferred): use with method-call desugar, e.g. x.abs()
+let max_value = int_max_value
+let min_value = int_min_value
+let abs = (x: Int) -> Int { int_abs(x) }
+let max = (a: Int, b: Int) -> Int { int_max(a, b) }
+let min = (a: Int, b: Int) -> Int { int_min(a, b) }
+let clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
+  int_clamp(x, min_val, max_val)
+}
+let signum = (x: Int) -> Int { int_signum(x) }
+let is_even = (x: Int) -> Bool { int_is_even(x) }
+let is_odd = (x: Int) -> Bool { int_is_odd(x) }
+let is_positive = (x: Int) -> Bool { int_is_positive(x) }
+let is_negative = (x: Int) -> Bool { int_is_negative(x) }
+let is_zero = (x: Int) -> Bool { int_is_zero(x) }
+let pow = (base: Int, exp: Int) -> Int { int_pow(base, exp) }
+let gcd = (a: Int, b: Int) -> Int { int_gcd(a, b) }
+let lcm = (a: Int, b: Int) -> Int { int_lcm(a, b) }
+let factorial = (n: Int) -> Int { int_factorial(n) }
+let fibonacci = (n: Int) -> Int { int_fibonacci(n) }
+
 // Tests
 test "int_abs" {
   assert(eq(int_abs(5), 5))
   assert(eq(int_abs(-5), 5))
   assert(eq(int_abs(0), 0))
+  assert(eq(int_abs(int_min_value), int_max_value))
 }
 
 test "int_max_min" {
@@ -161,6 +194,7 @@ test "int_lcm" {
   assert(eq(int_lcm(4, 6), 12))
   assert(eq(int_lcm(3, 5), 15))
   assert(eq(int_lcm(0, 5), 0))
+  assert(eq(int_lcm(1073741824, 2), 1073741824))
 }
 
 test "int_factorial" {
@@ -177,10 +211,23 @@ test "int_fibonacci" {
   assert(eq(int_fibonacci(15), 610))
 }
 
+test "int_short_aliases" {
+  assert(eq(abs(-3), 3))
+  assert(eq(clamp(99, 0, 8), 8))
+  assert(is_even(10))
+  assert(eq(pow(2, 8), 256))
+}
+
+test "int_type_member_to_double" {
+  let v = 7
+  let d = v.to_double()
+  assert(eq(double_to_int(d), 7))
+}
+
 // Export all public functions
 export {
-  int_max_value, int_min_value,
-  int_abs, int_max, int_min, int_clamp, int_signum,
-  int_is_even, int_is_odd, int_is_positive, int_is_negative, int_is_zero,
-  int_pow, int_gcd, int_lcm, int_factorial, int_fibonacci
+  max_value, min_value,
+  abs, max, min, clamp, signum,
+  is_even, is_odd, is_positive, is_negative, is_zero,
+  pow, gcd, lcm, factorial, fibonacci
 }
