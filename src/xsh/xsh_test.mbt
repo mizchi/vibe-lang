@@ -465,6 +465,30 @@ test "xsh stdout permission requires effect" {
 }
 
 ///|
+test "xsh sleep requires runtime capability" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Unit with {Async} { do { sleep(1) } }\n" + "run()",
+  )
+  match result {
+    Err(err) => assert_true(err.to_string().contains("clock_read"))
+    Ok(_) => fail("expected sleep capability error")
+  }
+}
+
+///|
+test "xsh sleep succeeds with developer capability" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let run = () -> Unit with {Async} { do { sleep(1) } }\n" + "run()",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(eval_result) => assert_eq(eval_result.effects.length(), 0)
+  }
+}
+
+///|
 test "xsh stdio builtins require effects" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result_stdout : Result[EvalResult, XshError] = try? rt.eval_script(

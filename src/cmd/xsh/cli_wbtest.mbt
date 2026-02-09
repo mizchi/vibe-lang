@@ -444,6 +444,10 @@ fn wbtest_remove_if_exists(path : String) -> Unit {
   }
   let is_dir = @os_fs.is_dir(path) catch { _ => false }
   if is_dir {
+    let entries = @os_fs.read_dir(path) catch { _ => [] }
+    for name in entries {
+      wbtest_remove_if_exists(path + "/" + name)
+    }
     ignore(@os_fs.remove_dir(path) catch { _ => () })
   }
 }

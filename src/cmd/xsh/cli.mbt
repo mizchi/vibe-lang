@@ -268,7 +268,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
     Ok(v) => v
     Err(msg) => abort(msg)
   }
-  match load_db(opts.entry_path) {
+  match @loader.load_db(opts.entry_path) {
     Err(err) => abort("compile: " + err)
     Ok((db, entry)) => {
       // Resolve output path with default to dist/
@@ -387,7 +387,7 @@ fn run_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
   let entry_path = args[0]
   match syntax_mode {
     @xsh_lib.ParserMode::XshMode =>
-      match load_db(entry_path) {
+      match @loader.load_db(entry_path) {
         Err(err) => abort("run: " + err)
         Ok((db, entry)) => {
           let compiled = @xsh_lib.compile_module(db, entry) catch {
@@ -406,7 +406,9 @@ fn run_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
                 match source {
                   @xsh_core.ModuleRef::Path(path=raw_path) => {
                     // Resolve the path to find the hash
-                    let resolved = resolve_import_path(base_dir, raw_path)
+                    let resolved = @loader.resolve_import_path(
+                      base_dir, raw_path,
+                    )
                     match path_to_hash.get(resolved) {
                       Some(hash) => path_to_hash[raw_path] = hash
                       None => ()
@@ -437,7 +439,7 @@ fn run_cmd(args : Array[String], syntax_mode : @xsh_lib.ParserMode) -> Unit {
         }
       }
     @xsh_lib.ParserMode::PosixMode => {
-      let resolved = resolve_entry_path(entry_path)
+      let resolved = @loader.resolve_entry_path(entry_path)
       let source = @os_fs.read_file_to_string(resolved) catch {
         e => abort("run: " + e.to_string())
       }
@@ -482,7 +484,7 @@ fn check_cmd(args : Array[String]) -> Unit {
   }
   let mut total_errors = 0
   for entry_path in args {
-    let resolved = resolve_entry_path(entry_path)
+    let resolved = @loader.resolve_entry_path(entry_path)
     let source = @os_fs.read_file_to_string(resolved) catch {
       e => {
         println("check: \{entry_path}: \{e}")
@@ -535,7 +537,7 @@ fn check_cmd(args : Array[String]) -> Unit {
       }
       continue
     }
-    match load_db(entry_path) {
+    match @loader.load_db(entry_path) {
       Err(err) => {
         println("check: \{entry_path}: \{err}")
         total_errors += 1
@@ -577,7 +579,7 @@ fn test_cmd(args : Array[String]) -> Unit {
   let mut failed_count = 0
   let file_count = entry_paths.length()
   for entry_path in entry_paths {
-    match load_db(entry_path) {
+    match @loader.load_db(entry_path) {
       Err(err) => {
         println("[\{entry_path}] load error: \{err}")
         failed = true
@@ -602,7 +604,7 @@ fn test_cmd(args : Array[String]) -> Unit {
             @xsh_core.Stmt::Import(source~, ..) =>
               match source {
                 @xsh_core.ModuleRef::Path(path=raw_path) => {
-                  let resolved = resolve_import_path(base_dir, raw_path)
+                  let resolved = @loader.resolve_import_path(base_dir, raw_path)
                   match path_to_hash.get(resolved) {
                     Some(hash) => path_to_hash[raw_path] = hash
                     None => ()
@@ -1796,7 +1798,7 @@ fn print_test_report(path : String, report : @xsh_lib.TestReport) -> Bool {
 fn compile_entry(
   entry_path : String,
 ) -> Result[@xsh_lib.CompiledModule, String] {
-  match load_db(entry_path) {
+  match @loader.load_db(entry_path) {
     Err(err) => Err(err)
     Ok((db, entry)) => {
       let compiled = @xsh_lib.compile_module(db, entry) catch {
@@ -1808,530 +1810,23 @@ fn compile_entry(
 }
 
 ///|
-struct LockData {
-  path_refs : Map[String, String]
-  version_refs : Map[String, String]
-  symbol_refs : Map[String, String]
-} derive(Show, Eq)
-
-///|
-fn empty_lock_data() -> LockData {
-  { path_refs: {}, version_refs: {}, symbol_refs: {} }
-}
-
-///|
-fn normalize_lock_hash(hash : String) -> String {
-  if hash.has_prefix("#") && hash.length() > 1 {
-    hash.unsafe_substring(start=1, end=hash.length())
-  } else {
-    hash
-  }
-}
-
-///|
-fn parse_lock_path_map(
-  json : Json?,
-  base_dir : String,
-) -> Result[Map[String, String], String] {
-  let out : Map[String, String] = {}
-  match json {
-    None => Ok(out)
-    Some(Json::Object(entries)) => {
-      for key, value in entries {
-        match value {
-          Json::String(hash) => {
-            let normalized = if key.has_prefix("/") {
-              @xsh_fs.normalize_path(key)
-            } else {
-              @xsh_fs.normalize_path(base_dir + "/" + key)
-            }
-            out[normalized] = normalize_lock_hash(hash)
-          }
-          _ => return Err("xsh.lock: path.\{key} must be a string hash")
-        }
-      }
-      Ok(out)
-    }
-    Some(_) => Err("xsh.lock: `path` must be an object")
-  }
-}
-
-///|
-fn parse_lock_ref_map(
-  json : Json?,
-  field_name : String,
-) -> Result[Map[String, String], String] {
-  let out : Map[String, String] = {}
-  match json {
-    None => Ok(out)
-    Some(Json::Object(entries)) => {
-      for key, value in entries {
-        match value {
-          Json::String(hash) => out[key] = normalize_lock_hash(hash)
-          _ =>
-            return Err("xsh.lock: \{field_name}.\{key} must be a string hash")
-        }
-      }
-      Ok(out)
-    }
-    Some(_) => Err("xsh.lock: `\{field_name}` must be an object")
-  }
-}
-
-///|
-fn parse_lock_data(
-  content : String,
-  base_dir : String,
-) -> Result[LockData, String] {
-  if content.trim().to_string().length() == 0 {
-    return Ok(empty_lock_data())
-  }
-  let json : Json = @json.parse(content) catch {
-    e => return Err("xsh.lock: invalid JSON: " + e.to_string())
-  }
-  match json {
-    Json::Object(obj) => {
-      let path_refs = match parse_lock_path_map(obj.get("path"), base_dir) {
-        Ok(v) => v
-        Err(err) => return Err(err)
-      }
-      let version_refs = match
-        parse_lock_ref_map(obj.get("version"), "version") {
-        Ok(v) => v
-        Err(err) => return Err(err)
-      }
-      let symbol_refs = match parse_lock_ref_map(obj.get("symbol"), "symbol") {
-        Ok(v) => v
-        Err(err) => return Err(err)
-      }
-      Ok({ path_refs, version_refs, symbol_refs })
-    }
-    _ => Err("xsh.lock: top-level JSON must be an object")
-  }
-}
-
-///|
-fn write_json_string_literal(text : String, buf : StringBuilder) -> Unit {
-  buf.write_char('"')
-  for c in text {
-    match c {
-      '"' => buf.write_string("\\\"")
-      '\\' => buf.write_string("\\\\")
-      '\n' => buf.write_string("\\n")
-      '\r' => buf.write_string("\\r")
-      '\t' => buf.write_string("\\t")
-      _ => buf.write_char(c)
-    }
-  }
-  buf.write_char('"')
-}
-
-///|
-fn split_path_parts(path : String) -> Array[String] {
-  let parts : Array[String] = []
-  for part in path.split("/") {
-    let s = part.to_string()
-    if s.length() > 0 {
-      parts.push(s)
-    }
-  }
-  parts
-}
-
-///|
-fn relativize_lock_path(base_dir : String, target_path : String) -> String {
-  let base = @xsh_fs.normalize_path(base_dir)
-  let target = @xsh_fs.normalize_path(target_path)
-  if not(base.has_prefix("/")) || not(target.has_prefix("/")) {
-    return target
-  }
-  let base_parts = split_path_parts(base)
-  let target_parts = split_path_parts(target)
-  let mut common = 0
-  while common < base_parts.length() &&
-        common < target_parts.length() &&
-        base_parts[common] == target_parts[common] {
-    common += 1
-  }
-  let rel_buf = StringBuilder::new()
-  let mut wrote = false
-  for _ in common..<base_parts.length() {
-    if wrote {
-      rel_buf.write_char('/')
-    }
-    rel_buf.write_string("..")
-    wrote = true
-  }
-  for i in common..<target_parts.length() {
-    if wrote {
-      rel_buf.write_char('/')
-    }
-    rel_buf.write_string(target_parts[i])
-    wrote = true
-  }
-  let rel = rel_buf.to_string()
-  if rel.length() == 0 {
-    "."
-  } else if rel.has_prefix("..") {
-    rel
-  } else {
-    "./" + rel
-  }
-}
-
-///|
-fn write_lock_map_json(
-  map : Map[String, String],
-  buf : StringBuilder,
-  base_dir : String?,
-) -> Unit {
-  buf.write_char('{')
-  let mut first = true
-  for key, value in map {
-    if first {
-      first = false
-    } else {
-      buf.write_char(',')
-    }
-    let rendered_key = match base_dir {
-      Some(base) => relativize_lock_path(base, key)
-      None => key
-    }
-    write_json_string_literal(rendered_key, buf)
-    buf.write_char(':')
-    write_json_string_literal(value, buf)
-  }
-  buf.write_char('}')
-}
-
-///|
-fn lock_data_to_json(lock : LockData, lock_base_dir : String) -> String {
-  let buf = StringBuilder::new()
-  buf.write_char('{')
-  write_json_string_literal("path", buf)
-  buf.write_char(':')
-  write_lock_map_json(lock.path_refs, buf, Some(lock_base_dir))
-  buf.write_char(',')
-  write_json_string_literal("version", buf)
-  buf.write_char(':')
-  write_lock_map_json(lock.version_refs, buf, None)
-  buf.write_char(',')
-  write_json_string_literal("symbol", buf)
-  buf.write_char(':')
-  write_lock_map_json(lock.symbol_refs, buf, None)
-  buf.write_char('}')
-  buf.to_string()
-}
-
-///|
-fn lock_file_path(entry : String) -> String {
-  @xsh_fs.parent_path(entry) + "/xsh.lock"
-}
-
-///|
-fn load_lock_data(lock_path : String) -> Result[LockData, String] {
-  if not(@os_fs.path_exists(lock_path)) {
-    return Ok(empty_lock_data())
-  }
-  let base_dir = @xsh_fs.parent_path(lock_path)
-  let content = @os_fs.read_file_to_string(lock_path) catch {
-    e => return Err("failed to read xsh.lock: " + e.to_string())
-  }
-  parse_lock_data(content, base_dir)
-}
-
-///|
-fn write_lock_data(lock_path : String, lock : LockData) -> Result[Unit, String] {
-  let base_dir = @xsh_fs.parent_path(lock_path)
-  let content = lock_data_to_json(lock, base_dir)
-  @os_fs.write_string_to_file(lock_path, content) catch {
-    e => return Err("failed to write xsh.lock: " + e.to_string())
-  }
-  Ok(())
-}
-
-///|
-fn clone_lock_map(src : Map[String, String]) -> Map[String, String] {
-  let out : Map[String, String] = {}
-  for key, value in src {
-    out[key] = value
-  }
-  out
-}
-
-///|
-fn apply_lock_to_db(
-  db : @xsh_lib.XshDb,
-  entry : String,
-) -> Result[LockData, String] {
-  db.require_path_lock(true)
-  let lock_path = lock_file_path(entry)
-  let lock = match load_lock_data(lock_path) {
-    Ok(data) => data
-    Err(err) => return Err(err)
-  }
-  for path, hash in lock.path_refs {
-    db.set_path_ref(path, hash)
-  }
-  for name, hash in lock.version_refs {
-    db.set_version_ref(name, hash)
-  }
-  for name, hash in lock.symbol_refs {
-    db.set_symbol_ref(name, hash)
-  }
-  Ok(lock)
-}
-
-///|
-fn collect_lock_path_refs(
-  path : String,
-  out : Map[String, String],
-  visited : Map[String, Bool],
-  stack : Array[String],
-) -> Result[Unit, String] {
-  let norm = @xsh_fs.normalize_path(path)
-  for i, p in stack {
-    if p == norm {
-      let cycle_path = StringBuilder::new()
-      for j = i; j < stack.length(); j = j + 1 {
-        cycle_path.write_string(stack[j])
-        cycle_path.write_string(" -> ")
-      }
-      cycle_path.write_string(norm)
-      return Err("import cycle detected: " + cycle_path.to_string())
-    }
-  }
-  if visited.contains(norm) {
-    return Ok(())
-  }
-  stack.push(norm)
-  visited[norm] = true
-  let source = @os_fs.read_file_to_string(norm) catch {
-    e => {
-      let _ = stack.pop()
-      return Err("io: " + e.to_string())
-    }
-  }
-  out[norm] = @xsh_core.git_blob_hash_string(source)
-  let ast = @parser.parse_ast(source) catch {
-    e => {
-      let _ = stack.pop()
-      return Err("parse: " + e.to_string())
-    }
-  }
-  let base = @xsh_fs.parent_path(norm)
-  for stmt in ast.stmts {
-    match stmt {
-      @xsh_core.Stmt::Import(source~, ..) =>
-        match source {
-          @xsh_core.ModuleRef::Path(path~) => {
-            let resolved = resolve_import_path(base, path)
-            match collect_lock_path_refs(resolved, out, visited, stack) {
-              Ok(_) => ()
-              Err(err) => {
-                let _ = stack.pop()
-                return Err(err)
-              }
-            }
-          }
-          @xsh_core.ModuleRef::Hash(..)
-          | @xsh_core.ModuleRef::Version(..)
-          | @xsh_core.ModuleRef::Symbol(..) => ()
-        }
-      _ => ()
-    }
-  }
-  let _ = stack.pop()
-  Ok(())
-}
-
-///|
 fn fetch_cmd(args : Array[String]) -> Unit {
   if args.length() != 1 {
     abort("fetch: expected <file>")
   }
-  let entry = resolve_entry_path(args[0])
-  let lock_path = lock_file_path(entry)
-  let current = match load_lock_data(lock_path) {
+  let entry = @loader.resolve_entry_path(args[0])
+  let lock_path = @codebase.lock_file_path(entry)
+  let updated_lock = match @codebase.update_lock_path_refs(entry) {
     Ok(lock) => lock
-    Err(err) => abort("fetch: " + err)
-  }
-  let path_refs : Map[String, String] = {}
-  let visited : Map[String, Bool] = {}
-  let stack : Array[String] = []
-  match collect_lock_path_refs(entry, path_refs, visited, stack) {
-    Ok(_) => ()
-    Err(err) => abort("fetch: " + err)
-  }
-  let merged_path_refs = clone_lock_map(current.path_refs)
-  for path, hash in path_refs {
-    merged_path_refs[path] = hash
-  }
-  let next_lock : LockData = {
-    path_refs: merged_path_refs,
-    version_refs: current.version_refs,
-    symbol_refs: current.symbol_refs,
-  }
-  match write_lock_data(lock_path, next_lock) {
-    Ok(_) => ()
     Err(err) => abort("fetch: " + err)
   }
   println(
     "updated xsh.lock: " +
     lock_path +
     " (" +
-    merged_path_refs.length().to_string() +
+    updated_lock.path_refs.length().to_string() +
     " path refs)",
   )
-}
-
-///|
-fn load_db(entry_path : String) -> Result[(@xsh_lib.XshDb, String), String] {
-  match load_db_with_paths(entry_path) {
-    Ok((db, entry, _)) => Ok((db, entry))
-    Err(err) => Err(err)
-  }
-}
-
-///|
-fn load_db_with_paths(
-  entry_path : String,
-) -> Result[(@xsh_lib.XshDb, String, Array[String]), String] {
-  let db = @xsh_lib.XshDb::new()
-  let entry = resolve_entry_path(entry_path)
-  match apply_lock_to_db(db, entry) {
-    Ok(_) => ()
-    Err(err) => return Err(err)
-  }
-  let visited : Map[String, Bool] = {}
-  match load_sources_recursive(db, entry, visited) {
-    Ok(_) => {
-      let paths : Array[String] = []
-      for path, _ in visited {
-        paths.push(path)
-      }
-      paths.sort()
-      Ok((db, entry, paths))
-    }
-    Err(err) => Err(err)
-  }
-}
-
-///|
-fn resolve_entry_path(path : String) -> String {
-  if path.has_prefix("/") {
-    @xsh_fs.normalize_path(path)
-  } else {
-    let cwd = match @env.current_dir() {
-      Some(dir) => dir
-      None => "/"
-    }
-    @xsh_fs.normalize_path(cwd + "/" + path)
-  }
-}
-
-///|
-fn load_sources_recursive(
-  db : @xsh_lib.XshDb,
-  path : String,
-  visited : Map[String, Bool],
-) -> Result[Unit, String] {
-  // Use stack-based approach for cycle detection
-  let stack : Array[String] = []
-  load_sources_recursive_impl(db, path, visited, stack)
-}
-
-///|
-fn load_sources_recursive_impl(
-  db : @xsh_lib.XshDb,
-  path : String,
-  visited : Map[String, Bool],
-  stack : Array[String],
-) -> Result[Unit, String] {
-  let norm = @xsh_fs.normalize_path(path)
-  // Check for cycle: if norm is already in current stack, we have a cycle
-  for i, p in stack {
-    if p == norm {
-      // Build cycle path for error message
-      let cycle_path = StringBuilder::new()
-      for j = i; j < stack.length(); j = j + 1 {
-        cycle_path.write_string(stack[j])
-        cycle_path.write_string(" -> ")
-      }
-      cycle_path.write_string(norm)
-      return Err("import cycle detected: " + cycle_path.to_string())
-    }
-  }
-  // If already visited (and not in stack), we've already processed this module
-  if visited.contains(norm) {
-    return Ok(())
-  }
-  // Add to stack for cycle detection
-  stack.push(norm)
-  visited.set(norm, true)
-  let source = @os_fs.read_file_to_string(norm) catch {
-    e => {
-      // Pop from stack before returning error
-      let _ = stack.pop()
-      return Err("io: " + e.to_string())
-    }
-  }
-  db.set_source(norm, source)
-  let ast = @parser.parse_ast(source) catch {
-    e => {
-      // Pop from stack before returning error
-      let _ = stack.pop()
-      return Err("parse: " + e.to_string())
-    }
-  }
-  let base = @xsh_fs.parent_path(norm)
-  for stmt in ast.stmts {
-    match stmt {
-      @xsh_core.Stmt::Import(source~, ..) =>
-        match source {
-          @xsh_core.ModuleRef::Path(path~) => {
-            let resolved = resolve_import_path(base, path)
-            if resolved.has_suffix(".wasm") {
-              if not(visited.contains(resolved)) {
-                visited.set(resolved, true)
-                let wasm_bytes = @os_fs.read_file_to_bytes(resolved) catch {
-                  e => {
-                    let _ = stack.pop()
-                    return Err("io: " + e.to_string())
-                  }
-                }
-                db.set_binary_source(resolved, wasm_bytes)
-              }
-            } else {
-              match load_sources_recursive_impl(db, resolved, visited, stack) {
-                Ok(_) => ()
-                Err(err) => {
-                  // Pop from stack before returning error
-                  let _ = stack.pop()
-                  return Err(err)
-                }
-              }
-            }
-          }
-          @xsh_core.ModuleRef::Hash(..)
-          | @xsh_core.ModuleRef::Version(..)
-          | @xsh_core.ModuleRef::Symbol(..) => ()
-        }
-      _ => ()
-    }
-  }
-  // Pop from stack after successful processing
-  let _ = stack.pop()
-  Ok(())
-}
-
-///|
-fn resolve_import_path(base : String, import_path : String) -> String {
-  if import_path.has_prefix("/") {
-    @xsh_fs.normalize_path(import_path)
-  } else {
-    @xsh_fs.normalize_path(base + "/" + import_path)
-  }
 }
 
 ///|
@@ -2339,7 +1834,7 @@ fn hash_cmd(args : Array[String]) -> Unit {
   if args.length() != 1 {
     abort("hash: expected <file>")
   }
-  let path = resolve_entry_path(args[0])
+  let path = @loader.resolve_entry_path(args[0])
   let source = @os_fs.read_file_to_string(path) catch {
     e => abort("hash: " + e.to_string())
   }
@@ -2364,7 +1859,7 @@ fn save_cmd(args : Array[String]) -> Unit {
     abort("save: expected <file>")
   }
   let file_arg = files[0]
-  let path = resolve_entry_path(file_arg)
+  let path = @loader.resolve_entry_path(file_arg)
   let base_dir = @xsh_fs.parent_path(path)
   let source = @os_fs.read_file_to_string(path) catch {
     e => abort("save: " + e.to_string())
@@ -2401,13 +1896,11 @@ fn save_cmd(args : Array[String]) -> Unit {
   // Update paths.json for the main module
   if not(use_git) {
     let base_dir = find_xsh_dir(path)
-    let paths_file = base_dir + "/paths.json"
-    let mappings = load_path_mappings(paths_file)
-    update_path_mapping(mappings, file_arg, bundle.main_hash)
-    let mappings_json = @xsh_core.serialize_path_mappings(mappings)
-    @os_fs.write_string_to_file(paths_file, mappings_json) catch {
-      e => abort("save: write paths: " + e.to_string())
+    let codebase = @codebase.Codebase::new(base_dir)
+    let _ = codebase.upsert_path_mapping(file_arg, bundle.main_hash) catch {
+      e => abort("save: update paths: " + e.to_string())
     }
+
   }
   // Print result
   let main_short = @xsh_core.short_hash(bundle.main_hash)
@@ -2417,26 +1910,11 @@ fn save_cmd(args : Array[String]) -> Unit {
 ///|
 fn save_module_to_xsh(base_path : String, json : String, hash : String) -> Unit {
   let base_dir = find_xsh_dir(base_path)
-  let obj_dir = @xsh_core.object_dir_from_hash(base_dir, hash)
-  let obj_path = @xsh_core.object_path_from_hash(base_dir, hash)
-  // Create directories if needed
-  let objects_dir = base_dir + "/objects"
-  if not(@os_fs.path_exists(objects_dir)) {
-    @os_fs.create_dir(objects_dir) catch {
-      e => abort("save: mkdir objects: " + e.to_string())
-    }
+  let codebase = @codebase.Codebase::new(base_dir)
+  let _ = codebase.write_object(hash, json) catch {
+    e => abort("save: " + e.to_string())
   }
-  if not(@os_fs.path_exists(obj_dir)) {
-    @os_fs.create_dir(obj_dir) catch {
-      e => abort("save: mkdir: " + e.to_string())
-    }
-  }
-  // Write blob (skip if already exists - content-addressed)
-  if not(@os_fs.path_exists(obj_path)) {
-    @os_fs.write_string_to_file(obj_path, json) catch {
-      e => abort("save: write: " + e.to_string())
-    }
-  }
+
 }
 
 ///|
@@ -2492,37 +1970,6 @@ fn find_xsh_dir(path : String) -> String {
 }
 
 ///|
-fn load_path_mappings(path : String) -> Array[@xsh_core.PathMapping] {
-  if not(@os_fs.path_exists(path)) {
-    return []
-  }
-  let json = @os_fs.read_file_to_string(path) catch { _ => return [] }
-  @xsh_core.parse_path_mappings(json) catch {
-    _ => []
-  }
-}
-
-///|
-fn update_path_mapping(
-  mappings : Array[@xsh_core.PathMapping],
-  path : String,
-  hash : String,
-) -> Unit {
-  // Remove existing entry for this path if any
-  let mut found = false
-  for i, m in mappings {
-    if m.path == path {
-      mappings[i] = @xsh_core.PathMapping::{ path, hash }
-      found = true
-      break
-    }
-  }
-  if not(found) {
-    mappings.push(@xsh_core.PathMapping::{ path, hash })
-  }
-}
-
-///|
 /// expand <hash|path> [--depth N] [--json] [--source]
 /// Expand a module from storage with its dependencies
 fn expand_cmd(args : Array[String]) -> Unit {
@@ -2571,11 +2018,14 @@ fn expand_cmd(args : Array[String]) -> Unit {
     }
   }
   let xsh_dir = find_xsh_dir_from(base_dir)
+  let codebase = @codebase.Codebase::new(xsh_dir)
   // Resolve target to hash
-  let main_hash = resolve_target_to_hash(target, xsh_dir)
+  let main_hash = resolve_target_to_hash(target, codebase)
   let load_module = fn(hash : String) -> @xsh_core.Module? {
-    let obj_path = @xsh_core.object_path_from_hash(xsh_dir, hash)
-    let json = @os_fs.read_file_to_string(obj_path) catch { _ => return None }
+    let json = match codebase.read_object(hash) {
+      Some(v) => v
+      None => return None
+    }
     let m = @xsh_core.deserialize_module(json) catch { _ => return None }
     Some(m)
   }
@@ -2629,20 +2079,19 @@ fn expand_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn resolve_target_to_hash(target : String, xsh_dir : String) -> String {
+fn resolve_target_to_hash(
+  target : String,
+  codebase : @codebase.Codebase,
+) -> String {
   // If it looks like a hash (40 hex chars or prefix), use it directly
   if is_hash_like(target) {
-    return resolve_hash_prefix(target, xsh_dir)
+    return resolve_hash_prefix(target, codebase.root())
   }
   // Otherwise, try to look up as a path in paths.json
-  let paths_file = xsh_dir + "/paths.json"
-  let mappings = load_path_mappings(paths_file)
-  for m in mappings {
-    if m.path == target || m.path.has_suffix(target) {
-      return m.hash
-    }
+  match codebase.resolve_path_mapping(target) {
+    Some(hash) => hash
+    None => abort("expand: cannot resolve target: " + target)
   }
-  abort("expand: cannot resolve target: " + target)
 }
 
 ///|
@@ -2782,7 +2231,7 @@ fn ide_outline_cmd(args : Array[String]) -> Unit {
   if args.length() != 1 {
     abort("ide outline: expected <file>")
   }
-  match load_db_with_paths(args[0]) {
+  match @loader.load_db_with_paths(args[0]) {
     Ok((db, entry, _)) => {
       let index = @xsh_lib.build_symbol_index(db, [entry])
       if index.entries.length() == 0 {
@@ -2829,7 +2278,7 @@ fn ide_peek_def_cmd(args : Array[String]) -> Unit {
   }
   let symbol = args[0]
   let entry_file = args[1]
-  match load_db_with_paths(entry_file) {
+  match @loader.load_db_with_paths(entry_file) {
     Ok((db, _, paths)) => {
       let index = @xsh_lib.build_symbol_index(db, paths)
       let matches = index.find_exact(symbol)
@@ -2880,7 +2329,7 @@ fn ide_search_cmd(args : Array[String]) -> Unit {
   }
   let query = args[0]
   let entry_file = args[1]
-  match load_db_with_paths(entry_file) {
+  match @loader.load_db_with_paths(entry_file) {
     Ok((db, _, paths)) => {
       let index = @xsh_lib.build_symbol_index(db, paths)
       let matches = index.search(query)
@@ -2955,7 +2404,7 @@ fn lsif_cmd(args : Array[String]) -> Unit {
   if entries.length() != 1 {
     abort("lsif: expected <entry-file>")
   }
-  match load_db_with_paths(entries[0]) {
+  match @loader.load_db_with_paths(entries[0]) {
     Ok((db, _, paths)) => {
       let index = @xsh_lib.build_symbol_index(db, paths)
       let lines = @xsh_lib.symbol_index_to_lsif_lines(index, fn(path) {
@@ -3202,7 +2651,7 @@ fn index_build_cmd(args : Array[String]) -> Unit {
   if out_path.has_prefix("dist/") {
     ensure_dist_dir()
   }
-  match load_db_with_paths(entry_path) {
+  match @loader.load_db_with_paths(entry_path) {
     Ok((db, _, paths)) => {
       let index = @x_exp.build_advanced_graph_index(
         db,

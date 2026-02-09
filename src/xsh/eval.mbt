@@ -898,9 +898,12 @@ fn eval_call(
               if pos_args.length() != 1 {
                 raise EvalError::BadCall("sleep")
               }
+              if not(rt.caps().can_read_clock()) {
+                raise EvalError::PermissionDenied("clock_read")
+              }
               match pos_args[0] {
                 @core.Value::Int(ms) => {
-                  sleep_ms(ms.to_int64())
+                  @io.sleep_ms(ms.to_int64())
                   { value: @core.Value::Unit, effects: out.effects }
                 }
                 _ => raise EvalError::BadCall("sleep")

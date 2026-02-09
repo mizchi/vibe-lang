@@ -659,18 +659,6 @@ fn join_shell_args(parts : Array[String], start : Int) -> String {
 }
 
 ///|
-fn split_output_lines(text : String) -> Array[String] {
-  let out : Array[String] = []
-  for part in text.split("\n") {
-    out.push(part.to_string())
-  }
-  if out.length() > 0 && out[out.length() - 1] == "" {
-    ignore(out.pop())
-  }
-  out
-}
-
-///|
 fn execute_shell_lines(cmd : String) -> Array[String] raise EvalError {
   let parts = split_shell_args(cmd)
   if parts.length() == 0 {
@@ -682,18 +670,19 @@ fn execute_shell_lines(cmd : String) -> Array[String] raise EvalError {
         raise EvalError::BadCall("sh_lines")
       }
       let dir = if parts.length() == 2 { parts[1] } else { "." }
-      @os_fs.read_dir(dir) catch {
-        _ => raise EvalError::BadCall("sh_lines")
+      match @io.shell_ls_lines(dir) {
+        Ok(lines) => lines
+        Err(_) => raise EvalError::BadCall("sh_lines")
       }
     }
     "cat" => {
       if parts.length() != 2 {
         raise EvalError::BadCall("sh_lines")
       }
-      let content = @os_fs.read_file_to_string(parts[1]) catch {
-        _ => raise EvalError::BadCall("sh_lines")
+      match @io.shell_cat_lines(parts[1]) {
+        Ok(lines) => lines
+        Err(_) => raise EvalError::BadCall("sh_lines")
       }
-      split_output_lines(content)
     }
     "echo" =>
       if parts.length() <= 1 {

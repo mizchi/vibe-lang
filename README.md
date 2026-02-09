@@ -154,11 +154,16 @@ just wasmtime-stack-switching /tmp/out.wasm
 
 ```
 src/
+├── backend/        # Runtime host adapters (target-specific sleep, etc.)
+├── codebase/       # Nix-like content-addressed store and path mappings
+├── io/             # Unified IO boundary (fs/env/shell/sleep facade)
+├── loader/         # Source/lock resolution and module loading pipeline
 ├── core/           # AST types and serialization
 ├── parser/         # Lexer and parser
 ├── checker/        # Type checker with effects
 ├── codegen/        # WASM code generation
 ├── xsh/            # Interpreter and compilation
+├── x/fp/           # Floating-point to decimal formatter utilities
 ├── x/module_graph/ # Experimental module graph index and codecs
 ├── cmd/xsh/        # CLI command implementation (native/js)
 ├── cmd/xsh_wasi/   # WASI line-REPL command (wasm)
