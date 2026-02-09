@@ -12,6 +12,16 @@ pub fn git_blob_hash_string(content : String) -> String {
 }
 
 ///|
+/// Compute Git blob hash (sha1) for binary content.
+pub fn git_blob_hash_bytes(content : Bytes) -> String {
+  let header = "blob " + content.length().to_string() + "\u0000"
+  let hasher = @bit.Sha1State::new()
+  hasher.update_string(header)
+  hasher.update(content)
+  hasher.finish().to_hex()
+}
+
+///|
 /// Build canonical module reference for a hash.
 pub fn module_ref_from_hash(hash : String) -> String {
   "ko-doha/xsh/" + hash

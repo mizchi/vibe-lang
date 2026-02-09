@@ -2365,12 +2365,25 @@ fn load_sources_recursive_impl(
         match source {
           @xsh_core.ModuleRef::Path(path~) => {
             let resolved = resolve_import_path(base, path)
-            match load_sources_recursive_impl(db, resolved, visited, stack) {
-              Ok(_) => ()
-              Err(err) => {
-                // Pop from stack before returning error
-                let _ = stack.pop()
-                return Err(err)
+            if resolved.has_suffix(".wasm") {
+              if not(visited.contains(resolved)) {
+                visited.set(resolved, true)
+                let wasm_bytes = @os_fs.read_file_to_bytes(resolved) catch {
+                  e => {
+                    let _ = stack.pop()
+                    return Err("io: " + e.to_string())
+                  }
+                }
+                db.set_binary_source(resolved, wasm_bytes)
+              }
+            } else {
+              match load_sources_recursive_impl(db, resolved, visited, stack) {
+                Ok(_) => ()
+                Err(err) => {
+                  // Pop from stack before returning error
+                  let _ = stack.pop()
+                  return Err(err)
+                }
               }
             }
           }

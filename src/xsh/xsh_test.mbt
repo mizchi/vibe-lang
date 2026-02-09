@@ -441,6 +441,80 @@ test "xsh symbol import resolves through lock ref" {
 }
 
 ///|
+test "xsh wasm import resolves binary module and type checks call" {
+  let lib_db = XshDb::new()
+  lib_db.set_source(
+    "lib", "export let inflate = (src: Int, dst: Int) -> Int { add(src, dst) }",
+  )
+  let wasm = try compile_module_wasm(lib_db, "lib") catch {
+    e => fail("failed to build wasm fixture: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  let db = XshDb::new()
+  db.set_binary_source("./zlib.wasm", wasm)
+  db.set_source(
+    "main", "import { inflate } from \"./zlib.wasm\"\nlet x = inflate(1, 2, 0)\nx",
+  )
+  let imports = db.imports("main")
+  assert_eq(imports.length(), 1)
+  assert_true(imports[0].hash is Some(_))
+  let _ = db.types("main")
+  let diags = db.diagnostics("main")
+  assert_true(diags.is_empty())
+  let compiled = compile_module(db, "main")
+  assert_eq(compiled.imports.length(), 1)
+}
+
+///|
+test "xsh wasm import reports missing exported function" {
+  let lib_db = XshDb::new()
+  lib_db.set_source("lib", "export let inflate = (n: Int) -> Int { n }")
+  let wasm = try compile_module_wasm(lib_db, "lib") catch {
+    e => fail("failed to build wasm fixture: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  let db = XshDb::new()
+  db.set_binary_source("./zlib.wasm", wasm)
+  db.set_source(
+    "main", "import { deflate } from \"./zlib.wasm\"\nlet x = deflate(1)\nx",
+  )
+  let _ = db.types("main")
+  let diags = db.diagnostics("main")
+  let mut found = false
+  for diag in diags {
+    if diag.stage == "import" && diag.message.contains("missing wasm export") {
+      found = true
+    }
+  }
+  assert_true(found)
+}
+
+///|
+test "xsh wasm import reports type mismatch on call" {
+  let lib_db = XshDb::new()
+  lib_db.set_source("lib", "export let inflate = (n: Int) -> Int { n }")
+  let wasm = try compile_module_wasm(lib_db, "lib") catch {
+    e => fail("failed to build wasm fixture: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  let db = XshDb::new()
+  db.set_binary_source("./zlib.wasm", wasm)
+  db.set_source(
+    "main", "import { inflate } from \"./zlib.wasm\"\nlet x = inflate(\"bad\")\nx",
+  )
+  let result : Result[CompiledModule, CompileError] = try? compile_module(
+    db, "main",
+  )
+  match result {
+    Ok(_) => fail("expected type error")
+    Err(err) => assert_true(err.to_string().contains("type"))
+  }
+}
+
+///|
 test "xsh compile simple" {
   // Test compilation without imports
   let db = XshDb::new()
