@@ -696,7 +696,7 @@ Bench:
 - `just bench-compare` compares interpreter (`cmd/xsh run`) vs `wasmtime run`.
 - `xsh bench --n 20000 --warmup 1000 --expr "add(1,2)"` measures per-command latency
   after startup inside a single process.
-- `xsh bench --case sum=add(1,2) --case "eq(1,1) == true"` runs multiple named
+- `xsh bench --case sum=add(1,2) --case "1 == 1"` runs multiple named
   expression benchmarks in one invocation.
 - `xsh bench --cases bench/cases.txt` loads benchmark cases from file
   (one case per line, `name=expr` or plain `expr`; blank/comment lines are ignored).
@@ -709,7 +709,7 @@ Bench:
 
 - `compile_module_wasm(db, path)` emits a minimal wasm-gc compatible module (MVP bytecode).
 - `compile_module_wasm_js_string(db, path)` emits a module that uses wasm js-string builtins.
-- Supported: `let`, expression statements, block expressions `{ ... }`, `do { ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; only inside `do`), `add/sub/eq/lt` on `Int`, `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
+- Supported: `let`, expression statements, block expressions `{ ... }`, `do { ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; only inside `do`), `+/-/==/<` on `Int` (`==` is syntax sugar lowering to `eq`), `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
 - Not supported: `import`, qualified calls, or external symbols. Tuple/record patterns are supported, but nested tuple/record patterns are not.
 - Exports: `run` (i32) and `memory`. Import: `xsh.sh` when `sh(...)` is used.
 - `--wasm-js-string` imports:
@@ -740,7 +740,9 @@ Bench:
 
 - No persistent evaluator API (only a single `run` export; no REPL-style eval).
 - No `import` statements; no qualified names or qualified calls.
-- Builtins are limited to `add/sub/eq/lt/not/and/or/path/sh` with fixed arity.
+- Builtins are limited to fixed-arity core ops (`+/-/==/<` on `Int`,
+  `not/and/or` on `Bool`, plus `path/sh`; internally lowered to
+  `add/sub/eq/lt/not/and/or/path/sh`).
 - `sh` / `path` depend on host imports (`xsh.sh`, `xsh.path`).
 - No user-defined functions, modules, or recursion in wasm backend yet.
 
