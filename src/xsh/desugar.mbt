@@ -100,8 +100,7 @@ fn desugar_xshell_block(
       @core.Stmt::Import(spec~, ..) =>
         for item in spec.items {
           let binds_runtime = item.kind == @core.ImportKind::Value ||
-            (item.kind == @core.ImportKind::Type &&
-            item.name.contains("::"))
+            (item.kind == @core.ImportKind::Type && item.name.contains("::"))
           if binds_runtime {
             match item.rename {
               Some(local_name) => scope_map[local_name] = true

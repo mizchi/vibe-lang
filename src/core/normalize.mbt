@@ -59,7 +59,108 @@ fn NormScope::lookup(self : NormScope, name : String) -> String {
 /// Normalize a module AST
 pub fn normalize_module(m : Module) -> Module {
   let scope = NormScope::new()
-  Module::{ stmts: normalize_stmts(m.stmts, scope) }
+  let canonical_stmts = canonicalize_export_list_stmts(m.stmts)
+  Module::{ stmts: normalize_stmts(canonical_stmts, scope) }
+}
+
+///|
+fn collect_export_list_names(stmts : Array[Stmt]) -> Map[String, Bool] {
+  let names : Map[String, Bool] = {}
+  for stmt in stmts {
+    match stmt {
+      Stmt::Export(names=items, ..) =>
+        for name in items {
+          names[name] = true
+        }
+      _ => ()
+    }
+  }
+  names
+}
+
+///|
+fn collect_export_targets(stmts : Array[Stmt]) -> Map[String, Bool] {
+  let names : Map[String, Bool] = {}
+  for stmt in stmts {
+    match stmt {
+      Stmt::Let(name~, ..) => names[name] = true
+      Stmt::EnumDef(name~, ..) => names[name] = true
+      Stmt::TypeAlias(name~, ..) => names[name] = true
+      Stmt::TraitDef(name~, ..) => names[name] = true
+      Stmt::StructDef(name~, ..) => names[name] = true
+      Stmt::ExportLet(name~, ..) => names[name] = true
+      Stmt::ExportEnumDef(name~, ..) => names[name] = true
+      Stmt::ExportTypeAlias(name~, ..) => names[name] = true
+      Stmt::ExportStructDef(name~, ..) => names[name] = true
+      _ => ()
+    }
+  }
+  names
+}
+
+///|
+fn canonicalize_export_list_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
+  let export_list_names = collect_export_list_names(stmts)
+  if export_list_names.length() == 0 {
+    return stmts
+  }
+  let export_targets = collect_export_targets(stmts)
+  let out : Array[Stmt] = []
+  for stmt in stmts {
+    match stmt {
+      Stmt::Let(rec~, name~, expr~, span~) =>
+        if export_list_names.contains(name) {
+          out.push(Stmt::ExportLet(rec~, name~, expr~, span~))
+        } else {
+          out.push(stmt)
+        }
+      Stmt::EnumDef(name~, params~, ctors~, span~) =>
+        if export_list_names.contains(name) {
+          out.push(Stmt::ExportEnumDef(name~, params~, ctors~, span~))
+        } else {
+          out.push(stmt)
+        }
+      Stmt::TypeAlias(name~, params~, target~, span~) =>
+        if export_list_names.contains(name) {
+          out.push(Stmt::ExportTypeAlias(name~, params~, target~, span~))
+        } else {
+          out.push(stmt)
+        }
+      Stmt::StructDef(name~, params~, fields~, span~) =>
+        if export_list_names.contains(name) {
+          out.push(Stmt::ExportStructDef(name~, params~, fields~, span~))
+        } else {
+          out.push(stmt)
+        }
+      Stmt::TraitDef(name~, supertraits~, open_impl~, span~, ..) =>
+        if export_list_names.contains(name) {
+          out.push(
+            Stmt::TraitDef(
+              name~,
+              supertraits~,
+              open_impl~,
+              exported=true,
+              span~,
+            ),
+          )
+        } else {
+          out.push(stmt)
+        }
+      Stmt::Export(names~, span~) => {
+        let unresolved : Array[String] = []
+        for name in names {
+          if not(export_targets.contains(name)) {
+            unresolved.push(name)
+          }
+        }
+        if unresolved.length() > 0 {
+          out.push(Stmt::Export(names=unresolved, span~))
+        }
+      }
+      _ => out.push(stmt)
+    }
+  }
+  out
 }
 
 ///|

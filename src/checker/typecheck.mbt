@@ -4395,10 +4395,7 @@ fn ensure_ord_operand(
 }
 
 ///|
-fn namespace_root_from_type(
-  env : TypeEnv,
-  ty : @core.Type,
-) -> String? {
+fn namespace_root_from_type(env : TypeEnv, ty : @core.Type) -> String? {
   match resolve_type(env, ty) {
     @core.Type::Int => Some("Int")
     @core.Type::Float => Some("Float")
@@ -4429,22 +4426,13 @@ fn resolve_type_member_call_name(
   for arg in args {
     match arg.label {
       Some(_) => ()
-      None =>
-        if recv_expr is None {
-          recv_expr = Some(arg.expr)
-        }
+      None => if recv_expr is None { recv_expr = Some(arg.expr) }
     }
   }
   match recv_expr {
     None => return None
     Some(expr) => {
-      let recv_ty = type_expr_eff(
-        env,
-        expr,
-        aliases,
-        effects,
-        allow_effect,
-      )
+      let recv_ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
       match namespace_root_from_type(env, recv_ty) {
         Some(root) => {
           let candidate = root + "::" + name
@@ -4470,18 +4458,12 @@ fn type_call(
   call_span : @core.Span,
 ) -> @core.Type raise TypeError {
   let lookup_name = match
-      resolve_type_member_call_name(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
-      ) {
-      Some(candidate) => candidate
-      None => name
-    }
+    resolve_type_member_call_name(
+      env, name, args, aliases, effects, allow_effect, call_span,
+    ) {
+    Some(candidate) => candidate
+    None => name
+  }
   match env.get(lookup_name) {
     Some(ty) =>
       match ty {
@@ -4496,13 +4478,7 @@ fn type_call(
           // Name exists but isn't a function - try field access first
           match
             try_field_access(
-              env,
-              lookup_name,
-              args,
-              aliases,
-              effects,
-              allow_effect,
-              call_span,
+              env, lookup_name, args, aliases, effects, allow_effect, call_span,
             ) {
             Some(field_ty) => field_ty
             None =>

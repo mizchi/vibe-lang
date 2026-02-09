@@ -165,8 +165,10 @@ pub fn Runtime::eval_module(
               symbol_name : String,
             ) -> Bool {
               item.kind == @core.ImportKind::Value ||
-              (item.kind == @core.ImportKind::Type &&
-              symbol_name.contains("::"))
+              (
+                item.kind == @core.ImportKind::Type &&
+                symbol_name.contains("::")
+              )
             }
             for item in spec.items {
               let import_name = item.name
@@ -815,10 +817,7 @@ fn resolve_type_member_call_name_rt(
   for arg in args {
     match arg.label {
       Some(_) => ()
-      None =>
-        if recv_expr is None {
-          recv_expr = Some(arg.expr)
-        }
+      None => if recv_expr is None { recv_expr = Some(arg.expr) }
     }
   }
   match recv_expr {

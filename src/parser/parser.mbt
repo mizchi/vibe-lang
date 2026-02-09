@@ -1115,10 +1115,14 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     let is_pattern = self.peek_kind() == lparen() ||
       self.peek_kind() == record_kw() ||
       self.peek_kind() == lbracket() ||
-      (self.peek_kind() == name() &&
-      @core.is_ctor_name(self.peek().text()) &&
-      (next_kind != double_colon() ||
-      (next_kind == double_colon() && next2_kind == lbrace())))
+      (
+        self.peek_kind() == name() &&
+        @core.is_ctor_name(self.peek().text()) &&
+        (
+          next_kind != double_colon() ||
+          (next_kind == double_colon() && next2_kind == lbrace())
+        )
+      )
     if is_pattern {
       let pat = self.parse_pattern()
       let _ = self.expect(eq(), "=")
@@ -1739,9 +1743,7 @@ fn AstParser::parse_import_stmt(
 }
 
 ///|
-fn AstParser::parse_import_item_kind(
-  self : AstParser,
-) -> @core.ImportKind {
+fn AstParser::parse_import_item_kind(self : AstParser) -> @core.ImportKind {
   if self.peek_kind() == type_kw() {
     let _ = self.bump()
     @core.ImportKind::Type
@@ -3733,8 +3735,7 @@ fn AstParser::parse_call_or_primary(
       // name[Type, ...] - explicit type arguments (only if next token looks like a type)
       let type_args = self.parse_call_type_args()
       self.skip_trivia()
-      if self.peek_kind() == double_colon() &&
-        @core.is_ctor_name(base_name) {
+      if self.peek_kind() == double_colon() && @core.is_ctor_name(base_name) {
         // StructName[T]::{ field: value }
         let _ = self.bump() // consume ::
         self.skip_trivia()

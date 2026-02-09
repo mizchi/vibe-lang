@@ -931,12 +931,15 @@ pub fn XshDb::new() -> XshDb {
                       for exported_name, _ in exported_names {
                         if exported_name.has_prefix(prefix) {
                           imported_any = true
-                          if not(import_symbol(item, exported_name, exported_name)) {
+                          if not(
+                              import_symbol(item, exported_name, exported_name),
+                            ) {
                             report_kind_mismatch(item, exported_name)
                           }
                         }
                       }
-                      if item.kind != @core.ImportKind::Value && not(imported_any) {
+                      if item.kind != @core.ImportKind::Value &&
+                        not(imported_any) {
                         report_kind_mismatch(item, name)
                       }
                     }

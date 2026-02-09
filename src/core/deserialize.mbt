@@ -743,8 +743,7 @@ fn parse_import_kind(kind : String?) -> ImportKind raise DeserializeError {
     Some("value") => ImportKind::Value
     Some("type") => ImportKind::Type
     Some("trait") => ImportKind::Trait
-    Some(other) =>
-      raise DeserializeError("Unknown import kind: " + other)
+    Some(other) => raise DeserializeError("Unknown import kind: " + other)
   }
 }
 
