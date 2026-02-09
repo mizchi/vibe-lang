@@ -211,14 +211,35 @@
   - P2 [done 2026-02-09]: Improve import-parse diagnostics with targeted hints:
     import parser now distinguishes missing `from`, malformed list separators,
     and extra commas in import lists; trailing comma form is accepted.
-  - P2: Track existing syntax-adjacent gaps discovered during std port:
-    cross-module trait import/export robustness,
-    polymorphic recursion,
-    `loop` expression,
-    and mutable enum field syntax.
-  - P2: Revisit negative literal boundary UX for `Int` minimum value
-    (`-2147483648`) with clearer parser error + optional future grammar design
-    note.
+  - P2 [done 2026-02-09]: Track existing syntax-adjacent gaps discovered during
+    std port.
+    `loop { ... }` expression is now implemented as `while true` desugar
+    (`loop` is contextual keyword to avoid identifier collisions), mutable enum
+    payload `mut` now emits a dedicated parse diagnostic, transitive
+    cross-module trait import/export is covered by fixture regression
+    (`trait_chain_base -> trait_chain_mid -> trait_import_chain`), and
+    polymorphic recursion now emits a dedicated type diagnostic
+    (`polymorphic_recursion_unsupported` fixture).
+  - P2 [done 2026-02-09]: Revisit negative literal boundary UX for `Int`
+    minimum value (`-2147483648`) with clearer parser error + optional future
+    grammar design note.
+    Parser now emits dedicated `IntMinLiteralBoundary` diagnostics with a
+    focused rewrite hint and explanatory note.
+- Show trait migration plan (prelude 常駐化):
+  - P0 [done 2026-02-09]: Inventory/guardrail.
+    fixture/std の `trait Show` / `impl Show` を棚卸しし、`show_to_string_method` と
+    trait-bound 成功/失敗 fixture を prelude 前提で維持。
+  - P0 [done 2026-02-09]: Compatibility period.
+    `to_string` の prelude 提供を維持したまま、呼び出し側の移行を先行。
+  - P1 [done 2026-02-09]: Source migration.
+    `xsh/std/builtin_traits.xsh` と fixture 群から冗長な `trait Show` /
+    primitive `impl Show` を削除し、unknown-bound 用 fixture は
+    `MissingShow` に切り替え。
+  - P1 [done 2026-02-09]: Prelude trait injection.
+    checker prelude に `trait Show` + `Int/Float/Double/Bool/String` impl を追加し、
+    `to_string` を `[T: Show]` へ戻した。
+  - P2 [done 2026-02-09]: Cleanup/deprecation close.
+    `xsh.lock` を更新し、`just check && just test` 緑を確認。
 
 ## Deferred
 
@@ -236,5 +257,8 @@
   Current result: `4397 -> 1590` bytes (`wasm-no-dce` baseline).
 - [ ] Reduce top offenders further without semantic regression:
   `examples/json.xsh`, `xsh/std/option.xsh`, `xsh/std/double.xsh`.
+  Progress (2026-02-09): `examples/json.xsh` `10747 -> 10279`,
+  `xsh/std/option.xsh` `4201 -> 3014`, `xsh/std/double.xsh` `2685 -> 2382`
+  (`wasm-no-dce` / `wasm-js-string-no-dce`).
 - [ ] Eliminate noisy abort-signal output in size benchmark fallback path
   (convert unsupported compile attempts to clean diagnostics).
