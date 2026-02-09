@@ -86,6 +86,77 @@ fn import_kind_expected_label(kind : @core.ImportKind) -> String {
 }
 
 ///|
+fn collect_pat_bind_names(
+  pat : @core.Pat,
+  out : Map[String, @core.Span],
+) -> Unit {
+  match pat {
+    @core.Pat::Bind(name~, span~) =>
+      if name != "_" && not(out.contains(name)) {
+        out[name] = span
+      }
+    @core.Pat::Ctor(args~, ..) =>
+      for arg in args {
+        collect_pat_bind_names(arg, out)
+      }
+    @core.Pat::Tuple(items~, ..) =>
+      for item in items {
+        collect_pat_bind_names(item, out)
+      }
+    @core.Pat::Record(fields~, ..) =>
+      for field in fields {
+        collect_pat_bind_names(field.pat, out)
+      }
+    @core.Pat::Struct(fields~, ..) =>
+      for field in fields {
+        collect_pat_bind_names(field.pat, out)
+      }
+    @core.Pat::Or(pats~, ..) =>
+      for p in pats {
+        collect_pat_bind_names(p, out)
+      }
+    _ => ()
+  }
+}
+
+///|
+fn collect_local_value_decl_spans(
+  ast : @core.Module,
+) -> Map[String, @core.Span] {
+  let out : Map[String, @core.Span] = {}
+  let collect_name = fn(name : String, span : @core.Span) {
+    if name != "_" && not(out.contains(name)) {
+      out[name] = span
+    }
+  }
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = rec
+        let _ = expr
+        collect_name(name, span)
+      }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        let _ = rec
+        let _ = expr
+        collect_name(name, span)
+      }
+      @core.Stmt::LetMut(name~, expr~, span~) => {
+        let _ = expr
+        collect_name(name, span)
+      }
+      @core.Stmt::LetPat(pat~, expr~, span~) => {
+        let _ = expr
+        let _ = span
+        collect_pat_bind_names(pat, out)
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
 fn resolve_imported_trait_supertraits(
   source_name : String,
   local_name : String,
@@ -1244,6 +1315,32 @@ pub fn XshDb::new() -> XshDb {
     let desugared = desugar_method_calls(ast, aliases)
     let base_dir = @path.Path(file_path).dirname().to_string()
     let env = try! @checker.get_cached_prelude_env_for_module()
+    let local_value_decl_spans = collect_local_value_decl_spans(ast)
+    let imported_value_decl_spans : Map[String, @core.Span] = {}
+    let report_duplicate_import_value = fn(name : String, span : @core.Span) {
+      diags.push(rt, @core.Diagnostic::{
+        stage: "import",
+        message: "duplicate declaration: " + name,
+        span: Some(span),
+        hint: None,
+        note: None,
+      })
+    }
+    let can_bind_import_value = fn(name : String, span : @core.Span) -> Bool {
+      if name == "_" {
+        return true
+      }
+      if local_value_decl_spans.contains(name) {
+        report_duplicate_import_value(name, span)
+        return false
+      }
+      if imported_value_decl_spans.contains(name) {
+        report_duplicate_import_value(name, span)
+        return false
+      }
+      imported_value_decl_spans[name] = span
+      true
+    }
     // Import types from imported modules
     for imp in imports {
       match sources.get(rt, imp.path) {
@@ -1289,7 +1386,9 @@ pub fn XshDb::new() -> XshDb {
                     if import_item_accepts_value(item, source_name) {
                       match imported_env.get_scheme(source_name) {
                         Some(scheme) => {
-                          env.set_scheme(target_name, scheme)
+                          if can_bind_import_value(target_name, span) {
+                            env.set_scheme(target_name, scheme)
+                          }
                           imported_any = true
                         }
                         None => ()
@@ -1321,7 +1420,10 @@ pub fn XshDb::new() -> XshDb {
                               None => ()
                             }
                             match imported_env.get_scheme(ctor.name) {
-                              Some(scheme) => env.set_scheme(ctor.name, scheme)
+                              Some(scheme) =>
+                                if can_bind_import_value(ctor.name, span) {
+                                  env.set_scheme(ctor.name, scheme)
+                                }
                               None => ()
                             }
                           }

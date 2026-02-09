@@ -57,6 +57,10 @@ just run test examples/*.xsh
 
 # Compile to WASM
 just run compile --wasm examples/wasm/sleep_demo.xsh -o /tmp/out.wasm
+# Compile + optimize with wite (-Oz default)
+just run compile --wasm --wite examples/wasm/sleep_demo.xsh -o /tmp/out.opt.wasm
+# Compile + optimize with explicit level
+just run compile --component -O3 script.xsh -o out.component.opt.wasm
 
 # Compile to Component Model WASM
 just run compile --component script.xsh -o out.component.wasm

@@ -56,7 +56,7 @@ fn print_usage() -> Unit {
   println("  check <file...>            parse/type check scripts")
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [-o out] <file>",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
   )
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
@@ -123,17 +123,6 @@ fn short_hash(hash : String) -> String {
   } else {
     (try! hash[0:7]).to_string()
   }
-}
-
-///|
-enum CompileMode {
-  Ir
-  Wasm
-  WasmJsString
-  WasmGc
-  Component
-  Wit
-  WitComponent
 }
 
 ///|
@@ -275,178 +264,115 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
 
 ///|
 fn compile_cmd(args : Array[String]) -> Unit {
-  let mut mode = CompileMode::Ir
-  let mut no_dce = false
-  let mut out_path : String? = None
-  let mut entry_path : String? = None
-  let mut i = 0
-  while i < args.length() {
-    let arg = args[i]
-    match arg {
-      "--wasm" => {
-        mode = CompileMode::Wasm
-        i += 1
-      }
-      "--wasm-js-string" => {
-        mode = CompileMode::WasmJsString
-        i += 1
-      }
-      "--wasm-gc" => {
-        mode = CompileMode::WasmGc
-        i += 1
-      }
-      "--component" => {
-        mode = CompileMode::Component
-        i += 1
-      }
-      "--wit" => {
-        mode = CompileMode::Wit
-        i += 1
-      }
-      "--wit-component" => {
-        mode = CompileMode::WitComponent
-        i += 1
-      }
-      "--no-dce" => {
-        no_dce = true
-        i += 1
-      }
-      "-o" | "--out" => {
-        if i + 1 >= args.length() {
-          abort("compile: missing output path after " + arg)
-        }
-        out_path = Some(args[i + 1])
-        i += 2
-      }
-      _ => {
-        if entry_path is None {
-          entry_path = Some(arg)
-        } else {
-          abort("compile: too many input files")
-        }
-        i += 1
-      }
-    }
+  let opts = match parse_compile_cmd_args(args) {
+    Ok(v) => v
+    Err(msg) => abort(msg)
   }
-  match entry_path {
-    None => abort("compile: missing <file>")
-    Some(path) => {
-      if no_dce {
-        match mode {
-          CompileMode::Wasm | CompileMode::WasmJsString | CompileMode::WasmGc =>
-            ()
-          _ =>
-            abort(
-              "compile: --no-dce is only supported with --wasm, --wasm-js-string, or --wasm-gc",
-            )
+  match load_db(opts.entry_path) {
+    Err(err) => abort("compile: " + err)
+    Ok((db, entry)) => {
+      // Resolve output path with default to dist/
+      let resolved_out = match opts.out_path {
+        Some(path) => path
+        None => {
+          ensure_dist_dir()
+          default_output_path(opts.entry_path, opts.mode)
         }
       }
-      match load_db(path) {
-        Err(err) => abort("compile: " + err)
-        Ok((db, entry)) => {
-          // Resolve output path with default to dist/
-          let resolved_out = match out_path {
-            Some(p) => p
-            None => {
-              ensure_dist_dir()
-              default_output_path(path, mode)
-            }
+      match opts.mode {
+        CompileMode::Ir => {
+          let compiled = @xsh_lib.compile_module(db, entry) catch {
+            e => abort("compile: " + e.to_string())
           }
-          match mode {
-            CompileMode::Ir => {
-              let compiled = @xsh_lib.compile_module(db, entry) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              @os_fs.write_string_to_file(resolved_out, compiled.ir) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              println("wrote " + resolved_out)
-            }
-            CompileMode::Wasm => {
-              let wasm_bytes = try {
-                if no_dce {
-                  @xsh_lib.compile_module_wasm_no_dce(db, entry)
-                } else {
-                  @xsh_lib.compile_module_wasm(db, entry)
-                }
-              } catch {
-                e => abort("compile: " + e.to_string())
-              }
-              @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              println("wrote " + resolved_out)
-            }
-            CompileMode::WasmJsString => {
-              let wasm_bytes = try {
-                if no_dce {
-                  @xsh_lib.compile_module_wasm_js_string_no_dce(db, entry)
-                } else {
-                  @xsh_lib.compile_module_wasm_js_string(db, entry)
-                }
-              } catch {
-                e => abort("compile: " + e.to_string())
-              }
-              @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              println("wrote " + resolved_out)
-            }
-            CompileMode::WasmGc => {
-              let wasm_bytes = try {
-                if no_dce {
-                  @xsh_lib.compile_module_wasm_gc_no_dce(db, entry)
-                } else {
-                  @xsh_lib.compile_module_wasm_gc(db, entry)
-                }
-              } catch {
-                e => abort("compile: " + e.to_string())
-              }
-              @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              println("wrote " + resolved_out)
-            }
-            CompileMode::Component => {
-              let wasm_bytes = @xsh_lib.compile_module_component(db, entry) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              println("wrote " + resolved_out)
-            }
-            CompileMode::Wit => {
-              // Generate WIT with default package/world names derived from filename
-              let basename = get_basename(entry)
-              let package_name = "local:" + basename
-              let world_name = basename
-              let wit_str = @xsh_lib.generate_module_wit(
-                db, entry, package_name, world_name,
-              ) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              @os_fs.write_string_to_file(resolved_out, wit_str) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              println("wrote " + resolved_out)
-            }
-            CompileMode::WitComponent => {
-              let basename = get_basename(entry)
-              let wit_ident = sanitize_wit_ident(basename)
-              let package_name = "local:" + wit_ident
-              let world_name = wit_ident
-              let wit_str = @xsh_lib.generate_module_component_wit(
-                db, entry, package_name, world_name,
-              ) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              @os_fs.write_string_to_file(resolved_out, wit_str) catch {
-                e => abort("compile: " + e.to_string())
-              }
-              println("wrote " + resolved_out)
-            }
+          @os_fs.write_string_to_file(resolved_out, compiled.ir) catch {
+            e => abort("compile: " + e.to_string())
           }
+          println("wrote " + resolved_out)
+        }
+        CompileMode::Wasm => {
+          let wasm_bytes = @xsh_lib.compile_module_wasm_with_opt_level(
+            db,
+            entry,
+            no_dce=opts.no_dce,
+            opt_level=opts.opt_level,
+          ) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          println("wrote " + resolved_out)
+        }
+        CompileMode::WasmJsString => {
+          let wasm_bytes = @xsh_lib.compile_module_wasm_js_string_with_opt_level(
+            db,
+            entry,
+            no_dce=opts.no_dce,
+            opt_level=opts.opt_level,
+          ) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          println("wrote " + resolved_out)
+        }
+        CompileMode::WasmGc => {
+          let wasm_bytes = @xsh_lib.compile_module_wasm_gc_with_opt_level(
+            db,
+            entry,
+            no_dce=opts.no_dce,
+            opt_level=opts.opt_level,
+          ) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          println("wrote " + resolved_out)
+        }
+        CompileMode::Component => {
+          let wasm_bytes = @xsh_lib.compile_module_component_with_opt_level(
+            db,
+            entry,
+            opt_level=opts.opt_level,
+          ) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          println("wrote " + resolved_out)
+        }
+        CompileMode::Wit => {
+          // Generate WIT with default package/world names derived from filename
+          let basename = get_basename(entry)
+          let package_name = "local:" + basename
+          let world_name = basename
+          let wit_str = @xsh_lib.generate_module_wit(
+            db, entry, package_name, world_name,
+          ) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          @os_fs.write_string_to_file(resolved_out, wit_str) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          println("wrote " + resolved_out)
+        }
+        CompileMode::WitComponent => {
+          let basename = get_basename(entry)
+          let wit_ident = sanitize_wit_ident(basename)
+          let package_name = "local:" + wit_ident
+          let world_name = wit_ident
+          let wit_str = @xsh_lib.generate_module_component_wit(
+            db, entry, package_name, world_name,
+          ) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          @os_fs.write_string_to_file(resolved_out, wit_str) catch {
+            e => abort("compile: " + e.to_string())
+          }
+          println("wrote " + resolved_out)
         }
       }
     }

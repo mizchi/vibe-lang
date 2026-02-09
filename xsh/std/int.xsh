@@ -112,6 +112,25 @@ export let Int::to_double = (x: Int) -> Double {
   int_to_double(x)
 }
 
+// Type member names: can be imported as `import { Int }`
+export let Int::abs = (x: Int) -> Int { int_abs(x) }
+export let Int::max = (a: Int, b: Int) -> Int { int_max(a, b) }
+export let Int::min = (a: Int, b: Int) -> Int { int_min(a, b) }
+export let Int::clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
+  int_clamp(x, min_val, max_val)
+}
+export let Int::signum = (x: Int) -> Int { int_signum(x) }
+export let Int::is_even = (x: Int) -> Bool { int_is_even(x) }
+export let Int::is_odd = (x: Int) -> Bool { int_is_odd(x) }
+export let Int::is_positive = (x: Int) -> Bool { int_is_positive(x) }
+export let Int::is_negative = (x: Int) -> Bool { int_is_negative(x) }
+export let Int::is_zero = (x: Int) -> Bool { int_is_zero(x) }
+export let Int::pow = (base: Int, exp: Int) -> Int { int_pow(base, exp) }
+export let Int::gcd = (a: Int, b: Int) -> Int { int_gcd(a, b) }
+export let Int::lcm = (a: Int, b: Int) -> Int { int_lcm(a, b) }
+export let Int::factorial = (n: Int) -> Int { int_factorial(n) }
+export let Int::fibonacci = (n: Int) -> Int { int_fibonacci(n) }
+
 // Short names (preferred): use with method-call desugar, e.g. x.abs()
 export let max_value = int_max_value
 export let min_value = int_min_value
@@ -216,6 +235,13 @@ test "int_short_aliases" {
   assert(eq(clamp(99, 0, 8), 8))
   assert(is_even(10))
   assert(eq(pow(2, 8), 256))
+}
+
+test "int_type_members" {
+  assert(eq(Int::abs(-3), 3))
+  assert(eq(Int::pow(2, 8), 256))
+  assert(Int::is_even(10))
+  assert(eq(Int::gcd(12, 18), 6))
 }
 
 test "int_type_member_to_double" {

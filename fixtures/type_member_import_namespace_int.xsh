@@ -1,7 +1,10 @@
 import { Int } from ./xsh/std/int.xsh
-let v = 5
 
-double_to_int(v.to_double())
+let v = -6
+let abs_v = v.abs()
+let pow_v = Int::pow(2, 3)
+
+abs_v + pow_v
 
 __DATA__
-{"last":"5"}
+{"last":"14"}

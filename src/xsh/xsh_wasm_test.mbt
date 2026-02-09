@@ -16,6 +16,46 @@ test "xsh wasm header" {
 }
 
 ///|
+test "xsh wasm compile with wite opt level" {
+  let db = XshDb::new()
+  db.set_source("main", "let x = 1\nx")
+  let wasm = try
+    compile_module_wasm_with_opt_level(db, "main", opt_level=Some("-Oz"))
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_eq(wasm[0].to_int(), 0x00)
+  assert_eq(wasm[1].to_int(), 0x61)
+  assert_eq(wasm[2].to_int(), 0x73)
+  assert_eq(wasm[3].to_int(), 0x6d)
+}
+
+///|
+test "xsh wasm compile rejects unknown wite opt level" {
+  let db = XshDb::new()
+  db.set_source("main", "let x = 1\nx")
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm_with_opt_level(
+    db,
+    "main",
+    opt_level=Some("-Ox"),
+  )
+  match result {
+    Ok(_) => fail("expected optimize error")
+    Err(err) =>
+      assert_true(
+        err
+        .to_string()
+        .contains(
+          "unsupported wite optimize level -Ox (expected: -O0|-O1|-O2|-O3|-Os|-Oz",
+        ),
+      )
+  }
+}
+
+///|
 test "xsh wasm export run" {
   let db = XshDb::new()
   db.set_source("main", "let x = 1\nx")

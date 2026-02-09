@@ -1,0 +1,132 @@
+///|
+pub enum CompileMode {
+  Ir
+  Wasm
+  WasmJsString
+  WasmGc
+  Component
+  Wit
+  WitComponent
+} derive(Eq, Show)
+
+///|
+pub struct CompileCmdOptions {
+  mode : CompileMode
+  no_dce : Bool
+  out_path : String?
+  entry_path : String
+  opt_level : String?
+}
+
+///|
+fn compile_mode_supports_no_dce(mode : CompileMode) -> Bool {
+  match mode {
+    CompileMode::Wasm | CompileMode::WasmJsString | CompileMode::WasmGc => true
+    _ => false
+  }
+}
+
+///|
+fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
+  match mode {
+    CompileMode::Wasm
+    | CompileMode::WasmJsString
+    | CompileMode::WasmGc
+    | CompileMode::Component => true
+    _ => false
+  }
+}
+
+///|
+fn is_opt_level_flag(arg : String) -> Bool {
+  match arg {
+    "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-Os" | "-Oz" => true
+    _ => false
+  }
+}
+
+///|
+pub fn parse_compile_cmd_args(
+  args : Array[String],
+) -> Result[CompileCmdOptions, String] {
+  let mut mode = CompileMode::Ir
+  let mut no_dce = false
+  let mut out_path : String? = None
+  let mut entry_path : String? = None
+  let mut opt_level : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "--wasm" => {
+        mode = CompileMode::Wasm
+        i += 1
+      }
+      "--wasm-js-string" => {
+        mode = CompileMode::WasmJsString
+        i += 1
+      }
+      "--wasm-gc" => {
+        mode = CompileMode::WasmGc
+        i += 1
+      }
+      "--component" => {
+        mode = CompileMode::Component
+        i += 1
+      }
+      "--wit" => {
+        mode = CompileMode::Wit
+        i += 1
+      }
+      "--wit-component" => {
+        mode = CompileMode::WitComponent
+        i += 1
+      }
+      "--no-dce" => {
+        no_dce = true
+        i += 1
+      }
+      "--wite" => {
+        if opt_level is None {
+          opt_level = Some("-Oz")
+        }
+        i += 1
+      }
+      "-o" | "--out" => {
+        if i + 1 >= args.length() {
+          return Err("compile: missing output path after " + arg)
+        }
+        out_path = Some(args[i + 1])
+        i += 2
+      }
+      _ if is_opt_level_flag(arg) => {
+        opt_level = Some(arg)
+        i += 1
+      }
+      _ => {
+        if entry_path is None {
+          entry_path = Some(arg)
+        } else {
+          return Err("compile: too many input files")
+        }
+        i += 1
+      }
+    }
+  }
+  match entry_path {
+    None => Err("compile: missing <file>")
+    Some(path) => {
+      if no_dce && not(compile_mode_supports_no_dce(mode)) {
+        return Err(
+          "compile: --no-dce is only supported with --wasm, --wasm-js-string, or --wasm-gc",
+        )
+      }
+      if opt_level is Some(_) && not(compile_mode_supports_wite_opt(mode)) {
+        return Err(
+          "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, or --component",
+        )
+      }
+      Ok({ mode, no_dce, out_path, entry_path: path, opt_level })
+    }
+  }
+}

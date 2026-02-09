@@ -3,6 +3,7 @@
 suberror TypeError {
   UnknownName(name~ : String, span~ : @core.Span, suggestion~ : String?)
   UnknownType(name~ : String, span~ : @core.Span, suggestion~ : String?)
+  DuplicateDecl(name~ : String, span~ : @core.Span)
   Mismatch(
     expected~ : @core.Type,
     actual~ : @core.Type,
@@ -147,6 +148,14 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         message: "unknown type: " + name,
         span: Some(span),
         hint: suggestion_hint(suggestion),
+        note: None,
+      }
+    TypeError::DuplicateDecl(name~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "duplicate declaration: " + name,
+        span: Some(span),
+        hint: None,
         note: None,
       }
     TypeError::Mismatch(expected~, actual~, span~, context~) => {
@@ -1323,10 +1332,28 @@ fn type_check_stmts(
   allow_effect : Bool,
   exported_names : Map[String, Bool],
 ) -> TypeEnv raise TypeError {
+  let declared_in_scope : Map[String, Bool] = {}
+  let ensure_fresh_value_binding = fn(
+    name : String,
+    span : @core.Span,
+  ) -> Unit raise TypeError {
+    if name == "_" {
+      return
+    }
+    if declared_in_scope.contains(name) {
+      raise TypeError::DuplicateDecl(name~, span~)
+    }
+  }
+  let record_value_binding = fn(name : String) {
+    if name == "_" {
+      return
+    }
+    declared_in_scope[name] = true
+  }
   for stmt in stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) => {
-        let _ = span
+        ensure_fresh_value_binding(name, span)
         let scheme = type_let_expr(
           env, rec, name, expr, span, aliases, effects, allow_effect,
         )
@@ -1337,6 +1364,7 @@ fn type_check_stmts(
         }
         let info = purity_for_let(env, rec, name, expr)
         env.set_purity(name, info.value)
+        record_value_binding(name)
       }
       @core.Stmt::EnumDef(name~, params~, ctors~, span~) =>
         register_enum_def(env, name, params, ctors, span)
@@ -1361,12 +1389,14 @@ fn type_check_stmts(
       }
       @core.Stmt::Import(..) => ()
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        ensure_fresh_value_binding(name, span)
         let scheme = type_let_expr(
           env, rec, name, expr, span, aliases, effects, allow_effect,
         )
         env.set_exported_scheme(name, scheme)
         let info = purity_for_let(env, rec, name, expr)
         env.set_purity(name, info.value)
+        record_value_binding(name)
       }
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
         register_enum_def(env, name, params, ctors, span)
@@ -1387,7 +1417,7 @@ fn type_check_stmts(
 
       }
       @core.Stmt::LetMut(name~, expr~, span~) => {
-        let _ = span
+        ensure_fresh_value_binding(name, span)
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
         let scheme = TypeScheme::{
           vars: [],
@@ -1402,12 +1432,14 @@ fn type_check_stmts(
           env.set_scheme(name, scheme)
         }
         env.set_purity(name, false)
+        record_value_binding(name)
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
         let bindings = collect_pattern_bindings(env, pat, ty)
         for name, bound_ty in bindings {
+          ensure_fresh_value_binding(name, span)
           let scheme = TypeScheme::{
             vars: [],
             num_vars: [],
@@ -1421,6 +1453,7 @@ fn type_check_stmts(
             env.set_scheme(name, scheme)
           }
           env.set_purity(name, true)
+          record_value_binding(name)
         }
       }
       @core.Stmt::Assign(name~, expr~, span~) => {

@@ -226,6 +226,68 @@ test "cli syntax mode support matrix" {
 }
 
 ///|
+test "compile args parse wite default level" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--wite", "-o", "/tmp/out.wasm", "main.xsh",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wasm)
+      assert_false(opts.no_dce)
+      assert_eq(opts.entry_path, "main.xsh")
+      match opts.out_path {
+        Some(path) => assert_eq(path, "/tmp/out.wasm")
+        None => fail("expected out path")
+      }
+      match opts.opt_level {
+        Some(level) => assert_eq(level, "-Oz")
+        None => fail("expected opt level")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "compile args parse explicit O level for component" {
+  let parsed = parse_compile_cmd_args(["--component", "-O3", "main.xsh"])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Component)
+      match opts.opt_level {
+        Some(level) => assert_eq(level, "-O3")
+        None => fail("expected opt level")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "compile args reject no-dce on non-wasm mode" {
+  let parsed = parse_compile_cmd_args(["--wit", "--no-dce", "main.xsh"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(
+        msg, "compile: --no-dce is only supported with --wasm, --wasm-js-string, or --wasm-gc",
+      )
+  }
+}
+
+///|
+test "compile args reject optimize flags on non-binary mode" {
+  let parsed = parse_compile_cmd_args(["--wit", "-Oz", "main.xsh"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(
+        msg, "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, or --component",
+      )
+  }
+}
+
+///|
 test "bench case arg parse named" {
   let parsed = parse_bench_case_arg("sum=add(1,2)", 1)
   match parsed {

@@ -60,6 +60,25 @@ test "component wasm size overhead" {
 }
 
 ///|
+test "component wasm compile with wite opt level" {
+  let db = XshDb::new()
+  db.set_source("main", "let x = 1\nx")
+  let wasm = try
+    compile_module_component_with_opt_level(db, "main", opt_level=Some("-O3"))
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_eq(wasm[0].to_int(), 0x00)
+  assert_eq(wasm[1].to_int(), 0x61)
+  assert_eq(wasm[2].to_int(), 0x73)
+  assert_eq(wasm[3].to_int(), 0x6d)
+  assert_eq(wasm[4].to_int(), 0x0d)
+}
+
+///|
 test "component wit includes wasi stdio imports when used" {
   let db = XshDb::new()
   let src =

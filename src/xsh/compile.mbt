@@ -10,6 +10,7 @@ suberror CompileError {
 suberror WasmCompileError {
   Compile(CompileError)
   Gen(@codegen.WasmGenError)
+  Optimize(String)
 } derive(Show, Eq)
 
 ///|
@@ -107,12 +108,53 @@ fn compile_module_wasm_with(
 }
 
 ///|
+pub fn optimize_wasm_bytes_with_opt_level(
+  bytes : Bytes,
+  opt_level : String?,
+) -> Bytes raise WasmCompileError {
+  match opt_level {
+    None => bytes
+    Some(level) => {
+      let config = match @wite.optimize_config_from_opt_level(level) {
+        Some(v) => v
+        None =>
+          raise WasmCompileError::Optimize(
+            "unsupported wite optimize level " +
+            level +
+            " (expected: -O0|-O1|-O2|-O3|-Os|-Oz)",
+          )
+      }
+      match @wite.optimize_binary_for_size(bytes, config~) {
+        Ok(result) => result.bytes
+        Err(msg) =>
+          raise WasmCompileError::Optimize("wite optimize failed: " + msg)
+      }
+    }
+  }
+}
+
+///|
 /// Compile a module to WASM (wasm-gc compatible, minimal MVP).
 pub fn compile_module_wasm(
   db : XshDb,
   path : String,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, bundle_for_wasm, @codegen.emit_module_wasm)
+}
+
+///|
+pub fn compile_module_wasm_with_opt_level(
+  db : XshDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+) -> Bytes raise WasmCompileError {
+  let wasm = if no_dce {
+    compile_module_wasm_no_dce(db, path)
+  } else {
+    compile_module_wasm(db, path)
+  }
+  optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
 
 ///|
@@ -124,6 +166,21 @@ pub fn compile_module_wasm_js_string(
   compile_module_wasm_with(
     db, path, bundle_for_wasm, @codegen.emit_module_wasm_js_string,
   )
+}
+
+///|
+pub fn compile_module_wasm_js_string_with_opt_level(
+  db : XshDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+) -> Bytes raise WasmCompileError {
+  let wasm = if no_dce {
+    compile_module_wasm_js_string_no_dce(db, path)
+  } else {
+    compile_module_wasm_js_string(db, path)
+  }
+  optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
 
 ///|
@@ -146,6 +203,21 @@ pub fn compile_module_wasm_gc(
   compile_module_wasm_with(
     db, path, bundle_for_wasm, @codegen.emit_module_wasm_gc,
   )
+}
+
+///|
+pub fn compile_module_wasm_gc_with_opt_level(
+  db : XshDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+) -> Bytes raise WasmCompileError {
+  let wasm = if no_dce {
+    compile_module_wasm_gc_no_dce(db, path)
+  } else {
+    compile_module_wasm_gc(db, path)
+  }
+  optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
 
 ///|
@@ -185,6 +257,16 @@ pub fn compile_module_component(
     e => raise WasmCompileError::Gen(e)
   }
   @codegen.emit_component_wasm_with_lift(core_wasm, "run")
+}
+
+///|
+pub fn compile_module_component_with_opt_level(
+  db : XshDb,
+  path : String,
+  opt_level? : String? = None,
+) -> Bytes raise WasmCompileError {
+  let component = compile_module_component(db, path)
+  optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
 
 ///|
