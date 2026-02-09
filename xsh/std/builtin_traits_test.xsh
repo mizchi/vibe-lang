@@ -13,7 +13,6 @@ import {
 
 trait Eq
 trait Ord
-trait Show
 trait Add
 trait Sub
 trait Mul
@@ -30,12 +29,6 @@ impl Ord for Int
 impl Ord for Float
 impl Ord for Double
 impl Ord for String
-
-impl Show for Int
-impl Show for Float
-impl Show for Double
-impl Show for Bool
-impl Show for String
 
 impl Add for Int
 impl Add for Float

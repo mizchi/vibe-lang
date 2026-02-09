@@ -183,9 +183,7 @@ test "fn metadata version reflects generic parameter bound changes" {
   let env = TypeEnv::new()
   let base_script =
     #|trait Eq
-    #|trait Show
     #|impl Eq for Int
-    #|impl Show for Int
     #|export let f = [T: Eq](x: T) -> Bool { x == x }
   let base_ast = parse_module(base_script)
   let env1 = type_check_with_env(env, base_ast, {})

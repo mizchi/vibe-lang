@@ -2,7 +2,6 @@
 
 export trait Eq
 export trait Ord
-export trait Show
 export trait Add
 export trait Sub
 export trait Mul
@@ -19,12 +18,6 @@ impl Ord for Int
 impl Ord for Float
 impl Ord for Double
 impl Ord for String
-
-impl Show for Int
-impl Show for Float
-impl Show for Double
-impl Show for Bool
-impl Show for String
 
 impl Add for Int
 impl Add for Float
@@ -99,4 +92,3 @@ export let num_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
 export let to_string = [T: Show](x: T) -> String {
   __to_string(x)
 }
-

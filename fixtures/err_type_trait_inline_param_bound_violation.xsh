@@ -1,7 +1,6 @@
-trait Show
-impl Show for String
+enum NoShow { NoShow(Int) }
 let keep = [T](x: T: Show) -> T { x }
-keep(1)
+keep(NoShow(1))
 
 __DATA__
 {"error_contains":"context=Some(\"argument\")"}

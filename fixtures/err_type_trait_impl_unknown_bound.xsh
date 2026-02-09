@@ -1,5 +1,5 @@
 trait Eq
-impl [T: Show] Eq for T
+impl [T: MissingShow] Eq for T
 
 __DATA__
-{"error_contains":"unknown trait: Show"}
+{"error_contains":"unknown trait: MissingShow"}

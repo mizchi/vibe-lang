@@ -1,9 +1,8 @@
 trait Eq
-trait Show
-impl Show for String
+enum NoShow { NoShow(Int) }
 impl [T: Show] Eq for T
 let id = [U: Eq](x: U) -> U { x }
-id(1)
+id(NoShow(1))
 
 __DATA__
 {"error_contains":"context=Some(\"argument\")"}

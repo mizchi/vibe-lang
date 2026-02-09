@@ -297,6 +297,33 @@ test "xsh method call and pipe" {
 }
 
 ///|
+test "xsh prelude to_string works with parenthesized literal method call" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script =
+    #|let a = to_string(3.14)
+    #|let b = 3.14.to_string()
+    #|let c = (3.14).to_string()
+    #|let d = true.to_string()
+  let _ = rt.eval_script(script)
+  match rt.get("a") {
+    Some(@core.Value::String(v)) => assert_eq(v, "3.14")
+    _ => fail("missing a")
+  }
+  match rt.get("b") {
+    Some(@core.Value::String(v)) => assert_eq(v, "3.14")
+    _ => fail("missing b")
+  }
+  match rt.get("c") {
+    Some(@core.Value::String(v)) => assert_eq(v, "3.14")
+    _ => fail("missing c")
+  }
+  match rt.get("d") {
+    Some(@core.Value::String(v)) => assert_eq(v, "true")
+    _ => fail("missing d")
+  }
+}
+
+///|
 test "xsh char literal" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let a = 'a'\nlet b = '\\n'\nlet c = '\\''")
@@ -858,8 +885,6 @@ test "xsh trait bound violation is type error" {
 test "xsh inline param trait bound" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
-    #|trait Show
-    #|impl Show for String
     #|let keep = [T](x: T: Show) -> T { x }
     #|let out = keep("ok")
   let _ = rt.eval_script(script)

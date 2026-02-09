@@ -21,10 +21,8 @@ fn gen_large_typecheck_source(def_count : Int) -> String {
 fn gen_trait_bound_source(call_count : Int) -> String {
   let buf = StringBuilder::new()
   buf.write_string("trait Eq\n")
-  buf.write_string("trait Show\n")
   buf.write_string("trait Hash\n")
   buf.write_string("impl Eq for Int\n")
-  buf.write_string("impl Show for Int\n")
   buf.write_string("impl [T: Eq + Show] Hash for T\n")
   buf.write_string("let use_hash = [U: Hash](x: U) -> Int { 1 }\n")
   for i in 0..<call_count {
