@@ -274,6 +274,12 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "type" => type_kw()
           "enum" => enum_kw()
           "while" => while_kw()
+          "loop" =>
+            if self.peek_next_significant_char() == Some('{') {
+              loop_kw()
+            } else {
+              name()
+            }
           "mut" => mut_kw()
           "raise" => raise_kw()
           "await" => await_kw()

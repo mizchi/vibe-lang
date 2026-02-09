@@ -1,0 +1,8 @@
+let a = to_string(3.14)
+let b = 3.14.to_string()
+let c = (3.14).to_string()
+let d = true.to_string()
+string_length(d)
+
+__DATA__
+{"last":"4"}

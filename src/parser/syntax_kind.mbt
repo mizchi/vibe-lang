@@ -178,6 +178,11 @@ pub fn continue_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn loop_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(91)
+}
+
+///|
 pub fn while_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(124)
 }

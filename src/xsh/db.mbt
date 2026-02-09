@@ -960,6 +960,9 @@ pub fn XshDb::new() -> XshDb {
     }
   })
   simple_type_query.register(rt)
+  let type_query_ref : Ref[@ripple.Query[String, @checker.TypeEnv]?] = @ref.new(
+    None,
+  )
   // Now create the main type query that handles imports
   let type_query : @ripple.Query[String, @checker.TypeEnv] = db.query(fn(
     rt,
@@ -1011,8 +1014,12 @@ pub fn XshDb::new() -> XshDb {
     for imp in imports {
       match sources.get(rt, imp.path) {
         Some(_) => {
-          // Use simple_type_query to get the imported module's type environment
-          let imported_env = simple_type_query.fetch(rt, imp.path)
+          // Use full type query when available so transitive imports contribute
+          // trait/type exports from dependency modules.
+          let imported_env = match type_query_ref.val {
+            Some(q) => q.fetch(rt, imp.path)
+            None => simple_type_query.fetch(rt, imp.path)
+          }
           // Get the AST of the imported module to find exports
           let imported_ast = ast_query.fetch(rt, imp.path).unwrap()
           let exported_names = collect_exported_names(imported_ast)
@@ -1232,6 +1239,7 @@ pub fn XshDb::new() -> XshDb {
       }
     }
   })
+  type_query_ref.val = Some(type_query)
   type_query.register(rt)
   {
     db,

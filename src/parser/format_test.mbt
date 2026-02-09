@@ -169,6 +169,28 @@ test "xsh parse/format map keyword is contextual in identifier positions" {
 }
 
 ///|
+test "xsh parse/format loop expression is parser-equivalent" {
+  let input =
+    #|let mut i = 0
+    #|loop {
+    #|  i += 1
+    #|  if i == 3 { break } else { }
+    #|}
+    #|i
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] loop expression failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] loop expression format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
 test "xsh format basic" {
   let input =
     #|let x=1

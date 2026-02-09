@@ -406,6 +406,8 @@ pub struct TypeEnv {
   mut next_var : Int
   mut next_effect_var : Int
   mut loop_depth : Int
+  mut active_rec_fn : String?
+  mut active_rec_fn_has_type_params : Bool
   subs : Map[Int, @core.Type]
   effect_subs : Map[String, Array[@core.EffectAtom]]
 } derive(Show, Eq)
@@ -921,6 +923,8 @@ pub fn TypeEnv::new() -> TypeEnv {
     next_var: 0,
     next_effect_var: 0,
     loop_depth: 0,
+    active_rec_fn: None,
+    active_rec_fn_has_type_params: false,
     subs: {},
     effect_subs: {},
   }
@@ -973,6 +977,8 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
     loop_depth: self.loop_depth,
+    active_rec_fn: self.active_rec_fn,
+    active_rec_fn_has_type_params: self.active_rec_fn_has_type_params,
     subs: self.subs.copy(),
     effect_subs: self.effect_subs.copy(),
   }
@@ -997,6 +1003,8 @@ pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
     next_var: self.next_var,
     next_effect_var: self.next_effect_var,
     loop_depth: self.loop_depth,
+    active_rec_fn: self.active_rec_fn,
+    active_rec_fn_has_type_params: self.active_rec_fn_has_type_params,
     subs: self.subs.copy(),
     effect_subs: self.effect_subs.copy(),
   }
@@ -1023,6 +1031,8 @@ pub fn TypeEnv::clone_for_module(self : TypeEnv) -> TypeEnv {
     next_var: 0,
     next_effect_var: 0,
     loop_depth: 0,
+    active_rec_fn: None,
+    active_rec_fn_has_type_params: false,
     subs: {},
     effect_subs: {},
   }
@@ -4502,7 +4512,14 @@ fn type_call(
       match ty {
         @core.Type::Func(params~, ret~, effects=fn_effects) => {
           check_call_args(
-            env, params, args, aliases, effects, allow_effect, call_span,
+            env,
+            lookup_name,
+            params,
+            args,
+            aliases,
+            effects,
+            allow_effect,
+            call_span,
           )
           require_effects(env, effects, fn_effects, call_span)
           ret
@@ -6859,6 +6876,8 @@ fn type_let_expr(
               effects=normalized_effects,
             )
             scope_env.set(name, provisional_fn_ty)
+            scope_env.active_rec_fn = Some(name)
+            scope_env.active_rec_fn_has_type_params = type_params.length() > 0
             let fn_scope = effect_scope_from_list(normalized_effects)
             let fn_allow_effect = allow_effect ||
               normalized_effects.length() > 0
@@ -7086,8 +7105,20 @@ fn type_lambda_with_context(
 }
 
 ///|
+fn is_active_polymorphic_recursive_call(
+  env : TypeEnv,
+  callee_name : String,
+) -> Bool {
+  match env.active_rec_fn {
+    Some(active) => active == callee_name && env.active_rec_fn_has_type_params
+    None => false
+  }
+}
+
+///|
 fn check_call_args(
   env : TypeEnv,
+  callee_name : String,
   params : Array[@core.FuncParam],
   args : Array[@core.CallArg],
   aliases : Map[String, @core.Ref],
@@ -7160,6 +7191,12 @@ fn check_call_args(
         let param = positional[pos_index]
         pos_index += 1
         if not(type_equal(env, param.ty, arg.ty)) {
+          if is_active_polymorphic_recursive_call(env, callee_name) {
+            raise TypeError::BadRec(
+              message="polymorphic recursion is unsupported",
+              span=arg.span,
+            )
+          }
           raise TypeError::Mismatch(
             expected=argument_mismatch_expected_type(env, param.ty, arg.ty),
             actual=resolve_type(env, arg.ty),
@@ -7186,6 +7223,12 @@ fn check_call_args(
           Some(param) => {
             used_labels[label] = true
             if not(type_equal(env, param.ty, arg.ty)) {
+              if is_active_polymorphic_recursive_call(env, callee_name) {
+                raise TypeError::BadRec(
+                  message="polymorphic recursion is unsupported",
+                  span=arg.span,
+                )
+              }
               raise TypeError::Mismatch(
                 expected=argument_mismatch_expected_type(env, param.ty, arg.ty),
                 actual=resolve_type(env, arg.ty),

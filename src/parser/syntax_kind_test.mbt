@@ -12,6 +12,9 @@ test "syntax kind keyword/operator ids are distinct" {
   if continue_kw() == slash() {
     fail("continue_kw and slash must have different SyntaxKind ids")
   }
+  if loop_kw() == star_eq() {
+    fail("loop_kw and star_eq must have different SyntaxKind ids")
+  }
 }
 
 ///|
@@ -55,6 +58,17 @@ test "lexer distinguishes await/yield from operators" {
   }
   if continue_tokens[0].kind() == continue_tokens[2].kind() {
     fail("continue and / must not share SyntaxKind")
+  }
+  let loop_kw_tokens = tokenize("loop { break }")
+  if loop_kw_tokens[0].kind() != loop_kw() {
+    fail("loop before { must lex as loop_kw")
+  }
+  let loop_ident_tokens = tokenize("let loop = 1\nloop(1)")
+  if loop_ident_tokens[2].kind() != name() {
+    fail("loop binding must lex as name")
+  }
+  if loop_ident_tokens[8].kind() != name() {
+    fail("loop before ( must lex as name")
   }
 }
 

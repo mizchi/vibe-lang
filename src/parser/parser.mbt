@@ -4,6 +4,8 @@ suberror ParseError {
   UnexpectedToken(expected~ : String, got~ : String, span~ : @core.Span)
   UnexpectedEof(span~ : @core.Span)
   IntLiteralOverflow(literal~ : String, span~ : @core.Span)
+  IntMinLiteralBoundary(span~ : @core.Span)
+  MutableEnumFieldUnsupported(span~ : @core.Span)
 } derive(Show, Eq)
 
 ///|
@@ -43,6 +45,28 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
         span: Some(span),
         hint: Some("use a smaller literal or rewrite as `0 - 2147483647 - 1`"),
         note: None,
+      }
+    ParseError::IntMinLiteralBoundary(span~) =>
+      @core.Diagnostic::{
+        stage: "parse",
+        message: "`-2147483648` is rejected: unary `-` does not extend Int literal range",
+        span: Some(span),
+        hint: Some("rewrite as `0 - 2147483647 - 1`"),
+        note: Some(
+          "parser treats `-` as unary operator applied after literal parsing",
+        ),
+      }
+    ParseError::MutableEnumFieldUnsupported(span~) =>
+      @core.Diagnostic::{
+        stage: "parse",
+        message: "enum payload fields cannot be marked `mut` yet",
+        span: Some(span),
+        hint: Some(
+          "remove `mut` from enum payload type, or wrap mutability in a struct payload",
+        ),
+        note: Some(
+          "mutable enum field syntax is tracked separately and not implemented in current grammar",
+        ),
       }
   }
 }
@@ -461,6 +485,8 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_if_expr()
   } else if self.at(while_kw()) {
     self.parse_while_expr()
+  } else if self.at(loop_kw()) {
+    self.parse_loop_expr()
   } else if self.at(match_kw()) {
     self.parse_match_expr()
   } else if self.at(do_kw()) {
@@ -481,8 +507,6 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_record_expr()
   } else if self.at(map_kw()) {
     self.parse_map_expr()
-  } else if self.at(lparen()) {
-    self.parse_paren_expr()
   } else if self.at(lbracket()) {
     self.parse_array_expr()
   } else if self.at(lbrace()) {
@@ -498,6 +522,15 @@ fn Parser::parse_while_expr(self : Parser) -> Unit {
   self.bump() // while
   self.skip_trivia()
   self.parse_expr()
+  self.skip_trivia()
+  self.parse_brace_block_tokens()
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_loop_expr(self : Parser) -> Unit {
+  self.builder.start_node(while_expr())
+  self.bump() // loop
   self.skip_trivia()
   self.parse_brace_block_tokens()
   self.builder.finish_node()
@@ -932,12 +965,16 @@ fn Parser::parse_arg(self : Parser) -> Unit {
 fn Parser::parse_primary(self : Parser) -> Unit {
   self.skip_trivia()
   match self.peek_kind() {
+    k if k == lparen() => {
+      self.parse_paren_expr()
+    }
     k if k == name() => {
       self.builder.start_node(name_ref())
       self.bump()
       self.builder.finish_node()
     }
     k if k == int_lit() ||
+      k == float_lit() ||
       k == string_lit() ||
       k == string_interp_lit() ||
       k == bool_lit() ||
@@ -1727,6 +1764,9 @@ fn AstParser::parse_type_ctor(
     let _ = self.bump()
     self.skip_trivia()
     if self.peek_kind() != rparen() {
+      if self.peek_kind() == mut_kw() {
+        raise ParseError::MutableEnumFieldUnsupported(span=self.token_span())
+      }
       args.push(self.parse_type_with_params(params))
       while {
               self.skip_trivia()
@@ -1736,6 +1776,9 @@ fn AstParser::parse_type_ctor(
         self.skip_trivia()
         if self.peek_kind() == rparen() {
           break
+        }
+        if self.peek_kind() == mut_kw() {
+          raise ParseError::MutableEnumFieldUnsupported(span=self.token_span())
         }
         args.push(self.parse_type_with_params(params))
       }
@@ -2192,6 +2235,8 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_if_expr()
   } else if self.peek_kind() == while_kw() {
     self.parse_while_expr()
+  } else if self.peek_kind() == loop_kw() {
+    self.parse_loop_expr()
   } else if self.peek_kind() == match_kw() {
     self.parse_match_expr()
   } else if self.peek_kind() == do_kw() {
@@ -2212,8 +2257,6 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_record_expr()
   } else if self.peek_kind() == map_kw() {
     self.parse_map_expr()
-  } else if self.peek_kind() == lparen() {
-    self.parse_paren_expr()
   } else if self.peek_kind() == lbracket() {
     // Could be array literal or generic function: [T](x: T) -> T { x }
     match self.try_parse_arrow_fn() {
@@ -2500,7 +2543,19 @@ fn AstParser::parse_unary_expr(self : AstParser) -> @core.Expr raise ParseError 
   self.skip_trivia()
   match self.peek_kind() {
     k if k == minus() => {
+      let start_pos = self.pos
       let _ = self.bump()
+      self.skip_trivia()
+      if self.peek_kind() == int_lit() {
+        let lit = self.peek()
+        if lit.text() == "2147483648" {
+          let span = @core.Span::new(
+            self.offset_at(start_pos),
+            self.offset_at(self.pos) + lit.text().length(),
+          )
+          raise ParseError::IntMinLiteralBoundary(span~)
+        }
+      }
       let value = self.parse_unary_expr()
       call1("__neg", value)
     }
@@ -2538,6 +2593,17 @@ fn AstParser::parse_while_expr(self : AstParser) -> @core.Expr raise ParseError 
   let cond = self.parse_expr()
   let body = self.parse_block()
   let span = self.span_from(start)
+  @core.Expr::While(cond~, body~, span~)
+}
+
+///|
+fn AstParser::parse_loop_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let loop_tok = self.expect(loop_kw(), "loop")
+  let body = self.parse_block()
+  let span = self.span_from(start)
+  let cond_span = @core.Span::new(span.start, span.start + loop_tok.text().length())
+  let cond = @core.Expr::Bool(value=true, span=cond_span)
   @core.Expr::While(cond~, body~, span~)
 }
 
