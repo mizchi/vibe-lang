@@ -16,19 +16,7 @@ let is_digit = (c: Int) -> Bool {
 }
 
 let digit_to_double = (c: Int) -> Double {
-  match c - '0' {
-    0 => 0.0
-    1 => 1.0
-    2 => 2.0
-    3 => 3.0
-    4 => 4.0
-    5 => 5.0
-    6 => 6.0
-    7 => 7.0
-    8 => 8.0
-    9 => 9.0
-    _ => 0.0
-  }
+  int_to_double(c - '0')
 }
 
 let rec skip_ws = (s: String, i: Int) -> Int {
