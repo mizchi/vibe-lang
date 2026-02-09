@@ -143,6 +143,43 @@ just run compile --wasm script.xsh -o /tmp/out.wasm
 wasmtime /tmp/out.wasm
 ```
 
+### With `deps/wasmtime` submodule (experimental flags)
+
+```bash
+# one-time init + build
+just wasmtime-submodule-init
+just build-wasmtime-submodule
+
+# run wasmtime from submodule directly
+just wasmtime-submodule run -W gc --invoke run /tmp/out.wasm
+
+# or switch existing xsh scripts/tasks to submodule wasmtime
+XSH_USE_WASMTIME_SUBMODULE=1 just component-run script.xsh
+XSH_USE_WASMTIME_SUBMODULE=1 just bench-wasmtime
+
+# inject extra wasmtime runtime flags into xsh scripts/*
+# (space-separated list; each token is passed as -W / -S)
+XSH_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
+XSH_WASMTIME_WASI_FLAGS='p3=y' \
+XSH_USE_WASMTIME_SUBMODULE=1 \
+just component-run script.xsh
+
+# flags are also propagated through justfile-backed tasks
+XSH_WASMTIME_WASM_FLAGS='gc=y' just bench-wasmtime
+
+# inspect current flag env values used by scripts/wasmtime_run.sh
+just show-wasmtime-flags
+
+# run minimal WASI Threads probe (imports wasi::thread-spawn + env::memory)
+# defaults to:
+#   XSH_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'
+#   XSH_WASMTIME_WASI_FLAGS='threads=y'
+XSH_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
+
+# direct runner under x/threads
+XSH_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
+```
+
 ### With wasmtime stack-switching (x86_64 Linux only)
 
 ```bash

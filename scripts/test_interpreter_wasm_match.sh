@@ -7,6 +7,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 TEMP_DIR="/tmp/interpreter_wasm_match"
+WASMTIME_BIN="${WASMTIME_BIN:-$("$PROJECT_DIR/scripts/wasmtime_bin.sh")}"
+WASMTIME_RUN="$PROJECT_DIR/scripts/wasmtime_run.sh"
 
 mkdir -p "$TEMP_DIR"
 
@@ -73,7 +75,7 @@ for expr in "${test_cases[@]}"; do
   # Compile and run WASM
   if moon run "$PROJECT_DIR/src/cmd/xsh/main.mbt" --target native -- compile --wasm "$TEMP_DIR/test.xsh" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
     # Run with --invoke to get return value, untag integer (divide by 4)
-    wasm_tagged=$(wasmtime run --invoke run "$TEMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning")
+    wasm_tagged=$(WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke run "$TEMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning")
     if [ -n "$wasm_tagged" ]; then
       # Untag: shift right 2 bits (divide by 4)
       wasm_result=$((wasm_tagged >> 2))

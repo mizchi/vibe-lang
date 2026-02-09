@@ -46,6 +46,12 @@ moon build src/cmd/xsh/main.mbt --target native -q 2>/dev/null || {
 }
 
 XSH="moon run src/cmd/xsh/main.mbt --target native --"
+WASMTIME_BIN=""
+WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
+HAS_WASMTIME=0
+if WASMTIME_BIN="$("$PROJECT_ROOT/scripts/wasmtime_bin.sh" 2>/dev/null)"; then
+  HAS_WASMTIME=1
+fi
 
 # Test 1: Simple WASM compilation with while loop
 test_while_loop() {
@@ -289,7 +295,7 @@ EOF
 test_component_stdio_roundtrip() {
   log_info "Test: Component stdio roundtrip"
 
-  if ! command -v wasmtime >/dev/null 2>&1; then
+  if [ "$HAS_WASMTIME" -ne 1 ]; then
     log_info "wasmtime not found, skipping stdio roundtrip"
     return
   fi
@@ -317,7 +323,7 @@ EOF
     return
   }
 
-  RESULT=$(printf 'A' | wasmtime --invoke 'run()' "$TMP_DIR/stdio_roundtrip.component.wasm" 2>/dev/null || true)
+  RESULT=$(printf 'A' | WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke 'run()' "$TMP_DIR/stdio_roundtrip.component.wasm" 2>/dev/null || true)
   LAST_LINE=$(printf '%s\n' "$RESULT" | tail -n 1)
   if [ "$LAST_LINE" = "260" ]; then
     log_pass "stdin_read_char reads one byte and returns tagged int (260 for 'A')"
@@ -330,7 +336,7 @@ EOF
 test_component_stdio_stream_chunk() {
   log_info "Test: Component stdio stream chunk I/O"
 
-  if ! command -v wasmtime >/dev/null 2>&1; then
+  if [ "$HAS_WASMTIME" -ne 1 ]; then
     log_info "wasmtime not found, skipping stream chunk test"
     return
   fi
@@ -353,7 +359,7 @@ EOF
     return
   }
 
-  RESULT=$(printf 'ABCD' | wasmtime --invoke 'run()' "$TMP_DIR/stdio_stream_chunk.component.wasm" 2>/dev/null || true)
+  RESULT=$(printf 'ABCD' | WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke 'run()' "$TMP_DIR/stdio_stream_chunk.component.wasm" 2>/dev/null || true)
   LAST_LINE=$(printf '%s\n' "$RESULT" | tail -n 1)
 
   if printf '%s\n' "$RESULT" | grep -q '^> ABCD$' && [ "$LAST_LINE" = "28" ]; then

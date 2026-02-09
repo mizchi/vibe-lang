@@ -6,6 +6,12 @@ home := env_var_or_default("HOME", "/tmp")
 prefix := env_var_or_default("XSH_PREFIX", home + "/.local")
 bindir := prefix + "/bin"
 cli_bin := "target/native/release/build/cmd/xsh/xsh.exe"
+# 0: prefer system wasmtime, 1: force deps/wasmtime build
+xsh_use_wasmtime_submodule := env_var_or_default("XSH_USE_WASMTIME_SUBMODULE", "0")
+# space-separated flags, each token is passed as `-W <token>`
+xsh_wasmtime_wasm_flags := env_var_or_default("XSH_WASMTIME_WASM_FLAGS", "")
+# space-separated flags, each token is passed as `-S <token>`
+xsh_wasmtime_wasi_flags := env_var_or_default("XSH_WASMTIME_WASI_FLAGS", "")
 
 # Default task: check and test
 default: check test
@@ -58,14 +64,20 @@ build-repl-wasi-wasm:
 # Build + run a stdio component (`run()` by default)
 component-run file out="" invoke="run()":
     if [ -n "{{out}}" ]; then \
+      XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" \
+      XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" \
+      XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} \
       scripts/run_component_stdio.sh {{file}} {{out}} '{{invoke}}'; \
     else \
+      XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" \
+      XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" \
+      XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} \
       scripts/run_component_stdio.sh {{file}} '' '{{invoke}}'; \
     fi
 
 # Run sample stream-TUI demo with canned stdin
 demo-tui-stream:
-    printf 'hello\nworld\n' | scripts/run_component_stdio.sh examples/wasm/tui_stream_demo.xsh '' 'run()' | awk 'NR==1{prev=$0;next}{print prev;prev=$0} END{if (prev !~ /^-?[0-9]+$/) print prev}'
+    printf 'hello\nworld\n' | XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/run_component_stdio.sh examples/wasm/tui_stream_demo.xsh '' 'run()' | awk 'NR==1{prev=$0;next}{print prev;prev=$0} END{if (prev !~ /^-?[0-9]+$/) print prev}'
 
 # Build + run a stdio component with moonix (`run()` by default)
 component-run-moonix file out="" invoke="run()":
@@ -91,29 +103,29 @@ install:
 
 # Benchmark wasm execution via wasmtime
 bench-wasmtime:
-    scripts/bench_wasmtime.sh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_wasmtime.sh
 
 # Compare interpreter vs wasmtime
 bench-compare:
-    scripts/bench_compare.sh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_compare.sh
 
 # Compare wasm js-string vs wasm gc on string-heavy workload
 bench-string-compare:
-    scripts/bench_string_compare.sh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh
 
 # String benchmarks (js-string vs wasm-gc)
 bench-string-concat:
-    scripts/bench_string_compare.sh bench/bench_string_concat.xsh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_concat.xsh
 
 bench-string-substring:
-    scripts/bench_string_compare.sh bench/bench_string_substring.xsh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_substring.xsh
 
 bench-string-equals:
-    scripts/bench_string_compare.sh bench/bench_string_equals.xsh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_equals.xsh
 
 # Base64 benchmark (js-string vs wasm-gc)
 bench-base64:
-    scripts/bench_string_compare.sh bench/bench_base64_encode.xsh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_base64_encode.xsh
 
 # Audit bench/*.xsh backend compatibility
 bench-audit-backends:
@@ -173,7 +185,7 @@ clean:
 
 # E2E tests for Component Model and WIT
 test-component-e2e:
-    scripts/test_component_e2e.sh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/test_component_e2e.sh
 
 # Build a Component Model artifact using wkg + wasm-tools
 component-wkg file out="":
@@ -197,7 +209,47 @@ test-golden-wat-update:
 
 # Test interpreter vs WASM output consistency
 test-interpreter-wasm:
-    scripts/test_interpreter_wasm_match.sh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/test_interpreter_wasm_match.sh
+
+# Show resolved wasmtime binary for current env selection
+show-wasmtime-bin:
+    XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/wasmtime_bin.sh
+
+# Show resolved wasmtime runtime flag env values used by scripts/wasmtime_run.sh
+show-wasmtime-flags:
+    echo "XSH_WASMTIME_WASM_FLAGS={{xsh_wasmtime_wasm_flags}}"
+    echo "XSH_WASMTIME_WASI_FLAGS={{xsh_wasmtime_wasi_flags}}"
+
+# Run minimal WASI Threads probe module (requires wasmtime + wasm-tools)
+wasi-threads-probe:
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} src/x/threads/run_probe.sh
+
+# Initialize wasmtime submodule for experimental runtime flags
+wasmtime-submodule-init:
+    git submodule update --init deps/wasmtime
+
+# Update wasmtime submodule to latest upstream main
+wasmtime-submodule-update:
+    git submodule update --remote deps/wasmtime
+
+# Build submodule wasmtime CLI (`profile=release` or `profile=debug`)
+build-wasmtime-submodule profile="release": wasmtime-submodule-init
+    if [ "{{profile}}" = "release" ]; then \
+      cargo build --manifest-path deps/wasmtime/Cargo.toml -p wasmtime-cli --release; \
+    else \
+      cargo build --manifest-path deps/wasmtime/Cargo.toml -p wasmtime-cli; \
+    fi
+
+# Run submodule wasmtime CLI (build first if needed)
+wasmtime-submodule *args:
+    if [ -x deps/wasmtime/target/release/wasmtime ]; then \
+      deps/wasmtime/target/release/wasmtime {{args}}; \
+    elif [ -x deps/wasmtime/target/debug/wasmtime ]; then \
+      deps/wasmtime/target/debug/wasmtime {{args}}; \
+    else \
+      echo "submodule wasmtime is not built. run: just build-wasmtime-submodule" >&2; \
+      exit 1; \
+    fi
 
 # Run wasmtime in x86_64 Linux container (for stack-switching support)
 wasmtime-x64 *args:

@@ -8,14 +8,11 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
   exit 1
 fi
 
-if ! command -v wasmtime >/dev/null 2>&1; then
-  echo "wasmtime is required" >&2
-  exit 1
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
+WASMTIME_BIN="${WASMTIME_BIN:-$(scripts/wasmtime_bin.sh)}"
+WASMTIME_RUN="scripts/wasmtime_run.sh"
 
 INPUT="$1"
 OUT="${2:-}"
@@ -32,4 +29,4 @@ else
 fi
 
 # Note: non-command components are invoked explicitly.
-wasmtime --invoke "$INVOKE" "$COMPONENT"
+WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke "$INVOKE" "$COMPONENT"
