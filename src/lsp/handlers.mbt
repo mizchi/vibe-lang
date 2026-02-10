@@ -237,7 +237,11 @@ fn hover_entry_markdown(entry : @frontend.SymbolEntry) -> String {
 }
 
 ///|
-pub fn hover_json(uri : String, source : String, position : LspPosition) -> Json {
+pub fn hover_json(
+  uri : String,
+  source : String,
+  position : LspPosition,
+) -> Json {
   let offset = position_to_offset(source, position)
   let name = match source_ident_at(source, offset) {
     Some(v) => v

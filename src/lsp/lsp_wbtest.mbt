@@ -112,10 +112,7 @@ test "parse_request/notification" {
 test "parse_position/valid" {
   let parsed = parse_position(
     Some(
-      Json::object({
-        "line": Json::number(3.0),
-        "character": Json::number(7.0),
-      }),
+      Json::object({ "line": Json::number(3.0), "character": Json::number(7.0) }),
     ),
   )
   match parsed {
