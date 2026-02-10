@@ -390,120 +390,15 @@ export let parse = (s: String) -> (Json, Int) with {Error} {
   }
 }
 
-let is_ok = (s: String) -> Bool {
-  try { let _ = parse(s); true } catch { false }
+export let parse_ok = (s: String) -> Bool {
+  try {
+    let (_, end) = parse(s)
+    end == s.string_length()
+  } catch {
+    false
+  }
 }
 
-let is_err = (s: String) -> Bool {
-  try { let _ = parse(s); false } catch { true }
-}
-
-let input = "{\"name\":\"xsh\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
-
-test "json_parser" {
-  let (json, _) = parse(input)
-  let ok =
-    match json {
-      JObj(obj) =>
-        match obj.map_get("name") {
-          JStr(name) => {
-            let name_ok = name.string_equals("xsh")
-            let nums_ok =
-              match obj.map_get("nums") {
-                JArr(arr) => {
-                  let n0_ok = match arr[0] { JNum(n) => n == 1.5 _ => false }
-                  let n1_ok = match arr[1] { JNum(n) => n == 2.0 _ => false }
-                  let n2_ok = match arr[2] { JNum(n) => n == 3.25 _ => false }
-                  arr.array_length() == 3 && n0_ok && n1_ok && n2_ok
-                }
-                _ => false
-              }
-            let ok_ok = match obj.map_get("ok") { JBool(b) => b _ => false }
-            let meta_ok = match obj.map_get("meta") { JNull => true _ => false }
-            name_ok && nums_ok && ok_ok && meta_ok
-          }
-          _ => false
-        }
-      _ => false
-    }
-  assert(ok)
-}
-
-test "json_parser_numbers" {
-  assert(match parse("0") { (JNum(n), _) => n == 0.0 _ => false })
-  assert(match parse("-12") { (JNum(n), _) => n == -12.0 _ => false })
-  assert(match parse("3.5") { (JNum(n), _) => n == 3.5 _ => false })
-  assert(match parse("1e3") { (JNum(n), _) => n == 1000.0 _ => false })
-  assert(match parse("1.25e-2") { (JNum(n), _) => n == 0.0125 _ => false })
-  assert(match parse("1E+2") { (JNum(n), _) => n == 100.0 _ => false })
-  assert(match parse("-0.0") { (JNum(n), _) => n == -0.0 _ => false })
-}
-
-test "json_parser_whitespace" {
-  let (json, _) = parse(" \n\t{\"a\": 1}\n ")
-  let ok =
-    match json {
-      JObj(obj) =>
-        match obj.map_get("a") { JNum(n) => n == 1.0 _ => false }
-      _ => false
-    }
-  assert(ok)
-}
-
-test "json_parser_nested" {
-  let (json, _) = parse("{\"a\":[true,false,null,{\"b\":2}],\"c\":{}}")
-  let ok =
-    match json {
-      JObj(obj) => {
-        let a_ok =
-          match obj.map_get("a") {
-            JArr(arr) => {
-              let b0 = match arr[0] { JBool(b) => b _ => false }
-              let b1 = match arr[1] { JBool(b) => !b _ => false }
-              let b2 = match arr[2] { JNull => true _ => false }
-              let b3 =
-                match arr[3] {
-                  JObj(inner) =>
-                    match inner.map_get("b") { JNum(n) => n == 2.0 _ => false }
-                  _ => false
-                }
-              arr.array_length() == 4 && b0 && b1 && b2 && b3
-            }
-            _ => false
-          }
-        let c_ok = match obj.map_get("c") { JObj(_) => true _ => false }
-        a_ok && c_ok
-      }
-      _ => false
-    }
-  assert(ok)
-}
-
-test "json_parser_string" {
-  let (json, _) = parse("\"he\\\\llo\\n\\t\\\"/\"")
-  let ok =
-    match json {
-      JStr(s) => s.string_equals("he\\llo\n\t\"/")
-      _ => false
-    }
-  assert(ok)
-}
-
-test "json_parser_errors" {
-  assert(is_err("\"abc"))
-  assert(is_err("true false"))
-  assert(is_err("1e"))
-  assert(is_err("1e+"))
-  assert(is_err("1e-"))
-  assert(is_err("[1,]"))
-  assert(is_err("{\"a\":1,}"))
-  assert(is_err("\"a\\b\""))
-  assert(is_err("01"))
-  assert(is_err("-01"))
-  assert(is_err("00"))
-  assert(is_err(".1"))
-  assert(is_err("1."))
-  assert(is_err("+1"))
-  assert(is_err("-"))
-  assert(is_err("\"a\nb\""))
+export let parse_err = (s: String) -> Bool {
+  not(parse_ok(s))
 }

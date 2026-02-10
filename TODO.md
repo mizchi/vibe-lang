@@ -140,6 +140,27 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   Progress (2026-02-09): `examples/json.xsh` `10747 -> 10279`,
   `xsh/std/option.xsh` `4201 -> 3014`, `xsh/std/double.xsh` `2685 -> 2382`
   (`wasm-no-dce` / `wasm-js-string-no-dce`).
+  Progress (2026-02-10): split JSON parser tests into `examples/json_test.xsh`
+  and keep `examples/json.xsh` parser-only runtime surface;
+  bundle-size bench now excludes `*_test.xsh` entries in `examples/` and
+  `xsh/std/` so regressions track runtime surfaces only;
+  `examples/json.xsh` `10279 -> 10227`, `xsh/std/option.xsh` `3014 -> 3014`,
+  `xsh/std/double.xsh` `2278 -> 2271`.
+  Progress (2026-02-10): reverted API-level extra split and restored
+  single-module surfaces (`option.xsh` / `double.xsh`) to avoid
+  superficial "module size only" optimization.
+  Progress (2026-02-10): importer-level measurements (new
+  `bench/bundle_size/*.xsh`) are now the primary benchmark focus:
+  current baseline is
+  `consumer_option_core` `3380`,
+  `consumer_option_extra` `3128`,
+  `consumer_double_core` `unsupported(call local: abs)`,
+  `consumer_double_rounding` `unsupported(call local: floor)`.
+  `scripts/bench_bundle_size.sh` now prioritizes `bench/importers` by default;
+  module-surface scan for `xsh/std/*.xsh` is opt-in via
+  `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`.
+  Case set / golden rules are now explicit via
+  `bench/bundle_size/cases.txt` + `bench/bundle_size/README.md`.
 - [x] Eliminate noisy abort-signal output in size benchmark fallback path
   (convert unsupported compile attempts to clean diagnostics).
   done 2026-02-10: `scripts/bench_bundle_size.sh` now captures failed compile

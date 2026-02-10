@@ -6,8 +6,10 @@ CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
 REPORT_DIR="$ROOT_DIR/dist/bundle_size"
 REPORT_FILE="$REPORT_DIR/current.tsv"
 BUDGET_FILE="$ROOT_DIR/bench/golden/bundle_size_budget.tsv"
+IMPORTER_CASES_FILE="$ROOT_DIR/bench/bundle_size/cases.txt"
 OUT_DIR="$REPORT_DIR/out"
 UPDATE=0
+INCLUDE_STD_SURFACES="${XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES:-0}"
 
 if [[ "${1:-}" == "--update" ]]; then
   UPDATE=1
@@ -24,6 +26,9 @@ mkdir -p "$REPORT_DIR" "$OUT_DIR"
 moon build --target native --release src/cmd/xsh >/dev/null
 
 printf 'group\tpath\tmode\tbytes\n' > "$REPORT_FILE"
+
+declare -a active_groups
+active_groups=("examples")
 
 try_compile() {
   local exit_code=0
@@ -68,11 +73,32 @@ compile_entry() {
 
 while IFS= read -r path; do
   compile_entry "examples" "$path"
-done < <(find "$ROOT_DIR/examples" -maxdepth 1 -type f -name '*.xsh' | sed "s#^$ROOT_DIR/##" | sort)
+done < <(find "$ROOT_DIR/examples" -maxdepth 1 -type f -name '*.xsh' ! -name '*_test.xsh' | sed "s#^$ROOT_DIR/##" | sort)
 
-while IFS= read -r path; do
-  compile_entry "xsh/std" "$path"
-done < <(find "$ROOT_DIR/xsh/std" -maxdepth 1 -type f -name '*.xsh' | sed "s#^$ROOT_DIR/##" | sort)
+if [[ -d "$ROOT_DIR/bench/bundle_size" ]]; then
+  active_groups+=("bench/importers")
+  if [[ ! -f "$IMPORTER_CASES_FILE" ]]; then
+    echo "bundle-size: missing importer case list: $IMPORTER_CASES_FILE" >&2
+    exit 1
+  fi
+  while IFS= read -r path; do
+    [[ -z "$path" || "$path" =~ ^# ]] && continue
+    rel_path="$path"
+    abs_path="$ROOT_DIR/$rel_path"
+    if [[ ! -f "$abs_path" ]]; then
+      echo "bundle-size: importer case missing file: $rel_path" >&2
+      exit 1
+    fi
+    compile_entry "bench/importers" "$rel_path"
+  done < "$IMPORTER_CASES_FILE"
+fi
+
+if [[ "$INCLUDE_STD_SURFACES" == "1" ]]; then
+  active_groups+=("xsh/std")
+  while IFS= read -r path; do
+    compile_entry "xsh/std" "$path"
+  done < <(find "$ROOT_DIR/xsh/std" -maxdepth 1 -type f -name '*.xsh' ! -name '*_test.xsh' | sed "s#^$ROOT_DIR/##" | sort)
+fi
 
 {
   head -n 1 "$REPORT_FILE"
@@ -152,7 +178,21 @@ while IFS=$'\t' read -r group path mode bytes; do
   fi
 done < "$REPORT_FILE"
 
+is_active_group() {
+  local group="$1"
+  for active in "${active_groups[@]}"; do
+    if [[ "$active" == "$group" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 for key in "${!budget_bytes[@]}"; do
+  group="${key%%|*}"
+  if ! is_active_group "$group"; then
+    continue
+  fi
   if [[ -z "${seen_keys[$key]+x}" ]]; then
     echo "bundle-size: stale budget entry: $key" >&2
     status=1

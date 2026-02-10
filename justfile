@@ -191,7 +191,8 @@ bench-advanced-graph:
 bench-typechecker:
     moon bench -p benches -f checker_bench.mbt
 
-# Benchmark bundle size for examples/ and xsh/std/ with no-DCE builds
+# Benchmark bundle size for examples/ + use-case importers (bench/bundle_size/)
+# Set `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include xsh/std module surfaces.
 bench-bundle-size:
     scripts/bench_bundle_size.sh
 

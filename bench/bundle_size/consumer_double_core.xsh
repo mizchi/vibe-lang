@@ -1,0 +1,7 @@
+import { abs, max, lerp } from "../../xsh/std/double.xsh"
+
+let a = abs(-3.5)
+let b = max(2.0, 7.0)
+let c = lerp(0.0, 10.0, 0.25)
+
+if a == 3.5 && b == 7.0 && c == 2.5 { "ok" } else { "ng" }

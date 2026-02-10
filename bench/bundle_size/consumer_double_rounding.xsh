@@ -1,0 +1,9 @@
+import { floor, ceil, round, trunc, fract } from "../../xsh/std/double.xsh"
+
+let a = floor(3.7)
+let b = ceil(-3.2)
+let c = round(2.6)
+let d = trunc(-1.9)
+let e = fract(3.25)
+
+if a == 3.0 && b == -3.0 && c == 3.0 && d == -1.0 && e > 0.24 && e < 0.26 { "ok" } else { "ng" }
