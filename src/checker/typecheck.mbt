@@ -15,7 +15,6 @@ suberror TypeError {
   BadMatch(message~ : String, span~ : @core.Span)
   NonExhaustiveMatch(span~ : @core.Span)
   BadTypeDef(message~ : String, span~ : @core.Span)
-  EffectNotAllowed(name~ : String, span~ : @core.Span)
   EffectGuardNotSatisfied(
     operation~ : String,
     missing_effect~ : String?,
@@ -214,14 +213,6 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         message: "type definition: " + message,
         span: Some(span),
         hint: None,
-        note: None,
-      }
-    TypeError::EffectNotAllowed(name~, span~) =>
-      @core.Diagnostic::{
-        stage: "type",
-        message: "effect not allowed: `" + name + "`",
-        span: Some(span),
-        hint: effect_not_allowed_hint(name),
         note: None,
       }
     TypeError::EffectGuardNotSatisfied(
@@ -485,10 +476,17 @@ fn require_effects(
   env : TypeEnv,
   scope : EffectScope,
   effects : Array[@core.EffectAtom],
+  operation : String,
   span : @core.Span,
 ) -> Unit raise TypeError {
   match find_missing_effect(env, scope, effects) {
-    Some(name) => raise TypeError::EffectNotAllowed(name~, span~)
+    Some(name) =>
+      raise TypeError::EffectGuardNotSatisfied(
+        operation~,
+        missing_effect=Some(name),
+        missing_do_boundary=false,
+        span~,
+      )
     None => ()
   }
 }
@@ -3612,17 +3610,35 @@ fn type_expr_eff(
         span,
         "raise",
       )
-      require_effects(env, effects, [@core.EffectAtom::Const("Error")], span)
+      require_effects(
+        env,
+        effects,
+        [@core.EffectAtom::Const("Error")],
+        "raise",
+        span,
+      )
       @core.Type::Never
     }
     @core.Expr::Await(expr~, span~) => {
       let inner_ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
-      require_effects(env, effects, [@core.EffectAtom::Const("Async")], span)
+      require_effects(
+        env,
+        effects,
+        [@core.EffectAtom::Const("Async")],
+        "await",
+        span,
+      )
       inner_ty
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
-      require_effects(env, effects, [@core.EffectAtom::Const("Async")], span)
+      require_effects(
+        env,
+        effects,
+        [@core.EffectAtom::Const("Async")],
+        "yield",
+        span,
+      )
       @core.Type::Unit
     }
   }
@@ -4520,7 +4536,7 @@ fn type_call(
           check_call_args(
             env, lookup_name, params, args, aliases, effects, allow_effect, call_span,
           )
-          require_effects(env, effects, fn_effects, call_span)
+          require_effects(env, effects, fn_effects, lookup_name, call_span)
           ret
         }
         _ =>

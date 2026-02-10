@@ -5,14 +5,20 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 ## Next Up (Priority Order)
 
 - Language UX hard-point triage (spec/examples review):
-  - P0: Unify effect diagnostics for `effect-set` vs `do` boundary failures.
-    Emit a single grouped diagnostic that explains both missing declarations and
-    missing effect-allowed context with one fix path.
-    Coverage targets: `examples/effects.xsh` style wrappers and
-    `docs/xsh.md` effect examples.
-  - P0: Add a generics+effects fixture matrix (success/failure pairs).
-    Include higher-order wrappers with `with {e}`, localized `try/catch`, and
-    mixed trait-bound + effect-bound failures so users can see minimal patterns.
+  - P0 [done 2026-02-10]: Unify effect diagnostics for `effect-set` vs `do`
+    boundary failures.
+    `TypeError::EffectNotAllowed` was folded into
+    `TypeError::EffectGuardNotSatisfied`, so effect-set failures and
+    do-boundary failures now share one grouped diagnostic shape (hint/note with
+    missing effect declaration + missing boundary when applicable). Updated
+    related typecheck + fixture expectations.
+  - P0 [done 2026-02-10]: Add a generics+effects fixture matrix (success/failure pairs).
+    Added matrix fixtures covering higher-order wrappers with `with {e}`,
+    localized `try/catch`, and mixed trait/effect call-shape mismatch cases:
+    `generic_effect_matrix_ok_with_e_try_catch_localized`,
+    `generic_effect_matrix_ok_trait_and_effect_bound`,
+    `generic_effect_matrix_fail_missing_effect_at_caller`,
+    `generic_effect_matrix_fail_trait_and_effect_mixed`.
   - P0 [done 2026-02-10]: Add PosixMode command-head desugar diagnostics.
     In `--syntax posix`, unresolved bare identifiers desugared to command heads
     now emit explicit runtime notes (`note: posix-mode command-head desugar: ...`)
@@ -134,5 +140,8 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   Progress (2026-02-09): `examples/json.xsh` `10747 -> 10279`,
   `xsh/std/option.xsh` `4201 -> 3014`, `xsh/std/double.xsh` `2685 -> 2382`
   (`wasm-no-dce` / `wasm-js-string-no-dce`).
-- [ ] Eliminate noisy abort-signal output in size benchmark fallback path
+- [x] Eliminate noisy abort-signal output in size benchmark fallback path
   (convert unsupported compile attempts to clean diagnostics).
+  done 2026-02-10: `scripts/bench_bundle_size.sh` now captures failed compile
+  probes via command substitution, so signal exits no longer emit shell
+  `Abort trap` noise while unsupported entries remain visible in the report.

@@ -27,7 +27,10 @@ printf 'group\tpath\tmode\tbytes\n' > "$REPORT_FILE"
 
 try_compile() {
   local exit_code=0
-  "$CLI_BIN" compile "$@" >/dev/null 2>&1 || exit_code=$?
+  local _discard=""
+  # Capture output via command substitution so signal exits (e.g. SIGABRT)
+  # do not emit bash "Abort trap" line noise during backend fallback probing.
+  _discard="$("$CLI_BIN" compile "$@" 2>&1)" || exit_code=$?
   [[ $exit_code -eq 0 ]]
 }
 
