@@ -118,6 +118,24 @@ pub fn parse_text_document_identifier(
 }
 
 ///|
+pub fn parse_position(json : Json?) -> LspPosition? {
+  match json {
+    Some(Json::Object(obj)) => {
+      let line = match obj.get("line") {
+        Some(Json::Number(n, ..)) => n.to_int()
+        _ => return None
+      }
+      let character = match obj.get("character") {
+        Some(Json::Number(n, ..)) => n.to_int()
+        _ => return None
+      }
+      Some(LspPosition::{ line, character })
+    }
+    _ => None
+  }
+}
+
+///|
 pub fn parse_versioned_text_document_identifier(
   json : Json?,
 ) -> LspVersionedTextDocumentIdentifier? {

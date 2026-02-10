@@ -101,6 +101,53 @@ pub fn LspServer::handle_message(
       }
       (None, notifications)
     }
+    "textDocument/completion" =>
+      match req.id {
+        Some(id) => {
+          let result = match req.params {
+            Some(Json::Object(obj)) =>
+              match parse_text_document_identifier(obj.get("textDocument")) {
+                Some(doc_id) =>
+                  match parse_position(obj.get("position")) {
+                    Some(position) =>
+                      match self.documents.get(doc_id.uri) {
+                        Some(source) =>
+                          completion_items_json(doc_id.uri, source, position)
+                        None => Json::array([])
+                      }
+                    None => Json::array([])
+                  }
+                None => Json::array([])
+              }
+            _ => Json::array([])
+          }
+          (Some(make_response(Some(id), result)), notifications)
+        }
+        None => (None, notifications)
+      }
+    "textDocument/hover" =>
+      match req.id {
+        Some(id) => {
+          let result = match req.params {
+            Some(Json::Object(obj)) =>
+              match parse_text_document_identifier(obj.get("textDocument")) {
+                Some(doc_id) =>
+                  match parse_position(obj.get("position")) {
+                    Some(position) =>
+                      match self.documents.get(doc_id.uri) {
+                        Some(source) => hover_json(doc_id.uri, source, position)
+                        None => Json::null()
+                      }
+                    None => Json::null()
+                  }
+                None => Json::null()
+              }
+            _ => Json::null()
+          }
+          (Some(make_response(Some(id), result)), notifications)
+        }
+        None => (None, notifications)
+      }
     "textDocument/codeAction" =>
       match req.id {
         Some(id) => {

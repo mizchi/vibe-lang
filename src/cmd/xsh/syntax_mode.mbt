@@ -149,11 +149,11 @@ pub fn ensure_cli_parser_mode_supported(
     @xsh_lib.ParserMode::XshMode => Ok(())
     @xsh_lib.ParserMode::PosixMode =>
       match cmd_name {
-        "run" | "repl" | "repl-stdin" | "repl-wasi" | "bench" => Ok(())
+        "run" | "eval" | "repl" | "repl-stdin" | "repl-wasi" | "bench" => Ok(())
         _ =>
           Err(
             cmd_name +
-            ": --syntax posix is supported only for run/repl/repl-stdin/repl-wasi/bench",
+            ": --syntax posix is supported only for run/eval/repl/repl-stdin/repl-wasi/bench",
           )
       }
   }

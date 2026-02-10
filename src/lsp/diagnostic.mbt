@@ -28,6 +28,36 @@ fn offset_to_position(source : String, offset : Int) -> LspPosition {
 }
 
 ///|
+fn position_to_offset(source : String, pos : LspPosition) -> Int {
+  if pos.line < 0 || pos.character < 0 {
+    return 0
+  }
+  let mut line = 0
+  let mut col = 0
+  let mut idx = 0
+  let chars = source.to_array()
+  while idx < chars.length() {
+    if line == pos.line && col == pos.character {
+      return idx
+    }
+    if chars[idx] == '\n' {
+      line += 1
+      col = 0
+      idx += 1
+      if line > pos.line {
+        return idx
+      }
+      continue
+    }
+    if line == pos.line {
+      col += 1
+    }
+    idx += 1
+  }
+  chars.length()
+}
+
+///|
 /// Convert xsh Diagnostic to LSP Diagnostic
 pub fn to_lsp_diagnostic(
   diag : @core.Diagnostic,

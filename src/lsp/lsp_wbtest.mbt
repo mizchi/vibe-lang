@@ -54,6 +54,23 @@ test "handle_initialize" {
   assert_eq(resp.id, Some(JsonRpcId::Num(1)))
   assert_true(resp.result is Some(_))
   assert_true(resp.error is None)
+  match resp.result {
+    Some(Json::Object(obj)) =>
+      match obj.get("capabilities") {
+        Some(Json::Object(capabilities)) => {
+          match capabilities.get("hoverProvider") {
+            Some(Json::True) => ()
+            _ => fail("missing hoverProvider")
+          }
+          match capabilities.get("completionProvider") {
+            Some(Json::Object(_)) => ()
+            _ => fail("missing completionProvider")
+          }
+        }
+        _ => fail("missing capabilities")
+      }
+    _ => fail("missing initialize result")
+  }
 }
 
 ///|
@@ -89,6 +106,25 @@ test "parse_request/notification" {
   assert_true(req is Some(_))
   let r = req.unwrap()
   assert_true(r.id is None)
+}
+
+///|
+test "parse_position/valid" {
+  let parsed = parse_position(
+    Some(
+      Json::object({
+        "line": Json::number(3.0),
+        "character": Json::number(7.0),
+      }),
+    ),
+  )
+  match parsed {
+    Some(pos) => {
+      assert_eq(pos.line, 3)
+      assert_eq(pos.character, 7)
+    }
+    None => fail("expected position")
+  }
 }
 
 ///|
@@ -163,6 +199,133 @@ test "LspServer/handle_message/codeAction trait import quickfix" {
         _ => fail("expected code actions")
       }
     None => fail("expected response")
+  }
+}
+
+///|
+test "LspServer/handle_message/completion returns symbols with hash info" {
+  let server = LspServer::new()
+  let uri = "file://completion_test.xsh"
+  let source =
+    #|let alpha = 1
+    #|let beta = alpha
+    #|al
+  let open_json = Json::object({
+    "jsonrpc": Json::string("2.0"),
+    "method": Json::string("textDocument/didOpen"),
+    "params": Json::object({
+      "textDocument": Json::object({
+        "uri": Json::string(uri),
+        "languageId": Json::string("xsh"),
+        "version": Json::number(1.0),
+        "text": Json::string(source),
+      }),
+    }),
+  })
+  let _ = server.handle_message(open_json)
+  let completion_json = Json::object({
+    "jsonrpc": Json::string("2.0"),
+    "id": Json::number(20.0),
+    "method": Json::string("textDocument/completion"),
+    "params": Json::object({
+      "textDocument": Json::object({ "uri": Json::string(uri) }),
+      "position": Json::object({
+        "line": Json::number(2.0),
+        "character": Json::number(2.0),
+      }),
+    }),
+  })
+  let (resp, notifications) = server.handle_message(completion_json)
+  assert_eq(notifications.length(), 0)
+  match resp {
+    Some(response) =>
+      match response.result {
+        Some(Json::Array(items)) => {
+          assert_true(items.length() > 0)
+          let mut has_alpha = false
+          let mut has_hash_doc = false
+          for item in items {
+            match item {
+              Json::Object(obj) => {
+                match obj.get("label") {
+                  Some(Json::String(label)) =>
+                    if label == "alpha" {
+                      has_alpha = true
+                    }
+                  _ => ()
+                }
+                match obj.get("documentation") {
+                  Some(Json::String(doc)) =>
+                    if doc.contains("hash: ") {
+                      has_hash_doc = true
+                    }
+                  _ => ()
+                }
+              }
+              _ => ()
+            }
+          }
+          assert_true(has_alpha)
+          assert_true(has_hash_doc)
+        }
+        _ => fail("expected completion array")
+      }
+    None => fail("expected completion response")
+  }
+}
+
+///|
+test "LspServer/handle_message/hover includes hash" {
+  let server = LspServer::new()
+  let uri = "file://hover_test.xsh"
+  let source =
+    #|let alpha = 1
+    #|alpha
+  let open_json = Json::object({
+    "jsonrpc": Json::string("2.0"),
+    "method": Json::string("textDocument/didOpen"),
+    "params": Json::object({
+      "textDocument": Json::object({
+        "uri": Json::string(uri),
+        "languageId": Json::string("xsh"),
+        "version": Json::number(1.0),
+        "text": Json::string(source),
+      }),
+    }),
+  })
+  let _ = server.handle_message(open_json)
+  let hover_req = Json::object({
+    "jsonrpc": Json::string("2.0"),
+    "id": Json::number(21.0),
+    "method": Json::string("textDocument/hover"),
+    "params": Json::object({
+      "textDocument": Json::object({ "uri": Json::string(uri) }),
+      "position": Json::object({
+        "line": Json::number(1.0),
+        "character": Json::number(2.0),
+      }),
+    }),
+  })
+  let (resp, notifications) = server.handle_message(hover_req)
+  assert_eq(notifications.length(), 0)
+  match resp {
+    Some(response) =>
+      match response.result {
+        Some(Json::Object(obj)) =>
+          match obj.get("contents") {
+            Some(Json::Object(contents)) =>
+              match contents.get("value") {
+                Some(Json::String(value)) => {
+                  assert_true(value.contains("alpha"))
+                  assert_true(value.contains("hash: `"))
+                }
+                _ => fail("hover contents value missing")
+              }
+            _ => fail("hover contents missing")
+          }
+        _ => fail("expected hover object")
+      }
+    None => fail("expected hover response")
   }
 }
 

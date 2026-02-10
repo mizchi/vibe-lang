@@ -299,6 +299,54 @@ test "codebase load_lock_data falls back to legacy xsh.lock" {
 }
 
 ///|
+test "codebase load_lock_data prefers index.xdb lock payload over index.lock" {
+  let root = make_temp_dir("index_xdb_lock_priority")
+  let entry = root + "/main.xsh"
+  let lock_path = lock_file_path(entry)
+  write_file(
+    lock_path, "{\"path\":{\"./main.xsh\":\"from_lock\"},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(
+    root + "/index.xdb",
+    "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"path\":{\"./main.xsh\":\"from_xdb\"},\"version\":{},\"symbol\":{}}",
+  )
+  let loaded = match load_lock_data(lock_path) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let entry_norm = @xsh_fs.normalize_path(entry)
+  match loaded.path_refs.get(entry_norm) {
+    Some(hash) => assert_eq(hash, "from_xdb")
+    None => fail("expected path ref from index.xdb")
+  }
+  remove_if_exists(root)
+}
+
+///|
+test "codebase load_lock_data falls back to index.lock when index.xdb has no lock data" {
+  let root = make_temp_dir("index_xdb_fallback")
+  let entry = root + "/main.xsh"
+  let lock_path = lock_file_path(entry)
+  write_file(
+    lock_path, "{\"path\":{\"./main.xsh\":\"from_lock\"},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(
+    root + "/index.xdb",
+    "{\"graph_head\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+  )
+  let loaded = match load_lock_data(lock_path) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let entry_norm = @xsh_fs.normalize_path(entry)
+  match loaded.path_refs.get(entry_norm) {
+    Some(hash) => assert_eq(hash, "from_lock")
+    None => fail("expected path ref from index.lock fallback")
+  }
+  remove_if_exists(root)
+}
+
+///|
 test "codebase update_lock_path_refs rejects imports outside index root" {
   let root = make_temp_dir("root_guard")
   let outside_name = "xsh_codebase_test_outside_guard"
@@ -311,7 +359,7 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
   let outside_lib = outside + "/lib.xsh"
   write_file(
     root + "/index.xsh",
-    "export let module = record { std: \"./xsh/std\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./xsh/std\" }\n",
   )
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
@@ -329,6 +377,61 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
 }
 
 ///|
+test "codebase update_lock_path_refs requires index version export" {
+  let root = make_temp_dir("registry_version_required")
+  let std_dir = root + "/xsh/std"
+  @os_fs.create_dir(root + "/xsh") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(std_dir) catch {
+    e => fail(e.to_string())
+  }
+  let entry = root + "/main.xsh"
+  let std_mod = std_dir + "/math.xsh"
+  write_file(
+    root + "/index.xsh",
+    "export let module = record { std: \"./xsh/std\" }\n",
+  )
+  write_file(std_mod, "let value = 1\nexport { value }\n")
+  write_file(
+    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+  )
+  match update_lock_path_refs(entry) {
+    Ok(_) => fail("expected missing version error")
+    Err(err) =>
+      assert_true(err.contains("missing required `export let version"))
+  }
+  remove_if_exists(root)
+}
+
+///|
+test "codebase update_lock_path_refs validates index version format" {
+  let root = make_temp_dir("registry_version_format")
+  let std_dir = root + "/xsh/std"
+  @os_fs.create_dir(root + "/xsh") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(std_dir) catch {
+    e => fail(e.to_string())
+  }
+  let entry = root + "/main.xsh"
+  let std_mod = std_dir + "/math.xsh"
+  write_file(
+    root + "/index.xsh",
+    "export let version = \"v1\"\nexport let module = record { std: \"./xsh/std\" }\n",
+  )
+  write_file(std_mod, "let value = 1\nexport { value }\n")
+  write_file(
+    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+  )
+  match update_lock_path_refs(entry) {
+    Ok(_) => fail("expected invalid semver error")
+    Err(err) => assert_true(err.contains("must be semver"))
+  }
+  remove_if_exists(root)
+}
+
+///|
 test "codebase update_lock_path_refs resolves std namespace via index.xsh" {
   let root = make_temp_dir("registry_std")
   let std_dir = root + "/xsh/std"
@@ -342,7 +445,7 @@ test "codebase update_lock_path_refs resolves std namespace via index.xsh" {
   let std_mod = std_dir + "/math.xsh"
   write_file(
     root + "/index.xsh",
-    "export let module = record { std: \"./xsh/std\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./xsh/std\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -364,8 +467,7 @@ test "codebase update_lock_path_refs captures export comments as annotations" {
   let root = make_temp_dir("annotations_capture")
   let entry = root + "/main.xsh"
   write_file(
-    entry,
-    "// first line\n// second line\nlet main = 1\nexport { main }\n",
+    entry, "// first line\n// second line\nlet main = 1\nexport { main }\n",
   )
   let updated = match update_lock_path_refs(entry) {
     Ok(v) => v

@@ -72,7 +72,7 @@ Status: accepted and moved from `TODO.md`.
   parser-consuming commands use explicit `--syntax xsh|posix` switch
   (default `xsh`) with no automatic fallback.
   `posix` is preview-enabled only for runtime-eval commands
-  (`run`/`repl`/`repl-stdin`/`repl-wasi`/`bench`) and rejected on
+  (`run`/`eval`/`repl`/`repl-stdin`/`repl-wasi`/`bench`) and rejected on
   static/compile-oriented commands.
 - PosixMode runtime preview semantics are fixed:
   `Runtime::eval_script_with_mode(..., PosixMode)` desugars unresolved
@@ -102,6 +102,15 @@ Status: accepted and moved from `TODO.md`.
   (`path`/`version`/`symbol`/`module`/`annotation` maps), path imports are
   validated against lock entries when enabled, and import diagnostics are
   compile-fatal.
+  `index.xsh` root registry now requires
+  `export let version = "<semver>"` (simple `x.y.z` form).
+- Eval include alias workflow is fixed for local registry usage:
+  `xsh eval --include xsh/std@<version>.xdb` resolves aliases from
+  `XSH_LIB_DIR` (fallback `$HOME/.xsh/lib`), and `.xdb` can point to
+  object content via `hash:<sha1>` / `{ "hash": "<sha1>" }`.
+- Advanced graph distributed refs workflow is introduced:
+  snapshot/delta payloads can be stored as git/bit objects and addressed by
+  refs under `refs/bit/index/<scope>/graph/(head|wal_head)`.
 - SyntaxKind token id uniqueness is fixed for parser stability:
   keyword and operator token kinds must not share raw ids
   (guarded by parser tests for `await`/`yield` vs `%`/`+=`).
@@ -115,6 +124,9 @@ Status: accepted and moved from `TODO.md`.
 - Symbol/type/signature indexing backend is implemented and shared:
   `xsh ide` (`outline`/`peek-def`/`search`) and `xsh lsif` consume the same
   module-level symbol index (`src/xsh/symbol_index.mbt`).
+- Scratch-first workflow design is documented:
+  default namespace-backed eval/repl flow, symbol listing with index inclusion
+  status, and history reset policy are tracked in `docs/scratch-workflow.md`.
 - Advanced graph extension PoC is implemented on xsh side:
   `xsh index` (`build`/`query`/`verify`) provides a sidecar JSON index
   (`src/xsh/advanced_graph_poc.mbt`) that models manifest + def graph +

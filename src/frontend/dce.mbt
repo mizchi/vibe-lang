@@ -5,8 +5,20 @@
 ///|
 /// Apply DCE to a bundled module, keeping only reachable definitions.
 pub fn dce_module(mod : @core.Module) -> @core.Module {
+  dce_module_with_entry_names(mod, [])
+}
+
+///|
+/// Apply DCE with additional entry names (e.g. names from `export { ... }`).
+pub fn dce_module_with_entry_names(
+  mod : @core.Module,
+  extra_entries : Array[String],
+) -> @core.Module {
   let graph = build_dep_graph(mod.stmts)
   let entries = collect_entry_points(mod.stmts)
+  for name in extra_entries {
+    entries[name] = true
+  }
   let reachable = compute_reachable(entries, graph)
   let filtered = filter_reachable_stmts(mod.stmts, reachable)
   @core.Module::{ stmts: filtered }

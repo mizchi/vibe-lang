@@ -160,6 +160,288 @@ test "line repl options reject unknown arg" {
 }
 
 ///|
+test "eval cmd options parse db and expression" {
+  let parsed = parse_eval_cmd_options(
+    ["--db=tmp1.db", "--include=index.xdb", "let", "value", "=", "1"],
+    "eval",
+  )
+  match parsed {
+    Ok(opts) => {
+      match opts.db_path {
+        Some(path) => assert_eq(path, "tmp1.db")
+        None => fail("expected db path")
+      }
+      match opts.export_path {
+        Some(_) => fail("unexpected export path")
+        None => ()
+      }
+      assert_eq(opts.include_paths, ["index.xdb"])
+      match opts.expr {
+        Some(expr) => assert_eq(expr, "let value = 1")
+        None => fail("expected expression")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "eval cmd options parse export only" {
+  let parsed = parse_eval_cmd_options(
+    ["--db", "tmp1.db", "--include", "index.xdb", "--export", "out.xsh"],
+    "eval",
+  )
+  match parsed {
+    Ok(opts) => {
+      match opts.db_path {
+        Some(path) => assert_eq(path, "tmp1.db")
+        None => fail("expected db path")
+      }
+      match opts.export_path {
+        Some(path) => assert_eq(path, "out.xsh")
+        None => fail("expected export path")
+      }
+      assert_eq(opts.include_paths, ["index.xdb"])
+      match opts.expr {
+        Some(_) => fail("unexpected expression")
+        None => ()
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "eval cmd options allows export without db" {
+  let parsed = parse_eval_cmd_options(["--export", "out.xsh"], "eval")
+  match parsed {
+    Ok(opts) => {
+      match opts.db_path {
+        Some(_) => fail("unexpected db path")
+        None => ()
+      }
+      match opts.export_path {
+        Some(path) => assert_eq(path, "out.xsh")
+        None => fail("expected export path")
+      }
+      match opts.expr {
+        Some(_) => fail("unexpected expression")
+        None => ()
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "eval cmd options parse multiple includes" {
+  let parsed = parse_eval_cmd_options(
+    [
+      "--db", "tmp1.db", "--include", "index.xdb", "--include=bit:/tmp/std.xdb",
+      "let", "x", "=", "1",
+    ],
+    "eval",
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.include_paths, ["index.xdb", "bit:/tmp/std.xdb"])
+      match opts.expr {
+        Some(expr) => assert_eq(expr, "let x = 1")
+        None => fail("expected expression")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "eval cmd options parse inspect scope assertions and test target" {
+  let parsed = parse_eval_cmd_options(
+    [
+      "--db=tmp1.db", "--inspect-scope", "--assert=base:Int", "--assert", "inc:(x: Int) -> Int",
+      "--test-for", "inc", "test \"inc/basic\" { assert_eq(inc(1), 2) }",
+    ],
+    "eval",
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_true(opts.inspect_scope)
+      assert_false(opts.test_run)
+      assert_eq(opts.assertions.length(), 2)
+      assert_eq(opts.assertions[0].name, "base")
+      assert_eq(opts.assertions[0].expected_signature, "Int")
+      assert_eq(opts.assertions[1].name, "inc")
+      assert_eq(opts.assertions[1].expected_signature, "(x: Int) -> Int")
+      match opts.test_target {
+        Some(name) => assert_eq(name, "inc")
+        None => fail("expected test target")
+      }
+      match opts.expr {
+        Some(expr) =>
+          assert_eq(expr, "test \"inc/basic\" { assert_eq(inc(1), 2) }")
+        None => fail("expected expression")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "eval cmd options parse run for existing test target without expression" {
+  let parsed = parse_eval_cmd_options(
+    ["--db=tmp1.db", "--test-for", "inc", "--run"],
+    "eval",
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_true(opts.test_run)
+      match opts.test_target {
+        Some(name) => assert_eq(name, "inc")
+        None => fail("expected test target")
+      }
+      match opts.expr {
+        Some(_) => fail("unexpected expression")
+        None => ()
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "eval cmd options allow inspect scope without expression" {
+  let parsed = parse_eval_cmd_options(
+    ["--db=tmp1.db", "--inspect-scope"],
+    "eval",
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_true(opts.inspect_scope)
+      match opts.expr {
+        Some(_) => fail("unexpected expression")
+        None => ()
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "eval cmd options reject malformed assert" {
+  let parsed = parse_eval_cmd_options(
+    ["--assert", "bad", "let", "x", "=", "1"],
+    "eval",
+  )
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(
+        msg, "eval: invalid --assert `bad` (expected <name>:<signature>)",
+      )
+  }
+}
+
+///|
+test "eval cmd options reject run without test target" {
+  let parsed = parse_eval_cmd_options(["--db=tmp1.db", "--run"], "eval")
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "eval: --run requires --test-for")
+  }
+}
+
+///|
+test "eval cmd options reject test target without expression" {
+  let parsed = parse_eval_cmd_options(
+    ["--db=tmp1.db", "--test-for", "inc"],
+    "eval",
+  )
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "eval: --test-for requires expression")
+  }
+}
+
+///|
+test "eval cmd options reject missing expression and export" {
+  let parsed = parse_eval_cmd_options(["--db=tmp1.db"], "eval")
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "eval: expected expression or --export")
+  }
+}
+
+///|
+test "eval cmd options reject missing include value" {
+  let parsed = parse_eval_cmd_options(["--db=tmp1.db", "--include"], "eval")
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "eval: missing value for --include")
+  }
+}
+
+///|
+test "eval include path resolves named xdb alias from lib dir" {
+  let resolved = resolve_eval_include_path(
+    "/work/project", "xsh/std@0.1.0.xdb", "/home/test/.xsh/lib",
+  )
+  assert_eq(resolved, "/home/test/.xsh/lib/xsh/std@0.1.0.xdb")
+}
+
+///|
+test "finalize cmd options parse default" {
+  let parsed = parse_finalize_cmd_args([])
+  match parsed {
+    Ok(opts) => {
+      match opts.db_path {
+        Some(_) => fail("unexpected db path")
+        None => ()
+      }
+      match opts.export_path {
+        Some(_) => fail("unexpected export path")
+        None => ()
+      }
+      assert_false(opts.library_mode)
+      assert_false(opts.print_source)
+      assert_false(opts.dry_run)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "finalize cmd options parse db export and flags" {
+  let parsed = parse_finalize_cmd_args([
+    "--db=tmp1.db", "--export", "dist/out.xsh", "--library", "--print", "--dry-run",
+  ])
+  match parsed {
+    Ok(opts) => {
+      match opts.db_path {
+        Some(path) => assert_eq(path, "tmp1.db")
+        None => fail("expected db path")
+      }
+      match opts.export_path {
+        Some(path) => assert_eq(path, "dist/out.xsh")
+        None => fail("expected export path")
+      }
+      assert_true(opts.library_mode)
+      assert_true(opts.print_source)
+      assert_true(opts.dry_run)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "finalize cmd options reject positional arg" {
+  let parsed = parse_finalize_cmd_args(["foo"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "finalize: unexpected arg foo")
+  }
+}
+
+///|
 test "cli syntax mode parse default" {
   let parsed = parse_cli_syntax_args(["main.xsh"], "run")
   match parsed {
@@ -286,6 +568,11 @@ test "cli syntax mode support matrix" {
     ensure_cli_parser_mode_supported(@xsh_lib.ParserMode::PosixMode, "run") {
     Ok(_) => ()
     Err(msg) => fail("unexpected run error: " + msg)
+  }
+  match
+    ensure_cli_parser_mode_supported(@xsh_lib.ParserMode::PosixMode, "eval") {
+    Ok(_) => ()
+    Err(msg) => fail("unexpected eval error: " + msg)
   }
   match
     ensure_cli_parser_mode_supported(@xsh_lib.ParserMode::PosixMode, "repl") {

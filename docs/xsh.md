@@ -446,12 +446,16 @@ Resolution pipeline:
 Invariants:
 - Runtime evaluation uses locked hash refs only.
 - Missing required lock metadata or hash mismatch is a compile error.
-- Dependency updates are explicit workflow steps (fetch/update-lock), not
-  implicit side effects during execution.
+- Dependency updates are explicit workflow steps (`apply`/`check`/`fetch`/`update-lock`),
+  not implicit side effects during execution (`run`/`eval`).
 
 Current lock file:
 
 - `index.lock` (JSON object) is loaded from the resolved index root directory.
+  - `index.xdb` is checked first; when it includes lock payload
+    (`path`/`version`/`symbol`/`module`/`annotation` or `lock` object),
+    that payload is used as lock source.
+  - If `index.xdb` has no lock payload, loader falls back to `index.lock`.
   - Legacy compatibility: if `index.lock` is absent and `xsh.lock` exists in the
     same directory, loader reads `xsh.lock`.
 - Shape:
@@ -465,18 +469,25 @@ Current lock file:
 - Root guard:
   - index root is the nearest ancestor directory containing `index.xsh`
     (fallback: entry directory).
+  - `index.xsh` must export version:
+    `export let version = "0.1.0"` (simple semver `x.y.z`).
   - Path imports are rejected when resolved path escapes index root.
   - `index.xsh` may define `export let module = record { <ns>: "<dir>" }` to map
     namespace imports (for example `std/...`) under root.
   - Default namespace mapping includes `std -> ./xsh/std`.
 - CLI:
+  - `xsh apply <entry>` resolves recursive path imports, updates `index.lock`,
+    injects prelude refs, and updates `index.xdb.graph_head`.
+    It also stores the graph snapshot object under `.xsh/objects/<graph-head>`.
   - `xsh fetch <entry>` (or `xsh update-lock <entry>`) resolves recursive
     path imports and updates `index.lock`.
   - `fetch/update-lock` also injects prelude refs:
     - `version.prelude = <normalized-prelude-hash>`
     - `symbol."std/prelude" = <normalized-prelude-hash>`
     and stores the normalized prelude module object under `.xsh/objects/`.
-  - `xsh run/check/compile/test` require lock entries for path imports;
+  - `xsh check <entry...>` runs the same resolution/apply pipeline as `xsh apply`
+    before diagnostics.
+  - `xsh run/compile/test` require lock entries for path imports;
     missing/mismatch emits import diagnostics and fails compile.
 
 ## Trait and impl rules (current)
@@ -703,12 +714,17 @@ Runtime API:
   command-head desugaring.
 CLI:
 - `moon run --target native src/cmd/xsh -- run <file>` executes a script (ignores `test {}`).
+- `moon run --target native src/cmd/xsh -- eval [--db tmp1.db] [--include index.xdb] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
+  - `--include` accepts path forms and alias forms:
+    - `--include=bit:<path>`: explicit alias to path-backed source.
+    - `--include=xsh/std@0.1.0.xdb`: named alias resolved from `XSH_LIB_DIR` (fallback: `$HOME/.xsh/lib`).
+  - `.xdb` alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
 - `moon run --target native src/cmd/xsh -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/cmd/xsh -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - `moon run --target wasm src/cmd/xsh_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
   - `xsh_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
 - Parser-consuming commands support `--syntax xsh|posix` (default `xsh`);
-  `posix` is preview-enabled for `run/repl/repl-stdin/repl-wasi/bench` and is
+  `posix` is preview-enabled for `run/eval/repl/repl-stdin/repl-wasi/bench` and is
   rejected on static/compile-oriented commands.
 - `moon run --target native src/cmd/xsh -- repl` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/cmd/xsh -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
@@ -749,6 +765,10 @@ Bench:
   expression benchmarks in one invocation.
 - `xsh bench --cases bench/cases.txt` loads benchmark cases from file
   (one case per line, `name=expr` or plain `expr`; blank/comment lines are ignored).
+- `xsh index ref push <scope> <index-file>` / `pull <scope> <out-file>` maps advanced graph snapshots to git/bit refs under
+  `refs/bit/index/<scope>/graph/head`.
+- `xsh index ref push-delta <scope> <delta-file>` / `pull-delta <scope> <out-file>` maps advanced graph deltas to
+  `refs/bit/index/<scope>/graph/wal_head`.
 - `just bench-cmd-latency` compares per-command latency between interpreter and a
   resident wasmtime instance.
 - `just run-wasm-js-string examples/string_basic.xsh` compiles with `--wasm-js-string`

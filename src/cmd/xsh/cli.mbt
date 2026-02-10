@@ -23,8 +23,14 @@ pub fn run(args : Array[String]) -> Unit {
   }
   match cmd {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features)
+    "eval" => eval_cmd(cmd_args, syntax_mode, runtime_features)
     "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
+    "finalize" => finalize_cmd(cmd_args)
+    "apply" => apply_cmd(cmd_args)
+    "symbols" => symbols_cmd(cmd_args)
+    "history" => history_cmd(cmd_args)
+    "write_file" => write_file_cmd(cmd_args)
     "fmt" => fmt_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
@@ -56,8 +62,24 @@ fn print_usage() -> Unit {
   println("")
   println("commands:")
   println("  run <file>                 parse/type/eval a script")
+  println(
+    "  eval [--db file] [--include file] [--inspect-scope] [--assert name:sig]... [--test-for name] [--run] [--export file] <expr...>  evaluate expression/script",
+  )
   println("  test <file|dir...>         run test blocks in scripts")
   println("  check <file...>            parse/type check scripts")
+  println(
+    "  finalize [--db file] [--export file] [--library] [--print] [--dry-run]  refactor scratch/db source",
+  )
+  println(
+    "  apply <file>               resolve lock+graph head and apply artifacts",
+  )
+  println(
+    "  symbols [--json] <file>    list symbols and index inclusion status",
+  )
+  println("  history reset              reset scratch namespace history/db")
+  println(
+    "  write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>  materialize selector",
+  )
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
     "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
@@ -85,7 +107,12 @@ fn print_usage() -> Unit {
   println("  update-lock <file>          alias for fetch")
   println("  ide <outline|peek-def|search> ...  symbol/type index queries")
   println("  lsif [-o out.lsif] <file>   emit LSIF via shared symbol index")
-  println("  index <build|query|verify|wal> ...  advanced graph index (POC)")
+  println(
+    "  index <build|query|verify|wal|ref> ...  advanced graph index (POC)",
+  )
+  println(
+    "    ref: push|pull|push-delta|pull-delta <scope> <file>  git/bit distributed refs",
+  )
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax xsh|posix (default: xsh)")
   println("  runtime flags: --unstable-async --unstable-threads")
@@ -114,8 +141,11 @@ fn new_runtime_with_features(
 fn command_requires_parser(cmd : String) -> Bool {
   match cmd {
     "run"
+    | "eval"
     | "test"
     | "check"
+    | "apply"
+    | "symbols"
     | "compile"
     | "bench"
     | "bench-file"
@@ -517,65 +547,23 @@ fn check_cmd(args : Array[String]) -> Unit {
   }
   let mut total_errors = 0
   for entry_path in args {
-    let resolved = @loader.resolve_entry_path(entry_path)
-    let source = @os_fs.read_file_to_string(resolved) catch {
-      e => {
-        println("check: \{entry_path}: \{e}")
-        total_errors += 1
-        continue
-      }
-    }
-    let parsed : Result[@xsh_core.Module, @parser.ParseError] = try? @parser.parse_ast(
-      source,
-    )
-    let ast = match parsed {
-      Err(e) => {
-        let diag = e.diagnostic()
-        println(diag.render(entry_path, source))
-        total_errors += 1
-        continue
-      }
-      Ok(ast) => ast
-    }
-    let mut has_import_stmt = false
-    for stmt in ast.stmts {
-      match stmt {
-        @xsh_core.Stmt::Import(..) => {
-          has_import_stmt = true
-          break
-        }
-        _ => ()
-      }
-    }
-    if !has_import_stmt {
-      let desugared = @xsh_lib.desugar_method_calls(ast, {})
-      let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check_with_aliases(
-        desugared,
-        {},
-      )
-      match typed {
-        Ok(_) => {
-          let warnings = @checker.collect_warnings(ast)
-          for warning in warnings {
-            println(warning.render(entry_path, source))
-          }
-          if warnings.length() == 0 {
-            println("\{entry_path}: ok")
-          }
-        }
-        Err(e) => {
-          println(e.diagnostic().render(entry_path, source))
-          total_errors += 1
-        }
-      }
-      continue
-    }
-    match @loader.load_db(entry_path) {
+    match resolve_entry_artifacts(entry_path) {
       Err(err) => {
         println("check: \{entry_path}: \{err}")
         total_errors += 1
       }
-      Ok((db, entry)) => {
+      Ok((db, entry, _lock, _index, graph_head)) => {
+        let source = match db.get_source(entry) {
+          Some(v) => v
+          None =>
+            @os_fs.read_file_to_string(entry) catch {
+              e => {
+                println("check: \{entry_path}: \{e}")
+                total_errors += 1
+                continue
+              }
+            }
+        }
         let _ = db.types(entry)
         let diags = db.diagnostics(entry)
         for diag in diags {
@@ -586,7 +574,7 @@ fn check_cmd(args : Array[String]) -> Unit {
           println(warning.render(entry_path, source))
         }
         if diags.length() == 0 && warnings.length() == 0 {
-          println("\{entry_path}: ok")
+          println("\{entry_path}: ok (graph_head=\{short_hash(graph_head)})")
         }
         total_errors += diags.length()
       }
@@ -594,6 +582,201 @@ fn check_cmd(args : Array[String]) -> Unit {
   }
   if total_errors > 0 {
     abort("check: \{total_errors} error(s) found")
+  }
+}
+
+///|
+fn finalize_collect_export_names(ast : @xsh_core.Module) -> Array[String] {
+  let entries : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @xsh_core.Stmt::ExportLet(name~, ..)
+      | @xsh_core.Stmt::ExportEnumDef(name~, ..)
+      | @xsh_core.Stmt::ExportTypeAlias(name~, ..)
+      | @xsh_core.Stmt::ExportStructDef(name~, ..) => entries[name] = true
+      @xsh_core.Stmt::TraitDef(name~, exported~, ..) =>
+        if exported {
+          entries[name] = true
+        }
+      @xsh_core.Stmt::Export(names~, ..)
+      | @xsh_core.Stmt::ReExport(names~, ..) =>
+        for name in names {
+          entries[name] = true
+        }
+      _ => ()
+    }
+  }
+  let out : Array[String] = []
+  for name, _ in entries {
+    out.push(name)
+  }
+  out.sort()
+  out
+}
+
+///|
+fn finalize_stmt_is_library_side_effect(stmt : @xsh_core.Stmt) -> Bool {
+  match stmt {
+    @xsh_core.Stmt::Expr(..)
+    | @xsh_core.Stmt::Assign(..)
+    | @xsh_core.Stmt::IndexAssign(..)
+    | @xsh_core.Stmt::LetPat(..) => true
+    _ => false
+  }
+}
+
+///|
+fn finalize_render_name_list(names : Array[String]) -> String {
+  let out = StringBuilder::new()
+  for i, name in names {
+    if i > 0 {
+      out.write_string(", ")
+    }
+    out.write_string(name)
+  }
+  out.to_string()
+}
+
+///|
+fn finalize_render_module_ref(source : @xsh_core.ModuleRef) -> String {
+  match source {
+    @xsh_core.ModuleRef::Path(path~) => path
+    @xsh_core.ModuleRef::Hash(hash~) => "#" + hash
+    @xsh_core.ModuleRef::Version(name~) => "version@" + name
+    @xsh_core.ModuleRef::Symbol(name~) => "symbol@" + name
+  }
+}
+
+///|
+fn finalize_render_stmt_fallback(stmt : @xsh_core.Stmt) -> String? {
+  match stmt {
+    @xsh_core.Stmt::Export(names~, ..) =>
+      Some("export { " + finalize_render_name_list(names) + " }")
+    @xsh_core.Stmt::ReExport(names~, source~, ..) =>
+      Some(
+        "export { " +
+        finalize_render_name_list(names) +
+        " } from " +
+        finalize_render_module_ref(source),
+      )
+    _ => None
+  }
+}
+
+///|
+fn finalize_render_source(
+  source : String,
+  stmts : Array[@xsh_core.Stmt],
+) -> Result[String, String] {
+  let out = StringBuilder::new()
+  for stmt in stmts {
+    match finalize_render_stmt_fallback(stmt) {
+      Some(rendered) => {
+        out.write_string(rendered)
+        if not(rendered.has_suffix("\n")) {
+          out.write_char('\n')
+        }
+      }
+      None => {
+        let span = stmt.span()
+        let snippet = source_slice_by_span(source, span.start, span.end)
+        if snippet.trim().to_string().length() == 0 {
+          continue
+        }
+        out.write_string(snippet)
+        if not(snippet.has_suffix("\n")) {
+          out.write_char('\n')
+        }
+      }
+    }
+  }
+  let result = out.to_string()
+  if result.trim().to_string().length() == 0 {
+    Err("finalize: no statements kept")
+  } else {
+    let _ = @parser.parse_ast(result) catch {
+      e =>
+        return Err("finalize: rendered source parse failed: " + e.to_string())
+    }
+    Ok(result)
+  }
+}
+
+///|
+fn finalize_cmd(args : Array[String]) -> Unit {
+  let options = match parse_finalize_cmd_args(args) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let (namespace_name, db_path) = match options.db_path {
+    Some(path) => ("explicit", @loader.resolve_entry_path(path))
+    None =>
+      match resolve_scratch_db_path() {
+        Ok(v) => v
+        Err(err) => abort("finalize: " + err)
+      }
+  }
+  let source = match load_eval_db_source(db_path) {
+    Ok(v) => v
+    Err(err) => abort("finalize: " + err)
+  }
+  if source.trim().to_string().length() == 0 {
+    abort("finalize: source is empty: " + db_path)
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e => abort("finalize: parse failed: " + e.to_string())
+  }
+  let extra_entries = finalize_collect_export_names(ast)
+  let dced = @xsh_lib.dce_module_with_entry_names(ast, extra_entries)
+  let kept_stmts : Array[@xsh_core.Stmt] = []
+  for stmt in dced.stmts {
+    match stmt {
+      @xsh_core.Stmt::Test(..) => ()
+      _ =>
+        if options.library_mode && finalize_stmt_is_library_side_effect(stmt) {
+          ()
+        } else {
+          kept_stmts.push(stmt)
+        }
+    }
+  }
+  let finalized_source = match finalize_render_source(source, kept_stmts) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  if options.print_source {
+    println(finalized_source)
+  }
+  if not(options.dry_run) {
+    match write_eval_db_source(db_path, finalized_source) {
+      Ok(_) => ()
+      Err(err) => abort("finalize: " + err)
+    }
+    match options.export_path {
+      Some(path) =>
+        match write_eval_export(path, finalized_source) {
+          Ok(_) => println("exported: " + path)
+          Err(err) => abort("finalize: " + err)
+        }
+      None => ()
+    }
+  }
+  let action = if options.dry_run { "dry-run" } else { "applied" }
+  let mode = if options.library_mode { "library" } else { "safe" }
+  println(
+    "finalize: " +
+    action +
+    " mode=" +
+    mode +
+    " db=" +
+    db_path +
+    " stmts=" +
+    ast.stmts.length().to_string() +
+    "->" +
+    kept_stmts.length().to_string(),
+  )
+  if namespace_name != "explicit" {
+    println("namespace: " + namespace_name + " db=" + db_path)
   }
 }
 
@@ -1026,6 +1209,20 @@ fn repl_cmd(
     abort("repl: no args supported")
   }
   let rt = new_runtime_with_features(features)
+  let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
+    Ok(v) => v
+    Err(err) => abort("repl: " + err)
+  }
+  let restored_source = match load_eval_db_source(scratch_db_path) {
+    Ok(v) => v
+    Err(err) => abort("repl: " + err)
+  }
+  if restored_source.trim().length() > 0 {
+    let _ = rt.eval_script_with_mode(restored_source, syntax_mode) catch {
+      e => abort("repl: failed to restore namespace db: " + e.to_string())
+    }
+
+  }
   let (initial_cols, initial_rows) = @tui.get_terminal_size()
   let (app, cleanup) = @tui.init_vnode_terminal(
     initial_cols, initial_rows, @tui.print_raw,
@@ -1056,6 +1253,7 @@ fn repl_cmd(
     input_rows.val,
     @editor.HighlightKind::Plain,
   )
+  let scratch_source_ref = Ref::new(restored_source)
   fn set_input_text(text : String) -> Unit {
     input_editor.set_text("")
     if text.length() > 0 {
@@ -1343,6 +1541,17 @@ fn repl_cmd(
         @xsh_lib.Effect::PosixDesugar(message) =>
           push_output_line("note: " + message)
         _ => push_output_line("effect: " + effect.to_string())
+      }
+    }
+    scratch_source_ref.val = append_eval_db_source(
+      scratch_source_ref.val,
+      trimmed,
+    )
+    match write_eval_db_source(scratch_db_path, scratch_source_ref.val) {
+      Ok(_) => ()
+      Err(err) => {
+        push_output_line("error: failed to persist namespace db: " + err)
+        return true
       }
     }
     match extract_let_name(trimmed) {
@@ -1654,6 +1863,8 @@ fn repl_cmd(
   }
 
   do_render()
+  push_output_line("namespace: " + namespace_name + " db=" + scratch_db_path)
+  do_render()
   @tui.start_keypress_listener(handle_key)
   cleanup_once()
 }
@@ -1703,10 +1914,31 @@ fn run_eval_line_repl_with_prompt(
     Ok(opts) => opts
     Err(msg) => abort(msg)
   }
+  let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
+    Ok(v) => v
+    Err(err) => abort(cmd_name + ": " + err)
+  }
   async fn repl_loop() {
     let rt = new_runtime_with_features(features)
+    let mut scratch_source = match load_eval_db_source(scratch_db_path) {
+      Ok(v) => v
+      Err(err) => {
+        println("error: " + err)
+        return
+      }
+    }
+    if scratch_source.trim().length() > 0 {
+      let _ = rt.eval_script_with_mode(scratch_source, syntax_mode) catch {
+        e => {
+          println("error: failed to restore namespace db: " + e.to_string())
+          return
+        }
+      }
+
+    }
     let input = @stdio.stdin
     print_line_repl_tty_mode(options.io_mode)
+    println("namespace: " + namespace_name + " db=" + scratch_db_path)
     if options.prompt_enabled {
       @stdio.stdout.write(options.prompt)
     }
@@ -1739,6 +1971,11 @@ fn run_eval_line_repl_with_prompt(
                 None => ()
               }
             None => ()
+          }
+          scratch_source = append_eval_db_source(scratch_source, line_str)
+          match write_eval_db_source(scratch_db_path, scratch_source) {
+            Ok(_) => ()
+            Err(err) => println("error: failed to persist namespace db: " + err)
           }
         }
       }
@@ -1859,6 +2096,892 @@ fn print_eval_result(result : @xsh_lib.EvalResult) -> Unit {
 }
 
 ///|
+fn load_eval_db_source(path : String) -> Result[String, String] {
+  if not(@os_fs.path_exists(path)) {
+    return Ok("")
+  }
+  let is_file = @os_fs.is_file(path) catch { _ => false }
+  if not(is_file) {
+    return Err("db path is not a file: " + path)
+  }
+  let source = @os_fs.read_file_to_string(path) catch {
+    e => return Err("failed to read db `" + path + "`: " + e.to_string())
+  }
+  Ok(source)
+}
+
+///|
+struct EvalScopeSymbol {
+  name : String
+  kind : String
+  signature : String
+  path : String
+  def_id : String
+} derive(Show, Eq)
+
+///|
+fn eval_scope_symbol_id_from_entry(entry : @xsh_lib.SymbolEntry) -> String {
+  let key = entry.path +
+    "|" +
+    entry.span.start.to_string() +
+    "|" +
+    entry.span.end.to_string() +
+    "|" +
+    entry.name +
+    "|" +
+    @xsh_lib.symbol_kind_name(entry.kind) +
+    "|" +
+    entry.signature
+  @xsh_core.git_blob_hash_string(key)
+}
+
+///|
+fn collect_eval_scope_symbols(
+  path : String,
+  source : String,
+) -> Array[EvalScopeSymbol] {
+  if source.trim().to_string().length() == 0 {
+    return []
+  }
+  let db = @xsh_lib.XshDb::new()
+  db.set_source(path, source)
+  let index = @xsh_lib.build_symbol_index(db, [path])
+  let out : Array[EvalScopeSymbol] = []
+  for entry in index.entries {
+    if entry.path != path {
+      continue
+    }
+    out.push({
+      name: entry.name,
+      kind: @xsh_lib.symbol_kind_name(entry.kind),
+      signature: entry.signature,
+      path: entry.path,
+      def_id: eval_scope_symbol_id_from_entry(entry),
+    })
+  }
+  out
+}
+
+///|
+fn eval_scope_symbols_json(scope : Array[EvalScopeSymbol]) -> Json {
+  let symbols : Array[Json] = []
+  for symbol in scope {
+    let obj : Map[String, Json] = {}
+    obj["name"] = Json::string(symbol.name)
+    obj["kind"] = Json::string(symbol.kind)
+    obj["signature"] = Json::string(symbol.signature)
+    obj["path"] = Json::string(symbol.path)
+    obj["hash"] = Json::string(symbol.def_id)
+    obj["short_hash"] = Json::string(short_hash(symbol.def_id))
+    symbols.push(Json::object(obj))
+  }
+  let out : Map[String, Json] = {}
+  out["ok"] = Json::boolean(true)
+  out["symbols"] = Json::array(symbols)
+  Json::object(out)
+}
+
+///|
+fn eval_scope_signature_for_name(
+  scope : Array[EvalScopeSymbol],
+  name : String,
+) -> String? {
+  for symbol in scope {
+    if symbol.name == name {
+      return Some(symbol.signature)
+    }
+  }
+  None
+}
+
+///|
+fn validate_eval_type_assertions(
+  assertions : Array[EvalTypeAssertion],
+  scope : Array[EvalScopeSymbol],
+) -> Result[Unit, String] {
+  for assertion in assertions {
+    let actual = match eval_scope_signature_for_name(scope, assertion.name) {
+      Some(signature) => signature
+      None => return Err("assert symbol not found: " + assertion.name)
+    }
+    if actual != assertion.expected_signature {
+      return Err(
+        "assert type mismatch: " +
+        assertion.name +
+        " expected `" +
+        assertion.expected_signature +
+        "` actual `" +
+        actual +
+        "`",
+      )
+    }
+  }
+  Ok(())
+}
+
+///|
+fn clone_json_map(src : Map[String, Json]) -> Map[String, Json] {
+  let out : Map[String, Json] = {}
+  for key, value in src {
+    out[key] = value
+  }
+  out
+}
+
+///|
+fn default_scratch_ns_name() -> String {
+  "scratch"
+}
+
+///|
+fn workspace_probe_entry_path() -> String {
+  @xsh_fs.normalize_path(@io.current_dir_or_root() + "/__scratch__.xsh")
+}
+
+///|
+fn current_workspace_index_root() -> String {
+  @codebase.resolve_index_root(workspace_probe_entry_path())
+}
+
+///|
+fn default_ns_db_rel_path(ns_name : String) -> String {
+  ".xsh/namespaces/" + ns_name + ".db"
+}
+
+///|
+fn load_index_xdb_object(path : String) -> Map[String, Json] {
+  let obj : Map[String, Json] = {}
+  if not(@os_fs.path_exists(path)) {
+    return obj
+  }
+  let source = @os_fs.read_file_to_string(path) catch { _ => return obj }
+  let parsed : Json = @json.parse(source) catch { _ => return obj }
+  match parsed {
+    Json::Object(current) => {
+      for key, value in current {
+        obj[key] = value
+      }
+      obj
+    }
+    _ => obj
+  }
+}
+
+///|
+fn write_index_xdb_object(
+  index_xdb_path : String,
+  obj : Map[String, Json],
+) -> Result[Unit, String] {
+  @os_fs.write_string_to_file(
+    index_xdb_path,
+    Json::object(obj).stringify() + "\n",
+  ) catch {
+    e => return Err("write index.xdb: " + e.to_string())
+  }
+  Ok(())
+}
+
+///|
+fn resolve_active_ns_name_from_index_xdb(xdb : Map[String, Json]) -> String {
+  match xdb.get("active_namespace") {
+    Some(Json::String(name)) =>
+      if name.trim().to_string().length() > 0 {
+        name.trim().to_string()
+      } else {
+        default_scratch_ns_name()
+      }
+    _ => default_scratch_ns_name()
+  }
+}
+
+///|
+fn resolve_ns_db_rel_path_from_index_xdb(
+  xdb : Map[String, Json],
+  ns_name : String,
+) -> String {
+  match xdb.get("namespaces") {
+    Some(Json::Object(namespaces)) =>
+      match namespaces.get(ns_name) {
+        Some(Json::Object(ns_obj)) =>
+          match ns_obj.get("db_path") {
+            Some(Json::String(path)) =>
+              if path.trim().to_string().length() > 0 {
+                path.trim().to_string()
+              } else {
+                default_ns_db_rel_path(ns_name)
+              }
+            _ => default_ns_db_rel_path(ns_name)
+          }
+        _ => default_ns_db_rel_path(ns_name)
+      }
+    _ => default_ns_db_rel_path(ns_name)
+  }
+}
+
+///|
+fn to_absolute_db_path(index_root : String, db_path : String) -> String {
+  if db_path.has_prefix("/") {
+    @xsh_fs.normalize_path(db_path)
+  } else {
+    @xsh_fs.normalize_path(index_root + "/" + db_path)
+  }
+}
+
+///|
+fn resolve_scratch_db_path_for_index_root(
+  index_root : String,
+) -> Result[(String, String), String] {
+  match @sys.get_env_var("XSH_SCRATCH_DB_PATH") {
+    Some(path) =>
+      if path.trim().to_string().length() == 0 {
+        Err("XSH_SCRATCH_DB_PATH must not be empty")
+      } else {
+        Ok((default_scratch_ns_name(), @loader.resolve_entry_path(path)))
+      }
+    None => {
+      let xsh_dir = find_xsh_dir(index_root + "/index.xsh")
+      let index_xdb_path = index_root + "/index.xdb"
+      let xdb = load_index_xdb_object(index_xdb_path)
+      let ns_name = resolve_active_ns_name_from_index_xdb(xdb)
+      let db_rel = resolve_ns_db_rel_path_from_index_xdb(xdb, ns_name)
+      let db_path = to_absolute_db_path(index_root, db_rel)
+      let next_xdb = clone_json_map(xdb)
+      next_xdb["active_namespace"] = Json::string(ns_name)
+      let namespaces = match xdb.get("namespaces") {
+        Some(Json::Object(current)) => clone_json_map(current)
+        _ => {}
+      }
+      let ns_obj = match namespaces.get(ns_name) {
+        Some(Json::Object(current)) => clone_json_map(current)
+        _ => {}
+      }
+      let db_path_in_xdb = if db_path.has_prefix(xsh_dir) {
+        default_ns_db_rel_path(ns_name)
+      } else {
+        db_path
+      }
+      ns_obj["db_path"] = Json::string(db_path_in_xdb)
+      ns_obj["updated_at"] = Json::string(@env.now().to_string())
+      namespaces[ns_name] = Json::object(ns_obj)
+      next_xdb["namespaces"] = Json::object(namespaces)
+      match write_index_xdb_object(index_xdb_path, next_xdb) {
+        Ok(_) => ()
+        Err(err) => return Err(err)
+      }
+      Ok((ns_name, db_path))
+    }
+  }
+}
+
+///|
+fn eval_include_base_dir(options : EvalCmdOptions) -> String {
+  match options.db_path {
+    Some(path) => @xsh_fs.parent_path(@loader.resolve_entry_path(path))
+    None => "."
+  }
+}
+
+///|
+fn path_last_segment(path : String) -> String {
+  let parts : Array[String] = []
+  for part in path.split("/") {
+    let text = part.to_string()
+    if text.length() > 0 {
+      parts.push(text)
+    }
+  }
+  if parts.length() == 0 {
+    ""
+  } else {
+    parts[parts.length() - 1]
+  }
+}
+
+///|
+fn parse_include_hash_alias(source : String) -> String? {
+  let trimmed = source.trim().to_string()
+  if trimmed.has_prefix("hash:") {
+    let hash = trimmed
+      .unsafe_substring(start=5, end=trimmed.length())
+      .trim()
+      .to_string()
+    if hash.length() == 0 {
+      None
+    } else {
+      Some(hash)
+    }
+  } else {
+    let parsed : Json = @json.parse(trimmed) catch { _ => return None }
+    match parsed {
+      Json::Object(obj) =>
+        match obj.get("hash") {
+          Some(Json::String(hash)) => {
+            let normalized = hash.trim().to_string()
+            if normalized.length() == 0 {
+              None
+            } else {
+              Some(normalized)
+            }
+          }
+          _ => None
+        }
+      _ => None
+    }
+  }
+}
+
+///|
+fn load_git_blob_source_from_objects_dir(
+  objects_dir : String,
+  hash : String,
+) -> Result[String, String] {
+  if not(@os_fs.path_exists(objects_dir)) {
+    return Err("git objects dir not found: " + objects_dir)
+  }
+  let git_dir = @xsh_fs.parent_path(objects_dir)
+  let fs = @osfs.OsFs::new()
+  let db = @gitlib.ObjectDb::load_lazy(fs, git_dir) catch {
+    e =>
+      return Err(
+        "failed to load git object db `" + objects_dir + "`: " + e.to_string(),
+      )
+  }
+  let id = @bit.ObjectId::from_hex(hash) catch {
+    e => return Err("invalid object hash `" + hash + "`: " + e.to_string())
+  }
+  let obj = db.get(fs, id) catch {
+    e =>
+      return Err("failed to read git object `" + hash + "`: " + e.to_string())
+  }
+  match obj {
+    Some(pack_obj) => Ok(@utf8.decode_lossy(pack_obj.data[:]))
+    None => Err("git object not found: " + hash)
+  }
+}
+
+///|
+fn try_load_hash_source_from_root(root : String, hash : String) -> String? {
+  let codebase = @codebase.Codebase::new(root)
+  match codebase.read_object(hash) {
+    Some(content) => return Some(content)
+    None => ()
+  }
+  let objects_dir = @xsh_fs.normalize_path(root + "/.git/objects")
+  match load_git_blob_source_from_objects_dir(objects_dir, hash) {
+    Ok(content) => Some(content)
+    Err(_) => None
+  }
+}
+
+///|
+fn load_eval_include_source(
+  include_spec : String,
+  base_dir : String,
+  include_lib_dir : String,
+) -> Result[String, String] {
+  let path = resolve_eval_include_path(base_dir, include_spec, include_lib_dir)
+  if not(@os_fs.path_exists(path)) {
+    return Err("include not found: " + include_spec + " -> " + path)
+  }
+  let is_file = @os_fs.is_file(path) catch { _ => false }
+  if not(is_file) {
+    return Err("include path is not a file: " + include_spec + " -> " + path)
+  }
+  let source = @os_fs.read_file_to_string(path) catch {
+    e =>
+      return Err(
+        "failed to read include `" +
+        include_spec +
+        "` (" +
+        path +
+        "): " +
+        e.to_string(),
+      )
+  }
+  match parse_include_hash_alias(source) {
+    Some(hash) => {
+      let roots : Array[String] = []
+      let include_parent = @xsh_fs.parent_path(path)
+      if path_last_segment(include_parent) == "xsh" {
+        roots.push(@xsh_fs.parent_path(include_parent))
+      }
+      if roots.length() == 0 || roots[0] != include_lib_dir {
+        roots.push(include_lib_dir)
+      }
+      for root in roots {
+        match try_load_hash_source_from_root(root, hash) {
+          Some(content) => return Ok(content)
+          None => ()
+        }
+      }
+      Err(
+        "hash alias `" +
+        include_spec +
+        "` unresolved: object `" +
+        hash +
+        "` not found in local stores",
+      )
+    }
+    None => Ok(source)
+  }
+}
+
+///|
+fn append_eval_db_source(base_source : String, expr : String) -> String {
+  let trimmed = expr.trim().to_string()
+  if trimmed.length() == 0 {
+    return base_source
+  }
+  let out = StringBuilder::new()
+  if base_source.length() > 0 {
+    out.write_string(base_source)
+    if not(base_source.has_suffix("\n")) {
+      out.write_char('\n')
+    }
+  }
+  out.write_string(trimmed)
+  if not(trimmed.has_suffix("\n")) {
+    out.write_char('\n')
+  }
+  out.to_string()
+}
+
+///|
+fn eval_tests_dir_path(db_path : String) -> String {
+  if db_path.has_suffix(".db") && db_path.length() > 3 {
+    db_path.unsafe_substring(start=0, end=db_path.length() - 3) + ".tests"
+  } else {
+    db_path + ".tests"
+  }
+}
+
+///|
+fn is_test_target_safe_char(ch : Char) -> Bool {
+  (ch >= 'a' && ch <= 'z') ||
+  (ch >= 'A' && ch <= 'Z') ||
+  (ch >= '0' && ch <= '9') ||
+  ch == '_' ||
+  ch == '-'
+}
+
+///|
+fn sanitize_eval_test_target(target : String) -> String {
+  let out = StringBuilder::new()
+  for _, ch in target {
+    if is_test_target_safe_char(ch) {
+      out.write_char(ch)
+    } else {
+      out.write_char('_')
+    }
+  }
+  let value = out.to_string()
+  if value.length() == 0 {
+    "unnamed"
+  } else {
+    value
+  }
+}
+
+///|
+fn eval_test_file_path(db_path : String, target : String) -> String {
+  eval_tests_dir_path(db_path) +
+  "/" +
+  sanitize_eval_test_target(target) +
+  "_test.xsh"
+}
+
+///|
+fn eval_test_cache_dir_path(db_path : String) -> String {
+  eval_tests_dir_path(db_path) + "/.cache"
+}
+
+///|
+fn eval_test_cache_file_path(db_path : String, target : String) -> String {
+  eval_test_cache_dir_path(db_path) +
+  "/" +
+  sanitize_eval_test_target(target) +
+  ".ok"
+}
+
+///|
+fn load_eval_test_cache_hash(db_path : String, target : String) -> String? {
+  let cache_path = eval_test_cache_file_path(db_path, target)
+  if not(@os_fs.path_exists(cache_path)) {
+    return None
+  }
+  let is_file = @os_fs.is_file(cache_path) catch { _ => false }
+  if not(is_file) {
+    return None
+  }
+  let source = @os_fs.read_file_to_string(cache_path) catch { _ => return None }
+  let hash = source.trim().to_string()
+  if hash.length() == 0 {
+    None
+  } else {
+    Some(hash)
+  }
+}
+
+///|
+fn write_eval_test_cache_hash(
+  db_path : String,
+  target : String,
+  closure_hash : String,
+) -> Result[Unit, String] {
+  write_eval_db_source(
+    eval_test_cache_file_path(db_path, target),
+    closure_hash + "\n",
+  )
+}
+
+///|
+fn clear_eval_test_cache_hash(db_path : String, target : String) -> Unit {
+  let cache_path = eval_test_cache_file_path(db_path, target)
+  if @os_fs.path_exists(cache_path) {
+    ignore(@os_fs.remove_file(cache_path) catch { _ => () })
+  }
+}
+
+///|
+fn eval_test_dep_snapshot_hash(
+  test_source : String,
+  target : String,
+  dep_snapshot : Map[String, String],
+) -> String {
+  let sorted = dep_snapshot.to_array()
+  sorted.sort_by((a, b) => {
+    let (a_name, _) = a
+    let (b_name, _) = b
+    String::compare(a_name, b_name)
+  })
+  let out = StringBuilder::new()
+  out.write_string("target:")
+  out.write_string(target)
+  out.write_char('\n')
+  for item in sorted {
+    let (name, addr) = item
+    out.write_string(name)
+    out.write_char(':')
+    out.write_string(addr)
+    out.write_char('\n')
+  }
+  out.write_string("tests:")
+  out.write_string(@xsh_core.git_blob_hash_string(test_source))
+  out.write_char('\n')
+  @xsh_core.git_blob_hash_string(out.to_string())
+}
+
+///|
+fn eval_test_closure_hash_from_runtime(
+  rt : @xsh_lib.Runtime,
+  syntax_mode : @xsh_lib.ParserMode,
+  test_source : String,
+  target : String,
+) -> Result[String?, String] {
+  let target_addr = match rt.get_addr(target) {
+    Some(addr) => addr
+    None =>
+      match rt.get_hash(target) {
+        Some(addr) => addr
+        None => return Ok(None)
+      }
+  }
+  let dep_snapshot = rt.collect_script_test_dep_snapshot_with_mode(
+    test_source, syntax_mode,
+  ) catch {
+    e => return Err("failed to analyze test deps: " + e.to_string())
+  }
+  let deps = match dep_snapshot {
+    Some(snapshot) => snapshot.copy()
+    None => {}
+  }
+  deps[target] = target_addr
+  Ok(Some(eval_test_dep_snapshot_hash(test_source, target, deps)))
+}
+
+///|
+fn eval_test_target_is_pure(rt : @xsh_lib.Runtime, target : String) -> Bool {
+  match rt.type_env().get_purity(target) {
+    Some(v) => v
+    None => false
+  }
+}
+
+///|
+fn run_eval_sidecar_tests(
+  db_source : String,
+  test_source : String,
+  include_sources : Array[String],
+  syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
+) -> Result[@xsh_lib.TestReport, String] {
+  let rt = new_runtime_with_features(features)
+  for include_source in include_sources {
+    if include_source.trim().to_string().length() == 0 {
+      continue
+    }
+    let _ = rt.eval_script_with_mode(include_source, syntax_mode) catch {
+      e => return Err("failed to restore include for --run: " + e.to_string())
+    }
+
+  }
+  if db_source.trim().to_string().length() > 0 {
+    let _ = rt.eval_script_with_mode(db_source, syntax_mode) catch {
+      e => return Err("failed to restore db for --run: " + e.to_string())
+    }
+
+  }
+  let report = rt.run_script_tests_with_mode(test_source, syntax_mode) catch {
+    e => return Err("failed to run sidecar tests: " + e.to_string())
+  }
+  Ok(report)
+}
+
+///|
+fn write_eval_test_source(
+  db_path : String,
+  target : String,
+  expr : String,
+) -> Result[String, String] {
+  let test_path = eval_test_file_path(db_path, target)
+  let current = match load_eval_db_source(test_path) {
+    Ok(source) => source
+    Err(err) => return Err(err)
+  }
+  let next = append_eval_db_source(current, expr)
+  match write_eval_db_source(test_path, next) {
+    Ok(_) => Ok(test_path)
+    Err(err) => Err(err)
+  }
+}
+
+///|
+fn write_eval_db_source(path : String, source : String) -> Result[Unit, String] {
+  let parent = @xsh_fs.parent_path(path)
+  if parent != "." && parent.length() > 0 && not(@os_fs.path_exists(parent)) {
+    @os_fs.create_dir(parent) catch {
+      e =>
+        return Err("failed to create db dir `" + parent + "`: " + e.to_string())
+    }
+  }
+  @os_fs.write_string_to_file(path, source) catch {
+    e => return Err("failed to write db `" + path + "`: " + e.to_string())
+  }
+  Ok(())
+}
+
+///|
+fn write_eval_export(path : String, source : String) -> Result[Unit, String] {
+  let parent = @xsh_fs.parent_path(path)
+  if parent != "." && parent.length() > 0 && not(@os_fs.path_exists(parent)) {
+    @os_fs.create_dir(parent) catch {
+      e =>
+        return Err(
+          "failed to create export dir `" + parent + "`: " + e.to_string(),
+        )
+    }
+  }
+  @os_fs.write_string_to_file(path, source) catch {
+    e => return Err("failed to write export `" + path + "`: " + e.to_string())
+  }
+  Ok(())
+}
+
+///|
+fn eval_cmd(
+  args : Array[String],
+  syntax_mode : @xsh_lib.ParserMode,
+  features : @xsh_lib.RuntimeFeatureFlags,
+) -> Unit {
+  let options = match parse_eval_cmd_options(args, "eval") {
+    Ok(opts) => opts
+    Err(msg) => abort(msg)
+  }
+  let rt = new_runtime_with_features(features)
+  let (namespace_name, db_path) = match options.db_path {
+    Some(path) => ("explicit", @loader.resolve_entry_path(path))
+    None =>
+      match resolve_scratch_db_path() {
+        Ok(v) => v
+        Err(err) => abort("eval: " + err)
+      }
+  }
+  let mut next_source = ""
+  let include_base_dir = eval_include_base_dir(options)
+  let include_lib_dir = resolve_xsh_lib_dir(@io.current_dir_or_root())
+  let include_sources : Array[String] = []
+  let mut eval_test_sidecar_path : String? = None
+  for include_spec in options.include_paths {
+    let include_source = match
+      load_eval_include_source(include_spec, include_base_dir, include_lib_dir) {
+      Ok(source) => source
+      Err(err) => abort("eval: " + err)
+    }
+    include_sources.push(include_source)
+    if include_source.trim().length() > 0 {
+      let _ = rt.eval_script_with_mode(include_source, syntax_mode) catch {
+        e =>
+          abort(
+            "eval: failed to load include `" +
+            include_spec +
+            "`: " +
+            e.to_string(),
+          )
+      }
+
+    }
+  }
+  let source = match load_eval_db_source(db_path) {
+    Ok(content) => content
+    Err(err) => abort("eval: " + err)
+  }
+  next_source = source
+  if source.trim().length() > 0 {
+    let _ = rt.eval_script_with_mode(source, syntax_mode) catch {
+      e =>
+        abort("eval: failed to restore db `" + db_path + "`: " + e.to_string())
+    }
+
+  }
+  match options.expr {
+    Some(expr) => {
+      let result = rt.eval_script_with_mode(expr, syntax_mode) catch {
+        e => abort("eval: " + e.to_string())
+      }
+      print_eval_result(result)
+      match extract_let_name(expr) {
+        Some(name) =>
+          match rt.get_addr(name) {
+            Some(addr) => println("addr: " + name + "#" + short_hash(addr))
+            None => ()
+          }
+        None => ()
+      }
+      match options.test_target {
+        Some(target) =>
+          match write_eval_test_source(db_path, target, expr) {
+            Ok(path) => {
+              eval_test_sidecar_path = Some(path)
+              println(
+                "test stored: target=" +
+                target +
+                " path=" +
+                path +
+                " db=" +
+                db_path,
+              )
+            }
+            Err(err) => abort("eval: " + err)
+          }
+        None => {
+          next_source = append_eval_db_source(next_source, expr)
+          match write_eval_db_source(db_path, next_source) {
+            Ok(_) => ()
+            Err(err) => abort("eval: " + err)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  if options.test_run {
+    let target = match options.test_target {
+      Some(v) => v
+      None => abort("eval: --run requires --test-for")
+    }
+    let test_path = match eval_test_sidecar_path {
+      Some(path) => path
+      None => eval_test_file_path(db_path, target)
+    }
+    let test_source = match load_eval_db_source(test_path) {
+      Ok(v) => v
+      Err(err) => abort("eval: " + err)
+    }
+    if test_source.trim().to_string().length() == 0 {
+      abort("eval: no tests found for --test-for `" + target + "`")
+    }
+    let pure_target = eval_test_target_is_pure(rt, target)
+    if not(pure_target) {
+      clear_eval_test_cache_hash(db_path, target)
+    }
+    let closure_hash = if pure_target {
+      match
+        eval_test_closure_hash_from_runtime(
+          rt, syntax_mode, test_source, target,
+        ) {
+        Ok(value) => value
+        Err(err) => abort("eval: " + err)
+      }
+    } else {
+      None
+    }
+    let mut should_run = true
+    match closure_hash {
+      Some(hash) =>
+        match load_eval_test_cache_hash(db_path, target) {
+          Some(cached_hash) =>
+            if cached_hash == hash {
+              println(
+                test_path +
+                ": cache hit (pure, closure=" +
+                short_hash(hash) +
+                ")",
+              )
+              should_run = false
+            }
+          None => ()
+        }
+      None => ()
+    }
+    if should_run {
+      let report = match
+        run_eval_sidecar_tests(
+          next_source, test_source, include_sources, syntax_mode, features,
+        ) {
+        Ok(v) => v
+        Err(err) => abort("eval: " + err)
+      }
+      if not(print_test_report(test_path, report)) {
+        clear_eval_test_cache_hash(db_path, target)
+        abort("eval: test-for failed: " + target)
+      }
+      match closure_hash {
+        Some(hash) =>
+          match write_eval_test_cache_hash(db_path, target, hash) {
+            Ok(_) => ()
+            Err(err) => abort("eval: " + err)
+          }
+        None => clear_eval_test_cache_hash(db_path, target)
+      }
+    }
+  }
+  let scope_symbols = collect_eval_scope_symbols(db_path, next_source)
+  match validate_eval_type_assertions(options.assertions, scope_symbols) {
+    Ok(_) => ()
+    Err(err) => abort("eval: " + err)
+  }
+  if options.inspect_scope {
+    println(eval_scope_symbols_json(scope_symbols).stringify())
+  }
+  match options.export_path {
+    Some(path) => {
+      if next_source.trim().length() == 0 {
+        abort("eval: no source to export")
+      }
+      match write_eval_export(path, next_source) {
+        Ok(_) => ()
+        Err(err) => abort("eval: " + err)
+      }
+      println("exported: " + path)
+    }
+    None => ()
+  }
+  if namespace_name != "explicit" {
+    println("namespace: " + namespace_name + " db=" + db_path)
+  }
+}
+
+///|
 fn print_test_report(path : String, report : @xsh_lib.TestReport) -> Bool {
   let status = if report.failed == 0 { "ok" } else { "fail" }
   println("\{path}: \{status} (\{report.passed}/\{report.total})")
@@ -1933,11 +3056,7 @@ fn sync_prelude_to_codebase(
   let module_refs = clone_string_map(lock.module_refs)
   let annotations = clone_string_map(lock.annotations)
   let next_lock = @codebase.LockData::new_with_meta(
-    path_refs,
-    version_refs,
-    symbol_refs,
-    module_refs,
-    annotations,
+    path_refs, version_refs, symbol_refs, module_refs, annotations,
   )
   let lock_path = @codebase.lock_file_path(entry)
   match @codebase.write_lock_data(lock_path, next_lock) {
@@ -1966,6 +3085,937 @@ fn fetch_cmd(args : Array[String]) -> Unit {
     updated_lock.path_refs.length().to_string() +
     " path refs)",
   )
+}
+
+///|
+fn apply_cmd(args : Array[String]) -> Unit {
+  if args.length() != 1 {
+    abort("apply: expected <file>")
+  }
+  match resolve_entry_artifacts(args[0]) {
+    Err(err) => abort("apply: " + err)
+    Ok((_, entry, lock, index, graph_head)) => {
+      let lock_path = @codebase.lock_file_path(entry)
+      let index_root = @codebase.resolve_index_root(entry)
+      println(
+        "applied: " +
+        entry +
+        " lock=" +
+        lock_path +
+        " path_refs=" +
+        lock.path_refs.length().to_string() +
+        " graph_head=" +
+        short_hash(graph_head) +
+        " defs=" +
+        index.defs.length().to_string() +
+        " index_xdb=" +
+        index_root +
+        "/index.xdb",
+      )
+    }
+  }
+}
+
+///|
+struct SymbolsCmdOptions {
+  entry_path : String
+  output_json : Bool
+} derive(Show, Eq)
+
+///|
+struct SymbolsRow {
+  status : String
+  origin : String
+  kind : String
+  name : String
+  path : String
+  def_id : String
+  signature : String
+  module_hash : String
+} derive(Show, Eq)
+
+///|
+fn parse_symbols_cmd_args(
+  args : Array[String],
+) -> Result[SymbolsCmdOptions, String] {
+  let mut output_json = false
+  let positional : Array[String] = []
+  for arg in args {
+    if arg == "--json" {
+      output_json = true
+      continue
+    }
+    if arg.has_prefix("--") {
+      return Err("symbols: unknown option " + arg)
+    }
+    positional.push(arg)
+  }
+  if positional.length() != 1 {
+    return Err("symbols: expected [--json] <file>")
+  }
+  Ok({ entry_path: positional[0], output_json })
+}
+
+///|
+fn symbols_row_to_json(row : SymbolsRow) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["status"] = Json::string(row.status)
+  obj["origin"] = Json::string(row.origin)
+  obj["kind"] = Json::string(row.kind)
+  obj["name"] = Json::string(row.name)
+  obj["path"] = Json::string(row.path)
+  obj["hash"] = Json::string(row.def_id)
+  obj["short_hash"] = Json::string(short_hash(row.def_id))
+  obj["signature"] = Json::string(row.signature)
+  obj["module_hash"] = Json::string(row.module_hash)
+  Json::object(obj)
+}
+
+///|
+fn symbols_rows_to_lines(rows : Array[SymbolsRow]) -> Array[String] {
+  let lines : Array[String] = []
+  for row in rows {
+    lines.push(
+      row.status +
+      "\t" +
+      row.origin +
+      "\t" +
+      row.kind +
+      "\t" +
+      row.name +
+      "\t" +
+      row.path +
+      "#" +
+      short_hash(row.def_id),
+    )
+  }
+  lines.sort()
+  lines
+}
+
+///|
+fn collect_symbols_rows(
+  entry_path : String,
+) -> Result[Array[SymbolsRow], String] {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let (_db, _entry, lock, index, _graph_head) = match
+    resolve_entry_artifacts(resolved) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let index_root = @codebase.resolve_index_root(resolved)
+  let scratch_candidates = match
+    load_scratch_write_file_candidates(index_root) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let scratch_names : Map[String, Bool] = {}
+  for candidate in scratch_candidates {
+    scratch_names[candidate.def.name] = true
+  }
+  let index_names : Map[String, Bool] = {}
+  for _, def in index.defs {
+    index_names[def.name] = true
+  }
+  let rows : Array[SymbolsRow] = []
+  for _, def in index.defs {
+    let key = def.path + "#" + def.name
+    let managed = lock.module_refs.contains(key)
+    let status = if scratch_names.contains(def.name) {
+      "shadowed"
+    } else if managed {
+      "managed"
+    } else {
+      "scratch-only"
+    }
+    rows.push({
+      status,
+      origin: "index",
+      kind: def.kind,
+      name: def.name,
+      path: def.path,
+      def_id: def.def_id,
+      signature: def.signature,
+      module_hash: def.module_hash,
+    })
+  }
+  for candidate in scratch_candidates {
+    let status = if index_names.contains(candidate.def.name) {
+      "shadowed"
+    } else {
+      "scratch-only"
+    }
+    rows.push({
+      status,
+      origin: candidate.origin,
+      kind: candidate.def.kind,
+      name: candidate.def.name,
+      path: candidate.def.path,
+      def_id: candidate.def.def_id,
+      signature: candidate.def.signature,
+      module_hash: candidate.def.module_hash,
+    })
+  }
+  Ok(rows)
+}
+
+///|
+fn symbols_cmd(args : Array[String]) -> Unit {
+  let options = match parse_symbols_cmd_args(args) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let rows = match collect_symbols_rows(options.entry_path) {
+    Ok(v) => v
+    Err(err) => abort("symbols: " + err)
+  }
+  if options.output_json {
+    let arr : Array[Json] = []
+    for row in rows {
+      arr.push(symbols_row_to_json(row))
+    }
+    println(Json::array(arr).stringify())
+    return
+  }
+  let lines = symbols_rows_to_lines(rows)
+  for line in lines {
+    println(line)
+  }
+  println("symbols: " + rows.length().to_string() + " entries")
+}
+
+///|
+fn history_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    abort("history: expected subcommand (reset)")
+  }
+  let sub = args[0]
+  match sub {
+    "reset" => {
+      let mut hard = false
+      let mut i = 1
+      while i < args.length() {
+        let arg = args[i]
+        match arg {
+          "--hard" => hard = true
+          _ => abort("history reset: unknown arg " + arg)
+        }
+        i += 1
+      }
+      let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
+        Ok(v) => v
+        Err(err) => abort("history reset: " + err)
+      }
+      let mut removed = false
+      if @os_fs.path_exists(scratch_db_path) {
+        @os_fs.remove_file(scratch_db_path) catch {
+          e =>
+            abort("history reset: remove scratch db failed: " + e.to_string())
+        }
+        removed = true
+      }
+      if hard {
+        let index_root = current_workspace_index_root()
+        let index_xdb_path = index_root + "/index.xdb"
+        let xdb = load_index_xdb_object(index_xdb_path)
+        let next_xdb = clone_json_map(xdb)
+        let namespaces = match xdb.get("namespaces") {
+          Some(Json::Object(current)) => clone_json_map(current)
+          _ => {}
+        }
+        let ns_obj = match namespaces.get(namespace_name) {
+          Some(Json::Object(current)) => clone_json_map(current)
+          _ => {}
+        }
+        ns_obj["head"] = Json::string("")
+        ns_obj["history_head"] = Json::string("")
+        ns_obj["updated_at"] = Json::string(@env.now().to_string())
+        namespaces[namespace_name] = Json::object(ns_obj)
+        next_xdb["active_namespace"] = Json::string(namespace_name)
+        next_xdb["namespaces"] = Json::object(namespaces)
+        match write_index_xdb_object(index_xdb_path, next_xdb) {
+          Ok(_) => ()
+          Err(err) => abort("history reset: " + err)
+        }
+      }
+      println(
+        "history reset: namespace=" +
+        namespace_name +
+        " db=" +
+        scratch_db_path +
+        " removed=" +
+        removed.to_string() +
+        " hard=" +
+        hard.to_string(),
+      )
+    }
+    _ => abort("history: unknown subcommand: " + sub)
+  }
+}
+
+///|
+enum WriteFileSelector {
+  Name(String)
+  NameHash(String, String)
+  Hash(String)
+} derive(Show, Eq)
+
+///|
+struct WriteFileCmdOptions {
+  entry_path : String?
+  selector_text : String
+  out_path : String
+  no_deps : Bool
+  dry_run : Bool
+  output_json : Bool
+} derive(Show, Eq)
+
+///|
+struct WriteFileDef {
+  def_id : String
+  name : String
+  kind : String
+  signature : String
+  path : String
+  start : Int
+  end : Int
+  module_hash : String
+} derive(Show, Eq)
+
+///|
+struct WriteFileCandidate {
+  def : WriteFileDef
+  origin : String
+} derive(Show, Eq)
+
+///|
+fn first_char_index(text : String, target : Char) -> Int? {
+  for i, c in text {
+    if c == target {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
+fn parse_write_file_selector(raw : String) -> Result[WriteFileSelector, String] {
+  let trimmed = raw.trim().to_string()
+  if trimmed.length() == 0 {
+    return Err("write_file: selector must not be empty")
+  }
+  if trimmed.has_prefix("#") {
+    let hash = trimmed
+      .unsafe_substring(start=1, end=trimmed.length())
+      .trim()
+      .to_string()
+    if hash.length() == 0 {
+      return Err("write_file: selector hash must not be empty")
+    }
+    return Ok(WriteFileSelector::Hash(hash))
+  }
+  match first_char_index(trimmed, '#') {
+    Some(idx) => {
+      let name = trimmed.unsafe_substring(start=0, end=idx).trim().to_string()
+      let hash = trimmed
+        .unsafe_substring(start=idx + 1, end=trimmed.length())
+        .trim()
+        .to_string()
+      if name.length() == 0 {
+        return Err("write_file: selector name must not be empty")
+      }
+      if hash.length() == 0 {
+        return Err("write_file: selector hash must not be empty")
+      }
+      Ok(WriteFileSelector::NameHash(name, hash))
+    }
+    None => Ok(WriteFileSelector::Name(trimmed))
+  }
+}
+
+///|
+fn parse_write_file_cmd_args(
+  args : Array[String],
+) -> Result[WriteFileCmdOptions, String] {
+  let mut entry_path : String? = None
+  let mut no_deps = false
+  let mut dry_run = false
+  let mut output_json = false
+  let positional : Array[String] = []
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "--entry" {
+      i += 1
+      if i >= args.length() {
+        return Err("write_file: missing path after --entry")
+      }
+      entry_path = Some(args[i])
+      i += 1
+      continue
+    }
+    if arg.has_prefix("--entry=") {
+      let path = arg.unsafe_substring(start=8, end=arg.length())
+      if path.trim().to_string().length() == 0 {
+        return Err("write_file: --entry path must not be empty")
+      }
+      entry_path = Some(path)
+      i += 1
+      continue
+    }
+    if arg == "--no-deps" {
+      no_deps = true
+      i += 1
+      continue
+    }
+    if arg == "--dry-run" {
+      dry_run = true
+      i += 1
+      continue
+    }
+    if arg == "--json" {
+      output_json = true
+      i += 1
+      continue
+    }
+    if arg.has_prefix("--") {
+      return Err("write_file: unknown option: " + arg)
+    }
+    positional.push(arg)
+    i += 1
+  }
+  if positional.length() != 2 {
+    return Err(
+      "write_file: expected [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>",
+    )
+  }
+  Ok({
+    entry_path,
+    selector_text: positional[0],
+    out_path: positional[1],
+    no_deps,
+    dry_run,
+    output_json,
+  })
+}
+
+///|
+fn write_file_def_id_from_symbol_entry(entry : @xsh_lib.SymbolEntry) -> String {
+  let key = entry.path +
+    "|" +
+    entry.span.start.to_string() +
+    "|" +
+    entry.span.end.to_string() +
+    "|" +
+    entry.name +
+    "|" +
+    @xsh_lib.symbol_kind_name(entry.kind) +
+    "|" +
+    entry.signature
+  @xsh_core.git_blob_hash_string(key)
+}
+
+///|
+fn write_file_graph_def_from_symbol_entry(
+  db : @xsh_lib.XshDb,
+  entry : @xsh_lib.SymbolEntry,
+) -> WriteFileDef {
+  {
+    def_id: write_file_def_id_from_symbol_entry(entry),
+    name: entry.name,
+    kind: @xsh_lib.symbol_kind_name(entry.kind),
+    signature: entry.signature,
+    path: entry.path,
+    start: entry.span.start,
+    end: entry.span.end,
+    module_hash: @xsh_core.hash_module(db.ast(entry.path)),
+  }
+}
+
+///|
+fn write_file_def_from_index_def(def : @x_exp.AdvancedGraphDef) -> WriteFileDef {
+  {
+    def_id: def.def_id,
+    name: def.name,
+    kind: def.kind,
+    signature: def.signature,
+    path: def.path,
+    start: def.start,
+    end: def.end,
+    module_hash: def.module_hash,
+  }
+}
+
+///|
+fn write_file_candidates_from_index(
+  index : @x_exp.AdvancedGraphIndex,
+) -> Array[WriteFileCandidate] {
+  let out : Array[WriteFileCandidate] = []
+  for _, def in index.defs {
+    out.push({ def: write_file_def_from_index_def(def), origin: "index" })
+  }
+  out
+}
+
+///|
+fn write_file_candidate_label(candidate : WriteFileCandidate) -> String {
+  candidate.origin +
+  ":" +
+  candidate.def.name +
+  "\t" +
+  candidate.def.path +
+  "#" +
+  short_hash(candidate.def.def_id)
+}
+
+///|
+fn write_file_result_json(
+  candidate : WriteFileCandidate,
+  out_path : String,
+  no_deps : Bool,
+  dry_run : Bool,
+) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["status"] = Json::string("ok")
+  obj["dry_run"] = Json::boolean(dry_run)
+  obj["origin"] = Json::string(candidate.origin)
+  obj["kind"] = Json::string(candidate.def.kind)
+  obj["name"] = Json::string(candidate.def.name)
+  obj["path"] = Json::string(candidate.def.path)
+  obj["hash"] = Json::string(candidate.def.def_id)
+  obj["short_hash"] = Json::string(short_hash(candidate.def.def_id))
+  obj["signature"] = Json::string(candidate.def.signature)
+  obj["module_hash"] = Json::string(candidate.def.module_hash)
+  obj["out_path"] = Json::string(out_path)
+  obj["no_deps"] = Json::boolean(no_deps)
+  Json::object(obj)
+}
+
+///|
+fn write_file_ambiguous_error(
+  prefix : String,
+  matches : Array[WriteFileCandidate],
+) -> String {
+  let buf = StringBuilder::new()
+  buf.write_string(prefix)
+  buf.write_string("\nUse `name#hash` or `#hash` selector.")
+  for candidate in matches {
+    buf.write_string("\n  - " + write_file_candidate_label(candidate))
+  }
+  buf.to_string()
+}
+
+///|
+fn write_file_filter_name(
+  candidates : Array[WriteFileCandidate],
+  name : String,
+) -> Array[WriteFileCandidate] {
+  let out : Array[WriteFileCandidate] = []
+  for candidate in candidates {
+    if candidate.def.name == name {
+      out.push(candidate)
+    }
+  }
+  out
+}
+
+///|
+fn write_file_filter_hash(
+  candidates : Array[WriteFileCandidate],
+  hash_prefix : String,
+  name? : String = "",
+) -> Array[WriteFileCandidate] {
+  let out : Array[WriteFileCandidate] = []
+  for candidate in candidates {
+    if not(candidate.def.def_id.has_prefix(hash_prefix)) {
+      continue
+    }
+    if name.length() > 0 && candidate.def.name != name {
+      continue
+    }
+    out.push(candidate)
+  }
+  out
+}
+
+///|
+fn write_file_resolve_single(
+  matches : Array[WriteFileCandidate],
+  not_found_message : String,
+  ambiguous_message : String,
+) -> Result[WriteFileCandidate, String] {
+  if matches.length() == 0 {
+    return Err(not_found_message)
+  }
+  if matches.length() > 1 {
+    return Err(write_file_ambiguous_error(ambiguous_message, matches))
+  }
+  Ok(matches[0])
+}
+
+///|
+fn write_file_resolve_candidate(
+  selector : WriteFileSelector,
+  scratch_candidates : Array[WriteFileCandidate],
+  index_candidates : Array[WriteFileCandidate],
+) -> Result[WriteFileCandidate, String] {
+  match selector {
+    WriteFileSelector::Name(name) => {
+      let scratch_matches = write_file_filter_name(scratch_candidates, name)
+      if scratch_matches.length() > 1 {
+        return Err(
+          write_file_ambiguous_error(
+            "write_file: scratch selector is ambiguous for `" + name + "`",
+            scratch_matches,
+          ),
+        )
+      }
+      if scratch_matches.length() == 1 {
+        return Ok(scratch_matches[0])
+      }
+      let index_matches = write_file_filter_name(index_candidates, name)
+      write_file_resolve_single(
+        index_matches,
+        "write_file: selector not found: `" + name + "`",
+        "write_file: selector is ambiguous for `" + name + "`",
+      )
+    }
+    WriteFileSelector::NameHash(name, hash_prefix) => {
+      let combined : Array[WriteFileCandidate] = []
+      for candidate in scratch_candidates {
+        combined.push(candidate)
+      }
+      for candidate in index_candidates {
+        combined.push(candidate)
+      }
+      let matches = write_file_filter_hash(combined, hash_prefix, name~)
+      write_file_resolve_single(
+        matches,
+        "write_file: selector not found: `" + name + "#" + hash_prefix + "`",
+        "write_file: selector is ambiguous for `" +
+        name +
+        "#" +
+        hash_prefix +
+        "`",
+      )
+    }
+    WriteFileSelector::Hash(hash_prefix) => {
+      let combined : Array[WriteFileCandidate] = []
+      for candidate in scratch_candidates {
+        combined.push(candidate)
+      }
+      for candidate in index_candidates {
+        combined.push(candidate)
+      }
+      let matches = write_file_filter_hash(combined, hash_prefix)
+      write_file_resolve_single(
+        matches,
+        "write_file: selector not found: `#" + hash_prefix + "`",
+        "write_file: selector is ambiguous for `#" + hash_prefix + "`",
+      )
+    }
+  }
+}
+
+///|
+fn graph_head_from_index_xdb(xdb : Map[String, Json]) -> String? {
+  match xdb.get("graph_head") {
+    Some(Json::String(hash)) => {
+      let normalized = hash.trim().to_string()
+      if normalized.length() == 0 {
+        None
+      } else {
+        Some(normalized)
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+fn load_graph_index_from_index_root(
+  index_root : String,
+) -> Result[@x_exp.AdvancedGraphIndex?, String] {
+  let index_xdb_path = index_root + "/index.xdb"
+  let xdb = load_index_xdb_object(index_xdb_path)
+  let graph_head = match graph_head_from_index_xdb(xdb) {
+    Some(hash) => hash
+    None => return Ok(None)
+  }
+  let xsh_dir = find_xsh_dir(index_root + "/index.xsh")
+  let codebase = @codebase.Codebase::new(xsh_dir)
+  let graph_source = match codebase.read_object(graph_head) {
+    Some(source) => source
+    None =>
+      return Err(
+        "write_file: graph head object not found: " +
+        graph_head +
+        " in " +
+        xsh_dir,
+      )
+  }
+  let graph_json : Json = @json.parse(graph_source) catch {
+    e => return Err("write_file: graph head parse failed: " + e.to_string())
+  }
+  match @x_exp.advanced_graph_index_from_json(graph_json) {
+    Ok(index) => Ok(Some(index))
+    Err(err) => Err("write_file: graph head decode failed: " + err)
+  }
+}
+
+///|
+fn load_scratch_write_file_candidates(
+  index_root : String,
+) -> Result[Array[WriteFileCandidate], String] {
+  let (_, scratch_db_path) = match
+    resolve_scratch_db_path_for_index_root(index_root) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  if not(@os_fs.path_exists(scratch_db_path)) {
+    return Ok([])
+  }
+  let source = match load_eval_db_source(scratch_db_path) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  if source.trim().to_string().length() == 0 {
+    return Ok([])
+  }
+  let _ = @parser.parse_ast(source) catch {
+    e => return Err("write_file: scratch db parse failed: " + e.to_string())
+  }
+  let db = @xsh_lib.XshDb::new()
+  db.set_source(scratch_db_path, source)
+  let symbol_index = @xsh_lib.build_symbol_index(db, [scratch_db_path])
+  let out : Array[WriteFileCandidate] = []
+  for entry in symbol_index.entries {
+    let def = write_file_graph_def_from_symbol_entry(db, entry)
+    out.push({ def, origin: "scratch" })
+  }
+  Ok(out)
+}
+
+///|
+fn read_write_file_source(path : String) -> Result[String, String] {
+  let resolved = @loader.resolve_entry_path(path)
+  if not(@os_fs.path_exists(resolved)) {
+    return Err("write_file: source path not found: " + resolved)
+  }
+  let is_file = @os_fs.is_file(resolved) catch { _ => false }
+  if not(is_file) {
+    return Err("write_file: source path is not a file: " + resolved)
+  }
+  let source = @os_fs.read_file_to_string(resolved) catch {
+    e =>
+      return Err(
+        "write_file: failed to read `" + resolved + "`: " + e.to_string(),
+      )
+  }
+  Ok(source)
+}
+
+///|
+fn clamp_source_offset(source : String, offset : Int) -> Int {
+  if offset < 0 {
+    0
+  } else if offset > source.length() {
+    source.length()
+  } else {
+    offset
+  }
+}
+
+///|
+fn source_slice_by_span(source : String, start : Int, end : Int) -> String {
+  let s = clamp_source_offset(source, start)
+  let e = clamp_source_offset(source, end)
+  let stop = if e < s { s } else { e }
+  if stop <= s {
+    return ""
+  }
+  try source[s:stop] catch {
+    _ => ""
+  } noraise {
+    value => value.to_string()
+  }
+}
+
+///|
+fn write_file_source_exports_name(source : String, name : String) -> Bool {
+  let ast = @parser.parse_ast(source) catch {
+    _ =>
+      return source.contains("export { " + name + " }") ||
+        source.contains("export {" + name + "}")
+  }
+  for stmt in ast.stmts {
+    match stmt {
+      @xsh_core.Stmt::ExportLet(name=export_name, ..) =>
+        if export_name == name {
+          return true
+        }
+      @xsh_core.Stmt::ExportEnumDef(name=export_name, ..) =>
+        if export_name == name {
+          return true
+        }
+      @xsh_core.Stmt::ExportTypeAlias(name=export_name, ..) =>
+        if export_name == name {
+          return true
+        }
+      @xsh_core.Stmt::ExportStructDef(name=export_name, ..) =>
+        if export_name == name {
+          return true
+        }
+      @xsh_core.Stmt::TraitDef(name=trait_name, exported~, ..) =>
+        if exported && trait_name == name {
+          return true
+        }
+      @xsh_core.Stmt::Export(names~, ..) =>
+        for export_name in names {
+          if export_name == name {
+            return true
+          }
+        }
+      @xsh_core.Stmt::ReExport(names~, ..) =>
+        for export_name in names {
+          if export_name == name {
+            return true
+          }
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+fn ensure_write_file_export(source : String, name : String) -> String {
+  if write_file_source_exports_name(source, name) {
+    return source
+  }
+  let buf = StringBuilder::new()
+  buf.write_string(source)
+  if source.length() > 0 && not(source.has_suffix("\n")) {
+    buf.write_char('\n')
+  }
+  buf.write_string("export { " + name + " }\n")
+  buf.to_string()
+}
+
+///|
+fn materialize_write_file_source(
+  source : String,
+  def : WriteFileDef,
+  no_deps : Bool,
+) -> Result[String, String] {
+  if not(no_deps) {
+    return Ok(source)
+  }
+  let snippet = source_slice_by_span(source, def.start, def.end)
+  if snippet.trim().to_string().length() == 0 {
+    return Err(
+      "write_file: empty selector span for " + def.path + "#" + def.name,
+    )
+  }
+  if snippet.has_suffix("\n") {
+    Ok(snippet)
+  } else {
+    Ok(snippet + "\n")
+  }
+}
+
+///|
+fn write_file_cmd(args : Array[String]) -> Unit {
+  let options = match parse_write_file_cmd_args(args) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let selector = match parse_write_file_selector(options.selector_text) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let (index_root, index_candidates) = match options.entry_path {
+    Some(entry_path) => {
+      let resolved_entry = @loader.resolve_entry_path(entry_path)
+      let index = match resolve_entry_artifacts(resolved_entry) {
+        Ok((_, _, _, index, _)) => index
+        Err(err) => abort("write_file: " + err)
+      }
+      (
+        @codebase.resolve_index_root(resolved_entry),
+        write_file_candidates_from_index(index),
+      )
+    }
+    None => {
+      let root = current_workspace_index_root()
+      let candidates = match load_graph_index_from_index_root(root) {
+        Ok(Some(index)) => write_file_candidates_from_index(index)
+        Ok(None) => []
+        Err(err) => abort(err)
+      }
+      (root, candidates)
+    }
+  }
+  let scratch_candidates = match
+    load_scratch_write_file_candidates(index_root) {
+    Ok(v) => v
+    Err(err) => abort("write_file: " + err)
+  }
+  let selected = match
+    write_file_resolve_candidate(selector, scratch_candidates, index_candidates) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let source = match read_write_file_source(selected.def.path) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let materialized = match
+    materialize_write_file_source(source, selected.def, options.no_deps) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let out_source = ensure_write_file_export(materialized, selected.def.name)
+  if options.dry_run {
+    if options.output_json {
+      println(
+        write_file_result_json(
+          selected,
+          options.out_path,
+          options.no_deps,
+          true,
+        ).stringify(),
+      )
+    } else {
+      println(
+        "write_file(dry-run): " +
+        write_file_candidate_label(selected) +
+        " -> " +
+        options.out_path +
+        " no_deps=" +
+        options.no_deps.to_string(),
+      )
+    }
+    return
+  }
+  match write_eval_export(options.out_path, out_source) {
+    Ok(_) => ()
+    Err(err) => abort("write_file: " + err)
+  }
+  if options.output_json {
+    println(
+      write_file_result_json(selected, options.out_path, options.no_deps, false).stringify(),
+    )
+  } else {
+    println(
+      "write_file: " +
+      write_file_candidate_label(selected) +
+      " -> " +
+      options.out_path +
+      " no_deps=" +
+      options.no_deps.to_string(),
+    )
+  }
 }
 
 ///|
@@ -2215,6 +4265,11 @@ fn expand_cmd(args : Array[String]) -> Unit {
       }
     }
   }
+}
+
+///|
+fn resolve_scratch_db_path() -> Result[(String, String), String] {
+  resolve_scratch_db_path_for_index_root(current_workspace_index_root())
 }
 
 ///|
@@ -2586,6 +4641,14 @@ enum IndexWalAction {
 }
 
 ///|
+enum IndexRefAction {
+  PushIndex(String, String)
+  PullIndex(String, String)
+  PushDelta(String, String)
+  PullDelta(String, String)
+}
+
+///|
 fn parse_index_wal_args(args : Array[String]) -> Result[IndexWalAction, String] {
   if args.length() == 0 {
     return Err("index wal: expected subcommand (stats|append|replay|compact)")
@@ -2734,6 +4797,126 @@ fn index_wal_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
+fn parse_index_ref_args(args : Array[String]) -> Result[IndexRefAction, String] {
+  if args.length() != 3 {
+    return Err(
+      "index ref: expected <push|pull|push-delta|pull-delta> <scope> <file>",
+    )
+  }
+  let action = args[0]
+  let scope = args[1]
+  let path = args[2]
+  match action {
+    "push" => Ok(IndexRefAction::PushIndex(scope, path))
+    "pull" => Ok(IndexRefAction::PullIndex(scope, path))
+    "push-delta" => Ok(IndexRefAction::PushDelta(scope, path))
+    "pull-delta" => Ok(IndexRefAction::PullDelta(scope, path))
+    _ =>
+      Err(
+        "index ref: unknown action: " +
+        action +
+        " (expected push|pull|push-delta|pull-delta)",
+      )
+  }
+}
+
+///|
+fn read_advanced_graph_delta_file(path : String) -> @x_exp.AdvancedGraphDelta {
+  let content = @os_fs.read_file_to_string(path) catch {
+    e => abort("index ref: read delta file: " + e.to_string())
+  }
+  let json = @json.parse(content) catch {
+    e => abort("index ref: parse delta json: " + e.to_string())
+  }
+  match @x_exp.advanced_graph_delta_from_json(json) {
+    Ok(v) => v
+    Err(err) => abort("index ref: decode delta: " + err)
+  }
+}
+
+///|
+fn write_advanced_graph_delta_file(
+  path : String,
+  delta : @x_exp.AdvancedGraphDelta,
+) -> Unit {
+  @os_fs.write_string_to_file(path, delta.to_json().stringify()) catch {
+    e => abort("index ref: write delta file: " + e.to_string())
+  }
+}
+
+///|
+fn index_ref_cmd(args : Array[String]) -> Unit {
+  let action = match parse_index_ref_args(args) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let git_dir = find_git_dir()
+  match action {
+    IndexRefAction::PushIndex(scope, index_path) => {
+      let index = index_load_file(index_path)
+      let hash = match
+        @x_exp.write_advanced_graph_index_to_git_ref(git_dir, scope, index) {
+        Ok(v) => v
+        Err(err) => abort("index ref push: " + err)
+      }
+      println(
+        "index ref push: refs/bit/index/" +
+        scope +
+        "/graph/head -> " +
+        short_hash(hash),
+      )
+    }
+    IndexRefAction::PullIndex(scope, out_path) => {
+      let index = match
+        @x_exp.read_advanced_graph_index_from_git_ref(git_dir, scope) {
+        Ok(v) => v
+        Err(err) => abort("index ref pull: " + err)
+      }
+      if out_path.has_prefix("dist/") {
+        ensure_dist_dir()
+      }
+      match @x_exp.write_advanced_graph_index(out_path, index) {
+        Ok(_) =>
+          println(
+            "index ref pull: wrote " +
+            out_path +
+            " (" +
+            index.defs.length().to_string() +
+            " defs)",
+          )
+        Err(err) => abort("index ref pull: " + err)
+      }
+    }
+    IndexRefAction::PushDelta(scope, delta_path) => {
+      let delta = read_advanced_graph_delta_file(delta_path)
+      let hash = match
+        @x_exp.write_advanced_graph_delta_to_git_ref(git_dir, scope, delta) {
+        Ok(v) => v
+        Err(err) => abort("index ref push-delta: " + err)
+      }
+      println(
+        "index ref push-delta: refs/bit/index/" +
+        scope +
+        "/graph/wal_head -> " +
+        short_hash(hash),
+      )
+    }
+    IndexRefAction::PullDelta(scope, out_path) => {
+      let delta = match
+        @x_exp.read_advanced_graph_delta_from_git_ref(git_dir, scope) {
+        Ok(v) => v
+        Err(err) => abort("index ref pull-delta: " + err)
+      }
+      if out_path.has_prefix("dist/") {
+        ensure_dist_dir()
+      }
+      write_advanced_graph_delta_file(out_path, delta)
+      println("index ref pull-delta: wrote " + out_path)
+    }
+  }
+}
+
+///|
 fn print_graph_def_entry(def : @x_exp.AdvancedGraphDef) -> Unit {
   println(
     def.path +
@@ -2750,6 +4933,76 @@ fn print_graph_def_entry(def : @x_exp.AdvancedGraphDef) -> Unit {
     "  #" +
     short_hash(def.def_id),
   )
+}
+
+///|
+fn write_index_xdb_graph_head(
+  index_root : String,
+  graph_head : String,
+) -> Result[Unit, String] {
+  let index_xdb_path = index_root + "/index.xdb"
+  let xdb_obj = load_index_xdb_object(index_xdb_path)
+  xdb_obj["graph_head"] = Json::string(graph_head)
+  write_index_xdb_object(index_xdb_path, xdb_obj)
+}
+
+///|
+fn sync_graph_head_for_loaded_db(
+  db : @xsh_lib.XshDb,
+  entry : String,
+  paths : Array[String],
+  base_commit : String,
+) -> Result[(@x_exp.AdvancedGraphIndex, String), String] {
+  let index = @x_exp.build_advanced_graph_index(
+    db,
+    paths,
+    base_commit~,
+    created_at=@env.now().to_string(),
+  )
+  let index_json = index.to_json().stringify()
+  let graph_head = @xsh_core.git_blob_hash_string(index_json)
+  let index_root = @codebase.resolve_index_root(entry)
+  let xsh_dir = find_xsh_dir(index_root + "/index.xsh")
+  let codebase = @codebase.Codebase::new(xsh_dir)
+  let _ = codebase.write_object(graph_head, index_json) catch {
+    e => return Err("sync graph snapshot object: " + e.to_string())
+  }
+  match write_index_xdb_graph_head(index_root, graph_head) {
+    Ok(_) => ()
+    Err(err) => return Err(err)
+  }
+  Ok((index, graph_head))
+}
+
+///|
+fn resolve_entry_artifacts(
+  entry_path : String,
+) -> Result[
+  (
+    @xsh_lib.XshDb,
+    String,
+    @codebase.LockData,
+    @x_exp.AdvancedGraphIndex,
+    String,
+  ),
+  String,
+] {
+  let resolved = @loader.resolve_entry_path(entry_path)
+  let lock = match @codebase.update_lock_path_refs(resolved) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let synced_lock = sync_prelude_to_codebase(resolved, lock)
+  let (db, entry, paths) = match @loader.load_db_with_paths(resolved) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let (index, graph_head) = match
+    sync_graph_head_for_loaded_db(db, entry, paths, "") {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  Ok((db, entry, synced_lock, index, graph_head))
 }
 
 ///|
@@ -2791,13 +5044,12 @@ fn index_build_cmd(args : Array[String]) -> Unit {
     ensure_dist_dir()
   }
   match @loader.load_db_with_paths(entry_path) {
-    Ok((db, _, paths)) => {
-      let index = @x_exp.build_advanced_graph_index(
-        db,
-        paths,
-        base_commit~,
-        created_at=@env.now().to_string(),
-      )
+    Ok((db, entry, paths)) => {
+      let (index, graph_head) = match
+        sync_graph_head_for_loaded_db(db, entry, paths, base_commit) {
+        Ok(v) => v
+        Err(err) => abort("index build: " + err)
+      }
       match @x_exp.write_advanced_graph_index(out_path, index) {
         Ok(_) =>
           println(
@@ -2805,7 +5057,8 @@ fn index_build_cmd(args : Array[String]) -> Unit {
             out_path +
             " (" +
             index.defs.length().to_string() +
-            " defs)",
+            " defs), index.xdb graph_head=" +
+            short_hash(graph_head),
           )
         Err(err) => abort("index build: " + err)
       }
@@ -2864,7 +5117,7 @@ fn index_verify_cmd(args : Array[String]) -> Unit {
 ///|
 fn index_cmd(args : Array[String]) -> Unit {
   if args.length() == 0 {
-    abort("index: expected subcommand (build|query|verify|wal)")
+    abort("index: expected subcommand (build|query|verify|wal|ref)")
   }
   let sub = args[0]
   let sub_args = args_tail(args, 1)
@@ -2873,6 +5126,7 @@ fn index_cmd(args : Array[String]) -> Unit {
     "query" => index_query_cmd(sub_args)
     "verify" => index_verify_cmd(sub_args)
     "wal" => index_wal_cmd(sub_args)
+    "ref" => index_ref_cmd(sub_args)
     _ => abort("index: unknown subcommand: " + sub)
   }
 }

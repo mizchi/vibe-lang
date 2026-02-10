@@ -123,6 +123,34 @@ pub fn Runtime::run_script_tests_with_mode(
 }
 
 ///|
+/// Parse/type-check test script and collect dependency snapshot (`name -> addr`).
+pub fn Runtime::collect_script_test_dep_snapshot_with_mode(
+  self : Runtime,
+  script : String,
+  mode : ParserMode,
+) -> Map[String, String]? raise XshError {
+  let (raw_ast, _) = parse_script_with_mode(script, mode)
+  let aliases = self.aliases
+  let ast = desugar_method_calls(raw_ast, aliases)
+  try {
+    let _ = @checker.type_check_with_env(self.type_env.clone(), ast, aliases)
+
+  } catch {
+    e => raise XshError::Type(e)
+  }
+  self.collect_test_dep_snapshot(ast)
+}
+
+///|
+/// Parse/type-check test script and collect dependency snapshot (`name -> addr`).
+pub fn Runtime::collect_script_test_dep_snapshot(
+  self : Runtime,
+  script : String,
+) -> Map[String, String]? raise XshError {
+  self.collect_script_test_dep_snapshot_with_mode(script, ParserMode::XshMode)
+}
+
+///|
 /// Parse, type-check, and run xsh test blocks.
 pub fn Runtime::run_script_tests(
   self : Runtime,

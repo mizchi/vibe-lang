@@ -11,6 +11,14 @@ pub fn handle_initialize(id : JsonRpcId?) -> JsonRpcResponse {
   sync_options["change"] = Json::number(1.0) // Full sync
   capabilities["textDocumentSync"] = Json::object(sync_options)
   capabilities["codeActionProvider"] = Json::boolean(true)
+  capabilities["hoverProvider"] = Json::boolean(true)
+  let completion_options : Map[String, Json] = {}
+  completion_options["resolveProvider"] = Json::boolean(false)
+  completion_options["triggerCharacters"] = Json::array([
+    Json::string("."),
+    Json::string(":"),
+  ])
+  capabilities["completionProvider"] = Json::object(completion_options)
   let result : Map[String, Json] = {}
   result["capabilities"] = Json::object(capabilities)
   make_response(id, Json::object(result))
@@ -62,6 +70,201 @@ fn is_ident_char(c : Char) -> Bool {
   (c >= 'a' && c <= 'z') ||
   (c >= '0' && c <= '9') ||
   c == '_'
+}
+
+///|
+fn symbol_hash(entry : @frontend.SymbolEntry) -> String {
+  let key = entry.path +
+    "|" +
+    entry.span.start.to_string() +
+    "|" +
+    entry.span.end.to_string() +
+    "|" +
+    entry.name +
+    "|" +
+    @frontend.symbol_kind_name(entry.kind) +
+    "|" +
+    entry.signature
+  @core.git_blob_hash_string(key)
+}
+
+///|
+fn symbol_index_for_source(
+  uri : String,
+  source : String,
+) -> @frontend.SymbolIndex? {
+  let ast = @parser.parse_ast(source) catch { _ => return None }
+  let env = (try? @checker.type_check(ast)).unwrap_or(@checker.TypeEnv::new())
+  Some(@frontend.build_symbol_index_for_module(uri, ast, env))
+}
+
+///|
+fn clamp_offset_for_source(source : String, offset : Int) -> Int {
+  if source.length() == 0 {
+    0
+  } else if offset < 0 {
+    0
+  } else if offset > source.length() {
+    source.length()
+  } else {
+    offset
+  }
+}
+
+///|
+fn source_ident_prefix_at(source : String, offset : Int) -> String {
+  if source.length() == 0 {
+    return ""
+  }
+  let chars = source.to_array()
+  let mut i = clamp_offset_for_source(source, offset)
+  if i > chars.length() {
+    i = chars.length()
+  }
+  let mut start = i
+  while start > 0 && is_ident_char(chars[start - 1]) {
+    start -= 1
+  }
+  if i <= start {
+    return ""
+  }
+  source.unsafe_substring(start~, end=i)
+}
+
+///|
+fn source_ident_at(source : String, offset : Int) -> String? {
+  if source.length() == 0 {
+    return None
+  }
+  let chars = source.to_array()
+  if chars.length() == 0 {
+    return None
+  }
+  let mut anchor = clamp_offset_for_source(source, offset)
+  if anchor >= chars.length() {
+    anchor = chars.length() - 1
+  }
+  if not(is_ident_char(chars[anchor])) {
+    if anchor > 0 && is_ident_char(chars[anchor - 1]) {
+      anchor -= 1
+    } else {
+      return None
+    }
+  }
+  let mut start = anchor
+  let mut end = anchor + 1
+  while start > 0 && is_ident_char(chars[start - 1]) {
+    start -= 1
+  }
+  while end < chars.length() && is_ident_char(chars[end]) {
+    end += 1
+  }
+  if end <= start {
+    None
+  } else {
+    Some(source.unsafe_substring(start~, end~))
+  }
+}
+
+///|
+fn completion_kind(kind : @frontend.SymbolKind) -> Int {
+  match kind {
+    @frontend.SymbolKind::FnSym => 3
+    @frontend.SymbolKind::ValueSym => 6
+    @frontend.SymbolKind::TypeAliasSym => 7
+    @frontend.SymbolKind::EnumSym => 13
+    @frontend.SymbolKind::StructSym => 22
+    @frontend.SymbolKind::TraitSym => 8
+    @frontend.SymbolKind::CtorSym => 4
+    @frontend.SymbolKind::ImplSym => 9
+  }
+}
+
+///|
+fn completion_item_json(entry : @frontend.SymbolEntry) -> Json {
+  let hash = symbol_hash(entry)
+  let obj : Map[String, Json] = {}
+  obj["label"] = Json::string(entry.name)
+  obj["kind"] = Json::number(completion_kind(entry.kind).to_double())
+  obj["detail"] = Json::string(
+    @frontend.symbol_kind_name(entry.kind) + " " + entry.signature,
+  )
+  obj["documentation"] = Json::string(
+    "hash: " + @core.short_hash(hash) + " (" + hash + ")",
+  )
+  Json::object(obj)
+}
+
+///|
+pub fn completion_items_json(
+  uri : String,
+  source : String,
+  position : LspPosition,
+) -> Json {
+  let offset = position_to_offset(source, position)
+  let prefix = source_ident_prefix_at(source, offset)
+  let items : Array[Json] = []
+  let seen : Map[String, Bool] = {}
+  match symbol_index_for_source(uri, source) {
+    Some(index) =>
+      for entry in index.entries {
+        if prefix.length() > 0 && not(entry.name.has_prefix(prefix)) {
+          continue
+        }
+        if seen.contains(entry.name) {
+          continue
+        }
+        seen[entry.name] = true
+        items.push(completion_item_json(entry))
+      }
+    None => ()
+  }
+  Json::array(items)
+}
+
+///|
+fn hover_entry_markdown(entry : @frontend.SymbolEntry) -> String {
+  let hash = symbol_hash(entry)
+  "```xsh\n" +
+  entry.name +
+  " : " +
+  entry.signature +
+  "\n```\n\nkind: `" +
+  @frontend.symbol_kind_name(entry.kind) +
+  "`\n\nhash: `" +
+  hash +
+  "`"
+}
+
+///|
+pub fn hover_json(uri : String, source : String, position : LspPosition) -> Json {
+  let offset = position_to_offset(source, position)
+  let name = match source_ident_at(source, offset) {
+    Some(v) => v
+    None => return Json::null()
+  }
+  let index = match symbol_index_for_source(uri, source) {
+    Some(v) => v
+    None => return Json::null()
+  }
+  let matches = index.find_exact(name)
+  if matches.length() == 0 {
+    return Json::null()
+  }
+  let mut selected = matches[0]
+  for entry in matches {
+    if offset >= entry.span.start && offset <= entry.span.end {
+      selected = entry
+      break
+    }
+  }
+  let contents : Map[String, Json] = {}
+  contents["kind"] = Json::string("markdown")
+  contents["value"] = Json::string(hover_entry_markdown(selected))
+  let out : Map[String, Json] = {}
+  out["contents"] = Json::object(contents)
+  out["range"] = range_to_json(span_to_range(source, selected.span))
+  Json::object(out)
 }
 
 ///|

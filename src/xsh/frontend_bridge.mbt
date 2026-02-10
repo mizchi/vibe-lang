@@ -12,7 +12,7 @@ pub using @frontend {type MonoifyResult}
 pub using @frontend {monoify_module}
 
 ///|
-pub using @frontend {dce_module}
+pub using @frontend {dce_module, dce_module_with_entry_names}
 
 ///|
 pub using @frontend {type SymbolKind}

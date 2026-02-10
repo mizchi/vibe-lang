@@ -259,6 +259,63 @@ fn extract_registry_map(ast : @core.Module) -> Map[String, String]? {
 }
 
 ///|
+fn is_ascii_digits(text : String) -> Bool {
+  if text.length() == 0 {
+    return false
+  }
+  for _, c in text {
+    if c < '0' || c > '9' {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn is_simple_semver(version : String) -> Bool {
+  let parts : Array[String] = []
+  for part in version.split(".") {
+    parts.push(part.to_string())
+  }
+  if parts.length() != 3 {
+    return false
+  }
+  for part in parts {
+    if not(is_ascii_digits(part)) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn require_index_version(ast : @core.Module) -> Result[String, String] {
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, expr~, ..) =>
+        if name == "version" {
+          match expr {
+            @core.Expr::String(value~, ..) =>
+              if is_simple_semver(value) {
+                return Ok(value)
+              } else {
+                return Err(
+                  "index.xsh: `export let version` must be semver like \"0.1.0\"",
+                )
+              }
+            _ =>
+              return Err(
+                "index.xsh: `export let version` must be a string literal",
+              )
+          }
+        }
+      _ => ()
+    }
+  }
+  Err("index.xsh: missing required `export let version = \"0.1.0\"`")
+}
+
+///|
 fn normalize_registry_modules(
   root : String,
   raw : Map[String, String],
@@ -296,6 +353,10 @@ pub fn load_registry_modules_with_fs(
   }
   let ast = @parser.parse_ast(content) catch {
     e => return Err("index.xsh parse: " + e.to_string())
+  }
+  let _ = match require_index_version(ast) {
+    Ok(v) => v
+    Err(err) => return Err(err)
   }
   let raw = match extract_registry_map(ast) {
     Some(v) => v
@@ -419,7 +480,7 @@ fn source_line_text(
   if end <= start {
     ""
   } else {
-    source.unsafe_substring(start=start, end=end)
+    source.unsafe_substring(start~, end~)
   }
 }
 
@@ -440,11 +501,10 @@ fn line_comment_body(line : String) -> String? {
       return None
     }
     let mut start = i + 2
-    if start < line.length() &&
-      line[start].to_int().unsafe_to_char() == ' ' {
+    if start < line.length() && line[start].to_int().unsafe_to_char() == ' ' {
       start += 1
     }
-    return Some(line.unsafe_substring(start=start, end=line.length()))
+    return Some(line.unsafe_substring(start~, end=line.length()))
   }
   None
 }
@@ -531,7 +591,7 @@ fn statement_anchor_offset(source : String, offset : Int) -> Int {
     let line = if end <= start {
       ""
     } else {
-      source.unsafe_substring(start=start, end=end)
+      source.unsafe_substring(start~, end~)
     }
     if line_is_blank(line) || line_comment_body(line) is Some(_) {
       if end >= source.length() {
@@ -568,7 +628,7 @@ fn line_leading_indent(line : String) -> String {
   if end == 0 {
     ""
   } else {
-    line.unsafe_substring(start=0, end=end)
+    line.unsafe_substring(start=0, end~)
   }
 }
 
@@ -759,14 +819,7 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved,
-                out,
-                module_refs,
-                annotations,
-                visited,
-                stack,
-                root,
-                registry_modules,
+                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
               ) {
               Ok(_) => ()
               Err(err) => {
@@ -791,7 +844,10 @@ fn collect_path_refs(
   entry : String,
   root : String,
   registry_modules : Map[String, String],
-) -> Result[(Map[String, String], Map[String, String], Map[String, String]), String] {
+) -> Result[
+  (Map[String, String], Map[String, String], Map[String, String]),
+  String,
+] {
   let out : Map[String, String] = {}
   let module_refs : Map[String, String] = {}
   let annotations : Map[String, String] = {}
@@ -799,14 +855,7 @@ fn collect_path_refs(
   let stack : Array[String] = []
   match
     collect_path_refs_impl(
-      entry,
-      out,
-      module_refs,
-      annotations,
-      visited,
-      stack,
-      root,
-      registry_modules,
+      entry, out, module_refs, annotations, visited, stack, root, registry_modules,
     ) {
     Ok(_) => Ok((out, module_refs, annotations))
     Err(err) => Err(err)
@@ -828,13 +877,7 @@ pub fn LockData::new(
   version_refs : Map[String, String],
   symbol_refs : Map[String, String],
 ) -> LockData {
-  {
-    path_refs,
-    version_refs,
-    symbol_refs,
-    module_refs: {},
-    annotations: {},
-  }
+  { path_refs, version_refs, symbol_refs, module_refs: {}, annotations: {} }
 }
 
 ///|
@@ -924,8 +967,7 @@ fn parse_lock_string_map(
       for key, value in entries {
         match value {
           Json::String(v) => out[key] = v
-          _ =>
-            return Err("index.lock: \{field_name}.\{key} must be a string")
+          _ => return Err("index.lock: \{field_name}.\{key} must be a string")
         }
       }
       Ok(out)
@@ -971,15 +1013,57 @@ fn parse_lock_data(
       }
       Ok(
         LockData::new_with_meta(
-          path_refs,
-          version_refs,
-          symbol_refs,
-          module_refs,
-          annotations,
+          path_refs, version_refs, symbol_refs, module_refs, annotations,
         ),
       )
     }
     _ => Err("index.lock: top-level JSON must be an object")
+  }
+}
+
+///|
+fn has_lock_payload_fields(obj : Map[String, Json]) -> Bool {
+  obj.contains("path") ||
+  obj.contains("version") ||
+  obj.contains("symbol") ||
+  obj.contains("module") ||
+  obj.contains("annotation")
+}
+
+///|
+fn parse_lock_data_from_index_xdb(
+  content : String,
+  base_dir : String,
+) -> Result[LockData?, String] {
+  let trimmed = content.trim().to_string()
+  if trimmed.length() == 0 {
+    return Ok(None)
+  }
+  let json : Json = @json.parse(trimmed) catch {
+    // Keep compatibility with non-lock `.xdb` payloads.
+    _ => return Ok(None)
+  }
+  match json {
+    Json::Object(obj) =>
+      if has_lock_payload_fields(obj) {
+        match parse_lock_data(trimmed, base_dir) {
+          Ok(v) => Ok(Some(v))
+          Err(err) => Err("index.xdb: " + err)
+        }
+      } else {
+        match obj.get("lock") {
+          Some(Json::Object(lock_obj)) => {
+            let lock_json = Json::object(lock_obj).stringify()
+            match parse_lock_data(lock_json, base_dir) {
+              Ok(v) => Ok(Some(v))
+              Err(err) => Err("index.xdb: " + err)
+            }
+          }
+          Some(_) => Err("index.xdb: `lock` must be an object")
+          None => Ok(None)
+        }
+      }
+    _ => Ok(None)
   }
 }
 
@@ -1123,9 +1207,21 @@ pub fn load_lock_data_with_fs(
   lock_path : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[LockData, String] {
+  let base_dir = @xsh_fs.parent_path(lock_path)
+  let xdb_path = base_dir + "/index.xdb"
+  if @io.path_exists_with(fs, xdb_path) {
+    let xdb_content = match @io.read_string_with(fs, xdb_path) {
+      Ok(v) => v
+      Err(err) => return Err("failed to read index.xdb: " + err)
+    }
+    match parse_lock_data_from_index_xdb(xdb_content, base_dir) {
+      Ok(Some(lock)) => return Ok(lock)
+      Ok(None) => ()
+      Err(err) => return Err(err)
+    }
+  }
   let mut target = lock_path
   if not(@io.path_exists_with(fs, target)) {
-    let base_dir = @xsh_fs.parent_path(lock_path)
     let legacy_path = base_dir + "/xsh.lock"
     if @io.path_exists_with(fs, legacy_path) {
       target = legacy_path
