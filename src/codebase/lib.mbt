@@ -133,13 +133,582 @@ fn resolve_import_path(base : String, import_path : String) -> String {
 }
 
 ///|
+fn is_within_root(root : String, path : String) -> Bool {
+  let root_norm = @xsh_fs.normalize_path(root)
+  let path_norm = @xsh_fs.normalize_path(path)
+  if root_norm == "/" {
+    return path_norm.has_prefix("/")
+  }
+  if path_norm == root_norm {
+    return true
+  }
+  path_norm.has_prefix(root_norm + "/")
+}
+
+///|
+fn first_slash_index(path : String) -> Int? {
+  for i, c in path {
+    if c == '/' {
+      return Some(i)
+    }
+  }
+  None
+}
+
+///|
+fn split_registry_import_path(path : String) -> (String, String)? {
+  match first_slash_index(path) {
+    Some(idx) =>
+      if idx <= 0 || idx + 1 >= path.length() {
+        None
+      } else {
+        let ns = path.unsafe_substring(start=0, end=idx)
+        let rest = path.unsafe_substring(start=idx + 1, end=path.length())
+        Some((ns, rest))
+      }
+    None => None
+  }
+}
+
+///|
+fn default_registry_modules(root : String) -> Map[String, String] {
+  let out : Map[String, String] = {}
+  out["std"] = @xsh_fs.normalize_path(root + "/xsh/std")
+  out
+}
+
+///|
+fn find_index_root_with_fs(
+  start_dir : String,
+  fs : &@io.FileSystemAdapter,
+) -> String {
+  let mut dir = @xsh_fs.normalize_path(start_dir)
+  for _ in 0..<64 {
+    let index_path = @xsh_fs.normalize_path(dir + "/index.xsh")
+    if @io.path_exists_with(fs, index_path) {
+      return dir
+    }
+    let parent = @xsh_fs.parent_path(dir)
+    if parent == dir || parent.length() == 0 {
+      break
+    }
+    dir = parent
+  }
+  @xsh_fs.normalize_path(start_dir)
+}
+
+///|
+pub fn resolve_index_root_with_fs(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+) -> String {
+  let normalized_entry = if entry.has_prefix("/") {
+    @xsh_fs.normalize_path(entry)
+  } else {
+    @xsh_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
+  }
+  let start_dir = @xsh_fs.parent_path(normalized_entry)
+  find_index_root_with_fs(start_dir, fs)
+}
+
+///|
+pub fn resolve_index_root(entry : String) -> String {
+  resolve_index_root_with_fs(entry, @io.default_fs_adapter())
+}
+
+///|
+fn extract_registry_map(ast : @core.Module) -> Map[String, String]? {
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..) =>
+        if name == "module" || name == "registry" {
+          match expr {
+            @core.Expr::Record(fields~, ..) => {
+              let out : Map[String, String] = {}
+              for field in fields {
+                match field.expr {
+                  @core.Expr::String(value~, ..) => out[field.name] = value
+                  _ => ()
+                }
+              }
+              return Some(out)
+            }
+            _ => ()
+          }
+        }
+      @core.Stmt::ExportLet(name~, expr~, ..) =>
+        if name == "module" || name == "registry" {
+          match expr {
+            @core.Expr::Record(fields~, ..) => {
+              let out : Map[String, String] = {}
+              for field in fields {
+                match field.expr {
+                  @core.Expr::String(value~, ..) => out[field.name] = value
+                  _ => ()
+                }
+              }
+              return Some(out)
+            }
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+  }
+  None
+}
+
+///|
+fn normalize_registry_modules(
+  root : String,
+  raw : Map[String, String],
+) -> Result[Map[String, String], String] {
+  let out = default_registry_modules(root)
+  for ns, raw_path in raw {
+    let resolved = if raw_path.has_prefix("/") {
+      @xsh_fs.normalize_path(raw_path)
+    } else {
+      @xsh_fs.normalize_path(root + "/" + raw_path)
+    }
+    if not(is_within_root(root, resolved)) {
+      return Err(
+        "index.xsh registry path outside root: " + ns + " -> " + resolved,
+      )
+    }
+    out[ns] = resolved
+  }
+  Ok(out)
+}
+
+///|
+pub fn load_registry_modules_with_fs(
+  root : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[Map[String, String], String] {
+  let root_norm = @xsh_fs.normalize_path(root)
+  let index_path = @xsh_fs.normalize_path(root_norm + "/index.xsh")
+  if not(@io.path_exists_with(fs, index_path)) {
+    return Ok(default_registry_modules(root_norm))
+  }
+  let content = match @io.read_string_with(fs, index_path) {
+    Ok(v) => v
+    Err(err) => return Err("failed to read index.xsh: " + err)
+  }
+  let ast = @parser.parse_ast(content) catch {
+    e => return Err("index.xsh parse: " + e.to_string())
+  }
+  let raw = match extract_registry_map(ast) {
+    Some(v) => v
+    None => {}
+  }
+  normalize_registry_modules(root_norm, raw)
+}
+
+///|
+pub fn load_registry_modules(
+  root : String,
+) -> Result[Map[String, String], String] {
+  load_registry_modules_with_fs(root, @io.default_fs_adapter())
+}
+
+///|
+pub fn resolve_import_path_with_registry(
+  base : String,
+  import_path : String,
+  root : String,
+  registry_modules : Map[String, String],
+) -> Result[String, String] {
+  let resolved = if import_path.has_prefix("/") {
+    @xsh_fs.normalize_path(import_path)
+  } else if import_path.has_prefix("./") || import_path.has_prefix("../") {
+    @xsh_fs.normalize_path(base + "/" + import_path)
+  } else {
+    match split_registry_import_path(import_path) {
+      Some((ns, rest)) =>
+        match registry_modules.get(ns) {
+          Some(ns_root) => @xsh_fs.normalize_path(ns_root + "/" + rest)
+          None => resolve_import_path(base, import_path)
+        }
+      None => resolve_import_path(base, import_path)
+    }
+  }
+  if not(is_within_root(root, resolved)) {
+    return Err(
+      "import path outside root: " + resolved + " (root: " + root + ")",
+    )
+  }
+  Ok(resolved)
+}
+
+///|
+fn collect_module_export_refs(
+  path : String,
+  ast : @core.Module,
+  module_refs : Map[String, String],
+) -> Unit {
+  let exports = @core.extract_exports(ast)
+  let zero = @core.Span::empty(0)
+  for name, stmt in exports {
+    let export_module = @core.Module::{
+      stmts: [stmt, @core.Stmt::Export(names=[name], span=zero)],
+    }
+    let normalized = @core.normalize_module(export_module)
+    let export_hash = @core.hash_module(normalized)
+    module_refs[path + "#" + name] = export_hash
+  }
+}
+
+///|
+fn collect_line_starts(source : String) -> Array[Int] {
+  let starts : Array[Int] = [0]
+  for i, c in source {
+    if c == '\n' && i + 1 < source.length() {
+      starts.push(i + 1)
+    }
+  }
+  starts
+}
+
+///|
+fn line_index_for_offset(
+  line_starts : Array[Int],
+  source_len : Int,
+  offset : Int,
+) -> Int {
+  if line_starts.length() == 0 {
+    return 0
+  }
+  let off = if offset < 0 {
+    0
+  } else if offset > source_len {
+    source_len
+  } else {
+    offset
+  }
+  let mut idx = 0
+  for i in 0..<line_starts.length() {
+    let start = line_starts[i]
+    if start > off {
+      break
+    }
+    idx = i
+  }
+  idx
+}
+
+///|
+fn source_line_text(
+  source : String,
+  line_starts : Array[Int],
+  line_idx : Int,
+) -> String {
+  if line_starts.length() == 0 {
+    return ""
+  }
+  let start = line_starts[line_idx]
+  let mut end = source.length()
+  if line_idx + 1 < line_starts.length() {
+    end = line_starts[line_idx + 1]
+  }
+  if end > start {
+    let last = source[end - 1].to_int().unsafe_to_char()
+    if last == '\n' {
+      end -= 1
+    }
+  }
+  if end <= start {
+    ""
+  } else {
+    source.unsafe_substring(start=start, end=end)
+  }
+}
+
+///|
+fn line_comment_body(line : String) -> String? {
+  let mut i = 0
+  while i < line.length() {
+    let c = line[i].to_int().unsafe_to_char()
+    if c == ' ' || c == '\t' {
+      i += 1
+      continue
+    }
+    if c != '/' || i + 1 >= line.length() {
+      return None
+    }
+    let next = line[i + 1].to_int().unsafe_to_char()
+    if next != '/' {
+      return None
+    }
+    let mut start = i + 2
+    if start < line.length() &&
+      line[start].to_int().unsafe_to_char() == ' ' {
+      start += 1
+    }
+    return Some(line.unsafe_substring(start=start, end=line.length()))
+  }
+  None
+}
+
+///|
+fn line_is_blank(line : String) -> Bool {
+  for c in line {
+    if c != ' ' && c != '\t' && c != '\r' {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn leading_comment_block_at(
+  source : String,
+  line_starts : Array[Int],
+  offset : Int,
+) -> String? {
+  if line_starts.length() == 0 {
+    return None
+  }
+  let line_idx = line_index_for_offset(line_starts, source.length(), offset)
+  if line_idx == 0 {
+    return None
+  }
+  let prev_idx = line_idx - 1
+  match line_comment_body(source_line_text(source, line_starts, prev_idx)) {
+    None => return None
+    Some(_) => ()
+  }
+  let mut start_idx = prev_idx
+  while start_idx > 0 {
+    let cand = start_idx - 1
+    match line_comment_body(source_line_text(source, line_starts, cand)) {
+      Some(_) => start_idx = cand
+      None => break
+    }
+  }
+  let buf = StringBuilder::new()
+  let mut first = true
+  for i in start_idx..<line_idx {
+    match line_comment_body(source_line_text(source, line_starts, i)) {
+      Some(body) => {
+        if first {
+          first = false
+        } else {
+          buf.write_char('\n')
+        }
+        buf.write_string(body)
+      }
+      None => ()
+    }
+  }
+  Some(buf.to_string())
+}
+
+///|
+fn statement_anchor_offset(source : String, offset : Int) -> Int {
+  let mut start = if offset < 0 {
+    0
+  } else if offset > source.length() {
+    source.length()
+  } else {
+    offset
+  }
+  while start > 0 {
+    let prev = source[start - 1].to_int().unsafe_to_char()
+    if prev == '\n' {
+      break
+    }
+    start -= 1
+  }
+  while start < source.length() {
+    let mut end = start
+    while end < source.length() {
+      let c = source[end].to_int().unsafe_to_char()
+      if c == '\n' {
+        break
+      }
+      end += 1
+    }
+    let line = if end <= start {
+      ""
+    } else {
+      source.unsafe_substring(start=start, end=end)
+    }
+    if line_is_blank(line) || line_comment_body(line) is Some(_) {
+      if end >= source.length() {
+        return source.length()
+      }
+      start = end + 1
+      continue
+    }
+    let mut i = start
+    while i < end {
+      let c = source[i].to_int().unsafe_to_char()
+      if c == ' ' || c == '\t' || c == '\r' {
+        i += 1
+        continue
+      }
+      return i
+    }
+    return end
+  }
+  source.length()
+}
+
+///|
+fn line_leading_indent(line : String) -> String {
+  let mut end = 0
+  while end < line.length() {
+    let c = line[end].to_int().unsafe_to_char()
+    if c == ' ' || c == '\t' {
+      end += 1
+    } else {
+      break
+    }
+  }
+  if end == 0 {
+    ""
+  } else {
+    line.unsafe_substring(start=0, end=end)
+  }
+}
+
+///|
+fn render_comment_block(note : String, indent : String) -> String {
+  let buf = StringBuilder::new()
+  for part in note.split("\n") {
+    let line = part.to_string()
+    buf.write_string(indent)
+    buf.write_string("//")
+    if line.length() > 0 {
+      buf.write_char(' ')
+      buf.write_string(line)
+    }
+    buf.write_char('\n')
+  }
+  buf.to_string()
+}
+
+///|
+fn collect_module_export_annotations(
+  path : String,
+  source : String,
+  ast : @core.Module,
+  annotations : Map[String, String],
+) -> Unit {
+  let exports = @core.extract_exports(ast)
+  if exports.length() == 0 {
+    return
+  }
+  let line_starts = collect_line_starts(source)
+  for name, stmt in exports {
+    let key = path + "#" + name
+    let span = stmt.span()
+    let anchor = statement_anchor_offset(source, span.start)
+    match leading_comment_block_at(source, line_starts, anchor) {
+      Some(note) => annotations[key] = note
+      None => ()
+    }
+  }
+}
+
+///|
+fn clear_annotations_for_paths(
+  annotations : Map[String, String],
+  path_refs : Map[String, String],
+) -> Unit {
+  if path_refs.length() == 0 {
+    return
+  }
+  let stale_keys : Array[String] = []
+  for key, _ in annotations {
+    let mut matched = false
+    for path, _ in path_refs {
+      if key.has_prefix(path + "#") {
+        matched = true
+        break
+      }
+    }
+    if matched {
+      stale_keys.push(key)
+    }
+  }
+  for key in stale_keys {
+    annotations.remove(key)
+  }
+}
+
+///|
+pub fn apply_annotations_to_source(
+  path : String,
+  source : String,
+  annotations : Map[String, String],
+) -> Result[String, String] {
+  if annotations.length() == 0 {
+    return Ok(source)
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e => return Err("parse: " + e.to_string())
+  }
+  let exports = @core.extract_exports(ast)
+  if exports.length() == 0 {
+    return Ok(source)
+  }
+  let line_starts = collect_line_starts(source)
+  let line_notes : Map[Int, String] = {}
+  for name, stmt in exports {
+    let key = path + "#" + name
+    let note = match annotations.get(key) {
+      Some(v) => v
+      None => continue
+    }
+    let span = stmt.span()
+    let anchor = statement_anchor_offset(source, span.start)
+    match leading_comment_block_at(source, line_starts, anchor) {
+      Some(_) => continue
+      None => ()
+    }
+    let line_idx = line_index_for_offset(line_starts, source.length(), anchor)
+    if not(line_notes.contains(line_idx)) {
+      line_notes[line_idx] = note
+    }
+  }
+  if line_notes.length() == 0 {
+    return Ok(source)
+  }
+  let out = StringBuilder::new()
+  let mut cursor = 0
+  for line_idx in 0..<line_starts.length() {
+    match line_notes.get(line_idx) {
+      Some(note) => {
+        let line_start = line_starts[line_idx]
+        out.write_string(source.unsafe_substring(start=cursor, end=line_start))
+        let line = source_line_text(source, line_starts, line_idx)
+        let indent = line_leading_indent(line)
+        out.write_string(render_comment_block(note, indent))
+        cursor = line_start
+      }
+      None => ()
+    }
+  }
+  out.write_string(source.unsafe_substring(start=cursor, end=source.length()))
+  Ok(out.to_string())
+}
+
+///|
 fn collect_path_refs_impl(
   path : String,
   out : Map[String, String],
+  module_refs : Map[String, String],
+  annotations : Map[String, String],
   visited : Map[String, Bool],
   stack : Array[String],
+  root : String,
+  registry_modules : Map[String, String],
 ) -> Result[Unit, String] {
   let norm = @xsh_fs.normalize_path(path)
+  if not(is_within_root(root, norm)) {
+    return Err("import path outside root: " + norm + " (root: " + root + ")")
+  }
   for i, p in stack {
     if p == norm {
       let cycle_path = StringBuilder::new()
@@ -170,14 +739,35 @@ fn collect_path_refs_impl(
       return Err("parse: " + e.to_string())
     }
   }
+  collect_module_export_refs(norm, ast, module_refs)
+  collect_module_export_annotations(norm, source, ast, annotations)
   let base = @xsh_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(source~, ..) =>
         match source {
           @core.ModuleRef::Path(path~) => {
-            let resolved = resolve_import_path(base, path)
-            match collect_path_refs_impl(resolved, out, visited, stack) {
+            let resolved = match
+              resolve_import_path_with_registry(
+                base, path, root, registry_modules,
+              ) {
+              Ok(v) => v
+              Err(err) => {
+                let _ = stack.pop()
+                return Err(err)
+              }
+            }
+            match
+              collect_path_refs_impl(
+                resolved,
+                out,
+                module_refs,
+                annotations,
+                visited,
+                stack,
+                root,
+                registry_modules,
+              ) {
               Ok(_) => ()
               Err(err) => {
                 let _ = stack.pop()
@@ -197,12 +787,28 @@ fn collect_path_refs_impl(
 }
 
 ///|
-fn collect_path_refs(entry : String) -> Result[Map[String, String], String] {
+fn collect_path_refs(
+  entry : String,
+  root : String,
+  registry_modules : Map[String, String],
+) -> Result[(Map[String, String], Map[String, String], Map[String, String]), String] {
   let out : Map[String, String] = {}
+  let module_refs : Map[String, String] = {}
+  let annotations : Map[String, String] = {}
   let visited : Map[String, Bool] = {}
   let stack : Array[String] = []
-  match collect_path_refs_impl(entry, out, visited, stack) {
-    Ok(_) => Ok(out)
+  match
+    collect_path_refs_impl(
+      entry,
+      out,
+      module_refs,
+      annotations,
+      visited,
+      stack,
+      root,
+      registry_modules,
+    ) {
+    Ok(_) => Ok((out, module_refs, annotations))
     Err(err) => Err(err)
   }
 }
@@ -212,6 +818,8 @@ pub struct LockData {
   path_refs : Map[String, String]
   version_refs : Map[String, String]
   symbol_refs : Map[String, String]
+  module_refs : Map[String, String]
+  annotations : Map[String, String]
 } derive(Show, Eq)
 
 ///|
@@ -220,7 +828,24 @@ pub fn LockData::new(
   version_refs : Map[String, String],
   symbol_refs : Map[String, String],
 ) -> LockData {
-  { path_refs, version_refs, symbol_refs }
+  {
+    path_refs,
+    version_refs,
+    symbol_refs,
+    module_refs: {},
+    annotations: {},
+  }
+}
+
+///|
+pub fn LockData::new_with_meta(
+  path_refs : Map[String, String],
+  version_refs : Map[String, String],
+  symbol_refs : Map[String, String],
+  module_refs : Map[String, String],
+  annotations : Map[String, String],
+) -> LockData {
+  { path_refs, version_refs, symbol_refs, module_refs, annotations }
 }
 
 ///|
@@ -256,12 +881,12 @@ fn parse_lock_path_map(
             }
             out[normalized] = normalize_lock_hash(hash)
           }
-          _ => return Err("xsh.lock: path.\{key} must be a string hash")
+          _ => return Err("index.lock: path.\{key} must be a string hash")
         }
       }
       Ok(out)
     }
-    Some(_) => Err("xsh.lock: `path` must be an object")
+    Some(_) => Err("index.lock: `path` must be an object")
   }
 }
 
@@ -278,12 +903,34 @@ fn parse_lock_ref_map(
         match value {
           Json::String(hash) => out[key] = normalize_lock_hash(hash)
           _ =>
-            return Err("xsh.lock: \{field_name}.\{key} must be a string hash")
+            return Err("index.lock: \{field_name}.\{key} must be a string hash")
         }
       }
       Ok(out)
     }
-    Some(_) => Err("xsh.lock: `\{field_name}` must be an object")
+    Some(_) => Err("index.lock: `\{field_name}` must be an object")
+  }
+}
+
+///|
+fn parse_lock_string_map(
+  json : Json?,
+  field_name : String,
+) -> Result[Map[String, String], String] {
+  let out : Map[String, String] = {}
+  match json {
+    None => Ok(out)
+    Some(Json::Object(entries)) => {
+      for key, value in entries {
+        match value {
+          Json::String(v) => out[key] = v
+          _ =>
+            return Err("index.lock: \{field_name}.\{key} must be a string")
+        }
+      }
+      Ok(out)
+    }
+    Some(_) => Err("index.lock: `\{field_name}` must be an object")
   }
 }
 
@@ -296,7 +943,7 @@ fn parse_lock_data(
     return Ok(empty_lock_data())
   }
   let json : Json = @json.parse(content) catch {
-    e => return Err("xsh.lock: invalid JSON: " + e.to_string())
+    e => return Err("index.lock: invalid JSON: " + e.to_string())
   }
   match json {
     Json::Object(obj) => {
@@ -313,9 +960,26 @@ fn parse_lock_data(
         Ok(v) => v
         Err(err) => return Err(err)
       }
-      Ok(LockData::new(path_refs, version_refs, symbol_refs))
+      let module_refs = match parse_lock_ref_map(obj.get("module"), "module") {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let annotations = match
+        parse_lock_string_map(obj.get("annotation"), "annotation") {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      Ok(
+        LockData::new_with_meta(
+          path_refs,
+          version_refs,
+          symbol_refs,
+          module_refs,
+          annotations,
+        ),
+      )
     }
-    _ => Err("xsh.lock: top-level JSON must be an object")
+    _ => Err("index.lock: top-level JSON must be an object")
   }
 }
 
@@ -394,9 +1058,18 @@ fn write_lock_map_json(
   buf : StringBuilder,
   base_dir : String?,
 ) -> Unit {
+  let keys : Array[String] = []
+  for key, _ in map {
+    keys.push(key)
+  }
+  keys.sort()
   buf.write_char('{')
   let mut first = true
-  for key, value in map {
+  for key in keys {
+    let value = match map.get(key) {
+      Some(v) => v
+      None => continue
+    }
     if first {
       first = false
     } else {
@@ -428,13 +1101,21 @@ fn lock_data_to_json(lock : LockData, lock_base_dir : String) -> String {
   write_json_string_literal("symbol", buf)
   buf.write_char(':')
   write_lock_map_json(lock.symbol_refs, buf, None)
+  buf.write_char(',')
+  write_json_string_literal("module", buf)
+  buf.write_char(':')
+  write_lock_map_json(lock.module_refs, buf, None)
+  buf.write_char(',')
+  write_json_string_literal("annotation", buf)
+  buf.write_char(':')
+  write_lock_map_json(lock.annotations, buf, None)
   buf.write_char('}')
   buf.to_string()
 }
 
 ///|
 pub fn lock_file_path(entry : String) -> String {
-  @xsh_fs.parent_path(entry) + "/xsh.lock"
+  resolve_index_root(entry) + "/index.lock"
 }
 
 ///|
@@ -442,13 +1123,20 @@ pub fn load_lock_data_with_fs(
   lock_path : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[LockData, String] {
-  if not(@io.path_exists_with(fs, lock_path)) {
-    return Ok(empty_lock_data())
+  let mut target = lock_path
+  if not(@io.path_exists_with(fs, target)) {
+    let base_dir = @xsh_fs.parent_path(lock_path)
+    let legacy_path = base_dir + "/xsh.lock"
+    if @io.path_exists_with(fs, legacy_path) {
+      target = legacy_path
+    } else {
+      return Ok(empty_lock_data())
+    }
   }
-  let base_dir = @xsh_fs.parent_path(lock_path)
-  let content = match @io.read_string_with(fs, lock_path) {
+  let base_dir = @xsh_fs.parent_path(target)
+  let content = match @io.read_string_with(fs, target) {
     Ok(v) => v
-    Err(err) => return Err("failed to read xsh.lock: " + err)
+    Err(err) => return Err("failed to read index.lock: " + err)
   }
   parse_lock_data(content, base_dir)
 }
@@ -468,7 +1156,7 @@ pub fn write_lock_data_with_fs(
   let content = lock_data_to_json(lock, base_dir)
   match @io.write_string_with(fs, lock_path, content) {
     Ok(_) => ()
-    Err(err) => return Err("failed to write xsh.lock: " + err)
+    Err(err) => return Err("failed to write index.lock: " + err)
   }
   Ok(())
 }
@@ -492,12 +1180,18 @@ fn clone_lock_map(src : Map[String, String]) -> Map[String, String] {
 
 ///|
 pub fn update_lock_path_refs(entry : String) -> Result[LockData, String] {
+  let root = resolve_index_root(entry)
+  let registry_modules = match load_registry_modules(root) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
   let lock_path = lock_file_path(entry)
   let current = match load_lock_data(lock_path) {
     Ok(lock) => lock
     Err(err) => return Err(err)
   }
-  let path_refs = match collect_path_refs(entry) {
+  let (path_refs, module_refs, annotations) = match
+    collect_path_refs(entry, root, registry_modules) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -505,10 +1199,21 @@ pub fn update_lock_path_refs(entry : String) -> Result[LockData, String] {
   for path, hash in path_refs {
     merged_path_refs[path] = hash
   }
-  let next_lock = LockData::new(
+  let merged_module_refs = clone_lock_map(current.module_refs)
+  for key, hash in module_refs {
+    merged_module_refs[key] = hash
+  }
+  let merged_annotations = clone_lock_map(current.annotations)
+  clear_annotations_for_paths(merged_annotations, path_refs)
+  for key, note in annotations {
+    merged_annotations[key] = note
+  }
+  let next_lock = LockData::new_with_meta(
     merged_path_refs,
     current.version_refs,
     current.symbol_refs,
+    merged_module_refs,
+    merged_annotations,
   )
   match write_lock_data(lock_path, next_lock) {
     Ok(_) => Ok(next_lock)

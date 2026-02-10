@@ -28,7 +28,7 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     fallback, emit candidate-aware diagnostics and suggested disambiguation.
   - P1: Add `xsh explain-import <entry>` to visualize
     `PathRef/HashRef/VersionRef/SymbolRef -> HashRef` normalization and lock
-    lookups (`xsh.lock` hit/miss reasons).
+    lookups (`index.lock` hit/miss reasons).
   - P1: Improve trait openness diagnostics.
     Distinguish sealed-trait, non-exported trait, and overlapping-impl failures
     with dedicated error codes/messages.
@@ -119,7 +119,7 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     checker prelude に `trait Show` + `Int/Float/Double/Bool/String` impl を追加し、
     `to_string` を `[T: Show]` へ戻した。
   - P2 [done 2026-02-09]: Cleanup/deprecation close.
-    `xsh.lock` を更新し、`just check && just test` 緑を確認。
+    `index.lock` を更新し、`just check && just test` 緑を確認。
 
 ## Deferred
 

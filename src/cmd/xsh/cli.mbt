@@ -81,7 +81,7 @@ fn print_usage() -> Unit {
   println(
     "  save <file>                 save module to content-addressed store",
   )
-  println("  fetch <file>                resolve imports and write xsh.lock")
+  println("  fetch <file>                resolve imports and write index.lock")
   println("  update-lock <file>          alias for fetch")
   println("  ide <outline|peek-def|search> ...  symbol/type index queries")
   println("  lsif [-o out.lsif] <file>   emit LSIF via shared symbol index")
@@ -702,17 +702,36 @@ fn fmt_cmd(args : Array[String]) -> Unit {
     abort("fmt: use --write for multiple files")
   }
   for path in files {
+    let resolved = @loader.resolve_entry_path(path)
     let src = @os_fs.read_file_to_string(path) catch {
       e => abort("fmt: " + e.to_string())
     }
     let formatted = @parser.format_script(src)
+    let output = if write {
+      apply_lock_annotations_for_format(resolved, formatted)
+    } else {
+      formatted
+    }
     if write {
-      @os_fs.write_string_to_file(path, formatted) catch {
+      @os_fs.write_string_to_file(path, output) catch {
         e => abort("fmt: " + e.to_string())
       }
     } else {
-      println(formatted)
+      println(output)
     }
+  }
+}
+
+///|
+fn apply_lock_annotations_for_format(path : String, source : String) -> String {
+  let lock_path = @codebase.lock_file_path(path)
+  let lock = match @codebase.load_lock_data(lock_path) {
+    Ok(v) => v
+    Err(err) => abort("fmt: " + err)
+  }
+  match @codebase.apply_annotations_to_source(path, source, lock.annotations) {
+    Ok(v) => v
+    Err(err) => abort("fmt: " + err)
   }
 }
 
@@ -1911,7 +1930,15 @@ fn sync_prelude_to_codebase(
   version_refs["prelude"] = prelude_hash
   let symbol_refs = clone_string_map(lock.symbol_refs)
   symbol_refs["std/prelude"] = prelude_hash
-  let next_lock = @codebase.LockData::new(path_refs, version_refs, symbol_refs)
+  let module_refs = clone_string_map(lock.module_refs)
+  let annotations = clone_string_map(lock.annotations)
+  let next_lock = @codebase.LockData::new_with_meta(
+    path_refs,
+    version_refs,
+    symbol_refs,
+    module_refs,
+    annotations,
+  )
   let lock_path = @codebase.lock_file_path(entry)
   match @codebase.write_lock_data(lock_path, next_lock) {
     Ok(_) => ()
@@ -1933,7 +1960,7 @@ fn fetch_cmd(args : Array[String]) -> Unit {
   }
   let updated_lock = sync_prelude_to_codebase(entry, path_locked)
   println(
-    "updated xsh.lock: " +
+    "updated index.lock: " +
     lock_path +
     " (" +
     updated_lock.path_refs.length().to_string() +

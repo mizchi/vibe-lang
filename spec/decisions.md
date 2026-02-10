@@ -98,9 +98,10 @@ Status: accepted and moved from `TODO.md`.
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.
 - Lock workflow is implemented in CLI/runtime flow:
-  `xsh fetch`/`xsh update-lock` maintain `xsh.lock` (`path`/`version`/`symbol`
-  maps), path imports are validated against lock entries when enabled, and
-  import diagnostics are compile-fatal.
+  `xsh fetch`/`xsh update-lock` maintain `index.lock`
+  (`path`/`version`/`symbol`/`module`/`annotation` maps), path imports are
+  validated against lock entries when enabled, and import diagnostics are
+  compile-fatal.
 - SyntaxKind token id uniqueness is fixed for parser stability:
   keyword and operator token kinds must not share raw ids
   (guarded by parser tests for `await`/`yield` vs `%`/`+=`).

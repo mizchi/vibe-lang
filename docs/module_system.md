@@ -96,7 +96,7 @@ export { dev_shell }
   - record (`record { kind: "git", ... }`)
   - dedicated literal (例: `git("github:...", rev="...", hash="...")`)
 - export の文法 (新規キーワード `export` を導入するか)
-- lock ファイルの形式と配置 (例: `xsh.lock`)
+- lock ファイルの形式と配置 (例: `index.lock`)
 - import の失敗時のエラー設計
 
 ---

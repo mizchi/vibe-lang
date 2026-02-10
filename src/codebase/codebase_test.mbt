@@ -149,7 +149,7 @@ test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
   )
   write_file(lib, "let libv = 1\nexport { libv }\n")
   let lock_path = lock_file_path(entry)
-  let lock_json = "{\"path\":{\"./old.xsh\":\"1111\"},\"version\":{\"main\":\"2222\"},\"symbol\":{\"std/io\":\"3333\"}}"
+  let lock_json = "{\"path\":{\"./old.xsh\":\"1111\"},\"version\":{\"main\":\"2222\"},\"symbol\":{\"std/io\":\"3333\"},\"module\":{\"legacy#x\":\"4444\"},\"annotation\":{\"legacy#x\":\"note\"}}"
   write_file(lock_path, lock_json)
   let updated = match update_lock_path_refs(entry) {
     Ok(v) => v
@@ -171,6 +171,22 @@ test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
   match updated.symbol_refs.get("std/io") {
     Some(hash) => assert_eq(hash, "3333")
     None => fail("expected symbol ref")
+  }
+  match updated.module_refs.get("legacy#x") {
+    Some(hash) => assert_eq(hash, "4444")
+    None => fail("expected existing module ref")
+  }
+  match updated.annotations.get("legacy#x") {
+    Some(note) => assert_eq(note, "note")
+    None => fail("expected existing annotation")
+  }
+  match updated.module_refs.get(entry_norm + "#main") {
+    Some(hash) => assert_true(hash.length() > 0)
+    None => fail("expected entry export module ref")
+  }
+  match updated.module_refs.get(lib_norm + "#libv") {
+    Some(hash) => assert_true(hash.length() > 0)
+    None => fail("expected lib export module ref")
   }
   let loaded = match load_lock_data(lock_path) {
     Ok(v) => v
@@ -215,6 +231,8 @@ test "codebase lock roundtrip keeps refs and normalizes path keys" {
     e => fail(e.to_string())
   }
   assert_true(content.contains("\"./lib.xsh\""))
+  assert_true(content.contains("\"module\""))
+  assert_true(content.contains("\"annotation\""))
   let loaded = match load_lock_data(lock_path) {
     Ok(v) => v
     Err(err) => fail(err)
@@ -237,7 +255,7 @@ test "codebase lock roundtrip keeps refs and normalizes path keys" {
 ///|
 test "codebase lock parser accepts #hash form" {
   let root = make_temp_dir("lock_hash")
-  let lock_path = root + "/xsh.lock"
+  let lock_path = root + "/index.lock"
   let _ = @os_fs.write_string_to_file(
     lock_path, "{\"path\":{},\"version\":{\"main\":\"#abcd\"},\"symbol\":{}}",
   )
@@ -249,5 +267,163 @@ test "codebase lock parser accepts #hash form" {
     Some(hash) => assert_eq(hash, "abcd")
     None => fail("expected version ref")
   }
+  remove_if_exists(root)
+}
+
+///|
+test "codebase lock_file_path uses index.lock filename" {
+  let root = make_temp_dir("lock_file_name")
+  let entry = root + "/main.xsh"
+  assert_eq(lock_file_path(entry), root + "/index.lock")
+  remove_if_exists(root)
+}
+
+///|
+test "codebase load_lock_data falls back to legacy xsh.lock" {
+  let root = make_temp_dir("legacy_lock")
+  let entry = root + "/main.xsh"
+  let legacy_path = root + "/xsh.lock"
+  write_file(
+    legacy_path, "{\"path\":{\"./main.xsh\":\"abcd\"},\"version\":{},\"symbol\":{}}",
+  )
+  let loaded = match load_lock_data(lock_file_path(entry)) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let entry_norm = @xsh_fs.normalize_path(entry)
+  match loaded.path_refs.get(entry_norm) {
+    Some(hash) => assert_eq(hash, "abcd")
+    None => fail("expected legacy path ref")
+  }
+  remove_if_exists(root)
+}
+
+///|
+test "codebase update_lock_path_refs rejects imports outside index root" {
+  let root = make_temp_dir("root_guard")
+  let outside_name = "xsh_codebase_test_outside_guard"
+  let outside = @xsh_fs.normalize_path(root + "/../" + outside_name)
+  remove_if_exists(outside)
+  @os_fs.create_dir(outside) catch {
+    e => fail(e.to_string())
+  }
+  let entry = root + "/main.xsh"
+  let outside_lib = outside + "/lib.xsh"
+  write_file(
+    root + "/index.xsh",
+    "export let module = record { std: \"./xsh/std\" }\n",
+  )
+  write_file(outside_lib, "let libv = 1\nexport { libv }\n")
+  write_file(
+    entry,
+    "import { libv } from \"../" +
+    outside_name +
+    "/lib.xsh\"\nlet main = libv\nexport { main }\n",
+  )
+  match update_lock_path_refs(entry) {
+    Ok(_) => fail("expected root guard error")
+    Err(err) => assert_true(err.contains("outside root"))
+  }
+  remove_if_exists(root)
+  remove_if_exists(outside)
+}
+
+///|
+test "codebase update_lock_path_refs resolves std namespace via index.xsh" {
+  let root = make_temp_dir("registry_std")
+  let std_dir = root + "/xsh/std"
+  @os_fs.create_dir(root + "/xsh") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(std_dir) catch {
+    e => fail(e.to_string())
+  }
+  let entry = root + "/main.xsh"
+  let std_mod = std_dir + "/math.xsh"
+  write_file(
+    root + "/index.xsh",
+    "export let module = record { std: \"./xsh/std\" }\n",
+  )
+  write_file(std_mod, "let value = 1\nexport { value }\n")
+  write_file(
+    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+  )
+  let updated = match update_lock_path_refs(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let entry_norm = @xsh_fs.normalize_path(entry)
+  let std_norm = @xsh_fs.normalize_path(std_mod)
+  assert_true(updated.path_refs.contains(entry_norm))
+  assert_true(updated.path_refs.contains(std_norm))
+  remove_if_exists(root)
+}
+
+///|
+test "codebase update_lock_path_refs captures export comments as annotations" {
+  let root = make_temp_dir("annotations_capture")
+  let entry = root + "/main.xsh"
+  write_file(
+    entry,
+    "// first line\n// second line\nlet main = 1\nexport { main }\n",
+  )
+  let updated = match update_lock_path_refs(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let key = @xsh_fs.normalize_path(entry) + "#main"
+  match updated.annotations.get(key) {
+    Some(note) => assert_eq(note, "first line\nsecond line")
+    None => fail("expected annotation")
+  }
+  remove_if_exists(root)
+}
+
+///|
+test "codebase update_lock_path_refs clears removed comments in annotations" {
+  let root = make_temp_dir("annotations_remove")
+  let entry = root + "/main.xsh"
+  write_file(entry, "// note\nlet main = 1\nexport { main }\n")
+  let _ = match update_lock_path_refs(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  write_file(entry, "let main = 1\nexport { main }\n")
+  let updated = match update_lock_path_refs(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let key = @xsh_fs.normalize_path(entry) + "#main"
+  assert_false(updated.annotations.contains(key))
+  remove_if_exists(root)
+}
+
+///|
+test "codebase apply_annotations_to_source injects export comments" {
+  let root = make_temp_dir("annotations_apply")
+  let path = @xsh_fs.normalize_path(root + "/main.xsh")
+  let source = "let main = 1\nexport { main }\n"
+  let annotations : Map[String, String] = {}
+  annotations[path + "#main"] = "hello\nworld"
+  let applied = match apply_annotations_to_source(path, source, annotations) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  assert_true(applied.contains("// hello\n// world\nlet main = 1"))
+  remove_if_exists(root)
+}
+
+///|
+test "codebase apply_annotations_to_source avoids duplicate when comment exists" {
+  let root = make_temp_dir("annotations_apply_existing")
+  let path = @xsh_fs.normalize_path(root + "/main.xsh")
+  let source = "// hello\nlet main = 1\nexport { main }\n"
+  let annotations : Map[String, String] = {}
+  annotations[path + "#main"] = "hello"
+  let applied = match apply_annotations_to_source(path, source, annotations) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  assert_eq(applied, source)
   remove_if_exists(root)
 }

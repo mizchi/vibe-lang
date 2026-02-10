@@ -631,7 +631,7 @@ pub fn XshDb::new() -> XshDb {
                               ")",
                               span: Some(span),
                               hint: Some(
-                                "run `xsh fetch <entry>` to refresh xsh.lock",
+                                "run `xsh fetch <entry>` to refresh index.lock",
                               ),
                               note: None,
                             })
@@ -646,7 +646,7 @@ pub fn XshDb::new() -> XshDb {
                             path_obj.normalized,
                             span: Some(span),
                             hint: Some(
-                              "run `xsh fetch <entry>` to create xsh.lock",
+                              "run `xsh fetch <entry>` to create index.lock",
                             ),
                             note: None,
                           })
@@ -694,7 +694,7 @@ pub fn XshDb::new() -> XshDb {
                                   ")",
                                   span: Some(span),
                                   hint: Some(
-                                    "run `xsh fetch <entry>` to refresh xsh.lock",
+                                    "run `xsh fetch <entry>` to refresh index.lock",
                                   ),
                                   note: None,
                                 })
@@ -709,7 +709,7 @@ pub fn XshDb::new() -> XshDb {
                                 path_obj.normalized,
                                 span: Some(span),
                                 hint: Some(
-                                  "run `xsh fetch <entry>` to create xsh.lock",
+                                  "run `xsh fetch <entry>` to create index.lock",
                                 ),
                                 note: None,
                               })

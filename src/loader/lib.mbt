@@ -28,9 +28,13 @@ fn load_sources_recursive(
   path : String,
   visited : Map[String, Bool],
   fs : &@io.FileSystemAdapter,
+  root : String,
+  registry_modules : Map[String, String],
 ) -> Result[Unit, String] {
   let stack : Array[String] = []
-  load_sources_recursive_impl(db, path, visited, stack, fs)
+  load_sources_recursive_impl(
+    db, path, visited, stack, fs, root, registry_modules,
+  )
 }
 
 ///|
@@ -40,6 +44,8 @@ fn load_sources_recursive_impl(
   visited : Map[String, Bool],
   stack : Array[String],
   fs : &@io.FileSystemAdapter,
+  root : String,
+  registry_modules : Map[String, String],
 ) -> Result[Unit, String] {
   let norm = @xsh_fs.normalize_path(path)
   for i, p in stack {
@@ -78,7 +84,16 @@ fn load_sources_recursive_impl(
       @xsh_core.Stmt::Import(source~, ..) =>
         match source {
           @xsh_core.ModuleRef::Path(path~) => {
-            let resolved = resolve_import_path(base, path)
+            let resolved = match
+              @codebase.resolve_import_path_with_registry(
+                base, path, root, registry_modules,
+              ) {
+              Ok(v) => v
+              Err(err) => {
+                let _ = stack.pop()
+                return Err(err)
+              }
+            }
             if resolved.has_suffix(".wasm") {
               if not(visited.contains(resolved)) {
                 visited.set(resolved, true)
@@ -93,7 +108,9 @@ fn load_sources_recursive_impl(
               }
             } else {
               match
-                load_sources_recursive_impl(db, resolved, visited, stack, fs) {
+                load_sources_recursive_impl(
+                  db, resolved, visited, stack, fs, root, registry_modules,
+                ) {
                 Ok(_) => ()
                 Err(err) => {
                   let _ = stack.pop()
@@ -173,12 +190,18 @@ pub fn load_db_with_paths_with_fs(
 ) -> Result[(@xsh_lib.XshDb, String, Array[String]), String] {
   let db = @xsh_lib.XshDb::new()
   let entry = resolve_entry_path_with_fs(entry_path, fs)
+  let root = @codebase.resolve_index_root_with_fs(entry, fs)
+  let registry_modules = match
+    @codebase.load_registry_modules_with_fs(root, fs) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
   match apply_lock_to_db_with_fs(db, entry, fs) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
   let visited : Map[String, Bool] = {}
-  match load_sources_recursive(db, entry, visited, fs) {
+  match load_sources_recursive(db, entry, visited, fs, root, registry_modules) {
     Ok(_) => {
       let paths : Array[String] = []
       for path, _ in visited {

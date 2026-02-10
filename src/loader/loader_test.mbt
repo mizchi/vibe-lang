@@ -215,3 +215,63 @@ test "loader load_db_with_paths reports import cycle" {
   }
   remove_if_exists(root)
 }
+
+///|
+test "loader load_db_with_paths rejects import outside index root" {
+  let root = make_temp_dir("root_guard")
+  let outside_name = "xsh_loader_test_outside_guard"
+  let outside = @xsh_fs.normalize_path(root + "/../" + outside_name)
+  remove_if_exists(outside)
+  @os_fs.create_dir(outside) catch {
+    e => fail(e.to_string())
+  }
+  let entry = root + "/main.xsh"
+  let outside_lib = outside + "/lib.xsh"
+  write_file(
+    root + "/index.xsh",
+    "export let module = record { std: \"./xsh/std\" }\n",
+  )
+  write_file(outside_lib, "let libv = 1\nexport { libv }\n")
+  write_file(
+    entry,
+    "import { libv } from \"../" +
+    outside_name +
+    "/lib.xsh\"\nlet main = libv\nexport { main }\n",
+  )
+  match load_db_with_paths(entry) {
+    Ok(_) => fail("expected outside root error")
+    Err(err) => assert_true(err.contains("outside root"))
+  }
+  remove_if_exists(root)
+  remove_if_exists(outside)
+}
+
+///|
+test "loader load_db_with_paths resolves std namespace from index registry" {
+  let root = make_temp_dir("registry_std")
+  let std_root = root + "/xsh/std"
+  @os_fs.create_dir(root + "/xsh") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(std_root) catch {
+    e => fail(e.to_string())
+  }
+  let entry = root + "/main.xsh"
+  let std_mod = std_root + "/math.xsh"
+  write_file(
+    root + "/index.xsh",
+    "export let module = record { std: \"./xsh/std\" }\n",
+  )
+  write_file(std_mod, "let value = 1\nexport { value }\n")
+  write_file(
+    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+  )
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (_db, _resolved, paths) = loaded
+  let std_norm = @xsh_fs.normalize_path(std_mod)
+  assert_true(contains_path(paths, std_norm))
+  remove_if_exists(root)
+}

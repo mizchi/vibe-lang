@@ -451,16 +451,27 @@ Invariants:
 
 Current lock file:
 
-- `xsh.lock` (JSON object) is loaded from the entry file directory.
+- `index.lock` (JSON object) is loaded from the resolved index root directory.
+  - Legacy compatibility: if `index.lock` is absent and `xsh.lock` exists in the
+    same directory, loader reads `xsh.lock`.
 - Shape:
   - `path`: `{ "<path-key>": "<hash>" }`
   - `version`: `{ "<name>": "<hash>" }`
   - `symbol`: `{ "<name>": "<hash>" }`
+  - `module`: `{ "<normalized-path>#<export-name>": "<normalized-export-hash>" }`
+  - `annotation`: `{ "<key>": "<note-text>" }`
 - `path` keys are written as lock-dir-relative paths (`./foo.xsh`) and resolved
   to normalized absolute paths when loading (absolute keys are also accepted).
+- Root guard:
+  - index root is the nearest ancestor directory containing `index.xsh`
+    (fallback: entry directory).
+  - Path imports are rejected when resolved path escapes index root.
+  - `index.xsh` may define `export let module = record { <ns>: "<dir>" }` to map
+    namespace imports (for example `std/...`) under root.
+  - Default namespace mapping includes `std -> ./xsh/std`.
 - CLI:
   - `xsh fetch <entry>` (or `xsh update-lock <entry>`) resolves recursive
-    path imports and updates `xsh.lock`.
+    path imports and updates `index.lock`.
   - `fetch/update-lock` also injects prelude refs:
     - `version.prelude = <normalized-prelude-hash>`
     - `symbol."std/prelude" = <normalized-prelude-hash>`
