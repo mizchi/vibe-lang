@@ -771,6 +771,12 @@ Bench:
   `refs/bit/index/<scope>/graph/wal_head`.
 - `just bench-cmd-latency` compares per-command latency between interpreter and a
   resident wasmtime instance.
+- `just bench-scratch-workflow` benchmarks scratch workflow stages
+  (`eval` / `finalize` / `export+apply` / `full`) and supports:
+  - `XSH_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (comma-separated)
+  - `XSH_BENCH_CHAIN=<N>`
+  - `XSH_BENCH_WARMUP=<N>` / `XSH_BENCH_RUNS=<N>`
+  - `XSH_BENCH_EXPORT_JSON=<path>` for hyperfine JSON export
 - `just run-wasm-js-string examples/string_basic.xsh` compiles with `--wasm-js-string`
   and runs the result using a JS engine (Node/WebAssembly builtins).
 

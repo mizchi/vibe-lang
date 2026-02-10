@@ -287,10 +287,18 @@ WASM GC fixtures live in `fixtures/wasm_gc/*.xsh` and check for `struct.new/get/
 just bench-wasmtime
 just bench-compare
 just bench-cmd-latency
+just bench-scratch-workflow
 just bench-symbol-index
 just bench-advanced-graph
 just bench-typechecker
 ```
+
+`bench-scratch-workflow` は scratch 開発フローを段階別に計測する。
+
+- `XSH_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (`all` は `,` 区切り指定可)
+- `XSH_BENCH_CHAIN=<N>` 定義チェーン長（デフォルト `40`）
+- `XSH_BENCH_WARMUP=<N>` / `XSH_BENCH_RUNS=<N>`
+- `XSH_BENCH_EXPORT_JSON=<path>` で `hyperfine` の JSON を保存
 
 ## License
 

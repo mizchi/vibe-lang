@@ -179,7 +179,8 @@ bench-cmd-latency:
 bench-cmd-compile:
     scripts/bench_cmd_compile.sh
 
-# Benchmark scratch eval -> finalize -> export workflow
+# Benchmark scratch workflow stages (eval/finalize/export_apply/full)
+# env: XSH_BENCH_SCENARIOS, XSH_BENCH_CHAIN, XSH_BENCH_WARMUP, XSH_BENCH_RUNS
 bench-scratch-workflow:
     scripts/bench_scratch_workflow.sh
 
