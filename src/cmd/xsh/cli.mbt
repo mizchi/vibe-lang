@@ -723,6 +723,20 @@ fn finalize_prefilter_stmts(
 }
 
 ///|
+fn finalize_select_stmts(
+  ast : @xsh_core.Module,
+  library_mode : Bool,
+) -> Array[@xsh_core.Stmt] {
+  let extra_entries = finalize_collect_export_names(ast)
+  let prefiltered = finalize_prefilter_stmts(ast.stmts, library_mode)
+  let dced = @xsh_lib.dce_module_with_entry_names(
+    @xsh_core.Module::{ stmts: prefiltered },
+    extra_entries,
+  )
+  dced.stmts
+}
+
+///|
 fn finalize_cmd(args : Array[String]) -> Unit {
   let options = match parse_finalize_cmd_args(args) {
     Ok(v) => v
@@ -746,19 +760,7 @@ fn finalize_cmd(args : Array[String]) -> Unit {
   let ast = @parser.parse_ast(source) catch {
     e => abort("finalize: parse failed: " + e.to_string())
   }
-  let extra_entries = finalize_collect_export_names(ast)
-  let prefiltered = finalize_prefilter_stmts(ast.stmts, options.library_mode)
-  let dced = @xsh_lib.dce_module_with_entry_names(
-    @xsh_core.Module::{ stmts: prefiltered },
-    extra_entries,
-  )
-  let kept_stmts : Array[@xsh_core.Stmt] = []
-  for stmt in dced.stmts {
-    match stmt {
-      @xsh_core.Stmt::Test(..) => ()
-      _ => kept_stmts.push(stmt)
-    }
-  }
+  let kept_stmts = finalize_select_stmts(ast, options.library_mode)
   let finalized_source = match finalize_render_source(source, kept_stmts) {
     Ok(v) => v
     Err(err) => abort(err)

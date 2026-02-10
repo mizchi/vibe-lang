@@ -1184,6 +1184,80 @@ test "cli finalize library mode prunes scratch db toward exports" {
 }
 
 ///|
+test "cli finalize safe mode keeps side-effect expressions" {
+  let root = wbtest_make_temp_dir("finalize_safe_mode")
+  let db_path = root + "/tmp1.db"
+  let source = "let helper = (x: Int) -> Int { x + 1 }\n" +
+    "let answer = helper(41)\n" +
+    "helper(0)\n" +
+    "test \"answer\" { assert(answer == 42) }\n" +
+    "export { answer }\n"
+  match write_eval_db_source(db_path, source) {
+    Ok(_) => ()
+    Err(err) => fail("write seed db failed: " + err)
+  }
+  finalize_cmd(["--db=" + db_path])
+  let finalized = @os_fs.read_file_to_string(db_path) catch {
+    e => fail("read finalized db failed: " + e.to_string())
+  }
+  assert_true(finalized.contains("let helper = (x: Int) -> Int"))
+  assert_true(finalized.contains("let answer = helper(41)"))
+  assert_true(finalized.contains("helper(0)"))
+  assert_false(finalized.contains("test \"answer\""))
+  let _ = @parser.parse_ast(finalized) catch {
+    e => fail("finalized parse failed: " + e.to_string())
+  }
+  wbtest_remove_if_exists(db_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli finalize export workflow supports fetch and apply" {
+  let root = wbtest_make_temp_dir("finalize_export_apply")
+  let db_path = root + "/tmp1.db"
+  let out_path = root + "/main.xsh"
+  let source = "let helper = (x: Int) -> Int { x + 1 }\n" +
+    "let answer = helper(41)\n" +
+    "helper(0)\n" +
+    "export { answer }\n"
+  match write_eval_db_source(db_path, source) {
+    Ok(_) => ()
+    Err(err) => fail("write seed db failed: " + err)
+  }
+  finalize_cmd(["--db=" + db_path, "--library", "--export=" + out_path])
+  let exported = @os_fs.read_file_to_string(out_path) catch {
+    e => fail("read exported module failed: " + e.to_string())
+  }
+  assert_true(exported.contains("let helper = (x: Int) -> Int"))
+  assert_true(exported.contains("let answer = helper(41)"))
+  assert_true(exported.contains("export { answer }"))
+  assert_false(exported.contains("helper(0)"))
+  fetch_cmd([out_path])
+  let lock_path = @codebase.lock_file_path(out_path)
+  let lock = match @codebase.load_lock_data(lock_path) {
+    Ok(v) => v
+    Err(err) => fail("load lock failed: " + err)
+  }
+  let resolved = @loader.resolve_entry_path(out_path)
+  match lock.path_refs.get(resolved) {
+    Some(hash) => assert_eq(hash, @xsh_core.git_blob_hash_string(exported))
+    None => fail("expected path ref for exported module")
+  }
+  apply_cmd([out_path])
+  match resolve_entry_artifacts(out_path) {
+    Ok((db, entry, _lock, _index, _graph_head)) => {
+      let _ = db.types(entry)
+
+    }
+    Err(err) => fail("resolve entry artifacts failed: " + err)
+  }
+  wbtest_remove_if_exists(out_path)
+  wbtest_remove_if_exists(@codebase.lock_file_path(out_path))
+  wbtest_remove_if_exists(db_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli finalize library mode keeps re-export stmt parseable" {
   let root = wbtest_make_temp_dir("finalize_library_mode_reexport")
   let db_path = root + "/tmp1.db"

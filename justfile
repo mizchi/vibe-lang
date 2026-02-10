@@ -179,6 +179,10 @@ bench-cmd-latency:
 bench-cmd-compile:
     scripts/bench_cmd_compile.sh
 
+# Benchmark scratch eval -> finalize -> export workflow
+bench-scratch-workflow:
+    scripts/bench_scratch_workflow.sh
+
 # Benchmark symbol index + LSIF backend
 bench-symbol-index:
     moon bench -p benches -f symbol_index_bench.mbt
