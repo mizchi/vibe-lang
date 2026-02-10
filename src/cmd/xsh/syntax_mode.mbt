@@ -100,7 +100,9 @@ fn cli_args_tail(args : Array[String], start : Int) -> Array[String] {
 }
 
 ///|
-pub fn parse_cli_dispatch_args(args : Array[String]) -> Result[CliDispatchArgs, String] {
+pub fn parse_cli_dispatch_args(
+  args : Array[String],
+) -> Result[CliDispatchArgs, String] {
   if args.length() <= 1 {
     return Err("missing command")
   }

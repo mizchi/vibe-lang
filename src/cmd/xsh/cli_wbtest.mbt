@@ -217,11 +217,7 @@ test "cli runtime flags parse with unstable flags" {
 ///|
 test "cli dispatch args parse leading unstable flags" {
   let parsed = parse_cli_dispatch_args([
-    "xsh",
-    "--unstable-async",
-    "--unstable-threads",
-    "run",
-    "main.xsh",
+    "xsh", "--unstable-async", "--unstable-threads", "run", "main.xsh",
   ])
   match parsed {
     Ok(v) => {
@@ -238,12 +234,7 @@ test "cli dispatch args parse leading unstable flags" {
 ///|
 test "cli dispatch args merges leading and trailing unstable flags" {
   let parsed = parse_cli_dispatch_args([
-    "xsh",
-    "--unstable-async",
-    "run",
-    "--unstable-threads",
-    "--syntax",
-    "posix",
+    "xsh", "--unstable-async", "run", "--unstable-threads", "--syntax", "posix",
     "main.xsh",
   ])
   match parsed {
@@ -261,9 +252,7 @@ test "cli dispatch args merges leading and trailing unstable flags" {
 ///|
 test "cli dispatch args rejects missing command" {
   let parsed = parse_cli_dispatch_args([
-    "xsh",
-    "--unstable-async",
-    "--unstable-threads",
+    "xsh", "--unstable-async", "--unstable-threads",
   ])
   match parsed {
     Ok(_) => fail("expected error")

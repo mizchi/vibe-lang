@@ -438,12 +438,15 @@ pub fn lock_file_path(entry : String) -> String {
 }
 
 ///|
-pub fn load_lock_data(lock_path : String) -> Result[LockData, String] {
-  if not(@io.path_exists(lock_path)) {
+pub fn load_lock_data_with_fs(
+  lock_path : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[LockData, String] {
+  if not(@io.path_exists_with(fs, lock_path)) {
     return Ok(empty_lock_data())
   }
   let base_dir = @xsh_fs.parent_path(lock_path)
-  let content = match @io.read_string(lock_path) {
+  let content = match @io.read_string_with(fs, lock_path) {
     Ok(v) => v
     Err(err) => return Err("failed to read xsh.lock: " + err)
   }
@@ -451,17 +454,31 @@ pub fn load_lock_data(lock_path : String) -> Result[LockData, String] {
 }
 
 ///|
-pub fn write_lock_data(
+pub fn load_lock_data(lock_path : String) -> Result[LockData, String] {
+  load_lock_data_with_fs(lock_path, @io.default_fs_adapter())
+}
+
+///|
+pub fn write_lock_data_with_fs(
   lock_path : String,
   lock : LockData,
+  fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   let base_dir = @xsh_fs.parent_path(lock_path)
   let content = lock_data_to_json(lock, base_dir)
-  match @io.write_string(lock_path, content) {
+  match @io.write_string_with(fs, lock_path, content) {
     Ok(_) => ()
     Err(err) => return Err("failed to write xsh.lock: " + err)
   }
   Ok(())
+}
+
+///|
+pub fn write_lock_data(
+  lock_path : String,
+  lock : LockData,
+) -> Result[Unit, String] {
+  write_lock_data_with_fs(lock_path, lock, @io.default_fs_adapter())
 }
 
 ///|

@@ -4745,9 +4745,7 @@ fn type_call(
               }
               "threads_probe_wat" => {
                 let pos_args = extract_positional_args(
-                  args,
-                  "threads_probe_wat",
-                  call_span,
+                  args, "threads_probe_wat", call_span,
                 )
                 if pos_args.length() != 0 {
                   raise TypeError::BadCall(
@@ -4759,9 +4757,7 @@ fn type_call(
               }
               "threads_runtime_hints" => {
                 let pos_args = extract_positional_args(
-                  args,
-                  "threads_runtime_hints",
-                  call_span,
+                  args, "threads_runtime_hints", call_span,
                 )
                 if pos_args.length() != 0 {
                   raise TypeError::BadCall(
@@ -4778,9 +4774,7 @@ fn type_call(
               }
               "threads_channel_new" => {
                 let pos_args = extract_positional_args(
-                  args,
-                  "threads_channel_new",
-                  call_span,
+                  args, "threads_channel_new", call_span,
                 )
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall(
@@ -4807,9 +4801,7 @@ fn type_call(
               }
               "threads_send" => {
                 let pos_args = extract_positional_args(
-                  args,
-                  "threads_send",
-                  call_span,
+                  args, "threads_send", call_span,
                 )
                 if pos_args.length() != 2 {
                   raise TypeError::BadCall(
@@ -4851,9 +4843,7 @@ fn type_call(
               }
               "threads_recv" => {
                 let pos_args = extract_positional_args(
-                  args,
-                  "threads_recv",
-                  call_span,
+                  args, "threads_recv", call_span,
                 )
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall(
@@ -4880,9 +4870,7 @@ fn type_call(
               }
               "threads_spawn" => {
                 let pos_args = extract_positional_args(
-                  args,
-                  "threads_spawn",
-                  call_span,
+                  args, "threads_spawn", call_span,
                 )
                 if pos_args.length() != 2 {
                   raise TypeError::BadCall(
@@ -4924,9 +4912,7 @@ fn type_call(
               }
               "threads_wait" => {
                 let pos_args = extract_positional_args(
-                  args,
-                  "threads_wait",
-                  call_span,
+                  args, "threads_wait", call_span,
                 )
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall(
@@ -6986,7 +6972,10 @@ fn type_let_expr(
   allow_effect : Bool,
 ) -> TypeScheme raise TypeError {
   if rec && name == "_" {
-    raise TypeError::BadRec(message="wildcard binding cannot be recursive", span~)
+    raise TypeError::BadRec(
+      message="wildcard binding cannot be recursive",
+      span~,
+    )
   }
   if rec {
     match expr {

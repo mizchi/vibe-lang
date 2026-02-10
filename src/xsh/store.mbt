@@ -105,12 +105,7 @@ fn thread_runtime_key(id : Int) -> String {
 
 ///|
 fn ThreadRuntime::new() -> ThreadRuntime {
-  {
-    next_channel_id: 0,
-    next_task_id: 0,
-    channels: {},
-    tasks: {},
-  }
+  { next_channel_id: 0, next_task_id: 0, channels: {}, tasks: {} }
 }
 
 ///|
@@ -182,11 +177,7 @@ fn ThreadRuntime::wait(self : ThreadRuntime, task_id : Int) -> Int? {
   match self.tasks.get(key) {
     None => None
     Some(task) => {
-      self.tasks[key] = {
-        name: task.name,
-        mailbox: task.mailbox,
-        done: true,
-      }
+      self.tasks[key] = { name: task.name, mailbox: task.mailbox, done: true }
       Some(0)
     }
   }
@@ -273,11 +264,7 @@ fn Runtime::threads_recv(self : Runtime, channel_id : Int) -> String? {
 }
 
 ///|
-fn Runtime::threads_spawn(
-  self : Runtime,
-  name : String,
-  mailbox : Int,
-) -> Int? {
+fn Runtime::threads_spawn(self : Runtime, name : String, mailbox : Int) -> Int? {
   self.thread_runtime.spawn(name, mailbox)
 }
 

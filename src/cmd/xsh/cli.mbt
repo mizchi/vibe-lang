@@ -254,12 +254,18 @@ fn sanitize_wit_ident(raw : String) -> String {
 
 ///|
 /// Ensure dist directory exists
-fn ensure_dist_dir() -> Unit {
-  if not(@os_fs.path_exists("dist")) {
-    @os_fs.create_dir("dist") catch {
-      e => abort("compile: failed to create dist/: " + e.to_string())
+fn ensure_dist_dir_with(fs : &@io.FileSystemAdapter) -> Unit {
+  if not(@io.path_exists_with(fs, "dist")) {
+    match @io.create_dir_with(fs, "dist") {
+      Ok(_) => ()
+      Err(err) => abort("compile: failed to create dist/: " + err)
     }
   }
+}
+
+///|
+fn ensure_dist_dir() -> Unit {
+  ensure_dist_dir_with(@io.default_fs_adapter())
 }
 
 ///|
@@ -283,14 +289,15 @@ fn compile_cmd(args : Array[String]) -> Unit {
     Ok(v) => v
     Err(msg) => abort(msg)
   }
-  match @loader.load_db(opts.entry_path) {
+  let fs = @io.default_fs_adapter()
+  match @loader.load_db_with_fs(opts.entry_path, fs) {
     Err(err) => abort("compile: " + err)
     Ok((db, entry)) => {
       // Resolve output path with default to dist/
       let resolved_out = match opts.out_path {
         Some(path) => path
         None => {
-          ensure_dist_dir()
+          ensure_dist_dir_with(fs)
           default_output_path(opts.entry_path, opts.mode)
         }
       }
@@ -299,8 +306,9 @@ fn compile_cmd(args : Array[String]) -> Unit {
           let compiled = @xsh_lib.compile_module(db, entry) catch {
             e => abort("compile: " + e.to_string())
           }
-          @os_fs.write_string_to_file(resolved_out, compiled.ir) catch {
-            e => abort("compile: " + e.to_string())
+          match @io.write_string_with(fs, resolved_out, compiled.ir) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
           }
           println("wrote " + resolved_out)
         }
@@ -313,8 +321,9 @@ fn compile_cmd(args : Array[String]) -> Unit {
           ) catch {
             e => abort("compile: " + e.to_string())
           }
-          @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
-            e => abort("compile: " + e.to_string())
+          match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
           }
           println("wrote " + resolved_out)
         }
@@ -327,8 +336,9 @@ fn compile_cmd(args : Array[String]) -> Unit {
           ) catch {
             e => abort("compile: " + e.to_string())
           }
-          @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
-            e => abort("compile: " + e.to_string())
+          match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
           }
           println("wrote " + resolved_out)
         }
@@ -341,8 +351,9 @@ fn compile_cmd(args : Array[String]) -> Unit {
           ) catch {
             e => abort("compile: " + e.to_string())
           }
-          @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
-            e => abort("compile: " + e.to_string())
+          match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
           }
           println("wrote " + resolved_out)
         }
@@ -354,8 +365,9 @@ fn compile_cmd(args : Array[String]) -> Unit {
           ) catch {
             e => abort("compile: " + e.to_string())
           }
-          @os_fs.write_bytes_to_file(resolved_out, wasm_bytes) catch {
-            e => abort("compile: " + e.to_string())
+          match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
           }
           println("wrote " + resolved_out)
         }
@@ -369,8 +381,9 @@ fn compile_cmd(args : Array[String]) -> Unit {
           ) catch {
             e => abort("compile: " + e.to_string())
           }
-          @os_fs.write_string_to_file(resolved_out, wit_str) catch {
-            e => abort("compile: " + e.to_string())
+          match @io.write_string_with(fs, resolved_out, wit_str) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
           }
           println("wrote " + resolved_out)
         }
@@ -384,8 +397,9 @@ fn compile_cmd(args : Array[String]) -> Unit {
           ) catch {
             e => abort("compile: " + e.to_string())
           }
-          @os_fs.write_string_to_file(resolved_out, wit_str) catch {
-            e => abort("compile: " + e.to_string())
+          match @io.write_string_with(fs, resolved_out, wit_str) {
+            Ok(_) => ()
+            Err(err) => abort("compile: " + err)
           }
           println("wrote " + resolved_out)
         }
@@ -1851,16 +1865,66 @@ fn compile_entry(
 }
 
 ///|
+fn clone_string_map(src : Map[String, String]) -> Map[String, String] {
+  let out : Map[String, String] = {}
+  for key, value in src {
+    out[key] = value
+  }
+  out
+}
+
+///|
+fn normalized_prelude_object() -> (String, String) {
+  let prelude_ast = @checker.prelude_ast()
+  let bundle = @xsh_core.normalize_with_imports(prelude_ast, fn(_import_path) {
+    None
+  })
+  let prelude_hash = bundle.main_hash
+  let prelude_module = match bundle.modules.get(prelude_hash) {
+    Some(m) => m
+    None => @xsh_core.normalize_module(prelude_ast)
+  }
+  let prelude_json = @xsh_core.serialize_module(prelude_module)
+  (prelude_hash, prelude_json)
+}
+
+///|
+fn sync_prelude_to_codebase(
+  entry : String,
+  lock : @codebase.LockData,
+) -> @codebase.LockData {
+  let (prelude_hash, prelude_json) = normalized_prelude_object()
+  let xsh_dir = find_xsh_dir(entry)
+  let codebase = @codebase.Codebase::new(xsh_dir)
+  let _ = codebase.write_object(prelude_hash, prelude_json) catch {
+    e => abort("fetch: sync prelude object: " + e.to_string())
+  }
+  let path_refs = clone_string_map(lock.path_refs)
+  let version_refs = clone_string_map(lock.version_refs)
+  version_refs["prelude"] = prelude_hash
+  let symbol_refs = clone_string_map(lock.symbol_refs)
+  symbol_refs["std/prelude"] = prelude_hash
+  let next_lock = @codebase.LockData::new(path_refs, version_refs, symbol_refs)
+  let lock_path = @codebase.lock_file_path(entry)
+  match @codebase.write_lock_data(lock_path, next_lock) {
+    Ok(_) => ()
+    Err(err) => abort("fetch: sync prelude lock: " + err)
+  }
+  next_lock
+}
+
+///|
 fn fetch_cmd(args : Array[String]) -> Unit {
   if args.length() != 1 {
     abort("fetch: expected <file>")
   }
   let entry = @loader.resolve_entry_path(args[0])
   let lock_path = @codebase.lock_file_path(entry)
-  let updated_lock = match @codebase.update_lock_path_refs(entry) {
+  let path_locked = match @codebase.update_lock_path_refs(entry) {
     Ok(lock) => lock
     Err(err) => abort("fetch: " + err)
   }
+  let updated_lock = sync_prelude_to_codebase(entry, path_locked)
   println(
     "updated xsh.lock: " +
     lock_path +

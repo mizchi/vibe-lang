@@ -57,7 +57,7 @@ pub fn Runtime::eval_module(
   let mut last : @core.Value? = None
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Let(rec~, name~, expr~, ..) => {
+      @core.Stmt::Let(rec~, name~, expr~, ..) =>
         if name == "_" {
           let out = eval_expr(self, expr)
           extend_effects(effects, out.effects)
@@ -94,7 +94,6 @@ pub fn Runtime::eval_module(
           }
           last = Some(value)
         }
-      }
       @core.Stmt::EnumDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::TypeAlias(..) => last = Some(@core.Value::Unit)
       @core.Stmt::TraitDef(..) => last = Some(@core.Value::Unit)
@@ -217,7 +216,7 @@ pub fn Runtime::eval_module(
         }
         last = Some(@core.Value::Unit)
       }
-      @core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
+      @core.Stmt::ExportLet(rec~, name~, expr~, ..) =>
         if name == "_" {
           let out = eval_expr(self, expr)
           extend_effects(effects, out.effects)
@@ -254,7 +253,6 @@ pub fn Runtime::eval_module(
           }
           last = Some(value)
         }
-      }
       @core.Stmt::ExportEnumDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::ExportTypeAlias(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
@@ -973,7 +971,10 @@ fn eval_call(
               if pos_args.length() != 0 {
                 raise EvalError::BadCall("threads_probe_wat")
               }
-              { value: @core.Value::String(@x_threads.probe_wat()), effects: out.effects }
+              {
+                value: @core.Value::String(@x_threads.probe_wat()),
+                effects: out.effects,
+              }
             }
             "threads_runtime_hints" => {
               require_unstable_threads(rt, "threads_runtime_hints")
@@ -1019,9 +1020,7 @@ fn eval_call(
               match pos_args[0] {
                 @core.Value::Int(capacity) =>
                   {
-                    value: @core.Value::Int(
-                      rt.threads_channel_new(capacity),
-                    ),
+                    value: @core.Value::Int(rt.threads_channel_new(capacity)),
                     effects: out.effects,
                   }
                 _ => raise EvalError::BadCall("threads_channel_new")
@@ -1037,10 +1036,8 @@ fn eval_call(
               match (pos_args[0], pos_args[1]) {
                 (@core.Value::Int(channel_id), @core.Value::String(message)) =>
                   match rt.threads_send(channel_id, message) {
-                    Some(ok) => {
-                      value: @core.Value::Bool(ok),
-                      effects: out.effects,
-                    }
+                    Some(ok) =>
+                      { value: @core.Value::Bool(ok), effects: out.effects }
                     None => raise EvalError::BadCall("threads_send")
                   }
                 _ => raise EvalError::BadCall("threads_send")
@@ -1056,10 +1053,11 @@ fn eval_call(
               match pos_args[0] {
                 @core.Value::Int(channel_id) =>
                   match rt.threads_recv(channel_id) {
-                    Some(message) => {
-                      value: @core.Value::String(message),
-                      effects: out.effects,
-                    }
+                    Some(message) =>
+                      {
+                        value: @core.Value::String(message),
+                        effects: out.effects,
+                      }
                     None => raise EvalError::BadCall("threads_recv")
                   }
                 _ => raise EvalError::BadCall("threads_recv")
@@ -1078,10 +1076,8 @@ fn eval_call(
               match (pos_args[0], pos_args[1]) {
                 (@core.Value::String(name), @core.Value::Int(mailbox)) =>
                   match rt.threads_spawn(name, mailbox) {
-                    Some(task_id) => {
-                      value: @core.Value::Int(task_id),
-                      effects: out.effects,
-                    }
+                    Some(task_id) =>
+                      { value: @core.Value::Int(task_id), effects: out.effects }
                     None => raise EvalError::BadCall("threads_spawn")
                   }
                 _ => raise EvalError::BadCall("threads_spawn")
@@ -1097,10 +1093,8 @@ fn eval_call(
               match pos_args[0] {
                 @core.Value::Int(task_id) =>
                   match rt.threads_wait(task_id) {
-                    Some(status) => {
-                      value: @core.Value::Int(status),
-                      effects: out.effects,
-                    }
+                    Some(status) =>
+                      { value: @core.Value::Int(status), effects: out.effects }
                     None => raise EvalError::BadCall("threads_wait")
                   }
                 _ => raise EvalError::BadCall("threads_wait")

@@ -1,11 +1,12 @@
 ///|
-fn apply_lock_to_db(
+fn apply_lock_to_db_with_fs(
   db : @xsh_lib.XshDb,
   entry : String,
+  fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   db.require_path_lock(true)
   let lock_path = @codebase.lock_file_path(entry)
-  let lock = match @codebase.load_lock_data(lock_path) {
+  let lock = match @codebase.load_lock_data_with_fs(lock_path, fs) {
     Ok(data) => data
     Err(err) => return Err(err)
   }
@@ -26,9 +27,10 @@ fn load_sources_recursive(
   db : @xsh_lib.XshDb,
   path : String,
   visited : Map[String, Bool],
+  fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   let stack : Array[String] = []
-  load_sources_recursive_impl(db, path, visited, stack)
+  load_sources_recursive_impl(db, path, visited, stack, fs)
 }
 
 ///|
@@ -37,6 +39,7 @@ fn load_sources_recursive_impl(
   path : String,
   visited : Map[String, Bool],
   stack : Array[String],
+  fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   let norm = @xsh_fs.normalize_path(path)
   for i, p in stack {
@@ -55,7 +58,7 @@ fn load_sources_recursive_impl(
   }
   stack.push(norm)
   visited.set(norm, true)
-  let source = match @io.read_string(norm) {
+  let source = match @io.read_string_with(fs, norm) {
     Ok(v) => v
     Err(err) => {
       let _ = stack.pop()
@@ -79,7 +82,7 @@ fn load_sources_recursive_impl(
             if resolved.has_suffix(".wasm") {
               if not(visited.contains(resolved)) {
                 visited.set(resolved, true)
-                let wasm_bytes = match @io.read_bytes(resolved) {
+                let wasm_bytes = match @io.read_bytes_with(fs, resolved) {
                   Ok(v) => v
                   Err(err) => {
                     let _ = stack.pop()
@@ -89,7 +92,8 @@ fn load_sources_recursive_impl(
                 db.set_binary_source(resolved, wasm_bytes)
               }
             } else {
-              match load_sources_recursive_impl(db, resolved, visited, stack) {
+              match
+                load_sources_recursive_impl(db, resolved, visited, stack, fs) {
                 Ok(_) => ()
                 Err(err) => {
                   let _ = stack.pop()
@@ -110,13 +114,21 @@ fn load_sources_recursive_impl(
 }
 
 ///|
-pub fn resolve_entry_path(path : String) -> String {
+pub fn resolve_entry_path_with_fs(
+  path : String,
+  fs : &@io.FileSystemAdapter,
+) -> String {
   if path.has_prefix("/") {
     @xsh_fs.normalize_path(path)
   } else {
-    let cwd = @io.current_dir_or_root()
+    let cwd = @io.current_dir_or_root_with(fs)
     @xsh_fs.normalize_path(cwd + "/" + path)
   }
+}
+
+///|
+pub fn resolve_entry_path(path : String) -> String {
+  resolve_entry_path_with_fs(path, @io.default_fs_adapter())
 }
 
 ///|
@@ -130,7 +142,18 @@ pub fn resolve_import_path(base : String, import_path : String) -> String {
 
 ///|
 pub fn load_db(entry_path : String) -> Result[(@xsh_lib.XshDb, String), String] {
-  match load_db_with_paths(entry_path) {
+  match load_db_with_fs(entry_path, @io.default_fs_adapter()) {
+    Ok((db, entry)) => Ok((db, entry))
+    Err(err) => Err(err)
+  }
+}
+
+///|
+pub fn load_db_with_fs(
+  entry_path : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[(@xsh_lib.XshDb, String), String] {
+  match load_db_with_paths_with_fs(entry_path, fs) {
     Ok((db, entry, _)) => Ok((db, entry))
     Err(err) => Err(err)
   }
@@ -140,14 +163,22 @@ pub fn load_db(entry_path : String) -> Result[(@xsh_lib.XshDb, String), String] 
 pub fn load_db_with_paths(
   entry_path : String,
 ) -> Result[(@xsh_lib.XshDb, String, Array[String]), String] {
+  load_db_with_paths_with_fs(entry_path, @io.default_fs_adapter())
+}
+
+///|
+pub fn load_db_with_paths_with_fs(
+  entry_path : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[(@xsh_lib.XshDb, String, Array[String]), String] {
   let db = @xsh_lib.XshDb::new()
-  let entry = resolve_entry_path(entry_path)
-  match apply_lock_to_db(db, entry) {
+  let entry = resolve_entry_path_with_fs(entry_path, fs)
+  match apply_lock_to_db_with_fs(db, entry, fs) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
   let visited : Map[String, Bool] = {}
-  match load_sources_recursive(db, entry, visited) {
+  match load_sources_recursive(db, entry, visited, fs) {
     Ok(_) => {
       let paths : Array[String] = []
       for path, _ in visited {

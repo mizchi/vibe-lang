@@ -615,7 +615,9 @@ test "xsh let rec underscore is rejected" {
   )
   match result {
     Err(err) =>
-      assert_true(err.to_string().contains("wildcard binding cannot be recursive"))
+      assert_true(
+        err.to_string().contains("wildcard binding cannot be recursive"),
+      )
     Ok(_) => fail("expected let rec _ to fail")
   }
 }
@@ -697,8 +699,7 @@ test "xsh threads runtime hints returns recommended flags" {
 test "xsh threads runtime queue builtins require unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let ch = threads_channel_new(1)\n" +
-    "threads_send(ch, \"hello\")",
+    "let ch = threads_channel_new(1)\n" + "threads_send(ch, \"hello\")",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))

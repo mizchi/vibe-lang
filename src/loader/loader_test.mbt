@@ -52,6 +52,87 @@ fn contains_path(paths : Array[String], target : String) -> Bool {
 }
 
 ///|
+struct MemIoAdapter {
+  fs : @xsh_fs.MemFs
+  cwd : String
+}
+
+///|
+fn MemIoAdapter::new(cwd : String) -> MemIoAdapter {
+  let fs = @xsh_fs.MemFs::new()
+  fs.mkdir_p(cwd) catch {
+    e => abort("mem fs init failed: " + e.to_string())
+  }
+  { fs, cwd }
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with current_dir_or_root(self) {
+  self.cwd
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with path_exists(self, path) {
+  self.fs.exists(path)
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with create_dir(self, path) {
+  self.fs.mkdir_p(path) catch {
+    e => return Err(e.to_string())
+  }
+  Ok(())
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with read_dir(self, path) {
+  let entries = self.fs.readdir(path) catch { e => return Err(e.to_string()) }
+  let out : Array[String] = []
+  for entry in entries {
+    out.push(entry.name)
+  }
+  Ok(out)
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with read_string(self, path) {
+  let content = self.fs.read_string(path) catch {
+    e => return Err(e.to_string())
+  }
+  Ok(content)
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with read_bytes(self, path) {
+  let content = self.fs.read_file(path) catch { e => return Err(e.to_string()) }
+  Ok(content)
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with write_string(
+  self,
+  path,
+  content,
+) {
+  self.fs.write_string(path, content) catch {
+    e => return Err(e.to_string())
+  }
+  Ok(())
+}
+
+///|
+pub impl @io.FileSystemAdapter for MemIoAdapter with write_bytes(
+  self,
+  path,
+  content,
+) {
+  self.fs.write_file(path, content) catch {
+    e => return Err(e.to_string())
+  }
+  Ok(())
+}
+
+///|
 test "loader load_db_with_paths loads transitive modules" {
   let root = make_temp_dir("transitive")
   let entry = root + "/main.xsh"
@@ -79,6 +160,46 @@ test "loader load_db_with_paths loads transitive modules" {
     None => fail("expected imported source")
   }
   remove_if_exists(root)
+}
+
+///|
+test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
+  let root = "/workspace"
+  let entry = root + "/main.xsh"
+  let lib = root + "/lib.xsh"
+  let fs = MemIoAdapter::new(root)
+  match
+    fs.write_string(
+      entry, "import { libv } from \"./lib.xsh\"\nlet main = libv\nexport { main }\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match fs.write_string(lib, "let libv = 1\nexport { libv }\n") {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, paths) = loaded
+  let entry_norm = @xsh_fs.normalize_path(entry)
+  let lib_norm = @xsh_fs.normalize_path(lib)
+  assert_eq(resolved, entry_norm)
+  assert_true(contains_path(paths, entry_norm))
+  assert_true(contains_path(paths, lib_norm))
+  match db.get_source(entry_norm) {
+    Some(source) =>
+      assert_eq(
+        source, "import { libv } from \"./lib.xsh\"\nlet main = libv\nexport { main }\n",
+      )
+    None => fail("expected entry source")
+  }
+  match db.get_source(lib_norm) {
+    Some(source) => assert_eq(source, "let libv = 1\nexport { libv }\n")
+    None => fail("expected imported source")
+  }
 }
 
 ///|

@@ -29,6 +29,18 @@ test:
     moon test --target {{target}}
     moon run src/cmd/xsh/main.mbt --target native -- test --unstable-async examples xsh/std
 
+# Build wasm artifact used by Deno integration tests
+build-integration-deno-wasm:
+    moon build --target wasm-gc src/lib
+
+# Run Deno integration tests (artifact-only, no command spawn)
+test-integration-deno: build-integration-deno-wasm
+    deno test --allow-read tests/integration-deno
+
+# Run JS-backed xsh ide command (artifact-only wasm service)
+ide-js *args: build-integration-deno-wasm
+    deno run --allow-read js/xsh/cli.js ide {{args}}
+
 # Run fixture tests only
 test-fixtures:
     moon test -p tests --filter "fixtures" --target {{target}}
@@ -60,6 +72,30 @@ run *args:
 # Build wasm line REPL package (wasi preview2 imports)
 build-repl-wasi-wasm:
     moon build --target wasm src/cmd/xsh_wasi
+
+# Build wasm compiler CLI package (filesystem adapter via src/io)
+build-compiler-wasi-wasm:
+    moon build --target wasm src/cmd/xsh_compile_wasi
+
+# Build wasm checker CLI package (JSON diagnostics)
+build-checker-wasi-wasm:
+    moon build --target wasm src/cmd/xsh_check_wasi
+
+# Run wasm compiler CLI through moon wasm runner
+run-compiler-wasi-wasm *args:
+    moon run --target wasm src/cmd/xsh_compile_wasi -- {{args}}
+
+# Run wasm checker CLI through moon wasm runner
+run-checker-wasi-wasm *args:
+    moon run --target wasm src/cmd/xsh_check_wasi -- {{args}}
+
+# Run wasm compiler CLI (wasm-gc preferred backend)
+run-compiler-wasi-wasm-gc *args:
+    moon run --target wasm src/cmd/xsh_compile_wasi -- --wasm {{args}}
+
+# Run wasm compiler CLI (core wasm MVP backend)
+run-compiler-wasi-wasm-mvp *args:
+    moon run --target wasm src/cmd/xsh_compile_wasi -- --wasm-mvp {{args}}
 
 # Build + run a stdio component (`run()` by default)
 component-run file out="" invoke="run()":

@@ -44,6 +44,23 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
     Some(hash) => assert_eq(hash, @xsh_core.git_blob_hash_string(lib_source))
     None => fail("expected import lock ref")
   }
+  let prelude_hash = match lock.version_refs.get("prelude") {
+    Some(hash) => hash
+    None => fail("expected prelude version ref")
+  }
+  match lock.symbol_refs.get("std/prelude") {
+    Some(hash) => assert_eq(hash, prelude_hash)
+    None => fail("expected prelude symbol ref")
+  }
+  match codebase.read_object(prelude_hash) {
+    Some(json) => {
+      let _ = @xsh_core.deserialize_module(json) catch {
+        e => fail("deserialize prelude module failed: " + e.to_string())
+      }
+
+    }
+    None => fail("expected prelude object in codebase")
+  }
   let resolved = resolve_target_to_hash(entry, codebase)
   assert_eq(resolved, main_hash)
   let short_target = target_substring(main_hash, 0, 8)

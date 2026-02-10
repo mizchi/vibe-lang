@@ -458,6 +458,10 @@ Current lock file:
 - CLI:
   - `xsh fetch <entry>` (or `xsh update-lock <entry>`) resolves recursive
     path imports and updates `xsh.lock`.
+  - `fetch/update-lock` also injects prelude refs:
+    - `version.prelude = <normalized-prelude-hash>`
+    - `symbol."std/prelude" = <normalized-prelude-hash>`
+    and stores the normalized prelude module object under `.xsh/objects/`.
   - `xsh run/check/compile/test` require lock entries for path imports;
     missing/mismatch emits import diagnostics and fails compile.
 
@@ -687,6 +691,8 @@ CLI:
 - `moon run --target native src/cmd/xsh -- run <file>` executes a script (ignores `test {}`).
 - `moon run --target native src/cmd/xsh -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/cmd/xsh -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
+- `moon run --target wasm src/cmd/xsh_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
+  - `xsh_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
 - Parser-consuming commands support `--syntax xsh|posix` (default `xsh`);
   `posix` is preview-enabled for `run/repl/repl-stdin/repl-wasi/bench` and is
   rejected on static/compile-oriented commands.
@@ -694,6 +700,7 @@ CLI:
 - `moon run --target native src/cmd/xsh -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
 - `moon run --target native src/cmd/xsh -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.
 - `moon build --target wasm src/cmd/xsh_wasi` builds a wasm line REPL wired to preview2 imports (`wasi:cli/stdin|stdout`, `wasi:io/streams`).
+- `moon build --target wasm src/cmd/xsh_compile_wasi` builds wasm compiler CLI (filesystem side is abstracted via `src/io.FileSystemAdapter`).
 - `just component-run script.xsh` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
 - `just component-run-moonix script.xsh` builds the same component and runs it via moonix.
 - `just bootstrap-moonix [src]` tries to produce `moonix` binary from a local moonix checkout.
