@@ -123,7 +123,13 @@ Status: accepted and moved from `TODO.md`.
   serialized as JSON for transfer simulation.
 - Bundle-size guardrail workflow is implemented:
   `scripts/bench_bundle_size.sh` compiles `examples/*.xsh` and
-  `xsh/std/*.xsh` with mode precedence
-  (`wasm-no-dce` -> `wasm-js-string-no-dce` -> `wasm` -> `wasm-js-string`),
-  stores current metrics in `dist/bundle_size/current.tsv`, and enforces
-  per-entry golden budgets from `bench/golden/bundle_size_budget.tsv`.
+  `bench/bundle_size/cases.txt` importer cases by default
+  (`bench/importers` is runtime-first:
+  `wasm` -> `wasm-js-string` -> no-dce fallback),
+  supports optional `bench/importers-no-dce` diagnostics via
+  `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`,
+  supports opt-in `xsh/std/*.xsh` surfaces via
+  `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`,
+  stores current metrics in `dist/bundle_size/current.tsv`,
+  and enforces per-entry golden budgets from
+  `bench/golden/bundle_size_budget.tsv`.

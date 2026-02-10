@@ -10,6 +10,7 @@ IMPORTER_CASES_FILE="$ROOT_DIR/bench/bundle_size/cases.txt"
 OUT_DIR="$REPORT_DIR/out"
 UPDATE=0
 INCLUDE_STD_SURFACES="${XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES:-0}"
+INCLUDE_IMPORTER_NO_DCE="${XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE:-0}"
 
 if [[ "${1:-}" == "--update" ]]; then
   UPDATE=1
@@ -42,6 +43,7 @@ try_compile() {
 compile_entry() {
   local group="$1"
   local path="$2"
+  local prefer_no_dce="${3:-1}"
   local out_key
   local out_path
   local mode
@@ -52,19 +54,36 @@ compile_entry() {
   out_key="${group_key}_$(echo "$path" | tr '/.' '__')"
   out_path="$OUT_DIR/$out_key.wasm"
 
-  if try_compile --wasm --no-dce "$path" -o "$out_path"; then
-    mode="wasm-no-dce"
-  elif try_compile --wasm-js-string --no-dce "$path" -o "$out_path"; then
-    mode="wasm-js-string-no-dce"
-  elif try_compile --wasm "$path" -o "$out_path"; then
-    mode="wasm"
-  elif try_compile --wasm-js-string "$path" -o "$out_path"; then
-    mode="wasm-js-string"
+  if [[ "$prefer_no_dce" == "1" ]]; then
+    if try_compile --wasm --no-dce "$path" -o "$out_path"; then
+      mode="wasm-no-dce"
+    elif try_compile --wasm-js-string --no-dce "$path" -o "$out_path"; then
+      mode="wasm-js-string-no-dce"
+    elif try_compile --wasm "$path" -o "$out_path"; then
+      mode="wasm"
+    elif try_compile --wasm-js-string "$path" -o "$out_path"; then
+      mode="wasm-js-string"
+    else
+      mode="unsupported"
+      bytes="-1"
+      printf '%s\t%s\t%s\t%s\n' "$group" "$path" "$mode" "$bytes" >> "$REPORT_FILE"
+      return 0
+    fi
   else
-    mode="unsupported"
-    bytes="-1"
-    printf '%s\t%s\t%s\t%s\n' "$group" "$path" "$mode" "$bytes" >> "$REPORT_FILE"
-    return 0
+    if try_compile --wasm "$path" -o "$out_path"; then
+      mode="wasm"
+    elif try_compile --wasm-js-string "$path" -o "$out_path"; then
+      mode="wasm-js-string"
+    elif try_compile --wasm --no-dce "$path" -o "$out_path"; then
+      mode="wasm-no-dce"
+    elif try_compile --wasm-js-string --no-dce "$path" -o "$out_path"; then
+      mode="wasm-js-string-no-dce"
+    else
+      mode="unsupported"
+      bytes="-1"
+      printf '%s\t%s\t%s\t%s\n' "$group" "$path" "$mode" "$bytes" >> "$REPORT_FILE"
+      return 0
+    fi
   fi
 
   bytes="$(wc -c < "$out_path" | tr -d '[:space:]')"
@@ -72,7 +91,7 @@ compile_entry() {
 }
 
 while IFS= read -r path; do
-  compile_entry "examples" "$path"
+  compile_entry "examples" "$path" "1"
 done < <(find "$ROOT_DIR/examples" -maxdepth 1 -type f -name '*.xsh' ! -name '*_test.xsh' | sed "s#^$ROOT_DIR/##" | sort)
 
 if [[ -d "$ROOT_DIR/bench/bundle_size" ]]; then
@@ -89,14 +108,20 @@ if [[ -d "$ROOT_DIR/bench/bundle_size" ]]; then
       echo "bundle-size: importer case missing file: $rel_path" >&2
       exit 1
     fi
-    compile_entry "bench/importers" "$rel_path"
+    compile_entry "bench/importers" "$rel_path" "0"
+    if [[ "$INCLUDE_IMPORTER_NO_DCE" == "1" ]]; then
+      compile_entry "bench/importers-no-dce" "$rel_path" "1"
+    fi
   done < "$IMPORTER_CASES_FILE"
+  if [[ "$INCLUDE_IMPORTER_NO_DCE" == "1" ]]; then
+    active_groups+=("bench/importers-no-dce")
+  fi
 fi
 
 if [[ "$INCLUDE_STD_SURFACES" == "1" ]]; then
   active_groups+=("xsh/std")
   while IFS= read -r path; do
-    compile_entry "xsh/std" "$path"
+    compile_entry "xsh/std" "$path" "1"
   done < <(find "$ROOT_DIR/xsh/std" -maxdepth 1 -type f -name '*.xsh' ! -name '*_test.xsh' | sed "s#^$ROOT_DIR/##" | sort)
 fi
 

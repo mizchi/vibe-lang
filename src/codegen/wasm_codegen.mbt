@@ -218,6 +218,8 @@ priv struct CodegenCtx {
   fn_closure_indices : Map[String, Int]
   fn_closure_captures : Map[String, Array[String]]
   fn_closure_capture_kinds : Map[String, Array[ValueKind]]
+  fn_table_slots : Map[Int, Int] // function index -> table slot
+  fn_table_order : Array[Int] // table slot order -> function index
   // enum info: ctor_name -> (tag_index, arity, arg_kinds)
   enum_ctor_tags : Map[String, Int]
   enum_ctor_arities : Map[String, Int]
@@ -289,6 +291,8 @@ fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
     fn_closure_indices: {},
     fn_closure_captures: {},
     fn_closure_capture_kinds: {},
+    fn_table_slots: {},
+    fn_table_order: [],
     enum_ctor_tags,
     enum_ctor_arities,
     enum_ctor_arg_kinds,
@@ -853,6 +857,19 @@ fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
     @core.Type::Float => ValueKind::BoxedF32
     @core.Type::Double => ValueKind::BoxedF64
     _ => ValueKind::I32
+  }
+}
+
+///|
+fn ensure_funcref_slot(ctx : CodegenCtx, func_idx : Int) -> Int {
+  match ctx.fn_table_slots.get(func_idx) {
+    Some(slot) => slot
+    None => {
+      let slot = ctx.fn_table_order.length()
+      ctx.fn_table_slots[func_idx] = slot
+      ctx.fn_table_order.push(func_idx)
+      slot
+    }
   }
 }
 
@@ -3115,7 +3132,10 @@ fn compile_expr(
         Some(idx) => emit_local_get(buf, idx)
         None =>
           match ctx.fn_indices.get(name) {
-            Some(idx) => emit_i32_const_raw(buf, tag_fn_value(idx))
+            Some(idx) => {
+              let slot = ensure_funcref_slot(ctx, idx)
+              emit_i32_const_raw(buf, tag_fn_value(slot))
+            }
             None =>
               if ctx.enum_ctor_tags.contains(name) {
                 // Nullary enum constructor
@@ -4601,7 +4621,8 @@ fn compile_expr(
         None => []
       }
       if captures.length() == 0 {
-        emit_i32_const_raw(buf, tag_fn_value(func_idx))
+        let slot = ensure_funcref_slot(ctx, func_idx)
+        emit_i32_const_raw(buf, tag_fn_value(slot))
       } else {
         require_heap(ctx)
         let len = captures.length()
@@ -4617,7 +4638,8 @@ fn compile_expr(
         emit_i32_const_raw(buf, obj_fn)
         emit_i32_store(buf, 0)
         emit_local_get(buf, obj_local)
-        emit_i32_const_raw(buf, func_idx)
+        let slot = ensure_funcref_slot(ctx, func_idx)
+        emit_i32_const_raw(buf, slot)
         emit_i32_store(buf, 4)
         let capture_kinds : Array[ValueKind] = []
         for i in 0..<len {
@@ -4649,7 +4671,10 @@ fn compile_expr(
               Some(idx) => emit_local_get(buf, idx)
               None =>
                 match ctx.fn_indices.get(name) {
-                  Some(idx) => emit_i32_const_raw(buf, tag_fn_value(idx))
+                  Some(idx) => {
+                    let slot = ensure_funcref_slot(ctx, idx)
+                    emit_i32_const_raw(buf, tag_fn_value(slot))
+                  }
                   None => raise WasmGenError::UnknownName(name)
                 }
             }
@@ -6065,23 +6090,21 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   write_section(buf, 3, func_sec.data)
 
   // table section (for function values + optional externref table)
-  let helper_func_count = if ctx.need_stdin_read_char { 1 } else { 0 }
-  let user_func_count = if funcs.length() > helper_func_count + 1 {
-    funcs.length() - helper_func_count - 1
-  } else {
-    0
-  }
+  let funcref_slot_count = ctx.fn_table_order.length()
   let has_extern_table = ctx.need_extern_table && ctx.extern_table_next_slot > 0
-  let table_count = (if user_func_count > 0 { 1 } else { 0 }) +
+  // Reserve table 0 for funcref when externref table is used,
+  // so extern_table_index can stay stable at 1.
+  let has_funcref_table = funcref_slot_count > 0 || has_extern_table
+  let table_count = (if has_funcref_table { 1 } else { 0 }) +
     (if has_extern_table { 1 } else { 0 })
   if table_count > 0 {
     let table_sec = ByteBuf::new()
     write_u32_leb(table_sec, table_count)
-    if user_func_count > 0 {
+    if has_funcref_table {
       // table 0: funcref
       table_sec.push((112).to_byte()) // funcref
       table_sec.push((0).to_byte()) // limits: min only
-      write_u32_leb(table_sec, user_func_count)
+      write_u32_leb(table_sec, funcref_slot_count)
     }
     if has_extern_table {
       // table 1 (or 0 if no funcref table): externref
@@ -6201,20 +6224,20 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   write_section(buf, 7, export_sec.data)
 
   // element section
-  let need_elem = user_func_count > 0 || ctx.need_stack_switching
+  let need_elem = funcref_slot_count > 0 || ctx.need_stack_switching
   if need_elem {
     let elem_sec = ByteBuf::new()
-    let elem_count = (if user_func_count > 0 { 1 } else { 0 }) +
+    let elem_count = (if funcref_slot_count > 0 { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 })
     write_u32_leb(elem_sec, elem_count)
     // Active element segment for indirect calls (table)
-    if user_func_count > 0 {
+    if funcref_slot_count > 0 {
       elem_sec.push((0).to_byte())
       emit_i32_const_raw(elem_sec, 0)
       elem_sec.push((11).to_byte())
-      write_u32_leb(elem_sec, user_func_count)
-      for i in 0..<user_func_count {
-        write_u32_leb(elem_sec, func_import_count + i)
+      write_u32_leb(elem_sec, funcref_slot_count)
+      for func_idx in ctx.fn_table_order {
+        write_u32_leb(elem_sec, func_import_count + func_idx)
       }
     }
     // Declarative element segment for stack switching (ref.func $run)
@@ -7262,9 +7285,9 @@ fn emit_module(
     }
     ctx.sleep_import_index = import_count
   }
-  // Pre-compute extern_table_index for externref captures
-  let user_func_count = if funcs.length() > 0 { funcs.length() - 1 } else { 0 }
-  ctx.extern_table_index = if user_func_count > 0 { 1 } else { 0 }
+  // Pre-compute extern_table_index for externref captures.
+  // Table 0 is reserved for funcref table when extern table exists.
+  ctx.extern_table_index = 1
   let compiled_funcs : Array[WasmFunc] = []
   for i in 0..<funcs.length() {
     let f = funcs[i]

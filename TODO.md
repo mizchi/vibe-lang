@@ -152,11 +152,14 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   Progress (2026-02-10): importer-level measurements (new
   `bench/bundle_size/*.xsh`) are now the primary benchmark focus:
   current baseline is
-  `consumer_option_core` `3380`,
-  `consumer_option_extra` `3128`,
+  `consumer_option_core` `850`,
+  `consumer_option_extra` `1111`,
   `consumer_double_core` `unsupported(call local: abs)`,
   `consumer_double_rounding` `unsupported(call local: floor)`.
-  `scripts/bench_bundle_size.sh` now prioritizes `bench/importers` by default;
+  `scripts/bench_bundle_size.sh` now prioritizes `bench/importers` with
+  runtime-first mode (`wasm` -> `wasm-js-string` -> no-dce fallback);
+  no-dce importer diagnostics are opt-in via
+  `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`;
   module-surface scan for `xsh/std/*.xsh` is opt-in via
   `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`.
   Case set / golden rules are now explicit via

@@ -120,6 +120,80 @@ fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
 }
 
 ///|
+fn read_u32_leb_at(bytes : Array[Byte], start : Int) -> (Int, Int) {
+  let mut value = 0
+  let mut shift = 0
+  let mut i = start
+  while true {
+    if i >= bytes.length() {
+      return (value, i)
+    }
+    let b = bytes[i].to_int()
+    value = value | ((b & 0x7f) << shift)
+    i += 1
+    if (b & 0x80) == 0 {
+      return (value, i)
+    }
+    shift += 7
+  }
+  (value, i)
+}
+
+///|
+fn wasm_has_section(bytes : Bytes, section_id : Int) -> Bool {
+  let arr = bytes.to_array()
+  if arr.length() < 8 {
+    return false
+  }
+  let mut i = 8
+  while i < arr.length() {
+    let id = arr[i].to_int()
+    i += 1
+    let (size, next_i) = read_u32_leb_at(arr, i)
+    i = next_i
+    if id == section_id {
+      return true
+    }
+    i += size
+  }
+  false
+}
+
+///|
+test "xsh wasm omits table/element when no function values are used" {
+  let db = XshDb::new()
+  let src =
+    #|let inc = (x: Int) -> Int { x + 1 }
+    #|let dec = (x: Int) -> Int { x - 1 }
+    #|inc(1) + dec(2)
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_false(wasm_has_section(wasm, 4))
+  assert_false(wasm_has_section(wasm, 9))
+}
+
+///|
+test "xsh wasm keeps table/element when function values are used" {
+  let db = XshDb::new()
+  let src =
+    #|let apply = (f: (Int) -> Int, v: Int) -> Int { f(v) }
+    #|let id = (x: Int) -> Int { x }
+    #|apply(id, 7)
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm_has_section(wasm, 4))
+  assert_true(wasm_has_section(wasm, 9))
+}
+
+///|
 test "xsh wasm import sleep" {
   let db = XshDb::new()
   db.set_source("main", "do { sleep(100) }")

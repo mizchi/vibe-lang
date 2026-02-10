@@ -96,7 +96,7 @@ test "bench: dce.many_unused" {
   inspect(
     result,
     content=(
-      #|{name: "many_unused", stmts_before: 18, stmts_after: 3, wasm_no_dce: Some(440), wasm_with_dce: Some(229), reduction_percent: Some(47.95454545454545)}
+      #|{name: "many_unused", stmts_before: 18, stmts_after: 3, wasm_no_dce: Some(435), wasm_with_dce: Some(229), reduction_percent: Some(47.356321839080465)}
     ),
   )
 }
@@ -145,7 +145,7 @@ test "bench: dce.dependency_chain" {
   inspect(
     result,
     content=(
-      #|{name: "dependency_chain", stmts_before: 7, stmts_after: 6, wasm_no_dce: Some(524), wasm_with_dce: Some(491), reduction_percent: Some(6.297709923664121)}
+      #|{name: "dependency_chain", stmts_before: 7, stmts_after: 6, wasm_no_dce: Some(523), wasm_with_dce: Some(491), reduction_percent: Some(6.118546845124283)}
     ),
   )
 }
@@ -168,7 +168,7 @@ test "bench: dce.all_used" {
   inspect(
     result,
     content=(
-      #|{name: "all_used", stmts_before: 4, stmts_after: 4, wasm_no_dce: Some(185), wasm_with_dce: Some(185), reduction_percent: Some(0)}
+      #|{name: "all_used", stmts_before: 4, stmts_after: 4, wasm_no_dce: Some(169), wasm_with_dce: Some(169), reduction_percent: Some(0)}
     ),
   )
 }

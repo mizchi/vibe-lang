@@ -192,6 +192,8 @@ bench-typechecker:
     moon bench -p benches -f checker_bench.mbt
 
 # Benchmark bundle size for examples/ + use-case importers (bench/bundle_size/)
+# Default importer mode is runtime-first (`--wasm`/`--wasm-js-string`).
+# Set `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1` to add no-dce diagnostics.
 # Set `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include xsh/std module surfaces.
 bench-bundle-size:
     scripts/bench_bundle_size.sh
