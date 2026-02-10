@@ -41,8 +41,16 @@ just              # check + test
 just fmt          # format code
 just check        # type check
 just test         # run tests
+just test-integration-deno  # deno integration tests (artifact-only wasm-gc)
 just release-check  # full check before release
 ```
+
+`js/xsh/` には wasm 成果物 (`src/lib`) を呼ぶ JS バインディングを置く:
+- `js/xsh/index.js` / `js/xsh/index.d.ts` (`createXshService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
+  - `createXshService({ bootstrap: { prelude, kv } })` または `service.init({ prelude, kv })` で初期状態を注入可能
+  - `checkProject({ entry, files })` と IDE request (`{ entry, path, files, ... }`) は import 解決対応（init で注入した `kv` も解決対象）
+- `js/xsh/cli.js` shell から使う JS CLI (`xsh ide` 相当)
+- `js/xsh/lsp.js` / `js/xsh/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
 
 ## CLI
 
@@ -95,6 +103,11 @@ just run repl-wasi --unstable-async
 just run ide outline examples/syntax.xsh
 just run ide peek-def some_fn examples/syntax.xsh
 just run ide search Option examples/syntax.xsh
+# JS-backed ide command
+just ide-js outline examples/syntax.xsh
+just ide-js peek-def some_fn examples/syntax.xsh
+just ide-js search Option examples/syntax.xsh
+# `ide-js` は entry から相対 import を再帰収集して project request を生成する
 
 # Advanced graph index PoC (build/query/verify)
 just run index build examples/syntax.xsh -o /tmp/advanced-graph-index.json
@@ -106,6 +119,22 @@ just run lsif -o /tmp/xsh.lsif examples/syntax.xsh
 
 # Build wasm line REPL (preview2 stdio imports)
 just build-repl-wasi-wasm
+# Build wasm compiler CLI (wasi)
+just build-compiler-wasi-wasm
+# Build wasm checker CLI (json diagnostics)
+just build-checker-wasi-wasm
+# Run wasm compiler CLI (`--wasm` は wasm-gc を優先)
+printf '1 + 2\n' > /tmp/gc_demo.xsh
+just run-compiler-wasi-wasm --wasm /tmp/gc_demo.xsh -o /tmp/out.wasm
+# Run wasm checker CLI (file path or --source)
+just run-checker-wasi-wasm /tmp/gc_demo.xsh
+just run-checker-wasi-wasm --source '1 + true'
+# Run wasm formatter mode (xsh fmt 相当)
+just run-checker-wasi-wasm --format --source 'let  x=1'
+# Same as above (shortcut)
+just run-compiler-wasi-wasm-gc /tmp/gc_demo.xsh -o /tmp/out.wasm
+# Use core wasm MVP backend explicitly
+just run-compiler-wasi-wasm-mvp examples/basics.xsh -o /tmp/out.mvp.wasm
 
 # Build component + run with wasmtime (explicit invoke for non-command component)
 just component-run xsh/std/test_import.xsh
@@ -132,6 +161,13 @@ just install
 - for script-level stdio execution, use `just component-run <file.xsh>`
 - moonix 実行は `just component-run-moonix <file.xsh>`（必要なら `MOONIX_BIN=/path/to/moonix`）
 - `component-run-moonix` は `moonix` 未導入時に `scripts/bootstrap_moonix_bin.sh` を自動試行
+
+`build-compiler-wasi-wasm` output:
+- `_build/wasm/release/build/cmd/xsh_compile_wasi/xsh_compile_wasi.wasm`
+- run with `moon run --target wasm src/cmd/xsh_compile_wasi -- ...` (or `just run-compiler-wasi-wasm ...`)
+- compiler filesystem access is routed through `src/io.FileSystemAdapter` abstraction
+- `xsh_compile_wasi` では `--wasm` が `wasm-gc` を選ぶ（MVP を使う場合は `--wasm-mvp`）
+- 現状 `wasm-gc` backend は実験段階のため、複雑な文法は `--wasm-mvp` を使う
 
 ## WASM Execution
 
