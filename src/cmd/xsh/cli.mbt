@@ -703,6 +703,26 @@ fn finalize_render_source(
 }
 
 ///|
+fn finalize_prefilter_stmts(
+  stmts : Array[@xsh_core.Stmt],
+  library_mode : Bool,
+) -> Array[@xsh_core.Stmt] {
+  let out : Array[@xsh_core.Stmt] = []
+  for stmt in stmts {
+    match stmt {
+      @xsh_core.Stmt::Test(..) => ()
+      _ =>
+        if library_mode && finalize_stmt_is_library_side_effect(stmt) {
+          ()
+        } else {
+          out.push(stmt)
+        }
+    }
+  }
+  out
+}
+
+///|
 fn finalize_cmd(args : Array[String]) -> Unit {
   let options = match parse_finalize_cmd_args(args) {
     Ok(v) => v
@@ -727,17 +747,16 @@ fn finalize_cmd(args : Array[String]) -> Unit {
     e => abort("finalize: parse failed: " + e.to_string())
   }
   let extra_entries = finalize_collect_export_names(ast)
-  let dced = @xsh_lib.dce_module_with_entry_names(ast, extra_entries)
+  let prefiltered = finalize_prefilter_stmts(ast.stmts, options.library_mode)
+  let dced = @xsh_lib.dce_module_with_entry_names(
+    @xsh_core.Module::{ stmts: prefiltered },
+    extra_entries,
+  )
   let kept_stmts : Array[@xsh_core.Stmt] = []
   for stmt in dced.stmts {
     match stmt {
       @xsh_core.Stmt::Test(..) => ()
-      _ =>
-        if options.library_mode && finalize_stmt_is_library_side_effect(stmt) {
-          ()
-        } else {
-          kept_stmts.push(stmt)
-        }
+      _ => kept_stmts.push(stmt)
     }
   }
   let finalized_source = match finalize_render_source(source, kept_stmts) {

@@ -1199,6 +1199,7 @@ test "cli finalize library mode keeps re-export stmt parseable" {
     e => fail("read finalized db failed: " + e.to_string())
   }
   assert_true(finalized.contains("export { helper } from ./mod.xsh"))
+  assert_false(finalized.contains("let local = 1"))
   let ast = @parser.parse_ast(finalized) catch {
     e => fail("finalized parse failed: " + e.to_string())
   }
