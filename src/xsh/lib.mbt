@@ -35,17 +35,20 @@ pub fn is_xsh_script(script : String) -> Bool {
 fn parse_script_with_mode(
   script : String,
   mode : ParserMode,
-) -> @core.Module raise XshError {
+) -> (@core.Module, Array[String]) raise XshError {
   match mode {
     ParserMode::XshMode =>
-      @parser.parse_ast(script) catch {
-        e => raise XshError::Parse(e)
-      }
+      (@parser.parse_ast(script) catch { e => raise XshError::Parse(e) }, [])
     ParserMode::PosixMode => {
       let parsed = @parser.parse_ast(script) catch {
         e => raise XshError::Parse(e)
       }
-      desugar_xshell_commands(parsed)
+      let (desugared, notes) = desugar_xshell_commands_with_notes(parsed)
+      let out_notes : Array[String] = []
+      for note in notes {
+        out_notes.push("posix-mode command-head desugar: " + note)
+      }
+      (desugared, out_notes)
     }
   }
 }
@@ -57,7 +60,7 @@ pub fn Runtime::eval_script_with_mode(
   script : String,
   mode : ParserMode,
 ) -> EvalResult raise XshError {
-  let raw_ast = parse_script_with_mode(script, mode)
+  let (raw_ast, mode_notes) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = if script.contains(".") {
     desugar_method_calls(raw_ast, aliases)
@@ -74,8 +77,18 @@ pub fn Runtime::eval_script_with_mode(
   } catch {
     e => raise XshError::Type(e)
   }
-  self.eval_module(ast) catch {
-    e => raise XshError::Eval(e)
+  let result = self.eval_module(ast) catch { e => raise XshError::Eval(e) }
+  if mode_notes.length() == 0 {
+    result
+  } else {
+    let effects : Array[Effect] = []
+    for note in mode_notes {
+      effects.push(Effect::PosixDesugar(note))
+    }
+    for effect in result.effects {
+      effects.push(effect)
+    }
+    EvalResult::{ last: result.last, effects }
   }
 }
 
@@ -95,7 +108,7 @@ pub fn Runtime::run_script_tests_with_mode(
   script : String,
   mode : ParserMode,
 ) -> TestReport raise XshError {
-  let raw_ast = parse_script_with_mode(script, mode)
+  let (raw_ast, _) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = desugar_method_calls(raw_ast, aliases)
   try {

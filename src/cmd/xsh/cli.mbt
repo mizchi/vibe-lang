@@ -1320,7 +1320,11 @@ fn repl_cmd(
       None => ()
     }
     for effect in result.effects {
-      push_output_line("effect: " + effect.to_string())
+      match effect {
+        @xsh_lib.Effect::PosixDesugar(message) =>
+          push_output_line("note: " + message)
+        _ => push_output_line("effect: " + effect.to_string())
+      }
     }
     match extract_let_name(trimmed) {
       Some(name) => {
@@ -1828,7 +1832,10 @@ fn print_eval_result(result : @xsh_lib.EvalResult) -> Unit {
     None => ()
   }
   for effect in result.effects {
-    println("effect: " + effect.to_string())
+    match effect {
+      @xsh_lib.Effect::PosixDesugar(message) => println("note: " + message)
+      _ => println("effect: " + effect.to_string())
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 ///|
 /// Evaluation for xsh
 pub enum Effect {
+  PosixDesugar(String)
   ShellExec(String)
   StdoutWriteChar(Int)
   StdinReadChar(Int)

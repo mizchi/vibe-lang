@@ -36,8 +36,15 @@ test "xsh posix mode command pipeline with where" {
   match result {
     Err(err) => fail("unexpected posix mode error: " + err.to_string())
     Ok(eval_result) => {
-      assert_eq(eval_result.effects.length(), 1)
+      assert_eq(eval_result.effects.length(), 2)
       match eval_result.effects[0] {
+        Effect::PosixDesugar(note) => {
+          assert_true(note.contains("ls"))
+          assert_true(note.contains("sh_lines(\"ls\")"))
+        }
+        _ => fail("expected posix desugar note")
+      }
+      match eval_result.effects[1] {
         Effect::ShellExec(cmd) => assert_eq(cmd, "ls")
         _ => fail("expected shell effect")
       }

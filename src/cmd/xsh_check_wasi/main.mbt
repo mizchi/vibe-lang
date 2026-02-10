@@ -96,7 +96,9 @@ fn has_import_stmt(ast : @core.Module) -> Bool {
 }
 
 ///|
-fn check_ast_without_imports(ast : @core.Module) -> (Array[@core.Diagnostic], Int, Int) {
+fn check_ast_without_imports(
+  ast : @core.Module,
+) -> (Array[@core.Diagnostic], Int, Int) {
   let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check_with_aliases(
     @xsh_lib.desugar_method_calls(ast, {}),
     {},

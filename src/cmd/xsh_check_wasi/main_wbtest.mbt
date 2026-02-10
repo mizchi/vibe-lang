@@ -36,8 +36,7 @@ test "parse_cmd_args rejects source and file mixed input" {
   let parsed = parse_cmd_args(["--source", "1", "examples/basic.xsh"])
   match parsed {
     Ok(_) => fail("expected parse error")
-    Err(err) =>
-      assert_eq(err, "check: --source and file input are exclusive")
+    Err(err) => assert_eq(err, "check: --source and file input are exclusive")
   }
 }
 

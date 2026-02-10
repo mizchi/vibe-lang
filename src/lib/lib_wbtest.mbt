@@ -57,6 +57,7 @@ test "init_state_report_json injects prelude definitions" {
   assert_true(report.contains("\"ok\":true"))
   assert_true(report.contains("\"error_count\":0"))
   let _ = init_state_report_json("{}")
+
 }
 
 ///|
@@ -71,4 +72,5 @@ test "init_state_report_json injects kv files for project requests" {
   assert_true(report.contains("\"ok\":true"))
   assert_true(report.contains("\"error_count\":0"))
   let _ = init_state_report_json("{}")
+
 }

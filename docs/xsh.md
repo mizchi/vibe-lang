@@ -32,6 +32,9 @@ Parser dispatch is explicit:
 - Runtime API preview:
   `Runtime::eval_script_with_mode(script, PosixMode)` supports xshell-style
   command-head desugaring (`ls` -> `sh_lines("ls")`).
+- In `--syntax posix`, each unresolved bare identifier command-head rewrite
+  emits a runtime note (`note: posix-mode command-head desugar: ...`) so
+  migration behavior is explicit in `run`/`repl` output.
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
 `test`, `try`) exists as helper logic only and does not switch parser modes.

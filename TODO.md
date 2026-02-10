@@ -13,10 +13,10 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   - P0: Add a generics+effects fixture matrix (success/failure pairs).
     Include higher-order wrappers with `with {e}`, localized `try/catch`, and
     mixed trait-bound + effect-bound failures so users can see minimal patterns.
-  - P0: Add PosixMode command-head desugar diagnostics.
-    In `--syntax posix`, when an unresolved bare identifier is desugared to a
-    command head (`sh_lines("<name>")`), surface an explicit note so behavior is
-    predictable during migration.
+  - P0 [done 2026-02-10]: Add PosixMode command-head desugar diagnostics.
+    In `--syntax posix`, unresolved bare identifiers desugared to command heads
+    now emit explicit runtime notes (`note: posix-mode command-head desugar: ...`)
+    so migration behavior is visible in `run`/`repl` output.
   - P1: Add desugar ambiguity diagnostics for postfix/property access.
     When `expr.prop` can resolve as function-call desugar vs field access
     fallback, emit candidate-aware diagnostics and suggested disambiguation.

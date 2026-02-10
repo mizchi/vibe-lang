@@ -1,5 +1,9 @@
 ///|
-pub using @frontend {desugar_method_calls, desugar_xshell_commands}
+pub using @frontend {
+  desugar_method_calls,
+  desugar_xshell_commands,
+  desugar_xshell_commands_with_notes,
+}
 
 ///|
 pub using @frontend {type MonoifyResult}

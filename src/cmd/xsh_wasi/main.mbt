@@ -258,7 +258,10 @@ fn print_eval_result(io : WasiLineIo, result : @xsh_lib.EvalResult) -> Unit {
     None => ()
   }
   for effect in result.effects {
-    io.writeln("effect: " + effect.to_string())
+    match effect {
+      @xsh_lib.Effect::PosixDesugar(message) => io.writeln("note: " + message)
+      _ => io.writeln("effect: " + effect.to_string())
+    }
   }
 }
 
