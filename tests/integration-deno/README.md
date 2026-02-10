@@ -13,8 +13,14 @@
 
 ```bash
 just test-integration-deno
+just coverage-deno
 
 # 手元で JS CLI を試す
 just ide-js outline /path/to/file.xsh
 # CLI は相対 import を再帰で収集して project request を組み立てる
 ```
+
+`just coverage-deno` は以下を生成:
+- `_build/coverage/deno/summary.txt`
+- `_build/coverage/deno/lcov.info`
+- `_build/coverage/deno/html/index.html`
