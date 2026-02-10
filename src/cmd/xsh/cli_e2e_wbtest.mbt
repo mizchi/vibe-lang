@@ -134,6 +134,29 @@ test "cli symbols cmd options reject unknown option" {
 }
 
 ///|
+test "cli compile coverage guard rejects outside test mode" {
+  match ensure_compile_coverage_allowed(true, false) {
+    Ok(_) => fail("expected rejection")
+    Err(msg) =>
+      assert_eq(
+        msg, "compile: --coverage is test-only (set XSH_TEST_COVERAGE=1)",
+      )
+  }
+}
+
+///|
+test "cli compile coverage guard allows test mode" {
+  match ensure_compile_coverage_allowed(true, true) {
+    Ok(_) => ()
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+  match ensure_compile_coverage_allowed(false, false) {
+    Ok(_) => ()
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
 test "cli index build writes index.xdb graph head" {
   let root = wbtest_make_temp_dir("index_build_xdb")
   let entry = root + "/main.xsh"

@@ -4,6 +4,7 @@ pub using @xsh {
   compile_module_component,
   compile_module_component_with_opt_level,
   compile_module_wasm,
+  compile_module_wasm_with_coverage,
   compile_module_wasm_gc,
   compile_module_wasm_with_opt_level,
   generate_module_component_wit,
@@ -23,6 +24,15 @@ pub using @xsh {type Runtime}
 
 ///|
 pub using @xsh {type WasmCompileError}
+
+///|
+pub using @xsh {type WasmCoverageArtifact}
+
+///|
+pub using @xsh {type WasmCoveragePoint}
+
+///|
+pub using @xsh {type WasmCoveragePointKind}
 
 ///|
 pub using @xsh {type XshDb}
