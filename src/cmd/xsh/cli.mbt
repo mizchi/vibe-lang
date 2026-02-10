@@ -1116,14 +1116,12 @@ fn run_bench_case(
     let _ = rt.eval_script_with_mode(case_item.expr, syntax_mode) catch {
       e => abort("bench: " + case_item.name + ": " + e.to_string())
     }
-
   }
   let start = @env.now()
   for _ in 0..<count {
     let _ = rt.eval_script_with_mode(case_item.expr, syntax_mode) catch {
       e => abort("bench: " + case_item.name + ": " + e.to_string())
     }
-
   }
   let end = @env.now()
   let elapsed_ms = (end - start).to_double()
@@ -1324,7 +1322,6 @@ fn bench_file_cmd(
         let _ = rt.run_compiled(compiled) catch {
           e => abort("bench-file: " + e.to_string())
         }
-
       }
       let start = @env.now()
       for _ in 0..<count {
@@ -1335,7 +1332,6 @@ fn bench_file_cmd(
         let _ = rt.run_compiled(compiled) catch {
           e => abort("bench-file: " + e.to_string())
         }
-
       }
       let end = @env.now()
       let elapsed_ms = (end - start).to_double()
@@ -1395,7 +1391,6 @@ fn repl_cmd(
     let _ = rt.eval_script_with_mode(restored_source, syntax_mode) catch {
       e => abort("repl: failed to restore namespace db: " + e.to_string())
     }
-
   }
   let (initial_cols, initial_rows) = @tui.get_terminal_size()
   let (app, cleanup) = @tui.init_vnode_terminal(
@@ -2108,7 +2103,6 @@ fn run_eval_line_repl_with_prompt(
           return
         }
       }
-
     }
     let input = @stdio.stdin
     print_line_repl_tty_mode(options.io_mode)
@@ -2897,13 +2891,11 @@ fn run_eval_sidecar_tests(
     let _ = rt.eval_script_with_mode(include_source, syntax_mode) catch {
       e => return Err("failed to restore include for --run: " + e.to_string())
     }
-
   }
   if db_source.trim().to_string().length() > 0 {
     let _ = rt.eval_script_with_mode(db_source, syntax_mode) catch {
       e => return Err("failed to restore db for --run: " + e.to_string())
     }
-
   }
   let report = rt.run_script_tests_with_mode(test_source, syntax_mode) catch {
     e => return Err("failed to run sidecar tests: " + e.to_string())
@@ -3002,7 +2994,6 @@ fn eval_cmd(
             e.to_string(),
           )
       }
-
     }
   }
   let source = match load_eval_db_source(db_path) {
@@ -3015,7 +3006,6 @@ fn eval_cmd(
       e =>
         abort("eval: failed to restore db `" + db_path + "`: " + e.to_string())
     }
-
   }
   match options.expr {
     Some(expr) => {
@@ -4263,7 +4253,6 @@ fn save_cmd(args : Array[String]) -> Unit {
     let _ = codebase.upsert_path_mapping(file_arg, bundle.main_hash) catch {
       e => abort("save: update paths: " + e.to_string())
     }
-
   }
   // Print result
   let main_short = @xsh_core.short_hash(bundle.main_hash)
@@ -4277,7 +4266,6 @@ fn save_module_to_xsh(base_path : String, json : String, hash : String) -> Unit 
   let _ = codebase.write_object(hash, json) catch {
     e => abort("save: " + e.to_string())
   }
-
 }
 
 ///|

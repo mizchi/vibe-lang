@@ -310,7 +310,6 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
           buf.write_string(expr_to_addr_sexp(block_ctx, expr))
           buf.write_char(')')
           let _ = addr_bind_local(block_ctx, name)
-
         }
       @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
         let _ = span
@@ -379,7 +378,6 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         buf.write_string(expr_to_addr_sexp(block_ctx, expr))
         buf.write_char(')')
         let _ = addr_bind_local(block_ctx, name)
-
       }
       @core.Stmt::Assign(name~, expr~, span~) => {
         let _ = span
@@ -441,7 +439,6 @@ fn bind_pattern(ctx : AddrCtx, pat : @core.Pat) -> Unit {
     @core.Pat::Bind(name~, span~) => {
       let _ = span
       let _ = addr_bind_local(ctx, name)
-
     }
     @core.Pat::Ctor(name~, args~, span~) => {
       let _ = name

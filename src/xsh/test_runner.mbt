@@ -220,7 +220,6 @@ fn collect_dep_block(
         let _ = name
         let _ = body
         let _ = span
-
       }
       _ => ()
     }
@@ -237,27 +236,22 @@ fn collect_dep_expr(
     @core.Expr::Int(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Expr::Float(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Expr::Double(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Expr::Bool(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Expr::String(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Expr::Ident(name~, span~) => {
       let _ = span
@@ -352,11 +346,9 @@ fn collect_dep_expr(
     }
     @core.Expr::Break(span~) => {
       let _ = span
-
     }
     @core.Expr::Continue(span~) => {
       let _ = span
-
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span

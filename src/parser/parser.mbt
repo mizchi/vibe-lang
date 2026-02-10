@@ -539,10 +539,10 @@ fn Parser::parse_loop_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_pipe_expr(self : Parser) -> Unit {
   self.parse_bit_or_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(pipe_gt())
-        } {
+        }) {
     self.bump()
     self.parse_bit_or_expr()
   }
@@ -551,10 +551,10 @@ fn Parser::parse_pipe_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_bit_or_expr(self : Parser) -> Unit {
   self.parse_bit_xor_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(bit_or())
-        } {
+        }) {
     self.bump()
     self.parse_bit_xor_expr()
   }
@@ -563,10 +563,10 @@ fn Parser::parse_bit_or_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_bit_xor_expr(self : Parser) -> Unit {
   self.parse_bit_and_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(bit_xor())
-        } {
+        }) {
     self.bump()
     self.parse_bit_and_expr()
   }
@@ -575,10 +575,10 @@ fn Parser::parse_bit_xor_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_bit_and_expr(self : Parser) -> Unit {
   self.parse_cmp_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(bit_and())
-        } {
+        }) {
     self.bump()
     self.parse_cmp_expr()
   }
@@ -587,10 +587,10 @@ fn Parser::parse_bit_and_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_or_expr(self : Parser) -> Unit {
   self.parse_and_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(or_or())
-        } {
+        }) {
     self.bump()
     self.parse_and_expr()
   }
@@ -599,10 +599,10 @@ fn Parser::parse_or_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_and_expr(self : Parser) -> Unit {
   self.parse_pipe_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(and_and())
-        } {
+        }) {
     self.bump()
     self.parse_pipe_expr()
   }
@@ -611,7 +611,7 @@ fn Parser::parse_and_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_cmp_expr(self : Parser) -> Unit {
   self.parse_shift_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(eqeq()) ||
           self.at(neq()) ||
@@ -619,7 +619,7 @@ fn Parser::parse_cmp_expr(self : Parser) -> Unit {
           self.at(lte()) ||
           self.at(gt()) ||
           self.at(gte())
-        } {
+        }) {
     self.bump()
     self.parse_shift_expr()
   }
@@ -628,10 +628,10 @@ fn Parser::parse_cmp_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_shift_expr(self : Parser) -> Unit {
   self.parse_add_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(lshift()) || self.at(rshift())
-        } {
+        }) {
     self.bump()
     self.parse_add_expr()
   }
@@ -640,10 +640,10 @@ fn Parser::parse_shift_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_add_expr(self : Parser) -> Unit {
   self.parse_mul_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(plus()) || self.at(minus())
-        } {
+        }) {
     self.bump()
     self.parse_mul_expr()
   }
@@ -652,10 +652,10 @@ fn Parser::parse_add_expr(self : Parser) -> Unit {
 ///|
 fn Parser::parse_mul_expr(self : Parser) -> Unit {
   self.parse_unary_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.at(star()) || self.at(slash()) || self.at(percent())
-        } {
+        }) {
     self.bump()
     self.parse_unary_expr()
   }
@@ -935,10 +935,10 @@ fn Parser::parse_args(self : Parser) -> Unit {
   self.skip_trivia()
   if not(self.at(rparen())) {
     self.parse_arg()
-    while {
+    while ({
             self.skip_trivia()
             self.at(comma())
-          } {
+          }) {
       self.bump()
       self.skip_trivia()
       self.parse_arg()
@@ -1118,10 +1118,10 @@ fn AstParser::expect(
 ///|
 pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
   let stmts : Array[@core.Stmt] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != eof()
-        } {
+        }) {
     stmts.push(self.parse_stmt())
     for pending in self.pending_stmts {
       stmts.push(pending)
@@ -1425,7 +1425,6 @@ fn AstParser::expect_decl_separator(
   match self.peek_kind() {
     k if k == semicolon() => {
       let _ = self.bump()
-
     }
     k if k == comma() =>
       raise ParseError::UnexpectedToken(
@@ -1455,10 +1454,10 @@ fn AstParser::parse_enum_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   self.skip_trivia()
   let _ = self.expect(lbrace(), "{")
   let ctors : Array[@core.TypeCtor] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -1492,10 +1491,10 @@ fn AstParser::parse_suberror_stmt(
     let args : Array[@core.Type] = []
     if self.peek_kind() != rparen() {
       args.push(self.parse_type_with_params(param_set))
-      while {
+      while ({
               self.skip_trivia()
               self.peek_kind() == comma()
-            } {
+            }) {
         let _ = self.bump()
         self.skip_trivia()
         if self.peek_kind() == rparen() {
@@ -1512,10 +1511,10 @@ fn AstParser::parse_suberror_stmt(
     })
   } else if self.peek_kind() == lbrace() {
     let _ = self.bump()
-    while {
+    while ({
             self.skip_trivia()
             self.peek_kind() != rbrace()
-          } {
+          }) {
       if self.peek_kind() == eof() {
         raise ParseError::UnexpectedEof(span=self.token_span())
       }
@@ -1523,7 +1522,6 @@ fn AstParser::parse_suberror_stmt(
       self.expect_decl_separator("suberror variant separator")
     }
     let _ = self.expect(rbrace(), "}")
-
   } else {
     raise ParseError::UnexpectedToken(
       expected="suberror payload",
@@ -1552,10 +1550,10 @@ fn AstParser::parse_struct_stmt(
   self.skip_trivia()
   let _ = self.expect(lbrace(), "{")
   let fields : Array[@core.StructField] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -1595,10 +1593,10 @@ fn AstParser::parse_derive_clause(
   if self.peek_kind() != rparen() {
     let first = self.expect(name(), "trait name")
     traits.push(first.text())
-    while {
+    while ({
             self.skip_trivia()
             self.peek_kind() == comma()
-          } {
+          }) {
       let _ = self.bump()
       self.skip_trivia()
       if self.peek_kind() == rparen() {
@@ -1766,10 +1764,10 @@ fn AstParser::parse_type_ctor(
         raise ParseError::MutableEnumFieldUnsupported(span=self.token_span())
       }
       args.push(self.parse_type_with_params(params))
-      while {
+      while ({
               self.skip_trivia()
               self.peek_kind() == comma()
-            } {
+            }) {
         let _ = self.bump()
         self.skip_trivia()
         if self.peek_kind() == rparen() {
@@ -1782,7 +1780,6 @@ fn AstParser::parse_type_ctor(
       }
     }
     let _ = self.expect(rparen(), ")")
-
   }
   let span = self.span_from(start)
   @core.TypeCtor::{ name: name_tok.text(), args, span }
@@ -1800,10 +1797,10 @@ fn AstParser::parse_type_params(
     if self.peek_kind() != rbracket() {
       let first = self.expect(name(), "type param")
       params.push(first.text())
-      while {
+      while ({
               self.skip_trivia()
               self.peek_kind() == comma()
-            } {
+            }) {
         let _ = self.bump()
         self.skip_trivia()
         if self.peek_kind() == rbracket() {
@@ -1814,7 +1811,6 @@ fn AstParser::parse_type_params(
       }
     }
     let _ = self.expect(rbracket(), "]")
-
   }
   params
 }
@@ -1848,10 +1844,10 @@ fn AstParser::parse_test_stmt(self : AstParser) -> @core.Stmt raise ParseError {
 fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
   let _ = self.expect(lbrace(), "{")
   let stmts : Array[@core.Stmt] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -2205,7 +2201,6 @@ fn AstParser::parse_export_stmt(
       self.skip_trivia()
       if self.peek_kind() == comma() {
         let _ = self.bump()
-
       }
     }
     let _ = self.expect(rbrace(), "}")
@@ -2274,10 +2269,10 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
 ///|
 fn AstParser::parse_pipe_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_bit_or_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == pipe_gt()
-        } {
+        }) {
     let _ = self.bump()
     let right = self.parse_bit_or_expr()
     left = pipe_apply(left, right)
@@ -2290,10 +2285,10 @@ fn AstParser::parse_bit_or_expr(
   self : AstParser,
 ) -> @core.Expr raise ParseError {
   let mut left = self.parse_bit_xor_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == bit_or()
-        } {
+        }) {
     let _ = self.bump()
     let right = self.parse_bit_xor_expr()
     left = call2("__bit_or", left, right)
@@ -2306,10 +2301,10 @@ fn AstParser::parse_bit_xor_expr(
   self : AstParser,
 ) -> @core.Expr raise ParseError {
   let mut left = self.parse_bit_and_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == bit_xor()
-        } {
+        }) {
     let _ = self.bump()
     let right = self.parse_bit_and_expr()
     left = call2("__bit_xor", left, right)
@@ -2322,10 +2317,10 @@ fn AstParser::parse_bit_and_expr(
   self : AstParser,
 ) -> @core.Expr raise ParseError {
   let mut left = self.parse_cmp_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == bit_and()
-        } {
+        }) {
     let _ = self.bump()
     let right = self.parse_cmp_expr()
     left = call2("__bit_and", left, right)
@@ -2336,10 +2331,10 @@ fn AstParser::parse_bit_and_expr(
 ///|
 fn AstParser::parse_or_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_and_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == or_or()
-        } {
+        }) {
     let _ = self.bump()
     let right = self.parse_and_expr()
     let left_span = left.span()
@@ -2360,10 +2355,10 @@ fn AstParser::parse_or_expr(self : AstParser) -> @core.Expr raise ParseError {
 ///|
 fn AstParser::parse_and_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_pipe_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == and_and()
-        } {
+        }) {
     let _ = self.bump()
     let right = self.parse_pipe_expr()
     let left_span = left.span()
@@ -2384,7 +2379,7 @@ fn AstParser::parse_and_expr(self : AstParser) -> @core.Expr raise ParseError {
 ///|
 fn AstParser::parse_cmp_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_shift_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == eqeq() ||
           self.peek_kind() == neq() ||
@@ -2392,7 +2387,7 @@ fn AstParser::parse_cmp_expr(self : AstParser) -> @core.Expr raise ParseError {
           self.peek_kind() == lte() ||
           self.peek_kind() == gt() ||
           self.peek_kind() == gte()
-        } {
+        }) {
     let op = self.peek_kind()
     let _ = self.bump()
     let right = self.parse_shift_expr()
@@ -2404,10 +2399,10 @@ fn AstParser::parse_cmp_expr(self : AstParser) -> @core.Expr raise ParseError {
 ///|
 fn AstParser::parse_shift_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_add_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == lshift() || self.peek_kind() == rshift()
-        } {
+        }) {
     let op = self.peek_kind()
     let _ = self.bump()
     let right = self.parse_add_expr()
@@ -2499,10 +2494,10 @@ fn pipe_apply(
 ///|
 fn AstParser::parse_add_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_mul_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == plus() || self.peek_kind() == minus()
-        } {
+        }) {
     let op = self.peek_kind()
     let _ = self.bump()
     let right = self.parse_mul_expr()
@@ -2515,12 +2510,12 @@ fn AstParser::parse_add_expr(self : AstParser) -> @core.Expr raise ParseError {
 ///|
 fn AstParser::parse_mul_expr(self : AstParser) -> @core.Expr raise ParseError {
   let mut left = self.parse_unary_expr()
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == star() ||
           self.peek_kind() == slash() ||
           self.peek_kind() == percent()
-        } {
+        }) {
     let op = self.peek_kind()
     let _ = self.bump()
     let right = self.parse_unary_expr()
@@ -2615,10 +2610,10 @@ fn AstParser::parse_match_expr(self : AstParser) -> @core.Expr raise ParseError 
   let scrutinee = self.parse_expr()
   let _ = self.expect(lbrace(), "{")
   let arms : Array[@core.MatchArm] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -2627,10 +2622,10 @@ fn AstParser::parse_match_expr(self : AstParser) -> @core.Expr raise ParseError 
     // Check for or-pattern: A | B | C => ...
     let pat = if self.peek_kind() == bit_or() {
       let pats : Array[@core.Pat] = [first_pat]
-      while {
+      while ({
               self.skip_trivia()
               self.peek_kind() == bit_or()
-            } {
+            }) {
         let _ = self.bump() // consume |
         pats.push(self.parse_pattern())
       }
@@ -2658,7 +2653,6 @@ fn AstParser::parse_match_expr(self : AstParser) -> @core.Expr raise ParseError 
     arms.push(@core.MatchArm::{ pat, cond, expr, span: arm_span })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
-
   }
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
@@ -2739,10 +2733,10 @@ fn AstParser::parse_record_expr(
   let _ = self.expect(record_kw(), "record")
   let _ = self.expect(lbrace(), "{")
   let fields : Array[@core.RecordFieldExpr] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -2764,7 +2758,6 @@ fn AstParser::parse_record_expr(
     })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
-
   }
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
@@ -2776,10 +2769,10 @@ fn AstParser::parse_struct_lit_fields(
   self : AstParser,
 ) -> Array[@core.RecordFieldExpr] raise ParseError {
   let fields : Array[@core.RecordFieldExpr] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -2801,7 +2794,6 @@ fn AstParser::parse_struct_lit_fields(
     })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
-
   }
   fields
 }
@@ -2812,10 +2804,10 @@ fn AstParser::parse_map_expr(self : AstParser) -> @core.Expr raise ParseError {
   let _ = self.expect(map_kw(), "map")
   let _ = self.expect(lbrace(), "{")
   let fields : Array[@core.MapFieldExpr] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -2839,7 +2831,6 @@ fn AstParser::parse_map_expr(self : AstParser) -> @core.Expr raise ParseError {
     })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
-
   }
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
@@ -2851,17 +2842,16 @@ fn AstParser::parse_array_expr(self : AstParser) -> @core.Expr raise ParseError 
   let start = self.pos
   let _ = self.expect(lbracket(), "[")
   let items : Array[@core.Expr] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbracket()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
     items.push(self.parse_expr())
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
-
   }
   let _ = self.expect(rbracket(), "]")
   let span = self.span_from(start)
@@ -2882,10 +2872,10 @@ fn AstParser::parse_effect_list(
     if self.peek_kind() != rbrace() {
       let name_tok = self.expect(name(), "effect")
       effects.push(effect_atom_from_name(name_tok.text()))
-      while {
+      while ({
               self.skip_trivia()
               self.peek_kind() == comma()
-            } {
+            }) {
         let _ = self.bump()
         self.skip_trivia()
         if self.peek_kind() == rbrace() {
@@ -2896,7 +2886,6 @@ fn AstParser::parse_effect_list(
       }
     }
     let _ = self.expect(rbrace(), "}")
-
   }
   effects
 }
@@ -2911,10 +2900,10 @@ fn AstParser::parse_param_list(
   self.skip_trivia()
   if self.peek_kind() != rparen() {
     out.push(self.parse_param(params))
-    while {
+    while ({
             self.skip_trivia()
             self.peek_kind() == comma()
-          } {
+          }) {
       let _ = self.bump()
       self.skip_trivia()
       if self.peek_kind() == rparen() {
@@ -2941,10 +2930,10 @@ fn AstParser::parse_fn_type_param_list(
   if self.peek_kind() != rparen() {
     out.push(self.parse_fn_type_param(params, idx))
     idx += 1
-    while {
+    while ({
             self.skip_trivia()
             self.peek_kind() == comma()
-          } {
+          }) {
       let _ = self.bump()
       self.skip_trivia()
       if self.peek_kind() == rparen() {
@@ -3309,10 +3298,10 @@ fn AstParser::parse_tuple_type(
   if self.peek_kind() == comma() {
     let items : Array[@core.Type] = []
     items.push(first)
-    while {
+    while ({
             self.skip_trivia()
             self.peek_kind() == comma()
-          } {
+          }) {
       let _ = self.bump()
       self.skip_trivia()
       if self.peek_kind() == rparen() {
@@ -3340,10 +3329,10 @@ fn AstParser::parse_type_args(
     self.skip_trivia()
     if self.peek_kind() != rbracket() {
       args.push(self.parse_type_with_params(params))
-      while {
+      while ({
               self.skip_trivia()
               self.peek_kind() == comma()
-            } {
+            }) {
         let _ = self.bump()
         self.skip_trivia()
         if self.peek_kind() == rbracket() {
@@ -3353,7 +3342,6 @@ fn AstParser::parse_type_args(
       }
     }
     let _ = self.expect(rbracket(), "]")
-
   }
   args
 }
@@ -3373,10 +3361,10 @@ fn AstParser::parse_trait_bounds(
   let bounds : Array[String] = []
   let first = self.expect(name(), "trait")
   bounds.push(first.text())
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() == plus()
-        } {
+        }) {
     let _ = self.bump()
     self.skip_trivia()
     let next = self.expect(name(), "trait")
@@ -3404,10 +3392,10 @@ fn AstParser::parse_fn_type_params(
         self.skip_trivia()
         type_bounds[name_tok.text()] = self.parse_trait_bounds()
       }
-      while {
+      while ({
               self.skip_trivia()
               self.peek_kind() == comma()
-            } {
+            }) {
         let _ = self.bump()
         self.skip_trivia()
         if self.peek_kind() == rbracket() {
@@ -3424,7 +3412,6 @@ fn AstParser::parse_fn_type_params(
       }
     }
     let _ = self.expect(rbracket(), "]")
-
   }
   ParsedTypeParams::{ names: type_params, bounds: type_bounds }
 }
@@ -3442,10 +3429,10 @@ fn AstParser::parse_call_type_args(
     self.skip_trivia()
     if self.peek_kind() != rbracket() {
       type_args.push(self.parse_type())
-      while {
+      while ({
               self.skip_trivia()
               self.peek_kind() == comma()
-            } {
+            }) {
         let _ = self.bump()
         self.skip_trivia()
         if self.peek_kind() == rbracket() {
@@ -3455,7 +3442,6 @@ fn AstParser::parse_call_type_args(
       }
     }
     let _ = self.expect(rbracket(), "]")
-
   }
   type_args
 }
@@ -3586,7 +3572,6 @@ fn AstParser::is_arrow_expr_body(self : AstParser) -> Bool {
         depth = depth - 1
       }
       let _ = self.bump()
-
     }
     self.skip_trivia()
     let after_kind = self.peek_kind()
@@ -3639,10 +3624,10 @@ fn AstParser::parse_paren_expr(self : AstParser) -> @core.Expr raise ParseError 
       if self.peek_kind() == comma() {
         let items : Array[@core.Expr] = []
         items.push(first)
-        while {
+        while ({
                 self.skip_trivia()
                 self.peek_kind() == comma()
-              } {
+              }) {
           let _ = self.bump()
           self.skip_trivia()
           if self.peek_kind() == rparen() {
@@ -3767,16 +3752,15 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
             self.skip_trivia()
             if self.peek_kind() != rparen() {
               args.push(self.parse_pattern())
-              while {
+              while ({
                       self.skip_trivia()
                       self.peek_kind() == comma()
-                    } {
+                    }) {
                 let _ = self.bump()
                 args.push(self.parse_pattern())
               }
             }
             let _ = self.expect(rparen(), ")")
-
           }
           let span = self.span_from(start)
           @core.Pat::Ctor(name=tok.text(), args~, span~)
@@ -3806,10 +3790,10 @@ fn AstParser::parse_tuple_pattern(
   if self.peek_kind() == comma() {
     let items : Array[@core.Pat] = []
     items.push(first)
-    while {
+    while ({
             self.skip_trivia()
             self.peek_kind() == comma()
-          } {
+          }) {
       let _ = self.bump()
       self.skip_trivia()
       if self.peek_kind() == rparen() {
@@ -3834,10 +3818,10 @@ fn AstParser::parse_record_pattern(
   let _ = self.expect(record_kw(), "record")
   let _ = self.expect(lbrace(), "{")
   let fields : Array[@core.RecordFieldPat] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -3859,7 +3843,6 @@ fn AstParser::parse_record_pattern(
     })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
-
   }
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
@@ -3871,10 +3854,10 @@ fn AstParser::parse_struct_pat_fields(
   self : AstParser,
 ) -> Array[@core.RecordFieldPat] raise ParseError {
   let fields : Array[@core.RecordFieldPat] = []
-  while {
+  while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
-        } {
+        }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
@@ -3896,7 +3879,6 @@ fn AstParser::parse_struct_pat_fields(
     })
     let _ = self.eat(comma())
     let _ = self.eat(semicolon())
-
   }
   fields
 }
@@ -4097,10 +4079,10 @@ fn AstParser::parse_args(
   self.skip_trivia()
   if self.peek_kind() != rparen() {
     args.push(self.parse_arg())
-    while {
+    while ({
             self.skip_trivia()
             self.peek_kind() == comma()
-          } {
+          }) {
       let _ = self.bump()
       args.push(self.parse_arg())
     }

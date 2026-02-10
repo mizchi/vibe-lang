@@ -235,7 +235,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                 None => false
               }) {
           let _ = self.advance()
-
         }
         let text = (try! self.input[start:self.pos]).to_string()
         return Token::new(whitespace(), text)
@@ -305,7 +304,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                 None => false
               }) {
           let _ = self.advance()
-
         }
         let mut is_float = false
         if self.peek() == Some('.') {
@@ -316,7 +314,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                   None => false
                 }) {
             let _ = self.advance()
-
           }
         }
         match self.peek() {
@@ -332,7 +329,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                     None => false
                   }) {
               let _ = self.advance()
-
             }
           }
           _ => ()
@@ -341,7 +337,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           Some('f') | Some('F') => {
             is_float = true
             let _ = self.advance()
-
           }
           _ => ()
         }
@@ -406,7 +401,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                       _ => true
                     }) {
                 let _ = self.advance()
-
               }
               Token::new(whitespace(), "//")
             }
@@ -498,7 +492,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                   None => false
                 }) {
             let _ = self.advance()
-
           }
           let text = self.input.unsafe_substring(start~, end=self.pos)
           Token::new(hash_ref(), text)
@@ -521,11 +514,9 @@ fn Lexer::lex_ident(self : Lexer) -> String {
       Some(ch) =>
         if is_alnum(ch) || ch == '_' {
           let _ = self.advance()
-
         } else if ch == '.' {
           if allow_qual {
             let _ = self.advance()
-
           } else {
             break
           }
@@ -534,19 +525,16 @@ fn Lexer::lex_ident(self : Lexer) -> String {
             allow_qual = true
           }
           let _ = self.advance()
-
         } else if ch == '/' {
           if allow_qual || self.should_continue_qualified() {
             allow_qual = true
             let _ = self.advance()
-
           } else {
             break
           }
         } else if ch == '-' {
           if allow_qual {
             let _ = self.advance()
-
           } else {
             break
           }

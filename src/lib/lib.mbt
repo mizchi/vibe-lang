@@ -384,7 +384,6 @@ fn analyze_project(
   let visiting : Map[String, Bool] = {}
   for path in paths {
     let _ = analyze_module(path, project.files, cache, visiting)
-
   }
   (cache, paths)
 }

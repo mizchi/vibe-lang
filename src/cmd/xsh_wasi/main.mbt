@@ -186,7 +186,6 @@ fn WasiLineIo::write_byte(self : WasiLineIo, b : Int) -> Unit {
     1,
     self.write_retptr,
   )
-
 }
 
 ///|

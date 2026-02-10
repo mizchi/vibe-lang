@@ -43,11 +43,7 @@ pub fn normalize_path(path : String) -> String {
     let s = part.to_string()
     match s {
       "" | "." => continue
-      ".." =>
-        if parts.length() > 0 {
-          let _ = parts.pop()
-
-        }
+      ".." => if parts.length() > 0 { let _ = parts.pop() }
       _ => parts.push(s)
     }
   }

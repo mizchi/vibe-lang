@@ -17,7 +17,6 @@ fn build_git_ref_test_graph_index(
 fn ensure_dir_if_missing(path : String) -> Unit {
   if not(@os_fs.path_exists(path)) {
     let _ = @os_fs.create_dir(path) catch { _ => () }
-
   }
 }
 

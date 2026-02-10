@@ -1395,7 +1395,6 @@ fn type_check_stmts(
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
         let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
-
       }
       @core.Stmt::Import(..) => ()
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
@@ -1426,7 +1425,6 @@ fn type_check_stmts(
           allow_effect,
           {},
         )
-
       }
       @core.Stmt::LetMut(name~, expr~, span~) => {
         ensure_fresh_value_binding(name, span)
@@ -3891,7 +3889,6 @@ fn collect_pattern_bindings_inner(
   match pat {
     @core.Pat::Wildcard(span~) => {
       let _ = span
-
     }
     @core.Pat::Bind(name~, span~) => {
       if out.contains(name) {
@@ -4126,7 +4123,6 @@ fn collect_pattern_bindings_loose(
   match pat {
     @core.Pat::Wildcard(span~) => {
       let _ = span
-
     }
     @core.Pat::Bind(name~, span~) => {
       if out.contains(name) {
@@ -4163,27 +4159,22 @@ fn collect_pattern_bindings_loose(
     @core.Pat::Int(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::Float(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::Double(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::Bool(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::String(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::Or(pats~, span~) => {
       let _ = span

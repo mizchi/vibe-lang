@@ -577,14 +577,14 @@ fn eval_while_expr(
   body : @core.Module,
 ) -> EvalOutput raise EvalError {
   let effects : Array[Effect] = []
-  while {
+  while ({
           let cond_out = eval_expr(rt, cond)
           extend_effects(effects, cond_out.effects)
           match cond_out.value {
             @core.Value::Bool(b) => b
             _ => raise EvalError::BadCall("while cond")
           }
-        } {
+        }) {
     let body_result : Result[EvalResult, EvalError] = try? rt.eval_module(body)
     match body_result {
       Ok(body_res) => extend_effects(effects, body_res.effects)

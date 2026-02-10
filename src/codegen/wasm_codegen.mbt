@@ -654,7 +654,6 @@ fn collect_nested_funcs_block(
         let _ = name
         let _ = body
         let _ = span
-
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
@@ -2279,7 +2278,6 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = params
       let _ = target
       let _ = span
-
     }
     @core.Stmt::Expr(expr~, span~) => {
       let _ = span
@@ -2289,7 +2287,6 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = name
       let _ = body
       let _ = span
-
     }
     @core.Stmt::LetPat(pat~, expr~, span~) => {
       let _ = pat
@@ -2336,7 +2333,6 @@ fn scan_strings_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = name
       let _ = span
       let _ = body
-
     }
     @core.Stmt::LetPat(pat~, expr~, span~) => {
       let _ = pat
@@ -2359,10 +2355,8 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let _ = span
       if ctx.use_js_strings {
         let _ = ctx.js_strings.intern(s)
-
       } else {
         let _ = ctx.strings.intern(s)
-
       }
     }
     @core.Expr::Call(name~, args~, span~, ..) => {
@@ -2458,7 +2452,6 @@ fn scan_strings_pat(ctx : CodegenCtx, pat : @core.Pat) -> Unit {
       let _ = span
       if not(ctx.use_js_strings) {
         let _ = ctx.strings.intern(s)
-
       }
     }
     @core.Pat::Tuple(items~, span~) => {

@@ -23,7 +23,6 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
       let _ = @xsh_core.deserialize_module(json) catch {
         e => fail("deserialize saved module failed: " + e.to_string())
       }
-
     }
     None => fail("expected object for saved hash")
   }
@@ -57,7 +56,6 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
       let _ = @xsh_core.deserialize_module(json) catch {
         e => fail("deserialize prelude module failed: " + e.to_string())
       }
-
     }
     None => fail("expected prelude object in codebase")
   }
@@ -1270,7 +1268,6 @@ test "cli finalize export workflow supports fetch and apply" {
   match resolve_entry_artifacts(out_path) {
     Ok((db, entry, _lock, _index, _graph_head)) => {
       let _ = db.types(entry)
-
     }
     Err(err) => fail("resolve entry artifacts failed: " + err)
   }

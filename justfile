@@ -12,6 +12,8 @@ xsh_use_wasmtime_submodule := env_var_or_default("XSH_USE_WASMTIME_SUBMODULE", "
 xsh_wasmtime_wasm_flags := env_var_or_default("XSH_WASMTIME_WASM_FLAGS", "")
 # space-separated flags, each token is passed as `-S <token>`
 xsh_wasmtime_wasi_flags := env_var_or_default("XSH_WASMTIME_WASI_FLAGS", "")
+# suppress noisy import-liveness warnings while keeping other warnings active
+moon_warn_list := env_var_or_default("XSH_MOON_WARN_LIST", "-29")
 
 # Default task: check and test
 default: check test
@@ -22,12 +24,12 @@ fmt:
 
 # Type check
 check:
-    moon check --deny-warn --target {{target}}
+    moon check --deny-warn --warn-list '{{moon_warn_list}}' --target {{target}}
 
 # Run tests (includes fixtures, examples, and core std library)
 test:
-    moon test --target {{target}}
-    moon run src/cmd/xsh/main.mbt --target native -- test --unstable-async examples xsh/std
+    moon test --target {{target}} --warn-list '{{moon_warn_list}}'
+    moon run src/cmd/xsh/main.mbt --target native --warn-list '{{moon_warn_list}}' -- test --unstable-async examples xsh/std
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:

@@ -38,7 +38,7 @@ fn Cursor::read_bytes(self : Cursor, n : Int) -> Bytes raise WasmWatError {
   if self.pos + n > self.bytes.length() {
     raise WasmWatError::UnexpectedEof
   }
-  let view = self.bytes.sub(start=self.pos, end=self.pos + n)
+  let view = self.bytes[self.pos:self.pos + n]
   self.pos += n
   view.to_bytes()
 }

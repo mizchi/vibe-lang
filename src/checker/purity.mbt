@@ -260,7 +260,6 @@ fn purity_block_inner(
         let _ = name
         let _ = body
         let _ = span
-
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
@@ -331,7 +330,6 @@ pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
   match pat {
     @core.Pat::Wildcard(span~) => {
       let _ = span
-
     }
     @core.Pat::Bind(name~, span~) => {
       let _ = span
@@ -366,27 +364,22 @@ pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
     @core.Pat::Int(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::Float(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::Double(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::Bool(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::String(value~, span~) => {
       let _ = value
       let _ = span
-
     }
     @core.Pat::Or(pats~, span~) => {
       let _ = span

@@ -73,7 +73,6 @@ fn stmts_to_sexp(
         let _ = spec
         let _ = source
         let _ = span
-
       }
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
         let _ = span
@@ -125,7 +124,6 @@ fn stmts_to_sexp(
         let _ = name
         let _ = body
         let _ = span
-
       }
       @core.Stmt::LetMut(name~, expr~, span~) => {
         let _ = span

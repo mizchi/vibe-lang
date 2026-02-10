@@ -151,7 +151,7 @@ fn CursorGc::read_bytes(self : CursorGc, n : Int) -> Bytes raise {
   if self.pos + n > self.bytes.length() {
     fail("unexpected eof")
   }
-  let view = self.bytes.sub(start=self.pos, end=self.pos + n)
+  let view = self.bytes[self.pos:self.pos + n]
   self.pos += n
   view.to_bytes()
 }

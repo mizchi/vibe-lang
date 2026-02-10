@@ -438,11 +438,9 @@ fn collect_refs_expr(
     }
     @core.Expr::Break(span~) => {
       let _ = span
-
     }
     @core.Expr::Continue(span~) => {
       let _ = span
-
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span

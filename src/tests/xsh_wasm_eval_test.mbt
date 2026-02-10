@@ -363,12 +363,10 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
       }
       65 | 32 | 33 | 34 | 16 => {
         let _ = code.read_leb_u32()
-
       }
       40 | 54 => {
         let _ = code.read_leb_u32()
         let _ = code.read_leb_u32()
-
       }
       _ => ()
     }
@@ -394,12 +392,10 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
       }
       65 | 32 | 33 | 34 | 16 => {
         let _ = code.read_leb_u32()
-
       }
       40 | 54 => {
         let _ = code.read_leb_u32()
         let _ = code.read_leb_u32()
-
       }
       _ => ()
     }
@@ -658,7 +654,6 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
           raise WasmEvalError::Invalid("stack underflow")
         }
         let _ = stack.pop()
-
       }
       4 => {
         let _ = code.read_u8()

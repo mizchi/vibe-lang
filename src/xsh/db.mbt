@@ -1373,7 +1373,6 @@ pub fn XshDb::set_source(self : XshDb, path : String, content : String) -> Unit 
   let _ = self.sources.set(self.rt, path, content)
   let hash = @core.git_blob_hash_string(content)
   let _ = self.sources.set(self.rt, hash_source_key(hash), content)
-
 }
 
 ///|
@@ -1385,7 +1384,6 @@ pub fn XshDb::set_binary_source(
   let _ = self.binary_sources.set(self.rt, path, content)
   let hash = @core.git_blob_hash_bytes(content)
   let _ = self.binary_sources.set(self.rt, hash_source_key(hash), content)
-
 }
 
 ///|
@@ -1395,7 +1393,6 @@ pub fn XshDb::set_version_ref(
   hash : String,
 ) -> Unit {
   let _ = self.sources.set(self.rt, version_ref_key(name), normalize_hash(hash))
-
 }
 
 ///|
@@ -1406,14 +1403,12 @@ pub fn XshDb::set_path_ref(self : XshDb, path : String, hash : String) -> Unit {
     path_ref_key(normalized),
     normalize_hash(hash),
   )
-
 }
 
 ///|
 pub fn XshDb::require_path_lock(self : XshDb, required : Bool) -> Unit {
   let value = if required { "1" } else { "0" }
   let _ = self.sources.set(self.rt, require_path_lock_config_key(), value)
-
 }
 
 ///|
@@ -1423,7 +1418,6 @@ pub fn XshDb::set_symbol_ref(
   hash : String,
 ) -> Unit {
   let _ = self.sources.set(self.rt, symbol_ref_key(name), normalize_hash(hash))
-
 }
 
 ///|

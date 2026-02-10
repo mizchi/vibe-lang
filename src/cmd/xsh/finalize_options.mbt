@@ -8,7 +8,7 @@ struct FinalizeCmdOptions {
 } derive(Show, Eq)
 
 ///|
-fn parse_finalize_cmd_args(
+pub fn parse_finalize_cmd_args(
   args : Array[String],
 ) -> Result[FinalizeCmdOptions, String] {
   let mut db_path : String? = None

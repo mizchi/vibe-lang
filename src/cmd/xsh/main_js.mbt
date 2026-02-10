@@ -15,7 +15,6 @@ fn touch_cli_helpers() -> Unit {
     Some(info) => {
       let _ = info.receiver
       let _ = info.prefix
-
     }
     None => ()
   }
@@ -23,7 +22,6 @@ fn touch_cli_helpers() -> Unit {
     Some(info) => {
       let _ = info.receiver
       let _ = info.prefix
-
     }
     None => ()
   }
@@ -44,7 +42,6 @@ fn touch_cli_helpers() -> Unit {
   let node = render_repl_view(view, editor)
   let _ = repl_cursor_pos(view, editor)
   let _ = node
-
 }
 
 ///|
