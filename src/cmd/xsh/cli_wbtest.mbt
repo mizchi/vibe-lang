@@ -628,6 +628,66 @@ test "compile args parse explicit O level for component" {
 }
 
 ///|
+test "compile args parse coverage for wasm" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--coverage", "-o", "/tmp/out.wasm", "main.xsh",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wasm)
+      assert_true(opts.coverage)
+      assert_false(opts.coverage_run_tests)
+      assert_eq(opts.entry_path, "main.xsh")
+      match opts.out_path {
+        Some(path) => assert_eq(path, "/tmp/out.wasm")
+        None => fail("expected out path")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "compile args parse coverage run tests for wasm" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--coverage", "--coverage-run-tests", "main.xsh",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wasm)
+      assert_true(opts.coverage)
+      assert_true(opts.coverage_run_tests)
+      assert_eq(opts.entry_path, "main.xsh")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "compile args reject coverage run tests without coverage" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--coverage-run-tests", "main.xsh",
+  ])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(msg, "compile: --coverage-run-tests requires --coverage")
+  }
+}
+
+///|
+test "compile args reject coverage on non-wasm mode" {
+  let parsed = parse_compile_cmd_args(["--wit", "--coverage", "main.xsh"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(
+        msg, "compile: --coverage is only supported with --wasm or --wasm-js-string",
+      )
+  }
+}
+
+///|
 test "compile args reject no-dce on non-wasm mode" {
   let parsed = parse_compile_cmd_args(["--wit", "--no-dce", "main.xsh"])
   match parsed {

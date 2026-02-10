@@ -82,10 +82,16 @@ fn print_usage() -> Unit {
   )
   println("  fmt [--write] <file...>    format scripts via CST")
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
   )
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
+  )
+  println(
+    "                                     --coverage is test-only (set XSH_TEST_COVERAGE=1)",
+  )
+  println(
+    "                                     --coverage-run-tests executes top-level test blocks in coverage mode",
   )
   println(
     "  bench [--n N] [--warmup N] [--expr EXPR] [--case NAME=EXPR]... [--cases FILE]",
@@ -314,9 +320,102 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
 }
 
 ///|
+fn coverage_point_kind_name(kind : @xsh_lib.WasmCoveragePointKind) -> String {
+  match kind {
+    @xsh_lib.WasmCoveragePointKind::Line => "line"
+    @xsh_lib.WasmCoveragePointKind::BranchIfThen => "branch_if_then"
+    @xsh_lib.WasmCoveragePointKind::BranchIfElse => "branch_if_else"
+    @xsh_lib.WasmCoveragePointKind::BranchMatchArm => "branch_match_arm"
+  }
+}
+
+///|
+fn coverage_point_json(
+  source : String,
+  point : @xsh_lib.WasmCoveragePoint,
+) -> Json {
+  let obj : Map[String, Json] = {}
+  let span_obj : Map[String, Json] = {}
+  span_obj["start"] = Json::number(point.span.start.to_double())
+  span_obj["end"] = Json::number(point.span.end.to_double())
+  obj["id"] = Json::number(point.id.to_double())
+  obj["kind"] = Json::string(coverage_point_kind_name(point.kind))
+  obj["span"] = Json::object(span_obj)
+  obj["range"] = @lsp.range_to_json(@lsp.span_to_range(source, point.span))
+  Json::object(obj)
+}
+
+///|
+fn write_wasm_coverage_sidecar_with(
+  fs : &@io.FileSystemAdapter,
+  out_path : String,
+  entry_path : String,
+  source : String,
+  coverage : @xsh_lib.WasmCoverageArtifact,
+) -> Unit {
+  let points : Array[Json] = []
+  for point in coverage.points {
+    points.push(coverage_point_json(source, point))
+  }
+  let obj : Map[String, Json] = {}
+  obj["format"] = Json::string("xsh-wasm-coverage-v1")
+  obj["entry_path"] = Json::string(entry_path)
+  obj["counter_base"] = Json::number(coverage.counter_base.to_double())
+  obj["counter_count"] = Json::number(coverage.counter_count.to_double())
+  obj["points"] = Json::array(points)
+  let sidecar_path = out_path + ".cov.json"
+  match
+    @io.write_string_with(
+      fs,
+      sidecar_path,
+      Json::object(obj).stringify() + "\n",
+    ) {
+    Ok(_) => println("wrote " + sidecar_path)
+    Err(err) => abort("compile: " + err)
+  }
+}
+
+///|
+fn parse_bool_flag(value : String) -> Bool {
+  let normalized = value.trim().to_string().to_lower()
+  match normalized {
+    "1" | "true" | "yes" | "on" => true
+    _ => false
+  }
+}
+
+///|
+fn compile_coverage_test_mode_enabled() -> Bool {
+  match @sys.get_env_var("XSH_TEST_COVERAGE") {
+    Some(raw) => parse_bool_flag(raw)
+    None => false
+  }
+}
+
+///|
+fn ensure_compile_coverage_allowed(
+  coverage : Bool,
+  test_mode_enabled : Bool,
+) -> Result[Unit, String] {
+  if not(coverage) || test_mode_enabled {
+    Ok(())
+  } else {
+    Err("compile: --coverage is test-only (set XSH_TEST_COVERAGE=1)")
+  }
+}
+
+///|
 fn compile_cmd(args : Array[String]) -> Unit {
   let opts = match parse_compile_cmd_args(args) {
     Ok(v) => v
+    Err(msg) => abort(msg)
+  }
+  match
+    ensure_compile_coverage_allowed(
+      opts.coverage,
+      compile_coverage_test_mode_enabled(),
+    ) {
+    Ok(_) => ()
     Err(msg) => abort(msg)
   }
   let fs = @io.default_fs_adapter()
@@ -342,36 +441,90 @@ fn compile_cmd(args : Array[String]) -> Unit {
           }
           println("wrote " + resolved_out)
         }
-        CompileMode::Wasm => {
-          let wasm_bytes = @xsh_lib.compile_module_wasm_with_opt_level(
-            db,
-            entry,
-            no_dce=opts.no_dce,
-            opt_level=opts.opt_level,
-          ) catch {
-            e => abort("compile: " + e.to_string())
+        CompileMode::Wasm =>
+          if opts.coverage {
+            let coverage = @xsh_lib.compile_module_wasm_with_coverage(
+              db,
+              entry,
+              no_dce=opts.no_dce,
+              opt_level=opts.opt_level,
+              run_tests=opts.coverage_run_tests,
+            ) catch {
+              e => abort("compile: " + e.to_string())
+            }
+            match @io.write_bytes_with(fs, resolved_out, coverage.bytes) {
+              Ok(_) => ()
+              Err(err) => abort("compile: " + err)
+            }
+            println("wrote " + resolved_out)
+            let source = match db.get_source(entry) {
+              Some(s) => s
+              None => ""
+            }
+            write_wasm_coverage_sidecar_with(
+              fs,
+              resolved_out,
+              opts.entry_path,
+              source,
+              coverage,
+            )
+          } else {
+            let wasm_bytes = @xsh_lib.compile_module_wasm_with_opt_level(
+              db,
+              entry,
+              no_dce=opts.no_dce,
+              opt_level=opts.opt_level,
+            ) catch {
+              e => abort("compile: " + e.to_string())
+            }
+            match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+              Ok(_) => ()
+              Err(err) => abort("compile: " + err)
+            }
+            println("wrote " + resolved_out)
           }
-          match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
-            Ok(_) => ()
-            Err(err) => abort("compile: " + err)
+        CompileMode::WasmJsString =>
+          if opts.coverage {
+            let coverage = @xsh_lib.compile_module_wasm_js_string_with_coverage(
+              db,
+              entry,
+              no_dce=opts.no_dce,
+              opt_level=opts.opt_level,
+              run_tests=opts.coverage_run_tests,
+            ) catch {
+              e => abort("compile: " + e.to_string())
+            }
+            match @io.write_bytes_with(fs, resolved_out, coverage.bytes) {
+              Ok(_) => ()
+              Err(err) => abort("compile: " + err)
+            }
+            println("wrote " + resolved_out)
+            let source = match db.get_source(entry) {
+              Some(s) => s
+              None => ""
+            }
+            write_wasm_coverage_sidecar_with(
+              fs,
+              resolved_out,
+              opts.entry_path,
+              source,
+              coverage,
+            )
+          } else {
+            let wasm_bytes = @xsh_lib.compile_module_wasm_js_string_with_opt_level(
+              db,
+              entry,
+              no_dce=opts.no_dce,
+              opt_level=opts.opt_level,
+            ) catch {
+              e => abort("compile: " + e.to_string())
+            }
+            match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+              Ok(_) => ()
+              Err(err) => abort("compile: " + err)
+            }
+            println("wrote " + resolved_out)
           }
-          println("wrote " + resolved_out)
-        }
-        CompileMode::WasmJsString => {
-          let wasm_bytes = @xsh_lib.compile_module_wasm_js_string_with_opt_level(
-            db,
-            entry,
-            no_dce=opts.no_dce,
-            opt_level=opts.opt_level,
-          ) catch {
-            e => abort("compile: " + e.to_string())
-          }
-          match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
-            Ok(_) => ()
-            Err(err) => abort("compile: " + err)
-          }
-          println("wrote " + resolved_out)
-        }
         CompileMode::WasmGc => {
           let wasm_bytes = @xsh_lib.compile_module_wasm_gc_with_opt_level(
             db,

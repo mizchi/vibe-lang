@@ -42,8 +42,36 @@ just fmt          # format code
 just check        # type check
 just test         # run tests
 just test-integration-deno  # deno integration tests (artifact-only wasm-gc)
+just coverage     # moonbit + wasm(deno) coverage
+just coverage-moon  # moonbit source coverage (summary/cobertura/html)
+just coverage-deno  # wasm integration coverage (summary/lcov/html)
+just coverage-wasm-source examples/pattern_coverage.xsh  # xsh source span + wasm counter coverage
+just coverage-wasm-std  # xsh/std *_test.xsh coverage aggregation (wasm source)
 just release-check  # full check before release
 ```
+
+Coverage で使う主な環境変数:
+- `XSH_MOON_COVERAGE_TARGET=native|wasm|wasm-gc|js`
+- `XSH_MOON_COVERAGE_PACKAGE=<pkg>`
+- `XSH_MOON_COVERAGE_MIN_LINE=<percent>`
+- `XSH_DENO_COVERAGE_FILTER=<regex>`
+- `XSH_DENO_COVERAGE_MIN_LINE=<percent>`
+- `XSH_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string`
+- `XSH_WASM_SOURCE_COVERAGE_NO_DCE=0|1`
+- `XSH_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1`
+- `XSH_WASM_SOURCE_COVERAGE_DIR=<dir>`
+- `XSH_WASM_STD_COVERAGE_MODE=wasm|wasm-js-string`
+- `XSH_WASM_STD_COVERAGE_FILTER=<regex>`
+- `XSH_WASM_STD_COVERAGE_EXCLUDE=<regex>`
+- `XSH_WASM_STD_COVERAGE_STRICT=0|1`
+- `XSH_WASM_STD_COVERAGE_DIR=<dir>`
+
+WASM 向けは 3 層で測る:
+- MoonBit 本体ロジック: `just coverage-moon`（必要なら `XSH_MOON_COVERAGE_TARGET=wasm-gc`）
+- `WebAssembly.instantiate` 経由の統合導線: `just coverage-deno`
+- xsh ソース span ベースの line/branch: `just coverage-wasm-source <entry.xsh>`
+- xsh/std の集計: `just coverage-wasm-std`（`summary` の `cases(total/success)` と `failures.txt` を確認）
+- 詳細: `docs/coverage.md`
 
 `js/xsh/` には wasm 成果物 (`src/lib`) を呼ぶ JS バインディングを置く:
 - `js/xsh/index.js` / `js/xsh/index.d.ts` (`createXshService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
@@ -272,6 +300,7 @@ examples/async_host/  # Rust/wasmtime host runtime
 - `docs/module_system.md` - Legacy module draft notes (non-normative)
 - `docs/async_design.md` - Async design proposals (non-normative)
 - `docs/unstable_features.md` - Unstable runtime feature flags (`--unstable-async`, `--unstable-threads`)
+- `docs/coverage.md` - Coverage strategy for MoonBit + WASM integration
 
 ## Fixtures
 

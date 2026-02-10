@@ -37,6 +37,29 @@ build-integration-deno-wasm:
 test-integration-deno: build-integration-deno-wasm
     deno test --allow-read tests/integration-deno
 
+# Run MoonBit source coverage (summary + cobertura + html)
+# env: XSH_MOON_COVERAGE_TARGET, XSH_MOON_COVERAGE_PACKAGE, XSH_MOON_COVERAGE_MIN_LINE, XSH_MOON_COVERAGE_DIR
+coverage-moon:
+    scripts/coverage_moon.sh
+
+# Run WASM integration coverage via Deno (summary + lcov + html)
+# env: XSH_DENO_COVERAGE_FILTER, XSH_DENO_COVERAGE_MIN_LINE, XSH_DENO_COVERAGE_DIR
+coverage-deno:
+    scripts/coverage_deno.sh
+
+# Run source-level WASM coverage (xsh span map + runtime counters)
+# env: XSH_WASM_SOURCE_COVERAGE_MODE, XSH_WASM_SOURCE_COVERAGE_NO_DCE, XSH_WASM_SOURCE_COVERAGE_RUN_TESTS, XSH_WASM_SOURCE_COVERAGE_DIR
+coverage-wasm-source entry="examples/pattern_coverage.xsh":
+    scripts/coverage_wasm_source.sh {{entry}}
+
+# Run xsh/std coverage from *_test.xsh via wasm source coverage
+# env: XSH_WASM_STD_COVERAGE_MODE, XSH_WASM_STD_COVERAGE_NO_DCE, XSH_WASM_STD_COVERAGE_STRICT, XSH_WASM_STD_COVERAGE_FILTER, XSH_WASM_STD_COVERAGE_EXCLUDE, XSH_WASM_STD_COVERAGE_DIR
+coverage-wasm-std:
+    scripts/coverage_wasm_std.sh
+
+# Run full coverage pipeline (MoonBit + WASM integration)
+coverage: coverage-moon coverage-deno
+
 # Run JS-backed xsh ide command (artifact-only wasm service)
 ide-js *args: build-integration-deno-wasm
     deno run --allow-read js/xsh/cli.js ide {{args}}

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+OUT_DIR="${XSH_WASM_SOURCE_COVERAGE_DIR:-$PROJECT_ROOT/_build/coverage/wasm-source}"
+MODE="${XSH_WASM_SOURCE_COVERAGE_MODE:-wasm}"
+NO_DCE="${XSH_WASM_SOURCE_COVERAGE_NO_DCE:-0}"
+RUN_TESTS="${XSH_WASM_SOURCE_COVERAGE_RUN_TESTS:-0}"
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: coverage_wasm_source.sh <entry.xsh>" >&2
+  echo "env: XSH_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string XSH_WASM_SOURCE_COVERAGE_NO_DCE=0|1 XSH_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 XSH_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
+  exit 1
+fi
+
+ENTRY_PATH="$1"
+if [ ! -f "$ENTRY_PATH" ]; then
+  echo "[wasm source coverage] entry not found: $ENTRY_PATH" >&2
+  exit 1
+fi
+
+case "$MODE" in
+  wasm|wasm-js-string) ;;
+  *)
+    echo "[wasm source coverage] invalid mode: $MODE (expected: wasm|wasm-js-string)" >&2
+    exit 1
+    ;;
+esac
+
+case "$RUN_TESTS" in
+  0|1) ;;
+  *)
+    echo "[wasm source coverage] invalid run-tests flag: $RUN_TESTS (expected: 0|1)" >&2
+    exit 1
+    ;;
+esac
+
+mkdir -p "$OUT_DIR"
+cd "$PROJECT_ROOT"
+
+entry_norm="${ENTRY_PATH#./}"
+if [[ "$entry_norm" == "$PROJECT_ROOT/"* ]]; then
+  entry_norm="${entry_norm#$PROJECT_ROOT/}"
+fi
+entry_stem="${entry_norm%.*}"
+entry_slug="${entry_stem//\//__}"
+wasm_path="$OUT_DIR/$entry_slug.wasm"
+cov_map_path="$wasm_path.cov.json"
+report_json_path="$OUT_DIR/$entry_slug.report.json"
+summary_path="$OUT_DIR/$entry_slug.summary.txt"
+
+compile_args=(compile "--$MODE" --coverage -o "$wasm_path" "$ENTRY_PATH")
+if [ "$NO_DCE" = "1" ]; then
+  compile_args=(compile "--$MODE" --no-dce --coverage -o "$wasm_path" "$ENTRY_PATH")
+fi
+if [ "$RUN_TESTS" = "1" ]; then
+  compile_args=(compile "--$MODE" --coverage --coverage-run-tests -o "$wasm_path" "$ENTRY_PATH")
+  if [ "$NO_DCE" = "1" ]; then
+    compile_args=(compile "--$MODE" --no-dce --coverage --coverage-run-tests -o "$wasm_path" "$ENTRY_PATH")
+  fi
+fi
+
+echo "[wasm source coverage] compile: mode=$MODE no_dce=$NO_DCE run_tests=$RUN_TESTS entry=$ENTRY_PATH"
+XSH_TEST_COVERAGE=1 moon run src/cmd/xsh/main.mbt --target native -- "${compile_args[@]}"
+
+if [ ! -f "$cov_map_path" ]; then
+  echo "[wasm source coverage] missing coverage map: $cov_map_path" >&2
+  exit 1
+fi
+
+echo "[wasm source coverage] execute + collect"
+node "$SCRIPT_DIR/coverage_wasm_source.mjs" \
+  "$wasm_path" \
+  "$cov_map_path" \
+  --json "$report_json_path" \
+  --summary "$summary_path"
+
+echo "[wasm source coverage] reports:"
+echo "  - $summary_path"
+echo "  - $report_json_path"
+echo "  - $cov_map_path"

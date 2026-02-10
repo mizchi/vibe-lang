@@ -6,6 +6,29 @@ suberror WasmGenError {
 } derive(Show, Eq)
 
 ///|
+pub enum WasmCoveragePointKind {
+  Line
+  BranchIfThen
+  BranchIfElse
+  BranchMatchArm
+} derive(Show, Eq)
+
+///|
+pub struct WasmCoveragePoint {
+  id : Int
+  kind : WasmCoveragePointKind
+  span : @core.Span
+} derive(Show, Eq)
+
+///|
+pub struct WasmCoverageArtifact {
+  bytes : Bytes
+  counter_base : Int
+  counter_count : Int
+  points : Array[WasmCoveragePoint]
+} derive(Show, Eq)
+
+///|
 priv struct StringSegment {
   offset : Int
   bytes : Array[Byte]
@@ -261,12 +284,21 @@ priv struct CodegenCtx {
   // StdIO char-level import functions
   mut need_stdout_write_char : Bool
   mut need_stdin_read_char : Bool
+  // Source-level coverage instrumentation
+  coverage_enabled : Bool
+  coverage_points : Array[WasmCoveragePoint]
+  mut coverage_base_offset : Int
+  mut coverage_base_global_index : Int
+  mut coverage_count_global_index : Int
   // Exported user functions (export let ...)
   exported_fns : Map[String, Bool]
 }
 
 ///|
-fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
+fn CodegenCtx::new(
+  use_js_strings : Bool,
+  coverage_enabled? : Bool = false,
+) -> CodegenCtx {
   // Register builtin enum constructors
   let enum_ctor_tags : Map[String, Int] = {}
   let enum_ctor_arities : Map[String, Int] = {}
@@ -333,6 +365,12 @@ fn CodegenCtx::new(use_js_strings : Bool) -> CodegenCtx {
     // StdIO char-level import functions
     need_stdout_write_char: false,
     need_stdin_read_char: false,
+    // Source-level coverage instrumentation
+    coverage_enabled,
+    coverage_points: [],
+    coverage_base_offset: 0,
+    coverage_base_global_index: -1,
+    coverage_count_global_index: -1,
     // Exported user functions
     exported_fns: {},
   }
@@ -1367,6 +1405,48 @@ fn emit_i32_store(buf : ByteBuf, offset : Int) -> Unit {
   buf.push((54).to_byte())
   write_u32_leb(buf, 2)
   write_u32_leb(buf, offset)
+}
+
+///|
+fn register_coverage_point(
+  ctx : CodegenCtx,
+  kind : WasmCoveragePointKind,
+  span : @core.Span,
+) -> Int {
+  if not(ctx.coverage_enabled) {
+    return -1
+  }
+  let id = ctx.coverage_points.length()
+  ctx.coverage_points.push({ id, kind, span })
+  id
+}
+
+///|
+fn emit_coverage_hit(ctx : CodegenCtx, buf : ByteBuf, point_id : Int) -> Unit {
+  if point_id < 0 {
+    return
+  }
+  let addr = ctx.coverage_base_offset + point_id * 4
+  emit_i32_const_raw(buf, addr)
+  emit_i32_const_raw(buf, addr)
+  emit_i32_load(buf, 0)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 0)
+}
+
+///|
+fn emit_coverage(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  kind : WasmCoveragePointKind,
+  span : @core.Span,
+) -> Unit {
+  if not(ctx.coverage_enabled) {
+    return
+  }
+  let point_id = register_coverage_point(ctx, kind, span)
+  emit_coverage_hit(ctx, buf, point_id)
 }
 
 ///|
@@ -3299,6 +3379,20 @@ fn compile_expr(
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_lt_s(buf)
         emit_bool_from_i32(buf)
+      } else if name == "assert" {
+        let pos_args = extract_positional_exprs(args, "assert")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("assert arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i32_const_raw(buf, tag_bool_value(true))
+        emit_i32_eq(buf)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // empty result
+        buf.push((0).to_byte()) // unreachable (trap)
+        buf.push((11).to_byte()) // end if
+        emit_i32_const_tagged(buf, 0)
       } else if name == "__add" {
         let pos_args = extract_positional_exprs(args, "__add")
         if pos_args.length() != 2 {
@@ -4547,8 +4641,10 @@ fn compile_expr(
       emit_i32_shr_u(buf)
       buf.push((4).to_byte())
       buf.push(valtype_byte(if_kind))
+      emit_coverage(ctx, buf, WasmCoveragePointKind::BranchIfThen, span)
       compile_block_expr(ctx, buf, then_body)
       buf.push((5).to_byte())
+      emit_coverage(ctx, buf, WasmCoveragePointKind::BranchIfElse, span)
       compile_block_expr(ctx, buf, else_body)
       buf.push((11).to_byte())
     }
@@ -4877,6 +4973,7 @@ fn compile_stmt(
   stmt : @core.Stmt,
   is_last : Bool,
 ) -> Unit raise WasmGenError {
+  emit_coverage(ctx, buf, WasmCoveragePointKind::Line, stmt.span())
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) => {
       let _ = span
@@ -6146,17 +6243,22 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
 
   // global section
-  let need_globals = ctx.use_heap_global || ctx.need_stack_switching
+  let coverage_count = ctx.coverage_points.length()
+  let coverage_bytes = coverage_count * 4
+  let need_globals = ctx.use_heap_global ||
+    ctx.need_stack_switching ||
+    ctx.coverage_enabled
   if need_globals {
     let global_sec = ByteBuf::new()
     let global_count = (if ctx.use_heap_global { 1 } else { 0 }) +
-      (if ctx.need_stack_switching { 1 } else { 0 })
+      (if ctx.need_stack_switching { 1 } else { 0 }) +
+      (if ctx.coverage_enabled { 2 } else { 0 })
     write_u32_leb(global_sec, global_count)
     // Heap pointer global
     if ctx.use_heap_global {
       global_sec.push((127).to_byte()) // i32
       global_sec.push((1).to_byte()) // mutable
-      let heap_start = align4(ctx.strings.next_offset)
+      let heap_start = align4(ctx.strings.next_offset + coverage_bytes)
       emit_i32_const_raw(global_sec, heap_start)
       global_sec.push((11).to_byte()) // end
     }
@@ -6168,6 +6270,21 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i32_const_raw(global_sec, 0) // initial value = 0
       global_sec.push((11).to_byte()) // end
     }
+    if ctx.coverage_enabled {
+      ctx.coverage_base_global_index = (if ctx.use_heap_global { 1 } else { 0 }) +
+        (if ctx.need_stack_switching { 1 } else { 0 })
+      ctx.coverage_count_global_index = ctx.coverage_base_global_index + 1
+      // Coverage counter base offset (immutable)
+      global_sec.push((127).to_byte()) // i32
+      global_sec.push((0).to_byte()) // immutable
+      emit_i32_const_raw(global_sec, ctx.coverage_base_offset)
+      global_sec.push((11).to_byte()) // end
+      // Coverage counter count (immutable)
+      global_sec.push((127).to_byte()) // i32
+      global_sec.push((0).to_byte()) // immutable
+      emit_i32_const_raw(global_sec, coverage_count)
+      global_sec.push((11).to_byte()) // end
+    }
     write_section(buf, 6, global_sec.data)
   }
 
@@ -6177,7 +6294,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     user_export_count +
     (if ctx.need_stdin_read_char { 1 } else { 0 }) +
     (if ctx.need_exceptions { 1 } else { 0 }) +
-    (if ctx.need_stack_switching { 3 } else { 0 }) // await_tag + sleep_tag + global
+    (if ctx.need_stack_switching { 3 } else { 0 }) + // await_tag + sleep_tag + global
+    (if ctx.coverage_enabled { 2 } else { 0 })
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
   write_name(export_sec, "run")
@@ -6220,6 +6338,14 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_name(export_sec, "async_result")
     export_sec.push((3).to_byte()) // global export
     write_u32_leb(export_sec, ctx.async_result_global_index)
+  }
+  if ctx.coverage_enabled {
+    write_name(export_sec, "__xsh_cov_base")
+    export_sec.push((3).to_byte()) // global export
+    write_u32_leb(export_sec, ctx.coverage_base_global_index)
+    write_name(export_sec, "__xsh_cov_count")
+    export_sec.push((3).to_byte()) // global export
+    write_u32_leb(export_sec, ctx.coverage_count_global_index)
   }
   write_section(buf, 7, export_sec.data)
 
@@ -6956,6 +7082,7 @@ fn compile_guarded_arm_with_bindings(
       emit_i32_shr_u(buf)
       buf.push((4).to_byte())
       buf.push((127).to_byte())
+      emit_coverage(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
       compile_expr(ctx, buf, arm.expr)
       buf.push((5).to_byte())
       restore_locals(ctx, saved)
@@ -6966,6 +7093,7 @@ fn compile_guarded_arm_with_bindings(
       restore_local_kinds(ctx, saved_kinds)
     }
     None => {
+      emit_coverage(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
       compile_expr(ctx, buf, arm.expr)
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
@@ -7114,10 +7242,10 @@ fn emit_load_ctor_arg_raw(
 
 ///|
 /// Emit a WASM module for a typed xsh AST.
-fn emit_module(
+fn emit_module_with_coverage(
   ctx : CodegenCtx,
   ast : @core.Module,
-) -> Bytes raise WasmGenError {
+) -> WasmCoverageArtifact raise WasmGenError {
   // Collect exported function names
   for stmt in ast.stmts {
     match stmt {
@@ -7146,6 +7274,11 @@ fn emit_module(
   }
   scan_needs(ctx, ast)
   scan_strings(ctx, ast)
+  if ctx.coverage_enabled {
+    ctx.coverage_base_offset = align4(ctx.strings.next_offset)
+  } else {
+    ctx.coverage_base_offset = 0
+  }
   let func_param_kinds : Array[Array[ValueKind]] = []
   let func_return_kinds : Array[ValueKind] = []
   for i in 0..<funcs.length() {
@@ -7330,7 +7463,22 @@ fn emit_module(
       false,
     ),
   )
-  build_module(ctx, compiled_funcs)
+  let bytes = build_module(ctx, compiled_funcs)
+  {
+    bytes,
+    counter_base: ctx.coverage_base_offset,
+    counter_count: ctx.coverage_points.length(),
+    points: ctx.coverage_points,
+  }
+}
+
+///|
+fn emit_module(
+  ctx : CodegenCtx,
+  ast : @core.Module,
+) -> Bytes raise WasmGenError {
+  let artifact = emit_module_with_coverage(ctx, ast)
+  artifact.bytes
 }
 
 ///|
@@ -7345,4 +7493,20 @@ pub fn emit_module_wasm_js_string(
 ) -> Bytes raise WasmGenError {
   let ctx = CodegenCtx::new(true)
   emit_module(ctx, ast)
+}
+
+///|
+pub fn emit_module_wasm_with_coverage(
+  ast : @core.Module,
+) -> WasmCoverageArtifact raise WasmGenError {
+  let ctx = CodegenCtx::new(false, coverage_enabled=true)
+  emit_module_with_coverage(ctx, ast)
+}
+
+///|
+pub fn emit_module_wasm_js_string_with_coverage(
+  ast : @core.Module,
+) -> WasmCoverageArtifact raise WasmGenError {
+  let ctx = CodegenCtx::new(true, coverage_enabled=true)
+  emit_module_with_coverage(ctx, ast)
 }

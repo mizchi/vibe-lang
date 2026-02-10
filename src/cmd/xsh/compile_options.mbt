@@ -13,6 +13,8 @@ pub enum CompileMode {
 pub struct CompileCmdOptions {
   mode : CompileMode
   no_dce : Bool
+  coverage : Bool
+  coverage_run_tests : Bool
   out_path : String?
   entry_path : String
   opt_level : String?
@@ -38,6 +40,14 @@ fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
 }
 
 ///|
+fn compile_mode_supports_coverage(mode : CompileMode) -> Bool {
+  match mode {
+    CompileMode::Wasm | CompileMode::WasmJsString => true
+    _ => false
+  }
+}
+
+///|
 fn is_opt_level_flag(arg : String) -> Bool {
   match arg {
     "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-Os" | "-Oz" => true
@@ -51,6 +61,8 @@ pub fn parse_compile_cmd_args(
 ) -> Result[CompileCmdOptions, String] {
   let mut mode = CompileMode::Ir
   let mut no_dce = false
+  let mut coverage = false
+  let mut coverage_run_tests = false
   let mut out_path : String? = None
   let mut entry_path : String? = None
   let mut opt_level : String? = None
@@ -84,6 +96,14 @@ pub fn parse_compile_cmd_args(
       }
       "--no-dce" => {
         no_dce = true
+        i += 1
+      }
+      "--coverage" => {
+        coverage = true
+        i += 1
+      }
+      "--coverage-run-tests" => {
+        coverage_run_tests = true
         i += 1
       }
       "--wite" => {
@@ -126,7 +146,23 @@ pub fn parse_compile_cmd_args(
           "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, or --component",
         )
       }
-      Ok({ mode, no_dce, out_path, entry_path: path, opt_level })
+      if coverage && not(compile_mode_supports_coverage(mode)) {
+        return Err(
+          "compile: --coverage is only supported with --wasm or --wasm-js-string",
+        )
+      }
+      if coverage_run_tests && not(coverage) {
+        return Err("compile: --coverage-run-tests requires --coverage")
+      }
+      Ok({
+        mode,
+        no_dce,
+        coverage,
+        coverage_run_tests,
+        out_path,
+        entry_path: path,
+        opt_level,
+      })
     }
   }
 }

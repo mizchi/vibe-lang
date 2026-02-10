@@ -7,7 +7,13 @@ fn bundle_for_wasm(
   path : String,
   ast : @core.Module,
 ) -> @core.Module {
-  bundle_for_wasm_impl(db, path, ast, apply_dce=true)
+  bundle_for_wasm_impl(
+    db,
+    path,
+    ast,
+    apply_dce=true,
+    include_test_entries=false,
+  )
 }
 
 ///|
@@ -17,7 +23,24 @@ pub fn bundle_for_wasm_no_dce(
   path : String,
   ast : @core.Module,
 ) -> @core.Module {
-  bundle_for_wasm_impl(db, path, ast, apply_dce=false)
+  bundle_for_wasm_impl(
+    db,
+    path,
+    ast,
+    apply_dce=false,
+    include_test_entries=false,
+  )
+}
+
+///|
+/// Bundle for coverage mode that executes top-level tests.
+/// Keeps definitions referenced from test bodies when applying DCE.
+pub fn bundle_for_wasm_test_coverage(
+  db : XshDb,
+  path : String,
+  ast : @core.Module,
+) -> @core.Module {
+  bundle_for_wasm_impl(db, path, ast, apply_dce=true, include_test_entries=true)
 }
 
 ///|
@@ -26,6 +49,7 @@ fn bundle_for_wasm_impl(
   path : String,
   ast : @core.Module,
   apply_dce~ : Bool,
+  include_test_entries~ : Bool,
 ) -> @core.Module {
   let bundled_stmts : Array[@core.Stmt] = []
   let visited : Map[String, Bool] = {}
@@ -46,7 +70,11 @@ fn bundle_for_wasm_impl(
   }
   let bundled = @core.Module::{ stmts: bundled_stmts }
   if apply_dce {
-    dce_module(bundled)
+    if include_test_entries {
+      dce_module_for_tests(bundled)
+    } else {
+      dce_module(bundled)
+    }
   } else {
     bundled
   }

@@ -68,6 +68,92 @@ test "xsh wasm export run" {
 }
 
 ///|
+test "xsh wasm coverage exports counters and collects points" {
+  let db = XshDb::new()
+  let src =
+    #|let x = 1
+    #|if true {
+    #|  x
+    #|} else {
+    #|  0
+    #|}
+  db.set_source("main", src)
+  let artifact = try compile_module_wasm_with_coverage(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_true(artifact.bytes.length() >= 8)
+  assert_true(bytes_contains_ascii(artifact.bytes, "__xsh_cov_base"))
+  assert_true(bytes_contains_ascii(artifact.bytes, "__xsh_cov_count"))
+  assert_true(artifact.counter_base >= 0)
+  assert_true(artifact.counter_count >= 3)
+  assert_eq(artifact.counter_count, artifact.points.length())
+  let mut has_line = false
+  let mut has_then = false
+  let mut has_else = false
+  for point in artifact.points {
+    match point.kind {
+      WasmCoveragePointKind::Line => has_line = true
+      WasmCoveragePointKind::BranchIfThen => has_then = true
+      WasmCoveragePointKind::BranchIfElse => has_else = true
+      _ => ()
+    }
+  }
+  assert_true(has_line)
+  assert_true(has_then)
+  assert_true(has_else)
+}
+
+///|
+test "xsh wasm coverage run-tests keeps test-referenced branches" {
+  let db = XshDb::new()
+  let src =
+    #|let helper = (x: Int) -> Int {
+    #|  if x < 0 { 0 - x } else { x }
+    #|}
+    #|test "helper" {
+    #|  assert(eq(helper(-3), 3))
+    #|}
+    #|0
+  db.set_source("main", src)
+  let baseline = try compile_module_wasm_with_coverage(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let run_tests = try
+    compile_module_wasm_with_coverage(db, "main", run_tests=true)
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_true(run_tests.counter_count > baseline.counter_count)
+  let mut baseline_has_branch = false
+  for point in baseline.points {
+    match point.kind {
+      WasmCoveragePointKind::BranchIfThen
+      | WasmCoveragePointKind::BranchIfElse
+      | WasmCoveragePointKind::BranchMatchArm => baseline_has_branch = true
+      _ => ()
+    }
+  }
+  assert_false(baseline_has_branch)
+  let mut run_tests_has_then = false
+  let mut run_tests_has_else = false
+  for point in run_tests.points {
+    match point.kind {
+      WasmCoveragePointKind::BranchIfThen => run_tests_has_then = true
+      WasmCoveragePointKind::BranchIfElse => run_tests_has_else = true
+      _ => ()
+    }
+  }
+  assert_true(run_tests_has_then)
+  assert_true(run_tests_has_else)
+}
+
+///|
 test "xsh wasm import sh" {
   let db = XshDb::new()
   db.set_source("main", "do { sh(\"ls\") }")

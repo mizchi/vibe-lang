@@ -5,7 +5,7 @@
 ///|
 /// Apply DCE to a bundled module, keeping only reachable definitions.
 pub fn dce_module(mod : @core.Module) -> @core.Module {
-  dce_module_with_entry_names(mod, [])
+  dce_module_with_entry_names_impl(mod, [], include_tests=false)
 }
 
 ///|
@@ -14,8 +14,23 @@ pub fn dce_module_with_entry_names(
   mod : @core.Module,
   extra_entries : Array[String],
 ) -> @core.Module {
+  dce_module_with_entry_names_impl(mod, extra_entries, include_tests=false)
+}
+
+///|
+/// Apply DCE including references from top-level `test {}` blocks.
+pub fn dce_module_for_tests(mod : @core.Module) -> @core.Module {
+  dce_module_with_entry_names_impl(mod, [], include_tests=true)
+}
+
+///|
+fn dce_module_with_entry_names_impl(
+  mod : @core.Module,
+  extra_entries : Array[String],
+  include_tests~ : Bool,
+) -> @core.Module {
   let graph = build_dep_graph(mod.stmts)
-  let entries = collect_entry_points(mod.stmts)
+  let entries = collect_entry_points(mod.stmts, include_tests~)
   for name in extra_entries {
     entries[name] = true
   }
@@ -132,7 +147,10 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
 /// Collect entry points: exports + references from top-level expressions + last stmt
 /// Note: We don't track bound names here because we want ALL references
 /// from top-level expressions to be considered entry points.
-fn collect_entry_points(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
+fn collect_entry_points(
+  stmts : Array[@core.Stmt],
+  include_tests~ : Bool,
+) -> Map[String, Bool] {
   let entries : Map[String, Bool] = {}
   let empty_bound : Map[String, Bool] = {}
   let len = stmts.length()
@@ -170,11 +188,17 @@ fn collect_entry_points(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
       // Last let binding is an entry point (its value is returned by 'run')
       @core.Stmt::Let(name~, ..) => if is_last { entries[name] = true }
       @core.Stmt::LetMut(name~, ..) => if is_last { entries[name] = true }
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = span
+        if include_tests {
+          collect_refs_block(body, empty_bound, entries)
+        }
+      }
       @core.Stmt::EnumDef(..)
       | @core.Stmt::TypeAlias(..)
       | @core.Stmt::StructDef(..)
       | @core.Stmt::Import(..)
-      | @core.Stmt::Test(..)
       | @core.Stmt::TraitDef(..)
       | @core.Stmt::TraitImpl(..)
       | @core.Stmt::Export(..)

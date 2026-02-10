@@ -14,6 +14,29 @@ suberror WasmCompileError {
 } derive(Show, Eq)
 
 ///|
+pub enum WasmCoveragePointKind {
+  Line
+  BranchIfThen
+  BranchIfElse
+  BranchMatchArm
+} derive(Show, Eq)
+
+///|
+pub struct WasmCoveragePoint {
+  id : Int
+  kind : WasmCoveragePointKind
+  span : @core.Span
+} derive(Show, Eq)
+
+///|
+pub struct WasmCoverageArtifact {
+  bytes : Bytes
+  counter_base : Int
+  counter_count : Int
+  points : Array[WasmCoveragePoint]
+} derive(Show, Eq)
+
+///|
 pub struct CompiledModule {
   path : String
   ir : String
@@ -24,6 +47,41 @@ pub struct CompiledModule {
   ast : @core.Module
   type_env : @checker.TypeEnv
   instantiations : Map[String, Int]
+}
+
+///|
+fn wasm_coverage_kind_from_codegen(
+  kind : @codegen.WasmCoveragePointKind,
+) -> WasmCoveragePointKind {
+  match kind {
+    @codegen.WasmCoveragePointKind::Line => WasmCoveragePointKind::Line
+    @codegen.WasmCoveragePointKind::BranchIfThen =>
+      WasmCoveragePointKind::BranchIfThen
+    @codegen.WasmCoveragePointKind::BranchIfElse =>
+      WasmCoveragePointKind::BranchIfElse
+    @codegen.WasmCoveragePointKind::BranchMatchArm =>
+      WasmCoveragePointKind::BranchMatchArm
+  }
+}
+
+///|
+fn wasm_coverage_artifact_from_codegen(
+  artifact : @codegen.WasmCoverageArtifact,
+) -> WasmCoverageArtifact {
+  let points : Array[WasmCoveragePoint] = []
+  for point in artifact.points {
+    points.push({
+      id: point.id,
+      kind: wasm_coverage_kind_from_codegen(point.kind),
+      span: point.span,
+    })
+  }
+  {
+    bytes: artifact.bytes,
+    counter_base: artifact.counter_base,
+    counter_count: artifact.counter_count,
+    points,
+  }
 }
 
 ///|
@@ -108,6 +166,44 @@ fn compile_module_wasm_with(
 }
 
 ///|
+fn compile_module_wasm_coverage_with(
+  db : XshDb,
+  path : String,
+  bundler : (XshDb, String, @core.Module) -> @core.Module,
+  emitter : (@core.Module) -> @codegen.WasmCoverageArtifact raise @codegen.WasmGenError,
+  run_tests? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  let compiled = compile_module(db, path) catch {
+    e => raise WasmCompileError::Compile(e)
+  }
+  let bundled = bundler(db, path, compiled.ast)
+  let lowered = if run_tests {
+    lower_top_level_tests_to_exprs(bundled)
+  } else {
+    bundled
+  }
+  let coverage = emitter(lowered) catch { e => raise WasmCompileError::Gen(e) }
+  wasm_coverage_artifact_from_codegen(coverage)
+}
+
+///|
+fn lower_top_level_tests_to_exprs(ast : @core.Module) -> @core.Module {
+  let stmts : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        stmts.push(
+          @core.Stmt::Expr(expr=@core.Expr::Block(body~, span~), span~),
+        )
+      }
+      _ => stmts.push(stmt)
+    }
+  }
+  @core.Module::{ stmts, }
+}
+
+///|
 fn optimize_wasm_bytes_with_opt_level(
   bytes : Bytes,
   opt_level : String?,
@@ -130,6 +226,20 @@ fn optimize_wasm_bytes_with_opt_level(
           raise WasmCompileError::Optimize("wite optimize failed: " + msg)
       }
     }
+  }
+}
+
+///|
+fn optimize_wasm_coverage_with_opt_level(
+  coverage : WasmCoverageArtifact,
+  opt_level : String?,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  let optimized = optimize_wasm_bytes_with_opt_level(coverage.bytes, opt_level)
+  {
+    bytes: optimized,
+    counter_base: coverage.counter_base,
+    counter_count: coverage.counter_count,
+    points: coverage.points,
   }
 }
 
@@ -158,6 +268,47 @@ pub fn compile_module_wasm_with_opt_level(
 }
 
 ///|
+pub fn compile_module_wasm_with_coverage(
+  db : XshDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+  run_tests? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  let coverage = if no_dce {
+    compile_module_wasm_no_dce_with_coverage(db, path, run_tests~)
+  } else if run_tests {
+    compile_module_wasm_coverage_with(
+      db,
+      path,
+      bundle_for_wasm_test_coverage,
+      @codegen.emit_module_wasm_with_coverage,
+      run_tests=true,
+    )
+  } else {
+    compile_module_wasm_coverage_with(
+      db, path, bundle_for_wasm, @codegen.emit_module_wasm_with_coverage,
+    )
+  }
+  optimize_wasm_coverage_with_opt_level(coverage, opt_level)
+}
+
+///|
+fn compile_module_wasm_no_dce_with_coverage(
+  db : XshDb,
+  path : String,
+  run_tests? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  compile_module_wasm_coverage_with(
+    db,
+    path,
+    bundle_for_wasm_no_dce,
+    @codegen.emit_module_wasm_with_coverage,
+    run_tests~,
+  )
+}
+
+///|
 /// Compile a module to WASM using wasm js-string builtins.
 pub fn compile_module_wasm_js_string(
   db : XshDb,
@@ -181,6 +332,47 @@ pub fn compile_module_wasm_js_string_with_opt_level(
     compile_module_wasm_js_string(db, path)
   }
   optimize_wasm_bytes_with_opt_level(wasm, opt_level)
+}
+
+///|
+pub fn compile_module_wasm_js_string_with_coverage(
+  db : XshDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+  run_tests? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  let coverage = if no_dce {
+    compile_module_wasm_js_string_no_dce_with_coverage(db, path, run_tests~)
+  } else if run_tests {
+    compile_module_wasm_coverage_with(
+      db,
+      path,
+      bundle_for_wasm_test_coverage,
+      @codegen.emit_module_wasm_js_string_with_coverage,
+      run_tests=true,
+    )
+  } else {
+    compile_module_wasm_coverage_with(
+      db, path, bundle_for_wasm, @codegen.emit_module_wasm_js_string_with_coverage,
+    )
+  }
+  optimize_wasm_coverage_with_opt_level(coverage, opt_level)
+}
+
+///|
+fn compile_module_wasm_js_string_no_dce_with_coverage(
+  db : XshDb,
+  path : String,
+  run_tests? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  compile_module_wasm_coverage_with(
+    db,
+    path,
+    bundle_for_wasm_no_dce,
+    @codegen.emit_module_wasm_js_string_with_coverage,
+    run_tests~,
+  )
 }
 
 ///|
