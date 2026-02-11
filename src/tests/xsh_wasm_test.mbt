@@ -206,6 +206,17 @@ fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
 }
 
 ///|
+fn bytes_contains_opcode(bytes : Bytes, opcode : Int) -> Bool {
+  let arr = bytes.to_array()
+  for b in arr {
+    if b.to_int() == opcode {
+      return true
+    }
+  }
+  false
+}
+
+///|
 fn read_u32_leb_at(bytes : Array[Byte], start : Int) -> (Int, Int) {
   let mut value = 0
   let mut shift = 0
@@ -404,6 +415,35 @@ test "xsh wasm compiles std wasm opcode module" {
 }
 
 ///|
+test "xsh wasm compiles multiple local recursive `go` helpers" {
+  let src =
+    #|let reverse_count = (n: Int) -> Int {
+    #|  let rec go = (acc: Int, rest: Int) -> Int {
+    #|    if rest <= 0 { acc } else { go(acc + 1, rest - 1) }
+    #|  }
+    #|  go(0, n)
+    #|}
+    #|let take_count = (n: Int) -> Int {
+    #|  let rec go = (acc: Int, rest: Int, count: Int) -> Int {
+    #|    if count <= 0 || rest <= 0 { acc }
+    #|    else { go(acc + 1, rest - 1, count - 1) }
+    #|  }
+    #|  go(0, n, n)
+    #|}
+    #|reverse_count(5) + take_count(3)
+  let db = XshDb::new()
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "memory"))
+}
+
+///|
 test "xsh wasm compiles numeric conversion builtins" {
   let db = XshDb::new()
   let src =
@@ -423,6 +463,101 @@ test "xsh wasm compiles numeric conversion builtins" {
   assert_true(wasm.length() >= 8)
   assert_true(bytes_contains_ascii(wasm, "run"))
   assert_true(bytes_contains_ascii(wasm, "memory"))
+}
+
+///|
+test "xsh wasm uses f32/f64 compare opcodes for typed params" {
+  let db = XshDb::new()
+  let src =
+    #|let float_eq = (a: Float, b: Float) -> Bool { a == b }
+    #|let double_eq = (a: Double, b: Double) -> Bool { a == b }
+    #|if float_eq(1.0f, 1.0f) && double_eq(1.0, 1.0) { 1 } else { 0 }
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_opcode(wasm, 0x5b))
+  assert_true(bytes_contains_opcode(wasm, 0x61))
+}
+
+///|
+test "xsh wasm compiles function alias calls" {
+  let db = XshDb::new()
+  let src =
+    #|let abs_impl = (x: Double) -> Double {
+    #|  if x < 0.0 { 0.0 - x } else { x }
+    #|}
+    #|let abs = abs_impl
+    #|abs(-3.5)
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
+test "xsh wasm compiles local recursive helper calls" {
+  let db = XshDb::new()
+  let src =
+    #|let run = (n: Int) -> Int {
+    #|  let rec go = (acc: Int, rest: Int) -> Int {
+    #|    if rest <= 0 { acc } else { go(acc + 1, rest - 1) }
+    #|  }
+    #|  go(0, n)
+    #|}
+    #|run(5)
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
+test "xsh wasm compiles recursive helper with captured function param" {
+  let db = XshDb::new()
+  let src =
+    #|let apply_n = (f: (x: Int) -> Int, n: Int) -> Int {
+    #|  let rec go = (acc: Int, rest: Int) -> Int {
+    #|    if rest <= 0 { acc } else { go(f(acc), rest - 1) }
+    #|  }
+    #|  go(0, n)
+    #|}
+    #|apply_n((x: Int) -> Int { x + 2 }, 3)
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
+test "xsh wasm compiles Int method-style to_double call" {
+  let db = XshDb::new()
+  let src =
+    #|let v = 7
+    #|let d = v.to_double()
+    #|double_to_int(d)
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
 }
 
 ///|
@@ -520,6 +655,82 @@ test "xsh wasm compiles string_from_char_code builtin" {
   }
   assert_true(wasm.length() >= 8)
   assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
+test "xsh wasm compiles non-js string builtins" {
+  let db = XshDb::new()
+  let src =
+    #|let s = "ab"
+    #|let len = string_length(s)
+    #|let code = string_char_code_at(s, 1)
+    #|let joined = string_concat(s, "cd")
+    #|let part = string_substring(joined, 1, 3)
+    #|if string_equals(part, "bc") { len + code } else { 0 }
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
+test "xsh wasm compiles __to_string builtin" {
+  let db = XshDb::new()
+  let src =
+    #|let s1 = __to_string(42)
+    #|let s2 = __to_string(true)
+    #|if string_equals(s1, "42") && string_equals(s2, "true") { 1 } else { 0 }
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
+test "xsh wasm compiles threads builtin thunks" {
+  let db = XshDb::new()
+  let src =
+    #|let probe = () -> String { threads_probe_wat() }
+    #|let hints = () { threads_runtime_hints() }
+    #|let new_ch = () -> Int { threads_channel_new(1) }
+    #|let spawn_w = () -> Int { threads_spawn("worker", 1) }
+    #|let send_w = () -> Bool { threads_send(1, "msg") }
+    #|let recv_w = () -> String { threads_recv(1) }
+    #|let wait_w = () -> Int { threads_wait(1) }
+    #|0
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
+test "xsh wasm rejects unknown record accessor call" {
+  let db = XshDb::new()
+  let src =
+    #|let hints = record { kind: "ok" }
+    #|unknown_accessor(hints)
+  db.set_source("main", src)
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm(
+    db,
+    "main",
+  )
+  match result {
+    Ok(_) => fail("expected compile error")
+    Err(err) => assert_true(err.to_string().contains("call: unknown_accessor"))
+  }
 }
 
 ///|

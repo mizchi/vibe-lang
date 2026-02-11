@@ -1,7 +1,7 @@
 // Double utilities - ported from MoonBit core/double
 
-let double_int_max = 2147483647
-let double_int_min = -2147483647 - 1
+let double_int_max = 536870911
+let double_int_min = -536870912
 let double_int_max_value = int_to_double(double_int_max)
 let double_int_min_value = int_to_double(double_int_min)
 

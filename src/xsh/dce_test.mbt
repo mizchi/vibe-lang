@@ -247,3 +247,245 @@ test "dce: keeps function dependencies" {
   // All 3 should be kept: helper <- main <- expr
   inspect(result.stmts.length(), content="3")
 }
+
+///|
+test "dce: merges dependencies for duplicate definition names" {
+  let inner_body = @core.Module::{
+    stmts: [
+      @core.Stmt::Expr(
+        expr=@core.Expr::Ident(name="v", span=@core.Span::empty(0)),
+        span=@core.Span::empty(0),
+      ),
+    ],
+  }
+  let shared_impl_body = @core.Module::{
+    stmts: [
+      @core.Stmt::Expr(
+        expr=@core.Expr::Call(
+          name="inner",
+          type_args=[],
+          args=[
+            @core.CallArg::{
+              label: None,
+              expr: @core.Expr::Ident(name="v", span=@core.Span::empty(0)),
+              span: @core.Span::empty(0),
+            },
+          ],
+          span=@core.Span::empty(0),
+        ),
+        span=@core.Span::empty(0),
+      ),
+    ],
+  }
+  let outer_body = @core.Module::{
+    stmts: [
+      @core.Stmt::Expr(
+        expr=@core.Expr::Call(
+          name="shared",
+          type_args=[],
+          args=[
+            @core.CallArg::{
+              label: None,
+              expr: @core.Expr::Ident(name="v", span=@core.Span::empty(0)),
+              span: @core.Span::empty(0),
+            },
+          ],
+          span=@core.Span::empty(0),
+        ),
+        span=@core.Span::empty(0),
+      ),
+    ],
+  }
+  let param = @core.FuncParam::{
+    name: "v",
+    label: @core.ParamLabel::Positional,
+    ty: @core.Type::Int,
+    bounds: [],
+  }
+  let stmts : Array[@core.Stmt] = [
+    @core.Stmt::Let(
+      rec=false,
+      name="inner",
+      expr=@core.Expr::Fn(
+        type_params=[],
+        type_bounds={},
+        params=[param],
+        ret=Some(@core.Type::Int),
+        effects=[],
+        body=inner_body,
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+    @core.Stmt::Let(
+      rec=false,
+      name="shared",
+      expr=@core.Expr::Fn(
+        type_params=[],
+        type_bounds={},
+        params=[param],
+        ret=Some(@core.Type::Int),
+        effects=[],
+        body=shared_impl_body,
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+    @core.Stmt::Let(
+      rec=false,
+      name="outer",
+      expr=@core.Expr::Fn(
+        type_params=[],
+        type_bounds={},
+        params=[param],
+        ret=Some(@core.Type::Int),
+        effects=[],
+        body=outer_body,
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+    @core.Stmt::Let(
+      rec=false,
+      name="shared",
+      expr=@core.Expr::Ident(name="outer", span=@core.Span::empty(0)),
+      span=@core.Span::empty(0),
+    ),
+    @core.Stmt::Expr(
+      expr=@core.Expr::Call(
+        name="shared",
+        type_args=[],
+        args=[
+          @core.CallArg::{
+            label: None,
+            expr: @core.Expr::Int(value=1, span=@core.Span::empty(0)),
+            span: @core.Span::empty(0),
+          },
+        ],
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+  ]
+  let input = @core.Module::{ stmts, }
+  let result = dce_module(input)
+  let mut has_inner = false
+  for stmt in result.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) => if name == "inner" { has_inner = true }
+      _ => ()
+    }
+  }
+  inspect(has_inner, content="true")
+}
+
+///|
+test "dce: keeps user-defined and/or names" {
+  let and_body = @core.Module::{
+    stmts: [
+      @core.Stmt::Expr(
+        expr=@core.Expr::Ident(name="a", span=@core.Span::empty(0)),
+        span=@core.Span::empty(0),
+      ),
+    ],
+  }
+  let use_body = @core.Module::{
+    stmts: [
+      @core.Stmt::Expr(
+        expr=@core.Expr::Call(
+          name="and",
+          type_args=[],
+          args=[
+            @core.CallArg::{
+              label: None,
+              expr: @core.Expr::Ident(name="x", span=@core.Span::empty(0)),
+              span: @core.Span::empty(0),
+            },
+            @core.CallArg::{
+              label: None,
+              expr: @core.Expr::Ident(name="x", span=@core.Span::empty(0)),
+              span: @core.Span::empty(0),
+            },
+          ],
+          span=@core.Span::empty(0),
+        ),
+        span=@core.Span::empty(0),
+      ),
+    ],
+  }
+  let stmts : Array[@core.Stmt] = [
+    @core.Stmt::Let(
+      rec=false,
+      name="and",
+      expr=@core.Expr::Fn(
+        type_params=[],
+        type_bounds={},
+        params=[
+          @core.FuncParam::{
+            name: "a",
+            label: @core.ParamLabel::Positional,
+            ty: @core.Type::Int,
+            bounds: [],
+          },
+          @core.FuncParam::{
+            name: "b",
+            label: @core.ParamLabel::Positional,
+            ty: @core.Type::Int,
+            bounds: [],
+          },
+        ],
+        ret=Some(@core.Type::Int),
+        effects=[],
+        body=and_body,
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+    @core.Stmt::Let(
+      rec=false,
+      name="use",
+      expr=@core.Expr::Fn(
+        type_params=[],
+        type_bounds={},
+        params=[
+          @core.FuncParam::{
+            name: "x",
+            label: @core.ParamLabel::Positional,
+            ty: @core.Type::Int,
+            bounds: [],
+          },
+        ],
+        ret=Some(@core.Type::Int),
+        effects=[],
+        body=use_body,
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+    @core.Stmt::Expr(
+      expr=@core.Expr::Call(
+        name="use",
+        type_args=[],
+        args=[
+          @core.CallArg::{
+            label: None,
+            expr: @core.Expr::Int(value=1, span=@core.Span::empty(0)),
+            span: @core.Span::empty(0),
+          },
+        ],
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+  ]
+  let input = @core.Module::{ stmts, }
+  let result = dce_module(input)
+  let mut has_and = false
+  for stmt in result.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) => if name == "and" { has_and = true }
+      _ => ()
+    }
+  }
+  inspect(has_and, content="true")
+}

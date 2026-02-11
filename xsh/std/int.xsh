@@ -1,10 +1,8 @@
 // Int utilities - ported from MoonBit core/int
 
-// Constants
-let int_max_value = 2147483647
-// Note: -2147483648 is rejected with an overflow parse error
-// Use int_max_value + 1 with negation trick
-let int_min_value = 0 - 2147483647 - 1
+// Constants (tagged-int safe range for current runtime representation)
+let int_max_value = 536870911
+let int_min_value = -536870912
 
 // Absolute value (saturates at int_max_value for int_min_value)
 let int_abs = (x: Int) -> Int {

@@ -17,8 +17,8 @@ import {
   approx_eq
 } from "./double.xsh"
 
-let double_int_max_value = 2147483647.0
-let double_int_min_value = -2147483648.0
+let double_int_max_value = 536870911.0
+let double_int_min_value = -536870912.0
 
 test "double_abs" {
   assert(eq(abs(3.5), 3.5))

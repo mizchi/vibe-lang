@@ -61,11 +61,11 @@ let v = None.unwrap_or(0)
 - Basic `let rec [T] ...` recursion is supported.
 - Calling the same recursive function at *different* type instantiations inside one body (true polymorphic recursion) is still unsupported.
 
-### 2. Large negative integer literals
+### 2. Tagged-int range limits (WASM backend)
 
-- `-2147483648` is rejected with an overflow parse error
-  (`2147483648` exceeds Int range).
-- Workaround: `0 - 2147483647 - 1`.
+- Current runtime representation uses tagged integers.
+- Safe Int range is `-536870912 .. 536870911`.
+- std `int.max_value` / `int.min_value` and double-to-int saturation follow this range.
 
 ### 3. `loop` expression (unverified)
 

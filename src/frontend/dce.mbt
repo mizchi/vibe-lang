@@ -46,7 +46,17 @@ fn build_dep_graph(stmts : Array[@core.Stmt]) -> Map[String, Map[String, Bool]] 
   for stmt in stmts {
     let (name, refs) = collect_stmt_info(stmt)
     match name {
-      Some(n) => graph[n] = refs
+      Some(n) =>
+        match graph.get(n) {
+          Some(existing) => {
+            let merged = clone_bool_map(existing)
+            for ref_name, _ in refs {
+              merged[ref_name] = true
+            }
+            graph[n] = merged
+          }
+          None => graph[n] = refs
+        }
       None => ()
     }
   }
@@ -655,9 +665,6 @@ fn dce_is_builtin_name(name : String) -> Bool {
   name == "div" ||
   name == "eq" ||
   name == "lt" ||
-  name == "not" ||
-  name == "and" ||
-  name == "or" ||
   name == "stdout_write_char" ||
   name == "stdout_write_stream" ||
   name == "stdin_read_char" ||

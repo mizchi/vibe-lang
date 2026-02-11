@@ -8,10 +8,11 @@ OUT_DIR="${XSH_WASM_SOURCE_COVERAGE_DIR:-$PROJECT_ROOT/_build/coverage/wasm-sour
 MODE="${XSH_WASM_SOURCE_COVERAGE_MODE:-wasm}"
 NO_DCE="${XSH_WASM_SOURCE_COVERAGE_NO_DCE:-0}"
 RUN_TESTS="${XSH_WASM_SOURCE_COVERAGE_RUN_TESTS:-0}"
+ALLOW_TRAP="${XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP:-0}"
 
 if [ "$#" -lt 1 ]; then
   echo "usage: coverage_wasm_source.sh <entry.xsh>" >&2
-  echo "env: XSH_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string XSH_WASM_SOURCE_COVERAGE_NO_DCE=0|1 XSH_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 XSH_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
+  echo "env: XSH_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string XSH_WASM_SOURCE_COVERAGE_NO_DCE=0|1 XSH_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP=0|1 XSH_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
   exit 1
 fi
 
@@ -33,6 +34,14 @@ case "$RUN_TESTS" in
   0|1) ;;
   *)
     echo "[wasm source coverage] invalid run-tests flag: $RUN_TESTS (expected: 0|1)" >&2
+    exit 1
+    ;;
+esac
+
+case "$ALLOW_TRAP" in
+  0|1) ;;
+  *)
+    echo "[wasm source coverage] invalid allow-trap flag: $ALLOW_TRAP (expected: 0|1)" >&2
     exit 1
     ;;
 esac
@@ -62,7 +71,7 @@ if [ "$RUN_TESTS" = "1" ]; then
   fi
 fi
 
-echo "[wasm source coverage] compile: mode=$MODE no_dce=$NO_DCE run_tests=$RUN_TESTS entry=$ENTRY_PATH"
+echo "[wasm source coverage] compile: mode=$MODE no_dce=$NO_DCE run_tests=$RUN_TESTS allow_trap=$ALLOW_TRAP entry=$ENTRY_PATH"
 XSH_TEST_COVERAGE=1 moon run src/cmd/xsh/main.mbt --target native -- "${compile_args[@]}"
 
 if [ ! -f "$cov_map_path" ]; then
@@ -71,11 +80,17 @@ if [ ! -f "$cov_map_path" ]; then
 fi
 
 echo "[wasm source coverage] execute + collect"
-node "$SCRIPT_DIR/coverage_wasm_source.mjs" \
-  "$wasm_path" \
-  "$cov_map_path" \
-  --json "$report_json_path" \
+node_args=(
+  "$SCRIPT_DIR/coverage_wasm_source.mjs"
+  "$wasm_path"
+  "$cov_map_path"
+  --json "$report_json_path"
   --summary "$summary_path"
+)
+if [ "$ALLOW_TRAP" = "1" ]; then
+  node_args+=(--allow-trap)
+fi
+node "${node_args[@]}"
 
 echo "[wasm source coverage] reports:"
 echo "  - $summary_path"

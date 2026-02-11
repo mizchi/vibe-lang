@@ -269,6 +269,7 @@ priv struct CodegenCtx {
   mut need_extern_table : Bool
   mut extern_table_index : Int
   mut extern_table_next_slot : Int
+  known_record_fields : Map[String, Bool]
   strings : StringTable
   js_strings : StringConstTable
   // Stack switching for async
@@ -350,6 +351,7 @@ fn CodegenCtx::new(
     need_extern_table: false,
     extern_table_index: -1,
     extern_table_next_slot: 0,
+    known_record_fields: {},
     strings: StringTable::new(),
     js_strings: StringConstTable::new(),
     // Stack switching for async
@@ -886,13 +888,39 @@ priv struct WasmFunc {
 
 ///|
 fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
-  if not(ctx.use_js_strings) {
-    return ValueKind::I32
-  }
   match ty {
-    @core.Type::String => ValueKind::ExternRef
+    @core.Type::String =>
+      if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
     @core.Type::Float => ValueKind::BoxedF32
     @core.Type::Double => ValueKind::BoxedF64
+    @core.Type::Named(name~, args~) => {
+      if args.length() > 0 {
+        return ValueKind::I32
+      }
+      let is_string_name = name == "String" ||
+        name.has_suffix(".String") ||
+        name.has_suffix("::String") ||
+        name.has_suffix("/String")
+      let is_float_name = name == "Float" ||
+        name == "f32" ||
+        name.has_suffix(".Float") ||
+        name.has_suffix("::Float") ||
+        name.has_suffix("/Float")
+      let is_double_name = name == "Double" ||
+        name == "f64" ||
+        name.has_suffix(".Double") ||
+        name.has_suffix("::Double") ||
+        name.has_suffix("/Double")
+      if is_string_name {
+        if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+      } else if is_float_name {
+        ValueKind::BoxedF32
+      } else if is_double_name {
+        ValueKind::BoxedF64
+      } else {
+        ValueKind::I32
+      }
+    }
     _ => ValueKind::I32
   }
 }
@@ -1221,6 +1249,17 @@ fn emit_tag_i32(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_string_const(ctx : CodegenCtx, buf : ByteBuf, s : String) -> Unit {
+  if ctx.use_js_strings {
+    let idx = ctx.js_strings.intern(s)
+    emit_global_get(buf, idx)
+  } else {
+    let offset = ctx.strings.intern(s)
+    emit_i32_const_raw(buf, tag_ptr(offset, tag_obj))
+  }
+}
+
+///|
 fn emit_local_get(buf : ByteBuf, idx : Int) -> Unit {
   buf.push((32).to_byte())
   write_u32_leb(buf, idx)
@@ -1537,7 +1576,7 @@ fn emit_f64_lt(buf : ByteBuf) -> Unit {
 
 ///|
 fn emit_f64_neg(buf : ByteBuf) -> Unit {
-  buf.push((153).to_byte())
+  buf.push((154).to_byte())
 }
 
 ///|
@@ -1613,9 +1652,6 @@ fn infer_expr_kind(
   ctx : CodegenCtx,
   expr : @core.Expr,
 ) -> ValueKind raise WasmGenError {
-  if not(ctx.use_js_strings) {
-    return ValueKind::I32
-  }
   infer_expr_kind_with(ctx, expr, ctx.local_kinds)
 }
 
@@ -1625,9 +1661,6 @@ fn infer_expr_kind_with(
   expr : @core.Expr,
   locals : Map[String, ValueKind],
 ) -> ValueKind raise WasmGenError {
-  if not(ctx.use_js_strings) {
-    return ValueKind::I32
-  }
   match expr {
     @core.Expr::Int(value~, span~) => {
       let _ = value
@@ -1642,7 +1675,7 @@ fn infer_expr_kind_with(
     @core.Expr::String(value~, span~) => {
       let _ = value
       let _ = span
-      ValueKind::ExternRef
+      if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
     }
     @core.Expr::Float(value~, span~) => {
       let _ = value
@@ -1710,6 +1743,7 @@ fn infer_expr_kind_with(
         | "f32_load" => ValueKind::BoxedF32
         "int_to_double"
         | "f64_convert_i32_s"
+        | "to_double"
         | "float_to_double"
         | "f64_promote_f32"
         | "f64_neg"
@@ -1726,10 +1760,14 @@ fn infer_expr_kind_with(
         | "f32_store"
         | "f64_store" => ValueKind::I32
         "__eq" | "__lt" => ValueKind::I32
+        "__to_string" =>
+          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
         "string_length" => ValueKind::I32
         "string_char_code_at" => ValueKind::I32
-        "string_substring" => ValueKind::ExternRef
-        "string_concat" => ValueKind::ExternRef
+        "string_substring" =>
+          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+        "string_concat" =>
+          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
         "string_equals" => ValueKind::I32
         "array_builder" | "array_builder_freeze" => ValueKind::I32
         "array_builder_push" => ValueKind::I32
@@ -1744,6 +1782,17 @@ fn infer_expr_kind_with(
         "stdin_read_char" => ValueKind::I32
         "stdin_read_stream" => ValueKind::I32
         "string_from_char_code" => ValueKind::I32
+        "threads_probe_wat" =>
+          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+        "threads_runtime_hints" => ValueKind::I32
+        "wasm_env" | "wasi_env" =>
+          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+        "threads_channel_new" => ValueKind::I32
+        "threads_spawn" => ValueKind::I32
+        "threads_send" => ValueKind::I32
+        "threads_recv" =>
+          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+        "threads_wait" => ValueKind::I32
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
             Some(sig) => sig.result
@@ -2114,19 +2163,31 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       } else if name == "path" {
         ctx.need_path = true
       } else if name == "string_length" {
-        ctx.need_js_length = true
+        if ctx.use_js_strings {
+          ctx.need_js_length = true
+        }
       } else if name == "string_char_code_at" {
-        ctx.need_js_char_code_at = true
+        if ctx.use_js_strings {
+          ctx.need_js_char_code_at = true
+        }
       } else if name == "string_substring" {
-        ctx.need_js_substring = true
+        if ctx.use_js_strings {
+          ctx.need_js_substring = true
+        }
       } else if name == "string_concat" {
-        ctx.need_js_concat = true
+        if ctx.use_js_strings {
+          ctx.need_js_concat = true
+        }
       } else if name == "string_equals" {
-        ctx.need_js_equals = true
+        if ctx.use_js_strings {
+          ctx.need_js_equals = true
+        }
       } else if name == "array_builder" || name == "map_builder" {
         ctx.need_heap = true
       } else if name == "map_get" {
-        ctx.need_js_equals = true
+        if ctx.use_js_strings {
+          ctx.need_js_equals = true
+        }
       } else if name == "sleep" {
         ctx.need_sleep = true
       } else if name == "stdout_write_char" {
@@ -2138,6 +2199,12 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       } else if name == "stdin_read_stream" {
         ctx.need_stdin_read_char = true
       } else if name == "string_from_char_code" {
+        ctx.need_heap = true
+      } else if name == "__to_string" {
+        if not(ctx.use_js_strings) {
+          ctx.need_heap = true
+        }
+      } else if name == "to_double" {
         ctx.need_heap = true
       }
       for arg in args {
@@ -2378,6 +2445,7 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let ordered = sort_record_fields_expr(fields)
       for field in ordered {
         let _ = ctx.strings.intern(field.name)
+        ctx.known_record_fields[field.name] = true
         scan_strings_expr(ctx, field.expr)
       }
     }
@@ -2463,6 +2531,7 @@ fn scan_strings_pat(ctx : CodegenCtx, pat : @core.Pat) -> Unit {
     @core.Pat::Record(fields~, span~) => {
       let _ = span
       for field in fields {
+        ctx.known_record_fields[field.name] = true
         scan_strings_pat(ctx, field.pat)
       }
     }
@@ -2635,6 +2704,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "int_to_float" ||
         name == "f32_convert_i32_s" ||
         name == "int_to_double" ||
+        name == "to_double" ||
         name == "f64_convert_i32_s" ||
         name == "float_to_double" ||
         name == "f64_promote_f32" ||
@@ -2648,6 +2718,9 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "stdout_write_stream" ||
         name == "stdin_read_char" ||
         name == "stdin_read_stream" ||
+        name == "string_substring" ||
+        name == "string_concat" ||
+        name == "__to_string" ||
         name == "string_from_char_code" {
         return true
       }
@@ -3142,9 +3215,91 @@ fn compile_binary_cmp_op(
   let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
   match resolved_kind {
     ValueKind::I32 => {
+      // Dynamic numeric comparison for generic Num paths (e.g. prelude eq/lt):
+      // when tagged objects are boxed float/double, compare payload values.
+      let left_local = alloc_temp_local(ctx)
+      let right_local = alloc_temp_local(ctx)
+      let left_tag_local = alloc_temp_local(ctx)
+      let right_tag_local = alloc_temp_local(ctx)
+      let left_ptr_local = alloc_temp_local(ctx)
+      let right_ptr_local = alloc_temp_local(ctx)
+      let left_type_local = alloc_temp_local(ctx)
+      let right_type_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
+      emit_local_set(buf, left_local)
       compile_expr_i32(ctx, buf, pos_args[1])
+      emit_local_set(buf, right_local)
+      emit_local_get(buf, left_local)
+      emit_i32_const_raw(buf, tag_mask)
+      emit_i32_and(buf)
+      emit_local_set(buf, left_tag_local)
+      emit_local_get(buf, right_local)
+      emit_i32_const_raw(buf, tag_mask)
+      emit_i32_and(buf)
+      emit_local_set(buf, right_tag_local)
+      emit_local_get(buf, left_tag_local)
+      emit_i32_const_raw(buf, tag_obj)
+      emit_i32_eq(buf)
+      emit_local_get(buf, right_tag_local)
+      emit_i32_const_raw(buf, tag_obj)
+      emit_i32_eq(buf)
+      emit_i32_and(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
+      emit_local_get(buf, left_local)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      emit_local_set(buf, left_ptr_local)
+      emit_local_get(buf, right_local)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      emit_local_set(buf, right_ptr_local)
+      emit_local_get(buf, left_ptr_local)
+      emit_i32_load(buf, 0)
+      emit_local_set(buf, left_type_local)
+      emit_local_get(buf, right_ptr_local)
+      emit_i32_load(buf, 0)
+      emit_local_set(buf, right_type_local)
+      emit_local_get(buf, left_type_local)
+      emit_i32_const_raw(buf, obj_float)
+      emit_i32_eq(buf)
+      emit_local_get(buf, right_type_local)
+      emit_i32_const_raw(buf, obj_float)
+      emit_i32_eq(buf)
+      emit_i32_and(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
+      emit_local_get(buf, left_ptr_local)
+      emit_f32_load(buf, 4)
+      emit_local_get(buf, right_ptr_local)
+      emit_f32_load(buf, 4)
+      emit_f32(buf)
+      buf.push((5).to_byte()) // else
+      emit_local_get(buf, left_type_local)
+      emit_i32_const_raw(buf, obj_double)
+      emit_i32_eq(buf)
+      emit_local_get(buf, right_type_local)
+      emit_i32_const_raw(buf, obj_double)
+      emit_i32_eq(buf)
+      emit_i32_and(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((127).to_byte()) // result i32
+      emit_local_get(buf, left_ptr_local)
+      emit_f64_load(buf, 4)
+      emit_local_get(buf, right_ptr_local)
+      emit_f64_load(buf, 4)
+      emit_f64(buf)
+      buf.push((5).to_byte()) // else
+      emit_local_get(buf, left_local)
+      emit_local_get(buf, right_local)
       emit_i32(buf)
+      buf.push((11).to_byte()) // end if
+      buf.push((11).to_byte()) // end if
+      buf.push((5).to_byte()) // else
+      emit_local_get(buf, left_local)
+      emit_local_get(buf, right_local)
+      emit_i32(buf)
+      buf.push((11).to_byte()) // end if
       emit_bool_from_i32(buf)
     }
     ValueKind::BoxedF32 => {
@@ -3313,7 +3468,102 @@ fn compile_expr(
           emit_local_set(buf, ctx.heap_local)
         }
       } else if ctx.locals.contains(name) && not(ctx.fn_indices.contains(name)) {
-        raise WasmGenError::Unsupported("call local: " + name)
+        let pos_args = extract_positional_exprs(args, name)
+        if not(ctx.fn_local_sigs.contains(name)) {
+          let guessed_params : Array[ValueKind] = []
+          for arg in pos_args {
+            let arg_kind = if ctx.use_js_strings {
+              infer_expr_kind(ctx, arg)
+            } else {
+              ValueKind::I32
+            }
+            if ctx.use_js_strings && arg_kind == ValueKind::ExternRef {
+              guessed_params.push(ValueKind::ExternRef)
+            } else {
+              guessed_params.push(ValueKind::I32)
+            }
+          }
+          let guessed_result = if ctx.use_js_strings {
+            let kind = infer_expr_kind(ctx, expr)
+            if kind == ValueKind::ExternRef {
+              ValueKind::ExternRef
+            } else {
+              ValueKind::I32
+            }
+          } else {
+            ValueKind::I32
+          }
+          ctx.fn_local_sigs[name] = func_sig_with_env(
+            guessed_params, guessed_result,
+          )
+        }
+        let sig = match ctx.fn_local_sigs.get(name) {
+          Some(s) => s
+          None => raise WasmGenError::Unsupported("call local: " + name)
+        }
+        let sig_param_len = if sig.params.length() > 0 {
+          sig.params.length() - 1
+        } else {
+          0
+        }
+        if pos_args.length() != sig_param_len {
+          raise WasmGenError::Unsupported("arity: " + name)
+        }
+        let fn_value_idx = match ctx.locals.get(name) {
+          Some(idx) => idx
+          None => raise WasmGenError::UnknownName(name)
+        }
+        let env_idx = alloc_temp_local(ctx)
+        let func_idx = alloc_temp_local(ctx)
+        emit_local_get(buf, fn_value_idx)
+        emit_i32_const_raw(buf, tag_mask)
+        emit_i32_and(buf)
+        emit_i32_const_raw(buf, tag_fn)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte())
+        buf.push((64).to_byte())
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, env_idx)
+        emit_local_get(buf, fn_value_idx)
+        emit_i32_const_raw(buf, tag_fn)
+        emit_i32_sub(buf)
+        emit_i32_const_raw(buf, 2)
+        emit_i32_shr_u(buf)
+        emit_local_set(buf, func_idx)
+        buf.push((5).to_byte())
+        emit_untag_ptr(buf, fn_value_idx)
+        emit_local_set(buf, env_idx)
+        emit_local_get(buf, env_idx)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, func_idx)
+        buf.push((11).to_byte())
+        for i in 0..<sig_param_len {
+          let kind = sig.params[i]
+          if ctx.use_js_strings && kind == ValueKind::ExternRef {
+            compile_expr_ref(ctx, buf, pos_args[i])
+          } else {
+            compile_expr_i32(ctx, buf, pos_args[i])
+          }
+        }
+        emit_local_get(buf, env_idx)
+        emit_local_get(buf, func_idx)
+        let type_idx = match ctx.fn_sig_type_indices.get(func_sig_key(sig)) {
+          Some(idx) => idx
+          None => {
+            let new_idx = ensure_sig_index(ctx, sig)
+            ctx.fn_sig_type_indices[func_sig_key(sig)] = new_idx
+            new_idx
+          }
+        }
+        if ctx.heap_local >= 0 && ctx.use_heap_global {
+          emit_local_get(buf, ctx.heap_local)
+          emit_global_set(buf, ctx.heap_global)
+        }
+        emit_call_indirect(buf, type_idx)
+        if ctx.heap_local >= 0 && ctx.use_heap_global {
+          emit_global_get(buf, ctx.heap_global)
+          emit_local_set(buf, ctx.heap_local)
+        }
       } else if name == "sh" {
         let pos_args = extract_positional_exprs(args, "sh")
         if pos_args.length() != 1 {
@@ -3330,49 +3580,39 @@ fn compile_expr(
         }
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_call(buf, import_index_path(ctx))
-      } else if name == "add" {
+      } else if name == "add" && not(ctx.fn_indices.contains(name)) {
         let pos_args = extract_positional_exprs(args, "add")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("add arity")
         }
         compile_i32_add_tagged(ctx, buf, pos_args[0], pos_args[1])
-      } else if name == "sub" {
+      } else if name == "sub" && not(ctx.fn_indices.contains(name)) {
         let pos_args = extract_positional_exprs(args, "sub")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("sub arity")
         }
         compile_i32_sub_tagged(ctx, buf, pos_args[0], pos_args[1])
-      } else if name == "mul" {
+      } else if name == "mul" && not(ctx.fn_indices.contains(name)) {
         let pos_args = extract_positional_exprs(args, "mul")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("mul arity")
         }
         compile_i32_mul_tagged(ctx, buf, pos_args[0], pos_args[1])
-      } else if name == "div" {
+      } else if name == "div" && not(ctx.fn_indices.contains(name)) {
         let pos_args = extract_positional_exprs(args, "div")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("div arity")
         }
         compile_i32_div_tagged(ctx, buf, pos_args[0], pos_args[1])
-      } else if name == "eq" {
-        let pos_args = extract_positional_exprs(args, "eq")
-        if pos_args.length() != 2 {
-          raise WasmGenError::Unsupported("eq arity")
-        }
-        compile_expr_i32(ctx, buf, pos_args[0])
-        compile_expr_i32(ctx, buf, pos_args[1])
-        emit_i32_eq(buf)
-        emit_bool_from_i32(buf)
-      } else if name == "lt" {
-        let pos_args = extract_positional_exprs(args, "lt")
-        if pos_args.length() != 2 {
-          raise WasmGenError::Unsupported("lt arity")
-        }
-        compile_expr_i32(ctx, buf, pos_args[0])
-        compile_expr_i32(ctx, buf, pos_args[1])
-        emit_i32_lt_s(buf)
-        emit_bool_from_i32(buf)
-      } else if name == "assert" {
+      } else if name == "eq" && not(ctx.fn_indices.contains(name)) {
+        compile_binary_cmp_op(
+          ctx, buf, "eq", args, emit_i32_eq, emit_f32_eq, emit_f64_eq,
+        )
+      } else if name == "lt" && not(ctx.fn_indices.contains(name)) {
+        compile_binary_cmp_op(
+          ctx, buf, "lt", args, emit_i32_lt_s, emit_f32_lt, emit_f64_lt,
+        )
+      } else if name == "assert" && not(ctx.fn_indices.contains(name)) {
         let pos_args = extract_positional_exprs(args, "assert")
         if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("assert arity")
@@ -3585,7 +3825,9 @@ fn compile_expr(
           emit_untag_i32(buf)
           emit_f32_convert_i32_s(buf)
         })
-      } else if name == "int_to_double" || name == "f64_convert_i32_s" {
+      } else if name == "int_to_double" ||
+        name == "f64_convert_i32_s" ||
+        name == "to_double" {
         let pos_args = extract_positional_exprs(args, name)
         if pos_args.length() != 1 {
           raise WasmGenError::Unsupported(name + " arity")
@@ -3733,7 +3975,7 @@ fn compile_expr(
         emit_unbox_f64_expr(ctx, buf, pos_args[2])
         emit_f64_store(buf, 0)
         emit_i32_const_tagged(buf, 0)
-      } else if name == "not" {
+      } else if name == "not" && not(ctx.fn_indices.contains(name)) {
         let pos_args = extract_positional_exprs(args, "not")
         if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("not arity")
@@ -3741,7 +3983,7 @@ fn compile_expr(
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_i32_const_raw(buf, 4)
         emit_i32_xor(buf)
-      } else if name == "and" {
+      } else if name == "and" && not(ctx.fn_indices.contains(name)) {
         let pos_args = extract_positional_exprs(args, "and")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("and arity")
@@ -3749,7 +3991,7 @@ fn compile_expr(
         compile_expr_i32(ctx, buf, pos_args[0])
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_and(buf)
-      } else if name == "or" {
+      } else if name == "or" && not(ctx.fn_indices.contains(name)) {
         let pos_args = extract_positional_exprs(args, "or")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("or arity")
@@ -3757,87 +3999,666 @@ fn compile_expr(
         compile_expr_i32(ctx, buf, pos_args[0])
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_or(buf)
-      } else if name == "string_length" {
-        if not(ctx.use_js_strings) {
-          raise WasmGenError::Unsupported(
-            "string_length requires --wasm-js-string",
-          )
+      } else if name == "__to_string" {
+        let pos_args = extract_positional_exprs(args, "__to_string")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("__to_string arity")
         }
+        if ctx.use_js_strings {
+          let arg_kind = infer_expr_kind(ctx, pos_args[0])
+          if arg_kind == ValueKind::ExternRef {
+            compile_expr_ref(ctx, buf, pos_args[0])
+          } else {
+            compile_expr_i32(ctx, buf, pos_args[0])
+            emit_drop(buf)
+            emit_string_const(ctx, buf, "")
+          }
+        } else {
+          require_heap(ctx)
+          let true_str = tag_ptr(ctx.strings.intern("true"), tag_obj)
+          let false_str = tag_ptr(ctx.strings.intern("false"), tag_obj)
+          let fallback_str = tag_ptr(ctx.strings.intern("<value>"), tag_obj)
+          let value_local = alloc_temp_local(ctx)
+          let tag_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_local_set(buf, value_local)
+          emit_local_get(buf, value_local)
+          emit_i32_const_raw(buf, tag_mask)
+          emit_i32_and(buf)
+          emit_local_set(buf, tag_local)
+          emit_local_get(buf, tag_local)
+          emit_i32_const_raw(buf, tag_obj)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((127).to_byte()) // result i32
+          emit_local_get(buf, value_local)
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, tag_local)
+          emit_i32_const_raw(buf, tag_bool)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((127).to_byte()) // result i32
+          emit_local_get(buf, value_local)
+          emit_i32_const_raw(buf, tag_bool_value(true))
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((127).to_byte()) // result i32
+          emit_i32_const_raw(buf, true_str)
+          buf.push((5).to_byte()) // else
+          emit_i32_const_raw(buf, false_str)
+          buf.push((11).to_byte()) // end if
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, tag_local)
+          emit_i32_const_raw(buf, tag_int)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((127).to_byte()) // result i32
+          let n_local = alloc_temp_local(ctx)
+          let is_neg_local = alloc_temp_local(ctx)
+          let scratch_local = alloc_temp_local(ctx)
+          let digit_len_local = alloc_temp_local(ctx)
+          let digit_local = alloc_temp_local(ctx)
+          let copy_i_local = alloc_temp_local(ctx)
+          let obj_local = alloc_temp_local(ctx)
+          let src_idx_local = alloc_temp_local(ctx)
+          emit_local_get(buf, value_local)
+          emit_untag_i32(buf)
+          emit_local_set(buf, n_local)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, is_neg_local)
+          emit_local_get(buf, n_local)
+          emit_i32_const_raw(buf, 0)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, is_neg_local)
+          emit_i32_const_raw(buf, 0)
+          emit_local_get(buf, n_local)
+          emit_i32_sub(buf)
+          emit_local_set(buf, n_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, ctx.heap_local)
+          emit_local_set(buf, scratch_local)
+          emit_local_get(buf, ctx.heap_local)
+          emit_i32_const_raw(buf, 64)
+          emit_i32_add(buf)
+          emit_local_set(buf, ctx.heap_local)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, digit_len_local)
+          emit_local_get(buf, n_local)
+          emit_i32_eqz(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, scratch_local)
+          emit_i32_const_raw(buf, 48)
+          emit_i32_store8(buf, 0)
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, digit_len_local)
+          buf.push((5).to_byte()) // else
+          emit_block(buf)
+          emit_loop(buf)
+          emit_local_get(buf, n_local)
+          emit_i32_eqz(buf)
+          emit_br_if(buf, 1)
+          emit_local_get(buf, n_local)
+          emit_i32_const_raw(buf, 10)
+          emit_i32_rem_s(buf)
+          emit_local_set(buf, digit_local)
+          emit_local_get(buf, n_local)
+          emit_i32_const_raw(buf, 10)
+          emit_i32_div_s(buf)
+          emit_local_set(buf, n_local)
+          emit_local_get(buf, scratch_local)
+          emit_local_get(buf, digit_len_local)
+          emit_i32_add(buf)
+          emit_local_get(buf, digit_local)
+          emit_i32_const_raw(buf, 48)
+          emit_i32_add(buf)
+          emit_i32_store8(buf, 0)
+          emit_local_get(buf, digit_len_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, digit_len_local)
+          emit_br(buf, 0)
+          emit_end(buf)
+          emit_end(buf)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, is_neg_local)
+          emit_i32_eqz(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, scratch_local)
+          emit_local_get(buf, digit_len_local)
+          emit_i32_add(buf)
+          emit_i32_const_raw(buf, 45)
+          emit_i32_store8(buf, 0)
+          emit_local_get(buf, digit_len_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, digit_len_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, ctx.heap_local)
+          emit_local_set(buf, obj_local)
+          emit_local_get(buf, ctx.heap_local)
+          emit_local_get(buf, digit_len_local)
+          emit_i32_const_raw(buf, 11)
+          emit_i32_add(buf)
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_i32_add(buf)
+          emit_local_set(buf, ctx.heap_local)
+          emit_local_get(buf, obj_local)
+          emit_i32_const_raw(buf, obj_string)
+          emit_i32_store(buf, 0)
+          emit_local_get(buf, obj_local)
+          emit_local_get(buf, digit_len_local)
+          emit_i32_store(buf, 4)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, copy_i_local)
+          emit_block(buf)
+          emit_loop(buf)
+          emit_local_get(buf, copy_i_local)
+          emit_local_get(buf, digit_len_local)
+          emit_i32_lt_s(buf)
+          emit_i32_eqz(buf)
+          emit_br_if(buf, 1)
+          emit_local_get(buf, digit_len_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_sub(buf)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_sub(buf)
+          emit_local_set(buf, src_idx_local)
+          emit_local_get(buf, obj_local)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_add(buf)
+          emit_local_get(buf, scratch_local)
+          emit_local_get(buf, src_idx_local)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 0)
+          emit_i32_store8(buf, 8)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, copy_i_local)
+          emit_br(buf, 0)
+          emit_end(buf)
+          emit_end(buf)
+          emit_local_get(buf, obj_local)
+          emit_i32_const_raw(buf, tag_obj)
+          emit_i32_or(buf)
+          buf.push((5).to_byte()) // else
+          emit_i32_const_raw(buf, fallback_str)
+          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end if
+        }
+      } else if name == "threads_probe_wat" {
+        let pos_args = extract_positional_exprs(args, "threads_probe_wat")
+        if pos_args.length() != 0 {
+          raise WasmGenError::Unsupported("threads_probe_wat arity")
+        }
+        emit_string_const(ctx, buf, "(module)")
+      } else if name == "threads_runtime_hints" {
+        let pos_args = extract_positional_exprs(args, "threads_runtime_hints")
+        if pos_args.length() != 0 {
+          raise WasmGenError::Unsupported("threads_runtime_hints arity")
+        }
+        emit_i32_const_tagged(buf, 0)
+      } else if name == "wasm_env" {
+        let pos_args = extract_positional_exprs(args, "wasm_env")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("wasm_env arity")
+        }
+        compile_expr(ctx, buf, pos_args[0])
+        emit_drop(buf)
+        emit_string_const(ctx, buf, "threads=y shared-memory=y")
+      } else if name == "wasi_env" {
+        let pos_args = extract_positional_exprs(args, "wasi_env")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("wasi_env arity")
+        }
+        compile_expr(ctx, buf, pos_args[0])
+        emit_drop(buf)
+        emit_string_const(ctx, buf, "threads=y")
+      } else if name == "threads_channel_new" {
+        let pos_args = extract_positional_exprs(args, "threads_channel_new")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("threads_channel_new arity")
+        }
+        let cap_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_untag_i32(buf)
+        emit_local_set(buf, cap_local)
+        emit_local_get(buf, cap_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_lt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((127).to_byte()) // result i32
+        emit_i32_const_raw(buf, 0)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, cap_local)
+        buf.push((11).to_byte()) // end if
+        emit_tag_i32(buf)
+      } else if name == "threads_spawn" {
+        let pos_args = extract_positional_exprs(args, "threads_spawn")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("threads_spawn arity")
+        }
+        compile_expr(ctx, buf, pos_args[0])
+        emit_drop(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+      } else if name == "threads_send" {
+        let pos_args = extract_positional_exprs(args, "threads_send")
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("threads_send arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_drop(buf)
+        compile_expr(ctx, buf, pos_args[1])
+        emit_drop(buf)
+        emit_i32_const_raw(buf, tag_bool_value(true))
+      } else if name == "threads_recv" {
+        let pos_args = extract_positional_exprs(args, "threads_recv")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("threads_recv arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_drop(buf)
+        emit_string_const(ctx, buf, "")
+      } else if name == "threads_wait" {
+        let pos_args = extract_positional_exprs(args, "threads_wait")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("threads_wait arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+      } else if name == "string_length" {
         let pos_args = extract_positional_exprs(args, "string_length")
         if pos_args.length() != 1 {
           raise WasmGenError::Unsupported("string_length arity")
         }
-        ctx.need_js_length = true
-        compile_expr_ref(ctx, buf, pos_args[0])
-        emit_call(buf, import_index_js_length(ctx))
-        emit_i32_const_raw(buf, 2)
-        emit_i32_shl(buf)
-      } else if name == "string_char_code_at" {
-        if not(ctx.use_js_strings) {
-          raise WasmGenError::Unsupported(
-            "string_char_code_at requires --wasm-js-string",
-          )
+        if ctx.use_js_strings {
+          ctx.need_js_length = true
+          compile_expr_ref(ctx, buf, pos_args[0])
+          emit_call(buf, import_index_js_length(ctx))
+          emit_i32_const_raw(buf, 2)
+          emit_i32_shl(buf)
+        } else {
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_i32_load(buf, 4)
+          emit_tag_i32(buf)
         }
+      } else if name == "string_char_code_at" {
         let pos_args = extract_positional_exprs(args, "string_char_code_at")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("string_char_code_at arity")
         }
-        ctx.need_js_char_code_at = true
-        compile_expr_ref(ctx, buf, pos_args[0])
-        compile_expr_i32(ctx, buf, pos_args[1])
-        emit_i32_const_raw(buf, 2)
-        emit_i32_shr_u(buf)
-        emit_call(buf, import_index_js_char_code_at(ctx))
-        emit_i32_const_raw(buf, 2)
-        emit_i32_shl(buf)
-      } else if name == "string_substring" {
-        if not(ctx.use_js_strings) {
-          raise WasmGenError::Unsupported(
-            "string_substring requires --wasm-js-string",
-          )
+        if ctx.use_js_strings {
+          ctx.need_js_char_code_at = true
+          compile_expr_ref(ctx, buf, pos_args[0])
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i32_const_raw(buf, 2)
+          emit_i32_shr_u(buf)
+          emit_call(buf, import_index_js_char_code_at(ctx))
+          emit_i32_const_raw(buf, 2)
+          emit_i32_shl(buf)
+        } else {
+          let str_ptr_local = alloc_temp_local(ctx)
+          let str_len_local = alloc_temp_local(ctx)
+          let idx_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_local_set(buf, str_ptr_local)
+          emit_local_get(buf, str_ptr_local)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, str_len_local)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_untag_i32(buf)
+          emit_local_set(buf, idx_local)
+          emit_local_get(buf, idx_local)
+          emit_i32_const_raw(buf, 0)
+          emit_i32_lt_s(buf)
+          emit_local_get(buf, idx_local)
+          emit_local_get(buf, str_len_local)
+          emit_i32_lt_s(buf)
+          emit_i32_eqz(buf)
+          emit_i32_or(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((127).to_byte()) // result i32
+          emit_i32_const_tagged(buf, -1)
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, str_ptr_local)
+          emit_local_get(buf, idx_local)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 8)
+          emit_tag_i32(buf)
+          buf.push((11).to_byte()) // end if
         }
+      } else if name == "string_substring" {
         let pos_args = extract_positional_exprs(args, "string_substring")
         if pos_args.length() != 3 {
           raise WasmGenError::Unsupported("string_substring arity")
         }
-        ctx.need_js_substring = true
-        compile_expr_ref(ctx, buf, pos_args[0])
-        compile_expr_i32(ctx, buf, pos_args[1])
-        emit_i32_const_raw(buf, 2)
-        emit_i32_shr_u(buf)
-        compile_expr_i32(ctx, buf, pos_args[2])
-        emit_i32_const_raw(buf, 2)
-        emit_i32_shr_u(buf)
-        emit_call(buf, import_index_js_substring(ctx))
-      } else if name == "string_concat" {
-        if not(ctx.use_js_strings) {
-          raise WasmGenError::Unsupported(
-            "string_concat requires --wasm-js-string",
-          )
+        if ctx.use_js_strings {
+          ctx.need_js_substring = true
+          compile_expr_ref(ctx, buf, pos_args[0])
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i32_const_raw(buf, 2)
+          emit_i32_shr_u(buf)
+          compile_expr_i32(ctx, buf, pos_args[2])
+          emit_i32_const_raw(buf, 2)
+          emit_i32_shr_u(buf)
+          emit_call(buf, import_index_js_substring(ctx))
+        } else {
+          require_heap(ctx)
+          let str_ptr_local = alloc_temp_local(ctx)
+          let str_len_local = alloc_temp_local(ctx)
+          let start_local = alloc_temp_local(ctx)
+          let end_local = alloc_temp_local(ctx)
+          let sub_len_local = alloc_temp_local(ctx)
+          let obj_local = alloc_temp_local(ctx)
+          let copy_i_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_local_set(buf, str_ptr_local)
+          emit_local_get(buf, str_ptr_local)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, str_len_local)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_untag_i32(buf)
+          emit_local_set(buf, start_local)
+          compile_expr_i32(ctx, buf, pos_args[2])
+          emit_untag_i32(buf)
+          emit_local_set(buf, end_local)
+          emit_local_get(buf, start_local)
+          emit_i32_const_raw(buf, 0)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, start_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, str_len_local)
+          emit_local_get(buf, start_local)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, str_len_local)
+          emit_local_set(buf, start_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, end_local)
+          emit_i32_const_raw(buf, 0)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, end_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, str_len_local)
+          emit_local_get(buf, end_local)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, str_len_local)
+          emit_local_set(buf, end_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, end_local)
+          emit_local_get(buf, start_local)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, start_local)
+          emit_local_set(buf, end_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, end_local)
+          emit_local_get(buf, start_local)
+          emit_i32_sub(buf)
+          emit_local_set(buf, sub_len_local)
+          emit_local_get(buf, ctx.heap_local)
+          emit_local_set(buf, obj_local)
+          emit_local_get(buf, ctx.heap_local)
+          emit_local_get(buf, sub_len_local)
+          emit_i32_const_raw(buf, 11)
+          emit_i32_add(buf)
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_i32_add(buf)
+          emit_local_set(buf, ctx.heap_local)
+          emit_local_get(buf, obj_local)
+          emit_i32_const_raw(buf, obj_string)
+          emit_i32_store(buf, 0)
+          emit_local_get(buf, obj_local)
+          emit_local_get(buf, sub_len_local)
+          emit_i32_store(buf, 4)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, copy_i_local)
+          emit_block(buf)
+          emit_loop(buf)
+          emit_local_get(buf, copy_i_local)
+          emit_local_get(buf, sub_len_local)
+          emit_i32_lt_s(buf)
+          emit_i32_eqz(buf)
+          emit_br_if(buf, 1)
+          emit_local_get(buf, obj_local)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_add(buf)
+          emit_local_get(buf, str_ptr_local)
+          emit_local_get(buf, start_local)
+          emit_i32_add(buf)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 8)
+          emit_i32_store8(buf, 8)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, copy_i_local)
+          emit_br(buf, 0)
+          emit_end(buf)
+          emit_end(buf)
+          emit_local_get(buf, obj_local)
+          emit_i32_const_raw(buf, tag_obj)
+          emit_i32_or(buf)
         }
+      } else if name == "string_concat" {
         let pos_args = extract_positional_exprs(args, "string_concat")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("string_concat arity")
         }
-        ctx.need_js_concat = true
-        compile_expr_ref(ctx, buf, pos_args[0])
-        compile_expr_ref(ctx, buf, pos_args[1])
-        emit_call(buf, import_index_js_concat(ctx))
-      } else if name == "string_equals" {
-        if not(ctx.use_js_strings) {
-          raise WasmGenError::Unsupported(
-            "string_equals requires --wasm-js-string",
-          )
+        if ctx.use_js_strings {
+          ctx.need_js_concat = true
+          compile_expr_ref(ctx, buf, pos_args[0])
+          compile_expr_ref(ctx, buf, pos_args[1])
+          emit_call(buf, import_index_js_concat(ctx))
+        } else {
+          require_heap(ctx)
+          let left_ptr_local = alloc_temp_local(ctx)
+          let left_len_local = alloc_temp_local(ctx)
+          let right_ptr_local = alloc_temp_local(ctx)
+          let right_len_local = alloc_temp_local(ctx)
+          let total_len_local = alloc_temp_local(ctx)
+          let obj_local = alloc_temp_local(ctx)
+          let copy_i_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_local_set(buf, left_ptr_local)
+          emit_local_get(buf, left_ptr_local)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, left_len_local)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_local_set(buf, right_ptr_local)
+          emit_local_get(buf, right_ptr_local)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, right_len_local)
+          emit_local_get(buf, left_len_local)
+          emit_local_get(buf, right_len_local)
+          emit_i32_add(buf)
+          emit_local_set(buf, total_len_local)
+          emit_local_get(buf, ctx.heap_local)
+          emit_local_set(buf, obj_local)
+          emit_local_get(buf, ctx.heap_local)
+          emit_local_get(buf, total_len_local)
+          emit_i32_const_raw(buf, 11)
+          emit_i32_add(buf)
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_i32_add(buf)
+          emit_local_set(buf, ctx.heap_local)
+          emit_local_get(buf, obj_local)
+          emit_i32_const_raw(buf, obj_string)
+          emit_i32_store(buf, 0)
+          emit_local_get(buf, obj_local)
+          emit_local_get(buf, total_len_local)
+          emit_i32_store(buf, 4)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, copy_i_local)
+          emit_block(buf)
+          emit_loop(buf)
+          emit_local_get(buf, copy_i_local)
+          emit_local_get(buf, left_len_local)
+          emit_i32_lt_s(buf)
+          emit_i32_eqz(buf)
+          emit_br_if(buf, 1)
+          emit_local_get(buf, obj_local)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_add(buf)
+          emit_local_get(buf, left_ptr_local)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 8)
+          emit_i32_store8(buf, 8)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, copy_i_local)
+          emit_br(buf, 0)
+          emit_end(buf)
+          emit_end(buf)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, copy_i_local)
+          emit_block(buf)
+          emit_loop(buf)
+          emit_local_get(buf, copy_i_local)
+          emit_local_get(buf, right_len_local)
+          emit_i32_lt_s(buf)
+          emit_i32_eqz(buf)
+          emit_br_if(buf, 1)
+          emit_local_get(buf, obj_local)
+          emit_local_get(buf, left_len_local)
+          emit_i32_add(buf)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_add(buf)
+          emit_local_get(buf, right_ptr_local)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 8)
+          emit_i32_store8(buf, 8)
+          emit_local_get(buf, copy_i_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, copy_i_local)
+          emit_br(buf, 0)
+          emit_end(buf)
+          emit_end(buf)
+          emit_local_get(buf, obj_local)
+          emit_i32_const_raw(buf, tag_obj)
+          emit_i32_or(buf)
         }
+      } else if name == "string_equals" {
         let pos_args = extract_positional_exprs(args, "string_equals")
         if pos_args.length() != 2 {
           raise WasmGenError::Unsupported("string_equals arity")
         }
-        ctx.need_js_equals = true
-        compile_expr_ref(ctx, buf, pos_args[0])
-        compile_expr_ref(ctx, buf, pos_args[1])
-        emit_call(buf, import_index_js_equals(ctx))
-        emit_bool_from_i32(buf)
+        if ctx.use_js_strings {
+          ctx.need_js_equals = true
+          compile_expr_ref(ctx, buf, pos_args[0])
+          compile_expr_ref(ctx, buf, pos_args[1])
+          emit_call(buf, import_index_js_equals(ctx))
+          emit_bool_from_i32(buf)
+        } else {
+          let left_ptr_local = alloc_temp_local(ctx)
+          let right_ptr_local = alloc_temp_local(ctx)
+          let left_len_local = alloc_temp_local(ctx)
+          let right_len_local = alloc_temp_local(ctx)
+          let loop_i_local = alloc_temp_local(ctx)
+          let eq_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_local_set(buf, left_ptr_local)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_local_set(buf, right_ptr_local)
+          emit_local_get(buf, left_ptr_local)
+          emit_local_get(buf, right_ptr_local)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((127).to_byte()) // result i32
+          emit_i32_const_raw(buf, 1)
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, left_ptr_local)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, left_len_local)
+          emit_local_get(buf, right_ptr_local)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, right_len_local)
+          emit_local_get(buf, left_len_local)
+          emit_local_get(buf, right_len_local)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((127).to_byte()) // result i32
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, eq_local)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, loop_i_local)
+          emit_block(buf)
+          emit_loop(buf)
+          emit_local_get(buf, loop_i_local)
+          emit_local_get(buf, left_len_local)
+          emit_i32_lt_s(buf)
+          emit_i32_eqz(buf)
+          emit_br_if(buf, 1)
+          emit_local_get(buf, left_ptr_local)
+          emit_local_get(buf, loop_i_local)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 8)
+          emit_local_get(buf, right_ptr_local)
+          emit_local_get(buf, loop_i_local)
+          emit_i32_add(buf)
+          emit_i32_load8_u(buf, 8)
+          emit_i32_eq(buf)
+          emit_i32_eqz(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, eq_local)
+          emit_local_get(buf, left_len_local)
+          emit_local_set(buf, loop_i_local)
+          buf.push((5).to_byte()) // else
+          emit_local_get(buf, loop_i_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i_local)
+          buf.push((11).to_byte()) // end if
+          emit_br(buf, 0)
+          emit_end(buf)
+          emit_end(buf)
+          emit_local_get(buf, eq_local)
+          buf.push((5).to_byte()) // else
+          emit_i32_const_raw(buf, 0)
+          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end if
+          emit_bool_from_i32(buf)
+        }
       } else if name == "array_builder" {
         // array_builder() -> allocate empty array obj with len=0
         // Reserve max_capacity * 4 bytes after header for future pushes
@@ -4595,7 +5416,74 @@ fn compile_expr(
         if is_qualified_name(name) {
           raise WasmGenError::Unsupported("qualified call: " + name)
         }
-        raise WasmGenError::Unsupported("call: " + name)
+        let pos_args = extract_positional_exprs(args, name)
+        if pos_args.length() == 1 && ctx.known_record_fields.contains(name) {
+          // Fallback for method-style record field access desugared as `field(record)`.
+          let record_ptr_local = alloc_temp_local(ctx)
+          let record_len_local = alloc_temp_local(ctx)
+          let loop_i_local = alloc_temp_local(ctx)
+          let result_local = alloc_temp_local(ctx)
+          let found_local = alloc_temp_local(ctx)
+          let field_name_ptr = ctx.strings.intern(name)
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i32_const_raw(buf, -4)
+          emit_i32_and(buf)
+          emit_local_set(buf, record_ptr_local)
+          emit_local_get(buf, record_ptr_local)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, record_len_local)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, loop_i_local)
+          emit_i32_const_tagged(buf, 0)
+          emit_local_set(buf, result_local)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, found_local)
+          emit_block(buf)
+          emit_loop(buf)
+          emit_local_get(buf, loop_i_local)
+          emit_local_get(buf, record_len_local)
+          emit_i32_lt_s(buf)
+          emit_i32_eqz(buf)
+          emit_br_if(buf, 1)
+          emit_local_get(buf, record_ptr_local)
+          emit_local_get(buf, loop_i_local)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8)
+          emit_i32_const_raw(buf, field_name_ptr)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, record_ptr_local)
+          emit_local_get(buf, loop_i_local)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 12)
+          emit_local_set(buf, result_local)
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, found_local)
+          emit_local_get(buf, record_len_local)
+          emit_local_set(buf, loop_i_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, loop_i_local)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i_local)
+          emit_br(buf, 0)
+          emit_end(buf)
+          emit_end(buf)
+          emit_local_get(buf, found_local)
+          emit_i32_eqz(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          buf.push((0).to_byte()) // unreachable
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, result_local)
+        } else {
+          raise WasmGenError::Unsupported("call: " + name)
+        }
       }
     }
     @core.Expr::Tuple(items~, span~) => {
@@ -4985,10 +5873,15 @@ fn compile_stmt(
             Some(i) => i
             None => -1
           }
+          let kinds = param_kinds(ctx, fn_params)
+          let ret_kind = match fn_ret {
+            Some(r) => value_kind_from_type(ctx, r)
+            None => ValueKind::I32
+          }
+          ctx.fn_local_sigs[name] = func_sig_with_env(kinds, ret_kind)
           if func_idx >= 0 {
             // Register as callable function (direct call)
             ctx.fn_indices[name] = func_idx
-            let kinds = param_kinds(ctx, fn_params)
             ctx.fn_params[name] = kinds
             // Save parameter names for labeled args resolution
             let names : Array[String] = []
@@ -4996,10 +5889,6 @@ fn compile_stmt(
               names.push(p.name)
             }
             ctx.fn_param_names[name] = names
-            let ret_kind = match fn_ret {
-              Some(r) => value_kind_from_type(ctx, r)
-              None => ValueKind::I32
-            }
             ctx.fn_returns[name] = ret_kind
             // Infer return signature if function returns a function type
             match fn_ret {
@@ -5060,6 +5949,35 @@ fn compile_stmt(
           ctx.local_kinds[name] = kind
           // If the expression is a Call that returns a function, register in fn_local_sigs
           match expr {
+            @core.Expr::Ident(name=source_name, span~) => {
+              let _ = span
+              match ctx.fn_local_sigs.get(source_name) {
+                Some(sig) => ctx.fn_local_sigs[name] = sig
+                None => ()
+              }
+              match ctx.fn_indices.get(source_name) {
+                Some(func_idx) => {
+                  ctx.fn_indices[name] = func_idx
+                  match ctx.fn_params.get(source_name) {
+                    Some(kinds) => ctx.fn_params[name] = kinds
+                    None => ()
+                  }
+                  match ctx.fn_param_names.get(source_name) {
+                    Some(names) => ctx.fn_param_names[name] = names
+                    None => ()
+                  }
+                  match ctx.fn_returns.get(source_name) {
+                    Some(ret_kind) => ctx.fn_returns[name] = ret_kind
+                    None => ()
+                  }
+                  match ctx.fn_return_sigs.get(source_name) {
+                    Some(sig) => ctx.fn_return_sigs[name] = sig
+                    None => ()
+                  }
+                }
+                None => ()
+              }
+            }
             @core.Expr::Call(name=call_name, args~, span~, ..) => {
               let _ = args
               let _ = span
@@ -5650,7 +6568,12 @@ fn compile_func_body(
         emit_global_get(prologue, ctx.heap_global)
         emit_local_set(prologue, ctx.heap_local)
       } else {
-        let heap_start = align4(ctx.strings.next_offset)
+        let coverage_bytes = if ctx.coverage_enabled {
+          ctx.coverage_points.length() * 4
+        } else {
+          0
+        }
+        let heap_start = align4(ctx.strings.next_offset + coverage_bytes)
         emit_i32_const_raw(prologue, heap_start)
         emit_local_set(prologue, ctx.heap_local)
       }
@@ -5723,6 +6646,10 @@ fn compile_function(
       }
       let idx = ctx.local_count
       ctx.local_count += 1
+      match saved_fn_locals.get(name) {
+        Some(sig) => ctx.fn_local_sigs[name] = sig
+        None => ()
+      }
       if ctx.use_js_strings && kind == ValueKind::ExternRef {
         // ExternRef capture: load table slot index from env, then table.get
         ctx.local_types.push(ValueKind::ExternRef)
@@ -7417,6 +8344,22 @@ fn emit_module_with_coverage(
   let compiled_funcs : Array[WasmFunc] = []
   for i in 0..<funcs.length() {
     let f = funcs[i]
+    match f.name {
+      Some(name) => {
+        // Function names can collide across lexical scopes (e.g. multiple `go`).
+        // Rebind the current function before compiling its body so recursive calls
+        // resolve to the right signature/index.
+        ctx.fn_indices[name] = i
+        ctx.fn_params[name] = func_param_kinds[i]
+        let param_names : Array[String] = []
+        for p in f.params {
+          param_names.push(p.name)
+        }
+        ctx.fn_param_names[name] = param_names
+        ctx.fn_returns[name] = func_return_kinds[i]
+      }
+      None => ()
+    }
     let cap_kinds = match ctx.fn_closure_capture_kinds.get(f.span_key) {
       Some(kinds) => kinds
       None => []

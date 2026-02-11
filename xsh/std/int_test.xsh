@@ -97,7 +97,7 @@ test "int_lcm" {
   assert(eq(int_lcm(4, 6), 12))
   assert(eq(int_lcm(3, 5), 15))
   assert(eq(int_lcm(0, 5), 0))
-  assert(eq(int_lcm(1073741824, 2), 1073741824))
+  assert(eq(int_lcm(268435456, 2), 268435456))
 }
 
 test "int_factorial" {
