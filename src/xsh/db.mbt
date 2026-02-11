@@ -82,7 +82,13 @@ fn import_kind_expected_label(kind : @core.ImportKind) -> String {
     @core.ImportKind::Value => "value"
     @core.ImportKind::Type => "type"
     @core.ImportKind::Trait => "trait"
+    @core.ImportKind::Module => "module namespace"
   }
+}
+
+///|
+fn supports_module_namespace_import(path : String) -> Bool {
+  path.has_suffix(".xm")
 }
 
 ///|
@@ -1031,11 +1037,25 @@ pub fn XshDb::new() -> XshDb {
                   let trait_aliases = collect_import_trait_aliases(
                     spec, imported_env,
                   )
+                  let module_namespace_ok = supports_module_namespace_import(
+                    imp.path,
+                  )
                   let import_symbol = fn(
                     item : @core.ImportItem,
                     source_name : String,
                     target_name : String,
                   ) -> Bool {
+                    if item.kind == @core.ImportKind::Module {
+                      match imported_env.get_scheme(source_name) {
+                        Some(scheme) => {
+                          if can_bind_import_value(target_name, span) {
+                            env.set_scheme(target_name, scheme)
+                          }
+                          return true
+                        }
+                        None => return false
+                      }
+                    }
                     let mut imported_any = false
                     if import_item_accepts_trait(item) &&
                       imported_env.has_trait(source_name) {
@@ -1127,6 +1147,48 @@ pub fn XshDb::new() -> XshDb {
                   // For each imported item, copy symbols by declared kind.
                   for item in spec.items {
                     let name = item.name
+                    if item.kind == @core.ImportKind::Module {
+                      if not(module_namespace_ok) {
+                        diags.push(rt, @core.Diagnostic::{
+                          stage: "import",
+                          message:
+                            "module import is only supported for .xm source: " +
+                            imp.path,
+                          span: Some(span),
+                          hint: Some(
+                            "use `.xm` for multi-module files, or import explicit exported symbols from `.xsh`",
+                          ),
+                          note: None,
+                        })
+                        continue
+                      }
+                      let source_prefix = name + "::"
+                      let local_ns = match item.rename {
+                        Some(n) => n
+                        None => name
+                      }
+                      let target_prefix = local_ns + "::"
+                      let mut imported_any = false
+                      for exported_name, _ in exported_names {
+                        if exported_name.has_prefix(source_prefix) {
+                          let suffix = exported_name.unsafe_substring(
+                            start=source_prefix.length(),
+                            end=exported_name.length(),
+                          )
+                          let target_name = target_prefix + suffix
+                          imported_any = true
+                          if not(
+                              import_symbol(item, exported_name, target_name),
+                            ) {
+                            report_kind_mismatch(item, exported_name)
+                          }
+                        }
+                      }
+                      if not(imported_any) {
+                        report_kind_mismatch(item, name)
+                      }
+                      continue
+                    }
                     let local_name = match item.rename {
                       Some(n) => n
                       None => name
@@ -1195,6 +1257,19 @@ pub fn XshDb::new() -> XshDb {
                         let target_name = match item.rename {
                           Some(rename) => rename
                           None => source_name
+                        }
+                        if item.kind == @core.ImportKind::Module {
+                          diags.push(rt, @core.Diagnostic::{
+                            stage: "import",
+                            message: "module import is not supported for wasm import: " +
+                            source_name,
+                            span: Some(span),
+                            hint: Some(
+                              "wasm import currently exposes flat value exports only",
+                            ),
+                            note: None,
+                          })
+                          continue
                         }
                         if item.kind != @core.ImportKind::Value {
                           diags.push(rt, @core.Diagnostic::{

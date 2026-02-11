@@ -110,6 +110,57 @@ test "xsh parse/format import list allows trailing comma" {
 }
 
 ///|
+test "xsh parse/format import list supports module qualifier" {
+  let input =
+    #|export module math {
+    #|  export let inc = (x: Int) -> Int { add(x, 1) }
+    #|}
+    #|import { module math } from "./math.xm"
+    #|math::inc(1)
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] module import qualifier failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] module import qualifier format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+  if not(formatted.contains("module math")) {
+    fail("[format] missing module qualifier\n---\n\{formatted}")
+  }
+  if not(formatted.contains("from \"./math.xm\"")) {
+    fail("[format] missing import source\n---\n\{formatted}")
+  }
+}
+
+///|
+test "xsh parse/format import list supports module qualifier alias" {
+  let input =
+    #|export module math {
+    #|  export let inc = (x: Int) -> Int { add(x, 1) }
+    #|}
+    #|import { module math as m } from "./math.xm"
+    #|m::inc(1)
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] module import qualifier alias failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] module import qualifier alias format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+  if not(formatted.contains("module math as m")) {
+    fail("[format] missing module alias qualifier\n---\n\{formatted}")
+  }
+}
+
+///|
 test "xsh parse/format local let annotation is parser-equivalent" {
   let input =
     #|let x: Int = 1

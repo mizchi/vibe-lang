@@ -112,6 +112,22 @@ fn Parser::peek_non_trivia_kind(self : Parser, pos : Int) -> @cst.SyntaxKind {
 }
 
 ///|
+fn Parser::peek_non_trivia_ahead(self : Parser, nth : Int) -> @cst.SyntaxKind {
+  let mut i = self.pos + 1
+  let mut seen = 0
+  while i < self.tokens.length() {
+    if not(is_trivia(self.tokens[i].kind())) {
+      seen += 1
+      if seen == nth {
+        return self.tokens[i].kind()
+      }
+    }
+    i += 1
+  }
+  eof()
+}
+
+///|
 fn Parser::is_labeled_arg(self : Parser) -> Bool {
   if self.peek_kind() != name() {
     return false
@@ -225,6 +241,11 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
   match self.peek_kind() {
     k if k == let_kw() => self.parse_let_stmt()
     k if k == enum_kw() => self.parse_enum_stmt()
+    k if
+      k == name() &&
+      self.peek().text() == "module" &&
+      self.peek_non_trivia_ahead(1) == name() &&
+      self.peek_non_trivia_ahead(2) == lbrace() => self.parse_module_stmt()
     k if k == name() && self.peek().text() == "suberror" =>
       self.parse_suberror_stmt()
     k if k == struct_kw() => self.parse_struct_stmt()
@@ -235,6 +256,22 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
     k if k == bench_kw() => self.parse_bench_block()
     _ => self.parse_expr_stmt()
   }
+}
+
+///|
+fn Parser::parse_module_stmt(self : Parser) -> Unit {
+  self.builder.start_node(module_stmt())
+  self.bump() // module
+  self.skip_trivia()
+  self.expect(name())
+  self.skip_trivia()
+  self.expect(lbrace())
+  self.skip_balanced_braces()
+  self.skip_trivia()
+  if self.at(semicolon()) {
+    self.bump()
+  }
+  self.builder.finish_node()
 }
 
 ///|
@@ -446,6 +483,13 @@ fn Parser::parse_export_stmt(self : Parser) -> Unit {
   } else if self.at(let_kw()) {
     // export let name = ...
     self.parse_let_stmt()
+  } else if
+    self.at(name()) &&
+    self.peek().text() == "module" &&
+    self.peek_non_trivia_ahead(1) == name() &&
+    self.peek_non_trivia_ahead(2) == lbrace() {
+    // export module foo { ... }
+    self.parse_module_stmt()
   } else if self.at(trait_kw()) {
     // export trait Name
     self.parse_stmt()
@@ -1056,6 +1100,22 @@ fn AstParser::peek_non_trivia_kind(
 }
 
 ///|
+fn AstParser::peek_non_trivia_ahead(self : AstParser, nth : Int) -> @cst.SyntaxKind {
+  let mut i = self.pos + 1
+  let mut seen = 0
+  while i < self.tokens.length() {
+    if not(is_trivia(self.tokens[i].kind())) {
+      seen += 1
+      if seen == nth {
+        return self.tokens[i].kind()
+      }
+    }
+    i += 1
+  }
+  eof()
+}
+
+///|
 fn AstParser::offset_at(self : AstParser, pos : Int) -> Int {
   let mut i = 0
   let mut offset = 0
@@ -1162,11 +1222,13 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == bench_kw() => self.parse_bench_stmt()
     k if k == name() => {
       let tok = self.peek()
-      if tok.text() == "suberror" {
+      let next = self.peek_non_trivia_ahead(1)
+      let next2 = self.peek_non_trivia_ahead(2)
+      if tok.text() == "module" && next == name() && next2 == lbrace() {
+        self.parse_module_stmt(false)
+      } else if tok.text() == "suberror" {
         self.parse_suberror_stmt()
       } else {
-        let next = self.peek_non_trivia_kind(self.pos + 1)
-        let next2 = self.peek_non_trivia_kind(self.pos + 2)
         if tok.text() == "open" && next == trait_kw() {
           raise ParseError::UnexpectedToken(
             expected="`open trait` is only allowed as `export open trait`",
@@ -1873,6 +1935,434 @@ fn AstParser::parse_bench_stmt(self : AstParser) -> @core.Stmt raise ParseError 
 }
 
 ///|
+fn module_qualified_name(module_name : String, member_name : String) -> String {
+  if member_name.contains("::") {
+    member_name
+  } else {
+    module_name + "::" + member_name
+  }
+}
+
+///|
+fn collect_module_decl_names(stmts : Array[@core.Stmt]) -> Map[String, String] {
+  let out : Map[String, String] = {}
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::LetMut(name~, ..) =>
+        if not(name.contains("::")) {
+          out[name] = name
+        }
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn local_module_name(
+  module_name : String,
+  name : String,
+  locals : Map[String, String],
+) -> String {
+  match locals.get(name) {
+    Some(_) => module_qualified_name(module_name, name)
+    None => name
+  }
+}
+
+///|
+fn module_locals_without(
+  locals : Map[String, String],
+  names : Array[String],
+) -> Map[String, String] {
+  let out : Map[String, String] = {}
+  for key, value in locals {
+    let mut shadowed = false
+    for name in names {
+      if key == name {
+        shadowed = true
+        break
+      }
+    }
+    if not(shadowed) {
+      out[key] = value
+    }
+  }
+  out
+}
+
+///|
+fn collect_pat_bindings_for_module(
+  pat : @core.Pat,
+  out : Array[String],
+) -> Unit {
+  match pat {
+    @core.Pat::Bind(name~, ..) =>
+      if name != "_" {
+        out.push(name)
+      }
+    @core.Pat::Ctor(args~, ..) =>
+      for arg in args {
+        collect_pat_bindings_for_module(arg, out)
+      }
+    @core.Pat::Tuple(items~, ..) =>
+      for item in items {
+        collect_pat_bindings_for_module(item, out)
+      }
+    @core.Pat::Record(fields~, ..) =>
+      for field in fields {
+        collect_pat_bindings_for_module(field.pat, out)
+      }
+    @core.Pat::Struct(fields~, ..) =>
+      for field in fields {
+        collect_pat_bindings_for_module(field.pat, out)
+      }
+    @core.Pat::Or(pats~, ..) =>
+      for p in pats {
+        collect_pat_bindings_for_module(p, out)
+      }
+    _ => ()
+  }
+}
+
+///|
+fn rewrite_module_expr(
+  module_name : String,
+  expr : @core.Expr,
+  locals : Map[String, String],
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Ident(name~, span~) =>
+      @core.Expr::Ident(name=local_module_name(module_name, name, locals), span~)
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
+      let next_args : Array[@core.CallArg] = []
+      for arg in args {
+        next_args.push(@core.CallArg::{
+          label: arg.label,
+          expr: rewrite_module_expr(module_name, arg.expr, locals),
+          span: arg.span,
+        })
+      }
+      @core.Expr::Call(
+        name=local_module_name(module_name, name, locals),
+        type_args~,
+        args=next_args,
+        span~,
+      )
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let next_items : Array[@core.Expr] = []
+      for item in items {
+        next_items.push(rewrite_module_expr(module_name, item, locals))
+      }
+      @core.Expr::Tuple(items=next_items, span~)
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) =>
+      @core.Expr::TupleIndex(
+        expr=rewrite_module_expr(module_name, expr, locals),
+        index~,
+        span~,
+      )
+    @core.Expr::Record(fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: rewrite_module_expr(module_name, field.expr, locals),
+          span: field.span,
+        })
+      }
+      @core.Expr::Record(fields=next_fields, span~)
+    }
+    @core.Expr::Array(items~, span~) => {
+      let next_items : Array[@core.Expr] = []
+      for item in items {
+        next_items.push(rewrite_module_expr(module_name, item, locals))
+      }
+      @core.Expr::Array(items=next_items, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let next_fields : Array[@core.MapFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.MapFieldExpr::{
+          key: field.key,
+          expr: rewrite_module_expr(module_name, field.expr, locals),
+          span: field.span,
+        })
+      }
+      @core.Expr::Map(fields=next_fields, span~)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=rewrite_module_expr(module_name, cond, locals),
+        then_body=rewrite_module_block(module_name, then_body, locals),
+        else_body=rewrite_module_block(module_name, else_body, locals),
+        span~,
+      )
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(
+        body=rewrite_module_block(module_name, body, locals),
+        span~,
+      )
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let next_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        let pat_bindings : Array[String] = []
+        collect_pat_bindings_for_module(arm.pat, pat_bindings)
+        let arm_locals = module_locals_without(locals, pat_bindings)
+        let next_cond = match arm.cond {
+          Some(cond) => Some(rewrite_module_expr(module_name, cond, arm_locals))
+          None => None
+        }
+        next_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: next_cond,
+          expr: rewrite_module_expr(module_name, arm.expr, arm_locals),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Match(
+        scrutinee=rewrite_module_expr(module_name, scrutinee, locals),
+        arms=next_arms,
+        span~,
+      )
+    }
+    @core.Expr::Do(body~, span~) =>
+      @core.Expr::Do(body=rewrite_module_block(module_name, body, locals), span~)
+    @core.Expr::Try(try_body~, catch_body~, span~) =>
+      @core.Expr::Try(
+        try_body=rewrite_module_block(module_name, try_body, locals),
+        catch_body=rewrite_module_block(module_name, catch_body, locals),
+        span~,
+      )
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
+      let shadow : Array[String] = []
+      for param in params {
+        shadow.push(param.name)
+      }
+      let inner_locals = module_locals_without(locals, shadow)
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params~,
+        ret~,
+        effects~,
+        body=rewrite_module_block(module_name, body, inner_locals),
+        span~,
+      )
+    }
+    @core.Expr::While(cond~, body~, span~) =>
+      @core.Expr::While(
+        cond=rewrite_module_expr(module_name, cond, locals),
+        body=rewrite_module_block(module_name, body, locals),
+        span~,
+      )
+    @core.Expr::Raise(value~, span~) =>
+      @core.Expr::Raise(
+        value=rewrite_module_expr(module_name, value, locals),
+        span~,
+      )
+    @core.Expr::Await(expr~, span~) =>
+      @core.Expr::Await(
+        expr=rewrite_module_expr(module_name, expr, locals),
+        span~,
+      )
+    @core.Expr::Yield(expr~, span~) =>
+      @core.Expr::Yield(
+        expr=rewrite_module_expr(module_name, expr, locals),
+        span~,
+      )
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        next_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: rewrite_module_expr(module_name, field.expr, locals),
+          span: field.span,
+        })
+      }
+      @core.Expr::StructLit(name~, type_args~, fields=next_fields, span~)
+    }
+    _ => expr
+  }
+}
+
+///|
+fn rewrite_module_stmt(
+  module_name : String,
+  stmt : @core.Stmt,
+  locals : Map[String, String],
+  exported_module : Bool,
+) -> @core.Stmt raise ParseError {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @core.Stmt::Let(
+        rec~,
+        name=module_qualified_name(module_name, name),
+        expr=rewrite_module_expr(module_name, expr, locals),
+        span~,
+      )
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      let next_expr = rewrite_module_expr(module_name, expr, locals)
+      let qualified_name = module_qualified_name(module_name, name)
+      if exported_module {
+        @core.Stmt::ExportLet(
+          rec~,
+          name=qualified_name,
+          expr=next_expr,
+          span~,
+        )
+      } else {
+        @core.Stmt::Let(rec~, name=qualified_name, expr=next_expr, span~)
+      }
+    }
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      @core.Stmt::LetMut(
+        name=module_qualified_name(module_name, name),
+        expr=rewrite_module_expr(module_name, expr, locals),
+        span~,
+      )
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(
+        name=local_module_name(module_name, name, locals),
+        expr=rewrite_module_expr(module_name, expr, locals),
+        span~,
+      )
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=rewrite_module_expr(module_name, target, locals),
+        index=rewrite_module_expr(module_name, index, locals),
+        value=rewrite_module_expr(module_name, value, locals),
+        span~,
+      )
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(expr=rewrite_module_expr(module_name, expr, locals), span~)
+    @core.Stmt::Import(..) => stmt
+    @core.Stmt::Export(names~, span~) => {
+      if not(exported_module) {
+        @core.Stmt::Export(names=[], span~)
+      } else {
+        let qualified_names : Array[String] = []
+        for name in names {
+          qualified_names.push(module_qualified_name(module_name, name))
+        }
+        @core.Stmt::Export(names=qualified_names, span~)
+      }
+    }
+    @core.Stmt::Test(name~, body~, span~) =>
+      @core.Stmt::Test(
+        name~,
+        body=rewrite_module_block(module_name, body, locals),
+        span~,
+      )
+    @core.Stmt::Bench(name~, body~, span~) =>
+      @core.Stmt::Bench(
+        name~,
+        body=rewrite_module_block(module_name, body, locals),
+        span~,
+      )
+    _ =>
+      raise ParseError::UnexpectedToken(
+        expected="module body statement (let/export let/let mut/assign/expr/import/test/bench)",
+        got="unsupported statement",
+        span=stmt.span(),
+      )
+  }
+}
+
+///|
+fn rewrite_module_block(
+  module_name : String,
+  body : @core.Module,
+  locals : Map[String, String],
+) -> @core.Module {
+  let next_stmts : Array[@core.Stmt] = []
+  let mut active_locals = locals
+  for stmt in body.stmts {
+    let rewritten = rewrite_module_stmt(
+      module_name,
+      stmt,
+      active_locals,
+      false,
+    ) catch { _ => stmt }
+    next_stmts.push(rewritten)
+    match stmt {
+      @core.Stmt::Let(name~, ..) | @core.Stmt::LetMut(name~, ..) => {
+        let shadow = [name]
+        active_locals = module_locals_without(active_locals, shadow)
+      }
+      @core.Stmt::LetPat(pat~, ..) => {
+        let shadow : Array[String] = []
+        collect_pat_bindings_for_module(pat, shadow)
+        active_locals = module_locals_without(active_locals, shadow)
+      }
+      @core.Stmt::Import(spec~, ..) =>
+        for item in spec.items {
+          let local_name = match item.rename {
+            Some(rename) => rename
+            None => item.name
+          }
+          let shadow = [local_name]
+          active_locals = module_locals_without(active_locals, shadow)
+        }
+      _ => ()
+    }
+  }
+  @core.Module::{ stmts: next_stmts }
+}
+
+///|
+fn AstParser::parse_module_stmt(
+  self : AstParser,
+  exported : Bool,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let module_tok = self.expect(name(), "module")
+  if module_tok.text() != "module" {
+    raise ParseError::UnexpectedToken(
+      expected="module",
+      got=module_tok.text(),
+      span=self.token_span(),
+    )
+  }
+  self.skip_trivia()
+  let name_tok = self.expect(name(), "module name")
+  let module_name = name_tok.text()
+  self.skip_trivia()
+  let body = self.parse_block()
+  let span = self.span_from(start)
+  let locals = collect_module_decl_names(body.stmts)
+  let lowered : Array[@core.Stmt] = []
+  for stmt in body.stmts {
+    lowered.push(rewrite_module_stmt(module_name, stmt, locals, exported))
+  }
+  if lowered.length() == 0 {
+    raise ParseError::UnexpectedToken(
+      expected="non-empty module body",
+      got="}",
+      span~,
+    )
+  }
+  let first = lowered[0]
+  let mut i = 1
+  while i < lowered.length() {
+    self.pending_stmts.push(lowered[i])
+    i += 1
+  }
+  first
+}
+
+///|
 fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
   let _ = self.expect(lbrace(), "{")
   let stmts : Array[@core.Stmt] = []
@@ -1884,6 +2374,10 @@ fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
     stmts.push(self.parse_stmt())
+    for pending in self.pending_stmts {
+      stmts.push(pending)
+    }
+    self.pending_stmts = []
   }
   let _ = self.expect(rbrace(), "}")
   @core.Module::{ stmts, }
@@ -1913,7 +2407,19 @@ fn AstParser::parse_import_stmt(
     }
     let kind = self.parse_import_item_kind()
     self.skip_trivia()
-    let import_name = self.parse_type_member_name("import name")
+    let import_name = if kind == @core.ImportKind::Module {
+      let tok = self.expect(name(), "module name")
+      tok.text()
+    } else {
+      self.parse_type_member_name("import name")
+    }
+    if kind == @core.ImportKind::Module && self.peek_kind() == double_colon() {
+      raise ParseError::UnexpectedToken(
+        expected="`import { module foo }` (module namespace only)",
+        got=self.peek().text(),
+        span=self.token_span(),
+      )
+    }
     self.skip_trivia()
     let rename : String? = if self.peek_kind() == as_kw() {
       let _ = self.bump()
@@ -1975,6 +2481,9 @@ fn AstParser::parse_import_item_kind(self : AstParser) -> @core.ImportKind {
   } else if self.peek_kind() == trait_kw() {
     let _ = self.bump()
     @core.ImportKind::Trait
+  } else if self.peek_kind() == name() && self.peek().text() == "module" {
+    let _ = self.bump()
+    @core.ImportKind::Module
   } else {
     @core.ImportKind::Value
   }
@@ -2187,6 +2696,12 @@ fn AstParser::parse_export_stmt(
         )
       }
     }
+  } else if
+    self.peek_kind() == name() &&
+    self.peek().text() == "module" &&
+    self.peek_non_trivia_ahead(1) == name() &&
+    self.peek_non_trivia_ahead(2) == lbrace() {
+    self.parse_module_stmt(true)
   } else if self.peek_kind() == trait_kw() || self.peek_kind() == name() {
     let mut open_impl = false
     if self.peek_kind() == name() && self.peek().text() == "open" {

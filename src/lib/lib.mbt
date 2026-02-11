@@ -185,6 +185,11 @@ fn resolve_import_source_path(
 }
 
 ///|
+fn supports_module_namespace_import(path : String) -> Bool {
+  path.has_suffix(".xm")
+}
+
+///|
 fn empty_module_analysis(diags : Array[@core.Diagnostic]) -> ModuleAnalysis {
   ModuleAnalysis::{
     ast: { stmts: [] },
@@ -282,20 +287,73 @@ fn analyze_module(
               hash_prefix: None,
             }
             let imported = analyze_module(resolved_path, files, cache, visiting)
+            let module_namespace_ok = supports_module_namespace_import(
+              resolved_path,
+            )
             for item in spec.items {
               let source_name = item.name
               let target_name = match item.rename {
                 Some(name) => name
                 None => source_name
               }
-              if not(imported.exports.contains(source_name)) {
-                local_diags.push(
-                  missing_export_diagnostic(resolved_path, source_name, span),
-                )
-                continue
-              }
               match item.kind {
-                @core.ImportKind::Value =>
+                @core.ImportKind::Module => {
+                  if not(module_namespace_ok) {
+                    local_diags.push(
+                      @core.Diagnostic::{
+                        stage: "import",
+                        message:
+                          "module import is only supported for .xm source: " +
+                          resolved_path,
+                        span: Some(span),
+                        hint: Some(
+                          "use `.xm` for multi-module files, or import explicit exported symbols from `.xsh`",
+                        ),
+                        note: None,
+                      },
+                    )
+                    continue
+                  }
+                  let source_prefix = source_name + "::"
+                  let local_ns = match item.rename {
+                    Some(rename_name) => rename_name
+                    None => source_name
+                  }
+                  let target_prefix = local_ns + "::"
+                  let mut imported_any = false
+                  for exported_name, _ in imported.exports {
+                    if exported_name.has_prefix(source_prefix) {
+                      let suffix = exported_name.unsafe_substring(
+                        start=source_prefix.length(),
+                        end=exported_name.length(),
+                      )
+                      let target_name = target_prefix + suffix
+                      match imported.env.get_scheme(exported_name) {
+                        Some(scheme) => {
+                          env.set_scheme(target_name, scheme)
+                          imported_any = true
+                        }
+                        None => ()
+                      }
+                    }
+                  }
+                  if not(imported_any) {
+                    local_diags.push(
+                      missing_export_diagnostic(
+                        resolved_path, source_name, span,
+                      ),
+                    )
+                  }
+                }
+                @core.ImportKind::Value => {
+                  if not(imported.exports.contains(source_name)) {
+                    local_diags.push(
+                      missing_export_diagnostic(
+                        resolved_path, source_name, span,
+                      ),
+                    )
+                    continue
+                  }
                   match imported.env.get_scheme(source_name) {
                     Some(scheme) => env.set_scheme(target_name, scheme)
                     None =>
@@ -305,7 +363,16 @@ fn analyze_module(
                         ),
                       )
                   }
+                }
                 @core.ImportKind::Type => {
+                  if not(imported.exports.contains(source_name)) {
+                    local_diags.push(
+                      missing_export_diagnostic(
+                        resolved_path, source_name, span,
+                      ),
+                    )
+                    continue
+                  }
                   let mut imported_any = false
                   match imported.env.get_type_alias(source_name) {
                     Some(type_alias_entry) => {
@@ -336,7 +403,15 @@ fn analyze_module(
                     )
                   }
                 }
-                @core.ImportKind::Trait =>
+                @core.ImportKind::Trait => {
+                  if not(imported.exports.contains(source_name)) {
+                    local_diags.push(
+                      missing_export_diagnostic(
+                        resolved_path, source_name, span,
+                      ),
+                    )
+                    continue
+                  }
                   match imported.env.get_trait_info(source_name) {
                     Some(trait_info) =>
                       env.set_trait_info(target_name, trait_info)
@@ -347,6 +422,7 @@ fn analyze_module(
                         ),
                       )
                   }
+                }
               }
             }
           }

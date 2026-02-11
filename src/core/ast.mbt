@@ -72,6 +72,7 @@ pub(all) enum ImportKind {
   Value
   Type
   Trait
+  Module
 } derive(Show, Eq)
 
 ///|

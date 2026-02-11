@@ -848,6 +848,7 @@ fn serialize_import_kind_to(kind : ImportKind, buf : StringBuilder) -> Unit {
     ImportKind::Value => serialize_string_to("value", buf)
     ImportKind::Type => serialize_string_to("type", buf)
     ImportKind::Trait => serialize_string_to("trait", buf)
+    ImportKind::Module => serialize_string_to("module", buf)
   }
 }
 

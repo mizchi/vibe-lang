@@ -409,3 +409,92 @@ test "xsh integration imported suberror can be raised as Error" {
     _ => fail("expected String(\"caught\")")
   }
 }
+
+///|
+test "xsh integration module-qualified import namespace" {
+  let db = XshDb::new()
+  let lib_source =
+    #|export module math {
+    #|  export let inc = (x: Int) -> Int { add(x, 1) }
+    #|}
+  let main_source =
+    #|import { module math } from ./lib.xm
+    #|math::inc(41)
+  db.set_source("./lib.xm", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int(42)")
+  }
+}
+
+///|
+test "xsh integration module-qualified import accepts alias" {
+  let db = XshDb::new()
+  db.set_source("./lib.xm", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }")
+  db.set_source("main", "import { module math as m } from ./lib.xm\nm::inc(41)")
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int(42)")
+  }
+}
+
+///|
+test "xsh integration module-qualified import rejects .xsh source" {
+  let db = XshDb::new()
+  db.set_source("./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }")
+  db.set_source("main", "import { module math } from ./lib.xsh\nmath::inc(1)")
+  let compiled : Result[CompiledModule, CompileError] = try? compile_module(
+    db, "main",
+  )
+  match compiled {
+    Ok(_) => fail("expected import error for .xsh module namespace import")
+    Err(err) =>
+      assert_true(
+        err.to_string().contains(
+          "module import is only supported for .xm source",
+        ),
+      )
+  }
+}
+
+///|
+test "xsh integration module-qualified import rejects member path" {
+  let db = XshDb::new()
+  db.set_source("./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }")
+  db.set_source("main", "import { module math::inc } from ./lib.xsh\nmath::inc(1)")
+  let compiled : Result[CompiledModule, CompileError] = try? compile_module(
+    db, "main",
+  )
+  match compiled {
+    Ok(_) => fail("expected parse error for module member import")
+    Err(err) =>
+      assert_true(
+        err.to_string().contains("`import { module foo }`"),
+      )
+  }
+}

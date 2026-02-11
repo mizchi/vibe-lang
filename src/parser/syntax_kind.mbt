@@ -425,6 +425,11 @@ pub fn bench_block() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn module_stmt() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(133)
+}
+
+///|
 pub fn type_def() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(118)
 }

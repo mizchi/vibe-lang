@@ -179,6 +179,32 @@ pub fn Runtime::eval_module(
             }
             for item in spec.items {
               let import_name = item.name
+              if item.kind == @core.ImportKind::Module {
+                let source_prefix = import_name + "::"
+                let local_ns = match item.rename {
+                  Some(rename_name) => rename_name
+                  None => import_name
+                }
+                let target_prefix = local_ns + "::"
+                let mut imported_any = false
+                for exported_name, _ in exports {
+                  if exported_name.has_prefix(source_prefix) {
+                    let suffix = exported_name.unsafe_substring(
+                      start=source_prefix.length(),
+                      end=exported_name.length(),
+                    )
+                    let target_name = target_prefix + suffix
+                    imported_any = true
+                    bind_import(exported_name, target_name)
+                  }
+                }
+                if not(imported_any) {
+                  raise EvalError::ImportError(
+                    "Symbol not exported: " + import_name,
+                  )
+                }
+                continue
+              }
               let local_name = match item.rename {
                 Some(n) => n
                 None => import_name
