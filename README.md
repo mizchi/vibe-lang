@@ -326,6 +326,7 @@ just bench-typechecker
 `xsh bench` は `bench {}` ブロックを言語機能として実行する。  
 `<file|dir...>` 指定時は `--backend wasm` がデフォルト（`--backend interpreter` で従来実装）。  
 legacy の式ベンチ (`--expr/--case/--cases`) は `interpreter` backend のみ対応。
+`--backend wasm` ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
 
 `bench-scratch-workflow` は scratch 開発フローを段階別に計測する。
 

@@ -764,6 +764,7 @@ Bench:
   - backend は `--backend wasm|interpreter`（`<file|dir...>` 指定時のデフォルトは `wasm`）。
   - ディレクトリ指定時は top-level の `*_bench.xsh` を探索。
   - `--n` / `--warmup` は benchmark 実行回数に適用。
+  - `--backend wasm` はサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、出力に `wasm_bytes=<size>` を含める。
 - 互換の expression benchmark モード（legacy）:
   - `--backend interpreter` のみ対応（`--backend wasm` は非対応）。
   - `xsh bench --n 20000 --warmup 1000 --expr "add(1,2)"`

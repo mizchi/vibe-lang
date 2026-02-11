@@ -151,6 +151,44 @@ test "cli bench uses expr mode ignores backend with path" {
 }
 
 ///|
+test "cli wasm bench compile uses size-oriented optimize level" {
+  let root = wbtest_make_temp_dir("bench_wasm_size_opt")
+  let source_path = root + "/case.xsh"
+  let wasm_path = root + "/case.wasm"
+  let source =
+    #|let rec repeat = (s: String, n: Int) -> String {
+    #|  if eq(n, 0) { "" } else { string_concat(s, repeat(s, sub(n, 1))) }
+    #|}
+    #|let base = "abcdefghijklmnopqrstuvwxyz"
+    #|let s = repeat(base, 12)
+    #|string_length(s)
+  let optimized_size = match compile_bench_script_to_wasm(
+    source_path,
+    wasm_path,
+    source,
+  ) {
+    Ok(bytes) => bytes
+    Err(err) => fail("compile bench wasm failed: " + err)
+  }
+  let (db, entry) = match @loader.load_db(source_path) {
+    Ok(v) => v
+    Err(err) => fail("load source db failed: " + err)
+  }
+  let baseline_wasm = @xsh_lib.compile_module_wasm_with_opt_level(
+    db,
+    entry,
+    no_dce=true,
+    opt_level=None,
+  ) catch {
+    e => fail("compile baseline wasm failed: " + e.to_string())
+  }
+  assert_true(optimized_size < baseline_wasm.length())
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli symbols cmd options reject unknown option" {
   let parsed = parse_symbols_cmd_args(["--wat", "main.xsh"])
   match parsed {

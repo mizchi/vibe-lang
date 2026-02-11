@@ -1144,6 +1144,7 @@ struct WasmBenchResult {
   warmup : Int
   elapsed_ms : Double
   per_us : Double
+  wasm_bytes : Int
 } derive(Show, Eq)
 
 ///|
@@ -1893,7 +1894,7 @@ fn compile_bench_script_to_wasm(
   source_path : String,
   wasm_path : String,
   source : String,
-) -> Result[Unit, String] {
+) -> Result[Int, String] {
   @os_fs.write_string_to_file(source_path, source) catch {
     e => return Err("write source failed: " + e.to_string())
   }
@@ -1905,14 +1906,14 @@ fn compile_bench_script_to_wasm(
     db,
     entry,
     no_dce=true,
-    opt_level=None,
+    opt_level=Some("-Oz"),
   ) catch {
     e => return Err("compile wasm error: " + e.to_string())
   }
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
     e => return Err("write wasm failed: " + e.to_string())
   }
-  Ok(())
+  Ok(wasm_bytes.length())
 }
 
 ///|
@@ -1922,9 +1923,13 @@ fn run_wasm_case_measure(
   wasm_path : String,
   source : String,
   count : Int,
-) -> Result[(Double, Double), String] {
-  match compile_bench_script_to_wasm(source_path, wasm_path, source) {
-    Ok(_) => ()
+) -> Result[(Double, Double, Int), String] {
+  let wasm_bytes = match compile_bench_script_to_wasm(
+    source_path,
+    wasm_path,
+    source,
+  ) {
+    Ok(bytes) => bytes
     Err(err) => return Err(err)
   }
   let start = @env.now()
@@ -1935,7 +1940,7 @@ fn run_wasm_case_measure(
   let end = @env.now()
   let elapsed_ms = (end - start).to_double()
   let per_us = elapsed_ms * 1000.0 / count.to_double()
-  Ok((elapsed_ms, per_us))
+  Ok((elapsed_ms, per_us, wasm_bytes))
 }
 
 ///|
@@ -1990,13 +1995,14 @@ fn run_wasm_bench_case(
   remove_file_if_exists(run_wasm_path)
   remove_file_if_exists(run_source_path)
   match measured {
-    Ok((elapsed_ms, per_us)) =>
+    Ok((elapsed_ms, per_us, wasm_bytes)) =>
       Ok(WasmBenchResult::{
         name: case_name,
         iterations: count,
         warmup,
         elapsed_ms,
         per_us,
+        wasm_bytes,
       })
     Err(err) => Err(WasmBenchFailure::{ name: case_name, error: err })
   }
@@ -2073,7 +2079,9 @@ fn print_wasm_bench_report(path : String, report : WasmBenchReport) -> Bool {
       " total_ms=" +
       result.elapsed_ms.to_string() +
       " per_us=" +
-      result.per_us.to_string(),
+      result.per_us.to_string() +
+      " wasm_bytes=" +
+      result.wasm_bytes.to_string(),
     )
   }
   for failure in report.failures {
