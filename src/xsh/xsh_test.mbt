@@ -1151,6 +1151,16 @@ test "xsh test block ignored by eval" {
 }
 
 ///|
+test "xsh bench block ignored by eval" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script("bench { let x = 1 }")
+  match rt.get("x") {
+    Some(_) => fail("bench block should not bind in module env")
+    None => ()
+  }
+}
+
+///|
 test "xsh bool literal" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script("let t = true\nlet f = false")
@@ -1606,6 +1616,29 @@ test "xsh test cache invalidates on update" {
 test "xsh test runner failure" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let report = rt.run_script_tests("test { do { sh(\"ls\") } }")
+  assert_eq(report.total, 1)
+  assert_eq(report.passed, 0)
+  assert_eq(report.failed, 1)
+  assert_eq(report.failures.length(), 1)
+}
+
+///|
+test "xsh bench runner report" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let report = rt.run_script_benches(
+    "let x = 1\nbench \"sum\" { add(x, 1) }", 1000, 10,
+  )
+  assert_eq(report.total, 1)
+  assert_eq(report.passed, 1)
+  assert_eq(report.failed, 0)
+  assert_eq(report.results.length(), 1)
+  assert_eq(report.results[0].name, Some("sum"))
+}
+
+///|
+test "xsh bench runner failure" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let report = rt.run_script_benches("bench { do { sh(\"ls\") } }", 1, 0)
   assert_eq(report.total, 1)
   assert_eq(report.passed, 0)
   assert_eq(report.failed, 1)

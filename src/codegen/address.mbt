@@ -372,6 +372,13 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         buf.write_string(block_to_addr_sexp(block_ctx, body))
         buf.write_char(')')
       }
+      @core.Stmt::Bench(name~, body~, span~) => {
+        let _ = name
+        let _ = span
+        buf.write_string(" (bench ")
+        buf.write_string(block_to_addr_sexp(block_ctx, body))
+        buf.write_char(')')
+      }
       @core.Stmt::LetMut(name~, expr~, span~) => {
         let _ = span
         buf.write_string(" (let-mut ")

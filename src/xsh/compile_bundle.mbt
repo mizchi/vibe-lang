@@ -121,7 +121,7 @@ fn collect_dependency_defs(
         // Skip imports and exports in dependencies
         @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
-        @core.Stmt::Test(..) => ()
+        @core.Stmt::Test(..) | @core.Stmt::Bench(..) => ()
         // Other statements are passed through
         _ => out.push(stmt)
       }

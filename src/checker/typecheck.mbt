@@ -1426,6 +1426,18 @@ fn type_check_stmts(
           {},
         )
       }
+      @core.Stmt::Bench(name~, body~, span~) => {
+        let _ = span
+        let _ = name
+        let _ = type_check_stmts(
+          clone_env(env),
+          body.stmts,
+          aliases,
+          effects,
+          allow_effect,
+          {},
+        )
+      }
       @core.Stmt::LetMut(name~, expr~, span~) => {
         ensure_fresh_value_binding(name, span)
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
@@ -4259,6 +4271,12 @@ fn type_block(
       @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
         last = @core.Type::Unit
       @core.Stmt::Test(name~, body~, span~) => {
+        let _ = span
+        let _ = name
+        let _ = type_block(scope_env, body, aliases, effects, allow_effect)
+        last = @core.Type::Unit
+      }
+      @core.Stmt::Bench(name~, body~, span~) => {
         let _ = span
         let _ = name
         let _ = type_block(scope_env, body, aliases, effects, allow_effect)

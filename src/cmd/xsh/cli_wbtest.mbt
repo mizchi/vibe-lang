@@ -831,6 +831,41 @@ test "resolve test entry paths includes top-level xsh files" {
 }
 
 ///|
+test "resolve bench entry paths includes top-level _bench.xsh files" {
+  let root = wbtest_make_temp_dir("resolve_bench")
+  let sub = root + "/sub"
+  @os_fs.create_dir(sub) catch {
+    e => fail("create sub dir failed: " + e.to_string())
+  }
+  let top = root + "/top_bench.xsh"
+  let top_non_bench = root + "/top.xsh"
+  let nested = sub + "/nested_bench.xsh"
+  @os_fs.write_string_to_file(top, "") catch {
+    e => fail("write top bench failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(top_non_bench, "") catch {
+    e => fail("write top non bench failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(nested, "") catch {
+    e => fail("write nested bench failed: " + e.to_string())
+  }
+  let files = resolve_bench_entry_paths([root])
+  assert_eq(files.length(), 1)
+  assert_true(wbtest_contains(files, top))
+  assert_false(wbtest_contains(files, top_non_bench))
+  assert_false(wbtest_contains(files, nested))
+  let files2 = resolve_bench_entry_paths([root, nested])
+  assert_eq(files2.length(), 2)
+  assert_true(wbtest_contains(files2, top))
+  assert_true(wbtest_contains(files2, nested))
+  wbtest_remove_if_exists(nested)
+  wbtest_remove_if_exists(top_non_bench)
+  wbtest_remove_if_exists(top)
+  wbtest_remove_if_exists(sub)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 fn wbtest_make_temp_dir(prefix : String) -> String {
   let base = "/tmp/cmd_xsh_wbtest_" + prefix + "_" + @env.now().to_string()
   for i in 0..<1000 {

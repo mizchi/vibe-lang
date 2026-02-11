@@ -724,8 +724,7 @@ test "xsh wasm rejects unknown record accessor call" {
     #|unknown_accessor(hints)
   db.set_source("main", src)
   let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm(
-    db,
-    "main",
+    db, "main",
   )
   match result {
     Ok(_) => fail("expected compile error")

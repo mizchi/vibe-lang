@@ -365,6 +365,7 @@ fn scan_component_wit_imports_stmt(
       scan_component_wit_imports_expr(value, acc)
     }
     @core.Stmt::Test(body~, ..) => scan_component_wit_imports_block(body, acc)
+    @core.Stmt::Bench(body~, ..) => scan_component_wit_imports_block(body, acc)
     _ => ()
   }
 }

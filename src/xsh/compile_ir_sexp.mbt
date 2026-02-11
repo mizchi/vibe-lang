@@ -125,6 +125,11 @@ fn stmts_to_sexp(
         let _ = body
         let _ = span
       }
+      @core.Stmt::Bench(name~, body~, span~) => {
+        let _ = name
+        let _ = body
+        let _ = span
+      }
       @core.Stmt::LetMut(name~, expr~, span~) => {
         let _ = span
         buf.write_string(" (let-mut ")

@@ -469,6 +469,11 @@ fn collect_captures_block(
         let _ = span
         collect_captures_block(body, scope, outer_bound, captures, seen)
       }
+      @core.Stmt::Bench(name~, body~, span~) => {
+        let _ = name
+        let _ = span
+        collect_captures_block(body, scope, outer_bound, captures, seen)
+      }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         collect_captures_expr(expr, scope, outer_bound, captures, seen)
@@ -653,6 +658,11 @@ fn collect_nested_funcs_block(
         collect_nested_funcs_expr(expr, scope, funcs)
       }
       @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = body
+        let _ = span
+      }
+      @core.Stmt::Bench(name~, body~, span~) => {
         let _ = name
         let _ = body
         let _ = span
@@ -890,7 +900,11 @@ priv struct WasmFunc {
 fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
   match ty {
     @core.Type::String =>
-      if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+      if ctx.use_js_strings {
+        ValueKind::ExternRef
+      } else {
+        ValueKind::I32
+      }
     @core.Type::Float => ValueKind::BoxedF32
     @core.Type::Double => ValueKind::BoxedF64
     @core.Type::Named(name~, args~) => {
@@ -912,7 +926,11 @@ fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
         name.has_suffix("::Double") ||
         name.has_suffix("/Double")
       if is_string_name {
-        if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+        if ctx.use_js_strings {
+          ValueKind::ExternRef
+        } else {
+          ValueKind::I32
+        }
       } else if is_float_name {
         ValueKind::BoxedF32
       } else if is_double_name {
@@ -1675,7 +1693,11 @@ fn infer_expr_kind_with(
     @core.Expr::String(value~, span~) => {
       let _ = value
       let _ = span
-      if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+      if ctx.use_js_strings {
+        ValueKind::ExternRef
+      } else {
+        ValueKind::I32
+      }
     }
     @core.Expr::Float(value~, span~) => {
       let _ = value
@@ -1761,13 +1783,25 @@ fn infer_expr_kind_with(
         | "f64_store" => ValueKind::I32
         "__eq" | "__lt" => ValueKind::I32
         "__to_string" =>
-          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
         "string_length" => ValueKind::I32
         "string_char_code_at" => ValueKind::I32
         "string_substring" =>
-          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
         "string_concat" =>
-          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
         "string_equals" => ValueKind::I32
         "array_builder" | "array_builder_freeze" => ValueKind::I32
         "array_builder_push" => ValueKind::I32
@@ -1783,15 +1817,27 @@ fn infer_expr_kind_with(
         "stdin_read_stream" => ValueKind::I32
         "string_from_char_code" => ValueKind::I32
         "threads_probe_wat" =>
-          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
         "threads_runtime_hints" => ValueKind::I32
         "wasm_env" | "wasi_env" =>
-          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
         "threads_channel_new" => ValueKind::I32
         "threads_spawn" => ValueKind::I32
         "threads_send" => ValueKind::I32
         "threads_recv" =>
-          if ctx.use_js_strings { ValueKind::ExternRef } else { ValueKind::I32 }
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
         "threads_wait" => ValueKind::I32
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
@@ -1971,6 +2017,12 @@ fn infer_stmt_kind(
       ValueKind::I32
     }
     @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = body
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Stmt::Bench(name~, body~, span~) => {
       let _ = name
       let _ = body
       let _ = span
@@ -2355,6 +2407,11 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = body
       let _ = span
     }
+    @core.Stmt::Bench(name~, body~, span~) => {
+      let _ = name
+      let _ = body
+      let _ = span
+    }
     @core.Stmt::LetPat(pat~, expr~, span~) => {
       let _ = pat
       let _ = span
@@ -2397,6 +2454,11 @@ fn scan_strings_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       scan_strings_expr(ctx, expr)
     }
     @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = span
+      let _ = body
+    }
+    @core.Stmt::Bench(name~, body~, span~) => {
       let _ = name
       let _ = span
       let _ = body
@@ -2659,6 +2721,11 @@ fn needs_heap_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Bool {
       needs_heap_expr(ctx, expr)
     }
     @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = span
+      needs_heap_block(ctx, body)
+    }
+    @core.Stmt::Bench(name~, body~, span~) => {
       let _ = name
       let _ = span
       needs_heap_block(ctx, body)
@@ -6034,6 +6101,14 @@ fn compile_stmt(
       }
     }
     @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = body
+      let _ = span
+      if is_last {
+        emit_i32_const_tagged(buf, 0)
+      }
+    }
+    @core.Stmt::Bench(name~, body~, span~) => {
       let _ = name
       let _ = body
       let _ = span

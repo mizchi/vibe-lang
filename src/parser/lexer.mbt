@@ -279,6 +279,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
             } else {
               name()
             }
+          "bench" => bench_kw()
           "mut" => mut_kw()
           "raise" => raise_kw()
           "await" => await_kw()

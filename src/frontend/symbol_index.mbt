@@ -594,6 +594,7 @@ pub fn build_symbol_index_for_module(
       @core.Stmt::Expr(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::Test(..)
+      | @core.Stmt::Bench(..)
       | @core.Stmt::Assign(..)
       | @core.Stmt::IndexAssign(..)
       | @core.Stmt::LetPat(..)

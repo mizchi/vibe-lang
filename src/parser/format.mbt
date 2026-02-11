@@ -491,6 +491,7 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == alias_kw() ||
   kind == import_kw() ||
   kind == test_kw() ||
+  kind == bench_kw() ||
   kind == if_kw() ||
   kind == while_kw() ||
   kind == loop_kw() ||
@@ -796,6 +797,7 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == from_kw() ||
   kind == as_kw() ||
   kind == test_kw() ||
+  kind == bench_kw() ||
   kind == if_kw() ||
   kind == else_kw() ||
   kind == match_kw() ||

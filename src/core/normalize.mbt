@@ -216,6 +216,10 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       let child = scope.child()
       Stmt::Test(name~, body=normalize_block(body, child), span=zero_span)
     }
+    Stmt::Bench(name~, body~, ..) => {
+      let child = scope.child()
+      Stmt::Bench(name~, body=normalize_block(body, child), span=zero_span)
+    }
     Stmt::EnumDef(name~, params~, ctors~, ..) =>
       Stmt::EnumDef(
         name~,

@@ -81,6 +81,16 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       }
       buf.write_string("}}")
     }
+    Stmt::Bench(name~, body~, ..) => {
+      buf.write_string("{\"Bench\":{\"body\":")
+      serialize_module_to(body, buf)
+      buf.write_string(",\"name\":")
+      match name {
+        Some(n) => serialize_string_to(n, buf)
+        None => buf.write_string("null")
+      }
+      buf.write_string("}}")
+    }
     Stmt::EnumDef(name~, params~, ctors~, ..) => {
       buf.write_string("{\"EnumDef\":{\"ctors\":")
       serialize_ctors_to(ctors, buf)

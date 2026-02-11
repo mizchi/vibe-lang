@@ -116,6 +116,12 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, body.structural_hash())
       h
     }
+    Stmt::Bench(name~, body~, ..) => {
+      let mut h = 0x42656e63 // "Benc"
+      h = combine_hash(h, name.map(fn(n) { n.hash() }).unwrap_or(0))
+      h = combine_hash(h, body.structural_hash())
+      h
+    }
     Stmt::ExportLet(rec~, name~, expr~, ..) => {
       let mut h = 0x45784c65 // "ExLe"
       h = combine_hash(h, if rec { 1 } else { 0 })

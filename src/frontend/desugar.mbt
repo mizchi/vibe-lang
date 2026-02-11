@@ -153,6 +153,12 @@ fn desugar_xshell_stmt(
         body=desugar_xshell_block(body, scope, known_non_cmd, notes),
         span~,
       )
+    @core.Stmt::Bench(name~, body~, span~) =>
+      @core.Stmt::Bench(
+        name~,
+        body=desugar_xshell_block(body, scope, known_non_cmd, notes),
+        span~,
+      )
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::ExportLet(
         rec~,
@@ -457,6 +463,8 @@ fn desugar_stmt(
       @core.Stmt::Expr(expr=desugar_expr(expr, scope, aliases), span~)
     @core.Stmt::Test(name~, body~, span~) =>
       @core.Stmt::Test(name~, body=desugar_block(body, scope, aliases), span~)
+    @core.Stmt::Bench(name~, body~, span~) =>
+      @core.Stmt::Bench(name~, body=desugar_block(body, scope, aliases), span~)
     @core.Stmt::EnumDef(..) => stmt
     @core.Stmt::TypeAlias(..) => stmt
     @core.Stmt::TraitDef(..) => stmt

@@ -23,6 +23,7 @@ pub fn is_xsh_script(script : String) -> Bool {
     let kind = tok.kind()
     return kind == @parser.let_kw() ||
       kind == @parser.test_kw() ||
+      kind == @parser.bench_kw() ||
       kind == @parser.type_kw() ||
       kind == @parser.enum_kw() ||
       kind == @parser.map_kw() ||
@@ -122,6 +123,28 @@ pub fn Runtime::run_script_tests_with_mode(
 }
 
 ///|
+/// Parse, type-check, and run xsh bench blocks.
+pub fn Runtime::run_script_benches_with_mode(
+  self : Runtime,
+  script : String,
+  count : Int,
+  warmup : Int,
+  mode : ParserMode,
+) -> BenchReport raise XshError {
+  let (raw_ast, _) = parse_script_with_mode(script, mode)
+  let aliases = self.aliases
+  let ast = desugar_method_calls(raw_ast, aliases)
+  try {
+    let _ = @checker.type_check_with_env(self.type_env.clone(), ast, aliases)
+  } catch {
+    e => raise XshError::Type(e)
+  }
+  self.run_benches(ast, count, warmup) catch {
+    e => raise XshError::Eval(e)
+  }
+}
+
+///|
 /// Parse/type-check test script and collect dependency snapshot (`name -> addr`).
 pub fn Runtime::collect_script_test_dep_snapshot_with_mode(
   self : Runtime,
@@ -155,4 +178,15 @@ pub fn Runtime::run_script_tests(
   script : String,
 ) -> TestReport raise XshError {
   self.run_script_tests_with_mode(script, ParserMode::XshMode)
+}
+
+///|
+/// Parse, type-check, and run xsh bench blocks.
+pub fn Runtime::run_script_benches(
+  self : Runtime,
+  script : String,
+  count : Int,
+  warmup : Int,
+) -> BenchReport raise XshError {
+  self.run_script_benches_with_mode(script, count, warmup, ParserMode::XshMode)
 }

@@ -261,6 +261,11 @@ fn purity_block_inner(
         let _ = body
         let _ = span
       }
+      @core.Stmt::Bench(name~, body~, span~) => {
+        let _ = name
+        let _ = body
+        let _ = span
+      }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         if not(purity_expr_inner(env, expr, scope)) {

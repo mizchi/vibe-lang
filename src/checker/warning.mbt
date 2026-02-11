@@ -327,6 +327,11 @@ fn walk_stmt(
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
     }
+    @core.Stmt::Bench(body~, ..) => {
+      scopes.push(warning_scope_new())
+      walk_module(body, scopes, out)
+      warning_scope_pop(scopes, out)
+    }
     @core.Stmt::EnumDef(..)
     | @core.Stmt::TypeAlias(..)
     | @core.Stmt::TraitDef(..)

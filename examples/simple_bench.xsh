@@ -1,0 +1,5 @@
+let add_one = (x: Int) { add(x, 1) }
+
+bench "add_one" {
+  let _ = add_one(1)
+}

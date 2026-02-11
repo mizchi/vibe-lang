@@ -98,6 +98,13 @@ fn collect_instantiations_module(
           body, env, specializable, instantiations, local_scope, true,
         )
       }
+      @core.Stmt::Bench(name~, body~, span~) => {
+        let _ = name
+        let _ = span
+        collect_instantiations_module(
+          body, env, specializable, instantiations, local_scope, true,
+        )
+      }
       _ => ()
     }
   }
@@ -326,6 +333,17 @@ fn monoify_module_top(
         )
         out_stmts.push(@core.Stmt::Test(name~, body=rewritten, span~))
       }
+      @core.Stmt::Bench(name~, body~, span~) => {
+        let rewritten = monoify_block(
+          body,
+          env,
+          instantiations,
+          specializable,
+          {},
+          {},
+        )
+        out_stmts.push(@core.Stmt::Bench(name~, body=rewritten, span~))
+      }
       _ => out_stmts.push(stmt)
     }
   }
@@ -370,6 +388,12 @@ fn monoify_block(
           body, env, instantiations, specializable, local_scope, current_spec,
         )
         out_stmts.push(@core.Stmt::Test(name~, body=rewritten, span~))
+      }
+      @core.Stmt::Bench(name~, body~, span~) => {
+        let rewritten = monoify_block(
+          body, env, instantiations, specializable, local_scope, current_spec,
+        )
+        out_stmts.push(@core.Stmt::Bench(name~, body=rewritten, span~))
       }
       _ => out_stmts.push(stmt)
     }

@@ -87,3 +87,18 @@ test "lexer treats map as contextual keyword" {
     fail("map before ( must lex as name")
   }
 }
+
+///|
+test "lexer treats bench as keyword" {
+  let bench_tokens = tokenize("bench \"sum\" { let x = 1 }")
+  if bench_tokens[0].kind() != bench_kw() {
+    fail("bench must lex as bench_kw")
+  }
+  let bench_ident_tokens = tokenize("let bench = 1\nbench(1)")
+  if bench_ident_tokens[2].kind() != bench_kw() {
+    fail("bench is reserved and must lex as bench_kw")
+  }
+  if bench_ident_tokens[8].kind() != bench_kw() {
+    fail("bench before ( must lex as bench_kw")
+  }
+}

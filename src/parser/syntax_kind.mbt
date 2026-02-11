@@ -183,6 +183,11 @@ pub fn loop_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn bench_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(92)
+}
+
+///|
 pub fn while_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(124)
 }
@@ -412,6 +417,11 @@ pub fn import_stmt() -> @cst.SyntaxKind {
 ///|
 pub fn test_block() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(106)
+}
+
+///|
+pub fn bench_block() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(132)
 }
 
 ///|

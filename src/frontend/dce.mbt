@@ -143,6 +143,7 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
     @core.Stmt::Expr(..)
     | @core.Stmt::Import(..)
     | @core.Stmt::Test(..)
+    | @core.Stmt::Bench(..)
     | @core.Stmt::TraitDef(..)
     | @core.Stmt::TraitImpl(..)
     | @core.Stmt::Assign(..)
@@ -199,6 +200,13 @@ fn collect_entry_points(
       @core.Stmt::Let(name~, ..) => if is_last { entries[name] = true }
       @core.Stmt::LetMut(name~, ..) => if is_last { entries[name] = true }
       @core.Stmt::Test(name~, body~, span~) => {
+        let _ = name
+        let _ = span
+        if include_tests {
+          collect_refs_block(body, empty_bound, entries)
+        }
+      }
+      @core.Stmt::Bench(name~, body~, span~) => {
         let _ = name
         let _ = span
         if include_tests {
@@ -330,6 +338,7 @@ fn filter_reachable_stmts(
       @core.Stmt::Expr(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::Test(..)
+      | @core.Stmt::Bench(..)
       | @core.Stmt::TraitDef(..)
       | @core.Stmt::TraitImpl(..)
       | @core.Stmt::Assign(..)
@@ -571,6 +580,7 @@ fn collect_refs_block(
         }
       }
       @core.Stmt::Test(..)
+      | @core.Stmt::Bench(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::TraitDef(..)
       | @core.Stmt::TraitImpl(..)

@@ -232,6 +232,7 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
     k if k == import_kw() => self.parse_import_stmt()
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_block()
+    k if k == bench_kw() => self.parse_bench_block()
     _ => self.parse_expr_stmt()
   }
 }
@@ -373,6 +374,20 @@ fn Parser::parse_type_alias_stmt(self : Parser) -> Unit {
 fn Parser::parse_test_block(self : Parser) -> Unit {
   self.builder.start_node(test_block())
   self.bump() // test
+  self.skip_trivia()
+  if self.at(string_lit()) || self.at(name()) {
+    self.bump()
+    self.skip_trivia()
+  }
+  self.expect(lbrace())
+  self.skip_balanced_braces()
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_bench_block(self : Parser) -> Unit {
+  self.builder.start_node(bench_block())
+  self.bump() // bench
   self.skip_trivia()
   if self.at(string_lit()) || self.at(name()) {
     self.bump()
@@ -1144,6 +1159,7 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == import_kw() => self.parse_import_stmt()
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_stmt()
+    k if k == bench_kw() => self.parse_bench_stmt()
     k if k == name() => {
       let tok = self.peek()
       if tok.text() == "suberror" {
@@ -1838,6 +1854,22 @@ fn AstParser::parse_test_stmt(self : AstParser) -> @core.Stmt raise ParseError {
   let body = self.parse_block()
   let span = self.span_from(start)
   @core.Stmt::Test(name=test_name, body~, span~)
+}
+
+///|
+fn AstParser::parse_bench_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let _ = self.expect(bench_kw(), "bench")
+  self.skip_trivia()
+  let mut bench_name : String? = None
+  if self.peek_kind() == string_lit() || self.peek_kind() == name() {
+    let name_tok = self.bump()
+    bench_name = Some(name_tok.text())
+    self.skip_trivia()
+  }
+  let body = self.parse_block()
+  let span = self.span_from(start)
+  @core.Stmt::Bench(name=bench_name, body~, span~)
 }
 
 ///|
@@ -4591,6 +4623,8 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
       @core.Stmt::ExportLet(rec~, name~, expr=desugar_expr_deep(expr), span~)
     @core.Stmt::Test(name~, body~, span~) =>
       @core.Stmt::Test(name~, body=desugar_module(body), span~)
+    @core.Stmt::Bench(name~, body~, span~) =>
+      @core.Stmt::Bench(name~, body=desugar_module(body), span~)
     @core.Stmt::Expr(expr~, span~) =>
       @core.Stmt::Expr(expr=desugar_expr_deep(expr), span~)
     @core.Stmt::LetMut(name~, expr~, span~) =>

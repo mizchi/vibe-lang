@@ -259,6 +259,7 @@ pub fn Runtime::eval_module(
       @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
         last = Some(@core.Value::Unit)
       @core.Stmt::Test(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::Bench(..) => last = Some(@core.Value::Unit)
       @core.Stmt::LetMut(name~, expr~, ..) => {
         let out = eval_expr(self, expr)
         extend_effects(effects, out.effects)

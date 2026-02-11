@@ -72,6 +72,12 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let body = parse_module(get_field(inner, "body"))
         return Stmt::Test(name~, body~, span=zero)
       }
+      "Bench" => {
+        let inner = expect_object(value)
+        let name = get_string_opt(inner, "name")
+        let body = parse_module(get_field(inner, "body"))
+        return Stmt::Bench(name~, body~, span=zero)
+      }
       "EnumDef" => {
         let inner = expect_object(value)
         let name = get_string(inner, "name")
