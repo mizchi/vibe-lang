@@ -1,6 +1,9 @@
 ///|
 fn is_pure_builtin(name : String) -> Bool {
   name == "path" ||
+  name == "path_ref" ||
+  name == "path_to_string" ||
+  name == "path_is_absolute" ||
   name == "addr" ||
   name == "array_length" ||
   name == "array_get" ||
@@ -54,13 +57,32 @@ fn eval_pure_builtin(
   args : Array[@core.Value],
 ) -> @core.Value raise EvalError {
   match name {
-    "path" => {
+    "path" | "path_ref" => {
+      let builtin_name = name
       if args.length() != 1 {
-        raise EvalError::BadCall("path")
+        raise EvalError::BadCall(builtin_name)
       }
       match args[0] {
         @core.Value::String(s) => @core.Value::Path(@core.Path::new(s))
-        _ => raise EvalError::BadCall("path")
+        _ => raise EvalError::BadCall(builtin_name)
+      }
+    }
+    "path_to_string" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("path_to_string")
+      }
+      match args[0] {
+        @core.Value::Path(p) => @core.Value::String(p.as_string())
+        _ => raise EvalError::BadCall("path_to_string")
+      }
+    }
+    "path_is_absolute" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("path_is_absolute")
+      }
+      match args[0] {
+        @core.Value::Path(p) => @core.Value::Bool(p.as_string().has_prefix("/"))
+        _ => raise EvalError::BadCall("path_is_absolute")
       }
     }
     "array_length" => {

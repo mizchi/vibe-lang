@@ -1088,6 +1088,18 @@ pub fn XshDb::new() -> XshDb {
                       }
                     }
                     if import_item_accepts_type(item) {
+                      match imported_env.get_struct(source_name) {
+                        Some(struct_def) => {
+                          env.set_struct(target_name, struct_def)
+                          import_trait_impls_for_type(
+                            env, imported_env, source_name, trait_aliases,
+                          )
+                          imported_any = true
+                        }
+                        None => ()
+                      }
+                    }
+                    if import_item_accepts_type(item) {
                       match imported_env.get_type_alias(source_name) {
                         Some(type_alias) => {
                           env.set_type_alias(target_name, type_alias)
@@ -1357,6 +1369,7 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
         defined[name] = true
       @core.Stmt::EnumDef(name~, ..) => defined[name] = true
       @core.Stmt::TypeAlias(name~, ..) => defined[name] = true
+      @core.Stmt::StructDef(name~, ..) => defined[name] = true
       @core.Stmt::TraitDef(name~, exported~, ..) => {
         defined[name] = true
         if exported {
@@ -1377,6 +1390,10 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
         }
       }
       @core.Stmt::ExportTypeAlias(name~, ..) => {
+        defined[name] = true
+        exports[name] = true
+      }
+      @core.Stmt::ExportStructDef(name~, ..) => {
         defined[name] = true
         exports[name] = true
       }

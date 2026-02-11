@@ -330,3 +330,45 @@ test "xsh wasm import reports type mismatch on call" {
     Err(err) => assert_true(err.to_string().contains("type"))
   }
 }
+
+///|
+test "xsh db path std module has no type diagnostics" {
+  let db = XshDb::new()
+  let source = @os_fs.read_file_to_string("xsh/std/path.xsh") catch {
+    e => fail("failed to read xsh/std/path.xsh: " + e.to_string())
+  }
+  db.set_source("path", source)
+  let env = db.types("path")
+  let diags = db.diagnostics("path")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  let ast = db.ast("path")
+  let mut has_export_from_literal = false
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, ..) =>
+        if name == "from_literal" {
+          has_export_from_literal = true
+        }
+      _ => ()
+    }
+  }
+  assert_true(has_export_from_literal)
+  match env.get_scheme("add") {
+    Some(_) => ()
+    None => fail("expected prelude scheme: add")
+  }
+  match env.get_scheme("dynamic") {
+    Some(_) => ()
+    None => fail("expected dynamic export scheme")
+  }
+  match env.get_scheme("from_literal") {
+    Some(_) => ()
+    None => fail("expected from_literal export scheme")
+  }
+}

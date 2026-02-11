@@ -1,0 +1,30 @@
+import {
+  type PathRef,
+  type DynamicPath,
+  from_literal,
+  dynamic,
+  resolve
+} from "./path.xsh"
+
+test "path from_literal returns absolute path" {
+  let path = from_literal("./xsh/std/string.xsh")
+  assert(path.is_absolute())
+  let raw = path.as_string()
+  assert(eq(string_char_code_at(raw, 0), 47))
+}
+
+test "dynamic path resolve is Env effectful" {
+  let path = do {
+    resolve(dynamic("./xsh/std/string.xsh"))
+  }
+  assert(path.is_absolute())
+}
+
+test "DynamicPath method wrappers are available" {
+  let dynamic_path = dynamic("./foo/../bar.xsh")
+  assert(string_equals(dynamic_path.as_string(), "./foo/../bar.xsh"))
+  let resolved = do {
+    dynamic_path.resolve()
+  }
+  assert(resolved.is_absolute())
+}

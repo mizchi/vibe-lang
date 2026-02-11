@@ -1042,6 +1042,34 @@ fn eval_call(
                 _ => raise EvalError::BadCall("sleep")
               }
             }
+            "dynamic_path_resolve" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "dynamic_path_resolve",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("dynamic_path_resolve")
+              }
+              match pos_args[0] {
+                @core.Value::String(raw_path) => {
+                  let cwd = @io.current_dir_or_root()
+                  let resolved = if raw_path.has_prefix("/") {
+                    @path.Path(raw_path).normalize().to_string()
+                  } else {
+                    @path.Path(cwd)
+                    .join(@path.Path(raw_path))
+                    .normalize()
+                    .to_string()
+                  }
+                  {
+                    value: @core.Value::Path(@core.Path::new(resolved)),
+                    effects: out.effects,
+                  }
+                }
+                _ => raise EvalError::BadCall("dynamic_path_resolve")
+              }
+            }
             "threads_probe_wat" => {
               require_unstable_threads(rt, "threads_probe_wat")
               let out = eval_args(rt, args)

@@ -15,12 +15,13 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 | `bool.xsh` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
 | `string.xsh` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
 | `io.xsh` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
+| `path.xsh` | 3 | PathRef/DynamicPath wrappers (`from_literal`, `dynamic`, `resolve`) + member APIs (`PathRef::as_string`, `PathRef::is_absolute`) |
 | `threads.xsh` | 7 | Experimental threads contracts (`task/channel/actor/deployment_plan`) + runtime wrappers (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`) |
 | `wasm/types.xsh` | 6 | WASM type alias entrypoint (`i32`/`f32`/`f64`, `I32`/`F32`/`F64`) |
 | `wasm/opcodes.xsh` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
 | `wasm/io_stream.xsh` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
-**Total: 115 tests**
+**Total: 118 tests**
 
 Tests are separated into `*_test.xsh` files (for example, `string_test.xsh` for `string.xsh`).
 

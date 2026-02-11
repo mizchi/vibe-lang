@@ -539,6 +539,7 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     "stdin_read_char" => [@core.EffectAtom::Const("Stdin")]
     "stdin_read_stream" => [@core.EffectAtom::Const("Stdin")]
     "sleep" => [@core.EffectAtom::Const("Async")]
+    "dynamic_path_resolve" => [@core.EffectAtom::Const("Env")]
     _ => []
   }
 }
@@ -4781,11 +4782,103 @@ fn type_call(
             @core.Type::Variant(map)
           } else {
             match name {
-              "path" => {
-                let pos_args = extract_positional_args(args, "path", call_span)
+              "path" | "path_ref" => {
+                let builtin_name = name
+                let pos_args = extract_positional_args(
+                  args, builtin_name, call_span,
+                )
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall(message="path", span=call_span)
+                  raise TypeError::BadCall(message=builtin_name, span=call_span)
                 }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Path
+              }
+              "path_to_string" => {
+                let pos_args = extract_positional_args(
+                  args, "path_to_string", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="path_to_string",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::Path)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Path,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "path_is_absolute" => {
+                let pos_args = extract_positional_args(
+                  args, "path_is_absolute", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="path_is_absolute",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::Path)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Path,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "dynamic_path_resolve" => {
+                let pos_args = extract_positional_args(
+                  args, "dynamic_path_resolve", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="dynamic_path_resolve",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "dynamic_path_resolve",
+                  builtin_effects("dynamic_path_resolve"),
+                  call_span,
+                )
                 let arg_ty = type_expr_eff(
                   env,
                   pos_args[0],

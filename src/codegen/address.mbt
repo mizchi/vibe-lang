@@ -841,6 +841,10 @@ fn addr_clone_string_map(src : Map[String, String]) -> Map[String, String] {
 ///|
 fn is_builtin(name : String) -> Bool {
   name == "path" ||
+  name == "path_ref" ||
+  name == "path_to_string" ||
+  name == "path_is_absolute" ||
+  name == "dynamic_path_resolve" ||
   name == "addr" ||
   name == "sh" ||
   name == "stdout_write_char" ||
