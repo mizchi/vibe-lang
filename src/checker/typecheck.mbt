@@ -1106,6 +1106,15 @@ pub fn TypeEnv::get_enum_def(self : TypeEnv, name : String) -> EnumDef? {
 }
 
 ///|
+pub fn TypeEnv::enum_names(self : TypeEnv) -> Array[String] {
+  let out : Array[String] = []
+  for name, _ in self.enum_defs {
+    out.push(name)
+  }
+  out
+}
+
+///|
 pub fn TypeEnv::set_enum_def(
   self : TypeEnv,
   name : String,
@@ -4469,6 +4478,38 @@ fn ensure_ord_operand(
 }
 
 ///|
+fn variant_namespace_root_from_type(
+  env : TypeEnv,
+  fields : Map[String, @core.Type],
+) -> String? {
+  let mut found : String? = None
+  for enum_name in env.enum_names() {
+    match env.get_enum_def(enum_name) {
+      Some(enum_def) => {
+        if enum_def.ctors.length() != fields.length() {
+          continue
+        }
+        let mut all_match = true
+        for ctor in enum_def.ctors {
+          if not(fields.contains(ctor.name)) {
+            all_match = false
+            break
+          }
+        }
+        if all_match {
+          match found {
+            None => found = Some(enum_name)
+            Some(_) => return None
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  found
+}
+
+///|
 fn namespace_root_from_type(env : TypeEnv, ty : @core.Type) -> String? {
   match resolve_type(env, ty) {
     @core.Type::Int => Some("Int")
@@ -4478,6 +4519,7 @@ fn namespace_root_from_type(env : TypeEnv, ty : @core.Type) -> String? {
     @core.Type::String => Some("String")
     @core.Type::Path => Some("Path")
     @core.Type::Named(name~, ..) => Some(name)
+    @core.Type::Variant(fields) => variant_namespace_root_from_type(env, fields)
     _ => None
   }
 }
@@ -5476,6 +5518,87 @@ fn type_call(
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall(
                     message="string_length",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "string_utf8_length" => {
+                let pos_args = extract_positional_args(
+                  args, "string_utf8_length", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="string_utf8_length",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "string_utf16_length" => {
+                let pos_args = extract_positional_args(
+                  args, "string_utf16_length", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="string_utf16_length",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "string_unicode_length" => {
+                let pos_args = extract_positional_args(
+                  args, "string_unicode_length", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="string_unicode_length",
                     span=call_span,
                   )
                 }

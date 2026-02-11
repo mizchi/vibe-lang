@@ -177,6 +177,29 @@ pub fn Runtime::eval_module(
                 symbol_name.contains("::")
               )
             }
+            let bind_namespace_members = fn(
+              item : @core.ImportItem,
+              source_root : String,
+              target_root : String,
+            ) -> Bool raise EvalError {
+              let source_prefix = source_root + "::"
+              let target_prefix = target_root + "::"
+              let mut imported_any = false
+              for exported_name, _ in exports {
+                if exported_name.has_prefix(source_prefix) {
+                  let suffix = exported_name.unsafe_substring(
+                    start=source_prefix.length(),
+                    end=exported_name.length(),
+                  )
+                  let target_name = target_prefix + suffix
+                  imported_any = true
+                  if should_bind_runtime_value(item, exported_name) {
+                    bind_import(exported_name, target_name)
+                  }
+                }
+              }
+              imported_any
+            }
             for item in spec.items {
               let import_name = item.name
               if item.kind == @core.ImportKind::Module {
@@ -210,23 +233,20 @@ pub fn Runtime::eval_module(
                 None => import_name
               }
               match exports.get(import_name) {
-                Some(_) =>
+                Some(_) => {
                   if should_bind_runtime_value(item, import_name) {
                     bind_import(import_name, local_name)
                   }
+                  bind_namespace_members(item, import_name, local_name) |> ignore
+                }
                 None =>
                   if item.rename is None {
                     // Namespace import: `import { Int }` brings `Int::...`.
-                    let prefix = import_name + "::"
-                    let mut imported_any = false
-                    for exported_name, _ in exports {
-                      if exported_name.has_prefix(prefix) {
-                        imported_any = true
-                        if should_bind_runtime_value(item, exported_name) {
-                          bind_import(exported_name, exported_name)
-                        }
-                      }
-                    }
+                    let imported_any = bind_namespace_members(
+                      item,
+                      import_name,
+                      import_name,
+                    )
                     if not(imported_any) {
                       raise EvalError::ImportError(
                         "Symbol not exported: " + import_name,
@@ -870,7 +890,39 @@ fn eval_block(rt : Runtime, body : @core.Module) -> EvalOutput raise EvalError {
 }
 
 ///|
-fn namespace_root_from_runtime_type(ty : @core.Type) -> String? {
+fn variant_namespace_root_from_runtime_type(
+  rt : Runtime,
+  fields : Map[String, @core.Type],
+) -> String? {
+  let mut found : String? = None
+  for enum_name in rt.type_env.enum_names() {
+    match rt.type_env.get_enum_def(enum_name) {
+      Some(enum_def) => {
+        if enum_def.ctors.length() != fields.length() {
+          continue
+        }
+        let mut all_match = true
+        for ctor in enum_def.ctors {
+          if not(fields.contains(ctor.name)) {
+            all_match = false
+            break
+          }
+        }
+        if all_match {
+          match found {
+            None => found = Some(enum_name)
+            Some(_) => return None
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  found
+}
+
+///|
+fn namespace_root_from_runtime_type(rt : Runtime, ty : @core.Type) -> String? {
   match ty {
     @core.Type::Int => Some("Int")
     @core.Type::Float => Some("Float")
@@ -879,6 +931,8 @@ fn namespace_root_from_runtime_type(ty : @core.Type) -> String? {
     @core.Type::String => Some("String")
     @core.Type::Path => Some("Path")
     @core.Type::Named(name~, ..) => Some(name)
+    @core.Type::Variant(fields) =>
+      variant_namespace_root_from_runtime_type(rt, fields)
     _ => None
   }
 }
@@ -904,7 +958,7 @@ fn resolve_type_member_call_name_rt(
     Some(expr) =>
       match rt.type_env.get_expr_type(expr.span()) {
         Some(recv_ty) =>
-          match namespace_root_from_runtime_type(recv_ty) {
+          match namespace_root_from_runtime_type(rt, recv_ty) {
             Some(root) => {
               let candidate = root + "::" + name
               match rt.get(candidate) {

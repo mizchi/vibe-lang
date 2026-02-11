@@ -107,21 +107,51 @@ let double_approx_eq = (a: Double, b: Double, eps: Double) -> Bool {
 }
 
 // Type member names: can be imported as `import { Double }`
-export let Double::abs = double_abs
-export let Double::signum = double_signum
-export let Double::is_nan = double_is_nan
-export let Double::max = double_max
-export let Double::min = double_min
-export let Double::clamp = double_clamp
-export let Double::floor = double_floor
-export let Double::ceil = double_ceil
-export let Double::round = double_round
-export let Double::trunc = double_trunc
-export let Double::fract = double_fract
-export let Double::square = double_square
-export let Double::cube = double_cube
-export let Double::lerp = double_lerp
-export let Double::approx_eq = double_approx_eq
+export let Double::abs = (x: Double) -> Double {
+  double_abs(x)
+}
+export let Double::signum = (x: Double) -> Double {
+  double_signum(x)
+}
+export let Double::is_nan = (x: Double) -> Bool {
+  double_is_nan(x)
+}
+export let Double::max = (a: Double, b: Double) -> Double {
+  double_max(a, b)
+}
+export let Double::min = (a: Double, b: Double) -> Double {
+  double_min(a, b)
+}
+export let Double::clamp = (x: Double, min_val: Double, max_val: Double) -> Double {
+  double_clamp(x, min_val, max_val)
+}
+export let Double::floor = (x: Double) -> Double {
+  double_floor(x)
+}
+export let Double::ceil = (x: Double) -> Double {
+  double_ceil(x)
+}
+export let Double::round = (x: Double) -> Double {
+  double_round(x)
+}
+export let Double::trunc = (x: Double) -> Double {
+  double_trunc(x)
+}
+export let Double::fract = (x: Double) -> Double {
+  double_fract(x)
+}
+export let Double::square = (x: Double) -> Double {
+  double_square(x)
+}
+export let Double::cube = (x: Double) -> Double {
+  double_cube(x)
+}
+export let Double::lerp = (a: Double, b: Double, t: Double) -> Double {
+  double_lerp(a, b, t)
+}
+export let Double::approx_eq = (a: Double, b: Double, eps: Double) -> Bool {
+  double_approx_eq(a, b, eps)
+}
 
 // Short names (preferred): use with method-call desugar, e.g. x.floor()
 export let abs = double_abs

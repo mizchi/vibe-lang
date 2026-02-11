@@ -418,6 +418,9 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "array_get" ||
   name == "map_get" ||
   name == "string_length" ||
+  name == "string_utf8_length" ||
+  name == "string_utf16_length" ||
+  name == "string_unicode_length" ||
   name == "string_char_code_at" ||
   name == "string_substring" ||
   name == "string_concat" ||

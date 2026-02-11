@@ -1144,6 +1144,29 @@ pub fn XshDb::new() -> XshDb {
                       note: None,
                     })
                   }
+                  let import_namespace_members = fn(
+                    item : @core.ImportItem,
+                    source_root : String,
+                    target_root : String,
+                  ) -> Bool {
+                    let source_prefix = source_root + "::"
+                    let target_prefix = target_root + "::"
+                    let mut imported_any = false
+                    for exported_name, _ in exported_names {
+                      if exported_name.has_prefix(source_prefix) {
+                        let suffix = exported_name.unsafe_substring(
+                          start=source_prefix.length(),
+                          end=exported_name.length(),
+                        )
+                        let target_name = target_prefix + suffix
+                        imported_any = true
+                        if not(import_symbol(item, exported_name, target_name)) {
+                          report_kind_mismatch(item, exported_name)
+                        }
+                      }
+                    }
+                    imported_any
+                  }
                   // For each imported item, copy symbols by declared kind.
                   for item in spec.items {
                     let name = item.name
@@ -1197,21 +1220,13 @@ pub fn XshDb::new() -> XshDb {
                       if not(import_symbol(item, name, local_name)) {
                         report_kind_mismatch(item, name)
                       }
+                      // Also bring namespace members (`Type::...`) when importing
+                      // the namespace root itself (e.g. `import { Option }`).
+                      let _ = import_namespace_members(item, name, local_name)
                     } else if item.rename is None {
                       // Namespace import: `import { Int }` or `import { type Int }`
                       // brings all `Int::...` exports.
-                      let prefix = name + "::"
-                      let mut imported_any = false
-                      for exported_name, _ in exported_names {
-                        if exported_name.has_prefix(prefix) {
-                          imported_any = true
-                          if not(
-                              import_symbol(item, exported_name, exported_name),
-                            ) {
-                            report_kind_mismatch(item, exported_name)
-                          }
-                        }
-                      }
+                      let imported_any = import_namespace_members(item, name, name)
                       if item.kind != @core.ImportKind::Value &&
                         not(imported_any) {
                         report_kind_mismatch(item, name)

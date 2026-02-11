@@ -38,6 +38,9 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "string_contains" ||
   name == "string_trim" ||
   name == "string_from_char_code" ||
+  name == "string_utf8_length" ||
+  name == "string_utf16_length" ||
+  name == "string_unicode_length" ||
   name == "__lshift" ||
   name == "__rshift" ||
   name == "__bit_and" ||
@@ -103,6 +106,33 @@ fn eval_pure_builtin(
       match args[0] {
         @core.Value::String(s) => @core.Value::Int(String::length(s))
         _ => raise EvalError::BadCall("string_length")
+      }
+    }
+    "string_utf8_length" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_utf8_length")
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::Int(string_utf8_length(s))
+        _ => raise EvalError::BadCall("string_utf8_length")
+      }
+    }
+    "string_utf16_length" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_utf16_length")
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::Int(string_utf16_length(s))
+        _ => raise EvalError::BadCall("string_utf16_length")
+      }
+    }
+    "string_unicode_length" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_unicode_length")
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::Int(string_unicode_length(s))
+        _ => raise EvalError::BadCall("string_unicode_length")
       }
     }
     "string_char_code_at" => {
@@ -631,6 +661,85 @@ fn eval_pure_builtin(
     }
     _ => raise EvalError::BadCall(name)
   }
+}
+
+///|
+fn string_utf16_unit_at(s : String, index : Int) -> Int {
+  UInt16::to_int(String::code_unit_at(s, index))
+}
+
+///|
+fn is_high_surrogate(code : Int) -> Bool {
+  code >= 55296 && code <= 56319
+}
+
+///|
+fn is_low_surrogate(code : Int) -> Bool {
+  code >= 56320 && code <= 57343
+}
+
+///|
+fn utf8_bytes_of_utf16_unit(code : Int) -> Int {
+  if code <= 127 {
+    1
+  }
+  else if code <= 2047 {
+    2
+  }
+  else {
+    3
+  }
+}
+
+///|
+fn string_utf16_length(s : String) -> Int {
+  String::length(s)
+}
+
+///|
+fn string_unicode_length(s : String) -> Int {
+  let len16 = String::length(s)
+  let mut i = 0
+  let mut acc = 0
+  while i < len16 {
+    let unit0 = string_utf16_unit_at(s, i)
+    if is_high_surrogate(unit0) && i + 1 < len16 {
+      let unit1 = string_utf16_unit_at(s, i + 1)
+      if is_low_surrogate(unit1) {
+        i = i + 2
+      } else {
+        i = i + 1
+      }
+    } else {
+      i = i + 1
+    }
+    acc = acc + 1
+  }
+  acc
+}
+
+///|
+fn string_utf8_length(s : String) -> Int {
+  let len16 = String::length(s)
+  let mut i = 0
+  let mut acc = 0
+  while i < len16 {
+    let unit0 = string_utf16_unit_at(s, i)
+    if is_high_surrogate(unit0) && i + 1 < len16 {
+      let unit1 = string_utf16_unit_at(s, i + 1)
+      if is_low_surrogate(unit1) {
+        i = i + 2
+        acc = acc + 4
+      } else {
+        i = i + 1
+        acc = acc + utf8_bytes_of_utf16_unit(unit0)
+      }
+    } else {
+      i = i + 1
+      acc = acc + utf8_bytes_of_utf16_unit(unit0)
+    }
+  }
+  acc
 }
 
 ///|

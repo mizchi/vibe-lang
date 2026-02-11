@@ -64,18 +64,42 @@ let float_lerp = (a: Float, b: Float, t: Float) -> Float {
 }
 
 // Type member names: can be imported as `import { Float }`
-export let Float::eq = float_eq
-export let Float::abs = float_abs
-export let Float::signum = float_signum
-export let Float::is_nan = float_is_nan
-export let Float::is_positive = float_is_positive
-export let Float::is_negative = float_is_negative
-export let Float::is_zero = float_is_zero
-export let Float::max = float_max
-export let Float::min = float_min
-export let Float::clamp = float_clamp
-export let Float::square = float_square
-export let Float::lerp = float_lerp
+export let Float::eq = (a: Float, b: Float) -> Bool {
+  float_eq(a, b)
+}
+export let Float::abs = (x: Float) -> Float {
+  float_abs(x)
+}
+export let Float::signum = (x: Float) -> Float {
+  float_signum(x)
+}
+export let Float::is_nan = (x: Float) -> Bool {
+  float_is_nan(x)
+}
+export let Float::is_positive = (x: Float) -> Bool {
+  float_is_positive(x)
+}
+export let Float::is_negative = (x: Float) -> Bool {
+  float_is_negative(x)
+}
+export let Float::is_zero = (x: Float) -> Bool {
+  float_is_zero(x)
+}
+export let Float::max = (a: Float, b: Float) -> Float {
+  float_max(a, b)
+}
+export let Float::min = (a: Float, b: Float) -> Float {
+  float_min(a, b)
+}
+export let Float::clamp = (x: Float, min_val: Float, max_val: Float) -> Float {
+  float_clamp(x, min_val, max_val)
+}
+export let Float::square = (x: Float) -> Float {
+  float_square(x)
+}
+export let Float::lerp = (a: Float, b: Float, t: Float) -> Float {
+  float_lerp(a, b, t)
+}
 
 // Short names (preferred): use with method-call desugar, e.g. x.abs()
 export let eq = float_eq

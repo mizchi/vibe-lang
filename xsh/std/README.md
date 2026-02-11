@@ -13,7 +13,7 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 | `double.xsh` | 12 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
 | `list.xsh` | 13 | Generic Cons list helpers (`List[T]`, `map`, `fold`, `filter`, `append`, `contains_by`) |
 | `bool.xsh` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
-| `string.xsh` | 16 | String helpers (`head`, `tail`, `take`, `drop`, `contains`, `count`, `replace`, `replace_all`) |
+| `string.xsh` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
 | `io.xsh` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
 | `threads.xsh` | 7 | Experimental threads contracts (`task/channel/actor/deployment_plan`) + runtime wrappers (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`) |
 | `wasm/types.xsh` | 6 | WASM type alias entrypoint (`i32`/`f32`/`f64`, `I32`/`F32`/`F64`) |

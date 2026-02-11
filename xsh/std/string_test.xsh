@@ -1,6 +1,13 @@
 import {
+  String,
   is_empty,
   is_not_empty,
+  utf8_length,
+  utf16_length,
+  unicode_length,
+  is_blank,
+  equals,
+  compare,
   head,
   tail,
   last,
@@ -17,11 +24,20 @@ import {
   last_index_of,
   count,
   replace,
-  replace_all
+  replace_all,
+  trim,
+  trim_start,
+  trim_end
 } from "./string.xsh"
 
 let string_is_empty = is_empty
 let string_is_not_empty = is_not_empty
+let string_utf8_length = utf8_length
+let string_utf16_length = utf16_length
+let string_unicode_length = unicode_length
+let string_is_blank = is_blank
+let string_equals_std = equals
+let string_compare = compare
 let string_head = head
 let string_tail = tail
 let string_last = last
@@ -39,10 +55,45 @@ let string_last_index_of = last_index_of
 let string_count = count
 let string_replace = replace
 let string_replace_all = replace_all
+let string_trim = trim
+let string_trim_start = trim_start
+let string_trim_end = trim_end
 
 test "string_is_empty" {
   assert(string_is_empty(""))
   assert(not(string_is_empty("a")))
+}
+
+test "string_equals_compare_blank" {
+  assert(string_equals_std("abc", "abc"))
+  assert(not(string_equals_std("abc", "ab")))
+  assert(eq(string_compare("abc", "abc"), 0))
+  assert(eq(string_compare("abc", "abd"), -1))
+  assert(eq(string_compare("abd", "abc"), 1))
+  assert(string_is_blank(""))
+  assert(string_is_blank("    "))
+  assert(not(string_is_blank(" a ")))
+}
+
+test "string_unicode_lengths" {
+  assert(eq(string_utf8_length("abc"), 3))
+  assert(eq(string_utf16_length("abc"), 3))
+  assert(eq(string_unicode_length("abc"), 3))
+
+  assert(eq(string_utf8_length("あ"), 3))
+  assert(eq(string_utf16_length("あ"), 1))
+  assert(eq(string_unicode_length("あ"), 1))
+
+  assert(eq(string_utf8_length("😀"), 4))
+  assert(eq(string_utf16_length("😀"), 2))
+  assert(eq(string_unicode_length("😀"), 1))
+}
+
+test "string_type_members_and_method_style" {
+  assert(String::is_empty(""))
+  assert(not(String::is_empty("x")))
+  assert("".is_empty())
+  assert(not("x".is_empty()))
 }
 
 test "string_head_tail" {
@@ -144,4 +195,10 @@ test "string_short_aliases" {
   assert(is_empty(""))
   assert(contains("hello", "ell"))
   assert(string_equals(replace_all("foo foo", "foo", "x"), "x x"))
+}
+
+test "string_trim" {
+  assert(string_equals(string_trim("  hello  "), "hello"))
+  assert(string_equals(string_trim_start("   hi"), "hi"))
+  assert(string_equals(string_trim_end("hi   "), "hi"))
 }
