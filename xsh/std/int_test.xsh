@@ -1,4 +1,4 @@
-import {
+use ./int.xsh {
   Int,
   max_value,
   min_value,
@@ -17,9 +17,7 @@ import {
   lcm,
   factorial,
   fibonacci
-} from "./int.xsh"
-
-let int_max_value = max_value
+}let int_max_value = max_value
 let int_min_value = min_value
 let int_abs = abs
 let int_max = max

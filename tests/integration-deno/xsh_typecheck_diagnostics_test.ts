@@ -59,7 +59,7 @@ Deno.test("xsh wasm api init injects prelude and kv", async () => {
   const projectReport = await service.checkProject({
     entry: "/main.xsh",
     files: {
-      "/main.xsh": 'import { value } from "./lib.xsh"\nlet out = value\n',
+      "/main.xsh": "use ./lib.xsh { value }\nlet out = value\n",
     },
   }) as {
     ok: boolean;
@@ -119,7 +119,7 @@ Deno.test("xsh wasm api checkProject resolves imports", async () => {
   const report = await service.checkProject({
     entry: "/main.xsh",
     files: {
-      "/main.xsh": 'import { value } from "./lib.xsh"\nlet out = value\n',
+      "/main.xsh": "use ./lib.xsh { value }\nlet out = value\n",
       "/lib.xsh": "export let value = 1\n",
     },
   }) as {
@@ -180,7 +180,7 @@ Deno.test("xsh wasm api ide peek-def and search work", async () => {
 Deno.test("xsh wasm api ide supports imports via project request", async () => {
   const service = await createXshService();
   const files = {
-    "/main.xsh": 'import { value } from "./lib.xsh"\nlet out = value\n',
+    "/main.xsh": "use ./lib.xsh { value }\nlet out = value\n",
     "/lib.xsh": "export let value = 1\n",
   };
 

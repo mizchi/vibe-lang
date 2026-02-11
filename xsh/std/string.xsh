@@ -402,7 +402,7 @@ export let from_char_code = (code: Int) -> String {
   string_from_char_code(code)
 }
 
-// Type member names: can be imported as `import { String }`
+// Type member names: can be imported with `use <module-ref> { String }`
 export let String::equals = (a: String, b: String) -> Bool {
   string_equals_value(a, b)
 }

@@ -1,4 +1,4 @@
-import {
+use ./float.xsh {
   Float,
   eq,
   abs,
@@ -9,9 +9,7 @@ import {
   clamp,
   square,
   lerp
-} from "./float.xsh"
-
-test "float_abs" {
+}test "float_abs" {
   assert(eq(abs(3.5f), 3.5f))
   assert(eq(abs(-3.5f), 3.5f))
   assert(eq(abs(0.0f), 0.0f))

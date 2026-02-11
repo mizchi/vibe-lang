@@ -91,7 +91,6 @@ fn supports_module_namespace_import(path : String) -> Bool {
   path.has_suffix(".xm")
 }
 
-///|
 fn collect_pat_bind_names(
   pat : @core.Pat,
   out : Map[String, @core.Span],
@@ -266,6 +265,17 @@ fn normalize_lock_path(path : String) -> String {
 }
 
 ///|
+fn strip_module_ext(path : String) -> String {
+  if path.has_suffix(".xsh") && path.length() > 4 {
+    (try! path[0:path.length() - 4]).to_string()
+  } else if path.has_suffix(".xm") && path.length() > 3 {
+    (try! path[0:path.length() - 3]).to_string()
+  } else {
+    path
+  }
+}
+
+///|
 fn path_lock_required(
   rt : @ripple.Runtime,
   sources : @ripple.Input[String, String],
@@ -407,11 +417,20 @@ fn import_stmt_matches_spec(
   match source {
     @core.ModuleRef::Path(path~) => {
       let path_obj = normalize_path_obj(base_dir, path)
-      if path_obj.normalized == imp.path || path == imp.path {
+      let source_norm = path_obj.normalized
+      let source_base = strip_module_ext(source_norm)
+      let imp_base = strip_module_ext(imp.path)
+      if source_norm == imp.path ||
+        path == imp.path ||
+        source_base == imp_base {
         true
       } else {
         match imp.path_obj {
-          Some(obj) => obj.normalized == path_obj.normalized || obj.raw == path
+          Some(obj) =>
+            obj.normalized == source_norm ||
+            obj.raw == path ||
+            strip_module_ext(obj.normalized) == source_base ||
+            strip_module_ext(obj.raw) == strip_module_ext(path)
           None => false
         }
       }
@@ -590,26 +609,52 @@ pub fn XshDb::new() -> XshDb {
             @core.ModuleRef::Path(path~) => {
               let path_obj = normalize_path_obj(base_dir, path)
               let alias_name = @core.import_alias_name(path)
-              // Try normalized path first, then fall back to raw import path (for tests).
-              let (final_path, text_opt, binary_opt) = match
-                sources.get(rt, path_obj.normalized) {
-                Some(c) => (path_obj.normalized, Some(c), None)
-                None =>
-                  match binary_sources.get(rt, path_obj.normalized) {
-                    Some(b) => (path_obj.normalized, None, Some(b))
-                    None =>
-                      match sources.get(rt, path) {
-                        Some(c) => (path, Some(c), None)
-                        None =>
-                          match binary_sources.get(rt, path) {
-                            Some(b) => (path, None, Some(b))
-                            None => (path_obj.normalized, None, None)
-                          }
-                      }
-                  }
+              let candidates : Array[String] = []
+              let push_candidate = fn(candidate : String) {
+                if not(array_has_string(candidates, candidate)) {
+                  candidates.push(candidate)
+                }
               }
+              push_candidate(path_obj.normalized)
+              if not(path_obj.normalized.has_suffix(".xsh")) {
+                push_candidate(path_obj.normalized + ".xsh")
+              }
+              if not(path_obj.normalized.has_suffix(".xm")) {
+                push_candidate(path_obj.normalized + ".xm")
+              }
+              push_candidate(path)
+              if not(path.has_suffix(".xsh")) {
+                push_candidate(path + ".xsh")
+              }
+              if not(path.has_suffix(".xm")) {
+                push_candidate(path + ".xm")
+              }
+              let mut final_path = path_obj.normalized
+              let mut text_opt : String? = None
+              let mut binary_opt : Bytes? = None
+              for candidate in candidates {
+                match sources.get(rt, candidate) {
+                  Some(c) => {
+                    final_path = candidate
+                    text_opt = Some(c)
+                    break
+                  }
+                  None =>
+                    match binary_sources.get(rt, candidate) {
+                      Some(b) => {
+                        final_path = candidate
+                        binary_opt = Some(b)
+                        break
+                      }
+                      None => ()
+                    }
+                }
+              }
+              let resolved_path_obj = normalize_path_obj(base_dir, final_path)
               let lock_expected = if path_lock_required(rt, sources) {
-                Some(sources.get(rt, path_ref_key(path_obj.normalized)))
+                Some(
+                  sources.get(rt, path_ref_key(resolved_path_obj.normalized)),
+                )
               } else {
                 None
               }
@@ -629,7 +674,7 @@ pub fn XshDb::new() -> XshDb {
                             diags.push(rt, @core.Diagnostic::{
                               stage: "import",
                               message: "lock mismatch for path: " +
-                              path_obj.normalized +
+                              resolved_path_obj.normalized +
                               " (expected " +
                               expected_hash +
                               ", got " +
@@ -649,7 +694,7 @@ pub fn XshDb::new() -> XshDb {
                           diags.push(rt, @core.Diagnostic::{
                             stage: "import",
                             message: "missing lock entry for path: " +
-                            path_obj.normalized,
+                            resolved_path_obj.normalized,
                             span: Some(span),
                             hint: Some(
                               "run `xsh fetch <entry>` to create index.lock",
@@ -667,7 +712,7 @@ pub fn XshDb::new() -> XshDb {
                     alias_name,
                     hash: resolved_hash,
                     module_ref,
-                    path_obj: Some(path_obj),
+                    path_obj: Some(resolved_path_obj),
                     source_hash: None,
                     source_version: None,
                     source_symbol: None,
@@ -692,7 +737,7 @@ pub fn XshDb::new() -> XshDb {
                                 diags.push(rt, @core.Diagnostic::{
                                   stage: "import",
                                   message: "lock mismatch for path: " +
-                                  path_obj.normalized +
+                                  resolved_path_obj.normalized +
                                   " (expected " +
                                   expected_hash +
                                   ", got " +
@@ -712,7 +757,7 @@ pub fn XshDb::new() -> XshDb {
                               diags.push(rt, @core.Diagnostic::{
                                 stage: "import",
                                 message: "missing lock entry for path: " +
-                                path_obj.normalized,
+                                resolved_path_obj.normalized,
                                 span: Some(span),
                                 hint: Some(
                                   "run `xsh fetch <entry>` to create index.lock",
@@ -730,7 +775,7 @@ pub fn XshDb::new() -> XshDb {
                         alias_name,
                         hash: resolved_hash,
                         module_ref,
-                        path_obj: Some(path_obj),
+                        path_obj: Some(resolved_path_obj),
                         source_hash: None,
                         source_version: None,
                         source_symbol: None,
@@ -739,7 +784,7 @@ pub fn XshDb::new() -> XshDb {
                     None => {
                       diags.push(rt, @core.Diagnostic::{
                         stage: "import",
-                        message: "missing: " + path_obj.normalized,
+                        message: "missing: " + resolved_path_obj.normalized,
                         span: Some(span),
                         hint: None,
                         note: None,
@@ -749,7 +794,7 @@ pub fn XshDb::new() -> XshDb {
                         alias_name,
                         hash: None,
                         module_ref: None,
-                        path_obj: Some(path_obj),
+                        path_obj: Some(resolved_path_obj),
                         source_hash: None,
                         source_version: None,
                         source_symbol: None,
@@ -932,7 +977,7 @@ pub fn XshDb::new() -> XshDb {
     match sources.get(rt, path) {
       None => @checker.TypeEnv::new()
       Some(content) =>
-        if not(content.contains("import")) {
+        if not(content.contains("import")) && not(content.contains("use")) {
           let hash = @core.git_blob_hash_string(content)
           match no_import_type_query.fetch(rt, hash) {
             Some(env) => env
@@ -976,7 +1021,7 @@ pub fn XshDb::new() -> XshDb {
   ) {
     match sources.get(rt, file_path) {
       Some(content) =>
-        if not(content.contains("import")) {
+        if not(content.contains("import")) && not(content.contains("use")) {
           return simple_type_query.fetch(rt, file_path)
         }
       None => ()
@@ -1036,9 +1081,6 @@ pub fn XshDb::new() -> XshDb {
                 if import_stmt_matches_spec(base_dir, source, imp) {
                   let trait_aliases = collect_import_trait_aliases(
                     spec, imported_env,
-                  )
-                  let module_namespace_ok = supports_module_namespace_import(
-                    imp.path,
                   )
                   let import_symbol = fn(
                     item : @core.ImportItem,
@@ -1183,7 +1225,7 @@ pub fn XshDb::new() -> XshDb {
                   for item in spec.items {
                     let name = item.name
                     if item.kind == @core.ImportKind::Module {
-                      if not(module_namespace_ok) {
+                      if not(supports_module_namespace_import(imp.path)) {
                         diags.push(rt, @core.Diagnostic::{
                           stage: "import",
                           message: "module import is only supported for .xm source: " +
@@ -1231,11 +1273,11 @@ pub fn XshDb::new() -> XshDb {
                       if not(import_symbol(item, name, local_name)) {
                         report_kind_mismatch(item, name)
                       }
-                      // Also bring namespace members (`Type::...`) when importing
-                      // the namespace root itself (e.g. `import { Option }`).
+                      // Also bring namespace members (`Type::...`) when using
+                      // the namespace root itself (e.g. `use <ref> { Option }`).
                       let _ = import_namespace_members(item, name, local_name)
                     } else if item.rename is None {
-                      // Namespace import: `import { Int }` or `import { type Int }`
+                      // Namespace import: `use <ref> { Int }` or `use <ref> { type Int }`
                       // brings all `Int::...` exports.
                       let imported_any = import_namespace_members(
                         item, name, name,

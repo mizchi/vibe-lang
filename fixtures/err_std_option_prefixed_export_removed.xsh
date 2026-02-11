@@ -1,4 +1,4 @@
-import { option_map } from "./xsh/std/option.xsh"
+use ./xsh/std/option.xsh {  option_map  }
 
 option_map(Some(5), (x) -> x * 2)
 

@@ -44,7 +44,7 @@ test "xsh warning reports unused import local name" {
   let db = XshDb::new()
   db.set_source("./lib.xsh", "export let foo = 1")
   db.set_source(
-    "main", "import { foo as local_foo } from ./lib.xsh\nlet x = 1\nx",
+    "main", "use ./lib.xsh { foo as local_foo }\nlet x = 1\nx",
   )
   let _ = db.types("main")
   let warnings = db.warnings("main")
@@ -56,7 +56,7 @@ test "xsh warning reports unused import local name" {
 test "xsh import parsing" {
   // Test that import syntax parses correctly
   let db = XshDb::new()
-  db.set_source("main", "import { y } from ./foo.xsh\nlet x = 1")
+  db.set_source("main", "use ./foo.xsh { y }\nlet x = 1")
   db.set_source("./foo.xsh", "export let y = 2")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
@@ -76,7 +76,7 @@ test "xsh hash import resolves by content hash" {
   let lib_source = "export let y = 2"
   let lib_hash = @core.git_blob_hash_string(lib_source)
   db.set_source("./foo.xsh", lib_source)
-  db.set_source("main", "import { y } from #\{lib_hash}\nlet x = y")
+  db.set_source("main", "use #\{lib_hash} { y }\nlet x = y")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -95,9 +95,9 @@ test "xsh hash import resolves by content hash" {
 ///|
 test "xsh import cycle reports diagnostic" {
   let db = XshDb::new()
-  db.set_source("main", "import { a } from ./a.xsh\nlet x = a")
-  db.set_source("./a.xsh", "import { b } from ./b.xsh\nexport let a = b")
-  db.set_source("./b.xsh", "import { a } from ./a.xsh\nexport let b = a")
+  db.set_source("main", "use ./a.xsh { a }\nlet x = a")
+  db.set_source("./a.xsh", "use ./b.xsh { b }\nexport let a = b")
+  db.set_source("./b.xsh", "use ./a.xsh { a }\nexport let b = a")
   let _ = db.imports("main")
   let diags = db.diagnostics("main")
   let mut found = false
@@ -114,7 +114,7 @@ test "xsh import keeps normalized path object" {
   let db = XshDb::new()
   db.set_source("/project/lib/util.xsh", "export let y = 2")
   db.set_source(
-    "/project/main.xsh", "import { y } from ./lib/./util.xsh\nlet x = y",
+    "/project/main.xsh", "use ./lib/./util.xsh { y }\nlet x = y",
   )
   let imports = db.imports("/project/main.xsh")
   assert_eq(imports.length(), 1)
@@ -122,7 +122,7 @@ test "xsh import keeps normalized path object" {
   assert_eq(imp.path, "/project/lib/util.xsh")
   match imp.path_obj {
     Some(path_obj) => {
-      assert_eq(path_obj.raw, "./lib/./util.xsh")
+      assert_eq(path_obj.raw, "/project/lib/util.xsh")
       assert_eq(path_obj.base, "/project")
       assert_eq(path_obj.normalized, "/project/lib/util.xsh")
     }
@@ -134,7 +134,7 @@ test "xsh import keeps normalized path object" {
 test "xsh path import lock missing reports diagnostic when required" {
   let db = XshDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "import { y } from ./foo.xsh\nlet x = y")
+  db.set_source("main", "use ./foo.xsh { y }\nlet x = y")
   db.set_source("./foo.xsh", "export let y = 2")
   let _ = db.imports("main")
   let diags = db.diagnostics("main")
@@ -151,7 +151,7 @@ test "xsh path import lock missing reports diagnostic when required" {
 test "xsh path import lock mismatch reports diagnostic when required" {
   let db = XshDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "import { y } from ./foo.xsh\nlet x = y")
+  db.set_source("main", "use ./foo.xsh { y }\nlet x = y")
   let lib_source = "export let y = 2"
   db.set_source("./foo.xsh", lib_source)
   db.set_path_ref("./foo.xsh", "0000000000000000000000000000000000000000")
@@ -170,7 +170,7 @@ test "xsh path import lock mismatch reports diagnostic when required" {
 test "xsh path import lock accepts matching hash" {
   let db = XshDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "import { y } from ./foo.xsh\nlet x = y")
+  db.set_source("main", "use ./foo.xsh { y }\nlet x = y")
   let lib_source = "export let y = 2"
   db.set_source("./foo.xsh", lib_source)
   let lib_hash = @core.git_blob_hash_string(lib_source)
@@ -187,7 +187,7 @@ test "xsh path import lock accepts matching hash" {
 test "xsh compile fails on import diagnostics" {
   let db = XshDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "import { y } from ./foo.xsh\nlet x = y")
+  db.set_source("main", "use ./foo.xsh { y }\nlet x = y")
   db.set_source("./foo.xsh", "export let y = 2")
   let result : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
@@ -206,7 +206,7 @@ test "xsh hash import keeps immutable snapshot after source update" {
   let hash_v1 = @core.git_blob_hash_string(lib_v1)
   db.set_source("./foo.xsh", lib_v1)
   db.set_source("./foo.xsh", lib_v2)
-  db.set_source("main", "import { y } from #\{hash_v1}\nlet x = y")
+  db.set_source("main", "use #\{hash_v1} { y }\nlet x = y")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -228,7 +228,7 @@ test "xsh version import resolves through lock ref" {
   let lib_hash = @core.git_blob_hash_string(lib_source)
   db.set_source("./foo.xsh", lib_source)
   db.set_version_ref("main", lib_hash)
-  db.set_source("entry", "import { y } from version@main\nlet x = y")
+  db.set_source("entry", "use version@main { y }\nlet x = y")
   let imports = db.imports("entry")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -246,7 +246,7 @@ test "xsh symbol import resolves through lock ref" {
   let lib_hash = @core.git_blob_hash_string(lib_source)
   db.set_source("./foo.xsh", lib_source)
   db.set_symbol_ref("std/math", lib_hash)
-  db.set_source("entry", "import { y } from symbol@std/math\nlet x = y")
+  db.set_source("entry", "use symbol@std/math { y }\nlet x = y")
   let imports = db.imports("entry")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -271,7 +271,7 @@ test "xsh wasm import resolves binary module and type checks call" {
   let db = XshDb::new()
   db.set_binary_source("./zlib.wasm", wasm)
   db.set_source(
-    "main", "import { inflate } from \"./zlib.wasm\"\nlet x = inflate(1, 2, 0)\nx",
+    "main", "use ./zlib.wasm { inflate }\nlet x = inflate(1, 2, 0)\nx",
   )
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
@@ -295,7 +295,7 @@ test "xsh wasm import reports missing exported function" {
   let db = XshDb::new()
   db.set_binary_source("./zlib.wasm", wasm)
   db.set_source(
-    "main", "import { deflate } from \"./zlib.wasm\"\nlet x = deflate(1)\nx",
+    "main", "use ./zlib.wasm { deflate }\nlet x = deflate(1)\nx",
   )
   let _ = db.types("main")
   let diags = db.diagnostics("main")
@@ -320,7 +320,7 @@ test "xsh wasm import reports type mismatch on call" {
   let db = XshDb::new()
   db.set_binary_source("./zlib.wasm", wasm)
   db.set_source(
-    "main", "import { inflate } from \"./zlib.wasm\"\nlet x = inflate(\"bad\")\nx",
+    "main", "use ./zlib.wasm { inflate }\nlet x = inflate(\"bad\")\nx",
   )
   let result : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",

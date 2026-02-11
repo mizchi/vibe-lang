@@ -254,6 +254,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
         let kind = match text {
           "let" => let_kw()
           "import" => import_kw()
+          "use" => use_kw()
           "test" => test_kw()
           "if" => if_kw()
           "else" => else_kw()

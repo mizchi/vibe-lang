@@ -1,12 +1,10 @@
-import {
+use ./path.xsh {
   type PathRef,
   type DynamicPath,
   from_literal,
   dynamic,
   resolve
-} from "./path.xsh"
-
-test "path from_literal returns absolute path" {
+}test "path from_literal returns absolute path" {
   let path = from_literal("./xsh/std/string.xsh")
   assert(path.is_absolute())
   let raw = path.as_string()

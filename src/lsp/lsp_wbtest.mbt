@@ -329,7 +329,7 @@ test "LspServer/handle_message/hover includes hash" {
 ///|
 test "trait_import_code_actions skips already imported trait" {
   let source =
-    #|import { Eq } from "./xsh/std/builtin_traits.xsh"
+    #|use ./xsh/std/builtin_traits.xsh {  Eq  }
     #|let same = [T: Eq](x: T, y: T) -> Bool { x == y }
   let actions = trait_import_code_actions("file://test.xsh", source)
   match actions {

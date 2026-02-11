@@ -1,4 +1,4 @@
-import { value, add } from symbol@fixture/std/math
+use symbol@fixture/std/math {  value, add  }
 add(value, 2)
 
 __DATA__

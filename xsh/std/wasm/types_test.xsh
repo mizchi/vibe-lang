@@ -1,13 +1,11 @@
-import {
+use ./types.xsh {
   I32,
   F32,
   F64,
   i32_add,
   f64_id,
   f32_id
-} from "./types.xsh"
-
-test "i32_add" {
+}test "i32_add" {
   assert(eq(i32_add(40, 2), 42))
 }
 

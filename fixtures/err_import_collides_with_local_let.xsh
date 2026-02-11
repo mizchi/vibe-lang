@@ -1,5 +1,5 @@
 let abs = (x: Int) -> Int { x }
-import { abs } from "./xsh/std/int.xsh"
+use ./xsh/std/int.xsh {  abs  }
 
 abs(-1)
 

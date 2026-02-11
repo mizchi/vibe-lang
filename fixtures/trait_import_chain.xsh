@@ -1,4 +1,4 @@
-import { trait Keyed, use_keyed } from ./fixtures/modules/trait_chain_mid.xsh
+use ./fixtures/modules/trait_chain_mid.xsh {  trait Keyed, use_keyed  }
 
 use_keyed(1)
 

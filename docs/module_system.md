@@ -53,35 +53,35 @@ let exports = record { add, sub }
 ```
 - 文法追加なし。import は `exports` だけを見る規約にする
 
-### 4) import の構文案 (最小限)
-- 現行: `import "path"` / `import name`
+### 4) use の構文案 (最小限)
+- 現行: `use <module-ref> { ... }`
 - 拡張案:
 ```
-import "path/to/mod.xsh" as mod
-import { add, sub } from "path/to/mod.xsh"
-import mod from "path/to/mod.xsh"
+use path/to/mod.xsh { module mod }
+use path/to/mod.xsh { add, sub }
+use path/to/mod.xsh
 ```
 
 ### 5) 参照の正規化と内容アドレス
 - 依存解決後は **内容アドレス**(hash)で参照。
 - これは xsh の関数アドレス設計と整合。
-- import で得た namespace の各シンボルは
+- use で得た namespace の各シンボルは
   - `name#hash` を内部的に保持
   - 人間可読名は別で保持
 
 ### 6) 純粋性と Effect
-import は **純粋式** として扱う。
+use は **純粋式** として扱う。
 
 - 依存解決・ダウンロードは **コンパイル時の別フェーズ**
 - 実行時は lock で固定済みの内容しか参照しない
-- これにより import は `with {}` なしで使える
+- これにより use は `with {}` なしで使える
 
 ---
 
 ## 例 (将来像)
 
 ```
-import "git:github:NixOS/nixpkgs@rev#hash//pkgs.xsh" as pkgs
+use git:github:NixOS/nixpkgs@rev#hash//pkgs.xsh { module pkgs }
 
 let dev_shell = pkgs.mk_shell {
   packages = [ pkgs.wasm, pkgs.nodejs ]

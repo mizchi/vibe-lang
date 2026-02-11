@@ -1,2 +1,2 @@
-import { foo } from ./lib.xsh
+use ./lib.xsh {  foo  }
 foo

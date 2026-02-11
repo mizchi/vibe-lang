@@ -63,7 +63,7 @@ let float_lerp = (a: Float, b: Float, t: Float) -> Float {
   a + (b - a) * t
 }
 
-// Type member names: can be imported as `import { Float }`
+// Type member names: can be imported with `use <module-ref> { Float }`
 export let Float::eq = (a: Float, b: Float) -> Bool {
   float_eq(a, b)
 }

@@ -1,6 +1,4 @@
-import { parse_ok, parse_err } from "./json.xsh"
-
-let input = "{\"name\":\"xsh\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
+use ./json.xsh { parse_ok, parse_err }let input = "{\"name\":\"xsh\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
 
 test "json_parser_complex" {
   assert(parse_ok(input))

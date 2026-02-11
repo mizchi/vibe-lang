@@ -1,4 +1,4 @@
-import {
+use ./bool.xsh {
   Bool,
   bool_to_int,
   int_to_bool,
@@ -9,9 +9,7 @@ import {
   bool_all3,
   bool_any3,
   xor
-} from "./bool.xsh"
-
-test "bool_to_int" {
+}test "bool_to_int" {
   assert(eq(bool_to_int(true), 1))
   assert(eq(bool_to_int(false), 0))
 }

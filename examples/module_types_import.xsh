@@ -1,7 +1,5 @@
 // Import exported types
-import { Color, Maybe, IntPair, make_pair, is_red } from "./module_types_export.xsh"
-
-let my_color = Red
+use ./module_types_export.xsh { Color, Maybe, IntPair, make_pair, is_red }let my_color = Red
 let my_maybe = Just(100)
 
 test "imported Color" {

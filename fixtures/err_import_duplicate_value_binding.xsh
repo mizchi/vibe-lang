@@ -1,5 +1,5 @@
-import { abs } from "./xsh/std/int.xsh"
-import { clamp as abs } from "./xsh/std/int.xsh"
+use ./xsh/std/int.xsh {  abs  }
+use ./xsh/std/int.xsh {  clamp as abs  }
 
 abs(-1)
 

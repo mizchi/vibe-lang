@@ -1,4 +1,4 @@
-import { value } from symbol@fixture/missing
+use symbol@fixture/missing {  value  }
 1
 
 __DATA__

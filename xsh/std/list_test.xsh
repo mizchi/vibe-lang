@@ -1,4 +1,4 @@
-import {
+use ./list.xsh {
   List,
   list_empty,
   list_is_empty,
@@ -18,9 +18,7 @@ import {
   list_contains_by,
   length,
   sum
-} from "./list.xsh"
-
-test "list_empty" {
+}test "list_empty" {
   let empty = list_empty()
   assert(list_is_empty(empty))
   assert(not(list_is_empty(list_singleton(1))))

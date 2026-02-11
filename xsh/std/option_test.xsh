@@ -1,4 +1,4 @@
-import {
+use ./option.xsh {
   Option,
   is_some,
   is_none,
@@ -15,9 +15,7 @@ import {
   or_else,
   equals,
   zip_sum
-} from "./option.xsh"
-
-trait Eq
+}trait Eq
 impl Eq for Int
 impl Eq for Float
 impl Eq for Double

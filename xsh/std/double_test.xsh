@@ -1,4 +1,4 @@
-import {
+use ./double.xsh {
   Double,
   abs,
   signum,
@@ -15,9 +15,7 @@ import {
   cube,
   lerp,
   approx_eq
-} from "./double.xsh"
-
-let double_int_max_value = 536870911.0
+}let double_int_max_value = 536870911.0
 let double_int_min_value = -536870912.0
 
 test "double_abs" {

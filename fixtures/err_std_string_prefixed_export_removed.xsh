@@ -1,4 +1,4 @@
-import { string_is_empty } from "./xsh/std/string.xsh"
+use ./xsh/std/string.xsh {  string_is_empty  }
 
 string_is_empty("")
 

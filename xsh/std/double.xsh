@@ -106,7 +106,7 @@ let double_approx_eq = (a: Double, b: Double, eps: Double) -> Bool {
   double_abs(a - b) <= eps
 }
 
-// Type member names: can be imported as `import { Double }`
+// Type member names: can be imported with `use <module-ref> { Double }`
 export let Double::abs = (x: Double) -> Double {
   double_abs(x)
 }

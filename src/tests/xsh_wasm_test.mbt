@@ -336,7 +336,7 @@ test "xsh wasm enum import and match" {
     #|  }
     #|}
   let main_src =
-    #|import { Json, is_null } from ./lib.xsh
+    #|use ./lib.xsh { Json, is_null }
     #|let x = JNull
     #|is_null(x)
   db.set_source("./lib.xsh", lib_src)

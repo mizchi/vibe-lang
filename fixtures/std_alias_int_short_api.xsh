@@ -1,4 +1,4 @@
-import { abs, clamp, is_even } from "./xsh/std/int.xsh"
+use ./xsh/std/int.xsh {  abs, clamp, is_even  }
 
 let a = abs(-5)
 let x = 12

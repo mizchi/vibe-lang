@@ -3,7 +3,7 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
   let root = wbtest_make_temp_dir("save_fetch_expand")
   let entry = root + "/main.xsh"
   let lib = root + "/lib.xsh"
-  let entry_source = "import { inc } from \"./lib.xsh\"\nlet main = inc(1)\nexport { main }\n"
+  let entry_source = "use ./lib.xsh {  inc  }\nlet main = inc(1)\nexport { main }\n"
   let lib_source = "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n"
   @os_fs.write_string_to_file(entry, entry_source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -257,7 +257,7 @@ test "cli check resolves lock and graph artifacts" {
   let root = wbtest_make_temp_dir("check_resolve_artifacts")
   let entry = root + "/main.xsh"
   let lib = root + "/lib.xsh"
-  let entry_source = "import { inc } from \"./lib.xsh\"\nlet main = inc(1)\nexport { main }\n"
+  let entry_source = "use ./lib.xsh {  inc  }\nlet main = inc(1)\nexport { main }\n"
   let lib_source = "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n"
   @os_fs.write_string_to_file(entry, entry_source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -401,7 +401,7 @@ test "cli symbols prints status for managed symbols" {
   let entry = root + "/main.xsh"
   let lib = root + "/lib.xsh"
   @os_fs.write_string_to_file(
-    entry, "import { inc } from \"./lib.xsh\"\nlet main = inc(1)\nexport { main }\n",
+    entry, "use ./lib.xsh {  inc  }\nlet main = inc(1)\nexport { main }\n",
   ) catch {
     e => fail("write entry failed: " + e.to_string())
   }

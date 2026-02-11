@@ -1,1 +1,1 @@
-import { value,, next } from "./mod.xsh"
+use ./mod.xsh {  value,, next  }

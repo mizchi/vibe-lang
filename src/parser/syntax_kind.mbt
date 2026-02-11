@@ -78,6 +78,11 @@ pub fn import_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn use_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(93)
+}
+
+///|
 pub fn test_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(24)
 }

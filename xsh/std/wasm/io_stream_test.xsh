@@ -1,4 +1,4 @@
-import {
+use ./io_stream.xsh {
   stdout_write,
   stdout_writeln,
   stdin_read,
@@ -7,9 +7,7 @@ import {
   tui_leave_alt_screen,
   tui_cursor_home,
   tui_clear_screen
-} from "./io_stream.xsh"
-
-test "stream helpers run" {
+}test "stream helpers run" {
   let run_stream = (n: Int, s: String) -> String with {Stdin, Stdout} {
     do {
       stdout_write(s)

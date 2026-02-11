@@ -1,4 +1,4 @@
-import { is_some } from "./xsh/std/option.xsh"
+use ./xsh/std/option.xsh {  is_some  }
 is_some(Some(1))
 
 __DATA__

@@ -1,4 +1,4 @@
-import {
+use ./opcodes.xsh {
   i32_add,
   i32_sub,
   i32_mul,
@@ -42,9 +42,7 @@ import {
   f64_convert_i32_s,
   i32_trunc_f32_s,
   i32_trunc_f64_s
-} from "./opcodes.xsh"
-
-test "i32 arithmetic and bitwise" {
+}test "i32 arithmetic and bitwise" {
   assert(eq(i32_add(40, 2), 42))
   assert(eq(i32_sub(50, 8), 42))
   assert(eq(i32_mul(6, 7), 42))

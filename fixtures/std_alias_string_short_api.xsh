@@ -1,4 +1,4 @@
-import { String } from "./xsh/std/string.xsh"
+use ./xsh/std/string.xsh {  String  }
 
 let a = "".is_empty()
 let b = "hello world".contains("lo wo")

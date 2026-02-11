@@ -1,4 +1,4 @@
-import { is_some, unwrap_or, map_or } from "./xsh/std/option.xsh"
+use ./xsh/std/option.xsh {  is_some, unwrap_or, map_or  }
 
 let a = Some(1).is_some()
 let b = None.unwrap_or(7)

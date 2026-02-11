@@ -1,1 +1,1 @@
-import { type Option, trait Eq, value as value_alias, } from "./mod.xsh"
+use ./mod.xsh {  type Option, trait Eq, value as value_alias,  }

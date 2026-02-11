@@ -1,4 +1,4 @@
-import { Int } from ./xsh/std/int.xsh
+use ./xsh/std/int.xsh {  Int  }
 
 let v = -6
 let abs_v = v.abs()

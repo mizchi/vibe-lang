@@ -361,7 +361,7 @@ fn eval_fixture(
   script : String,
   spec : FixtureSpec,
 ) -> Result[EvalResult, String] {
-  if not(script.contains("import ")) {
+  if not(script.contains("import ")) && not(script.contains("use ")) {
     let rt = Runtime::new(@capability.CapabilitySet::developer())
     return Ok(rt.eval_script(script)) catch { e => Err(e.to_string()) }
   }

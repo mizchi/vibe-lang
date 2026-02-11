@@ -1,11 +1,9 @@
-import {
+use ./io.xsh {
   stdout_write,
   stdout_writeln,
   stdin_read,
   stdin_read_line
-} from "./io.xsh"
-
-test "string_from_char_code basic" {
+}test "string_from_char_code basic" {
   assert(string_equals(string_from_char_code(65), "A"))
 }
 

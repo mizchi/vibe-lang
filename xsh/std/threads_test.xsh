@@ -1,4 +1,4 @@
-import {
+use ./threads.xsh {
   probe_wat,
   runtime_hints,
   task_spec,
@@ -14,9 +14,7 @@ import {
   send,
   recv,
   wait
-} from "./threads.xsh"
-
-test "threads probe helper typecheck" {
+}test "threads probe helper typecheck" {
   let _ = probe_wat
   assert(true)
 }

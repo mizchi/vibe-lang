@@ -83,7 +83,7 @@ export let zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
   }
 }
 
-// Type member names: can be imported as `import { Option }`
+// Type member names: can be imported with `use <module-ref> { Option }`
 export let Option::is_some = [T](opt: Option[T]) -> Bool {
   is_some(opt)
 }

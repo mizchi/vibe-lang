@@ -137,7 +137,7 @@ test "loader load_db_with_paths loads transitive modules" {
   let root = make_temp_dir("transitive")
   let entry = root + "/main.xsh"
   let lib = root + "/lib.xsh"
-  let entry_source = "import { libv } from \"./lib.xsh\"\nlet main = libv\nexport { main }\n"
+  let entry_source = "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n"
   let lib_source = "let libv = 1\nexport { libv }\n"
   write_file(entry, entry_source)
   write_file(lib, lib_source)
@@ -170,7 +170,7 @@ test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
   let fs = MemIoAdapter::new(root)
   match
     fs.write_string(
-      entry, "import { libv } from \"./lib.xsh\"\nlet main = libv\nexport { main }\n",
+      entry, "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n",
     ) {
     Ok(_) => ()
     Err(err) => fail(err)
@@ -192,7 +192,7 @@ test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
   match db.get_source(entry_norm) {
     Some(source) =>
       assert_eq(
-        source, "import { libv } from \"./lib.xsh\"\nlet main = libv\nexport { main }\n",
+        source, "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n",
       )
     None => fail("expected entry source")
   }
@@ -207,8 +207,8 @@ test "loader load_db_with_paths reports import cycle" {
   let root = make_temp_dir("cycle")
   let a_path = root + "/a.xsh"
   let b_path = root + "/b.xsh"
-  write_file(a_path, "import { b } from \"./b.xsh\"\nlet a = b\nexport { a }\n")
-  write_file(b_path, "import { a } from \"./a.xsh\"\nlet b = a\nexport { b }\n")
+  write_file(a_path, "use ./b.xsh {  b  }\nlet a = b\nexport { a }\n")
+  write_file(b_path, "use ./a.xsh {  a  }\nlet b = a\nexport { b }\n")
   match load_db_with_paths(a_path) {
     Ok(_) => fail("expected import cycle error")
     Err(err) => assert_true(err.contains("import cycle detected"))
@@ -234,9 +234,9 @@ test "loader load_db_with_paths rejects import outside index root" {
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
     entry,
-    "import { libv } from \"../" +
+    "use ../" +
     outside_name +
-    "/lib.xsh\"\nlet main = libv\nexport { main }\n",
+    "/lib.xsh { libv }\nlet main = libv\nexport { main }\n",
   )
   match load_db_with_paths(entry) {
     Ok(_) => fail("expected outside root error")
@@ -264,7 +264,7 @@ test "loader load_db_with_paths resolves std namespace from index registry" {
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
   )
   let loaded = match load_db_with_paths(entry) {
     Ok(v) => v
@@ -294,7 +294,7 @@ test "loader load_db_with_paths requires index version export" {
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
   )
   match load_db_with_paths(entry) {
     Ok(_) => fail("expected missing version error")

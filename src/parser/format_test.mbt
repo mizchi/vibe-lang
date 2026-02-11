@@ -4,7 +4,7 @@
 ///|
 test "xsh format roundtrip regression: trait impl import test and literals" {
   let input =
-    #|import { type Option, trait Eq, eq } from "./mod.xsh"
+    #|use ./mod.xsh { type Option, trait Eq, eq }
     #|trait Eq
     #|impl Eq for Int
     #|test "quoted case" {
@@ -32,8 +32,8 @@ test "xsh format roundtrip regression: trait impl import test and literals" {
   if not(formatted.contains("test \"quoted case\"")) {
     fail("[test quoted name] missing quoted test name\n---\n\{formatted}")
   }
-  if not(formatted.contains("from \"./mod.xsh\"")) {
-    fail("[import from spacing] missing from clause spacing\n---\n\{formatted}")
+  if not(formatted.contains("use ./mod.xsh")) {
+    fail("[use source spacing] missing use source clause spacing\n---\n\{formatted}")
   }
   if not(formatted.contains("\"hello world\"")) {
     fail("[string quotes] missing quoted string literal\n---\n\{formatted}")
@@ -47,8 +47,8 @@ test "xsh format roundtrip regression: trait impl import test and literals" {
   if formatted.contains("implEq") {
     fail("[impl join regression] found implEq\n---\n\{formatted}")
   }
-  if formatted.contains("}from") {
-    fail("[import join regression] found }from\n---\n\{formatted}")
+  if formatted.contains("}use") {
+    fail("[use join regression] found }use\n---\n\{formatted}")
   }
 }
 
@@ -73,8 +73,8 @@ test "xsh format roundtrip regression: effect signatures stay parse-equivalent" 
 ///|
 test "xsh format keeps import list forms parse-equivalent" {
   let input =
-    #|import { type Option, trait Eq, value as value_alias } from "./mod.xsh"
-    #|import { value_alias } from "./mod.xsh"
+    #|use ./mod.xsh { type Option, trait Eq, value as value_alias }
+    #|use ./mod.xsh { value_alias }
   let formatted = format_script(input)
   let before = parse_ast(input) catch {
     e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
@@ -87,15 +87,15 @@ test "xsh format keeps import list forms parse-equivalent" {
   if not(formatted.contains("trait Eq")) {
     fail("[import trait item spacing] missing trait Eq\n---\n\{formatted}")
   }
-  if formatted.contains("}from") {
-    fail("[import from spacing] found }from\n---\n\{formatted}")
+  if formatted.contains("}use") {
+    fail("[use spacing] found }use\n---\n\{formatted}")
   }
 }
 
 ///|
 test "xsh parse/format import list allows trailing comma" {
   let input =
-    #|import { type Option, trait Eq, value as value_alias, } from "./mod.xsh"
+    #|use ./mod.xsh { type Option, trait Eq, value as value_alias, }
   let ast = parse_ast(input) catch {
     e => fail("[parse] import trailing comma failed: \{e.to_string()}")
   }
@@ -115,7 +115,7 @@ test "xsh parse/format import list supports module qualifier" {
     #|export module math {
     #|  export let inc = (x: Int) -> Int { add(x, 1) }
     #|}
-    #|import { module math } from "./math.xm"
+    #|use ./math.xm { module math }
     #|math::inc(1)
   let ast = parse_ast(input) catch {
     e => fail("[parse] module import qualifier failed: \{e.to_string()}")
@@ -131,8 +131,8 @@ test "xsh parse/format import list supports module qualifier" {
   if not(formatted.contains("module math")) {
     fail("[format] missing module qualifier\n---\n\{formatted}")
   }
-  if not(formatted.contains("from \"./math.xm\"")) {
-    fail("[format] missing import source\n---\n\{formatted}")
+  if not(formatted.contains("use ./math.xm")) {
+    fail("[format] missing use source\n---\n\{formatted}")
   }
 }
 
@@ -142,7 +142,7 @@ test "xsh parse/format import list supports module qualifier alias" {
     #|export module math {
     #|  export let inc = (x: Int) -> Int { add(x, 1) }
     #|}
-    #|import { module math as m } from "./math.xm"
+    #|use ./math.xm { module math as m }
     #|m::inc(1)
   let ast = parse_ast(input) catch {
     e => fail("[parse] module import qualifier alias failed: \{e.to_string()}")
@@ -157,6 +157,21 @@ test "xsh parse/format import list supports module qualifier alias" {
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
   if not(formatted.contains("module math as m")) {
     fail("[format] missing module alias qualifier\n---\n\{formatted}")
+  }
+}
+
+///|
+test "xsh parse rejects quoted use source" {
+  let input = "use \"./mod.xsh\" { value }\nvalue"
+  let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
+  match parsed {
+    Ok(_) => fail("[parse] expected quoted use source to be rejected")
+    Err(err) =>
+      assert_true(
+        err.to_string().contains(
+          "module path without quotes (e.g. ./xsh/std/string.xsh)",
+        ),
+      )
   }
 }
 

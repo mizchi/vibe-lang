@@ -1,4 +1,4 @@
-import { trait Hashable } from ./trait_chain_base.xsh
+use ./trait_chain_base.xsh {  trait Hashable  }
 
 export trait Keyed: Hashable
 impl Keyed for Int

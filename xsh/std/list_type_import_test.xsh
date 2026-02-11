@@ -1,6 +1,4 @@
-import { List, list_of3 } from "./list.xsh"
-
-test "list_method_with_type_import_only" {
+use ./list.xsh { List, list_of3 }test "list_method_with_type_import_only" {
   let xs = list_of3(1, 2, 3)
   assert(eq(xs.length(), 3))
   assert(eq(xs.sum(), 6))

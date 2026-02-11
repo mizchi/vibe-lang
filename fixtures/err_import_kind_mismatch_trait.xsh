@@ -1,4 +1,4 @@
-import { trait add_eq } from ./fixtures/modules/import_explicit_kind_lib.xsh
+use ./fixtures/modules/import_explicit_kind_lib.xsh {  trait add_eq  }
 add_eq(1, 1)
 
 __DATA__

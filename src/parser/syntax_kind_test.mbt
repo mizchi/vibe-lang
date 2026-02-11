@@ -102,3 +102,24 @@ test "lexer treats bench as keyword" {
     fail("bench before ( must lex as bench_kw")
   }
 }
+
+///|
+test "lexer treats use as keyword and keeps slash namespace tokens" {
+  let use_tokens = tokenize("use /xsh/std/string")
+  if use_tokens[0].kind() != use_kw() {
+    fail("use must lex as use_kw")
+  }
+  let ns_tokens = tokenize("std/string::from_char_code(1)")
+  if ns_tokens[0].kind() != name() {
+    fail("namespace head must lex as name")
+  }
+  if ns_tokens[1].kind() != slash() {
+    fail("namespace separator must lex as slash")
+  }
+  if ns_tokens[2].kind() != name() {
+    fail("namespace tail must lex as name")
+  }
+  if ns_tokens[3].kind() != double_colon() {
+    fail("member access must lex as double_colon")
+  }
+}

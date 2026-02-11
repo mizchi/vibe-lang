@@ -1,4 +1,4 @@
-import { Int::to_double } from ./xsh/std/int.xsh
+use ./xsh/std/int.xsh {  Int::to_double  }
 let v = 6
 
 double_to_int(v.to_double())

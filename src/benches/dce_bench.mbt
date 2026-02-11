@@ -134,7 +134,7 @@ let lib_chain : String =
 
 ///|
 let main_chain : String =
-  #|import { level4 } from ./lib.xsh
+  #|use ./lib.xsh { level4 }
   #|level4(1)
 
 ///|
@@ -158,7 +158,7 @@ let lib_all_used : String =
 
 ///|
 let main_all_used : String =
-  #|import { fn1, fn2 } from ./lib.xsh
+  #|use ./lib.xsh { fn1, fn2 }
   #|fn1(1) + fn2(2)
 
 ///|

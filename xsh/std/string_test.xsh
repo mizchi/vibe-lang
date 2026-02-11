@@ -1,6 +1,4 @@
-import { String, from_char_code } from "./string.xsh"
-
-let string_is_empty = String::is_empty
+use ./string.xsh { String, from_char_code }let string_is_empty = String::is_empty
 let string_is_not_empty = String::is_not_empty
 let string_utf8_length = String::utf8_length
 let string_utf16_length = String::utf16_length

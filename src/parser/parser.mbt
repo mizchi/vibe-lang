@@ -249,7 +249,12 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
       self.parse_suberror_stmt()
     k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
-    k if k == import_kw() => self.parse_import_stmt()
+    k if k == use_kw() => self.parse_import_stmt()
+    k if k == import_kw() => {
+      self.builder.start_node(error_kind())
+      self.bump()
+      self.builder.finish_node()
+    }
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_block()
     k if k == bench_kw() => self.parse_bench_block()
@@ -437,22 +442,37 @@ fn Parser::parse_bench_block(self : Parser) -> Unit {
 ///|
 fn Parser::parse_import_stmt(self : Parser) -> Unit {
   self.builder.start_node(import_stmt())
-  self.bump() // import
+  let head = self.peek_kind()
+  self.bump() // import | use
   self.skip_trivia()
-  if self.at(lbrace()) {
-    self.parse_brace_block_tokens()
-    self.skip_trivia()
-    self.expect(from_kw())
-    self.skip_trivia()
+  if head == import_kw() {
+    if self.at(lbrace()) {
+      self.parse_brace_block_tokens()
+      self.skip_trivia()
+      self.expect(from_kw())
+      self.skip_trivia()
+      while not(self.at(eof())) &&
+            not(self.at(semicolon())) &&
+            not(self.at(newline())) {
+        self.bump()
+      }
+    } else if self.at(name()) || self.at(string_lit()) {
+      self.bump()
+    } else {
+      self.builder.token(error_kind(), "")
+    }
+  } else {
+    // use <source> { ... } / use <source>
     while not(self.at(eof())) &&
           not(self.at(semicolon())) &&
-          not(self.at(newline())) {
+          not(self.at(newline())) &&
+          not(self.at(lbrace())) {
       self.bump()
     }
-  } else if self.at(name()) || self.at(string_lit()) {
-    self.bump()
-  } else {
-    self.builder.token(error_kind(), "")
+    self.skip_trivia()
+    if self.at(lbrace()) {
+      self.parse_brace_block_tokens()
+    }
   }
   self.skip_trivia()
   if self.at(semicolon()) {
@@ -1217,7 +1237,15 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
     k if k == type_kw() => self.parse_type_alias_stmt()
     k if k == trait_kw() => self.parse_trait_stmt()
     k if k == impl_kw() => self.parse_impl_stmt()
-    k if k == import_kw() => self.parse_import_stmt()
+    k if k == use_kw() => self.parse_import_stmt()
+    k if k == import_kw() => {
+      let tok = self.bump()
+      raise ParseError::UnexpectedToken(
+        expected="`use <module-ref> { ... }`",
+        got=tok.text(),
+        span=self.token_span(),
+      )
+    }
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_stmt()
     k if k == bench_kw() => self.parse_bench_stmt()
@@ -2386,9 +2414,103 @@ fn AstParser::parse_import_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
   let start = self.pos
-  let _ = self.expect(import_kw(), "import")
+  let _ = self.expect(use_kw(), "use")
   self.skip_trivia()
-  // Parse import spec: { foo, bar as b }
+  let source = self.parse_module_ref()
+  self.skip_trivia()
+  let items = if self.peek_kind() == lbrace() {
+    self.parse_import_items("use name")
+  } else {
+    let rename : String? = if self.peek_kind() == as_kw() {
+      let _ = self.bump()
+      self.skip_trivia()
+      let alias_tok = self.expect(name(), "alias name")
+      Some(alias_tok.text())
+    } else {
+      None
+    }
+    [
+      @core.ImportItem::{
+        kind: @core.ImportKind::Module,
+        name: use_namespace_name_from_source(source),
+        rename,
+      },
+    ]
+  }
+  let spec = @core.ImportSpec::{ items, }
+  let _ = self.eat(semicolon())
+  let span = self.span_from(start)
+  @core.Stmt::Import(spec~, source~, span~)
+}
+
+///|
+fn strip_module_path_suffix(path : String) -> String {
+  if path.has_suffix(".xsh") && path.length() > 4 {
+    (try! path[0:path.length() - 4]).to_string()
+  } else if path.has_suffix(".xm") && path.length() > 3 {
+    (try! path[0:path.length() - 3]).to_string()
+  } else {
+    path
+  }
+}
+
+///|
+fn use_namespace_name_from_path(path : String) -> String {
+  if path.has_prefix("/xsh/") && path.length() > 5 {
+    let inner = (try! path[5:path.length()]).to_string()
+    let trimmed = strip_module_path_suffix(inner)
+    if trimmed.length() > 0 {
+      trimmed
+    } else {
+      @core.import_alias_name(path)
+    }
+  } else {
+    @core.import_alias_name(path)
+  }
+}
+
+///|
+fn hash_prefix8(hash : String) -> String {
+  if hash.length() > 8 {
+    hash.unsafe_substring(start=0, end=8)
+  } else {
+    hash
+  }
+}
+
+///|
+fn use_namespace_name_from_source(source : @core.ModuleRef) -> String {
+  match source {
+    @core.ModuleRef::Path(path~) => use_namespace_name_from_path(path)
+    @core.ModuleRef::Hash(hash~) => "hash_" + hash_prefix8(hash)
+    @core.ModuleRef::Version(name~) => "version_" + name
+    @core.ModuleRef::Symbol(name~) => name
+  }
+}
+
+///|
+fn AstParser::parse_module_item_name(
+  self : AstParser,
+  label : String,
+) -> String raise ParseError {
+  let base_tok = self.expect(name(), label)
+  let mut out = base_tok.text()
+  self.skip_trivia()
+  while self.peek_kind() == slash() {
+    let _ = self.bump()
+    self.skip_trivia()
+    let seg_tok = self.expect(name(), label + " segment")
+    out = out + "/" + seg_tok.text()
+    self.skip_trivia()
+  }
+  out
+}
+
+///|
+fn AstParser::parse_import_items(
+  self : AstParser,
+  item_label : String,
+) -> Array[@core.ImportItem] raise ParseError {
   let _ = self.expect(lbrace(), "{")
   let items : Array[@core.ImportItem] = []
   while true {
@@ -2398,7 +2520,7 @@ fn AstParser::parse_import_stmt(
     }
     if self.peek_kind() == comma() {
       raise ParseError::UnexpectedToken(
-        expected="import name after `,`",
+        expected=item_label + " after `,`",
         got=self.peek().text(),
         span=self.token_span(),
       )
@@ -2406,14 +2528,13 @@ fn AstParser::parse_import_stmt(
     let kind = self.parse_import_item_kind()
     self.skip_trivia()
     let import_name = if kind == @core.ImportKind::Module {
-      let tok = self.expect(name(), "module name")
-      tok.text()
+      self.parse_module_item_name("module name")
     } else {
-      self.parse_type_member_name("import name")
+      self.parse_type_member_name(item_label)
     }
     if kind == @core.ImportKind::Module && self.peek_kind() == double_colon() {
       raise ParseError::UnexpectedToken(
-        expected="`import { module foo }` (module namespace only)",
+        expected="`use <module-ref> { module foo }` (module namespace only)",
         got=self.peek().text(),
         span=self.token_span(),
       )
@@ -2444,31 +2565,7 @@ fn AstParser::parse_import_stmt(
     }
   }
   let _ = self.expect(rbrace(), "}")
-  let spec = @core.ImportSpec::{ items, }
-  // Expect 'from'
-  self.skip_trivia()
-  if self.peek_kind() != from_kw() {
-    let expected = if self.peek_kind() == string_lit() ||
-      self.peek_kind() == name() ||
-      self.peek_kind() == dot() ||
-      self.peek_kind() == hash_ref() {
-      "`from` before import source"
-    } else {
-      "from"
-    }
-    raise ParseError::UnexpectedToken(
-      expected~,
-      got=self.peek().text(),
-      span=self.token_span(),
-    )
-  }
-  let _ = self.bump()
-  self.skip_trivia()
-  // Parse module reference: path or hash
-  let source = self.parse_module_ref()
-  let _ = self.eat(semicolon())
-  let span = self.span_from(start)
-  @core.Stmt::Import(spec~, source~, span~)
+  items
 }
 
 ///|
@@ -2492,6 +2589,14 @@ fn AstParser::parse_import_item_kind(self : AstParser) -> @core.ImportKind {
 fn AstParser::parse_module_ref(
   self : AstParser,
 ) -> @core.ModuleRef raise ParseError {
+  if self.peek_kind() == string_lit() {
+    let tok = self.peek()
+    raise ParseError::UnexpectedToken(
+      expected="module path without quotes (e.g. ./xsh/std/string.xsh)",
+      got=tok.text(),
+      span=self.token_span(),
+    )
+  }
   if self.peek_kind() == hash_ref() {
     let hash_tok = self.bump()
     // Remove leading '#' from hash
@@ -2502,7 +2607,40 @@ fn AstParser::parse_module_ref(
       ""
     }
     @core.ModuleRef::Hash(hash~)
-  } else if self.peek_kind() == name() || self.peek_kind() == string_lit() {
+  } else if self.peek_kind() == slash() {
+    let buf = StringBuilder::new()
+    self.skip_trivia()
+    while self.peek_kind() == slash() {
+      let _ = self.bump()
+      buf.write_char('/')
+      self.skip_trivia()
+    }
+    if self.peek_kind() == name() {
+      let seg = self.bump()
+      buf.write_string(seg.text())
+      self.skip_trivia()
+    }
+    while true {
+      self.skip_trivia()
+      if self.peek_kind() != dot() && self.peek_kind() != slash() {
+        break
+      }
+      if self.peek_kind() == dot() {
+        let _ = self.bump()
+        buf.write_char('.')
+      } else {
+        let _ = self.bump()
+        buf.write_char('/')
+      }
+      self.skip_trivia()
+      if self.peek_kind() == name() {
+        let seg = self.bump()
+        buf.write_string(seg.text())
+        self.skip_trivia()
+      }
+    }
+    @core.ModuleRef::Path(path=buf.to_string())
+  } else if self.peek_kind() == name() {
     let tok = self.peek()
     let text = tok.text()
     if text.has_prefix("version@") && text.length() > 8 {
@@ -2525,24 +2663,34 @@ fn AstParser::parse_module_ref(
       // Path: ./foo/bar.xsh or foo.xsh
       let buf = StringBuilder::new()
       // Handle leading ./ or ../
+      self.skip_trivia()
       while self.peek_kind() == dot() {
         let _ = self.bump()
         buf.write_char('.')
+        self.skip_trivia()
         if self.peek_kind() == dot() {
           let _ = self.bump()
           buf.write_char('.')
+          self.skip_trivia()
         }
         if self.peek_kind() == slash() {
           let _ = self.bump()
           buf.write_char('/')
+          self.skip_trivia()
         }
       }
       // Path segments
-      if self.peek_kind() == name() || self.peek_kind() == string_lit() {
+      self.skip_trivia()
+      if self.peek_kind() == name() {
         let seg = self.bump()
         buf.write_string(seg.text())
+        self.skip_trivia()
       }
-      while self.peek_kind() == dot() || self.peek_kind() == slash() {
+      while true {
+        self.skip_trivia()
+        if self.peek_kind() != dot() && self.peek_kind() != slash() {
+          break
+        }
         if self.peek_kind() == dot() {
           let _ = self.bump()
           buf.write_char('.')
@@ -2550,9 +2698,11 @@ fn AstParser::parse_module_ref(
           let _ = self.bump()
           buf.write_char('/')
         }
+        self.skip_trivia()
         if self.peek_kind() == name() {
           let seg = self.bump()
           buf.write_string(seg.text())
+          self.skip_trivia()
         }
       }
       @core.ModuleRef::Path(path=buf.to_string())
@@ -2561,23 +2711,33 @@ fn AstParser::parse_module_ref(
     let tok = self.peek()
     if tok.kind() == dot() {
       let buf = StringBuilder::new()
+      self.skip_trivia()
       while self.peek_kind() == dot() {
         let _ = self.bump()
         buf.write_char('.')
+        self.skip_trivia()
         if self.peek_kind() == dot() {
           let _ = self.bump()
           buf.write_char('.')
+          self.skip_trivia()
         }
         if self.peek_kind() == slash() {
           let _ = self.bump()
           buf.write_char('/')
+          self.skip_trivia()
         }
       }
-      if self.peek_kind() == name() || self.peek_kind() == string_lit() {
+      self.skip_trivia()
+      if self.peek_kind() == name() {
         let seg = self.bump()
         buf.write_string(seg.text())
+        self.skip_trivia()
       }
-      while self.peek_kind() == dot() || self.peek_kind() == slash() {
+      while true {
+        self.skip_trivia()
+        if self.peek_kind() != dot() && self.peek_kind() != slash() {
+          break
+        }
         if self.peek_kind() == dot() {
           let _ = self.bump()
           buf.write_char('.')
@@ -2585,9 +2745,11 @@ fn AstParser::parse_module_ref(
           let _ = self.bump()
           buf.write_char('/')
         }
+        self.skip_trivia()
         if self.peek_kind() == name() {
           let seg = self.bump()
           buf.write_string(seg.text())
+          self.skip_trivia()
         }
       }
       @core.ModuleRef::Path(path=buf.to_string())
@@ -4439,6 +4601,19 @@ fn AstParser::parse_call_or_primary(
     let base_name = name_tok.text()
     let mut qualified_name = base_name
     self.skip_trivia()
+    if self.can_parse_slash_qualified_name() {
+      while true {
+        self.skip_trivia()
+        if self.peek_kind() != slash() {
+          break
+        }
+        let _ = self.bump()
+        self.skip_trivia()
+        let seg = self.expect(name(), "namespace segment")
+        qualified_name = qualified_name + "/" + seg.text()
+      }
+      self.skip_trivia()
+    }
     // Check for single-parameter lambda: x -> expr
     if self.peek_kind() == thin_arrow() {
       let _ = self.bump() // consume ->
@@ -4523,7 +4698,7 @@ fn AstParser::parse_call_or_primary(
       let _ = self.bump()
       self.skip_trivia()
       let member_tok = self.expect(name(), "member name")
-      qualified_name = base_name + "::" + member_tok.text()
+      qualified_name = qualified_name + "::" + member_tok.text()
       self.skip_trivia()
       if self.peek_kind() == lparen() {
         let _ = self.bump()
@@ -4613,6 +4788,43 @@ fn AstParser::parse_call_or_primary(
     }
   }
   expr
+}
+
+///|
+fn AstParser::can_parse_slash_qualified_name(self : AstParser) -> Bool {
+  let mut i = self.pos
+  let mut saw_segment = false
+  while true {
+    while i < self.tokens.length() && is_trivia(self.tokens[i].kind()) {
+      i += 1
+    }
+    if i >= self.tokens.length() || self.tokens[i].kind() != slash() {
+      break
+    }
+    saw_segment = true
+    i += 1
+    while i < self.tokens.length() && is_trivia(self.tokens[i].kind()) {
+      i += 1
+    }
+    if i >= self.tokens.length() || self.tokens[i].kind() != name() {
+      return false
+    }
+    i += 1
+  }
+  if not(saw_segment) {
+    return false
+  }
+  while i < self.tokens.length() && is_trivia(self.tokens[i].kind()) {
+    i += 1
+  }
+  if i >= self.tokens.length() || self.tokens[i].kind() != double_colon() {
+    return false
+  }
+  i += 1
+  while i < self.tokens.length() && is_trivia(self.tokens[i].kind()) {
+    i += 1
+  }
+  i < self.tokens.length() && self.tokens[i].kind() == name()
 }
 
 ///|

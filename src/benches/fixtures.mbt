@@ -32,8 +32,8 @@ pub let sample_effect_ho_script : String =
   #|  g: (x: Int) -> Int with {e},
   #|  x: Int,
   #|) -> Int with {e} { add(f(x), g(x)) }
-  #|let use = (x: Int) -> Int with {Error} { chain(effectful, effectful, x) }
-  #|use(10)
+  #|let run = (x: Int) -> Int with {Error} { chain(effectful, effectful, x) }
+  #|run(10)
 
 ///|
 pub let sample_numeric_script : String =

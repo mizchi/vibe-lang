@@ -44,7 +44,7 @@ Tests are separated into `*_test.xsh` files (for example, `string_test.xsh` for 
 Recommended usage (collision-safe, method-style):
 
 ```xsh
-import { is_some, unwrap_or } from "./xsh/std/option.xsh"
+use ./xsh/std/option.xsh { is_some, unwrap_or }
 let ok = Some(1).is_some()
 let v = None.unwrap_or(0)
 ```

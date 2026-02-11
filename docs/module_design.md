@@ -17,11 +17,11 @@ Only named imports are supported. No `* as` or default exports.
 
 ```xsh
 // Named imports
-import { foo, bar } from ./path.xsh
-import { foo as f, bar } from ./path.xsh
+use ./path.xsh { foo, bar }
+use ./path.xsh { foo as f, bar }
 
 // Hash reference (normalized form)
-import { foo } from #abc12345
+use #abc12345 { foo }
 ```
 
 ### Export
@@ -307,7 +307,7 @@ export let public_fn = ...  // Visible to importers
 ### Import creates bindings
 
 ```xsh
-import { foo, bar as b } from ./lib.xsh
+use ./lib.xsh { foo, bar as b }
 
 foo()    // OK
 b()      // OK (alias for bar)

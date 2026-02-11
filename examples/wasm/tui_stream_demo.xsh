@@ -7,9 +7,7 @@
 // - In many hosts stdin is line-buffered, so input arrives after Enter.
 // - This demo avoids alternate-screen so output is visible in all terminals.
 
-import { stdout_write, stdout_writeln, stdin_read } from "../../xsh/std/wasm/io_stream.xsh"
-
-let main = () -> Int with {Stdin, Stdout} {
+use ../../xsh/std/wasm/io_stream.xsh { stdout_write, stdout_writeln, stdin_read }let main = () -> Int with {Stdin, Stdout} {
   do {
     // Read first byte to suppress duplicate output when host invokes twice.
     let first = stdin_read_char()

@@ -20,37 +20,45 @@ export module math {
 }
 ```
 
-### モジュール import
+### モジュール import / use
 ```xsh
-import { module math } from ./lib.xm
+use ./lib.xm { module math }
 math::inc(41)
 ```
 
 ```xsh
-import { module math as m } from ./lib.xm
+use ./lib.xm { module math as m }
 m::inc(41)
+```
+
+```xsh
+use /xsh/std/string
+std/string::from_char_code(65)
 ```
 
 ## 意味論
 - `module foo { ... }` は内部的に `foo::name` 形式へ lower される。
 - `export module foo { ... }` は `foo::...` を export する。
-- `import { module foo } from ...` は対象 module の export から `foo::` prefix を持つ値を一括取り込みする。
+- `use <path> { ... }` は Rust 風に source 先行で import できる。
+- `use <path>` は namespace import の省略形。
+  - `/xsh/...` の場合は `/xsh/` を落とした名前空間を使う（例: `/xsh/std/string` -> `std/string::...`）。
+- `import { ... } from ...` は廃止され、parse error になる。
+- `module` import は `.xm` ソースのみ対応し、`foo::...` 形式 export を取り込む。
 - アクセス子は `::` を正規とする。
 
 ## import kind
-- `import { x }`: `value`
-- `import { type T }`: `type`
-- `import { trait Eq }`: `trait`
-- `import { module foo }`: `module` (namespace import)
+- `use <path> { x }`: `value`
+- `use <path> { type T }`: `type`
+- `use <path> { trait Eq }`: `trait`
+- `use <path> { module foo }`: `module` (namespace import)
 
 ## 制約 (現行)
-- `import { module foo::bar }` は未対応 (parse error)。
+- `use <path> { module foo::bar }` は未対応 (parse error)。
 - `module` 本体は現状、以下の文のみを想定:
   - `let` / `export let` / `let mut`
   - 代入、式文、`import`
   - `test` / `bench`
 - 空モジュールは parse error。
-- `import { module ... }` は `.xm` ソースに限定 (`.xsh` では import error)。
 
 ## 例
 ```xsh
@@ -60,7 +68,7 @@ export module math {
 }
 
 // main.xsh
-import { module math } from ./lib.xm
+use ./lib.xm { module math }
 let v = math::inc(1)
 ```
 

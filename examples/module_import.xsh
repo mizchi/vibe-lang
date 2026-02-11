@@ -1,7 +1,5 @@
 // Import from module_export.xsh
-import { add, mul, pi, double, square } from "./module_export.xsh"
-
-// Use imported functions
+use ./module_export.xsh { add, mul, pi, double, square }// Use imported functions
 let result1 = add(10, 20)
 let result2 = mul(3, 4)
 let result3 = double(pi)

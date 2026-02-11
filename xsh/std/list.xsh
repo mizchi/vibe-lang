@@ -151,7 +151,7 @@ export let list_of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
   Cons(a, Cons(b, Cons(c, Cons(d, Cons(e, Nil)))))
 }
 
-// Type member names: can be imported as `import { List }`
+// Type member names: can be imported with `use <module-ref> { List }`
 export let List::is_empty = [T](xs: List[T]) -> Bool {
   list_is_empty(xs)
 }

@@ -1,4 +1,4 @@
-import {
+use ./builtin_traits.xsh {
   cmp_eq,
   ord_clamp,
   num_add,
@@ -9,9 +9,7 @@ import {
   ord_between,
   num_square,
   to_string
-} from "./builtin_traits.xsh"
-
-trait Eq
+}trait Eq
 trait Ord
 trait Add
 trait Sub

@@ -1,4 +1,4 @@
-import { value, add } from version@fixture/main
+use version@fixture/main {  value, add  }
 add(value, 1)
 
 __DATA__

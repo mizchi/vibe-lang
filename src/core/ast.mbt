@@ -85,7 +85,7 @@ pub(all) struct ImportItem {
 
 ///|
 /// Import specification: only named imports allowed
-/// import { foo, bar as b } from ./path.xsh
+/// use ./path.xsh { foo, bar as b }
 pub(all) struct ImportSpec {
   items : Array[ImportItem]
 } derive(Show, Eq)

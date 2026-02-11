@@ -109,8 +109,8 @@ test "codebase update_lock_path_refs gathers transitive local imports" {
   let main_path = root + "/main.xsh"
   let lib_path = root + "/lib.xsh"
   let util_path = nested + "/util.xsh"
-  let main_source = "import { libv } from \"./lib.xsh\"\nlet main = libv\nexport { main }\n"
-  let lib_source = "import { utilv } from \"./nested/util.xsh\"\nlet libv = utilv\nexport { libv }\n"
+  let main_source = "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n"
+  let lib_source = "use ./nested/util.xsh {  utilv  }\nlet libv = utilv\nexport { libv }\n"
   let util_source = "let utilv = 1\nexport { utilv }\n"
   write_file(main_path, main_source)
   write_file(lib_path, lib_source)
@@ -145,7 +145,7 @@ test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
   let lib = root + "/lib.xsh"
   let old = root + "/old.xsh"
   write_file(
-    entry, "import { libv } from \"./lib.xsh\"\nlet main = libv\nexport { main }\n",
+    entry, "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n",
   )
   write_file(lib, "let libv = 1\nexport { libv }\n")
   let lock_path = lock_file_path(entry)
@@ -201,8 +201,8 @@ test "codebase update_lock_path_refs reports collect_path_refs errors" {
   let root = make_temp_dir("update_lock_cycle")
   let a_path = root + "/a.xsh"
   let b_path = root + "/b.xsh"
-  write_file(a_path, "import { b } from \"./b.xsh\"\nlet a = b\nexport { a }\n")
-  write_file(b_path, "import { a } from \"./a.xsh\"\nlet b = a\nexport { b }\n")
+  write_file(a_path, "use ./b.xsh {  b  }\nlet a = b\nexport { a }\n")
+  write_file(b_path, "use ./a.xsh {  a  }\nlet b = a\nexport { b }\n")
   match update_lock_path_refs(a_path) {
     Ok(_) => fail("expected update_lock_path_refs to fail")
     Err(err) => assert_true(err.contains("import cycle detected"))
@@ -364,9 +364,9 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
     entry,
-    "import { libv } from \"../" +
+    "use ../" +
     outside_name +
-    "/lib.xsh\"\nlet main = libv\nexport { main }\n",
+    "/lib.xsh { libv }\nlet main = libv\nexport { main }\n",
   )
   match update_lock_path_refs(entry) {
     Ok(_) => fail("expected root guard error")
@@ -394,7 +394,7 @@ test "codebase update_lock_path_refs requires index version export" {
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
   )
   match update_lock_path_refs(entry) {
     Ok(_) => fail("expected missing version error")
@@ -422,7 +422,7 @@ test "codebase update_lock_path_refs validates index version format" {
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
   )
   match update_lock_path_refs(entry) {
     Ok(_) => fail("expected invalid semver error")
@@ -449,7 +449,7 @@ test "codebase update_lock_path_refs resolves std namespace via index.xsh" {
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "import { value } from \"std/math.xsh\"\nlet main = value\nexport { main }\n",
+    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
   )
   let updated = match update_lock_path_refs(entry) {
     Ok(v) => v

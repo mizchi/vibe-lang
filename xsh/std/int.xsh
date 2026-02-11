@@ -110,7 +110,7 @@ export let Int::to_double = (x: Int) -> Double {
   int_to_double(x)
 }
 
-// Type member names: can be imported as `import { Int }`
+// Type member names: can be imported with `use <module-ref> { Int }`
 export let Int::abs = (x: Int) -> Int { int_abs(x) }
 export let Int::max = (a: Int, b: Int) -> Int { int_max(a, b) }
 export let Int::min = (a: Int, b: Int) -> Int { int_min(a, b) }

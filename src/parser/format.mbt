@@ -171,7 +171,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       prev_prev_kind, prev_kind, prev_text, kind, in_type_context,
     )
     if not(insert_struct_double_colon) &&
-      needs_space(prev_kind, kind, prev_prefix, prev_pipe) {
+      needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe) {
       buf.write_char(' ')
     }
     if insert_struct_double_colon {
@@ -490,6 +490,7 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == flake_kw() ||
   kind == alias_kw() ||
   kind == import_kw() ||
+  kind == use_kw() ||
   kind == test_kw() ||
   kind == bench_kw() ||
   kind == if_kw() ||
@@ -666,6 +667,7 @@ fn should_insert_struct_double_colon(
 
 ///|
 fn needs_space(
+  prev_prev_kind : @cst.SyntaxKind?,
   prev_kind : @cst.SyntaxKind?,
   curr_kind : @cst.SyntaxKind,
   prev_prefix : Bool,
@@ -709,6 +711,19 @@ fn needs_space(
       }
       if prev == lparen() || prev == lbracket() {
         return false
+      }
+      if prev == use_kw() &&
+        (curr_kind == dot() || curr_kind == slash()) {
+        return true
+      }
+      if prev == slash() && curr_kind == name() {
+        match prev_prev_kind {
+          Some(pp) =>
+            if pp == dot() || pp == use_kw() {
+              return false
+            }
+          None => ()
+        }
       }
       if prev == dot() || curr_kind == dot() {
         return false
@@ -793,6 +808,7 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == type_kw() ||
   kind == alias_kw() ||
   kind == import_kw() ||
+  kind == use_kw() ||
   kind == export_kw() ||
   kind == from_kw() ||
   kind == as_kw() ||

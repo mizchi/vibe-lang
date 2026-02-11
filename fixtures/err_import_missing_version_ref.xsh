@@ -1,4 +1,4 @@
-import { value } from version@fixture/missing
+use version@fixture/missing {  value  }
 1
 
 __DATA__

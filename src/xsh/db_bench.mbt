@@ -183,7 +183,7 @@ test "bench: XshDb multi-file import" (b : @bench.T) {
   db.set_source("/lib.xsh", lib_source)
   // main.xsh imports from lib
   let main_source =
-    #|import { double } from "/lib.xsh"
+    #|use /lib.xsh {  double  }
     #|double(21)
   db.set_source("/main.xsh", main_source)
   // Warm up
@@ -206,7 +206,7 @@ test "bench: XshDb multi-file import change" (b : @bench.T) {
     #|export let double = (x: Int) -> Int { x + x }
   db.set_source("/lib.xsh", lib_source1)
   let main_source =
-    #|import { double } from "/lib.xsh"
+    #|use /lib.xsh {  double  }
     #|double(21)
   db.set_source("/main.xsh", main_source)
   // Warm up

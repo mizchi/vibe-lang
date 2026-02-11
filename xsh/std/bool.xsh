@@ -40,7 +40,7 @@ export let bool_any3 = (a: Bool, b: Bool, c: Bool) -> Bool {
   a || b || c
 }
 
-// Type member names: can be imported as `import { Bool }`
+// Type member names: can be imported with `use <module-ref> { Bool }`
 export let Bool::to_int = (b: Bool) -> Int {
   bool_to_int(b)
 }

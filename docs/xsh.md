@@ -341,15 +341,15 @@ Separate internal hash:
 
 ### Surface syntax (current)
 
-Imports are named imports only:
+Imports are source-first `use` only:
 
 ```xsh
-import { foo, bar as b } from ./path/to/mod.xsh
-import { type IntPair, trait Show, foo, bar } from ./path/to/mod.xsh
-import { foo } from "./path/to/mod.xsh"
-import { foo } from #abc12345
-import { foo } from version@main
-import { foo } from symbol@std/math
+use ./path/to/mod.xsh { foo, bar as b }
+use ./path/to/mod.xsh { type IntPair, trait Show, foo, bar }
+use ./path/to/mod.xsh { foo }
+use #abc12345 { foo }
+use version@main { foo }
+use symbol@std/math { foo }
 ```
 
 Per-item import kind:
@@ -358,7 +358,7 @@ Per-item import kind:
 - `trait Eq`: trait import
 - `type Int` can be used as namespace activation for `Int::...` exports.
 - If a non-default qualifier (`type` / `trait`) does not match the exported
-  symbol category, compiler emits an `import` diagnostic.
+  symbol category, compiler emits a `use` diagnostic.
 
 Parser compatibility:
 - `version:<name>` / `symbol:<name>` are accepted, but `@` form is canonical.
@@ -376,7 +376,8 @@ export { foo } from "./other.xsh"
 Rules:
 - No implicit "export all".
 - Non-exported top-level names are module-private.
-- `import "foo.xsh"` (bare import) and default import forms are not part of the
+- `use foo.xsh` (bare namespace import shorthand is `use foo.xsh`) and
+  default-import forms are not part of the
   current spec.
 
 ### Type-member imports (proposal)
@@ -384,22 +385,22 @@ Rules:
 Namespace-explicit style (ESM/Python-like) is adopted for type-attached
 functions.
 
-Proposed forms:
+Current forms:
 
 ```xsh
-import { type Int } from "./xsh/std/int.xsh"             // also imports Int::*
-import { Int } from "./xsh/std/int.xsh"                  // backward-compatible
-import { Int::to_string } from "./xsh/std/int.xsh"       // single member
-import { Int::to_string as int_to_string } from "./xsh/std/int.xsh"
+use ./xsh/std/int.xsh { type Int }             // also imports Int::*
+use ./xsh/std/int.xsh { Int }                  // namespace activation
+use ./xsh/std/int.xsh { Int::to_string }       // single member
+use ./xsh/std/int.xsh { Int::to_string as int_to_string }
 ```
 
 Rules:
-- `import { Int } from <module-ref>` activates namespace binding `Int:: ->
+- `use <module-ref> { Int }` activates namespace binding `Int:: ->
   <module-ref>` in the current module scope.
 - Activated `Int::` resolves `Int::*` only from the bound `<module-ref>`.
   Example: if target is `std/int`, only exported `Int::...` symbols in
   `std/int` become resolution candidates.
-- `import { Int::name } from <module-ref>` imports only that member from that
+- `use <module-ref> { Int::name }` imports only that member from that
   `<module-ref>`.
 - Overwrite is forbidden:
   if an already-bound namespace or symbol key (`Int::` or `Int::name`) is
@@ -408,11 +409,15 @@ Rules:
 
 ### Module refs and normalization
 
-`import ... from <module-ref>` accepts:
+`use <module-ref> { ... }` accepts:
 - `PathRef`: local/module path literal.
 - `HashRef`: content hash literal (`#...`).
 - `VersionRef`: namespace pointer.
 - `SymbolRef`: symbol pointer.
+
+Notes:
+- `PathRef` is unquoted (`use ./xsh/std/string.xsh { ... }`).
+- `use` source is semantically `ModuleRef`; non-module assets should be split to a future `AssetRef` lane.
 
 Dependency resolution is Nix-like: path inputs are handled as typed path objects
 instead of raw strings.
@@ -516,7 +521,7 @@ Rules:
 - Overlapping impls for the same trait are rejected.
 - Supertrait satisfaction is transitive (`impl Ord for T` also satisfies `Eq`
   when `trait Ord: Eq`).
-- Trait imports are explicit (`import { Eq } from ...`), and only exported
+- Trait imports are explicit (`use ... { Eq }`), and only exported
   traits can be imported across modules.
 - Import renaming preserves canonical source identity for supertrait checks
   (`Eq as MyEq` keeps relation to canonical `Eq`).
@@ -643,7 +648,7 @@ Import/export behavior (proposal):
 
 ```xsh
 export { Int::to_string, String::to_string }
-import { Int::to_string as int_to_string } from "./std/stringify.xsh"
+use ./std/stringify.xsh { Int::to_string as int_to_string }
 ```
 
 ### Prelude and `--nostd` (proposal)

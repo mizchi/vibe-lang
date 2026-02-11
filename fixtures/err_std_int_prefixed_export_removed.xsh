@@ -1,4 +1,4 @@
-import { int_abs } from "./xsh/std/int.xsh"
+use ./xsh/std/int.xsh {  int_abs  }
 
 int_abs(-5)
 
