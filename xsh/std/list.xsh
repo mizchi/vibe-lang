@@ -150,3 +150,133 @@ export let list_of3 = [T](a: T, b: T, c: T) -> List[T] {
 export let list_of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
   Cons(a, Cons(b, Cons(c, Cons(d, Cons(e, Nil)))))
 }
+
+// Type member names: can be imported as `import { List }`
+export let List::empty = [T]() -> List[T] {
+  list_empty()
+}
+
+export let List::singleton = [T](x: T) -> List[T] {
+  list_singleton(x)
+}
+
+export let List::is_empty = [T](xs: List[T]) -> Bool {
+  list_is_empty(xs)
+}
+
+export let List::head = [T](xs: List[T]) -> Option[T] {
+  list_head(xs)
+}
+
+export let List::tail = [T](xs: List[T]) -> List[T] {
+  list_tail(xs)
+}
+
+export let List::length = [T](xs: List[T]) -> Int {
+  list_length(xs)
+}
+
+export let List::reverse = [T](xs: List[T]) -> List[T] {
+  list_reverse(xs)
+}
+
+export let List::filter = [T](xs: List[T], pred: (x: T) -> Bool) -> List[T] {
+  list_filter(pred, xs)
+}
+
+export let List::append = [T](xs: List[T], ys: List[T]) -> List[T] {
+  list_append(xs, ys)
+}
+
+export let List::nth = [T](xs: List[T], n: Int) -> Option[T] {
+  list_nth(xs, n)
+}
+
+export let List::take = [T](xs: List[T], n: Int) -> List[T] {
+  list_take(n, xs)
+}
+
+export let List::drop = [T](xs: List[T], n: Int) -> List[T] {
+  list_drop(n, xs)
+}
+
+export let List::contains_by = [T](xs: List[T], eq: (a: T, b: T) -> Bool, value: T) -> Bool {
+  list_contains_by(eq, value, xs)
+}
+
+export let List::sum = (xs: List[Int]) -> Int {
+  list_sum(xs)
+}
+
+export let List::of3 = [T](a: T, b: T, c: T) -> List[T] {
+  list_of3(a, b, c)
+}
+
+export let List::of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
+  list_of5(a, b, c, d, e)
+}
+
+// Short names (optional): can be used with method-call desugar.
+export let empty = [T]() -> List[T] {
+  list_empty()
+}
+
+export let singleton = [T](x: T) -> List[T] {
+  list_singleton(x)
+}
+
+export let is_empty = [T](xs: List[T]) -> Bool {
+  list_is_empty(xs)
+}
+
+export let head = [T](xs: List[T]) -> Option[T] {
+  list_head(xs)
+}
+
+export let tail = [T](xs: List[T]) -> List[T] {
+  list_tail(xs)
+}
+
+export let length = [T](xs: List[T]) -> Int {
+  list_length(xs)
+}
+
+export let reverse = [T](xs: List[T]) -> List[T] {
+  list_reverse(xs)
+}
+
+export let filter = [T](xs: List[T], pred: (x: T) -> Bool) -> List[T] {
+  list_filter(pred, xs)
+}
+
+export let append = [T](xs: List[T], ys: List[T]) -> List[T] {
+  list_append(xs, ys)
+}
+
+export let nth = [T](xs: List[T], n: Int) -> Option[T] {
+  list_nth(xs, n)
+}
+
+export let take = [T](xs: List[T], n: Int) -> List[T] {
+  list_take(n, xs)
+}
+
+export let drop = [T](xs: List[T], n: Int) -> List[T] {
+  list_drop(n, xs)
+}
+
+export let contains_by = [T](xs: List[T], eq: (a: T, b: T) -> Bool, value: T) -> Bool {
+  list_contains_by(eq, value, xs)
+}
+
+export let sum = (xs: List[Int]) -> Int {
+  list_sum(xs)
+}
+
+export let of3 = [T](a: T, b: T, c: T) -> List[T] {
+  list_of3(a, b, c)
+}
+
+export let of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
+  list_of5(a, b, c, d, e)
+}

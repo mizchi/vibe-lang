@@ -1,4 +1,5 @@
 import {
+  Option,
   is_some,
   is_none,
   unwrap_or,
@@ -134,4 +135,11 @@ test "option_short_aliases" {
   assert(eq(unwrap_or(mapped, 0), 2))
   assert(eq(map_or(None, 9, len), 9))
   assert(equals(or(Some(1), None), Some(1)))
+}
+
+test "option_type_members_and_method_style" {
+  assert(Option::is_some(Some(1)))
+  assert(Option::is_none(None))
+  assert(Some(2).is_some())
+  assert(eq(None.unwrap_or(7), 7))
 }

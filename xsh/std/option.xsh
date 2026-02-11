@@ -82,3 +82,64 @@ export let zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
     _ => None
   }
 }
+
+// Type member names: can be imported as `import { Option }`
+export let Option::is_some = [T](opt: Option[T]) -> Bool {
+  is_some(opt)
+}
+
+export let Option::is_none = [T](opt: Option[T]) -> Bool {
+  is_none(opt)
+}
+
+export let Option::unwrap_or = [T](opt: Option[T], default: T) -> T {
+  unwrap_or(opt, default)
+}
+
+export let Option::unwrap_or_else = [T](opt: Option[T], fallback: () -> T) -> T {
+  unwrap_or_else(opt, fallback)
+}
+
+export let Option::map_opt = [A, B](opt: Option[A], f: (x: A) -> B) -> Option[B] {
+  map_opt(opt, f)
+}
+
+export let Option::map_or = [A, B](opt: Option[A], default: B, f: (x: A) -> B) -> B {
+  map_or(opt, default, f)
+}
+
+export let Option::flatten = [T](opt: Option[Option[T]]) -> Option[T] {
+  flatten(opt)
+}
+
+export let Option::flatmap = [A, B](opt: Option[A], f: (x: A) -> Option[B]) -> Option[B] {
+  flatmap(opt, f)
+}
+
+export let Option::filter = [T](opt: Option[T], pred: (x: T) -> Bool) -> Option[T] {
+  filter(opt, pred)
+}
+
+export let Option::zip = [A, B](a: Option[A], b: Option[B]) -> Option[(A, B)] {
+  zip(a, b)
+}
+
+export let Option::and = [A, B](a: Option[A], b: Option[B]) -> Option[B] {
+  and(a, b)
+}
+
+export let Option::or = [T](a: Option[T], b: Option[T]) -> Option[T] {
+  or(a, b)
+}
+
+export let Option::or_else = [T](a: Option[T], fallback: () -> Option[T]) -> Option[T] {
+  or_else(a, fallback)
+}
+
+export let Option::equals = [T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  equals(a, b)
+}
+
+export let Option::zip_sum = (a: Option[Int], b: Option[Int]) -> Option[Int] {
+  zip_sum(a, b)
+}

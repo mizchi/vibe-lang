@@ -1,4 +1,5 @@
 import {
+  Bool,
   bool_to_int,
   int_to_bool,
   bool_implies,
@@ -6,7 +7,8 @@ import {
   bool_nand,
   bool_nor,
   bool_all3,
-  bool_any3
+  bool_any3,
+  xor
 } from "./bool.xsh"
 
 test "bool_to_int" {
@@ -60,4 +62,12 @@ test "bool_any3" {
   assert(bool_any3(true, false, false))
   assert(bool_any3(false, true, false))
   assert(not(bool_any3(false, false, false)))
+}
+
+test "bool_type_members_and_method_style" {
+  let t = true
+  assert(eq(Bool::to_int(true), 1))
+  assert(not(Bool::from_int(0)))
+  assert(eq(t.to_int(), 1))
+  assert(xor(t, false))
 }

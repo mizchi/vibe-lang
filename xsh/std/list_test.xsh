@@ -15,7 +15,9 @@ import {
   list_nth,
   list_take,
   list_drop,
-  list_contains_by
+  list_contains_by,
+  length,
+  sum
 } from "./list.xsh"
 
 test "list_empty" {
@@ -112,4 +114,10 @@ test "list_contains_by" {
   let eq_string = (a: String, b: String) -> Bool { string_equals(a, b) }
   assert(list_contains_by(eq_string, "bb", xs))
   assert(not(list_contains_by(eq_string, "z", xs)))
+}
+
+test "list_type_members_and_method_style" {
+  let xs = list_of3(1, 2, 3)
+  assert(eq(xs.length(), 3))
+  assert(eq(xs.sum(), 6))
 }
