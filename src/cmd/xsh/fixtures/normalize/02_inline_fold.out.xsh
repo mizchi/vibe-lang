@@ -1,0 +1,8 @@
+let value: Int = 3
+export let run = () -> Int {
+  value
+}
+export {
+  run
+}
+

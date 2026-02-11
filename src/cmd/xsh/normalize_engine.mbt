@@ -22,6 +22,19 @@ struct NormalizeEngine {
 }
 
 ///|
+struct NormalizeOptimizeResult {
+  normalized_module : @xsh_core.Module
+  rewritten_exprs : Map[String, @xsh_core.Expr]
+}
+
+///|
+struct NormalizeInlineCandidate {
+  stmt_index : Int
+  name : String
+  body_expr : @xsh_core.Expr
+}
+
+///|
 fn normalize_cmd(args : Array[String]) -> Unit {
   if args.length() == 0 {
     abort("normalize: expected <file...>")
@@ -152,8 +165,14 @@ fn normalize_source_text_with_modules(
     if range.start < cursor {
       continue
     }
-    out.write_string(normalize_source_slice_by_span(source, cursor, range.start))
-    let stmt_source = normalize_source_slice_by_span(source, range.start, range.end)
+    out.write_string(
+      normalize_source_slice_by_span(source, cursor, range.start),
+    )
+    let stmt_source = normalize_source_slice_by_span(
+      source,
+      range.start,
+      range.end,
+    )
     let normalized_stmt = match normalize_module_stmt_source(stmt_source) {
       Ok(v) => v
       Err(err) => return Err(err)
@@ -164,7 +183,9 @@ fn normalize_source_text_with_modules(
     }
     cursor = range.end
   }
-  out.write_string(normalize_source_slice_by_span(source, cursor, source.length()))
+  out.write_string(
+    normalize_source_slice_by_span(source, cursor, source.length()),
+  )
   Ok(@parser.format_script(out.to_string()))
 }
 
@@ -175,11 +196,9 @@ fn normalize_module_stmt_source(stmt_source : String) -> Result[String, String] 
     Some(v) => v
     None => return Err("normalize: malformed module block")
   }
-  let head = normalize_source_slice_by_span(
-    stmt_source,
-    0,
-    open_index,
-  ).trim().to_string()
+  let head = normalize_source_slice_by_span(stmt_source, 0, open_index)
+    .trim()
+    .to_string()
   let body_source = normalize_source_slice_by_span(
     stmt_source,
     open_index + 1,
@@ -377,12 +396,22 @@ fn normalize_source_text_flat(source : String) -> Result[String, String] {
   let ast = @parser.parse_ast(source) catch {
     e => return Err("normalize: parse failed: " + e.to_string())
   }
-  let selected = normalize_select_stmts(ast)
+  let optimized = normalize_optimize_module(ast)
+  let selected = normalize_select_stmts(optimized.normalized_module)
   let sorted = normalize_sort_stmts(selected)
   if sorted.length() == 0 {
     return Ok("")
   }
-  let rendered = match normalize_render_source(source, sorted) {
+  let inferred_annotations = normalize_collect_inferred_annotations(@xsh_core.Module::{
+    stmts: sorted,
+  })
+  let rendered = match
+    normalize_render_source(
+      source,
+      sorted,
+      optimized.rewritten_exprs,
+      inferred_annotations,
+    ) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -391,8 +420,10 @@ fn normalize_source_text_flat(source : String) -> Result[String, String] {
     e => return Err("normalize: rendered parse failed: " + e.to_string())
   }
   let expected = @xsh_core.Module::{ stmts: sorted }
-  if @xsh_core.normalize_module(reparsed) !=
-    @xsh_core.normalize_module(expected) {
+  let reparsed_stripped = normalize_strip_local_type_assert_module(reparsed)
+  let expected_stripped = normalize_strip_local_type_assert_module(expected)
+  if @xsh_core.normalize_module(reparsed_stripped) !=
+    @xsh_core.normalize_module(expected_stripped) {
     return Err("normalize: rendered source changed semantics")
   }
   Ok(formatted)
@@ -476,13 +507,216 @@ fn normalize_render_stmt_fallback(stmt : @xsh_core.Stmt) -> String? {
 }
 
 ///|
+fn normalize_render_stmt(
+  source : String,
+  stmt : @xsh_core.Stmt,
+  rewritten_exprs : Map[String, @xsh_core.Expr],
+  inferred_annotations : Map[String, String],
+) -> String? {
+  let key = normalize_stmt_key(stmt)
+  let rewritten_expr = rewritten_exprs.get(key)
+  let annotation = inferred_annotations.get(key)
+  match stmt {
+    @xsh_core.Stmt::Let(rec~, name~, expr~, ..) =>
+      normalize_render_let_stmt(
+        source, false, rec, name, expr, rewritten_expr, annotation,
+      )
+    @xsh_core.Stmt::ExportLet(rec~, name~, expr~, ..) =>
+      normalize_render_let_stmt(
+        source, true, rec, name, expr, rewritten_expr, annotation,
+      )
+    _ => normalize_render_stmt_fallback(stmt)
+  }
+}
+
+///|
+fn normalize_render_let_stmt(
+  source : String,
+  exported : Bool,
+  rec_flag : Bool,
+  name : String,
+  original_expr : @xsh_core.Expr,
+  rewritten_expr : @xsh_core.Expr?,
+  annotation : String?,
+) -> String? {
+  if rewritten_expr is None && annotation is None {
+    return None
+  }
+  let expr_text = match rewritten_expr {
+    Some(expr) =>
+      match normalize_render_expr_for_stmt(source, expr) {
+        Some(v) => v
+        None => return None
+      }
+    None =>
+      normalize_source_slice_by_span(
+        source,
+        original_expr.span().start,
+        original_expr.span().end,
+      )
+      .trim()
+      .to_string()
+  }
+  if expr_text.length() == 0 {
+    return None
+  }
+  let out = StringBuilder::new()
+  if exported {
+    out.write_string("export ")
+  }
+  out.write_string("let ")
+  if rec_flag {
+    out.write_string("rec ")
+  }
+  out.write_string(name)
+  match annotation {
+    Some(ty_text) => {
+      out.write_string(": ")
+      out.write_string(ty_text)
+    }
+    None => ()
+  }
+  out.write_string(" = ")
+  out.write_string(expr_text)
+  Some(out.to_string())
+}
+
+///|
+fn normalize_render_expr_for_stmt(
+  source : String,
+  expr : @xsh_core.Expr,
+) -> String? {
+  match normalize_render_expr(expr) {
+    Some(v) => Some(v)
+    None => {
+      let span = expr.span()
+      let snippet = normalize_source_slice_by_span(source, span.start, span.end)
+        .trim()
+        .to_string()
+      if snippet.length() == 0 {
+        None
+      } else {
+        Some(snippet)
+      }
+    }
+  }
+}
+
+///|
+fn normalize_render_expr(expr : @xsh_core.Expr) -> String? {
+  match expr {
+    @xsh_core.Expr::Int(value~, ..) => Some(value.to_string())
+    @xsh_core.Expr::Float(value~, ..) => Some(value.to_string())
+    @xsh_core.Expr::Double(value~, ..) => Some(value.to_string())
+    @xsh_core.Expr::Bool(value~, ..) =>
+      Some(if value { "true" } else { "false" })
+    @xsh_core.Expr::String(value~, ..) => Some(normalize_quote_string(value))
+    @xsh_core.Expr::Ident(name~, ..) => Some(name)
+    @xsh_core.Expr::Call(name~, type_args~, args~, ..) => {
+      if type_args.length() > 0 {
+        return None
+      }
+      let out = StringBuilder::new()
+      out.write_string(name)
+      out.write_char('(')
+      for i, arg in args {
+        if arg.label is Some(_) {
+          return None
+        }
+        match normalize_render_expr(arg.expr) {
+          Some(rendered) => {
+            if i > 0 {
+              out.write_string(", ")
+            }
+            out.write_string(rendered)
+          }
+          None => return None
+        }
+      }
+      out.write_char(')')
+      Some(out.to_string())
+    }
+    @xsh_core.Expr::Tuple(items~, ..) => {
+      let out = StringBuilder::new()
+      out.write_char('(')
+      for i, item in items {
+        match normalize_render_expr(item) {
+          Some(rendered) => {
+            if i > 0 {
+              out.write_string(", ")
+            }
+            out.write_string(rendered)
+          }
+          None => return None
+        }
+      }
+      out.write_char(')')
+      Some(out.to_string())
+    }
+    @xsh_core.Expr::Array(items~, ..) => {
+      let out = StringBuilder::new()
+      out.write_char('[')
+      for i, item in items {
+        match normalize_render_expr(item) {
+          Some(rendered) => {
+            if i > 0 {
+              out.write_string(", ")
+            }
+            out.write_string(rendered)
+          }
+          None => return None
+        }
+      }
+      out.write_char(']')
+      Some(out.to_string())
+    }
+    _ => None
+  }
+}
+
+///|
+fn normalize_quote_string(text : String) -> String {
+  let out = StringBuilder::new()
+  out.write_char('"')
+  for c in text {
+    normalize_write_escaped_char(out, c)
+  }
+  out.write_char('"')
+  out.to_string()
+}
+
+///|
+fn normalize_write_escaped_char(buf : StringBuilder, c : Char) -> Unit {
+  match c {
+    '\\' => buf.write_string("\\\\")
+    '"' => buf.write_string("\\\"")
+    '\n' => buf.write_string("\\n")
+    '\r' => buf.write_string("\\r")
+    '\t' => buf.write_string("\\t")
+    _ => {
+      let code = c.to_int()
+      if code >= 0 && code < 0x20 {
+        buf.write_string("\\u{")
+        buf.write_string(code.to_string())
+        buf.write_char('}')
+      } else {
+        buf.write_char(c)
+      }
+    }
+  }
+}
+
+///|
 fn normalize_render_source(
   source : String,
   stmts : Array[@xsh_core.Stmt],
+  rewritten_exprs : Map[String, @xsh_core.Expr],
+  inferred_annotations : Map[String, String],
 ) -> Result[String, String] {
   let out = StringBuilder::new()
   for stmt in stmts {
-    match normalize_render_stmt_fallback(stmt) {
+    match
+      normalize_render_stmt(source, stmt, rewritten_exprs, inferred_annotations) {
       Some(rendered) => {
         out.write_string(rendered)
         if not(rendered.has_suffix("\n")) {
@@ -491,7 +725,11 @@ fn normalize_render_source(
       }
       None => {
         let span = stmt.span()
-        let snippet = normalize_source_slice_by_span(source, span.start, span.end)
+        let snippet = normalize_source_slice_by_span(
+          source,
+          span.start,
+          span.end,
+        )
         if snippet.trim().to_string().length() == 0 {
           continue
         }
@@ -507,7 +745,8 @@ fn normalize_render_source(
     Err("normalize: no statements kept")
   } else {
     let _ = @parser.parse_ast(result) catch {
-      e => return Err("normalize: rendered source parse failed: " + e.to_string())
+      e =>
+        return Err("normalize: rendered source parse failed: " + e.to_string())
     }
     Ok(result)
   }
@@ -525,7 +764,11 @@ fn normalize_clamp_source_offset(source : String, offset : Int) -> Int {
 }
 
 ///|
-fn normalize_source_slice_by_span(source : String, start : Int, end : Int) -> String {
+fn normalize_source_slice_by_span(
+  source : String,
+  start : Int,
+  end : Int,
+) -> String {
   let s = normalize_clamp_source_offset(source, start)
   let e = normalize_clamp_source_offset(source, end)
   let stop = if e < s { s } else { e }
@@ -536,6 +779,1111 @@ fn normalize_source_slice_by_span(source : String, start : Int, end : Int) -> St
     _ => ""
   } noraise {
     value => value.to_string()
+  }
+}
+
+///|
+fn normalize_stmt_key(stmt : @xsh_core.Stmt) -> String {
+  let span = stmt.span()
+  span.start.to_string() + ":" + span.end.to_string()
+}
+
+///|
+fn normalize_optimize_module(ast : @xsh_core.Module) -> NormalizeOptimizeResult {
+  let exported = normalize_collect_export_name_map(ast)
+  let inlined = normalize_inline_single_use(ast, exported)
+  normalize_fold_top_level_consts(
+    inlined.normalized_module,
+    inlined.rewritten_exprs,
+  )
+}
+
+///|
+fn normalize_collect_export_name_map(
+  ast : @xsh_core.Module,
+) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for name in normalize_collect_export_names(ast) {
+    out[name] = true
+  }
+  out
+}
+
+///|
+fn normalize_inline_single_use(
+  ast : @xsh_core.Module,
+  exported_names : Map[String, Bool],
+) -> NormalizeOptimizeResult {
+  let candidates : Map[String, NormalizeInlineCandidate] = {}
+  for i, stmt in ast.stmts {
+    match normalize_stmt_inline_candidate(stmt) {
+      Some((name, body_expr)) =>
+        if not(exported_names.contains(name)) {
+          candidates[name] = { stmt_index: i, name, body_expr }
+        }
+      None => ()
+    }
+  }
+  if candidates.length() == 0 {
+    return { normalized_module: ast, rewritten_exprs: {} }
+  }
+  let ref_counts = normalize_count_candidate_refs_module(ast, candidates)
+  let callsite_index_by_name : Map[String, Int] = {}
+  for i, stmt in ast.stmts {
+    match normalize_stmt_inline_call_name(stmt, candidates) {
+      Some(name) =>
+        match callsite_index_by_name.get(name) {
+          Some(_) => callsite_index_by_name[name] = -1
+          None => callsite_index_by_name[name] = i
+        }
+      None => ()
+    }
+  }
+  let callsite_name_by_index : Map[Int, String] = {}
+  let dropped_candidate_names : Map[String, Bool] = {}
+  for name, candidate in candidates {
+    let ref_count = match ref_counts.get(name) {
+      Some(v) => v
+      None => 0
+    }
+    match callsite_index_by_name.get(name) {
+      Some(callsite_idx) =>
+        if callsite_idx >= 0 && ref_count == 1 {
+          callsite_name_by_index[callsite_idx] = name
+          dropped_candidate_names[name] = true
+          dropped_candidate_names[candidate.name] = true
+        }
+      None => ()
+    }
+  }
+  if callsite_name_by_index.length() == 0 {
+    return { normalized_module: ast, rewritten_exprs: {} }
+  }
+  let rewritten_exprs : Map[String, @xsh_core.Expr] = {}
+  let out_stmts : Array[@xsh_core.Stmt] = []
+  for i, stmt in ast.stmts {
+    match callsite_name_by_index.get(i) {
+      Some(name) =>
+        match candidates.get(name) {
+          Some(candidate) => {
+            let rewritten = normalize_stmt_replace_expr(
+              stmt,
+              candidate.body_expr,
+            )
+            rewritten_exprs[normalize_stmt_key(stmt)] = candidate.body_expr
+            out_stmts.push(rewritten)
+          }
+          None => out_stmts.push(stmt)
+        }
+      None => {
+        let mut drop_stmt = false
+        match normalize_stmt_def_name(stmt) {
+          Some(name) =>
+            if dropped_candidate_names.contains(name) {
+              match candidates.get(name) {
+                Some(candidate) =>
+                  if candidate.stmt_index == i {
+                    drop_stmt = true
+                  }
+                None => ()
+              }
+            }
+          None => ()
+        }
+        if not(drop_stmt) {
+          out_stmts.push(stmt)
+        }
+      }
+    }
+  }
+  { normalized_module: @xsh_core.Module::{ stmts: out_stmts }, rewritten_exprs }
+}
+
+///|
+fn normalize_stmt_inline_candidate(
+  stmt : @xsh_core.Stmt,
+) -> (String, @xsh_core.Expr)? {
+  match stmt {
+    @xsh_core.Stmt::Let(rec~, name~, expr~, ..) =>
+      if rec {
+        None
+      } else {
+        match expr {
+          @xsh_core.Expr::Fn(type_params~, params~, effects~, body~, ..) =>
+            if type_params.length() > 0 ||
+              params.length() > 0 ||
+              effects.length() > 0 ||
+              body.stmts.length() != 1 {
+              None
+            } else {
+              match body.stmts[0] {
+                @xsh_core.Stmt::Expr(expr=body_expr, ..) =>
+                  Some((name, body_expr))
+                _ => None
+              }
+            }
+          _ => None
+        }
+      }
+    _ => None
+  }
+}
+
+///|
+fn normalize_stmt_inline_call_name(
+  stmt : @xsh_core.Stmt,
+  candidates : Map[String, NormalizeInlineCandidate],
+) -> String? {
+  let expr = match stmt {
+    @xsh_core.Stmt::Let(expr~, ..) | @xsh_core.Stmt::ExportLet(expr~, ..) =>
+      Some(expr)
+    _ => None
+  }
+  match expr {
+    Some(@xsh_core.Expr::Call(name~, type_args~, args~, ..)) =>
+      if candidates.contains(name) &&
+        type_args.length() == 0 &&
+        args.length() == 0 {
+        Some(name)
+      } else {
+        None
+      }
+    _ => None
+  }
+}
+
+///|
+fn normalize_stmt_replace_expr(
+  stmt : @xsh_core.Stmt,
+  next_expr : @xsh_core.Expr,
+) -> @xsh_core.Stmt {
+  match stmt {
+    @xsh_core.Stmt::Let(rec~, name~, span~, ..) =>
+      @xsh_core.Stmt::Let(rec~, name~, expr=next_expr, span~)
+    @xsh_core.Stmt::ExportLet(rec~, name~, span~, ..) =>
+      @xsh_core.Stmt::ExportLet(rec~, name~, expr=next_expr, span~)
+    _ => stmt
+  }
+}
+
+///|
+fn normalize_count_candidate_refs_module(
+  mod : @xsh_core.Module,
+  candidates : Map[String, NormalizeInlineCandidate],
+) -> Map[String, Int] {
+  let counts : Map[String, Int] = {}
+  for stmt in mod.stmts {
+    let bound : Map[String, Bool] = {}
+    normalize_count_candidate_refs_stmt(stmt, bound, candidates, counts)
+  }
+  counts
+}
+
+///|
+fn normalize_count_candidate_refs_stmt(
+  stmt : @xsh_core.Stmt,
+  bound : Map[String, Bool],
+  candidates : Map[String, NormalizeInlineCandidate],
+  counts : Map[String, Int],
+) -> Unit {
+  match stmt {
+    @xsh_core.Stmt::Let(rec~, name~, expr~, ..)
+    | @xsh_core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
+      if rec {
+        bound[name] = true
+      }
+      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
+      if not(rec) {
+        bound[name] = true
+      }
+    }
+    @xsh_core.Stmt::LetMut(name~, expr~, ..) => {
+      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
+      bound[name] = true
+    }
+    @xsh_core.Stmt::Assign(name~, expr~, ..) => {
+      normalize_count_candidate_ref_name(name, bound, candidates, counts)
+      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
+    }
+    @xsh_core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      normalize_count_candidate_refs_expr(target, bound, candidates, counts)
+      normalize_count_candidate_refs_expr(index, bound, candidates, counts)
+      normalize_count_candidate_refs_expr(value, bound, candidates, counts)
+    }
+    @xsh_core.Stmt::LetPat(pat~, expr~, ..) => {
+      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
+      normalize_bind_pattern_names(bound, pat)
+    }
+    @xsh_core.Stmt::Expr(expr~, ..) =>
+      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
+    @xsh_core.Stmt::Test(body~, ..) | @xsh_core.Stmt::Bench(body~, ..) =>
+      normalize_count_candidate_refs_block(body, bound, candidates, counts)
+    @xsh_core.Stmt::Import(..)
+    | @xsh_core.Stmt::EnumDef(..)
+    | @xsh_core.Stmt::ExportEnumDef(..)
+    | @xsh_core.Stmt::TypeAlias(..)
+    | @xsh_core.Stmt::ExportTypeAlias(..)
+    | @xsh_core.Stmt::TraitDef(..)
+    | @xsh_core.Stmt::TraitImpl(..)
+    | @xsh_core.Stmt::Export(..)
+    | @xsh_core.Stmt::ReExport(..)
+    | @xsh_core.Stmt::StructDef(..)
+    | @xsh_core.Stmt::ExportStructDef(..) => ()
+  }
+}
+
+///|
+fn normalize_count_candidate_refs_block(
+  body : @xsh_core.Module,
+  bound : Map[String, Bool],
+  candidates : Map[String, NormalizeInlineCandidate],
+  counts : Map[String, Int],
+) -> Unit {
+  let scope = normalize_clone_bool_map(bound)
+  for stmt in body.stmts {
+    normalize_count_candidate_refs_stmt(stmt, scope, candidates, counts)
+  }
+}
+
+///|
+fn normalize_count_candidate_refs_expr(
+  expr : @xsh_core.Expr,
+  bound : Map[String, Bool],
+  candidates : Map[String, NormalizeInlineCandidate],
+  counts : Map[String, Int],
+) -> Unit {
+  match expr {
+    @xsh_core.Expr::Int(..)
+    | @xsh_core.Expr::Float(..)
+    | @xsh_core.Expr::Double(..)
+    | @xsh_core.Expr::Bool(..)
+    | @xsh_core.Expr::String(..)
+    | @xsh_core.Expr::Placeholder(..)
+    | @xsh_core.Expr::Break(..)
+    | @xsh_core.Expr::Continue(..) => ()
+    @xsh_core.Expr::Ident(name~, ..) =>
+      normalize_count_candidate_ref_name(name, bound, candidates, counts)
+    @xsh_core.Expr::Call(name~, args~, ..) => {
+      normalize_count_candidate_ref_name(name, bound, candidates, counts)
+      for arg in args {
+        normalize_count_candidate_refs_expr(arg.expr, bound, candidates, counts)
+      }
+    }
+    @xsh_core.Expr::Tuple(items~, ..) =>
+      for item in items {
+        normalize_count_candidate_refs_expr(item, bound, candidates, counts)
+      }
+    @xsh_core.Expr::TupleIndex(expr~, ..)
+    | @xsh_core.Expr::Await(expr~, ..)
+    | @xsh_core.Expr::Yield(expr~, ..) =>
+      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
+    @xsh_core.Expr::Record(fields~, ..)
+    | @xsh_core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        normalize_count_candidate_refs_expr(
+          field.expr,
+          bound,
+          candidates,
+          counts,
+        )
+      }
+    @xsh_core.Expr::Array(items~, ..) =>
+      for item in items {
+        normalize_count_candidate_refs_expr(item, bound, candidates, counts)
+      }
+    @xsh_core.Expr::Map(fields~, ..) =>
+      for field in fields {
+        normalize_count_candidate_refs_expr(
+          field.expr,
+          bound,
+          candidates,
+          counts,
+        )
+      }
+    @xsh_core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      normalize_count_candidate_refs_expr(cond, bound, candidates, counts)
+      normalize_count_candidate_refs_block(then_body, bound, candidates, counts)
+      normalize_count_candidate_refs_block(else_body, bound, candidates, counts)
+    }
+    @xsh_core.Expr::Block(body~, ..) | @xsh_core.Expr::Do(body~, ..) =>
+      normalize_count_candidate_refs_block(body, bound, candidates, counts)
+    @xsh_core.Expr::Try(try_body~, catch_body~, ..) => {
+      normalize_count_candidate_refs_block(try_body, bound, candidates, counts)
+      normalize_count_candidate_refs_block(
+        catch_body, bound, candidates, counts,
+      )
+    }
+    @xsh_core.Expr::Match(scrutinee~, arms~, ..) => {
+      normalize_count_candidate_refs_expr(scrutinee, bound, candidates, counts)
+      for arm in arms {
+        let arm_bound = normalize_clone_bool_map(bound)
+        normalize_bind_pattern_names(arm_bound, arm.pat)
+        match arm.cond {
+          Some(cond) =>
+            normalize_count_candidate_refs_expr(
+              cond, arm_bound, candidates, counts,
+            )
+          None => ()
+        }
+        normalize_count_candidate_refs_expr(
+          arm.expr,
+          arm_bound,
+          candidates,
+          counts,
+        )
+      }
+    }
+    @xsh_core.Expr::Fn(params~, body~, ..) => {
+      let fn_bound = normalize_clone_bool_map(bound)
+      for param in params {
+        fn_bound[param.name] = true
+      }
+      normalize_count_candidate_refs_block(body, fn_bound, candidates, counts)
+    }
+    @xsh_core.Expr::While(cond~, body~, ..) => {
+      normalize_count_candidate_refs_expr(cond, bound, candidates, counts)
+      normalize_count_candidate_refs_block(body, bound, candidates, counts)
+    }
+    @xsh_core.Expr::Raise(value~, ..) =>
+      normalize_count_candidate_refs_expr(value, bound, candidates, counts)
+  }
+}
+
+///|
+fn normalize_count_candidate_ref_name(
+  name : String,
+  bound : Map[String, Bool],
+  candidates : Map[String, NormalizeInlineCandidate],
+  counts : Map[String, Int],
+) -> Unit {
+  if bound.contains(name) || not(candidates.contains(name)) {
+    return
+  }
+  match counts.get(name) {
+    Some(v) => counts[name] = v + 1
+    None => counts[name] = 1
+  }
+}
+
+///|
+fn normalize_fold_top_level_consts(
+  mod : @xsh_core.Module,
+  rewritten_exprs : Map[String, @xsh_core.Expr],
+) -> NormalizeOptimizeResult {
+  let out_rewrites = normalize_clone_expr_map(rewritten_exprs)
+  let out_stmts : Array[@xsh_core.Stmt] = []
+  for stmt in mod.stmts {
+    let next_stmt = match stmt {
+      @xsh_core.Stmt::Let(expr~, ..) | @xsh_core.Stmt::ExportLet(expr~, ..) =>
+        match normalize_fold_const_expr(expr) {
+          Some(folded) =>
+            match normalize_render_expr(folded) {
+              Some(_) => {
+                out_rewrites[normalize_stmt_key(stmt)] = folded
+                normalize_stmt_replace_expr(stmt, folded)
+              }
+              None => stmt
+            }
+          None => stmt
+        }
+      _ => stmt
+    }
+    out_stmts.push(next_stmt)
+  }
+  {
+    normalized_module: @xsh_core.Module::{ stmts: out_stmts },
+    rewritten_exprs: out_rewrites,
+  }
+}
+
+///|
+fn normalize_clone_expr_map(
+  m : Map[String, @xsh_core.Expr],
+) -> Map[String, @xsh_core.Expr] {
+  let out : Map[String, @xsh_core.Expr] = {}
+  for k, v in m {
+    out[k] = v
+  }
+  out
+}
+
+///|
+fn normalize_fold_const_expr(expr : @xsh_core.Expr) -> @xsh_core.Expr? {
+  match normalize_eval_const_expr(expr) {
+    Some(value) =>
+      if normalize_expr_is_literal(expr) {
+        None
+      } else {
+        Some(value)
+      }
+    None => None
+  }
+}
+
+///|
+fn normalize_expr_is_literal(expr : @xsh_core.Expr) -> Bool {
+  match expr {
+    @xsh_core.Expr::Int(..)
+    | @xsh_core.Expr::Float(..)
+    | @xsh_core.Expr::Double(..)
+    | @xsh_core.Expr::Bool(..)
+    | @xsh_core.Expr::String(..) => true
+    _ => false
+  }
+}
+
+///|
+fn normalize_eval_const_expr(expr : @xsh_core.Expr) -> @xsh_core.Expr? {
+  match expr {
+    @xsh_core.Expr::Int(..)
+    | @xsh_core.Expr::Float(..)
+    | @xsh_core.Expr::Double(..)
+    | @xsh_core.Expr::Bool(..)
+    | @xsh_core.Expr::String(..) => Some(expr)
+    @xsh_core.Expr::Call(name~, type_args~, args~, span~) => {
+      if type_args.length() > 0 {
+        return None
+      }
+      let values : Array[@xsh_core.Expr] = []
+      for arg in args {
+        if arg.label is Some(_) {
+          return None
+        }
+        match normalize_eval_const_expr(arg.expr) {
+          Some(v) => values.push(v)
+          None => return None
+        }
+      }
+      normalize_fold_builtin_call(name, values, span)
+    }
+    _ => None
+  }
+}
+
+///|
+fn normalize_fold_builtin_call(
+  name : String,
+  args : Array[@xsh_core.Expr],
+  span : @xsh_core.Span,
+) -> @xsh_core.Expr? {
+  match name {
+    "__add" =>
+      if args.length() == 2 {
+        match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Int(value=left + right, span~))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__sub" =>
+      if args.length() == 2 {
+        match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Int(value=left - right, span~))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__mul" =>
+      if args.length() == 2 {
+        match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Int(value=left * right, span~))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__div" =>
+      if args.length() == 2 {
+        match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
+          (Some(_), Some(0)) => None
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Int(value=left / right, span~))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__mod" =>
+      if args.length() == 2 {
+        match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
+          (Some(_), Some(0)) => None
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Int(value=left % right, span~))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__eq" =>
+      if args.length() == 2 {
+        match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Bool(value=left == right, span~))
+          _ =>
+            match
+              (normalize_expr_as_bool(args[0]), normalize_expr_as_bool(args[1])) {
+              (Some(left), Some(right)) =>
+                Some(@xsh_core.Expr::Bool(value=left == right, span~))
+              _ =>
+                match
+                  (
+                    normalize_expr_as_string(args[0]),
+                    normalize_expr_as_string(args[1]),
+                  ) {
+                  (Some(left), Some(right)) =>
+                    Some(@xsh_core.Expr::Bool(value=left == right, span~))
+                  _ => None
+                }
+            }
+        }
+      } else {
+        None
+      }
+    "__lt" =>
+      if args.length() == 2 {
+        match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Bool(value=left < right, span~))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "and" =>
+      if args.length() == 2 {
+        match
+          (normalize_expr_as_bool(args[0]), normalize_expr_as_bool(args[1])) {
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Bool(value=left && right, span~))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "or" =>
+      if args.length() == 2 {
+        match
+          (normalize_expr_as_bool(args[0]), normalize_expr_as_bool(args[1])) {
+          (Some(left), Some(right)) =>
+            Some(@xsh_core.Expr::Bool(value=left || right, span~))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "not" =>
+      if args.length() == 1 {
+        match normalize_expr_as_bool(args[0]) {
+          Some(value) => Some(@xsh_core.Expr::Bool(value=not(value), span~))
+          None => None
+        }
+      } else {
+        None
+      }
+    _ => None
+  }
+}
+
+///|
+fn normalize_expr_as_int(expr : @xsh_core.Expr) -> Int? {
+  match expr {
+    @xsh_core.Expr::Int(value~, ..) => Some(value)
+    _ => None
+  }
+}
+
+///|
+fn normalize_expr_as_bool(expr : @xsh_core.Expr) -> Bool? {
+  match expr {
+    @xsh_core.Expr::Bool(value~, ..) => Some(value)
+    _ => None
+  }
+}
+
+///|
+fn normalize_expr_as_string(expr : @xsh_core.Expr) -> String? {
+  match expr {
+    @xsh_core.Expr::String(value~, ..) => Some(value)
+    _ => None
+  }
+}
+
+///|
+fn normalize_collect_inferred_annotations(
+  ast : @xsh_core.Module,
+) -> Map[String, String] {
+  let env = @checker.type_check(ast) catch { _ => return {} }
+  let out : Map[String, String] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @xsh_core.Stmt::Let(rec~, name~, expr~, ..)
+      | @xsh_core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
+        if rec || normalize_stmt_has_explicit_type_assert(expr) {
+          continue
+        }
+        match expr {
+          @xsh_core.Expr::Fn(..) => continue
+          _ => ()
+        }
+        let ty = match env.get(name) {
+          Some(v) => v
+          None => continue
+        }
+        if not(normalize_type_annotation_allowed(ty)) {
+          continue
+        }
+        let rendered = normalize_render_type_annotation(ty)
+        if rendered.length() == 0 {
+          continue
+        }
+        let probe = "let __normalize_probe: " + rendered + " = 0"
+        let _ = @parser.parse_ast(probe) catch { _ => continue }
+        out[normalize_stmt_key(stmt)] = rendered
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn normalize_stmt_has_explicit_type_assert(expr : @xsh_core.Expr) -> Bool {
+  normalize_unwrap_local_type_assert(expr) is Some(_)
+}
+
+///|
+fn normalize_unwrap_local_type_assert(
+  expr : @xsh_core.Expr,
+) -> (@xsh_core.Type, @xsh_core.Expr)? {
+  match expr {
+    @xsh_core.Expr::Block(body~, ..) => {
+      if body.stmts.length() != 2 {
+        return None
+      }
+      let helper_stmt = body.stmts[0]
+      let call_stmt = body.stmts[1]
+      let (helper_name, helper_ty) = match helper_stmt {
+        @xsh_core.Stmt::Let(
+          rec~,
+          name~,
+          expr=@xsh_core.Expr::Fn(params~, ret~, body=helper_body, ..),
+          ..
+        ) =>
+          if rec ||
+            not(name.has_prefix("__xsh_local_type_assert_")) ||
+            params.length() != 1 ||
+            helper_body.stmts.length() != 1 {
+            return None
+          } else {
+            match helper_body.stmts[0] {
+              @xsh_core.Stmt::Expr(
+                expr=@xsh_core.Expr::Ident(name=returned_name, ..),
+                ..
+              ) => if returned_name != params[0].name { return None }
+              _ => return None
+            }
+            let ret_ty = match ret {
+              Some(v) => v
+              None => return None
+            }
+            if params[0].ty != ret_ty {
+              return None
+            }
+            (name, ret_ty)
+          }
+        _ => return None
+      }
+      match call_stmt {
+        @xsh_core.Stmt::Expr(expr=@xsh_core.Expr::Call(name~, args~, ..), ..) =>
+          if name != helper_name || args.length() != 1 {
+            None
+          } else {
+            Some((helper_ty, args[0].expr))
+          }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+fn normalize_type_annotation_allowed(ty : @xsh_core.Type) -> Bool {
+  match ty {
+    @xsh_core.Type::Int
+    | @xsh_core.Type::Float
+    | @xsh_core.Type::Double
+    | @xsh_core.Type::Bool
+    | @xsh_core.Type::String
+    | @xsh_core.Type::Path
+    | @xsh_core.Type::Unit
+    | @xsh_core.Type::Never => true
+    @xsh_core.Type::Tuple(items) => {
+      for item in items {
+        if not(normalize_type_annotation_allowed(item)) {
+          return false
+        }
+      }
+      true
+    }
+    @xsh_core.Type::Array(inner)
+    | @xsh_core.Type::Map(inner)
+    | @xsh_core.Type::ArrayBuilder(inner)
+    | @xsh_core.Type::MapBuilder(inner) =>
+      normalize_type_annotation_allowed(inner)
+    @xsh_core.Type::Named(args~, ..) => {
+      for arg in args {
+        if not(normalize_type_annotation_allowed(arg)) {
+          return false
+        }
+      }
+      true
+    }
+    @xsh_core.Type::Func(params~, ret~, effects~) => {
+      for param in params {
+        if not(normalize_type_annotation_allowed(param.ty)) {
+          return false
+        }
+      }
+      if not(normalize_type_annotation_allowed(ret)) {
+        return false
+      }
+      for effect in effects {
+        match effect {
+          @xsh_core.EffectAtom::Const(_) => ()
+          @xsh_core.EffectAtom::Var(_) => return false
+        }
+      }
+      true
+    }
+    @xsh_core.Type::Record(_)
+    | @xsh_core.Type::Variant(_)
+    | @xsh_core.Type::Param(_)
+    | @xsh_core.Type::Var(_) => false
+  }
+}
+
+///|
+fn normalize_render_type_annotation(ty : @xsh_core.Type) -> String {
+  match ty {
+    @xsh_core.Type::Int => "Int"
+    @xsh_core.Type::Float => "Float"
+    @xsh_core.Type::Double => "Double"
+    @xsh_core.Type::Bool => "Bool"
+    @xsh_core.Type::String => "String"
+    @xsh_core.Type::Path => "@core.Path"
+    @xsh_core.Type::Unit => "Unit"
+    @xsh_core.Type::Never => "Never"
+    @xsh_core.Type::Tuple(items) => {
+      let out = StringBuilder::new()
+      out.write_char('(')
+      for i, item in items {
+        if i > 0 {
+          out.write_string(", ")
+        }
+        out.write_string(normalize_render_type_annotation(item))
+      }
+      out.write_char(')')
+      out.to_string()
+    }
+    @xsh_core.Type::Array(inner) =>
+      "Array[" + normalize_render_type_annotation(inner) + "]"
+    @xsh_core.Type::Map(inner) =>
+      "Map[" + normalize_render_type_annotation(inner) + "]"
+    @xsh_core.Type::ArrayBuilder(inner) =>
+      "ArrayBuilder[" + normalize_render_type_annotation(inner) + "]"
+    @xsh_core.Type::MapBuilder(inner) =>
+      "MapBuilder[" + normalize_render_type_annotation(inner) + "]"
+    @xsh_core.Type::Named(name~, args~) =>
+      if args.length() == 0 {
+        name
+      } else {
+        let out = StringBuilder::new()
+        out.write_string(name)
+        out.write_char('[')
+        for i, arg in args {
+          if i > 0 {
+            out.write_string(", ")
+          }
+          out.write_string(normalize_render_type_annotation(arg))
+        }
+        out.write_char(']')
+        out.to_string()
+      }
+    @xsh_core.Type::Func(params~, ret~, effects~) => {
+      let out = StringBuilder::new()
+      out.write_char('(')
+      for i, param in params {
+        if i > 0 {
+          out.write_string(", ")
+        }
+        out.write_string(normalize_render_type_annotation(param.ty))
+      }
+      out.write_string(") -> ")
+      out.write_string(normalize_render_type_annotation(ret))
+      if effects.length() > 0 {
+        out.write_string(" with {")
+        for i, effect in effects {
+          if i > 0 {
+            out.write_string(", ")
+          }
+          match effect {
+            @xsh_core.EffectAtom::Const(name) => out.write_string(name)
+            @xsh_core.EffectAtom::Var(name) => out.write_string(name)
+          }
+        }
+        out.write_char('}')
+      }
+      out.to_string()
+    }
+    @xsh_core.Type::Record(_)
+    | @xsh_core.Type::Variant(_)
+    | @xsh_core.Type::Param(_)
+    | @xsh_core.Type::Var(_) => ""
+  }
+}
+
+///|
+fn normalize_strip_local_type_assert_module(
+  mod : @xsh_core.Module,
+) -> @xsh_core.Module {
+  let out : Array[@xsh_core.Stmt] = []
+  for stmt in mod.stmts {
+    out.push(normalize_strip_local_type_assert_stmt(stmt))
+  }
+  @xsh_core.Module::{ stmts: out }
+}
+
+///|
+fn normalize_strip_local_type_assert_stmt(
+  stmt : @xsh_core.Stmt,
+) -> @xsh_core.Stmt {
+  match stmt {
+    @xsh_core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @xsh_core.Stmt::Let(
+        rec~,
+        name~,
+        expr=normalize_strip_local_type_assert_expr(expr),
+        span~,
+      )
+    @xsh_core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @xsh_core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=normalize_strip_local_type_assert_expr(expr),
+        span~,
+      )
+    @xsh_core.Stmt::Expr(expr~, span~) =>
+      @xsh_core.Stmt::Expr(
+        expr=normalize_strip_local_type_assert_expr(expr),
+        span~,
+      )
+    @xsh_core.Stmt::LetMut(name~, expr~, span~) =>
+      @xsh_core.Stmt::LetMut(
+        name~,
+        expr=normalize_strip_local_type_assert_expr(expr),
+        span~,
+      )
+    @xsh_core.Stmt::Assign(name~, expr~, span~) =>
+      @xsh_core.Stmt::Assign(
+        name~,
+        expr=normalize_strip_local_type_assert_expr(expr),
+        span~,
+      )
+    @xsh_core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @xsh_core.Stmt::IndexAssign(
+        target=normalize_strip_local_type_assert_expr(target),
+        index=normalize_strip_local_type_assert_expr(index),
+        value=normalize_strip_local_type_assert_expr(value),
+        span~,
+      )
+    @xsh_core.Stmt::LetPat(pat~, expr~, span~) =>
+      @xsh_core.Stmt::LetPat(
+        pat~,
+        expr=normalize_strip_local_type_assert_expr(expr),
+        span~,
+      )
+    @xsh_core.Stmt::Test(name~, body~, span~) =>
+      @xsh_core.Stmt::Test(
+        name~,
+        body=normalize_strip_local_type_assert_module(body),
+        span~,
+      )
+    @xsh_core.Stmt::Bench(name~, body~, span~) =>
+      @xsh_core.Stmt::Bench(
+        name~,
+        body=normalize_strip_local_type_assert_module(body),
+        span~,
+      )
+    _ => stmt
+  }
+}
+
+///|
+fn normalize_strip_local_type_assert_expr(
+  expr : @xsh_core.Expr,
+) -> @xsh_core.Expr {
+  match normalize_unwrap_local_type_assert(expr) {
+    Some((_, unwrapped)) => normalize_strip_local_type_assert_expr(unwrapped)
+    None =>
+      match expr {
+        @xsh_core.Expr::Call(name~, type_args~, args~, span~) => {
+          let next_args : Array[@xsh_core.CallArg] = []
+          for arg in args {
+            next_args.push(@xsh_core.CallArg::{
+              label: arg.label,
+              expr: normalize_strip_local_type_assert_expr(arg.expr),
+              span: arg.span,
+            })
+          }
+          @xsh_core.Expr::Call(name~, type_args~, args=next_args, span~)
+        }
+        @xsh_core.Expr::Tuple(items~, span~) => {
+          let next_items : Array[@xsh_core.Expr] = []
+          for item in items {
+            next_items.push(normalize_strip_local_type_assert_expr(item))
+          }
+          @xsh_core.Expr::Tuple(items=next_items, span~)
+        }
+        @xsh_core.Expr::TupleIndex(expr~, index~, span~) =>
+          @xsh_core.Expr::TupleIndex(
+            expr=normalize_strip_local_type_assert_expr(expr),
+            index~,
+            span~,
+          )
+        @xsh_core.Expr::Record(fields~, span~) => {
+          let next_fields : Array[@xsh_core.RecordFieldExpr] = []
+          for field in fields {
+            next_fields.push(@xsh_core.RecordFieldExpr::{
+              name: field.name,
+              expr: normalize_strip_local_type_assert_expr(field.expr),
+              span: field.span,
+            })
+          }
+          @xsh_core.Expr::Record(fields=next_fields, span~)
+        }
+        @xsh_core.Expr::Array(items~, span~) => {
+          let next_items : Array[@xsh_core.Expr] = []
+          for item in items {
+            next_items.push(normalize_strip_local_type_assert_expr(item))
+          }
+          @xsh_core.Expr::Array(items=next_items, span~)
+        }
+        @xsh_core.Expr::Map(fields~, span~) => {
+          let next_fields : Array[@xsh_core.MapFieldExpr] = []
+          for field in fields {
+            next_fields.push(@xsh_core.MapFieldExpr::{
+              key: field.key,
+              expr: normalize_strip_local_type_assert_expr(field.expr),
+              span: field.span,
+            })
+          }
+          @xsh_core.Expr::Map(fields=next_fields, span~)
+        }
+        @xsh_core.Expr::If(cond~, then_body~, else_body~, span~) =>
+          @xsh_core.Expr::If(
+            cond=normalize_strip_local_type_assert_expr(cond),
+            then_body=normalize_strip_local_type_assert_module(then_body),
+            else_body=normalize_strip_local_type_assert_module(else_body),
+            span~,
+          )
+        @xsh_core.Expr::Block(body~, span~) =>
+          @xsh_core.Expr::Block(
+            body=normalize_strip_local_type_assert_module(body),
+            span~,
+          )
+        @xsh_core.Expr::Match(scrutinee~, arms~, span~) => {
+          let next_arms : Array[@xsh_core.MatchArm] = []
+          for arm in arms {
+            next_arms.push(@xsh_core.MatchArm::{
+              pat: arm.pat,
+              cond: match arm.cond {
+                Some(cond) => Some(normalize_strip_local_type_assert_expr(cond))
+                None => None
+              },
+              expr: normalize_strip_local_type_assert_expr(arm.expr),
+              span: arm.span,
+            })
+          }
+          @xsh_core.Expr::Match(
+            scrutinee=normalize_strip_local_type_assert_expr(scrutinee),
+            arms=next_arms,
+            span~,
+          )
+        }
+        @xsh_core.Expr::Do(body~, span~) =>
+          @xsh_core.Expr::Do(
+            body=normalize_strip_local_type_assert_module(body),
+            span~,
+          )
+        @xsh_core.Expr::Try(try_body~, catch_body~, span~) =>
+          @xsh_core.Expr::Try(
+            try_body=normalize_strip_local_type_assert_module(try_body),
+            catch_body=normalize_strip_local_type_assert_module(catch_body),
+            span~,
+          )
+        @xsh_core.Expr::Fn(
+          type_params~,
+          type_bounds~,
+          params~,
+          ret~,
+          effects~,
+          body~,
+          span~
+        ) =>
+          @xsh_core.Expr::Fn(
+            type_params~,
+            type_bounds~,
+            params~,
+            ret~,
+            effects~,
+            body=normalize_strip_local_type_assert_module(body),
+            span~,
+          )
+        @xsh_core.Expr::While(cond~, body~, span~) =>
+          @xsh_core.Expr::While(
+            cond=normalize_strip_local_type_assert_expr(cond),
+            body=normalize_strip_local_type_assert_module(body),
+            span~,
+          )
+        @xsh_core.Expr::Raise(value~, span~) =>
+          @xsh_core.Expr::Raise(
+            value=normalize_strip_local_type_assert_expr(value),
+            span~,
+          )
+        @xsh_core.Expr::Await(expr~, span~) =>
+          @xsh_core.Expr::Await(
+            expr=normalize_strip_local_type_assert_expr(expr),
+            span~,
+          )
+        @xsh_core.Expr::Yield(expr~, span~) =>
+          @xsh_core.Expr::Yield(
+            expr=normalize_strip_local_type_assert_expr(expr),
+            span~,
+          )
+        @xsh_core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+          let next_fields : Array[@xsh_core.RecordFieldExpr] = []
+          for field in fields {
+            next_fields.push(@xsh_core.RecordFieldExpr::{
+              name: field.name,
+              expr: normalize_strip_local_type_assert_expr(field.expr),
+              span: field.span,
+            })
+          }
+          @xsh_core.Expr::StructLit(
+            name~,
+            type_args~,
+            fields=next_fields,
+            span~,
+          )
+        }
+        _ => expr
+      }
   }
 }
 
