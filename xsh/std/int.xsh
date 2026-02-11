@@ -5,8 +5,6 @@ let int_max = (a: Int, b: Int) -> Int {
     b
   }
 }
-
-
 export let max = (a: Int, b: Int) -> Int {
   int_max(a, b)
 }
@@ -17,8 +15,6 @@ let int_min = (a: Int, b: Int) -> Int {
     b
   }
 }
-
-
 export let min = (a: Int, b: Int) -> Int {
   int_min(a, b)
 }
@@ -36,21 +32,8 @@ let rec int_pow = (base: Int, exp: Int) -> Int {
     base * int_pow(base, exp - 1)
   }
 }
-
-
 // Short names (preferred): use with method-call desugar, e.g. x.abs()
 export let pow = (base: Int, exp: Int) -> Int {
-  int_pow(base, exp)
-}
-// Least Common Multiple
-export let Int::max = (a: Int, b: Int) -> Int {
-  int_max(a, b)
-}
-export let Int::min = (a: Int, b: Int) -> Int {
-  int_min(a, b)
-}
-// Type member names: can be imported with `use <module-ref> { Int }`
-export let Int::pow = (base: Int, exp: Int) -> Int {
   int_pow(base, exp)
 }
 let int_clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
@@ -64,19 +47,12 @@ let int_clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
     x
   }
 }
-
-
 export let clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
-  int_clamp(x, min_val, max_val)
-}
-export let Int::clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
   int_clamp(x, min_val, max_val)
 }
 let int_is_odd = (x: Int) -> Bool {
   x % 2 != 0
 }
-
-
 export let is_odd = (x: Int) -> Bool {
   int_is_odd(x)
 }
@@ -91,39 +67,19 @@ let int_signum = (x: Int) -> Int {
     0
   }
 }
-
-
 export let signum = (x: Int) -> Int {
-  int_signum(x)
-}
-export let Int::is_odd = (x: Int) -> Bool {
-  int_is_odd(x)
-}
-export let Int::signum = (x: Int) -> Int {
   int_signum(x)
 }
 let int_is_even = (x: Int) -> Bool {
   x % 2 == 0
 }
-
-
 export let is_even = (x: Int) -> Bool {
   int_is_even(x)
 }
 let int_is_zero = (x: Int) -> Bool {
   x == 0
 }
-
-
 export let is_zero = (x: Int) -> Bool {
-  int_is_zero(x)
-}
-// Fibonacci
-export let Int::is_even = (x: Int) -> Bool {
-  int_is_even(x)
-}
-// Type member names: can be imported with `use <module-ref> { Int }`
-export let Int::is_zero = (x: Int) -> Bool {
   int_is_zero(x)
 }
 let rec int_factorial = (n: Int) -> Int {
@@ -134,8 +90,6 @@ let rec int_factorial = (n: Int) -> Int {
     n * int_factorial(n - 1)
   }
 }
-
-
 export let factorial = (n: Int) -> Int {
   int_factorial(n)
 }
@@ -167,8 +121,6 @@ let int_abs = (x: Int) -> Int {
     x
   }
 }
-
-
 export let abs = (x: Int) -> Int {
   int_abs(x)
 }
@@ -182,8 +134,6 @@ let rec int_gcd = (a: Int, b: Int) -> Int {
     int_gcd(abs_b, abs_a % abs_b)
   }
 }
-
-
 // Short names (preferred): use with method-call desugar, e.g. x.abs()
 export let gcd = (a: Int, b: Int) -> Int {
   int_gcd(a, b)
@@ -198,10 +148,21 @@ let int_lcm = (a: Int, b: Int) -> Int {
     int_abs(scaled * b)
   }
 }
-
-
 export let lcm = (a: Int, b: Int) -> Int {
   int_lcm(a, b)
+}
+export let min_value: Int = int_min_value
+let int_is_negative = (x: Int) -> Bool {
+  x < 0
+}
+export let is_negative = (x: Int) -> Bool {
+  int_is_negative(x)
+}
+let int_is_positive = (x: Int) -> Bool {
+  x > 0
+}
+export let is_positive = (x: Int) -> Bool {
+  int_is_positive(x)
 }
 export let Int::abs = (x: Int) -> Int {
   int_abs(x)
@@ -212,35 +173,42 @@ export let Int::gcd = (a: Int, b: Int) -> Int {
 export let Int::lcm = (a: Int, b: Int) -> Int {
   int_lcm(a, b)
 }
-export let min_value: Int = int_min_value
+// Maximum of two integers
+export let Int::max = (a: Int, b: Int) -> Int {
+  int_max(a, b)
+}
+export let Int::min = (a: Int, b: Int) -> Int {
+  int_min(a, b)
+}
+// Type member names: can be imported with `use <module-ref> { Int }`
+export let Int::pow = (base: Int, exp: Int) -> Int {
+  int_pow(base, exp)
+}
+export let Int::clamp = (x: Int, min_val: Int, max_val: Int) -> Int {
+  int_clamp(x, min_val, max_val)
+}
+export let Int::is_odd = (x: Int) -> Bool {
+  int_is_odd(x)
+}
+export let Int::signum = (x: Int) -> Int {
+  int_signum(x)
+}
+// Is even
+export let Int::is_even = (x: Int) -> Bool {
+  int_is_even(x)
+}
+// Type member names: can be imported with `use <module-ref> { Int }`
+export let Int::is_zero = (x: Int) -> Bool {
+  int_is_zero(x)
+}
 export let Int::factorial = (n: Int) -> Int {
   int_factorial(n)
 }
 export let Int::fibonacci = (n: Int) -> Int {
   int_fibonacci(n)
 }
-
-
 export let Int::to_double = (x: Int) -> Double {
   int_to_double(x)
-}
-
-
-let int_is_negative = (x: Int) -> Bool {
-  x < 0
-}
-
-
-export let is_negative = (x: Int) -> Bool {
-  int_is_negative(x)
-}
-let int_is_positive = (x: Int) -> Bool {
-  x > 0
-}
-
-
-export let is_positive = (x: Int) -> Bool {
-  int_is_positive(x)
 }
 export let Int::is_negative = (x: Int) -> Bool {
   int_is_negative(x)

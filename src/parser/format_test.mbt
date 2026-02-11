@@ -310,6 +310,18 @@ test "xsh format match" {
 }
 
 ///|
+test "xsh format match keeps tuple/call args compact in arms" {
+  let input =
+    #|match option_zip(Some(1), Some(2)) { Some((x,y)) => x+y, _ => 0 }
+  let expected =
+    #|match option_zip(Some(1), Some(2)) {
+    #|  Some((x, y)) => x + y,
+    #|  _ => 0
+    #|}
+  inspect(format_script(input), content=expected)
+}
+
+///|
 test "xsh format type args and index" {
   let input =
     #|let x: Option[Int] = none
@@ -322,6 +334,28 @@ test "xsh format type args and index" {
     #|let z = foo()[0]
     #|type Box[T] = Array[T]
   inspect(format_script(input), content=expected)
+}
+
+///|
+test "xsh format generic parameter brackets stay compact" {
+  let input =
+    #|trait Eq
+    #|impl Eq for Int
+    #|impl [T: Eq] Eq for Option[T]
+    #|let id = [T](x: T) -> T { x }
+  let formatted = format_script(input)
+  if not(formatted.contains("impl [T: Eq] Eq for Option[T]")) {
+    fail("[generic impl] expected compact impl generic params\n---\n\{formatted}")
+  }
+  if not(formatted.contains("let id = [T](x: T) -> T {")) {
+    fail("[generic let] expected compact let generic params\n---\n\{formatted}")
+  }
+  if formatted.contains("impl [\n") {
+    fail("[generic impl] unexpected multiline generic bracket\n---\n\{formatted}")
+  }
+  if formatted.contains("let id = [\n") {
+    fail("[generic let] unexpected multiline generic bracket\n---\n\{formatted}")
+  }
 }
 
 ///|
@@ -343,8 +377,7 @@ test "xsh format keeps enum payload commas" {
   let expected =
     #|enum List {
     #|  Nil;
-    #|  Cons(Int,
-    #|  List)
+    #|  Cons(Int, List)
     #|}
   inspect(format_script(input), content=expected)
 }
@@ -410,4 +443,14 @@ test "xsh format derive declarations is idempotent" {
   let once = format_script(input)
   let twice = format_script(once)
   inspect(twice, content=once)
+}
+
+test "xsh format trait impl top-level spacing" {
+  let input =
+    #|trait Eq
+    #|impl Eq for Int
+  let expected =
+    #|trait Eq
+    #|impl Eq for Int
+  inspect(format_script(input), content=expected)
 }
