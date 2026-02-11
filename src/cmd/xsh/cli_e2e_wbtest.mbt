@@ -342,6 +342,59 @@ test "cli apply resolves lock and graph artifacts" {
 }
 
 ///|
+test "cli apply tracks function version on incompatible change" {
+  let root = wbtest_make_temp_dir("apply_track_fn_version")
+  let entry = root + "/main.xsh"
+  let entry_norm = @loader.resolve_entry_path(entry)
+  let key = entry_norm + "#inc"
+  @os_fs.write_string_to_file(
+    entry, "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n",
+  ) catch {
+    e => fail("write entry failed: " + e.to_string())
+  }
+  apply_cmd([entry])
+  let first = read_function_tracking_record(root, key)
+  assert_eq(first.version, "1.0.0")
+  @os_fs.write_string_to_file(
+    entry, "let inc = (x: Int) -> String { \"x\" }\nexport { inc }\n",
+  ) catch {
+    e => fail("rewrite entry failed: " + e.to_string())
+  }
+  apply_cmd([entry])
+  let second = read_function_tracking_record(root, key)
+  assert_eq(second.version, "2.0.0")
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli apply tracks rename continuity for similar function" {
+  let root = wbtest_make_temp_dir("apply_track_fn_rename")
+  let entry = root + "/main.xsh"
+  let entry_norm = @loader.resolve_entry_path(entry)
+  let old_key = entry_norm + "#inc"
+  let new_key = entry_norm + "#plus"
+  @os_fs.write_string_to_file(
+    entry, "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n",
+  ) catch {
+    e => fail("write entry failed: " + e.to_string())
+  }
+  apply_cmd([entry])
+  @os_fs.write_string_to_file(
+    entry, "let plus = (x: Int) -> Int { x + 1 }\nexport { plus }\n",
+  ) catch {
+    e => fail("rewrite entry failed: " + e.to_string())
+  }
+  apply_cmd([entry])
+  let tracked = read_function_tracking_record(root, new_key)
+  assert_eq(tracked.version, "1.0.0")
+  match tracked.renamed_from {
+    Some(value) => assert_eq(value, old_key)
+    None => fail("expected renamed_from")
+  }
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli eval without db uses scratch namespace db" {
   let root = wbtest_make_temp_dir("eval_default_scratch_db")
   let scratch_db = root + "/scratch.db"
@@ -1420,4 +1473,54 @@ fn assert_scope_symbol_signature(
       }
     None => abort("missing scope symbol: " + symbol_name)
   }
+}
+
+///|
+struct FunctionTrackingRecord {
+  version : String
+  renamed_from : String?
+}
+
+///|
+fn read_function_tracking_record(
+  index_root : String,
+  key : String,
+) -> FunctionTrackingRecord {
+  let path = index_root + "/index.xdb"
+  let source = @os_fs.read_file_to_string(path) catch {
+    e => abort("read index.xdb failed: " + e.to_string())
+  }
+  let json : Json = @json.parse(source) catch {
+    e => abort("parse index.xdb failed: " + e.to_string())
+  }
+  let obj = match json {
+    Json::Object(map) => map
+    _ => abort("index.xdb must be object")
+  }
+  let tracking = match obj.get("function_tracking") {
+    Some(Json::Object(value)) => value
+    _ => abort("index.xdb must include function_tracking object")
+  }
+  let records = match tracking.get("records") {
+    Some(Json::Object(value)) => value
+    _ => abort("function_tracking.records must be object")
+  }
+  let record = match records.get(key) {
+    Some(Json::Object(value)) => value
+    _ => abort("missing function_tracking record for " + key)
+  }
+  let version = match record.get("version") {
+    Some(Json::String(value)) => value
+    _ => abort("function_tracking record must include version")
+  }
+  let renamed_from = match record.get("renamed_from") {
+    Some(Json::String(value)) =>
+      if value.trim().to_string().length() == 0 {
+        None
+      } else {
+        Some(value)
+      }
+    _ => None
+  }
+  FunctionTrackingRecord::{ version, renamed_from }
 }

@@ -5973,10 +5973,12 @@ fn print_graph_def_entry(def : @x_exp.AdvancedGraphDef) -> Unit {
 fn write_index_xdb_graph_head(
   index_root : String,
   graph_head : String,
+  function_tracking : Json,
 ) -> Result[Unit, String] {
   let index_xdb_path = index_root + "/index.xdb"
   let xdb_obj = load_index_xdb_object(index_xdb_path)
   xdb_obj["graph_head"] = Json::string(graph_head)
+  xdb_obj["function_tracking"] = function_tracking
   write_index_xdb_object(index_xdb_path, xdb_obj)
 }
 
@@ -6001,7 +6003,12 @@ fn sync_graph_head_for_loaded_db(
   let _ = codebase.write_object(graph_head, index_json) catch {
     e => return Err("sync graph snapshot object: " + e.to_string())
   }
-  match write_index_xdb_graph_head(index_root, graph_head) {
+  let index_xdb_path = index_root + "/index.xdb"
+  let xdb_obj = load_index_xdb_object(index_xdb_path)
+  let function_tracking = compute_function_tracking_json(
+    db, paths, index, xdb_obj,
+  )
+  match write_index_xdb_graph_head(index_root, graph_head, function_tracking) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
