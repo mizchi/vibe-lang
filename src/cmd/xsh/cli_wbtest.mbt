@@ -866,6 +866,107 @@ test "resolve bench entry paths includes top-level _bench.xsh files" {
 }
 
 ///|
+test "normalize source sorts declarations and prunes unreachable defs" {
+  let source =
+    #|let dead = () -> Int { 0 }
+    #|use ./dep.xsh { dep }
+    #|trait Eq
+    #|impl Eq for Int
+    #|type Alias = Int
+    #|let helper = () -> Int { 1 }
+    #|export let run = () -> Int { helper() }
+    #|export let run_io = () -> Int with {Error} { run() }
+    #|export { run, run_io }
+  let normalized = match normalize_source_text(source) {
+    Ok(v) => v
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+  assert_false(normalized.contains("let dead ="))
+  assert_false(normalized.contains("type Alias = Int"))
+  let idx_use = wbtest_substring_index(normalized, "use ./dep.xsh {")
+  let idx_trait = wbtest_substring_index(normalized, "trait Eq")
+  let idx_pure_fn = wbtest_substring_index(normalized, "let helper =")
+  let idx_effect_fn = wbtest_substring_index(
+    normalized, "export let run_io = () -> Int with {",
+  )
+  assert_true(idx_use >= 0)
+  assert_true(idx_trait >= 0)
+  assert_true(idx_pure_fn >= 0)
+  assert_true(idx_effect_fn >= 0)
+  assert_true(idx_use < idx_trait)
+  assert_true(idx_trait < idx_pure_fn)
+  assert_true(idx_pure_fn < idx_effect_fn)
+}
+
+///|
+test "normalize source keeps module blocks and sorts module body" {
+  let source =
+    #|export module math {
+    #|  let dead = () -> Int { 0 }
+    #|  let helper = () -> Int { 1 }
+    #|  type Alias = Int
+    #|  export let run = () -> Int { helper() }
+    #|  export let run_io = () -> Int with {Error} { run() }
+    #|}
+  let normalized = match normalize_source_text(source) {
+    Ok(v) => v
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+  assert_true(normalized.contains("export module math {"))
+  assert_false(normalized.contains("let dead ="))
+  assert_false(normalized.contains("type Alias = Int"))
+  let idx_helper = wbtest_substring_index(normalized, "let helper =")
+  let idx_run = wbtest_substring_index(normalized, "export let run =")
+  let idx_run_io = wbtest_substring_index(
+    normalized, "export let run_io = () -> Int with {",
+  )
+  assert_true(idx_helper >= 0)
+  assert_true(idx_run >= 0)
+  assert_true(idx_run_io >= 0)
+  assert_true(idx_helper < idx_run)
+  assert_true(idx_run < idx_run_io)
+}
+
+///|
+test "normalize source sorts function defs topologically with alpha tie" {
+  let source =
+    #|export let z = () -> Int { b() }
+    #|export let b = () -> Int { 1 }
+    #|export let a = () -> Int { 2 }
+    #|export let io_z = () -> Int with {Error} { io_b() }
+    #|export let io_b = () -> Int with {Error} { 1 }
+    #|export let io_a = () -> Int with {Error} { 2 }
+    #|export { a, b, z, io_a, io_b, io_z }
+  let normalized = match normalize_source_text(source) {
+    Ok(v) => v
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+  let idx_a = wbtest_substring_index(normalized, "export let a =")
+  let idx_b = wbtest_substring_index(normalized, "export let b =")
+  let idx_z = wbtest_substring_index(normalized, "export let z =")
+  let idx_io_a = wbtest_substring_index(
+    normalized, "export let io_a = () -> Int with {",
+  )
+  let idx_io_b = wbtest_substring_index(
+    normalized, "export let io_b = () -> Int with {",
+  )
+  let idx_io_z = wbtest_substring_index(
+    normalized, "export let io_z = () -> Int with {",
+  )
+  assert_true(idx_a >= 0)
+  assert_true(idx_b >= 0)
+  assert_true(idx_z >= 0)
+  assert_true(idx_io_a >= 0)
+  assert_true(idx_io_b >= 0)
+  assert_true(idx_io_z >= 0)
+  assert_true(idx_a < idx_b)
+  assert_true(idx_b < idx_z)
+  assert_true(idx_io_a < idx_io_b)
+  assert_true(idx_io_b < idx_io_z)
+  assert_true(idx_z < idx_io_a)
+}
+
+///|
 fn wbtest_make_temp_dir(prefix : String) -> String {
   let base = "/tmp/cmd_xsh_wbtest_" + prefix + "_" + @env.now().to_string()
   for i in 0..<1000 {
@@ -889,6 +990,32 @@ fn wbtest_contains(paths : Array[String], target : String) -> Bool {
     }
   }
   false
+}
+
+///|
+fn wbtest_substring_index(haystack : String, needle : String) -> Int {
+  let h_len = haystack.length()
+  let n_len = needle.length()
+  if n_len == 0 {
+    return 0
+  }
+  if n_len > h_len {
+    return -1
+  }
+  let mut i = 0
+  let limit = h_len - n_len
+  while i <= limit {
+    let slice = try haystack[i:i + n_len] catch {
+      _ => ""
+    } noraise {
+      value => value.to_string()
+    }
+    if slice == needle {
+      return i
+    }
+    i += 1
+  }
+  -1
 }
 
 ///|

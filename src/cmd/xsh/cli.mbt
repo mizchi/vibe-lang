@@ -32,6 +32,7 @@ pub fn run(args : Array[String]) -> Unit {
     "history" => history_cmd(cmd_args)
     "write_file" => write_file_cmd(cmd_args)
     "fmt" => fmt_cmd(cmd_args)
+    "normalize" => normalize_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
@@ -81,6 +82,7 @@ fn print_usage() -> Unit {
     "  write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>  materialize selector",
   )
   println("  fmt [--write] <file...>    format scripts via CST")
+  println("  normalize [--write] <file...>  normalize declaration order + DCE")
   println(
     "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
   )
@@ -155,6 +157,7 @@ fn command_requires_parser(cmd : String) -> Bool {
     | "check"
     | "apply"
     | "symbols"
+    | "normalize"
     | "compile"
     | "bench"
     | "bench-file"
