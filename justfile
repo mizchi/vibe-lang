@@ -33,7 +33,7 @@ test:
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
-    moon build --target wasm-gc src/lib
+    moon build --target wasm-gc --release src/lib
 
 # Run Deno integration tests (artifact-only, no command spawn)
 test-integration-deno: build-integration-deno-wasm
@@ -50,12 +50,12 @@ coverage-deno:
     scripts/coverage_deno.sh
 
 # Run source-level WASM coverage (xsh span map + runtime counters)
-# env: XSH_WASM_SOURCE_COVERAGE_MODE, XSH_WASM_SOURCE_COVERAGE_NO_DCE, XSH_WASM_SOURCE_COVERAGE_RUN_TESTS, XSH_WASM_SOURCE_COVERAGE_DIR
+# env: XSH_WASM_SOURCE_COVERAGE_MODE, XSH_WASM_SOURCE_COVERAGE_NO_DCE, XSH_WASM_SOURCE_COVERAGE_RUN_TESTS, XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP, XSH_WASM_SOURCE_COVERAGE_DIR
 coverage-wasm-source entry="examples/pattern_coverage.xsh":
     scripts/coverage_wasm_source.sh {{entry}}
 
 # Run xsh/std coverage from *_test.xsh via wasm source coverage
-# env: XSH_WASM_STD_COVERAGE_MODE, XSH_WASM_STD_COVERAGE_NO_DCE, XSH_WASM_STD_COVERAGE_STRICT, XSH_WASM_STD_COVERAGE_FILTER, XSH_WASM_STD_COVERAGE_EXCLUDE, XSH_WASM_STD_COVERAGE_DIR
+# env: XSH_WASM_STD_COVERAGE_MODES, XSH_WASM_STD_COVERAGE_MODE, XSH_WASM_STD_COVERAGE_NO_DCE, XSH_WASM_STD_COVERAGE_STRICT, XSH_WASM_STD_COVERAGE_ALLOW_TRAP, XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE, XSH_WASM_STD_COVERAGE_MIN_LINE_RATE, XSH_WASM_STD_COVERAGE_FILTER, XSH_WASM_STD_COVERAGE_EXCLUDE, XSH_WASM_STD_COVERAGE_MATRIX, XSH_WASM_STD_COVERAGE_DIR
 coverage-wasm-std:
     scripts/coverage_wasm_std.sh
 

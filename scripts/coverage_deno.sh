@@ -16,7 +16,7 @@ lcov_file="$OUTPUT_DIR/lcov.info"
 html_dir="$OUTPUT_DIR/html"
 
 echo "[deno coverage] build wasm artifact"
-moon build --target wasm-gc src/lib
+moon build --target wasm-gc --release src/lib
 
 test_args=(deno test --allow-read "--coverage=$OUTPUT_DIR" --clean tests/integration-deno)
 if [ -n "$FILTER" ]; then

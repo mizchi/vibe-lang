@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 
 function usage() {
   console.error(
-    "usage: coverage_wasm_source.mjs <wasm-file> <map-json> [--json <report.json>] [--summary <summary.txt>]",
+    "usage: coverage_wasm_source.mjs <wasm-file> <map-json> [--json <report.json>] [--summary <summary.txt>] [--allow-trap]",
   );
 }
 
@@ -17,6 +18,7 @@ function parseArgs(argv) {
   const mapPath = argv[1];
   let reportJsonPath = "";
   let summaryPath = "";
+  let allowTrap = false;
   let i = 2;
   while (i < argv.length) {
     const arg = argv[i];
@@ -36,9 +38,14 @@ function parseArgs(argv) {
       i += 2;
       continue;
     }
+    if (arg === "--allow-trap") {
+      allowTrap = true;
+      i += 1;
+      continue;
+    }
     throw new Error(`unknown option: ${arg}`);
   }
-  return { wasmPath, mapPath, reportJsonPath, summaryPath };
+  return { wasmPath, mapPath, reportJsonPath, summaryPath, allowTrap };
 }
 
 function percent(hit, total) {
@@ -60,17 +67,21 @@ function buildSummaryText(report) {
   lines.push("xsh wasm source coverage");
   lines.push(`wasm: ${report.wasm_path}`);
   lines.push(`map: ${report.map_path}`);
+  lines.push(`execution: ${report.execution.ok ? "ok" : `trap (${report.execution.error})`}`);
   lines.push(
     `points: ${report.stats.point_hit}/${report.stats.point_total} (${percent(report.stats.point_hit, report.stats.point_total)}%)`,
   );
   lines.push(
     `lines: ${report.stats.line_hit}/${report.stats.line_total} (${percent(report.stats.line_hit, report.stats.line_total)}%)`,
   );
+  if (Number(report.stats.line_excluded_total ?? 0) > 0) {
+    lines.push(`lines_excluded: ${report.stats.line_excluded_total}`);
+  }
   lines.push(
     `branches: ${report.stats.branch_hit}/${report.stats.branch_total} (${percent(report.stats.branch_hit, report.stats.branch_total)}%)`,
   );
   const missedLineList = report.lines
-    .filter((line) => !line.hit)
+    .filter((line) => !line.hit && line.excluded !== true)
     .map((line) => line.line)
     .sort((a, b) => a - b);
   if (missedLineList.length > 0) {
@@ -99,6 +110,85 @@ function pointKind(point) {
     return "unknown";
   }
   return point.kind;
+}
+
+function readSourceLines(entryPath) {
+  if (!entryPath || typeof entryPath !== "string") {
+    return [];
+  }
+  if (!fs.existsSync(entryPath)) {
+    return [];
+  }
+  const raw = fs.readFileSync(entryPath, "utf8");
+  return raw.split(/\r?\n/);
+}
+
+function isImportListIdentifierLine(sourceLines, lineIndex) {
+  if (lineIndex < 0 || lineIndex >= sourceLines.length) {
+    return false;
+  }
+  const trimmed = sourceLines[lineIndex].trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*,$/.test(trimmed)) {
+    return false;
+  }
+  for (let i = lineIndex - 1; i >= 0; i -= 1) {
+    const prev = sourceLines[i].trim();
+    if (prev.length === 0) {
+      continue;
+    }
+    if (/^import\s*\{/.test(prev)) {
+      return true;
+    }
+    if (/^\}/.test(prev)) {
+      return false;
+    }
+  }
+  return false;
+}
+
+export function isCoverageNoiseLine(sourceLines, lineNumber) {
+  if (!Array.isArray(sourceLines)) {
+    return false;
+  }
+  if (typeof lineNumber !== "number" || lineNumber <= 0) {
+    return false;
+  }
+  const lineIndex = lineNumber - 1;
+  if (lineIndex < 0 || lineIndex >= sourceLines.length) {
+    return false;
+  }
+  const trimmed = sourceLines[lineIndex].trim();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  if (
+    trimmed === "}" ||
+    trimmed === "};" ||
+    trimmed === "})" ||
+    trimmed === "});" ||
+    /^\}\s+from\b/.test(trimmed)
+  ) {
+    return true;
+  }
+  if (isImportListIdentifierLine(sourceLines, lineIndex)) {
+    return true;
+  }
+  return false;
+}
+
+export function applySourceNoiseExclusion(lines, sourceLines) {
+  const annotated = lines.map((line) => ({
+    ...line,
+    excluded: isCoverageNoiseLine(sourceLines, line.line),
+  }));
+  const measuredLines = annotated.filter((line) => line.excluded !== true);
+  const lineHit = measuredLines.filter((line) => line.hit === true).length;
+  return {
+    lines: annotated,
+    line_total: measuredLines.length,
+    line_hit: lineHit,
+    line_excluded_total: annotated.length - measuredLines.length,
+  };
 }
 
 function makeHostFunction(moduleName, importName) {
@@ -171,7 +261,12 @@ async function main() {
     throw new Error(`invalid counter count: ${counterCount}`);
   }
 
-  exports.run();
+  let runError = null;
+  try {
+    exports.run();
+  } catch (error) {
+    runError = error instanceof Error ? error.message : String(error);
+  }
 
   const memory = exports.memory;
   const counters = Array.from(
@@ -196,7 +291,7 @@ async function main() {
   const linePoints = points.filter((p) => p.kind === "line");
   const branchPoints = points.filter((p) => p.kind !== "line");
   const pointHit = points.filter((p) => p.hit).length;
-  const lineHit = linePoints.filter((p) => p.hit).length;
+  const linePointHit = linePoints.filter((p) => p.hit).length;
   const branchHit = branchPoints.filter((p) => p.hit).length;
 
   const lineMap = new Map();
@@ -219,21 +314,33 @@ async function main() {
       count: prev.count + point.count,
     });
   }
-  const lines = Array.from(lineMap.values()).sort((a, b) => a.line - b.line);
+  const rawLines = Array.from(lineMap.values()).sort((a, b) => a.line - b.line);
+  const sourceLines = readSourceLines(map.entry_path);
+  const lineCoverage = applySourceNoiseExclusion(rawLines, sourceLines);
+  const lines = lineCoverage.lines;
+  const lineHit = lineCoverage.line_hit;
 
   const report = {
-    format: "xsh-wasm-source-coverage-v1",
+    format: "xsh-wasm-source-coverage-v2",
     wasm_path: args.wasmPath,
     map_path: args.mapPath,
     counter_base: counterBase,
     counter_count: counterCount,
+    entry_path: typeof map.entry_path === "string" ? map.entry_path : "",
+    execution: {
+      ok: runError === null,
+      error: runError,
+    },
     points,
     lines,
     stats: {
       point_total: points.length,
       point_hit: pointHit,
-      line_total: linePoints.length,
+      line_total: lineCoverage.line_total,
       line_hit: lineHit,
+      line_excluded_total: lineCoverage.line_excluded_total,
+      line_point_total: linePoints.length,
+      line_point_hit: linePointHit,
       branch_total: branchPoints.length,
       branch_hit: branchHit,
     },
@@ -247,10 +354,19 @@ async function main() {
     fs.writeFileSync(args.summaryPath, summary);
   }
   process.stdout.write(summary);
+
+  if (runError !== null && !args.allowTrap) {
+    throw new Error(`run trapped: ${runError}`);
+  }
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`[coverage_wasm_source] ${message}`);
-  process.exit(1);
-});
+const isCliEntry =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isCliEntry) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[coverage_wasm_source] ${message}`);
+    process.exit(1);
+  });
+}

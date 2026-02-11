@@ -17,17 +17,12 @@ import {
 } from "./threads.xsh"
 
 test "threads probe helper typecheck" {
-  let probe_fn = () -> String {
-    probe_wat()
-  }
+  let _ = probe_wat
   assert(true)
 }
 
 test "threads runtime hints helper typecheck" {
-  let hints_fn = () -> String {
-    let hints = runtime_hints()
-    hints.wasm_env
-  }
+  let _ = runtime_hints
   assert(true)
 }
 

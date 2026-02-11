@@ -13,22 +13,28 @@ test "stdin_read_line eof is empty by default" {
   assert(string_equals(stdin_read_line(), ""))
 }
 
-test "stdout helpers typecheck" {
-  let _ = (s: String) -> Unit with {Stdout} {
+test "stdout helpers run" {
+  let run_stdout = (s: String) -> Unit with {Stdout} {
     do {
       stdout_write(s)
       stdout_writeln(s)
     }
   }
+  do {
+    run_stdout("")
+  }
   assert(true)
 }
 
-test "stream helpers typecheck" {
-  let _ = (n: Int, s: String) -> String with {Stdin, Stdout} {
+test "stream helpers run" {
+  let run_stream = (n: Int, s: String) -> String with {Stdin, Stdout} {
     do {
       stdout_write(s)
       stdin_read(n)
     }
   }
-  assert(true)
+  let read = do {
+    run_stream(0, "")
+  }
+  assert(string_equals(read, ""))
 }

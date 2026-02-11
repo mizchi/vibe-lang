@@ -88,6 +88,7 @@ just coverage-wasm-source examples/pattern_coverage.xsh
 - `XSH_WASM_SOURCE_COVERAGE_MODE` (`wasm` / `wasm-js-string`)
 - `XSH_WASM_SOURCE_COVERAGE_NO_DCE` (`0` / `1`)
 - `XSH_WASM_SOURCE_COVERAGE_RUN_TESTS` (`0` / `1`)
+- `XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP` (`0` / `1`)
 - `XSH_WASM_SOURCE_COVERAGE_DIR` (出力先ディレクトリ)
 
 実装上の制約:
@@ -107,19 +108,68 @@ just coverage-wasm-std
 生成物:
 - `_build/coverage/wasm-std/summary.txt`
 - `_build/coverage/wasm-std/report.json`
+- `_build/coverage/wasm-std/report.md`
 - `_build/coverage/wasm-std/reports.txt`
+- `_build/coverage/wasm-std/attempts.tsv`
 - `_build/coverage/wasm-std/failures.txt`
 
 環境変数:
-- `XSH_WASM_STD_COVERAGE_MODE` (`wasm` / `wasm-js-string`)
+- `XSH_WASM_STD_COVERAGE_MODES` (カンマ or 空白区切り; 例: `wasm,wasm-js-string`)
+- `XSH_WASM_STD_COVERAGE_MODE` (単一モード指定; `MODES` 未指定時のみ利用)
 - `XSH_WASM_STD_COVERAGE_NO_DCE` (`0` / `1`)
 - `XSH_WASM_STD_COVERAGE_STRICT` (`0` / `1`)
+- `XSH_WASM_STD_COVERAGE_ALLOW_TRAP` (`0` / `1`)
+- `XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE` (`0..100`, 任意)
+- `XSH_WASM_STD_COVERAGE_MIN_LINE_RATE` (`0..100`, 任意)
 - `XSH_WASM_STD_COVERAGE_FILTER` (`rg` パターン)
 - `XSH_WASM_STD_COVERAGE_EXCLUDE` (`rg` パターン)
+- `XSH_WASM_STD_COVERAGE_MATRIX` (backend capability matrix JSON)
 - `XSH_WASM_STD_COVERAGE_DIR` (出力先ディレクトリ)
 
-現状は backend 未対応機能を含むケースがあり、`failures.txt` に残る。
-coverage の有効性判断は `cases(total/success)` と失敗ケース内訳を併せて行う。
+デフォルトでは `wasm -> wasm-js-string` の順でフォールバック実行する。
+各試行の結果は `attempts.tsv` と `cases/*.log` に残り、`report.json` には以下が入る。
+
+- `failed_case_details[]`: ケースごとの失敗理由 (`compile_unsupported` / `runtime_trap` など) と mode 別試行履歴
+- `failure_reason_counts`: 失敗理由の集計
+- `execution.trap_case_count`: 実行時 trap したケース数（計測自体は保持）
+- `spec.expected_failure_count` / `spec.unexpected_failure_count`:
+  backend capability matrix に対する仕様内/仕様外の失敗件数
+- `spec.mismatch_case_count`:
+  計測成功ケースの実行 backend が `expected_backend` と不一致だった件数
+
+`xsh/std/backend_capabilities.json` をデフォルト matrix として読み込み、
+失敗ケースごとに `expected_backend` (`wasm` / `wasm-js-string` / `either`)
+を参照して `spec_status` を付与する。
+`XSH_WASM_STD_COVERAGE_STRICT=1` では `unexpected_failure` または
+`mismatch_case_count > 0` の場合に失敗する。
+
+coverage の有効性判断は、全体率だけでなく `cases(total/measured/failed)` と `failure_reason_counts` を併せて行う。
+必要なら KPI gate を有効化し、閾値未達でコマンドを失敗させる。
+
+line 率は `line point` の重複ではなく `raw.lines` の unique line 数を使って集計する。
+`point` は細粒度カウンタ、`line` は運用 KPI として使い分ける。
+さらに `raw.lines` では source-map ノイズ（import 列挙行、構文ブロック終端の `}` 行）を
+`excluded=true` として line KPI から除外する。
+
+```bash
+XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE=50 \
+XSH_WASM_STD_COVERAGE_MIN_LINE_RATE=55 \
+just coverage-wasm-std
+```
+
+## Coverage の有用性判定（2026-02-11）
+
+実測（このリポジトリ現状）:
+- MoonBit coverage (`just coverage-moon`): `18718/29541` (`63.36%`)
+- Deno integration coverage (`just coverage-deno`): `All files line 69.9%`
+- xsh/std wasm coverage (`just coverage-wasm-std`): `626/626` (`100.00%`)
+
+運用判断:
+- `coverage-moon` はコンパイラ/型検査本体の回帰検知に有効（本命KPI）。
+- `coverage-deno` は wasm export 契約と JS バインディング回帰の検知に有効。
+- `coverage-wasm-std` は std テストシナリオの抜け検知に有効（backend matrix + strict 併用）。
+- 逆に、coverage 単体では意味論の正しさは保証しないため、
+  golden / integration / fixture テストとセットで見る。
 
 ## 一括実行
 

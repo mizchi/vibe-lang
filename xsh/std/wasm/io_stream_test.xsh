@@ -9,34 +9,43 @@ import {
   tui_clear_screen
 } from "./io_stream.xsh"
 
-test "stream helper signatures" {
-  let _ = (n: Int, s: String) -> String with {Stdin, Stdout} {
+test "stream helpers run" {
+  let run_stream = (n: Int, s: String) -> String with {Stdin, Stdout} {
     do {
       stdout_write(s)
       stdout_writeln(s)
       stdin_read(n)
     }
   }
-  assert(true)
+  let read = do {
+    run_stream(0, "")
+  }
+  assert(string_equals(read, ""))
 }
 
-test "ansi escape helper signature" {
-  let _ = (suffix: String) -> Unit with {Stdout} {
+test "ansi escape helper runs" {
+  let run_ansi = (suffix: String) -> Unit with {Stdout} {
     do {
       ansi_escape(suffix)
     }
   }
+  do {
+    run_ansi("")
+  }
   assert(true)
 }
 
-test "tui preset helpers typecheck" {
-  let _ = () -> Unit with {Stdout} {
+test "tui preset helpers run" {
+  let run_tui = () -> Unit with {Stdout} {
     do {
       tui_enter_alt_screen()
       tui_clear_screen()
       tui_cursor_home()
       tui_leave_alt_screen()
     }
+  }
+  do {
+    run_tui()
   }
   assert(true)
 }

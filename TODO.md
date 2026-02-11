@@ -120,6 +120,56 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     `to_string` を `[T: Show]` へ戻した。
   - P2 [done 2026-02-09]: Cleanup/deprecation close.
     `index.lock` を更新し、`just check && just test` 緑を確認。
+- xsh/std wasm-source coverage 実用化:
+  - P0 [done 2026-02-10]: `coverage-wasm-std` を multi-mode フォールバック対応。
+    `wasm -> wasm-js-string` の順で試行し、
+    `_build/coverage/wasm-std/attempts.tsv` と `cases/*.log` を出力。
+  - P0 [done 2026-02-10]: レポートを分析可能な形式へ拡張。
+    `_build/coverage/wasm-std/report.md` を追加し、
+    `failed_case_details[]`, `failure_reason_counts`,
+    `execution.trap_case_count` を `report.json` に追加。
+  - P0 [done 2026-02-10]: `coverage_wasm_std` 集計ロジックの Node テストを追加。
+    `scripts/coverage_wasm_std.test.mjs`
+  - P0 [done 2026-02-10]: `compile_unsupported` 上位要因を順に解消して measured case を増やす。
+    対象:
+    `__to_string` / externref return kind mismatch,
+    `abs`, `to_double`, `floor` 系数値 intrinsic,
+    local function arity (`go`)。
+    追加で `threads_probe_wat` / method-style record accessor (`call: kind`) も解消。
+  - P0 [done 2026-02-10]: `abs` / `to_double` / `go` 系の codegen 解消を実施。
+    - local function alias 呼び出し (`call local: abs`) を解消
+    - method-style `to_double` 呼び出しを wasm codegen で受理
+    - 同名ローカル再帰関数（`go`）のシグネチャ衝突を緩和
+    - captured function param 呼び出しの一部 (`call local: f`) を解消
+    追加テスト:
+    `src/tests/xsh_wasm_test.mbt`
+    - `xsh wasm compiles function alias calls`
+    - `xsh wasm compiles multiple local recursive \`go\` helpers`
+    - `xsh wasm compiles recursive helper with captured function param`
+    - `xsh wasm compiles Int method-style to_double call`
+  - P1 [done 2026-02-11]: wasm runtime trap ケースを分離・改善。
+    tagged-int 範囲の不整合（`int/double` 飽和境界）を修正し、
+    `coverage-wasm-std` の実行 trap を 0 件化。
+  - P1 [done 2026-02-11]: backend capability matrix を明文化。
+    `xsh/std/backend_capabilities.json` を導入し、
+    `xsh/std/*_test.xsh` ごとの expected backend
+    (`wasm` / `wasm-js-string` / `either`) を管理。
+    `coverage-wasm-std` 集計時に `spec_status`
+    (`expected_failure` / `unexpected_failure`) を判定する。
+    追加で成功ケースの backend mismatch も検出し、
+    strict で失敗させられるようにした。
+  - P1 [done 2026-02-10]: coverage KPI gate を追加。
+    `XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE` /
+    `XSH_WASM_STD_COVERAGE_MIN_LINE_RATE` で下限を指定し、
+    未達時に `coverage-wasm-std` を失敗させる。
+  - Progress (2026-02-11):
+    `just coverage-wasm-std` 実測は
+    `cases(total/measured/failed)=13/13/0`,
+    `execution(ok/trap)=13/0`,
+    `lines=626/626 (100.00%)`。
+    line 集計は point 重複ではなく unique line ベースへ正規化済みで、
+    source-map ノイズ（import 列挙行・`}` 終端行）は除外。
+    `compile_unsupported` は 0 件。
 
 ## Deferred
 
