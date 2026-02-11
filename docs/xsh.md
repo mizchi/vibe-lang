@@ -759,6 +759,13 @@ Bench:
 - `just bench-wasmtime` builds `cmd/xsh`, compiles `bench/bench_simple.xsh` to wasm,
   then benchmarks `wasmtime run --invoke run`.
 - `just bench-compare` compares interpreter (`cmd/xsh run`) vs `wasmtime run`.
+- `just bench-kpi [<file|dir...>]` runs `xsh bench` and writes a combined KPI report
+  (`per_us` + `wasm_bytes`) to `dist/bench_kpi/latest.tsv`.
+  - Default target (no args): `bench/kpi_bench.xsh` with numeric pipeline/state-mix cases.
+  - Default iterations/warmup: `wasm=20000/1000`, `interpreter=2000/200`.
+  - `XSH_BENCH_KPI_N` / `XSH_BENCH_KPI_WARMUP` to tune iterations.
+  - Optional thresholds: `XSH_BENCH_KPI_MAX_PER_US`,
+    `XSH_BENCH_KPI_MAX_WASM_BYTES`, `XSH_BENCH_KPI_MAX_SCORE`.
 - 言語組み込み benchmark:
   - `bench "name" { ... }` を `.xsh` に書き、`xsh bench <file|dir...>` で実行。
   - backend は `--backend wasm|interpreter`（`<file|dir...>` 指定時のデフォルトは `wasm`）。

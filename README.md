@@ -315,6 +315,8 @@ WASM GC fixtures live in `fixtures/wasm_gc/*.xsh` and check for `struct.new/get/
 ```bash
 just bench-wasmtime
 just bench-compare
+just bench-kpi
+just bench-kpi bench/kpi_bench.xsh
 just run bench examples/simple_bench.xsh
 just bench-cmd-latency
 just bench-scratch-workflow
@@ -327,6 +329,10 @@ just bench-typechecker
 `<file|dir...>` 指定時は `--backend wasm` がデフォルト（`--backend interpreter` で従来実装）。  
 legacy の式ベンチ (`--expr/--case/--cases`) は `interpreter` backend のみ対応。
 `--backend wasm` ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
+`just bench-kpi` は `xsh bench` の結果を `dist/bench_kpi/latest.tsv` に保存し、`per_us` と `wasm_bytes` を同時に確認できる。
+KPI しきい値は `XSH_BENCH_KPI_MAX_PER_US` / `XSH_BENCH_KPI_MAX_WASM_BYTES` / `XSH_BENCH_KPI_MAX_SCORE` で設定可能。
+引数なしの `just bench-kpi` は `bench/kpi_bench.xsh`（数値パイプライン/状態更新の4ケース）を対象にする。
+`XSH_BENCH_KPI_N` / `XSH_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000`, `interpreter=2000/200` を使う。
 
 `bench-scratch-workflow` は scratch 開発フローを段階別に計測する。
 

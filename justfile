@@ -170,6 +170,11 @@ bench-wasmtime:
 bench-compare:
     XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_compare.sh
 
+# Run language bench and collect latency + wasm size KPI in one report
+# env: XSH_BENCH_KPI_N, XSH_BENCH_KPI_WARMUP, XSH_BENCH_KPI_BACKEND, XSH_BENCH_KPI_MAX_PER_US, XSH_BENCH_KPI_MAX_WASM_BYTES, XSH_BENCH_KPI_MAX_SCORE, XSH_BENCH_KPI_DIR, XSH_BENCH_KPI_REPORT
+bench-kpi *paths:
+    scripts/bench_kpi.sh {{paths}}
+
 # Compare wasm js-string vs wasm gc on string-heavy workload
 bench-string-compare:
     XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh
