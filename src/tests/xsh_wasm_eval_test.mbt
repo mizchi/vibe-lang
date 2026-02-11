@@ -699,6 +699,154 @@ fn eval_run(script : String) -> WasmEvalResult raise WasmRunError {
 }
 
 ///|
+struct InterpreterEvalResult {
+  value : @core.Value
+  effects : Array[@xsh.Effect]
+}
+
+///|
+fn eval_run_interpreter_with_caps(
+  script : String,
+  caps : @capability.CapabilitySet,
+) -> InterpreterEvalResult raise WasmRunError {
+  let db = XshDb::new()
+  db.set_source("main", script)
+  let compiled = compile_module(db, "main") catch {
+    e => raise WasmRunError::Compile(e.to_string())
+  }
+  let rt = Runtime::new(caps)
+  let result = rt.run_compiled(compiled) catch {
+    e => raise WasmRunError::Eval(e.to_string())
+  }
+  let value = match result.last {
+    Some(value) => value
+    None => @core.Value::Unit
+  }
+  { value, effects: result.effects }
+}
+
+///|
+fn eval_run_interpreter(script : String) -> @core.Value raise WasmRunError {
+  let result = eval_run_interpreter_with_caps(
+    script,
+    @capability.CapabilitySet::new(),
+  )
+  result.value
+}
+
+///|
+fn collect_shell_exec_effects(effects : Array[@xsh.Effect]) -> Array[String] {
+  let out : Array[String] = []
+  for effect in effects {
+    match effect {
+      @xsh.Effect::ShellExec(cmd) => out.push(cmd)
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn decode_tagged_value(
+  mem : Array[Byte],
+  tagged : Int,
+  depth : Int,
+) -> @core.Value raise WasmEvalError {
+  if depth > 64 {
+    raise WasmEvalError::Unsupported("decode depth overflow")
+  }
+  if is_tagged_int(tagged) {
+    return @core.Value::Int(decode_int(tagged))
+  }
+  if is_tagged_bool(tagged) {
+    return @core.Value::Bool(decode_bool(tagged))
+  }
+  if !is_tagged_obj(tagged) {
+    if tagged == 0 {
+      return @core.Value::Unit
+    }
+    raise WasmEvalError::Unsupported(
+      "decode unsupported tagged value: " + tagged.to_string(),
+    )
+  }
+  let ty = object_type(mem, tagged)
+  if ty == obj_string {
+    return @core.Value::String(read_string_object(mem, tagged))
+  }
+  if ty == obj_path {
+    return @core.Value::Path(@core.Path::new(read_string_object(mem, tagged)))
+  }
+  if ty == obj_array {
+    let len = object_len(mem, tagged)
+    let base = untag_ptr(tagged)
+    let out : Array[@core.Value] = []
+    for i in 0..<len {
+      let item = read_u32_le(mem, base + 8 + i * 4)
+      out.push(decode_tagged_value(mem, item, depth + 1))
+    }
+    return @core.Value::Array(out)
+  }
+  if ty == obj_map {
+    let len = object_len(mem, tagged)
+    let base = untag_ptr(tagged)
+    let out : Map[String, @core.Value] = {}
+    for i in 0..<len {
+      let key_ptr = read_u32_le(mem, base + 8 + i * 8)
+      let value = read_u32_le(mem, base + 12 + i * 8)
+      let key = read_string_object(mem, key_ptr)
+      out[key] = decode_tagged_value(mem, value, depth + 1)
+    }
+    return @core.Value::Map(out)
+  }
+  raise WasmEvalError::Unsupported("decode unsupported object type")
+}
+
+///|
+fn assert_eval_backends_same(script : String) -> Unit raise {
+  let wasm_res = try eval_run(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let wasm_value = try decode_tagged_value(wasm_res.mem, wasm_res.value, 0) catch {
+    e => fail("wasm decode failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let interpreter_value = try eval_run_interpreter(script) catch {
+    e => fail("interpreter eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_eq(wasm_value, interpreter_value)
+}
+
+///|
+fn assert_eval_backends_same_with_shell_effects(script : String) -> Unit raise {
+  let wasm_res = try eval_run(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let wasm_value = try decode_tagged_value(wasm_res.mem, wasm_res.value, 0) catch {
+    e => fail("wasm decode failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let interpreter = try eval_run_interpreter_with_caps(
+    script,
+    @capability.CapabilitySet::developer(),
+  ) catch {
+    e => fail("interpreter eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let shell_effects = collect_shell_exec_effects(interpreter.effects)
+  assert_eq(wasm_value, interpreter.value)
+  assert_eq(wasm_res.outputs, shell_effects)
+}
+
+///|
 test "xsh wasm eval returns value" {
   let res = try eval_run("let x = 1\nx") catch {
     e => fail(e.to_string())
@@ -1026,4 +1174,25 @@ test "xsh wasm eval normalizes path" {
   assert_true(is_path)
   let normalized = read_string_object(res.mem, res.value)
   assert_eq(normalized, "/b")
+}
+
+///|
+test "xsh wasm eval matches interpreter for scalar outputs" {
+  assert_eval_backends_same("let x = 1\nadd(x, 2)")
+  assert_eval_backends_same("if lt(1, 2) { \"ok\" } else { \"ng\" }")
+  assert_eval_backends_same("not(and(true, false))")
+  assert_eval_backends_same("let p = path(\"a/../b\")\np")
+}
+
+///|
+test "xsh wasm eval matches interpreter for collection outputs" {
+  assert_eval_backends_same("[1, add(1, 2), 5]")
+  assert_eval_backends_same("map { a: 1, b: add(1, 2) }")
+}
+
+///|
+test "xsh wasm eval matches interpreter for shell effects" {
+  assert_eval_backends_same_with_shell_effects(
+    "do { sh(\"echo hello\") }\ndo { sh(\"echo world\") }\n42",
+  )
 }
