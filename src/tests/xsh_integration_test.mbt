@@ -492,17 +492,13 @@ test "xsh integration module-qualified import rejects member path" {
   db.set_source(
     "./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
   )
-  db.set_source(
-    "main", "use ./lib.xsh { module math::inc }\nmath::inc(1)",
-  )
+  db.set_source("main", "use ./lib.xsh { module math::inc }\nmath::inc(1)")
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
   )
   match compiled {
     Ok(_) => fail("expected parse error for module member import")
     Err(err) =>
-      assert_true(
-        err.to_string().contains("`use <module-ref> { module foo }`"),
-      )
+      assert_true(err.to_string().contains("`use <module-ref> { module foo }`"))
   }
 }

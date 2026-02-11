@@ -712,16 +712,12 @@ fn needs_space(
       if prev == lparen() || prev == lbracket() {
         return false
       }
-      if prev == use_kw() &&
-        (curr_kind == dot() || curr_kind == slash()) {
+      if prev == use_kw() && (curr_kind == dot() || curr_kind == slash()) {
         return true
       }
       if prev == slash() && curr_kind == name() {
         match prev_prev_kind {
-          Some(pp) =>
-            if pp == dot() || pp == use_kw() {
-              return false
-            }
+          Some(pp) => if pp == dot() || pp == use_kw() { return false }
           None => ()
         }
       }

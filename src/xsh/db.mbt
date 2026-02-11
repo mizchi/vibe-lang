@@ -91,6 +91,7 @@ fn supports_module_namespace_import(path : String) -> Bool {
   path.has_suffix(".xm")
 }
 
+///|
 fn collect_pat_bind_names(
   pat : @core.Pat,
   out : Map[String, @core.Span],
@@ -420,9 +421,7 @@ fn import_stmt_matches_spec(
       let source_norm = path_obj.normalized
       let source_base = strip_module_ext(source_norm)
       let imp_base = strip_module_ext(imp.path)
-      if source_norm == imp.path ||
-        path == imp.path ||
-        source_base == imp_base {
+      if source_norm == imp.path || path == imp.path || source_base == imp_base {
         true
       } else {
         match imp.path_obj {

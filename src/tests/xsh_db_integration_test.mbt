@@ -43,9 +43,7 @@ test "xsh warning reports unnecessary mut binding" {
 test "xsh warning reports unused import local name" {
   let db = XshDb::new()
   db.set_source("./lib.xsh", "export let foo = 1")
-  db.set_source(
-    "main", "use ./lib.xsh { foo as local_foo }\nlet x = 1\nx",
-  )
+  db.set_source("main", "use ./lib.xsh { foo as local_foo }\nlet x = 1\nx")
   let _ = db.types("main")
   let warnings = db.warnings("main")
   assert_eq(warnings.length(), 1)
@@ -113,9 +111,7 @@ test "xsh import cycle reports diagnostic" {
 test "xsh import keeps normalized path object" {
   let db = XshDb::new()
   db.set_source("/project/lib/util.xsh", "export let y = 2")
-  db.set_source(
-    "/project/main.xsh", "use ./lib/./util.xsh { y }\nlet x = y",
-  )
+  db.set_source("/project/main.xsh", "use ./lib/./util.xsh { y }\nlet x = y")
   let imports = db.imports("/project/main.xsh")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -294,9 +290,7 @@ test "xsh wasm import reports missing exported function" {
   }
   let db = XshDb::new()
   db.set_binary_source("./zlib.wasm", wasm)
-  db.set_source(
-    "main", "use ./zlib.wasm { deflate }\nlet x = deflate(1)\nx",
-  )
+  db.set_source("main", "use ./zlib.wasm { deflate }\nlet x = deflate(1)\nx")
   let _ = db.types("main")
   let diags = db.diagnostics("main")
   let mut found = false

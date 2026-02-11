@@ -33,7 +33,9 @@ test "xsh format roundtrip regression: trait impl import test and literals" {
     fail("[test quoted name] missing quoted test name\n---\n\{formatted}")
   }
   if not(formatted.contains("use ./mod.xsh")) {
-    fail("[use source spacing] missing use source clause spacing\n---\n\{formatted}")
+    fail(
+      "[use source spacing] missing use source clause spacing\n---\n\{formatted}",
+    )
   }
   if not(formatted.contains("\"hello world\"")) {
     fail("[string quotes] missing quoted string literal\n---\n\{formatted}")
@@ -168,9 +170,9 @@ test "xsh parse rejects quoted use source" {
     Ok(_) => fail("[parse] expected quoted use source to be rejected")
     Err(err) =>
       assert_true(
-        err.to_string().contains(
-          "module path without quotes (e.g. ./xsh/std/string.xsh)",
-        ),
+        err
+        .to_string()
+        .contains("module path without quotes (e.g. ./xsh/std/string.xsh)"),
       )
   }
 }
