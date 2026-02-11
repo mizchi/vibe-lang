@@ -1146,7 +1146,7 @@ fn AstParser::offset_at(self : AstParser, pos : Int) -> Int {
     pos
   }
   while i < limit {
-    offset += self.tokens[i].text().length()
+    offset += self.tokens[i].width()
     i += 1
   }
   offset
@@ -1161,7 +1161,7 @@ fn AstParser::span_from(self : AstParser, start_pos : Int) -> @core.Span {
 fn AstParser::token_span(self : AstParser) -> @core.Span {
   let start = self.offset_at(self.pos)
   let tok = self.peek()
-  @core.Span::new(start, start + tok.text().length())
+  @core.Span::new(start, start + tok.width())
 }
 
 ///|

@@ -1,4 +1,7 @@
-use ./option.xsh { Option }test "option_method_with_type_import_only" {
+use ./option.xsh {
+  Option
+}
+test "option_method_with_type_import_only" {
   assert(Option::is_some(Some(1)))
   assert(Some(2).is_some())
   assert(eq(None.unwrap_or(7), 7))

@@ -89,6 +89,7 @@ fn is_whitespace_char(c : Char) -> Bool {
 ///|
 /// Lex a string literal ("...") with basic escapes
 fn Lexer::lex_string(self : Lexer) -> Token {
+  let start = self.pos
   let _ = self.advance() // opening quote
   let buf = StringBuilder::new()
   let raw = StringBuilder::new()
@@ -166,27 +167,29 @@ fn Lexer::lex_string(self : Lexer) -> Token {
   match self.peek() {
     Some('"') => {
       let _ = self.advance()
+      let width = self.pos - start
       if has_interp {
-        Token::new(string_interp_lit(), raw.to_string())
+        Token::new_with_width(string_interp_lit(), raw.to_string(), width)
       } else {
-        Token::new(string_lit(), buf.to_string())
+        Token::new_with_width(string_lit(), buf.to_string(), width)
       }
     }
-    _ => Token::new(error_kind(), buf.to_string())
+    _ => Token::new_with_width(error_kind(), buf.to_string(), self.pos - start)
   }
 }
 
 ///|
 /// Lex a char literal ('a') with simple escapes
 fn Lexer::lex_char(self : Lexer) -> Token {
+  let start = self.pos
   let _ = self.advance() // opening quote
   match self.peek() {
-    None => Token::new(error_kind(), "'")
-    Some('\n') => Token::new(error_kind(), "'")
+    None => Token::new_with_width(error_kind(), "'", self.pos - start)
+    Some('\n') => Token::new_with_width(error_kind(), "'", self.pos - start)
     Some('\\') => {
       let _ = self.advance()
       match self.peek() {
-        None => Token::new(error_kind(), "'")
+        None => Token::new_with_width(error_kind(), "'", self.pos - start)
         Some(ch) => {
           let c = match ch {
             'n' => '\n'
@@ -201,9 +204,9 @@ fn Lexer::lex_char(self : Lexer) -> Token {
             let _ = self.advance()
             let buf = StringBuilder::new()
             buf.write_char(c)
-            Token::new(char_lit(), buf.to_string())
+            Token::new_with_width(char_lit(), buf.to_string(), self.pos - start)
           } else {
-            Token::new(error_kind(), "'")
+            Token::new_with_width(error_kind(), "'", self.pos - start)
           }
         }
       }
@@ -214,9 +217,9 @@ fn Lexer::lex_char(self : Lexer) -> Token {
         let _ = self.advance()
         let buf = StringBuilder::new()
         buf.write_char(ch)
-        Token::new(char_lit(), buf.to_string())
+        Token::new_with_width(char_lit(), buf.to_string(), self.pos - start)
       } else {
-        Token::new(error_kind(), "'")
+        Token::new_with_width(error_kind(), "'", self.pos - start)
       }
     }
   }
@@ -397,6 +400,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
               Token::new(slash_eq(), "/=")
             }
             Some('/') => {
+              let start = self.pos - 1
               let _ = self.advance()
               while (match self.peek() {
                       Some('\n') | None => false
@@ -404,7 +408,8 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                     }) {
                 let _ = self.advance()
               }
-              Token::new(whitespace(), "//")
+              let text = (try! self.input[start:self.pos]).to_string()
+              Token::new(whitespace(), text)
             }
             _ => Token::new(slash(), "/")
           }

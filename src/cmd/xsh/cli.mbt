@@ -81,8 +81,10 @@ fn print_usage() -> Unit {
   println(
     "  write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>  materialize selector",
   )
-  println("  fmt [--write] <file...>    format scripts via CST")
-  println("  normalize [--write] <file...>  normalize declaration order + DCE")
+  println("  fmt [--write] <file...>    normalize + format scripts")
+  println(
+    "  normalize [--write] <file...>  normalize declaration order + DCE (+fmt)",
+  )
   println(
     "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
   )
@@ -1046,6 +1048,46 @@ fn test_cmd(
 }
 
 ///|
+fn normalize_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    abort("normalize: expected <file...>")
+  }
+  let mut write = false
+  let files : Array[String] = []
+  for arg in args {
+    match arg {
+      "--write" | "-w" => write = true
+      _ => files.push(arg)
+    }
+  }
+  if files.length() == 0 {
+    abort("normalize: expected <file...>")
+  }
+  if not(write) && files.length() > 1 {
+    abort("normalize: use --write for multiple files")
+  }
+  for path in files {
+    let resolved = @loader.resolve_entry_path(path)
+    let normalized = match normalize_format_file_source(resolved) {
+      Ok(v) => v
+      Err(err) => abort("normalize: " + err)
+    }
+    let output = if write {
+      apply_lock_annotations_for_format(resolved, normalized)
+    } else {
+      normalized
+    }
+    if write {
+      @os_fs.write_string_to_file(resolved, output) catch {
+        e => abort("normalize: " + e.to_string())
+      }
+    } else {
+      println(output)
+    }
+  }
+}
+
+///|
 fn fmt_cmd(args : Array[String]) -> Unit {
   if args.length() == 0 {
     abort("fmt: expected <file...>")
@@ -1066,17 +1108,17 @@ fn fmt_cmd(args : Array[String]) -> Unit {
   }
   for path in files {
     let resolved = @loader.resolve_entry_path(path)
-    let src = @os_fs.read_file_to_string(path) catch {
-      e => abort("fmt: " + e.to_string())
+    let formatted = match normalize_format_file_source(resolved) {
+      Ok(v) => v
+      Err(err) => abort("fmt: " + err)
     }
-    let formatted = @parser.format_script(src)
     let output = if write {
       apply_lock_annotations_for_format(resolved, formatted)
     } else {
       formatted
     }
     if write {
-      @os_fs.write_string_to_file(path, output) catch {
+      @os_fs.write_string_to_file(resolved, output) catch {
         e => abort("fmt: " + e.to_string())
       }
     } else {

@@ -14,16 +14,15 @@ use ./threads.xsh {
   send,
   recv,
   wait
-}test "threads probe helper typecheck" {
+}
+test "threads probe helper typecheck" {
   let _ = probe_wat
   assert(true)
 }
-
 test "threads runtime hints helper typecheck" {
   let _ = runtime_hints
   assert(true)
 }
-
 test "threads stable recommendation helpers run without unstable flag" {
   let wasm_flags = recommended_wasm_flags()
   let wasi_flags = recommended_wasi_flags()
@@ -35,7 +34,6 @@ test "threads stable recommendation helpers run without unstable flag" {
   assert(recommended_wasm_env() == "threads=y shared-memory=y")
   assert(recommended_wasi_env() == "threads=y")
 }
-
 test "threads task/channel/actor spec shape" {
   let task = task_spec("worker", "worker_entry")
   let channel = channel_spec("jobs", 8)
@@ -47,12 +45,10 @@ test "threads task/channel/actor spec shape" {
   assert(actor.kind == "actor")
   assert(actor.mailbox == "jobs")
 }
-
 test "threads channel capacity is clamped at zero" {
   let channel = channel_spec("jobs", -1)
   assert(channel.capacity == 0)
 }
-
 test "threads deployment plan uses stable recommendations" {
   let task = task_spec("worker", "worker_entry")
   let channel = channel_spec("jobs", 4)
@@ -62,14 +58,27 @@ test "threads deployment plan uses stable recommendations" {
   assert(plan.wasi_env == "threads=y")
   assert(plan.unstable_flag == "--unstable-threads")
 }
-
 test "threads unstable runtime APIs stay thunk-only in std tests" {
-  let probe_fn = () -> String { probe_wat() }
-  let runtime_hints_fn = () { runtime_hints() }
-  let channel_new_fn = () -> Int { channel_new(1) }
-  let spawn_fn = (ch: Int) -> Int { spawn("worker", ch) }
-  let send_fn = (ch: Int) -> Bool { send(ch, "msg") }
-  let recv_fn = (ch: Int) -> String { recv(ch) }
-  let wait_fn = (task: Int) -> Int { wait(task) }
+  let probe_fn = () -> String {
+    probe_wat()
+  }
+  let runtime_hints_fn = () {
+    runtime_hints()
+  }
+  let channel_new_fn = () -> Int {
+    channel_new(1)
+  }
+  let spawn_fn = (ch: Int) -> Int {
+    spawn("worker", ch)
+  }
+  let send_fn = (ch: Int) -> Bool {
+    send(ch, "msg")
+  }
+  let recv_fn = (ch: Int) -> String {
+    recv(ch)
+  }
+  let wait_fn = (task: Int) -> Int {
+    wait(task)
+  }
   assert(true)
 }

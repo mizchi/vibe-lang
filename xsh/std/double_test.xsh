@@ -15,63 +15,53 @@ use ./double.xsh {
   cube,
   lerp,
   approx_eq
-}let double_int_max_value = 536870911.0
+}
+let double_int_max_value = 536870911.0
 let double_int_min_value = -536870912.0
-
 test "double_abs" {
   assert(eq(abs(3.5), 3.5))
   assert(eq(abs(-3.5), 3.5))
   assert(eq(abs(0.0), 0.0))
 }
-
 test "double_signum" {
   assert(eq(signum(5.0), 1.0))
   assert(eq(signum(-5.0), -1.0))
   assert(eq(signum(0.0), 0.0))
 }
-
 test "double_is_nan" {
-  // Note: can't directly create NaN in xsh, so just test non-NaN
   assert(not(is_nan(1.0)))
   assert(not(is_nan(0.0)))
 }
-
 test "double_max_min" {
   assert(eq(max(3.0, 7.0), 7.0))
   assert(eq(min(3.0, 7.0), 3.0))
   assert(eq(max(-1.0, -5.0), -1.0))
   assert(eq(min(-1.0, -5.0), -5.0))
 }
-
 test "double_clamp" {
   assert(eq(clamp(5.0, 0.0, 10.0), 5.0))
   assert(eq(clamp(-5.0, 0.0, 10.0), 0.0))
   assert(eq(clamp(15.0, 0.0, 10.0), 10.0))
 }
-
 test "double_floor_ceil" {
   assert(eq(floor(3.7), 3.0))
   assert(eq(floor(-3.7), -4.0))
   assert(eq(ceil(3.2), 4.0))
   assert(eq(ceil(-3.2), -3.0))
 }
-
 test "double_round" {
   assert(eq(round(3.4), 3.0))
   assert(eq(round(3.5), 4.0))
   assert(eq(round(-3.4), -3.0))
   assert(eq(round(-3.5), -4.0))
 }
-
 test "double_trunc_fract" {
   assert(eq(trunc(3.7), 3.0))
   assert(eq(trunc(-3.7), -3.0))
-  // fract test with tolerance
   let f = fract(3.75)
   assert(f > 0.74)
   assert(f < 0.76)
 }
-
 test "double_floor_ceil_trunc_saturate_int_range" {
   assert(eq(floor(1.0e20), double_int_max_value))
   assert(eq(ceil(1.0e20), double_int_max_value))
@@ -80,23 +70,19 @@ test "double_floor_ceil_trunc_saturate_int_range" {
   assert(eq(ceil(-1.0e20), double_int_min_value))
   assert(eq(trunc(-1.0e20), double_int_min_value))
 }
-
 test "double_square_cube" {
   assert(eq(square(3.0), 9.0))
   assert(eq(cube(2.0), 8.0))
 }
-
 test "double_lerp" {
   assert(eq(lerp(0.0, 10.0, 0.5), 5.0))
   assert(eq(lerp(0.0, 10.0, 0.0), 0.0))
   assert(eq(lerp(0.0, 10.0, 1.0), 10.0))
 }
-
 test "double_approx_eq boundary" {
   assert(approx_eq(1.0, 1.5, 0.5))
   assert(not(approx_eq(1.0, 1.500001, 0.5)))
 }
-
 test "double_type_members" {
   assert(eq(Double::abs(-3.5), 3.5))
   assert(eq(Double::floor(3.7), 3.0))

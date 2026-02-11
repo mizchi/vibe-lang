@@ -3,16 +3,17 @@ use ./io.xsh {
   stdout_writeln,
   stdin_read,
   stdin_read_line
-}test "string_from_char_code basic" {
+}
+test "string_from_char_code basic" {
   assert(string_equals(string_from_char_code(65), "A"))
 }
-
 test "stdin_read_line eof is empty by default" {
   assert(string_equals(stdin_read_line(), ""))
 }
-
 test "stdout helpers run" {
-  let run_stdout = (s: String) -> Unit with {Stdout} {
+  let run_stdout = (s: String) -> Unit with {
+    Stdout
+  } {
     do {
       stdout_write(s)
       stdout_writeln(s)
@@ -23,9 +24,10 @@ test "stdout helpers run" {
   }
   assert(true)
 }
-
 test "stream helpers run" {
-  let run_stream = (n: Int, s: String) -> String with {Stdin, Stdout} {
+  let run_stream = (n: Int, s: String) -> String with {
+    Stdin, Stdout
+  } {
     do {
       stdout_write(s)
       stdin_read(n)

@@ -42,7 +42,8 @@ use ./opcodes.xsh {
   f64_convert_i32_s,
   i32_trunc_f32_s,
   i32_trunc_f64_s
-}test "i32 arithmetic and bitwise" {
+}
+test "i32 arithmetic and bitwise" {
   assert(eq(i32_add(40, 2), 42))
   assert(eq(i32_sub(50, 8), 42))
   assert(eq(i32_mul(6, 7), 42))
@@ -52,7 +53,6 @@ use ./opcodes.xsh {
   assert(eq(i32_or(34, 10), 42))
   assert(eq(i32_xor(47, 5), 42))
 }
-
 test "i32 shift and compare" {
   assert(eq(i32_shl(21, 1), 42))
   assert(eq(i32_shr_s(-84, 1), -42))
@@ -64,7 +64,6 @@ test "i32 shift and compare" {
   assert(eq(i32_gt_s(3, 2), 1))
   assert(eq(i32_ge_s(3, 3), 1))
 }
-
 test "f32 operations" {
   assert(eq(f32_add(40.0f, 2.0f), 42.0f))
   assert(eq(f32_sub(50.0f, 8.0f), 42.0f))
@@ -77,7 +76,6 @@ test "f32 operations" {
   assert(eq(f32_gt(3.0f, 2.0f), 1))
   assert(eq(f32_ge(3.0f, 3.0f), 1))
 }
-
 test "f64 operations" {
   assert(eq(f64_add(40.0, 2.0), 42.0))
   assert(eq(f64_sub(50.0, 8.0), 42.0))
@@ -90,7 +88,6 @@ test "f64 operations" {
   assert(eq(f64_gt(3.0, 2.0), 1))
   assert(eq(f64_ge(3.0, 3.0), 1))
 }
-
 test "conversion operations" {
   assert(eq(f64_promote_f32(1.5f), 1.5))
   assert(eq(f32_demote_f64(1.5), 1.5f))

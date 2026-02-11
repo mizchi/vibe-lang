@@ -4,20 +4,19 @@ use ./path.xsh {
   from_literal,
   dynamic,
   resolve
-}test "path from_literal returns absolute path" {
+}
+test "path from_literal returns absolute path" {
   let path = from_literal("./xsh/std/string.xsh")
   assert(path.is_absolute())
   let raw = path.as_string()
   assert(eq(string_char_code_at(raw, 0), 47))
 }
-
 test "dynamic path resolve is Env effectful" {
   let path = do {
     resolve(dynamic("./xsh/std/string.xsh"))
   }
   assert(path.is_absolute())
 }
-
 test "DynamicPath method wrappers are available" {
   let dynamic_path = dynamic("./foo/../bar.xsh")
   assert(string_equals(dynamic_path.as_string(), "./foo/../bar.xsh"))

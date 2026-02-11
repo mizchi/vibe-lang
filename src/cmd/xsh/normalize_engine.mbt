@@ -35,62 +35,20 @@ struct NormalizeInlineCandidate {
 }
 
 ///|
-fn normalize_cmd(args : Array[String]) -> Unit {
-  if args.length() == 0 {
-    abort("normalize: expected <file...>")
+pub fn normalize_format_file_source(path : String) -> Result[String, String] {
+  let src = @os_fs.read_file_to_string(path) catch {
+    e => return Err("normalize: " + e.to_string())
   }
-  let mut write = false
-  let files : Array[String] = []
-  for arg in args {
-    match arg {
-      "--write" | "-w" => write = true
-      _ => files.push(arg)
-    }
-  }
-  if files.length() == 0 {
-    abort("normalize: expected <file...>")
-  }
-  if not(write) && files.length() > 1 {
-    abort("normalize: use --write for multiple files")
-  }
-  for path in files {
-    let resolved = @loader.resolve_entry_path(path)
-    let src = @os_fs.read_file_to_string(resolved) catch {
-      e => abort("normalize: " + e.to_string())
-    }
-    let normalized = match normalize_source_text(src) {
-      Ok(v) => v
-      Err(err) => abort(err)
-    }
-    let output = if write {
-      normalize_apply_lock_annotations_for_format(resolved, normalized)
-    } else {
-      normalized
-    }
-    if write {
-      @os_fs.write_string_to_file(resolved, output) catch {
-        e => abort("normalize: " + e.to_string())
-      }
-    } else {
-      println(output)
-    }
-  }
+  normalize_format_source_text(src)
 }
 
 ///|
-fn normalize_apply_lock_annotations_for_format(
-  path : String,
-  source : String,
-) -> String {
-  let lock_path = @codebase.lock_file_path(path)
-  let lock = match @codebase.load_lock_data(lock_path) {
+pub fn normalize_format_source_text(source : String) -> Result[String, String] {
+  let normalized = match normalize_source_text(source) {
     Ok(v) => v
-    Err(err) => abort("normalize: " + err)
+    Err(err) => return Err(err)
   }
-  match @codebase.apply_annotations_to_source(path, source, lock.annotations) {
-    Ok(v) => v
-    Err(err) => abort("normalize: " + err)
-  }
+  Ok(@parser.format_script(normalized))
 }
 
 ///|
@@ -517,16 +475,51 @@ fn normalize_render_stmt(
   let rewritten_expr = rewritten_exprs.get(key)
   let annotation = inferred_annotations.get(key)
   match stmt {
-    @xsh_core.Stmt::Let(rec~, name~, expr~, ..) =>
+    @xsh_core.Stmt::Let(rec~, name~, expr~, span~) => {
+      if rewritten_expr is None && annotation is None {
+        let snippet = normalize_source_slice_by_span(
+            source,
+            span.start,
+            span.end,
+          )
+          .trim()
+          .to_string()
+        if normalize_render_stmt_accept_raw_snippet(snippet) {
+          return Some(snippet)
+        }
+      }
       normalize_render_let_stmt(
         source, false, rec, name, expr, rewritten_expr, annotation,
       )
-    @xsh_core.Stmt::ExportLet(rec~, name~, expr~, ..) =>
+    }
+    @xsh_core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      if rewritten_expr is None && annotation is None {
+        let snippet = normalize_source_slice_by_span(
+            source,
+            span.start,
+            span.end,
+          )
+          .trim()
+          .to_string()
+        if normalize_render_stmt_accept_raw_snippet(snippet) {
+          return Some(snippet)
+        }
+      }
       normalize_render_let_stmt(
         source, true, rec, name, expr, rewritten_expr, annotation,
       )
+    }
     _ => normalize_render_stmt_fallback(stmt)
   }
+}
+
+///|
+fn normalize_render_stmt_accept_raw_snippet(snippet : String) -> Bool {
+  if snippet.length() == 0 {
+    return false
+  }
+  let parsed = @parser.parse_ast(snippet) catch { _ => return false }
+  parsed.stmts.length() == 1
 }
 
 ///|
@@ -539,9 +532,6 @@ fn normalize_render_let_stmt(
   rewritten_expr : @xsh_core.Expr?,
   annotation : String?,
 ) -> String? {
-  if rewritten_expr is None && annotation is None {
-    return None
-  }
   let expr_text = match rewritten_expr {
     Some(expr) =>
       match normalize_render_expr_for_stmt(source, expr) {
@@ -549,13 +539,17 @@ fn normalize_render_let_stmt(
         None => return None
       }
     None =>
-      normalize_source_slice_by_span(
-        source,
-        original_expr.span().start,
-        original_expr.span().end,
-      )
-      .trim()
-      .to_string()
+      match normalize_render_expr_for_stmt(source, original_expr) {
+        Some(v) => v
+        None =>
+          normalize_source_slice_by_span(
+            source,
+            original_expr.span().start,
+            original_expr.span().end,
+          )
+          .trim()
+          .to_string()
+      }
   }
   if expr_text.length() == 0 {
     return None

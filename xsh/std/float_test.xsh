@@ -9,47 +9,39 @@ use ./float.xsh {
   clamp,
   square,
   lerp
-}test "float_abs" {
+}
+test "float_abs" {
   assert(eq(abs(3.5f), 3.5f))
   assert(eq(abs(-3.5f), 3.5f))
   assert(eq(abs(0.0f), 0.0f))
 }
-
 test "float_signum" {
   assert(signum(5.0f) > 0.0f)
   assert(signum(-5.0f) < 0.0f)
   assert(eq(signum(0.0f), 0.0f))
 }
-
 test "float_is_nan" {
-  // Note: can't directly create NaN in xsh, so just test non-NaN
   assert(not(is_nan(1.0f)))
   assert(not(is_nan(0.0f)))
 }
-
 test "float_max_min" {
   assert(eq(max(3.0f, 7.0f), 7.0f))
   assert(eq(min(3.0f, 7.0f), 3.0f))
 }
-
 test "float_clamp" {
   assert(eq(clamp(5.0f, 0.0f, 10.0f), 5.0f))
   assert(eq(clamp(-5.0f, 0.0f, 10.0f), 0.0f))
   assert(eq(clamp(15.0f, 0.0f, 10.0f), 10.0f))
 }
-
 test "float_square" {
   assert(eq(square(3.0f), 9.0f))
   assert(eq(square(0.0f), 0.0f))
 }
-
 test "float_lerp" {
   let result = lerp(0.0f, 10.0f, 0.5f)
-  // Use tolerance check
   assert(result > 4.9f)
   assert(result < 5.1f)
 }
-
 test "float_type_members" {
   assert(eq(Float::abs(-3.5f), 3.5f))
   assert(eq(Float::max(3.0f, 7.0f), 7.0f))

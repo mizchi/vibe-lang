@@ -7,8 +7,11 @@ use ./io_stream.xsh {
   tui_leave_alt_screen,
   tui_cursor_home,
   tui_clear_screen
-}test "stream helpers run" {
-  let run_stream = (n: Int, s: String) -> String with {Stdin, Stdout} {
+}
+test "stream helpers run" {
+  let run_stream = (n: Int, s: String) -> String with {
+    Stdin, Stdout
+  } {
     do {
       stdout_write(s)
       stdout_writeln(s)
@@ -20,9 +23,10 @@ use ./io_stream.xsh {
   }
   assert(string_equals(read, ""))
 }
-
 test "ansi escape helper runs" {
-  let run_ansi = (suffix: String) -> Unit with {Stdout} {
+  let run_ansi = (suffix: String) -> Unit with {
+    Stdout
+  } {
     do {
       ansi_escape(suffix)
     }
@@ -32,9 +36,10 @@ test "ansi escape helper runs" {
   }
   assert(true)
 }
-
 test "tui preset helpers run" {
-  let run_tui = () -> Unit with {Stdout} {
+  let run_tui = () -> Unit with {
+    Stdout
+  } {
     do {
       tui_enter_alt_screen()
       tui_clear_screen()

@@ -3,11 +3,22 @@
 pub struct Token {
   kind : @cst.SyntaxKind
   text : String
+  width : Int
 } derive(Show, Eq)
 
 ///|
 pub fn Token::new(kind : @cst.SyntaxKind, text : String) -> Token {
-  Token::{ kind, text }
+  Token::{ kind, text, width: text.length() }
+}
+
+///|
+pub fn Token::new_with_width(
+  kind : @cst.SyntaxKind,
+  text : String,
+  width : Int,
+) -> Token {
+  let safe_width = if width < 0 { 0 } else { width }
+  Token::{ kind, text, width: safe_width }
 }
 
 ///|
@@ -18,4 +29,9 @@ pub fn Token::kind(self : Token) -> @cst.SyntaxKind {
 ///|
 pub fn Token::text(self : Token) -> String {
   self.text
+}
+
+///|
+pub fn Token::width(self : Token) -> Int {
+  self.width
 }

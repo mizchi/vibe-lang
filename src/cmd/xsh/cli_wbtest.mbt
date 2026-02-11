@@ -998,6 +998,39 @@ test "normalize source inserts inferred annotation on non-fn let" {
 }
 
 ///|
+test "normalize source succeeds for xsh std files" {
+  let files = wbtest_collect_xsh_files_recursive("xsh/std")
+  if files.length() == 0 {
+    fail("[xsh/std] no .xsh files found")
+  }
+  for path in files {
+    let source = @os_fs.read_file_to_string(path) catch {
+      e => fail("[\{path}] read failed: \{e.to_string()}")
+    }
+    let _ = match normalize_source_text(source) {
+      Ok(v) => v
+      Err(msg) => fail("[\{path}] normalize failed: " + msg)
+    }
+  }
+}
+
+///|
+test "fmt pipeline applies normalize rules" {
+  let source =
+    #|let dead = () -> Int { 0 }
+    #|let helper = () -> Int { 1 }
+    #|export let run = () -> Int { helper() }
+    #|export { run }
+  let output = match normalize_format_source_text(source) {
+    Ok(v) => v
+    Err(err) => fail("fmt pipeline failed: " + err)
+  }
+  assert_false(output.contains("let dead ="))
+  assert_true(output.contains("let helper ="))
+  assert_true(output.contains("export let run ="))
+}
+
+///|
 test "normalize fixtures input output pairs" {
   let fixture_dir = "src/cmd/xsh/fixtures/normalize"
   let entries = @os_fs.read_dir(fixture_dir) catch {
@@ -1187,6 +1220,40 @@ fn wbtest_replace_suffix(
   match path.strip_suffix(suffix) {
     Some(view) => view.to_string() + new_suffix
     None => path
+  }
+}
+
+///|
+fn wbtest_collect_xsh_files_recursive(root : String) -> Array[String] {
+  let out : Array[String] = []
+  wbtest_collect_xsh_files_recursive_impl(root, out)
+  wbtest_sort_strings(out)
+  out
+}
+
+///|
+fn wbtest_collect_xsh_files_recursive_impl(
+  dir : String,
+  out : Array[String],
+) -> Unit {
+  let entries = @os_fs.read_dir(dir) catch {
+    e => abort("[\{dir}] read_dir failed: \{e.to_string()}")
+  }
+  for entry in entries {
+    let path = if entry.has_prefix(dir + "/") {
+      entry
+    } else {
+      dir + "/" + entry
+    }
+    let is_dir = @os_fs.is_dir(path) catch { _ => false }
+    if is_dir {
+      wbtest_collect_xsh_files_recursive_impl(path, out)
+      continue
+    }
+    let is_file = @os_fs.is_file(path) catch { _ => false }
+    if is_file && path.has_suffix(".xsh") {
+      out.push(path)
+    }
   }
 }
 
