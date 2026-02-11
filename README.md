@@ -315,12 +315,17 @@ WASM GC fixtures live in `fixtures/wasm_gc/*.xsh` and check for `struct.new/get/
 ```bash
 just bench-wasmtime
 just bench-compare
+just run bench examples/simple_bench.xsh
 just bench-cmd-latency
 just bench-scratch-workflow
 just bench-symbol-index
 just bench-advanced-graph
 just bench-typechecker
 ```
+
+`xsh bench` は `bench {}` ブロックを言語機能として実行する。  
+`<file|dir...>` 指定時は `--backend wasm` がデフォルト（`--backend interpreter` で従来実装）。  
+legacy の式ベンチ (`--expr/--case/--cases`) は `interpreter` backend のみ対応。
 
 `bench-scratch-workflow` は scratch 開発フローを段階別に計測する。
 

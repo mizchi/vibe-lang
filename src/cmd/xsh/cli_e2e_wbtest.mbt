@@ -123,6 +123,34 @@ test "cli symbols cmd options parse json" {
 }
 
 ///|
+test "cli bench backend parse" {
+  match parse_bench_backend("wasm") {
+    Some(backend) => assert_eq(bench_backend_name(backend), "wasm")
+    None => fail("expected wasm backend")
+  }
+  match parse_bench_backend("interpreter") {
+    Some(backend) => assert_eq(bench_backend_name(backend), "interpreter")
+    None => fail("expected interpreter backend")
+  }
+  match parse_bench_backend("interp") {
+    Some(backend) => assert_eq(bench_backend_name(backend), "interpreter")
+    None => fail("expected interpreter backend alias")
+  }
+  match parse_bench_backend("unknown") {
+    Some(_) => fail("unexpected backend")
+    None => ()
+  }
+}
+
+///|
+test "cli bench uses expr mode ignores backend with path" {
+  assert_false(
+    bench_uses_expr_mode(["--backend", "wasm", "examples/simple_bench.xsh"]),
+  )
+  assert_true(bench_uses_expr_mode(["--backend", "interpreter"]))
+}
+
+///|
 test "cli symbols cmd options reject unknown option" {
   let parsed = parse_symbols_cmd_args(["--wat", "main.xsh"])
   match parsed {

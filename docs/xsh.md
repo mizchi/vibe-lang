@@ -759,12 +759,16 @@ Bench:
 - `just bench-wasmtime` builds `cmd/xsh`, compiles `bench/bench_simple.xsh` to wasm,
   then benchmarks `wasmtime run --invoke run`.
 - `just bench-compare` compares interpreter (`cmd/xsh run`) vs `wasmtime run`.
-- `xsh bench --n 20000 --warmup 1000 --expr "add(1,2)"` measures per-command latency
-  after startup inside a single process.
-- `xsh bench --case sum=add(1,2) --case "1 == 1"` runs multiple named
-  expression benchmarks in one invocation.
-- `xsh bench --cases bench/cases.txt` loads benchmark cases from file
-  (one case per line, `name=expr` or plain `expr`; blank/comment lines are ignored).
+- 言語組み込み benchmark:
+  - `bench "name" { ... }` を `.xsh` に書き、`xsh bench <file|dir...>` で実行。
+  - backend は `--backend wasm|interpreter`（`<file|dir...>` 指定時のデフォルトは `wasm`）。
+  - ディレクトリ指定時は top-level の `*_bench.xsh` を探索。
+  - `--n` / `--warmup` は benchmark 実行回数に適用。
+- 互換の expression benchmark モード（legacy）:
+  - `--backend interpreter` のみ対応（`--backend wasm` は非対応）。
+  - `xsh bench --n 20000 --warmup 1000 --expr "add(1,2)"`
+  - `xsh bench --case sum=add(1,2) --case "1 == 1"`
+  - `xsh bench --cases bench/cases.txt`
 - `xsh index ref push <scope> <index-file>` / `pull <scope> <out-file>` maps advanced graph snapshots to git/bit refs under
   `refs/bit/index/<scope>/graph/head`.
 - `xsh index ref push-delta <scope> <delta-file>` / `pull-delta <scope> <out-file>` maps advanced graph deltas to
