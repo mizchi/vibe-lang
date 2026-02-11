@@ -299,19 +299,16 @@ fn analyze_module(
               match item.kind {
                 @core.ImportKind::Module => {
                   if not(module_namespace_ok) {
-                    local_diags.push(
-                      @core.Diagnostic::{
-                        stage: "import",
-                        message:
-                          "module import is only supported for .xm source: " +
-                          resolved_path,
-                        span: Some(span),
-                        hint: Some(
-                          "use `.xm` for multi-module files, or import explicit exported symbols from `.xsh`",
-                        ),
-                        note: None,
-                      },
-                    )
+                    local_diags.push(@core.Diagnostic::{
+                      stage: "import",
+                      message: "module import is only supported for .xm source: " +
+                      resolved_path,
+                      span: Some(span),
+                      hint: Some(
+                        "use `.xm` for multi-module files, or import explicit exported symbols from `.xsh`",
+                      ),
+                      note: None,
+                    })
                     continue
                   }
                   let source_prefix = source_name + "::"

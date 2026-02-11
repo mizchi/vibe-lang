@@ -237,15 +237,14 @@ pub fn Runtime::eval_module(
                   if should_bind_runtime_value(item, import_name) {
                     bind_import(import_name, local_name)
                   }
-                  bind_namespace_members(item, import_name, local_name) |> ignore
+                  bind_namespace_members(item, import_name, local_name)
+                  |> ignore
                 }
                 None =>
                   if item.rename is None {
                     // Namespace import: `import { Int }` brings `Int::...`.
                     let imported_any = bind_namespace_members(
-                      item,
-                      import_name,
-                      import_name,
+                      item, import_name, import_name,
                     )
                     if not(imported_any) {
                       raise EvalError::ImportError(

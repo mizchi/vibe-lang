@@ -38,12 +38,12 @@ fn known_xsh_non_command_names() -> Map[String, Bool] {
   let builtins = [
     "path", "addr", "sh", "sh_lines", "sleep", "stdin_read_char", "stdin_read_stream",
     "stdout_write_char", "stdout_write_stream", "string_from_char_code", "string_length",
-    "string_utf8_length", "string_utf16_length", "string_unicode_length",
-    "string_char_code_at", "string_substring", "string_concat", "string_equals",
-    "string_split", "string_index_of", "string_contains", "string_trim", "array_length",
-    "array_get", "array_slice", "array_builder", "array_builder_push", "array_builder_freeze",
-    "map_builder", "map_builder_set", "map_builder_freeze", "map_keys", "map_values",
-    "map_has_key", "record_set",
+    "string_utf8_length", "string_utf16_length", "string_unicode_length", "string_char_code_at",
+    "string_substring", "string_concat", "string_equals", "string_split", "string_index_of",
+    "string_contains", "string_trim", "array_length", "array_get", "array_slice",
+    "array_builder", "array_builder_push", "array_builder_freeze", "map_builder",
+    "map_builder_set", "map_builder_freeze", "map_keys", "map_values", "map_has_key",
+    "record_set",
   ]
   for name in builtins {
     out[name] = true

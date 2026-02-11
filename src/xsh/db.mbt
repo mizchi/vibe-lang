@@ -1174,9 +1174,8 @@ pub fn XshDb::new() -> XshDb {
                       if not(module_namespace_ok) {
                         diags.push(rt, @core.Diagnostic::{
                           stage: "import",
-                          message:
-                            "module import is only supported for .xm source: " +
-                            imp.path,
+                          message: "module import is only supported for .xm source: " +
+                          imp.path,
                           span: Some(span),
                           hint: Some(
                             "use `.xm` for multi-module files, or import explicit exported symbols from `.xsh`",
@@ -1226,7 +1225,9 @@ pub fn XshDb::new() -> XshDb {
                     } else if item.rename is None {
                       // Namespace import: `import { Int }` or `import { type Int }`
                       // brings all `Int::...` exports.
-                      let imported_any = import_namespace_members(item, name, name)
+                      let imported_any = import_namespace_members(
+                        item, name, name,
+                      )
                       if item.kind != @core.ImportKind::Value &&
                         not(imported_any) {
                         report_kind_mismatch(item, name)

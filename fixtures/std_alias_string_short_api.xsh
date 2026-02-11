@@ -1,4 +1,4 @@
-import { is_empty, contains, replace_all } from "./xsh/std/string.xsh"
+import { String } from "./xsh/std/string.xsh"
 
 let a = "".is_empty()
 let b = "hello world".contains("lo wo")

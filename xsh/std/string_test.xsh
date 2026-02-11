@@ -1,63 +1,33 @@
-import {
-  String,
-  is_empty,
-  is_not_empty,
-  utf8_length,
-  utf16_length,
-  unicode_length,
-  is_blank,
-  equals,
-  compare,
-  head,
-  tail,
-  last,
-  init,
-  take,
-  drop,
-  repeat,
-  pad_left,
-  pad_right,
-  starts_with,
-  ends_with,
-  contains,
-  index_of,
-  last_index_of,
-  count,
-  replace,
-  replace_all,
-  trim,
-  trim_start,
-  trim_end
-} from "./string.xsh"
+import { String, from_char_code } from "./string.xsh"
 
-let string_is_empty = is_empty
-let string_is_not_empty = is_not_empty
-let string_utf8_length = utf8_length
-let string_utf16_length = utf16_length
-let string_unicode_length = unicode_length
-let string_is_blank = is_blank
-let string_equals_std = equals
-let string_compare = compare
-let string_head = head
-let string_tail = tail
-let string_last = last
-let string_init = init
-let string_take = take
-let string_drop = drop
-let string_repeat = repeat
-let string_pad_left = pad_left
-let string_pad_right = pad_right
-let string_starts_with = starts_with
-let string_ends_with = ends_with
-let string_contains = contains
-let string_index_of = index_of
-let string_last_index_of = last_index_of
-let string_count = count
-let string_replace = replace
-let string_replace_all = replace_all
-let string_trim = trim
-let string_trim_start = trim_start
-let string_trim_end = trim_end
+let string_is_empty = String::is_empty
+let string_is_not_empty = String::is_not_empty
+let string_utf8_length = String::utf8_length
+let string_utf16_length = String::utf16_length
+let string_unicode_length = String::unicode_length
+let string_is_blank = String::is_blank
+let string_equals_std = String::equals
+let string_compare = String::compare
+let string_head = String::head
+let string_tail = String::tail
+let string_last = String::last
+let string_init = String::init
+let string_take = String::take
+let string_drop = String::drop
+let string_repeat = String::repeat
+let string_pad_left = String::pad_left
+let string_pad_right = String::pad_right
+let string_starts_with = String::starts_with
+let string_ends_with = String::ends_with
+let string_contains = String::contains
+let string_index_of = String::index_of
+let string_last_index_of = String::last_index_of
+let string_count = String::count
+let string_replace = String::replace
+let string_replace_all = String::replace_all
+let string_trim = String::trim
+let string_trim_start = String::trim_start
+let string_trim_end = String::trim_end
 
 test "string_is_empty" {
   assert(string_is_empty(""))
@@ -191,14 +161,18 @@ test "string_replace_all" {
   assert(string_equals(string_replace_all("ababa", "aba", "x"), "xba"))
 }
 
-test "string_short_aliases" {
-  assert(is_empty(""))
-  assert(contains("hello", "ell"))
-  assert(string_equals(replace_all("foo foo", "foo", "x"), "x x"))
+test "string_type_calls_only" {
+  assert(String::is_empty(""))
+  assert(String::contains("hello", "ell"))
+  assert(string_equals(String::replace_all("foo foo", "foo", "x"), "x x"))
 }
 
 test "string_trim" {
   assert(string_equals(string_trim("  hello  "), "hello"))
   assert(string_equals(string_trim_start("   hi"), "hi"))
   assert(string_equals(string_trim_end("hi   "), "hi"))
+}
+
+test "string_from_char_code_is_top_level" {
+  assert(string_equals(from_char_code(65), "A"))
 }

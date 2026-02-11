@@ -1374,6 +1374,7 @@ fn type_check_stmts(
         let scheme = type_let_expr(
           env, rec, name, expr, span, aliases, effects, allow_effect,
         )
+        ensure_type_member_decl_receiver_contract(env, name, scheme.ty, span)
         if name != "_" {
           if exported_names.contains(name) {
             env.set_exported_scheme(name, scheme)
@@ -1411,6 +1412,7 @@ fn type_check_stmts(
         let scheme = type_let_expr(
           env, rec, name, expr, span, aliases, effects, allow_effect,
         )
+        ensure_type_member_decl_receiver_contract(env, name, scheme.ty, span)
         if name != "_" {
           env.set_exported_scheme(name, scheme)
           let info = purity_for_let(env, rec, name, expr)
@@ -4474,6 +4476,108 @@ fn ensure_ord_operand(
         span~,
         context=Some("argument"),
       )
+  }
+}
+
+///|
+fn parse_type_member_decl(name : String) -> (String, String)? {
+  if not(name.contains("::")) {
+    return None
+  }
+  let parts : Array[String] = []
+  for part_view in name.split("::") {
+    parts.push(part_view.to_string())
+  }
+  if parts.length() != 2 {
+    return None
+  }
+  let type_name = parts[0]
+  let member_name = parts[1]
+  if type_name == "" || member_name == "" {
+    None
+  } else {
+    Some((type_name, member_name))
+  }
+}
+
+///|
+fn should_enforce_type_member_decl_contract(
+  env : TypeEnv,
+  type_name : String,
+) -> Bool {
+  match type_name {
+    "Int" | "Float" | "Double" | "Bool" | "String" | "Path" => true
+    _ =>
+      env.get_enum_def(type_name) is Some(_) ||
+      env.get_struct(type_name) is Some(_) ||
+      env.get_type_alias(type_name) is Some(_)
+  }
+}
+
+///|
+fn ensure_type_member_decl_receiver_contract(
+  env : TypeEnv,
+  name : String,
+  ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  match parse_type_member_decl(name) {
+    None => ()
+    Some((type_name, member_name)) => {
+      let _ = member_name
+      if not(should_enforce_type_member_decl_contract(env, type_name)) {
+        return
+      }
+      let resolved = normalize_type(env, ty)
+      match resolved {
+        @core.Type::Func(params~, ..) => {
+          if params.is_empty() {
+            raise TypeError::BadCall(
+              message="type member `" +
+                name +
+                "` must have first parameter of type `" +
+                type_name +
+                "`",
+              span~,
+            )
+          }
+          let recv_ty = params[0].ty
+          match namespace_root_from_type(env, recv_ty) {
+            Some(actual_type_name) =>
+              if actual_type_name != type_name {
+                raise TypeError::BadCall(
+                  message="type member `" +
+                    name +
+                    "` first parameter must be `" +
+                    type_name +
+                    "`, but got `" +
+                    actual_type_name +
+                    "`",
+                  span~,
+                )
+              }
+            None =>
+              raise TypeError::BadCall(
+                message="type member `" +
+                  name +
+                  "` first parameter must be `" +
+                  type_name +
+                  "`",
+                span~,
+              )
+          }
+        }
+        _ =>
+          raise TypeError::BadCall(
+            message="type member `" +
+              name +
+              "` must be a function with first parameter `" +
+              type_name +
+              "`",
+            span~,
+          )
+      }
+    }
   }
 }
 

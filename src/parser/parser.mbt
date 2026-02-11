@@ -241,8 +241,7 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
   match self.peek_kind() {
     k if k == let_kw() => self.parse_let_stmt()
     k if k == enum_kw() => self.parse_enum_stmt()
-    k if
-      k == name() &&
+    k if k == name() &&
       self.peek().text() == "module" &&
       self.peek_non_trivia_ahead(1) == name() &&
       self.peek_non_trivia_ahead(2) == lbrace() => self.parse_module_stmt()
@@ -483,8 +482,7 @@ fn Parser::parse_export_stmt(self : Parser) -> Unit {
   } else if self.at(let_kw()) {
     // export let name = ...
     self.parse_let_stmt()
-  } else if
-    self.at(name()) &&
+  } else if self.at(name()) &&
     self.peek().text() == "module" &&
     self.peek_non_trivia_ahead(1) == name() &&
     self.peek_non_trivia_ahead(2) == lbrace() {
@@ -1100,7 +1098,10 @@ fn AstParser::peek_non_trivia_kind(
 }
 
 ///|
-fn AstParser::peek_non_trivia_ahead(self : AstParser, nth : Int) -> @cst.SyntaxKind {
+fn AstParser::peek_non_trivia_ahead(
+  self : AstParser,
+  nth : Int,
+) -> @cst.SyntaxKind {
   let mut i = self.pos + 1
   let mut seen = 0
   while i < self.tokens.length() {
@@ -1999,10 +2000,7 @@ fn collect_pat_bindings_for_module(
   out : Array[String],
 ) -> Unit {
   match pat {
-    @core.Pat::Bind(name~, ..) =>
-      if name != "_" {
-        out.push(name)
-      }
+    @core.Pat::Bind(name~, ..) => if name != "_" { out.push(name) }
     @core.Pat::Ctor(args~, ..) =>
       for arg in args {
         collect_pat_bindings_for_module(arg, out)
@@ -2035,7 +2033,10 @@ fn rewrite_module_expr(
 ) -> @core.Expr {
   match expr {
     @core.Expr::Ident(name~, span~) =>
-      @core.Expr::Ident(name=local_module_name(module_name, name, locals), span~)
+      @core.Expr::Ident(
+        name=local_module_name(module_name, name, locals),
+        span~,
+      )
     @core.Expr::Call(name~, type_args~, args~, span~) => {
       let next_args : Array[@core.CallArg] = []
       for arg in args {
@@ -2130,7 +2131,10 @@ fn rewrite_module_expr(
       )
     }
     @core.Expr::Do(body~, span~) =>
-      @core.Expr::Do(body=rewrite_module_block(module_name, body, locals), span~)
+      @core.Expr::Do(
+        body=rewrite_module_block(module_name, body, locals),
+        span~,
+      )
     @core.Expr::Try(try_body~, catch_body~, span~) =>
       @core.Expr::Try(
         try_body=rewrite_module_block(module_name, try_body, locals),
@@ -2216,12 +2220,7 @@ fn rewrite_module_stmt(
       let next_expr = rewrite_module_expr(module_name, expr, locals)
       let qualified_name = module_qualified_name(module_name, name)
       if exported_module {
-        @core.Stmt::ExportLet(
-          rec~,
-          name=qualified_name,
-          expr=next_expr,
-          span~,
-        )
+        @core.Stmt::ExportLet(rec~, name=qualified_name, expr=next_expr, span~)
       } else {
         @core.Stmt::Let(rec~, name=qualified_name, expr=next_expr, span~)
       }
@@ -2246,9 +2245,12 @@ fn rewrite_module_stmt(
         span~,
       )
     @core.Stmt::Expr(expr~, span~) =>
-      @core.Stmt::Expr(expr=rewrite_module_expr(module_name, expr, locals), span~)
+      @core.Stmt::Expr(
+        expr=rewrite_module_expr(module_name, expr, locals),
+        span~,
+      )
     @core.Stmt::Import(..) => stmt
-    @core.Stmt::Export(names~, span~) => {
+    @core.Stmt::Export(names~, span~) =>
       if not(exported_module) {
         @core.Stmt::Export(names=[], span~)
       } else {
@@ -2258,7 +2260,6 @@ fn rewrite_module_stmt(
         }
         @core.Stmt::Export(names=qualified_names, span~)
       }
-    }
     @core.Stmt::Test(name~, body~, span~) =>
       @core.Stmt::Test(
         name~,
@@ -2289,12 +2290,9 @@ fn rewrite_module_block(
   let next_stmts : Array[@core.Stmt] = []
   let mut active_locals = locals
   for stmt in body.stmts {
-    let rewritten = rewrite_module_stmt(
-      module_name,
-      stmt,
-      active_locals,
-      false,
-    ) catch { _ => stmt }
+    let rewritten = rewrite_module_stmt(module_name, stmt, active_locals, false) catch {
+      _ => stmt
+    }
     next_stmts.push(rewritten)
     match stmt {
       @core.Stmt::Let(name~, ..) | @core.Stmt::LetMut(name~, ..) => {
@@ -2696,8 +2694,7 @@ fn AstParser::parse_export_stmt(
         )
       }
     }
-  } else if
-    self.peek_kind() == name() &&
+  } else if self.peek_kind() == name() &&
     self.peek().text() == "module" &&
     self.peek_non_trivia_ahead(1) == name() &&
     self.peek_non_trivia_ahead(2) == lbrace() {

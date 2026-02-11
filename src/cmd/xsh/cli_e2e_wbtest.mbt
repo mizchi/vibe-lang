@@ -162,11 +162,8 @@ test "cli wasm bench compile uses size-oriented optimize level" {
     #|let base = "abcdefghijklmnopqrstuvwxyz"
     #|let s = repeat(base, 12)
     #|string_length(s)
-  let optimized_size = match compile_bench_script_to_wasm(
-    source_path,
-    wasm_path,
-    source,
-  ) {
+  let optimized_size = match
+    compile_bench_script_to_wasm(source_path, wasm_path, source) {
     Ok(bytes) => bytes
     Err(err) => fail("compile bench wasm failed: " + err)
   }

@@ -67,7 +67,7 @@ test "bool_any3" {
 test "bool_type_members_and_method_style" {
   let t = true
   assert(eq(Bool::to_int(true), 1))
-  assert(not(Bool::from_int(0)))
+  assert(not(int_to_bool(0)))
   assert(eq(t.to_int(), 1))
   assert(xor(t, false))
 }

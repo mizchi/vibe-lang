@@ -682,11 +682,9 @@ fn is_low_surrogate(code : Int) -> Bool {
 fn utf8_bytes_of_utf16_unit(code : Int) -> Int {
   if code <= 127 {
     1
-  }
-  else if code <= 2047 {
+  } else if code <= 2047 {
     2
-  }
-  else {
+  } else {
     3
   }
 }

@@ -152,14 +152,6 @@ export let list_of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
 }
 
 // Type member names: can be imported as `import { List }`
-export let List::empty = [T]() -> List[T] {
-  list_empty()
-}
-
-export let List::singleton = [T](x: T) -> List[T] {
-  list_singleton(x)
-}
-
 export let List::is_empty = [T](xs: List[T]) -> Bool {
   list_is_empty(xs)
 }
@@ -206,14 +198,6 @@ export let List::contains_by = [T](xs: List[T], eq: (a: T, b: T) -> Bool, value:
 
 export let List::sum = (xs: List[Int]) -> Int {
   list_sum(xs)
-}
-
-export let List::of3 = [T](a: T, b: T, c: T) -> List[T] {
-  list_of3(a, b, c)
-}
-
-export let List::of5 = [T](a: T, b: T, c: T, d: T, e: T) -> List[T] {
-  list_of5(a, b, c, d, e)
 }
 
 // Short names (optional): can be used with method-call desugar.

@@ -207,7 +207,7 @@ let string_index_of_from = (s: String, sub: String, start: Int) -> Int {
 }
 
 
-let string_is_ascii_whitespace = (code: Int) -> Bool {
+let is_ascii_whitespace = (code: Int) -> Bool {
   code == 32 || code == 9 || code == 10 || code == 13
 }
 
@@ -220,7 +220,7 @@ let string_trim_start = (s: String) -> String {
     }
     else {
       let code = string_char_code_at(s, i)
-      if string_is_ascii_whitespace(code) {
+      if is_ascii_whitespace(code) {
         find_start(i + 1)
       }
       else {
@@ -246,7 +246,7 @@ let string_trim_end = (s: String) -> String {
     }
     else {
       let code = string_char_code_at(s, i - 1)
-      if string_is_ascii_whitespace(code) {
+      if is_ascii_whitespace(code) {
         find_end(i - 1)
       }
       else {
@@ -398,6 +398,10 @@ let string_replace_all = (s: String, pattern: String, replacement: String) -> St
 }
 
 
+export let from_char_code = (code: Int) -> String {
+  string_from_char_code(code)
+}
+
 // Type member names: can be imported as `import { String }`
 export let String::equals = (a: String, b: String) -> Bool {
   string_equals_value(a, b)
@@ -482,96 +486,4 @@ export let String::trim_end = (s: String) -> String {
 }
 export let String::trim = (s: String) -> String {
   string_trim(s)
-}
-export let String::from_char_code = (code: Int) -> String {
-  string_from_char_code(code)
-}
-
-// Short names (preferred): use with method-call desugar, e.g. s.is_empty()
-export let equals = (a: String, b: String) -> Bool {
-  string_equals_value(a, b)
-}
-export let compare = (a: String, b: String) -> Int {
-  string_compare(a, b)
-}
-export let is_empty = (s: String) -> Bool {
-  string_is_empty(s)
-}
-export let is_not_empty = (s: String) -> Bool {
-  string_is_not_empty(s)
-}
-export let utf8_length = (s: String) -> Int {
-  string_utf8_length_value(s)
-}
-export let utf16_length = (s: String) -> Int {
-  string_utf16_length_value(s)
-}
-export let unicode_length = (s: String) -> Int {
-  string_unicode_length_value(s)
-}
-export let is_blank = (s: String) -> Bool {
-  string_is_blank(s)
-}
-export let head = (s: String) -> String {
-  string_head(s)
-}
-export let tail = (s: String) -> String {
-  string_tail(s)
-}
-export let last = (s: String) -> String {
-  string_last(s)
-}
-export let init = (s: String) -> String {
-  string_init(s)
-}
-export let take = (s: String, n: Int) -> String {
-  string_take(s, n)
-}
-export let drop = (s: String, n: Int) -> String {
-  string_drop(s, n)
-}
-export let repeat = (s: String, n: Int) -> String {
-  string_repeat(s, n)
-}
-export let pad_left = (s: String, target_len: Int, pad_char: String) -> String {
-  string_pad_left(s, target_len, pad_char)
-}
-export let pad_right = (s: String, target_len: Int, pad_char: String) -> String {
-  string_pad_right(s, target_len, pad_char)
-}
-export let starts_with = (s: String, prefix: String) -> Bool {
-  string_starts_with(s, prefix)
-}
-export let ends_with = (s: String, suffix: String) -> Bool {
-  string_ends_with(s, suffix)
-}
-export let contains = (s: String, sub: String) -> Bool {
-  string_contains(s, sub)
-}
-export let index_of = (s: String, sub: String) -> Int {
-  string_index_of(s, sub)
-}
-export let last_index_of = (s: String, sub: String) -> Int {
-  string_last_index_of(s, sub)
-}
-export let count = (s: String, sub: String) -> Int {
-  string_count(s, sub)
-}
-export let replace = (s: String, pattern: String, replacement: String) -> String {
-  string_replace(s, pattern, replacement)
-}
-export let replace_all = (s: String, pattern: String, replacement: String) -> String {
-  string_replace_all(s, pattern, replacement)
-}
-export let trim_start = (s: String) -> String {
-  string_trim_start(s)
-}
-export let trim_end = (s: String) -> String {
-  string_trim_end(s)
-}
-export let trim = (s: String) -> String {
-  string_trim(s)
-}
-export let from_char_code = (code: Int) -> String {
-  string_from_char_code(code)
 }

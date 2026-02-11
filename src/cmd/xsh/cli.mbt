@@ -1924,11 +1924,8 @@ fn run_wasm_case_measure(
   source : String,
   count : Int,
 ) -> Result[(Double, Double, Int), String] {
-  let wasm_bytes = match compile_bench_script_to_wasm(
-    source_path,
-    wasm_path,
-    source,
-  ) {
+  let wasm_bytes = match
+    compile_bench_script_to_wasm(source_path, wasm_path, source) {
     Ok(bytes) => bytes
     Err(err) => return Err(err)
   }

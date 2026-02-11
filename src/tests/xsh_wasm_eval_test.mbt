@@ -808,7 +808,9 @@ fn assert_eval_backends_same(script : String) -> Unit raise {
   } noraise {
     r => r
   }
-  let wasm_value = try decode_tagged_value(wasm_res.mem, wasm_res.value, 0) catch {
+  let wasm_value = try
+    decode_tagged_value(wasm_res.mem, wasm_res.value, 0)
+  catch {
     e => fail("wasm decode failed: " + e.to_string())
   } noraise {
     v => v
@@ -828,15 +830,19 @@ fn assert_eval_backends_same_with_shell_effects(script : String) -> Unit raise {
   } noraise {
     r => r
   }
-  let wasm_value = try decode_tagged_value(wasm_res.mem, wasm_res.value, 0) catch {
+  let wasm_value = try
+    decode_tagged_value(wasm_res.mem, wasm_res.value, 0)
+  catch {
     e => fail("wasm decode failed: " + e.to_string())
   } noraise {
     v => v
   }
-  let interpreter = try eval_run_interpreter_with_caps(
-    script,
-    @capability.CapabilitySet::developer(),
-  ) catch {
+  let interpreter = try
+    eval_run_interpreter_with_caps(
+      script,
+      @capability.CapabilitySet::developer(),
+    )
+  catch {
     e => fail("interpreter eval failed: " + e.to_string())
   } noraise {
     v => v

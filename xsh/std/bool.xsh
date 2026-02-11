@@ -45,10 +45,6 @@ export let Bool::to_int = (b: Bool) -> Int {
   bool_to_int(b)
 }
 
-export let Bool::from_int = (n: Int) -> Bool {
-  int_to_bool(n)
-}
-
 export let Bool::implies = (a: Bool, b: Bool) -> Bool {
   bool_implies(a, b)
 }

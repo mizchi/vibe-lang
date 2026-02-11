@@ -443,7 +443,9 @@ test "xsh integration module-qualified import namespace" {
 ///|
 test "xsh integration module-qualified import accepts alias" {
   let db = XshDb::new()
-  db.set_source("./lib.xm", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }")
+  db.set_source(
+    "./lib.xm", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
+  )
   db.set_source("main", "import { module math as m } from ./lib.xm\nm::inc(41)")
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -466,7 +468,9 @@ test "xsh integration module-qualified import accepts alias" {
 ///|
 test "xsh integration module-qualified import rejects .xsh source" {
   let db = XshDb::new()
-  db.set_source("./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }")
+  db.set_source(
+    "./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
+  )
   db.set_source("main", "import { module math } from ./lib.xsh\nmath::inc(1)")
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
@@ -475,9 +479,9 @@ test "xsh integration module-qualified import rejects .xsh source" {
     Ok(_) => fail("expected import error for .xsh module namespace import")
     Err(err) =>
       assert_true(
-        err.to_string().contains(
-          "module import is only supported for .xm source",
-        ),
+        err
+        .to_string()
+        .contains("module import is only supported for .xm source"),
       )
   }
 }
@@ -485,16 +489,17 @@ test "xsh integration module-qualified import rejects .xsh source" {
 ///|
 test "xsh integration module-qualified import rejects member path" {
   let db = XshDb::new()
-  db.set_source("./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }")
-  db.set_source("main", "import { module math::inc } from ./lib.xsh\nmath::inc(1)")
+  db.set_source(
+    "./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
+  )
+  db.set_source(
+    "main", "import { module math::inc } from ./lib.xsh\nmath::inc(1)",
+  )
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
   )
   match compiled {
     Ok(_) => fail("expected parse error for module member import")
-    Err(err) =>
-      assert_true(
-        err.to_string().contains("`import { module foo }`"),
-      )
+    Err(err) => assert_true(err.to_string().contains("`import { module foo }`"))
   }
 }
