@@ -95,33 +95,6 @@ fn emit_i32_const_raw(buf : ByteBuf, n : Int) -> Unit {
 }
 
 ///|
-fn emit_i32_const_tagged(buf : ByteBuf, n : Int) -> Unit {
-  emit_i32_const_raw(buf, tag_int_value(n))
-}
-
-///|
-fn emit_bool_from_i32(buf : ByteBuf) -> Unit {
-  emit_i32_const_raw(buf, 2)
-  emit_i32_shl(buf)
-  emit_i32_const_raw(buf, tag_bool)
-  emit_i32_or(buf)
-}
-
-///|
-fn emit_untag_i32(buf : ByteBuf) -> Unit {
-  emit_i32_const_raw(buf, 2)
-  emit_i32_shr_s(buf)
-}
-
-///|
-fn emit_tag_i32(buf : ByteBuf) -> Unit {
-  emit_i32_const_raw(buf, 2)
-  emit_i32_shl(buf)
-  emit_i32_const_raw(buf, tag_int)
-  emit_i32_or(buf)
-}
-
-///|
 fn emit_string_const(ctx : CodegenCtx, buf : ByteBuf, s : String) -> Unit {
   if ctx.use_js_strings {
     let idx = ctx.js_strings.intern(s)
@@ -286,18 +259,8 @@ fn emit_i32_lt_s(buf : ByteBuf) -> Unit {
 }
 
 ///|
-fn emit_i32_shl(buf : ByteBuf) -> Unit {
-  buf.push((116).to_byte())
-}
-
-///|
 fn emit_i32_shr_u(buf : ByteBuf) -> Unit {
   buf.push((118).to_byte())
-}
-
-///|
-fn emit_i32_shr_s(buf : ByteBuf) -> Unit {
-  buf.push((117).to_byte())
 }
 
 ///|
@@ -526,6 +489,116 @@ fn emit_f64_store(buf : ByteBuf, offset : Int) -> Unit {
   buf.push((57).to_byte())
   write_u32_leb(buf, 3)
   write_u32_leb(buf, offset)
+}
+
+///|
+fn write_i64_leb(buf : ByteBuf, n : Int64) -> Unit {
+  let mut value = n
+  while true {
+    let mut byte = (value & 0x7fL).to_int()
+    value = value >> 7
+    let sign_bit_set = (byte & 0x40) != 0
+    let done = (value == 0L && not(sign_bit_set)) ||
+      (value == -1L && sign_bit_set)
+    if not(done) {
+      byte = byte | 0x80
+    }
+    buf.push(byte.to_byte())
+    if done {
+      break
+    }
+  }
+}
+
+///|
+fn emit_i64_const_raw(buf : ByteBuf, n : Int64) -> Unit {
+  buf.push((0x42).to_byte())
+  write_i64_leb(buf, n)
+}
+
+///|
+fn emit_i64_const_tagged(buf : ByteBuf, n : Int64) -> Unit {
+  emit_i64_const_raw(buf, tag_int_value64(n))
+}
+
+///|
+fn emit_i64_add(buf : ByteBuf) -> Unit {
+  buf.push((0x7C).to_byte())
+}
+
+///|
+fn emit_i64_sub(buf : ByteBuf) -> Unit {
+  buf.push((0x7D).to_byte())
+}
+
+///|
+fn emit_i64_mul(buf : ByteBuf) -> Unit {
+  buf.push((0x7E).to_byte())
+}
+
+///|
+fn emit_i64_div_s(buf : ByteBuf) -> Unit {
+  buf.push((0x7F).to_byte())
+}
+
+///|
+fn emit_i64_rem_s(buf : ByteBuf) -> Unit {
+  buf.push((0x81).to_byte())
+}
+
+///|
+fn emit_i64_eq(buf : ByteBuf) -> Unit {
+  buf.push((0x51).to_byte())
+}
+
+///|
+fn emit_i64_lt_s(buf : ByteBuf) -> Unit {
+  buf.push((0x53).to_byte())
+}
+
+///|
+fn emit_i64_shl(buf : ByteBuf) -> Unit {
+  buf.push((0x86).to_byte())
+}
+
+///|
+fn emit_i64_shr_u(buf : ByteBuf) -> Unit {
+  buf.push((0x88).to_byte())
+}
+
+///|
+fn emit_i64_shr_s(buf : ByteBuf) -> Unit {
+  buf.push((0x87).to_byte())
+}
+
+///|
+fn emit_i64_or(buf : ByteBuf) -> Unit {
+  buf.push((0x84).to_byte())
+}
+
+///|
+fn emit_i64_and(buf : ByteBuf) -> Unit {
+  buf.push((0x83).to_byte())
+}
+
+///|
+fn emit_i64_xor(buf : ByteBuf) -> Unit {
+  buf.push((0x85).to_byte())
+}
+
+///|
+fn emit_i32_wrap_i64(buf : ByteBuf) -> Unit {
+  buf.push((0xA7).to_byte())
+}
+
+///|
+fn emit_i64_extend_i32_s(buf : ByteBuf) -> Unit {
+  buf.push((0xAC).to_byte())
+}
+
+///|
+fn emit_i64_extend_i32_u(buf : ByteBuf) -> Unit {
+  buf.push((0xAD).to_byte())
 }
 
 ///|

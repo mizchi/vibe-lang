@@ -56,6 +56,15 @@ moon doc '@json'          # List symbols in package
 moon doc 'String::*rev*'  # Glob pattern search
 ```
 
+## vibe 言語の Int 型制約
+
+- **リテラル上限**: ~536870911 (2^29-1)。それ以上は `IntLiteralOverflow`
+- **ランタイム**: 32-bit signed。演算で大きな値を構成可能（例: `(50130 << 16) | 57840`）
+- **hex リテラル非対応**: `0xFF` は使えない。10進数か shift/or で構成する
+- **`>>` は算術シフト（符号拡張あり）**: 符号なし右シフトには `(x >> n) & ((1 << (32 - n)) - 1)` を使う
+- **`~` (bit_not) 非対応**: `x ^ mask` で代用（ただし `mask = (65535 << 16) | 65535` は `-1` なので注意）
+- **ビット演算子**: `&`, `|`, `^`, `<<`, `>>` は使用可能
+
 ## Tooling
 
 - `moon fmt` is used to format your code properly.

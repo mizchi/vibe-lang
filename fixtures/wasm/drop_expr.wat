@@ -1,9 +1,9 @@
 (module
-  (type (;0;) (func (result i32)))
+  (type (;0;) (func (result i64)))
   (func (;0;) (type 0)
-    i32.const 4
+    i64.const 4
     drop
-    i32.const 8
+    i64.const 8
     end
   )
   (memory (;0;) 64)

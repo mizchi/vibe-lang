@@ -14,7 +14,7 @@ suberror WasmRunError {
 
 ///|
 struct WasmEvalResult {
-  value : Int
+  value : Int64
   outputs : Array[String]
   mem : Array[Byte]
 } derive(Show, Eq)
@@ -80,6 +80,30 @@ fn Cursor::read_leb_u32(self : Cursor) -> Int raise WasmEvalError {
 }
 
 ///|
+fn Cursor::read_leb_i64(self : Cursor) -> Int64 raise WasmEvalError {
+  let mut result : Int64 = 0L
+  let mut shift = 0
+  let mut last_byte = 0
+  while true {
+    let byte = self.read_u8()
+    last_byte = byte
+    result = result | ((byte & 0x7f).to_int64() << shift)
+    if (byte & 0x80) == 0 {
+      break
+    }
+    shift += 7
+    if shift > 63 {
+      raise WasmEvalError::Invalid("i64 leb overflow")
+    }
+  }
+  // Sign extend if the sign bit of the last byte is set
+  if shift < 64 && (last_byte & 0x40) != 0 {
+    result = result | (-1L << (shift + 7))
+  }
+  result
+}
+
+///|
 fn Cursor::read_name(self : Cursor) -> String raise WasmEvalError {
   let len = self.read_leb_u32()
   let bytes = self.read_bytes(len)
@@ -125,7 +149,7 @@ fn write_u32_le(
 ///|
 fn read_string_object(
   mem : Array[Byte],
-  ptr : Int,
+  ptr : Int64,
 ) -> String raise WasmEvalError {
   let base = untag_ptr(ptr)
   let ty = read_u32_le(mem, base)
@@ -146,16 +170,16 @@ fn read_string_object(
 }
 
 ///|
-let tag_mask = 3
+let tag_mask : Int64 = 3L
 
 ///|
-let tag_obj = 1
+let tag_obj : Int64 = 1L
 
 ///|
-let tag_int = 0
+let tag_int : Int64 = 0L
 
 ///|
-let tag_bool = 3
+let tag_bool : Int64 = 3L
 
 ///|
 let obj_string = 1
@@ -170,67 +194,67 @@ let obj_array = 5
 let obj_map = 6
 
 ///|
-fn untag_ptr(ptr : Int) -> Int {
-  ptr - (ptr & tag_mask)
+fn untag_ptr(ptr : Int64) -> Int {
+  (ptr - (ptr & tag_mask)).to_int()
 }
 
 ///|
-fn tag_of(ptr : Int) -> Int {
+fn tag_of(ptr : Int64) -> Int64 {
   ptr & tag_mask
 }
 
 ///|
-fn is_tagged_obj(ptr : Int) -> Bool {
+fn is_tagged_obj(ptr : Int64) -> Bool {
   tag_of(ptr) == tag_obj
 }
 
 ///|
-fn is_tagged_int(ptr : Int) -> Bool {
+fn is_tagged_int(ptr : Int64) -> Bool {
   tag_of(ptr) == tag_int
 }
 
 ///|
-fn decode_int(ptr : Int) -> Int {
+fn decode_int(ptr : Int64) -> Int64 {
   ptr >> 2
 }
 
 ///|
-fn is_tagged_bool(ptr : Int) -> Bool {
+fn is_tagged_bool(ptr : Int64) -> Bool {
   tag_of(ptr) == tag_bool
 }
 
 ///|
-fn decode_bool(ptr : Int) -> Bool {
-  ptr >> 2 != 0
+fn decode_bool(ptr : Int64) -> Bool {
+  ptr >> 2 != 0L
 }
 
 ///|
-fn object_type(mem : Array[Byte], ptr : Int) -> Int raise WasmEvalError {
+fn object_type(mem : Array[Byte], ptr : Int64) -> Int raise WasmEvalError {
   read_u32_le(mem, untag_ptr(ptr))
 }
 
 ///|
-fn object_len(mem : Array[Byte], ptr : Int) -> Int raise WasmEvalError {
+fn object_len(mem : Array[Byte], ptr : Int64) -> Int raise WasmEvalError {
   read_u32_le(mem, untag_ptr(ptr) + 4)
 }
 
 ///|
-fn is_tagged_string(mem : Array[Byte], ptr : Int) -> Bool raise WasmEvalError {
+fn is_tagged_string(mem : Array[Byte], ptr : Int64) -> Bool raise WasmEvalError {
   is_tagged_obj(ptr) && object_type(mem, ptr) == obj_string
 }
 
 ///|
-fn is_tagged_path(mem : Array[Byte], ptr : Int) -> Bool raise WasmEvalError {
+fn is_tagged_path(mem : Array[Byte], ptr : Int64) -> Bool raise WasmEvalError {
   is_tagged_obj(ptr) && object_type(mem, ptr) == obj_path
 }
 
 ///|
-fn is_tagged_array(mem : Array[Byte], ptr : Int) -> Bool raise WasmEvalError {
+fn is_tagged_array(mem : Array[Byte], ptr : Int64) -> Bool raise WasmEvalError {
   is_tagged_obj(ptr) && object_type(mem, ptr) == obj_array
 }
 
 ///|
-fn is_tagged_map(mem : Array[Byte], ptr : Int) -> Bool raise WasmEvalError {
+fn is_tagged_map(mem : Array[Byte], ptr : Int64) -> Bool raise WasmEvalError {
   is_tagged_obj(ptr) && object_type(mem, ptr) == obj_map
 }
 
@@ -251,7 +275,7 @@ fn parse_code_section(
   for _ in 0..<local_decl_count {
     let n = body_cur.read_leb_u32()
     let ty = body_cur.read_u8()
-    if ty != 127 {
+    if ty != 127 && ty != 126 {
       raise WasmEvalError::Unsupported("local type")
     }
     locals_total += n
@@ -345,6 +369,16 @@ fn alloc_string(
 }
 
 ///|
+fn skip_leb(code : Cursor) -> Unit raise WasmEvalError {
+  while true {
+    let byte = code.read_u8()
+    if (byte & 0x80) == 0 {
+      break
+    }
+  }
+}
+
+///|
 fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
   let mut depth = 1
   while code.remaining() > 0 {
@@ -361,12 +395,10 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
           return false
         }
       }
-      65 | 32 | 33 | 34 | 16 => {
-        let _ = code.read_leb_u32()
-      }
+      65 | 66 | 32 | 33 | 34 | 16 => skip_leb(code)
       40 | 42 | 43 | 54 => {
-        let _ = code.read_leb_u32()
-        let _ = code.read_leb_u32()
+        skip_leb(code)
+        skip_leb(code)
       }
       _ => ()
     }
@@ -390,12 +422,10 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
           return
         }
       }
-      65 | 32 | 33 | 34 | 16 => {
-        let _ = code.read_leb_u32()
-      }
+      65 | 66 | 32 | 33 | 34 | 16 => skip_leb(code)
       40 | 42 | 43 | 54 => {
-        let _ = code.read_leb_u32()
-        let _ = code.read_leb_u32()
+        skip_leb(code)
+        skip_leb(code)
       }
       _ => ()
     }
@@ -464,152 +494,364 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
     raise WasmEvalError::Invalid("missing code")
   }
   let code = Cursor::new(code_bytes)
-  let locals : Array[Int] = Array::make(locals_total, 0)
-  let stack : Array[Int] = []
+  let locals : Array[Int64] = Array::make(locals_total, 0L)
+  let stack : Array[Int64] = []
   let outputs : Array[String] = []
   let mut if_depth = 0
   while true {
     let op = code.read_u8()
     match op {
+      // i32.const
       65 => {
         let v = code.read_leb_u32()
+        stack.push(v.to_int64())
+      }
+      // i64.const
+      66 => {
+        let v = code.read_leb_i64()
         stack.push(v)
       }
+      // i32.add
       106 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let b = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let a = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(a + b)
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push((a.to_int() + b.to_int()).to_int64())
       }
+      // i32.sub
       107 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let b = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let a = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(a - b)
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push((a.to_int() - b.to_int()).to_int64())
       }
+      // i32.mul
+      108 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push((a.to_int() * b.to_int()).to_int64())
+      }
+      // i32.eq
       70 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let b = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let a = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(if a == b { 1 } else { 0 })
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a.to_int() == b.to_int() { 1L } else { 0L })
       }
+      // i32.ne
+      71 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a.to_int() != b.to_int() { 1L } else { 0L })
+      }
+      // i32.lt_s
       72 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let b = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let a = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(if a < b { 1 } else { 0 })
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a.to_int() < b.to_int() { 1L } else { 0L })
       }
+      // i32.eqz
+      69 => {
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let a = stack.unsafe_pop()
+        stack.push(if a.to_int() == 0 { 1L } else { 0L })
+      }
+      // i32.or
       114 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let b = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let a = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(a | b)
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push((a.to_int() | b.to_int()).to_int64())
       }
+      // i32.and
       113 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let b = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let a = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(a & b)
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push((a.to_int() & b.to_int()).to_int64())
       }
+      // i32.xor
       115 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let b = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let a = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(a ^ b)
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push((a.to_int() ^ b.to_int()).to_int64())
       }
+      // i32.shl
       116 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let shift = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let value = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(value << shift)
+        let shift = stack.unsafe_pop()
+        let value = stack.unsafe_pop()
+        stack.push((value.to_int() << shift.to_int()).to_int64())
       }
+      // i32.shr_u
       118 => {
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let shift = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let value = stack[stack.length() - 1]
-        let _ = stack.pop()
-        stack.push(value >> shift)
+        let shift = stack.unsafe_pop()
+        let value = stack.unsafe_pop()
+        stack.push((value.to_int() >> shift.to_int()).to_int64())
       }
-      63 => {
-        let _ = code.read_u8() // memory index
-        stack.push(mem.length() / 65536)
+      // i64.add
+      124 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(a + b)
       }
-      64 => {
-        let _ = code.read_u8() // memory index
+      // i64.sub
+      125 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(a - b)
+      }
+      // i64.mul
+      126 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(a * b)
+      }
+      // i64.div_s
+      127 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(a / b)
+      }
+      // i64.rem_s
+      129 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(a % b)
+      }
+      // i64.and
+      131 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(a & b)
+      }
+      // i64.or
+      132 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(a | b)
+      }
+      // i64.xor
+      133 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(a ^ b)
+      }
+      // i64.shl
+      134 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let shift = stack.unsafe_pop()
+        let value = stack.unsafe_pop()
+        stack.push(value << shift.to_int())
+      }
+      // i64.shr_s
+      135 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let shift = stack.unsafe_pop()
+        let value = stack.unsafe_pop()
+        stack.push(value >> shift.to_int())
+      }
+      // i64.shr_u
+      136 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let shift = stack.unsafe_pop()
+        let value = stack.unsafe_pop()
+        stack.push(
+          (value.reinterpret_as_uint64() >> shift.to_int()).reinterpret_as_int64(),
+        )
+      }
+      // i64.eqz
+      80 => {
         if stack.is_empty() {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let delta_pages = stack[stack.length() - 1]
-        let _ = stack.pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a == 0L { 1L } else { 0L })
+      }
+      // i64.eq
+      81 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a == b { 1L } else { 0L })
+      }
+      // i64.ne
+      82 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a != b { 1L } else { 0L })
+      }
+      // i64.lt_s
+      83 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a < b { 1L } else { 0L })
+      }
+      // i64.gt_s
+      84 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a > b { 1L } else { 0L })
+      }
+      // i64.le_s
+      85 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a <= b { 1L } else { 0L })
+      }
+      // i64.ge_s
+      86 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push(if a >= b { 1L } else { 0L })
+      }
+      // i32.wrap_i64
+      167 => {
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let v = stack.unsafe_pop()
+        stack.push(v.to_int().to_int64())
+      }
+      // i64.extend_i32_s
+      172 => {
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let v = stack.unsafe_pop()
+        stack.push(v.to_int().to_int64())
+      }
+      // i64.extend_i32_u
+      173 => {
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let v = stack.unsafe_pop()
+        let unsigned = v.to_int().reinterpret_as_uint().to_int64()
+        stack.push(unsigned)
+      }
+      // memory.size
+      63 => {
+        let _ = code.read_u8()
+        stack.push((mem.length() / 65536).to_int64())
+      }
+      // memory.grow
+      64 => {
+        let _ = code.read_u8()
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let delta_pages = stack.unsafe_pop().to_int()
         let old_pages = mem.length() / 65536
         if delta_pages < 0 {
-          stack.push(-1)
+          stack.push(-1L)
         } else {
           let grow_bytes = delta_pages * 65536
           for _ in 0..<grow_bytes {
             mem.push((0).to_byte())
           }
-          stack.push(old_pages)
+          stack.push(old_pages.to_int64())
         }
       }
+      // i32.load
       40 => {
-        let _ = code.read_leb_u32() // align
+        let _ = code.read_leb_u32()
         let offset = code.read_leb_u32()
         if stack.is_empty() {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let addr = stack[stack.length() - 1]
-        let _ = stack.pop()
+        let addr = stack.unsafe_pop().to_int()
         let value = read_u32_le(mem, addr + offset)
-        stack.push(value)
+        stack.push(value.to_int64())
       }
+      // i32.store
       54 => {
-        let _ = code.read_leb_u32() // align
+        let _ = code.read_leb_u32()
         let offset = code.read_leb_u32()
         if stack.length() < 2 {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let value = stack[stack.length() - 1]
-        let _ = stack.pop()
-        let addr = stack[stack.length() - 1]
-        let _ = stack.pop()
+        let value = stack.unsafe_pop().to_int()
+        let addr = stack.unsafe_pop().to_int()
         write_u32_le(mem, addr + offset, value)
       }
+      // local.get
       32 => {
         let idx = code.read_leb_u32()
         if idx >= locals.length() {
@@ -617,6 +859,7 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         }
         stack.push(locals[idx])
       }
+      // local.set
       33 => {
         let idx = code.read_leb_u32()
         if idx >= locals.length() {
@@ -625,10 +868,10 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         if stack.is_empty() {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let v = stack[stack.length() - 1]
-        let _ = stack.pop()
+        let v = stack.unsafe_pop()
         locals[idx] = v
       }
+      // local.tee
       34 => {
         let idx = code.read_leb_u32()
         if idx >= locals.length() {
@@ -640,13 +883,13 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         let v = stack[stack.length() - 1]
         locals[idx] = v
       }
+      // call
       16 => {
         let idx = code.read_leb_u32()
         if stack.is_empty() {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let ptr = stack[stack.length() - 1]
-        let _ = stack.pop()
+        let ptr = stack.unsafe_pop()
         match path_index {
           Some(pidx) if idx == pidx => {
             let raw = read_string_object(mem, ptr)
@@ -658,33 +901,34 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
             }
             let alloc = alloc_string(mem, heap_top, resolved, obj_path)
             heap_top = alloc.next
-            stack.push(alloc.ptr | tag_obj)
+            stack.push(alloc.ptr.to_int64() | tag_obj)
           }
           _ =>
             match sh_index {
               Some(sidx) if idx == sidx => {
                 let msg = read_string_object(mem, ptr)
                 outputs.push(msg)
-                stack.push(0)
+                stack.push(0L)
               }
               _ => raise WasmEvalError::Unsupported("call")
             }
         }
       }
+      // drop
       26 => {
         if stack.is_empty() {
           raise WasmEvalError::Invalid("stack underflow")
         }
         let _ = stack.pop()
       }
+      // if
       4 => {
         let _ = code.read_u8()
         if stack.is_empty() {
           raise WasmEvalError::Invalid("stack underflow")
         }
-        let cond = stack[stack.length() - 1]
-        let _ = stack.pop()
-        if cond != 0 {
+        let cond = stack.unsafe_pop()
+        if cond != 0L {
           if_depth += 1
         } else {
           let has_else = skip_to_else_or_end(code)
@@ -693,6 +937,7 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
           }
         }
       }
+      // else
       5 => {
         if if_depth == 0 {
           raise WasmEvalError::Invalid("unexpected else")
@@ -700,11 +945,12 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         skip_to_end(code)
         if_depth -= 1
       }
+      // end
       11 => if if_depth > 0 { if_depth -= 1 } else { break }
-      _ => raise WasmEvalError::Unsupported("opcode")
+      _ => raise WasmEvalError::Unsupported("opcode " + op.to_string())
     }
   }
-  let value = if stack.is_empty() { 0 } else { stack[stack.length() - 1] }
+  let value = if stack.is_empty() { 0L } else { stack[stack.length() - 1] }
   { value, outputs, mem }
 }
 
@@ -773,7 +1019,7 @@ fn collect_shell_exec_effects(
 ///|
 fn decode_tagged_value(
   mem : Array[Byte],
-  tagged : Int,
+  tagged : Int64,
   depth : Int,
 ) -> @core.Value raise WasmEvalError {
   if depth > 64 {
@@ -786,7 +1032,7 @@ fn decode_tagged_value(
     return @core.Value::Bool(decode_bool(tagged))
   }
   if !is_tagged_obj(tagged) {
-    if tagged == 0 {
+    if tagged == 0L {
       return @core.Value::Unit
     }
     raise WasmEvalError::Unsupported(
@@ -805,7 +1051,7 @@ fn decode_tagged_value(
     let base = untag_ptr(tagged)
     let out : Array[@core.Value] = []
     for i in 0..<len {
-      let item = read_u32_le(mem, base + 8 + i * 4)
+      let item = read_u32_le(mem, base + 8 + i * 4).to_int64()
       out.push(decode_tagged_value(mem, item, depth + 1))
     }
     return @core.Value::Array(out)
@@ -815,8 +1061,8 @@ fn decode_tagged_value(
     let base = untag_ptr(tagged)
     let out : Map[String, @core.Value] = {}
     for i in 0..<len {
-      let key_ptr = read_u32_le(mem, base + 8 + i * 8)
-      let value = read_u32_le(mem, base + 12 + i * 8)
+      let key_ptr = read_u32_le(mem, base + 8 + i * 8).to_int64()
+      let value = read_u32_le(mem, base + 12 + i * 8).to_int64()
       let key = read_string_object(mem, key_ptr)
       out[key] = decode_tagged_value(mem, value, depth + 1)
     }
@@ -884,7 +1130,7 @@ test "vibe wasm eval returns value" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 1)
+  assert_eq(decode_int(res.value), 1L)
 }
 
 ///|
@@ -895,7 +1141,7 @@ test "vibe wasm eval handles locals" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 2)
+  assert_eq(decode_int(res.value), 2L)
 }
 
 ///|
@@ -906,13 +1152,13 @@ test "vibe wasm eval add/sub/eq/lt" {
     r => r
   }
   assert_true(is_tagged_int(add_res.value))
-  assert_eq(decode_int(add_res.value), 3)
+  assert_eq(decode_int(add_res.value), 3L)
   let sub_res = try eval_run("sub(5, 2)") catch {
     e => fail(e.to_string())
   } noraise {
     r => r
   }
-  assert_eq(decode_int(sub_res.value), 3)
+  assert_eq(decode_int(sub_res.value), 3L)
   let eq_true = try eval_run("eq(2, 2)") catch {
     e => fail(e.to_string())
   } noraise {
@@ -979,14 +1225,14 @@ test "vibe wasm eval if expression" {
     r => r
   }
   assert_true(is_tagged_int(res_true.value))
-  assert_eq(decode_int(res_true.value), 1)
+  assert_eq(decode_int(res_true.value), 1L)
   let res_false = try eval_run("if false { 1 } else { 2 }") catch {
     e => fail(e.to_string())
   } noraise {
     r => r
   }
   assert_true(is_tagged_int(res_false.value))
-  assert_eq(decode_int(res_false.value), 2)
+  assert_eq(decode_int(res_false.value), 2L)
 }
 
 ///|
@@ -1010,7 +1256,7 @@ test "vibe wasm eval block expression" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 4)
+  assert_eq(decode_int(res.value), 4L)
 }
 
 ///|
@@ -1021,7 +1267,7 @@ test "vibe wasm eval match expression" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 20)
+  assert_eq(decode_int(res.value), 20L)
 }
 
 ///|
@@ -1032,7 +1278,7 @@ test "vibe wasm eval match bind" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 4)
+  assert_eq(decode_int(res.value), 4L)
 }
 
 ///|
@@ -1043,7 +1289,7 @@ test "vibe wasm eval match tuple" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 3)
+  assert_eq(decode_int(res.value), 3L)
 }
 
 ///|
@@ -1056,7 +1302,7 @@ test "vibe wasm eval match nested tuple" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 6)
+  assert_eq(decode_int(res.value), 6L)
 }
 
 ///|
@@ -1071,7 +1317,7 @@ test "vibe wasm eval match record" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 3)
+  assert_eq(decode_int(res.value), 3L)
 }
 
 ///|
@@ -1086,7 +1332,7 @@ test "vibe wasm eval match nested record" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 5)
+  assert_eq(decode_int(res.value), 5L)
 }
 
 ///|
@@ -1105,12 +1351,12 @@ test "vibe wasm eval array literal" {
   let len = object_len(res.mem, res.value)
   assert_eq(len, 2)
   let base = untag_ptr(res.value)
-  let v0 = read_u32_le(res.mem, base + 8)
-  let v1 = read_u32_le(res.mem, base + 12)
+  let v0 = read_u32_le(res.mem, base + 8).to_int64()
+  let v1 = read_u32_le(res.mem, base + 12).to_int64()
   assert_true(is_tagged_int(v0))
   assert_true(is_tagged_int(v1))
-  assert_eq(decode_int(v0), 1)
-  assert_eq(decode_int(v1), 2)
+  assert_eq(decode_int(v0), 1L)
+  assert_eq(decode_int(v1), 2L)
 }
 
 ///|
@@ -1129,12 +1375,12 @@ test "vibe wasm eval map literal" {
   let len = object_len(res.mem, res.value)
   assert_eq(len, 1)
   let base = untag_ptr(res.value)
-  let key_ptr = read_u32_le(res.mem, base + 8)
-  let val = read_u32_le(res.mem, base + 12)
+  let key_ptr = read_u32_le(res.mem, base + 8).to_int64()
+  let val = read_u32_le(res.mem, base + 12).to_int64()
   let key = read_string_object(res.mem, key_ptr)
   assert_eq(key, "a")
   assert_true(is_tagged_int(val))
-  assert_eq(decode_int(val), 1)
+  assert_eq(decode_int(val), 1L)
 }
 
 ///|
@@ -1144,13 +1390,13 @@ test "vibe wasm eval match guard" {
   } noraise {
     r => r
   }
-  assert_eq(decode_int(res_false.value), 9)
+  assert_eq(decode_int(res_false.value), 9L)
   let res_true = try eval_run("match 1 { v if lt(v, 2) => 1, _ => 9 }") catch {
     e => fail(e.to_string())
   } noraise {
     r => r
   }
-  assert_eq(decode_int(res_true.value), 1)
+  assert_eq(decode_int(res_true.value), 1L)
 }
 
 ///|
@@ -1184,7 +1430,7 @@ test "vibe wasm eval captures sh output" {
     r => r
   }
   assert_true(is_tagged_int(res.value))
-  assert_eq(decode_int(res.value), 0)
+  assert_eq(decode_int(res.value), 0L)
   assert_eq(res.outputs.length(), 1)
   assert_eq(res.outputs[0], "hello")
 }

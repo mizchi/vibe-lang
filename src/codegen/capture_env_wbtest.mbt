@@ -45,7 +45,7 @@ fn wb_ident(name : String) -> @core.Expr {
 }
 
 ///|
-fn wb_int(value : Int) -> @core.Expr {
+fn wb_int(value : Int64) -> @core.Expr {
   @core.Expr::Int(value~, span=wb_span())
 }
 

@@ -1,7 +1,7 @@
 (module
-  (type (;0;) (func (result i32)))
-  (func (;0;) (type 0) (local i32)
-    i32.const 4
+  (type (;0;) (func (result i64)))
+  (func (;0;) (type 0) (local i64)
+    i64.const 4
     local.tee 0
     end
   )

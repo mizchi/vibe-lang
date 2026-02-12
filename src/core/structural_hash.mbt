@@ -193,7 +193,7 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
 /// Hash an Expr structurally
 pub fn Expr::structural_hash(self : Expr) -> Int {
   match self {
-    Expr::Int(value~, ..) => combine_hash(0x496e7400, value)
+    Expr::Int(value~, ..) => combine_hash(0x496e7400, value.to_int())
     Expr::Float(value~, ..) =>
       combine_hash(0x466c6f61, value.reinterpret_as_int())
     Expr::Double(value~, ..) => {
@@ -437,7 +437,7 @@ pub fn Pat::structural_hash(self : Pat) -> Int {
       }
       h
     }
-    Pat::Int(value~, ..) => combine_hash(0x496e7400, value)
+    Pat::Int(value~, ..) => combine_hash(0x496e7400, value.to_int())
     Pat::Float(value~, ..) =>
       combine_hash(0x466c6f61, value.reinterpret_as_int())
     Pat::Double(value~, ..) => {

@@ -41,17 +41,19 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
     ParseError::IntLiteralOverflow(literal~, span~) =>
       @core.Diagnostic::{
         stage: "parse",
-        message: "int literal overflow: `" + literal + "` is out of Int range",
+        message: "int literal overflow: `" + literal + "` is out of Int64 range",
         span: Some(span),
-        hint: Some("use a smaller literal or rewrite as `0 - 2147483647 - 1`"),
+        hint: Some(
+          "use a smaller literal or rewrite as `0 - 9223372036854775807 - 1`",
+        ),
         note: None,
       }
     ParseError::IntMinLiteralBoundary(span~) =>
       @core.Diagnostic::{
         stage: "parse",
-        message: "`-2147483648` is rejected: unary `-` does not extend Int literal range",
+        message: "`-9223372036854775808` is rejected: unary `-` does not extend Int64 literal range",
         span: Some(span),
-        hint: Some("rewrite as `0 - 2147483647 - 1`"),
+        hint: Some("rewrite as `0 - 9223372036854775807 - 1`"),
         note: Some(
           "parser treats `-` as unary operator applied after literal parsing",
         ),

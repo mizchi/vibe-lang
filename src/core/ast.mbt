@@ -18,7 +18,7 @@ pub(all) enum Pat {
   Tuple(items~ : Array[Pat], span~ : Span)
   Record(fields~ : Array[RecordFieldPat], span~ : Span)
   Struct(name~ : String, fields~ : Array[RecordFieldPat], span~ : Span)
-  Int(value~ : Int, span~ : Span)
+  Int(value~ : Int64, span~ : Span)
   Float(value~ : Float, span~ : Span)
   Double(value~ : Double, span~ : Span)
   Bool(value~ : Bool, span~ : Span)
@@ -168,7 +168,7 @@ pub(all) enum Stmt {
 
 ///|
 pub(all) enum Expr {
-  Int(value~ : Int, span~ : Span)
+  Int(value~ : Int64, span~ : Span)
   Float(value~ : Float, span~ : Span)
   Double(value~ : Double, span~ : Span)
   Bool(value~ : Bool, span~ : Span)

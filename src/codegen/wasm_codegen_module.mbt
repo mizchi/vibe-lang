@@ -140,15 +140,15 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   if ctx.need_sh || ctx.need_path {
     type_sec.push((96).to_byte())
     write_u32_leb(type_sec, 1)
-    type_sec.push((127).to_byte())
+    type_sec.push((126).to_byte()) // i64 (tagged value)
     write_u32_leb(type_sec, 1)
-    type_sec.push((127).to_byte())
+    type_sec.push((126).to_byte()) // i64 (tagged value)
   }
   if ctx.need_sleep {
-    // sleep type: (func (param i32)) - takes ms, returns nothing
+    // sleep type: (func (param i64)) - takes ms as tagged value, returns nothing
     type_sec.push((96).to_byte())
     write_u32_leb(type_sec, 1)
-    type_sec.push((127).to_byte()) // i32 param
+    type_sec.push((126).to_byte()) // i64 (tagged value)
     write_u32_leb(type_sec, 0) // no results
   }
   if ctx.need_stdout_write_char || ctx.need_stdin_read_char {
@@ -189,27 +189,26 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     if ctx.use_js_strings {
       type_sec.push(ref_type) // externref
     } else {
-      type_sec.push((127).to_byte()) // i32
+      type_sec.push((126).to_byte()) // i64 (tagged value)
     }
     write_u32_leb(type_sec, 0) // result count = 0
   }
   // Stack switching types
   if ctx.need_stack_switching {
-    // Await tag type: (func (param i32)) - one-way, no result
-    // Bidirectional (with result) is not fully supported yet
+    // Await tag type: (func (param i64)) - one-way, no result
     ctx.await_tag_type_index = builtin_count +
       ctx.fn_sig_order.length() +
       exception_type_count
     type_sec.push((96).to_byte()) // func type
     write_u32_leb(type_sec, 1) // param count = 1
-    type_sec.push((127).to_byte()) // i32
+    type_sec.push((126).to_byte()) // i64 (tagged value)
     write_u32_leb(type_sec, 0) // result count = 0
-    // Run function type: (func (result i32))
+    // Run function type: (func (result i64))
     ctx.run_func_type_index = ctx.await_tag_type_index + 1
     type_sec.push((96).to_byte()) // func type
     write_u32_leb(type_sec, 0) // param count = 0
     write_u32_leb(type_sec, 1) // result count = 1
-    type_sec.push((127).to_byte()) // i32
+    type_sec.push((126).to_byte()) // i64 (tagged value)
     // Run continuation type: (cont $run_func_type)
     // Type index = ctx.run_func_type_index + 1
     type_sec.push((0x5d).to_byte()) // cont type (0x5d per stack-switching spec)
@@ -427,9 +426,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     // Async result global for stack switching
     if ctx.need_stack_switching {
       ctx.async_result_global_index = if ctx.use_heap_global { 1 } else { 0 }
-      global_sec.push((127).to_byte()) // i32
+      global_sec.push((126).to_byte()) // i64 (tagged value)
       global_sec.push((1).to_byte()) // mutable
-      emit_i32_const_raw(global_sec, 0) // initial value = 0
+      emit_i64_const_raw(global_sec, 0L) // initial value = 0
       global_sec.push((11).to_byte()) // end
     }
     if ctx.coverage_enabled {
@@ -806,7 +805,7 @@ fn emit_module_with_coverage(
     let type_idx = ensure_sig_index(ctx, sig)
     ctx.fn_type_indices[funcs[i].span_key] = type_idx
   }
-  let run_sig = FuncSig::{ params: [], result: ValueKind::I32 }
+  let run_sig = FuncSig::{ params: [], result: ValueKind::I64 }
   let _ = ensure_sig_index(ctx, run_sig)
   let run_ast = filter_top_level_funcs(ctx, ast)
   let func_needs_heap : Array[Bool] = []
@@ -916,7 +915,7 @@ fn emit_module_with_coverage(
       None,
       [],
       [],
-      ValueKind::I32,
+      ValueKind::I64,
       run_ast,
       run_need_heap,
       [],

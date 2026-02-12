@@ -1036,7 +1036,7 @@ fn eval_call(
               }
               match pos_args[0] {
                 @core.Value::Int(ms) => {
-                  @io.sleep_ms(ms.to_int64())
+                  @io.sleep_ms(ms)
                   { value: @core.Value::Unit, effects: out.effects }
                 }
                 _ => raise EvalError::BadCall("sleep")
@@ -1129,7 +1129,9 @@ fn eval_call(
               match pos_args[0] {
                 @core.Value::Int(capacity) =>
                   {
-                    value: @core.Value::Int(rt.threads_channel_new(capacity)),
+                    value: @core.Value::Int(
+                      rt.threads_channel_new(capacity.to_int()).to_int64(),
+                    ),
                     effects: out.effects,
                   }
                 _ => raise EvalError::BadCall("threads_channel_new")
@@ -1144,7 +1146,7 @@ fn eval_call(
               }
               match (pos_args[0], pos_args[1]) {
                 (@core.Value::Int(channel_id), @core.Value::String(message)) =>
-                  match rt.threads_send(channel_id, message) {
+                  match rt.threads_send(channel_id.to_int(), message) {
                     Some(ok) =>
                       { value: @core.Value::Bool(ok), effects: out.effects }
                     None => raise EvalError::BadCall("threads_send")
@@ -1161,7 +1163,7 @@ fn eval_call(
               }
               match pos_args[0] {
                 @core.Value::Int(channel_id) =>
-                  match rt.threads_recv(channel_id) {
+                  match rt.threads_recv(channel_id.to_int()) {
                     Some(message) =>
                       {
                         value: @core.Value::String(message),
@@ -1184,9 +1186,12 @@ fn eval_call(
               }
               match (pos_args[0], pos_args[1]) {
                 (@core.Value::String(name), @core.Value::Int(mailbox)) =>
-                  match rt.threads_spawn(name, mailbox) {
+                  match rt.threads_spawn(name, mailbox.to_int()) {
                     Some(task_id) =>
-                      { value: @core.Value::Int(task_id), effects: out.effects }
+                      {
+                        value: @core.Value::Int(task_id.to_int64()),
+                        effects: out.effects,
+                      }
                     None => raise EvalError::BadCall("threads_spawn")
                   }
                 _ => raise EvalError::BadCall("threads_spawn")
@@ -1201,9 +1206,12 @@ fn eval_call(
               }
               match pos_args[0] {
                 @core.Value::Int(task_id) =>
-                  match rt.threads_wait(task_id) {
+                  match rt.threads_wait(task_id.to_int()) {
                     Some(status) =>
-                      { value: @core.Value::Int(status), effects: out.effects }
+                      {
+                        value: @core.Value::Int(status.to_int64()),
+                        effects: out.effects,
+                      }
                     None => raise EvalError::BadCall("threads_wait")
                   }
                 _ => raise EvalError::BadCall("threads_wait")
@@ -1264,7 +1272,7 @@ fn eval_call(
               match pos_args[0] {
                 @core.Value::Int(code) => {
                   let effects = out.effects
-                  effects.push(Effect::StdoutWriteChar(code))
+                  effects.push(Effect::StdoutWriteChar(code.to_int()))
                   { value: @core.Value::Unit, effects }
                 }
                 _ => raise EvalError::BadCall("stdout_write_char")
@@ -1282,7 +1290,7 @@ fn eval_call(
               let code = -1
               let effects = out.effects
               effects.push(Effect::StdinReadChar(code))
-              { value: @core.Value::Int(code), effects }
+              { value: @core.Value::Int(code.to_int64()), effects }
             }
             "stdout_write_stream" => {
               let out = eval_args(rt, args)
@@ -1313,12 +1321,12 @@ fn eval_call(
               }
               match pos_args[0] {
                 @core.Value::Int(len) => {
-                  if len < 0 {
+                  if len < 0L {
                     raise EvalError::BadCall("stdin_read_stream")
                   }
                   let chunk = ""
                   let effects = out.effects
-                  effects.push(Effect::StdinReadStream(len, chunk))
+                  effects.push(Effect::StdinReadStream(len.to_int(), chunk))
                   { value: @core.Value::String(chunk), effects }
                 }
                 _ => raise EvalError::BadCall("stdin_read_stream")

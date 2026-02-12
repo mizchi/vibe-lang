@@ -68,6 +68,7 @@ fn write_i32_leb_gc(buf : GcByteBuf, n : Int) -> Unit {
 ///|
 priv enum GcValKind {
   I32
+  I64
   F32
   F64
   Ref(Int)
@@ -128,6 +129,7 @@ priv struct GcCodegenCtx {
 fn gc_val_kind_key(kind : GcValKind) -> String {
   match kind {
     GcValKind::I32 => "i32"
+    GcValKind::I64 => "i64"
     GcValKind::F32 => "f32"
     GcValKind::F64 => "f64"
     GcValKind::Ref(idx) => "ref:" + idx.to_string()
@@ -221,6 +223,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
 fn write_valtype_gc(buf : GcByteBuf, kind : GcValKind) -> Unit {
   match kind {
     GcValKind::I32 => buf.push(0x7f)
+    GcValKind::I64 => buf.push(0x7e)
     GcValKind::F32 => buf.push(0x7d)
     GcValKind::F64 => buf.push(0x7c)
     GcValKind::Ref(idx) => {
@@ -389,6 +392,66 @@ fn emit_f64_neg_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn write_i64_leb_gc(buf : GcByteBuf, n : Int64) -> Unit {
+  let mut value = n
+  while true {
+    let mut byte = (value & 0x7fL).to_int()
+    value = value >> 7
+    let sign_bit_set = (byte & 0x40) != 0
+    let done = (value == 0L && not(sign_bit_set)) ||
+      (value == -1L && sign_bit_set)
+    if not(done) {
+      byte = byte | 0x80
+    }
+    buf.push(byte)
+    if done {
+      break
+    }
+  }
+}
+
+///|
+fn emit_i64_const_gc(buf : GcByteBuf, n : Int64) -> Unit {
+  buf.push(0x42)
+  write_i64_leb_gc(buf, n)
+}
+
+///|
+fn emit_i64_add_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x7c)
+}
+
+///|
+fn emit_i64_sub_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x7d)
+}
+
+///|
+fn emit_i64_mul_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x7e)
+}
+
+///|
+fn emit_i64_div_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x7f)
+}
+
+///|
+fn emit_i64_rem_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x81)
+}
+
+///|
+fn emit_i64_eq_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x51)
+}
+
+///|
+fn emit_i64_lt_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x53)
+}
+
+///|
 fn emit_i32_eq_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x46)
 }
@@ -525,7 +588,7 @@ fn gc_val_kind_from_type(
   ty : @core.Type,
 ) -> GcValKind raise WasmGenError {
   match ty {
-    @core.Type::Int => GcValKind::I32
+    @core.Type::Int => GcValKind::I64
     @core.Type::Float => GcValKind::F32
     @core.Type::Double => GcValKind::F64
     @core.Type::Bool => GcValKind::I32
@@ -666,7 +729,7 @@ fn infer_expr_kind_gc(
   expr : @core.Expr,
 ) -> GcValKind raise WasmGenError {
   match expr {
-    @core.Expr::Int(..) => GcValKind::I32
+    @core.Expr::Int(..) => GcValKind::I64
     @core.Expr::Float(..) => GcValKind::F32
     @core.Expr::Double(..) => GcValKind::F64
     @core.Expr::Bool(..) => GcValKind::I32
@@ -679,8 +742,9 @@ fn infer_expr_kind_gc(
     @core.Expr::Call(name~, args~, ..) => {
       let pos_args = extract_positional_exprs(args, name)
       match name {
-        "add" | "sub" | "mul" | "div" | "eq" | "lt" => GcValKind::I32
-        "__index" => GcValKind::I32
+        "add" | "sub" | "mul" | "div" => GcValKind::I64
+        "eq" | "lt" => GcValKind::I32
+        "__index" => GcValKind::I64
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("arity: " + name)
@@ -691,7 +755,8 @@ fn infer_expr_kind_gc(
             raise WasmGenError::Unsupported("numeric kind mismatch")
           }
           match left_kind {
-            GcValKind::I32 | GcValKind::F32 | GcValKind::F64 => left_kind
+            GcValKind::I64 | GcValKind::I32 | GcValKind::F32 | GcValKind::F64 =>
+              left_kind
             _ => raise WasmGenError::Unsupported("numeric kind")
           }
         }
@@ -701,15 +766,13 @@ fn infer_expr_kind_gc(
           }
           let kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           match kind {
-            GcValKind::I32 | GcValKind::F32 | GcValKind::F64 => kind
+            GcValKind::I64 | GcValKind::I32 | GcValKind::F32 | GcValKind::F64 =>
+              kind
             _ => raise WasmGenError::Unsupported("numeric kind")
           }
         }
-        "__eq"
-        | "__lt"
-        | "string_length"
-        | "string_char_code_at"
-        | "string_equals" => GcValKind::I32
+        "__eq" | "__lt" | "string_equals" => GcValKind::I32
+        "string_length" | "string_char_code_at" => GcValKind::I64
         "string_substring" | "string_concat" => GcValKind::Ref(ctx.string_type)
         "record_set" => {
           if pos_args.length() != 3 {
@@ -1204,9 +1267,14 @@ fn compile_pat_cond_gc(
     @core.Pat::Int(value=n, span~) => {
       let _ = span
       match scrut_kind {
+        GcValKind::I64 => {
+          emit_local_get_gc(buf, scrut_idx)
+          emit_i64_const_gc(buf, n)
+          emit_i64_eq_gc(buf)
+        }
         GcValKind::I32 => {
           emit_local_get_gc(buf, scrut_idx)
-          emit_i32_const_gc(buf, n)
+          emit_i32_const_gc(buf, n.to_int())
           emit_i32_eq_gc(buf)
         }
         _ => raise WasmGenError::Unsupported("pat int kind")
@@ -1339,7 +1407,7 @@ fn compile_expr_gc(
   match expr {
     @core.Expr::Int(value=n, span~) => {
       let _ = span
-      emit_i32_const_gc(buf, n)
+      emit_i64_const_gc(buf, n)
     }
     @core.Expr::Float(value=n, span~) => {
       let _ = span
@@ -1413,7 +1481,7 @@ fn compile_expr_gc(
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i32_add_gc(buf)
+          emit_i64_add_gc(buf)
         }
         "sub" => {
           if pos_args.length() != 2 {
@@ -1421,7 +1489,7 @@ fn compile_expr_gc(
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i32_sub_gc(buf)
+          emit_i64_sub_gc(buf)
         }
         "mul" => {
           if pos_args.length() != 2 {
@@ -1429,7 +1497,7 @@ fn compile_expr_gc(
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i32_mul_gc(buf)
+          emit_i64_mul_gc(buf)
         }
         "div" => {
           if pos_args.length() != 2 {
@@ -1437,7 +1505,7 @@ fn compile_expr_gc(
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i32_div_s_gc(buf)
+          emit_i64_div_s_gc(buf)
         }
         "eq" => {
           if pos_args.length() != 2 {
@@ -1445,7 +1513,7 @@ fn compile_expr_gc(
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i32_eq_gc(buf)
+          emit_i64_eq_gc(buf)
         }
         "lt" => {
           if pos_args.length() != 2 {
@@ -1453,7 +1521,7 @@ fn compile_expr_gc(
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i32_lt_s_gc(buf)
+          emit_i64_lt_s_gc(buf)
         }
         "__add" => {
           if pos_args.length() != 2 {
@@ -1467,6 +1535,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           match left_kind {
+            GcValKind::I64 => emit_i64_add_gc(buf)
             GcValKind::I32 => emit_i32_add_gc(buf)
             GcValKind::F32 => emit_f32_add_gc(buf)
             GcValKind::F64 => emit_f64_add_gc(buf)
@@ -1485,6 +1554,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           match left_kind {
+            GcValKind::I64 => emit_i64_sub_gc(buf)
             GcValKind::I32 => emit_i32_sub_gc(buf)
             GcValKind::F32 => emit_f32_sub_gc(buf)
             GcValKind::F64 => emit_f64_sub_gc(buf)
@@ -1503,6 +1573,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           match left_kind {
+            GcValKind::I64 => emit_i64_mul_gc(buf)
             GcValKind::I32 => emit_i32_mul_gc(buf)
             GcValKind::F32 => emit_f32_mul_gc(buf)
             GcValKind::F64 => emit_f64_mul_gc(buf)
@@ -1521,6 +1592,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           match left_kind {
+            GcValKind::I64 => emit_i64_div_s_gc(buf)
             GcValKind::I32 => emit_i32_div_s_gc(buf)
             GcValKind::F32 => emit_f32_div_gc(buf)
             GcValKind::F64 => emit_f64_div_gc(buf)
@@ -1539,6 +1611,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           match left_kind {
+            GcValKind::I64 => emit_i64_rem_s_gc(buf)
             GcValKind::I32 => emit_i32_rem_s_gc(buf)
             _ => raise WasmGenError::Unsupported("__mod for float types")
           }
@@ -1555,6 +1628,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           match left_kind {
+            GcValKind::I64 => emit_i64_eq_gc(buf)
             GcValKind::I32 => emit_i32_eq_gc(buf)
             GcValKind::F32 => emit_f32_eq_gc(buf)
             GcValKind::F64 => emit_f64_eq_gc(buf)
@@ -1573,6 +1647,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           match left_kind {
+            GcValKind::I64 => emit_i64_lt_s_gc(buf)
             GcValKind::I32 => emit_i32_lt_s_gc(buf)
             GcValKind::F32 => emit_f32_lt_gc(buf)
             GcValKind::F64 => emit_f64_lt_gc(buf)
@@ -1585,6 +1660,11 @@ fn compile_expr_gc(
           }
           let kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           match kind {
+            GcValKind::I64 => {
+              emit_i64_const_gc(buf, 0L)
+              compile_expr_gc(ctx, fctx, buf, pos_args[0])
+              emit_i64_sub_gc(buf)
+            }
             GcValKind::I32 => {
               emit_i32_const_gc(buf, 0)
               compile_expr_gc(ctx, fctx, buf, pos_args[0])

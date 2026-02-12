@@ -90,7 +90,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("array_length")
       }
       match args[0] {
-        @core.Value::Array(items) => @core.Value::Int(items.length())
+        @core.Value::Array(items) => @core.Value::Int(items.length().to_int64())
         _ => raise EvalError::BadCall("array_length")
       }
     }
@@ -100,10 +100,10 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Array(items), @core.Value::Int(index)) => {
-          if index < 0 || index >= items.length() {
+          if index < 0L || index >= items.length().to_int64() {
             raise EvalError::BadCall("array_get")
           }
-          items[index]
+          items[index.to_int()]
         }
         _ => raise EvalError::BadCall("array_get")
       }
@@ -126,7 +126,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_length")
       }
       match args[0] {
-        @core.Value::String(s) => @core.Value::Int(String::length(s))
+        @core.Value::String(s) => @core.Value::Int(String::length(s).to_int64())
         _ => raise EvalError::BadCall("string_length")
       }
     }
@@ -135,7 +135,8 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_utf8_length")
       }
       match args[0] {
-        @core.Value::String(s) => @core.Value::Int(string_utf8_length(s))
+        @core.Value::String(s) =>
+          @core.Value::Int(string_utf8_length(s).to_int64())
         _ => raise EvalError::BadCall("string_utf8_length")
       }
     }
@@ -144,7 +145,8 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_utf16_length")
       }
       match args[0] {
-        @core.Value::String(s) => @core.Value::Int(string_utf16_length(s))
+        @core.Value::String(s) =>
+          @core.Value::Int(string_utf16_length(s).to_int64())
         _ => raise EvalError::BadCall("string_utf16_length")
       }
     }
@@ -153,7 +155,8 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("string_unicode_length")
       }
       match args[0] {
-        @core.Value::String(s) => @core.Value::Int(string_unicode_length(s))
+        @core.Value::String(s) =>
+          @core.Value::Int(string_unicode_length(s).to_int64())
         _ => raise EvalError::BadCall("string_unicode_length")
       }
     }
@@ -163,11 +166,11 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::Int(index)) => {
-          if index < 0 || index >= String::length(s) {
+          if index < 0L || index >= String::length(s).to_int64() {
             raise EvalError::BadCall("string_char_code_at")
           }
-          let code = String::code_unit_at(s, index)
-          @core.Value::Int(UInt16::to_int(code))
+          let code = String::code_unit_at(s, index.to_int())
+          @core.Value::Int(UInt16::to_int(code).to_int64())
         }
         _ => raise EvalError::BadCall("string_char_code_at")
       }
@@ -178,14 +181,14 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1], args[2]) {
         (@core.Value::String(s), @core.Value::Int(start), @core.Value::Int(end)) => {
-          let len = String::length(s)
+          let len = String::length(s).to_int64()
           let mut a = start
           let mut b = end
-          if a < 0 {
-            a = 0
+          if a < 0L {
+            a = 0L
           }
-          if b < 0 {
-            b = 0
+          if b < 0L {
+            b = 0L
           }
           if a > len {
             a = len
@@ -194,7 +197,9 @@ fn eval_pure_builtin(
             b = len
           }
           let (from, to) = if a <= b { (a, b) } else { (b, a) }
-          @core.Value::String(String::unsafe_substring(s, start=from, end=to))
+          @core.Value::String(
+            String::unsafe_substring(s, start=from.to_int(), end=to.to_int()),
+          )
         }
         _ => raise EvalError::BadCall("string_substring")
       }
@@ -241,8 +246,8 @@ fn eval_pure_builtin(
       match (args[0], args[1]) {
         (@core.Value::String(s), @core.Value::String(sub)) =>
           match String::find(s, sub[:]) {
-            Some(idx) => @core.Value::Int(idx)
-            None => @core.Value::Int(-1)
+            Some(idx) => @core.Value::Int(idx.to_int64())
+            None => @core.Value::Int(-1L)
           }
         _ => raise EvalError::BadCall("string_index_of")
       }
@@ -272,10 +277,10 @@ fn eval_pure_builtin(
       }
       match args[0] {
         @core.Value::Int(code) =>
-          if code < 0 || code > 1114111 {
+          if code < 0L || code > 1114111L {
             raise EvalError::BadCall("string_from_char_code")
           } else {
-            match Int::to_char(code) {
+            match Int::to_char(code.to_int()) {
               Some(ch) => @core.Value::String(ch.to_string())
               None => raise EvalError::BadCall("string_from_char_code")
             }
@@ -364,8 +369,8 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1]) {
         (@core.Value::Array(arr), @core.Value::Int(i)) =>
-          if i >= 0 && i < arr.length() {
-            arr[i]
+          if i >= 0L && i < arr.length().to_int64() {
+            arr[i.to_int()]
           } else {
             raise EvalError::BadCall("__index: out of bounds")
           }
@@ -393,8 +398,8 @@ fn eval_pure_builtin(
       }
       match (args[0], args[1], args[2]) {
         (@core.Value::Array(arr), @core.Value::Int(i), value) =>
-          if i >= 0 && i < arr.length() {
-            arr[i] = value
+          if i >= 0L && i < arr.length().to_int64() {
+            arr[i.to_int()] = value
             value
           } else {
             raise EvalError::BadCall("__set_index: out of bounds")
@@ -462,7 +467,8 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__lshift")
       }
       match (args[0], args[1]) {
-        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a << b)
+        (@core.Value::Int(a), @core.Value::Int(b)) =>
+          @core.Value::Int(a << b.to_int())
         _ => raise EvalError::BadCall("__lshift")
       }
     }
@@ -471,7 +477,8 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("__rshift")
       }
       match (args[0], args[1]) {
-        (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a >> b)
+        (@core.Value::Int(a), @core.Value::Int(b)) =>
+          @core.Value::Int(a >> b.to_int())
         _ => raise EvalError::BadCall("__rshift")
       }
     }
@@ -585,14 +592,14 @@ fn eval_pure_builtin(
           @core.Value::Int(start),
           @core.Value::Int(end),
         ) => {
-          let len = items.length()
+          let len = items.length().to_int64()
           let mut a = start
           let mut b = end
-          if a < 0 {
-            a = 0
+          if a < 0L {
+            a = 0L
           }
-          if b < 0 {
-            b = 0
+          if b < 0L {
+            b = 0L
           }
           if a > len {
             a = len
@@ -604,7 +611,7 @@ fn eval_pure_builtin(
             a = b
           }
           let out : Array[@core.Value] = []
-          for i in a..<b {
+          for i in a.to_int()..<b.to_int() {
             out.push(items[i])
           }
           @core.Value::Array(out)
@@ -617,7 +624,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("int_to_float")
       }
       match args[0] {
-        @core.Value::Int(n) => @core.Value::Float(Float::from_int(n))
+        @core.Value::Int(n) => @core.Value::Float(Float::from_int(n.to_int()))
         _ => raise EvalError::BadCall("int_to_float")
       }
     }
@@ -635,7 +642,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("float_to_int")
       }
       match args[0] {
-        @core.Value::Float(f) => @core.Value::Int(f.to_int())
+        @core.Value::Float(f) => @core.Value::Int(f.to_int().to_int64())
         _ => raise EvalError::BadCall("float_to_int")
       }
     }
@@ -653,7 +660,7 @@ fn eval_pure_builtin(
         raise EvalError::BadCall("double_to_int")
       }
       match args[0] {
-        @core.Value::Double(d) => @core.Value::Int(d.to_int())
+        @core.Value::Double(d) => @core.Value::Int(d.to_int().to_int64())
         _ => raise EvalError::BadCall("double_to_int")
       }
     }

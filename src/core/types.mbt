@@ -198,7 +198,7 @@ fn format_type_compact(ty : Type) -> String {
 
 ///|
 pub(all) enum Value {
-  Int(Int)
+  Int(Int64)
   Float(Float)
   Double(Double)
   Bool(Bool)

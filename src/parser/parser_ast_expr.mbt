@@ -318,7 +318,7 @@ fn AstParser::parse_unary_expr(self : AstParser) -> @core.Expr raise ParseError 
       self.skip_trivia()
       if self.peek_kind() == int_lit() {
         let lit = self.peek()
-        if lit.text() == "2147483648" {
+        if lit.text() == "9223372036854775808" {
           let span = @core.Span::new(
             self.offset_at(start_pos),
             self.offset_at(self.pos) + lit.text().length(),
@@ -1132,8 +1132,8 @@ fn AstParser::parse_paren_expr(self : AstParser) -> @core.Expr raise ParseError 
 fn parse_int_literal_token(
   tok : Token,
   span : @core.Span,
-) -> Int raise ParseError {
-  let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
+) -> Int64 raise ParseError {
+  let parsed : Result[Int64, @strconv.StrConvError] = try? @strconv.parse_int64(
     tok.text(),
   )
   match parsed {
@@ -1500,7 +1500,7 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
       let chars = tok.text().to_array()
       if chars.length() == 1 {
         let span = self.span_from(start)
-        @core.Expr::Int(value=chars[0].to_int(), span~)
+        @core.Expr::Int(value=chars[0].to_int().to_int64(), span~)
       } else {
         raise ParseError::UnexpectedToken(
           expected="char",

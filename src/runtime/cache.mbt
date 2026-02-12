@@ -126,7 +126,7 @@ fn encode_value(value : @core.Value) -> String {
 fn decode_value(encoded : String) -> @core.Value? {
   if encoded.has_prefix("i:") {
     let rest = slice_from(encoded, 2)
-    let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
+    let parsed : Result[Int64, @strconv.StrConvError] = try? @strconv.parse_int64(
       rest,
     )
     match parsed {

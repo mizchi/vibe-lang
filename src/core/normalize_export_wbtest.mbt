@@ -2,7 +2,7 @@
 let zero_span_for_export_norm_test : Span = Span::{ start: 0, end: 0 }
 
 ///|
-fn int_expr_for_export_norm_test(value : Int) -> Expr {
+fn int_expr_for_export_norm_test(value : Int64) -> Expr {
   Expr::Int(value~, span=zero_span_for_export_norm_test)
 }
 

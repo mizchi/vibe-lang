@@ -113,6 +113,7 @@ let obj_enum = 10
 ///|
 enum ValueKind {
   I32
+  I64
   BoxedF32
   BoxedF64
   ExternRef
@@ -121,8 +122,9 @@ enum ValueKind {
 ///|
 fn valtype_byte(kind : ValueKind) -> Byte {
   match kind {
-    ValueKind::I32 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
-      (127).to_byte()
+    ValueKind::I32 => (127).to_byte()
+    ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
+      (126).to_byte()
     ValueKind::ExternRef => (111).to_byte()
   }
 }
@@ -157,19 +159,24 @@ fn tag_ptr(ptr : Int, tag : Int) -> Int {
 }
 
 ///|
-fn tag_int_value(n : Int) -> Int {
-  (n << 2) | tag_int
+fn tag_int_value64(n : Int64) -> Int64 {
+  (n << 2) | tag_int.to_int64()
 }
 
 ///|
-fn tag_bool_value(b : Bool) -> Int {
-  let n = if b { 1 } else { 0 }
-  (n << 2) | tag_bool
+fn tag_bool_value64(b : Bool) -> Int64 {
+  let n : Int64 = if b { 1L } else { 0L }
+  (n << 2) | tag_bool.to_int64()
 }
 
 ///|
-fn tag_fn_value(idx : Int) -> Int {
-  (idx << 2) | tag_fn
+fn tag_fn_value64(idx : Int64) -> Int64 {
+  (idx << 2) | tag_fn.to_int64()
+}
+
+///|
+fn tag_ptr64(ptr : Int, tag : Int) -> Int64 {
+  (ptr | (tag & tag_mask)).to_int64()
 }
 
 ///|

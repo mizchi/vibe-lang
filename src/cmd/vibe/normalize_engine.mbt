@@ -1465,7 +1465,7 @@ fn normalize_fold_builtin_call(
     "__div" =>
       if args.length() == 2 {
         match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
-          (Some(_), Some(0)) => None
+          (Some(_), Some(0L)) => None
           (Some(left), Some(right)) =>
             Some(@vibe_core.Expr::Int(value=left / right, span~))
           _ => None
@@ -1476,7 +1476,7 @@ fn normalize_fold_builtin_call(
     "__mod" =>
       if args.length() == 2 {
         match (normalize_expr_as_int(args[0]), normalize_expr_as_int(args[1])) {
-          (Some(_), Some(0)) => None
+          (Some(_), Some(0L)) => None
           (Some(left), Some(right)) =>
             Some(@vibe_core.Expr::Int(value=left % right, span~))
           _ => None
@@ -1555,7 +1555,7 @@ fn normalize_fold_builtin_call(
 }
 
 ///|
-fn normalize_expr_as_int(expr : @vibe_core.Expr) -> Int? {
+fn normalize_expr_as_int(expr : @vibe_core.Expr) -> Int64? {
   match expr {
     @vibe_core.Expr::Int(value~, ..) => Some(value)
     _ => None

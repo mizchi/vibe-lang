@@ -191,7 +191,7 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
     let (key, value) = entry
     match key {
       "Int" => {
-        let v = expect_int(value)
+        let v = expect_int64(value)
         return Expr::Int(value=v, span=zero)
       }
       "Float" => {
@@ -325,7 +325,7 @@ fn parse_pat(json : Json) -> Pat raise DeserializeError {
         return Pat::Bind(name~, span=zero)
       }
       "Int" => {
-        let v = expect_int(value)
+        let v = expect_int64(value)
         return Pat::Int(value=v, span=zero)
       }
       "Float" => {
@@ -785,6 +785,14 @@ fn expect_string(json : Json) -> String raise DeserializeError {
 fn expect_int(json : Json) -> Int raise DeserializeError {
   match json {
     Json::Number(n, ..) => n.to_int()
+    _ => raise DeserializeError("Expected number")
+  }
+}
+
+///|
+fn expect_int64(json : Json) -> Int64 raise DeserializeError {
+  match json {
+    Json::Number(n, ..) => n.to_int64()
     _ => raise DeserializeError("Expected number")
   }
 }

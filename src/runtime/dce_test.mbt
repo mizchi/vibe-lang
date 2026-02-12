@@ -5,7 +5,7 @@ test "dce: keeps used definitions" {
     @core.Stmt::Let(
       rec=false,
       name="x",
-      expr=@core.Expr::Int(value=1, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=1L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
     @core.Stmt::Expr(
@@ -25,13 +25,13 @@ test "dce: removes unused definitions" {
     @core.Stmt::Let(
       rec=false,
       name="unused",
-      expr=@core.Expr::Int(value=1, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=1L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
     @core.Stmt::Let(
       rec=false,
       name="used",
-      expr=@core.Expr::Int(value=2, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=2L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
     @core.Stmt::Expr(
@@ -56,7 +56,7 @@ test "dce: keeps transitive dependencies" {
     @core.Stmt::Let(
       rec=false,
       name="a",
-      expr=@core.Expr::Int(value=1, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=1L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
     @core.Stmt::Let(
@@ -83,7 +83,7 @@ test "dce: keeps last let statement" {
     @core.Stmt::Let(
       rec=false,
       name="x",
-      expr=@core.Expr::Int(value=1, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=1L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
   ]
@@ -99,13 +99,13 @@ test "dce: keeps exports" {
     @core.Stmt::Let(
       rec=false,
       name="unused",
-      expr=@core.Expr::Int(value=1, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=1L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
     @core.Stmt::ExportLet(
       rec=false,
       name="exported",
-      expr=@core.Expr::Int(value=2, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=2L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
   ]
@@ -125,25 +125,25 @@ test "dce: removes multiple unused" {
     @core.Stmt::Let(
       rec=false,
       name="unused1",
-      expr=@core.Expr::Int(value=1, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=1L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
     @core.Stmt::Let(
       rec=false,
       name="unused2",
-      expr=@core.Expr::Int(value=2, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=2L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
     @core.Stmt::Let(
       rec=false,
       name="unused3",
-      expr=@core.Expr::Int(value=3, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=3L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
     @core.Stmt::ExportLet(
       rec=false,
       name="used",
-      expr=@core.Expr::Int(value=4, span=@core.Span::empty(0)),
+      expr=@core.Expr::Int(value=4L, span=@core.Span::empty(0)),
       span=@core.Span::empty(0),
     ),
   ]
@@ -233,7 +233,7 @@ test "dce: keeps function dependencies" {
         args=[
           @core.CallArg::{
             label: None,
-            expr: @core.Expr::Int(value=1, span=@core.Span::empty(0)),
+            expr: @core.Expr::Int(value=1L, span=@core.Span::empty(0)),
             span: @core.Span::empty(0),
           },
         ],
@@ -358,7 +358,7 @@ test "dce: merges dependencies for duplicate definition names" {
         args=[
           @core.CallArg::{
             label: None,
-            expr: @core.Expr::Int(value=1, span=@core.Span::empty(0)),
+            expr: @core.Expr::Int(value=1L, span=@core.Span::empty(0)),
             span: @core.Span::empty(0),
           },
         ],
@@ -469,7 +469,7 @@ test "dce: keeps user-defined and/or names" {
         args=[
           @core.CallArg::{
             label: None,
-            expr: @core.Expr::Int(value=1, span=@core.Span::empty(0)),
+            expr: @core.Expr::Int(value=1L, span=@core.Span::empty(0)),
             span: @core.Span::empty(0),
           },
         ],

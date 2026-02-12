@@ -13,13 +13,13 @@ fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
       if ctx.use_js_strings {
         ValueKind::ExternRef
       } else {
-        ValueKind::I32
+        ValueKind::I64
       }
     @core.Type::Float => ValueKind::BoxedF32
     @core.Type::Double => ValueKind::BoxedF64
     @core.Type::Named(name~, args~) => {
       if args.length() > 0 {
-        return ValueKind::I32
+        return ValueKind::I64
       }
       let is_string_name = name == "String" ||
         name.has_suffix(".String") ||
@@ -39,17 +39,17 @@ fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
         if ctx.use_js_strings {
           ValueKind::ExternRef
         } else {
-          ValueKind::I32
+          ValueKind::I64
         }
       } else if is_float_name {
         ValueKind::BoxedF32
       } else if is_double_name {
         ValueKind::BoxedF64
       } else {
-        ValueKind::I32
+        ValueKind::I64
       }
     }
-    _ => ValueKind::I32
+    _ => ValueKind::I64
   }
 }
 
@@ -67,6 +67,16 @@ fn ensure_funcref_slot(ctx : CodegenCtx, func_idx : Int) -> Int {
 }
 
 ///|
+fn value_kind_key_char(kind : ValueKind) -> Char {
+  match kind {
+    ValueKind::I32 => 'i'
+    ValueKind::I64 => 'l'
+    ValueKind::ExternRef => 'r'
+    _ => 'i'
+  }
+}
+
+///|
 fn func_sig_key_from_parts(
   params : Array[ValueKind],
   result : ValueKind,
@@ -77,12 +87,10 @@ fn func_sig_key_from_parts(
     if i > 0 {
       sb.write_char(',')
     }
-    let c = if params[i] == ValueKind::ExternRef { 'r' } else { 'i' }
-    sb.write_char(c)
+    sb.write_char(value_kind_key_char(params[i]))
   }
   sb.write_string(")->")
-  let rc = if result == ValueKind::ExternRef { 'r' } else { 'i' }
-  sb.write_char(rc)
+  sb.write_char(value_kind_key_char(result))
   sb.to_string()
 }
 
@@ -97,7 +105,7 @@ fn func_sig_with_env(params : Array[ValueKind], result : ValueKind) -> FuncSig {
   for kind in params {
     out.push(kind)
   }
-  out.push(ValueKind::I32)
+  out.push(ValueKind::I64)
   FuncSig::{ params: out, result }
 }
 
@@ -130,7 +138,7 @@ fn infer_expr_func_sig(ctx : CodegenCtx, expr : @core.Expr) -> FuncSig? {
       }
       let result = match ret {
         Some(r) => value_kind_from_type(ctx, r)
-        None => ValueKind::I32
+        None => ValueKind::I64
       }
       Some(func_sig_with_env(param_kinds, result))
     }
@@ -281,12 +289,12 @@ fn infer_expr_kind_with(
     @core.Expr::Int(value~, span~) => {
       let _ = value
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Bool(value~, span~) => {
       let _ = value
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::String(value~, span~) => {
       let _ = value
@@ -294,7 +302,7 @@ fn infer_expr_kind_with(
       if ctx.use_js_strings {
         ValueKind::ExternRef
       } else {
-        ValueKind::I32
+        ValueKind::I64
       }
     }
     @core.Expr::Float(value~, span~) => {
@@ -311,36 +319,36 @@ fn infer_expr_kind_with(
       let _ = span
       match locals.get(name) {
         Some(kind) => kind
-        None => ValueKind::I32
+        None => ValueKind::I64
       }
     }
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before codegen
-      ValueKind::I32
+      ValueKind::I64
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       let pos_args = extract_positional_exprs(args, name)
       match name {
-        "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I32
-        "__index" => ValueKind::I32
+        "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I64
+        "__index" => ValueKind::I64
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("js-string arity: " + name)
           }
           let left_kind = infer_expr_kind_with(ctx, pos_args[0], locals)
           let right_kind = infer_expr_kind_with(ctx, pos_args[1], locals)
-          // When one side is I32 (generic tagged), coerce to the other side's type
+          // When one side is I64 (generic tagged), coerce to the other side's type
           let resolved_kind = if left_kind == right_kind {
             left_kind
-          } else if left_kind == ValueKind::I32 {
+          } else if left_kind == ValueKind::I64 {
             right_kind
-          } else if right_kind == ValueKind::I32 {
+          } else if right_kind == ValueKind::I64 {
             left_kind
           } else {
             raise WasmGenError::Unsupported("numeric kind mismatch")
           }
           match resolved_kind {
-            ValueKind::I32 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
+            ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
               resolved_kind
             _ => raise WasmGenError::Unsupported("js-string numeric kind")
           }
@@ -351,7 +359,7 @@ fn infer_expr_kind_with(
           }
           let kind = infer_expr_kind_with(ctx, pos_args[0], locals)
           match kind {
-            ValueKind::I32 | ValueKind::BoxedF32 | ValueKind::BoxedF64 => kind
+            ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 => kind
             _ => raise WasmGenError::Unsupported("js-string numeric kind")
           }
         }
@@ -378,78 +386,78 @@ fn infer_expr_kind_with(
         | "i32_store"
         | "i32_store8"
         | "f32_store"
-        | "f64_store" => ValueKind::I32
-        "__eq" | "__lt" => ValueKind::I32
+        | "f64_store" => ValueKind::I64
+        "__eq" | "__lt" => ValueKind::I64
         "__to_string" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
-            ValueKind::I32
+            ValueKind::I64
           }
-        "string_length" => ValueKind::I32
-        "string_char_code_at" => ValueKind::I32
+        "string_length" => ValueKind::I64
+        "string_char_code_at" => ValueKind::I64
         "string_substring" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
-            ValueKind::I32
+            ValueKind::I64
           }
         "string_concat" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
-            ValueKind::I32
+            ValueKind::I64
           }
-        "string_equals" => ValueKind::I32
-        "array_builder" | "array_builder_freeze" => ValueKind::I32
-        "array_builder_push" => ValueKind::I32
-        "map_builder" | "map_builder_freeze" => ValueKind::I32
-        "map_builder_set" => ValueKind::I32
-        "array_length" => ValueKind::I32
-        "array_get" => ValueKind::I32
-        "map_get" => ValueKind::I32
-        "sleep" => ValueKind::I32
-        "stdout_write_char" => ValueKind::I32
-        "stdout_write_stream" => ValueKind::I32
-        "stdin_read_char" => ValueKind::I32
-        "stdin_read_stream" => ValueKind::I32
-        "string_from_char_code" => ValueKind::I32
+        "string_equals" => ValueKind::I64
+        "array_builder" | "array_builder_freeze" => ValueKind::I64
+        "array_builder_push" => ValueKind::I64
+        "map_builder" | "map_builder_freeze" => ValueKind::I64
+        "map_builder_set" => ValueKind::I64
+        "array_length" => ValueKind::I64
+        "array_get" => ValueKind::I64
+        "map_get" => ValueKind::I64
+        "sleep" => ValueKind::I64
+        "stdout_write_char" => ValueKind::I64
+        "stdout_write_stream" => ValueKind::I64
+        "stdin_read_char" => ValueKind::I64
+        "stdin_read_stream" => ValueKind::I64
+        "string_from_char_code" => ValueKind::I64
         "threads_probe_wat" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
-            ValueKind::I32
+            ValueKind::I64
           }
-        "threads_runtime_hints" => ValueKind::I32
+        "threads_runtime_hints" => ValueKind::I64
         "wasm_env" | "wasi_env" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
-            ValueKind::I32
+            ValueKind::I64
           }
-        "threads_channel_new" => ValueKind::I32
-        "threads_spawn" => ValueKind::I32
-        "threads_send" => ValueKind::I32
+        "threads_channel_new" => ValueKind::I64
+        "threads_spawn" => ValueKind::I64
+        "threads_send" => ValueKind::I64
         "threads_recv" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef
           } else {
-            ValueKind::I32
+            ValueKind::I64
           }
-        "threads_wait" => ValueKind::I32
+        "threads_wait" => ValueKind::I64
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
             Some(sig) => sig.result
-            None => ValueKind::I32
+            None => ValueKind::I64
           }
         _ =>
           if ctx.fn_returns.contains(name) {
             match ctx.fn_returns.get(name) {
               Some(kind) => kind
-              None => ValueKind::I32
+              None => ValueKind::I64
             }
           } else {
-            ValueKind::I32
+            ValueKind::I64
           }
       }
     }
@@ -480,7 +488,7 @@ fn infer_expr_kind_with(
       let _ = scrutinee
       let _ = span
       if arms.length() == 0 {
-        ValueKind::I32
+        ValueKind::I64
       } else {
         // Infer type from the first arm's expression
         let arm = arms[0]
@@ -488,7 +496,7 @@ fn infer_expr_kind_with(
         let bindings : Array[String] = []
         collect_pat_bindings_codegen(arm.pat, bindings)
         for name in bindings {
-          arm_locals[name] = ValueKind::I32
+          arm_locals[name] = ValueKind::I64
         }
         infer_expr_kind_with(ctx, arm.expr, arm_locals)
       }
@@ -496,28 +504,28 @@ fn infer_expr_kind_with(
     @core.Expr::Tuple(items~, span~) => {
       let _ = items
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::TupleIndex(expr~, index~, span~) => {
       let _ = expr
       let _ = index
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Record(fields~, span~) => {
       let _ = fields
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Array(items~, span~) => {
       let _ = items
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Map(fields~, span~) => {
       let _ = fields
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Do(body~, span~) => {
       let _ = span
@@ -529,26 +537,26 @@ fn infer_expr_kind_with(
       let _ = effects
       let _ = body
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = cond
       let _ = body
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Break(span~) => {
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Continue(span~) => {
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = value
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::Await(expr~, span~) => {
       let _ = span
@@ -557,13 +565,13 @@ fn infer_expr_kind_with(
     @core.Expr::Yield(expr~, span~) => {
       let _ = expr
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Expr::StructLit(fields~, span~, ..) => {
       let _ = fields
       let _ = span
       // Struct is compiled as record - same layout (pointer)
-      ValueKind::I32
+      ValueKind::I64
     }
   }
 }
@@ -575,7 +583,7 @@ fn infer_block_kind(
   locals : Map[String, ValueKind],
 ) -> ValueKind raise WasmGenError {
   let kinds = locals.copy()
-  let mut last = ValueKind::I32
+  let mut last = ValueKind::I64
   for stmt in body.stmts {
     last = infer_stmt_kind(ctx, stmt, kinds)
   }
@@ -605,26 +613,26 @@ fn infer_stmt_kind(
       let _ = params
       let _ = ctors
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
       let _ = name
       let _ = params
       let _ = target
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Stmt::Test(name~, body~, span~) => {
       let _ = name
       let _ = body
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Stmt::Bench(name~, body~, span~) => {
       let _ = name
       let _ = body
       let _ = span
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Stmt::LetPat(pat~, expr~, span~) => {
       let _ = span
@@ -633,9 +641,9 @@ fn infer_stmt_kind(
       let bindings : Array[String] = []
       collect_pat_bindings_codegen(pat, bindings)
       for name in bindings {
-        locals[name] = ValueKind::I32
+        locals[name] = ValueKind::I64
       }
-      ValueKind::I32
+      ValueKind::I64
     }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = span
@@ -643,7 +651,7 @@ fn infer_stmt_kind(
       locals[name] = kind
       kind
     }
-    _ => ValueKind::I32
+    _ => ValueKind::I64
   }
 }
 
@@ -960,7 +968,7 @@ fn infer_func_return_kind(
   let inferred = if ctx.use_js_strings {
     infer_block_kind(ctx, body, locals)
   } else {
-    ValueKind::I32
+    ValueKind::I64
   }
   ctx.fn_local_sigs = saved_fn_locals
   match ret {
@@ -1156,9 +1164,9 @@ fn resolve_numeric_kind(
   let right_kind = infer_expr_kind(ctx, right)
   if left_kind == right_kind {
     left_kind
-  } else if left_kind == ValueKind::I32 {
+  } else if left_kind == ValueKind::I64 {
     right_kind
-  } else if right_kind == ValueKind::I32 {
+  } else if right_kind == ValueKind::I64 {
     left_kind
   } else {
     raise WasmGenError::Unsupported("numeric kind mismatch")

@@ -62,6 +62,27 @@ fn Cursor::read_leb_u32(self : Cursor) -> Int raise WasmWatError {
 }
 
 ///|
+fn Cursor::read_leb_i64(self : Cursor) -> Int64 raise WasmWatError {
+  let mut result : Int64 = 0L
+  let mut shift = 0
+  while true {
+    let b = self.read_u8()
+    result = result | ((b & 0x7f).to_int64() << shift)
+    shift += 7
+    if (b & 0x80) == 0 {
+      if shift < 64 && (b & 0x40) != 0 {
+        result = result | (-1L << shift)
+      }
+      return result
+    }
+    if shift > 70 {
+      raise WasmWatError::InvalidSection("i64 leb overflow")
+    }
+  }
+  result
+}
+
+///|
 fn Cursor::read_name(self : Cursor) -> String raise WasmWatError {
   let len = self.read_leb_u32()
   let bytes = self.read_bytes(len)
@@ -224,8 +245,35 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
       0x72 => instrs.push(Instr::Simple("i32.or"))
       0x71 => instrs.push(Instr::Simple("i32.and"))
       0x73 => instrs.push(Instr::Simple("i32.xor"))
+      0x75 => instrs.push(Instr::Simple("i32.shr_s"))
       0x8c => instrs.push(Instr::Simple("f32.neg"))
       0x99 => instrs.push(Instr::Simple("f64.neg"))
+      // i64 instructions
+      0x42 => {
+        let value = cursor.read_leb_i64()
+        instrs.push(Instr::Simple("i64.const " + value.to_string()))
+      }
+      0x50 => instrs.push(Instr::Simple("i64.eqz"))
+      0x51 => instrs.push(Instr::Simple("i64.eq"))
+      0x52 => instrs.push(Instr::Simple("i64.ne"))
+      0x53 => instrs.push(Instr::Simple("i64.lt_s"))
+      0x55 => instrs.push(Instr::Simple("i64.gt_s"))
+      0x57 => instrs.push(Instr::Simple("i64.le_s"))
+      0x59 => instrs.push(Instr::Simple("i64.ge_s"))
+      0x7c => instrs.push(Instr::Simple("i64.add"))
+      0x7d => instrs.push(Instr::Simple("i64.sub"))
+      0x7e => instrs.push(Instr::Simple("i64.mul"))
+      0x7f => instrs.push(Instr::Simple("i64.div_s"))
+      0x81 => instrs.push(Instr::Simple("i64.rem_s"))
+      0x83 => instrs.push(Instr::Simple("i64.and"))
+      0x84 => instrs.push(Instr::Simple("i64.or"))
+      0x85 => instrs.push(Instr::Simple("i64.xor"))
+      0x86 => instrs.push(Instr::Simple("i64.shl"))
+      0x87 => instrs.push(Instr::Simple("i64.shr_s"))
+      0x88 => instrs.push(Instr::Simple("i64.shr_u"))
+      0xa7 => instrs.push(Instr::Simple("i32.wrap_i64"))
+      0xac => instrs.push(Instr::Simple("i64.extend_i32_s"))
+      0xad => instrs.push(Instr::Simple("i64.extend_i32_u"))
       0x3f => {
         let _ = cursor.read_u8() // memory index
         instrs.push(Instr::Simple("memory.size"))

@@ -1,6 +1,6 @@
 (module
-  (type (;0;) (func (result i32)))
-  (func (;0;) (type 0) (local i32 i32 i32 i32 i32 i32)
+  (type (;0;) (func (result i64)))
+  (func (;0;) (type 0) (local i32 i64 i32 i32 i32 i32)
     i32.const 12
     local.set 0
     local.get 0
@@ -41,11 +41,13 @@
     i32.const 0
     i32.store align=2 offset=8
     local.get 2
-    i32.const 4
+    i64.const 4
+    i32.wrap_i64
     i32.store align=2 offset=12
     local.get 2
-    i32.const 1
-    i32.or
+    i64.extend_i32_u
+    i64.const 1
+    i64.or
     local.set 1
     local.get 1
     end
