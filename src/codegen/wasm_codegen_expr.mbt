@@ -839,6 +839,75 @@ fn compile_binary_cmp_op(
 }
 
 ///|
+fn emit_i32_result_as_tagged_int(buf : ByteBuf) -> Unit {
+  emit_i64_extend_i32_s(buf)
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shl(buf)
+  emit_i64_const_raw(buf, tag_int.to_int64())
+  emit_i64_or(buf)
+}
+
+///|
+fn compile_i32_cmp_to_tagged_int(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  name : String,
+  args : Array[@core.CallArg],
+  emit_cmp : (ByteBuf) -> Unit,
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs(args, name)
+  if pos_args.length() != 2 {
+    raise WasmGenError::Unsupported(name + " arity")
+  }
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shr_s(buf)
+  emit_i32_wrap_i64(buf)
+  compile_expr_i32(ctx, buf, pos_args[1])
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shr_s(buf)
+  emit_i32_wrap_i64(buf)
+  emit_cmp(buf)
+  emit_i32_result_as_tagged_int(buf)
+}
+
+///|
+fn compile_f32_cmp_to_tagged_int(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  name : String,
+  args : Array[@core.CallArg],
+  emit_cmp : (ByteBuf) -> Unit,
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs(args, name)
+  if pos_args.length() != 2 {
+    raise WasmGenError::Unsupported(name + " arity")
+  }
+  emit_unbox_f32_expr(ctx, buf, pos_args[0])
+  emit_unbox_f32_expr(ctx, buf, pos_args[1])
+  emit_cmp(buf)
+  emit_i32_result_as_tagged_int(buf)
+}
+
+///|
+fn compile_f64_cmp_to_tagged_int(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  name : String,
+  args : Array[@core.CallArg],
+  emit_cmp : (ByteBuf) -> Unit,
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs(args, name)
+  if pos_args.length() != 2 {
+    raise WasmGenError::Unsupported(name + " arity")
+  }
+  emit_unbox_f64_expr(ctx, buf, pos_args[0])
+  emit_unbox_f64_expr(ctx, buf, pos_args[1])
+  emit_cmp(buf)
+  emit_i32_result_as_tagged_int(buf)
+}
+
+///|
 fn compile_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -921,6 +990,7 @@ fn compile_expr(
       raise WasmGenError::Unsupported("placeholder in codegen")
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
+      let name = @core.lower_wasm_intrinsic_name(name)
       if ctx.fn_local_sigs.contains(name) &&
         ctx.locals.contains(name) &&
         not(ctx.enum_ctor_tags.contains(name)) {
@@ -1310,6 +1380,53 @@ fn compile_expr(
         compile_binary_cmp_op(
           ctx, buf, "__lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
         )
+      } else if name == "i32_eqz" && not(ctx.fn_indices.contains(name)) {
+        let pos_args = extract_positional_exprs(args, "i32_eqz")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("i32_eqz arity")
+        }
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shr_s(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_eqz(buf)
+        emit_i32_result_as_tagged_int(buf)
+      } else if name == "i32_eq" && not(ctx.fn_indices.contains(name)) {
+        compile_i32_cmp_to_tagged_int(ctx, buf, "i32_eq", args, emit_i32_eq)
+      } else if name == "i32_ne" && not(ctx.fn_indices.contains(name)) {
+        compile_i32_cmp_to_tagged_int(ctx, buf, "i32_ne", args, emit_i32_ne)
+      } else if name == "i32_lt_s" && not(ctx.fn_indices.contains(name)) {
+        compile_i32_cmp_to_tagged_int(ctx, buf, "i32_lt_s", args, emit_i32_lt_s)
+      } else if name == "i32_gt_s" && not(ctx.fn_indices.contains(name)) {
+        compile_i32_cmp_to_tagged_int(ctx, buf, "i32_gt_s", args, emit_i32_gt_s)
+      } else if name == "i32_le_s" && not(ctx.fn_indices.contains(name)) {
+        compile_i32_cmp_to_tagged_int(ctx, buf, "i32_le_s", args, emit_i32_le_s)
+      } else if name == "i32_ge_s" && not(ctx.fn_indices.contains(name)) {
+        compile_i32_cmp_to_tagged_int(ctx, buf, "i32_ge_s", args, emit_i32_ge_s)
+      } else if name == "f32_eq" && not(ctx.fn_indices.contains(name)) {
+        compile_f32_cmp_to_tagged_int(ctx, buf, "f32_eq", args, emit_f32_eq)
+      } else if name == "f32_ne" && not(ctx.fn_indices.contains(name)) {
+        compile_f32_cmp_to_tagged_int(ctx, buf, "f32_ne", args, emit_f32_ne)
+      } else if name == "f32_lt" && not(ctx.fn_indices.contains(name)) {
+        compile_f32_cmp_to_tagged_int(ctx, buf, "f32_lt", args, emit_f32_lt)
+      } else if name == "f32_gt" && not(ctx.fn_indices.contains(name)) {
+        compile_f32_cmp_to_tagged_int(ctx, buf, "f32_gt", args, emit_f32_gt)
+      } else if name == "f32_le" && not(ctx.fn_indices.contains(name)) {
+        compile_f32_cmp_to_tagged_int(ctx, buf, "f32_le", args, emit_f32_le)
+      } else if name == "f32_ge" && not(ctx.fn_indices.contains(name)) {
+        compile_f32_cmp_to_tagged_int(ctx, buf, "f32_ge", args, emit_f32_ge)
+      } else if name == "f64_eq" && not(ctx.fn_indices.contains(name)) {
+        compile_f64_cmp_to_tagged_int(ctx, buf, "f64_eq", args, emit_f64_eq)
+      } else if name == "f64_ne" && not(ctx.fn_indices.contains(name)) {
+        compile_f64_cmp_to_tagged_int(ctx, buf, "f64_ne", args, emit_f64_ne)
+      } else if name == "f64_lt" && not(ctx.fn_indices.contains(name)) {
+        compile_f64_cmp_to_tagged_int(ctx, buf, "f64_lt", args, emit_f64_lt)
+      } else if name == "f64_gt" && not(ctx.fn_indices.contains(name)) {
+        compile_f64_cmp_to_tagged_int(ctx, buf, "f64_gt", args, emit_f64_gt)
+      } else if name == "f64_le" && not(ctx.fn_indices.contains(name)) {
+        compile_f64_cmp_to_tagged_int(ctx, buf, "f64_le", args, emit_f64_le)
+      } else if name == "f64_ge" && not(ctx.fn_indices.contains(name)) {
+        compile_f64_cmp_to_tagged_int(ctx, buf, "f64_ge", args, emit_f64_ge)
       } else if name == "__neg" {
         let pos_args = extract_positional_exprs(args, "__neg")
         if pos_args.length() != 1 {

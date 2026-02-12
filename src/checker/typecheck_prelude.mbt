@@ -93,7 +93,8 @@ fn find_name_suggestion(
 fn find_type_suggestion(env : TypeEnv, name : String) -> String? {
   let candidates : Array[String] = [
     "Int", "Float", "Double", "Bool", "String", "@core.Path", "Unit", "Array", "Map",
-    "ArrayBuilder", "MapBuilder", "i32", "f32", "f64",
+    "ArrayBuilder", "MapBuilder", "i32", "f32", "f64", "anyref", "eqref", "i31ref",
+    "structref", "arrayref", "funcref", "externref",
   ]
   for key, _ in env.enum_defs {
     candidates.push(key)
@@ -106,7 +107,7 @@ fn find_type_suggestion(env : TypeEnv, name : String) -> String? {
 
 ///|
 fn is_reserved_wasm_type_name(name : String) -> Bool {
-  name == "i32" || name == "f32" || name == "f64"
+  @core.is_wasm_reserved_type_name(name)
 }
 
 ///|

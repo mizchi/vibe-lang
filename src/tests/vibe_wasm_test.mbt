@@ -563,6 +563,48 @@ test "vibe wasm accepts i32/f32/f64 type aliases" {
 }
 
 ///|
+test "vibe wasm supports direct vibe/wasm type member calls" {
+  let db = VibeDb::new()
+  let src =
+    #|let a = vibe/wasm/i32::add(40, 2)
+    #|let b = vibe/wasm/i32::eqz(0)
+    #|let c = vibe/wasm/i32::eq(a, 42)
+    #|let d = vibe/wasm/f32::add(1.5f, 2.5f)
+    #|if c == 1 { a + b + float_to_int(d) } else { 0 }
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+  assert_true(bytes_contains_ascii(wasm, "memory"))
+}
+
+///|
+test "vibe wasm-gc supports direct ref type member eq calls" {
+  let db = VibeDb::new()
+  let src =
+    #|let anyref_eq = (a: anyref, b: anyref) -> i32 { vibe/wasm/anyref::eq(a, b) }
+    #|let eqref_eq = (a: eqref, b: eqref) -> i32 { vibe/wasm/eqref::eq(a, b) }
+    #|let i31ref_eq = (a: i31ref, b: i31ref) -> i32 { vibe/wasm/i31ref::eq(a, b) }
+    #|let structref_eq = (a: structref, b: structref) -> i32 { vibe/wasm/structref::eq(a, b) }
+    #|let arrayref_eq = (a: arrayref, b: arrayref) -> i32 { vibe/wasm/arrayref::eq(a, b) }
+    #|let funcref_eq = (a: funcref, b: funcref) -> i32 { vibe/wasm/funcref::eq(a, b) }
+    #|let externref_eq = (a: externref, b: externref) -> i32 { vibe/wasm/externref::eq(a, b) }
+    #|0
+  db.set_source("main", src)
+  let wasm = try @runtime.compile_module_wasm_gc_no_dce(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
 test "vibe wasm compiles std wasm opcode module" {
   let src = try @os_fs.read_file_to_string("vibe/std/wasm/opcodes.vibe") catch {
     e => fail("read error: " + e.to_string())

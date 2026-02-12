@@ -254,8 +254,28 @@ fn emit_i32_eq(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i32_ne(buf : ByteBuf) -> Unit {
+  buf.push((71).to_byte())
+}
+
+///|
 fn emit_i32_lt_s(buf : ByteBuf) -> Unit {
   buf.push((72).to_byte())
+}
+
+///|
+fn emit_i32_gt_s(buf : ByteBuf) -> Unit {
+  buf.push((74).to_byte())
+}
+
+///|
+fn emit_i32_le_s(buf : ByteBuf) -> Unit {
+  buf.push((76).to_byte())
+}
+
+///|
+fn emit_i32_ge_s(buf : ByteBuf) -> Unit {
+  buf.push((78).to_byte())
 }
 
 ///|
@@ -389,8 +409,28 @@ fn emit_f32_eq(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_f32_ne(buf : ByteBuf) -> Unit {
+  buf.push((92).to_byte())
+}
+
+///|
 fn emit_f32_lt(buf : ByteBuf) -> Unit {
   buf.push((93).to_byte())
+}
+
+///|
+fn emit_f32_gt(buf : ByteBuf) -> Unit {
+  buf.push((94).to_byte())
+}
+
+///|
+fn emit_f32_le(buf : ByteBuf) -> Unit {
+  buf.push((95).to_byte())
+}
+
+///|
+fn emit_f32_ge(buf : ByteBuf) -> Unit {
+  buf.push((96).to_byte())
 }
 
 ///|
@@ -424,8 +464,28 @@ fn emit_f64_eq(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_f64_ne(buf : ByteBuf) -> Unit {
+  buf.push((98).to_byte())
+}
+
+///|
 fn emit_f64_lt(buf : ByteBuf) -> Unit {
   buf.push((99).to_byte())
+}
+
+///|
+fn emit_f64_gt(buf : ByteBuf) -> Unit {
+  buf.push((100).to_byte())
+}
+
+///|
+fn emit_f64_le(buf : ByteBuf) -> Unit {
+  buf.push((101).to_byte())
+}
+
+///|
+fn emit_f64_ge(buf : ByteBuf) -> Unit {
+  buf.push((102).to_byte())
 }
 
 ///|

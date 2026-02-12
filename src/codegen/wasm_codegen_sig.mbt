@@ -327,6 +327,7 @@ fn infer_expr_kind_with(
       ValueKind::I64
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
+      let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       match name {
         "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I64
@@ -380,6 +381,25 @@ fn infer_expr_kind_with(
         | "i32_trunc_f32_s"
         | "double_to_int"
         | "i32_trunc_f64_s"
+        | "i32_eqz"
+        | "i32_eq"
+        | "i32_ne"
+        | "i32_lt_s"
+        | "i32_le_s"
+        | "i32_gt_s"
+        | "i32_ge_s"
+        | "f32_eq"
+        | "f32_ne"
+        | "f32_lt"
+        | "f32_le"
+        | "f32_gt"
+        | "f32_ge"
+        | "f64_eq"
+        | "f64_ne"
+        | "f64_lt"
+        | "f64_le"
+        | "f64_gt"
+        | "f64_ge"
         | "i32_shr_u"
         | "i32_load"
         | "i32_load8_u"
@@ -387,6 +407,13 @@ fn infer_expr_kind_with(
         | "i32_store8"
         | "f32_store"
         | "f64_store" => ValueKind::I64
+        "anyref_eq"
+        | "eqref_eq"
+        | "i31ref_eq"
+        | "structref_eq"
+        | "arrayref_eq"
+        | "funcref_eq"
+        | "externref_eq" => ValueKind::I64
         "__eq" | "__lt" => ValueKind::I64
         "__to_string" =>
           if ctx.use_js_strings {

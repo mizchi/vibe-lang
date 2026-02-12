@@ -1652,7 +1652,8 @@ fn type_call(
             map[name] = field_ty
             @core.Type::Variant(map)
           } else {
-            match name {
+            let builtin_name = @core.lower_wasm_intrinsic_name(name)
+            match builtin_name {
               "path" | "path_ref" => {
                 let builtin_name = name
                 let pos_args = extract_positional_args(
@@ -3184,6 +3185,91 @@ fn type_call(
                 }
                 @core.Type::Int
               }
+              "i32_eqz" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  "i32_eqz",
+                  @core.Type::Int,
+                  @core.Type::Int,
+                )
+              "i32_eq"
+              | "i32_ne"
+              | "i32_lt_s"
+              | "i32_le_s"
+              | "i32_gt_s"
+              | "i32_ge_s" =>
+                type_check_binary_exact(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  builtin_name,
+                  @core.Type::Int,
+                  @core.Type::Int,
+                  @core.Type::Int,
+                )
+              "f32_eq" | "f32_ne" | "f32_lt" | "f32_le" | "f32_gt" | "f32_ge" =>
+                type_check_binary_exact(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  builtin_name,
+                  @core.Type::Float,
+                  @core.Type::Float,
+                  @core.Type::Int,
+                )
+              "f64_eq" | "f64_ne" | "f64_lt" | "f64_le" | "f64_gt" | "f64_ge" =>
+                type_check_binary_exact(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  builtin_name,
+                  @core.Type::Double,
+                  @core.Type::Double,
+                  @core.Type::Int,
+                )
+              "anyref_eq"
+              | "eqref_eq"
+              | "i31ref_eq"
+              | "structref_eq"
+              | "arrayref_eq"
+              | "funcref_eq"
+              | "externref_eq" => {
+                let ref_name = match
+                  @core.wasm_gc_ref_eq_type_name(builtin_name) {
+                  Some(t) => t
+                  None =>
+                    raise TypeError::BadCall(
+                      message=builtin_name,
+                      span=call_span,
+                    )
+                }
+                type_check_binary_exact(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  builtin_name,
+                  @core.Type::Named(name=ref_name, args=[]),
+                  @core.Type::Named(name=ref_name, args=[]),
+                  @core.Type::Int,
+                )
+              }
               "__index" => {
                 let pos_args = extract_positional_args(
                   args, "__index", call_span,
@@ -4090,6 +4176,44 @@ fn type_check_unary_convert(
     )
   }
   to_ty
+}
+
+///|
+fn type_check_binary_exact(
+  env : TypeEnv,
+  args : Array[@core.CallArg],
+  call_span : @core.Span,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+  name : String,
+  left_expect : @core.Type,
+  right_expect : @core.Type,
+  ret_ty : @core.Type,
+) -> @core.Type raise TypeError {
+  let pos_args = extract_positional_args(args, name, call_span)
+  if pos_args.length() != 2 {
+    raise TypeError::BadCall(message=name, span=call_span)
+  }
+  let left_ty = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+  if not(type_equal(env, left_ty, left_expect)) {
+    raise TypeError::Mismatch(
+      expected=left_expect,
+      actual=left_ty,
+      span=pos_args[0].span(),
+      context=Some("argument"),
+    )
+  }
+  let right_ty = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
+  if not(type_equal(env, right_ty, right_expect)) {
+    raise TypeError::Mismatch(
+      expected=right_expect,
+      actual=right_ty,
+      span=pos_args[1].span(),
+      context=Some("argument"),
+    )
+  }
+  ret_ty
 }
 
 ///|

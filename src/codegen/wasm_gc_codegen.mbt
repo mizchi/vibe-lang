@@ -71,6 +71,13 @@ priv enum GcValKind {
   I64
   F32
   F64
+  AnyRef
+  EqRef
+  I31Ref
+  StructRef
+  ArrayRef
+  FuncRef
+  ExternRef
   Ref(Int)
 } derive(Eq)
 
@@ -132,6 +139,13 @@ fn gc_val_kind_key(kind : GcValKind) -> String {
     GcValKind::I64 => "i64"
     GcValKind::F32 => "f32"
     GcValKind::F64 => "f64"
+    GcValKind::AnyRef => "anyref"
+    GcValKind::EqRef => "eqref"
+    GcValKind::I31Ref => "i31ref"
+    GcValKind::StructRef => "structref"
+    GcValKind::ArrayRef => "arrayref"
+    GcValKind::FuncRef => "funcref"
+    GcValKind::ExternRef => "externref"
     GcValKind::Ref(idx) => "ref:" + idx.to_string()
   }
 }
@@ -226,6 +240,13 @@ fn write_valtype_gc(buf : GcByteBuf, kind : GcValKind) -> Unit {
     GcValKind::I64 => buf.push(0x7e)
     GcValKind::F32 => buf.push(0x7d)
     GcValKind::F64 => buf.push(0x7c)
+    GcValKind::AnyRef => buf.push(0x6e)
+    GcValKind::EqRef => buf.push(0x6d)
+    GcValKind::I31Ref => buf.push(0x6c)
+    GcValKind::StructRef => buf.push(0x6b)
+    GcValKind::ArrayRef => buf.push(0x6a)
+    GcValKind::FuncRef => buf.push(0x70)
+    GcValKind::ExternRef => buf.push(0x6f)
     GcValKind::Ref(idx) => {
       buf.push(0x63)
       write_u32_leb_gc(buf, idx)
@@ -447,6 +468,11 @@ fn emit_i64_eq_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i64_extend_i32_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xac)
+}
+
+///|
 fn emit_i64_lt_s_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x53)
 }
@@ -614,6 +640,21 @@ fn gc_val_kind_from_type(
       let type_idx = ensure_struct_type(ctx.types, ctx.struct_type_index, kinds)
       GcValKind::Ref(type_idx)
     }
+    @core.Type::Named(name~, args~) =>
+      if args.length() == 0 {
+        match name {
+          "anyref" => GcValKind::AnyRef
+          "eqref" => GcValKind::EqRef
+          "i31ref" => GcValKind::I31Ref
+          "structref" => GcValKind::StructRef
+          "arrayref" => GcValKind::ArrayRef
+          "funcref" => GcValKind::FuncRef
+          "externref" => GcValKind::ExternRef
+          _ => raise WasmGenError::Unsupported("gc type")
+        }
+      } else {
+        raise WasmGenError::Unsupported("gc type")
+      }
     _ => raise WasmGenError::Unsupported("gc type")
   }
 }
@@ -740,6 +781,7 @@ fn infer_expr_kind_gc(
         None => raise WasmGenError::UnknownName(name)
       }
     @core.Expr::Call(name~, args~, ..) => {
+      let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       match name {
         "add" | "sub" | "mul" | "div" => GcValKind::I64
@@ -772,6 +814,13 @@ fn infer_expr_kind_gc(
           }
         }
         "__eq" | "__lt" | "string_equals" => GcValKind::I32
+        "anyref_eq"
+        | "eqref_eq"
+        | "i31ref_eq"
+        | "structref_eq"
+        | "arrayref_eq"
+        | "funcref_eq"
+        | "externref_eq" => GcValKind::I64
         "string_length" | "string_char_code_at" => GcValKind::I64
         "string_substring" | "string_concat" => GcValKind::Ref(ctx.string_type)
         "record_set" => {
@@ -1473,6 +1522,7 @@ fn compile_expr_gc(
     }
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
+      let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       match name {
         "add" => {
@@ -1680,6 +1730,21 @@ fn compile_expr_gc(
             }
             _ => raise WasmGenError::Unsupported("numeric kind")
           }
+        }
+        "anyref_eq"
+        | "eqref_eq"
+        | "i31ref_eq"
+        | "structref_eq"
+        | "arrayref_eq"
+        | "funcref_eq"
+        | "externref_eq" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_ref_eq_gc(buf)
+          emit_i64_extend_i32_s_gc(buf)
         }
         "record_set" => {
           if pos_args.length() != 3 {
