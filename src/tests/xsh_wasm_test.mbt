@@ -49,7 +49,7 @@ test "xsh wasm compile rejects unknown wite opt level" {
         err
         .to_string()
         .contains(
-          "unsupported wite optimize level -Ox (expected: -O0|-O1|-O2|-O3|-Os|-Oz",
+          "unsupported wite optimize level -Ox (expected: -O0|-O1|-O2|-O3|-O4|-Os|-Oz",
         ),
       )
   }

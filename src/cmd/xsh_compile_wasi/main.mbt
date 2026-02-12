@@ -49,7 +49,7 @@ fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
 ///|
 fn is_opt_level_flag(arg : String) -> Bool {
   match arg {
-    "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-Os" | "-Oz" => true
+    "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-O4" | "-Os" | "-Oz" => true
     _ => false
   }
 }
@@ -149,7 +149,7 @@ fn parse_compile_cmd_args(
 ///|
 fn print_usage() -> Unit {
   println(
-    "xsh_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [--no-dce] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
+    "xsh_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [--no-dce] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
 }
 

@@ -59,7 +59,7 @@ fn compile_mode_supports_debug_errors(mode : CompileMode) -> Bool {
 ///|
 fn is_opt_level_flag(arg : String) -> Bool {
   match arg {
-    "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-Os" | "-Oz" => true
+    "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-O4" | "-Os" | "-Oz" => true
     _ => false
   }
 }

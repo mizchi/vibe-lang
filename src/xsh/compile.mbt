@@ -222,7 +222,7 @@ fn optimize_wasm_bytes_with_opt_level(
           raise WasmCompileError::Optimize(
             "unsupported wite optimize level " +
             level +
-            " (expected: -O0|-O1|-O2|-O3|-Os|-Oz)",
+            " (expected: -O0|-O1|-O2|-O3|-O4|-Os|-Oz)",
           )
       }
       match @wite.optimize_binary_for_size(bytes, config~) {

@@ -44,3 +44,18 @@ test "xsh_compile_wasi parse compile args keeps mvp on --wasm-mvp" {
     Err(err) => fail(err)
   }
 }
+
+///|
+test "xsh_compile_wasi parse compile args accepts -O4" {
+  let parsed = parse_compile_cmd_args(["--wasm-gc", "-O4", "main.vibe"])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::WasmGc)
+      match opts.opt_level {
+        Some(level) => assert_eq(level, "-O4")
+        None => fail("expected opt_level")
+      }
+    }
+    Err(err) => fail(err)
+  }
+}

@@ -680,6 +680,21 @@ test "compile args parse explicit O level for component" {
 }
 
 ///|
+test "compile args parse explicit O4 level for component" {
+  let parsed = parse_compile_cmd_args(["--component", "-O4", "main.vibe"])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Component)
+      match opts.opt_level {
+        Some(level) => assert_eq(level, "-O4")
+        None => fail("expected opt level")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
 test "compile args parse coverage for wasm" {
   let parsed = parse_compile_cmd_args([
     "--wasm", "--coverage", "-o", "/tmp/out.wasm", "main.vibe",
