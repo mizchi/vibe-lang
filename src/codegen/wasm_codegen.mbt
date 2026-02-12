@@ -234,6 +234,7 @@ priv struct CodegenCtx {
   mut local_types : Array[ValueKind]
   mut local_count : Int
   fn_indices : Map[String, Int]
+  fn_needs_env : Map[Int, Bool] // function index -> closure env required
   fn_params : Map[String, Array[ValueKind]]
   fn_param_names : Map[String, Array[String]] // function name -> param names
   fn_returns : Map[String, ValueKind]
@@ -263,6 +264,7 @@ priv struct CodegenCtx {
   mut heap_global : Int
   mut need_heap : Bool
   mut heap_local : Int
+  mut current_env_idx : Int
   mut need_exceptions : Bool
   mut error_tag_type_index : Int
   error_tag_index : Int
@@ -317,6 +319,7 @@ fn CodegenCtx::new(
     local_types: [],
     local_count: 0,
     fn_indices: {},
+    fn_needs_env: {},
     fn_params: {},
     fn_param_names: {},
     fn_returns: {},
@@ -345,6 +348,7 @@ fn CodegenCtx::new(
     heap_global: -1,
     need_heap: false,
     heap_local: -1,
+    current_env_idx: -1,
     need_exceptions: false,
     error_tag_type_index: -1,
     error_tag_index: 0,
@@ -379,6 +383,14 @@ fn CodegenCtx::new(
 }
 
 ///|
+fn fn_index_needs_env(ctx : CodegenCtx, idx : Int) -> Bool {
+  match ctx.fn_needs_env.get(idx) {
+    Some(v) => v
+    None => false
+  }
+}
+
+///|
 priv struct FuncDef {
   name : String?
   params : Array[@core.FuncParam]
@@ -386,6 +398,17 @@ priv struct FuncDef {
   body : @core.Module
   span_key : String
   captures : Array[String]
+}
+
+///|
+fn compute_fn_env_requirements(funcs : Array[FuncDef]) -> Array[Bool] {
+  let needs = Array::make(funcs.length(), false)
+  for i in 0..<funcs.length() {
+    // Current closure conversion always reads captured values from env slots.
+    // Therefore any function with captures requires an env-backed function value.
+    needs[i] = funcs[i].captures.length() > 0
+  }
+  needs
 }
 
 ///|
@@ -602,7 +625,32 @@ fn collect_captures_expr(
       collect_captures_expr(cond, bound, outer_bound, captures, seen)
       collect_captures_block(body, bound, outer_bound, captures, seen)
     }
-    @core.Expr::Fn(..) => ()
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
+      let _ = ret
+      let _ = effects
+      let _ = span
+      // A nested function may reference outer-outer variables only inside its
+      // own body. Propagate those through this function's capture set so nested
+      // closure construction can load them from locals.
+      let nested_bound : Map[String, Bool] = {}
+      for param in params {
+        nested_bound[param.name] = true
+      }
+      let nested_outer = outer_bound.copy()
+      for name, _ in bound {
+        nested_outer[name] = true
+      }
+      let nested_caps : Array[String] = []
+      let nested_seen : Map[String, Bool] = {}
+      collect_captures_block(
+        body, nested_bound, nested_outer, nested_caps, nested_seen,
+      )
+      for name in nested_caps {
+        if not(bound.contains(name)) && outer_bound.contains(name) {
+          push_capture(name, captures, seen)
+        }
+      }
+    }
     _ => ()
   }
 }
@@ -643,9 +691,17 @@ fn collect_nested_funcs_block(
                 captures,
               })
             }
-            let inner_bound = fn_bound.copy()
+            let inner_bound = scope.copy()
+            for param in params {
+              inner_bound[param.name] = true
+            }
             for cap in captures {
               inner_bound[cap] = true
+            }
+            if rec {
+              // Recursive binding name is in scope inside the function body.
+              // Nested closures must be able to capture it as a closure value.
+              inner_bound[name] = true
             }
             collect_nested_funcs_block(body, inner_bound, funcs, false)
           }
@@ -711,7 +767,10 @@ fn collect_nested_funcs_expr(
         span_key: key,
         captures,
       })
-      let inner_bound = fn_bound.copy()
+      let inner_bound = bound.copy()
+      for param in params {
+        inner_bound[param.name] = true
+      }
       for cap in captures {
         inner_bound[cap] = true
       }
@@ -1330,6 +1389,18 @@ fn emit_table_get(buf : ByteBuf, table_idx : Int) -> Unit {
 fn emit_table_set(buf : ByteBuf, table_idx : Int) -> Unit {
   buf.push((38).to_byte()) // table.set = 0x26
   write_u32_leb(buf, table_idx)
+}
+
+///|
+fn emit_memory_size(buf : ByteBuf) -> Unit {
+  buf.push((63).to_byte()) // memory.size = 0x3f
+  buf.push((0).to_byte()) // memory index
+}
+
+///|
+fn emit_memory_grow(buf : ByteBuf) -> Unit {
+  buf.push((64).to_byte()) // memory.grow = 0x40
+  buf.push((0).to_byte()) // memory index
 }
 
 ///|
@@ -2086,13 +2157,9 @@ fn emit_boxed_f32(
   emit_value : () -> Unit,
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
+  let size = align4(8)
   let obj_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, align4(8))
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
+  emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_float)
   emit_i32_store(buf, 0)
@@ -2111,13 +2178,9 @@ fn emit_boxed_f64(
   emit_value : () -> Unit,
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
+  let size = align4(12)
   let obj_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, align4(12))
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
+  emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_double)
   emit_i32_store(buf, 0)
@@ -2136,13 +2199,9 @@ fn emit_boxed_f32_raise(
   emit_value : () -> Unit raise WasmGenError,
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
+  let size = align4(8)
   let obj_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, align4(8))
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
+  emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_float)
   emit_i32_store(buf, 0)
@@ -2161,13 +2220,9 @@ fn emit_boxed_f64_raise(
   emit_value : () -> Unit raise WasmGenError,
 ) -> Unit raise WasmGenError {
   require_heap(ctx)
+  let size = align4(12)
   let obj_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, align4(12))
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
+  emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_double)
   emit_i32_store(buf, 0)
@@ -3430,6 +3485,11 @@ fn compile_expr(
         None =>
           match ctx.fn_indices.get(name) {
             Some(idx) => {
+              if fn_index_needs_env(ctx, idx) {
+                raise WasmGenError::Unsupported(
+                  "function value requires closure env in scope: " + name,
+                )
+              }
               let slot = ensure_funcref_slot(ctx, idx)
               emit_i32_const_raw(buf, tag_fn_value(slot))
             }
@@ -3443,12 +3503,7 @@ fn compile_expr(
                 require_heap(ctx)
                 let size = align4(8)
                 let obj_local = alloc_temp_local(ctx)
-                emit_local_get(buf, ctx.heap_local)
-                emit_local_set(buf, obj_local)
-                emit_local_get(buf, ctx.heap_local)
-                emit_i32_const_raw(buf, size)
-                emit_i32_add(buf)
-                emit_local_set(buf, ctx.heap_local)
+                emit_heap_alloc(ctx, buf, size, obj_local)
                 emit_local_get(buf, obj_local)
                 emit_i32_const_raw(buf, obj_enum)
                 emit_i32_store(buf, 0)
@@ -3470,7 +3525,7 @@ fn compile_expr(
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if ctx.fn_local_sigs.contains(name) &&
-        not(ctx.fn_indices.contains(name)) &&
+        ctx.locals.contains(name) &&
         not(ctx.enum_ctor_tags.contains(name)) {
         let sig = match ctx.fn_local_sigs.get(name) {
           Some(s) => s
@@ -3539,7 +3594,6 @@ fn compile_expr(
           emit_local_set(buf, ctx.heap_local)
         }
       } else if ctx.locals.contains(name) &&
-        not(ctx.fn_indices.contains(name)) &&
         not(ctx.enum_ctor_tags.contains(name)) {
         let pos_args = extract_positional_exprs(args, name)
         if not(ctx.fn_local_sigs.contains(name)) {
@@ -4134,6 +4188,7 @@ fn compile_expr(
           let copy_i_local = alloc_temp_local(ctx)
           let obj_local = alloc_temp_local(ctx)
           let src_idx_local = alloc_temp_local(ctx)
+          let alloc_size_local = alloc_temp_local(ctx)
           emit_local_get(buf, value_local)
           emit_untag_i32(buf)
           emit_local_set(buf, n_local)
@@ -4151,12 +4206,7 @@ fn compile_expr(
           emit_i32_sub(buf)
           emit_local_set(buf, n_local)
           buf.push((11).to_byte()) // end if
-          emit_local_get(buf, ctx.heap_local)
-          emit_local_set(buf, scratch_local)
-          emit_local_get(buf, ctx.heap_local)
-          emit_i32_const_raw(buf, 64)
-          emit_i32_add(buf)
-          emit_local_set(buf, ctx.heap_local)
+          emit_heap_alloc(ctx, buf, 64, scratch_local)
           emit_i32_const_raw(buf, 0)
           emit_local_set(buf, digit_len_local)
           emit_local_get(buf, n_local)
@@ -4212,16 +4262,13 @@ fn compile_expr(
           emit_i32_add(buf)
           emit_local_set(buf, digit_len_local)
           buf.push((11).to_byte()) // end if
-          emit_local_get(buf, ctx.heap_local)
-          emit_local_set(buf, obj_local)
-          emit_local_get(buf, ctx.heap_local)
           emit_local_get(buf, digit_len_local)
           emit_i32_const_raw(buf, 11)
           emit_i32_add(buf)
           emit_i32_const_raw(buf, -4)
           emit_i32_and(buf)
-          emit_i32_add(buf)
-          emit_local_set(buf, ctx.heap_local)
+          emit_local_set(buf, alloc_size_local)
+          emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
           emit_local_get(buf, obj_local)
           emit_i32_const_raw(buf, obj_string)
           emit_i32_store(buf, 0)
@@ -4435,6 +4482,7 @@ fn compile_expr(
           let sub_len_local = alloc_temp_local(ctx)
           let obj_local = alloc_temp_local(ctx)
           let copy_i_local = alloc_temp_local(ctx)
+          let alloc_size_local = alloc_temp_local(ctx)
           compile_expr_i32(ctx, buf, pos_args[0])
           emit_i32_const_raw(buf, -4)
           emit_i32_and(buf)
@@ -4492,16 +4540,13 @@ fn compile_expr(
           emit_local_get(buf, start_local)
           emit_i32_sub(buf)
           emit_local_set(buf, sub_len_local)
-          emit_local_get(buf, ctx.heap_local)
-          emit_local_set(buf, obj_local)
-          emit_local_get(buf, ctx.heap_local)
           emit_local_get(buf, sub_len_local)
           emit_i32_const_raw(buf, 11)
           emit_i32_add(buf)
           emit_i32_const_raw(buf, -4)
           emit_i32_and(buf)
-          emit_i32_add(buf)
-          emit_local_set(buf, ctx.heap_local)
+          emit_local_set(buf, alloc_size_local)
+          emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
           emit_local_get(buf, obj_local)
           emit_i32_const_raw(buf, obj_string)
           emit_i32_store(buf, 0)
@@ -4557,6 +4602,7 @@ fn compile_expr(
           let total_len_local = alloc_temp_local(ctx)
           let obj_local = alloc_temp_local(ctx)
           let copy_i_local = alloc_temp_local(ctx)
+          let alloc_size_local = alloc_temp_local(ctx)
           compile_expr_i32(ctx, buf, pos_args[0])
           emit_i32_const_raw(buf, -4)
           emit_i32_and(buf)
@@ -4575,16 +4621,13 @@ fn compile_expr(
           emit_local_get(buf, right_len_local)
           emit_i32_add(buf)
           emit_local_set(buf, total_len_local)
-          emit_local_get(buf, ctx.heap_local)
-          emit_local_set(buf, obj_local)
-          emit_local_get(buf, ctx.heap_local)
           emit_local_get(buf, total_len_local)
           emit_i32_const_raw(buf, 11)
           emit_i32_add(buf)
           emit_i32_const_raw(buf, -4)
           emit_i32_and(buf)
-          emit_i32_add(buf)
-          emit_local_set(buf, ctx.heap_local)
+          emit_local_set(buf, alloc_size_local)
+          emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
           emit_local_get(buf, obj_local)
           emit_i32_const_raw(buf, obj_string)
           emit_i32_store(buf, 0)
@@ -4739,12 +4782,7 @@ fn compile_expr(
         require_heap(ctx)
         let size = align4(8 + max_cap * 4)
         let obj_local = alloc_temp_local(ctx)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_set(buf, obj_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_i32_const_raw(buf, size)
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
+        emit_heap_alloc(ctx, buf, size, obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_array)
         emit_i32_store(buf, 0)
@@ -4799,12 +4837,7 @@ fn compile_expr(
         require_heap(ctx)
         let size = align4(8 + max_cap * 8)
         let obj_local = alloc_temp_local(ctx)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_set(buf, obj_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_i32_const_raw(buf, size)
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
+        emit_heap_alloc(ctx, buf, size, obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_map)
         emit_i32_store(buf, 0)
@@ -5131,12 +5164,7 @@ fn compile_expr(
         buf.push((5).to_byte()) // else
         emit_call(buf, import_index_stdout_get_stream(ctx))
         emit_local_set(buf, out_stream_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_set(buf, ret_area_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_i32_const_raw(buf, align4(8))
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
+        emit_heap_alloc(ctx, buf, align4(8), ret_area_local)
         emit_local_get(buf, out_stream_local)
         emit_local_get(buf, raw_local)
         emit_i32_const_raw(buf, 8)
@@ -5158,12 +5186,7 @@ fn compile_expr(
         let data_len_local = alloc_temp_local(ctx)
         emit_call(buf, import_index_stdin_get_stream(ctx))
         emit_local_set(buf, in_stream_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_set(buf, ret_area_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_i32_const_raw(buf, align4(16))
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
         // imported `blocking-read` may call cabi_realloc; sync local heap first.
         if ctx.heap_local >= 0 && ctx.use_heap_global {
           emit_local_get(buf, ctx.heap_local)
@@ -5223,6 +5246,7 @@ fn compile_expr(
         let data_len_local = alloc_temp_local(ctx)
         let obj_local = alloc_temp_local(ctx)
         let copy_i_local = alloc_temp_local(ctx)
+        let alloc_size_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_i32_const_raw(buf, 2)
         emit_i32_shr_s(buf)
@@ -5237,12 +5261,7 @@ fn compile_expr(
         buf.push((11).to_byte()) // end if
         emit_call(buf, import_index_stdin_get_stream(ctx))
         emit_local_set(buf, in_stream_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_set(buf, ret_area_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_i32_const_raw(buf, align4(16))
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
+        emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
         // imported `blocking-read` may call cabi_realloc; sync local heap first.
         if ctx.heap_local >= 0 && ctx.use_heap_global {
           emit_local_get(buf, ctx.heap_local)
@@ -5270,15 +5289,13 @@ fn compile_expr(
         emit_local_get(buf, ret_area_local)
         emit_i32_load(buf, 8)
         emit_local_set(buf, data_len_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_tee(buf, obj_local)
         emit_local_get(buf, data_len_local)
         emit_i32_const_raw(buf, 11) // align4(8 + len) == (len + 11) & -4
         emit_i32_add(buf)
         emit_i32_const_raw(buf, -4)
         emit_i32_and(buf)
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
+        emit_local_set(buf, alloc_size_local)
+        emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_string)
         emit_i32_store(buf, 0)
@@ -5313,11 +5330,7 @@ fn compile_expr(
         emit_i32_const_raw(buf, tag_obj)
         emit_i32_or(buf)
         buf.push((5).to_byte()) // else
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_tee(buf, obj_local)
-        emit_i32_const_raw(buf, align4(8))
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
+        emit_heap_alloc(ctx, buf, align4(8), obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_string)
         emit_i32_store(buf, 0)
@@ -5340,8 +5353,8 @@ fn compile_expr(
         emit_i32_const_raw(buf, 2)
         emit_i32_shr_s(buf)
         emit_local_set(buf, code_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_tee(buf, raw_local)
+        emit_heap_alloc(ctx, buf, 12, raw_local)
+        emit_local_get(buf, raw_local)
         emit_i32_const_raw(buf, obj_string)
         emit_i32_store(buf, 0)
         emit_local_get(buf, raw_local)
@@ -5353,10 +5366,6 @@ fn compile_expr(
         emit_local_get(buf, raw_local)
         emit_i32_const_raw(buf, tag_obj)
         emit_i32_or(buf)
-        emit_local_get(buf, raw_local)
-        emit_i32_const_raw(buf, 12)
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
       } else if ctx.fn_indices.contains(name) {
         // Resolve labeled arguments for user-defined functions
         let pos_args = resolve_args_with_labels(ctx, args, name)
@@ -5375,43 +5384,48 @@ fn compile_expr(
             compile_expr_i32(ctx, buf, pos_args[i])
           }
         }
-        // Pass closure env only when this local is known callable in current scope.
+        let fn_idx = match ctx.fn_indices.get(name) {
+          Some(i) => i
+          None => 0
+        }
+        // Direct call needs the callee's closure env when the function has captures.
+        // Do not fall back to current function env; it may belong to another closure.
         match ctx.locals.get(name) {
-          Some(local_idx) =>
-            if ctx.fn_local_sigs.contains(name) {
-              let env_local = alloc_temp_local(ctx)
-              emit_local_get(buf, local_idx)
-              emit_i32_const_raw(buf, tag_mask)
-              emit_i32_and(buf)
-              emit_i32_const_raw(buf, tag_fn)
-              emit_i32_eq(buf)
-              buf.push((4).to_byte()) // if
-              buf.push((127).to_byte()) // result i32
-              emit_i32_const_raw(buf, 0) // bare fn: env = 0
-              buf.push((5).to_byte()) // else
-              // closure: env ptr = untag obj ptr
-              emit_local_get(buf, local_idx)
-              emit_local_get(buf, local_idx)
-              emit_i32_const_raw(buf, tag_mask)
-              emit_i32_and(buf)
-              emit_i32_sub(buf)
-              buf.push((11).to_byte()) // end
-              emit_local_set(buf, env_local)
-              emit_local_get(buf, env_local)
+          Some(local_idx) if ctx.fn_local_sigs.contains(name) => {
+            let env_local = alloc_temp_local(ctx)
+            emit_local_get(buf, local_idx)
+            emit_i32_const_raw(buf, tag_mask)
+            emit_i32_and(buf)
+            emit_i32_const_raw(buf, tag_fn)
+            emit_i32_eq(buf)
+            buf.push((4).to_byte()) // if
+            buf.push((127).to_byte()) // result i32
+            emit_i32_const_raw(buf, 0) // bare fn: env = 0
+            buf.push((5).to_byte()) // else
+            // closure: env ptr = untag obj ptr
+            emit_local_get(buf, local_idx)
+            emit_local_get(buf, local_idx)
+            emit_i32_const_raw(buf, tag_mask)
+            emit_i32_and(buf)
+            emit_i32_sub(buf)
+            buf.push((11).to_byte()) // end
+            emit_local_set(buf, env_local)
+            emit_local_get(buf, env_local)
+          }
+          _ =>
+            if fn_index_needs_env(ctx, fn_idx) {
+              raise WasmGenError::Unsupported(
+                "missing closure env for direct call: " + name,
+              )
             } else {
               emit_i32_const_raw(buf, 0)
             }
-          None => emit_i32_const_raw(buf, 0)
         }
         if ctx.heap_local >= 0 && ctx.use_heap_global {
           emit_local_get(buf, ctx.heap_local)
           emit_global_set(buf, ctx.heap_global)
         }
-        let idx = func_import_count(ctx) +
-          (match ctx.fn_indices.get(name) {
-            Some(i) => i
-            None => 0
-          })
+        let idx = func_import_count(ctx) + fn_idx
         emit_call(buf, idx)
         if ctx.heap_local >= 0 && ctx.use_heap_global {
           emit_global_get(buf, ctx.heap_global)
@@ -5433,12 +5447,7 @@ fn compile_expr(
           require_heap(ctx)
           let size = align4(8)
           let obj_local = alloc_temp_local(ctx)
-          emit_local_get(buf, ctx.heap_local)
-          emit_local_set(buf, obj_local)
-          emit_local_get(buf, ctx.heap_local)
-          emit_i32_const_raw(buf, size)
-          emit_i32_add(buf)
-          emit_local_set(buf, ctx.heap_local)
+          emit_heap_alloc(ctx, buf, size, obj_local)
           emit_local_get(buf, obj_local)
           emit_i32_const_raw(buf, obj_enum)
           emit_i32_store(buf, 0)
@@ -5453,12 +5462,7 @@ fn compile_expr(
           require_heap(ctx)
           let size = align4(8 + arity * 4)
           let obj_local = alloc_temp_local(ctx)
-          emit_local_get(buf, ctx.heap_local)
-          emit_local_set(buf, obj_local)
-          emit_local_get(buf, ctx.heap_local)
-          emit_i32_const_raw(buf, size)
-          emit_i32_add(buf)
-          emit_local_set(buf, ctx.heap_local)
+          emit_heap_alloc(ctx, buf, size, obj_local)
           emit_local_get(buf, obj_local)
           emit_i32_const_raw(buf, obj_enum)
           emit_i32_store(buf, 0)
@@ -5681,12 +5685,7 @@ fn compile_expr(
         let len = captures.length()
         let size = align4(8 + len * 4)
         let obj_local = alloc_temp_local(ctx)
-        emit_local_get(buf, ctx.heap_local)
-        emit_local_set(buf, obj_local)
-        emit_local_get(buf, ctx.heap_local)
-        emit_i32_const_raw(buf, size)
-        emit_i32_add(buf)
-        emit_local_set(buf, ctx.heap_local)
+        emit_heap_alloc(ctx, buf, size, obj_local)
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, obj_fn)
         emit_i32_store(buf, 0)
@@ -5725,6 +5724,12 @@ fn compile_expr(
               None =>
                 match ctx.fn_indices.get(name) {
                   Some(idx) => {
+                    if fn_index_needs_env(ctx, idx) {
+                      raise WasmGenError::Unsupported(
+                        "closure capture requires env-backed function in scope: " +
+                        name,
+                      )
+                    }
                     let slot = ensure_funcref_slot(ctx, idx)
                     emit_i32_const_raw(buf, tag_fn_value(slot))
                   }
@@ -6434,6 +6439,111 @@ fn require_heap(ctx : CodegenCtx) -> Unit raise WasmGenError {
 }
 
 ///|
+fn emit_heap_reserve(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size : Int,
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  if size <= 0 {
+    return
+  }
+  let new_heap_local = alloc_temp_local(ctx)
+  let current_pages_local = alloc_temp_local(ctx)
+  let required_pages_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, size)
+  emit_i32_add(buf)
+  emit_local_set(buf, new_heap_local)
+  emit_memory_size(buf)
+  emit_local_set(buf, current_pages_local)
+  emit_local_get(buf, new_heap_local)
+  emit_i32_const_raw(buf, 65535)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, 16)
+  emit_i32_shr_u(buf)
+  emit_local_set(buf, required_pages_local)
+  emit_local_get(buf, current_pages_local)
+  emit_local_get(buf, required_pages_local)
+  emit_i32_lt_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // empty
+  emit_local_get(buf, required_pages_local)
+  emit_local_get(buf, current_pages_local)
+  emit_i32_sub(buf)
+  emit_memory_grow(buf)
+  emit_drop(buf)
+  buf.push((11).to_byte()) // end
+}
+
+///|
+fn emit_heap_alloc(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size : Int,
+  obj_local : Int,
+) -> Unit raise WasmGenError {
+  emit_heap_reserve(ctx, buf, size)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, size)
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+}
+
+///|
+fn emit_heap_reserve_local(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size_local : Int,
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  let new_heap_local = alloc_temp_local(ctx)
+  let current_pages_local = alloc_temp_local(ctx)
+  let required_pages_local = alloc_temp_local(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_get(buf, size_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, new_heap_local)
+  emit_memory_size(buf)
+  emit_local_set(buf, current_pages_local)
+  emit_local_get(buf, new_heap_local)
+  emit_i32_const_raw(buf, 65535)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, 16)
+  emit_i32_shr_u(buf)
+  emit_local_set(buf, required_pages_local)
+  emit_local_get(buf, current_pages_local)
+  emit_local_get(buf, required_pages_local)
+  emit_i32_lt_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // empty
+  emit_local_get(buf, required_pages_local)
+  emit_local_get(buf, current_pages_local)
+  emit_i32_sub(buf)
+  emit_memory_grow(buf)
+  emit_drop(buf)
+  buf.push((11).to_byte()) // end
+}
+
+///|
+fn emit_heap_alloc_local(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size_local : Int,
+  obj_local : Int,
+) -> Unit raise WasmGenError {
+  emit_heap_reserve_local(ctx, buf, size_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_get(buf, size_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+}
+
+///|
 fn compile_tuple_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -6443,12 +6553,7 @@ fn compile_tuple_expr(
   let len = items.length()
   let size = align4(8 + len * 4)
   let obj_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, size)
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
+  emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_tuple)
   emit_i32_store(buf, 0)
@@ -6494,12 +6599,7 @@ fn compile_record_expr(
   let len = ordered.length()
   let size = align4(8 + len * 8)
   let obj_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, size)
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
+  emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_record)
   emit_i32_store(buf, 0)
@@ -6531,12 +6631,7 @@ fn compile_array_expr(
   let len = items.length()
   let size = align4(8 + len * 4)
   let obj_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, size)
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
+  emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_array)
   emit_i32_store(buf, 0)
@@ -6563,12 +6658,7 @@ fn compile_map_expr(
   let len = fields.length()
   let size = align4(8 + len * 8)
   let obj_local = alloc_temp_local(ctx)
-  emit_local_get(buf, ctx.heap_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_const_raw(buf, size)
-  emit_i32_add(buf)
-  emit_local_set(buf, ctx.heap_local)
+  emit_heap_alloc(ctx, buf, size, obj_local)
   emit_local_get(buf, obj_local)
   emit_i32_const_raw(buf, obj_map)
   emit_i32_store(buf, 0)
@@ -6683,6 +6773,7 @@ fn compile_func_body(
 ///|
 fn compile_function(
   ctx : CodegenCtx,
+  self_name : String?,
   params : Array[@core.FuncParam],
   param_kinds : Array[ValueKind],
   result_kind : ValueKind,
@@ -6698,6 +6789,7 @@ fn compile_function(
   let saved_count = ctx.local_count
   let saved_need_heap = ctx.need_heap
   let saved_heap_local = ctx.heap_local
+  let saved_current_env_idx = ctx.current_env_idx
   let saved_fn_locals = ctx.fn_local_sigs
   ctx.locals = {}
   ctx.local_kinds = {}
@@ -6720,6 +6812,14 @@ fn compile_function(
       None => ()
     }
   }
+  match self_name {
+    Some(name) =>
+      // Keep self signature visible while compiling this function body.
+      // This is required for recursive local closures where `name` is both
+      // in fn_indices (direct call target) and in locals (captured closure).
+      ctx.fn_local_sigs[name] = func_sig_with_env(param_kinds, result_kind)
+    None => ()
+  }
   let env_idx = if with_env {
     let idx = ctx.local_count
     ctx.local_count += 1
@@ -6727,7 +6827,30 @@ fn compile_function(
   } else {
     -1
   }
+  ctx.current_env_idx = env_idx
   let prelude = ByteBuf::new()
+  match self_name {
+    Some(name) =>
+      if with_env && captures.length() > 0 {
+        match ctx.fn_indices.get(name) {
+          Some(_) => {
+            // Materialize current function value so nested closures can capture
+            // the correct closure (including env), not a bare function slot.
+            let self_local = ctx.local_count
+            ctx.local_count += 1
+            ctx.local_types.push(ValueKind::I32)
+            ctx.locals[name] = self_local
+            ctx.local_kinds[name] = ValueKind::I32
+            emit_local_get(prelude, env_idx)
+            emit_i32_const_raw(prelude, tag_obj)
+            emit_i32_or(prelude)
+            emit_local_set(prelude, self_local)
+          }
+          None => ()
+        }
+      }
+    None => ()
+  }
   if with_env && captures.length() > 0 {
     for i in 0..<captures.length() {
       let name = captures[i]
@@ -6740,7 +6863,18 @@ fn compile_function(
       ctx.local_count += 1
       match saved_fn_locals.get(name) {
         Some(sig) => ctx.fn_local_sigs[name] = sig
-        None => ()
+        None =>
+          match ctx.fn_params.get(name) {
+            Some(param_kinds) =>
+              match ctx.fn_returns.get(name) {
+                Some(ret_kind) =>
+                  ctx.fn_local_sigs[name] = func_sig_with_env(
+                    param_kinds, ret_kind,
+                  )
+                None => ()
+              }
+            None => ()
+          }
       }
       if ctx.use_js_strings && kind == ValueKind::ExternRef {
         // ExternRef capture: load table slot index from env, then table.get
@@ -6788,6 +6922,7 @@ fn compile_function(
   ctx.local_count = saved_count
   ctx.need_heap = saved_need_heap
   ctx.heap_local = saved_heap_local
+  ctx.current_env_idx = saved_current_env_idx
   ctx.fn_local_sigs = saved_fn_locals
   func
 }
@@ -7228,7 +7363,8 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let mem_sec = ByteBuf::new()
   write_u32_leb(mem_sec, 1)
   mem_sec.push((0).to_byte())
-  write_u32_leb(mem_sec, 1)
+  // Reserve enough linear memory for repeated allocations in bench loops.
+  write_u32_leb(mem_sec, 64)
   write_section(buf, 5, mem_sec.data)
 
   // tag section (section ID 13, placed between memory and global per spec)
@@ -8284,6 +8420,10 @@ fn emit_module_with_coverage(
       None => ()
     }
   }
+  let fn_needs_env = compute_fn_env_requirements(funcs)
+  for i in 0..<funcs.length() {
+    ctx.fn_needs_env[i] = fn_needs_env[i]
+  }
   scan_needs(ctx, ast)
   scan_strings(ctx, ast)
   if ctx.coverage_enabled {
@@ -8459,6 +8599,7 @@ fn emit_module_with_coverage(
     compiled_funcs.push(
       compile_function(
         ctx,
+        f.name,
         f.params,
         func_param_kinds[i],
         func_return_kinds[i],
@@ -8481,6 +8622,7 @@ fn emit_module_with_coverage(
   compiled_funcs.push(
     compile_function(
       ctx,
+      None,
       [],
       [],
       ValueKind::I32,
