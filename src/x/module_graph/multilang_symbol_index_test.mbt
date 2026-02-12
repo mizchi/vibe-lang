@@ -35,13 +35,13 @@ fn ts_row(
 
 ///|
 test "multilang index supports language-aware symbol query" {
-  let xsh_source =
+  let vibe_source =
     #|let id = (x: Int) -> Int { x }
-  let xsh_rows = assert_ok_rows(
-    extract_xsh_graph_ir_rows("/workspace/main.vibe", xsh_source),
+  let vibe_rows = assert_ok_rows(
+    extract_vibe_graph_ir_rows("/workspace/main.vibe", vibe_source),
   )
   let rows : Array[GraphIrRow] = []
-  for row in xsh_rows {
+  for row in vibe_rows {
     rows.push(row)
   }
   rows.push(
@@ -49,9 +49,9 @@ test "multilang index supports language-aware symbol query" {
   )
   let index = build_multilang_symbol_index(rows)
   assert_true(index.query_symbol("id").length() >= 2)
-  assert_eq(index.query_symbol("id", language_id="xsh").length(), 1)
+  assert_eq(index.query_symbol("id", language_id="vibe").length(), 1)
   assert_eq(index.query_symbol("id", language_id="typescript").length(), 1)
-  assert_true(index.symbol_index.contains(multilang_symbol_key("xsh", "id")))
+  assert_true(index.symbol_index.contains(multilang_symbol_key("vibe", "id")))
   assert_true(
     index.symbol_index.contains(multilang_symbol_key("typescript", "id")),
   )
@@ -59,13 +59,13 @@ test "multilang index supports language-aware symbol query" {
 
 ///|
 test "multilang index supports type queries across adapters" {
-  let xsh_source =
+  let vibe_source =
     #|let map_id = (xs: Array[Int]) -> Array[Int] { xs }
-  let xsh_rows = assert_ok_rows(
-    extract_xsh_graph_ir_rows("/workspace/types.vibe", xsh_source),
+  let vibe_rows = assert_ok_rows(
+    extract_vibe_graph_ir_rows("/workspace/types.vibe", vibe_source),
   )
   let rows : Array[GraphIrRow] = []
-  for row in xsh_rows {
+  for row in vibe_rows {
     rows.push(row)
   }
   rows.push(
@@ -79,7 +79,7 @@ test "multilang index supports type queries across adapters" {
     ),
   )
   let index = build_multilang_symbol_index(rows)
-  assert_true(index.query_type("Array", language_id="xsh").length() >= 1)
+  assert_true(index.query_type("Array", language_id="vibe").length() >= 1)
   assert_eq(index.query_type("Promise").length(), 1)
   assert_eq(index.query_type("string", language_id="typescript").length(), 1)
 }

@@ -1,5 +1,5 @@
 ///|
-/// Types and values for xsh
+/// Types and values for vibe
 pub(all) enum ParamLabel {
   Positional
   Required

@@ -41,7 +41,7 @@ WASI Threads モジュールとして必要な形:
 - Wasm: `-W shared-memory=y`
 - Wasm: `-W threads=y`（shared memory 運用で実質必須）
 
-`xsh` の env 変数にすると:
+`vibe` の env 変数にすると:
 
 - `XSH_WASMTIME_WASI_FLAGS='threads=y'`
 - `XSH_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'`
@@ -62,7 +62,7 @@ WASI Threads モジュールとして必要な形:
   - 43 系では `concurrency-support=y` が必要。
   - 41 系は `-W concurrency-support=...` 自体が未対応（unknown option）。
 
-## 5. xsh リポジトリ内での最小実行手順
+## 5. vibe リポジトリ内での最小実行手順
 
 追加済みプローブ:
 

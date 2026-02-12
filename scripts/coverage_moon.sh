@@ -4,10 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-OUTPUT_DIR="${XSH_MOON_COVERAGE_DIR:-$PROJECT_ROOT/_build/coverage/moon}"
-TARGET="${XSH_MOON_COVERAGE_TARGET:-native}"
-PACKAGE="${XSH_MOON_COVERAGE_PACKAGE:-}"
-MIN_LINE="${XSH_MOON_COVERAGE_MIN_LINE:-}"
+OUTPUT_DIR="${VIBE_MOON_COVERAGE_DIR:-$PROJECT_ROOT/_build/coverage/moon}"
+TARGET="${VIBE_MOON_COVERAGE_TARGET:-native}"
+PACKAGE="${VIBE_MOON_COVERAGE_PACKAGE:-}"
+MIN_LINE="${VIBE_MOON_COVERAGE_MIN_LINE:-}"
 
 mkdir -p "$OUTPUT_DIR"
 cd "$PROJECT_ROOT"
@@ -38,7 +38,7 @@ summary_file="$OUTPUT_DIR/summary.txt"
 xml_file="$OUTPUT_DIR/moonbit-cobertura.xml"
 html_dir="$OUTPUT_DIR/html"
 
-stderr_file="$(mktemp "${TMPDIR:-/tmp}/xsh_moon_coverage.XXXXXX")"
+stderr_file="$(mktemp "${TMPDIR:-/tmp}/vibe_moon_coverage.XXXXXX")"
 trap 'rm -f "$stderr_file"' EXIT
 
 summary_args=(moon coverage report --source-paths src -f summary)

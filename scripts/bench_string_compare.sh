@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
 SCRIPT_PATH="${1:-$ROOT_DIR/bench/bench_string.vibe}"
 NAME="$(basename "$SCRIPT_PATH" .vibe)"
 JS_WASM_OUT="$ROOT_DIR/target/bench/${NAME}_js_string.wasm"
@@ -12,7 +12,7 @@ WASMTIME_RUN="$ROOT_DIR/scripts/wasmtime_run.sh"
 
 mkdir -p "$ROOT_DIR/target/bench"
 
-moon build --target native --release src/cmd/xsh
+moon build --target native --release src/cmd/vibe
 
 "$CLI_BIN" compile --wasm-js-string -o "$JS_WASM_OUT" "$SCRIPT_PATH"
 if ! "$CLI_BIN" compile --wasm-gc -o "$GC_WASM_OUT" "$SCRIPT_PATH"; then

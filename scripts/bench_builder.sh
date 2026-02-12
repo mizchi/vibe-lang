@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
 OUT_DIR="$ROOT_DIR/target/bench"
 SCRIPT_PATH="$OUT_DIR/bench_builder.vibe"
-N="${XSH_BUILDER_N:-200}"
+N="${VIBE_BUILDER_N:-200}"
 
 mkdir -p "$OUT_DIR"
 cat >"$SCRIPT_PATH" <<EOF_SCRIPT
@@ -28,7 +28,7 @@ let result = do {
 result
 EOF_SCRIPT
 
-moon build --target native --release src/cmd/xsh
+moon build --target native --release src/cmd/vibe
 
 RUN_CMD="$CLI_BIN run $SCRIPT_PATH >/dev/null"
 

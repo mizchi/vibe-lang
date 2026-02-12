@@ -22,8 +22,8 @@
 
 配置ルール:
 
-- `xsh --unstable-async run file.vibe`
-- `xsh run --unstable-async file.vibe`
+- `vibe --unstable-async run file.vibe`
+- `vibe run --unstable-async file.vibe`
 
 の両方を受理する（`--unstable-threads` も同様）。
 
@@ -49,16 +49,16 @@
 
 ### 3. CLI 配線
 
-`src/cmd/xsh`:
+`src/cmd/vibe`:
 
 - `parse_cli_runtime_args(...)` で以下を受理:
   - `--unstable-async`
   - `--unstable-threads`
-  - 既存 `--syntax xsh|posix`
+  - 既存 `--syntax vibe|posix`
 - `run/test/bench/bench-file/repl/repl-stdin/repl-wasi` で
   runtime feature flags を伝播
 
-`src/cmd/xsh_wasi`:
+`src/cmd/vibe_wasi`:
 
 - line REPL オプションとして
   - `--unstable-async`
@@ -81,7 +81,7 @@
 
 `vibe/std/threads.vibe` は、次の 2 層に分離している。
 
-- pure contract 層（通常 `xsh test` で実行可能）
+- pure contract 層（通常 `vibe test` で実行可能）
   - `task_spec`
   - `channel_spec`
   - `actor_spec`
@@ -95,7 +95,7 @@
 
 ## テスト
 
-- `src/xsh/xsh_test.mbt`
+- `src/runtime/runtime_test.mbt`
   - `sleep` が `--unstable-async` なしで失敗
   - `await` が `--unstable-async` なしで失敗
   - `await` が `--unstable-async` 有効時に成功
@@ -108,14 +108,14 @@
   - `threads_channel_new` / `threads_spawn` / `threads_send` / `threads_recv` / `threads_wait`
     が `--unstable-threads` 有効時に成功
   - channel capacity 超過時に `threads_send` が `false` を返す
-- `src/cmd/xsh/cli_wbtest.mbt`
+- `src/cmd/vibe/cli_wbtest.mbt`
   - `parse_cli_runtime_args(...)` の default / opt-in パースを追加
 - `vibe/std/threads_test.vibe`
   - pure contract 層（Task/Channel/Actor/Plan + `recommended_*`）を通常テストで実行
   - runtime-gated 層（`probe_wat` / `runtime_hints`）は thunk-only で未実行
 - `just test`
   - async 例 (`examples/async.vibe`) 実行のため
-    `xsh test --unstable-async ...` を利用
+    `vibe test --unstable-async ...` を利用
 
 ## 今後の実装計画
 

@@ -153,8 +153,8 @@ const signatures = {
 };
 
 const checker = read_text("src/checker/typecheck.mbt");
-const eval_src = read_text("src/xsh/eval.mbt");
-const eval_builtins_src = read_text("src/xsh/eval_builtins.mbt");
+const eval_src = read_text("src/runtime/eval.mbt");
+const eval_builtins_src = read_text("src/runtime/eval_builtins.mbt");
 const wasm_codegen = read_text("src/codegen/wasm_codegen.mbt");
 
 const checker_type_call = slice_between(
@@ -225,7 +225,7 @@ const out = [
   "",
   "Sources:",
   "- `src/checker/typecheck.mbt` (`type_call`, `builtin_effects`)",
-  "- `src/xsh/eval.mbt` (`is_pure_builtin`, `eval_call`)",
+  "- `src/runtime/eval.mbt` (`is_pure_builtin`, `eval_call`)",
   "- `src/codegen/wasm_codegen.mbt` (`compile_expr`)",
   "",
   "Legend:",

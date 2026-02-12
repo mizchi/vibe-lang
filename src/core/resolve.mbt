@@ -28,7 +28,7 @@ pub fn import_alias_name(path : String) -> String {
 ///| Resolve module-qualified symbol name using aliases.
 
 ///|
-/// Example: foo.bar -> ko-doha/xsh/<hash>/bar
+/// Example: foo.bar -> ko-doha/vibe/<hash>/bar
 pub fn resolve_qualified(name : String, aliases : Map[String, Ref]) -> String {
   let chars : Array[Char] = []
   for c in name {

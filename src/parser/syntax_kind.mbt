@@ -1,4 +1,4 @@
-///| SyntaxKind constants for xsh
+///| SyntaxKind constants for vibe
 
 // Token kinds (0-99)
 

@@ -1,4 +1,4 @@
-///| Lexer for xsh
+///| Lexer for vibe
 
 ///|
 /// Lexer state

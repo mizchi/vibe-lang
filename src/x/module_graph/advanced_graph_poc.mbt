@@ -171,12 +171,12 @@ fn collect_defs_by_ids(
 }
 
 ///|
-fn module_hash_for_path(db : @xsh.XshDb, path : String) -> String {
+fn module_hash_for_path(db : @runtime.VibeDb, path : String) -> String {
   @core.hash_module(db.ast(path))
 }
 
 ///|
-fn def_id_from_entry(entry : @xsh.SymbolEntry) -> String {
+fn def_id_from_entry(entry : @runtime.SymbolEntry) -> String {
   let key = entry.path +
     "|" +
     entry.span.start.to_string() +
@@ -185,7 +185,7 @@ fn def_id_from_entry(entry : @xsh.SymbolEntry) -> String {
     "|" +
     entry.name +
     "|" +
-    @xsh.symbol_kind_name(entry.kind) +
+    @runtime.symbol_kind_name(entry.kind) +
     "|" +
     entry.signature
   @core.git_blob_hash_string(key)
@@ -206,15 +206,15 @@ pub fn advanced_graph_semantic_id(def : AdvancedGraphDef) -> String {
 
 ///|
 fn graph_def_from_entry(
-  db : @xsh.XshDb,
-  entry : @xsh.SymbolEntry,
+  db : @runtime.VibeDb,
+  entry : @runtime.SymbolEntry,
 ) -> AdvancedGraphDef {
   let module_hash = module_hash_for_path(db, entry.path)
   let def_id = def_id_from_entry(entry)
   AdvancedGraphDef::{
     def_id,
     name: entry.name,
-    kind: @xsh.symbol_kind_name(entry.kind),
+    kind: @runtime.symbol_kind_name(entry.kind),
     signature: entry.signature,
     path: entry.path,
     start: entry.span.start,
@@ -249,12 +249,12 @@ fn advanced_graph_manifest_equal(
 ///|
 /// Build POC sidecar index from the existing shared symbol index backend.
 pub fn build_advanced_graph_index(
-  db : @xsh.XshDb,
+  db : @runtime.VibeDb,
   paths : Array[String],
   base_commit? : String = "",
   created_at? : String = "",
 ) -> AdvancedGraphIndex {
-  let symbol_index = @xsh.build_symbol_index(db, paths)
+  let symbol_index = @runtime.build_symbol_index(db, paths)
   let defs : Map[String, AdvancedGraphDef] = {}
   let symbols : Map[String, Array[String]] = {}
   let types : Map[String, Array[String]] = {}
@@ -284,7 +284,7 @@ pub fn build_advanced_graph_index(
 /// Unchanged paths retain existing defs/index entries.
 pub fn update_advanced_graph_index_incremental(
   base : AdvancedGraphIndex,
-  db : @xsh.XshDb,
+  db : @runtime.VibeDb,
   changed_paths : Array[String],
   base_commit? : String = "",
   created_at? : String = "",
@@ -305,7 +305,7 @@ pub fn update_advanced_graph_index_incremental(
       remove_def_from_indexes(symbols, types, def)
     }
   }
-  let next_entries = @xsh.build_symbol_index(db, changed_paths)
+  let next_entries = @runtime.build_symbol_index(db, changed_paths)
   for entry in next_entries.entries {
     let node = graph_def_from_entry(db, entry)
     defs[node.def_id] = node

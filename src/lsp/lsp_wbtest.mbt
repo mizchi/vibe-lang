@@ -150,7 +150,7 @@ test "LspServer/handle_message/codeAction trait import quickfix" {
     "params": Json::object({
       "textDocument": Json::object({
         "uri": Json::string(uri),
-        "languageId": Json::string("xsh"),
+        "languageId": Json::string("vibe"),
         "version": Json::number(1.0),
         "text": Json::string(source),
       }),
@@ -213,7 +213,7 @@ test "LspServer/handle_message/completion returns symbols with hash info" {
     "params": Json::object({
       "textDocument": Json::object({
         "uri": Json::string(uri),
-        "languageId": Json::string("xsh"),
+        "languageId": Json::string("vibe"),
         "version": Json::number(1.0),
         "text": Json::string(source),
       }),
@@ -284,7 +284,7 @@ test "LspServer/handle_message/hover includes hash" {
     "params": Json::object({
       "textDocument": Json::object({
         "uri": Json::string(uri),
-        "languageId": Json::string("xsh"),
+        "languageId": Json::string("vibe"),
         "version": Json::number(1.0),
         "text": Json::string(source),
       }),

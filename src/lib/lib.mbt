@@ -156,15 +156,15 @@ fn project_paths(entry : String, files : Map[String, String]) -> Array[String] {
 ///|
 fn resolve_import_path(base_path : String, import_path : String) -> String {
   if import_path.has_prefix("/") {
-    @xsh_fs.normalize_path(import_path)
+    @vibe_fs.normalize_path(import_path)
   } else {
-    let base_dir = @xsh_fs.parent_path(base_path)
+    let base_dir = @vibe_fs.parent_path(base_path)
     let merged = if base_dir == "." || base_dir == "" {
       import_path
     } else {
       base_dir + "/" + import_path
     }
-    @xsh_fs.normalize_path(merged)
+    @vibe_fs.normalize_path(merged)
   }
 }
 
@@ -1168,7 +1168,7 @@ fn run_utf8_transform(
 }
 
 ///|
-pub fn xsh_init(
+pub fn vibe_init(
   source_ptr : Int,
   source_len : Int,
   out_ptr : Int,
@@ -1180,7 +1180,7 @@ pub fn xsh_init(
 }
 
 ///|
-pub fn xsh_check(
+pub fn vibe_check(
   source_ptr : Int,
   source_len : Int,
   out_ptr : Int,
@@ -1192,7 +1192,7 @@ pub fn xsh_check(
 }
 
 ///|
-pub fn xsh_check_project(
+pub fn vibe_check_project(
   source_ptr : Int,
   source_len : Int,
   out_ptr : Int,
@@ -1204,7 +1204,7 @@ pub fn xsh_check_project(
 }
 
 ///|
-pub fn xsh_format(
+pub fn vibe_format(
   source_ptr : Int,
   source_len : Int,
   out_ptr : Int,
@@ -1216,7 +1216,7 @@ pub fn xsh_format(
 }
 
 ///|
-pub fn xsh_ide_outline(
+pub fn vibe_ide_outline(
   source_ptr : Int,
   source_len : Int,
   out_ptr : Int,
@@ -1228,7 +1228,7 @@ pub fn xsh_ide_outline(
 }
 
 ///|
-pub fn xsh_ide_peek_def(
+pub fn vibe_ide_peek_def(
   source_ptr : Int,
   source_len : Int,
   out_ptr : Int,
@@ -1240,7 +1240,7 @@ pub fn xsh_ide_peek_def(
 }
 
 ///|
-pub fn xsh_ide_search(
+pub fn vibe_ide_search(
   source_ptr : Int,
   source_len : Int,
   out_ptr : Int,

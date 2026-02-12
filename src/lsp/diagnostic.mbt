@@ -58,7 +58,7 @@ fn position_to_offset(source : String, pos : LspPosition) -> Int {
 }
 
 ///|
-/// Convert xsh Diagnostic to LSP Diagnostic
+/// Convert vibe Diagnostic to LSP Diagnostic
 pub fn to_lsp_diagnostic(
   diag : @core.Diagnostic,
   source : String,
@@ -76,7 +76,12 @@ pub fn to_lsp_diagnostic(
     "warning" => Some(2) // Warning
     _ => Some(1)
   }
-  LspDiagnostic::{ range, severity, source: Some("xsh"), message: diag.message }
+  LspDiagnostic::{
+    range,
+    severity,
+    source: Some("vibe"),
+    message: diag.message,
+  }
 }
 
 ///|

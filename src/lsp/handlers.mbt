@@ -225,7 +225,7 @@ pub fn completion_items_json(
 ///|
 fn hover_entry_markdown(entry : @frontend.SymbolEntry) -> String {
   let hash = symbol_hash(entry)
-  "```xsh\n" +
+  "```vibe\n" +
   entry.name +
   " : " +
   entry.signature +

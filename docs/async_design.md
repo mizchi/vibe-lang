@@ -1,8 +1,8 @@
-# xsh async/await 設計
+# vibe async/await 設計
 
 ## 概要
 
-xsh の Effect システムを拡張し、WASM stack switching と WASI Preview 3 を活用した async/await を実装する。
+vibe の Effect システムを拡張し、WASM stack switching と WASI Preview 3 を活用した async/await を実装する。
 
 ## 背景技術
 
@@ -28,7 +28,7 @@ xsh の Effect システムを拡張し、WASM stack switching と WASI Preview 
 
 ## 現在の Effect システム
 
-```xsh
+```vibe
 // 現在の構文
 let parse = (s: String) -> Json with {Error} {
   if s == "" { raise "empty" }
@@ -59,7 +59,7 @@ enum Expr {
 
 現在の `{Error}` に加えて `{Async}` を追加:
 
-```xsh
+```vibe
 // 非同期関数
 let fetch_data = (url: String) -> String with {Async, Error} {
   let response = await http_get(url)
@@ -77,7 +77,7 @@ let process_stream = (input: Stream[Byte]) -> Stream[Json] with {Async} {
 ### 2. 構文拡張
 
 #### 2.1 async/await
-```xsh
+```vibe
 // async 関数（暗黙的に {Async} effect）
 async let fetch = (url: String) -> Response {
   // ...
@@ -88,7 +88,7 @@ let data = await fetch("https://example.com")
 ```
 
 #### 2.2 yield（ストリーム生成）
-```xsh
+```vibe
 // ストリーム生成
 let numbers = () -> Stream[Int] with {Async} {
   for i in 0..10 {
@@ -98,7 +98,7 @@ let numbers = () -> Stream[Int] with {Async} {
 ```
 
 #### 2.3 for-await（ストリーム消費）
-```xsh
+```vibe
 for await item in stream {
   process(item)
 }
@@ -192,7 +192,7 @@ fn run_async(task: AsyncValue) -> Value {
 ## 構文詳細
 
 ### async 関数宣言
-```xsh
+```vibe
 // 明示的
 let fetch = (url: String) -> Response with {Async} {
   // ...
@@ -205,7 +205,7 @@ async let fetch = (url: String) -> Response {
 ```
 
 ### await 式
-```xsh
+```vibe
 // 単純な await
 let response = await fetch(url)
 
@@ -218,7 +218,7 @@ let data = try {
 ```
 
 ### Stream 操作
-```xsh
+```vibe
 // ストリーム生成
 let gen = () -> Stream[Int] with {Async} {
   yield 1
@@ -239,7 +239,7 @@ let doubled = gen() |> map((n) { n * 2 })
 
 代数的エフェクトの完全なサポート:
 
-```xsh
+```vibe
 // Effect 定義
 effect Log {
   log: (msg: String) -> Unit

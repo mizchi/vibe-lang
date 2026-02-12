@@ -91,7 +91,7 @@ fn build_graph_index_from_source(
   source : String,
   base_commit : String,
 ) -> @x_exp.AdvancedGraphIndex {
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(bench_graph_path, source)
   @x_exp.build_advanced_graph_index(
     db,
@@ -210,7 +210,7 @@ fn bench_graph_watch_many_paths_full_rebuild_cbor(b : @bench.T) -> Unit {
   )
   let hash_changed = source_hash(source_changed)
   let hash_restored = source_hash(source_restored)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   let paths : Array[String] = []
   for i in 0..<file_count {
     let path = "/bench/advanced_graph_many_" + i.to_string() + ".vibe"
@@ -283,7 +283,7 @@ fn bench_graph_watch_many_paths_incremental_cbor(b : @bench.T) -> Unit {
   )
   let hash_changed = source_hash(source_changed)
   let hash_restored = source_hash(source_restored)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   let paths : Array[String] = []
   for i in 0..<file_count {
     let path = "/bench/advanced_graph_many_" + i.to_string() + ".vibe"
@@ -353,7 +353,7 @@ fn bench_graph_watch_realtime_save_event_cbor(b : @bench.T) -> Unit {
   let base_source = gen_advanced_graph_source(600, None, 0)
   let changed_source = gen_advanced_graph_source(600, Some(320), 3)
   let base_hash = source_hash(base_source)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(bench_graph_path, base_source)
   let base_index = @x_exp.build_advanced_graph_index(
     db,
@@ -390,7 +390,7 @@ fn bench_graph_watch_realtime_save_rolling_cbor(b : @bench.T) -> Unit {
   let source_b = gen_advanced_graph_source(600, Some(320), 4)
   let hash_a = source_hash(source_a)
   let hash_b = source_hash(source_b)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(bench_graph_path, source_a)
   let state_index : Ref[@x_exp.AdvancedGraphIndex] = {
     val: @x_exp.build_advanced_graph_index(
@@ -439,7 +439,7 @@ fn bench_graph_watch_realtime_save_rolling_flexbuffer(b : @bench.T) -> Unit {
   let source_b = gen_advanced_graph_source(600, Some(320), 4)
   let hash_a = source_hash(source_a)
   let hash_b = source_hash(source_b)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(bench_graph_path, source_a)
   let state_index : Ref[@x_exp.AdvancedGraphIndex] = {
     val: @x_exp.build_advanced_graph_index(
@@ -486,9 +486,9 @@ fn bench_graph_watch_realtime_save_rolling_flexbuffer(b : @bench.T) -> Unit {
 test "bench: graph_build.current_symbol_index_cold" (b : @bench.T) {
   let source = gen_advanced_graph_source(600, None, 0)
   b.bench(fn() {
-    let db = @xsh.XshDb::new()
+    let db = @runtime.VibeDb::new()
     db.set_source(bench_graph_path, source)
-    let index = @xsh.build_symbol_index(db, [bench_graph_path])
+    let index = @runtime.build_symbol_index(db, [bench_graph_path])
     b.keep(index.entries.length())
   })
 }
@@ -497,7 +497,7 @@ test "bench: graph_build.current_symbol_index_cold" (b : @bench.T) {
 test "bench: graph_build.advanced_graph_index_cold" (b : @bench.T) {
   let source = gen_advanced_graph_source(600, None, 0)
   b.bench(fn() {
-    let db = @xsh.XshDb::new()
+    let db = @runtime.VibeDb::new()
     db.set_source(bench_graph_path, source)
     let index = @x_exp.build_advanced_graph_index(
       db,
@@ -513,9 +513,9 @@ test "bench: graph_build.advanced_graph_index_cold" (b : @bench.T) {
 test "bench: graph_search.current_cli_like" (b : @bench.T) {
   let source = gen_advanced_graph_source(600, None, 0)
   b.bench(fn() {
-    let db = @xsh.XshDb::new()
+    let db = @runtime.VibeDb::new()
     db.set_source(bench_graph_path, source)
-    let index = @xsh.build_symbol_index(db, [bench_graph_path])
+    let index = @runtime.build_symbol_index(db, [bench_graph_path])
     let matches = index.search("needle_fn_599")
     b.keep(matches.length())
   })

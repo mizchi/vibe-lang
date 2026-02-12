@@ -30,7 +30,7 @@ BASE="${BASE%.*}"
 OUT="${2:-dist/${BASE}.component.wasm}"
 mkdir -p "$(dirname "$OUT")"
 
-TMP_DIR="$(mktemp -d "/tmp/xsh_component_wkg_${BASE}.XXXXXX")"
+TMP_DIR="$(mktemp -d "/tmp/vibe_component_wkg_${BASE}.XXXXXX")"
 cleanup() {
   rm -rf "$TMP_DIR"
 }
@@ -43,10 +43,10 @@ WIT_WORLD="${WIT_DIR}/world.wit"
 EMBEDDED_WASM="${TMP_DIR}/${BASE}.embedded.wasm"
 WIT_PKG="${TMP_DIR}/${BASE}.wit.wasm"
 
-XSH_CMD=(moon run --target native src/cmd/xsh -- compile)
+VIBE_CMD=(moon run --target native src/cmd/vibe -- compile)
 
-"${XSH_CMD[@]}" --wasm "$INPUT" -o "$CORE_WASM"
-"${XSH_CMD[@]}" --wit-component "$INPUT" -o "$WIT_WORLD"
+"${VIBE_CMD[@]}" --wasm "$INPUT" -o "$CORE_WASM"
+"${VIBE_CMD[@]}" --wit-component "$INPUT" -o "$WIT_WORLD"
 WORLD_NAME="$(awk '/^world / {print $2; exit}' "$WIT_WORLD")"
 if [ -z "$WORLD_NAME" ]; then
   echo "failed to detect world name from $WIT_WORLD" >&2

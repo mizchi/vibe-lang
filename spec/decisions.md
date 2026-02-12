@@ -57,20 +57,20 @@ Status: accepted and moved from `TODO.md`.
   map to content hash/module refs.
 - Canonical reference schema is fixed in spec:
   conversion and normalization rules among `PathRef` / `HashRef` /
-  `VersionRef` / `SymbolRef` are documented in `docs/xsh.md`.
+  `VersionRef` / `SymbolRef` are documented in `docs/vibe.md`.
 - Path object schema and lock key format are fixed in spec:
   `PathObj(raw/base/normalized)` and lock keys (`__hash__/...`,
   `__ref__/version/...`, `__ref__/symbol/...`) are documented in
-  `docs/xsh.md`.
+  `docs/vibe.md`.
 - Spec authority is fixed:
-  `docs/xsh.md` is normative; proposal/draft content lives in dedicated design
+  `docs/vibe.md` is normative; proposal/draft content lives in dedicated design
   docs.
 - Module syntax documentation is aligned with implementation:
   named import + explicit export forms are canonical; legacy bare import forms
   are non-spec.
 - Parser dispatch policy is fixed in spec and CLI behavior:
-  parser-consuming commands use explicit `--syntax xsh|posix` switch
-  (default `xsh`) with no automatic fallback.
+  parser-consuming commands use explicit `--syntax vibe|posix` switch
+  (default `vibe`) with no automatic fallback.
   `posix` is preview-enabled only for runtime-eval commands
   (`run`/`eval`/`repl`/`repl-stdin`/`repl-wasi`/`bench`) and rejected on
   static/compile-oriented commands.
@@ -88,7 +88,7 @@ Status: accepted and moved from `TODO.md`.
   module content hash is Git blob `sha1` over canonical S-expression output, and
   IR schema/examples are aligned to `module_to_sexp` serializer output.
 - Missing language chapters for implemented features are fixed in spec:
-  `docs/xsh.md` now documents trait/impl rules, struct/enum details,
+  `docs/vibe.md` now documents trait/impl rules, struct/enum details,
   placeholder lambda shorthand, `while`/`yield`, and method-call desugaring.
 - Generated builtin contract table is published:
   `docs/builtin_contract_table.generated.md` is generated from checker/eval/wasm
@@ -98,14 +98,14 @@ Status: accepted and moved from `TODO.md`.
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.
 - Lock workflow is implemented in CLI/runtime flow:
-  `xsh fetch`/`xsh update-lock` maintain `index.lock`
+  `vibe fetch`/`vibe update-lock` maintain `index.lock`
   (`path`/`version`/`symbol`/`module`/`annotation` maps), path imports are
   validated against lock entries when enabled, and import diagnostics are
   compile-fatal.
   `index.vibe` root registry now requires
   `export let version = "<semver>"` (simple `x.y.z` form).
 - Eval include alias workflow is fixed for local registry usage:
-  `xsh eval --include vibe/std@<version>.vdb` resolves aliases from
+  `vibe eval --include vibe/std@<version>.vdb` resolves aliases from
   `XSH_LIB_DIR` (fallback `$HOME/.vibe/lib`), and `.vdb` can point to
   object content via `hash:<sha1>` / `{ "hash": "<sha1>" }`.
 - Advanced graph distributed refs workflow is introduced:
@@ -122,14 +122,14 @@ Status: accepted and moved from `TODO.md`.
   crossing must be explicit conversion calls.
   Design memo is tracked in `spec/xshell.md`.
 - Symbol/type/signature indexing backend is implemented and shared:
-  `xsh ide` (`outline`/`peek-def`/`search`) and `xsh lsif` consume the same
-  module-level symbol index (`src/xsh/symbol_index.mbt`).
+  `vibe ide` (`outline`/`peek-def`/`search`) and `vibe lsif` consume the same
+  module-level symbol index (`src/frontend/symbol_index.mbt`).
 - Scratch-first workflow design is documented:
   default namespace-backed eval/repl flow, symbol listing with index inclusion
   status, and history reset policy are tracked in `docs/scratch-workflow.md`.
-- Advanced graph extension PoC is implemented on xsh side:
-  `xsh index` (`build`/`query`/`verify`) provides a sidecar JSON index
-  (`src/xsh/advanced_graph_poc.mbt`) that models manifest + def graph +
+- Advanced graph extension PoC is implemented on vibe side:
+  `vibe index` (`build`/`query`/`verify`) provides a sidecar JSON index
+  (`src/x/module_graph/advanced_graph_poc.mbt`) that models manifest + def graph +
   symbol/type lookup tables.
 - Advanced graph diff/apply path is implemented for remote sync PoC:
   delta payload (`AdvancedGraphDelta`) can be computed/applied and

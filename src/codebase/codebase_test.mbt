@@ -1,6 +1,6 @@
 ///|
 fn make_temp_dir(prefix : String) -> String {
-  let base = "/tmp/xsh_codebase_test_" + prefix
+  let base = "/tmp/vibe_codebase_test_" + prefix
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
     if not(@os_fs.path_exists(path)) {
@@ -120,9 +120,9 @@ test "codebase update_lock_path_refs gathers transitive local imports" {
     Err(err) => fail(err)
   }
   assert_eq(refs.path_refs.length(), 3)
-  let main_norm = @xsh_fs.normalize_path(main_path)
-  let lib_norm = @xsh_fs.normalize_path(lib_path)
-  let util_norm = @xsh_fs.normalize_path(util_path)
+  let main_norm = @vibe_fs.normalize_path(main_path)
+  let lib_norm = @vibe_fs.normalize_path(lib_path)
+  let util_norm = @vibe_fs.normalize_path(util_path)
   match refs.path_refs.get(main_norm) {
     Some(hash) => assert_eq(hash, @core.git_blob_hash_string(main_source))
     None => fail("expected main source hash")
@@ -155,9 +155,9 @@ test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let entry_norm = @xsh_fs.normalize_path(entry)
-  let lib_norm = @xsh_fs.normalize_path(lib)
-  let old_norm = @xsh_fs.normalize_path(old)
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let lib_norm = @vibe_fs.normalize_path(lib)
+  let old_norm = @vibe_fs.normalize_path(old)
   assert_true(updated.path_refs.contains(entry_norm))
   assert_true(updated.path_refs.contains(lib_norm))
   match updated.path_refs.get(old_norm) {
@@ -215,7 +215,7 @@ test "codebase lock roundtrip keeps refs and normalizes path keys" {
   let root = make_temp_dir("lock")
   let entry = root + "/main.vibe"
   let lock_path = lock_file_path(entry)
-  let lib_path = @xsh_fs.normalize_path(root + "/lib.vibe")
+  let lib_path = @vibe_fs.normalize_path(root + "/lib.vibe")
   let path_refs : Map[String, String] = {}
   path_refs[lib_path] = "aaaaaaaa"
   let version_refs : Map[String, String] = {}
@@ -290,7 +290,7 @@ test "codebase load_lock_data falls back to legacy xsh.lock" {
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let entry_norm = @xsh_fs.normalize_path(entry)
+  let entry_norm = @vibe_fs.normalize_path(entry)
   match loaded.path_refs.get(entry_norm) {
     Some(hash) => assert_eq(hash, "abcd")
     None => fail("expected legacy path ref")
@@ -314,7 +314,7 @@ test "codebase load_lock_data prefers index.vdb lock payload over index.lock" {
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let entry_norm = @xsh_fs.normalize_path(entry)
+  let entry_norm = @vibe_fs.normalize_path(entry)
   match loaded.path_refs.get(entry_norm) {
     Some(hash) => assert_eq(hash, "from_vdb")
     None => fail("expected path ref from index.vdb")
@@ -338,7 +338,7 @@ test "codebase load_lock_data falls back to index.lock when index.vdb has no loc
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let entry_norm = @xsh_fs.normalize_path(entry)
+  let entry_norm = @vibe_fs.normalize_path(entry)
   match loaded.path_refs.get(entry_norm) {
     Some(hash) => assert_eq(hash, "from_lock")
     None => fail("expected path ref from index.lock fallback")
@@ -349,8 +349,8 @@ test "codebase load_lock_data falls back to index.lock when index.vdb has no loc
 ///|
 test "codebase update_lock_path_refs rejects imports outside index root" {
   let root = make_temp_dir("root_guard")
-  let outside_name = "xsh_codebase_test_outside_guard"
-  let outside = @xsh_fs.normalize_path(root + "/../" + outside_name)
+  let outside_name = "vibe_codebase_test_outside_guard"
+  let outside = @vibe_fs.normalize_path(root + "/../" + outside_name)
   remove_if_exists(outside)
   @os_fs.create_dir(outside) catch {
     e => fail(e.to_string())
@@ -455,8 +455,8 @@ test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let entry_norm = @xsh_fs.normalize_path(entry)
-  let std_norm = @xsh_fs.normalize_path(std_mod)
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let std_norm = @vibe_fs.normalize_path(std_mod)
   assert_true(updated.path_refs.contains(entry_norm))
   assert_true(updated.path_refs.contains(std_norm))
   remove_if_exists(root)
@@ -473,7 +473,7 @@ test "codebase update_lock_path_refs captures export comments as annotations" {
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let key = @xsh_fs.normalize_path(entry) + "#main"
+  let key = @vibe_fs.normalize_path(entry) + "#main"
   match updated.annotations.get(key) {
     Some(note) => assert_eq(note, "first line\nsecond line")
     None => fail("expected annotation")
@@ -495,7 +495,7 @@ test "codebase update_lock_path_refs clears removed comments in annotations" {
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let key = @xsh_fs.normalize_path(entry) + "#main"
+  let key = @vibe_fs.normalize_path(entry) + "#main"
   assert_false(updated.annotations.contains(key))
   remove_if_exists(root)
 }
@@ -503,7 +503,7 @@ test "codebase update_lock_path_refs clears removed comments in annotations" {
 ///|
 test "codebase apply_annotations_to_source injects export comments" {
   let root = make_temp_dir("annotations_apply")
-  let path = @xsh_fs.normalize_path(root + "/main.vibe")
+  let path = @vibe_fs.normalize_path(root + "/main.vibe")
   let source = "let main = 1\nexport { main }\n"
   let annotations : Map[String, String] = {}
   annotations[path + "#main"] = "hello\nworld"
@@ -518,7 +518,7 @@ test "codebase apply_annotations_to_source injects export comments" {
 ///|
 test "codebase apply_annotations_to_source avoids duplicate when comment exists" {
   let root = make_temp_dir("annotations_apply_existing")
-  let path = @xsh_fs.normalize_path(root + "/main.vibe")
+  let path = @vibe_fs.normalize_path(root + "/main.vibe")
   let source = "// hello\nlet main = 1\nexport { main }\n"
   let annotations : Map[String, String] = {}
   annotations[path + "#main"] = "hello"

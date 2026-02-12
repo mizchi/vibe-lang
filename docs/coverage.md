@@ -4,7 +4,7 @@
 
 1. MoonBit 本体コードの行カバレッジ
 2. WASM 成果物をホストから呼ぶ統合導線のカバレッジ
-3. xsh ソース span ベースの WASM 実行カバレッジ（line/branch）
+3. vibe ソース span ベースの WASM 実行カバレッジ（line/branch）
 
 ## 1) MoonBit 本体カバレッジ
 
@@ -70,10 +70,10 @@ WASM で「何を coverage と見なすか」を分離するのが実務的:
 
 この分離により、`wasm-gc` 実行経路の回帰と API 回帰を同時に監視できる。
 
-## 3) xsh ソース span ベース WASM カバレッジ
+## 3) vibe ソース span ベース WASM カバレッジ
 
-`xsh compile --coverage` で生成する `.cov.json` と wasm カウンタを使って、
-xsh ソース基準の line/branch ヒットを集計する。
+`vibe compile --coverage` で生成する `.cov.json` と wasm カウンタを使って、
+vibe ソース基準の line/branch ヒットを集計する。
 
 ```bash
 just coverage-wasm-source examples/pattern_coverage.vibe

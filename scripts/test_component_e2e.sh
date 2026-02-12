@@ -4,7 +4,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-TMP_DIR="/tmp/xsh_component_e2e_$$"
+TMP_DIR="/tmp/vibe_component_e2e_$$"
 
 # Colors for output
 RED='\033[0;31m'
@@ -38,14 +38,14 @@ log_info() {
 }
 
 # Build the CLI first
-log_info "Building xsh CLI..."
+log_info "Building vibe CLI..."
 cd "$PROJECT_ROOT"
-moon build src/cmd/xsh/main.mbt --target native -q 2>/dev/null || {
-  log_fail "Failed to build xsh CLI"
+moon build src/cmd/vibe/main.mbt --target native -q 2>/dev/null || {
+  log_fail "Failed to build vibe CLI"
   exit 1
 }
 
-XSH="moon run src/cmd/xsh/main.mbt --target native --"
+VIBE="moon run src/cmd/vibe/main.mbt --target native --"
 WASMTIME_BIN=""
 WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
 HAS_WASMTIME=0
@@ -67,7 +67,7 @@ while i < 5 {
 sum
 EOF
 
-  $XSH compile --wasm "$TMP_DIR/while_test.vibe" -o "$TMP_DIR/while_test.wasm" 2>/dev/null
+  $VIBE compile --wasm "$TMP_DIR/while_test.vibe" -o "$TMP_DIR/while_test.wasm" 2>/dev/null
 
   if [ ! -f "$TMP_DIR/while_test.wasm" ]; then
     log_fail "While loop WASM not generated"
@@ -106,7 +106,7 @@ export let multiply = (a: Int, b: Int) -> Int {
 add(1, 2)
 EOF
 
-  $XSH compile --wit "$TMP_DIR/wit_test.vibe" -o "$TMP_DIR/wit_test.wit" 2>/dev/null
+  $VIBE compile --wit "$TMP_DIR/wit_test.vibe" -o "$TMP_DIR/wit_test.wit" 2>/dev/null
 
   if [ ! -f "$TMP_DIR/wit_test.wit" ]; then
     log_fail "WIT file not generated"
@@ -144,7 +144,7 @@ let square = (x: Int) -> Int {
 square(7)
 EOF
 
-  $XSH compile --component "$TMP_DIR/component_test.vibe" -o "$TMP_DIR/component_test.component.wasm" 2>/dev/null
+  $VIBE compile --component "$TMP_DIR/component_test.vibe" -o "$TMP_DIR/component_test.component.wasm" 2>/dev/null
 
   if [ ! -f "$TMP_DIR/component_test.component.wasm" ]; then
     log_fail "Component WASM not generated"
@@ -198,7 +198,7 @@ let quot = a / b
 prod
 EOF
 
-  $XSH compile --wasm "$TMP_DIR/arith_test.vibe" -o "$TMP_DIR/arith_test.wasm" 2>/dev/null
+  $VIBE compile --wasm "$TMP_DIR/arith_test.vibe" -o "$TMP_DIR/arith_test.wasm" 2>/dev/null
 
   RESULT=$(node -e "
     const fs = require('fs');
@@ -228,7 +228,7 @@ EOF
 
   # Ensure dist/ exists and run from project root
   mkdir -p "$PROJECT_ROOT/dist"
-  $XSH compile --wasm "$TMP_DIR/default_out.vibe" 2>/dev/null || true
+  $VIBE compile --wasm "$TMP_DIR/default_out.vibe" 2>/dev/null || true
 
   if [ -f "$PROJECT_ROOT/dist/default_out.wasm" ]; then
     log_pass "WASM generated in default dist/ directory"
@@ -250,7 +250,7 @@ parse("test", 5)
 EOF
 
   # This should parse and run without error
-  RESULT=$($XSH run "$TMP_DIR/tuple_effects.vibe" 2>&1)
+  RESULT=$($VIBE run "$TMP_DIR/tuple_effects.vibe" 2>&1)
 
   if echo "$RESULT" | grep -q -e 'Tuple.*String.*"test".*Int(6)' -e 'last: ("test", 6)'; then
     log_pass "Tuple with effects parses and runs correctly"
@@ -270,7 +270,7 @@ export let identity = (x: Int) -> Int { x }
 1
 EOF
 
-  $XSH compile --wit "$TMP_DIR/wit_types.vibe" -o "$TMP_DIR/wit_types.wit" 2>/dev/null
+  $VIBE compile --wit "$TMP_DIR/wit_types.vibe" -o "$TMP_DIR/wit_types.wit" 2>/dev/null
 
   if grep -q -- "-> bool" "$TMP_DIR/wit_types.wit"; then
     log_pass "WIT maps Bool to bool"
@@ -371,7 +371,7 @@ EOF
 
 # Run all tests
 echo "========================================"
-echo "xsh Component Model E2E Tests"
+echo "vibe Component Model E2E Tests"
 echo "========================================"
 echo ""
 

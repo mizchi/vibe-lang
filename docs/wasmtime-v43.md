@@ -198,9 +198,9 @@ async fn main() -> wasmtime::Result<()> {
 - commit `cc8d04f45` (async_support no-op / concurrency 周辺整理)
 - commit `c09aa3807` (post_return no-op 移行)
 
-## 8. xsh での運用メモ
+## 8. vibe での運用メモ
 
-`xsh` 側では `deps/wasmtime` を submodule として保持し、通常はシステム `wasmtime`、
+`vibe` 側では `deps/wasmtime` を submodule として保持し、通常はシステム `wasmtime`、
 実験時のみ submodule ビルドに切り替える運用にしている。
 
 ```bash
@@ -213,7 +213,7 @@ just build-wasmtime-submodule
 # submodule 版を直接使う
 just wasmtime-submodule run --help
 
-# xsh scripts/* が使う wasmtime を submodule 版へ切替
+# vibe scripts/* が使う wasmtime を submodule 版へ切替
 XSH_USE_WASMTIME_SUBMODULE=1 just component-run vibe/std/test_import.vibe
 ```
 
@@ -265,7 +265,7 @@ XSH_USE_WASMTIME_SUBMODULE=1 just component-run vibe/std/test_import.vibe
 - `-S p3=y` かつ compile-time で `component-model-async` が有効、かつ component が `wasi:cli`/p3 command を持つ場合に、
   `run` コマンドは `wasmtime_wasi::p3::bindings::Command` 経由の実行パスを選ぶ (`src/commands/run.rs`)。
 
-## 11. xsh との接続点（現状）
+## 11. vibe との接続点（現状）
 
 - バイナリ切替は `scripts/wasmtime_bin.sh` と `XSH_USE_WASMTIME_SUBMODULE=1` で統一済み。
 - `scripts/wasmtime_run.sh` 経由で `XSH_WASMTIME_WASM_FLAGS` / `XSH_WASMTIME_WASI_FLAGS` を注入できる。
@@ -350,7 +350,7 @@ just component-run script.vibe
     は `concurrency support must be enabled ...` で失敗。
 - 41 では `-W concurrency-support=...` 自体が unknown option。
 
-### 12.5 xsh リポジトリ内の最小プローブ
+### 12.5 vibe リポジトリ内の最小プローブ
 
 この検証を再実行できるように、以下を追加した:
 

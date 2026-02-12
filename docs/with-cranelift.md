@@ -1,10 +1,10 @@
-# xsh + Cranelift (draft)
-# xsh + Cranelift (下書き)
+# vibe + Cranelift (draft)
+# vibe + Cranelift (下書き)
 
 This document captures a proposed direction for integrating Cranelift as an
-AOT backend for xsh, while keeping the existing wasm VM sandbox model.
+AOT backend for vibe, while keeping the existing wasm VM sandbox model.
 このドキュメントは、既存の wasm VM サンドボックスを維持しつつ、
-xsh に Cranelift を AOT バックエンドとして統合する方針をまとめる。
+vibe に Cranelift を AOT バックエンドとして統合する方針をまとめる。
 
 ## Goals / 目標
 
@@ -28,7 +28,7 @@ xsh に Cranelift を AOT バックエンドとして統合する方針をまと
 
 ## High-level design / 全体像
 
-1. Parse/Type-check xsh as today.
+1. Parse/Type-check vibe as today.
    既存のパーサ/型検査を維持。
 2. Lower typed IR into a portable internal IR (existing).
    typed IR を既存の内部 IR に落とす。
@@ -62,8 +62,8 @@ wasm バックエンドはデフォルトのまま、Cranelift は追加の AOT 
 To make outputs content-addressable, define a strict build fingerprint:
 出力をコンテンツアドレス化するため、厳密な指紋 (fingerprint) を定義する。
 
-- input sources (xsh files, imported module hashes)
-  入力ソース (xsh ファイル、import されたモジュールハッシュ)
+- input sources (vibe files, imported module hashes)
+  入力ソース (vibe ファイル、import されたモジュールハッシュ)
 - typed IR serialization bytes
   typed IR のシリアライズ結果
 - target triple + cpu features
@@ -341,5 +341,5 @@ Notes:
 
 ## References in this repo (for orientation) / 参考
 
-- `docs/xsh.md`: current language design and wasm backend notes.
-  `docs/xsh.md`: 現在の言語設計と wasm バックエンドのメモ。
+- `docs/vibe.md`: current language design and wasm backend notes.
+  `docs/vibe.md`: 現在の言語設計と wasm バックエンドのメモ。

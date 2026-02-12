@@ -1,6 +1,6 @@
-# xsh
+# vibe
 
-xsh language prototype and runtime (MoonBit).
+vibe language prototype and runtime (MoonBit).
 
 ## Features
 
@@ -45,45 +45,45 @@ just test-integration-deno  # deno integration tests (artifact-only wasm-gc)
 just coverage     # moonbit + wasm(deno) coverage
 just coverage-moon  # moonbit source coverage (summary/cobertura/html)
 just coverage-deno  # wasm integration coverage (summary/lcov/html)
-just coverage-wasm-source examples/pattern_coverage.vibe  # xsh source span + wasm counter coverage
+just coverage-wasm-source examples/pattern_coverage.vibe  # vibe source span + wasm counter coverage
 just coverage-wasm-std  # vibe/std *_test.vibe coverage aggregation (wasm source)
 just release-check  # full check before release
 ```
 
 Coverage で使う主な環境変数:
-- `XSH_MOON_COVERAGE_TARGET=native|wasm|wasm-gc|js`
-- `XSH_MOON_COVERAGE_PACKAGE=<pkg>`
-- `XSH_MOON_COVERAGE_MIN_LINE=<percent>`
-- `XSH_DENO_COVERAGE_FILTER=<regex>`
-- `XSH_DENO_COVERAGE_MIN_LINE=<percent>`
-- `XSH_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string`
-- `XSH_WASM_SOURCE_COVERAGE_NO_DCE=0|1`
-- `XSH_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1`
-- `XSH_WASM_SOURCE_COVERAGE_DIR=<dir>`
-- `XSH_WASM_STD_COVERAGE_MODE=wasm|wasm-js-string`
-- `XSH_WASM_STD_COVERAGE_FILTER=<regex>`
-- `XSH_WASM_STD_COVERAGE_EXCLUDE=<regex>`
-- `XSH_WASM_STD_COVERAGE_STRICT=0|1`
-- `XSH_WASM_STD_COVERAGE_DIR=<dir>`
+- `VIBE_MOON_COVERAGE_TARGET=native|wasm|wasm-gc|js`
+- `VIBE_MOON_COVERAGE_PACKAGE=<pkg>`
+- `VIBE_MOON_COVERAGE_MIN_LINE=<percent>`
+- `VIBE_DENO_COVERAGE_FILTER=<regex>`
+- `VIBE_DENO_COVERAGE_MIN_LINE=<percent>`
+- `VIBE_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string`
+- `VIBE_WASM_SOURCE_COVERAGE_NO_DCE=0|1`
+- `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1`
+- `VIBE_WASM_SOURCE_COVERAGE_DIR=<dir>`
+- `VIBE_WASM_STD_COVERAGE_MODE=wasm|wasm-js-string`
+- `VIBE_WASM_STD_COVERAGE_FILTER=<regex>`
+- `VIBE_WASM_STD_COVERAGE_EXCLUDE=<regex>`
+- `VIBE_WASM_STD_COVERAGE_STRICT=0|1`
+- `VIBE_WASM_STD_COVERAGE_DIR=<dir>`
 
 WASM 向けは 3 層で測る:
-- MoonBit 本体ロジック: `just coverage-moon`（必要なら `XSH_MOON_COVERAGE_TARGET=wasm-gc`）
+- MoonBit 本体ロジック: `just coverage-moon`（必要なら `VIBE_MOON_COVERAGE_TARGET=wasm-gc`）
 - `WebAssembly.instantiate` 経由の統合導線: `just coverage-deno`
-- xsh ソース span ベースの line/branch: `just coverage-wasm-source <entry.vibe>`
+- vibe ソース span ベースの line/branch: `just coverage-wasm-source <entry.vibe>`
 - vibe/std の集計: `just coverage-wasm-std`（`summary` の `cases(total/success)` と `failures.txt` を確認）
 - 詳細: `docs/coverage.md`
 
-`js/xsh/` には wasm 成果物 (`src/lib`) を呼ぶ JS バインディングを置く:
-- `js/xsh/index.js` / `js/xsh/index.d.ts` (`createXshService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
-  - `createXshService({ bootstrap: { prelude, kv } })` または `service.init({ prelude, kv })` で初期状態を注入可能
+`js/vibe/` には wasm 成果物 (`src/lib`) を呼ぶ JS バインディングを置く:
+- `js/vibe/index.js` / `js/vibe/index.d.ts` (`createVibeService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
+  - `createVibeService({ bootstrap: { prelude, kv } })` または `service.init({ prelude, kv })` で初期状態を注入可能
   - `checkProject({ entry, files })` と IDE request (`{ entry, path, files, ... }`) は import 解決対応（init で注入した `kv` も解決対象）
-- `js/xsh/cli.js` shell から使う JS CLI (`xsh ide` 相当)
-- `js/xsh/lsp.js` / `js/xsh/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
+- `js/vibe/cli.js` shell から使う JS CLI (`vibe ide` 相当)
+- `js/vibe/lsp.js` / `js/vibe/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
 
 ## CLI
 
 ```bash
-# Run xsh script
+# Run vibe script
 just run run examples/basics.vibe
 # (comprehensive syntax tour)
 just run run examples/syntax.vibe
@@ -143,7 +143,7 @@ just run index query symbol add /tmp/advanced-graph-index.json
 just run index verify /tmp/advanced-graph-index.json
 
 # Emit LSIF from the same symbol index backend
-just run lsif -o /tmp/xsh.lsif examples/syntax.vibe
+just run lsif -o /tmp/vibe.lsif examples/syntax.vibe
 
 # Build wasm line REPL (preview2 stdio imports)
 just build-repl-wasi-wasm
@@ -157,7 +157,7 @@ just run-compiler-wasi-wasm --wasm /tmp/gc_demo.vibe -o /tmp/out.wasm
 # Run wasm checker CLI (file path or --source)
 just run-checker-wasi-wasm /tmp/gc_demo.vibe
 just run-checker-wasi-wasm --source '1 + true'
-# Run wasm formatter mode (xsh fmt 相当)
+# Run wasm formatter mode (vibe fmt 相当)
 just run-checker-wasi-wasm --format --source 'let  x=1'
 # Same as above (shortcut)
 just run-compiler-wasi-wasm-gc /tmp/gc_demo.vibe -o /tmp/out.wasm
@@ -178,12 +178,12 @@ just component-run-moonix vibe/std/test_import.vibe
 # moonix バイナリが無い場合の手動 bootstrap
 just bootstrap-moonix
 
-# Install CLI to ~/.local/bin/xsh
+# Install CLI to ~/.local/bin/vibe
 just install
 ```
 
 `build-repl-wasi-wasm` output:
-- `_build/wasm/release/build/xsh_wasi/xsh_wasi.wasm`
+- `_build/wasm/release/build/vibe_wasi/vibe_wasi.wasm`
 - this binary imports `wasi:cli/stdin|stdout@0.2.0` and `wasi:io/streams@0.2.0` directly
 - run it with a component/p3-compatible host (for example moon-component/mwac integration), not `moon run --target wasm`
 - for script-level stdio execution, use `just component-run <file.vibe>`
@@ -191,10 +191,10 @@ just install
 - `component-run-moonix` は `moonix` 未導入時に `scripts/bootstrap_moonix_bin.sh` を自動試行
 
 `build-compiler-wasi-wasm` output:
-- `_build/wasm/release/build/cmd/xsh_compile_wasi/xsh_compile_wasi.wasm`
-- run with `moon run --target wasm src/cmd/xsh_compile_wasi -- ...` (or `just run-compiler-wasi-wasm ...`)
+- `_build/wasm/release/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm`
+- run with `moon run --target wasm src/cmd/vibe_compile_wasi -- ...` (or `just run-compiler-wasi-wasm ...`)
 - compiler filesystem access is routed through `src/io.FileSystemAdapter` abstraction
-- `xsh_compile_wasi` では `--wasm` が `wasm-gc` を選ぶ（MVP を使う場合は `--wasm-mvp`）
+- `vibe_compile_wasi` では `--wasm` が `wasm-gc` を選ぶ（MVP を使う場合は `--wasm-mvp`）
 - 現状 `wasm-gc` backend は実験段階のため、複雑な文法は `--wasm-mvp` を使う
 
 ## WASM Execution
@@ -230,31 +230,31 @@ just build-wasmtime-submodule
 # run wasmtime from submodule directly
 just wasmtime-submodule run -W gc --invoke run /tmp/out.wasm
 
-# or switch existing xsh scripts/tasks to submodule wasmtime
-XSH_USE_WASMTIME_SUBMODULE=1 just component-run script.vibe
-XSH_USE_WASMTIME_SUBMODULE=1 just bench-wasmtime
+# or switch existing vibe scripts/tasks to submodule wasmtime
+VIBE_USE_WASMTIME_SUBMODULE=1 just component-run script.vibe
+VIBE_USE_WASMTIME_SUBMODULE=1 just bench-wasmtime
 
-# inject extra wasmtime runtime flags into xsh scripts/*
+# inject extra wasmtime runtime flags into vibe scripts/*
 # (space-separated list; each token is passed as -W / -S)
-XSH_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
-XSH_WASMTIME_WASI_FLAGS='p3=y' \
-XSH_USE_WASMTIME_SUBMODULE=1 \
+VIBE_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
+VIBE_WASMTIME_WASI_FLAGS='p3=y' \
+VIBE_USE_WASMTIME_SUBMODULE=1 \
 just component-run script.vibe
 
 # flags are also propagated through justfile-backed tasks
-XSH_WASMTIME_WASM_FLAGS='gc=y' just bench-wasmtime
+VIBE_WASMTIME_WASM_FLAGS='gc=y' just bench-wasmtime
 
 # inspect current flag env values used by scripts/wasmtime_run.sh
 just show-wasmtime-flags
 
 # run minimal WASI Threads probe (imports wasi::thread-spawn + env::memory)
 # defaults to:
-#   XSH_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'
-#   XSH_WASMTIME_WASI_FLAGS='threads=y'
-XSH_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
+#   VIBE_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'
+#   VIBE_WASMTIME_WASI_FLAGS='threads=y'
+VIBE_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
 
 # direct runner under x/threads
-XSH_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
+VIBE_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
 ```
 
 ### With wasmtime stack-switching (x86_64 Linux only)
@@ -276,11 +276,11 @@ src/
 ├── parser/         # Lexer and parser
 ├── checker/        # Type checker with effects
 ├── codegen/        # WASM code generation
-├── xsh/            # Interpreter and compilation
+├── runtime/        # Interpreter and compilation
 ├── x/fp/           # Floating-point to decimal formatter utilities
 ├── x/module_graph/ # Experimental module graph index and codecs
-├── cmd/xsh/        # CLI command implementation (native/js)
-├── cmd/xsh_wasi/   # WASI line-REPL command (wasm)
+├── cmd/vibe/       # CLI command implementation (native/js)
+├── cmd/vibe_wasi/  # WASI line-REPL command (wasm)
 └── tests/          # Integration-like blackbox tests
 
 examples/
@@ -295,9 +295,10 @@ examples/async_host/  # Rust/wasmtime host runtime
 
 ## Docs
 
-- `docs/xsh.md` - Language specification (normative for implemented behavior)
+- `docs/vibe.md` - Language specification (normative for implemented behavior)
 - `docs/module_design.md` - Module design proposals (non-normative)
-- `docs/module_system.md` - Legacy module draft notes (non-normative)
+- `docs/module-system.md` - Current module system spec
+- `docs/vibe-eval.md` - Eval workflow documentation
 - `docs/async_design.md` - Async design proposals (non-normative)
 - `docs/unstable_features.md` - Unstable runtime feature flags (`--unstable-async`, `--unstable-threads`)
 - `docs/coverage.md` - Coverage strategy for MoonBit + WASM integration
@@ -325,21 +326,21 @@ just bench-advanced-graph
 just bench-typechecker
 ```
 
-`xsh bench` は `bench {}` ブロックを言語機能として実行する。  
+`vibe bench` は `bench {}` ブロックを言語機能として実行する。  
 `<file|dir...>` 指定時は `--backend wasm` がデフォルト（`--backend interpreter` で従来実装）。  
 legacy の式ベンチ (`--expr/--case/--cases`) は `interpreter` backend のみ対応。
 `--backend wasm` ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
-`just bench-kpi` は `xsh bench` の結果を `dist/bench_kpi/latest.tsv` に保存し、`per_us` と `wasm_bytes` を同時に確認できる。
-KPI しきい値は `XSH_BENCH_KPI_MAX_PER_US` / `XSH_BENCH_KPI_MAX_WASM_BYTES` / `XSH_BENCH_KPI_MAX_SCORE` で設定可能。
+`just bench-kpi` は `vibe bench` の結果を `dist/bench_kpi/latest.tsv` に保存し、`per_us` と `wasm_bytes` を同時に確認できる。
+KPI しきい値は `VIBE_BENCH_KPI_MAX_PER_US` / `VIBE_BENCH_KPI_MAX_WASM_BYTES` / `VIBE_BENCH_KPI_MAX_SCORE` で設定可能。
 引数なしの `just bench-kpi` は `bench/kpi_bench.vibe`（数値パイプライン/状態更新の4ケース）を対象にする。
-`XSH_BENCH_KPI_N` / `XSH_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000`, `interpreter=2000/200` を使う。
+`VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000`, `interpreter=2000/200` を使う。
 
 `bench-scratch-workflow` は scratch 開発フローを段階別に計測する。
 
-- `XSH_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (`all` は `,` 区切り指定可)
-- `XSH_BENCH_CHAIN=<N>` 定義チェーン長（デフォルト `40`）
-- `XSH_BENCH_WARMUP=<N>` / `XSH_BENCH_RUNS=<N>`
-- `XSH_BENCH_EXPORT_JSON=<path>` で `hyperfine` の JSON を保存
+- `VIBE_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (`all` は `,` 区切り指定可)
+- `VIBE_BENCH_CHAIN=<N>` 定義チェーン長（デフォルト `40`）
+- `VIBE_BENCH_WARMUP=<N>` / `VIBE_BENCH_RUNS=<N>`
+- `VIBE_BENCH_EXPORT_JSON=<path>` で `hyperfine` の JSON を保存
 
 ## License
 

@@ -2,15 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
 SCRIPT_PATH="$ROOT_DIR/bench/bench_simple.vibe"
-WASM_OUT="$ROOT_DIR/target/bench/xsh_bench.wasm"
+WASM_OUT="$ROOT_DIR/target/bench/vibe_bench.wasm"
 WASMTIME_BIN="${WASMTIME_BIN:-$("$ROOT_DIR/scripts/wasmtime_bin.sh")}"
 WASMTIME_RUN="$ROOT_DIR/scripts/wasmtime_run.sh"
 
 mkdir -p "$ROOT_DIR/target/bench"
 
-moon build --target native --release src/cmd/xsh
+moon build --target native --release src/cmd/vibe
 
 "$CLI_BIN" compile --wasm -o "$WASM_OUT" "$SCRIPT_PATH"
 

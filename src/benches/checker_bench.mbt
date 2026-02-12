@@ -72,7 +72,7 @@ test "bench: checker.type_check.trait_bounds" (b : @bench.T) {
 
 ///|
 test "bench: checker.db_types.hot" (b : @bench.T) {
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(bench_type_path, gen_large_typecheck_source(400))
   db.types(bench_type_path) |> ignore
   b.bench(fn() { b.keep(db.types(bench_type_path).get_scheme("v399")) })
@@ -81,14 +81,14 @@ test "bench: checker.db_types.hot" (b : @bench.T) {
 ///|
 test "bench: checker.db_init.cold" (b : @bench.T) {
   b.bench(fn() {
-    let db = @xsh.XshDb::new()
+    let db = @runtime.VibeDb::new()
     b.keep(db.get_source("/missing"))
   })
 }
 
 ///|
 test "bench: checker.db_types.first_without_db_init" (b : @bench.T) {
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   let source = gen_large_typecheck_source(400)
   let mut idx = 0
   b.bench(fn() {
@@ -103,7 +103,7 @@ test "bench: checker.db_types.first_without_db_init" (b : @bench.T) {
 test "bench: checker.db_types.cold" (b : @bench.T) {
   let source = gen_large_typecheck_source(400)
   b.bench(fn() {
-    let db = @xsh.XshDb::new()
+    let db = @runtime.VibeDb::new()
     db.set_source(bench_type_path, source)
     b.keep(db.types(bench_type_path).get_scheme("v399"))
   })

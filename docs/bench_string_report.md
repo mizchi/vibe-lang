@@ -1,7 +1,7 @@
 # String Bench Report (2026-02-05)
 
 ## 概要
-xsh の文字列系ベンチマークを js-string バックエンドと wasm-gc バックエンドで比較した結果。計測は `hyperfine` を使用。
+vibe の文字列系ベンチマークを js-string バックエンドと wasm-gc バックエンドで比較した結果。計測は `hyperfine` を使用。
 
 ## 実行コマンド
 - `just bench-string-concat`

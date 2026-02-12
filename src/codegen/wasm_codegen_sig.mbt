@@ -1,0 +1,1172 @@
+///|
+priv struct WasmFunc {
+  params : Array[ValueKind]
+  locals : Array[ValueKind]
+  result : ValueKind
+  body : Array[Byte]
+}
+
+///|
+fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
+  match ty {
+    @core.Type::String =>
+      if ctx.use_js_strings {
+        ValueKind::ExternRef
+      } else {
+        ValueKind::I32
+      }
+    @core.Type::Float => ValueKind::BoxedF32
+    @core.Type::Double => ValueKind::BoxedF64
+    @core.Type::Named(name~, args~) => {
+      if args.length() > 0 {
+        return ValueKind::I32
+      }
+      let is_string_name = name == "String" ||
+        name.has_suffix(".String") ||
+        name.has_suffix("::String") ||
+        name.has_suffix("/String")
+      let is_float_name = name == "Float" ||
+        name == "f32" ||
+        name.has_suffix(".Float") ||
+        name.has_suffix("::Float") ||
+        name.has_suffix("/Float")
+      let is_double_name = name == "Double" ||
+        name == "f64" ||
+        name.has_suffix(".Double") ||
+        name.has_suffix("::Double") ||
+        name.has_suffix("/Double")
+      if is_string_name {
+        if ctx.use_js_strings {
+          ValueKind::ExternRef
+        } else {
+          ValueKind::I32
+        }
+      } else if is_float_name {
+        ValueKind::BoxedF32
+      } else if is_double_name {
+        ValueKind::BoxedF64
+      } else {
+        ValueKind::I32
+      }
+    }
+    _ => ValueKind::I32
+  }
+}
+
+///|
+fn ensure_funcref_slot(ctx : CodegenCtx, func_idx : Int) -> Int {
+  match ctx.fn_table_slots.get(func_idx) {
+    Some(slot) => slot
+    None => {
+      let slot = ctx.fn_table_order.length()
+      ctx.fn_table_slots[func_idx] = slot
+      ctx.fn_table_order.push(func_idx)
+      slot
+    }
+  }
+}
+
+///|
+fn func_sig_key_from_parts(
+  params : Array[ValueKind],
+  result : ValueKind,
+) -> String {
+  let sb = StringBuilder::new()
+  sb.write_char('(')
+  for i in 0..<params.length() {
+    if i > 0 {
+      sb.write_char(',')
+    }
+    let c = if params[i] == ValueKind::ExternRef { 'r' } else { 'i' }
+    sb.write_char(c)
+  }
+  sb.write_string(")->")
+  let rc = if result == ValueKind::ExternRef { 'r' } else { 'i' }
+  sb.write_char(rc)
+  sb.to_string()
+}
+
+///|
+fn func_sig_key(sig : FuncSig) -> String {
+  func_sig_key_from_parts(sig.params, sig.result)
+}
+
+///|
+fn func_sig_with_env(params : Array[ValueKind], result : ValueKind) -> FuncSig {
+  let out : Array[ValueKind] = []
+  for kind in params {
+    out.push(kind)
+  }
+  out.push(ValueKind::I32)
+  FuncSig::{ params: out, result }
+}
+
+///|
+fn func_sig_from_type(ctx : CodegenCtx, ty : @core.Type) -> FuncSig? {
+  match ty {
+    @core.Type::Func(params~, ret~, effects~) => {
+      let _ = effects
+      let param_kinds : Array[ValueKind] = []
+      for param in params {
+        param_kinds.push(value_kind_from_type(ctx, param.ty))
+      }
+      let result = value_kind_from_type(ctx, ret)
+      Some(func_sig_with_env(param_kinds, result))
+    }
+    _ => None
+  }
+}
+
+///|
+fn infer_expr_func_sig(ctx : CodegenCtx, expr : @core.Expr) -> FuncSig? {
+  match expr {
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
+      let _ = effects
+      let _ = body
+      let _ = span
+      let param_kinds : Array[ValueKind] = []
+      for param in params {
+        param_kinds.push(value_kind_from_type(ctx, param.ty))
+      }
+      let result = match ret {
+        Some(r) => value_kind_from_type(ctx, r)
+        None => ValueKind::I32
+      }
+      Some(func_sig_with_env(param_kinds, result))
+    }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      if body.stmts.length() > 0 {
+        match body.stmts[body.stmts.length() - 1] {
+          @core.Stmt::Expr(expr~, span~) => {
+            let _ = span
+            infer_expr_func_sig(ctx, expr)
+          }
+          _ => None
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+fn infer_body_return_sig(ctx : CodegenCtx, body : @core.Module) -> FuncSig? {
+  if body.stmts.length() > 0 {
+    match body.stmts[body.stmts.length() - 1] {
+      @core.Stmt::Expr(expr~, span~) => {
+        let _ = span
+        infer_expr_func_sig(ctx, expr)
+      }
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+///|
+fn builtin_type_count(ctx : CodegenCtx) -> Int {
+  let mut count = 0
+  if ctx.need_js_length {
+    count += 1
+  }
+  if ctx.need_js_char_code_at {
+    count += 1
+  }
+  if ctx.need_js_substring {
+    count += 1
+  }
+  if ctx.need_js_concat {
+    count += 1
+  }
+  if ctx.need_js_equals {
+    count += 1
+  }
+  if ctx.need_sh || ctx.need_path {
+    count += 1
+  }
+  if ctx.need_sleep {
+    count += 1
+  }
+  if ctx.need_stdout_write_char || ctx.need_stdin_read_char {
+    count += 1
+  }
+  if ctx.need_stdout_write_char {
+    count += 1
+  }
+  if ctx.need_stdin_read_char {
+    count += 1
+  }
+  count
+}
+
+///|
+fn ensure_sig_index(ctx : CodegenCtx, sig : FuncSig) -> Int {
+  let key = func_sig_key(sig)
+  match ctx.fn_sig_type_indices.get(key) {
+    Some(idx) => idx
+    None => {
+      let idx = builtin_type_count(ctx) + ctx.fn_sig_order.length()
+      ctx.fn_sig_type_indices[key] = idx
+      ctx.fn_sig_order.push(sig)
+      idx
+    }
+  }
+}
+
+///|
+fn func_import_count(ctx : CodegenCtx) -> Int {
+  let mut count = 0
+  if ctx.need_js_length {
+    count += 1
+  }
+  if ctx.need_js_char_code_at {
+    count += 1
+  }
+  if ctx.need_js_substring {
+    count += 1
+  }
+  if ctx.need_js_concat {
+    count += 1
+  }
+  if ctx.need_js_equals {
+    count += 1
+  }
+  if ctx.need_path {
+    count += 1
+  }
+  if ctx.need_sh {
+    count += 1
+  }
+  if ctx.need_sleep {
+    count += 1
+  }
+  if ctx.need_stdout_write_char {
+    count += 2
+  }
+  if ctx.need_stdin_read_char {
+    count += 2
+  }
+  count
+}
+
+///|
+fn is_qualified_name(name : String) -> Bool {
+  for c in name {
+    if c == '.' || c == '#' {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn infer_expr_kind(
+  ctx : CodegenCtx,
+  expr : @core.Expr,
+) -> ValueKind raise WasmGenError {
+  infer_expr_kind_with(ctx, expr, ctx.local_kinds)
+}
+
+///|
+fn infer_expr_kind_with(
+  ctx : CodegenCtx,
+  expr : @core.Expr,
+  locals : Map[String, ValueKind],
+) -> ValueKind raise WasmGenError {
+  match expr {
+    @core.Expr::Int(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::String(value~, span~) => {
+      let _ = value
+      let _ = span
+      if ctx.use_js_strings {
+        ValueKind::ExternRef
+      } else {
+        ValueKind::I32
+      }
+    }
+    @core.Expr::Float(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::BoxedF32
+    }
+    @core.Expr::Double(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::BoxedF64
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
+      match locals.get(name) {
+        Some(kind) => kind
+        None => ValueKind::I32
+      }
+    }
+    @core.Expr::Placeholder(..) =>
+      // Placeholder should be desugared before codegen
+      ValueKind::I32
+    @core.Expr::Call(name~, args~, span~, ..) => {
+      let _ = span
+      let pos_args = extract_positional_exprs(args, name)
+      match name {
+        "add" | "sub" | "mul" | "div" | "eq" | "lt" => ValueKind::I32
+        "__index" => ValueKind::I32
+        "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("js-string arity: " + name)
+          }
+          let left_kind = infer_expr_kind_with(ctx, pos_args[0], locals)
+          let right_kind = infer_expr_kind_with(ctx, pos_args[1], locals)
+          // When one side is I32 (generic tagged), coerce to the other side's type
+          let resolved_kind = if left_kind == right_kind {
+            left_kind
+          } else if left_kind == ValueKind::I32 {
+            right_kind
+          } else if right_kind == ValueKind::I32 {
+            left_kind
+          } else {
+            raise WasmGenError::Unsupported("numeric kind mismatch")
+          }
+          match resolved_kind {
+            ValueKind::I32 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
+              resolved_kind
+            _ => raise WasmGenError::Unsupported("js-string numeric kind")
+          }
+        }
+        "__neg" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("js-string arity: " + name)
+          }
+          let kind = infer_expr_kind_with(ctx, pos_args[0], locals)
+          match kind {
+            ValueKind::I32 | ValueKind::BoxedF32 | ValueKind::BoxedF64 => kind
+            _ => raise WasmGenError::Unsupported("js-string numeric kind")
+          }
+        }
+        "int_to_float"
+        | "f32_convert_i32_s"
+        | "double_to_float"
+        | "f32_demote_f64"
+        | "f32_neg"
+        | "f32_load" => ValueKind::BoxedF32
+        "int_to_double"
+        | "f64_convert_i32_s"
+        | "to_double"
+        | "float_to_double"
+        | "f64_promote_f32"
+        | "f64_neg"
+        | "f64_load" => ValueKind::BoxedF64
+        "float_to_int"
+        | "i32_trunc_f32_s"
+        | "double_to_int"
+        | "i32_trunc_f64_s"
+        | "i32_shr_u"
+        | "i32_load"
+        | "i32_load8_u"
+        | "i32_store"
+        | "i32_store8"
+        | "f32_store"
+        | "f64_store" => ValueKind::I32
+        "__eq" | "__lt" => ValueKind::I32
+        "__to_string" =>
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
+        "string_length" => ValueKind::I32
+        "string_char_code_at" => ValueKind::I32
+        "string_substring" =>
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
+        "string_concat" =>
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
+        "string_equals" => ValueKind::I32
+        "array_builder" | "array_builder_freeze" => ValueKind::I32
+        "array_builder_push" => ValueKind::I32
+        "map_builder" | "map_builder_freeze" => ValueKind::I32
+        "map_builder_set" => ValueKind::I32
+        "array_length" => ValueKind::I32
+        "array_get" => ValueKind::I32
+        "map_get" => ValueKind::I32
+        "sleep" => ValueKind::I32
+        "stdout_write_char" => ValueKind::I32
+        "stdout_write_stream" => ValueKind::I32
+        "stdin_read_char" => ValueKind::I32
+        "stdin_read_stream" => ValueKind::I32
+        "string_from_char_code" => ValueKind::I32
+        "threads_probe_wat" =>
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
+        "threads_runtime_hints" => ValueKind::I32
+        "wasm_env" | "wasi_env" =>
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
+        "threads_channel_new" => ValueKind::I32
+        "threads_spawn" => ValueKind::I32
+        "threads_send" => ValueKind::I32
+        "threads_recv" =>
+          if ctx.use_js_strings {
+            ValueKind::ExternRef
+          } else {
+            ValueKind::I32
+          }
+        "threads_wait" => ValueKind::I32
+        _ if ctx.fn_local_sigs.contains(name) =>
+          match ctx.fn_local_sigs.get(name) {
+            Some(sig) => sig.result
+            None => ValueKind::I32
+          }
+        _ =>
+          if ctx.fn_returns.contains(name) {
+            match ctx.fn_returns.get(name) {
+              Some(kind) => kind
+              None => ValueKind::I32
+            }
+          } else {
+            ValueKind::I32
+          }
+      }
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
+      let _ = cond
+      let then_kind = infer_block_kind(ctx, then_body, locals)
+      let else_kind = infer_block_kind(ctx, else_body, locals)
+      if then_kind != else_kind {
+        raise WasmGenError::Unsupported("js-string if kind mismatch")
+      }
+      then_kind
+    }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      infer_block_kind(ctx, body, locals)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
+      let try_kind = infer_block_kind(ctx, try_body, locals)
+      let catch_kind = infer_block_kind(ctx, catch_body, locals)
+      if try_kind != catch_kind {
+        raise WasmGenError::Unsupported("js-string try kind mismatch")
+      }
+      try_kind
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = scrutinee
+      let _ = span
+      if arms.length() == 0 {
+        ValueKind::I32
+      } else {
+        // Infer type from the first arm's expression
+        let arm = arms[0]
+        let arm_locals = locals.copy()
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(arm.pat, bindings)
+        for name in bindings {
+          arm_locals[name] = ValueKind::I32
+        }
+        infer_expr_kind_with(ctx, arm.expr, arm_locals)
+      }
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let _ = items
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) => {
+      let _ = expr
+      let _ = index
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let _ = fields
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Array(items~, span~) => {
+      let _ = items
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let _ = fields
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      infer_block_kind(ctx, body, locals)
+    }
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
+      let _ = params
+      let _ = ret
+      let _ = effects
+      let _ = body
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = cond
+      let _ = body
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Break(span~) => {
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Continue(span~) => {
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Raise(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      infer_expr_kind_with(ctx, expr, locals)
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = expr
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Expr::StructLit(fields~, span~, ..) => {
+      let _ = fields
+      let _ = span
+      // Struct is compiled as record - same layout (pointer)
+      ValueKind::I32
+    }
+  }
+}
+
+///|
+fn infer_block_kind(
+  ctx : CodegenCtx,
+  body : @core.Module,
+  locals : Map[String, ValueKind],
+) -> ValueKind raise WasmGenError {
+  let kinds = locals.copy()
+  let mut last = ValueKind::I32
+  for stmt in body.stmts {
+    last = infer_stmt_kind(ctx, stmt, kinds)
+  }
+  last
+}
+
+///|
+fn infer_stmt_kind(
+  ctx : CodegenCtx,
+  stmt : @core.Stmt,
+  locals : Map[String, ValueKind],
+) -> ValueKind raise WasmGenError {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let _ = span
+      let _ = rec
+      let kind = infer_expr_kind_with(ctx, expr, locals)
+      locals[name] = kind
+      kind
+    }
+    @core.Stmt::Expr(expr~, span~) => {
+      let _ = span
+      infer_expr_kind_with(ctx, expr, locals)
+    }
+    @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
+      let _ = name
+      let _ = params
+      let _ = ctors
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
+      let _ = name
+      let _ = params
+      let _ = target
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = body
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Stmt::Bench(name~, body~, span~) => {
+      let _ = name
+      let _ = body
+      let _ = span
+      ValueKind::I32
+    }
+    @core.Stmt::LetPat(pat~, expr~, span~) => {
+      let _ = span
+      let kind = infer_expr_kind_with(ctx, expr, locals)
+      let _ = kind
+      let bindings : Array[String] = []
+      collect_pat_bindings_codegen(pat, bindings)
+      for name in bindings {
+        locals[name] = ValueKind::I32
+      }
+      ValueKind::I32
+    }
+    @core.Stmt::LetMut(name~, expr~, span~) => {
+      let _ = span
+      let kind = infer_expr_kind_with(ctx, expr, locals)
+      locals[name] = kind
+      kind
+    }
+    _ => ValueKind::I32
+  }
+}
+
+///|
+fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
+  let out : Array[FuncDef] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let _ = rec
+        let _ = span
+        match expr {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
+            let _ = effects
+            let _ = span
+            out.push(FuncDef::{
+              name: Some(name),
+              params,
+              ret,
+              body,
+              span_key: span_key(span),
+              captures: [],
+            })
+          }
+          _ => ()
+        }
+      }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        // ExportLet is treated like Let for top-level function collection
+        let _ = rec
+        let _ = span
+        match expr {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
+            let _ = effects
+            let _ = span
+            out.push(FuncDef::{
+              name: Some(name),
+              params,
+              ret,
+              body,
+              span_key: span_key(span),
+              captures: [],
+            })
+          }
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module {
+  let out : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    let skip = match stmt {
+      @core.Stmt::Let(rec=_, name=_, expr~, span=_) =>
+        match expr {
+          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~, ..) => {
+            // Only skip functions with NO captures
+            // Functions with captures need to be processed in run() to create closure
+            let key = span_key(span)
+            match ctx.fn_closure_captures.get(key) {
+              Some(captures) => captures.length() == 0
+              None => true // No capture info, assume no captures
+            }
+          }
+          _ => false
+        }
+      @core.Stmt::ExportLet(rec=_, name=_, expr~, span=_) =>
+        // ExportLet functions are also skipped if they have no captures
+        match expr {
+          @core.Expr::Fn(params=_, ret=_, effects=_, body=_, span~, ..) => {
+            let key = span_key(span)
+            match ctx.fn_closure_captures.get(key) {
+              Some(captures) => captures.length() == 0
+              None => true
+            }
+          }
+          _ => false
+        }
+      _ => false
+    }
+    if not(skip) {
+      out.push(stmt)
+    }
+  }
+  @core.Module::{ stmts: out }
+}
+
+///|
+fn needs_heap_block(ctx : CodegenCtx, body : @core.Module) -> Bool {
+  for stmt in body.stmts {
+    if needs_heap_stmt(ctx, stmt) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn needs_heap_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Bool {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let _ = rec
+      let _ = name
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Stmt::Expr(expr~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Stmt::Test(name~, body~, span~) => {
+      let _ = name
+      let _ = span
+      needs_heap_block(ctx, body)
+    }
+    @core.Stmt::Bench(name~, body~, span~) => {
+      let _ = name
+      let _ = span
+      needs_heap_block(ctx, body)
+    }
+    @core.Stmt::LetPat(pat~, expr~, span~) => {
+      let _ = pat
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Stmt::LetMut(name~, expr~, span~) => {
+      let _ = name
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      let _ = rec
+      let _ = name
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    _ => false
+  }
+}
+
+///|
+fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
+  match expr {
+    @core.Expr::Float(..) => true
+    @core.Expr::Double(..) => true
+    @core.Expr::Tuple(..) => true
+    @core.Expr::TupleIndex(..) => true
+    @core.Expr::Record(..) => true
+    @core.Expr::Array(..) => true
+    @core.Expr::Map(..) => true
+    @core.Expr::Call(name~, args~, span~, ..) => {
+      let _ = span
+      if name == "__add" ||
+        name == "__sub" ||
+        name == "__mul" ||
+        name == "__div" ||
+        name == "__mod" ||
+        name == "__neg" ||
+        name == "int_to_float" ||
+        name == "f32_convert_i32_s" ||
+        name == "int_to_double" ||
+        name == "to_double" ||
+        name == "f64_convert_i32_s" ||
+        name == "float_to_double" ||
+        name == "f64_promote_f32" ||
+        name == "double_to_float" ||
+        name == "f32_demote_f64" ||
+        name == "f32_neg" ||
+        name == "f64_neg" ||
+        name == "f32_load" ||
+        name == "f64_load" ||
+        name == "stdout_write_char" ||
+        name == "stdout_write_stream" ||
+        name == "stdin_read_char" ||
+        name == "stdin_read_stream" ||
+        name == "string_substring" ||
+        name == "string_concat" ||
+        name == "__to_string" ||
+        name == "string_from_char_code" {
+        return true
+      }
+      // Enum constructor call needs heap
+      if ctx.enum_ctor_tags.contains(name) {
+        return true
+      }
+      for arg in args {
+        if needs_heap_expr(ctx, arg.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Ident(name~, span~) => {
+      let _ = span
+      // Nullary enum constructor needs heap
+      ctx.enum_ctor_tags.contains(name)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, cond) ||
+      needs_heap_block(ctx, then_body) ||
+      needs_heap_block(ctx, else_body)
+    }
+    @core.Expr::Block(body~, span~) => {
+      let _ = span
+      needs_heap_block(ctx, body)
+    }
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let _ = span
+      if needs_heap_expr(ctx, scrutinee) {
+        return true
+      }
+      for arm in arms {
+        if needs_heap_expr(ctx, arm.expr) {
+          return true
+        }
+        match arm.cond {
+          Some(c) => if needs_heap_expr(ctx, c) { return true }
+          None => ()
+        }
+      }
+      false
+    }
+    @core.Expr::Do(body~, span~) => {
+      let _ = span
+      needs_heap_block(ctx, body)
+    }
+    @core.Expr::Try(try_body~, catch_body~, span~) => {
+      let _ = span
+      needs_heap_block(ctx, try_body) || needs_heap_block(ctx, catch_body)
+    }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, cond) || needs_heap_block(ctx, body)
+    }
+    @core.Expr::Raise(value~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, value)
+    }
+    @core.Expr::Await(expr~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Expr::Yield(expr~, span~) => {
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
+    @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
+      let _ = params
+      let _ = ret
+      let _ = effects
+      let _ = body
+      let key = span_key(span)
+      match ctx.fn_closure_captures.get(key) {
+        Some(captures) => captures.length() > 0
+        None => false
+      }
+    }
+    _ => false
+  }
+}
+
+///|
+fn param_kinds(
+  ctx : CodegenCtx,
+  params : Array[@core.FuncParam],
+) -> Array[ValueKind] {
+  let out : Array[ValueKind] = []
+  for param in params {
+    out.push(value_kind_from_type(ctx, param.ty))
+  }
+  out
+}
+
+///|
+fn param_kind_map(
+  params : Array[@core.FuncParam],
+  kinds : Array[ValueKind],
+) -> Map[String, ValueKind] {
+  let out : Map[String, ValueKind] = {}
+  let len = if params.length() < kinds.length() {
+    params.length()
+  } else {
+    kinds.length()
+  }
+  for i in 0..<len {
+    out[params[i].name] = kinds[i]
+  }
+  out
+}
+
+///|
+fn infer_func_return_kind(
+  ctx : CodegenCtx,
+  params : Array[@core.FuncParam],
+  kinds : Array[ValueKind],
+  ret : @core.Type?,
+  body : @core.Module,
+) -> ValueKind raise WasmGenError {
+  let locals = param_kind_map(params, kinds)
+  let saved_fn_locals = ctx.fn_local_sigs
+  ctx.fn_local_sigs = {}
+  for param in params {
+    match func_sig_from_type(ctx, param.ty) {
+      Some(sig) => ctx.fn_local_sigs[param.name] = sig
+      None => ()
+    }
+  }
+  let inferred = if ctx.use_js_strings {
+    infer_block_kind(ctx, body, locals)
+  } else {
+    ValueKind::I32
+  }
+  ctx.fn_local_sigs = saved_fn_locals
+  match ret {
+    Some(r) => {
+      let declared = value_kind_from_type(ctx, r)
+      if ctx.use_js_strings && declared != inferred {
+        raise WasmGenError::Unsupported(
+          "fn return kind mismatch: declared=" +
+          declared.to_string() +
+          " inferred=" +
+          inferred.to_string(),
+        )
+      }
+      declared
+    }
+    None => inferred
+  }
+}
+
+///|
+fn js_import_count(ctx : CodegenCtx) -> Int {
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  if ctx.need_js_char_code_at {
+    idx += 1
+  }
+  if ctx.need_js_substring {
+    idx += 1
+  }
+  if ctx.need_js_concat {
+    idx += 1
+  }
+  if ctx.need_js_equals {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_path(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_path) {
+    raise WasmGenError::Unsupported("path import missing")
+  }
+  js_import_count(ctx)
+}
+
+///|
+fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_sh) {
+    raise WasmGenError::Unsupported("sh import missing")
+  }
+  let mut idx = js_import_count(ctx)
+  if ctx.need_path {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_js_length(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_length) {
+    raise WasmGenError::Unsupported("js-string length import missing")
+  }
+  0
+}
+
+///|
+fn import_index_js_char_code_at(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_char_code_at) {
+    raise WasmGenError::Unsupported("js-string charCodeAt import missing")
+  }
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_js_substring(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_substring) {
+    raise WasmGenError::Unsupported("js-string substring import missing")
+  }
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  if ctx.need_js_char_code_at {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_js_concat(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_concat) {
+    raise WasmGenError::Unsupported("js-string concat import missing")
+  }
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  if ctx.need_js_char_code_at {
+    idx += 1
+  }
+  if ctx.need_js_substring {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_js_equals(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_js_equals) {
+    raise WasmGenError::Unsupported("js-string equals import missing")
+  }
+  let mut idx = 0
+  if ctx.need_js_length {
+    idx += 1
+  }
+  if ctx.need_js_char_code_at {
+    idx += 1
+  }
+  if ctx.need_js_substring {
+    idx += 1
+  }
+  if ctx.need_js_concat {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_after_sleep(ctx : CodegenCtx) -> Int {
+  let mut idx = js_import_count(ctx)
+  if ctx.need_path {
+    idx += 1
+  }
+  if ctx.need_sh {
+    idx += 1
+  }
+  if ctx.need_sleep {
+    idx += 1
+  }
+  idx
+}
+
+///|
+fn import_index_stdout_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_stdout_write_char) {
+    raise WasmGenError::Unsupported("stdout stream import missing")
+  }
+  import_index_after_sleep(ctx)
+}
+
+///|
+fn import_index_stdout_write_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_stdout_write_char) {
+    raise WasmGenError::Unsupported("stdout stream import missing")
+  }
+  import_index_after_sleep(ctx) + 1
+}
+
+///|
+fn import_index_stdin_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_stdin_read_char) {
+    raise WasmGenError::Unsupported("stdin stream import missing")
+  }
+  let mut idx = import_index_after_sleep(ctx)
+  if ctx.need_stdout_write_char {
+    idx += 2
+  }
+  idx
+}
+
+///|
+fn import_index_stdin_read_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_stdin_read_char) {
+    raise WasmGenError::Unsupported("stdin stream import missing")
+  }
+  import_index_stdin_get_stream(ctx) + 1
+}
+
+///|
+fn resolve_numeric_kind(
+  ctx : CodegenCtx,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> ValueKind raise WasmGenError {
+  let left_kind = infer_expr_kind(ctx, left)
+  let right_kind = infer_expr_kind(ctx, right)
+  if left_kind == right_kind {
+    left_kind
+  } else if left_kind == ValueKind::I32 {
+    right_kind
+  } else if right_kind == ValueKind::I32 {
+    left_kind
+  } else {
+    raise WasmGenError::Unsupported("numeric kind mismatch")
+  }
+}
+
+///|
+/// Tagged integer arithmetic operations
+/// Tagged int format: (n << 2) | tag_int
+/// Since tag_int = 0, add/sub work directly on tagged values
+/// For mul/div: untag both, compute, retag

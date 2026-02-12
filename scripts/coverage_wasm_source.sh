@@ -4,15 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-OUT_DIR="${XSH_WASM_SOURCE_COVERAGE_DIR:-$PROJECT_ROOT/_build/coverage/wasm-source}"
-MODE="${XSH_WASM_SOURCE_COVERAGE_MODE:-wasm}"
-NO_DCE="${XSH_WASM_SOURCE_COVERAGE_NO_DCE:-0}"
-RUN_TESTS="${XSH_WASM_SOURCE_COVERAGE_RUN_TESTS:-0}"
-ALLOW_TRAP="${XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP:-0}"
+OUT_DIR="${VIBE_WASM_SOURCE_COVERAGE_DIR:-$PROJECT_ROOT/_build/coverage/wasm-source}"
+MODE="${VIBE_WASM_SOURCE_COVERAGE_MODE:-wasm}"
+NO_DCE="${VIBE_WASM_SOURCE_COVERAGE_NO_DCE:-0}"
+RUN_TESTS="${VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS:-0}"
+ALLOW_TRAP="${VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP:-0}"
 
 if [ "$#" -lt 1 ]; then
   echo "usage: coverage_wasm_source.sh <entry.vibe>" >&2
-  echo "env: XSH_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string XSH_WASM_SOURCE_COVERAGE_NO_DCE=0|1 XSH_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP=0|1 XSH_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
+  echo "env: VIBE_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string VIBE_WASM_SOURCE_COVERAGE_NO_DCE=0|1 VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP=0|1 VIBE_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
   exit 1
 fi
 
@@ -72,7 +72,7 @@ if [ "$RUN_TESTS" = "1" ]; then
 fi
 
 echo "[wasm source coverage] compile: mode=$MODE no_dce=$NO_DCE run_tests=$RUN_TESTS allow_trap=$ALLOW_TRAP entry=$ENTRY_PATH"
-XSH_TEST_COVERAGE=1 moon run src/cmd/xsh/main.mbt --target native -- "${compile_args[@]}"
+VIBE_TEST_COVERAGE=1 moon run src/cmd/vibe/main.mbt --target native -- "${compile_args[@]}"
 
 if [ ! -f "$cov_map_path" ]; then
   echo "[wasm source coverage] missing coverage map: $cov_map_path" >&2

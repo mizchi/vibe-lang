@@ -5,28 +5,10 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 ## Next Up (Priority Order)
 
 - Language UX hard-point triage (spec/examples review):
-  - P0 [done 2026-02-10]: Unify effect diagnostics for `effect-set` vs `do`
-    boundary failures.
-    `TypeError::EffectNotAllowed` was folded into
-    `TypeError::EffectGuardNotSatisfied`, so effect-set failures and
-    do-boundary failures now share one grouped diagnostic shape (hint/note with
-    missing effect declaration + missing boundary when applicable). Updated
-    related typecheck + fixture expectations.
-  - P0 [done 2026-02-10]: Add a generics+effects fixture matrix (success/failure pairs).
-    Added matrix fixtures covering higher-order wrappers with `with {e}`,
-    localized `try/catch`, and mixed trait/effect call-shape mismatch cases:
-    `generic_effect_matrix_ok_with_e_try_catch_localized`,
-    `generic_effect_matrix_ok_trait_and_effect_bound`,
-    `generic_effect_matrix_fail_missing_effect_at_caller`,
-    `generic_effect_matrix_fail_trait_and_effect_mixed`.
-  - P0 [done 2026-02-10]: Add PosixMode command-head desugar diagnostics.
-    In `--syntax posix`, unresolved bare identifiers desugared to command heads
-    now emit explicit runtime notes (`note: posix-mode command-head desugar: ...`)
-    so migration behavior is visible in `run`/`repl` output.
   - P1: Add desugar ambiguity diagnostics for postfix/property access.
     When `expr.prop` can resolve as function-call desugar vs field access
     fallback, emit candidate-aware diagnostics and suggested disambiguation.
-  - P1: Add `xsh explain-import <entry>` to visualize
+  - P1: Add `vibe explain-import <entry>` to visualize
     `PathRef/HashRef/VersionRef/SymbolRef -> HashRef` normalization and lock
     lookups (`index.lock` hit/miss reasons).
   - P1: Improve trait openness diagnostics.
@@ -37,7 +19,7 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     labeled-argument mistakes (`x~`/`y?`) where deterministic rewrites exist.
   - P2: Split backend capability errors from language-level errors.
     `compile` diagnostics should clearly classify unsupported backend features
-    (for example wasm-js-string storage limits) vs invalid xsh programs.
+    (for example wasm-js-string storage limits) vs invalid vibe programs.
 - Implement explicit Text/Object conversion builtins:
   `from_lines` / `to_lines` and JSON-oriented variants (`from_json[l]`,
   `to_json[l]`) with typecheck + eval + docs + fixtures.
@@ -45,14 +27,14 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   run `just bench-advanced-graph`, collect
   `current_cli_like` vs `graph_snapshot/json_load`, and
   `apply_full_snapshot` vs `apply_delta` ratios on CI fixture sizes.
-- Generalize symbol/type/signature indexing beyond xsh:
+- Generalize symbol/type/signature indexing beyond vibe:
   extract language-agnostic graph IR (`symbol/type/signature/ref/call/import`),
   add `language_id`-aware storage keys, and define stable hash/id contracts for
   incremental updates.
 - Add multi-language frontend adapters:
   implement a tree-sitter-based extractor as baseline and layer optional
   semantic providers (compiler/LSP) for type-resolution gaps; keep
-  `xsh ide`/`xsh lsif` on the shared backend API.
+  `vibe ide`/`vibe lsif` on the shared backend API.
 - Expand object pipeline operators on typed rows:
   add first-class `where/select` contracts over record-like objects and align
   parser/desugar/typecheck behavior for `|>` chains.
@@ -65,127 +47,10 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 - Add syntax profile controls:
   evaluate `--syntax posix-strict` vs `posix-ext` split and wire diagnostics so
   teams can enforce strict compatibility in CI.
-- Grammar/language cleanup candidates (from std refactor & test split):
-  - P0 [done 2026-02-09]: Fix `xsh fmt --write` parse-stability bugs for `*.vibe`.
-    Formatter output is now parser-equivalent for the reproduced cases:
-    `trait Eq` / `impl Eq for Int` spacing, quoted `test "name"`,
-    string/char literal quote preservation, and import join spacing
-    (`} from "./mod.vibe"`).
-  - P0 [done 2026-02-09]: Add regression fixtures for formatter round-trip on xsh syntax forms:
-    `import`, `trait/impl`, `test`, effect signatures (`with {..}`),
-    and string-heavy assertions (see `src/parser/format_test.mbt`).
-  - P1 [done 2026-02-09]: Allow trailing commas in import lists:
-    `import { a, b, } from "./m.vibe"`.
-    Parser now accepts trailing comma with trivia/newlines in named import lists.
-  - P1 [done 2026-02-09]: Support local variable type annotations in bindings:
-    `let x: T = expr`.
-    Parser now accepts annotated local `let` bindings; fixtures cover both
-    success and mismatch diagnostics.
-  - P1 [done 2026-02-09]: Improve test-declaration UX:
-    unquoted test names are now accepted (`test smoke_case { ... }`) while
-    quoted names remain supported.
-  - P1 [done 2026-02-09]: Reduce keyword collision friction (for `map`) via
-    contextual keyword handling.
-    `map { ... }` stays keyword syntax, while identifier positions
-    (`let map = ...`, `map(...)`) now lex as `name`.
-  - P2 [done 2026-02-09]: Improve import-parse diagnostics with targeted hints:
-    import parser now distinguishes missing `from`, malformed list separators,
-    and extra commas in import lists; trailing comma form is accepted.
-  - P2 [done 2026-02-09]: Track existing syntax-adjacent gaps discovered during
-    std port.
-    `loop { ... }` expression is now implemented as `while true` desugar
-    (`loop` is contextual keyword to avoid identifier collisions), mutable enum
-    payload `mut` now emits a dedicated parse diagnostic, transitive
-    cross-module trait import/export is covered by fixture regression
-    (`trait_chain_base -> trait_chain_mid -> trait_import_chain`), and
-    polymorphic recursion now emits a dedicated type diagnostic
-    (`polymorphic_recursion_unsupported` fixture).
-  - P2 [done 2026-02-09]: Revisit negative literal boundary UX for `Int`
-    minimum value (`-2147483648`) with clearer parser error + optional future
-    grammar design note.
-    Parser now emits dedicated `IntMinLiteralBoundary` diagnostics with a
-    focused rewrite hint and explanatory note.
-- Show trait migration plan (prelude 常駐化):
-  - P0 [done 2026-02-09]: Inventory/guardrail.
-    fixture/std の `trait Show` / `impl Show` を棚卸しし、`show_to_string_method` と
-    trait-bound 成功/失敗 fixture を prelude 前提で維持。
-  - P0 [done 2026-02-09]: Compatibility period.
-    `to_string` の prelude 提供を維持したまま、呼び出し側の移行を先行。
-  - P1 [done 2026-02-09]: Source migration.
-    `vibe/std/builtin_traits.vibe` と fixture 群から冗長な `trait Show` /
-    primitive `impl Show` を削除し、unknown-bound 用 fixture は
-    `MissingShow` に切り替え。
-  - P1 [done 2026-02-09]: Prelude trait injection.
-    checker prelude に `trait Show` + `Int/Float/Double/Bool/String` impl を追加し、
-    `to_string` を `[T: Show]` へ戻した。
-  - P2 [done 2026-02-09]: Cleanup/deprecation close.
-    `index.lock` を更新し、`just check && just test` 緑を確認。
-- vibe/std wasm-source coverage 実用化:
-  - P0 [done 2026-02-10]: `coverage-wasm-std` を multi-mode フォールバック対応。
-    `wasm -> wasm-js-string` の順で試行し、
-    `_build/coverage/wasm-std/attempts.tsv` と `cases/*.log` を出力。
-  - P0 [done 2026-02-10]: レポートを分析可能な形式へ拡張。
-    `_build/coverage/wasm-std/report.md` を追加し、
-    `failed_case_details[]`, `failure_reason_counts`,
-    `execution.trap_case_count` を `report.json` に追加。
-  - P0 [done 2026-02-10]: `coverage_wasm_std` 集計ロジックの Node テストを追加。
-    `scripts/coverage_wasm_std.test.mjs`
-  - P0 [done 2026-02-10]: `compile_unsupported` 上位要因を順に解消して measured case を増やす。
-    対象:
-    `__to_string` / externref return kind mismatch,
-    `abs`, `to_double`, `floor` 系数値 intrinsic,
-    local function arity (`go`)。
-    追加で `threads_probe_wat` / method-style record accessor (`call: kind`) も解消。
-  - P0 [done 2026-02-10]: `abs` / `to_double` / `go` 系の codegen 解消を実施。
-    - local function alias 呼び出し (`call local: abs`) を解消
-    - method-style `to_double` 呼び出しを wasm codegen で受理
-    - 同名ローカル再帰関数（`go`）のシグネチャ衝突を緩和
-    - captured function param 呼び出しの一部 (`call local: f`) を解消
-    追加テスト:
-    `src/tests/xsh_wasm_test.mbt`
-    - `xsh wasm compiles function alias calls`
-    - `xsh wasm compiles multiple local recursive \`go\` helpers`
-    - `xsh wasm compiles recursive helper with captured function param`
-    - `xsh wasm compiles Int method-style to_double call`
-  - P1 [done 2026-02-11]: wasm runtime trap ケースを分離・改善。
-    tagged-int 範囲の不整合（`int/double` 飽和境界）を修正し、
-    `coverage-wasm-std` の実行 trap を 0 件化。
-  - P1 [done 2026-02-11]: backend capability matrix を明文化。
-    `vibe/std/backend_capabilities.json` を導入し、
-    `vibe/std/*_test.vibe` ごとの expected backend
-    (`wasm` / `wasm-js-string` / `either`) を管理。
-    `coverage-wasm-std` 集計時に `spec_status`
-    (`expected_failure` / `unexpected_failure`) を判定する。
-    追加で成功ケースの backend mismatch も検出し、
-    strict で失敗させられるようにした。
-  - P1 [done 2026-02-10]: coverage KPI gate を追加。
-    `XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE` /
-    `XSH_WASM_STD_COVERAGE_MIN_LINE_RATE` で下限を指定し、
-    未達時に `coverage-wasm-std` を失敗させる。
-  - Progress (2026-02-11):
-    `just coverage-wasm-std` 実測は
-    `cases(total/measured/failed)=13/13/0`,
-    `execution(ok/trap)=13/0`,
-    `lines=626/626 (100.00%)`。
-    line 集計は point 重複ではなく unique line ベースへ正規化済みで、
-    source-map ノイズ（import 列挙行・`}` 終端行）は除外。
-    `compile_unsupported` は 0 件。
-
-## Deferred
-
-- none
 
 ## Bundle Size Plan (In Progress)
 
-- [x] Add reproducible bundle-size measurement command:
-  `just bench-bundle-size` / `just bench-bundle-size-update`.
-- [x] Add compiler path for no-DCE wasm-js-string/gc emits and CLI `compile --no-dce`.
-- [x] Add per-entry golden budget file:
-  `bench/golden/bundle_size_budget.tsv`.
-- [x] Reduce `vibe/std/test_import.vibe` transitive bundle size by importing
-  smaller std surfaces (`int/option` -> `bool/float`).
-  Current result: `4397 -> 1590` bytes (`wasm-no-dce` baseline).
-- [ ] Reduce top offenders further without semantic regression:
+- Reduce top offenders further without semantic regression:
   `examples/json.vibe`, `vibe/std/option.vibe`, `vibe/std/double.vibe`.
   Progress (2026-02-09): `examples/json.vibe` `10747 -> 10279`,
   `vibe/std/option.vibe` `4201 -> 3014`, `vibe/std/double.vibe` `2685 -> 2382`
@@ -209,13 +74,12 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   `scripts/bench_bundle_size.sh` now prioritizes `bench/importers` with
   runtime-first mode (`wasm` -> `wasm-js-string` -> no-dce fallback);
   no-dce importer diagnostics are opt-in via
-  `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`;
+  `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`;
   module-surface scan for `vibe/std/*.vibe` is opt-in via
-  `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`.
+  `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`.
   Case set / golden rules are now explicit via
   `bench/bundle_size/cases.txt` + `bench/bundle_size/README.md`.
-- [x] Eliminate noisy abort-signal output in size benchmark fallback path
-  (convert unsupported compile attempts to clean diagnostics).
-  done 2026-02-10: `scripts/bench_bundle_size.sh` now captures failed compile
-  probes via command substitution, so signal exits no longer emit shell
-  `Abort trap` noise while unsupported entries remain visible in the report.
+
+## Deferred
+
+- none

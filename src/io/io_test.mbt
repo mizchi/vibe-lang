@@ -1,6 +1,6 @@
 ///|
 fn make_temp_dir(prefix : String) -> String {
-  let base = "/tmp/xsh_io_test_" + prefix
+  let base = "/tmp/vibe_io_test_" + prefix
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
     if not(@os_fs.path_exists(path)) {

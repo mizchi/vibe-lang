@@ -212,7 +212,7 @@ fn resolve_import_fs_path(from_path : String, raw_path : String) -> String? {
 
 ///|
 fn preload_module_sources(
-  db : XshDb,
+  db : VibeDb,
   module_path : String,
   source : String,
   visited : Map[String, Bool],
@@ -288,7 +288,7 @@ fn normalize_hash_literal(text : String) -> String? {
 
 ///|
 fn resolve_ref_target_hash(
-  db : XshDb,
+  db : VibeDb,
   entry_path : String,
   target : String,
   preload_visited : Map[String, Bool],
@@ -314,7 +314,7 @@ fn resolve_ref_target_hash(
 
 ///|
 fn apply_fixture_refs(
-  db : XshDb,
+  db : VibeDb,
   entry_path : String,
   spec : FixtureSpec,
   preload_visited : Map[String, Bool],
@@ -332,7 +332,7 @@ fn apply_fixture_refs(
 ///|
 fn register_fixture_import_modules(
   rt : Runtime,
-  db : XshDb,
+  db : VibeDb,
   path : String,
   visited : Map[String, Bool],
   path_to_hash : Map[String, String],
@@ -366,7 +366,7 @@ fn eval_fixture(
     return Ok(rt.eval_script(script)) catch { e => Err(e.to_string()) }
   }
   let entry = fixture_entry_path(path)
-  let db = XshDb::new()
+  let db = VibeDb::new()
   let preload_visited : Map[String, Bool] = {}
   let preload = Ok(preload_module_sources(db, entry, script, preload_visited)) catch {
     e => Err(e.to_string())

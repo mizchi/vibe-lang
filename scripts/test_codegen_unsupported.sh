@@ -5,7 +5,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-TMP_DIR="/tmp/xsh_unsupported_e2e_$$"
+TMP_DIR="/tmp/vibe_unsupported_e2e_$$"
 
 # Colors for output
 RED='\033[0;31m'
@@ -38,25 +38,25 @@ log_info() {
 }
 
 # Build the CLI first
-log_info "Building xsh CLI..."
+log_info "Building vibe CLI..."
 cd "$PROJECT_ROOT"
-moon build src/cmd/xsh/main.mbt --target native -q 2>/dev/null || {
-  log_fail "Failed to build xsh CLI"
+moon build src/cmd/vibe/main.mbt --target native -q 2>/dev/null || {
+  log_fail "Failed to build vibe CLI"
   exit 1
 }
 
-XSH="moon run src/cmd/xsh/main.mbt --target native --"
+VIBE="moon run src/cmd/vibe/main.mbt --target native --"
 
 # Helper: expect compilation to fail with specific error
 expect_compile_error() {
   local test_name="$1"
-  local xsh_code="$2"
+  local vibe_code="$2"
   local expected_error="$3"
 
-  echo "$xsh_code" > "$TMP_DIR/test.vibe"
+  echo "$vibe_code" > "$TMP_DIR/test.vibe"
 
   local output
-  output=$($XSH compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>&1) || true
+  output=$($VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>&1) || true
 
   if echo "$output" | grep -q "$expected_error"; then
     log_pass "$test_name (error: $expected_error)"
@@ -68,11 +68,11 @@ expect_compile_error() {
 # Helper: expect compilation to succeed
 expect_compile_success() {
   local test_name="$1"
-  local xsh_code="$2"
+  local vibe_code="$2"
 
-  echo "$xsh_code" > "$TMP_DIR/test.vibe"
+  echo "$vibe_code" > "$TMP_DIR/test.vibe"
 
-  if $XSH compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
+  if $VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
     log_pass "$test_name"
   else
     log_fail "$test_name - compilation failed unexpectedly"
@@ -82,12 +82,12 @@ expect_compile_success() {
 # Helper: expect WASM execution to return specific value
 expect_wasm_result() {
   local test_name="$1"
-  local xsh_code="$2"
+  local vibe_code="$2"
   local expected_value="$3"
 
-  echo "$xsh_code" > "$TMP_DIR/test.vibe"
+  echo "$vibe_code" > "$TMP_DIR/test.vibe"
 
-  if ! $XSH compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
+  if ! $VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
     log_fail "$test_name - compilation failed"
     return
   fi
@@ -111,7 +111,7 @@ expect_wasm_result() {
 }
 
 echo "========================================"
-echo "xsh Codegen Behavior Tests"
+echo "vibe Codegen Behavior Tests"
 echo "========================================"
 echo ""
 

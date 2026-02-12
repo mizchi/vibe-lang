@@ -3,17 +3,17 @@
 # Default target (js for browser compatibility)
 target := "js"
 home := env_var_or_default("HOME", "/tmp")
-prefix := env_var_or_default("XSH_PREFIX", home + "/.local")
+prefix := env_var_or_default("VIBE_PREFIX", home + "/.local")
 bindir := prefix + "/bin"
-cli_bin := "target/native/release/build/cmd/xsh/xsh.exe"
+cli_bin := "target/native/release/build/cmd/vibe/vibe.exe"
 # 0: prefer system wasmtime, 1: force deps/wasmtime build
-xsh_use_wasmtime_submodule := env_var_or_default("XSH_USE_WASMTIME_SUBMODULE", "0")
+vibe_use_wasmtime_submodule := env_var_or_default("VIBE_USE_WASMTIME_SUBMODULE", "0")
 # space-separated flags, each token is passed as `-W <token>`
-xsh_wasmtime_wasm_flags := env_var_or_default("XSH_WASMTIME_WASM_FLAGS", "")
+vibe_wasmtime_wasm_flags := env_var_or_default("VIBE_WASMTIME_WASM_FLAGS", "")
 # space-separated flags, each token is passed as `-S <token>`
-xsh_wasmtime_wasi_flags := env_var_or_default("XSH_WASMTIME_WASI_FLAGS", "")
+vibe_wasmtime_wasi_flags := env_var_or_default("VIBE_WASMTIME_WASI_FLAGS", "")
 # suppress noisy import-liveness warnings while keeping other warnings active
-moon_warn_list := env_var_or_default("XSH_MOON_WARN_LIST", "-29")
+moon_warn_list := env_var_or_default("VIBE_MOON_WARN_LIST", "-29")
 
 # Default task: check and test
 default: check test
@@ -29,8 +29,8 @@ check:
 # Run tests (includes fixtures, examples, and core std library)
 test:
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
-    moon build --target native src/cmd/xsh --warn-list '{{moon_warn_list}}'
-    _build/native/debug/build/cmd/xsh/xsh.exe test --unstable-async examples vibe/std
+    moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
+    _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async examples vibe/std
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
@@ -41,31 +41,31 @@ test-integration-deno: build-integration-deno-wasm
     deno test --allow-read tests/integration-deno
 
 # Run MoonBit source coverage (summary + cobertura + html)
-# env: XSH_MOON_COVERAGE_TARGET, XSH_MOON_COVERAGE_PACKAGE, XSH_MOON_COVERAGE_MIN_LINE, XSH_MOON_COVERAGE_DIR
+# env: VIBE_MOON_COVERAGE_TARGET, VIBE_MOON_COVERAGE_PACKAGE, VIBE_MOON_COVERAGE_MIN_LINE, VIBE_MOON_COVERAGE_DIR
 coverage-moon:
     scripts/coverage_moon.sh
 
 # Run WASM integration coverage via Deno (summary + lcov + html)
-# env: XSH_DENO_COVERAGE_FILTER, XSH_DENO_COVERAGE_MIN_LINE, XSH_DENO_COVERAGE_DIR
+# env: VIBE_DENO_COVERAGE_FILTER, VIBE_DENO_COVERAGE_MIN_LINE, VIBE_DENO_COVERAGE_DIR
 coverage-deno:
     scripts/coverage_deno.sh
 
-# Run source-level WASM coverage (xsh span map + runtime counters)
-# env: XSH_WASM_SOURCE_COVERAGE_MODE, XSH_WASM_SOURCE_COVERAGE_NO_DCE, XSH_WASM_SOURCE_COVERAGE_RUN_TESTS, XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP, XSH_WASM_SOURCE_COVERAGE_DIR
+# Run source-level WASM coverage (vibe span map + runtime counters)
+# env: VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR
 coverage-wasm-source entry="examples/pattern_coverage.vibe":
     scripts/coverage_wasm_source.sh {{entry}}
 
 # Run vibe/std coverage from *_test.vibe via wasm source coverage
-# env: XSH_WASM_STD_COVERAGE_MODES, XSH_WASM_STD_COVERAGE_MODE, XSH_WASM_STD_COVERAGE_NO_DCE, XSH_WASM_STD_COVERAGE_STRICT, XSH_WASM_STD_COVERAGE_ALLOW_TRAP, XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE, XSH_WASM_STD_COVERAGE_MIN_LINE_RATE, XSH_WASM_STD_COVERAGE_FILTER, XSH_WASM_STD_COVERAGE_EXCLUDE, XSH_WASM_STD_COVERAGE_MATRIX, XSH_WASM_STD_COVERAGE_DIR
+# env: VIBE_WASM_STD_COVERAGE_MODES, VIBE_WASM_STD_COVERAGE_MODE, VIBE_WASM_STD_COVERAGE_NO_DCE, VIBE_WASM_STD_COVERAGE_STRICT, VIBE_WASM_STD_COVERAGE_ALLOW_TRAP, VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE, VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE, VIBE_WASM_STD_COVERAGE_FILTER, VIBE_WASM_STD_COVERAGE_EXCLUDE, VIBE_WASM_STD_COVERAGE_MATRIX, VIBE_WASM_STD_COVERAGE_DIR
 coverage-wasm-std:
     scripts/coverage_wasm_std.sh
 
 # Run full coverage pipeline (MoonBit + WASM integration)
 coverage: coverage-moon coverage-deno
 
-# Run JS-backed xsh ide command (artifact-only wasm service)
+# Run JS-backed vibe ide command (artifact-only wasm service)
 ide-js *args: build-integration-deno-wasm
-    deno run --allow-read js/xsh/cli.js ide {{args}}
+    deno run --allow-read js/vibe/cli.js ide {{args}}
 
 # Run fixture tests only
 test-fixtures:
@@ -93,53 +93,53 @@ test-update:
 
 # Run CLI
 run *args:
-    moon run --target native src/cmd/xsh -- {{args}}
+    moon run --target native src/cmd/vibe -- {{args}}
 
 # Build wasm line REPL package (wasi preview2 imports)
 build-repl-wasi-wasm:
-    moon build --target wasm src/cmd/xsh_wasi
+    moon build --target wasm src/cmd/vibe_wasi
 
 # Build wasm compiler CLI package (filesystem adapter via src/io)
 build-compiler-wasi-wasm:
-    moon build --target wasm src/cmd/xsh_compile_wasi
+    moon build --target wasm src/cmd/vibe_compile_wasi
 
 # Build wasm checker CLI package (JSON diagnostics)
 build-checker-wasi-wasm:
-    moon build --target wasm src/cmd/xsh_check_wasi
+    moon build --target wasm src/cmd/vibe_check_wasi
 
 # Run wasm compiler CLI through moon wasm runner
 run-compiler-wasi-wasm *args:
-    moon run --target wasm src/cmd/xsh_compile_wasi -- {{args}}
+    moon run --target wasm src/cmd/vibe_compile_wasi -- {{args}}
 
 # Run wasm checker CLI through moon wasm runner
 run-checker-wasi-wasm *args:
-    moon run --target wasm src/cmd/xsh_check_wasi -- {{args}}
+    moon run --target wasm src/cmd/vibe_check_wasi -- {{args}}
 
 # Run wasm compiler CLI (wasm-gc preferred backend)
 run-compiler-wasi-wasm-gc *args:
-    moon run --target wasm src/cmd/xsh_compile_wasi -- --wasm {{args}}
+    moon run --target wasm src/cmd/vibe_compile_wasi -- --wasm {{args}}
 
 # Run wasm compiler CLI (core wasm MVP backend)
 run-compiler-wasi-wasm-mvp *args:
-    moon run --target wasm src/cmd/xsh_compile_wasi -- --wasm-mvp {{args}}
+    moon run --target wasm src/cmd/vibe_compile_wasi -- --wasm-mvp {{args}}
 
 # Build + run a stdio component (`run()` by default)
 component-run file out="" invoke="run()":
     if [ -n "{{out}}" ]; then \
-      XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" \
-      XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" \
-      XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} \
+      VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" \
+      VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" \
+      VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} \
       scripts/run_component_stdio.sh {{file}} {{out}} '{{invoke}}'; \
     else \
-      XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" \
-      XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" \
-      XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} \
+      VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" \
+      VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" \
+      VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} \
       scripts/run_component_stdio.sh {{file}} '' '{{invoke}}'; \
     fi
 
 # Run sample stream-TUI demo with canned stdin
 demo-tui-stream:
-    printf 'hello\nworld\n' | XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/run_component_stdio.sh examples/wasm/tui_stream_demo.vibe '' 'run()' | awk 'NR==1{prev=$0;next}{print prev;prev=$0} END{if (prev !~ /^-?[0-9]+$/) print prev}'
+    printf 'hello\nworld\n' | VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/run_component_stdio.sh examples/wasm/tui_stream_demo.vibe '' 'run()' | awk 'NR==1{prev=$0;next}{print prev;prev=$0} END{if (prev !~ /^-?[0-9]+$/) print prev}'
 
 # Build + run a stdio component with moonix (`run()` by default)
 component-run-moonix file out="" invoke="run()":
@@ -157,42 +157,42 @@ bootstrap-moonix src="":
       scripts/bootstrap_moonix_bin.sh; \
     fi
 
-# Install native CLI to $XSH_PREFIX/bin (default: ~/.local/bin)
+# Install native CLI to $VIBE_PREFIX/bin (default: ~/.local/bin)
 install:
-    moon build --target native --release src/cmd/xsh
+    moon build --target native --release src/cmd/vibe
     mkdir -p {{bindir}}
-    cp {{cli_bin}} {{bindir}}/xsh
+    cp {{cli_bin}} {{bindir}}/vibe
 
 # Benchmark wasm execution via wasmtime
 bench-wasmtime:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_wasmtime.sh
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_wasmtime.sh
 
 # Compare interpreter vs wasmtime
 bench-compare:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_compare.sh
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_compare.sh
 
 # Run language bench and collect latency + wasm size KPI in one report
-# env: XSH_BENCH_KPI_N, XSH_BENCH_KPI_WARMUP, XSH_BENCH_KPI_BACKEND, XSH_BENCH_KPI_MAX_PER_US, XSH_BENCH_KPI_MAX_WASM_BYTES, XSH_BENCH_KPI_MAX_SCORE, XSH_BENCH_KPI_DIR, XSH_BENCH_KPI_REPORT
+# env: VIBE_BENCH_KPI_N, VIBE_BENCH_KPI_WARMUP, VIBE_BENCH_KPI_BACKEND, VIBE_BENCH_KPI_MAX_PER_US, VIBE_BENCH_KPI_MAX_WASM_BYTES, VIBE_BENCH_KPI_MAX_SCORE, VIBE_BENCH_KPI_DIR, VIBE_BENCH_KPI_REPORT
 bench-kpi *paths:
     scripts/bench_kpi.sh {{paths}}
 
 # Compare wasm js-string vs wasm gc on string-heavy workload
 bench-string-compare:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_string_compare.sh
 
 # String benchmarks (js-string vs wasm-gc)
 bench-string-concat:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_concat.vibe
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_concat.vibe
 
 bench-string-substring:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_substring.vibe
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_substring.vibe
 
 bench-string-equals:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_equals.vibe
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_equals.vibe
 
 # Base64 benchmark (js-string vs wasm-gc)
 bench-base64:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_base64_encode.vibe
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_base64_encode.vibe
 
 # Audit bench/*.vibe backend compatibility
 bench-audit-backends:
@@ -211,7 +211,7 @@ bench-cmd-compile:
     scripts/bench_cmd_compile.sh
 
 # Benchmark scratch workflow stages (eval/finalize/export_apply/full)
-# env: XSH_BENCH_SCENARIOS, XSH_BENCH_CHAIN, XSH_BENCH_WARMUP, XSH_BENCH_RUNS
+# env: VIBE_BENCH_SCENARIOS, VIBE_BENCH_CHAIN, VIBE_BENCH_WARMUP, VIBE_BENCH_RUNS
 bench-scratch-workflow:
     scripts/bench_scratch_workflow.sh
 
@@ -229,8 +229,8 @@ bench-typechecker:
 
 # Benchmark bundle size for examples/ + use-case importers (bench/bundle_size/)
 # Default importer mode is runtime-first (`--wasm`/`--wasm-js-string`).
-# Set `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1` to add no-dce diagnostics.
-# Set `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include vibe/std module surfaces.
+# Set `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1` to add no-dce diagnostics.
+# Set `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include vibe/std module surfaces.
 bench-bundle-size:
     scripts/bench_bundle_size.sh
 
@@ -260,7 +260,7 @@ clean:
 
 # E2E tests for Component Model and WIT
 test-component-e2e:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/test_component_e2e.sh
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/test_component_e2e.sh
 
 # Build a Component Model artifact using wkg + wasm-tools
 component-wkg file out="":
@@ -284,20 +284,20 @@ test-golden-wat-update:
 
 # Test interpreter vs WASM output consistency
 test-interpreter-wasm:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/test_interpreter_wasm_match.sh
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/test_interpreter_wasm_match.sh
 
 # Show resolved wasmtime binary for current env selection
 show-wasmtime-bin:
-    XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/wasmtime_bin.sh
+    VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/wasmtime_bin.sh
 
 # Show resolved wasmtime runtime flag env values used by scripts/wasmtime_run.sh
 show-wasmtime-flags:
-    echo "XSH_WASMTIME_WASM_FLAGS={{xsh_wasmtime_wasm_flags}}"
-    echo "XSH_WASMTIME_WASI_FLAGS={{xsh_wasmtime_wasi_flags}}"
+    echo "VIBE_WASMTIME_WASM_FLAGS={{vibe_wasmtime_wasm_flags}}"
+    echo "VIBE_WASMTIME_WASI_FLAGS={{vibe_wasmtime_wasi_flags}}"
 
 # Run minimal WASI Threads probe module (requires wasmtime + wasm-tools)
 wasi-threads-probe:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} src/x/threads/run_probe.sh
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} src/x/threads/run_probe.sh
 
 # Initialize wasmtime submodule for experimental runtime flags
 wasmtime-submodule-init:
@@ -347,12 +347,12 @@ build-async-host:
 
 # Run sleep demo with async host runtime
 sleep-demo: build-async-host
-    moon run --target native src/cmd/xsh -- compile --wasm examples/wasm/sleep_demo.vibe -o /tmp/sleep_demo.wasm
-    examples/async_host/target/release/xsh-async-host /tmp/sleep_demo.wasm
+    moon run --target native src/cmd/vibe -- compile --wasm examples/wasm/sleep_demo.vibe -o /tmp/sleep_demo.wasm
+    examples/async_host/target/release/vibe-async-host /tmp/sleep_demo.wasm
 
 # Run WASM file with async host runtime (supports sleep)
 run-wasm-async file: build-async-host
-    examples/async_host/target/release/xsh-async-host {{file}}
+    examples/async_host/target/release/vibe-async-host {{file}}
 
 # Pre-release check
 release-check: fmt info check test

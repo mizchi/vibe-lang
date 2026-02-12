@@ -126,16 +126,16 @@ pub fn Codebase::resolve_path_mapping(
 ///|
 fn resolve_import_path(base : String, import_path : String) -> String {
   if import_path.has_prefix("/") {
-    @xsh_fs.normalize_path(import_path)
+    @vibe_fs.normalize_path(import_path)
   } else {
-    @xsh_fs.normalize_path(base + "/" + import_path)
+    @vibe_fs.normalize_path(base + "/" + import_path)
   }
 }
 
 ///|
 fn is_within_root(root : String, path : String) -> Bool {
-  let root_norm = @xsh_fs.normalize_path(root)
-  let path_norm = @xsh_fs.normalize_path(path)
+  let root_norm = @vibe_fs.normalize_path(root)
+  let path_norm = @vibe_fs.normalize_path(path)
   if root_norm == "/" {
     return path_norm.has_prefix("/")
   }
@@ -173,7 +173,7 @@ fn split_registry_import_path(path : String) -> (String, String)? {
 ///|
 fn default_registry_modules(root : String) -> Map[String, String] {
   let out : Map[String, String] = {}
-  out["std"] = @xsh_fs.normalize_path(root + "/vibe/std")
+  out["std"] = @vibe_fs.normalize_path(root + "/vibe/std")
   out
 }
 
@@ -182,19 +182,19 @@ fn find_index_root_with_fs(
   start_dir : String,
   fs : &@io.FileSystemAdapter,
 ) -> String {
-  let mut dir = @xsh_fs.normalize_path(start_dir)
+  let mut dir = @vibe_fs.normalize_path(start_dir)
   for _ in 0..<64 {
-    let index_path = @xsh_fs.normalize_path(dir + "/index.vibe")
+    let index_path = @vibe_fs.normalize_path(dir + "/index.vibe")
     if @io.path_exists_with(fs, index_path) {
       return dir
     }
-    let parent = @xsh_fs.parent_path(dir)
+    let parent = @vibe_fs.parent_path(dir)
     if parent == dir || parent.length() == 0 {
       break
     }
     dir = parent
   }
-  @xsh_fs.normalize_path(start_dir)
+  @vibe_fs.normalize_path(start_dir)
 }
 
 ///|
@@ -203,11 +203,11 @@ pub fn resolve_index_root_with_fs(
   fs : &@io.FileSystemAdapter,
 ) -> String {
   let normalized_entry = if entry.has_prefix("/") {
-    @xsh_fs.normalize_path(entry)
+    @vibe_fs.normalize_path(entry)
   } else {
-    @xsh_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
+    @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
   }
-  let start_dir = @xsh_fs.parent_path(normalized_entry)
+  let start_dir = @vibe_fs.parent_path(normalized_entry)
   find_index_root_with_fs(start_dir, fs)
 }
 
@@ -323,9 +323,9 @@ fn normalize_registry_modules(
   let out = default_registry_modules(root)
   for ns, raw_path in raw {
     let resolved = if raw_path.has_prefix("/") {
-      @xsh_fs.normalize_path(raw_path)
+      @vibe_fs.normalize_path(raw_path)
     } else {
-      @xsh_fs.normalize_path(root + "/" + raw_path)
+      @vibe_fs.normalize_path(root + "/" + raw_path)
     }
     if not(is_within_root(root, resolved)) {
       return Err(
@@ -342,8 +342,8 @@ pub fn load_registry_modules_with_fs(
   root : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[Map[String, String], String] {
-  let root_norm = @xsh_fs.normalize_path(root)
-  let index_path = @xsh_fs.normalize_path(root_norm + "/index.vibe")
+  let root_norm = @vibe_fs.normalize_path(root)
+  let index_path = @vibe_fs.normalize_path(root_norm + "/index.vibe")
   if not(@io.path_exists_with(fs, index_path)) {
     return Ok(default_registry_modules(root_norm))
   }
@@ -380,14 +380,14 @@ pub fn resolve_import_path_with_registry(
   registry_modules : Map[String, String],
 ) -> Result[String, String] {
   let resolved = if import_path.has_prefix("/") {
-    @xsh_fs.normalize_path(import_path)
+    @vibe_fs.normalize_path(import_path)
   } else if import_path.has_prefix("./") || import_path.has_prefix("../") {
-    @xsh_fs.normalize_path(base + "/" + import_path)
+    @vibe_fs.normalize_path(base + "/" + import_path)
   } else {
     match split_registry_import_path(import_path) {
       Some((ns, rest)) =>
         match registry_modules.get(ns) {
-          Some(ns_root) => @xsh_fs.normalize_path(ns_root + "/" + rest)
+          Some(ns_root) => @vibe_fs.normalize_path(ns_root + "/" + rest)
           None => resolve_import_path(base, import_path)
         }
       None => resolve_import_path(base, import_path)
@@ -765,7 +765,7 @@ fn collect_path_refs_impl(
   root : String,
   registry_modules : Map[String, String],
 ) -> Result[Unit, String] {
-  let norm = @xsh_fs.normalize_path(path)
+  let norm = @vibe_fs.normalize_path(path)
   if not(is_within_root(root, norm)) {
     return Err("import path outside root: " + norm + " (root: " + root + ")")
   }
@@ -801,7 +801,7 @@ fn collect_path_refs_impl(
   }
   collect_module_export_refs(norm, ast, module_refs)
   collect_module_export_annotations(norm, source, ast, annotations)
-  let base = @xsh_fs.parent_path(norm)
+  let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(source~, ..) =>
@@ -918,9 +918,9 @@ fn parse_lock_path_map(
         match value {
           Json::String(hash) => {
             let normalized = if key.has_prefix("/") {
-              @xsh_fs.normalize_path(key)
+              @vibe_fs.normalize_path(key)
             } else {
-              @xsh_fs.normalize_path(base_dir + "/" + key)
+              @vibe_fs.normalize_path(base_dir + "/" + key)
             }
             out[normalized] = normalize_lock_hash(hash)
           }
@@ -1097,8 +1097,8 @@ fn split_path_parts(path : String) -> Array[String] {
 
 ///|
 fn relativize_lock_path(base_dir : String, target_path : String) -> String {
-  let base = @xsh_fs.normalize_path(base_dir)
-  let target = @xsh_fs.normalize_path(target_path)
+  let base = @vibe_fs.normalize_path(base_dir)
+  let target = @vibe_fs.normalize_path(target_path)
   if not(base.has_prefix("/")) || not(target.has_prefix("/")) {
     return target
   }
@@ -1207,7 +1207,7 @@ pub fn load_lock_data_with_fs(
   lock_path : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[LockData, String] {
-  let base_dir = @xsh_fs.parent_path(lock_path)
+  let base_dir = @vibe_fs.parent_path(lock_path)
   let index_vdb_path = base_dir + "/index.vdb"
   if @io.path_exists_with(fs, index_vdb_path) {
     let index_vdb_content = match @io.read_string_with(fs, index_vdb_path) {
@@ -1229,7 +1229,7 @@ pub fn load_lock_data_with_fs(
       return Ok(empty_lock_data())
     }
   }
-  let base_dir = @xsh_fs.parent_path(target)
+  let base_dir = @vibe_fs.parent_path(target)
   let content = match @io.read_string_with(fs, target) {
     Ok(v) => v
     Err(err) => return Err("failed to read index.lock: " + err)
@@ -1248,7 +1248,7 @@ pub fn write_lock_data_with_fs(
   lock : LockData,
   fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
-  let base_dir = @xsh_fs.parent_path(lock_path)
+  let base_dir = @vibe_fs.parent_path(lock_path)
   let content = lock_data_to_json(lock, base_dir)
   match @io.write_string_with(fs, lock_path, content) {
     Ok(_) => ()

@@ -1,12 +1,12 @@
 # Scratch Workflow Design (Unison-like)
 
-このドキュメントは、`xsh eval` / `repl` の日常運用を
+このドキュメントは、`vibe eval` / `repl` の日常運用を
 Unison 風の「名前空間 head 更新」モデルに寄せるための設計案。
 
 ## 目的
 
-- 外部 shell では `xsh eval "let x = 1"` だけで継続作業できる。
-- `xsh` shell 内では `let x = 1` をそのまま評価し、同じ scratch に積む。
+- 外部 shell では `vibe eval "let x = 1"` だけで継続作業できる。
+- `vibe` shell 内では `let x = 1` をそのまま評価し、同じ scratch に積む。
 - ファイルは最終成果物として `write_file` で materialize する。
 - lock / graph / scratch head を `index.vdb` に集約する。
 
@@ -19,11 +19,11 @@ Unison 風の「名前空間 head 更新」モデルに寄せるための設計�
 
 ## UX フロー
 
-1. ユーザーは任意の場所で `xsh eval "..."` を実行。
+1. ユーザーは任意の場所で `vibe eval "..."` を実行。
 2. CLI は最寄り `index.vibe` を探索し、`index.vdb` の `active_namespace` を解決。
 3. `--db` 未指定なら `scratch` namespace に評価結果を適用。
-4. `xsh apply <entry>` で lock / graph / head を同期。
-5. `xsh write_file <symbol> <path>` で成果物を書き出す。
+4. `vibe apply <entry>` で lock / graph / head を同期。
+5. `vibe write_file <symbol> <path>` で成果物を書き出す。
 
 `repl` も同じ `active_namespace` を使う。  
 `--db` を使う場合は明示指定を優先する。
@@ -63,17 +63,17 @@ Unison 風の「名前空間 head 更新」モデルに寄せるための設計�
 
 ### 1) eval / repl
 
-- `xsh eval "expr"`:
+- `vibe eval "expr"`:
   - デフォルトで `active_namespace` に評価を積む。
   - `--ns <name>` で namespace 切り替え。
   - `--db` 指定時のみ旧挙動を優先。
-- `xsh repl`:
+- `vibe repl`:
   - 同じ namespace head を使う。
   - `:ns <name>` でセッション中切替可能。
 
 ### 2) apply
 
-- `xsh apply <entry>`:
+- `vibe apply <entry>`:
   - `path/version/symbol/module/annotation` を再解決。
   - prelude を同期。
   - graph index を再生成し `graph_head` 更新。
@@ -82,7 +82,7 @@ Unison 風の「名前空間 head 更新」モデルに寄せるための設計�
 ### 3) symbols（新規）
 
 - 現状実装:
-  - `xsh symbols [--json] <entry>`
+  - `vibe symbols [--json] <entry>`
   - `<entry>` を起点に index + scratch を解決し、一覧を返す。
   - 各 symbol に `index_status` を付与:
     - `managed`: `index` 側に含まれる（lock/module/symbol ref から到達）
@@ -94,7 +94,7 @@ Unison 風の「名前空間 head 更新」モデルに寄せるための設計�
 ### 4) write_file（materialize）
 
 - 現状実装:
-  - `xsh write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>`
+  - `vibe write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>`
   - `selector` は `name` / `name#hash` / `#hash` を許可。
   - `name` 指定時は `scratch -> index` の順で解決。
   - 既定は selector の module source 全体を書き出し、`--no-deps` は selector span のみ書き出す。
@@ -105,7 +105,7 @@ Unison 風の「名前空間 head 更新」モデルに寄せるための設計�
 
 ### 5) history reset（新規）
 
-- `xsh history reset [--ns scratch] [--hard]`
+- `vibe history reset [--ns scratch] [--hard]`
   - soft reset（既定）:
     - `history_head` を切り替え、namespace は保持。
   - hard reset:

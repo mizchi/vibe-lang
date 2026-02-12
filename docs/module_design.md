@@ -1,7 +1,7 @@
-# xsh Module System Design (Phase 1)
+# vibe Module System Design (Phase 1)
 
 > Historical design draft (non-normative).
-> Current implemented hashing/IR behavior is specified in `docs/xsh.md`.
+> Current implemented hashing/IR behavior is specified in `docs/vibe.md`.
 
 ## Goals
 
@@ -15,7 +15,7 @@
 
 Only named imports are supported. No `* as` or default exports.
 
-```xsh
+```vibe
 // Named imports
 use ./path.vibe { foo, bar }
 use ./path.vibe { foo as f, bar }
@@ -26,7 +26,7 @@ use #abc12345 { foo }
 
 ### Export
 
-```xsh
+```vibe
 // Inline export
 export let foo = 1
 export let add = (x: Int, y: Int) -> Int { x + y }
@@ -148,7 +148,7 @@ hash(ast) -> String:
 
 ### Scope Rules for Alpha-Normalization
 
-```xsh
+```vibe
 let add = (x, y) -> x + y
 // Scope: [x=$0, y=$1]
 // Normalized: ($0, $1) -> $0 + $1
@@ -165,7 +165,7 @@ let nested = (a) -> {
 
 ### Example
 
-```xsh
+```vibe
 // These ALL produce the SAME hash:
 
 let add = (x: Int, y: Int) -> Int { x + y }
@@ -175,7 +175,7 @@ let add = (x: Int, y: Int) -> Int {
 }
 ```
 
-```xsh
+```vibe
 // These produce DIFFERENT hashes:
 
 let add = (x: Int, y: Int) -> Int { x + y }
@@ -280,33 +280,33 @@ If not in a git repo, use `.vibe/objects/` with same format:
 
 ```bash
 # Save file (normalize to hash)
-xsh save src/main.vibe
+vibe save src/main.vibe
 
 # Edit file (expand from hash to path)
-xsh edit src/main.vibe
+vibe edit src/main.vibe
 
 # Show module hash
-xsh hash src/main.vibe
+vibe hash src/main.vibe
 
 # Show dependencies
-xsh deps src/main.vibe
+vibe deps src/main.vibe
 
 # Verify all hashes
-xsh verify
+vibe verify
 ```
 
 ## Scope & Visibility
 
 ### Default: Private
 
-```xsh
+```vibe
 let internal_helper = ...   // Not visible outside
 export let public_fn = ...  // Visible to importers
 ```
 
 ### Import creates bindings
 
-```xsh
+```vibe
 use ./lib.vibe { foo, bar as b }
 
 foo()    // OK

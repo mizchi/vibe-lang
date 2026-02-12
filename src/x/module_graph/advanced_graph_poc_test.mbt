@@ -3,7 +3,7 @@ fn build_test_graph_index_at(
   path : String,
   source : String,
 ) -> AdvancedGraphIndex {
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(path, source)
   build_advanced_graph_index(
     db,
@@ -29,7 +29,7 @@ fn remove_file_if_exists(path : String) -> Unit {
 
 ///|
 fn build_graph_index_for_wal(
-  db : @xsh.XshDb,
+  db : @runtime.VibeDb,
   path : String,
   source : String,
   base_commit : String,
@@ -63,7 +63,7 @@ test "advanced graph poc module hash uses normalized ast hash" {
   let source =
     #|let id = (x: Int) -> Int { x }
     #|let add = (x: Int, y: Int) -> Int { x + y }
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(path, source)
   let expected = @core.hash_module(db.ast(path))
   let index = build_advanced_graph_index(
@@ -191,7 +191,7 @@ test "advanced graph poc incremental update no-op for empty changed paths" {
   let base = build_test_graph_index(source)
   let untouched = update_advanced_graph_index_incremental(
     base,
-    @xsh.XshDb::new(),
+    @runtime.VibeDb::new(),
     [],
   )
   assert_eq(untouched.to_json().stringify(), base.to_json().stringify())
@@ -209,7 +209,7 @@ test "advanced graph poc incremental update matches full rebuild" {
     #|let added_a = 2
   let source_b =
     #|let keep_b = (x: Int) -> Int { x * 2 }
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(path_a, base_a)
   db.set_source(path_b, source_b)
   let base = build_advanced_graph_index(
@@ -373,7 +373,7 @@ test "advanced graph poc wal jsonl replay roundtrip" {
   let path = "/tmp/advanced_graph_wal_replay_main.vibe"
   let wal_path = "/tmp/advanced_graph_replay.wal.jsonl"
   remove_file_if_exists(wal_path)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   let base_source =
     #|let value = 1
     #|let keep = (x: Int) -> Int { x }
@@ -419,7 +419,7 @@ test "advanced graph poc snapshot plus wal load and compact" {
   let wal_path = "/tmp/advanced_graph_snapshot.wal.jsonl"
   remove_file_if_exists(snapshot_path)
   remove_file_if_exists(wal_path)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   let base_source =
     #|let value = 1
     #|let keep = (x: Int) -> Int { x }
@@ -472,7 +472,7 @@ test "advanced graph poc wal batch append and stats" {
   let path = "/tmp/advanced_graph_wal_batch_main.vibe"
   let wal_path = "/tmp/advanced_graph_batch.wal.jsonl"
   remove_file_if_exists(wal_path)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   let base_source =
     #|let v = 1
   let next_source =
@@ -522,7 +522,7 @@ test "advanced graph poc wal load with threshold compaction" {
   let wal_path = "/tmp/advanced_graph_wal_threshold.wal.jsonl"
   remove_file_if_exists(snapshot_path)
   remove_file_if_exists(wal_path)
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   let base_source =
     #|let v = 1
   let next_source =

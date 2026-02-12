@@ -17,14 +17,14 @@ mkdir -p "$TEMP_DIR"
 failed=0
 passed=0
 
-for xsh_file in "$GOLDEN_DIR"/*.vibe; do
-  name=$(basename "$xsh_file" .vibe)
+for vibe_file in "$GOLDEN_DIR"/*.vibe; do
+  name=$(basename "$vibe_file" .vibe)
   expected_wat="$GOLDEN_DIR/${name}.wat"
   actual_wasm="$TEMP_DIR/${name}.wasm"
   actual_wat="$TEMP_DIR/${name}.wat"
 
   # Compile to WASM
-  if ! moon run src/cmd/xsh/main.mbt --target native -- compile --wasm "$xsh_file" -o "$actual_wasm" 2>/dev/null; then
+  if ! moon run src/cmd/vibe/main.mbt --target native -- compile --wasm "$vibe_file" -o "$actual_wasm" 2>/dev/null; then
     echo "FAIL: $name (compilation error)"
     failed=$((failed + 1))
     continue

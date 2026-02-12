@@ -1,7 +1,7 @@
 ///|
 /// Tests for Component Model WASM output
 test "component wasm header" {
-  let db = XshDb::new()
+  let db = VibeDb::new()
   db.set_source("main", "let x = 1\nx")
   let wasm = try compile_module_component(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -23,7 +23,7 @@ test "component wasm header" {
 
 ///|
 test "component wasm contains core module" {
-  let db = XshDb::new()
+  let db = VibeDb::new()
   db.set_source("main", "let x = 42\nx")
   let wasm = try compile_module_component(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -41,7 +41,7 @@ test "component wasm contains core module" {
 
 ///|
 test "component wasm size overhead" {
-  let db = XshDb::new()
+  let db = VibeDb::new()
   db.set_source("main", "let x = 1\nx")
   let core = try compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -61,7 +61,7 @@ test "component wasm size overhead" {
 
 ///|
 test "component wasm compile with wite opt level" {
-  let db = XshDb::new()
+  let db = VibeDb::new()
   db.set_source("main", "let x = 1\nx")
   let wasm = try
     compile_module_component_with_opt_level(db, "main", opt_level=Some("-O3"))
@@ -80,7 +80,7 @@ test "component wasm compile with wite opt level" {
 
 ///|
 test "component wit includes wasi stdio imports when used" {
-  let db = XshDb::new()
+  let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Stdout, Stdin} {
     #|  do {
@@ -108,7 +108,7 @@ test "component wit includes wasi stdio imports when used" {
 
 ///|
 test "component wit includes wasi stdio imports for stream builtins" {
-  let db = XshDb::new()
+  let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Stdout, Stdin} {
     #|  do {

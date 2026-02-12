@@ -181,7 +181,7 @@ pub fn symbol_index_to_lsif_lines(
   let lines : Array[String] = []
   let counter : Ref[Int] = { val: 1 }
   let tool_info : Map[String, Json] = {}
-  tool_info["name"] = Json::string("xsh")
+  tool_info["name"] = Json::string("vibe")
   tool_info["version"] = Json::string("0.0.0")
   let metadata_payload : Map[String, Json] = {}
   metadata_payload["version"] = Json::string("0.6.0-next.7")
@@ -190,7 +190,7 @@ pub fn symbol_index_to_lsif_lines(
   metadata_payload["toolInfo"] = Json::object(tool_info)
   push_lsif_vertex(lines, next_id(counter), "metaData", metadata_payload)
   let project_payload : Map[String, Json] = {}
-  project_payload["kind"] = Json::string("xsh")
+  project_payload["kind"] = Json::string("vibe")
   let project_id = next_id(counter)
   push_lsif_vertex(lines, project_id, "project", project_payload)
   let doc_ids : Array[Int] = []
@@ -200,7 +200,7 @@ pub fn symbol_index_to_lsif_lines(
       Some(source) => {
         let document_payload : Map[String, Json] = {}
         document_payload["uri"] = Json::string(path_to_uri(path))
-        document_payload["languageId"] = Json::string("xsh")
+        document_payload["languageId"] = Json::string("vibe")
         let document_id = next_id(counter)
         push_lsif_vertex(lines, document_id, "document", document_payload)
         docs[path] = SourceDoc::{
@@ -281,7 +281,7 @@ pub fn symbol_index_to_lsif_lines(
           document=doc.document_id,
         )
         let hover_item : Map[String, Json] = {}
-        hover_item["language"] = Json::string("xsh")
+        hover_item["language"] = Json::string("vibe")
         hover_item["value"] = Json::string(symbol_hover_signature(entry))
         let hover_result_obj : Map[String, Json] = {}
         hover_result_obj["contents"] = Json::array([Json::object(hover_item)])
@@ -298,7 +298,7 @@ pub fn symbol_index_to_lsif_lines(
         )
         let moniker_payload : Map[String, Json] = {}
         moniker_payload["kind"] = Json::string("export")
-        moniker_payload["scheme"] = Json::string("xsh")
+        moniker_payload["scheme"] = Json::string("vibe")
         moniker_payload["identifier"] = Json::string(
           entry.path + "::" + entry.name,
         )

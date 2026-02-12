@@ -2,7 +2,7 @@
 /// Formatter tests
 
 ///|
-test "xsh format roundtrip regression: trait impl import test and literals" {
+test "vibe format roundtrip regression: trait impl import test and literals" {
   let input =
     #|use ./mod.vibe { type Option, trait Eq, eq }
     #|trait Eq
@@ -55,7 +55,7 @@ test "xsh format roundtrip regression: trait impl import test and literals" {
 }
 
 ///|
-test "xsh format roundtrip regression: effect signatures stay parse-equivalent" {
+test "vibe format roundtrip regression: effect signatures stay parse-equivalent" {
   let input =
     #|let run = (f: () -> Int with { Error, Io }) -> Int with { Error } {
     #|  f()
@@ -73,7 +73,7 @@ test "xsh format roundtrip regression: effect signatures stay parse-equivalent" 
 }
 
 ///|
-test "xsh format keeps import list forms parse-equivalent" {
+test "vibe format keeps import list forms parse-equivalent" {
   let input =
     #|use ./mod.vibe { type Option, trait Eq, value as value_alias }
     #|use ./mod.vibe { value_alias }
@@ -95,7 +95,7 @@ test "xsh format keeps import list forms parse-equivalent" {
 }
 
 ///|
-test "xsh parse/format import list allows trailing comma" {
+test "vibe parse/format import list allows trailing comma" {
   let input =
     #|use ./mod.vibe { type Option, trait Eq, value as value_alias, }
   let ast = parse_ast(input) catch {
@@ -112,7 +112,7 @@ test "xsh parse/format import list allows trailing comma" {
 }
 
 ///|
-test "xsh parse/format import list supports module qualifier" {
+test "vibe parse/format import list supports module qualifier" {
   let input =
     #|export module math {
     #|  export let inc = (x: Int) -> Int { add(x, 1) }
@@ -139,7 +139,7 @@ test "xsh parse/format import list supports module qualifier" {
 }
 
 ///|
-test "xsh parse/format import list supports module qualifier alias" {
+test "vibe parse/format import list supports module qualifier alias" {
   let input =
     #|export module math {
     #|  export let inc = (x: Int) -> Int { add(x, 1) }
@@ -163,7 +163,7 @@ test "xsh parse/format import list supports module qualifier alias" {
 }
 
 ///|
-test "xsh parse rejects quoted use source" {
+test "vibe parse rejects quoted use source" {
   let input = "use \"./mod.vibe\" { value }\nvalue"
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
   match parsed {
@@ -178,7 +178,7 @@ test "xsh parse rejects quoted use source" {
 }
 
 ///|
-test "xsh parse/format local let annotation is parser-equivalent" {
+test "vibe parse/format local let annotation is parser-equivalent" {
   let input =
     #|let x: Int = 1
     #|let mut y: Int = x
@@ -197,7 +197,7 @@ test "xsh parse/format local let annotation is parser-equivalent" {
 }
 
 ///|
-test "xsh parse/format test declaration accepts unquoted names" {
+test "vibe parse/format test declaration accepts unquoted names" {
   let input =
     #|test smoke_case {
     #|  let x = 1
@@ -219,7 +219,7 @@ test "xsh parse/format test declaration accepts unquoted names" {
 }
 
 ///|
-test "xsh parse/format map keyword is contextual in identifier positions" {
+test "vibe parse/format map keyword is contextual in identifier positions" {
   let input =
     #|let map = (x: Int) -> Int { x }
     #|let y = map(1)
@@ -237,7 +237,7 @@ test "xsh parse/format map keyword is contextual in identifier positions" {
 }
 
 ///|
-test "xsh parse/format loop expression is parser-equivalent" {
+test "vibe parse/format loop expression is parser-equivalent" {
   let input =
     #|let mut i = 0
     #|loop {
@@ -259,7 +259,7 @@ test "xsh parse/format loop expression is parser-equivalent" {
 }
 
 ///|
-test "xsh format basic" {
+test "vibe format basic" {
   let input =
     #|let x=1
     #|let y = {
@@ -276,7 +276,7 @@ test "xsh format basic" {
 }
 
 ///|
-test "xsh format collections" {
+test "vibe format collections" {
   let input =
     #|let arr=[1,2]
     #|let r = record { a:1, b:2 }
@@ -298,7 +298,7 @@ test "xsh format collections" {
 }
 
 ///|
-test "xsh format match" {
+test "vibe format match" {
   let input =
     #|match v { Ok(v)=>1, None if true=>0 }
   let expected =
@@ -310,7 +310,7 @@ test "xsh format match" {
 }
 
 ///|
-test "xsh format match keeps tuple/call args compact in arms" {
+test "vibe format match keeps tuple/call args compact in arms" {
   let input =
     #|match option_zip(Some(1), Some(2)) { Some((x,y)) => x+y, _ => 0 }
   let expected =
@@ -322,7 +322,7 @@ test "xsh format match keeps tuple/call args compact in arms" {
 }
 
 ///|
-test "xsh format type args and index" {
+test "vibe format type args and index" {
   let input =
     #|let x: Option[Int] = none
     #|let y = xs[0]
@@ -337,7 +337,7 @@ test "xsh format type args and index" {
 }
 
 ///|
-test "xsh format generic parameter brackets stay compact" {
+test "vibe format generic parameter brackets stay compact" {
   let input =
     #|trait Eq
     #|impl Eq for Int
@@ -365,7 +365,7 @@ test "xsh format generic parameter brackets stay compact" {
 }
 
 ///|
-test "xsh format enum uses semicolon separator" {
+test "vibe format enum uses semicolon separator" {
   let input =
     #|enum Result[T] { Ok(T), Err }
   let expected =
@@ -377,7 +377,7 @@ test "xsh format enum uses semicolon separator" {
 }
 
 ///|
-test "xsh format keeps enum payload commas" {
+test "vibe format keeps enum payload commas" {
   let input =
     #|enum List { Nil, Cons(Int, List) }
   let expected =
@@ -389,7 +389,7 @@ test "xsh format keeps enum payload commas" {
 }
 
 ///|
-test "xsh format normalizes struct literal separator" {
+test "vibe format normalizes struct literal separator" {
   let input =
     #|let p = Point::{x:1,y:1}
     #|let q = Point {x:1,y:1}
@@ -404,7 +404,7 @@ test "xsh format normalizes struct literal separator" {
 }
 
 ///|
-test "xsh format is idempotent" {
+test "vibe format is idempotent" {
   let input =
     #|enum Result[T] { Ok(T), Err }
     #|struct Point { x : Int; y : Int }
@@ -417,7 +417,7 @@ test "xsh format is idempotent" {
 }
 
 ///|
-test "xsh format keeps declaration braces and return type blocks" {
+test "vibe format keeps declaration braces and return type blocks" {
   let input =
     #|struct Point { x : Int; y : Int }
     #|let make = () -> Int { 1 }
@@ -442,7 +442,7 @@ test "xsh format keeps declaration braces and return type blocks" {
 }
 
 ///|
-test "xsh format derive declarations is idempotent" {
+test "vibe format derive declarations is idempotent" {
   let input =
     #|struct Point { x : Int; y : Int } derive(Eq)
     #|enum Token { A, B } derive(Eq, Ord)
@@ -452,7 +452,7 @@ test "xsh format derive declarations is idempotent" {
 }
 
 ///|
-test "xsh format trait impl top-level spacing" {
+test "vibe format trait impl top-level spacing" {
   let input =
     #|trait Eq
     #|impl Eq for Int

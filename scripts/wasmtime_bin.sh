@@ -12,7 +12,7 @@ if [ -n "${WASMTIME_BIN:-}" ]; then
   exit 0
 fi
 
-if [ "${XSH_USE_WASMTIME_SUBMODULE:-0}" = "1" ]; then
+if [ "${VIBE_USE_WASMTIME_SUBMODULE:-0}" = "1" ]; then
   if [ -x "$LOCAL_RELEASE" ]; then
     printf '%s\n' "$LOCAL_RELEASE"
     exit 0
@@ -21,7 +21,7 @@ if [ "${XSH_USE_WASMTIME_SUBMODULE:-0}" = "1" ]; then
     printf '%s\n' "$LOCAL_DEBUG"
     exit 0
   fi
-  echo "XSH_USE_WASMTIME_SUBMODULE=1 but deps/wasmtime wasmtime binary is not built." >&2
+  echo "VIBE_USE_WASMTIME_SUBMODULE=1 but deps/wasmtime wasmtime binary is not built." >&2
   echo "Run: just build-wasmtime-submodule" >&2
   exit 1
 fi

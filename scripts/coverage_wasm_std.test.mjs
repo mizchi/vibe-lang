@@ -29,9 +29,9 @@ test("classifyFailureReason: runtime trap", () => {
 });
 
 test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xsh-cov-"));
-  const reportAPath = path.join(dir, "xsh__std__a_test.report.json");
-  const reportBPath = path.join(dir, "xsh__std__b_test.report.json");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-cov-"));
+  const reportAPath = path.join(dir, "vibe__std__a_test.report.json");
+  const reportBPath = path.join(dir, "vibe__std__b_test.report.json");
   const logC1 = path.join(dir, "c.wasm.log");
   const logC2 = path.join(dir, "c.wasm_js_string.log");
   const attemptsPath = path.join(dir, "attempts.tsv");
@@ -39,7 +39,7 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
   fs.writeFileSync(
     reportAPath,
     JSON.stringify({
-      map_path: path.join(dir, "xsh__std__a_test.wasm.cov.json"),
+      map_path: path.join(dir, "vibe__std__a_test.wasm.cov.json"),
       stats: {
         point_total: 10,
         point_hit: 8,
@@ -59,7 +59,7 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
   fs.writeFileSync(
     reportBPath,
     JSON.stringify({
-      map_path: path.join(dir, "xsh__std__b_test.wasm.cov.json"),
+      map_path: path.join(dir, "vibe__std__b_test.wasm.cov.json"),
       stats: {
         point_total: 6,
         point_hit: 6,
@@ -116,8 +116,8 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
   assert.equal(report.stats.point_total, 16);
   assert.equal(report.stats.point_hit, 14);
   assert.deepEqual(report.cases.map((item) => item.name), [
-    "xsh__std__a_test",
-    "xsh__std__b_test",
+    "vibe__std__a_test",
+    "vibe__std__b_test",
   ]);
   assert.deepEqual(
     report.failed_case_details[0].attempts.map((item) => item.mode),
@@ -160,12 +160,12 @@ test("expectedBackendForCase: defaults and per-case override", () => {
 });
 
 test("loadBackendMatrix: parses json file", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xsh-cov-matrix-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-cov-matrix-"));
   const matrixPath = path.join(dir, "backend_capabilities.json");
   fs.writeFileSync(
     matrixPath,
     JSON.stringify({
-      format: "xsh-std-backend-capability-matrix-v1",
+      format: "vibe-std-backend-capability-matrix-v1",
       defaults: { expected_backend: "wasm" },
       cases: {
         "vibe/std/io_test.vibe": { expected_backend: "wasm-js-string" },
@@ -213,8 +213,8 @@ test("buildAggregatedReport: classifies expected_failure when expected backend n
 });
 
 test("buildAggregatedReport: detects measured mode mismatch", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xsh-cov-mismatch-"));
-  const reportPath = path.join(dir, "xsh__std__mismatch.report.json");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-cov-mismatch-"));
+  const reportPath = path.join(dir, "vibe__std__mismatch.report.json");
   const attempts = [
     {
       case_path: "vibe/std/mismatch_test.vibe",
@@ -227,7 +227,7 @@ test("buildAggregatedReport: detects measured mode mismatch", () => {
   fs.writeFileSync(
     reportPath,
     JSON.stringify({
-      map_path: path.join(dir, "xsh__std__mismatch.wasm.cov.json"),
+      map_path: path.join(dir, "vibe__std__mismatch.wasm.cov.json"),
       stats: {
         point_total: 2,
         point_hit: 2,
@@ -257,8 +257,8 @@ test("buildAggregatedReport: detects measured mode mismatch", () => {
 });
 
 test("buildAggregatedReport: ignores excluded lines in line totals", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xsh-cov-excluded-lines-"));
-  const reportPath = path.join(dir, "xsh__std__excluded.report.json");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-cov-excluded-lines-"));
+  const reportPath = path.join(dir, "vibe__std__excluded.report.json");
   const attempts = [
     {
       case_path: "vibe/std/excluded_test.vibe",
@@ -271,7 +271,7 @@ test("buildAggregatedReport: ignores excluded lines in line totals", () => {
   fs.writeFileSync(
     reportPath,
     JSON.stringify({
-      map_path: path.join(dir, "xsh__std__excluded.wasm.cov.json"),
+      map_path: path.join(dir, "vibe__std__excluded.wasm.cov.json"),
       stats: {
         point_total: 3,
         point_hit: 2,

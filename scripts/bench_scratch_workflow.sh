@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
 OUT_DIR="$ROOT_DIR/target/bench"
 RUN_EVAL="$OUT_DIR/bench_scratch_eval.sh"
 RUN_FINALIZE="$OUT_DIR/bench_scratch_finalize.sh"
@@ -10,14 +10,14 @@ RUN_EXPORT_APPLY="$OUT_DIR/bench_scratch_export_apply.sh"
 RUN_FULL="$OUT_DIR/bench_scratch_full.sh"
 SEED_SOURCE="$OUT_DIR/bench_scratch_seed.vibe"
 
-WARMUP="${XSH_BENCH_WARMUP:-3}"
-RUNS="${XSH_BENCH_RUNS:-10}"
-CHAIN="${XSH_BENCH_CHAIN:-40}"
-SCENARIOS="${XSH_BENCH_SCENARIOS:-all}"
-EXPORT_JSON="${XSH_BENCH_EXPORT_JSON:-$OUT_DIR/bench_scratch_workflow.hyperfine.json}"
+WARMUP="${VIBE_BENCH_WARMUP:-3}"
+RUNS="${VIBE_BENCH_RUNS:-10}"
+CHAIN="${VIBE_BENCH_CHAIN:-40}"
+SCENARIOS="${VIBE_BENCH_SCENARIOS:-all}"
+EXPORT_JSON="${VIBE_BENCH_EXPORT_JSON:-$OUT_DIR/bench_scratch_workflow.hyperfine.json}"
 
 mkdir -p "$OUT_DIR"
-moon build --target native --release src/cmd/xsh
+moon build --target native --release src/cmd/vibe
 
 write_seed_source() {
   local out_path="$1"
@@ -40,7 +40,7 @@ cat >"$RUN_EVAL" <<EOF_SCRIPT
 set -euo pipefail
 
 CLI_BIN="$CLI_BIN"
-TMP_DIR="\$(mktemp -d /tmp/xsh_bench_scratch_XXXXXX)"
+TMP_DIR="\$(mktemp -d /tmp/vibe_bench_scratch_XXXXXX)"
 DB_PATH="\$TMP_DIR/tmp1.db"
 trap 'rm -rf "\$TMP_DIR"' EXIT
 
@@ -59,7 +59,7 @@ set -euo pipefail
 
 CLI_BIN="$CLI_BIN"
 SEED_SOURCE="$SEED_SOURCE"
-TMP_DIR="\$(mktemp -d /tmp/xsh_bench_scratch_XXXXXX)"
+TMP_DIR="\$(mktemp -d /tmp/vibe_bench_scratch_XXXXXX)"
 DB_PATH="\$TMP_DIR/tmp1.db"
 trap 'rm -rf "\$TMP_DIR"' EXIT
 
@@ -73,7 +73,7 @@ set -euo pipefail
 
 CLI_BIN="$CLI_BIN"
 SEED_SOURCE="$SEED_SOURCE"
-TMP_DIR="\$(mktemp -d /tmp/xsh_bench_scratch_XXXXXX)"
+TMP_DIR="\$(mktemp -d /tmp/vibe_bench_scratch_XXXXXX)"
 DB_PATH="\$TMP_DIR/tmp1.db"
 OUT_PATH="\$TMP_DIR/main.vibe"
 trap 'rm -rf "\$TMP_DIR"' EXIT
@@ -89,7 +89,7 @@ cat >"$RUN_FULL" <<EOF_SCRIPT
 set -euo pipefail
 
 CLI_BIN="$CLI_BIN"
-TMP_DIR="\$(mktemp -d /tmp/xsh_bench_scratch_XXXXXX)"
+TMP_DIR="\$(mktemp -d /tmp/vibe_bench_scratch_XXXXXX)"
 DB_PATH="\$TMP_DIR/tmp1.db"
 OUT_PATH="\$TMP_DIR/main.vibe"
 trap 'rm -rf "\$TMP_DIR"' EXIT

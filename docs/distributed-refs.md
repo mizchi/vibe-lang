@@ -64,12 +64,12 @@
 
 ## CLI 接続
 
-`xsh index ref` を追加:
+`vibe index ref` を追加:
 
-- `xsh index ref push <scope> <index-file>`
-- `xsh index ref pull <scope> <out-index-file>`
-- `xsh index ref push-delta <scope> <delta-file>`
-- `xsh index ref pull-delta <scope> <out-delta-file>`
+- `vibe index ref push <scope> <index-file>`
+- `vibe index ref pull <scope> <out-index-file>`
+- `vibe index ref push-delta <scope> <delta-file>`
+- `vibe index ref pull-delta <scope> <out-delta-file>`
 
 例:
 
@@ -79,7 +79,7 @@ just run index ref push vibe/std@0.1.0 /tmp/advanced-graph-index.json
 just run index ref pull vibe/std@0.1.0 /tmp/advanced-graph-index.restored.json
 ```
 
-`xsh index build` は entry から graph snapshot を作成し:
+`vibe index build` は entry から graph snapshot を作成し:
 
 - `-o` で指定した index JSON を出力
 - `index.vdb` に `graph_head` を出力

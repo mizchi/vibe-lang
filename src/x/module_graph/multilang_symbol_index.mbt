@@ -1,6 +1,6 @@
 ///|
 /// Language-agnostic symbol/type/signature row.
-/// This is a normalized ingestion format for xsh and external frontends
+/// This is a normalized ingestion format for vibe and external frontends
 /// (tree-sitter, compiler, LSP, etc.).
 pub struct GraphIrRow {
   language_id : String
@@ -568,8 +568,8 @@ pub fn MultiLangSymbolIndex::verify(
 }
 
 ///|
-/// xsh frontend adapter prototype for the shared IR row.
-pub fn extract_xsh_graph_ir_rows(
+/// vibe frontend adapter prototype for the shared IR row.
+pub fn extract_vibe_graph_ir_rows(
   path : String,
   source : String,
 ) -> Result[Array[GraphIrRow], String] {
@@ -579,15 +579,15 @@ pub fn extract_xsh_graph_ir_rows(
   let types = @checker.type_check(ast) catch {
     e => return Err("typecheck failed: " + e.to_string())
   }
-  let symbol_index = @xsh.build_symbol_index_for_module(path, ast, types)
+  let symbol_index = @runtime.build_symbol_index_for_module(path, ast, types)
   let module_hash = @core.git_blob_hash_string(source)
   let rows : Array[GraphIrRow] = []
   for entry in symbol_index.entries {
     rows.push(GraphIrRow::{
-      language_id: "xsh",
+      language_id: "vibe",
       path: entry.path,
       name: entry.name,
-      kind: @xsh.symbol_kind_name(entry.kind),
+      kind: @runtime.symbol_kind_name(entry.kind),
       signature: entry.signature,
       start: entry.span.start,
       end: entry.span.end,

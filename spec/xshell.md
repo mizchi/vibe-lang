@@ -1,4 +1,4 @@
-# xshell object pipeline memo
+# xshell object pipeline memo (vibe shell mode)
 
 Status: draft memo for implementation planning.
 

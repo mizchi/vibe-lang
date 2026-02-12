@@ -3,7 +3,7 @@ fn build_git_ref_test_graph_index(
   path : String,
   source : String,
 ) -> AdvancedGraphIndex {
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   db.set_source(path, source)
   build_advanced_graph_index(
     db,

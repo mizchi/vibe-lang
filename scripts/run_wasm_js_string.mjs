@@ -40,13 +40,13 @@ if (entry === null) {
 if (outPath === null) {
   const dir = path.join(process.cwd(), "target");
   await mkdir(dir, { recursive: true });
-  outPath = path.join(dir, "xsh_js_string.wasm");
+  outPath = path.join(dir, "vibe_js_string.wasm");
 }
 
 function compileWasm(flag, output) {
   const args = [
     "run",
-    "src/cmd/xsh/main.mbt",
+    "src/cmd/vibe/main.mbt",
     "--target",
     "native",
     "--",
@@ -70,7 +70,7 @@ async function runWasm(bytes, options) {
   return instance.exports.run();
 }
 const importObject = {
-  xsh: {
+  vibe: {
     path: (value) => value,
     sh: (_value) => 0,
   },

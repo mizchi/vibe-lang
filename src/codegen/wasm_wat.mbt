@@ -1,5 +1,5 @@
 ///|
-/// Minimal wasm-to-wat printer for xsh codegen tests.
+/// Minimal wasm-to-wat printer for vibe codegen tests.
 suberror WasmWatError {
   UnexpectedEof
   InvalidMagic

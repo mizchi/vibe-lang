@@ -14,7 +14,7 @@ if (args.length !== 1) {
 const wasmPath = args[0];
 
 const importObject = {
-  xsh: {
+  vibe: {
     path: (value) => value,
     sh: (_value) => 0,
   },
@@ -30,7 +30,7 @@ try {
   const mod = await WebAssembly.compile(bytes, compileOptions);
   const instance = await WebAssembly.instantiate(mod, importObject);
   const result = instance.exports.run();
-  if (process.env.XSH_WASM_PRINT_RESULT === "1") {
+  if (process.env.VIBE_WASM_PRINT_RESULT === "1") {
     console.log("run:", result);
   }
 } catch (err) {

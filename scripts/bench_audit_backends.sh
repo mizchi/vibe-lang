@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
 OUT_DIR="$ROOT_DIR/target/bench/audit"
 
 is_expected_failure() {
@@ -38,7 +38,7 @@ run_compile_check() {
   local out="$4"
 
   local log_file
-  log_file="$(mktemp "${TMPDIR:-/tmp}/xsh-bench-audit.XXXXXX")"
+  log_file="$(mktemp "${TMPDIR:-/tmp}/vibe-bench-audit.XXXXXX")"
 
   local rc=0
   set +e
@@ -90,7 +90,7 @@ run_compile_check() {
 
 mkdir -p "$OUT_DIR"
 
-moon build --target native --release src/cmd/xsh
+moon build --target native --release src/cmd/vibe
 
 status=0
 for src in "$ROOT_DIR"/bench/*.vibe; do

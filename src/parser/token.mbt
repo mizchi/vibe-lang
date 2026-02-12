@@ -1,5 +1,5 @@
 ///|
-/// Token for xsh lexer
+/// Token for vibe lexer
 pub struct Token {
   kind : @cst.SyntaxKind
   text : String

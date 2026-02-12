@@ -1,6 +1,6 @@
 ///|
 fn make_temp_dir(prefix : String) -> String {
-  let base = "/tmp/xsh_loader_test_" + prefix
+  let base = "/tmp/vibe_loader_test_" + prefix
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
     if not(@os_fs.path_exists(path)) {
@@ -53,13 +53,13 @@ fn contains_path(paths : Array[String], target : String) -> Bool {
 
 ///|
 struct MemIoAdapter {
-  fs : @xsh_fs.MemFs
+  fs : @vibe_fs.MemFs
   cwd : String
 }
 
 ///|
 fn MemIoAdapter::new(cwd : String) -> MemIoAdapter {
-  let fs = @xsh_fs.MemFs::new()
+  let fs = @vibe_fs.MemFs::new()
   fs.mkdir_p(cwd) catch {
     e => abort("mem fs init failed: " + e.to_string())
   }
@@ -146,8 +146,8 @@ test "loader load_db_with_paths loads transitive modules" {
     Err(err) => fail(err)
   }
   let (db, resolved, paths) = loaded
-  let entry_norm = @xsh_fs.normalize_path(entry)
-  let lib_norm = @xsh_fs.normalize_path(lib)
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let lib_norm = @vibe_fs.normalize_path(lib)
   assert_eq(resolved, entry_norm)
   assert_true(contains_path(paths, entry_norm))
   assert_true(contains_path(paths, lib_norm))
@@ -184,8 +184,8 @@ test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
     Err(err) => fail(err)
   }
   let (db, resolved, paths) = loaded
-  let entry_norm = @xsh_fs.normalize_path(entry)
-  let lib_norm = @xsh_fs.normalize_path(lib)
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let lib_norm = @vibe_fs.normalize_path(lib)
   assert_eq(resolved, entry_norm)
   assert_true(contains_path(paths, entry_norm))
   assert_true(contains_path(paths, lib_norm))
@@ -219,8 +219,8 @@ test "loader load_db_with_paths reports import cycle" {
 ///|
 test "loader load_db_with_paths rejects import outside index root" {
   let root = make_temp_dir("root_guard")
-  let outside_name = "xsh_loader_test_outside_guard"
-  let outside = @xsh_fs.normalize_path(root + "/../" + outside_name)
+  let outside_name = "vibe_loader_test_outside_guard"
+  let outside = @vibe_fs.normalize_path(root + "/../" + outside_name)
   remove_if_exists(outside)
   @os_fs.create_dir(outside) catch {
     e => fail(e.to_string())
@@ -271,7 +271,7 @@ test "loader load_db_with_paths resolves std namespace from index registry" {
     Err(err) => fail(err)
   }
   let (_db, _resolved, paths) = loaded
-  let std_norm = @xsh_fs.normalize_path(std_mod)
+  let std_norm = @vibe_fs.normalize_path(std_mod)
   assert_true(contains_path(paths, std_norm))
   remove_if_exists(root)
 }

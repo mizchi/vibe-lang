@@ -1,5 +1,5 @@
 ///|
-/// AST types for xsh
+/// AST types for vibe
 pub(all) struct Module {
   stmts : Array[Stmt]
 } derive(Show, Eq)

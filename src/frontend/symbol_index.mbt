@@ -25,7 +25,7 @@ pub struct SymbolIndex {
   entries : Array[SymbolEntry]
   name_index : Map[String, Int]
   name_dup_index : Map[String, Array[Int]]
-  xsh_query_index : Map[String, Array[Int]]
+  vibe_query_index : Map[String, Array[Int]]
 } derive(Show, Eq)
 
 ///|
@@ -410,7 +410,7 @@ fn si_collect_effect_fragments(signature : String, out : Array[String]) -> Unit 
 }
 
 ///|
-fn si_collect_xsh_query_fragments(signature : String) -> Array[String] {
+fn si_collect_vibe_query_fragments(signature : String) -> Array[String] {
   let raw : Array[String] = []
   if signature.contains(" + ") {
     si_collect_plus_bound_fragments(signature, raw)
@@ -454,7 +454,7 @@ fn si_build_name_index(
 }
 
 ///|
-fn si_build_xsh_query_index(
+fn si_build_vibe_query_index(
   entries : Array[SymbolEntry],
 ) -> Map[String, Array[Int]] {
   let out : Map[String, Array[Int]] = {}
@@ -463,7 +463,7 @@ fn si_build_xsh_query_index(
     if not(signature.contains(" + ") || signature.contains("with {")) {
       continue
     }
-    for key in si_collect_xsh_query_fragments(signature) {
+    for key in si_collect_vibe_query_fragments(signature) {
       si_push_index_id(out, key, i)
     }
   }
@@ -477,12 +477,12 @@ fn si_build_symbol_index(entries : Array[SymbolEntry]) -> SymbolIndex {
     entries,
     name_index,
     name_dup_index,
-    xsh_query_index: si_build_xsh_query_index(entries),
+    vibe_query_index: si_build_vibe_query_index(entries),
   }
 }
 
 ///|
-fn si_should_use_xsh_fast_path(query : String) -> Bool {
+fn si_should_use_vibe_fast_path(query : String) -> Bool {
   query.has_prefix("with {") || query.contains(" + ")
 }
 
@@ -644,8 +644,8 @@ pub fn SymbolIndex::search(
     }
     return out
   }
-  if si_should_use_xsh_fast_path(query) {
-    match self.xsh_query_index.get(query) {
+  if si_should_use_vibe_fast_path(query) {
+    match self.vibe_query_index.get(query) {
       Some(ids) => return si_collect_entries_by_ids(self.entries, ids)
       None => ()
     }

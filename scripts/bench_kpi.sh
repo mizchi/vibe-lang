@@ -2,15 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
-REPORT_DIR="${XSH_BENCH_KPI_DIR:-$ROOT_DIR/dist/bench_kpi}"
-REPORT_FILE="${XSH_BENCH_KPI_REPORT:-$REPORT_DIR/latest.tsv}"
-N_RAW="${XSH_BENCH_KPI_N:-}"
-WARMUP_RAW="${XSH_BENCH_KPI_WARMUP:-}"
-BACKEND="${XSH_BENCH_KPI_BACKEND:-wasm}"
-MAX_PER_US="${XSH_BENCH_KPI_MAX_PER_US:-}"
-MAX_WASM_BYTES="${XSH_BENCH_KPI_MAX_WASM_BYTES:-}"
-MAX_SCORE="${XSH_BENCH_KPI_MAX_SCORE:-}"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
+REPORT_DIR="${VIBE_BENCH_KPI_DIR:-$ROOT_DIR/dist/bench_kpi}"
+REPORT_FILE="${VIBE_BENCH_KPI_REPORT:-$REPORT_DIR/latest.tsv}"
+N_RAW="${VIBE_BENCH_KPI_N:-}"
+WARMUP_RAW="${VIBE_BENCH_KPI_WARMUP:-}"
+BACKEND="${VIBE_BENCH_KPI_BACKEND:-wasm}"
+MAX_PER_US="${VIBE_BENCH_KPI_MAX_PER_US:-}"
+MAX_WASM_BYTES="${VIBE_BENCH_KPI_MAX_WASM_BYTES:-}"
+MAX_SCORE="${VIBE_BENCH_KPI_MAX_SCORE:-}"
 
 if [[ "$BACKEND" != "wasm" && "$BACKEND" != "interpreter" ]]; then
   echo "bench-kpi: invalid backend: $BACKEND (expected wasm|interpreter)" >&2
@@ -42,7 +42,7 @@ fi
 
 mkdir -p "$REPORT_DIR"
 
-moon build --target native --release src/cmd/xsh >/dev/null
+moon build --target native --release src/cmd/vibe >/dev/null
 
 bench_out="$("$CLI_BIN" bench --backend "$BACKEND" --n "$N" --warmup "$WARMUP" "${entries[@]}")"
 printf '%s\n' "$bench_out"
@@ -129,7 +129,7 @@ END {
 
 if [[ "$BACKEND" == "wasm" ]]; then
   if awk -F '\t' 'NR > 1 && ($6 + 0) > 0 { found = 1 } END { exit found ? 1 : 0 }' "$REPORT_FILE"; then
-    echo "bench-kpi: all per_us are 0; try larger N (e.g. XSH_BENCH_KPI_N=200000)." >&2
+    echo "bench-kpi: all per_us are 0; try larger N (e.g. VIBE_BENCH_KPI_N=200000)." >&2
   fi
 fi
 

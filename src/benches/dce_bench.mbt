@@ -17,31 +17,33 @@ fn bench_dce(
   lib_source : String,
   main_source : String,
 ) -> DceBenchResult raise {
-  let db = @xsh.XshDb::new()
+  let db = @runtime.VibeDb::new()
   if lib_source.length() > 0 {
     db.set_source("./lib.vibe", lib_source)
   }
   db.set_source("main", main_source)
   // Compile main module
-  let compiled = try @xsh.compile_module(db, "main") catch {
+  let compiled = try @runtime.compile_module(db, "main") catch {
     e => fail("[\{name}] compile error: \{e.to_string()}")
   } noraise {
     c => c
   }
   // Count statements before/after DCE
-  let bundled_no_dce = @xsh.bundle_for_wasm_no_dce(db, "main", compiled.ast)
-  let bundled_with_dce = @xsh.dce_module(bundled_no_dce)
+  let bundled_no_dce = @runtime.bundle_for_wasm_no_dce(db, "main", compiled.ast)
+  let bundled_with_dce = @runtime.dce_module(bundled_no_dce)
   let stmts_before = bundled_no_dce.stmts.length()
   let stmts_after = bundled_with_dce.stmts.length()
   // Compile to WASM with and without DCE
   let wasm_no_dce : Int? = try
-    @xsh.compile_module_wasm_no_dce(db, "main")
+    @runtime.compile_module_wasm_no_dce(db, "main")
   catch {
     _ => None
   } noraise {
     wasm => Some(wasm.length())
   }
-  let wasm_with_dce : Int? = try @xsh.compile_module_wasm(db, "main") catch {
+  let wasm_with_dce : Int? = try
+    @runtime.compile_module_wasm(db, "main")
+  catch {
     _ => None
   } noraise {
     wasm => Some(wasm.length())

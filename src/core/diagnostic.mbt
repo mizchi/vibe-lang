@@ -1,5 +1,5 @@
 ///|
-/// Diagnostics utilities for xsh
+/// Diagnostics utilities for vibe
 pub(all) struct Span {
   start : Int
   end : Int

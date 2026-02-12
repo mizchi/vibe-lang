@@ -1,6 +1,6 @@
 # vibe/std Module Boundaries
 
-`vibe/std` is organized as layered modules. The boundary is validated by `xsh check` and `xsh normalize` for runtime modules under `vibe/std`.
+`vibe/std` is organized as layered modules. The boundary is validated by `vibe check` and `vibe normalize` for runtime modules under `vibe/std`.
 
 ## Layers
 

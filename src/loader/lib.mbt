@@ -1,6 +1,6 @@
 ///|
 fn apply_lock_to_db_with_fs(
-  db : @xsh_lib.XshDb,
+  db : @runtime.VibeDb,
   entry : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
@@ -24,7 +24,7 @@ fn apply_lock_to_db_with_fs(
 
 ///|
 fn load_sources_recursive(
-  db : @xsh_lib.XshDb,
+  db : @runtime.VibeDb,
   path : String,
   visited : Map[String, Bool],
   fs : &@io.FileSystemAdapter,
@@ -39,7 +39,7 @@ fn load_sources_recursive(
 
 ///|
 fn load_sources_recursive_impl(
-  db : @xsh_lib.XshDb,
+  db : @runtime.VibeDb,
   path : String,
   visited : Map[String, Bool],
   stack : Array[String],
@@ -47,7 +47,7 @@ fn load_sources_recursive_impl(
   root : String,
   registry_modules : Map[String, String],
 ) -> Result[Unit, String] {
-  let norm = @xsh_fs.normalize_path(path)
+  let norm = @vibe_fs.normalize_path(path)
   for i, p in stack {
     if p == norm {
       let cycle_path = StringBuilder::new()
@@ -78,12 +78,12 @@ fn load_sources_recursive_impl(
       return Err("parse: " + e.to_string())
     }
   }
-  let base = @xsh_fs.parent_path(norm)
+  let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
-      @xsh_core.Stmt::Import(source~, ..) =>
+      @vibe_core.Stmt::Import(source~, ..) =>
         match source {
-          @xsh_core.ModuleRef::Path(path~) => {
+          @vibe_core.ModuleRef::Path(path~) => {
             let resolved = match
               @codebase.resolve_import_path_with_registry(
                 base, path, root, registry_modules,
@@ -119,9 +119,9 @@ fn load_sources_recursive_impl(
               }
             }
           }
-          @xsh_core.ModuleRef::Hash(..)
-          | @xsh_core.ModuleRef::Version(..)
-          | @xsh_core.ModuleRef::Symbol(..) => ()
+          @vibe_core.ModuleRef::Hash(..)
+          | @vibe_core.ModuleRef::Version(..)
+          | @vibe_core.ModuleRef::Symbol(..) => ()
         }
       _ => ()
     }
@@ -136,10 +136,10 @@ pub fn resolve_entry_path_with_fs(
   fs : &@io.FileSystemAdapter,
 ) -> String {
   if path.has_prefix("/") {
-    @xsh_fs.normalize_path(path)
+    @vibe_fs.normalize_path(path)
   } else {
     let cwd = @io.current_dir_or_root_with(fs)
-    @xsh_fs.normalize_path(cwd + "/" + path)
+    @vibe_fs.normalize_path(cwd + "/" + path)
   }
 }
 
@@ -151,14 +151,16 @@ pub fn resolve_entry_path(path : String) -> String {
 ///|
 pub fn resolve_import_path(base : String, import_path : String) -> String {
   if import_path.has_prefix("/") {
-    @xsh_fs.normalize_path(import_path)
+    @vibe_fs.normalize_path(import_path)
   } else {
-    @xsh_fs.normalize_path(base + "/" + import_path)
+    @vibe_fs.normalize_path(base + "/" + import_path)
   }
 }
 
 ///|
-pub fn load_db(entry_path : String) -> Result[(@xsh_lib.XshDb, String), String] {
+pub fn load_db(
+  entry_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
   match load_db_with_fs(entry_path, @io.default_fs_adapter()) {
     Ok((db, entry)) => Ok((db, entry))
     Err(err) => Err(err)
@@ -169,7 +171,7 @@ pub fn load_db(entry_path : String) -> Result[(@xsh_lib.XshDb, String), String] 
 pub fn load_db_with_fs(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
-) -> Result[(@xsh_lib.XshDb, String), String] {
+) -> Result[(@runtime.VibeDb, String), String] {
   match load_db_with_paths_with_fs(entry_path, fs) {
     Ok((db, entry, _)) => Ok((db, entry))
     Err(err) => Err(err)
@@ -179,7 +181,7 @@ pub fn load_db_with_fs(
 ///|
 pub fn load_db_with_paths(
   entry_path : String,
-) -> Result[(@xsh_lib.XshDb, String, Array[String]), String] {
+) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
   load_db_with_paths_with_fs(entry_path, @io.default_fs_adapter())
 }
 
@@ -187,8 +189,8 @@ pub fn load_db_with_paths(
 pub fn load_db_with_paths_with_fs(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
-) -> Result[(@xsh_lib.XshDb, String, Array[String]), String] {
-  let db = @xsh_lib.XshDb::new()
+) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
+  let db = @runtime.VibeDb::new()
   let entry = resolve_entry_path_with_fs(entry_path, fs)
   let root = @codebase.resolve_index_root_with_fs(entry, fs)
   let registry_modules = match

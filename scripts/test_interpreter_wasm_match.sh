@@ -68,12 +68,12 @@ for expr in "${test_cases[@]}"; do
   echo "$expr" > "$TEMP_DIR/test.vibe"
 
   # Run interpreter and extract numeric value
-  interp_output=$(moon run "$PROJECT_DIR/src/cmd/xsh/main.mbt" --target native -- run "$TEMP_DIR/test.vibe" 2>/dev/null | tail -1)
+  interp_output=$(moon run "$PROJECT_DIR/src/cmd/vibe/main.mbt" --target native -- run "$TEMP_DIR/test.vibe" 2>/dev/null | tail -1)
   # Extract value from "last: X" format
   interp_result=$(echo "$interp_output" | sed 's/last: //')
 
   # Compile and run WASM
-  if moon run "$PROJECT_DIR/src/cmd/xsh/main.mbt" --target native -- compile --wasm "$TEMP_DIR/test.vibe" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
+  if moon run "$PROJECT_DIR/src/cmd/vibe/main.mbt" --target native -- compile --wasm "$TEMP_DIR/test.vibe" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
     # Run with --invoke to get return value, untag integer (divide by 4)
     wasm_tagged=$(WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke run "$TEMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning")
     if [ -n "$wasm_tagged" ]; then

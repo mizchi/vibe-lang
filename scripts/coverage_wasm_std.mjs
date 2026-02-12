@@ -610,7 +610,7 @@ export function buildAggregatedReport({
   failedCaseDetails.sort((a, b) => a.case_path.localeCompare(b.case_path));
 
   const report = {
-    format: "xsh-std-wasm-source-coverage-v2",
+    format: "vibe-std-wasm-source-coverage-v2",
     generated_at: new Date().toISOString(),
     total_case_count:
       totalCases >= 0 ? totalCases : cases.length + failedCaseDetails.length,
@@ -645,7 +645,7 @@ export function buildAggregatedReport({
 
 export function buildSummary(report) {
   const lines = [];
-  lines.push("xsh std wasm source coverage");
+  lines.push("vibe std wasm source coverage");
   if (report.modes.length > 0) {
     lines.push(`modes: ${report.modes.join(", ")}`);
   }

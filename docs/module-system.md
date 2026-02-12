@@ -1,4 +1,4 @@
-# xsh Module System (現行仕様)
+# vibe Module System (現行仕様)
 
 ## 目的
 - ユーザー向けには `::` で統一された名前空間アクセスを提供する。
@@ -7,31 +7,31 @@
 ## 構文
 
 ### モジュール定義
-```xsh
+```vibe
 module math {
   let private_inc = (x: Int) -> Int { add(x, 1) }
   export let inc = private_inc
 }
 ```
 
-```xsh
+```vibe
 export module math {
   export let inc = (x: Int) -> Int { add(x, 1) }
 }
 ```
 
 ### モジュール import / use
-```xsh
+```vibe
 use ./lib.xm { module math }
 math::inc(41)
 ```
 
-```xsh
+```vibe
 use ./lib.xm { module math as m }
 m::inc(41)
 ```
 
-```xsh
+```vibe
 use /vibe/std/string
 std/string::from_char_code(65)
 ```
@@ -61,7 +61,7 @@ std/string::from_char_code(65)
 - 空モジュールは parse error。
 
 ## 例
-```xsh
+```vibe
 // lib.xm
 export module math {
   export let inc = (x: Int) -> Int { add(x, 1) }

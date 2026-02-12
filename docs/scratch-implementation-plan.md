@@ -12,10 +12,10 @@
 
 ### 1. default sink を scratch に変更
 
-- [x] `xsh eval`:
+- [x] `vibe eval`:
   - `--db` 未指定時に最寄り workspace の scratch db を使う
   - `--export` は `--db` なしでも許可
-- [x] `xsh repl` / `xsh repl-stdin` / `xsh repl-wasi`:
+- [x] `vibe repl` / `vibe repl-stdin` / `vibe repl-wasi`:
   - 起動時に scratch db を復元
   - 成功した入力を scratch db に追記
 - [x] `index.vdb`:
@@ -30,7 +30,7 @@
 
 ### 2. symbol 一覧 CLI
 
-- [x] `xsh symbols [--json] <entry>`
+- [x] `vibe symbols [--json] <entry>`
   - `managed` / `scratch-only` を表示
   - `kind/name/path#short-hash` を表示
 
@@ -41,16 +41,16 @@
 
 ### 3. history reset CLI
 
-- [x] `xsh history reset`
+- [x] `vibe history reset`
   - scratch db ファイル削除
-- [x] `xsh history reset --hard`
+- [x] `vibe history reset --hard`
   - 追加で `index.vdb` 内 namespace head 系を空文字にリセット
 
 ## Phase 2 (次)
 
 ### 1. write_file selector
 
-- [x] `xsh write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>`
+- [x] `vibe write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>`
   - `name`, `name#hash`, `#hash` に対応
   - `name` は `scratch -> index` 優先で解決
   - 既定は module source を materialize、`--no-deps` で selector span のみ書き出し

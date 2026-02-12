@@ -1,4 +1,4 @@
-///| Capability-based security for xsh runtime
+///| Capability-based security for vibe runtime
 
 ///|
 /// Glob pattern for path matching

@@ -19,7 +19,7 @@ fn gen_symbol_index_source(def_count : Int) -> String {
 }
 
 ///|
-fn gen_symbol_index_xsh_query_source(def_count : Int) -> String {
+fn gen_symbol_index_vibe_query_source(def_count : Int) -> String {
   let buf = StringBuilder::new()
   buf.write_string("enum BenchOption[T] { BenchSome(T); BenchNone }\n")
   buf.write_string("trait BenchEq\n")
@@ -42,7 +42,7 @@ fn gen_symbol_index_xsh_query_source(def_count : Int) -> String {
       )
     }
   }
-  buf.write_string("let bench_xsh_value = BenchSome(42)\n")
+  buf.write_string("let bench_vibe_value = BenchSome(42)\n")
   buf.to_string()
 }
 
@@ -70,7 +70,9 @@ test "bench: symbol_index.build_module_index" (b : @bench.T) {
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
   b.bench(fn() {
-    let index = @xsh.build_symbol_index_for_module(bench_symbol_path, ast, env)
+    let index = @runtime.build_symbol_index_for_module(
+      bench_symbol_path, ast, env,
+    )
     b.keep(index.entries.length())
   })
 }
@@ -80,9 +82,11 @@ test "bench: symbol_index.emit_lsif" (b : @bench.T) {
   let source = gen_symbol_index_source(1000)
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
-  let index = @xsh.build_symbol_index_for_module(bench_symbol_path, ast, env)
+  let index = @runtime.build_symbol_index_for_module(
+    bench_symbol_path, ast, env,
+  )
   b.bench(fn() {
-    let lines = @xsh.symbol_index_to_lsif_lines(index, fn(path) {
+    let lines = @runtime.symbol_index_to_lsif_lines(index, fn(path) {
       if path == bench_symbol_path {
         Some(source)
       } else {
@@ -94,11 +98,13 @@ test "bench: symbol_index.emit_lsif" (b : @bench.T) {
 }
 
 ///|
-test "bench: symbol_index.query_xsh_constructor_exact" (b : @bench.T) {
-  let source = gen_symbol_index_xsh_query_source(600)
+test "bench: symbol_index.query_vibe_constructor_exact" (b : @bench.T) {
+  let source = gen_symbol_index_vibe_query_source(600)
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
-  let index = @xsh.build_symbol_index_for_module(bench_symbol_path, ast, env)
+  let index = @runtime.build_symbol_index_for_module(
+    bench_symbol_path, ast, env,
+  )
   b.bench(fn() {
     let hits = index.find_exact("BenchSome")
     b.keep(hits.length())
@@ -106,11 +112,13 @@ test "bench: symbol_index.query_xsh_constructor_exact" (b : @bench.T) {
 }
 
 ///|
-test "bench: symbol_index.query_xsh_trait_bound_signature" (b : @bench.T) {
-  let source = gen_symbol_index_xsh_query_source(600)
+test "bench: symbol_index.query_vibe_trait_bound_signature" (b : @bench.T) {
+  let source = gen_symbol_index_vibe_query_source(600)
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
-  let index = @xsh.build_symbol_index_for_module(bench_symbol_path, ast, env)
+  let index = @runtime.build_symbol_index_for_module(
+    bench_symbol_path, ast, env,
+  )
   b.bench(fn() {
     let hits = index.search("BenchEq + BenchShow")
     b.keep(hits.length())
@@ -118,11 +126,13 @@ test "bench: symbol_index.query_xsh_trait_bound_signature" (b : @bench.T) {
 }
 
 ///|
-test "bench: symbol_index.query_xsh_effect_signature" (b : @bench.T) {
-  let source = gen_symbol_index_xsh_query_source(600)
+test "bench: symbol_index.query_vibe_effect_signature" (b : @bench.T) {
+  let source = gen_symbol_index_vibe_query_source(600)
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
-  let index = @xsh.build_symbol_index_for_module(bench_symbol_path, ast, env)
+  let index = @runtime.build_symbol_index_for_module(
+    bench_symbol_path, ast, env,
+  )
   b.bench(fn() {
     let hits = index.search("with {Error}")
     b.keep(hits.length())

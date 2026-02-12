@@ -64,7 +64,7 @@ function ensureExportNumber(globalExport, name) {
 
 function buildSummaryText(report) {
   const lines = [];
-  lines.push("xsh wasm source coverage");
+  lines.push("vibe wasm source coverage");
   lines.push(`wasm: ${report.wasm_path}`);
   lines.push(`map: ${report.map_path}`);
   lines.push(`execution: ${report.execution.ok ? "ok" : `trap (${report.execution.error})`}`);
@@ -192,10 +192,10 @@ export function applySourceNoiseExclusion(lines, sourceLines) {
 }
 
 function makeHostFunction(moduleName, importName) {
-  if (moduleName === "xsh" && importName === "path") {
+  if (moduleName === "vibe" && importName === "path") {
     return (value) => value;
   }
-  if (moduleName === "xsh" && importName === "sh") {
+  if (moduleName === "vibe" && importName === "sh") {
     return (_value) => 0;
   }
   return (..._args) => 0;
@@ -252,10 +252,10 @@ async function main() {
     throw new Error('missing export "memory"');
   }
 
-  const counterBase = ensureExportNumber(exports.__xsh_cov_base, "__xsh_cov_base");
+  const counterBase = ensureExportNumber(exports.__vibe_cov_base, "__vibe_cov_base");
   const counterCount = ensureExportNumber(
-    exports.__xsh_cov_count,
-    "__xsh_cov_count",
+    exports.__vibe_cov_count,
+    "__vibe_cov_count",
   );
   if (counterCount < 0) {
     throw new Error(`invalid counter count: ${counterCount}`);
@@ -321,7 +321,7 @@ async function main() {
   const lineHit = lineCoverage.line_hit;
 
   const report = {
-    format: "xsh-wasm-source-coverage-v2",
+    format: "vibe-wasm-source-coverage-v2",
     wasm_path: args.wasmPath,
     map_path: args.mapPath,
     counter_base: counterBase,

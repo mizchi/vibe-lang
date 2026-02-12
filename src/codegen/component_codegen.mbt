@@ -1,5 +1,5 @@
 ///|
-/// Component Model codegen for xsh
+/// Component Model codegen for vibe
 /// Wraps Core WASM in Component Model format for wkg/wa.dev/mwac compatibility
 
 ///|
@@ -214,7 +214,7 @@ pub fn collect_exports(ast : @core.Module) -> Array[ExportInfo] {
 }
 
 ///|
-/// Convert xsh type to WIT type string
+/// Convert vibe type to WIT type string
 fn type_to_wit(ty : @core.Type) -> String {
   match ty {
     @core.Type::Int => "s32"
@@ -449,7 +449,7 @@ fn scan_component_wit_imports_expr(
 ///|
 /// Generate WIT world for `wasm-tools component embed/new`.
 /// Host builtins are split into:
-/// - xsh interface: path/sh/sleep
+/// - vibe interface: path/sh/sleep
 /// - wasi interfaces: stdin/stdout/streams for stdio char/stream builtins
 pub fn generate_component_wit(
   ast : @core.Module,

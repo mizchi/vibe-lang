@@ -24,7 +24,7 @@ pub fn git_blob_hash_bytes(content : Bytes) -> String {
 ///|
 /// Build canonical module reference for a hash.
 pub fn module_ref_from_hash(hash : String) -> String {
-  "ko-doha/xsh/" + hash
+  "ko-doha/vibe/" + hash
 }
 
 ///|

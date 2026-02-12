@@ -2,15 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
+CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/vibe/vibe.exe"
 REPORT_DIR="$ROOT_DIR/dist/bundle_size"
 REPORT_FILE="$REPORT_DIR/current.tsv"
 BUDGET_FILE="$ROOT_DIR/bench/golden/bundle_size_budget.tsv"
 IMPORTER_CASES_FILE="$ROOT_DIR/bench/bundle_size/cases.txt"
 OUT_DIR="$REPORT_DIR/out"
 UPDATE=0
-INCLUDE_STD_SURFACES="${XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES:-0}"
-INCLUDE_IMPORTER_NO_DCE="${XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE:-0}"
+INCLUDE_STD_SURFACES="${VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES:-0}"
+INCLUDE_IMPORTER_NO_DCE="${VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE:-0}"
 
 if [[ "${1:-}" == "--update" ]]; then
   UPDATE=1
@@ -24,7 +24,7 @@ fi
 
 mkdir -p "$REPORT_DIR" "$OUT_DIR"
 
-moon build --target native --release src/cmd/xsh >/dev/null
+moon build --target native --release src/cmd/vibe >/dev/null
 
 printf 'group\tpath\tmode\tbytes\n' > "$REPORT_FILE"
 

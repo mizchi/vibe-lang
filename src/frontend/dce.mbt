@@ -1,5 +1,5 @@
 ///|
-/// Dead Code Elimination for xsh WASM bundling
+/// Dead Code Elimination for vibe WASM bundling
 /// Uses backward reachability analysis from entry points
 
 ///|

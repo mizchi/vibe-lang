@@ -1,5 +1,5 @@
 ///|
-/// Formatter for xsh based on CST
+/// Formatter for vibe based on CST
 
 ///|
 enum ContainerKind {
