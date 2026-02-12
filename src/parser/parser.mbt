@@ -2445,8 +2445,8 @@ fn AstParser::parse_import_stmt(
 
 ///|
 fn strip_module_path_suffix(path : String) -> String {
-  if path.has_suffix(".xsh") && path.length() > 4 {
-    (try! path[0:path.length() - 4]).to_string()
+  if path.has_suffix(".vibe") && path.length() > 5 {
+    (try! path[0:path.length() - 5]).to_string()
   } else if path.has_suffix(".xm") && path.length() > 3 {
     (try! path[0:path.length() - 3]).to_string()
   } else {
@@ -2456,8 +2456,8 @@ fn strip_module_path_suffix(path : String) -> String {
 
 ///|
 fn use_namespace_name_from_path(path : String) -> String {
-  if path.has_prefix("/xsh/") && path.length() > 5 {
-    let inner = (try! path[5:path.length()]).to_string()
+  if path.has_prefix("/vibe/") && path.length() > 6 {
+    let inner = (try! path[6:path.length()]).to_string()
     let trimmed = strip_module_path_suffix(inner)
     if trimmed.length() > 0 {
       trimmed
@@ -2592,7 +2592,7 @@ fn AstParser::parse_module_ref(
   if self.peek_kind() == string_lit() {
     let tok = self.peek()
     raise ParseError::UnexpectedToken(
-      expected="module path without quotes (e.g. ./xsh/std/string.xsh)",
+      expected="module path without quotes (e.g. ./vibe/std/string.vibe)",
       got=tok.text(),
       span=self.token_span(),
     )
@@ -2660,7 +2660,7 @@ fn AstParser::parse_module_ref(
       let name = text.unsafe_substring(start=7, end=text.length())
       @core.ModuleRef::Symbol(name~)
     } else {
-      // Path: ./foo/bar.xsh or foo.xsh
+      // Path: ./foo/bar.vibe or foo.vibe
       let buf = StringBuilder::new()
       // Handle leading ./ or ../
       self.skip_trivia()

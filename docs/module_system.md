@@ -21,7 +21,7 @@
 import は「モジュールの評価結果(名前空間)」を返す純粋式として扱う。
 
 ```
-import "path/to/mod.xsh" as mod
+import "path/to/mod.vibe" as mod
 let x = mod.add(1, 2)
 ```
 
@@ -29,7 +29,7 @@ let x = mod.add(1, 2)
 import は **SourceSpec** を参照するだけで、実体解決はロックを通す。
 
 - SourceSpec は abstract な構造(後で文字列表現を決める)
-  - 例: `{ kind: "git", locator: "github:owner/repo", rev: "...", hash: "...", subpath: "src/mod.xsh" }`
+  - 例: `{ kind: "git", locator: "github:owner/repo", rev: "...", hash: "...", subpath: "src/mod.vibe" }`
 - lock が無い import は **コンパイルエラー**
 - `xsh fetch` のような別コマンドで lock を生成/更新
 
@@ -57,9 +57,9 @@ let exports = record { add, sub }
 - 現行: `use <module-ref> { ... }`
 - 拡張案:
 ```
-use path/to/mod.xsh { module mod }
-use path/to/mod.xsh { add, sub }
-use path/to/mod.xsh
+use path/to/mod.vibe { module mod }
+use path/to/mod.vibe { add, sub }
+use path/to/mod.vibe
 ```
 
 ### 5) 参照の正規化と内容アドレス
@@ -81,7 +81,7 @@ use は **純粋式** として扱う。
 ## 例 (将来像)
 
 ```
-use git:github:NixOS/nixpkgs@rev#hash//pkgs.xsh { module pkgs }
+use git:github:NixOS/nixpkgs@rev#hash//pkgs.vibe { module pkgs }
 
 let dev_shell = pkgs.mk_shell {
   packages = [ pkgs.wasm, pkgs.nodejs ]

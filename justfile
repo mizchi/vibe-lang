@@ -30,7 +30,7 @@ check:
 test:
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/xsh --warn-list '{{moon_warn_list}}'
-    _build/native/debug/build/cmd/xsh/xsh.exe test --unstable-async examples xsh/std
+    _build/native/debug/build/cmd/xsh/xsh.exe test --unstable-async examples vibe/std
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
@@ -52,10 +52,10 @@ coverage-deno:
 
 # Run source-level WASM coverage (xsh span map + runtime counters)
 # env: XSH_WASM_SOURCE_COVERAGE_MODE, XSH_WASM_SOURCE_COVERAGE_NO_DCE, XSH_WASM_SOURCE_COVERAGE_RUN_TESTS, XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP, XSH_WASM_SOURCE_COVERAGE_DIR
-coverage-wasm-source entry="examples/pattern_coverage.xsh":
+coverage-wasm-source entry="examples/pattern_coverage.vibe":
     scripts/coverage_wasm_source.sh {{entry}}
 
-# Run xsh/std coverage from *_test.xsh via wasm source coverage
+# Run vibe/std coverage from *_test.vibe via wasm source coverage
 # env: XSH_WASM_STD_COVERAGE_MODES, XSH_WASM_STD_COVERAGE_MODE, XSH_WASM_STD_COVERAGE_NO_DCE, XSH_WASM_STD_COVERAGE_STRICT, XSH_WASM_STD_COVERAGE_ALLOW_TRAP, XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE, XSH_WASM_STD_COVERAGE_MIN_LINE_RATE, XSH_WASM_STD_COVERAGE_FILTER, XSH_WASM_STD_COVERAGE_EXCLUDE, XSH_WASM_STD_COVERAGE_MATRIX, XSH_WASM_STD_COVERAGE_DIR
 coverage-wasm-std:
     scripts/coverage_wasm_std.sh
@@ -139,7 +139,7 @@ component-run file out="" invoke="run()":
 
 # Run sample stream-TUI demo with canned stdin
 demo-tui-stream:
-    printf 'hello\nworld\n' | XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/run_component_stdio.sh examples/wasm/tui_stream_demo.xsh '' 'run()' | awk 'NR==1{prev=$0;next}{print prev;prev=$0} END{if (prev !~ /^-?[0-9]+$/) print prev}'
+    printf 'hello\nworld\n' | XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/run_component_stdio.sh examples/wasm/tui_stream_demo.vibe '' 'run()' | awk 'NR==1{prev=$0;next}{print prev;prev=$0} END{if (prev !~ /^-?[0-9]+$/) print prev}'
 
 # Build + run a stdio component with moonix (`run()` by default)
 component-run-moonix file out="" invoke="run()":
@@ -182,19 +182,19 @@ bench-string-compare:
 
 # String benchmarks (js-string vs wasm-gc)
 bench-string-concat:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_concat.xsh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_concat.vibe
 
 bench-string-substring:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_substring.xsh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_substring.vibe
 
 bench-string-equals:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_equals.xsh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_string_equals.vibe
 
 # Base64 benchmark (js-string vs wasm-gc)
 bench-base64:
-    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_base64_encode.xsh
+    XSH_WASMTIME_WASM_FLAGS="{{xsh_wasmtime_wasm_flags}}" XSH_WASMTIME_WASI_FLAGS="{{xsh_wasmtime_wasi_flags}}" XSH_USE_WASMTIME_SUBMODULE={{xsh_use_wasmtime_submodule}} scripts/bench_string_compare.sh bench/bench_base64_encode.vibe
 
-# Audit bench/*.xsh backend compatibility
+# Audit bench/*.vibe backend compatibility
 bench-audit-backends:
     scripts/bench_audit_backends.sh
 
@@ -230,7 +230,7 @@ bench-typechecker:
 # Benchmark bundle size for examples/ + use-case importers (bench/bundle_size/)
 # Default importer mode is runtime-first (`--wasm`/`--wasm-js-string`).
 # Set `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1` to add no-dce diagnostics.
-# Set `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include xsh/std module surfaces.
+# Set `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include vibe/std module surfaces.
 bench-bundle-size:
     scripts/bench_bundle_size.sh
 
@@ -347,7 +347,7 @@ build-async-host:
 
 # Run sleep demo with async host runtime
 sleep-demo: build-async-host
-    moon run --target native src/cmd/xsh -- compile --wasm examples/wasm/sleep_demo.xsh -o /tmp/sleep_demo.wasm
+    moon run --target native src/cmd/xsh -- compile --wasm examples/wasm/sleep_demo.vibe -o /tmp/sleep_demo.wasm
     examples/async_host/target/release/xsh-async-host /tmp/sleep_demo.wasm
 
 # Run WASM file with async host runtime (supports sleep)

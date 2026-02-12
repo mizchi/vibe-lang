@@ -4,7 +4,7 @@
 ///|
 test "xsh format roundtrip regression: trait impl import test and literals" {
   let input =
-    #|use ./mod.xsh { type Option, trait Eq, eq }
+    #|use ./mod.vibe { type Option, trait Eq, eq }
     #|trait Eq
     #|impl Eq for Int
     #|test "quoted case" {
@@ -32,7 +32,7 @@ test "xsh format roundtrip regression: trait impl import test and literals" {
   if not(formatted.contains("test \"quoted case\"")) {
     fail("[test quoted name] missing quoted test name\n---\n\{formatted}")
   }
-  if not(formatted.contains("use ./mod.xsh")) {
+  if not(formatted.contains("use ./mod.vibe")) {
     fail(
       "[use source spacing] missing use source clause spacing\n---\n\{formatted}",
     )
@@ -75,8 +75,8 @@ test "xsh format roundtrip regression: effect signatures stay parse-equivalent" 
 ///|
 test "xsh format keeps import list forms parse-equivalent" {
   let input =
-    #|use ./mod.xsh { type Option, trait Eq, value as value_alias }
-    #|use ./mod.xsh { value_alias }
+    #|use ./mod.vibe { type Option, trait Eq, value as value_alias }
+    #|use ./mod.vibe { value_alias }
   let formatted = format_script(input)
   let before = parse_ast(input) catch {
     e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
@@ -97,7 +97,7 @@ test "xsh format keeps import list forms parse-equivalent" {
 ///|
 test "xsh parse/format import list allows trailing comma" {
   let input =
-    #|use ./mod.xsh { type Option, trait Eq, value as value_alias, }
+    #|use ./mod.vibe { type Option, trait Eq, value as value_alias, }
   let ast = parse_ast(input) catch {
     e => fail("[parse] import trailing comma failed: \{e.to_string()}")
   }
@@ -164,7 +164,7 @@ test "xsh parse/format import list supports module qualifier alias" {
 
 ///|
 test "xsh parse rejects quoted use source" {
-  let input = "use \"./mod.xsh\" { value }\nvalue"
+  let input = "use \"./mod.vibe\" { value }\nvalue"
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
   match parsed {
     Ok(_) => fail("[parse] expected quoted use source to be rejected")
@@ -172,7 +172,7 @@ test "xsh parse rejects quoted use source" {
       assert_true(
         err
         .to_string()
-        .contains("module path without quotes (e.g. ./xsh/std/string.xsh)"),
+        .contains("module path without quotes (e.g. ./vibe/std/string.vibe)"),
       )
   }
 }

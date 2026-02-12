@@ -59,35 +59,35 @@ fn std_layer_name(layer : StdModuleLayer) -> String {
 ///|
 fn std_layer_for_path(path : String) -> StdModuleLayer? {
   let normalized = @xsh_fs.normalize_path(path)
-  if not(normalized.contains("/xsh/std/")) ||
-    not(normalized.has_suffix(".xsh")) ||
-    normalized.has_suffix("_test.xsh") ||
-    normalized.has_suffix("_type_import_test.xsh") ||
-    normalized.has_suffix("/test_import.xsh") {
+  if not(normalized.contains("/vibe/std/")) ||
+    not(normalized.has_suffix(".vibe")) ||
+    normalized.has_suffix("_test.vibe") ||
+    normalized.has_suffix("_type_import_test.vibe") ||
+    normalized.has_suffix("/test_import.vibe") {
     return None
   }
-  if normalized.has_suffix("/xsh/std/builtin_traits.xsh") {
+  if normalized.has_suffix("/vibe/std/builtin_traits.vibe") {
     return Some(StdModuleLayer::TraitContract)
   }
-  if normalized.has_suffix("/xsh/std/bool.xsh") ||
-    normalized.has_suffix("/xsh/std/int.xsh") ||
-    normalized.has_suffix("/xsh/std/float.xsh") ||
-    normalized.has_suffix("/xsh/std/double.xsh") ||
-    normalized.has_suffix("/xsh/std/string.xsh") {
+  if normalized.has_suffix("/vibe/std/bool.vibe") ||
+    normalized.has_suffix("/vibe/std/int.vibe") ||
+    normalized.has_suffix("/vibe/std/float.vibe") ||
+    normalized.has_suffix("/vibe/std/double.vibe") ||
+    normalized.has_suffix("/vibe/std/string.vibe") {
     return Some(StdModuleLayer::PurePrimitive)
   }
-  if normalized.has_suffix("/xsh/std/list.xsh") ||
-    normalized.has_suffix("/xsh/std/option.xsh") {
+  if normalized.has_suffix("/vibe/std/list.vibe") ||
+    normalized.has_suffix("/vibe/std/option.vibe") {
     return Some(StdModuleLayer::PureData)
   }
-  if normalized.has_suffix("/xsh/std/path.xsh") {
+  if normalized.has_suffix("/vibe/std/path.vibe") {
     return Some(StdModuleLayer::RefModel)
   }
-  if normalized.has_suffix("/xsh/std/io.xsh") ||
-    normalized.has_suffix("/xsh/std/threads.xsh") {
+  if normalized.has_suffix("/vibe/std/io.vibe") ||
+    normalized.has_suffix("/vibe/std/threads.vibe") {
     return Some(StdModuleLayer::EffectBoundary)
   }
-  if normalized.contains("/xsh/std/wasm/") {
+  if normalized.contains("/vibe/std/wasm/") {
     return Some(StdModuleLayer::BackendSpecific)
   }
   None

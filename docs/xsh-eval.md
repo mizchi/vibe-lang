@@ -1,6 +1,6 @@
 # xsh eval workflow
 
-`xsh eval` は、式を逐次評価しながらローカル状態を積み上げ、最後に `--export` で `.xsh` として確定するためのコマンド。
+`xsh eval` は、式を逐次評価しながらローカル状態を積み上げ、最後に `--export` で `.vibe` として確定するためのコマンド。
 
 ## Usage
 
@@ -30,7 +30,7 @@ xsh eval \
   - 未指定時は最寄り workspace の scratch namespace DB を使う。
 - `--include <path-or-alias>`
   - 評価前に include source をロードして評価する。
-  - `xsh/std@0.1.0.xdb` 形式の alias や `bit:` プレフィックスをサポート。
+  - `vibe/std@0.1.0.vdb` 形式の alias や `bit:` プレフィックスをサポート。
 - `--inspect-scope`
   - 現在スコープの symbol/type/hash を JSON で出力する。
 - `--assert <name>:<signature>`
@@ -66,8 +66,8 @@ xsh eval \
 
 `--test-for <symbol>` で渡した `<expr...>` は以下へ追記される。
 
-- DB が `tmp1.db` の場合: `tmp1.tests/<symbol>_test.xsh`
-- DB が `/work/tmp1.db` の場合: `/work/tmp1.tests/<symbol>_test.xsh`
+- DB が `tmp1.db` の場合: `tmp1.tests/<symbol>_test.vibe`
+- DB が `/work/tmp1.db` の場合: `/work/tmp1.tests/<symbol>_test.vibe`
 
 この sidecar は本体DB (`tmp1.db`) に混ざらない。
 そのため `--export` の出力にも混ざらない。
@@ -81,7 +81,7 @@ xsh eval --db tmp1.db 'let base = 10'
 xsh eval --db tmp1.db 'let inc = (x: Int) -> Int { x + base }'
 xsh eval --db tmp1.db 'let answer = inc(2)'
 xsh eval --db tmp1.db 'export { answer }'
-xsh eval --db tmp1.db --export main.xsh
+xsh eval --db tmp1.db --export main.vibe
 ```
 
 ### 2) 型検証しながら進める

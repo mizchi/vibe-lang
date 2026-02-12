@@ -305,7 +305,7 @@ fn analyze_module(
                       resolved_path,
                       span: Some(span),
                       hint: Some(
-                        "use `.xm` for multi-module files, or import explicit exported symbols from `.xsh`",
+                        "use `.xm` for multi-module files, or import explicit exported symbols from `.vibe`",
                       ),
                       note: None,
                     })

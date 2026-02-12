@@ -2136,13 +2136,13 @@ fn run_wasm_bench_case(
 ) -> Result[WasmBenchResult, WasmBenchFailure] {
   let parent_dir = @xsh_fs.parent_path(entry_path)
   let prefix = parent_dir +
-    "/.xsh_bench_case_" +
+    "/.vibe_bench_case_" +
     @env.now().to_string() +
     "_" +
     case_index.to_string()
-  let warm_source_path = prefix + "_warm.xsh"
+  let warm_source_path = prefix + "_warm.vibe"
   let warm_wasm_path = prefix + "_warm.wasm"
-  let run_source_path = prefix + "_run.xsh"
+  let run_source_path = prefix + "_run.vibe"
   let run_wasm_path = prefix + "_run.wasm"
   let warm_source = build_bench_case_loop_script(
     prelude_source, case_body_source, warmup,
@@ -3224,7 +3224,7 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
         _ => {
           // Create a temporary source for compilation
           let db = @xsh_lib.XshDb::new()
-          let tmp_path = "/tmp/wasm_repl_" + counter.to_string() + ".xsh"
+          let tmp_path = "/tmp/wasm_repl_" + counter.to_string() + ".vibe"
           db.set_source(tmp_path, line_str)
           // Compile to WASM
           let wasm_bytes = @xsh_lib.compile_module_wasm(db, tmp_path) catch {
@@ -3420,7 +3420,7 @@ fn default_scratch_ns_name() -> String {
 
 ///|
 fn workspace_probe_entry_path() -> String {
-  @xsh_fs.normalize_path(@io.current_dir_or_root() + "/__scratch__.xsh")
+  @xsh_fs.normalize_path(@io.current_dir_or_root() + "/__scratch__.vibe")
 }
 
 ///|
@@ -3430,11 +3430,11 @@ fn current_workspace_index_root() -> String {
 
 ///|
 fn default_ns_db_rel_path(ns_name : String) -> String {
-  ".xsh/namespaces/" + ns_name + ".db"
+  ".vibe/namespaces/" + ns_name + ".db"
 }
 
 ///|
-fn load_index_xdb_object(path : String) -> Map[String, Json] {
+fn load_index_vdb_object(path : String) -> Map[String, Json] {
   let obj : Map[String, Json] = {}
   if not(@os_fs.path_exists(path)) {
     return obj
@@ -3453,22 +3453,22 @@ fn load_index_xdb_object(path : String) -> Map[String, Json] {
 }
 
 ///|
-fn write_index_xdb_object(
-  index_xdb_path : String,
+fn write_index_vdb_object(
+  index_vdb_path : String,
   obj : Map[String, Json],
 ) -> Result[Unit, String] {
   @os_fs.write_string_to_file(
-    index_xdb_path,
+    index_vdb_path,
     Json::object(obj).stringify() + "\n",
   ) catch {
-    e => return Err("write index.xdb: " + e.to_string())
+    e => return Err("write index.vdb: " + e.to_string())
   }
   Ok(())
 }
 
 ///|
-fn resolve_active_ns_name_from_index_xdb(xdb : Map[String, Json]) -> String {
-  match xdb.get("active_namespace") {
+fn resolve_active_ns_name_from_index_vdb(vdb : Map[String, Json]) -> String {
+  match vdb.get("active_namespace") {
     Some(Json::String(name)) =>
       if name.trim().to_string().length() > 0 {
         name.trim().to_string()
@@ -3480,11 +3480,11 @@ fn resolve_active_ns_name_from_index_xdb(xdb : Map[String, Json]) -> String {
 }
 
 ///|
-fn resolve_ns_db_rel_path_from_index_xdb(
-  xdb : Map[String, Json],
+fn resolve_ns_db_rel_path_from_index_vdb(
+  vdb : Map[String, Json],
   ns_name : String,
 ) -> String {
-  match xdb.get("namespaces") {
+  match vdb.get("namespaces") {
     Some(Json::Object(namespaces)) =>
       match namespaces.get(ns_name) {
         Some(Json::Object(ns_obj)) =>
@@ -3524,15 +3524,15 @@ fn resolve_scratch_db_path_for_index_root(
         Ok((default_scratch_ns_name(), @loader.resolve_entry_path(path)))
       }
     None => {
-      let xsh_dir = find_xsh_dir(index_root + "/index.xsh")
-      let index_xdb_path = index_root + "/index.xdb"
-      let xdb = load_index_xdb_object(index_xdb_path)
-      let ns_name = resolve_active_ns_name_from_index_xdb(xdb)
-      let db_rel = resolve_ns_db_rel_path_from_index_xdb(xdb, ns_name)
+      let xsh_dir = find_xsh_dir(index_root + "/index.vibe")
+      let index_vdb_path = index_root + "/index.vdb"
+      let vdb = load_index_vdb_object(index_vdb_path)
+      let ns_name = resolve_active_ns_name_from_index_vdb(vdb)
+      let db_rel = resolve_ns_db_rel_path_from_index_vdb(vdb, ns_name)
       let db_path = to_absolute_db_path(index_root, db_rel)
-      let next_xdb = clone_json_map(xdb)
-      next_xdb["active_namespace"] = Json::string(ns_name)
-      let namespaces = match xdb.get("namespaces") {
+      let next_vdb = clone_json_map(vdb)
+      next_vdb["active_namespace"] = Json::string(ns_name)
+      let namespaces = match vdb.get("namespaces") {
         Some(Json::Object(current)) => clone_json_map(current)
         _ => {}
       }
@@ -3540,16 +3540,16 @@ fn resolve_scratch_db_path_for_index_root(
         Some(Json::Object(current)) => clone_json_map(current)
         _ => {}
       }
-      let db_path_in_xdb = if db_path.has_prefix(xsh_dir) {
+      let db_path_in_vdb = if db_path.has_prefix(xsh_dir) {
         default_ns_db_rel_path(ns_name)
       } else {
         db_path
       }
-      ns_obj["db_path"] = Json::string(db_path_in_xdb)
+      ns_obj["db_path"] = Json::string(db_path_in_vdb)
       ns_obj["updated_at"] = Json::string(@env.now().to_string())
       namespaces[ns_name] = Json::object(ns_obj)
-      next_xdb["namespaces"] = Json::object(namespaces)
-      match write_index_xdb_object(index_xdb_path, next_xdb) {
+      next_vdb["namespaces"] = Json::object(namespaces)
+      match write_index_vdb_object(index_vdb_path, next_vdb) {
         Ok(_) => ()
         Err(err) => return Err(err)
       }
@@ -3772,7 +3772,7 @@ fn eval_test_file_path(db_path : String, target : String) -> String {
   eval_tests_dir_path(db_path) +
   "/" +
   sanitize_eval_test_target(target) +
-  "_test.xsh"
+  "_test.vibe"
 }
 
 ///|
@@ -4324,9 +4324,9 @@ fn apply_cmd(args : Array[String]) -> Unit {
         short_hash(graph_head) +
         " defs=" +
         index.defs.length().to_string() +
-        " index_xdb=" +
+        " index_vdb=" +
         index_root +
-        "/index.xdb",
+        "/index.vdb",
       )
     }
   }
@@ -4532,10 +4532,10 @@ fn history_cmd(args : Array[String]) -> Unit {
       }
       if hard {
         let index_root = current_workspace_index_root()
-        let index_xdb_path = index_root + "/index.xdb"
-        let xdb = load_index_xdb_object(index_xdb_path)
-        let next_xdb = clone_json_map(xdb)
-        let namespaces = match xdb.get("namespaces") {
+        let index_vdb_path = index_root + "/index.vdb"
+        let vdb = load_index_vdb_object(index_vdb_path)
+        let next_vdb = clone_json_map(vdb)
+        let namespaces = match vdb.get("namespaces") {
           Some(Json::Object(current)) => clone_json_map(current)
           _ => {}
         }
@@ -4547,9 +4547,9 @@ fn history_cmd(args : Array[String]) -> Unit {
         ns_obj["history_head"] = Json::string("")
         ns_obj["updated_at"] = Json::string(@env.now().to_string())
         namespaces[namespace_name] = Json::object(ns_obj)
-        next_xdb["active_namespace"] = Json::string(namespace_name)
-        next_xdb["namespaces"] = Json::object(namespaces)
-        match write_index_xdb_object(index_xdb_path, next_xdb) {
+        next_vdb["active_namespace"] = Json::string(namespace_name)
+        next_vdb["namespaces"] = Json::object(namespaces)
+        match write_index_vdb_object(index_vdb_path, next_vdb) {
           Ok(_) => ()
           Err(err) => abort("history reset: " + err)
         }
@@ -4934,8 +4934,8 @@ fn write_file_resolve_candidate(
 }
 
 ///|
-fn graph_head_from_index_xdb(xdb : Map[String, Json]) -> String? {
-  match xdb.get("graph_head") {
+fn graph_head_from_index_vdb(vdb : Map[String, Json]) -> String? {
+  match vdb.get("graph_head") {
     Some(Json::String(hash)) => {
       let normalized = hash.trim().to_string()
       if normalized.length() == 0 {
@@ -4952,13 +4952,13 @@ fn graph_head_from_index_xdb(xdb : Map[String, Json]) -> String? {
 fn load_graph_index_from_index_root(
   index_root : String,
 ) -> Result[@x_exp.AdvancedGraphIndex?, String] {
-  let index_xdb_path = index_root + "/index.xdb"
-  let xdb = load_index_xdb_object(index_xdb_path)
-  let graph_head = match graph_head_from_index_xdb(xdb) {
+  let index_vdb_path = index_root + "/index.vdb"
+  let vdb = load_index_vdb_object(index_vdb_path)
+  let graph_head = match graph_head_from_index_vdb(vdb) {
     Some(hash) => hash
     None => return Ok(None)
   }
-  let xsh_dir = find_xsh_dir(index_root + "/index.xsh")
+  let xsh_dir = find_xsh_dir(index_root + "/index.vibe")
   let codebase = @codebase.Codebase::new(xsh_dir)
   let graph_source = match codebase.read_object(graph_head) {
     Some(source) => source
@@ -5350,20 +5350,20 @@ fn find_git_dir() -> String {
 
 ///|
 fn find_xsh_dir(path : String) -> String {
-  // Look for .xsh directory, or create one in current directory
+  // Look for .vibe directory, or create one in current directory
   let base = @xsh_fs.parent_path(path)
-  let xsh_dir = base + "/.xsh"
+  let xsh_dir = base + "/.vibe"
   if @os_fs.path_exists(xsh_dir) {
     return xsh_dir
   }
-  // Create .xsh directory
+  // Create .vibe directory
   @os_fs.create_dir(xsh_dir) catch {
     _ => {
       // Try current directory
-      let cwd_xsh = ".xsh"
+      let cwd_xsh = ".vibe"
       if not(@os_fs.path_exists(cwd_xsh)) {
         @os_fs.create_dir(cwd_xsh) catch {
-          e => abort("save: mkdir .xsh: " + e.to_string())
+          e => abort("save: mkdir .vibe: " + e.to_string())
         }
       }
       return cwd_xsh
@@ -5408,7 +5408,7 @@ fn expand_cmd(args : Array[String]) -> Unit {
   if not(output_json) && not(output_source) {
     output_source = true
   }
-  // Find .xsh directory from target path
+  // Find .vibe directory from target path
   let base_dir = if is_hash_like(target) {
     "."
   } else {
@@ -5574,16 +5574,16 @@ fn target_substring(s : String, start : Int, end : Int) -> String {
 
 ///|
 fn find_xsh_dir_from(start : String) -> String {
-  // Search for .xsh directory starting from given directory
+  // Search for .vibe directory starting from given directory
   let mut dir = if start == "" { "." } else { start }
   for _ in 0..<10 {
-    let xsh_path = dir + "/.xsh"
+    let xsh_path = dir + "/.vibe"
     if @os_fs.path_exists(xsh_path) {
       return xsh_path
     }
     dir = dir + "/.."
   }
-  abort("expand: .xsh directory not found (searched from: " + start + ")")
+  abort("expand: .vibe directory not found (searched from: " + start + ")")
 }
 
 ///|
@@ -6150,16 +6150,16 @@ fn print_graph_def_entry(def : @x_exp.AdvancedGraphDef) -> Unit {
 }
 
 ///|
-fn write_index_xdb_graph_head(
+fn write_index_vdb_graph_head(
   index_root : String,
   graph_head : String,
   function_tracking : Json,
 ) -> Result[Unit, String] {
-  let index_xdb_path = index_root + "/index.xdb"
-  let xdb_obj = load_index_xdb_object(index_xdb_path)
-  xdb_obj["graph_head"] = Json::string(graph_head)
-  xdb_obj["function_tracking"] = function_tracking
-  write_index_xdb_object(index_xdb_path, xdb_obj)
+  let index_vdb_path = index_root + "/index.vdb"
+  let vdb_obj = load_index_vdb_object(index_vdb_path)
+  vdb_obj["graph_head"] = Json::string(graph_head)
+  vdb_obj["function_tracking"] = function_tracking
+  write_index_vdb_object(index_vdb_path, vdb_obj)
 }
 
 ///|
@@ -6178,17 +6178,17 @@ fn sync_graph_head_for_loaded_db(
   let index_json = index.to_json().stringify()
   let graph_head = @xsh_core.git_blob_hash_string(index_json)
   let index_root = @codebase.resolve_index_root(entry)
-  let xsh_dir = find_xsh_dir(index_root + "/index.xsh")
+  let xsh_dir = find_xsh_dir(index_root + "/index.vibe")
   let codebase = @codebase.Codebase::new(xsh_dir)
   let _ = codebase.write_object(graph_head, index_json) catch {
     e => return Err("sync graph snapshot object: " + e.to_string())
   }
-  let index_xdb_path = index_root + "/index.xdb"
-  let xdb_obj = load_index_xdb_object(index_xdb_path)
+  let index_vdb_path = index_root + "/index.vdb"
+  let vdb_obj = load_index_vdb_object(index_vdb_path)
   let function_tracking = compute_function_tracking_json(
-    db, paths, index, xdb_obj,
+    db, paths, index, vdb_obj,
   )
-  match write_index_xdb_graph_head(index_root, graph_head, function_tracking) {
+  match write_index_vdb_graph_head(index_root, graph_head, function_tracking) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
@@ -6278,7 +6278,7 @@ fn index_build_cmd(args : Array[String]) -> Unit {
             out_path +
             " (" +
             index.defs.length().to_string() +
-            " defs), index.xdb graph_head=" +
+            " defs), index.vdb graph_head=" +
             short_hash(graph_head),
           )
         Err(err) => abort("index build: " + err)

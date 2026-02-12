@@ -92,7 +92,7 @@ compile_entry() {
 
 while IFS= read -r path; do
   compile_entry "examples" "$path" "1"
-done < <(find "$ROOT_DIR/examples" -maxdepth 1 -type f -name '*.xsh' ! -name '*_test.xsh' | sed "s#^$ROOT_DIR/##" | sort)
+done < <(find "$ROOT_DIR/examples" -maxdepth 1 -type f -name '*.vibe' ! -name '*_test.vibe' | sed "s#^$ROOT_DIR/##" | sort)
 
 if [[ -d "$ROOT_DIR/bench/bundle_size" ]]; then
   active_groups+=("bench/importers")
@@ -119,10 +119,10 @@ if [[ -d "$ROOT_DIR/bench/bundle_size" ]]; then
 fi
 
 if [[ "$INCLUDE_STD_SURFACES" == "1" ]]; then
-  active_groups+=("xsh/std")
+  active_groups+=("vibe/std")
   while IFS= read -r path; do
-    compile_entry "xsh/std" "$path" "1"
-  done < <(find "$ROOT_DIR/xsh/std" -maxdepth 1 -type f -name '*.xsh' ! -name '*_test.xsh' | sed "s#^$ROOT_DIR/##" | sort)
+    compile_entry "vibe/std" "$path" "1"
+  done < <(find "$ROOT_DIR/vibe/std" -maxdepth 1 -type f -name '*.vibe' ! -name '*_test.vibe' | sed "s#^$ROOT_DIR/##" | sort)
 fi
 
 {

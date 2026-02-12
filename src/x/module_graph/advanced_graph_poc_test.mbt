@@ -15,7 +15,7 @@ fn build_test_graph_index_at(
 
 ///|
 fn build_test_graph_index(source : String) -> AdvancedGraphIndex {
-  build_test_graph_index_at("/tmp/advanced_graph_poc_test_main.xsh", source)
+  build_test_graph_index_at("/tmp/advanced_graph_poc_test_main.vibe", source)
 }
 
 ///|
@@ -59,7 +59,7 @@ test "advanced graph poc builds symbol/type indices" {
 
 ///|
 test "advanced graph poc module hash uses normalized ast hash" {
-  let path = "/tmp/advanced_graph_hash_main.xsh"
+  let path = "/tmp/advanced_graph_hash_main.vibe"
   let source =
     #|let id = (x: Int) -> Int { x }
     #|let add = (x: Int, y: Int) -> Int { x + y }
@@ -81,8 +81,8 @@ test "advanced graph poc module hash uses normalized ast hash" {
 test "advanced graph poc semantic id stable across path rebinding" {
   let source =
     #|let map_id = (xs: Array[Int]) -> Array[Int] { xs }
-  let index_a = build_test_graph_index_at("/tmp/path_a.xsh", source)
-  let index_b = build_test_graph_index_at("/tmp/path_b.xsh", source)
+  let index_a = build_test_graph_index_at("/tmp/path_a.vibe", source)
+  let index_b = build_test_graph_index_at("/tmp/path_b.vibe", source)
   let a_defs = index_a.query_symbol("map_id")
   let b_defs = index_b.query_symbol("map_id")
   assert_eq(a_defs.length(), 1)
@@ -199,8 +199,8 @@ test "advanced graph poc incremental update no-op for empty changed paths" {
 
 ///|
 test "advanced graph poc incremental update matches full rebuild" {
-  let path_a = "/tmp/advanced_graph_inc_a.xsh"
-  let path_b = "/tmp/advanced_graph_inc_b.xsh"
+  let path_a = "/tmp/advanced_graph_inc_a.vibe"
+  let path_b = "/tmp/advanced_graph_inc_b.vibe"
   let base_a =
     #|let keep_a = (x: Int) -> Int { x }
     #|let removed_a = 1
@@ -370,7 +370,7 @@ test "advanced graph poc remote query reports missing module hashes" {
 
 ///|
 test "advanced graph poc wal jsonl replay roundtrip" {
-  let path = "/tmp/advanced_graph_wal_replay_main.xsh"
+  let path = "/tmp/advanced_graph_wal_replay_main.vibe"
   let wal_path = "/tmp/advanced_graph_replay.wal.jsonl"
   remove_file_if_exists(wal_path)
   let db = @xsh.XshDb::new()
@@ -414,7 +414,7 @@ test "advanced graph poc wal jsonl replay roundtrip" {
 
 ///|
 test "advanced graph poc snapshot plus wal load and compact" {
-  let path = "/tmp/advanced_graph_wal_snapshot_main.xsh"
+  let path = "/tmp/advanced_graph_wal_snapshot_main.vibe"
   let snapshot_path = "/tmp/advanced_graph_snapshot.json"
   let wal_path = "/tmp/advanced_graph_snapshot.wal.jsonl"
   remove_file_if_exists(snapshot_path)
@@ -469,7 +469,7 @@ test "advanced graph poc snapshot plus wal load and compact" {
 
 ///|
 test "advanced graph poc wal batch append and stats" {
-  let path = "/tmp/advanced_graph_wal_batch_main.xsh"
+  let path = "/tmp/advanced_graph_wal_batch_main.vibe"
   let wal_path = "/tmp/advanced_graph_batch.wal.jsonl"
   remove_file_if_exists(wal_path)
   let db = @xsh.XshDb::new()
@@ -517,7 +517,7 @@ test "advanced graph poc wal batch append and stats" {
 
 ///|
 test "advanced graph poc wal load with threshold compaction" {
-  let path = "/tmp/advanced_graph_wal_compact_main.xsh"
+  let path = "/tmp/advanced_graph_wal_compact_main.vibe"
   let snapshot_path = "/tmp/advanced_graph_wal_threshold_snapshot.json"
   let wal_path = "/tmp/advanced_graph_wal_threshold.wal.jsonl"
   remove_file_if_exists(snapshot_path)

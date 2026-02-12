@@ -34,8 +34,8 @@ fn sort_strings_typecheck_fixture(arr : Array[String]) -> Unit {
 
 ///|
 fn diag_path_for_fixture(path : String) -> String {
-  if path.has_suffix(".xsh") {
-    let stem = try path[:path.length() - 4] catch {
+  if path.has_suffix(".vibe") {
+    let stem = try path[:path.length() - 5] catch {
       _ => return path + ".diag"
     } noraise {
       view => view.to_string()
@@ -95,13 +95,13 @@ pub fn collect_typecheck_fixture_entries(
     let is_file = @os_fs.is_file(path) catch {
       e => return Err("[\{fixture_dir}] stat failed: \{e.to_string()}")
     }
-    if is_file && path.has_suffix(".xsh") {
+    if is_file && path.has_suffix(".vibe") {
       files.push(path)
     }
   }
   sort_strings_typecheck_fixture(files)
   if files.length() == 0 {
-    return Err("[\{fixture_dir}] no .xsh fixtures found")
+    return Err("[\{fixture_dir}] no .vibe fixtures found")
   }
   let out : Array[TypecheckFixtureEntry] = []
   for source_path in files {

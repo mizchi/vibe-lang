@@ -26,5 +26,5 @@ Only files listed there are measured for `bench/importers`.
   (`wasm` -> `wasm-js-string` -> `wasm-no-dce` fallback)
 - Optional no-dce diagnostic group:
   `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1 just bench-bundle-size`
-- `xsh/std` surface scan is opt-in:
+- `vibe/std` surface scan is opt-in:
   `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1 just bench-bundle-size`

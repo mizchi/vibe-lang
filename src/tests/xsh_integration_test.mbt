@@ -29,8 +29,8 @@ fn register_import_modules(
 test "xsh integration import parsing" {
   let db = XshDb::new()
   let lib_source = "export let value = 7"
-  let main_source = "use ./lib.xsh { value }\nlet x = 1"
-  db.set_source("./lib.xsh", lib_source)
+  let main_source = "use ./lib.vibe { value }\nlet x = 1"
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let import_hash = @core.git_blob_hash_string(lib_source)
@@ -46,7 +46,7 @@ test "xsh integration hash import parsing" {
   let lib_source = "export let value = 7"
   let import_hash = @core.git_blob_hash_string(lib_source)
   let main_source = "use #\{import_hash} { value }\nlet x = value"
-  db.set_source("./lib.xsh", lib_source)
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let import_ref = @core.module_ref_from_hash(import_hash)
@@ -59,7 +59,7 @@ test "xsh integration version import parsing" {
   let db = XshDb::new()
   let lib_source = "export let value = 7"
   let import_hash = @core.git_blob_hash_string(lib_source)
-  db.set_source("./lib.xsh", lib_source)
+  db.set_source("./lib.vibe", lib_source)
   db.set_version_ref("main", import_hash)
   db.set_source("main", "use version@main { value }\nlet x = value")
   let compiled = compile_module(db, "main")
@@ -81,7 +81,7 @@ test "xsh integration symbol import parsing" {
   let db = XshDb::new()
   let lib_source = "export let value = 7"
   let import_hash = @core.git_blob_hash_string(lib_source)
-  db.set_source("./lib.xsh", lib_source)
+  db.set_source("./lib.vibe", lib_source)
   db.set_symbol_ref("std/math", import_hash)
   db.set_source("main", "use symbol@std/math { value }\nlet x = value")
   let compiled = compile_module(db, "main")
@@ -108,8 +108,8 @@ test "xsh integration import alias forwards generic helper" {
     #|export let unwrap_or = [T](opt: Option[T], fallback: T) -> T {
     #|  option_unwrap_or(opt, fallback)
     #|}
-  let main_source = "use ./lib.xsh { unwrap_or }\nunwrap_or(Some(5), 0)"
-  db.set_source("./lib.xsh", lib_source)
+  let main_source = "use ./lib.vibe { unwrap_or }\nunwrap_or(Some(5), 0)"
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -136,8 +136,8 @@ test "xsh integration cross-module trait-bound eq" {
     #|export trait Eq
     #|impl Eq for String
     #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool { a == b }
-  let main_source = "use ./lib.xsh { Eq, cmp_eq }\ncmp_eq(\"a\", \"a\")"
-  db.set_source("./lib.xsh", lib_source)
+  let main_source = "use ./lib.vibe { Eq, cmp_eq }\ncmp_eq(\"a\", \"a\")"
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -171,8 +171,8 @@ test "xsh integration cross-module option_equals" {
     #|    _ => false
     #|  }
     #|}
-  let main_source = "use ./lib.xsh { Eq, option_equals }\noption_equals(Some(1), Some(1))"
-  db.set_source("./lib.xsh", lib_source)
+  let main_source = "use ./lib.vibe { Eq, option_equals }\noption_equals(Some(1), Some(1))"
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -196,8 +196,8 @@ test "xsh integration cross-module option_equals" {
 test "xsh integration sealed exported trait rejects external impl" {
   let db = XshDb::new()
   let lib_source = "export trait Eq"
-  let main_source = "use ./lib.xsh { Eq }\nimpl Eq for String"
-  db.set_source("./lib.xsh", lib_source)
+  let main_source = "use ./lib.vibe { Eq }\nimpl Eq for String"
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
@@ -213,11 +213,11 @@ test "xsh integration export open trait allows external impl" {
   let db = XshDb::new()
   let lib_source = "export open trait Eq"
   let main_source =
-    #|use ./lib.xsh { Eq }
+    #|use ./lib.vibe { Eq }
     #|impl Eq for String
     #|let same = [T: Eq](a: T, b: T) -> Bool { a == b }
     #|same("a", "a")
-  db.set_source("./lib.xsh", lib_source)
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -244,8 +244,8 @@ test "xsh integration trait bound requires explicit trait import" {
     #|export open trait Eq
     #|impl Eq for String
     #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool { a == b }
-  let main_source = "use ./lib.xsh { cmp_eq }\ncmp_eq(\"a\", \"a\")"
-  db.set_source("./lib.xsh", lib_source)
+  let main_source = "use ./lib.vibe { cmp_eq }\ncmp_eq(\"a\", \"a\")"
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
@@ -263,8 +263,8 @@ test "xsh integration explicit trait import enables trait-bounded call" {
     #|export open trait Eq
     #|impl Eq for String
     #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool { a == b }
-  let main_source = "use ./lib.xsh { Eq, cmp_eq }\ncmp_eq(\"a\", \"a\")"
-  db.set_source("./lib.xsh", lib_source)
+  let main_source = "use ./lib.vibe { Eq, cmp_eq }\ncmp_eq(\"a\", \"a\")"
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -292,10 +292,10 @@ test "xsh integration imported subtrait keeps supertrait relation" {
     #|export open trait Ord: Eq
     #|impl Ord for Int
   let main_source =
-    #|use ./lib.xsh { Ord }
+    #|use ./lib.vibe { Ord }
     #|let same = [T: Ord](a: T, b: T) -> Bool { a == b }
     #|same(1, 1)
-  db.set_source("./lib.xsh", lib_source)
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -323,9 +323,9 @@ test "xsh integration trait alias import satisfies imported bound" {
     #|impl Eq for String
     #|export let cmp_eq = [T: Eq](a: T, b: T) -> Bool { a == b }
   let main_source =
-    #|use ./lib.xsh { Eq as Equality, cmp_eq }
+    #|use ./lib.vibe { Eq as Equality, cmp_eq }
     #|cmp_eq("a", "a")
-  db.set_source("./lib.xsh", lib_source)
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -354,10 +354,10 @@ test "xsh integration trait alias keeps supertrait chain" {
     #|impl Ord for Int
     #|export let same_ord = [T: Ord](a: T, b: T) -> Bool { a == b }
   let main_source =
-    #|use ./lib.xsh { Eq as Equality, Ord as Ordering, same_ord }
+    #|use ./lib.vibe { Eq as Equality, Ord as Ordering, same_ord }
     #|let same = [T: Ordering](a: T, b: T) -> Bool { a == b }
     #|same(1, 1) && same_ord(1, 1)
-  db.set_source("./lib.xsh", lib_source)
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -382,7 +382,7 @@ test "xsh integration imported suberror can be raised as Error" {
   let db = XshDb::new()
   let lib_source = "export suberror AppError(String);"
   let main_source =
-    #|use ./lib.xsh { AppError }
+    #|use ./lib.vibe { AppError }
     #|let fail = () -> Unit with {Error} {
     #|  raise AppError("boom")
     #|}
@@ -390,7 +390,7 @@ test "xsh integration imported suberror can be raised as Error" {
     #|  try { fail(); "ok" } catch { "caught" }
     #|}
     #|run()
-  db.set_source("./lib.xsh", lib_source)
+  db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
@@ -466,17 +466,17 @@ test "xsh integration module-qualified import accepts alias" {
 }
 
 ///|
-test "xsh integration module-qualified import rejects .xsh source" {
+test "xsh integration module-qualified import rejects .vibe source" {
   let db = XshDb::new()
   db.set_source(
-    "./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
+    "./lib.vibe", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
   )
-  db.set_source("main", "use ./lib.xsh { module math }\nmath::inc(1)")
+  db.set_source("main", "use ./lib.vibe { module math }\nmath::inc(1)")
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
   )
   match compiled {
-    Ok(_) => fail("expected import error for .xsh module namespace import")
+    Ok(_) => fail("expected import error for .vibe module namespace import")
     Err(err) =>
       assert_true(
         err
@@ -490,9 +490,9 @@ test "xsh integration module-qualified import rejects .xsh source" {
 test "xsh integration module-qualified import rejects member path" {
   let db = XshDb::new()
   db.set_source(
-    "./lib.xsh", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
+    "./lib.vibe", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
   )
-  db.set_source("main", "use ./lib.xsh { module math::inc }\nmath::inc(1)")
+  db.set_source("main", "use ./lib.vibe { module math::inc }\nmath::inc(1)")
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
   )

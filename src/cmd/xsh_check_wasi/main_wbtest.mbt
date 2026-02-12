@@ -11,10 +11,10 @@ test "parse_cmd_args accepts --source input" {
 
 ///|
 test "parse_cmd_args accepts positional file input" {
-  let parsed = parse_cmd_args(["examples/basic.xsh"])
+  let parsed = parse_cmd_args(["examples/basic.vibe"])
   match parsed {
     Ok({ mode: CommandMode::Check, input: CheckInput::File(path) }) =>
-      assert_eq(path, "examples/basic.xsh")
+      assert_eq(path, "examples/basic.vibe")
     Ok(_) => fail("expected file input")
     Err(err) => fail(err)
   }
@@ -33,7 +33,7 @@ test "parse_cmd_args parses --format mode" {
 
 ///|
 test "parse_cmd_args rejects source and file mixed input" {
-  let parsed = parse_cmd_args(["--source", "1", "examples/basic.xsh"])
+  let parsed = parse_cmd_args(["--source", "1", "examples/basic.vibe"])
   match parsed {
     Ok(_) => fail("expected parse error")
     Err(err) => assert_eq(err, "check: --source and file input are exclusive")

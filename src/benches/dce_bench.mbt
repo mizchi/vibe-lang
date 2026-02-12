@@ -19,7 +19,7 @@ fn bench_dce(
 ) -> DceBenchResult raise {
   let db = @xsh.XshDb::new()
   if lib_source.length() > 0 {
-    db.set_source("./lib.xsh", lib_source)
+    db.set_source("./lib.vibe", lib_source)
   }
   db.set_source("main", main_source)
   // Compile main module
@@ -134,7 +134,7 @@ let lib_chain : String =
 
 ///|
 let main_chain : String =
-  #|use ./lib.xsh { level4 }
+  #|use ./lib.vibe { level4 }
   #|level4(1)
 
 ///|
@@ -158,7 +158,7 @@ let lib_all_used : String =
 
 ///|
 let main_all_used : String =
-  #|use ./lib.xsh { fn1, fn2 }
+  #|use ./lib.vibe { fn1, fn2 }
   #|fn1(1) + fn2(2)
 
 ///|

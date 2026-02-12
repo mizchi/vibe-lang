@@ -42,8 +42,8 @@ test "xsh warning reports unnecessary mut binding" {
 ///|
 test "xsh warning reports unused import local name" {
   let db = XshDb::new()
-  db.set_source("./lib.xsh", "export let foo = 1")
-  db.set_source("main", "use ./lib.xsh { foo as local_foo }\nlet x = 1\nx")
+  db.set_source("./lib.vibe", "export let foo = 1")
+  db.set_source("main", "use ./lib.vibe { foo as local_foo }\nlet x = 1\nx")
   let _ = db.types("main")
   let warnings = db.warnings("main")
   assert_eq(warnings.length(), 1)
@@ -54,8 +54,8 @@ test "xsh warning reports unused import local name" {
 test "xsh import parsing" {
   // Test that import syntax parses correctly
   let db = XshDb::new()
-  db.set_source("main", "use ./foo.xsh { y }\nlet x = 1")
-  db.set_source("./foo.xsh", "export let y = 2")
+  db.set_source("main", "use ./foo.vibe { y }\nlet x = 1")
+  db.set_source("./foo.vibe", "export let y = 2")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -73,7 +73,7 @@ test "xsh hash import resolves by content hash" {
   let db = XshDb::new()
   let lib_source = "export let y = 2"
   let lib_hash = @core.git_blob_hash_string(lib_source)
-  db.set_source("./foo.xsh", lib_source)
+  db.set_source("./foo.vibe", lib_source)
   db.set_source("main", "use #\{lib_hash} { y }\nlet x = y")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
@@ -93,9 +93,9 @@ test "xsh hash import resolves by content hash" {
 ///|
 test "xsh import cycle reports diagnostic" {
   let db = XshDb::new()
-  db.set_source("main", "use ./a.xsh { a }\nlet x = a")
-  db.set_source("./a.xsh", "use ./b.xsh { b }\nexport let a = b")
-  db.set_source("./b.xsh", "use ./a.xsh { a }\nexport let b = a")
+  db.set_source("main", "use ./a.vibe { a }\nlet x = a")
+  db.set_source("./a.vibe", "use ./b.vibe { b }\nexport let a = b")
+  db.set_source("./b.vibe", "use ./a.vibe { a }\nexport let b = a")
   let _ = db.imports("main")
   let diags = db.diagnostics("main")
   let mut found = false
@@ -110,17 +110,17 @@ test "xsh import cycle reports diagnostic" {
 ///|
 test "xsh import keeps normalized path object" {
   let db = XshDb::new()
-  db.set_source("/project/lib/util.xsh", "export let y = 2")
-  db.set_source("/project/main.xsh", "use ./lib/./util.xsh { y }\nlet x = y")
-  let imports = db.imports("/project/main.xsh")
+  db.set_source("/project/lib/util.vibe", "export let y = 2")
+  db.set_source("/project/main.vibe", "use ./lib/./util.vibe { y }\nlet x = y")
+  let imports = db.imports("/project/main.vibe")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
-  assert_eq(imp.path, "/project/lib/util.xsh")
+  assert_eq(imp.path, "/project/lib/util.vibe")
   match imp.path_obj {
     Some(path_obj) => {
-      assert_eq(path_obj.raw, "/project/lib/util.xsh")
+      assert_eq(path_obj.raw, "/project/lib/util.vibe")
       assert_eq(path_obj.base, "/project")
-      assert_eq(path_obj.normalized, "/project/lib/util.xsh")
+      assert_eq(path_obj.normalized, "/project/lib/util.vibe")
     }
     None => fail("missing path object")
   }
@@ -130,8 +130,8 @@ test "xsh import keeps normalized path object" {
 test "xsh path import lock missing reports diagnostic when required" {
   let db = XshDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "use ./foo.xsh { y }\nlet x = y")
-  db.set_source("./foo.xsh", "export let y = 2")
+  db.set_source("main", "use ./foo.vibe { y }\nlet x = y")
+  db.set_source("./foo.vibe", "export let y = 2")
   let _ = db.imports("main")
   let diags = db.diagnostics("main")
   let mut found = false
@@ -147,10 +147,10 @@ test "xsh path import lock missing reports diagnostic when required" {
 test "xsh path import lock mismatch reports diagnostic when required" {
   let db = XshDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "use ./foo.xsh { y }\nlet x = y")
+  db.set_source("main", "use ./foo.vibe { y }\nlet x = y")
   let lib_source = "export let y = 2"
-  db.set_source("./foo.xsh", lib_source)
-  db.set_path_ref("./foo.xsh", "0000000000000000000000000000000000000000")
+  db.set_source("./foo.vibe", lib_source)
+  db.set_path_ref("./foo.vibe", "0000000000000000000000000000000000000000")
   let _ = db.imports("main")
   let diags = db.diagnostics("main")
   let mut found = false
@@ -166,11 +166,11 @@ test "xsh path import lock mismatch reports diagnostic when required" {
 test "xsh path import lock accepts matching hash" {
   let db = XshDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "use ./foo.xsh { y }\nlet x = y")
+  db.set_source("main", "use ./foo.vibe { y }\nlet x = y")
   let lib_source = "export let y = 2"
-  db.set_source("./foo.xsh", lib_source)
+  db.set_source("./foo.vibe", lib_source)
   let lib_hash = @core.git_blob_hash_string(lib_source)
-  db.set_path_ref("./foo.xsh", lib_hash)
+  db.set_path_ref("./foo.vibe", lib_hash)
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
   assert_eq(imports[0].hash, Some(lib_hash))
@@ -183,8 +183,8 @@ test "xsh path import lock accepts matching hash" {
 test "xsh compile fails on import diagnostics" {
   let db = XshDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "use ./foo.xsh { y }\nlet x = y")
-  db.set_source("./foo.xsh", "export let y = 2")
+  db.set_source("main", "use ./foo.vibe { y }\nlet x = y")
+  db.set_source("./foo.vibe", "export let y = 2")
   let result : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
   )
@@ -200,8 +200,8 @@ test "xsh hash import keeps immutable snapshot after source update" {
   let lib_v1 = "export let y = 2"
   let lib_v2 = "export let y = 3"
   let hash_v1 = @core.git_blob_hash_string(lib_v1)
-  db.set_source("./foo.xsh", lib_v1)
-  db.set_source("./foo.xsh", lib_v2)
+  db.set_source("./foo.vibe", lib_v1)
+  db.set_source("./foo.vibe", lib_v2)
   db.set_source("main", "use #\{hash_v1} { y }\nlet x = y")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
@@ -222,7 +222,7 @@ test "xsh version import resolves through lock ref" {
   let db = XshDb::new()
   let lib_source = "export let y = 2"
   let lib_hash = @core.git_blob_hash_string(lib_source)
-  db.set_source("./foo.xsh", lib_source)
+  db.set_source("./foo.vibe", lib_source)
   db.set_version_ref("main", lib_hash)
   db.set_source("entry", "use version@main { y }\nlet x = y")
   let imports = db.imports("entry")
@@ -240,7 +240,7 @@ test "xsh symbol import resolves through lock ref" {
   let db = XshDb::new()
   let lib_source = "export let y = 2"
   let lib_hash = @core.git_blob_hash_string(lib_source)
-  db.set_source("./foo.xsh", lib_source)
+  db.set_source("./foo.vibe", lib_source)
   db.set_symbol_ref("std/math", lib_hash)
   db.set_source("entry", "use symbol@std/math { y }\nlet x = y")
   let imports = db.imports("entry")
@@ -328,8 +328,8 @@ test "xsh wasm import reports type mismatch on call" {
 ///|
 test "xsh db path std module has no type diagnostics" {
   let db = XshDb::new()
-  let source = @os_fs.read_file_to_string("xsh/std/path.xsh") catch {
-    e => fail("failed to read xsh/std/path.xsh: " + e.to_string())
+  let source = @os_fs.read_file_to_string("vibe/std/path.vibe") catch {
+    e => fail("failed to read vibe/std/path.vibe: " + e.to_string())
   }
   db.set_source("path", source)
   let env = db.types("path")

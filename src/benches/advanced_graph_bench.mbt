@@ -1,5 +1,5 @@
 ///|
-let bench_graph_path = "/bench/advanced_graph.xsh"
+let bench_graph_path = "/bench/advanced_graph.vibe"
 
 ///|
 fn gen_advanced_graph_source(
@@ -194,7 +194,7 @@ fn bench_graph_watch_many_paths_full_rebuild_cbor(b : @bench.T) -> Unit {
   let changed_file = 13
   let changed_path = "/bench/advanced_graph_many_" +
     changed_file.to_string() +
-    ".xsh"
+    ".vibe"
   let query_symbol = "f" + changed_file.to_string() + "_needle_fn_40"
   let source_changed = gen_advanced_graph_source_for_file(
     changed_file,
@@ -213,7 +213,7 @@ fn bench_graph_watch_many_paths_full_rebuild_cbor(b : @bench.T) -> Unit {
   let db = @xsh.XshDb::new()
   let paths : Array[String] = []
   for i in 0..<file_count {
-    let path = "/bench/advanced_graph_many_" + i.to_string() + ".xsh"
+    let path = "/bench/advanced_graph_many_" + i.to_string() + ".vibe"
     paths.push(path)
     let source = gen_advanced_graph_source_for_file(i, defs_per_file, None, 0)
     db.set_source(path, source)
@@ -267,7 +267,7 @@ fn bench_graph_watch_many_paths_incremental_cbor(b : @bench.T) -> Unit {
   let changed_file = 13
   let changed_path = "/bench/advanced_graph_many_" +
     changed_file.to_string() +
-    ".xsh"
+    ".vibe"
   let query_symbol = "f" + changed_file.to_string() + "_needle_fn_40"
   let source_changed = gen_advanced_graph_source_for_file(
     changed_file,
@@ -286,7 +286,7 @@ fn bench_graph_watch_many_paths_incremental_cbor(b : @bench.T) -> Unit {
   let db = @xsh.XshDb::new()
   let paths : Array[String] = []
   for i in 0..<file_count {
-    let path = "/bench/advanced_graph_many_" + i.to_string() + ".xsh"
+    let path = "/bench/advanced_graph_many_" + i.to_string() + ".vibe"
     paths.push(path)
     let source = gen_advanced_graph_source_for_file(i, defs_per_file, None, 0)
     db.set_source(path, source)

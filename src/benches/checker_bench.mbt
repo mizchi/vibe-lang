@@ -1,5 +1,5 @@
 ///|
-let bench_type_path = "/bench/typechecker.xsh"
+let bench_type_path = "/bench/typechecker.vibe"
 
 ///|
 fn gen_large_typecheck_source(def_count : Int) -> String {
@@ -92,7 +92,7 @@ test "bench: checker.db_types.first_without_db_init" (b : @bench.T) {
   let source = gen_large_typecheck_source(400)
   let mut idx = 0
   b.bench(fn() {
-    let path = "/bench/typechecker-" + idx.to_string() + ".xsh"
+    let path = "/bench/typechecker-" + idx.to_string() + ".vibe"
     idx += 1
     db.set_source(path, source)
     b.keep(db.types(path).get_scheme("v399"))

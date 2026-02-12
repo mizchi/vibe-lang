@@ -267,8 +267,8 @@ fn normalize_lock_path(path : String) -> String {
 
 ///|
 fn strip_module_ext(path : String) -> String {
-  if path.has_suffix(".xsh") && path.length() > 4 {
-    (try! path[0:path.length() - 4]).to_string()
+  if path.has_suffix(".vibe") && path.length() > 5 {
+    (try! path[0:path.length() - 5]).to_string()
   } else if path.has_suffix(".xm") && path.length() > 3 {
     (try! path[0:path.length() - 3]).to_string()
   } else {
@@ -615,15 +615,15 @@ pub fn XshDb::new() -> XshDb {
                 }
               }
               push_candidate(path_obj.normalized)
-              if not(path_obj.normalized.has_suffix(".xsh")) {
-                push_candidate(path_obj.normalized + ".xsh")
+              if not(path_obj.normalized.has_suffix(".vibe")) {
+                push_candidate(path_obj.normalized + ".vibe")
               }
               if not(path_obj.normalized.has_suffix(".xm")) {
                 push_candidate(path_obj.normalized + ".xm")
               }
               push_candidate(path)
-              if not(path.has_suffix(".xsh")) {
-                push_candidate(path + ".xsh")
+              if not(path.has_suffix(".vibe")) {
+                push_candidate(path + ".vibe")
               }
               if not(path.has_suffix(".xm")) {
                 push_candidate(path + ".xm")
@@ -1231,7 +1231,7 @@ pub fn XshDb::new() -> XshDb {
                           imp.path,
                           span: Some(span),
                           hint: Some(
-                            "use `.xm` for multi-module files, or import explicit exported symbols from `.xsh`",
+                            "use `.xm` for multi-module files, or import explicit exported symbols from `.vibe`",
                           ),
                           note: None,
                         })

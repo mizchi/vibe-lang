@@ -1,26 +1,26 @@
-# xsh/std Module Boundaries
+# vibe/std Module Boundaries
 
-`xsh/std` is organized as layered modules. The boundary is validated by `xsh check` and `xsh normalize` for runtime modules under `xsh/std`.
+`vibe/std` is organized as layered modules. The boundary is validated by `xsh check` and `xsh normalize` for runtime modules under `vibe/std`.
 
 ## Layers
 
 | Layer | Modules | Responsibility |
 |---|---|---|
-| `trait-contract` | `xsh/std/builtin_traits.xsh` | Trait contracts and generic contract helpers |
-| `pure-primitive` | `xsh/std/bool.xsh`, `xsh/std/int.xsh`, `xsh/std/float.xsh`, `xsh/std/double.xsh`, `xsh/std/string.xsh` | Pure value operations |
-| `pure-data` | `xsh/std/list.xsh`, `xsh/std/option.xsh`, `xsh/std/threads/spec.xsh` | Pure data structures and transforms |
-| `ref-model` | `xsh/std/path/ref.xsh`, `xsh/std/path.xsh` | Reference/path model abstractions |
-| `effect-boundary` | `xsh/std/io.xsh`, `xsh/std/path/runtime.xsh`, `xsh/std/threads/runtime.xsh`, `xsh/std/threads.xsh` | Runtime side-effect bridges |
-| `backend-specific` | `xsh/std/wasm/*.xsh` | Backend-specific experimental APIs |
+| `trait-contract` | `vibe/std/builtin_traits.vibe` | Trait contracts and generic contract helpers |
+| `pure-primitive` | `vibe/std/bool.vibe`, `vibe/std/int.vibe`, `vibe/std/float.vibe`, `vibe/std/double.vibe`, `vibe/std/string.vibe` | Pure value operations |
+| `pure-data` | `vibe/std/list.vibe`, `vibe/std/option.vibe`, `vibe/std/threads/spec.vibe` | Pure data structures and transforms |
+| `ref-model` | `vibe/std/path/ref.vibe`, `vibe/std/path.vibe` | Reference/path model abstractions |
+| `effect-boundary` | `vibe/std/io.vibe`, `vibe/std/path/runtime.vibe`, `vibe/std/threads/runtime.vibe`, `vibe/std/threads.vibe` | Runtime side-effect bridges |
+| `backend-specific` | `vibe/std/wasm/*.vibe` | Backend-specific experimental APIs |
 
-Test files (`*_test.xsh`, `*_type_import_test.xsh`, `test_import.xsh`) are excluded from this boundary rule.
+Test files (`*_test.vibe`, `*_type_import_test.vibe`, `test_import.vibe`) are excluded from this boundary rule.
 
 Compatibility facades:
 
-- `xsh/std/path.xsh` keeps legacy API shape while `xsh/std/path/ref.xsh` and
-  `xsh/std/path/runtime.xsh` provide split boundaries.
-- `xsh/std/threads.xsh` keeps legacy API shape while
-  `xsh/std/threads/spec.xsh` and `xsh/std/threads/runtime.xsh` provide split
+- `vibe/std/path.vibe` keeps legacy API shape while `vibe/std/path/ref.vibe` and
+  `vibe/std/path/runtime.vibe` provide split boundaries.
+- `vibe/std/threads.vibe` keeps legacy API shape while
+  `vibe/std/threads/spec.vibe` and `vibe/std/threads/runtime.vibe` provide split
   boundaries.
 
 ## Allowed Imports

@@ -1,9 +1,9 @@
 ///|
 test "cli save fetch expand workflow keeps codebase artifacts" {
   let root = wbtest_make_temp_dir("save_fetch_expand")
-  let entry = root + "/main.xsh"
-  let lib = root + "/lib.xsh"
-  let entry_source = "use ./lib.xsh {  inc  }\nlet main = inc(1)\nexport { main }\n"
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
+  let entry_source = "use ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n"
   let lib_source = "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n"
   @os_fs.write_string_to_file(entry, entry_source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -34,7 +34,7 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
     Err(err) => fail(err)
   }
   let entry_norm = @loader.resolve_entry_path(entry)
-  let lib_norm = @loader.resolve_import_path(root, "./lib.xsh")
+  let lib_norm = @loader.resolve_import_path(root, "./lib.vibe")
   match lock.path_refs.get(entry_norm) {
     Some(hash) => assert_eq(hash, @xsh_core.git_blob_hash_string(entry_source))
     None => fail("expected entry lock ref")
@@ -71,13 +71,13 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
 ///|
 test "cli index ref args parse push" {
   let parsed = parse_index_ref_args([
-    "push", "xsh/std@0.1.0", "/tmp/advanced-graph-index.json",
+    "push", "vibe/std@0.1.0", "/tmp/advanced-graph-index.json",
   ])
   match parsed {
     Ok(action) =>
       match action {
         IndexRefAction::PushIndex(scope, path) => {
-          assert_eq(scope, "xsh/std@0.1.0")
+          assert_eq(scope, "vibe/std@0.1.0")
           assert_eq(path, "/tmp/advanced-graph-index.json")
         }
         _ => fail("expected push action")
@@ -100,10 +100,10 @@ test "cli index ref args reject unknown action" {
 
 ///|
 test "cli symbols cmd options parse default" {
-  let parsed = parse_symbols_cmd_args(["main.xsh"])
+  let parsed = parse_symbols_cmd_args(["main.vibe"])
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.entry_path, "main.xsh")
+      assert_eq(opts.entry_path, "main.vibe")
       assert_false(opts.output_json)
     }
     Err(msg) => fail("unexpected err: " + msg)
@@ -112,10 +112,10 @@ test "cli symbols cmd options parse default" {
 
 ///|
 test "cli symbols cmd options parse json" {
-  let parsed = parse_symbols_cmd_args(["--json", "main.xsh"])
+  let parsed = parse_symbols_cmd_args(["--json", "main.vibe"])
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.entry_path, "main.xsh")
+      assert_eq(opts.entry_path, "main.vibe")
       assert_true(opts.output_json)
     }
     Err(msg) => fail("unexpected err: " + msg)
@@ -145,7 +145,7 @@ test "cli bench backend parse" {
 ///|
 test "cli bench uses expr mode ignores backend with path" {
   assert_false(
-    bench_uses_expr_mode(["--backend", "wasm", "examples/simple_bench.xsh"]),
+    bench_uses_expr_mode(["--backend", "wasm", "examples/simple_bench.vibe"]),
   )
   assert_true(bench_uses_expr_mode(["--backend", "interpreter"]))
 }
@@ -153,7 +153,7 @@ test "cli bench uses expr mode ignores backend with path" {
 ///|
 test "cli wasm bench compile uses size-oriented optimize level" {
   let root = wbtest_make_temp_dir("bench_wasm_size_opt")
-  let source_path = root + "/case.xsh"
+  let source_path = root + "/case.vibe"
   let wasm_path = root + "/case.wasm"
   let source =
     #|let rec repeat = (s: String, n: Int) -> String {
@@ -187,7 +187,7 @@ test "cli wasm bench compile uses size-oriented optimize level" {
 
 ///|
 test "cli symbols cmd options reject unknown option" {
-  let parsed = parse_symbols_cmd_args(["--wat", "main.xsh"])
+  let parsed = parse_symbols_cmd_args(["--wat", "main.vibe"])
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) => assert_eq(msg, "symbols: unknown option --wat")
@@ -218,30 +218,30 @@ test "cli compile coverage guard allows test mode" {
 }
 
 ///|
-test "cli index build writes index.xdb graph head" {
-  let root = wbtest_make_temp_dir("index_build_xdb")
-  let entry = root + "/main.xsh"
+test "cli index build writes index.vdb graph head" {
+  let root = wbtest_make_temp_dir("index_build_vdb")
+  let entry = root + "/main.vibe"
   let out_path = root + "/advanced-graph-index.json"
   @os_fs.write_string_to_file(entry, "let value = 1\nexport { value }\n") catch {
     e => fail("write entry failed: " + e.to_string())
   }
   index_build_cmd(["-o", out_path, entry])
   assert_true(@os_fs.path_exists(out_path))
-  let xdb_path = root + "/index.xdb"
-  assert_true(@os_fs.path_exists(xdb_path))
-  let xdb_source = @os_fs.read_file_to_string(xdb_path) catch {
-    e => fail("read index.xdb failed: " + e.to_string())
+  let vdb_path = root + "/index.vdb"
+  assert_true(@os_fs.path_exists(vdb_path))
+  let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
+    e => fail("read index.vdb failed: " + e.to_string())
   }
-  let xdb_json : Json = @json.parse(xdb_source) catch {
-    e => fail("parse index.xdb failed: " + e.to_string())
+  let vdb_json : Json = @json.parse(vdb_source) catch {
+    e => fail("parse index.vdb failed: " + e.to_string())
   }
-  let graph_head = match xdb_json {
+  let graph_head = match vdb_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.xdb must include graph_head")
+        _ => fail("index.vdb must include graph_head")
       }
-    _ => fail("index.xdb must be object")
+    _ => fail("index.vdb must be object")
   }
   assert_eq(graph_head.length(), 40)
   let codebase = @codebase.Codebase::new(find_xsh_dir(entry))
@@ -255,9 +255,9 @@ test "cli index build writes index.xdb graph head" {
 ///|
 test "cli check resolves lock and graph artifacts" {
   let root = wbtest_make_temp_dir("check_resolve_artifacts")
-  let entry = root + "/main.xsh"
-  let lib = root + "/lib.xsh"
-  let entry_source = "use ./lib.xsh {  inc  }\nlet main = inc(1)\nexport { main }\n"
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
+  let entry_source = "use ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n"
   let lib_source = "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n"
   @os_fs.write_string_to_file(entry, entry_source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -273,24 +273,24 @@ test "cli check resolves lock and graph artifacts" {
     Err(err) => fail(err)
   }
   let entry_norm = @loader.resolve_entry_path(entry)
-  let lib_norm = @loader.resolve_import_path(root, "./lib.xsh")
+  let lib_norm = @loader.resolve_import_path(root, "./lib.vibe")
   assert_true(lock.path_refs.contains(entry_norm))
   assert_true(lock.path_refs.contains(lib_norm))
-  let xdb_path = root + "/index.xdb"
-  assert_true(@os_fs.path_exists(xdb_path))
-  let xdb_source = @os_fs.read_file_to_string(xdb_path) catch {
-    e => fail("read index.xdb failed: " + e.to_string())
+  let vdb_path = root + "/index.vdb"
+  assert_true(@os_fs.path_exists(vdb_path))
+  let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
+    e => fail("read index.vdb failed: " + e.to_string())
   }
-  let xdb_json : Json = @json.parse(xdb_source) catch {
-    e => fail("parse index.xdb failed: " + e.to_string())
+  let vdb_json : Json = @json.parse(vdb_source) catch {
+    e => fail("parse index.vdb failed: " + e.to_string())
   }
-  let graph_head = match xdb_json {
+  let graph_head = match vdb_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.xdb must include graph_head")
+        _ => fail("index.vdb must include graph_head")
       }
-    _ => fail("index.xdb must be object")
+    _ => fail("index.vdb must be object")
   }
   let codebase = @codebase.Codebase::new(find_xsh_dir(entry))
   match codebase.read_object(graph_head) {
@@ -303,7 +303,7 @@ test "cli check resolves lock and graph artifacts" {
 ///|
 test "cli apply resolves lock and graph artifacts" {
   let root = wbtest_make_temp_dir("apply_resolve_artifacts")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   let source = "let value = 1\nexport { value }\n"
   @os_fs.write_string_to_file(entry, source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -317,21 +317,21 @@ test "cli apply resolves lock and graph artifacts" {
   }
   let resolved = @loader.resolve_entry_path(entry)
   assert_true(lock.path_refs.contains(resolved))
-  let xdb_path = root + "/index.xdb"
-  assert_true(@os_fs.path_exists(xdb_path))
-  let xdb_source = @os_fs.read_file_to_string(xdb_path) catch {
-    e => fail("read index.xdb failed: " + e.to_string())
+  let vdb_path = root + "/index.vdb"
+  assert_true(@os_fs.path_exists(vdb_path))
+  let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
+    e => fail("read index.vdb failed: " + e.to_string())
   }
-  let xdb_json : Json = @json.parse(xdb_source) catch {
-    e => fail("parse index.xdb failed: " + e.to_string())
+  let vdb_json : Json = @json.parse(vdb_source) catch {
+    e => fail("parse index.vdb failed: " + e.to_string())
   }
-  let graph_head = match xdb_json {
+  let graph_head = match vdb_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.xdb must include graph_head")
+        _ => fail("index.vdb must include graph_head")
       }
-    _ => fail("index.xdb must be object")
+    _ => fail("index.vdb must be object")
   }
   let codebase = @codebase.Codebase::new(find_xsh_dir(entry))
   match codebase.read_object(graph_head) {
@@ -344,7 +344,7 @@ test "cli apply resolves lock and graph artifacts" {
 ///|
 test "cli apply tracks function version on incompatible change" {
   let root = wbtest_make_temp_dir("apply_track_fn_version")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   let entry_norm = @loader.resolve_entry_path(entry)
   let key = entry_norm + "#inc"
   @os_fs.write_string_to_file(
@@ -369,7 +369,7 @@ test "cli apply tracks function version on incompatible change" {
 ///|
 test "cli apply tracks rename continuity for similar function" {
   let root = wbtest_make_temp_dir("apply_track_fn_rename")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   let entry_norm = @loader.resolve_entry_path(entry)
   let old_key = entry_norm + "#inc"
   let new_key = entry_norm + "#plus"
@@ -398,7 +398,7 @@ test "cli apply tracks rename continuity for similar function" {
 test "cli eval without db uses scratch namespace db" {
   let root = wbtest_make_temp_dir("eval_default_scratch_db")
   let scratch_db = root + "/scratch.db"
-  let out_path = root + "/out.xsh"
+  let out_path = root + "/out.vibe"
   let prev = @sys.get_env_var("XSH_SCRATCH_DB_PATH")
   @sys.set_env_var("XSH_SCRATCH_DB_PATH", scratch_db)
   let features = @xsh_lib.RuntimeFeatureFlags::stable()
@@ -451,10 +451,10 @@ test "cli history reset clears scratch namespace db" {
 ///|
 test "cli symbols prints status for managed symbols" {
   let root = wbtest_make_temp_dir("symbols_status")
-  let entry = root + "/main.xsh"
-  let lib = root + "/lib.xsh"
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
   @os_fs.write_string_to_file(
-    entry, "use ./lib.xsh {  inc  }\nlet main = inc(1)\nexport { main }\n",
+    entry, "use ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n",
   ) catch {
     e => fail("write entry failed: " + e.to_string())
   }
@@ -486,7 +486,7 @@ test "cli symbols prints status for managed symbols" {
 ///|
 test "cli symbols marks shadowed when scratch overrides index symbol" {
   let root = wbtest_make_temp_dir("symbols_shadowed")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   let scratch_db = root + "/scratch.db"
   @os_fs.write_string_to_file(entry, "let foo = 10\nexport { foo }\n") catch {
     e => fail("write entry failed: " + e.to_string())
@@ -523,8 +523,8 @@ test "cli symbols marks shadowed when scratch overrides index symbol" {
 ///|
 test "cli write_file selector name prefers scratch namespace symbol" {
   let root = wbtest_make_temp_dir("write_file_selector_name_scratch")
-  let entry = root + "/main.xsh"
-  let out_path = root + "/foo.xsh"
+  let entry = root + "/main.vibe"
+  let out_path = root + "/foo.vibe"
   let scratch_db = root + "/scratch.db"
   @os_fs.write_string_to_file(entry, "let foo = 10\nexport { foo }\n") catch {
     e => fail("write entry failed: " + e.to_string())
@@ -553,8 +553,8 @@ test "cli write_file selector name prefers scratch namespace symbol" {
 ///|
 test "cli write_file selector hash resolves managed symbol" {
   let root = wbtest_make_temp_dir("write_file_selector_hash")
-  let entry = root + "/main.xsh"
-  let out_path = root + "/value.xsh"
+  let entry = root + "/main.vibe"
+  let out_path = root + "/value.vibe"
   @os_fs.write_string_to_file(entry, "let value = 1\nexport { value }\n") catch {
     e => fail("write entry failed: " + e.to_string())
   }
@@ -585,8 +585,8 @@ test "cli write_file selector hash resolves managed symbol" {
 ///|
 test "cli write_file no-deps emits selected definition only" {
   let root = wbtest_make_temp_dir("write_file_no_deps")
-  let entry = root + "/main.xsh"
-  let out_path = root + "/value-nodeps.xsh"
+  let entry = root + "/main.vibe"
+  let out_path = root + "/value-nodeps.vibe"
   @os_fs.write_string_to_file(
     entry, "let helper = 1\nlet value = helper + 1\nexport { value }\n",
   ) catch {
@@ -606,8 +606,8 @@ test "cli write_file no-deps emits selected definition only" {
 ///|
 test "cli write_file dry-run does not write output file" {
   let root = wbtest_make_temp_dir("write_file_dry_run")
-  let entry = root + "/main.xsh"
-  let out_path = root + "/value-dry-run.xsh"
+  let entry = root + "/main.vibe"
+  let out_path = root + "/value-dry-run.vibe"
   @os_fs.write_string_to_file(entry, "let value = 1\nexport { value }\n") catch {
     e => fail("write entry failed: " + e.to_string())
   }
@@ -622,7 +622,7 @@ test "cli write_file dry-run does not write output file" {
 test "cli eval db workflow persists namespace and exports module" {
   let root = wbtest_make_temp_dir("eval_db_workflow")
   let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.xsh"
+  let out_path = root + "/main.vibe"
   let features = @xsh_lib.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "40"],
@@ -670,8 +670,8 @@ test "cli eval db workflow persists namespace and exports module" {
 test "cli eval db workflow supports include scripts" {
   let root = wbtest_make_temp_dir("eval_db_include_workflow")
   let db_path = root + "/tmp1.db"
-  let include_path = root + "/index.xdb"
-  let out_path = root + "/main.xsh"
+  let include_path = root + "/index.vdb"
+  let out_path = root + "/main.vibe"
   let features = @xsh_lib.RuntimeFeatureFlags::stable()
   @os_fs.write_string_to_file(include_path, "let seed = 10\n") catch {
     e => fail("write include source failed: " + e.to_string())
@@ -719,7 +719,7 @@ test "cli eval db workflow supports include scripts" {
 }
 
 ///|
-test "cli eval include supports hash alias from xdb file" {
+test "cli eval include supports hash alias from vdb file" {
   let root = wbtest_make_temp_dir("eval_db_hash_alias")
   let lib_root = root + "/lib"
   let lib_xsh = lib_root + "/xsh"
@@ -730,8 +730,8 @@ test "cli eval include supports hash alias from xdb file" {
     e => fail("create lib xsh dir failed: " + e.to_string())
   }
   let db_path = root + "/tmp1.db"
-  let include_path = lib_xsh + "/std@0.1.0.xdb"
-  let out_path = root + "/main.xsh"
+  let include_path = lib_xsh + "/std@0.1.0.vdb"
+  let out_path = root + "/main.vibe"
   let seed_source = "let seed = 21\n"
   let seed_hash = @xsh_core.git_blob_hash_string(seed_source)
   let codebase = @codebase.Codebase::new(lib_root)
@@ -790,7 +790,7 @@ test "cli eval include supports hash alias from xdb file" {
 test "cli eval db workflow validates scope symbols and types per step" {
   let root = wbtest_make_temp_dir("eval_db_scope_validation")
   let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.xsh"
+  let out_path = root + "/main.vibe"
   let features = @xsh_lib.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "40"],
@@ -862,7 +862,7 @@ test "cli eval db workflow validates scope symbols and types per step" {
 test "cli eval db complex workflow validates chained function scope types" {
   let root = wbtest_make_temp_dir("eval_db_scope_complex")
   let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.xsh"
+  let out_path = root + "/main.vibe"
   let features = @xsh_lib.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "10"],
@@ -970,9 +970,9 @@ test "cli eval db complex workflow validates chained function scope types" {
 test "cli write_file handles complex eval exported module" {
   let root = wbtest_make_temp_dir("eval_write_file_complex")
   let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.xsh"
-  let no_deps_path = root + "/add_twice_nodeps.xsh"
-  let full_path = root + "/result_full.xsh"
+  let out_path = root + "/main.vibe"
+  let no_deps_path = root + "/add_twice_nodeps.vibe"
+  let full_path = root + "/result_full.vibe"
   let features = @xsh_lib.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "10"],
@@ -1124,7 +1124,7 @@ test "cli eval inspect scope and assertions on persisted namespace" {
 test "cli eval test-for stores tests outside dag and accumulates by function" {
   let root = wbtest_make_temp_dir("eval_test_for_sidecar")
   let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.xsh"
+  let out_path = root + "/main.vibe"
   let features = @xsh_lib.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "10"],
@@ -1352,7 +1352,7 @@ test "cli finalize safe mode keeps side-effect expressions" {
 test "cli finalize export workflow supports fetch and apply" {
   let root = wbtest_make_temp_dir("finalize_export_apply")
   let db_path = root + "/tmp1.db"
-  let out_path = root + "/main.xsh"
+  let out_path = root + "/main.vibe"
   let source = "let helper = (x: Int) -> Int { x + 1 }\n" +
     "let answer = helper(41)\n" +
     "helper(0)\n" +
@@ -1399,7 +1399,7 @@ test "cli finalize library mode keeps re-export stmt parseable" {
   let db_path = root + "/tmp1.db"
   let source = "let local = 1\n" +
     "local\n" +
-    "export { helper } from \"./mod.xsh\"\n"
+    "export { helper } from \"./mod.vibe\"\n"
   match write_eval_db_source(db_path, source) {
     Ok(_) => ()
     Err(err) => fail("write seed db failed: " + err)
@@ -1408,7 +1408,7 @@ test "cli finalize library mode keeps re-export stmt parseable" {
   let finalized = @os_fs.read_file_to_string(db_path) catch {
     e => fail("read finalized db failed: " + e.to_string())
   }
-  assert_true(finalized.contains("export { helper } from ./mod.xsh"))
+  assert_true(finalized.contains("export { helper } from ./mod.vibe"))
   assert_false(finalized.contains("let local = 1"))
   let ast = @parser.parse_ast(finalized) catch {
     e => fail("finalized parse failed: " + e.to_string())
@@ -1420,7 +1420,7 @@ test "cli finalize library mode keeps re-export stmt parseable" {
         if names == ["helper"] {
           match source {
             @xsh_core.ModuleRef::Path(path~) =>
-              if path == "./mod.xsh" {
+              if path == "./mod.vibe" {
                 has_reexport = true
               }
             _ => ()
@@ -1486,20 +1486,20 @@ fn read_function_tracking_record(
   index_root : String,
   key : String,
 ) -> FunctionTrackingRecord {
-  let path = index_root + "/index.xdb"
+  let path = index_root + "/index.vdb"
   let source = @os_fs.read_file_to_string(path) catch {
-    e => abort("read index.xdb failed: " + e.to_string())
+    e => abort("read index.vdb failed: " + e.to_string())
   }
   let json : Json = @json.parse(source) catch {
-    e => abort("parse index.xdb failed: " + e.to_string())
+    e => abort("parse index.vdb failed: " + e.to_string())
   }
   let obj = match json {
     Json::Object(map) => map
-    _ => abort("index.xdb must be object")
+    _ => abort("index.vdb must be object")
   }
   let tracking = match obj.get("function_tracking") {
     Some(Json::Object(value)) => value
-    _ => abort("index.xdb must include function_tracking object")
+    _ => abort("index.vdb must include function_tracking object")
   }
   let records = match tracking.get("records") {
     Some(Json::Object(value)) => value

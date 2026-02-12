@@ -42,7 +42,7 @@ Deno.test("xsh wasm api init injects prelude and kv", async () => {
   const init = await service.init({
     prelude: "let triple = (x: Int) -> Int { x * 3 }",
     kv: {
-      "/lib.xsh": "export let value = 7\n",
+      "/lib.vibe": "export let value = 7\n",
     },
   }) as { ok: boolean; kv_count?: number; prelude?: boolean };
   assertEquals(init.ok, true);
@@ -57,9 +57,9 @@ Deno.test("xsh wasm api init injects prelude and kv", async () => {
   assertEquals(preludeReport.error_count, 0);
 
   const projectReport = await service.checkProject({
-    entry: "/main.xsh",
+    entry: "/main.vibe",
     files: {
-      "/main.xsh": "use ./lib.xsh { value }\nlet out = value\n",
+      "/main.vibe": "use ./lib.vibe { value }\nlet out = value\n",
     },
   }) as {
     ok: boolean;
@@ -98,9 +98,9 @@ Deno.test("xsh wasm api formats source", async () => {
 Deno.test("xsh wasm api checkProject works for single-file entry", async () => {
   const service = await createXshService();
   const report = await service.checkProject({
-    entry: "/main.xsh",
+    entry: "/main.vibe",
     files: {
-      "/main.xsh": "1 + 2\n",
+      "/main.vibe": "1 + 2\n",
     },
   }) as {
     ok: boolean;
@@ -110,17 +110,17 @@ Deno.test("xsh wasm api checkProject works for single-file entry", async () => {
   };
   assertEquals(report.ok, true);
   assertEquals(report.error_count, 0);
-  assertEquals(report.entry, "/main.xsh");
+  assertEquals(report.entry, "/main.vibe");
   assertEquals(report.unsupported_imports, false);
 });
 
 Deno.test("xsh wasm api checkProject resolves imports", async () => {
   const service = await createXshService();
   const report = await service.checkProject({
-    entry: "/main.xsh",
+    entry: "/main.vibe",
     files: {
-      "/main.xsh": "use ./lib.xsh { value }\nlet out = value\n",
-      "/lib.xsh": "export let value = 1\n",
+      "/main.vibe": "use ./lib.vibe { value }\nlet out = value\n",
+      "/lib.vibe": "export let value = 1\n",
     },
   }) as {
     ok: boolean;
@@ -130,7 +130,7 @@ Deno.test("xsh wasm api checkProject resolves imports", async () => {
   };
   assertEquals(report.ok, true);
   assertEquals(report.error_count, 0);
-  assertEquals(report.entry, "/main.xsh");
+  assertEquals(report.entry, "/main.vibe");
   assertEquals(report.unsupported_imports, false);
 });
 
@@ -138,7 +138,7 @@ Deno.test("xsh wasm api ide outline returns symbols", async () => {
   const service = await createXshService();
   const result = await service.ideOutline({
     source: "let foo = 1\nlet bar = foo\n",
-    path: "/main.xsh",
+    path: "/main.vibe",
   }) as {
     ok: boolean;
     symbols?: Array<{ name: string }>;
@@ -154,7 +154,7 @@ Deno.test("xsh wasm api ide peek-def and search work", async () => {
 
   const peek = await service.idePeekDef({
     source,
-    path: "/main.xsh",
+    path: "/main.vibe",
     symbol: "foo",
   }) as {
     ok: boolean;
@@ -166,7 +166,7 @@ Deno.test("xsh wasm api ide peek-def and search work", async () => {
 
   const search = await service.ideSearch({
     source,
-    path: "/main.xsh",
+    path: "/main.vibe",
     query: "bar",
   }) as {
     ok: boolean;
@@ -180,13 +180,13 @@ Deno.test("xsh wasm api ide peek-def and search work", async () => {
 Deno.test("xsh wasm api ide supports imports via project request", async () => {
   const service = await createXshService();
   const files = {
-    "/main.xsh": "use ./lib.xsh { value }\nlet out = value\n",
-    "/lib.xsh": "export let value = 1\n",
+    "/main.vibe": "use ./lib.vibe { value }\nlet out = value\n",
+    "/lib.vibe": "export let value = 1\n",
   };
 
   const outline = await service.ideOutline({
-    entry: "/main.xsh",
-    path: "/main.xsh",
+    entry: "/main.vibe",
+    path: "/main.vibe",
     files,
   }) as {
     ok: boolean;
@@ -197,8 +197,8 @@ Deno.test("xsh wasm api ide supports imports via project request", async () => {
   assertTrue(outline.symbols!.some((s) => s.name === "out"));
 
   const peek = await service.idePeekDef({
-    entry: "/main.xsh",
-    path: "/main.xsh",
+    entry: "/main.vibe",
+    path: "/main.vibe",
     files,
     symbol: "value",
   }) as {
@@ -208,6 +208,6 @@ Deno.test("xsh wasm api ide supports imports via project request", async () => {
   assertEquals(peek.ok, true);
   assertTrue(Array.isArray(peek.matches));
   assertTrue(
-    peek.matches!.some((m) => m.path === "/lib.xsh" && m.name === "value"),
+    peek.matches!.some((m) => m.path === "/lib.vibe" && m.name === "value"),
   );
 });

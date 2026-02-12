@@ -54,7 +54,7 @@ fn collect_test_entry_paths_from_dir(
     let path = if name.has_prefix(dir + "/") { name } else { dir + "/" + name }
     let is_file = @os_fs.is_file(path) catch { _ => false }
     if is_file {
-      if path.has_suffix(".xsh") {
+      if path.has_suffix(".vibe") {
         push_unique_path(out, seen, path)
       }
     }
@@ -77,7 +77,7 @@ fn collect_bench_entry_paths_from_dir(
     let path = if name.has_prefix(dir + "/") { name } else { dir + "/" + name }
     let is_file = @os_fs.is_file(path) catch { _ => false }
     if is_file {
-      if path.has_suffix("_bench.xsh") {
+      if path.has_suffix("_bench.vibe") {
         push_unique_path(out, seen, path)
       }
     }

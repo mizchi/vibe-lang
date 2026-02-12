@@ -53,10 +53,10 @@ expect_compile_error() {
   local xsh_code="$2"
   local expected_error="$3"
 
-  echo "$xsh_code" > "$TMP_DIR/test.xsh"
+  echo "$xsh_code" > "$TMP_DIR/test.vibe"
 
   local output
-  output=$($XSH compile --wasm "$TMP_DIR/test.xsh" -o "$TMP_DIR/test.wasm" 2>&1) || true
+  output=$($XSH compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>&1) || true
 
   if echo "$output" | grep -q "$expected_error"; then
     log_pass "$test_name (error: $expected_error)"
@@ -70,9 +70,9 @@ expect_compile_success() {
   local test_name="$1"
   local xsh_code="$2"
 
-  echo "$xsh_code" > "$TMP_DIR/test.xsh"
+  echo "$xsh_code" > "$TMP_DIR/test.vibe"
 
-  if $XSH compile --wasm "$TMP_DIR/test.xsh" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
+  if $XSH compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
     log_pass "$test_name"
   else
     log_fail "$test_name - compilation failed unexpectedly"
@@ -85,9 +85,9 @@ expect_wasm_result() {
   local xsh_code="$2"
   local expected_value="$3"
 
-  echo "$xsh_code" > "$TMP_DIR/test.xsh"
+  echo "$xsh_code" > "$TMP_DIR/test.vibe"
 
-  if ! $XSH compile --wasm "$TMP_DIR/test.xsh" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
+  if ! $XSH compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
     log_fail "$test_name - compilation failed"
     return
   fi

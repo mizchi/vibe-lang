@@ -81,16 +81,16 @@ test "wasm wat fixtures" {
     let is_file = @os_fs.is_file(path) catch {
       e => fail("[\{fixture_dir}] stat failed: \{e.to_string()}")
     }
-    if is_file && path.has_suffix(".xsh") {
+    if is_file && path.has_suffix(".vibe") {
       files.push(path)
     }
   }
   sort_strings_wat(files)
   if files.length() == 0 {
-    fail("[\{fixture_dir}] no .xsh fixtures found")
+    fail("[\{fixture_dir}] no .vibe fixtures found")
   }
   for path in files {
-    let wat_path = replace_suffix(path, ".xsh", ".wat")
+    let wat_path = replace_suffix(path, ".vibe", ".wat")
     let source = @os_fs.read_file_to_string(path) catch {
       e => fail("[\{path}] read failed: \{e.to_string()}")
     }

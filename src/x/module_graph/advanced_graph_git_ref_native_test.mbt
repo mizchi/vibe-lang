@@ -52,7 +52,7 @@ test "advanced graph git ref snapshot roundtrip" {
     #|let add = (x: Int, y: Int) -> Int { x + y }
     #|let id = (x: Int) -> Int { x }
   let index = build_git_ref_test_graph_index(
-    "/tmp/advanced_graph_git_ref_main.xsh", source,
+    "/tmp/advanced_graph_git_ref_main.vibe", source,
   )
   let scope = "tests/snapshot-roundtrip"
   let hash = match
@@ -84,10 +84,10 @@ test "advanced graph git ref delta roundtrip" {
     #|let keep = (x: Int) -> Int { x + 1 }
     #|let added = 3
   let base = build_git_ref_test_graph_index(
-    "/tmp/advanced_graph_git_ref_delta_main.xsh", base_source,
+    "/tmp/advanced_graph_git_ref_delta_main.vibe", base_source,
   )
   let next = build_git_ref_test_graph_index(
-    "/tmp/advanced_graph_git_ref_delta_main.xsh", next_source,
+    "/tmp/advanced_graph_git_ref_delta_main.vibe", next_source,
   )
   let delta = advanced_graph_diff(base, next)
   let scope = "tests/delta-roundtrip"
@@ -113,7 +113,7 @@ test "advanced graph git ref delta chain replay" {
   ensure_dir_if_missing(repo_root)
   ensure_dir_if_missing(git_dir)
   ensure_dir_if_missing(git_dir + "/objects")
-  let path = "/tmp/advanced_graph_git_ref_chain_main.xsh"
+  let path = "/tmp/advanced_graph_git_ref_chain_main.vibe"
   let base = build_git_ref_test_graph_index(
     path,
     (

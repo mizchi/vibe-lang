@@ -105,7 +105,7 @@ test "lexer treats bench as keyword" {
 
 ///|
 test "lexer treats use as keyword and keeps slash namespace tokens" {
-  let use_tokens = tokenize("use /xsh/std/string")
+  let use_tokens = tokenize("use /vibe/std/string")
   if use_tokens[0].kind() != use_kw() {
     fail("use must lex as use_kw")
   }

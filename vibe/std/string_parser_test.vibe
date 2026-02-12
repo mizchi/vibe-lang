@@ -1,0 +1,123 @@
+use ./string_parser.vibe {
+  run,
+  pure,
+  map,
+  and_then,
+  or_else,
+  char,
+  literal,
+  digit,
+  digits1,
+  uint,
+  spaces0,
+  token,
+  identifier,
+  kw
+}
+
+test "string_parser: char and literal" {
+  match run(char("a"), "a") {
+    Some(v) => assert(v == "a"),
+    _ => assert(false)
+  }
+  match run(char("a"), "ab") {
+    Some(_) => assert(false),
+    _ => assert(true)
+  }
+  match run(literal("let"), "let") {
+    Some(v) => assert(v == "let"),
+    _ => assert(false)
+  }
+  match run(literal("let"), "lex") {
+    Some(_) => assert(false),
+    _ => assert(true)
+  }
+}
+
+test "string_parser: map and pure" {
+  let p = map(char("7"), (_: String) -> Int { 7 })
+  match run(p, "7") {
+    Some(v) => assert(eq(v, 7)),
+    _ => assert(false)
+  }
+  let p2 = and_then(pure("x"), (v: String) -> {
+    pure(string_concat(v, "y"))
+  })
+  match run(p2, "") {
+    Some(v) => {
+      assert(eq(string_length(v), 2))
+      assert(v == "xy")
+    },
+    _ => assert(false)
+  }
+}
+
+test "string_parser: or_else" {
+  let ab = or_else(char("a"), char("b"))
+  match run(ab, "b") {
+    Some(v) => assert(v == "b"),
+    _ => assert(false)
+  }
+  match run(or_else(char("a"), char("b")), "c") {
+    Some(_) => assert(false),
+    _ => assert(true)
+  }
+}
+
+test "string_parser: digit and uint" {
+  match run(digit, "9") {
+    Some(v) => assert(v == "9"),
+    _ => assert(false)
+  }
+  match run(digits1, "12345") {
+    Some(v) => assert(v == "12345"),
+    _ => assert(false)
+  }
+  match run(uint, "12345") {
+    Some(v) => assert(eq(v, 12345)),
+    _ => assert(false)
+  }
+  match run(uint, "x99") {
+    Some(_) => assert(false),
+    _ => assert(true)
+  }
+}
+
+test "string_parser: token and spaces" {
+  match run(spaces0, "   \n") {
+    Some(v) => assert(v == "   \n"),
+    _ => assert(false)
+  }
+  match run(token(uint), "  42\n") {
+    Some(v) => assert(eq(v, 42)),
+    _ => assert(false)
+  }
+}
+
+test "string_parser: identifier and let-binding parser" {
+  match run(identifier, "foo_123") {
+    Some(v) => assert(v == "foo_123"),
+    _ => assert(false)
+  }
+  let parse_let_binding = and_then(kw("let"), (_kw: String) -> {
+    and_then(token(identifier), (name: String) -> {
+      and_then(token(char("=")), (_eq: String) -> {
+        map(token(uint), (value: Int) -> String {
+          let _ = value
+          name
+        })
+      })
+    })
+  })
+  match run(parse_let_binding, "let foo = 42") {
+    Some(v) => {
+      assert(eq(string_length(v), 3))
+      assert(v == "foo")
+    },
+    _ => assert(false)
+  }
+  match run(parse_let_binding, "let 123 = 9") {
+    Some(_) => assert(false),
+    _ => assert(true)
+  }
+}

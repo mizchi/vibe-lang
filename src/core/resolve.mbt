@@ -1,7 +1,7 @@
 ///| Import alias and symbol resolution helpers
 
 ///|
-/// Derive alias name from import path (strip dirs and .xsh suffix).
+/// Derive alias name from import path (strip dirs and .vibe suffix).
 pub fn import_alias_name(path : String) -> String {
   let chars : Array[Char] = []
   for c in path {
@@ -18,8 +18,8 @@ pub fn import_alias_name(path : String) -> String {
     buf.write_char(chars[i])
   }
   let base = buf.to_string()
-  if base.has_suffix(".xsh") && base.length() > 4 {
-    (try! base[0:base.length() - 4]).to_string()
+  if base.has_suffix(".vibe") && base.length() > 5 {
+    (try! base[0:base.length() - 5]).to_string()
   } else {
     base
   }

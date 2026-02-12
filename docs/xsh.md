@@ -236,7 +236,7 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `threads_recv(channel_id: Int)` -> `String` (`""` when empty)
 - `threads_spawn(name: String, channel_id: Int)` -> `Int` (task id)
 - `threads_wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
-- `xsh/std/threads.xsh` は test-safe な pure contract 層を分離:
+- `vibe/std/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
   - これらは通常 `xsh test` で実行可能
   - runtime 呼び出し
@@ -260,8 +260,8 @@ Rules:
 - Canonical type names (`Int`/`Float`/`Double`) remain the public spec baseline.
 
 Core std module:
-- `xsh/std/wasm/types.xsh` provides an official wasm-facing entrypoint (`I32`/`F32`/`F64` aliases and helpers).
-- `xsh/std/wasm/opcodes.xsh` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
+- `vibe/std/wasm/types.vibe` provides an official wasm-facing entrypoint (`I32`/`F32`/`F64` aliases and helpers).
+- `vibe/std/wasm/opcodes.vibe` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
   - Naming rule: wasm `i32.add` is exposed as xsh `i32_add` (dot replaced with `_`).
 
 ## Names, hashes, versions, and symbols (Unison-style)
@@ -279,7 +279,7 @@ authoring/navigation aliases that normalize to hash before evaluation.
 
 Reference forms accepted by parser and importer:
 
-- `PathRef`: `./foo.xsh`, `../foo.xsh`, `/abs/foo.xsh`, `"./foo.xsh"`
+- `PathRef`: `./foo.vibe`, `../foo.vibe`, `/abs/foo.vibe`, `"./foo.vibe"`
 - `HashRef`: `#<hash>`
 - `VersionRef`: `version@<name>` (canonical), `version:<name>` (compat)
 - `SymbolRef`: `symbol@<name>` (canonical), `symbol:<name>` (compat)
@@ -344,9 +344,9 @@ Separate internal hash:
 Imports are source-first `use` only:
 
 ```xsh
-use ./path/to/mod.xsh { foo, bar as b }
-use ./path/to/mod.xsh { type IntPair, trait Show, foo, bar }
-use ./path/to/mod.xsh { foo }
+use ./path/to/mod.vibe { foo, bar as b }
+use ./path/to/mod.vibe { type IntPair, trait Show, foo, bar }
+use ./path/to/mod.vibe { foo }
 use #abc12345 { foo }
 use version@main { foo }
 use symbol@std/math { foo }
@@ -370,13 +370,13 @@ export let add = (x: Int, y: Int) -> Int { x + y }
 export enum Color { Red; Green; Blue }
 export type IntPair = (Int, Int)
 export { add, Color, IntPair }
-export { foo } from "./other.xsh"
+export { foo } from "./other.vibe"
 ```
 
 Rules:
 - No implicit "export all".
 - Non-exported top-level names are module-private.
-- `use foo.xsh` (bare namespace import shorthand is `use foo.xsh`) and
+- `use foo.vibe` (bare namespace import shorthand is `use foo.vibe`) and
   default-import forms are not part of the
   current spec.
 
@@ -388,10 +388,10 @@ functions.
 Current forms:
 
 ```xsh
-use ./xsh/std/int.xsh { type Int }             // also imports Int::*
-use ./xsh/std/int.xsh { Int }                  // namespace activation
-use ./xsh/std/int.xsh { Int::to_string }       // single member
-use ./xsh/std/int.xsh { Int::to_string as int_to_string }
+use ./vibe/std/int.vibe { type Int }             // also imports Int::*
+use ./vibe/std/int.vibe { Int }                  // namespace activation
+use ./vibe/std/int.vibe { Int::to_string }       // single member
+use ./vibe/std/int.vibe { Int::to_string as int_to_string }
 ```
 
 Rules:
@@ -416,7 +416,7 @@ Rules:
 - `SymbolRef`: symbol pointer.
 
 Notes:
-- `PathRef` is unquoted (`use ./xsh/std/string.xsh { ... }`).
+- `PathRef` is unquoted (`use ./vibe/std/string.vibe { ... }`).
 - `use` source is semantically `ModuleRef`; non-module assets should be split to a future `AssetRef` lane.
 
 Dependency resolution is Nix-like: path inputs are handled as typed path objects
@@ -457,10 +457,10 @@ Invariants:
 Current lock file:
 
 - `index.lock` (JSON object) is loaded from the resolved index root directory.
-  - `index.xdb` is checked first; when it includes lock payload
+  - `index.vdb` is checked first; when it includes lock payload
     (`path`/`version`/`symbol`/`module`/`annotation` or `lock` object),
     that payload is used as lock source.
-  - If `index.xdb` has no lock payload, loader falls back to `index.lock`.
+  - If `index.vdb` has no lock payload, loader falls back to `index.lock`.
   - Legacy compatibility: if `index.lock` is absent and `xsh.lock` exists in the
     same directory, loader reads `xsh.lock`.
 - Shape:
@@ -469,27 +469,27 @@ Current lock file:
   - `symbol`: `{ "<name>": "<hash>" }`
   - `module`: `{ "<normalized-path>#<export-name>": "<normalized-export-hash>" }`
   - `annotation`: `{ "<key>": "<note-text>" }`
-- `path` keys are written as lock-dir-relative paths (`./foo.xsh`) and resolved
+- `path` keys are written as lock-dir-relative paths (`./foo.vibe`) and resolved
   to normalized absolute paths when loading (absolute keys are also accepted).
 - Root guard:
-  - index root is the nearest ancestor directory containing `index.xsh`
+  - index root is the nearest ancestor directory containing `index.vibe`
     (fallback: entry directory).
-  - `index.xsh` must export version:
+  - `index.vibe` must export version:
     `export let version = "0.1.0"` (simple semver `x.y.z`).
   - Path imports are rejected when resolved path escapes index root.
-  - `index.xsh` may define `export let module = record { <ns>: "<dir>" }` to map
+  - `index.vibe` may define `export let module = record { <ns>: "<dir>" }` to map
     namespace imports (for example `std/...`) under root.
-  - Default namespace mapping includes `std -> ./xsh/std`.
+  - Default namespace mapping includes `std -> ./vibe/std`.
 - CLI:
   - `xsh apply <entry>` resolves recursive path imports, updates `index.lock`,
-    injects prelude refs, and updates `index.xdb.graph_head`.
-    It also stores the graph snapshot object under `.xsh/objects/<graph-head>`.
+    injects prelude refs, and updates `index.vdb.graph_head`.
+    It also stores the graph snapshot object under `.vibe/objects/<graph-head>`.
   - `xsh fetch <entry>` (or `xsh update-lock <entry>`) resolves recursive
     path imports and updates `index.lock`.
   - `fetch/update-lock` also injects prelude refs:
     - `version.prelude = <normalized-prelude-hash>`
     - `symbol."std/prelude" = <normalized-prelude-hash>`
-    and stores the normalized prelude module object under `.xsh/objects/`.
+    and stores the normalized prelude module object under `.vibe/objects/`.
   - `xsh check <entry...>` runs the same resolution/apply pipeline as `xsh apply`
     before diagnostics.
   - `xsh run/compile/test` require lock entries for path imports;
@@ -648,7 +648,7 @@ Import/export behavior (proposal):
 
 ```xsh
 export { Int::to_string, String::to_string }
-use ./std/stringify.xsh { Int::to_string as int_to_string }
+use ./std/stringify.vibe { Int::to_string as int_to_string }
 ```
 
 ### Prelude and `--nostd` (proposal)
@@ -719,11 +719,11 @@ Runtime API:
   command-head desugaring.
 CLI:
 - `moon run --target native src/cmd/xsh -- run <file>` executes a script (ignores `test {}`).
-- `moon run --target native src/cmd/xsh -- eval [--db tmp1.db] [--include index.xdb] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
+- `moon run --target native src/cmd/xsh -- eval [--db tmp1.db] [--include index.vdb] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
   - `--include` accepts path forms and alias forms:
     - `--include=bit:<path>`: explicit alias to path-backed source.
-    - `--include=xsh/std@0.1.0.xdb`: named alias resolved from `XSH_LIB_DIR` (fallback: `$HOME/.xsh/lib`).
-  - `.xdb` alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
+    - `--include=vibe/std@0.1.0.vdb`: named alias resolved from `XSH_LIB_DIR` (fallback: `$HOME/.vibe/lib`).
+  - `.vdb` alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
 - `moon run --target native src/cmd/xsh -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/cmd/xsh -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - `moon run --target wasm src/cmd/xsh_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
@@ -736,8 +736,8 @@ CLI:
 - `moon run --target native src/cmd/xsh -- repl-wasi [--no-prompt] [--tty|--no-tty]` runs line REPL with wasi-style prompt/tty options.
 - `moon build --target wasm src/cmd/xsh_wasi` builds a wasm line REPL wired to preview2 imports (`wasi:cli/stdin|stdout`, `wasi:io/streams`).
 - `moon build --target wasm src/cmd/xsh_compile_wasi` builds wasm compiler CLI (filesystem side is abstracted via `src/io.FileSystemAdapter`).
-- `just component-run script.xsh` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
-- `just component-run-moonix script.xsh` builds the same component and runs it via moonix.
+- `just component-run script.vibe` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
+- `just component-run-moonix script.vibe` builds the same component and runs it via moonix.
 - `just bootstrap-moonix [src]` tries to produce `moonix` binary from a local moonix checkout.
 - TUI completion sources: builtins + PATH commands + history.
 - `just install` installs a native binary to `~/.local/bin/xsh` (override with `XSH_PREFIX`).
@@ -746,7 +746,7 @@ CLI:
   (diagnostic stage: `import`, message prefix: `import cycle:`).
 
 Fixtures:
-- `fixtures/*.xsh` include a `__DATA__` JSON block and are executed by `moon test`.
+- `fixtures/*.vibe` include a `__DATA__` JSON block and are executed by `moon test`.
 - Fields:
   - `last`: expected `Value::to_string()` (exact match).
   - `effects`: expected `Effect::to_string()` list (exact match).
@@ -761,20 +761,20 @@ Fixtures:
     module path whose content hash is used.
 
 Bench:
-- `just bench-wasmtime` builds `cmd/xsh`, compiles `bench/bench_simple.xsh` to wasm,
+- `just bench-wasmtime` builds `cmd/xsh`, compiles `bench/bench_simple.vibe` to wasm,
   then benchmarks `wasmtime run --invoke run`.
 - `just bench-compare` compares interpreter (`cmd/xsh run`) vs `wasmtime run`.
 - `just bench-kpi [<file|dir...>]` runs `xsh bench` and writes a combined KPI report
   (`per_us` + `wasm_bytes`) to `dist/bench_kpi/latest.tsv`.
-  - Default target (no args): `bench/kpi_bench.xsh` with numeric pipeline/state-mix cases.
+  - Default target (no args): `bench/kpi_bench.vibe` with numeric pipeline/state-mix cases.
   - Default iterations/warmup: `wasm=20000/1000`, `interpreter=2000/200`.
   - `XSH_BENCH_KPI_N` / `XSH_BENCH_KPI_WARMUP` to tune iterations.
   - Optional thresholds: `XSH_BENCH_KPI_MAX_PER_US`,
     `XSH_BENCH_KPI_MAX_WASM_BYTES`, `XSH_BENCH_KPI_MAX_SCORE`.
 - 言語組み込み benchmark:
-  - `bench "name" { ... }` を `.xsh` に書き、`xsh bench <file|dir...>` で実行。
+  - `bench "name" { ... }` を `.vibe` に書き、`xsh bench <file|dir...>` で実行。
   - backend は `--backend wasm|interpreter`（`<file|dir...>` 指定時のデフォルトは `wasm`）。
-  - ディレクトリ指定時は top-level の `*_bench.xsh` を探索。
+  - ディレクトリ指定時は top-level の `*_bench.vibe` を探索。
   - `--n` / `--warmup` は benchmark 実行回数に適用。
   - `--backend wasm` はサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、出力に `wasm_bytes=<size>` を含める。
 - 互換の expression benchmark モード（legacy）:
@@ -794,7 +794,7 @@ Bench:
   - `XSH_BENCH_CHAIN=<N>`
   - `XSH_BENCH_WARMUP=<N>` / `XSH_BENCH_RUNS=<N>`
   - `XSH_BENCH_EXPORT_JSON=<path>` for hyperfine JSON export
-- `just run-wasm-js-string examples/string_basic.xsh` compiles with `--wasm-js-string`
+- `just run-wasm-js-string examples/string_basic.vibe` compiles with `--wasm-js-string`
   and runs the result using a JS engine (Node/WebAssembly builtins).
 
 ## WASM codegen (prototype)

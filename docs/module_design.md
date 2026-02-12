@@ -17,8 +17,8 @@ Only named imports are supported. No `* as` or default exports.
 
 ```xsh
 // Named imports
-use ./path.xsh { foo, bar }
-use ./path.xsh { foo as f, bar }
+use ./path.vibe { foo, bar }
+use ./path.vibe { foo as f, bar }
 
 // Hash reference (normalized form)
 use #abc12345 { foo }
@@ -34,7 +34,7 @@ export type Point = record { x: Int, y: Int }
 export enum Color { Red; Green; Blue }
 
 // Re-export
-export { foo, bar } from ./other.xsh
+export { foo, bar } from ./other.vibe
 
 // Export list (at end of file)
 export { foo, bar, baz }
@@ -45,7 +45,7 @@ export { foo, bar, baz }
 ```
 ModuleRef ::= Path | Hash
 
-Path   ::= "./" segment ("/" segment)* ".xsh"
+Path   ::= "./" segment ("/" segment)* ".vibe"
 Hash   ::= "#" [a-f0-9]{8,64}
 ```
 
@@ -63,7 +63,7 @@ struct ImportSpec {
 }
 
 enum ModuleRef {
-  Path(path~ : String)     // ./foo/bar.xsh
+  Path(path~ : String)     // ./foo/bar.vibe
   Hash(hash~ : String)     // #abc12345
 }
 
@@ -198,22 +198,22 @@ Git-style: shortest unique prefix within the module database.
 ```
 project/
 ├── src/
-│   ├── main.xsh
+│   ├── main.vibe
 │   └── lib/
-│       └── utils.xsh
-└── .xsh/
+│       └── utils.vibe
+└── .vibe/
     └── modules.db      # path → hash mapping
 ```
 
 ### Resolution Algorithm
 
 1. Parse source file
-2. For each `import ... from ./path.xsh`:
+2. For each `import ... from ./path.vibe`:
    - Resolve path relative to current file
    - Load and parse target file
    - Compute AST hash
    - Store in module DB
-3. Replace `Path(./path.xsh)` with `Hash(#abc...)` in normalized form
+3. Replace `Path(./path.vibe)` with `Hash(#abc...)` in normalized form
 
 ### Circular Import Detection
 
@@ -227,7 +227,7 @@ Use git's object storage directly for content-addressed modules.
 ### Object Types
 
 ```
-.git/objects/           # or .xsh/objects/
+.git/objects/           # or .vibe/objects/
 ├── ab/
 │   └── cdef1234...     # normalized AST blob
 └── 12/
@@ -255,21 +255,21 @@ git cat-file blob <hash>
 git cat-file -t <hash>  # should be "blob"
 ```
 
-### Path Mapping (.xsh/paths.json)
+### Path Mapping (.vibe/paths.json)
 
 ```json
 {
-  "./lib/utils.xsh": "abcdef1234567890...",
-  "./main.xsh": "1234567890abcdef..."
+  "./lib/utils.vibe": "abcdef1234567890...",
+  "./main.vibe": "1234567890abcdef..."
 }
 ```
 
 ### Alternative: Standalone Object Store
 
-If not in a git repo, use `.xsh/objects/` with same format:
+If not in a git repo, use `.vibe/objects/` with same format:
 
 ```
-.xsh/
+.vibe/
 ├── objects/
 │   ├── ab/cdef1234...
 │   └── 12/3456789...
@@ -280,16 +280,16 @@ If not in a git repo, use `.xsh/objects/` with same format:
 
 ```bash
 # Save file (normalize to hash)
-xsh save src/main.xsh
+xsh save src/main.vibe
 
 # Edit file (expand from hash to path)
-xsh edit src/main.xsh
+xsh edit src/main.vibe
 
 # Show module hash
-xsh hash src/main.xsh
+xsh hash src/main.vibe
 
 # Show dependencies
-xsh deps src/main.xsh
+xsh deps src/main.vibe
 
 # Verify all hashes
 xsh verify
@@ -307,7 +307,7 @@ export let public_fn = ...  // Visible to importers
 ### Import creates bindings
 
 ```xsh
-use ./lib.xsh { foo, bar as b }
+use ./lib.vibe { foo, bar as b }
 
 foo()    // OK
 b()      // OK (alias for bar)

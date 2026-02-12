@@ -19,5 +19,5 @@ test "bench: core.resolve_qualified" (b : @bench.T) {
 
 ///|
 test "bench: core.import_alias_name" (b : @bench.T) {
-  b.bench(fn() { b.keep(@core.import_alias_name("path/to/mod.xsh")) })
+  b.bench(fn() { b.keep(@core.import_alias_name("path/to/mod.vibe")) })
 }

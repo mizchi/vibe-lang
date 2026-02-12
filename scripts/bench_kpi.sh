@@ -35,7 +35,7 @@ fi
 
 declare -a entries
 if [[ $# -eq 0 ]]; then
-  entries=("bench/kpi_bench.xsh")
+  entries=("bench/kpi_bench.vibe")
 else
   entries=("$@")
 fi

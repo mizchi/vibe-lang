@@ -495,13 +495,13 @@ test "fixtures" {
     let is_file = @os_fs.is_file(path) catch {
       e => fail("[fixtures] stat failed: \{e.to_string()}")
     }
-    if is_file && path.has_suffix(".xsh") {
+    if is_file && path.has_suffix(".vibe") {
       files.push(path)
     }
   }
   sort_strings(files)
   if files.length() == 0 {
-    fail("[fixtures] no .xsh fixtures found")
+    fail("[fixtures] no .vibe fixtures found")
   }
   for path in files {
     run_fixture(path)
@@ -524,7 +524,7 @@ test "fixtures has no stale todo files" {
     let is_file = @os_fs.is_file(path) catch {
       e => fail("[fixtures] stat failed: \{e.to_string()}")
     }
-    if is_file && entry.has_prefix("todo_") && entry.has_suffix(".xsh") {
+    if is_file && entry.has_prefix("todo_") && entry.has_suffix(".vibe") {
       stale.push(path)
     }
   }

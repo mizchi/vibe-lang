@@ -18,7 +18,7 @@
 - [x] `xsh repl` / `xsh repl-stdin` / `xsh repl-wasi`:
   - 起動時に scratch db を復元
   - 成功した入力を scratch db に追記
-- [x] `index.xdb`:
+- [x] `index.vdb`:
   - `active_namespace`
   - `namespaces.<name>.db_path`
   - `namespaces.<name>.updated_at`
@@ -44,7 +44,7 @@
 - [x] `xsh history reset`
   - scratch db ファイル削除
 - [x] `xsh history reset --hard`
-  - 追加で `index.xdb` 内 namespace head 系を空文字にリセット
+  - 追加で `index.vdb` 内 namespace head 系を空文字にリセット
 
 ## Phase 2 (次)
 
@@ -67,4 +67,4 @@
 
 - [ ] namespace head の merge/rebase
 - [ ] distributed refs に namespace head 同期を追加
-- [ ] lock を `index.xdb` 主体に一本化（`index.lock` 廃止）
+- [ ] lock を `index.vdb` 主体に一本化（`index.lock` 廃止）

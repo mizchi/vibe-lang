@@ -1,13 +1,13 @@
 ///|
 test "xsh_compile_wasi parse compile args with wite default" {
   let parsed = parse_compile_cmd_args([
-    "--wasm", "--wite", "-o", "/tmp/out.wasm", "main.xsh",
+    "--wasm", "--wite", "-o", "/tmp/out.wasm", "main.vibe",
   ])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, CompileMode::WasmGc)
       assert_false(opts.no_dce)
-      assert_eq(opts.entry_path, "main.xsh")
+      assert_eq(opts.entry_path, "main.vibe")
       match opts.out_path {
         Some(path) => assert_eq(path, "/tmp/out.wasm")
         None => fail("expected out_path")
@@ -23,7 +23,7 @@ test "xsh_compile_wasi parse compile args with wite default" {
 
 ///|
 test "xsh_compile_wasi compile args reject no-dce on wit" {
-  let parsed = parse_compile_cmd_args(["--wit", "--no-dce", "main.xsh"])
+  let parsed = parse_compile_cmd_args(["--wit", "--no-dce", "main.vibe"])
   match parsed {
     Ok(_) => fail("expected parse error")
     Err(msg) =>
@@ -35,11 +35,11 @@ test "xsh_compile_wasi compile args reject no-dce on wit" {
 
 ///|
 test "xsh_compile_wasi parse compile args keeps mvp on --wasm-mvp" {
-  let parsed = parse_compile_cmd_args(["--wasm-mvp", "main.xsh"])
+  let parsed = parse_compile_cmd_args(["--wasm-mvp", "main.vibe"])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, CompileMode::Wasm)
-      assert_eq(opts.entry_path, "main.xsh")
+      assert_eq(opts.entry_path, "main.vibe")
     }
     Err(err) => fail(err)
   }

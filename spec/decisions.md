@@ -102,11 +102,11 @@ Status: accepted and moved from `TODO.md`.
   (`path`/`version`/`symbol`/`module`/`annotation` maps), path imports are
   validated against lock entries when enabled, and import diagnostics are
   compile-fatal.
-  `index.xsh` root registry now requires
+  `index.vibe` root registry now requires
   `export let version = "<semver>"` (simple `x.y.z` form).
 - Eval include alias workflow is fixed for local registry usage:
-  `xsh eval --include xsh/std@<version>.xdb` resolves aliases from
-  `XSH_LIB_DIR` (fallback `$HOME/.xsh/lib`), and `.xdb` can point to
+  `xsh eval --include vibe/std@<version>.vdb` resolves aliases from
+  `XSH_LIB_DIR` (fallback `$HOME/.vibe/lib`), and `.vdb` can point to
   object content via `hash:<sha1>` / `{ "hash": "<sha1>" }`.
 - Advanced graph distributed refs workflow is introduced:
   snapshot/delta payloads can be stored as git/bit objects and addressed by
@@ -135,13 +135,13 @@ Status: accepted and moved from `TODO.md`.
   delta payload (`AdvancedGraphDelta`) can be computed/applied and
   serialized as JSON for transfer simulation.
 - Bundle-size guardrail workflow is implemented:
-  `scripts/bench_bundle_size.sh` compiles `examples/*.xsh` and
+  `scripts/bench_bundle_size.sh` compiles `examples/*.vibe` and
   `bench/bundle_size/cases.txt` importer cases by default
   (`bench/importers` is runtime-first:
   `wasm` -> `wasm-js-string` -> no-dce fallback),
   supports optional `bench/importers-no-dce` diagnostics via
   `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`,
-  supports opt-in `xsh/std/*.xsh` surfaces via
+  supports opt-in `vibe/std/*.vibe` surfaces via
   `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`,
   stores current metrics in `dist/bundle_size/current.tsv`,
   and enforces per-entry golden budgets from

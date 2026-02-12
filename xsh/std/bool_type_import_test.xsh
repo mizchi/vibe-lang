@@ -1,8 +1,0 @@
-use ./bool.xsh {
-  Bool
-}
-test "bool_method_with_type_import_only" {
-  let t = true
-  assert(eq(t.to_int(), 1))
-  assert(eq(Bool::to_int(t), 1))
-}

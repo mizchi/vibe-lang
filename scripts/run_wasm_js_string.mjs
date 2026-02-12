@@ -4,7 +4,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 function usage() {
-  console.log("usage: node scripts/run_wasm_js_string.mjs <file.xsh> [--out wasm]");
+  console.log("usage: node scripts/run_wasm_js_string.mjs <file.vibe> [--out wasm]");
 }
 
 const args = process.argv.slice(2);

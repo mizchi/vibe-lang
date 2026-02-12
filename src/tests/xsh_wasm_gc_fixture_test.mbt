@@ -239,13 +239,13 @@ test "wasm gc opcode fixtures" {
     let is_file = @os_fs.is_file(path) catch {
       e => fail("[\{fixture_dir}] stat failed: \{e.to_string()}")
     }
-    if is_file && path.has_suffix(".xsh") {
+    if is_file && path.has_suffix(".vibe") {
       files.push(path)
     }
   }
   sort_strings_gc(files)
   if files.length() == 0 {
-    fail("[\{fixture_dir}] no .xsh fixtures found")
+    fail("[\{fixture_dir}] no .vibe fixtures found")
   }
   for path in files {
     let source = @os_fs.read_file_to_string(path) catch {

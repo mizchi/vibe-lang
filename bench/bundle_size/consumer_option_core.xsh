@@ -1,7 +1,0 @@
-import { is_some, unwrap_or, map_or } from "../../xsh/std/option.xsh"
-
-let a = is_some(Some(1))
-let b = unwrap_or(None, 7)
-let c = map_or(Some(5), 0, (x) -> x * 2)
-
-if a && eq(b, 7) && eq(c, 10) { "ok" } else { "ng" }

@@ -2,7 +2,7 @@
 
 ///|
 
-///| Uses git-style object format: .xsh/objects/ab/cdef1234...
+///| Uses git-style object format: .vibe/objects/ab/cdef1234...
 
 ///|
 pub(all) suberror StoreError {

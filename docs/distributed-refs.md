@@ -7,8 +7,8 @@
 
 - 不変データは content-addressed object として保存する。
 - 可変データは ref 更新だけで管理する。
-- `index.xsh` は人間向け manifest、`index.xdb` は機械向け entrypoint に寄せる。
-- `index.lock` は段階的に `index.xdb` へ収束させる。
+- `index.vibe` は人間向け manifest、`index.vdb` は機械向け entrypoint に寄せる。
+- `index.lock` は段階的に `index.vdb` へ収束させる。
 
 ## 基本モデル
 
@@ -32,7 +32,7 @@
 - `refs/bit/index/<scope>/graph/wal_head`
 - `refs/bit/index/<scope>/lock/head` (reserved)
 
-`<scope>` は `xsh/std@0.1.0` のような namespace + version を想定。
+`<scope>` は `vibe/std@0.1.0` のような namespace + version を想定。
 `..` を含む scope は拒否する。
 
 ## 現在実装済み
@@ -74,22 +74,22 @@
 例:
 
 ```bash
-just run index build examples/syntax.xsh -o /tmp/advanced-graph-index.json
-just run index ref push xsh/std@0.1.0 /tmp/advanced-graph-index.json
-just run index ref pull xsh/std@0.1.0 /tmp/advanced-graph-index.restored.json
+just run index build examples/syntax.vibe -o /tmp/advanced-graph-index.json
+just run index ref push vibe/std@0.1.0 /tmp/advanced-graph-index.json
+just run index ref pull vibe/std@0.1.0 /tmp/advanced-graph-index.restored.json
 ```
 
 `xsh index build` は entry から graph snapshot を作成し:
 
 - `-o` で指定した index JSON を出力
-- `index.xdb` に `graph_head` を出力
-- `.xsh/objects/<graph_head>` に snapshot JSON を保存
+- `index.vdb` に `graph_head` を出力
+- `.vibe/objects/<graph_head>` に snapshot JSON を保存
 
-## index.xsh / index.xdb / lock の整理
+## index.vibe / index.vdb / lock の整理
 
-- `index.xsh`: manifest (`version`, `module`, policy) のみ。
-- `index.xdb`: 実行に必要な pointer 集合 (`graph_head`, `wal_head`, 将来 `lock_head`)。
-- `index.lock`: 互換期間中は並行維持し、最終的に `index.xdb` に統合する。
+- `index.vibe`: manifest (`version`, `module`, policy) のみ。
+- `index.vdb`: 実行に必要な pointer 集合 (`graph_head`, `wal_head`, 将来 `lock_head`)。
+- `index.lock`: 互換期間中は並行維持し、最終的に `index.vdb` に統合する。
 
 ## converge (mizchi/converge) 連携案
 
@@ -99,15 +99,15 @@ just run index ref pull xsh/std@0.1.0 /tmp/advanced-graph-index.restored.json
 2. object 本体は git/bit object store から取得。
 3. 競合解決は ref のみ対象（object は immutable なので衝突しない）。
 
-## lock/xdb 解決順（現状）
+## lock/vdb 解決順（現状）
 
-- loader は lock 読み込み時に `index.xdb` を先に見る。
-  - `index.xdb` に lock payload (`path/version/symbol/module/annotation` または `lock` object) があれば採用。
+- loader は lock 読み込み時に `index.vdb` を先に見る。
+  - `index.vdb` に lock payload (`path/version/symbol/module/annotation` または `lock` object) があれば採用。
   - lock payload が無い場合は `index.lock` へ fallback。
   - `index.lock` が無ければ `xsh.lock` へ fallback（legacy）。
 
 ## 次ステップ
 
-1. `fetch/update-lock` の書き込み先を `index.xdb` 主体に寄せる。
+1. `fetch/update-lock` の書き込み先を `index.vdb` 主体に寄せる。
 2. `index.lock` 互換期間の終了条件を決める。
 3. chain compact / prune policy を CLI (`index ref`) 側に追加する。

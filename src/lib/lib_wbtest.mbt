@@ -15,7 +15,7 @@ test "format_report_json returns formatted payload" {
 
 ///|
 test "ide_outline_report_json returns symbols" {
-  let request = "{\"source\":\"let foo = 1\\nlet bar = foo\\n\",\"path\":\"/main.xsh\"}"
+  let request = "{\"source\":\"let foo = 1\\nlet bar = foo\\n\",\"path\":\"/main.vibe\"}"
   let json = ide_outline_report_json(request)
   assert_true(json.contains("\"ok\":true"))
   assert_true(json.contains("\"name\":\"foo\""))
@@ -23,7 +23,7 @@ test "ide_outline_report_json returns symbols" {
 
 ///|
 test "ide_search_report_json finds signature text" {
-  let request = "{\"source\":\"let foo = 1\\nlet bar = foo\\n\",\"path\":\"/main.xsh\",\"query\":\"foo\"}"
+  let request = "{\"source\":\"let foo = 1\\nlet bar = foo\\n\",\"path\":\"/main.vibe\",\"query\":\"foo\"}"
   let json = ide_search_report_json(request)
   assert_true(json.contains("\"ok\":true"))
   assert_true(json.contains("\"matches\""))
@@ -31,19 +31,19 @@ test "ide_search_report_json finds signature text" {
 
 ///|
 test "check_project_report_json resolves imports" {
-  let request = "{\"entry\":\"/main.xsh\",\"files\":{\"/main.xsh\":\"use \\\"./lib.xsh\\\" { value }\\nlet out = value\\n\",\"/lib.xsh\":\"export let value = 1\\n\"}}"
+  let request = "{\"entry\":\"/main.vibe\",\"files\":{\"/main.vibe\":\"use \\\"./lib.vibe\\\" { value }\\nlet out = value\\n\",\"/lib.vibe\":\"export let value = 1\\n\"}}"
   let json = check_project_report_json(request)
   assert_true(json.contains("\"ok\":true"))
-  assert_true(json.contains("\"entry\":\"/main.xsh\""))
+  assert_true(json.contains("\"entry\":\"/main.vibe\""))
   assert_true(json.contains("\"unsupported_imports\":false"))
 }
 
 ///|
 test "ide_peek_def_report_json resolves imported symbol" {
-  let request = "{\"entry\":\"/main.xsh\",\"path\":\"/main.xsh\",\"symbol\":\"value\",\"files\":{\"/main.xsh\":\"use \\\"./lib.xsh\\\" { value }\\nlet out = value\\n\",\"/lib.xsh\":\"export let value = 1\\n\"}}"
+  let request = "{\"entry\":\"/main.vibe\",\"path\":\"/main.vibe\",\"symbol\":\"value\",\"files\":{\"/main.vibe\":\"use \\\"./lib.vibe\\\" { value }\\nlet out = value\\n\",\"/lib.vibe\":\"export let value = 1\\n\"}}"
   let json = ide_peek_def_report_json(request)
   assert_true(json.contains("\"ok\":true"))
-  assert_true(json.contains("\"path\":\"/lib.xsh\""))
+  assert_true(json.contains("\"path\":\"/lib.vibe\""))
 }
 
 ///|
@@ -63,10 +63,10 @@ test "init_state_report_json injects prelude definitions" {
 test "init_state_report_json injects kv files for project requests" {
   let _ = init_state_report_json("{}")
   let init = init_state_report_json(
-    "{\"kv\":{\"/lib.xsh\":\"export let value = 7\\n\"}}",
+    "{\"kv\":{\"/lib.vibe\":\"export let value = 7\\n\"}}",
   )
   assert_true(init.contains("\"ok\":true"))
-  let request = "{\"entry\":\"/main.xsh\",\"files\":{\"/main.xsh\":\"use \\\"./lib.xsh\\\" { value }\\nlet out = value\\n\"}}"
+  let request = "{\"entry\":\"/main.vibe\",\"files\":{\"/main.vibe\":\"use \\\"./lib.vibe\\\" { value }\\nlet out = value\\n\"}}"
   let report = check_project_report_json(request)
   assert_true(report.contains("\"ok\":true"))
   assert_true(report.contains("\"error_count\":0"))

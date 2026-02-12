@@ -66,16 +66,16 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   evaluate `--syntax posix-strict` vs `posix-ext` split and wire diagnostics so
   teams can enforce strict compatibility in CI.
 - Grammar/language cleanup candidates (from std refactor & test split):
-  - P0 [done 2026-02-09]: Fix `xsh fmt --write` parse-stability bugs for `*.xsh`.
+  - P0 [done 2026-02-09]: Fix `xsh fmt --write` parse-stability bugs for `*.vibe`.
     Formatter output is now parser-equivalent for the reproduced cases:
     `trait Eq` / `impl Eq for Int` spacing, quoted `test "name"`,
     string/char literal quote preservation, and import join spacing
-    (`} from "./mod.xsh"`).
+    (`} from "./mod.vibe"`).
   - P0 [done 2026-02-09]: Add regression fixtures for formatter round-trip on xsh syntax forms:
     `import`, `trait/impl`, `test`, effect signatures (`with {..}`),
     and string-heavy assertions (see `src/parser/format_test.mbt`).
   - P1 [done 2026-02-09]: Allow trailing commas in import lists:
-    `import { a, b, } from "./m.xsh"`.
+    `import { a, b, } from "./m.vibe"`.
     Parser now accepts trailing comma with trivia/newlines in named import lists.
   - P1 [done 2026-02-09]: Support local variable type annotations in bindings:
     `let x: T = expr`.
@@ -112,7 +112,7 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   - P0 [done 2026-02-09]: Compatibility period.
     `to_string` の prelude 提供を維持したまま、呼び出し側の移行を先行。
   - P1 [done 2026-02-09]: Source migration.
-    `xsh/std/builtin_traits.xsh` と fixture 群から冗長な `trait Show` /
+    `vibe/std/builtin_traits.vibe` と fixture 群から冗長な `trait Show` /
     primitive `impl Show` を削除し、unknown-bound 用 fixture は
     `MissingShow` に切り替え。
   - P1 [done 2026-02-09]: Prelude trait injection.
@@ -120,7 +120,7 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     `to_string` を `[T: Show]` へ戻した。
   - P2 [done 2026-02-09]: Cleanup/deprecation close.
     `index.lock` を更新し、`just check && just test` 緑を確認。
-- xsh/std wasm-source coverage 実用化:
+- vibe/std wasm-source coverage 実用化:
   - P0 [done 2026-02-10]: `coverage-wasm-std` を multi-mode フォールバック対応。
     `wasm -> wasm-js-string` の順で試行し、
     `_build/coverage/wasm-std/attempts.tsv` と `cases/*.log` を出力。
@@ -151,8 +151,8 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     tagged-int 範囲の不整合（`int/double` 飽和境界）を修正し、
     `coverage-wasm-std` の実行 trap を 0 件化。
   - P1 [done 2026-02-11]: backend capability matrix を明文化。
-    `xsh/std/backend_capabilities.json` を導入し、
-    `xsh/std/*_test.xsh` ごとの expected backend
+    `vibe/std/backend_capabilities.json` を導入し、
+    `vibe/std/*_test.vibe` ごとの expected backend
     (`wasm` / `wasm-js-string` / `either`) を管理。
     `coverage-wasm-std` 集計時に `spec_status`
     (`expected_failure` / `unexpected_failure`) を判定する。
@@ -182,25 +182,25 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 - [x] Add compiler path for no-DCE wasm-js-string/gc emits and CLI `compile --no-dce`.
 - [x] Add per-entry golden budget file:
   `bench/golden/bundle_size_budget.tsv`.
-- [x] Reduce `xsh/std/test_import.xsh` transitive bundle size by importing
+- [x] Reduce `vibe/std/test_import.vibe` transitive bundle size by importing
   smaller std surfaces (`int/option` -> `bool/float`).
   Current result: `4397 -> 1590` bytes (`wasm-no-dce` baseline).
 - [ ] Reduce top offenders further without semantic regression:
-  `examples/json.xsh`, `xsh/std/option.xsh`, `xsh/std/double.xsh`.
-  Progress (2026-02-09): `examples/json.xsh` `10747 -> 10279`,
-  `xsh/std/option.xsh` `4201 -> 3014`, `xsh/std/double.xsh` `2685 -> 2382`
+  `examples/json.vibe`, `vibe/std/option.vibe`, `vibe/std/double.vibe`.
+  Progress (2026-02-09): `examples/json.vibe` `10747 -> 10279`,
+  `vibe/std/option.vibe` `4201 -> 3014`, `vibe/std/double.vibe` `2685 -> 2382`
   (`wasm-no-dce` / `wasm-js-string-no-dce`).
-  Progress (2026-02-10): split JSON parser tests into `examples/json_test.xsh`
-  and keep `examples/json.xsh` parser-only runtime surface;
-  bundle-size bench now excludes `*_test.xsh` entries in `examples/` and
-  `xsh/std/` so regressions track runtime surfaces only;
-  `examples/json.xsh` `10279 -> 10227`, `xsh/std/option.xsh` `3014 -> 3014`,
-  `xsh/std/double.xsh` `2278 -> 2271`.
+  Progress (2026-02-10): split JSON parser tests into `examples/json_test.vibe`
+  and keep `examples/json.vibe` parser-only runtime surface;
+  bundle-size bench now excludes `*_test.vibe` entries in `examples/` and
+  `vibe/std/` so regressions track runtime surfaces only;
+  `examples/json.vibe` `10279 -> 10227`, `vibe/std/option.vibe` `3014 -> 3014`,
+  `vibe/std/double.vibe` `2278 -> 2271`.
   Progress (2026-02-10): reverted API-level extra split and restored
-  single-module surfaces (`option.xsh` / `double.xsh`) to avoid
+  single-module surfaces (`option.vibe` / `double.vibe`) to avoid
   superficial "module size only" optimization.
   Progress (2026-02-10): importer-level measurements (new
-  `bench/bundle_size/*.xsh`) are now the primary benchmark focus:
+  `bench/bundle_size/*.vibe`) are now the primary benchmark focus:
   current baseline is
   `consumer_option_core` `850`,
   `consumer_option_extra` `1111`,
@@ -210,7 +210,7 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   runtime-first mode (`wasm` -> `wasm-js-string` -> no-dce fallback);
   no-dce importer diagnostics are opt-in via
   `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`;
-  module-surface scan for `xsh/std/*.xsh` is opt-in via
+  module-surface scan for `vibe/std/*.vibe` is opt-in via
   `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`.
   Case set / golden rules are now explicit via
   `bench/bundle_size/cases.txt` + `bench/bundle_size/README.md`.

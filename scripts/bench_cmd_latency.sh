@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
-SCRIPT_PATH="$ROOT_DIR/bench/bench_simple.xsh"
+SCRIPT_PATH="$ROOT_DIR/bench/bench_simple.vibe"
 WASM_OUT="$ROOT_DIR/target/bench/xsh_bench.wasm"
 
 COUNT="${XSH_BENCH_N:-5000000}"

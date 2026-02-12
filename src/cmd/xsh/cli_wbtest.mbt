@@ -162,7 +162,7 @@ test "line repl options reject unknown arg" {
 ///|
 test "eval cmd options parse db and expression" {
   let parsed = parse_eval_cmd_options(
-    ["--db=tmp1.db", "--include=index.xdb", "let", "value", "=", "1"],
+    ["--db=tmp1.db", "--include=index.vdb", "let", "value", "=", "1"],
     "eval",
   )
   match parsed {
@@ -175,7 +175,7 @@ test "eval cmd options parse db and expression" {
         Some(_) => fail("unexpected export path")
         None => ()
       }
-      assert_eq(opts.include_paths, ["index.xdb"])
+      assert_eq(opts.include_paths, ["index.vdb"])
       match opts.expr {
         Some(expr) => assert_eq(expr, "let value = 1")
         None => fail("expected expression")
@@ -188,7 +188,7 @@ test "eval cmd options parse db and expression" {
 ///|
 test "eval cmd options parse export only" {
   let parsed = parse_eval_cmd_options(
-    ["--db", "tmp1.db", "--include", "index.xdb", "--export", "out.xsh"],
+    ["--db", "tmp1.db", "--include", "index.vdb", "--export", "out.vibe"],
     "eval",
   )
   match parsed {
@@ -198,10 +198,10 @@ test "eval cmd options parse export only" {
         None => fail("expected db path")
       }
       match opts.export_path {
-        Some(path) => assert_eq(path, "out.xsh")
+        Some(path) => assert_eq(path, "out.vibe")
         None => fail("expected export path")
       }
-      assert_eq(opts.include_paths, ["index.xdb"])
+      assert_eq(opts.include_paths, ["index.vdb"])
       match opts.expr {
         Some(_) => fail("unexpected expression")
         None => ()
@@ -213,7 +213,7 @@ test "eval cmd options parse export only" {
 
 ///|
 test "eval cmd options allows export without db" {
-  let parsed = parse_eval_cmd_options(["--export", "out.xsh"], "eval")
+  let parsed = parse_eval_cmd_options(["--export", "out.vibe"], "eval")
   match parsed {
     Ok(opts) => {
       match opts.db_path {
@@ -221,7 +221,7 @@ test "eval cmd options allows export without db" {
         None => ()
       }
       match opts.export_path {
-        Some(path) => assert_eq(path, "out.xsh")
+        Some(path) => assert_eq(path, "out.vibe")
         None => fail("expected export path")
       }
       match opts.expr {
@@ -237,14 +237,14 @@ test "eval cmd options allows export without db" {
 test "eval cmd options parse multiple includes" {
   let parsed = parse_eval_cmd_options(
     [
-      "--db", "tmp1.db", "--include", "index.xdb", "--include=bit:/tmp/std.xdb",
+      "--db", "tmp1.db", "--include", "index.vdb", "--include=bit:/tmp/std.vdb",
       "let", "x", "=", "1",
     ],
     "eval",
   )
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.include_paths, ["index.xdb", "bit:/tmp/std.xdb"])
+      assert_eq(opts.include_paths, ["index.vdb", "bit:/tmp/std.vdb"])
       match opts.expr {
         Some(expr) => assert_eq(expr, "let x = 1")
         None => fail("expected expression")
@@ -381,11 +381,11 @@ test "eval cmd options reject missing include value" {
 }
 
 ///|
-test "eval include path resolves named xdb alias from lib dir" {
+test "eval include path resolves named vdb alias from lib dir" {
   let resolved = resolve_eval_include_path(
-    "/work/project", "xsh/std@0.1.0.xdb", "/home/test/.xsh/lib",
+    "/work/project", "vibe/std@0.1.0.vdb", "/home/test/.vibe/lib",
   )
-  assert_eq(resolved, "/home/test/.xsh/lib/xsh/std@0.1.0.xdb")
+  assert_eq(resolved, "/home/test/.vibe/lib/vibe/std@0.1.0.vdb")
 }
 
 ///|
@@ -412,7 +412,7 @@ test "finalize cmd options parse default" {
 ///|
 test "finalize cmd options parse db export and flags" {
   let parsed = parse_finalize_cmd_args([
-    "--db=tmp1.db", "--export", "dist/out.xsh", "--library", "--print", "--dry-run",
+    "--db=tmp1.db", "--export", "dist/out.vibe", "--library", "--print", "--dry-run",
   ])
   match parsed {
     Ok(opts) => {
@@ -421,7 +421,7 @@ test "finalize cmd options parse db export and flags" {
         None => fail("expected db path")
       }
       match opts.export_path {
-        Some(path) => assert_eq(path, "dist/out.xsh")
+        Some(path) => assert_eq(path, "dist/out.vibe")
         None => fail("expected export path")
       }
       assert_true(opts.library_mode)
@@ -443,11 +443,11 @@ test "finalize cmd options reject positional arg" {
 
 ///|
 test "fmt cmd options parse default write mode" {
-  let parsed = parse_fmt_cmd_options(["a.xsh", "b.xsh"])
+  let parsed = parse_fmt_cmd_options(["a.vibe", "b.vibe"])
   match parsed {
     Ok(opts) => {
       assert_false(opts.dry_run)
-      assert_eq(opts.files, ["a.xsh", "b.xsh"])
+      assert_eq(opts.files, ["a.vibe", "b.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -455,11 +455,11 @@ test "fmt cmd options parse default write mode" {
 
 ///|
 test "fmt cmd options parse dry-run and legacy write flags" {
-  let parsed = parse_fmt_cmd_options(["--dry-run", "--write", "-w", "a.xsh"])
+  let parsed = parse_fmt_cmd_options(["--dry-run", "--write", "-w", "a.vibe"])
   match parsed {
     Ok(opts) => {
       assert_true(opts.dry_run)
-      assert_eq(opts.files, ["a.xsh"])
+      assert_eq(opts.files, ["a.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -467,7 +467,7 @@ test "fmt cmd options parse dry-run and legacy write flags" {
 
 ///|
 test "fmt cmd options reject unknown option" {
-  let parsed = parse_fmt_cmd_options(["--wat", "a.xsh"])
+  let parsed = parse_fmt_cmd_options(["--wat", "a.vibe"])
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) => assert_eq(msg, "fmt: unknown option --wat")
@@ -477,10 +477,10 @@ test "fmt cmd options reject unknown option" {
 ///|
 test "fmt dry-run diff renders changed lines" {
   let diff = render_fmt_dry_run_diff(
-    "sample.xsh", "let value = 1\n", "let value = 2\n",
+    "sample.vibe", "let value = 1\n", "let value = 2\n",
   )
-  assert_true(diff.contains("--- sample.xsh\n"))
-  assert_true(diff.contains("+++ sample.xsh\n"))
+  assert_true(diff.contains("--- sample.vibe\n"))
+  assert_true(diff.contains("+++ sample.vibe\n"))
   assert_true(diff.contains("-let value = 1\n"))
   assert_true(diff.contains("+let value = 2\n"))
 }
@@ -488,18 +488,18 @@ test "fmt dry-run diff renders changed lines" {
 ///|
 test "fmt dry-run diff is empty when unchanged" {
   let diff = render_fmt_dry_run_diff(
-    "sample.xsh", "let value = 1\n", "let value = 1\n",
+    "sample.vibe", "let value = 1\n", "let value = 1\n",
   )
   assert_eq(diff, "")
 }
 
 ///|
 test "cli syntax mode parse default" {
-  let parsed = parse_cli_syntax_args(["main.xsh"], "run")
+  let parsed = parse_cli_syntax_args(["main.vibe"], "run")
   match parsed {
     Ok((mode, rest)) => {
       assert_eq(mode, @xsh_lib.ParserMode::XshMode)
-      assert_eq(rest, ["main.xsh"])
+      assert_eq(rest, ["main.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -507,11 +507,11 @@ test "cli syntax mode parse default" {
 
 ///|
 test "cli syntax mode parse explicit posix" {
-  let parsed = parse_cli_syntax_args(["--syntax", "posix", "main.xsh"], "run")
+  let parsed = parse_cli_syntax_args(["--syntax", "posix", "main.vibe"], "run")
   match parsed {
     Ok((mode, rest)) => {
       assert_eq(mode, @xsh_lib.ParserMode::PosixMode)
-      assert_eq(rest, ["main.xsh"])
+      assert_eq(rest, ["main.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -519,11 +519,11 @@ test "cli syntax mode parse explicit posix" {
 
 ///|
 test "cli runtime flags parse default" {
-  let parsed = parse_cli_runtime_args(["main.xsh"], "run")
+  let parsed = parse_cli_runtime_args(["main.vibe"], "run")
   match parsed {
     Ok(opts) => {
       assert_eq(opts.syntax_mode, @xsh_lib.ParserMode::XshMode)
-      assert_eq(opts.cmd_args, ["main.xsh"])
+      assert_eq(opts.cmd_args, ["main.vibe"])
       assert_false(opts.unstable_async)
       assert_false(opts.unstable_threads)
     }
@@ -534,13 +534,13 @@ test "cli runtime flags parse default" {
 ///|
 test "cli runtime flags parse with unstable flags" {
   let parsed = parse_cli_runtime_args(
-    ["--unstable-async", "--syntax", "posix", "--unstable-threads", "main.xsh"],
+    ["--unstable-async", "--syntax", "posix", "--unstable-threads", "main.vibe"],
     "run",
   )
   match parsed {
     Ok(opts) => {
       assert_eq(opts.syntax_mode, @xsh_lib.ParserMode::PosixMode)
-      assert_eq(opts.cmd_args, ["main.xsh"])
+      assert_eq(opts.cmd_args, ["main.vibe"])
       assert_true(opts.unstable_async)
       assert_true(opts.unstable_threads)
     }
@@ -551,13 +551,13 @@ test "cli runtime flags parse with unstable flags" {
 ///|
 test "cli dispatch args parse leading unstable flags" {
   let parsed = parse_cli_dispatch_args([
-    "xsh", "--unstable-async", "--unstable-threads", "run", "main.xsh",
+    "xsh", "--unstable-async", "--unstable-threads", "run", "main.vibe",
   ])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "run")
       assert_eq(v.syntax_mode, @xsh_lib.ParserMode::XshMode)
-      assert_eq(v.cmd_args, ["main.xsh"])
+      assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
       assert_true(v.unstable_threads)
     }
@@ -569,13 +569,13 @@ test "cli dispatch args parse leading unstable flags" {
 test "cli dispatch args merges leading and trailing unstable flags" {
   let parsed = parse_cli_dispatch_args([
     "xsh", "--unstable-async", "run", "--unstable-threads", "--syntax", "posix",
-    "main.xsh",
+    "main.vibe",
   ])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "run")
       assert_eq(v.syntax_mode, @xsh_lib.ParserMode::PosixMode)
-      assert_eq(v.cmd_args, ["main.xsh"])
+      assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
       assert_true(v.unstable_threads)
     }
@@ -644,13 +644,13 @@ test "cli syntax mode support matrix" {
 ///|
 test "compile args parse wite default level" {
   let parsed = parse_compile_cmd_args([
-    "--wasm", "--wite", "-o", "/tmp/out.wasm", "main.xsh",
+    "--wasm", "--wite", "-o", "/tmp/out.wasm", "main.vibe",
   ])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, CompileMode::Wasm)
       assert_false(opts.no_dce)
-      assert_eq(opts.entry_path, "main.xsh")
+      assert_eq(opts.entry_path, "main.vibe")
       match opts.out_path {
         Some(path) => assert_eq(path, "/tmp/out.wasm")
         None => fail("expected out path")
@@ -666,7 +666,7 @@ test "compile args parse wite default level" {
 
 ///|
 test "compile args parse explicit O level for component" {
-  let parsed = parse_compile_cmd_args(["--component", "-O3", "main.xsh"])
+  let parsed = parse_compile_cmd_args(["--component", "-O3", "main.vibe"])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, CompileMode::Component)
@@ -682,14 +682,14 @@ test "compile args parse explicit O level for component" {
 ///|
 test "compile args parse coverage for wasm" {
   let parsed = parse_compile_cmd_args([
-    "--wasm", "--coverage", "-o", "/tmp/out.wasm", "main.xsh",
+    "--wasm", "--coverage", "-o", "/tmp/out.wasm", "main.vibe",
   ])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, CompileMode::Wasm)
       assert_true(opts.coverage)
       assert_false(opts.coverage_run_tests)
-      assert_eq(opts.entry_path, "main.xsh")
+      assert_eq(opts.entry_path, "main.vibe")
       match opts.out_path {
         Some(path) => assert_eq(path, "/tmp/out.wasm")
         None => fail("expected out path")
@@ -702,14 +702,14 @@ test "compile args parse coverage for wasm" {
 ///|
 test "compile args parse coverage run tests for wasm" {
   let parsed = parse_compile_cmd_args([
-    "--wasm", "--coverage", "--coverage-run-tests", "main.xsh",
+    "--wasm", "--coverage", "--coverage-run-tests", "main.vibe",
   ])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, CompileMode::Wasm)
       assert_true(opts.coverage)
       assert_true(opts.coverage_run_tests)
-      assert_eq(opts.entry_path, "main.xsh")
+      assert_eq(opts.entry_path, "main.vibe")
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -717,12 +717,12 @@ test "compile args parse coverage run tests for wasm" {
 
 ///|
 test "compile args parse debug errors for wasm" {
-  let parsed = parse_compile_cmd_args(["--wasm", "--debug-errors", "main.xsh"])
+  let parsed = parse_compile_cmd_args(["--wasm", "--debug-errors", "main.vibe"])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, CompileMode::Wasm)
       assert_true(opts.debug_errors)
-      assert_eq(opts.entry_path, "main.xsh")
+      assert_eq(opts.entry_path, "main.vibe")
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -731,7 +731,7 @@ test "compile args parse debug errors for wasm" {
 ///|
 test "compile args reject coverage run tests without coverage" {
   let parsed = parse_compile_cmd_args([
-    "--wasm", "--coverage-run-tests", "main.xsh",
+    "--wasm", "--coverage-run-tests", "main.vibe",
   ])
   match parsed {
     Ok(_) => fail("expected error")
@@ -742,7 +742,7 @@ test "compile args reject coverage run tests without coverage" {
 
 ///|
 test "compile args reject debug errors on non-wasm mode" {
-  let parsed = parse_compile_cmd_args(["--wit", "--debug-errors", "main.xsh"])
+  let parsed = parse_compile_cmd_args(["--wit", "--debug-errors", "main.vibe"])
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
@@ -754,7 +754,7 @@ test "compile args reject debug errors on non-wasm mode" {
 
 ///|
 test "compile args reject coverage on non-wasm mode" {
-  let parsed = parse_compile_cmd_args(["--wit", "--coverage", "main.xsh"])
+  let parsed = parse_compile_cmd_args(["--wit", "--coverage", "main.vibe"])
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
@@ -766,7 +766,7 @@ test "compile args reject coverage on non-wasm mode" {
 
 ///|
 test "compile args reject no-dce on non-wasm mode" {
-  let parsed = parse_compile_cmd_args(["--wit", "--no-dce", "main.xsh"])
+  let parsed = parse_compile_cmd_args(["--wit", "--no-dce", "main.vibe"])
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
@@ -778,7 +778,7 @@ test "compile args reject no-dce on non-wasm mode" {
 
 ///|
 test "compile args reject optimize flags on non-binary mode" {
-  let parsed = parse_compile_cmd_args(["--wit", "-Oz", "main.xsh"])
+  let parsed = parse_compile_cmd_args(["--wit", "-Oz", "main.vibe"])
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
@@ -872,9 +872,9 @@ test "resolve test entry paths includes top-level xsh files" {
   @os_fs.create_dir(deep) catch {
     e => fail("create deep dir failed: " + e.to_string())
   }
-  let top = root + "/top.xsh"
-  let nested = sub + "/nested.xsh"
-  let deep_nested = deep + "/deep_nested.xsh"
+  let top = root + "/top.vibe"
+  let nested = sub + "/nested.vibe"
+  let deep_nested = deep + "/deep_nested.vibe"
   let ignored = deep + "/ignored.txt"
   @os_fs.write_string_to_file(top, "") catch {
     e => fail("write top failed: " + e.to_string())
@@ -908,15 +908,15 @@ test "resolve test entry paths includes top-level xsh files" {
 }
 
 ///|
-test "resolve bench entry paths includes top-level _bench.xsh files" {
+test "resolve bench entry paths includes top-level _bench.vibe files" {
   let root = wbtest_make_temp_dir("resolve_bench")
   let sub = root + "/sub"
   @os_fs.create_dir(sub) catch {
     e => fail("create sub dir failed: " + e.to_string())
   }
-  let top = root + "/top_bench.xsh"
-  let top_non_bench = root + "/top.xsh"
-  let nested = sub + "/nested_bench.xsh"
+  let top = root + "/top_bench.vibe"
+  let top_non_bench = root + "/top.vibe"
+  let nested = sub + "/nested_bench.vibe"
   @os_fs.write_string_to_file(top, "") catch {
     e => fail("write top bench failed: " + e.to_string())
   }
@@ -946,7 +946,7 @@ test "resolve bench entry paths includes top-level _bench.xsh files" {
 test "normalize source sorts declarations and prunes unreachable defs" {
   let source =
     #|let dead = () -> Int { 0 }
-    #|use ./dep.xsh { dep }
+    #|use ./dep.vibe { dep }
     #|trait Eq
     #|impl Eq for Int
     #|type Alias = Int
@@ -960,7 +960,7 @@ test "normalize source sorts declarations and prunes unreachable defs" {
   }
   assert_false(normalized.contains("let dead ="))
   assert_false(normalized.contains("type Alias = Int"))
-  let idx_use = wbtest_substring_index(normalized, "use ./dep.xsh {")
+  let idx_use = wbtest_substring_index(normalized, "use ./dep.vibe {")
   let idx_trait = wbtest_substring_index(normalized, "trait Eq")
   let idx_pure_fn = wbtest_substring_index(normalized, "let helper =")
   let idx_effect_fn = wbtest_substring_index(
@@ -1097,39 +1097,39 @@ test "normalize source inserts inferred annotation on non-fn let" {
 ///|
 test "std layer classification covers primary modules" {
   let trait_layer = match
-    std_layer_for_path("/tmp/repo/xsh/std/builtin_traits.xsh") {
+    std_layer_for_path("/tmp/repo/vibe/std/builtin_traits.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(trait_layer, "trait-contract")
 
   let primitive_layer = match
-    std_layer_for_path("/tmp/repo/xsh/std/string.xsh") {
+    std_layer_for_path("/tmp/repo/vibe/std/string.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(primitive_layer, "pure-primitive")
 
-  let data_layer = match std_layer_for_path("/tmp/repo/xsh/std/list.xsh") {
+  let data_layer = match std_layer_for_path("/tmp/repo/vibe/std/list.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer, "pure-data")
 
-  let ref_layer = match std_layer_for_path("/tmp/repo/xsh/std/path.xsh") {
+  let ref_layer = match std_layer_for_path("/tmp/repo/vibe/std/path.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(ref_layer, "ref-model")
 
-  let effect_layer = match std_layer_for_path("/tmp/repo/xsh/std/io.xsh") {
+  let effect_layer = match std_layer_for_path("/tmp/repo/vibe/std/io.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(effect_layer, "effect-boundary")
 
   let backend_layer = match
-    std_layer_for_path("/tmp/repo/xsh/std/wasm/types.xsh") {
+    std_layer_for_path("/tmp/repo/vibe/std/wasm/types.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
@@ -1139,9 +1139,9 @@ test "std layer classification covers primary modules" {
 ///|
 test "std layering rejects effect to backend import" {
   let source =
-    #|use ./wasm/types.xsh { i32 }
+    #|use ./wasm/types.vibe { i32 }
   let violations = std_layering_violations_for_source(
-    "/tmp/repo/xsh/std/io.xsh", source,
+    "/tmp/repo/vibe/std/io.vibe", source,
   )
   assert_eq(violations.length(), 1)
   assert_true(violations[0].contains("effect-boundary"))
@@ -1151,25 +1151,25 @@ test "std layering rejects effect to backend import" {
 ///|
 test "std layering allows effect to primitive import and ignores std tests" {
   let allowed_source =
-    #|use ./string.xsh { String }
+    #|use ./string.vibe { String }
   let allowed = std_layering_violations_for_source(
-    "/tmp/repo/xsh/std/io.xsh", allowed_source,
+    "/tmp/repo/vibe/std/io.vibe", allowed_source,
   )
   assert_eq(allowed.length(), 0)
 
   let test_source =
-    #|use ./wasm/types.xsh { i32 }
+    #|use ./wasm/types.vibe { i32 }
   let test_file = std_layering_violations_for_source(
-    "/tmp/repo/xsh/std/io_test.xsh", test_source,
+    "/tmp/repo/vibe/std/io_test.vibe", test_source,
   )
   assert_eq(test_file.length(), 0)
 }
 
 ///|
 test "normalize source succeeds for xsh std files" {
-  let files = wbtest_collect_xsh_files_recursive("xsh/std")
+  let files = wbtest_collect_xsh_files_recursive("vibe/std")
   if files.length() == 0 {
-    fail("[xsh/std] no .xsh files found")
+    fail("[vibe/std] no .vibe files found")
   }
   for path in files {
     let source = @os_fs.read_file_to_string(path) catch {
@@ -1214,16 +1214,16 @@ test "normalize fixtures input output pairs" {
     let is_file = @os_fs.is_file(path) catch {
       e => fail("[\{fixture_dir}] stat failed: \{e.to_string()}")
     }
-    if is_file && path.has_suffix(".in.xsh") {
+    if is_file && path.has_suffix(".in.vibe") {
       input_files.push(path)
     }
   }
   wbtest_sort_strings(input_files)
   if input_files.length() == 0 {
-    fail("[\{fixture_dir}] no .in.xsh fixtures found")
+    fail("[\{fixture_dir}] no .in.vibe fixtures found")
   }
   for input_path in input_files {
-    let output_path = wbtest_replace_suffix(input_path, ".in.xsh", ".out.xsh")
+    let output_path = wbtest_replace_suffix(input_path, ".in.vibe", ".out.vibe")
     if not(@os_fs.path_exists(output_path)) {
       fail("[\{input_path}] missing expected output fixture: \{output_path}")
     }
@@ -1263,10 +1263,10 @@ test "normalize fixtures has no stale output files" {
     let is_file = @os_fs.is_file(path) catch {
       e => fail("[\{fixture_dir}] stat failed: \{e.to_string()}")
     }
-    if not(is_file) || not(path.has_suffix(".out.xsh")) {
+    if not(is_file) || not(path.has_suffix(".out.vibe")) {
       continue
     }
-    let input_path = wbtest_replace_suffix(path, ".out.xsh", ".in.xsh")
+    let input_path = wbtest_replace_suffix(path, ".out.vibe", ".in.vibe")
     if not(@os_fs.path_exists(input_path)) {
       stale_outputs.push(path)
     }
@@ -1274,7 +1274,7 @@ test "normalize fixtures has no stale output files" {
   wbtest_sort_strings(stale_outputs)
   if stale_outputs.length() > 0 {
     fail(
-      "[\{fixture_dir}] stale .out.xsh fixtures found: \{stale_outputs.to_string()}",
+      "[\{fixture_dir}] stale .out.vibe fixtures found: \{stale_outputs.to_string()}",
     )
   }
 }
@@ -1419,7 +1419,7 @@ fn wbtest_collect_xsh_files_recursive_impl(
       continue
     }
     let is_file = @os_fs.is_file(path) catch { _ => false }
-    if is_file && path.has_suffix(".xsh") {
+    if is_file && path.has_suffix(".vibe") {
       out.push(path)
     }
   }

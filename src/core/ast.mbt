@@ -85,7 +85,7 @@ pub(all) struct ImportItem {
 
 ///|
 /// Import specification: only named imports allowed
-/// use ./path.xsh { foo, bar as b }
+/// use ./path.vibe { foo, bar as b }
 pub(all) struct ImportSpec {
   items : Array[ImportItem]
 } derive(Show, Eq)
@@ -93,7 +93,7 @@ pub(all) struct ImportSpec {
 ///|
 /// Module reference: path, content hash, or lock-managed ref
 pub(all) enum ModuleRef {
-  Path(path~ : String) // ./foo/bar.xsh
+  Path(path~ : String) // ./foo/bar.vibe
   Hash(hash~ : String) // #abc12345
   Version(name~ : String) // version@main
   Symbol(name~ : String) // symbol@std/math

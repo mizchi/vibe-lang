@@ -57,7 +57,7 @@ fi
 test_while_loop() {
   log_info "Test: While loop WASM compilation"
 
-  cat > "$TMP_DIR/while_test.xsh" << 'EOF'
+  cat > "$TMP_DIR/while_test.vibe" << 'EOF'
 let mut i = 0
 let mut sum = 0
 while i < 5 {
@@ -67,7 +67,7 @@ while i < 5 {
 sum
 EOF
 
-  $XSH compile --wasm "$TMP_DIR/while_test.xsh" -o "$TMP_DIR/while_test.wasm" 2>/dev/null
+  $XSH compile --wasm "$TMP_DIR/while_test.vibe" -o "$TMP_DIR/while_test.wasm" 2>/dev/null
 
   if [ ! -f "$TMP_DIR/while_test.wasm" ]; then
     log_fail "While loop WASM not generated"
@@ -96,7 +96,7 @@ EOF
 test_wit_generation() {
   log_info "Test: WIT generation"
 
-  cat > "$TMP_DIR/wit_test.xsh" << 'EOF'
+  cat > "$TMP_DIR/wit_test.vibe" << 'EOF'
 export let add = (x: Int, y: Int) -> Int {
   x + y
 }
@@ -106,7 +106,7 @@ export let multiply = (a: Int, b: Int) -> Int {
 add(1, 2)
 EOF
 
-  $XSH compile --wit "$TMP_DIR/wit_test.xsh" -o "$TMP_DIR/wit_test.wit" 2>/dev/null
+  $XSH compile --wit "$TMP_DIR/wit_test.vibe" -o "$TMP_DIR/wit_test.wit" 2>/dev/null
 
   if [ ! -f "$TMP_DIR/wit_test.wit" ]; then
     log_fail "WIT file not generated"
@@ -137,14 +137,14 @@ EOF
 test_component_generation() {
   log_info "Test: Component WASM generation"
 
-  cat > "$TMP_DIR/component_test.xsh" << 'EOF'
+  cat > "$TMP_DIR/component_test.vibe" << 'EOF'
 let square = (x: Int) -> Int {
   x * x
 }
 square(7)
 EOF
 
-  $XSH compile --component "$TMP_DIR/component_test.xsh" -o "$TMP_DIR/component_test.component.wasm" 2>/dev/null
+  $XSH compile --component "$TMP_DIR/component_test.vibe" -o "$TMP_DIR/component_test.component.wasm" 2>/dev/null
 
   if [ ! -f "$TMP_DIR/component_test.component.wasm" ]; then
     log_fail "Component WASM not generated"
@@ -188,7 +188,7 @@ EOF
 test_arithmetic() {
   log_info "Test: Arithmetic operations"
 
-  cat > "$TMP_DIR/arith_test.xsh" << 'EOF'
+  cat > "$TMP_DIR/arith_test.vibe" << 'EOF'
 let a = 10
 let b = 3
 let sum = a + b
@@ -198,7 +198,7 @@ let quot = a / b
 prod
 EOF
 
-  $XSH compile --wasm "$TMP_DIR/arith_test.xsh" -o "$TMP_DIR/arith_test.wasm" 2>/dev/null
+  $XSH compile --wasm "$TMP_DIR/arith_test.vibe" -o "$TMP_DIR/arith_test.wasm" 2>/dev/null
 
   RESULT=$(node -e "
     const fs = require('fs');
@@ -222,13 +222,13 @@ test_default_output() {
   log_info "Test: Default output directory"
 
   # Create a test file in project root's dist/
-  cat > "$TMP_DIR/default_out.xsh" << 'EOF'
+  cat > "$TMP_DIR/default_out.vibe" << 'EOF'
 42
 EOF
 
   # Ensure dist/ exists and run from project root
   mkdir -p "$PROJECT_ROOT/dist"
-  $XSH compile --wasm "$TMP_DIR/default_out.xsh" 2>/dev/null || true
+  $XSH compile --wasm "$TMP_DIR/default_out.vibe" 2>/dev/null || true
 
   if [ -f "$PROJECT_ROOT/dist/default_out.wasm" ]; then
     log_pass "WASM generated in default dist/ directory"
@@ -242,7 +242,7 @@ EOF
 test_tuple_with_effects() {
   log_info "Test: Tuple return type with effects"
 
-  cat > "$TMP_DIR/tuple_effects.xsh" << 'EOF'
+  cat > "$TMP_DIR/tuple_effects.vibe" << 'EOF'
 let parse = (s: String, i: Int) -> (String, Int) with {Error} {
   (s, i + 1)
 }
@@ -250,7 +250,7 @@ parse("test", 5)
 EOF
 
   # This should parse and run without error
-  RESULT=$($XSH run "$TMP_DIR/tuple_effects.xsh" 2>&1)
+  RESULT=$($XSH run "$TMP_DIR/tuple_effects.vibe" 2>&1)
 
   if echo "$RESULT" | grep -q -e 'Tuple.*String.*"test".*Int(6)' -e 'last: ("test", 6)'; then
     log_pass "Tuple with effects parses and runs correctly"
@@ -263,14 +263,14 @@ EOF
 test_wit_types() {
   log_info "Test: WIT type mappings"
 
-  cat > "$TMP_DIR/wit_types.xsh" << 'EOF'
+  cat > "$TMP_DIR/wit_types.vibe" << 'EOF'
 export let get_bool = () -> Bool { true }
 export let get_string = () -> String { "hello" }
 export let identity = (x: Int) -> Int { x }
 1
 EOF
 
-  $XSH compile --wit "$TMP_DIR/wit_types.xsh" -o "$TMP_DIR/wit_types.wit" 2>/dev/null
+  $XSH compile --wit "$TMP_DIR/wit_types.vibe" -o "$TMP_DIR/wit_types.wit" 2>/dev/null
 
   if grep -q -- "-> bool" "$TMP_DIR/wit_types.wit"; then
     log_pass "WIT maps Bool to bool"
@@ -300,7 +300,7 @@ test_component_stdio_roundtrip() {
     return
   fi
 
-  cat > "$TMP_DIR/stdio_roundtrip.xsh" << 'EOF'
+  cat > "$TMP_DIR/stdio_roundtrip.vibe" << 'EOF'
 let run = () -> Int with {Stdin, Stdout} {
   do {
     stdout_write_char(62)
@@ -318,7 +318,7 @@ let run = () -> Int with {Stdin, Stdout} {
 run()
 EOF
 
-  scripts/component_wkg_stdio.sh "$TMP_DIR/stdio_roundtrip.xsh" "$TMP_DIR/stdio_roundtrip.component.wasm" >/dev/null 2>&1 || {
+  scripts/component_wkg_stdio.sh "$TMP_DIR/stdio_roundtrip.vibe" "$TMP_DIR/stdio_roundtrip.component.wasm" >/dev/null 2>&1 || {
     log_fail "failed to build stdio component"
     return
   }
@@ -341,7 +341,7 @@ test_component_stdio_stream_chunk() {
     return
   fi
 
-  cat > "$TMP_DIR/stdio_stream_chunk.xsh" << 'EOF'
+  cat > "$TMP_DIR/stdio_stream_chunk.vibe" << 'EOF'
 let run = () -> Int with {Stdin, Stdout} {
   do {
     stdout_write_stream("> ")
@@ -354,7 +354,7 @@ let run = () -> Int with {Stdin, Stdout} {
 run()
 EOF
 
-  scripts/component_wkg_stdio.sh "$TMP_DIR/stdio_stream_chunk.xsh" "$TMP_DIR/stdio_stream_chunk.component.wasm" >/dev/null 2>&1 || {
+  scripts/component_wkg_stdio.sh "$TMP_DIR/stdio_stream_chunk.vibe" "$TMP_DIR/stdio_stream_chunk.component.wasm" >/dev/null 2>&1 || {
     log_fail "failed to build stdio stream component"
     return
   }

@@ -135,9 +135,9 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with write_bytes(
 ///|
 test "loader load_db_with_paths loads transitive modules" {
   let root = make_temp_dir("transitive")
-  let entry = root + "/main.xsh"
-  let lib = root + "/lib.xsh"
-  let entry_source = "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n"
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
+  let entry_source = "use ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n"
   let lib_source = "let libv = 1\nexport { libv }\n"
   write_file(entry, entry_source)
   write_file(lib, lib_source)
@@ -165,12 +165,12 @@ test "loader load_db_with_paths loads transitive modules" {
 ///|
 test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
   let root = "/workspace"
-  let entry = root + "/main.xsh"
-  let lib = root + "/lib.xsh"
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
   let fs = MemIoAdapter::new(root)
   match
     fs.write_string(
-      entry, "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n",
+      entry, "use ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n",
     ) {
     Ok(_) => ()
     Err(err) => fail(err)
@@ -192,7 +192,7 @@ test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
   match db.get_source(entry_norm) {
     Some(source) =>
       assert_eq(
-        source, "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n",
+        source, "use ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n",
       )
     None => fail("expected entry source")
   }
@@ -205,10 +205,10 @@ test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
 ///|
 test "loader load_db_with_paths reports import cycle" {
   let root = make_temp_dir("cycle")
-  let a_path = root + "/a.xsh"
-  let b_path = root + "/b.xsh"
-  write_file(a_path, "use ./b.xsh {  b  }\nlet a = b\nexport { a }\n")
-  write_file(b_path, "use ./a.xsh {  a  }\nlet b = a\nexport { b }\n")
+  let a_path = root + "/a.vibe"
+  let b_path = root + "/b.vibe"
+  write_file(a_path, "use ./b.vibe {  b  }\nlet a = b\nexport { a }\n")
+  write_file(b_path, "use ./a.vibe {  a  }\nlet b = a\nexport { b }\n")
   match load_db_with_paths(a_path) {
     Ok(_) => fail("expected import cycle error")
     Err(err) => assert_true(err.contains("import cycle detected"))
@@ -225,18 +225,18 @@ test "loader load_db_with_paths rejects import outside index root" {
   @os_fs.create_dir(outside) catch {
     e => fail(e.to_string())
   }
-  let entry = root + "/main.xsh"
-  let outside_lib = outside + "/lib.xsh"
+  let entry = root + "/main.vibe"
+  let outside_lib = outside + "/lib.vibe"
   write_file(
-    root + "/index.xsh",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./xsh/std\" }\n",
+    root + "/index.vibe",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/std\" }\n",
   )
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
     entry,
     "use ../" +
     outside_name +
-    "/lib.xsh { libv }\nlet main = libv\nexport { main }\n",
+    "/lib.vibe { libv }\nlet main = libv\nexport { main }\n",
   )
   match load_db_with_paths(entry) {
     Ok(_) => fail("expected outside root error")
@@ -249,22 +249,22 @@ test "loader load_db_with_paths rejects import outside index root" {
 ///|
 test "loader load_db_with_paths resolves std namespace from index registry" {
   let root = make_temp_dir("registry_std")
-  let std_root = root + "/xsh/std"
+  let std_root = root + "/vibe/std"
   @os_fs.create_dir(root + "/xsh") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_root) catch {
     e => fail(e.to_string())
   }
-  let entry = root + "/main.xsh"
-  let std_mod = std_root + "/math.xsh"
+  let entry = root + "/main.vibe"
+  let std_mod = std_root + "/math.vibe"
   write_file(
-    root + "/index.xsh",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./xsh/std\" }\n",
+    root + "/index.vibe",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/std\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
+    entry, "use std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
   )
   let loaded = match load_db_with_paths(entry) {
     Ok(v) => v
@@ -279,22 +279,22 @@ test "loader load_db_with_paths resolves std namespace from index registry" {
 ///|
 test "loader load_db_with_paths requires index version export" {
   let root = make_temp_dir("registry_version_required")
-  let std_root = root + "/xsh/std"
+  let std_root = root + "/vibe/std"
   @os_fs.create_dir(root + "/xsh") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_root) catch {
     e => fail(e.to_string())
   }
-  let entry = root + "/main.xsh"
-  let std_mod = std_root + "/math.xsh"
+  let entry = root + "/main.vibe"
+  let std_mod = std_root + "/math.vibe"
   write_file(
-    root + "/index.xsh",
-    "export let module = record { std: \"./xsh/std\" }\n",
+    root + "/index.vibe",
+    "export let module = record { std: \"./vibe/std\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
+    entry, "use std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
   )
   match load_db_with_paths(entry) {
     Ok(_) => fail("expected missing version error")

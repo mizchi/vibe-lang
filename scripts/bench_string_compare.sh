@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
-SCRIPT_PATH="${1:-$ROOT_DIR/bench/bench_string.xsh}"
-NAME="$(basename "$SCRIPT_PATH" .xsh)"
+SCRIPT_PATH="${1:-$ROOT_DIR/bench/bench_string.vibe}"
+NAME="$(basename "$SCRIPT_PATH" .vibe)"
 JS_WASM_OUT="$ROOT_DIR/target/bench/${NAME}_js_string.wasm"
 GC_WASM_OUT="$ROOT_DIR/target/bench/${NAME}_gc.wasm"
 WASMTIME_BIN="${WASMTIME_BIN:-$("$ROOT_DIR/scripts/wasmtime_bin.sh")}"

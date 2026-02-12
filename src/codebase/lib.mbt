@@ -173,7 +173,7 @@ fn split_registry_import_path(path : String) -> (String, String)? {
 ///|
 fn default_registry_modules(root : String) -> Map[String, String] {
   let out : Map[String, String] = {}
-  out["std"] = @xsh_fs.normalize_path(root + "/xsh/std")
+  out["std"] = @xsh_fs.normalize_path(root + "/vibe/std")
   out
 }
 
@@ -184,7 +184,7 @@ fn find_index_root_with_fs(
 ) -> String {
   let mut dir = @xsh_fs.normalize_path(start_dir)
   for _ in 0..<64 {
-    let index_path = @xsh_fs.normalize_path(dir + "/index.xsh")
+    let index_path = @xsh_fs.normalize_path(dir + "/index.vibe")
     if @io.path_exists_with(fs, index_path) {
       return dir
     }
@@ -300,19 +300,19 @@ fn require_index_version(ast : @core.Module) -> Result[String, String] {
                 return Ok(value)
               } else {
                 return Err(
-                  "index.xsh: `export let version` must be semver like \"0.1.0\"",
+                  "index.vibe: `export let version` must be semver like \"0.1.0\"",
                 )
               }
             _ =>
               return Err(
-                "index.xsh: `export let version` must be a string literal",
+                "index.vibe: `export let version` must be a string literal",
               )
           }
         }
       _ => ()
     }
   }
-  Err("index.xsh: missing required `export let version = \"0.1.0\"`")
+  Err("index.vibe: missing required `export let version = \"0.1.0\"`")
 }
 
 ///|
@@ -329,7 +329,7 @@ fn normalize_registry_modules(
     }
     if not(is_within_root(root, resolved)) {
       return Err(
-        "index.xsh registry path outside root: " + ns + " -> " + resolved,
+        "index.vibe registry path outside root: " + ns + " -> " + resolved,
       )
     }
     out[ns] = resolved
@@ -343,16 +343,16 @@ pub fn load_registry_modules_with_fs(
   fs : &@io.FileSystemAdapter,
 ) -> Result[Map[String, String], String] {
   let root_norm = @xsh_fs.normalize_path(root)
-  let index_path = @xsh_fs.normalize_path(root_norm + "/index.xsh")
+  let index_path = @xsh_fs.normalize_path(root_norm + "/index.vibe")
   if not(@io.path_exists_with(fs, index_path)) {
     return Ok(default_registry_modules(root_norm))
   }
   let content = match @io.read_string_with(fs, index_path) {
     Ok(v) => v
-    Err(err) => return Err("failed to read index.xsh: " + err)
+    Err(err) => return Err("failed to read index.vibe: " + err)
   }
   let ast = @parser.parse_ast(content) catch {
-    e => return Err("index.xsh parse: " + e.to_string())
+    e => return Err("index.vibe parse: " + e.to_string())
   }
   let _ = match require_index_version(ast) {
     Ok(v) => v
@@ -1031,7 +1031,7 @@ fn has_lock_payload_fields(obj : Map[String, Json]) -> Bool {
 }
 
 ///|
-fn parse_lock_data_from_index_xdb(
+fn parse_lock_data_from_index_vdb(
   content : String,
   base_dir : String,
 ) -> Result[LockData?, String] {
@@ -1040,7 +1040,7 @@ fn parse_lock_data_from_index_xdb(
     return Ok(None)
   }
   let json : Json = @json.parse(trimmed) catch {
-    // Keep compatibility with non-lock `.xdb` payloads.
+    // Keep compatibility with non-lock `index.vdb` payloads.
     _ => return Ok(None)
   }
   match json {
@@ -1048,7 +1048,7 @@ fn parse_lock_data_from_index_xdb(
       if has_lock_payload_fields(obj) {
         match parse_lock_data(trimmed, base_dir) {
           Ok(v) => Ok(Some(v))
-          Err(err) => Err("index.xdb: " + err)
+          Err(err) => Err("index.vdb: " + err)
         }
       } else {
         match obj.get("lock") {
@@ -1056,10 +1056,10 @@ fn parse_lock_data_from_index_xdb(
             let lock_json = Json::object(lock_obj).stringify()
             match parse_lock_data(lock_json, base_dir) {
               Ok(v) => Ok(Some(v))
-              Err(err) => Err("index.xdb: " + err)
+              Err(err) => Err("index.vdb: " + err)
             }
           }
-          Some(_) => Err("index.xdb: `lock` must be an object")
+          Some(_) => Err("index.vdb: `lock` must be an object")
           None => Ok(None)
         }
       }
@@ -1208,13 +1208,13 @@ pub fn load_lock_data_with_fs(
   fs : &@io.FileSystemAdapter,
 ) -> Result[LockData, String] {
   let base_dir = @xsh_fs.parent_path(lock_path)
-  let xdb_path = base_dir + "/index.xdb"
-  if @io.path_exists_with(fs, xdb_path) {
-    let xdb_content = match @io.read_string_with(fs, xdb_path) {
+  let index_vdb_path = base_dir + "/index.vdb"
+  if @io.path_exists_with(fs, index_vdb_path) {
+    let index_vdb_content = match @io.read_string_with(fs, index_vdb_path) {
       Ok(v) => v
-      Err(err) => return Err("failed to read index.xdb: " + err)
+      Err(err) => return Err("failed to read index.vdb: " + err)
     }
-    match parse_lock_data_from_index_xdb(xdb_content, base_dir) {
+    match parse_lock_data_from_index_vdb(index_vdb_content, base_dir) {
       Ok(Some(lock)) => return Ok(lock)
       Ok(None) => ()
       Err(err) => return Err(err)

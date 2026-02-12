@@ -8,7 +8,7 @@ RUN_EVAL="$OUT_DIR/bench_scratch_eval.sh"
 RUN_FINALIZE="$OUT_DIR/bench_scratch_finalize.sh"
 RUN_EXPORT_APPLY="$OUT_DIR/bench_scratch_export_apply.sh"
 RUN_FULL="$OUT_DIR/bench_scratch_full.sh"
-SEED_SOURCE="$OUT_DIR/bench_scratch_seed.xsh"
+SEED_SOURCE="$OUT_DIR/bench_scratch_seed.vibe"
 
 WARMUP="${XSH_BENCH_WARMUP:-3}"
 RUNS="${XSH_BENCH_RUNS:-10}"
@@ -75,7 +75,7 @@ CLI_BIN="$CLI_BIN"
 SEED_SOURCE="$SEED_SOURCE"
 TMP_DIR="\$(mktemp -d /tmp/xsh_bench_scratch_XXXXXX)"
 DB_PATH="\$TMP_DIR/tmp1.db"
-OUT_PATH="\$TMP_DIR/main.xsh"
+OUT_PATH="\$TMP_DIR/main.vibe"
 trap 'rm -rf "\$TMP_DIR"' EXIT
 
 cp "\$SEED_SOURCE" "\$DB_PATH"
@@ -91,7 +91,7 @@ set -euo pipefail
 CLI_BIN="$CLI_BIN"
 TMP_DIR="\$(mktemp -d /tmp/xsh_bench_scratch_XXXXXX)"
 DB_PATH="\$TMP_DIR/tmp1.db"
-OUT_PATH="\$TMP_DIR/main.xsh"
+OUT_PATH="\$TMP_DIR/main.vibe"
 trap 'rm -rf "\$TMP_DIR"' EXIT
 
 "\$CLI_BIN" eval --db="\$DB_PATH" "let v0 = 0" >/dev/null

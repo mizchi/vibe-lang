@@ -9,7 +9,7 @@ is_expected_failure() {
   local backend="$1"
   local rel_path="$2"
   case "$backend:$rel_path" in
-    "wasm-gc:bench/bench_builder.xsh")
+    "wasm-gc:bench/bench_builder.vibe")
       return 0
       ;;
     *)
@@ -22,7 +22,7 @@ expected_failure_reason() {
   local backend="$1"
   local rel_path="$2"
   case "$backend:$rel_path" in
-    "wasm-gc:bench/bench_builder.xsh")
+    "wasm-gc:bench/bench_builder.vibe")
       echo "gc type support is not implemented for array-builder benchmark"
       ;;
     *)
@@ -93,9 +93,9 @@ mkdir -p "$OUT_DIR"
 moon build --target native --release src/cmd/xsh
 
 status=0
-for src in "$ROOT_DIR"/bench/*.xsh; do
+for src in "$ROOT_DIR"/bench/*.vibe; do
   rel_path="bench/$(basename "$src")"
-  stem="$(basename "$src" .xsh)"
+  stem="$(basename "$src" .vibe)"
   js_out="$OUT_DIR/${stem}_js_string.wasm"
   gc_out="$OUT_DIR/${stem}_gc.wasm"
 

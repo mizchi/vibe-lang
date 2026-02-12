@@ -4,7 +4,7 @@
 ///|
 test "check_document/parse_error" {
   let source = "let x = " // Incomplete expression
-  let (diagnostics, ok) = check_document("file://test.xsh", source)
+  let (diagnostics, ok) = check_document("file://test.vibe", source)
   assert_false(ok)
   assert_true(diagnostics.length() > 0)
 }
@@ -12,7 +12,7 @@ test "check_document/parse_error" {
 ///|
 test "check_document/type_error" {
   let source = "let x: Int = \"hello\"" // Type mismatch
-  let (diagnostics, ok) = check_document("file://test.xsh", source)
+  let (diagnostics, ok) = check_document("file://test.vibe", source)
   assert_false(ok)
   assert_true(diagnostics.length() > 0)
 }
@@ -20,7 +20,7 @@ test "check_document/type_error" {
 ///|
 test "check_document/valid" {
   let source = "let x = 42\nx"
-  let (diagnostics, ok) = check_document("file://test.xsh", source)
+  let (diagnostics, ok) = check_document("file://test.vibe", source)
   assert_true(ok)
   assert_eq(diagnostics.length(), 0)
 }
@@ -28,7 +28,7 @@ test "check_document/valid" {
 ///|
 test "check_document/warning" {
   let source = "let unused = 42"
-  let (diagnostics, ok) = check_document("file://test.xsh", source)
+  let (diagnostics, ok) = check_document("file://test.vibe", source)
   assert_true(ok)
   assert_eq(diagnostics.length(), 1)
   let diag = diagnostics[0]
@@ -39,7 +39,7 @@ test "check_document/warning" {
 ///|
 test "check_document/warning_unnecessary_mut" {
   let source = "let mut value = 1\nvalue"
-  let (diagnostics, ok) = check_document("file://test.xsh", source)
+  let (diagnostics, ok) = check_document("file://test.vibe", source)
   assert_true(ok)
   assert_eq(diagnostics.length(), 1)
   let diag = diagnostics[0]
@@ -142,7 +142,7 @@ test "LspServer/handle_message/initialize" {
 ///|
 test "LspServer/handle_message/codeAction trait import quickfix" {
   let server = LspServer::new()
-  let uri = "file://test.xsh"
+  let uri = "file://test.vibe"
   let source = "let same = [T: Eq](x: T, y: T) -> Bool { x == y }"
   let open_json = Json::object({
     "jsonrpc": Json::string("2.0"),
@@ -202,7 +202,7 @@ test "LspServer/handle_message/codeAction trait import quickfix" {
 ///|
 test "LspServer/handle_message/completion returns symbols with hash info" {
   let server = LspServer::new()
-  let uri = "file://completion_test.xsh"
+  let uri = "file://completion_test.vibe"
   let source =
     #|let alpha = 1
     #|let beta = alpha
@@ -274,7 +274,7 @@ test "LspServer/handle_message/completion returns symbols with hash info" {
 ///|
 test "LspServer/handle_message/hover includes hash" {
   let server = LspServer::new()
-  let uri = "file://hover_test.xsh"
+  let uri = "file://hover_test.vibe"
   let source =
     #|let alpha = 1
     #|alpha
@@ -329,9 +329,9 @@ test "LspServer/handle_message/hover includes hash" {
 ///|
 test "trait_import_code_actions skips already imported trait" {
   let source =
-    #|use ./xsh/std/builtin_traits.xsh {  Eq  }
+    #|use ./vibe/std/builtin_traits.vibe {  Eq  }
     #|let same = [T: Eq](x: T, y: T) -> Bool { x == y }
-  let actions = trait_import_code_actions("file://test.xsh", source)
+  let actions = trait_import_code_actions("file://test.vibe", source)
   match actions {
     Json::Array(items) => assert_eq(items.length(), 0)
     _ => fail("expected array")
@@ -359,12 +359,12 @@ test "offset_to_position/middle" {
 ///|
 test "DocumentManager/basic" {
   let dm = DocumentManager::new()
-  dm.open("file://test.xsh", "let x = 1", 1)
-  assert_eq(dm.get("file://test.xsh"), Some("let x = 1"))
-  assert_eq(dm.get_version("file://test.xsh"), Some(1))
-  dm.update("file://test.xsh", "let x = 2", 2)
-  assert_eq(dm.get("file://test.xsh"), Some("let x = 2"))
-  assert_eq(dm.get_version("file://test.xsh"), Some(2))
-  dm.close("file://test.xsh")
-  assert_true(dm.get("file://test.xsh") is None)
+  dm.open("file://test.vibe", "let x = 1", 1)
+  assert_eq(dm.get("file://test.vibe"), Some("let x = 1"))
+  assert_eq(dm.get_version("file://test.vibe"), Some(1))
+  dm.update("file://test.vibe", "let x = 2", 2)
+  assert_eq(dm.get("file://test.vibe"), Some("let x = 2"))
+  assert_eq(dm.get_version("file://test.vibe"), Some(2))
+  dm.close("file://test.vibe")
+  assert_true(dm.get("file://test.vibe") is None)
 }

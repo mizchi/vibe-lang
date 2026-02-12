@@ -45,8 +45,8 @@ just test-integration-deno  # deno integration tests (artifact-only wasm-gc)
 just coverage     # moonbit + wasm(deno) coverage
 just coverage-moon  # moonbit source coverage (summary/cobertura/html)
 just coverage-deno  # wasm integration coverage (summary/lcov/html)
-just coverage-wasm-source examples/pattern_coverage.xsh  # xsh source span + wasm counter coverage
-just coverage-wasm-std  # xsh/std *_test.xsh coverage aggregation (wasm source)
+just coverage-wasm-source examples/pattern_coverage.vibe  # xsh source span + wasm counter coverage
+just coverage-wasm-std  # vibe/std *_test.vibe coverage aggregation (wasm source)
 just release-check  # full check before release
 ```
 
@@ -69,8 +69,8 @@ Coverage で使う主な環境変数:
 WASM 向けは 3 層で測る:
 - MoonBit 本体ロジック: `just coverage-moon`（必要なら `XSH_MOON_COVERAGE_TARGET=wasm-gc`）
 - `WebAssembly.instantiate` 経由の統合導線: `just coverage-deno`
-- xsh ソース span ベースの line/branch: `just coverage-wasm-source <entry.xsh>`
-- xsh/std の集計: `just coverage-wasm-std`（`summary` の `cases(total/success)` と `failures.txt` を確認）
+- xsh ソース span ベースの line/branch: `just coverage-wasm-source <entry.vibe>`
+- vibe/std の集計: `just coverage-wasm-std`（`summary` の `cases(total/success)` と `failures.txt` を確認）
 - 詳細: `docs/coverage.md`
 
 `js/xsh/` には wasm 成果物 (`src/lib`) を呼ぶ JS バインディングを置く:
@@ -84,39 +84,39 @@ WASM 向けは 3 層で測る:
 
 ```bash
 # Run xsh script
-just run run examples/basics.xsh
+just run run examples/basics.vibe
 # (comprehensive syntax tour)
-just run run examples/syntax.xsh
+just run run examples/syntax.vibe
 
 # Run unstable async examples (required for await/sleep/yield runtime execution)
-just run run --unstable-async examples/async.xsh
+just run run --unstable-async examples/async.vibe
 # flags can also be placed before command
-just run --unstable-async run examples/async.xsh
+just run --unstable-async run examples/async.vibe
 # unstable threads probe builtin (via line repl)
 printf 'threads_probe_wat()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
 # unstable threads runtime hints (recommended -W/-S flags)
 printf 'threads_runtime_hints()\nexit\n' | just run repl-stdin --no-prompt --unstable-threads
 
 # Run tests in script
-just run test examples/*.xsh
+just run test examples/*.vibe
 # For async tests
-just run test --unstable-async examples/async.xsh
+just run test --unstable-async examples/async.vibe
 
 # Compile to WASM
-just run compile --wasm examples/wasm/sleep_demo.xsh -o /tmp/out.wasm
+just run compile --wasm examples/wasm/sleep_demo.vibe -o /tmp/out.wasm
 # Compile + optimize with wite (-Oz default)
-just run compile --wasm --wite examples/wasm/sleep_demo.xsh -o /tmp/out.opt.wasm
+just run compile --wasm --wite examples/wasm/sleep_demo.vibe -o /tmp/out.opt.wasm
 # Compile + optimize with explicit level
-just run compile --component -O3 script.xsh -o out.component.opt.wasm
+just run compile --component -O3 script.vibe -o out.component.opt.wasm
 
 # Compile to Component Model WASM
-just run compile --component script.xsh -o out.component.wasm
+just run compile --component script.vibe -o out.component.wasm
 
 # Generate component embedding WIT for wasm-tools/wkg pipeline
-just run compile --wit-component script.xsh -o out.component.wit
+just run compile --wit-component script.vibe -o out.component.wit
 
 # Build validated component via wkg + wasm-tools
-just component-wkg script.xsh
+just component-wkg script.vibe
 # (stdio builtins are wired through wasi:cli/stdin|stdout + wasi:io/streams)
 
 # Interactive REPL
@@ -128,22 +128,22 @@ just run repl-wasi --no-prompt
 just run repl-wasi --unstable-async
 
 # IDE-like symbol queries
-just run ide outline examples/syntax.xsh
-just run ide peek-def some_fn examples/syntax.xsh
-just run ide search Option examples/syntax.xsh
+just run ide outline examples/syntax.vibe
+just run ide peek-def some_fn examples/syntax.vibe
+just run ide search Option examples/syntax.vibe
 # JS-backed ide command
-just ide-js outline examples/syntax.xsh
-just ide-js peek-def some_fn examples/syntax.xsh
-just ide-js search Option examples/syntax.xsh
+just ide-js outline examples/syntax.vibe
+just ide-js peek-def some_fn examples/syntax.vibe
+just ide-js search Option examples/syntax.vibe
 # `ide-js` は entry から相対 import を再帰収集して project request を生成する
 
 # Advanced graph index PoC (build/query/verify)
-just run index build examples/syntax.xsh -o /tmp/advanced-graph-index.json
+just run index build examples/syntax.vibe -o /tmp/advanced-graph-index.json
 just run index query symbol add /tmp/advanced-graph-index.json
 just run index verify /tmp/advanced-graph-index.json
 
 # Emit LSIF from the same symbol index backend
-just run lsif -o /tmp/xsh.lsif examples/syntax.xsh
+just run lsif -o /tmp/xsh.lsif examples/syntax.vibe
 
 # Build wasm line REPL (preview2 stdio imports)
 just build-repl-wasi-wasm
@@ -152,29 +152,29 @@ just build-compiler-wasi-wasm
 # Build wasm checker CLI (json diagnostics)
 just build-checker-wasi-wasm
 # Run wasm compiler CLI (`--wasm` は wasm-gc を優先)
-printf '1 + 2\n' > /tmp/gc_demo.xsh
-just run-compiler-wasi-wasm --wasm /tmp/gc_demo.xsh -o /tmp/out.wasm
+printf '1 + 2\n' > /tmp/gc_demo.vibe
+just run-compiler-wasi-wasm --wasm /tmp/gc_demo.vibe -o /tmp/out.wasm
 # Run wasm checker CLI (file path or --source)
-just run-checker-wasi-wasm /tmp/gc_demo.xsh
+just run-checker-wasi-wasm /tmp/gc_demo.vibe
 just run-checker-wasi-wasm --source '1 + true'
 # Run wasm formatter mode (xsh fmt 相当)
 just run-checker-wasi-wasm --format --source 'let  x=1'
 # Same as above (shortcut)
-just run-compiler-wasi-wasm-gc /tmp/gc_demo.xsh -o /tmp/out.wasm
+just run-compiler-wasi-wasm-gc /tmp/gc_demo.vibe -o /tmp/out.wasm
 # Use core wasm MVP backend explicitly
-just run-compiler-wasi-wasm-mvp examples/basics.xsh -o /tmp/out.mvp.wasm
+just run-compiler-wasi-wasm-mvp examples/basics.vibe -o /tmp/out.mvp.wasm
 
 # Build component + run with wasmtime (explicit invoke for non-command component)
-just component-run xsh/std/test_import.xsh
+just component-run vibe/std/test_import.vibe
 # stdin 経由の実行も可能:
-printf 'A' | just component-run your_stdio_script.xsh
+printf 'A' | just component-run your_stdio_script.vibe
 # stream TUI デモ:
-printf 'hello\nworld\n' | just component-run examples/wasm/tui_stream_demo.xsh
+printf 'hello\nworld\n' | just component-run examples/wasm/tui_stream_demo.vibe
 # 簡易デモ実行タスク:
 just demo-tui-stream
 
 # moonix で実行（moonix の CLI 差分はランチャで吸収）
-just component-run-moonix xsh/std/test_import.xsh
+just component-run-moonix vibe/std/test_import.vibe
 # moonix バイナリが無い場合の手動 bootstrap
 just bootstrap-moonix
 
@@ -186,8 +186,8 @@ just install
 - `_build/wasm/release/build/xsh_wasi/xsh_wasi.wasm`
 - this binary imports `wasi:cli/stdin|stdout@0.2.0` and `wasi:io/streams@0.2.0` directly
 - run it with a component/p3-compatible host (for example moon-component/mwac integration), not `moon run --target wasm`
-- for script-level stdio execution, use `just component-run <file.xsh>`
-- moonix 実行は `just component-run-moonix <file.xsh>`（必要なら `MOONIX_BIN=/path/to/moonix`）
+- for script-level stdio execution, use `just component-run <file.vibe>`
+- moonix 実行は `just component-run-moonix <file.vibe>`（必要なら `MOONIX_BIN=/path/to/moonix`）
 - `component-run-moonix` は `moonix` 未導入時に `scripts/bootstrap_moonix_bin.sh` を自動試行
 
 `build-compiler-wasi-wasm` output:
@@ -209,14 +209,14 @@ just build-async-host
 just sleep-demo
 
 # Run any WASM with sleep support
-just run compile --wasm your_script.xsh -o /tmp/out.wasm
+just run compile --wasm your_script.vibe -o /tmp/out.wasm
 just run-wasm-async /tmp/out.wasm
 ```
 
 ### With wasmtime (basic)
 
 ```bash
-just run compile --wasm script.xsh -o /tmp/out.wasm
+just run compile --wasm script.vibe -o /tmp/out.wasm
 wasmtime /tmp/out.wasm
 ```
 
@@ -231,7 +231,7 @@ just build-wasmtime-submodule
 just wasmtime-submodule run -W gc --invoke run /tmp/out.wasm
 
 # or switch existing xsh scripts/tasks to submodule wasmtime
-XSH_USE_WASMTIME_SUBMODULE=1 just component-run script.xsh
+XSH_USE_WASMTIME_SUBMODULE=1 just component-run script.vibe
 XSH_USE_WASMTIME_SUBMODULE=1 just bench-wasmtime
 
 # inject extra wasmtime runtime flags into xsh scripts/*
@@ -239,7 +239,7 @@ XSH_USE_WASMTIME_SUBMODULE=1 just bench-wasmtime
 XSH_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
 XSH_WASMTIME_WASI_FLAGS='p3=y' \
 XSH_USE_WASMTIME_SUBMODULE=1 \
-just component-run script.xsh
+just component-run script.vibe
 
 # flags are also propagated through justfile-backed tasks
 XSH_WASMTIME_WASM_FLAGS='gc=y' just bench-wasmtime
@@ -284,11 +284,11 @@ src/
 └── tests/          # Integration-like blackbox tests
 
 examples/
-├── *.xsh           # Example scripts (interpreter)
+├── *.vibe           # Example scripts (interpreter)
 └── wasm/           # WASM-only examples (require host)
 
-xsh/
-└── std/            # xsh core library (self-hosted std modules)
+vibe/
+└── std/            # vibe core library (self-hosted std modules)
 
 examples/async_host/  # Rust/wasmtime host runtime
 ```
@@ -304,11 +304,11 @@ examples/async_host/  # Rust/wasmtime host runtime
 
 ## Fixtures
 
-Fixtures live in `fixtures/*.xsh` and include a `__DATA__` JSON section.
+Fixtures live in `fixtures/*.vibe` and include a `__DATA__` JSON section.
 `moon test` runs them via `src/tests/fixture_test.mbt`.
 
-WASM fixtures live in `fixtures/wasm/*.xsh` and compare expected WAT.
-WASM GC fixtures live in `fixtures/wasm_gc/*.xsh` and check for `struct.new/get/set`.
+WASM fixtures live in `fixtures/wasm/*.vibe` and compare expected WAT.
+WASM GC fixtures live in `fixtures/wasm_gc/*.vibe` and check for `struct.new/get/set`.
 
 ## Bench
 
@@ -316,8 +316,8 @@ WASM GC fixtures live in `fixtures/wasm_gc/*.xsh` and check for `struct.new/get/
 just bench-wasmtime
 just bench-compare
 just bench-kpi
-just bench-kpi bench/kpi_bench.xsh
-just run bench examples/simple_bench.xsh
+just bench-kpi bench/kpi_bench.vibe
+just run bench examples/simple_bench.vibe
 just bench-cmd-latency
 just bench-scratch-workflow
 just bench-symbol-index
@@ -331,7 +331,7 @@ legacy の式ベンチ (`--expr/--case/--cases`) は `interpreter` backend の�
 `--backend wasm` ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
 `just bench-kpi` は `xsh bench` の結果を `dist/bench_kpi/latest.tsv` に保存し、`per_us` と `wasm_bytes` を同時に確認できる。
 KPI しきい値は `XSH_BENCH_KPI_MAX_PER_US` / `XSH_BENCH_KPI_MAX_WASM_BYTES` / `XSH_BENCH_KPI_MAX_SCORE` で設定可能。
-引数なしの `just bench-kpi` は `bench/kpi_bench.xsh`（数値パイプライン/状態更新の4ケース）を対象にする。
+引数なしの `just bench-kpi` は `bench/kpi_bench.vibe`（数値パイプライン/状態更新の4ケース）を対象にする。
 `XSH_BENCH_KPI_N` / `XSH_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000`, `interpreter=2000/200` を使う。
 
 `bench-scratch-workflow` は scratch 開発フローを段階別に計測する。

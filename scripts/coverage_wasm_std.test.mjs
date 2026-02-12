@@ -82,10 +82,10 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
   fs.writeFileSync(
     attemptsPath,
     [
-      `xsh/std/a_test.xsh\twasm\t0\t${reportAPath}.log\t${reportAPath}`,
-      `xsh/std/b_test.xsh\twasm\t0\t${reportBPath}.log\t${reportBPath}`,
-      `xsh/std/c_test.xsh\twasm\t1\t${logC1}\t-`,
-      `xsh/std/c_test.xsh\twasm-js-string\t1\t${logC2}\t-`,
+      `vibe/std/a_test.vibe\twasm\t0\t${reportAPath}.log\t${reportAPath}`,
+      `vibe/std/b_test.vibe\twasm\t0\t${reportBPath}.log\t${reportBPath}`,
+      `vibe/std/c_test.vibe\twasm\t1\t${logC1}\t-`,
+      `vibe/std/c_test.vibe\twasm-js-string\t1\t${logC2}\t-`,
     ].join("\n") + "\n",
   );
 
@@ -94,13 +94,13 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
     path: "inline",
     defaults: { expected_backend: "wasm" },
     cases: {
-      "xsh/std/c_test.xsh": { expected_backend: "wasm-js-string" },
+      "vibe/std/c_test.vibe": { expected_backend: "wasm-js-string" },
     },
   };
 
   const report = buildAggregatedReport({
     reportPaths: [reportAPath, reportBPath],
-    failedCases: ["xsh/std/c_test.xsh"],
+    failedCases: ["vibe/std/c_test.vibe"],
     attempts,
     totalCases: 3,
     backendMatrix: matrix,
@@ -141,18 +141,18 @@ test("expectedBackendForCase: defaults and per-case override", () => {
     path: "inline",
     defaults: { expected_backend: "wasm" },
     cases: {
-      "xsh/std/io_test.xsh": {
+      "vibe/std/io_test.vibe": {
         expected_backend: "wasm-js-string",
         note: "requires js-string",
       },
     },
   };
-  const a = expectedBackendForCase(matrix, "xsh/std/int_test.xsh");
+  const a = expectedBackendForCase(matrix, "vibe/std/int_test.vibe");
   assert.equal(a.expected_backend, "wasm");
   assert.deepEqual(a.expected_modes, ["wasm"]);
   assert.equal(a.source, "default");
 
-  const b = expectedBackendForCase(matrix, "xsh/std/io_test.xsh");
+  const b = expectedBackendForCase(matrix, "vibe/std/io_test.vibe");
   assert.equal(b.expected_backend, "wasm-js-string");
   assert.deepEqual(b.expected_modes, ["wasm-js-string"]);
   assert.equal(b.source, "case");
@@ -168,7 +168,7 @@ test("loadBackendMatrix: parses json file", () => {
       format: "xsh-std-backend-capability-matrix-v1",
       defaults: { expected_backend: "wasm" },
       cases: {
-        "xsh/std/io_test.xsh": { expected_backend: "wasm-js-string" },
+        "vibe/std/io_test.vibe": { expected_backend: "wasm-js-string" },
       },
     }),
   );
@@ -176,7 +176,7 @@ test("loadBackendMatrix: parses json file", () => {
   assert.equal(matrix.path, matrixPath);
   assert.equal(matrix.defaults.expected_backend, "wasm");
   assert.equal(
-    matrix.cases["xsh/std/io_test.xsh"].expected_backend,
+    matrix.cases["vibe/std/io_test.vibe"].expected_backend,
     "wasm-js-string",
   );
 });
@@ -184,7 +184,7 @@ test("loadBackendMatrix: parses json file", () => {
 test("buildAggregatedReport: classifies expected_failure when expected backend not attempted", () => {
   const attempts = [
     {
-      case_path: "xsh/std/io_test.xsh",
+      case_path: "vibe/std/io_test.vibe",
       mode: "wasm",
       exit_code: 1,
       log_path: "",
@@ -195,12 +195,12 @@ test("buildAggregatedReport: classifies expected_failure when expected backend n
     path: "inline",
     defaults: { expected_backend: "wasm" },
     cases: {
-      "xsh/std/io_test.xsh": { expected_backend: "wasm-js-string" },
+      "vibe/std/io_test.vibe": { expected_backend: "wasm-js-string" },
     },
   };
   const report = buildAggregatedReport({
     reportPaths: [],
-    failedCases: ["xsh/std/io_test.xsh"],
+    failedCases: ["vibe/std/io_test.vibe"],
     attempts,
     totalCases: 1,
     backendMatrix: matrix,
@@ -217,7 +217,7 @@ test("buildAggregatedReport: detects measured mode mismatch", () => {
   const reportPath = path.join(dir, "xsh__std__mismatch.report.json");
   const attempts = [
     {
-      case_path: "xsh/std/mismatch_test.xsh",
+      case_path: "vibe/std/mismatch_test.vibe",
       mode: "wasm-js-string",
       exit_code: 0,
       log_path: `${reportPath}.log`,
@@ -261,7 +261,7 @@ test("buildAggregatedReport: ignores excluded lines in line totals", () => {
   const reportPath = path.join(dir, "xsh__std__excluded.report.json");
   const attempts = [
     {
-      case_path: "xsh/std/excluded_test.xsh",
+      case_path: "vibe/std/excluded_test.vibe",
       mode: "wasm",
       exit_code: 0,
       log_path: `${reportPath}.log`,

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_BIN="$ROOT_DIR/target/native/release/build/cmd/xsh/xsh.exe"
 OUT_DIR="$ROOT_DIR/target/bench"
-SCRIPT_PATH="$OUT_DIR/bench_builder.xsh"
+SCRIPT_PATH="$OUT_DIR/bench_builder.vibe"
 N="${XSH_BUILDER_N:-200}"
 
 mkdir -p "$OUT_DIR"

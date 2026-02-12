@@ -77,22 +77,22 @@ test "codebase writes and reads object blobs" {
 test "codebase upserts path mappings" {
   let root = make_temp_dir("paths")
   let cb = Codebase::new(root)
-  let _ = cb.upsert_path_mapping("main.xsh", "aaaaaaaa") catch {
+  let _ = cb.upsert_path_mapping("main.vibe", "aaaaaaaa") catch {
     e => fail(e.to_string())
   }
-  let _ = cb.upsert_path_mapping("lib/util.xsh", "bbbbbbbb") catch {
+  let _ = cb.upsert_path_mapping("lib/util.vibe", "bbbbbbbb") catch {
     e => fail(e.to_string())
   }
-  let _ = cb.upsert_path_mapping("main.xsh", "cccccccc") catch {
+  let _ = cb.upsert_path_mapping("main.vibe", "cccccccc") catch {
     e => fail(e.to_string())
   }
   let mappings = cb.load_path_mappings()
   assert_eq(mappings.length(), 2)
-  match mapping_hash(mappings, "main.xsh") {
+  match mapping_hash(mappings, "main.vibe") {
     Some(hash) => assert_eq(hash, "cccccccc")
-    None => fail("expected main.xsh mapping")
+    None => fail("expected main.vibe mapping")
   }
-  match cb.resolve_path_mapping("util.xsh") {
+  match cb.resolve_path_mapping("util.vibe") {
     Some(hash) => assert_eq(hash, "bbbbbbbb")
     None => fail("expected suffix path resolution")
   }
@@ -106,11 +106,11 @@ test "codebase update_lock_path_refs gathers transitive local imports" {
   @os_fs.create_dir(nested) catch {
     e => fail(e.to_string())
   }
-  let main_path = root + "/main.xsh"
-  let lib_path = root + "/lib.xsh"
-  let util_path = nested + "/util.xsh"
-  let main_source = "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n"
-  let lib_source = "use ./nested/util.xsh {  utilv  }\nlet libv = utilv\nexport { libv }\n"
+  let main_path = root + "/main.vibe"
+  let lib_path = root + "/lib.vibe"
+  let util_path = nested + "/util.vibe"
+  let main_source = "use ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n"
+  let lib_source = "use ./nested/util.vibe {  utilv  }\nlet libv = utilv\nexport { libv }\n"
   let util_source = "let utilv = 1\nexport { utilv }\n"
   write_file(main_path, main_source)
   write_file(lib_path, lib_source)
@@ -141,15 +141,15 @@ test "codebase update_lock_path_refs gathers transitive local imports" {
 ///|
 test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
   let root = make_temp_dir("update_lock")
-  let entry = root + "/main.xsh"
-  let lib = root + "/lib.xsh"
-  let old = root + "/old.xsh"
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
+  let old = root + "/old.vibe"
   write_file(
-    entry, "use ./lib.xsh {  libv  }\nlet main = libv\nexport { main }\n",
+    entry, "use ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n",
   )
   write_file(lib, "let libv = 1\nexport { libv }\n")
   let lock_path = lock_file_path(entry)
-  let lock_json = "{\"path\":{\"./old.xsh\":\"1111\"},\"version\":{\"main\":\"2222\"},\"symbol\":{\"std/io\":\"3333\"},\"module\":{\"legacy#x\":\"4444\"},\"annotation\":{\"legacy#x\":\"note\"}}"
+  let lock_json = "{\"path\":{\"./old.vibe\":\"1111\"},\"version\":{\"main\":\"2222\"},\"symbol\":{\"std/io\":\"3333\"},\"module\":{\"legacy#x\":\"4444\"},\"annotation\":{\"legacy#x\":\"note\"}}"
   write_file(lock_path, lock_json)
   let updated = match update_lock_path_refs(entry) {
     Ok(v) => v
@@ -199,10 +199,10 @@ test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
 ///|
 test "codebase update_lock_path_refs reports collect_path_refs errors" {
   let root = make_temp_dir("update_lock_cycle")
-  let a_path = root + "/a.xsh"
-  let b_path = root + "/b.xsh"
-  write_file(a_path, "use ./b.xsh {  b  }\nlet a = b\nexport { a }\n")
-  write_file(b_path, "use ./a.xsh {  a  }\nlet b = a\nexport { b }\n")
+  let a_path = root + "/a.vibe"
+  let b_path = root + "/b.vibe"
+  write_file(a_path, "use ./b.vibe {  b  }\nlet a = b\nexport { a }\n")
+  write_file(b_path, "use ./a.vibe {  a  }\nlet b = a\nexport { b }\n")
   match update_lock_path_refs(a_path) {
     Ok(_) => fail("expected update_lock_path_refs to fail")
     Err(err) => assert_true(err.contains("import cycle detected"))
@@ -213,9 +213,9 @@ test "codebase update_lock_path_refs reports collect_path_refs errors" {
 ///|
 test "codebase lock roundtrip keeps refs and normalizes path keys" {
   let root = make_temp_dir("lock")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   let lock_path = lock_file_path(entry)
-  let lib_path = @xsh_fs.normalize_path(root + "/lib.xsh")
+  let lib_path = @xsh_fs.normalize_path(root + "/lib.vibe")
   let path_refs : Map[String, String] = {}
   path_refs[lib_path] = "aaaaaaaa"
   let version_refs : Map[String, String] = {}
@@ -230,7 +230,7 @@ test "codebase lock roundtrip keeps refs and normalizes path keys" {
   let content = @os_fs.read_file_to_string(lock_path) catch {
     e => fail(e.to_string())
   }
-  assert_true(content.contains("\"./lib.xsh\""))
+  assert_true(content.contains("\"./lib.vibe\""))
   assert_true(content.contains("\"module\""))
   assert_true(content.contains("\"annotation\""))
   let loaded = match load_lock_data(lock_path) {
@@ -273,7 +273,7 @@ test "codebase lock parser accepts #hash form" {
 ///|
 test "codebase lock_file_path uses index.lock filename" {
   let root = make_temp_dir("lock_file_name")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   assert_eq(lock_file_path(entry), root + "/index.lock")
   remove_if_exists(root)
 }
@@ -281,10 +281,10 @@ test "codebase lock_file_path uses index.lock filename" {
 ///|
 test "codebase load_lock_data falls back to legacy xsh.lock" {
   let root = make_temp_dir("legacy_lock")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   let legacy_path = root + "/xsh.lock"
   write_file(
-    legacy_path, "{\"path\":{\"./main.xsh\":\"abcd\"},\"version\":{},\"symbol\":{}}",
+    legacy_path, "{\"path\":{\"./main.vibe\":\"abcd\"},\"version\":{},\"symbol\":{}}",
   )
   let loaded = match load_lock_data(lock_file_path(entry)) {
     Ok(v) => v
@@ -299,16 +299,16 @@ test "codebase load_lock_data falls back to legacy xsh.lock" {
 }
 
 ///|
-test "codebase load_lock_data prefers index.xdb lock payload over index.lock" {
-  let root = make_temp_dir("index_xdb_lock_priority")
-  let entry = root + "/main.xsh"
+test "codebase load_lock_data prefers index.vdb lock payload over index.lock" {
+  let root = make_temp_dir("index_vdb_lock_priority")
+  let entry = root + "/main.vibe"
   let lock_path = lock_file_path(entry)
   write_file(
-    lock_path, "{\"path\":{\"./main.xsh\":\"from_lock\"},\"version\":{},\"symbol\":{}}",
+    lock_path, "{\"path\":{\"./main.vibe\":\"from_lock\"},\"version\":{},\"symbol\":{}}",
   )
   write_file(
-    root + "/index.xdb",
-    "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"path\":{\"./main.xsh\":\"from_xdb\"},\"version\":{},\"symbol\":{}}",
+    root + "/index.vdb",
+    "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"path\":{\"./main.vibe\":\"from_vdb\"},\"version\":{},\"symbol\":{}}",
   )
   let loaded = match load_lock_data(lock_path) {
     Ok(v) => v
@@ -316,22 +316,22 @@ test "codebase load_lock_data prefers index.xdb lock payload over index.lock" {
   }
   let entry_norm = @xsh_fs.normalize_path(entry)
   match loaded.path_refs.get(entry_norm) {
-    Some(hash) => assert_eq(hash, "from_xdb")
-    None => fail("expected path ref from index.xdb")
+    Some(hash) => assert_eq(hash, "from_vdb")
+    None => fail("expected path ref from index.vdb")
   }
   remove_if_exists(root)
 }
 
 ///|
-test "codebase load_lock_data falls back to index.lock when index.xdb has no lock data" {
-  let root = make_temp_dir("index_xdb_fallback")
-  let entry = root + "/main.xsh"
+test "codebase load_lock_data falls back to index.lock when index.vdb has no lock data" {
+  let root = make_temp_dir("index_vdb_fallback")
+  let entry = root + "/main.vibe"
   let lock_path = lock_file_path(entry)
   write_file(
-    lock_path, "{\"path\":{\"./main.xsh\":\"from_lock\"},\"version\":{},\"symbol\":{}}",
+    lock_path, "{\"path\":{\"./main.vibe\":\"from_lock\"},\"version\":{},\"symbol\":{}}",
   )
   write_file(
-    root + "/index.xdb",
+    root + "/index.vdb",
     "{\"graph_head\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
   )
   let loaded = match load_lock_data(lock_path) {
@@ -355,18 +355,18 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
   @os_fs.create_dir(outside) catch {
     e => fail(e.to_string())
   }
-  let entry = root + "/main.xsh"
-  let outside_lib = outside + "/lib.xsh"
+  let entry = root + "/main.vibe"
+  let outside_lib = outside + "/lib.vibe"
   write_file(
-    root + "/index.xsh",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./xsh/std\" }\n",
+    root + "/index.vibe",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/std\" }\n",
   )
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
     entry,
     "use ../" +
     outside_name +
-    "/lib.xsh { libv }\nlet main = libv\nexport { main }\n",
+    "/lib.vibe { libv }\nlet main = libv\nexport { main }\n",
   )
   match update_lock_path_refs(entry) {
     Ok(_) => fail("expected root guard error")
@@ -379,22 +379,22 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
 ///|
 test "codebase update_lock_path_refs requires index version export" {
   let root = make_temp_dir("registry_version_required")
-  let std_dir = root + "/xsh/std"
+  let std_dir = root + "/vibe/std"
   @os_fs.create_dir(root + "/xsh") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_dir) catch {
     e => fail(e.to_string())
   }
-  let entry = root + "/main.xsh"
-  let std_mod = std_dir + "/math.xsh"
+  let entry = root + "/main.vibe"
+  let std_mod = std_dir + "/math.vibe"
   write_file(
-    root + "/index.xsh",
-    "export let module = record { std: \"./xsh/std\" }\n",
+    root + "/index.vibe",
+    "export let module = record { std: \"./vibe/std\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
+    entry, "use std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
   )
   match update_lock_path_refs(entry) {
     Ok(_) => fail("expected missing version error")
@@ -407,22 +407,22 @@ test "codebase update_lock_path_refs requires index version export" {
 ///|
 test "codebase update_lock_path_refs validates index version format" {
   let root = make_temp_dir("registry_version_format")
-  let std_dir = root + "/xsh/std"
+  let std_dir = root + "/vibe/std"
   @os_fs.create_dir(root + "/xsh") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_dir) catch {
     e => fail(e.to_string())
   }
-  let entry = root + "/main.xsh"
-  let std_mod = std_dir + "/math.xsh"
+  let entry = root + "/main.vibe"
+  let std_mod = std_dir + "/math.vibe"
   write_file(
-    root + "/index.xsh",
-    "export let version = \"v1\"\nexport let module = record { std: \"./xsh/std\" }\n",
+    root + "/index.vibe",
+    "export let version = \"v1\"\nexport let module = record { std: \"./vibe/std\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
+    entry, "use std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
   )
   match update_lock_path_refs(entry) {
     Ok(_) => fail("expected invalid semver error")
@@ -432,24 +432,24 @@ test "codebase update_lock_path_refs validates index version format" {
 }
 
 ///|
-test "codebase update_lock_path_refs resolves std namespace via index.xsh" {
+test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
   let root = make_temp_dir("registry_std")
-  let std_dir = root + "/xsh/std"
+  let std_dir = root + "/vibe/std"
   @os_fs.create_dir(root + "/xsh") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_dir) catch {
     e => fail(e.to_string())
   }
-  let entry = root + "/main.xsh"
-  let std_mod = std_dir + "/math.xsh"
+  let entry = root + "/main.vibe"
+  let std_mod = std_dir + "/math.vibe"
   write_file(
-    root + "/index.xsh",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./xsh/std\" }\n",
+    root + "/index.vibe",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/std\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.xsh {  value  }\nlet main = value\nexport { main }\n",
+    entry, "use std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
   )
   let updated = match update_lock_path_refs(entry) {
     Ok(v) => v
@@ -465,7 +465,7 @@ test "codebase update_lock_path_refs resolves std namespace via index.xsh" {
 ///|
 test "codebase update_lock_path_refs captures export comments as annotations" {
   let root = make_temp_dir("annotations_capture")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   write_file(
     entry, "// first line\n// second line\nlet main = 1\nexport { main }\n",
   )
@@ -484,7 +484,7 @@ test "codebase update_lock_path_refs captures export comments as annotations" {
 ///|
 test "codebase update_lock_path_refs clears removed comments in annotations" {
   let root = make_temp_dir("annotations_remove")
-  let entry = root + "/main.xsh"
+  let entry = root + "/main.vibe"
   write_file(entry, "// note\nlet main = 1\nexport { main }\n")
   let _ = match update_lock_path_refs(entry) {
     Ok(v) => v
@@ -503,7 +503,7 @@ test "codebase update_lock_path_refs clears removed comments in annotations" {
 ///|
 test "codebase apply_annotations_to_source injects export comments" {
   let root = make_temp_dir("annotations_apply")
-  let path = @xsh_fs.normalize_path(root + "/main.xsh")
+  let path = @xsh_fs.normalize_path(root + "/main.vibe")
   let source = "let main = 1\nexport { main }\n"
   let annotations : Map[String, String] = {}
   annotations[path + "#main"] = "hello\nworld"
@@ -518,7 +518,7 @@ test "codebase apply_annotations_to_source injects export comments" {
 ///|
 test "codebase apply_annotations_to_source avoids duplicate when comment exists" {
   let root = make_temp_dir("annotations_apply_existing")
-  let path = @xsh_fs.normalize_path(root + "/main.xsh")
+  let path = @xsh_fs.normalize_path(root + "/main.vibe")
   let source = "// hello\nlet main = 1\nexport { main }\n"
   let annotations : Map[String, String] = {}
   annotations[path + "#main"] = "hello"

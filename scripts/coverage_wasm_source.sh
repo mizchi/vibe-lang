@@ -11,7 +11,7 @@ RUN_TESTS="${XSH_WASM_SOURCE_COVERAGE_RUN_TESTS:-0}"
 ALLOW_TRAP="${XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP:-0}"
 
 if [ "$#" -lt 1 ]; then
-  echo "usage: coverage_wasm_source.sh <entry.xsh>" >&2
+  echo "usage: coverage_wasm_source.sh <entry.vibe>" >&2
   echo "env: XSH_WASM_SOURCE_COVERAGE_MODE=wasm|wasm-js-string XSH_WASM_SOURCE_COVERAGE_NO_DCE=0|1 XSH_WASM_SOURCE_COVERAGE_RUN_TESTS=0|1 XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP=0|1 XSH_WASM_SOURCE_COVERAGE_DIR=<dir>" >&2
   exit 1
 fi

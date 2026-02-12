@@ -11,7 +11,7 @@ test("isCoverageNoiseLine: import list identifier is excluded", () => {
     "import {",
     "  a,",
     "  b",
-    "} from \"./x.xsh\"",
+    "} from \"./x.vibe\"",
   ];
   assert.equal(isCoverageNoiseLine(sourceLines, 2), true);
 });
@@ -38,7 +38,7 @@ test("applySourceNoiseExclusion: excluded lines are removed from line KPI", () =
   const sourceLines = [
     "import {",
     "  i32_and,",
-    "} from \"./opcodes.xsh\"",
+    "} from \"./opcodes.vibe\"",
     "test \"x\" {",
     "  assert(true)",
     "}",

@@ -17,8 +17,8 @@ pub struct EvalTypeAssertion {
 } derive(Show, Eq)
 
 ///|
-fn is_named_xdb_alias(spec : String) -> Bool {
-  if not(spec.has_suffix(".xdb")) {
+fn is_named_vdb_alias(spec : String) -> Bool {
+  if not(spec.has_suffix(".vdb")) {
     return false
   }
   if spec.has_prefix("/") || spec.has_prefix("./") || spec.has_prefix("../") {
@@ -87,8 +87,8 @@ pub fn resolve_xsh_lib_dir(base_dir : String) -> String {
       }
     None =>
       match @sys.get_env_var("HOME") {
-        Some(home) => @xsh_fs.normalize_path(home + "/.xsh/lib")
-        None => @xsh_fs.normalize_path(base_dir + "/.xsh/lib")
+        Some(home) => @xsh_fs.normalize_path(home + "/.vibe/lib")
+        None => @xsh_fs.normalize_path(base_dir + "/.vibe/lib")
       }
   }
 }
@@ -104,7 +104,7 @@ pub fn resolve_eval_include_path(
   } else {
     include_spec
   }
-  if is_named_xdb_alias(spec) {
+  if is_named_vdb_alias(spec) {
     @xsh_fs.normalize_path(include_lib_dir + "/" + spec)
   } else if spec.has_prefix("/") {
     @xsh_fs.normalize_path(spec)

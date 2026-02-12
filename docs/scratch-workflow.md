@@ -8,19 +8,19 @@ Unison 風の「名前空間 head 更新」モデルに寄せるための設計�
 - 外部 shell では `xsh eval "let x = 1"` だけで継続作業できる。
 - `xsh` shell 内では `let x = 1` をそのまま評価し、同じ scratch に積む。
 - ファイルは最終成果物として `write_file` で materialize する。
-- lock / graph / scratch head を `index.xdb` に集約する。
+- lock / graph / scratch head を `index.vdb` に集約する。
 
 ## 用語
 
-- `workspace`: 最寄りの `index.xsh` ルート。
+- `workspace`: 最寄りの `index.vibe` ルート。
 - `namespace`: `scratch` などの評価先。
 - `head`: namespace の現在状態を指す content hash。
-- `materialize`: DAG から `.xsh` ファイルを再構成して書き出す。
+- `materialize`: DAG から `.vibe` ファイルを再構成して書き出す。
 
 ## UX フロー
 
 1. ユーザーは任意の場所で `xsh eval "..."` を実行。
-2. CLI は最寄り `index.xsh` を探索し、`index.xdb` の `active_namespace` を解決。
+2. CLI は最寄り `index.vibe` を探索し、`index.vdb` の `active_namespace` を解決。
 3. `--db` 未指定なら `scratch` namespace に評価結果を適用。
 4. `xsh apply <entry>` で lock / graph / head を同期。
 5. `xsh write_file <symbol> <path>` で成果物を書き出す。
@@ -28,7 +28,7 @@ Unison 風の「名前空間 head 更新」モデルに寄せるための設計�
 `repl` も同じ `active_namespace` を使う。  
 `--db` を使う場合は明示指定を優先する。
 
-## index.xdb 拡張案
+## index.vdb 拡張案
 
 既存の `graph_head` に加えて、以下を保持する。
 
@@ -55,7 +55,7 @@ Unison 風の「名前空間 head 更新」モデルに寄せるための設計�
 
 方針:
 
-- `index.xdb` が真実ソース。
+- `index.vdb` が真実ソース。
 - `index.lock` は互換期間中の派生物。
 - `namespaces.*.head` は immutable object を指す。
 
@@ -132,7 +132,7 @@ REPL でも `:history reset` を提供。
 ### Phase 1 (最短)
 
 - `eval/repl` の default sink を `scratch` に変更。
-- `index.xdb` に `active_namespace` と `scratch.head` を保存。
+- `index.vdb` に `active_namespace` と `scratch.head` を保存。
 - `symbols` と `history reset` を read-only / reset-only で提供。
 
 ### Phase 2

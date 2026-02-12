@@ -5050,7 +5050,7 @@ fn compile_expr(
             buf.push((11).to_byte()) // end loop
             emit_local_get(buf, result_local)
           } else {
-            // non-externref key (unlikely for map_get in json.xsh, but handle)
+            // non-externref key (unlikely for map_get in json.vibe, but handle)
             let key_local = alloc_temp_local(ctx)
             compile_expr_i32(ctx, buf, pos_args[1])
             emit_local_set(buf, key_local)

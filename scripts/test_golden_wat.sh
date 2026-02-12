@@ -17,8 +17,8 @@ mkdir -p "$TEMP_DIR"
 failed=0
 passed=0
 
-for xsh_file in "$GOLDEN_DIR"/*.xsh; do
-  name=$(basename "$xsh_file" .xsh)
+for xsh_file in "$GOLDEN_DIR"/*.vibe; do
+  name=$(basename "$xsh_file" .vibe)
   expected_wat="$GOLDEN_DIR/${name}.wat"
   actual_wasm="$TEMP_DIR/${name}.wasm"
   actual_wat="$TEMP_DIR/${name}.wat"

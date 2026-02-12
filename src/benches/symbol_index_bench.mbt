@@ -1,5 +1,5 @@
 ///|
-let bench_symbol_path = "/bench/symbol_index.xsh"
+let bench_symbol_path = "/bench/symbol_index.vibe"
 
 ///|
 fn gen_symbol_index_source(def_count : Int) -> String {

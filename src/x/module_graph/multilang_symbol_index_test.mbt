@@ -38,7 +38,7 @@ test "multilang index supports language-aware symbol query" {
   let xsh_source =
     #|let id = (x: Int) -> Int { x }
   let xsh_rows = assert_ok_rows(
-    extract_xsh_graph_ir_rows("/workspace/main.xsh", xsh_source),
+    extract_xsh_graph_ir_rows("/workspace/main.vibe", xsh_source),
   )
   let rows : Array[GraphIrRow] = []
   for row in xsh_rows {
@@ -62,7 +62,7 @@ test "multilang index supports type queries across adapters" {
   let xsh_source =
     #|let map_id = (xs: Array[Int]) -> Array[Int] { xs }
   let xsh_rows = assert_ok_rows(
-    extract_xsh_graph_ir_rows("/workspace/types.xsh", xsh_source),
+    extract_xsh_graph_ir_rows("/workspace/types.vibe", xsh_source),
   )
   let rows : Array[GraphIrRow] = []
   for row in xsh_rows {

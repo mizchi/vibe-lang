@@ -22,8 +22,8 @@
 
 配置ルール:
 
-- `xsh --unstable-async run file.xsh`
-- `xsh run --unstable-async file.xsh`
+- `xsh --unstable-async run file.vibe`
+- `xsh run --unstable-async file.vibe`
 
 の両方を受理する（`--unstable-threads` も同様）。
 
@@ -79,7 +79,7 @@
 
 ### 5. std レイヤ分離（test-safe）
 
-`xsh/std/threads.xsh` は、次の 2 層に分離している。
+`vibe/std/threads.vibe` は、次の 2 層に分離している。
 
 - pure contract 層（通常 `xsh test` で実行可能）
   - `task_spec`
@@ -110,11 +110,11 @@
   - channel capacity 超過時に `threads_send` が `false` を返す
 - `src/cmd/xsh/cli_wbtest.mbt`
   - `parse_cli_runtime_args(...)` の default / opt-in パースを追加
-- `xsh/std/threads_test.xsh`
+- `vibe/std/threads_test.vibe`
   - pure contract 層（Task/Channel/Actor/Plan + `recommended_*`）を通常テストで実行
   - runtime-gated 層（`probe_wat` / `runtime_hints`）は thunk-only で未実行
 - `just test`
-  - async 例 (`examples/async.xsh`) 実行のため
+  - async 例 (`examples/async.vibe`) 実行のため
     `xsh test --unstable-async ...` を利用
 
 ## 今後の実装計画

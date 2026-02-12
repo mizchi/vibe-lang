@@ -1,5 +1,0 @@
-use ./xsh/std/option.xsh {  is_some  }
-is_some(Some(1))
-
-__DATA__
-{"last":"true"}

@@ -214,7 +214,7 @@ just build-wasmtime-submodule
 just wasmtime-submodule run --help
 
 # xsh scripts/* が使う wasmtime を submodule 版へ切替
-XSH_USE_WASMTIME_SUBMODULE=1 just component-run xsh/std/test_import.xsh
+XSH_USE_WASMTIME_SUBMODULE=1 just component-run vibe/std/test_import.vibe
 ```
 
 ## 9. `deps/wasmtime` 実測メモ (2026-02-09)
@@ -280,7 +280,7 @@ XSH_USE_WASMTIME_SUBMODULE=1 just component-run xsh/std/test_import.xsh
 XSH_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
 XSH_WASMTIME_WASI_FLAGS='p3=y' \
 XSH_USE_WASMTIME_SUBMODULE=1 \
-just component-run script.xsh
+just component-run script.vibe
 ```
 
 ## 12. wasi threads / atomics / concurrent 実測 (2026-02-09)

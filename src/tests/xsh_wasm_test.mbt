@@ -503,10 +503,10 @@ test "xsh wasm enum import and match" {
     #|  }
     #|}
   let main_src =
-    #|use ./lib.xsh { Json, is_null }
+    #|use ./lib.vibe { Json, is_null }
     #|let x = JNull
     #|is_null(x)
-  db.set_source("./lib.xsh", lib_src)
+  db.set_source("./lib.vibe", lib_src)
   db.set_source("main", main_src)
   let wasm = try compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
@@ -564,7 +564,7 @@ test "xsh wasm accepts i32/f32/f64 type aliases" {
 
 ///|
 test "xsh wasm compiles std wasm opcode module" {
-  let src = try @os_fs.read_file_to_string("xsh/std/wasm/opcodes.xsh") catch {
+  let src = try @os_fs.read_file_to_string("vibe/std/wasm/opcodes.vibe") catch {
     e => fail("read error: " + e.to_string())
   } noraise {
     s => s
