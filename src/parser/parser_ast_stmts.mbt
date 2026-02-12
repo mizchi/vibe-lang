@@ -1,14 +1,18 @@
 ///|
-fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
+fn AstParser::parse_stmt(
+  self : AstParser,
+  declared_export_let_types : Map[String, DeclaredExportLetInfo],
+  declared_export_let_assigned : Map[String, Bool],
+) -> @core.Stmt? raise ParseError {
   self.skip_trivia()
   match self.peek_kind() {
-    k if k == let_kw() => self.parse_let_stmt()
-    k if k == enum_kw() => self.parse_enum_stmt()
-    k if k == struct_kw() => self.parse_struct_stmt()
-    k if k == type_kw() => self.parse_type_alias_stmt()
-    k if k == trait_kw() => self.parse_trait_stmt()
-    k if k == impl_kw() => self.parse_impl_stmt()
-    k if k == use_kw() => self.parse_import_stmt()
+    k if k == let_kw() => Some(self.parse_let_stmt())
+    k if k == enum_kw() => Some(self.parse_enum_stmt())
+    k if k == struct_kw() => Some(self.parse_struct_stmt())
+    k if k == type_kw() => Some(self.parse_type_alias_stmt())
+    k if k == trait_kw() => Some(self.parse_trait_stmt())
+    k if k == impl_kw() => Some(self.parse_impl_stmt())
+    k if k == use_kw() => Some(self.parse_import_stmt())
     k if k == import_kw() => {
       let tok = self.bump()
       raise ParseError::UnexpectedToken(
@@ -17,17 +21,23 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
         span=self.token_span(),
       )
     }
-    k if k == export_kw() => self.parse_export_stmt()
-    k if k == test_kw() => self.parse_test_stmt()
-    k if k == bench_kw() => self.parse_bench_stmt()
+    k if k == declare_kw() => {
+      self.parse_declare_export_let_stmt(
+        declared_export_let_types, declared_export_let_assigned,
+      )
+      None
+    }
+    k if k == export_kw() => Some(self.parse_export_stmt())
+    k if k == test_kw() => Some(self.parse_test_stmt())
+    k if k == bench_kw() => Some(self.parse_bench_stmt())
     k if k == name() => {
       let tok = self.peek()
       let next = self.peek_non_trivia_ahead(1)
       let next2 = self.peek_non_trivia_ahead(2)
       if tok.text() == "module" && next == name() && next2 == lbrace() {
-        self.parse_module_stmt(false)
+        Some(self.parse_module_stmt(false))
       } else if tok.text() == "suberror" {
-        self.parse_suberror_stmt()
+        Some(self.parse_suberror_stmt())
       } else {
         if tok.text() == "open" && next == trait_kw() {
           raise ParseError::UnexpectedToken(
@@ -50,15 +60,91 @@ fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt raise ParseError {
             span=self.token_span(),
           )
         }
-        let assign_next = self.peek_non_trivia_kind(self.pos + 1)
+        let assign_next = self.peek_assign_op_kind_after_name()
         if assign_next == eq() || is_compound_assign(assign_next) {
-          self.parse_assign_stmt()
+          Some(
+            self.parse_assign_stmt(
+              declared_export_let_types, declared_export_let_assigned,
+            ),
+          )
         } else {
-          self.parse_expr_or_index_assign_stmt()
+          Some(self.parse_expr_or_index_assign_stmt())
         }
       }
     }
-    _ => self.parse_expr_or_index_assign_stmt()
+    _ => Some(self.parse_expr_or_index_assign_stmt())
+  }
+}
+
+///|
+fn AstParser::peek_assign_op_kind_after_name(
+  self : AstParser,
+) -> @cst.SyntaxKind {
+  let next = self.peek_non_trivia_ahead(1)
+  if next != double_colon() {
+    return next
+  }
+  if self.peek_non_trivia_ahead(2) != name() {
+    return eof()
+  }
+  self.peek_non_trivia_ahead(3)
+}
+
+///|
+fn AstParser::parse_declare_export_let_stmt(
+  self : AstParser,
+  declared_export_let_types : Map[String, DeclaredExportLetInfo],
+  declared_export_let_assigned : Map[String, Bool],
+) -> Unit raise ParseError {
+  let start = self.pos
+  let _ = self.expect(declare_kw(), "declare")
+  self.skip_trivia()
+  let _ = self.expect(export_kw(), "export")
+  self.skip_trivia()
+  let _ = self.expect(let_kw(), "let")
+  self.skip_trivia()
+  let name = self.parse_type_member_name("name")
+  self.skip_trivia()
+  let _ = self.expect(colon(), ":")
+  self.skip_trivia()
+  let ty = self.parse_type()
+  let _ = self.eat(semicolon())
+  let span = self.span_from(start)
+  if declared_export_let_types.contains(name) ||
+    declared_export_let_assigned.contains(name) {
+    raise ParseError::UnexpectedToken(
+      expected="single declaration for `" + name + "`",
+      got=name,
+      span~,
+    )
+  }
+  declared_export_let_types[name] = { ty, declare_span: span }
+  declared_export_let_assigned[name] = false
+}
+
+///|
+fn AstParser::ensure_declared_export_let_defs(
+  _self : AstParser,
+  declared_export_let_types : Map[String, DeclaredExportLetInfo],
+  declared_export_let_assigned : Map[String, Bool],
+) -> Unit raise ParseError {
+  for name, info in declared_export_let_types {
+    match declared_export_let_assigned.get(name) {
+      Some(done) =>
+        if not(done) {
+          raise ParseError::UnexpectedToken(
+            expected="definition `" + name + " = ...` for declared export let",
+            got="",
+            span=info.declare_span,
+          )
+        }
+      None =>
+        raise ParseError::UnexpectedToken(
+          expected="definition `" + name + " = ...` for declared export let",
+          got="",
+          span=info.declare_span,
+        )
+    }
   }
 }
 
@@ -223,30 +309,75 @@ fn compound_to_op(kind : @cst.SyntaxKind) -> String {
 ///|
 fn AstParser::parse_assign_stmt(
   self : AstParser,
+  declared_export_let_types : Map[String, DeclaredExportLetInfo],
+  declared_export_let_assigned : Map[String, Bool],
 ) -> @core.Stmt raise ParseError {
   let start = self.pos
-  let name_tok = self.expect(name(), "name")
+  let binding_name = self.parse_type_member_name("name")
   self.skip_trivia()
   let op_kind = self.peek_kind()
+  match declared_export_let_types.get(binding_name) {
+    Some(declare_info) => {
+      match declared_export_let_assigned.get(binding_name) {
+        Some(done) =>
+          if done {
+            let span = self.span_from(start)
+            raise ParseError::UnexpectedToken(
+              expected="single definition for declared export let `" +
+                binding_name +
+                "`",
+              got=binding_name,
+              span~,
+            )
+          }
+        None => ()
+      }
+      if op_kind != eq() {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="`=` for declared export let `" + binding_name + "`",
+          got=self.peek().text(),
+          span~,
+        )
+      }
+      let _ = self.bump()
+      let raw_expr = self.parse_expr()
+      let _ = self.eat(semicolon())
+      let span = self.span_from(start)
+      declared_export_let_assigned[binding_name] = true
+      let declared_expr = wrap_local_let_with_annotation(
+        declare_info.ty,
+        raw_expr,
+        span,
+      )
+      return @core.Stmt::ExportLet(
+        rec=false,
+        name=binding_name,
+        expr=declared_expr,
+        span~,
+      )
+    }
+    None => ()
+  }
   if op_kind == eq() {
     let _ = self.bump()
     let expr = self.parse_expr()
     let _ = self.eat(semicolon())
     let span = self.span_from(start)
-    @core.Stmt::Assign(name=name_tok.text(), expr~, span~)
+    @core.Stmt::Assign(name=binding_name, expr~, span~)
   } else {
     let _ = self.bump() // compound assign token
     let op_name = compound_to_op(op_kind)
     let rhs = self.parse_expr()
     let name_span = self.span_from(start)
     let ident : @core.Expr = @core.Expr::Ident(
-      name=name_tok.text(),
+      name=binding_name,
       span=name_span,
     )
     let desugared = call2(op_name, ident, rhs)
     let _ = self.eat(semicolon())
     let span = self.span_from(start)
-    @core.Stmt::Assign(name=name_tok.text(), expr=desugared, span~)
+    @core.Stmt::Assign(name=binding_name, expr=desugared, span~)
   }
 }
 
@@ -1163,6 +1294,8 @@ fn AstParser::parse_module_stmt(
 fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
   let _ = self.expect(lbrace(), "{")
   let stmts : Array[@core.Stmt] = []
+  let declared_export_let_types : Map[String, DeclaredExportLetInfo] = {}
+  let declared_export_let_assigned : Map[String, Bool] = {}
   while ({
           self.skip_trivia()
           self.peek_kind() != rbrace()
@@ -1170,12 +1303,19 @@ fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
-    stmts.push(self.parse_stmt())
+    match
+      self.parse_stmt(declared_export_let_types, declared_export_let_assigned) {
+      Some(stmt) => stmts.push(stmt)
+      None => ()
+    }
     for pending in self.pending_stmts {
       stmts.push(pending)
     }
     self.pending_stmts = []
   }
+  self.ensure_declared_export_let_defs(
+    declared_export_let_types, declared_export_let_assigned,
+  )
   let _ = self.expect(rbrace(), "}")
   @core.Module::{ stmts, }
 }

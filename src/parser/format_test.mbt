@@ -197,6 +197,63 @@ test "vibe parse/format local let annotation is parser-equivalent" {
 }
 
 ///|
+test "vibe parse/format declare export let signature is parser-equivalent" {
+  let input =
+    #|declare export let run: () -> Int
+    #|let helper = () -> Int { 1 }
+    #|run = () -> Int { helper() }
+    #|export { run }
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] declare export let failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] declare export let format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
+test "vibe parse rejects unresolved declare export let" {
+  let input = "declare export let run: () -> Int\nexport { run }"
+  let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
+  match parsed {
+    Ok(_) =>
+      fail("[parse] expected unresolved declare export let to be rejected")
+    Err(err) =>
+      assert_true(
+        err
+        .to_string()
+        .contains("definition `run = ...` for declared export let"),
+      )
+  }
+}
+
+///|
+test "vibe parse rejects duplicate declare export let definition" {
+  let input =
+    #|declare export let run: () -> Int
+    #|run = () -> Int { 1 }
+    #|run = () -> Int { 2 }
+  let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
+  match parsed {
+    Ok(_) =>
+      fail(
+        "[parse] expected duplicate declare export let definition to be rejected",
+      )
+    Err(err) =>
+      assert_true(
+        err
+        .to_string()
+        .contains("single definition for declared export let `run`"),
+      )
+  }
+}
+
+///|
 test "vibe parse/format test declaration accepts unquoted names" {
   let input =
     #|test smoke_case {

@@ -83,6 +83,11 @@ pub fn use_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn declare_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(94)
+}
+
+///|
 pub fn test_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(24)
 }

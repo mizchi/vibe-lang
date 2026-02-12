@@ -242,6 +242,7 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
   self.skip_trivia()
   match self.peek_kind() {
     k if k == let_kw() => self.parse_let_stmt()
+    k if k == declare_kw() => self.parse_declare_stmt()
     k if k == enum_kw() => self.parse_enum_stmt()
     k if k == name() &&
       self.peek().text() == "module" &&
@@ -262,6 +263,33 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
     k if k == bench_kw() => self.parse_bench_block()
     _ => self.parse_expr_stmt()
   }
+}
+
+///|
+fn Parser::parse_declare_stmt(self : Parser) -> Unit {
+  self.builder.start_node(let_stmt())
+  self.bump() // declare
+  self.skip_trivia()
+  self.expect(export_kw())
+  self.skip_trivia()
+  self.expect(let_kw())
+  self.skip_trivia()
+  self.expect(name())
+  self.skip_trivia()
+  if self.at(double_colon()) {
+    self.bump()
+    self.skip_trivia()
+    self.expect(name())
+    self.skip_trivia()
+  }
+  self.expect(colon())
+  self.skip_trivia()
+  self.parse_binding_type_until_stmt_end()
+  self.skip_trivia()
+  if self.at(semicolon()) {
+    self.bump()
+  }
+  self.builder.finish_node()
 }
 
 ///|
@@ -965,6 +993,56 @@ fn Parser::parse_binding_type_until_eq(self : Parser) -> Unit {
         }
         self.bump()
       }
+      _ => self.bump()
+    }
+  }
+}
+
+///|
+fn Parser::parse_binding_type_until_stmt_end(self : Parser) -> Unit {
+  let mut paren_depth = 0
+  let mut bracket_depth = 0
+  let mut brace_depth = 0
+  while not(self.at(eof())) {
+    let kind = self.peek_kind()
+    if paren_depth == 0 &&
+      bracket_depth == 0 &&
+      brace_depth == 0 &&
+      (kind == semicolon() || kind == newline()) {
+      break
+    }
+    match kind {
+      k if k == lparen() => {
+        paren_depth += 1
+        self.bump()
+      }
+      k if k == rparen() => {
+        if paren_depth > 0 {
+          paren_depth -= 1
+        }
+        self.bump()
+      }
+      k if k == lbracket() => {
+        bracket_depth += 1
+        self.bump()
+      }
+      k if k == rbracket() => {
+        if bracket_depth > 0 {
+          bracket_depth -= 1
+        }
+        self.bump()
+      }
+      k if k == lbrace() => {
+        brace_depth += 1
+        self.bump()
+      }
+      k if k == rbrace() =>
+        if brace_depth > 0 {
+          brace_depth -= 1
+          self.bump()
+        } else {
+          break
+        }
       _ => self.bump()
     }
   }

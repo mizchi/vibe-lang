@@ -977,17 +977,29 @@ test "normalize source sorts declarations and prunes unreachable defs" {
   assert_false(normalized.contains("type Alias = Int"))
   let idx_use = wbtest_substring_index(normalized, "use ./dep.vibe {")
   let idx_trait = wbtest_substring_index(normalized, "trait Eq")
+  let idx_decl_run = wbtest_substring_index(
+    normalized, "declare export let run: () -> Int",
+  )
+  let idx_decl_run_io = wbtest_substring_index(
+    normalized, "declare export let run_io: () -> Int with {",
+  )
   let idx_pure_fn = wbtest_substring_index(normalized, "let helper =")
   let idx_effect_fn = wbtest_substring_index(
-    normalized, "export let run_io = () -> Int with {",
+    normalized, "run_io = () -> Int with {",
   )
   assert_true(idx_use >= 0)
   assert_true(idx_trait >= 0)
+  assert_true(idx_decl_run >= 0)
+  assert_true(idx_decl_run_io >= 0)
   assert_true(idx_pure_fn >= 0)
   assert_true(idx_effect_fn >= 0)
   assert_true(idx_use < idx_trait)
-  assert_true(idx_trait < idx_pure_fn)
+  assert_true(idx_trait < idx_decl_run)
+  assert_true(idx_decl_run < idx_decl_run_io)
+  assert_true(idx_decl_run_io < idx_pure_fn)
   assert_true(idx_pure_fn < idx_effect_fn)
+  assert_false(normalized.contains("export let run ="))
+  assert_false(normalized.contains("export let run_io ="))
 }
 
 ///|
@@ -1007,14 +1019,24 @@ test "normalize source keeps module blocks and sorts module body" {
   assert_true(normalized.contains("export module math {"))
   assert_false(normalized.contains("let dead ="))
   assert_false(normalized.contains("type Alias = Int"))
-  let idx_helper = wbtest_substring_index(normalized, "let helper =")
-  let idx_run = wbtest_substring_index(normalized, "export let run =")
-  let idx_run_io = wbtest_substring_index(
-    normalized, "export let run_io = () -> Int with {",
+  let idx_decl_run = wbtest_substring_index(
+    normalized, "declare export let run: () -> Int",
   )
+  let idx_decl_run_io = wbtest_substring_index(
+    normalized, "declare export let run_io: () -> Int with {",
+  )
+  let idx_helper = wbtest_substring_index(normalized, "let helper =")
+  let idx_run = wbtest_substring_index(normalized, "run =")
+  let idx_run_io = wbtest_substring_index(
+    normalized, "run_io = () -> Int with {",
+  )
+  assert_true(idx_decl_run >= 0)
+  assert_true(idx_decl_run_io >= 0)
   assert_true(idx_helper >= 0)
   assert_true(idx_run >= 0)
   assert_true(idx_run_io >= 0)
+  assert_true(idx_decl_run < idx_decl_run_io)
+  assert_true(idx_decl_run_io < idx_helper)
   assert_true(idx_helper < idx_run)
   assert_true(idx_run < idx_run_io)
 }
@@ -1033,24 +1055,48 @@ test "normalize source sorts function defs topologically with alpha tie" {
     Ok(v) => v
     Err(msg) => fail("normalize failed: " + msg)
   }
-  let idx_a = wbtest_substring_index(normalized, "export let a =")
-  let idx_b = wbtest_substring_index(normalized, "export let b =")
-  let idx_z = wbtest_substring_index(normalized, "export let z =")
-  let idx_io_a = wbtest_substring_index(
-    normalized, "export let io_a = () -> Int with {",
+  let idx_decl_a = wbtest_substring_index(
+    normalized, "declare export let a: () -> Int",
   )
-  let idx_io_b = wbtest_substring_index(
-    normalized, "export let io_b = () -> Int with {",
+  let idx_decl_b = wbtest_substring_index(
+    normalized, "declare export let b: () -> Int",
   )
-  let idx_io_z = wbtest_substring_index(
-    normalized, "export let io_z = () -> Int with {",
+  let idx_decl_z = wbtest_substring_index(
+    normalized, "declare export let z: () -> Int",
   )
+  let idx_a = wbtest_substring_index(normalized, "a =")
+  let idx_b = wbtest_substring_index(normalized, "b =")
+  let idx_z = wbtest_substring_index(normalized, "z =")
+  let idx_decl_io_a = wbtest_substring_index(
+    normalized, "declare export let io_a: () -> Int with {",
+  )
+  let idx_decl_io_b = wbtest_substring_index(
+    normalized, "declare export let io_b: () -> Int with {",
+  )
+  let idx_decl_io_z = wbtest_substring_index(
+    normalized, "declare export let io_z: () -> Int with {",
+  )
+  let idx_io_a = wbtest_substring_index(normalized, "io_a = () -> Int with {")
+  let idx_io_b = wbtest_substring_index(normalized, "io_b = () -> Int with {")
+  let idx_io_z = wbtest_substring_index(normalized, "io_z = () -> Int with {")
+  assert_true(idx_decl_a >= 0)
+  assert_true(idx_decl_b >= 0)
+  assert_true(idx_decl_z >= 0)
   assert_true(idx_a >= 0)
   assert_true(idx_b >= 0)
   assert_true(idx_z >= 0)
+  assert_true(idx_decl_io_a >= 0)
+  assert_true(idx_decl_io_b >= 0)
+  assert_true(idx_decl_io_z >= 0)
   assert_true(idx_io_a >= 0)
   assert_true(idx_io_b >= 0)
   assert_true(idx_io_z >= 0)
+  assert_true(idx_decl_a < idx_decl_b)
+  assert_true(idx_decl_b < idx_decl_z)
+  assert_true(idx_decl_z < idx_decl_io_a)
+  assert_true(idx_decl_io_a < idx_decl_io_b)
+  assert_true(idx_decl_io_b < idx_decl_io_z)
+  assert_true(idx_decl_io_z < idx_a)
   assert_true(idx_a < idx_b)
   assert_true(idx_b < idx_z)
   assert_true(idx_io_a < idx_io_b)
@@ -1068,12 +1114,27 @@ test "normalize source keeps Type:: wrappers after plain defs on alpha tie" {
     Ok(v) => v
     Err(msg) => fail("normalize failed: " + msg)
   }
-  let idx_bar = wbtest_substring_index(normalized, "export let bar =")
-  let idx_baz = wbtest_substring_index(normalized, "export let baz =")
-  let idx_member = wbtest_substring_index(normalized, "export let Int::foo =")
+  let idx_decl_bar = wbtest_substring_index(
+    normalized, "declare export let bar: () -> Int",
+  )
+  let idx_decl_baz = wbtest_substring_index(
+    normalized, "declare export let baz: () -> Int",
+  )
+  let idx_decl_member = wbtest_substring_index(
+    normalized, "declare export let Int::foo: (Int) -> Int",
+  )
+  let idx_bar = wbtest_substring_index(normalized, "bar =")
+  let idx_baz = wbtest_substring_index(normalized, "baz =")
+  let idx_member = wbtest_substring_index(normalized, "Int::foo =")
+  assert_true(idx_decl_bar >= 0)
+  assert_true(idx_decl_baz >= 0)
+  assert_true(idx_decl_member >= 0)
   assert_true(idx_bar >= 0)
   assert_true(idx_baz >= 0)
   assert_true(idx_member >= 0)
+  assert_true(idx_decl_bar < idx_decl_baz)
+  assert_true(idx_decl_baz < idx_decl_member)
+  assert_true(idx_decl_member < idx_bar)
   assert_true(idx_bar < idx_baz)
   assert_true(idx_baz < idx_member)
 }
@@ -1107,6 +1168,26 @@ test "normalize source inserts inferred annotation on non-fn let" {
   }
   assert_true(normalized.contains("let answer: Int = 42"))
   assert_false(normalized.contains("let id:"))
+}
+
+///|
+test "normalize source renders export let as declare signature + assignment" {
+  let source =
+    #|let helper = () -> Int { 1 }
+    #|export let run = () -> Int { helper() }
+    #|export { run }
+  let normalized = match normalize_source_text(source) {
+    Ok(v) => v
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+  let idx_decl = wbtest_substring_index(
+    normalized, "declare export let run: () -> Int",
+  )
+  let idx_assign = wbtest_substring_index(normalized, "run = () -> Int {")
+  assert_true(idx_decl >= 0)
+  assert_true(idx_assign >= 0)
+  assert_true(idx_decl < idx_assign)
+  assert_false(normalized.contains("export let run ="))
 }
 
 ///|
@@ -1210,7 +1291,9 @@ test "fmt pipeline applies normalize rules" {
   }
   assert_false(output.contains("let dead ="))
   assert_true(output.contains("let helper ="))
-  assert_true(output.contains("export let run ="))
+  assert_true(output.contains("declare export let run: () -> Int"))
+  assert_true(output.contains("run = () -> Int {"))
+  assert_false(output.contains("export let run ="))
 }
 
 ///|

@@ -258,6 +258,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "let" => let_kw()
           "import" => import_kw()
           "use" => use_kw()
+          "declare" => declare_kw()
           "test" => test_kw()
           "if" => if_kw()
           "else" => else_kw()

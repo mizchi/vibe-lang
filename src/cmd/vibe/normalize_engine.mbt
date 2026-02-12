@@ -636,6 +636,7 @@ fn normalize_render_stmt(
   stmt : @vibe_core.Stmt,
   rewritten_exprs : Map[String, @vibe_core.Expr],
   inferred_annotations : Map[String, String],
+  export_decl_annotations : Map[String, String],
 ) -> String? {
   let key = normalize_stmt_key(stmt)
   let rewritten_expr = rewritten_exprs.get(key)
@@ -659,6 +660,11 @@ fn normalize_render_stmt(
       )
     }
     @vibe_core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      if export_decl_annotations.contains(key) {
+        return normalize_render_decl_assign_stmt(
+          source, name, expr, rewritten_expr,
+        )
+      }
       if rewritten_expr is None && annotation is None {
         let snippet = normalize_source_slice_by_span(
             source,
@@ -689,14 +695,10 @@ fn normalize_render_stmt_accept_raw_snippet(snippet : String) -> Bool {
 }
 
 ///|
-fn normalize_render_let_stmt(
+fn normalize_render_stmt_expr_text(
   source : String,
-  exported : Bool,
-  rec_flag : Bool,
-  name : String,
   original_expr : @vibe_core.Expr,
   rewritten_expr : @vibe_core.Expr?,
-  annotation : String?,
 ) -> String? {
   let expr_text = match rewritten_expr {
     Some(expr) =>
@@ -718,7 +720,26 @@ fn normalize_render_let_stmt(
       }
   }
   if expr_text.length() == 0 {
-    return None
+    None
+  } else {
+    Some(expr_text)
+  }
+}
+
+///|
+fn normalize_render_let_stmt(
+  source : String,
+  exported : Bool,
+  rec_flag : Bool,
+  name : String,
+  original_expr : @vibe_core.Expr,
+  rewritten_expr : @vibe_core.Expr?,
+  annotation : String?,
+) -> String? {
+  let expr_text = match
+    normalize_render_stmt_expr_text(source, original_expr, rewritten_expr) {
+    Some(v) => v
+    None => return None
   }
   let out = StringBuilder::new()
   if exported {
@@ -739,6 +760,25 @@ fn normalize_render_let_stmt(
   out.write_string(" = ")
   out.write_string(expr_text)
   Some(out.to_string())
+}
+
+///|
+fn normalize_render_decl_assign_stmt(
+  source : String,
+  name : String,
+  original_expr : @vibe_core.Expr,
+  rewritten_expr : @vibe_core.Expr?,
+) -> String? {
+  let source_expr = match normalize_unwrap_local_type_assert(original_expr) {
+    Some((_, inner_expr)) => inner_expr
+    None => original_expr
+  }
+  let expr_text = match
+    normalize_render_stmt_expr_text(source, source_expr, rewritten_expr) {
+    Some(v) => v
+    None => return None
+  }
+  Some(name + " = " + expr_text)
 }
 
 ///|
@@ -873,16 +913,49 @@ fn normalize_render_source(
   rewritten_exprs : Map[String, @vibe_core.Expr],
   inferred_annotations : Map[String, String],
 ) -> Result[String, String] {
+  let export_decl_annotations = normalize_collect_export_decl_annotations(
+    @vibe_core.Module::{ stmts, },
+    inferred_annotations,
+  )
   let out = StringBuilder::new()
+  let declare_lines : Array[String] = []
   for stmt in stmts {
-    match
-      normalize_render_stmt(source, stmt, rewritten_exprs, inferred_annotations) {
-      Some(rendered) => {
-        out.write_string(rendered)
-        if not(rendered.has_suffix("\n")) {
-          out.write_char('\n')
+    match stmt {
+      @vibe_core.Stmt::ExportLet(name~, ..) => {
+        let key = normalize_stmt_key(stmt)
+        match export_decl_annotations.get(key) {
+          Some(ty_text) =>
+            declare_lines.push("declare export let " + name + ": " + ty_text)
+          None => ()
         }
       }
+      _ => ()
+    }
+  }
+  let write_line = fn(line : String) {
+    out.write_string(line)
+    if not(line.has_suffix("\n")) {
+      out.write_char('\n')
+    }
+  }
+  let mut inserted_declare_lines = false
+  for stmt in stmts {
+    if not(inserted_declare_lines) && declare_lines.length() > 0 {
+      let group = normalize_stmt_group(stmt)
+      if group != NormalizeStmtGroup::Use &&
+        group != NormalizeStmtGroup::TypeDecl &&
+        group != NormalizeStmtGroup::TraitDecl {
+        for line in declare_lines {
+          write_line(line)
+        }
+        inserted_declare_lines = true
+      }
+    }
+    match
+      normalize_render_stmt(
+        source, stmt, rewritten_exprs, inferred_annotations, export_decl_annotations,
+      ) {
+      Some(rendered) => write_line(rendered)
       None => {
         let span = stmt.span()
         let snippet = normalize_source_slice_by_span(
@@ -893,11 +966,13 @@ fn normalize_render_source(
         if snippet.trim().to_string().length() == 0 {
           continue
         }
-        out.write_string(snippet)
-        if not(snippet.has_suffix("\n")) {
-          out.write_char('\n')
-        }
+        write_line(snippet)
       }
+    }
+  }
+  if not(inserted_declare_lines) {
+    for line in declare_lines {
+      write_line(line)
     }
   }
   let result = out.to_string()
@@ -1614,6 +1689,66 @@ fn normalize_collect_inferred_annotations(
     }
   }
   out
+}
+
+///|
+fn normalize_collect_export_decl_annotations(
+  ast : @vibe_core.Module,
+  inferred_annotations : Map[String, String],
+) -> Map[String, String] {
+  let env = @checker.type_check(ast) catch { _ => return {} }
+  let out : Map[String, String] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
+        if rec {
+          continue
+        }
+        let key = normalize_stmt_key(stmt)
+        match normalize_unwrap_local_type_assert(expr) {
+          Some((ann_ty, _)) =>
+            match normalize_render_decl_annotation_type(ann_ty) {
+              Some(ty_text) => {
+                out[key] = ty_text
+                continue
+              }
+              None => ()
+            }
+          None => ()
+        }
+        match inferred_annotations.get(key) {
+          Some(ty_text) => {
+            out[key] = ty_text
+            continue
+          }
+          None => ()
+        }
+        match env.get(name) {
+          Some(ty) =>
+            match normalize_render_decl_annotation_type(ty) {
+              Some(ty_text) => out[key] = ty_text
+              None => ()
+            }
+          None => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn normalize_render_decl_annotation_type(ty : @vibe_core.Type) -> String? {
+  if not(normalize_type_annotation_allowed(ty)) {
+    return None
+  }
+  let rendered = normalize_render_type_annotation(ty)
+  if rendered.length() == 0 {
+    None
+  } else {
+    Some(rendered)
+  }
 }
 
 ///|

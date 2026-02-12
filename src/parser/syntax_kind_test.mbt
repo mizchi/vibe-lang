@@ -15,6 +15,9 @@ test "syntax kind keyword/operator ids are distinct" {
   if loop_kw() == star_eq() {
     fail("loop_kw and star_eq must have different SyntaxKind ids")
   }
+  if declare_kw() == eq() {
+    fail("declare_kw and eq must have different SyntaxKind ids")
+  }
 }
 
 ///|
@@ -85,6 +88,14 @@ test "lexer treats map as contextual keyword" {
   let map_call_tokens = tokenize("map(1)")
   if map_call_tokens[0].kind() != name() {
     fail("map before ( must lex as name")
+  }
+}
+
+///|
+test "lexer treats declare as keyword" {
+  let tokens = tokenize("declare export let run: () -> Int")
+  if tokens[0].kind() != declare_kw() {
+    fail("declare must lex as declare_kw")
   }
 }
 

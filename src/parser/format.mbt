@@ -948,6 +948,7 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == alias_kw() ||
   kind == import_kw() ||
   kind == use_kw() ||
+  kind == declare_kw() ||
   kind == export_kw() ||
   kind == from_kw() ||
   kind == as_kw() ||
