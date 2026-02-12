@@ -1,4 +1,4 @@
-enum Json {
+export enum Json {
   JNull;
   JBool(Bool);
   JNum(Double);
@@ -6,159 +6,135 @@ enum Json {
   JArr(Array[Json]);
   JObj(Map[Json])
 }
-
 let is_ws = (c: Int) -> Bool {
   c == ' ' || c == '\n' || c == '\t' || c == '\r'
 }
-
-let is_digit = (c: Int) -> Bool {
-  c >= '0' && c < ':'
-}
-
-let digit_to_double = (c: Int) -> Double {
-  int_to_double(c - '0')
-}
-
-let rec skip_ws = (s: String, i: Int) -> Int {
-  if i < s.string_length() {
-    let c = s.string_char_code_at(i)
-    if is_ws(c) { skip_ws(s, i + 1) } else { i }
+let rec skip_ws = (s: String, len: Int, i: Int) -> Int {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if is_ws(c) {
+      skip_ws(s, len, i + 1)
+    } else {
+      i
+    }
   } else {
     i
   }
 }
-
-let starts_with = (s: String, i: Int, word: String) -> Bool {
-  let end = i + word.string_length()
-  end <= s.string_length() && s.string_substring(i, end).string_equals(word)
+let is_digit = (c: Int) -> Bool {
+  c >= '0' && c < ':'
 }
-
-let parse_string = (s: String, i: Int) -> (String, Int) with {Error} {
-  if i >= s.string_length() {
-    raise "unexpected eof"
-  } else if s.string_char_code_at(i) != '"' {
-    raise "expected string"
+let rec apply_exponent = (value: Double, exp: Int) -> Double {
+  if exp == 0 {
+    value
+  }
+  else if exp < 0 {
+    apply_exponent(value / 10.0, exp + 1)
+  }
+  else {
+    apply_exponent(value * 10.0, exp - 1)
+  }
+}
+let digit_to_double = (c: Int) -> Double {
+  int_to_double(c - '0')
+}
+let rec parse_digits_int = (s: String, len: Int, i: Int, acc: Int) -> (Int, Int) {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if is_digit(c) {
+      parse_digits_int(s, len, i + 1, acc * 10 + (c - '0'))
+    } else {
+      (acc, i)
+    }
   } else {
-    let len = s.string_length()
-    let rec scan = (
-      s: String,
-      idx: Int,
-      start: Int,
-      acc: String,
-    ) -> (String, Int) with {Error} {
+    (acc, i)
+  }
+}
+let rec starts_with_from = (s: String, len: Int, i: Int, word: String, wi: Int, wlen: Int) -> Bool {
+  if wi >= wlen {
+    true
+  }
+  else {
+    let si = i + wi
+    if si >= len {
+      false
+    }
+    else if string_char_code_at(s, si) == string_char_code_at(word, wi) {
+      starts_with_from(s, len, i, word, wi + 1, wlen)
+    }
+    else {
+      false
+    }
+  }
+}
+let starts_with = (s: String, len: Int, i: Int, word: String) -> Bool {
+  let wlen = string_length(word)
+  i + wlen <= len && starts_with_from(s, len, i, word, 0, wlen)
+}
+let parse_string = (s: String, len: Int, i: Int) -> (String, Int)with {
+  Error
+} {
+  if i >= len {
+    raise "unexpected eof"
+  }
+  else if string_char_code_at(s, i) != '"' {
+    raise "expected string"
+  }
+  else {
+    let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int)with {
+      Error
+    } {
       if idx >= len {
         raise "unterminated string"
-      } else {
-        let c = s.string_char_code_at(idx)
+      }
+      else {
+        let c = string_char_code_at(s, idx)
         if c < ' ' {
           raise "invalid string"
-        } else if c == '"' {
-          let chunk = s.string_substring(start, idx)
-          (acc.string_concat(chunk), idx + 1)
-        } else if c == '\\' {
-          let chunk = s.string_substring(start, idx)
+        }
+        else if c == '"' {
+          let chunk = string_substring(s, start, idx)
+          (string_concat(acc, chunk), idx + 1)
+        }
+        else if c == '\\' {
+          let chunk = string_substring(s, start, idx)
           let next = idx + 1
           if next >= len {
             raise "unterminated string"
-          } else {
-            let esc = s.string_char_code_at(next)
-            if esc == '"' {
-              scan(s, next + 1, next + 1, acc.string_concat(chunk).string_concat("\""))
+          }
+          else {
+            let esc = string_char_code_at(s, next)
+            let escaped = if esc == '"' {
+              "\""
             } else if esc == '\\' {
-              scan(s, next + 1, next + 1, acc.string_concat(chunk).string_concat("\\"))
+              "\\"
             } else if esc == '/' {
-              scan(s, next + 1, next + 1, acc.string_concat(chunk).string_concat("/"))
+              "/"
             } else if esc == 'n' {
-              scan(s, next + 1, next + 1, acc.string_concat(chunk).string_concat("\n"))
+              "\n"
             } else if esc == 't' {
-              scan(s, next + 1, next + 1, acc.string_concat(chunk).string_concat("\t"))
+              "\t"
             } else {
               raise "invalid escape"
             }
+            scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))
           }
-        } else {
-          scan(s, idx + 1, start, acc)
+        }
+        else {
+          scan(idx + 1, start, acc)
         }
       }
     }
-    scan(s, i + 1, i + 1, "")
+    scan(i + 1, i + 1, "")
   }
 }
-
-let rec parse_digits = (s: String, i: Int, acc: Int) -> (Int, Int) with {Error} {
-  if i < s.string_length() {
-    let c = s.string_char_code_at(i)
-    if is_digit(c) {
-      let digit = c - '0'
-      parse_digits(s, i + 1, acc * 10 + digit)
-    } else {
-      (acc, i)
-    }
-  } else {
-    (acc, i)
-  }
-}
-
-let rec parse_digits_double = (
-  s: String,
-  i: Int,
-  acc: Double,
-  seen: Bool,
-) -> (Double, Int) with {Error} {
-  if i < s.string_length() {
-    let c = s.string_char_code_at(i)
-    if is_digit(c) {
-      let digit = digit_to_double(c)
-      parse_digits_double(s, i + 1, acc * 10.0 + digit, true)
-    } else if seen {
-      (acc, i)
-    } else {
-      raise "expected digit"
-    }
-  } else if seen {
-    (acc, i)
-  } else {
-    raise "expected digit"
-  }
-}
-
-let parse_int_part = (s: String, i: Int) -> (Double, Int) with {Error} {
-  let len = s.string_length()
+let rec parse_fraction = (s: String, len: Int, i: Int, acc: Double, scale: Double, seen: Bool) -> (Double, Int)with {
+  Error
+} {
   if i < len {
-    let c = s.string_char_code_at(i)
-    if c == '0' {
-      let next = i + 1
-      if next < len {
-        if is_digit(s.string_char_code_at(next)) {
-          raise "leading zero"
-        } else {
-          (0.0, next)
-        }
-      } else {
-        (0.0, next)
-      }
-    } else if is_digit(c) {
-      parse_digits_double(s, i, 0.0, false)
-    } else {
-      raise "expected digit"
-    }
-  } else {
-    raise "expected digit"
-  }
-}
-
-let rec parse_fraction = (
-  s: String,
-  i: Int,
-  acc: Double,
-  scale: Double,
-  seen: Bool,
-) -> (Double, Int) with {Error} {
-  if i < s.string_length() {
-    let c = s.string_char_code_at(i)
+    let c = string_char_code_at(s, i)
     if is_digit(c) {
-      let digit = digit_to_double(c)
-      parse_fraction(s, i + 1, acc + digit / scale, scale * 10.0, true)
+      parse_fraction(s, len, i + 1, acc + digit_to_double(c) / scale, scale * 10.0, true)
     } else if seen {
       (acc, i)
     } else {
@@ -170,59 +146,71 @@ let rec parse_fraction = (
     raise "expected fraction"
   }
 }
-
-let rec apply_exponent = (value: Double, exp: Int) -> Double {
-  if exp == 0 {
-    value
-  } else if exp < 0 {
-    apply_exponent(value / 10.0, exp + 1)
+let rec parse_digits_double = (s: String, len: Int, i: Int, acc: Double, seen: Bool) -> (Double, Int)with {
+  Error
+} {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if is_digit(c) {
+      parse_digits_double(s, len, i + 1, acc * 10.0 + digit_to_double(c), true)
+    } else if seen {
+      (acc, i)
+    } else {
+      raise "expected digit"
+    }
+  } else if seen {
+    (acc, i)
   } else {
-    apply_exponent(value * 10.0, exp - 1)
+    raise "expected digit"
   }
 }
-
-let parse_fraction_if_any = (
-  s: String,
-  i: Int,
-  value: Double,
-) -> (Double, Int) with {Error} {
-  if i < s.string_length() {
-    if s.string_char_code_at(i) == '.' {
-      let (frac, next) = parse_fraction(s, i + 1, 0.0, 10.0, false)
-      (value + frac, next)
-    } else {
-      (value, i)
+let parse_int_part = (s: String, len: Int, i: Int) -> (Double, Int)with {
+  Error
+} {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if c == '0' {
+      let next = i + 1
+      if next < len && is_digit(string_char_code_at(s, next)) {
+        raise "leading zero"
+      } else {
+        (0.0, next)
+      }
+    }
+    else if is_digit(c) {
+      parse_digits_double(s, len, i, 0.0, false)
+    }
+    else {
+      raise "expected digit"
     }
   } else {
-    (value, i)
+    raise "expected digit"
   }
 }
-
-let parse_exponent_if_any = (
-  s: String,
-  i: Int,
-  value: Double,
-) -> (Double, Int) with {Error} {
-  let len = s.string_length()
-  let parse_exp = (exp_sign: Int, exp_idx: Int) -> (Double, Int) with {Error} {
-    if exp_idx < len {
-      if is_digit(s.string_char_code_at(exp_idx)) {
-        let (exp, exp_next) = parse_digits(s, exp_idx, 0)
-        let adj = if exp_sign < 0 { 0 - exp } else { exp }
-        (apply_exponent(value, adj), exp_next)
+let parse_exponent_if_any = (s: String, len: Int, i: Int, value: Double) -> (Double, Int)with {
+  Error
+} {
+  let parse_exp = (exp_sign: Int, exp_idx: Int) -> (Double, Int)with {
+    Error
+  } {
+    if exp_idx < len && is_digit(string_char_code_at(s, exp_idx)) {
+      let (exp, exp_next) = parse_digits_int(s, len, exp_idx, 0)
+      let signed_exp = if exp_sign < 0 {
+        0 - exp
       } else {
-        raise "expected exponent"
+        exp
       }
+      (apply_exponent(value, signed_exp), exp_next)
     } else {
       raise "expected exponent"
     }
   }
   if i < len {
-    let c = s.string_char_code_at(i)
+    let c = string_char_code_at(s, i)
     if c == 'e' || c == 'E' {
       let exp_start = i + 1
       if exp_start < len {
-        let sign_char = s.string_char_code_at(exp_start)
+        let sign_char = string_char_code_at(s, exp_start)
         if sign_char == '-' {
           parse_exp(-1, exp_start + 1)
         } else if sign_char == '+' {
@@ -240,49 +228,58 @@ let parse_exponent_if_any = (
     (value, i)
   }
 }
-
-let parse_number_body = (
-  s: String,
-  idx: Int,
-  sign: Double,
-) -> (Json, Int) with {Error} {
-  let (int_part, next) = parse_int_part(s, idx)
-  let (with_frac, next_frac) = parse_fraction_if_any(s, next, int_part)
-  let (with_exp, next_exp) = parse_exponent_if_any(s, next_frac, with_frac)
-  (JNum(with_exp * sign), next_exp)
-}
-
-let parse_number = (s: String, i: Int) -> (Json, Int) with {Error} {
-  if i >= s.string_length() {
-    raise "expected number"
+let parse_fraction_if_any = (s: String, len: Int, i: Int, value: Double) -> (Double, Int)with {
+  Error
+} {
+  if i < len && string_char_code_at(s, i) == '.' {
+    let (frac, next) = parse_fraction(s, len, i + 1, 0.0, 10.0, false)
+    (value + frac, next)
   } else {
-    let c = s.string_char_code_at(i)
-    if c == '-' {
-      parse_number_body(s, i + 1, -1.0)
-    } else {
-      parse_number_body(s, i, 1.0)
-    }
+    (value, i)
   }
 }
-
-let rec parse_value = (s: String, i: Int) -> (Json, Int) with {Error} {
-  let parse_array = (s: String, i: Int) -> (Json, Int) with {Error} {
+let parse_number_body = (s: String, len: Int, idx: Int, sign: Double) -> (Json, Int)with {
+  Error
+} {
+  let (int_part, next) = parse_int_part(s, len, idx)
+  let (with_frac, next_frac) = parse_fraction_if_any(s, len, next, int_part)
+  let (with_exp, next_exp) = parse_exponent_if_any(s, len, next_frac, with_frac)
+  (JNum(with_exp * sign), next_exp)
+}
+let parse_number = (s: String, len: Int, i: Int) -> (Json, Int)with {
+  Error
+} {
+  if i >= len {
+    raise "expected number"
+  } else if string_char_code_at(s, i) == '-' {
+    parse_number_body(s, len, i + 1, -1.0)
+  } else {
+    parse_number_body(s, len, i, 1.0)
+  }
+}
+let rec parse_value = (s: String, len: Int, i: Int) -> (Json, Int)with {
+  Error
+} {
+  let parse_array = (i: Int) -> (Json, Int)with {
+    Error
+  } {
     do {
-      let len = s.string_length()
-      let idx = skip_ws(s, i + 1)
+      let idx = skip_ws(s, len, i + 1)
       if idx < len {
-        if s.string_char_code_at(idx) == ']' {
+        if string_char_code_at(s, idx) == ']' {
           (JArr(array_builder_freeze(array_builder())), idx + 1)
         } else {
           let builder = array_builder()
-          let rec parse_items = (s: String, i: Int) -> (Json, Int) with {Error} {
-            let (value, next) = parse_value(s, i)
+          let rec parse_items = (i: Int) -> (Json, Int)with {
+            Error
+          } {
+            let (value, next) = parse_value(s, len, i)
             array_builder_push(builder, value)
-            let next_idx = skip_ws(s, next)
+            let next_idx = skip_ws(s, len, next)
             if next_idx < len {
-              let ch = s.string_char_code_at(next_idx)
+              let ch = string_char_code_at(s, next_idx)
               if ch == ',' {
-                parse_items(s, next_idx + 1)
+                parse_items(next_idx + 1)
               } else if ch == ']' {
                 (JArr(array_builder_freeze(builder)), next_idx + 1)
               } else {
@@ -292,38 +289,38 @@ let rec parse_value = (s: String, i: Int) -> (Json, Int) with {Error} {
               raise "expected , or ]"
             }
           }
-          parse_items(s, idx)
+          parse_items(idx)
         }
       } else {
         raise "unexpected eof"
       }
     }
   }
-
-  let parse_object = (s: String, i: Int) -> (Json, Int) with {Error} {
+  let parse_object = (i: Int) -> (Json, Int)with {
+    Error
+  } {
     do {
-      let len = s.string_length()
-      let idx = skip_ws(s, i + 1)
+      let idx = skip_ws(s, len, i + 1)
       if idx < len {
-        if s.string_char_code_at(idx) == '}' {
+        if string_char_code_at(s, idx) == '}' {
           (JObj(map_builder_freeze(map_builder())), idx + 1)
         } else {
           let builder = map_builder()
-          let rec parse_members = (s: String, i: Int) -> (Json, Int) with {Error} {
-            let (key, next) = parse_string(s, i)
-            let colon_idx = skip_ws(s, next)
-            if colon_idx >= len {
-              raise "expected :"
-            } else if s.string_char_code_at(colon_idx) != ':' {
+          let rec parse_members = (i: Int) -> (Json, Int)with {
+            Error
+          } {
+            let (key, next) = parse_string(s, len, i)
+            let colon_idx = skip_ws(s, len, next)
+            if colon_idx >= len || string_char_code_at(s, colon_idx) != ':' {
               raise "expected :"
             } else {
-              let (value, next_val) = parse_value(s, colon_idx + 1)
+              let (value, next_val) = parse_value(s, len, colon_idx + 1)
               map_builder_set(builder, key, value)
-              let next_idx = skip_ws(s, next_val)
+              let next_idx = skip_ws(s, len, next_val)
               if next_idx < len {
-                let ch = s.string_char_code_at(next_idx)
+                let ch = string_char_code_at(s, next_idx)
                 if ch == ',' {
-                  parse_members(s, next_idx + 1)
+                  parse_members(next_idx + 1)
                 } else if ch == '}' {
                   (JObj(map_builder_freeze(builder)), next_idx + 1)
                 } else {
@@ -334,56 +331,65 @@ let rec parse_value = (s: String, i: Int) -> (Json, Int) with {Error} {
               }
             }
           }
-          parse_members(s, idx)
+          parse_members(idx)
         }
       } else {
         raise "unexpected eof"
       }
     }
   }
-
-  let idx = skip_ws(s, i)
-  if idx >= s.string_length() {
+  let idx = skip_ws(s, len, i)
+  if idx >= len {
     raise "unexpected eof"
-  } else {
-    let c = s.string_char_code_at(idx)
+  }
+  else {
+    let c = string_char_code_at(s, idx)
     if c == 'n' {
-      if starts_with(s, idx, "null") {
+      if starts_with(s, len, idx, "null") {
         (JNull, idx + 4)
       } else {
         raise "expected null"
       }
-    } else if c == 't' {
-      if starts_with(s, idx, "true") {
+    }
+    else if c == 't' {
+      if starts_with(s, len, idx, "true") {
         (JBool(true), idx + 4)
       } else {
         raise "expected true"
       }
-    } else if c == 'f' {
-      if starts_with(s, idx, "false") {
+    }
+    else if c == 'f' {
+      if starts_with(s, len, idx, "false") {
         (JBool(false), idx + 5)
       } else {
         raise "expected false"
       }
-    } else if c == '"' {
-      let (value, next) = parse_string(s, idx)
+    }
+    else if c == '"' {
+      let (value, next) = parse_string(s, len, idx)
       (JStr(value), next)
-    } else if c == '[' {
-      parse_array(s, idx)
-    } else if c == '{' {
-      parse_object(s, idx)
-    } else if c == '-' || is_digit(c) {
-      parse_number(s, idx)
-    } else {
+    }
+    else if c == '[' {
+      parse_array(idx)
+    }
+    else if c == '{' {
+      parse_object(idx)
+    }
+    else if c == '-' || is_digit(c) {
+      parse_number(s, len, idx)
+    }
+    else {
       raise "unexpected token"
     }
   }
 }
-
-export let parse = (s: String) -> (Json, Int) with {Error} {
-  let (value, next) = parse_value(s, 0)
-  let end = skip_ws(s, next)
-  if end == s.string_length() {
+let parse = (s: String) -> (Json, Int)with {
+  Error
+} {
+  let len = string_length(s)
+  let (value, next) = parse_value(s, len, 0)
+  let end = skip_ws(s, len, next)
+  if end == len {
     (value, end)
   } else {
     raise "trailing input"
@@ -401,4 +407,89 @@ export let parse_ok = (s: String) -> Bool {
 
 export let parse_err = (s: String) -> Bool {
   not(parse_ok(s))
+}
+
+let input = "{\"name\":\"xsh\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
+
+test "json_parser_complex" {
+  assert(parse_ok(input))
+}
+
+test "json_parser_numbers" {
+  assert(parse_ok("0"))
+  assert(parse_ok("-12"))
+  assert(parse_ok("3.5"))
+  assert(parse_ok("1e3"))
+  assert(parse_ok("1.25e-2"))
+  assert(parse_ok("1E+2"))
+  assert(parse_ok("-0.0"))
+}
+
+test "json_parser_whitespace_nested_string" {
+  assert(parse_ok(" \n\t{\"a\": 1}\n "))
+  assert(parse_ok("{\"a\":[true,false,null,{\"b\":2}],\"c\":{}}"))
+  assert(parse_ok("\"he\\\\llo\\n\\t\\\"/\""))
+}
+
+test "json_parser_errors" {
+  assert(parse_ok("[]"))
+  assert(parse_err("\"abc"))
+  assert(parse_err("true false"))
+  assert(parse_err("1e"))
+  assert(parse_err("1e+"))
+  assert(parse_err("1e-"))
+  assert(parse_err("[1,]"))
+  assert(parse_err("{\"a\":1,}"))
+  assert(parse_err("\"a\\b\""))
+  assert(parse_err("01"))
+  assert(parse_err("-01"))
+  assert(parse_err("00"))
+  assert(parse_err(".1"))
+  assert(parse_err("1."))
+  assert(parse_err("+1"))
+  assert(parse_err("-"))
+  assert(parse_err("\"a\nb\""))
+}
+
+let json_small = "{\"name\":\"xsh\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
+let json_medium = "{\"users\":[{\"id\":1,\"name\":\"alice\",\"tags\":[\"x\",\"y\",\"z\"],\"active\":true},{\"id\":2,\"name\":\"bob\",\"tags\":[],\"active\":false}],\"config\":{\"retry\":3,\"ratio\":0.125,\"title\":\"hello\\nworld\"},\"nil\":null}"
+let item = "{\"id\":1,\"name\":\"alice\",\"active\":true,\"score\":123.456e-2,\"tags\":[\"xsh\",\"bench\",\"json\"],\"meta\":{\"a\":1,\"b\":2,\"c\":[1,2,3]}}"
+
+let rec join_items = (it: String, n: Int) -> String {
+  if n <= 1 {
+    it
+  } else {
+    string_concat(it, string_concat(",", join_items(it, n - 1)))
+  }
+}
+
+let json_large = string_concat(
+  "{\"items\":[",
+  string_concat(join_items(item, 8), "],\"ok\":true,\"version\":1}")
+)
+
+let mut sink = 0
+
+bench "json_parse_small" {
+  if parse_ok(json_small) {
+    sink = sink + 1
+  } else {
+    sink = sink
+  }
+}
+
+bench "json_parse_medium" {
+  if parse_ok(json_medium) {
+    sink = sink + 1
+  } else {
+    sink = sink
+  }
+}
+
+bench "json_parse_large" {
+  if parse_ok(json_large) {
+    sink = sink + 1
+  } else {
+    sink = sink
+  }
 }
