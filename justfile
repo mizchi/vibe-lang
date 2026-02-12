@@ -30,7 +30,7 @@ check:
 test:
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
-    _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async examples vibe/std
+    _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async examples vibe/std vibe/encoding
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:

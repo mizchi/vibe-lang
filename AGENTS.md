@@ -42,6 +42,9 @@ moon ide peek-def Type::method
 
 # List symbols in a file
 moon ide outline src/lib.mbt
+
+# Rename symbol (refactoring)
+moon ide rename old_name new_name
 ```
 
 ### `moon doc` - Standard Library API Discovery
