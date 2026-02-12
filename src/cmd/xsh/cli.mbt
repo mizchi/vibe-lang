@@ -734,10 +734,17 @@ fn check_cmd(args : Array[String]) -> Unit {
         for warning in warnings {
           println(warning.render(entry_path, source))
         }
+        let layering_violations = std_layering_violations_for_source(
+          entry, source,
+        )
+        for violation in layering_violations {
+          println("check: \{entry_path}: \{violation}")
+        }
         if diags.length() == 0 && warnings.length() == 0 {
           println("\{entry_path}: ok (graph_head=\{short_hash(graph_head)})")
         }
         total_errors += diags.length()
+        total_errors += layering_violations.length()
       }
     }
   }
@@ -1068,6 +1075,18 @@ fn normalize_cmd(args : Array[String]) -> Unit {
   }
   for path in files {
     let resolved = @loader.resolve_entry_path(path)
+    let source = @os_fs.read_file_to_string(resolved) catch {
+      e => abort("normalize: " + e.to_string())
+    }
+    let layering_violations = std_layering_violations_for_source(
+      resolved, source,
+    )
+    if layering_violations.length() > 0 {
+      for violation in layering_violations {
+        println("normalize: \{path}: \{violation}")
+      }
+      abort("normalize: std layering violation(s) found")
+    }
     let normalized = match normalize_format_file_source(resolved) {
       Ok(v) => v
       Err(err) => abort("normalize: " + err)
@@ -1200,6 +1219,27 @@ struct WasmBenchReport {
   results : Array[WasmBenchResult]
   failures : Array[WasmBenchFailure]
 } derive(Show, Eq)
+
+///|
+fn is_wasm_unsupported_compile_error(message : String) -> Bool {
+  message.contains("compile wasm error: Gen(Unsupported(") ||
+  message.contains("compile: Gen(Unsupported(")
+}
+
+///|
+fn wasm_bench_report_has_only_unsupported_compile_failures(
+  report : WasmBenchReport,
+) -> Bool {
+  if report.failed == 0 || report.passed > 0 {
+    return false
+  }
+  for failure in report.failures {
+    if not(is_wasm_unsupported_compile_error(failure.error)) {
+      return false
+    }
+  }
+  true
+}
 
 ///|
 fn bench_backend_name(backend : BenchBackend) -> String {
@@ -1549,6 +1589,7 @@ fn bench_blocks_cmd(
   let mut total = 0
   let mut passed = 0
   let mut failed_count = 0
+  let mut used_interpreter_fallback = false
   let file_count = entry_paths.length()
   for entry_path in entry_paths {
     let resolved_entry_path = @loader.resolve_entry_path(entry_path)
@@ -1573,23 +1614,80 @@ fn bench_blocks_cmd(
         }
       BenchBackend::Wasm =>
         match run_bench_blocks_wasm_entry(resolved_entry_path, count, warmup) {
-          Err(err) => {
-            println("[\{entry_path}] \{err}")
-            failed = true
-          }
-          Ok(report) => {
-            if !print_wasm_bench_report(entry_path, report) {
+          Err(err) =>
+            if is_wasm_unsupported_compile_error(err) {
+              used_interpreter_fallback = true
+              println(
+                "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{err}",
+              )
+              match
+                run_bench_blocks_interpreter_entry(
+                  resolved_entry_path, count, warmup, features,
+                ) {
+                Err(interp_err) => {
+                  println("[\{entry_path}] \{interp_err}")
+                  failed = true
+                }
+                Ok(report) => {
+                  if !print_bench_report(entry_path, report) {
+                    failed = true
+                  }
+                  total += report.total
+                  passed += report.passed
+                  failed_count += report.failed
+                }
+              }
+            } else {
+              println("[\{entry_path}] \{err}")
               failed = true
             }
-            total += report.total
-            passed += report.passed
-            failed_count += report.failed
-          }
+          Ok(report) =>
+            if wasm_bench_report_has_only_unsupported_compile_failures(report) {
+              used_interpreter_fallback = true
+              let reason = if report.failures.length() > 0 {
+                report.failures[0].error
+              } else {
+                "unsupported wasm compile error"
+              }
+              println(
+                "[\{entry_path}] wasm backend unsupported, fallback to interpreter: \{reason}",
+              )
+              match
+                run_bench_blocks_interpreter_entry(
+                  resolved_entry_path, count, warmup, features,
+                ) {
+                Err(interp_err) => {
+                  println("[\{entry_path}] \{interp_err}")
+                  failed = true
+                }
+                Ok(interp_report) => {
+                  if !print_bench_report(entry_path, interp_report) {
+                    failed = true
+                  }
+                  total += interp_report.total
+                  passed += interp_report.passed
+                  failed_count += interp_report.failed
+                }
+              }
+            } else {
+              if !print_wasm_bench_report(entry_path, report) {
+                failed = true
+              }
+              total += report.total
+              passed += report.passed
+              failed_count += report.failed
+            }
         }
     }
   }
+  let backend_name = if backend == BenchBackend::Wasm &&
+    used_interpreter_fallback {
+    "wasm+interpreter-fallback"
+  } else {
+    bench_backend_name(backend)
+  }
   println(
-    "summary: files=\{file_count} backend=\{bench_backend_name(backend)} total=\{total} passed=\{passed} failed=\{failed_count}",
+    "summary: files=\{file_count} backend=\{backend_name} total=\{total} passed=\{passed} failed=\{failed_count}",
   )
   if failed {
     abort("bench: failures detected")
