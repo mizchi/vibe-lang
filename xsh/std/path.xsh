@@ -1,11 +1,9 @@
 export struct PathRef {
   raw: String
 }
-
 export struct DynamicPath {
   raw: String
 }
-
 export let dynamic = (raw: String) -> DynamicPath {
   DynamicPath::{
     raw: raw

@@ -10,41 +10,37 @@ use ./builtin_traits.xsh {
   num_square,
   to_string
 }
- trait Eq
- trait Ord
- trait Add
- trait Sub
- trait Mul
- trait Div
- trait Signed
-
- impl Eq for Int
- impl Eq for Float
- impl Eq for Double
- impl Eq for Bool
- impl Eq for String
-
- impl Ord for Int
- impl Ord for Float
- impl Ord for Double
- impl Ord for String
-
- impl Add for Int
- impl Add for Float
- impl Add for Double
- impl Sub for Int
- impl Sub for Float
- impl Sub for Double
- impl Mul for Int
- impl Mul for Float
- impl Mul for Double
- impl Div for Int
- impl Div for Float
- impl Div for Double
- impl Signed for Int
- impl Signed for Float
- impl Signed for Double
-
+trait Eq
+trait Ord
+trait Add
+trait Sub
+trait Mul
+trait Div
+trait Signed
+impl Eq for Int
+impl Eq for Float
+impl Eq for Double
+impl Eq for Bool
+impl Eq for String
+impl Ord for Int
+impl Ord for Float
+impl Ord for Double
+impl Ord for String
+impl Add for Int
+impl Add for Float
+impl Add for Double
+impl Sub for Int
+impl Sub for Float
+impl Sub for Double
+impl Mul for Int
+impl Mul for Float
+impl Mul for Double
+impl Div for Int
+impl Div for Float
+impl Div for Double
+impl Signed for Int
+impl Signed for Float
+impl Signed for Double
 test "cmp_eq generic" {
   assert(cmp_eq(1, 1))
   assert(not(cmp_eq(1, 2)))

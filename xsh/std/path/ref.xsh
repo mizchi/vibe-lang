@@ -1,0 +1,34 @@
+export struct PathRef {
+  raw: String
+}
+export struct DynamicPath {
+  raw: String
+}
+export let dynamic = (raw: String) -> DynamicPath {
+  DynamicPath::{
+    raw: raw
+  }
+}
+export let from_literal = (literal: String) -> PathRef {
+  PathRef::{
+    raw: path_to_string(path_ref(literal))
+  }
+}
+export let path_ref_as_string = (self: PathRef) -> String {
+  self.raw
+}
+export let path_ref_is_absolute = (self: PathRef) -> Bool {
+  path_is_absolute(path(self.raw))
+}
+export let dynamic_path_as_string = (path: DynamicPath) -> String {
+  path.raw
+}
+export let PathRef::as_string = (self: PathRef) -> String {
+  path_ref_as_string(self)
+}
+export let PathRef::is_absolute = (self: PathRef) -> Bool {
+  path_ref_is_absolute(self)
+}
+export let DynamicPath::as_string = (path: DynamicPath) -> String {
+  dynamic_path_as_string(path)
+}

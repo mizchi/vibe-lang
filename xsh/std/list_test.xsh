@@ -28,8 +28,7 @@ test "list_singleton" {
   let xs = list_singleton(42)
   assert(eq(list_length(xs), 1))
   match list_head(xs) {
-    Some(v) => assert(eq(v,
-    42)),
+    Some(v) => assert(eq(v, 42)),
     _ => assert(false)
   }
 }
@@ -43,8 +42,7 @@ test "list_reverse" {
   let xs = list_of3(1, 2, 3)
   let rev = list_reverse(xs)
   match list_head(rev) {
-    Some(v) => assert(eq(v,
-    3)),
+    Some(v) => assert(eq(v, 3)),
     _ => assert(false)
   }
 }
@@ -84,8 +82,7 @@ test "list_append" {
 test "list_nth" {
   let xs = list_of5(10, 20, 30, 40, 50)
   match list_nth(xs, 2) {
-    Some(v) => assert(eq(v,
-    30)),
+    Some(v) => assert(eq(v, 30)),
     _ => assert(false)
   }
   match list_nth(xs, 10) {

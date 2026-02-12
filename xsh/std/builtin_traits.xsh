@@ -1,98 +1,74 @@
-export  trait Eq
-export  trait Ord
-export  trait Add
-export  trait Sub
-export  trait Mul
-export  trait Div
-export  trait Signed
-
- impl Eq for Int
- impl Eq for Float
- impl Eq for Double
- impl Eq for Bool
- impl Eq for String
-
- impl Ord for Int
- impl Ord for Float
- impl Ord for Double
- impl Ord for String
-
- impl Add for Int
- impl Add for Float
- impl Add for Double
- impl Sub for Int
- impl Sub for Float
- impl Sub for Double
- impl Mul for Int
- impl Mul for Float
- impl Mul for Double
- impl Div for Int
- impl Div for Float
- impl Div for Double
- impl Signed for Int
- impl Signed for Float
- impl Signed for Double
-
-export let cmp_eq = [
-  T: Eq
-](a: T, b: T) -> Bool {
+export trait Eq
+export trait Ord
+export trait Add
+export trait Sub
+export trait Mul
+export trait Div
+export trait Signed
+impl Eq for Int
+impl Eq for Float
+impl Eq for Double
+impl Eq for Bool
+impl Eq for String
+impl Ord for Int
+impl Ord for Float
+impl Ord for Double
+impl Ord for String
+impl Add for Int
+impl Add for Float
+impl Add for Double
+impl Sub for Int
+impl Sub for Float
+impl Sub for Double
+impl Mul for Int
+impl Mul for Float
+impl Mul for Double
+impl Div for Int
+impl Div for Float
+impl Div for Double
+impl Signed for Int
+impl Signed for Float
+impl Signed for Double
+export let cmp_eq = [T: Eq](a: T, b: T) -> Bool {
   a == b
 }
-export let cmp_ne = [
-  T: Eq
-](a: T, b: T) -> Bool {
+export let cmp_ne = [T: Eq](a: T, b: T) -> Bool {
   not(cmp_eq(a, b))
 }
-export let num_abs = [
-  T: Signed + Ord + Sub
-](x: T) -> T {
+export let num_abs = [T: Signed + Ord + Sub](x: T) -> T {
   if x < 0 {
     0 - x
   } else {
     x
   }
 }
-export let num_add = [
-  T: Add
-](a: T, b: T) -> T {
+export let num_add = [T: Add](a: T, b: T) -> T {
   a + b
 }
-export let num_div = [
-  T: Div
-](a: T, b: T) -> T {
+export let num_div = [T: Div](a: T, b: T) -> T {
   a / b
 }
-export let num_mul = [
-  T: Mul
-](a: T, b: T) -> T {
+export let num_mul = [T: Mul](a: T, b: T) -> T {
   a * b
 }
-export let num_sub = [
-  T: Sub
-](a: T, b: T) -> T {
+export let num_sub = [T: Sub](a: T, b: T) -> T {
   a - b
 }
-export let ord_max = [
-  T: Ord
-](a: T, b: T) -> T {
+export let ord_max = [T: Ord](a: T, b: T) -> T {
   if a > b {
     a
   } else {
     b
   }
 }
-export let ord_min = [
-  T: Ord
-](a: T, b: T) -> T {
+export let ord_min = [T: Ord](a: T, b: T) -> T {
   if a < b {
     a
   } else {
     b
   }
 }
-export let ord_clamp = [
-  T: Ord
-](x: T, min_val: T, max_val: T) -> T {
+export let ord_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
   if x < min_val {
     min_val
   }
@@ -103,23 +79,15 @@ export let ord_clamp = [
     x
   }
 }
-export let num_clamp = [
-  T: Ord
-](x: T, min_val: T, max_val: T) -> T {
+export let num_clamp = [T: Ord](x: T, min_val: T, max_val: T) -> T {
   ord_clamp(x, min_val, max_val)
 }
-export let to_string = [
-  T: Show
-](x: T) -> String {
+export let to_string = [T: Show](x: T) -> String {
   __to_string(x)
 }
-export let num_square = [
-  T: Mul
-](x: T) -> T {
+export let num_square = [T: Mul](x: T) -> T {
   x * x
 }
-export let ord_between = [
-  T: Ord + Eq
-](x: T, min_val: T, max_val: T) -> Bool {
+export let ord_between = [T: Ord + Eq](x: T, min_val: T, max_val: T) -> Bool {
   x >= min_val && x <= max_val
 }

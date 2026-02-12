@@ -1,85 +1,64 @@
+use ./threads / runtime.xsh {
+  recv as runtime_recv,
+  send as runtime_send,
+  wait as runtime_wait,
+  spawn as runtime_spawn,
+  probe_wat as runtime_probe_wat,
+  channel_new as runtime_channel_new,
+  runtime_hints as runtime_runtime_hints
+}
+use ./threads / spec.xsh {
+  task_spec as spec_task_spec,
+  actor_spec as spec_actor_spec,
+  channel_spec as spec_channel_spec,
+  recommended_wasi_env as spec_recommended_wasi_env,
+  recommended_wasm_env as spec_recommended_wasm_env,
+  recommended_wasi_flags as spec_recommended_wasi_flags,
+  recommended_wasm_flags as spec_recommended_wasm_flags,
+  deployment_plan as spec_deployment_plan
+}
 export let recv = (channel: Int) -> String {
-  threads_recv(channel)
+  runtime_recv(channel)
 }
 export let send = (channel: Int, message: String) -> Bool {
-  threads_send(channel, message)
+  runtime_send(channel, message)
 }
 export let wait = (task: Int) -> Int {
-  threads_wait(task)
+  runtime_wait(task)
 }
 export let spawn = (name: String, mailbox: Int) -> Int {
-  threads_spawn(name, mailbox)
+  runtime_spawn(name, mailbox)
 }
 export let probe_wat = () -> String {
-  threads_probe_wat()
+  runtime_probe_wat()
 }
 export let task_spec = (name: String, entry_symbol: String) {
-  record {
-    kind: "task",
-    name: name,
-    entry_symbol: entry_symbol
-  }
+  spec_task_spec(name, entry_symbol)
 }
 export let actor_spec = (name: String, mailbox: String, handler_symbol: String) {
-  record {
-    kind: "actor",
-    name: name,
-    mailbox: mailbox,
-    handler_symbol: handler_symbol
-  }
+  spec_actor_spec(name, mailbox, handler_symbol)
 }
 export let channel_new = (capacity: Int) -> Int {
-  threads_channel_new(capacity)
+  runtime_channel_new(capacity)
 }
 export let channel_spec = (name: String, capacity: Int) {
-  let normalized = if capacity < 0 {
-    0
-  } else {
-    capacity
-  }
-  record {
-    kind: "channel",
-    name: name,
-    capacity: normalized
-  }
+  spec_channel_spec(name, capacity)
 }
 export let runtime_hints = () {
-  threads_runtime_hints()
+  runtime_runtime_hints()
+}
+export let deployment_plan = [Task, Channel, Actor](task: Task, channel: Channel, actor: Actor) {
+  spec_deployment_plan(task, channel, actor)
 }
 export let recommended_wasi_env = () -> String {
-  "threads=y"
+  spec_recommended_wasi_env()
 }
 export let recommended_wasm_env = () -> String {
-  "threads=y shared-memory=y"
+  spec_recommended_wasm_env()
 }
 export let recommended_wasi_flags = () -> Array[String] {
-  [
-    "threads=y"
-  ]
+  spec_recommended_wasi_flags()
 }
 export let recommended_wasm_flags = () -> Array[String] {
-  [
-    "threads=y",
-    "shared-memory=y"
-  ]
-}
-export let deployment_plan = [
-  Task,
-  Channel,
-  Actor
-](
-task: Task,
-channel: Channel,
-actor: Actor
-) {
-  record {
-    task: task,
-    channel: channel,
-    actor: actor,
-    wasm_flags: recommended_wasm_flags(),
-    wasi_flags: recommended_wasi_flags(),
-    wasm_env: recommended_wasm_env(),
-    wasi_env: recommended_wasi_env(),
-    unstable_flag: "--unstable-threads"
-  }
+  spec_recommended_wasm_flags()
 }

@@ -1,0 +1,121 @@
+export struct StringView {
+  source: String;
+  start: Int;
+  end: Int
+}
+export struct ArrayView[T] {
+  source: Array[T];
+  start: Int;
+  end: Int
+}
+let normalize_range = (start: Int, end: Int, len: Int) {
+  let a0 = if start < 0 {
+    0
+  }
+  else if start > len {
+    len
+  }
+  else {
+    start
+  }
+  let b0 = if end < 0 {
+    0
+  }
+  else if end > len {
+    len
+  }
+  else {
+    end
+  }
+  if a0 <= b0 {
+    record {
+      start: a0,
+      end: b0
+    }
+  }
+  else {
+    record {
+      start: b0,
+      end: a0
+    }
+  }
+}
+export let from_array_range = [T](source: Array[T], start: Int, end: Int) -> ArrayView[T] {
+  let len = array_length(source)
+  let range = normalize_range(start, end, len)
+  ArrayView::{
+    source: source,
+    start: range.start,
+    end: range.end
+  }
+}
+export let from_array = [T](source: Array[T]) -> ArrayView[T] {
+  from_array_range(source, 0, array_length(source))
+}
+export let from_string_range = (source: String, start: Int, end: Int) -> StringView {
+  let len = string_length(source)
+  let range = normalize_range(start, end, len)
+  StringView::{
+    source: source,
+    start: range.start,
+    end: range.end
+  }
+}
+export let from_string = (source: String) -> StringView {
+  from_string_range(source, 0, string_length(source))
+}
+export let ArrayView::data = [T](view: ArrayView[T]) -> Array[T] {
+  view.source
+}
+export let ArrayView::view = [T](view: ArrayView[T], start: Int, end: Int) -> ArrayView[T] {
+  from_array_range(view.source, view.start + start, view.start + end)
+}
+export let StringView::data = (view: StringView) -> String {
+  view.source
+}
+export let StringView::view = (view: StringView, start: Int, end: Int) -> StringView {
+  from_string_range(view.source, view.start + start, view.start + end)
+}
+export let ArrayView::length = [T](view: ArrayView[T]) -> Int {
+  view.end - view.start
+}
+export let ArrayView::get = [T](view: ArrayView[T], index: Int) -> Option[T] {
+  let len = ArrayView::length(view)
+  if index < 0 || index >= len {
+    None
+  }
+  else {
+    Some(array_get(view.source, view.start + index))
+  }
+}
+export let StringView::length = (view: StringView) -> Int {
+  view.end - view.start
+}
+export let StringView::get = (view: StringView, index: Int) -> Option[String] {
+  let len = StringView::length(view)
+  if index < 0 || index >= len {
+    None
+  }
+  else {
+    let pos = view.start + index
+    Some(string_substring(view.source, pos, pos + 1))
+  }
+}
+export let ArrayView::is_empty = [T](view: ArrayView[T]) -> Bool {
+  ArrayView::length(view) == 0
+}
+export let ArrayView::to_array = [T](view: ArrayView[T]) -> Array[T] {
+  array_slice(view.source, view.start, view.end)
+}
+export let StringView::is_empty = (view: StringView) -> Bool {
+  StringView::length(view) == 0
+}
+export let StringView::to_string = (view: StringView) -> String {
+  string_substring(view.source, view.start, view.end)
+}
+export let ArrayView::start_offset = [T](view: ArrayView[T]) -> Int {
+  view.start
+}
+export let StringView::start_offset = (view: StringView) -> Int {
+  view.start
+}

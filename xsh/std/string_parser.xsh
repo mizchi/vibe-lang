@@ -1,0 +1,351 @@
+export type ParseResult[T] = Option[(T, Int)]
+export type Parser[T] = (input: String, pos: Int) -> ParseResult[T]
+
+export let run = [T](parser: Parser[T], input: String) -> Option[T] {
+  match parser(input, 0) {
+    Some((value, next)) => if next == string_length(input) {
+      Some(value)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+export let pure = [T](value: T) -> Parser[T] {
+  (_input: String, pos: Int) -> ParseResult[T] {
+    Some((value, pos))
+  }
+}
+
+export let fail = [T]() -> Parser[T] {
+  (_input: String, _pos: Int) -> ParseResult[T] {
+    None
+  }
+}
+
+export let map = [A, B](parser: Parser[A], f: (x: A) -> B) -> Parser[B] {
+  (input: String, pos: Int) -> ParseResult[B] {
+    match parser(input, pos) {
+      Some((value, next)) => Some((f(value), next)),
+      _ => None
+    }
+  }
+}
+
+export let and_then = [A, B](parser: Parser[A], f: (x: A) -> Parser[B]) -> Parser[B] {
+  (input: String, pos: Int) -> ParseResult[B] {
+    match parser(input, pos) {
+      Some((value, next)) => {
+        let next_parser = f(value)
+        next_parser(input, next)
+      },
+      _ => None
+    }
+  }
+}
+
+export let or_else = [T](left: Parser[T], right: Parser[T]) -> Parser[T] {
+  (input: String, pos: Int) -> ParseResult[T] {
+    match left(input, pos) {
+      Some((value, next)) => Some((value, next)),
+      _ => right(input, pos)
+    }
+  }
+}
+
+export let any_char : Parser[String] = (input: String, pos: Int) -> ParseResult[String] {
+  if pos >= string_length(input) {
+    None
+  }
+  else {
+    Some((string_substring(input, pos, pos + 1), pos + 1))
+  }
+}
+
+export let satisfy = (pred: (ch: String) -> Bool) -> Parser[String] {
+  (input: String, pos: Int) -> ParseResult[String] {
+    match any_char(input, pos) {
+      Some((ch, next)) => if pred(ch) {
+        Some((ch, next))
+      } else {
+        None
+      },
+      _ => None
+    }
+  }
+}
+
+export let char = (expected: String) -> Parser[String] {
+  (input: String, pos: Int) -> ParseResult[String] {
+    if string_length(expected) != 1 {
+      None
+    }
+    else if pos >= string_length(input) {
+      None
+    }
+    else {
+      let got = string_substring(input, pos, pos + 1)
+      if got == expected {
+        Some((got, pos + 1))
+      }
+      else {
+        None
+      }
+    }
+  }
+}
+
+export let literal = (expected: String) -> Parser[String] {
+  (input: String, pos: Int) -> ParseResult[String] {
+    let n = string_length(expected)
+    if pos + n > string_length(input) {
+      None
+    }
+    else {
+      let got = string_substring(input, pos, pos + n)
+      if got == expected {
+        Some((expected, pos + n))
+      }
+      else {
+        None
+      }
+    }
+  }
+}
+
+export let take_while = (pred: (ch: String) -> Bool) -> Parser[String] {
+  (input: String, pos: Int) -> ParseResult[String] {
+    let len = string_length(input)
+    let rec scan = (i: Int) -> Int {
+      if i >= len {
+        i
+      }
+      else {
+        let ch = string_substring(input, i, i + 1)
+        if pred(ch) {
+          scan(i + 1)
+        } else {
+          i
+        }
+      }
+    }
+    let end = scan(pos)
+    Some((string_substring(input, pos, end), end))
+  }
+}
+
+export let take_while1 = (pred: (ch: String) -> Bool) -> Parser[String] {
+  and_then(take_while(pred), (text: String) -> Parser[String] {
+    if string_length(text) == 0 {
+      fail()
+    }
+    else {
+      pure(text)
+    }
+  })
+}
+
+let is_single_char = (ch: String) -> Bool {
+  string_length(ch) == 1
+}
+
+let is_digit_char = (ch: String) -> Bool {
+  if not(is_single_char(ch)) {
+    false
+  }
+  else {
+    let code = string_char_code_at(ch, 0)
+    code >= 48 && code <= 57
+  }
+}
+
+let is_alpha_char = (ch: String) -> Bool {
+  if not(is_single_char(ch)) {
+    false
+  }
+  else {
+    let code = string_char_code_at(ch, 0)
+    (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code == 95
+  }
+}
+
+let is_alnum_char = (ch: String) -> Bool {
+  is_alpha_char(ch) || is_digit_char(ch)
+}
+
+let is_space_char = (ch: String) -> Bool {
+  ch == " " || ch == "\n" || ch == "\t" || ch == "\r"
+}
+
+let parse_uint_value = (text: String) -> Int {
+  let len = string_length(text)
+  let rec go = (i: Int, acc: Int) -> Int {
+    if i >= len {
+      acc
+    }
+    else {
+      let code = string_char_code_at(text, i)
+      go(i + 1, acc * 10 + (code - 48))
+    }
+  }
+  go(0, 0)
+}
+
+export let digit : Parser[String] = (input: String, pos: Int) -> ParseResult[String] {
+  if pos >= string_length(input) {
+    None
+  }
+  else {
+    let ch = string_substring(input, pos, pos + 1)
+    if is_digit_char(ch) {
+      Some((ch, pos + 1))
+    }
+    else {
+      None
+    }
+  }
+}
+
+export let alpha : Parser[String] = (input: String, pos: Int) -> ParseResult[String] {
+  if pos >= string_length(input) {
+    None
+  }
+  else {
+    let ch = string_substring(input, pos, pos + 1)
+    if is_alpha_char(ch) {
+      Some((ch, pos + 1))
+    }
+    else {
+      None
+    }
+  }
+}
+
+export let alnum : Parser[String] = (input: String, pos: Int) -> ParseResult[String] {
+  if pos >= string_length(input) {
+    None
+  }
+  else {
+    let ch = string_substring(input, pos, pos + 1)
+    if is_alnum_char(ch) {
+      Some((ch, pos + 1))
+    }
+    else {
+      None
+    }
+  }
+}
+
+export let spaces0 : Parser[String] = (input: String, pos: Int) -> ParseResult[String] {
+  let len = string_length(input)
+  let rec scan = (i: Int) -> Int {
+    if i >= len {
+      i
+    }
+    else {
+      let ch = string_substring(input, i, i + 1)
+      if is_space_char(ch) {
+        scan(i + 1)
+      }
+      else {
+        i
+      }
+    }
+  }
+  let end = scan(pos)
+  Some((string_substring(input, pos, end), end))
+}
+
+export let spaces1 : Parser[String] = (input: String, pos: Int) -> ParseResult[String] {
+  match spaces0(input, pos) {
+    Some((text, next)) => if next == pos {
+      None
+    }
+    else {
+      Some((text, next))
+    },
+    _ => None
+  }
+}
+
+export let digits1 : Parser[String] = (input: String, pos: Int) -> ParseResult[String] {
+  let len = string_length(input)
+  let rec scan = (i: Int) -> Int {
+    if i >= len {
+      i
+    }
+    else {
+      let ch = string_substring(input, i, i + 1)
+      if is_digit_char(ch) {
+        scan(i + 1)
+      }
+      else {
+        i
+      }
+    }
+  }
+  let end = scan(pos)
+  if end == pos {
+    None
+  }
+  else {
+    Some((string_substring(input, pos, end), end))
+  }
+}
+
+export let token = [T](parser: Parser[T]) -> Parser[T] {
+  (input: String, pos: Int) -> ParseResult[T] {
+    let start = match spaces0(input, pos) {
+      Some((_ws0, next)) => next,
+      _ => pos
+    }
+    match parser(input, start) {
+      Some((value, after_value)) => {
+        let end = match spaces0(input, after_value) {
+          Some((_ws1, next)) => next,
+          _ => after_value
+        }
+        Some((value, end))
+      },
+      _ => None
+    }
+  }
+}
+
+export let uint : Parser[Int] = (input: String, pos: Int) -> ParseResult[Int] {
+  match digits1(input, pos) {
+    Some((text, next)) => Some((parse_uint_value(text), next)),
+    _ => None
+  }
+}
+
+export let identifier : Parser[String] = (input: String, pos: Int) -> ParseResult[String] {
+  match alpha(input, pos) {
+    Some((head, next)) => {
+      let len = string_length(input)
+      let rec scan = (i: Int) -> Int {
+        if i >= len {
+          i
+        }
+        else {
+          let ch = string_substring(input, i, i + 1)
+          if is_alnum_char(ch) {
+            scan(i + 1)
+          }
+          else {
+            i
+          }
+        }
+      }
+      let end = scan(next)
+      let tail = string_substring(input, next, end)
+      Some((string_concat(head, tail), end))
+    },
+    _ => None
+  }
+}
+
+export let kw = (name: String) -> Parser[String] {
+  token(literal(name))
+}

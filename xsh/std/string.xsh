@@ -57,24 +57,6 @@ let string_take = (s: String, n: Int) -> String {
     string_substring(s, 0, n)
   }
 }
-export let String::drop = (s: String, n: Int) -> String {
-  string_drop(s, n)
-}
-export let String::head = (s: String) -> String {
-  string_head(s)
-}
-export let String::init = (s: String) -> String {
-  string_init(s)
-}
-export let String::last = (s: String) -> String {
-  string_last(s)
-}
-export let String::tail = (s: String) -> String {
-  string_tail(s)
-}
-export let String::take = (s: String, n: Int) -> String {
-  string_take(s, n)
-}
 let string_count = (s: String, sub: String) -> Int {
   let s_len = string_length(s)
   let sub_len = string_length(sub)
@@ -95,9 +77,6 @@ let string_count = (s: String, sub: String) -> Int {
     go(0, 0)
   }
 }
-export let String::count = (s: String, sub: String) -> Int {
-  string_count(s, sub)
-}
 let string_repeat = (s: String, n: Int) -> String {
   let rec go = (acc: String, chunk: String, count: Int) -> String {
     if count <= 0 {
@@ -111,14 +90,9 @@ let string_repeat = (s: String, n: Int) -> String {
   }
   go("", s, n)
 }
-export let String::repeat = (s: String, n: Int) -> String {
-  string_repeat(s, n)
-}
 export let from_char_code = (code: Int) -> String {
   string_from_char_code(code)
 }
-
-
 let string_compare = (a: String, b: String) -> Int {
   if string_equals(a, b) {
     0
@@ -130,15 +104,8 @@ let string_compare = (a: String, b: String) -> Int {
     1
   }
 }
-// Type member names: can be imported with `use <module-ref> { String }`
-export let String::compare = (a: String, b: String) -> Int {
-  string_compare(a, b)
-}
 let string_is_empty = (s: String) -> Bool {
   string_length(s) == 0
-}
-export let String::is_empty = (s: String) -> Bool {
-  string_is_empty(s)
 }
 let string_build_pad = (pad_char: String, pad_len: Int) -> String {
   if pad_len <= 0 {
@@ -170,9 +137,6 @@ let string_pad_left = (s: String, target_len: Int, pad_char: String) -> String {
     }
   }
 }
-export let String::pad_left = (s: String, target_len: Int, pad_char: String) -> String {
-  string_pad_left(s, target_len, pad_char)
-}
 let string_ends_with = (s: String, suffix: String) -> Bool {
   let s_len = string_length(s)
   let suf_len = string_length(suffix)
@@ -198,12 +162,6 @@ let string_pad_right = (s: String, target_len: Int, pad_char: String) -> String 
     }
   }
 }
-export let String::ends_with = (s: String, suffix: String) -> Bool {
-  string_ends_with(s, suffix)
-}
-export let String::pad_right = (s: String, target_len: Int, pad_char: String) -> String {
-  string_pad_right(s, target_len, pad_char)
-}
 let string_starts_with = (s: String, prefix: String) -> Bool {
   let s_len = string_length(s)
   let p_len = string_length(prefix)
@@ -213,9 +171,6 @@ let string_starts_with = (s: String, prefix: String) -> Bool {
   else {
     string_equals(string_substring(s, 0, p_len), prefix)
   }
-}
-export let String::starts_with = (s: String, prefix: String) -> Bool {
-  string_starts_with(s, prefix)
 }
 let is_ascii_whitespace = (code: Int) -> Bool {
   code == 32 || code == 9 || code == 10 || code == 13
@@ -244,9 +199,6 @@ let string_trim_end = (s: String) -> String {
     string_substring(s, 0, end)
   }
 }
-export let String::trim_end = (s: String) -> String {
-  string_trim_end(s)
-}
 let string_trim_start = (s: String) -> String {
   let len = string_length(s)
   let rec find_start = (i: Int) -> Int {
@@ -274,29 +226,14 @@ let string_trim_start = (s: String) -> String {
 let string_trim = (s: String) -> String {
   string_trim_end(string_trim_start(s))
 }
-export let String::trim = (s: String) -> String {
-  string_trim(s)
-}
 let string_is_blank = (s: String) -> Bool {
   string_is_empty(string_trim(s))
-}
-export let String::is_blank = (s: String) -> Bool {
-  string_is_blank(s)
-}
-export let String::trim_start = (s: String) -> String {
-  string_trim_start(s)
 }
 let string_equals_value = (a: String, b: String) -> Bool {
   string_equals(a, b)
 }
-export let String::equals = (a: String, b: String) -> Bool {
-  string_equals_value(a, b)
-}
 let string_is_not_empty = (s: String) -> Bool {
   string_length(s) > 0
-}
-export let String::is_not_empty = (s: String) -> Bool {
-  string_is_not_empty(s)
 }
 let string_index_of_from = (s: String, sub: String, start: Int) -> Int {
   let s_len = string_length(s)
@@ -352,15 +289,6 @@ let string_replace = (s: String, pattern: String, replacement: String) -> String
     }
   }
 }
-export let String::replace = (s: String, pattern: String, replacement: String) -> String {
-  string_replace(s, pattern, replacement)
-}
-export let String::contains = (s: String, sub: String) -> Bool {
-  string_contains(s, sub)
-}
-export let String::index_of = (s: String, sub: String) -> Int {
-  string_index_of(s, sub)
-}
 let string_replace_all = (s: String, pattern: String, replacement: String) -> String {
   let pat_len = string_length(pattern)
   let s_len = string_length(s)
@@ -381,9 +309,6 @@ let string_replace_all = (s: String, pattern: String, replacement: String) -> St
     }
     go(0, "")
   }
-}
-export let String::replace_all = (s: String, pattern: String, replacement: String) -> String {
-  string_replace_all(s, pattern, replacement)
 }
 let string_last_index_of = (s: String, sub: String) -> Int {
   let s_len = string_length(s)
@@ -409,23 +334,96 @@ let string_last_index_of = (s: String, sub: String) -> Int {
     find(s_len - sub_len)
   }
 }
-export let String::last_index_of = (s: String, sub: String) -> Int {
-  string_last_index_of(s, sub)
-}
 let string_utf8_length_value = (s: String) -> Int {
   string_utf8_length(s)
-}
-export let String::utf8_length = (s: String) -> Int {
-  string_utf8_length_value(s)
 }
 let string_utf16_length_value = (s: String) -> Int {
   string_utf16_length(s)
 }
+let string_unicode_length_value = (s: String) -> Int {
+  string_unicode_length(s)
+}
+export let String::drop = (s: String, n: Int) -> String {
+  string_drop(s, n)
+}
+export let String::head = (s: String) -> String {
+  string_head(s)
+}
+export let String::init = (s: String) -> String {
+  string_init(s)
+}
+export let String::last = (s: String) -> String {
+  string_last(s)
+}
+export let String::tail = (s: String) -> String {
+  string_tail(s)
+}
+export let String::take = (s: String, n: Int) -> String {
+  string_take(s, n)
+}
+export let String::trim = (s: String) -> String {
+  string_trim(s)
+}
+export let String::count = (s: String, sub: String) -> Int {
+  string_count(s, sub)
+}
+export let String::equals = (a: String, b: String) -> Bool {
+  string_equals_value(a, b)
+}
+export let String::repeat = (s: String, n: Int) -> String {
+  string_repeat(s, n)
+}
+// Type member names: can be imported with `use <module-ref> { String }`
+export let String::compare = (a: String, b: String) -> Int {
+  string_compare(a, b)
+}
+export let String::replace = (s: String, pattern: String, replacement: String) -> String {
+  string_replace(s, pattern, replacement)
+}
+export let String::contains = (s: String, sub: String) -> Bool {
+  string_contains(s, sub)
+}
+export let String::index_of = (s: String, sub: String) -> Int {
+  string_index_of(s, sub)
+}
+export let String::is_blank = (s: String) -> Bool {
+  string_is_blank(s)
+}
+export let String::is_empty = (s: String) -> Bool {
+  string_is_empty(s)
+}
+export let String::pad_left = (s: String, target_len: Int, pad_char: String) -> String {
+  string_pad_left(s, target_len, pad_char)
+}
+export let String::trim_end = (s: String) -> String {
+  string_trim_end(s)
+}
+export let String::ends_with = (s: String, suffix: String) -> Bool {
+  string_ends_with(s, suffix)
+}
+export let String::pad_right = (s: String, target_len: Int, pad_char: String) -> String {
+  string_pad_right(s, target_len, pad_char)
+}
+export let String::trim_start = (s: String) -> String {
+  string_trim_start(s)
+}
+export let String::replace_all = (s: String, pattern: String, replacement: String) -> String {
+  string_replace_all(s, pattern, replacement)
+}
+export let String::starts_with = (s: String, prefix: String) -> Bool {
+  string_starts_with(s, prefix)
+}
+export let String::utf8_length = (s: String) -> Int {
+  string_utf8_length_value(s)
+}
+export let String::is_not_empty = (s: String) -> Bool {
+  string_is_not_empty(s)
+}
 export let String::utf16_length = (s: String) -> Int {
   string_utf16_length_value(s)
 }
-let string_unicode_length_value = (s: String) -> Int {
-  string_unicode_length(s)
+export let String::last_index_of = (s: String, sub: String) -> Int {
+  string_last_index_of(s, sub)
 }
 export let String::unicode_length = (s: String) -> Int {
   string_unicode_length_value(s)

@@ -15,15 +15,40 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 | `bool.xsh` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
 | `string.xsh` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
 | `io.xsh` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
-| `path.xsh` | 3 | PathRef/DynamicPath wrappers (`from_literal`, `dynamic`, `resolve`) + member APIs (`PathRef::as_string`, `PathRef::is_absolute`) |
-| `threads.xsh` | 7 | Experimental threads contracts (`task/channel/actor/deployment_plan`) + runtime wrappers (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`) |
+| `path/ref.xsh` | 2 | PathRef/DynamicPath pure model (`from_literal`, `dynamic`) + member APIs (`as_string`, `is_absolute`) |
+| `path/runtime.xsh` | 2 | Path runtime bridge (`resolve`, `DynamicPath::resolve`) |
+| `path.xsh` | 3 | Compatibility facade for legacy path API shape |
+| `threads/spec.xsh` | 4 | Pure thread deployment specs (`task/channel/actor/deployment_plan`, recommended flags/env) |
+| `threads/runtime.xsh` | 2 | Runtime bridge (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`) |
+| `threads.xsh` | 7 | Compatibility facade for legacy threads API shape |
 | `wasm/types.xsh` | 6 | WASM type alias entrypoint (`i32`/`f32`/`f64`, `I32`/`F32`/`F64`) |
 | `wasm/opcodes.xsh` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
 | `wasm/io_stream.xsh` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
-**Total: 118 tests**
+**Total: 133 tests**
 
 Tests are separated into `*_test.xsh` files (for example, `string_test.xsh` for `string.xsh`).
+
+## Module Boundary (Layered Responsibilities)
+
+`xsh/std` is managed as layered modules. See `docs/std-module-boundaries.md` for the canonical table and allowed import matrix.
+
+- `trait-contract`: contracts (`builtin_traits.xsh`)
+- `pure-primitive`: pure scalar/string operations (`bool/int/float/double/string`)
+- `pure-data`: pure ADT/data operations (`list/option`)
+- `ref-model`: path and module reference model (`path/ref` + `path` facade)
+- `effect-boundary`: runtime side-effect bridge (`io/path/runtime/threads/runtime`)
+- `backend-specific`: backend-specific experimental APIs (`wasm/*`)
+
+Compatibility facades:
+
+- `path.xsh` delegates conceptually to `path/ref.xsh` + `path/runtime.xsh`.
+- `threads.xsh` delegates conceptually to `threads/spec.xsh` + `threads/runtime.xsh`.
+
+Boundary enforcement is active in:
+
+- `xsh check`
+- `xsh normalize`
 
 ## Trait-oriented API Surface
 

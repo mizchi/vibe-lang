@@ -16,17 +16,13 @@ use ./option.xsh {
   equals,
   zip_sum
 }
- trait Eq
- impl Eq for Int
- impl Eq for Float
- impl Eq for Double
- impl Eq for Bool
- impl Eq for String
- impl [
-  T: Eq
-  
-]Eq for Option[T]
-
+trait Eq
+impl Eq for Int
+impl Eq for Float
+impl Eq for Double
+impl Eq for Bool
+impl Eq for String
+impl [T: Eq] Eq for Option[T]
 let option_or = or
 let option_and = and
 let option_map = map_opt
@@ -83,8 +79,7 @@ test "option_filter" {
 }
 test "option_zip" {
   match option_zip(Some(1), Some("ok")) {
-    Some((n,
-    s)) => {
+    Some((n, s)) => {
       assert(eq(n, 1))
       assert(string_equals(s, "ok"))
     },

@@ -1,7 +1,6 @@
 export type I32 = i32
 export type F32 = f32
 export type F64 = f64
-
 export let f32_id = (x: f32) -> f32 {
   x
 }

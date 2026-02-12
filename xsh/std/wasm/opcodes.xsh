@@ -7,8 +7,6 @@ export let f32_add = (a: f32, b: f32) -> f32 {
 export let f32_div = (a: f32, b: f32) -> f32 {
   a / b
 }
-
-
 export let f32_mul = (a: f32, b: f32) -> f32 {
   a * b
 }
@@ -21,8 +19,6 @@ export let f64_add = (a: f64, b: f64) -> f64 {
 export let f64_div = (a: f64, b: f64) -> f64 {
   a / b
 }
-
-
 export let f64_mul = (a: f64, b: f64) -> f64 {
   a * b
 }
@@ -53,13 +49,9 @@ export let i32_div_s = (a: i32, b: i32) -> i32 {
 export let i32_rem_s = (a: i32, b: i32) -> i32 {
   a % b
 }
-
-
 export let i32_shr_s = (a: i32, b: i32) -> i32 {
   a>>b
 }
-
-
 let i32_from_bool = (b: Bool) -> i32 {
   if b {
     1
@@ -67,16 +59,12 @@ let i32_from_bool = (b: Bool) -> i32 {
     0
   }
 }
-
-
 export let f32_eq = (a: f32, b: f32) -> i32 {
   i32_from_bool(a == b)
 }
 export let f32_ge = (a: f32, b: f32) -> i32 {
   i32_from_bool(a >= b)
 }
-
-
 export let f32_gt = (a: f32, b: f32) -> i32 {
   i32_from_bool(a > b)
 }
@@ -95,8 +83,6 @@ export let f64_eq = (a: f64, b: f64) -> i32 {
 export let f64_ge = (a: f64, b: f64) -> i32 {
   i32_from_bool(a >= b)
 }
-
-
 export let f64_gt = (a: f64, b: f64) -> i32 {
   i32_from_bool(a > b)
 }
@@ -121,8 +107,6 @@ export let i32_eqz = (x: i32) -> i32 {
 export let i32_ge_s = (a: i32, b: i32) -> i32 {
   i32_from_bool(a >= b)
 }
-
-
 export let i32_gt_s = (a: i32, b: i32) -> i32 {
   i32_from_bool(a > b)
 }
