@@ -442,6 +442,58 @@ test "finalize cmd options reject positional arg" {
 }
 
 ///|
+test "fmt cmd options parse default write mode" {
+  let parsed = parse_fmt_cmd_options(["a.xsh", "b.xsh"])
+  match parsed {
+    Ok(opts) => {
+      assert_false(opts.dry_run)
+      assert_eq(opts.files, ["a.xsh", "b.xsh"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "fmt cmd options parse dry-run and legacy write flags" {
+  let parsed = parse_fmt_cmd_options(["--dry-run", "--write", "-w", "a.xsh"])
+  match parsed {
+    Ok(opts) => {
+      assert_true(opts.dry_run)
+      assert_eq(opts.files, ["a.xsh"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "fmt cmd options reject unknown option" {
+  let parsed = parse_fmt_cmd_options(["--wat", "a.xsh"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "fmt: unknown option --wat")
+  }
+}
+
+///|
+test "fmt dry-run diff renders changed lines" {
+  let diff = render_fmt_dry_run_diff(
+    "sample.xsh", "let value = 1\n", "let value = 2\n",
+  )
+  assert_true(diff.contains("--- sample.xsh\n"))
+  assert_true(diff.contains("+++ sample.xsh\n"))
+  assert_true(diff.contains("-let value = 1\n"))
+  assert_true(diff.contains("+let value = 2\n"))
+}
+
+///|
+test "fmt dry-run diff is empty when unchanged" {
+  let diff = render_fmt_dry_run_diff(
+    "sample.xsh", "let value = 1\n", "let value = 1\n",
+  )
+  assert_eq(diff, "")
+}
+
+///|
 test "cli syntax mode parse default" {
   let parsed = parse_cli_syntax_args(["main.xsh"], "run")
   match parsed {
@@ -664,6 +716,19 @@ test "compile args parse coverage run tests for wasm" {
 }
 
 ///|
+test "compile args parse debug errors for wasm" {
+  let parsed = parse_compile_cmd_args(["--wasm", "--debug-errors", "main.xsh"])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wasm)
+      assert_true(opts.debug_errors)
+      assert_eq(opts.entry_path, "main.xsh")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
 test "compile args reject coverage run tests without coverage" {
   let parsed = parse_compile_cmd_args([
     "--wasm", "--coverage-run-tests", "main.xsh",
@@ -672,6 +737,18 @@ test "compile args reject coverage run tests without coverage" {
     Ok(_) => fail("expected error")
     Err(msg) =>
       assert_eq(msg, "compile: --coverage-run-tests requires --coverage")
+  }
+}
+
+///|
+test "compile args reject debug errors on non-wasm mode" {
+  let parsed = parse_compile_cmd_args(["--wit", "--debug-errors", "main.xsh"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(
+        msg, "compile: --debug-errors is only supported with --wasm or --wasm-js-string",
+      )
   }
 }
 

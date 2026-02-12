@@ -226,6 +226,14 @@ fn parse_instrs(cursor : Cursor) -> Array[Instr] raise WasmWatError {
       0x73 => instrs.push(Instr::Simple("i32.xor"))
       0x8c => instrs.push(Instr::Simple("f32.neg"))
       0x99 => instrs.push(Instr::Simple("f64.neg"))
+      0x3f => {
+        let _ = cursor.read_u8() // memory index
+        instrs.push(Instr::Simple("memory.size"))
+      }
+      0x40 => {
+        let _ = cursor.read_u8() // memory index
+        instrs.push(Instr::Simple("memory.grow"))
+      }
       0x28 => {
         let align = cursor.read_leb_u32()
         let offset = cursor.read_leb_u32()

@@ -60,7 +60,7 @@ test "bench: wasm.size.user_fn" {
   inspect(
     snapshot,
     content=(
-      #|{wasm_size: Some(221), ir_size: 344, note: None}
+      #|{wasm_size: Some(290), ir_size: 344, note: None}
     ),
   )
 }
@@ -71,7 +71,7 @@ test "bench: wasm.size.effect_ho" {
   inspect(
     snapshot,
     content=(
-      #|{wasm_size: Some(355), ir_size: 930, note: None}
+      #|{wasm_size: Some(424), ir_size: 930, note: None}
     ),
   )
 }

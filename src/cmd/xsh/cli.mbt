@@ -81,12 +81,12 @@ fn print_usage() -> Unit {
   println(
     "  write_file [--entry file] [--no-deps] [--dry-run] [--json] <selector> <out-file>  materialize selector",
   )
-  println("  fmt [--write] <file...>    normalize + format scripts")
+  println("  fmt [--dry-run] <file...>  normalize + format scripts")
   println(
     "  normalize [--write] <file...>  normalize declaration order + DCE (+fmt)",
   )
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--debug-errors] [--wite|-O{0,1,2,3,s,z}] [-o out] <file>",
   )
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
@@ -96,6 +96,9 @@ fn print_usage() -> Unit {
   )
   println(
     "                                     --coverage-run-tests executes top-level test blocks in coverage mode",
+  )
+  println(
+    "                                     --debug-errors keeps raise string literals in wasm (debug builds)",
   )
   println(
     "  bench [--backend wasm|interpreter] [--n N] [--warmup N] <file|dir...>  run `bench {}` blocks",
@@ -457,6 +460,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               no_dce=opts.no_dce,
               opt_level=opts.opt_level,
               run_tests=opts.coverage_run_tests,
+              debug_errors=opts.debug_errors,
             ) catch {
               e => abort("compile: " + e.to_string())
             }
@@ -482,6 +486,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               entry,
               no_dce=opts.no_dce,
               opt_level=opts.opt_level,
+              debug_errors=opts.debug_errors,
             ) catch {
               e => abort("compile: " + e.to_string())
             }
@@ -499,6 +504,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               no_dce=opts.no_dce,
               opt_level=opts.opt_level,
               run_tests=opts.coverage_run_tests,
+              debug_errors=opts.debug_errors,
             ) catch {
               e => abort("compile: " + e.to_string())
             }
@@ -524,6 +530,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               entry,
               no_dce=opts.no_dce,
               opt_level=opts.opt_level,
+              debug_errors=opts.debug_errors,
             ) catch {
               e => abort("compile: " + e.to_string())
             }
@@ -1108,40 +1115,29 @@ fn normalize_cmd(args : Array[String]) -> Unit {
 
 ///|
 fn fmt_cmd(args : Array[String]) -> Unit {
-  if args.length() == 0 {
-    abort("fmt: expected <file...>")
+  let options = match parse_fmt_cmd_options(args) {
+    Ok(v) => v
+    Err(msg) => abort(msg)
   }
-  let mut write = false
-  let files : Array[String] = []
-  for arg in args {
-    match arg {
-      "--write" | "-w" => write = true
-      _ => files.push(arg)
-    }
-  }
-  if files.length() == 0 {
-    abort("fmt: expected <file...>")
-  }
-  if not(write) && files.length() > 1 {
-    abort("fmt: use --write for multiple files")
-  }
-  for path in files {
+  for path in options.files {
     let resolved = @loader.resolve_entry_path(path)
+    let source = @os_fs.read_file_to_string(resolved) catch {
+      e => abort("fmt: " + e.to_string())
+    }
     let formatted = match normalize_format_file_source(resolved) {
       Ok(v) => v
       Err(err) => abort("fmt: " + err)
     }
-    let output = if write {
-      apply_lock_annotations_for_format(resolved, formatted)
+    let output = apply_lock_annotations_for_format(resolved, formatted)
+    if options.dry_run {
+      let diff = render_fmt_dry_run_diff(path, source, output)
+      if diff.length() > 0 {
+        println(diff)
+      }
     } else {
-      formatted
-    }
-    if write {
       @os_fs.write_string_to_file(resolved, output) catch {
         e => abort("fmt: " + e.to_string())
       }
-    } else {
-      println(output)
     }
   }
 }

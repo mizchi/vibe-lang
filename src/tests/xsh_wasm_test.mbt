@@ -229,6 +229,20 @@ fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
 }
 
 ///|
+fn raise_literal_source(message : String) -> String {
+  let src =
+    #|let fail = () -> Int with {Error} {
+    #|  raise "@MSG@"
+    #|}
+    #|try {
+    #|  fail()
+    #|} catch {
+    #|  0
+    #|}
+  src.replace(old="@MSG@", new=message)
+}
+
+///|
 fn bytes_contains_opcode(bytes : Bytes, opcode : Int) -> Bool {
   let arr = bytes.to_array()
   for b in arr {
@@ -257,6 +271,100 @@ fn read_u32_leb_at(bytes : Array[Byte], start : Int) -> (Int, Int) {
     shift += 7
   }
   (value, i)
+}
+
+///|
+fn bytes_range_equals(
+  bytes : Array[Byte],
+  start : Int,
+  needle : Array[Byte],
+) -> Bool {
+  if start < 0 || start + needle.length() > bytes.length() {
+    return false
+  }
+  for i in 0..<needle.length() {
+    if bytes[start + i] != needle[i] {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn find_custom_section_payload(
+  bytes : Bytes,
+  section_name : String,
+) -> Array[Byte]? {
+  let arr = bytes.to_array()
+  if arr.length() < 8 {
+    return None
+  }
+  let name_bytes = @utf8.encode(section_name).to_array()
+  let mut i = 8
+  while i < arr.length() {
+    let section_id = arr[i].to_int()
+    i += 1
+    let (section_size, next_i) = read_u32_leb_at(arr, i)
+    i = next_i
+    let section_end = i + section_size
+    if section_end > arr.length() {
+      return None
+    }
+    if section_id == 0 {
+      let (name_len, name_start) = read_u32_leb_at(arr, i)
+      let name_end = name_start + name_len
+      if name_end <= section_end &&
+        bytes_range_equals(arr, name_start, name_bytes) {
+        let payload_len = section_end - name_end
+        let payload : Array[Byte] = []
+        for j in 0..<payload_len {
+          payload.push(arr[name_end + j])
+        }
+        return Some(payload)
+      }
+    }
+    i = section_end
+  }
+  None
+}
+
+///|
+fn wasm_has_custom_section_named(bytes : Bytes, section_name : String) -> Bool {
+  match find_custom_section_payload(bytes, section_name) {
+    Some(_) => true
+    None => false
+  }
+}
+
+///|
+fn wasm_error_map_contains(bytes : Bytes, code : Int, message : String) -> Bool {
+  let payload = match find_custom_section_payload(bytes, "xsh.error_map") {
+    Some(v) => v
+    None => return false
+  }
+  let msg_bytes = @utf8.encode(message).to_array()
+  let mut i = 0
+  let (version, after_version) = read_u32_leb_at(payload, i)
+  if version != 1 {
+    return false
+  }
+  i = after_version
+  let (count, after_count) = read_u32_leb_at(payload, i)
+  i = after_count
+  for _ in 0..<count {
+    let (entry_code, after_code) = read_u32_leb_at(payload, i)
+    i = after_code
+    let (msg_len, after_len) = read_u32_leb_at(payload, i)
+    i = after_len
+    if i + msg_len > payload.length() {
+      return false
+    }
+    if entry_code == code && bytes_range_equals(payload, i, msg_bytes) {
+      return true
+    }
+    i += msg_len
+  }
+  false
 }
 
 ///|
@@ -311,6 +419,42 @@ test "xsh wasm keeps table/element when function values are used" {
   }
   assert_true(wasm_has_section(wasm, 4))
   assert_true(wasm_has_section(wasm, 9))
+}
+
+///|
+test "xsh wasm strips raise string literal in default build" {
+  let db = XshDb::new()
+  let needle = "ERR_LITERAL_ONLY_FOR_DEBUG_9f0d5c2a"
+  db.set_source("main", raise_literal_source(needle))
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_false(bytes_contains_ascii(wasm, needle))
+  assert_false(wasm_has_custom_section_named(wasm, "xsh.error_map"))
+}
+
+///|
+test "xsh wasm keeps raise string literal when debug errors enabled" {
+  let db = XshDb::new()
+  let needle = "ERR_LITERAL_ONLY_FOR_DEBUG_9f0d5c2a"
+  db.set_source("main", raise_literal_source(needle))
+  let wasm = try
+    compile_module_wasm_with_opt_level(
+      db,
+      "main",
+      opt_level=None,
+      debug_errors=true,
+    )
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, needle))
+  assert_true(wasm_has_custom_section_named(wasm, "xsh.error_map"))
+  assert_true(wasm_error_map_contains(wasm, 1, needle))
 }
 
 ///|

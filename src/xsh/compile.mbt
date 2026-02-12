@@ -166,6 +166,11 @@ fn compile_module_wasm_with(
 }
 
 ///|
+fn wasm_emit_options(debug_errors : Bool) -> @codegen.WasmEmitOptions {
+  @codegen.wasm_emit_options(embed_error_strings=debug_errors)
+}
+
+///|
 fn compile_module_wasm_coverage_with(
   db : XshDb,
   path : String,
@@ -248,8 +253,11 @@ fn optimize_wasm_coverage_with_opt_level(
 pub fn compile_module_wasm(
   db : XshDb,
   path : String,
+  debug_errors? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(db, path, bundle_for_wasm, @codegen.emit_module_wasm)
+  compile_module_wasm_with(db, path, bundle_for_wasm, ast => {
+    @codegen.emit_module_wasm_with_options(ast, wasm_emit_options(debug_errors))
+  })
 }
 
 ///|
@@ -258,11 +266,12 @@ pub fn compile_module_wasm_with_opt_level(
   path : String,
   no_dce? : Bool = false,
   opt_level? : String? = None,
+  debug_errors? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   let wasm = if no_dce {
-    compile_module_wasm_no_dce(db, path)
+    compile_module_wasm_no_dce(db, path, debug_errors~)
   } else {
-    compile_module_wasm(db, path)
+    compile_module_wasm(db, path, debug_errors~)
   }
   optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
@@ -274,21 +283,35 @@ pub fn compile_module_wasm_with_coverage(
   no_dce? : Bool = false,
   opt_level? : String? = None,
   run_tests? : Bool = false,
+  debug_errors? : Bool = false,
 ) -> WasmCoverageArtifact raise WasmCompileError {
   let coverage = if no_dce {
-    compile_module_wasm_no_dce_with_coverage(db, path, run_tests~)
+    compile_module_wasm_no_dce_with_coverage(
+      db,
+      path,
+      run_tests~,
+      debug_errors~,
+    )
   } else if run_tests {
     compile_module_wasm_coverage_with(
       db,
       path,
       bundle_for_wasm_test_coverage,
-      @codegen.emit_module_wasm_with_coverage,
+      ast => {
+        @codegen.emit_module_wasm_with_coverage_options(
+          ast,
+          wasm_emit_options(debug_errors),
+        )
+      },
       run_tests=true,
     )
   } else {
-    compile_module_wasm_coverage_with(
-      db, path, bundle_for_wasm, @codegen.emit_module_wasm_with_coverage,
-    )
+    compile_module_wasm_coverage_with(db, path, bundle_for_wasm, ast => {
+      @codegen.emit_module_wasm_with_coverage_options(
+        ast,
+        wasm_emit_options(debug_errors),
+      )
+    })
   }
   optimize_wasm_coverage_with_opt_level(coverage, opt_level)
 }
@@ -298,12 +321,18 @@ fn compile_module_wasm_no_dce_with_coverage(
   db : XshDb,
   path : String,
   run_tests? : Bool = false,
+  debug_errors? : Bool = false,
 ) -> WasmCoverageArtifact raise WasmCompileError {
   compile_module_wasm_coverage_with(
     db,
     path,
     bundle_for_wasm_no_dce,
-    @codegen.emit_module_wasm_with_coverage,
+    ast => {
+      @codegen.emit_module_wasm_with_coverage_options(
+        ast,
+        wasm_emit_options(debug_errors),
+      )
+    },
     run_tests~,
   )
 }
@@ -313,10 +342,14 @@ fn compile_module_wasm_no_dce_with_coverage(
 pub fn compile_module_wasm_js_string(
   db : XshDb,
   path : String,
+  debug_errors? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(
-    db, path, bundle_for_wasm, @codegen.emit_module_wasm_js_string,
-  )
+  compile_module_wasm_with(db, path, bundle_for_wasm, ast => {
+    @codegen.emit_module_wasm_js_string_with_options(
+      ast,
+      wasm_emit_options(debug_errors),
+    )
+  })
 }
 
 ///|
@@ -325,11 +358,12 @@ pub fn compile_module_wasm_js_string_with_opt_level(
   path : String,
   no_dce? : Bool = false,
   opt_level? : String? = None,
+  debug_errors? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   let wasm = if no_dce {
-    compile_module_wasm_js_string_no_dce(db, path)
+    compile_module_wasm_js_string_no_dce(db, path, debug_errors~)
   } else {
-    compile_module_wasm_js_string(db, path)
+    compile_module_wasm_js_string(db, path, debug_errors~)
   }
   optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
@@ -341,21 +375,35 @@ pub fn compile_module_wasm_js_string_with_coverage(
   no_dce? : Bool = false,
   opt_level? : String? = None,
   run_tests? : Bool = false,
+  debug_errors? : Bool = false,
 ) -> WasmCoverageArtifact raise WasmCompileError {
   let coverage = if no_dce {
-    compile_module_wasm_js_string_no_dce_with_coverage(db, path, run_tests~)
+    compile_module_wasm_js_string_no_dce_with_coverage(
+      db,
+      path,
+      run_tests~,
+      debug_errors~,
+    )
   } else if run_tests {
     compile_module_wasm_coverage_with(
       db,
       path,
       bundle_for_wasm_test_coverage,
-      @codegen.emit_module_wasm_js_string_with_coverage,
+      ast => {
+        @codegen.emit_module_wasm_js_string_with_coverage_options(
+          ast,
+          wasm_emit_options(debug_errors),
+        )
+      },
       run_tests=true,
     )
   } else {
-    compile_module_wasm_coverage_with(
-      db, path, bundle_for_wasm, @codegen.emit_module_wasm_js_string_with_coverage,
-    )
+    compile_module_wasm_coverage_with(db, path, bundle_for_wasm, ast => {
+      @codegen.emit_module_wasm_js_string_with_coverage_options(
+        ast,
+        wasm_emit_options(debug_errors),
+      )
+    })
   }
   optimize_wasm_coverage_with_opt_level(coverage, opt_level)
 }
@@ -365,12 +413,18 @@ fn compile_module_wasm_js_string_no_dce_with_coverage(
   db : XshDb,
   path : String,
   run_tests? : Bool = false,
+  debug_errors? : Bool = false,
 ) -> WasmCoverageArtifact raise WasmCompileError {
   compile_module_wasm_coverage_with(
     db,
     path,
     bundle_for_wasm_no_dce,
-    @codegen.emit_module_wasm_js_string_with_coverage,
+    ast => {
+      @codegen.emit_module_wasm_js_string_with_coverage_options(
+        ast,
+        wasm_emit_options(debug_errors),
+      )
+    },
     run_tests~,
   )
 }
@@ -380,10 +434,14 @@ fn compile_module_wasm_js_string_no_dce_with_coverage(
 pub fn compile_module_wasm_js_string_no_dce(
   db : XshDb,
   path : String,
+  debug_errors? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(
-    db, path, bundle_for_wasm_no_dce, @codegen.emit_module_wasm_js_string,
-  )
+  compile_module_wasm_with(db, path, bundle_for_wasm_no_dce, ast => {
+    @codegen.emit_module_wasm_js_string_with_options(
+      ast,
+      wasm_emit_options(debug_errors),
+    )
+  })
 }
 
 ///|
@@ -428,10 +486,11 @@ pub fn compile_module_wasm_gc_no_dce(
 pub fn compile_module_wasm_no_dce(
   db : XshDb,
   path : String,
+  debug_errors? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(
-    db, path, bundle_for_wasm_no_dce, @codegen.emit_module_wasm,
-  )
+  compile_module_wasm_with(db, path, bundle_for_wasm_no_dce, ast => {
+    @codegen.emit_module_wasm_with_options(ast, wasm_emit_options(debug_errors))
+  })
 }
 
 ///|

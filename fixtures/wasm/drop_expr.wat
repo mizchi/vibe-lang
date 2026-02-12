@@ -6,7 +6,7 @@
     i32.const 8
     end
   )
-  (memory (;0;) 1)
+  (memory (;0;) 64)
   (export "run" (func 0))
   (export "memory" (memory 0))
 )

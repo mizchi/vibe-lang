@@ -253,9 +253,10 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
         }
       } else {
         let generic_hint = (match prev_kind {
-          Some(prev) => prev == impl_kw()
-          None => false
-        }) || is_generic_param_bracket(tokens, i)
+            Some(prev) => prev == impl_kw()
+            None => false
+          }) ||
+          is_generic_param_bracket(tokens, i)
         let container = container_kind_for_bracket(
           prev_kind,
           type_context_stack.length() > 0 || type_decl_rhs_active,
@@ -336,6 +337,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
   buf.to_string()
 }
 
+///|
 fn bracket_tokens_look_like_type_params(
   tokens : Array[@cst.SyntaxToken],
   start_idx : Int,
@@ -599,6 +601,7 @@ fn find_matching_rbracket_token_index(
   None
 }
 
+///|
 fn is_index_receiver_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == name() ||
   kind == rparen() ||

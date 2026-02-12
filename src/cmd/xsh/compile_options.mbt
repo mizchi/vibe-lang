@@ -15,6 +15,7 @@ pub struct CompileCmdOptions {
   no_dce : Bool
   coverage : Bool
   coverage_run_tests : Bool
+  debug_errors : Bool
   out_path : String?
   entry_path : String
   opt_level : String?
@@ -48,6 +49,14 @@ fn compile_mode_supports_coverage(mode : CompileMode) -> Bool {
 }
 
 ///|
+fn compile_mode_supports_debug_errors(mode : CompileMode) -> Bool {
+  match mode {
+    CompileMode::Wasm | CompileMode::WasmJsString => true
+    _ => false
+  }
+}
+
+///|
 fn is_opt_level_flag(arg : String) -> Bool {
   match arg {
     "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-Os" | "-Oz" => true
@@ -63,6 +72,7 @@ pub fn parse_compile_cmd_args(
   let mut no_dce = false
   let mut coverage = false
   let mut coverage_run_tests = false
+  let mut debug_errors = false
   let mut out_path : String? = None
   let mut entry_path : String? = None
   let mut opt_level : String? = None
@@ -104,6 +114,10 @@ pub fn parse_compile_cmd_args(
       }
       "--coverage-run-tests" => {
         coverage_run_tests = true
+        i += 1
+      }
+      "--debug-errors" => {
+        debug_errors = true
         i += 1
       }
       "--wite" => {
@@ -154,11 +168,17 @@ pub fn parse_compile_cmd_args(
       if coverage_run_tests && not(coverage) {
         return Err("compile: --coverage-run-tests requires --coverage")
       }
+      if debug_errors && not(compile_mode_supports_debug_errors(mode)) {
+        return Err(
+          "compile: --debug-errors is only supported with --wasm or --wasm-js-string",
+        )
+      }
       Ok({
         mode,
         no_dce,
         coverage,
         coverage_run_tests,
+        debug_errors,
         out_path,
         entry_path: path,
         opt_level,

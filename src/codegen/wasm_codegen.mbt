@@ -29,6 +29,18 @@ pub struct WasmCoverageArtifact {
 } derive(Show, Eq)
 
 ///|
+pub struct WasmEmitOptions {
+  embed_error_strings : Bool
+} derive(Show, Eq)
+
+///|
+pub fn wasm_emit_options(
+  embed_error_strings? : Bool = false,
+) -> WasmEmitOptions {
+  { embed_error_strings, }
+}
+
+///|
 priv struct StringSegment {
   offset : Int
   bytes : Array[Byte]
@@ -268,6 +280,8 @@ priv struct CodegenCtx {
   mut need_exceptions : Bool
   mut error_tag_type_index : Int
   error_tag_index : Int
+  embed_error_strings : Bool
+  error_codes : StringConstTable
   mut need_extern_table : Bool
   mut extern_table_index : Int
   mut extern_table_next_slot : Int
@@ -301,6 +315,7 @@ priv struct CodegenCtx {
 fn CodegenCtx::new(
   use_js_strings : Bool,
   coverage_enabled? : Bool = false,
+  embed_error_strings? : Bool = false,
 ) -> CodegenCtx {
   // Register builtin enum constructors
   let enum_ctor_tags : Map[String, Int] = {}
@@ -352,6 +367,8 @@ fn CodegenCtx::new(
     need_exceptions: false,
     error_tag_type_index: -1,
     error_tag_index: 0,
+    embed_error_strings,
+    error_codes: StringConstTable::new(),
     need_extern_table: false,
     extern_table_index: -1,
     extern_table_next_slot: 0,
@@ -1334,6 +1351,12 @@ fn emit_string_const(ctx : CodegenCtx, buf : ByteBuf, s : String) -> Unit {
     let offset = ctx.strings.intern(s)
     emit_i32_const_raw(buf, tag_ptr(offset, tag_obj))
   }
+}
+
+///|
+fn intern_error_code(ctx : CodegenCtx, message : String) -> Int {
+  // 0 is reserved for unknown/unmapped errors.
+  ctx.error_codes.intern(message) + 1
 }
 
 ///|
@@ -2621,7 +2644,20 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
-      scan_strings_expr(ctx, value)
+      if not(ctx.use_js_strings) {
+        match value {
+          @core.Expr::String(value=message, span~) => {
+            let _ = span
+            let _ = intern_error_code(ctx, message)
+            if ctx.embed_error_strings {
+              scan_strings_expr(ctx, value)
+            }
+          }
+          _ => scan_strings_expr(ctx, value)
+        }
+      } else {
+        scan_strings_expr(ctx, value)
+      }
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
@@ -5797,7 +5833,15 @@ fn compile_expr(
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
-      if ctx.use_js_strings {
+      if not(ctx.use_js_strings) && not(ctx.embed_error_strings) {
+        match value {
+          @core.Expr::String(value=message, span~) => {
+            let _ = span
+            emit_i32_const_tagged(buf, intern_error_code(ctx, message))
+          }
+          _ => compile_expr_i32(ctx, buf, value)
+        }
+      } else if ctx.use_js_strings {
         compile_expr(ctx, buf, value) // externref string on stack
       } else {
         compile_expr_i32(ctx, buf, value) // tagged i32 string on stack
@@ -7587,6 +7631,14 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     }
     write_section(buf, 11, data_sec.data)
   }
+  // debug-only error map section: code -> original literal message.
+  if ctx.embed_error_strings && ctx.error_codes.names.length() > 0 {
+    write_custom_section(
+      buf,
+      "xsh.error_map",
+      build_error_map_custom_content(ctx),
+    )
+  }
   buf.to_bytes()
 }
 
@@ -7595,6 +7647,31 @@ fn write_section(buf : ByteBuf, id : Int, content : Array[Byte]) -> Unit {
   buf.push(id.to_byte())
   write_u32_leb(buf, content.length())
   buf.extend(content)
+}
+
+///|
+fn write_custom_section(
+  buf : ByteBuf,
+  name : String,
+  content : Array[Byte],
+) -> Unit {
+  let sec = ByteBuf::new()
+  write_name(sec, name)
+  sec.extend(content)
+  write_section(buf, 0, sec.data)
+}
+
+///|
+fn build_error_map_custom_content(ctx : CodegenCtx) -> Array[Byte] {
+  let out = ByteBuf::new()
+  write_u32_leb(out, 1) // schema version
+  let count = ctx.error_codes.names.length()
+  write_u32_leb(out, count)
+  for i in 0..<count {
+    write_u32_leb(out, i + 1)
+    write_name(out, ctx.error_codes.names[i])
+  }
+  out.data
 }
 
 ///|
@@ -8652,8 +8729,39 @@ fn emit_module(
 }
 
 ///|
+fn default_emit_options() -> WasmEmitOptions {
+  wasm_emit_options()
+}
+
+///|
+pub fn emit_module_wasm_with_options(
+  ast : @core.Module,
+  options : WasmEmitOptions,
+) -> Bytes raise WasmGenError {
+  let ctx = CodegenCtx::new(
+    false,
+    coverage_enabled=false,
+    embed_error_strings=options.embed_error_strings,
+  )
+  emit_module(ctx, ast)
+}
+
+///|
 pub fn emit_module_wasm(ast : @core.Module) -> Bytes raise WasmGenError {
-  let ctx = CodegenCtx::new(false)
+  emit_module_wasm_with_options(ast, default_emit_options())
+}
+
+///|
+pub fn emit_module_wasm_js_string_with_options(
+  ast : @core.Module,
+  options : WasmEmitOptions,
+) -> Bytes raise WasmGenError {
+  let _ = options
+  let ctx = CodegenCtx::new(
+    true,
+    coverage_enabled=false,
+    embed_error_strings=true,
+  )
   emit_module(ctx, ast)
 }
 
@@ -8661,15 +8769,40 @@ pub fn emit_module_wasm(ast : @core.Module) -> Bytes raise WasmGenError {
 pub fn emit_module_wasm_js_string(
   ast : @core.Module,
 ) -> Bytes raise WasmGenError {
-  let ctx = CodegenCtx::new(true)
-  emit_module(ctx, ast)
+  emit_module_wasm_js_string_with_options(ast, default_emit_options())
+}
+
+///|
+pub fn emit_module_wasm_with_coverage_options(
+  ast : @core.Module,
+  options : WasmEmitOptions,
+) -> WasmCoverageArtifact raise WasmGenError {
+  let ctx = CodegenCtx::new(
+    false,
+    coverage_enabled=true,
+    embed_error_strings=options.embed_error_strings,
+  )
+  emit_module_with_coverage(ctx, ast)
 }
 
 ///|
 pub fn emit_module_wasm_with_coverage(
   ast : @core.Module,
 ) -> WasmCoverageArtifact raise WasmGenError {
-  let ctx = CodegenCtx::new(false, coverage_enabled=true)
+  emit_module_wasm_with_coverage_options(ast, default_emit_options())
+}
+
+///|
+pub fn emit_module_wasm_js_string_with_coverage_options(
+  ast : @core.Module,
+  options : WasmEmitOptions,
+) -> WasmCoverageArtifact raise WasmGenError {
+  let _ = options
+  let ctx = CodegenCtx::new(
+    true,
+    coverage_enabled=true,
+    embed_error_strings=true,
+  )
   emit_module_with_coverage(ctx, ast)
 }
 
@@ -8677,6 +8810,5 @@ pub fn emit_module_wasm_with_coverage(
 pub fn emit_module_wasm_js_string_with_coverage(
   ast : @core.Module,
 ) -> WasmCoverageArtifact raise WasmGenError {
-  let ctx = CodegenCtx::new(true, coverage_enabled=true)
-  emit_module_with_coverage(ctx, ast)
+  emit_module_wasm_js_string_with_coverage_options(ast, default_emit_options())
 }

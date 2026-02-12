@@ -345,16 +345,22 @@ test "xsh format generic parameter brackets stay compact" {
     #|let id = [T](x: T) -> T { x }
   let formatted = format_script(input)
   if not(formatted.contains("impl [T: Eq] Eq for Option[T]")) {
-    fail("[generic impl] expected compact impl generic params\n---\n\{formatted}")
+    fail(
+      "[generic impl] expected compact impl generic params\n---\n\{formatted}",
+    )
   }
   if not(formatted.contains("let id = [T](x: T) -> T {")) {
     fail("[generic let] expected compact let generic params\n---\n\{formatted}")
   }
   if formatted.contains("impl [\n") {
-    fail("[generic impl] unexpected multiline generic bracket\n---\n\{formatted}")
+    fail(
+      "[generic impl] unexpected multiline generic bracket\n---\n\{formatted}",
+    )
   }
   if formatted.contains("let id = [\n") {
-    fail("[generic let] unexpected multiline generic bracket\n---\n\{formatted}")
+    fail(
+      "[generic let] unexpected multiline generic bracket\n---\n\{formatted}",
+    )
   }
 }
 
@@ -445,6 +451,7 @@ test "xsh format derive declarations is idempotent" {
   inspect(twice, content=once)
 }
 
+///|
 test "xsh format trait impl top-level spacing" {
   let input =
     #|trait Eq

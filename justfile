@@ -29,7 +29,8 @@ check:
 # Run tests (includes fixtures, examples, and core std library)
 test:
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
-    moon run src/cmd/xsh/main.mbt --target native --warn-list '{{moon_warn_list}}' -- test --unstable-async examples xsh/std
+    moon build --target native src/cmd/xsh --warn-list '{{moon_warn_list}}'
+    _build/native/debug/build/cmd/xsh/xsh.exe test --unstable-async examples xsh/std
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:

@@ -7,7 +7,7 @@
     call 0
     end
   )
-  (memory (;0;) 1)
+  (memory (;0;) 64)
   (export "run" (func 1))
   (export "memory" (memory 0))
   (data (i32.const 0) "\01\00\00\00\06\00\00\00a/../b")

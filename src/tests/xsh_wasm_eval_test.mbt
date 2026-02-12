@@ -565,6 +565,28 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
         let _ = stack.pop()
         stack.push(value >> shift)
       }
+      63 => {
+        let _ = code.read_u8() // memory index
+        stack.push(mem.length() / 65536)
+      }
+      64 => {
+        let _ = code.read_u8() // memory index
+        if stack.is_empty() {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let delta_pages = stack[stack.length() - 1]
+        let _ = stack.pop()
+        let old_pages = mem.length() / 65536
+        if delta_pages < 0 {
+          stack.push(-1)
+        } else {
+          let grow_bytes = delta_pages * 65536
+          for _ in 0..<grow_bytes {
+            mem.push((0).to_byte())
+          }
+          stack.push(old_pages)
+        }
+      }
       40 => {
         let _ = code.read_leb_u32() // align
         let offset = code.read_leb_u32()

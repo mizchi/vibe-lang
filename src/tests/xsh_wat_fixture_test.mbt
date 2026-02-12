@@ -61,6 +61,13 @@ fn replace_suffix(
 ///|
 test "wasm wat fixtures" {
   let fixture_dir = "fixtures/wasm"
+  let update_mode = match @sys.get_env_var("XSH_WAT_FIXTURE_UPDATE") {
+    Some(v) => {
+      let lowered = v.trim().to_string().to_lower()
+      lowered == "1" || lowered == "true" || lowered == "yes"
+    }
+    None => false
+  }
   let entries = @os_fs.read_dir(fixture_dir) catch {
     e => fail("[\{fixture_dir}] read_dir failed: \{e.to_string()}")
   }
@@ -105,9 +112,15 @@ test "wasm wat fixtures" {
     let actual_norm = normalize_wat(actual)
     let expected_norm = normalize_wat(expected)
     if actual_norm != expected_norm {
-      fail(
-        "[\{path}] wat mismatch\n-- actual --\n\{actual_norm}\n-- expected --\n\{expected_norm}",
-      )
+      if update_mode {
+        @os_fs.write_string_to_file(wat_path, actual_norm + "\n") catch {
+          e => fail("[\{wat_path}] write failed: \{e.to_string()}")
+        }
+      } else {
+        fail(
+          "[\{path}] wat mismatch\n-- actual --\n\{actual_norm}\n-- expected --\n\{expected_norm}",
+        )
+      }
     }
   }
 }
