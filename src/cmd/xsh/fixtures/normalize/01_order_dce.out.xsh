@@ -1,8 +1,8 @@
 use ./dep.xsh {
   dep
 }
- trait Eq
- impl Eq for Int
+trait Eq
+impl Eq for Int
 let helper = () -> Int {
   1
 }

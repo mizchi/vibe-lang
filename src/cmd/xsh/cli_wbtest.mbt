@@ -967,6 +967,26 @@ test "normalize source sorts function defs topologically with alpha tie" {
 }
 
 ///|
+test "normalize source keeps Type:: wrappers after plain defs on alpha tie" {
+  let source =
+    #|export let Int::foo = (x: Int) -> Int { x }
+    #|export let bar = () -> Int { 1 }
+    #|export let baz = () -> Int { 2 }
+  let normalized = match normalize_source_text(source) {
+    Ok(v) => v
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+  let idx_bar = wbtest_substring_index(normalized, "export let bar =")
+  let idx_baz = wbtest_substring_index(normalized, "export let baz =")
+  let idx_member = wbtest_substring_index(normalized, "export let Int::foo =")
+  assert_true(idx_bar >= 0)
+  assert_true(idx_baz >= 0)
+  assert_true(idx_member >= 0)
+  assert_true(idx_bar < idx_baz)
+  assert_true(idx_baz < idx_member)
+}
+
+///|
 test "normalize source inlines single-use zero-arg fn and folds const" {
   let source =
     #|let helper = () -> Int { 1 + 2 }
@@ -995,6 +1015,77 @@ test "normalize source inserts inferred annotation on non-fn let" {
   }
   assert_true(normalized.contains("let answer: Int = 42"))
   assert_false(normalized.contains("let id:"))
+}
+
+///|
+test "std layer classification covers primary modules" {
+  let trait_layer = match
+    std_layer_for_path("/tmp/repo/xsh/std/builtin_traits.xsh") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(trait_layer, "trait-contract")
+
+  let primitive_layer = match
+    std_layer_for_path("/tmp/repo/xsh/std/string.xsh") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(primitive_layer, "pure-primitive")
+
+  let data_layer = match std_layer_for_path("/tmp/repo/xsh/std/list.xsh") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(data_layer, "pure-data")
+
+  let ref_layer = match std_layer_for_path("/tmp/repo/xsh/std/path.xsh") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(ref_layer, "ref-model")
+
+  let effect_layer = match std_layer_for_path("/tmp/repo/xsh/std/io.xsh") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(effect_layer, "effect-boundary")
+
+  let backend_layer = match
+    std_layer_for_path("/tmp/repo/xsh/std/wasm/types.xsh") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(backend_layer, "backend-specific")
+}
+
+///|
+test "std layering rejects effect to backend import" {
+  let source =
+    #|use ./wasm/types.xsh { i32 }
+  let violations = std_layering_violations_for_source(
+    "/tmp/repo/xsh/std/io.xsh", source,
+  )
+  assert_eq(violations.length(), 1)
+  assert_true(violations[0].contains("effect-boundary"))
+  assert_true(violations[0].contains("backend-specific"))
+}
+
+///|
+test "std layering allows effect to primitive import and ignores std tests" {
+  let allowed_source =
+    #|use ./string.xsh { String }
+  let allowed = std_layering_violations_for_source(
+    "/tmp/repo/xsh/std/io.xsh", allowed_source,
+  )
+  assert_eq(allowed.length(), 0)
+
+  let test_source =
+    #|use ./wasm/types.xsh { i32 }
+  let test_file = std_layering_violations_for_source(
+    "/tmp/repo/xsh/std/io_test.xsh", test_source,
+  )
+  assert_eq(test_file.length(), 0)
 }
 
 ///|

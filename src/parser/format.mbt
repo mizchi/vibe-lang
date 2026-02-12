@@ -70,7 +70,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
   let mut indent = 0
   let mut pending_newlines = 0
   let container_stack : Array[ContainerKind] = []
-  let enum_paren_base_stack : Array[Int] = []
+  let container_paren_base_stack : Array[Int] = []
   let mut paren_depth = 0
   let mut brace_depth = 0
   let mut bracket_depth = 0
@@ -79,6 +79,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
   let mut type_decl_header = TypeDeclMode::DeclNone
   let mut type_decl_rhs_active = false
   let mut saw_newline = false
+  let mut line_has_content = false
   let mut prev_prev_kind : @cst.SyntaxKind? = None
   let mut prev_kind : @cst.SyntaxKind? = None
   let mut prev_text : String? = None
@@ -94,7 +95,17 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
     }
     if kind == newline() {
       saw_newline = true
-      if pending_newlines == 0 || container_stack.length() == 0 {
+      let next_kind = next_non_trivia_kind(tokens, i)
+      let collapse_generic_break = match (prev_kind, next_kind) {
+        (Some(prev), Some(next)) =>
+          (prev == impl_kw() || prev == eq()) && next == lbracket()
+        _ => false
+      }
+      if paren_depth > 0 || bracket_depth > 0 || collapse_generic_break {
+        i += 1
+        continue
+      }
+      if pending_newlines == 0 {
         pending_newlines += 1
       }
       i += 1
@@ -151,6 +162,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       prev_text = None
       prev_prefix = false
       prev_pipe = false
+      line_has_content = false
     }
     let next_kind = next_non_trivia_kind(tokens, i)
     let curr_pipe = kind == pipe() &&
@@ -164,24 +176,32 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
     let in_enum_container = container_stack.length() > 0 &&
       container_stack[container_stack.length() - 1] == ContainerKind::BraceEnum
     let enum_top_level = in_enum_container &&
-      enum_paren_base_stack.length() > 0 &&
-      paren_depth == enum_paren_base_stack[enum_paren_base_stack.length() - 1]
+      container_paren_base_stack.length() > 0 &&
+      paren_depth ==
+      container_paren_base_stack[container_paren_base_stack.length() - 1]
+    let rendered_text = if kind == comma() && enum_top_level {
+      ";"
+    } else {
+      token_text_for_output(tok)
+    }
+    if rendered_text.length() == 0 {
+      i += 1
+      continue
+    }
     let curr_prefix = is_prefix_op(kind, prev_kind)
     let insert_struct_double_colon = should_insert_struct_double_colon(
       prev_prev_kind, prev_kind, prev_text, kind, in_type_context,
     )
-    if not(insert_struct_double_colon) &&
+    if line_has_content &&
+      not(insert_struct_double_colon) &&
       needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe) {
       buf.write_char(' ')
     }
     if insert_struct_double_colon {
       buf.write_string("::")
     }
-    if kind == comma() && enum_top_level {
-      buf.write_char(';')
-    } else {
-      buf.write_string(token_text_for_output(tok))
-    }
+    buf.write_string(rendered_text)
+    line_has_content = true
     if kind == type_kw() {
       type_decl_header = TypeDeclMode::DeclTypeAlias
     } else if kind == enum_kw() {
@@ -224,9 +244,7 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
           type_decl_header = TypeDeclMode::DeclNone
         }
         container_stack.push(container)
-        if container == ContainerKind::BraceEnum {
-          enum_paren_base_stack.push(paren_depth)
-        }
+        container_paren_base_stack.push(paren_depth)
         if container_indents(container) {
           indent += 1
           if pending_newlines == 0 {
@@ -234,13 +252,19 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
           }
         }
       } else {
+        let generic_hint = (match prev_kind {
+          Some(prev) => prev == impl_kw()
+          None => false
+        }) || is_generic_param_bracket(tokens, i)
         let container = container_kind_for_bracket(
           prev_kind,
           type_context_stack.length() > 0 || type_decl_rhs_active,
           type_decl_header != TypeDeclMode::DeclNone,
+          generic_hint,
         )
         bracket_depth += 1
         container_stack.push(container)
+        container_paren_base_stack.push(paren_depth)
         if container_indents(container) {
           indent += 1
           if pending_newlines == 0 {
@@ -267,20 +291,22 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
         }
       }
       if container_stack.length() > 0 {
+        if container_paren_base_stack.length() > 0 {
+          ignore(container_paren_base_stack.pop())
+        }
         match container_stack.pop() {
-          Some(container) =>
-            if container == ContainerKind::BraceEnum &&
-              enum_paren_base_stack.length() > 0 {
-              ignore(enum_paren_base_stack.pop())
-            }
+          Some(_) => ()
           None => ()
         }
       }
     } else if kind == comma() || kind == semicolon() {
       if container_stack.length() > 0 &&
+        container_paren_base_stack.length() > 0 &&
         container_forces_list_newlines(
           container_stack[container_stack.length() - 1],
         ) &&
+        paren_depth ==
+        container_paren_base_stack[container_paren_base_stack.length() - 1] &&
         pending_newlines == 0 {
         pending_newlines = 1
       }
@@ -310,6 +336,55 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
   buf.to_string()
 }
 
+fn bracket_tokens_look_like_type_params(
+  tokens : Array[@cst.SyntaxToken],
+  start_idx : Int,
+  close_idx : Int,
+) -> Bool {
+  let mut saw_name = false
+  let mut i = start_idx + 1
+  while i < close_idx {
+    let kind = tokens[i].kind()
+    if kind == whitespace() || kind == newline() || kind == eof() {
+      i += 1
+      continue
+    }
+    if kind == name() {
+      saw_name = true
+      i += 1
+      continue
+    }
+    if kind == comma() ||
+      kind == colon() ||
+      kind == plus() ||
+      kind == lbracket() ||
+      kind == rbracket() {
+      i += 1
+      continue
+    }
+    return false
+  }
+  saw_name
+}
+
+///|
+fn is_generic_param_bracket(
+  tokens : Array[@cst.SyntaxToken],
+  start_idx : Int,
+) -> Bool {
+  let close_idx = match find_matching_rbracket_token_index(tokens, start_idx) {
+    Some(v) => v
+    None => return false
+  }
+  if not(bracket_tokens_look_like_type_params(tokens, start_idx, close_idx)) {
+    return false
+  }
+  match next_non_trivia_kind(tokens, close_idx) {
+    Some(next_kind) => next_kind == lparen() || next_kind == name()
+    None => false
+  }
+}
+
 ///|
 fn token_text_for_output(tok : @cst.SyntaxToken) -> String {
   let kind = tok.kind()
@@ -320,7 +395,38 @@ fn token_text_for_output(tok : @cst.SyntaxToken) -> String {
   } else if kind == char_lit() {
     quote_char_literal(tok.text())
   } else {
-    tok.text()
+    trim_ascii_whitespace(tok.text())
+  }
+}
+
+///|
+fn trim_ascii_whitespace(text : String) -> String {
+  let len = text.length()
+  if len == 0 {
+    return ""
+  }
+  let mut start = 0
+  while start < len {
+    let c = text[start].to_int().unsafe_to_char()
+    if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+      start += 1
+    } else {
+      break
+    }
+  }
+  let mut end = len
+  while end > start {
+    let c = text[end - 1].to_int().unsafe_to_char()
+    if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+      end -= 1
+    } else {
+      break
+    }
+  }
+  if start == 0 && end == len {
+    text
+  } else {
+    text.unsafe_substring(start~, end~)
   }
 }
 
@@ -420,7 +526,11 @@ fn container_kind_for_bracket(
   prev_kind : @cst.SyntaxKind?,
   in_type_context : Bool,
   in_type_decl_header : Bool,
+  generic_param_hint : Bool,
 ) -> ContainerKind {
+  if generic_param_hint {
+    return ContainerKind::BracketTypeArgs
+  }
   match prev_kind {
     Some(prev) =>
       if (prev == name() || prev == rbracket()) &&
@@ -462,6 +572,33 @@ fn container_forces_list_newlines(kind : ContainerKind) -> Bool {
 }
 
 ///|
+fn find_matching_rbracket_token_index(
+  tokens : Array[@cst.SyntaxToken],
+  start_idx : Int,
+) -> Int? {
+  if start_idx < 0 || start_idx >= tokens.length() {
+    return None
+  }
+  if tokens[start_idx].kind() != lbracket() {
+    return None
+  }
+  let mut depth = 0
+  let mut i = start_idx
+  while i < tokens.length() {
+    let kind = tokens[i].kind()
+    if kind == lbracket() {
+      depth += 1
+    } else if kind == rbracket() {
+      depth -= 1
+      if depth == 0 {
+        return Some(i)
+      }
+    }
+    i += 1
+  }
+  None
+}
+
 fn is_index_receiver_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == name() ||
   kind == rparen() ||
@@ -693,6 +830,9 @@ fn needs_space(
         return false
       }
       if prev == name() && curr_kind == name() {
+        return true
+      }
+      if prev == rbracket() && curr_kind == name() {
         return true
       }
       if curr_kind == lparen() || curr_kind == lbracket() {

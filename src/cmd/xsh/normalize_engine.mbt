@@ -35,6 +35,172 @@ struct NormalizeInlineCandidate {
 }
 
 ///|
+enum StdModuleLayer {
+  TraitContract
+  PurePrimitive
+  PureData
+  RefModel
+  EffectBoundary
+  BackendSpecific
+}
+
+///|
+fn std_layer_name(layer : StdModuleLayer) -> String {
+  match layer {
+    StdModuleLayer::TraitContract => "trait-contract"
+    StdModuleLayer::PurePrimitive => "pure-primitive"
+    StdModuleLayer::PureData => "pure-data"
+    StdModuleLayer::RefModel => "ref-model"
+    StdModuleLayer::EffectBoundary => "effect-boundary"
+    StdModuleLayer::BackendSpecific => "backend-specific"
+  }
+}
+
+///|
+fn std_layer_for_path(path : String) -> StdModuleLayer? {
+  let normalized = @xsh_fs.normalize_path(path)
+  if not(normalized.contains("/xsh/std/")) ||
+    not(normalized.has_suffix(".xsh")) ||
+    normalized.has_suffix("_test.xsh") ||
+    normalized.has_suffix("_type_import_test.xsh") ||
+    normalized.has_suffix("/test_import.xsh") {
+    return None
+  }
+  if normalized.has_suffix("/xsh/std/builtin_traits.xsh") {
+    return Some(StdModuleLayer::TraitContract)
+  }
+  if normalized.has_suffix("/xsh/std/bool.xsh") ||
+    normalized.has_suffix("/xsh/std/int.xsh") ||
+    normalized.has_suffix("/xsh/std/float.xsh") ||
+    normalized.has_suffix("/xsh/std/double.xsh") ||
+    normalized.has_suffix("/xsh/std/string.xsh") {
+    return Some(StdModuleLayer::PurePrimitive)
+  }
+  if normalized.has_suffix("/xsh/std/list.xsh") ||
+    normalized.has_suffix("/xsh/std/option.xsh") {
+    return Some(StdModuleLayer::PureData)
+  }
+  if normalized.has_suffix("/xsh/std/path.xsh") {
+    return Some(StdModuleLayer::RefModel)
+  }
+  if normalized.has_suffix("/xsh/std/io.xsh") ||
+    normalized.has_suffix("/xsh/std/threads.xsh") {
+    return Some(StdModuleLayer::EffectBoundary)
+  }
+  if normalized.contains("/xsh/std/wasm/") {
+    return Some(StdModuleLayer::BackendSpecific)
+  }
+  None
+}
+
+///|
+fn std_layer_allows_import(
+  source_layer : StdModuleLayer,
+  imported_layer : StdModuleLayer,
+) -> Bool {
+  match source_layer {
+    StdModuleLayer::TraitContract =>
+      match imported_layer {
+        StdModuleLayer::TraitContract => true
+        _ => false
+      }
+    StdModuleLayer::PurePrimitive =>
+      match imported_layer {
+        StdModuleLayer::TraitContract | StdModuleLayer::PurePrimitive => true
+        _ => false
+      }
+    StdModuleLayer::PureData =>
+      match imported_layer {
+        StdModuleLayer::TraitContract
+        | StdModuleLayer::PurePrimitive
+        | StdModuleLayer::PureData => true
+        _ => false
+      }
+    StdModuleLayer::RefModel =>
+      match imported_layer {
+        StdModuleLayer::TraitContract
+        | StdModuleLayer::PurePrimitive
+        | StdModuleLayer::PureData
+        | StdModuleLayer::RefModel => true
+        _ => false
+      }
+    StdModuleLayer::EffectBoundary =>
+      match imported_layer {
+        StdModuleLayer::TraitContract
+        | StdModuleLayer::PurePrimitive
+        | StdModuleLayer::PureData
+        | StdModuleLayer::RefModel
+        | StdModuleLayer::EffectBoundary => true
+        _ => false
+      }
+    StdModuleLayer::BackendSpecific =>
+      match imported_layer {
+        StdModuleLayer::TraitContract
+        | StdModuleLayer::PurePrimitive
+        | StdModuleLayer::PureData
+        | StdModuleLayer::RefModel
+        | StdModuleLayer::BackendSpecific => true
+        _ => false
+      }
+  }
+}
+
+///|
+fn std_collect_direct_import_paths(
+  ast : @xsh_core.Module,
+  base_dir : String,
+) -> Array[String] {
+  let imports : Array[String] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @xsh_core.Stmt::Import(source~, ..)
+      | @xsh_core.Stmt::ReExport(source~, ..) =>
+        match source {
+          @xsh_core.ModuleRef::Path(path=raw_path) =>
+            imports.push(@loader.resolve_import_path(base_dir, raw_path))
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  imports
+}
+
+///|
+pub fn std_layering_violations_for_source(
+  path : String,
+  source : String,
+) -> Array[String] {
+  let source_layer = match std_layer_for_path(path) {
+    Some(v) => v
+    None => return []
+  }
+  let ast = @parser.parse_ast(source) catch { _ => return [] }
+  let base_dir = @xsh_fs.parent_path(path)
+  let imports = std_collect_direct_import_paths(ast, base_dir)
+  let violations : Array[String] = []
+  for import_path in imports {
+    match std_layer_for_path(import_path) {
+      Some(imported_layer) =>
+        if not(std_layer_allows_import(source_layer, imported_layer)) {
+          violations.push(
+            "std layering violation: " +
+            std_layer_name(source_layer) +
+            " module " +
+            path +
+            " must not import " +
+            std_layer_name(imported_layer) +
+            " module " +
+            import_path,
+          )
+        }
+      None => ()
+    }
+  }
+  violations
+}
+
+///|
 pub fn normalize_format_file_source(path : String) -> Result[String, String] {
   let src = @os_fs.read_file_to_string(path) catch {
     e => return Err("normalize: " + e.to_string())
@@ -2027,7 +2193,7 @@ fn normalize_sort_stmt_defs_topo_alpha(
         emitted[def.name] = true
       }
     }
-    unresolved.sort()
+    unresolved.sort_by(fn(a, b) { normalize_name_compare(a, b) })
     for name in unresolved {
       ordered_names.push(name)
     }
@@ -2284,8 +2450,35 @@ fn normalize_pop_smallest_name(names : Array[String]) -> String? {
   if names.length() == 0 {
     return None
   }
-  names.sort_by(fn(a, b) { String::compare(b, a) })
+  names.sort_by(fn(a, b) { normalize_name_compare(b, a) })
   names.pop()
+}
+
+///|
+fn normalize_name_is_member(name : String) -> Bool {
+  let mut i = 0
+  while i + 1 < name.length() {
+    let c = name[i].to_int().unsafe_to_char()
+    let next = name[i + 1].to_int().unsafe_to_char()
+    if c == ':' && next == ':' {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+///|
+fn normalize_name_compare(a : String, b : String) -> Int {
+  let a_member = normalize_name_is_member(a)
+  let b_member = normalize_name_is_member(b)
+  if a_member && not(b_member) {
+    1
+  } else if not(a_member) && b_member {
+    -1
+  } else {
+    String::compare(a, b)
+  }
 }
 
 ///|
