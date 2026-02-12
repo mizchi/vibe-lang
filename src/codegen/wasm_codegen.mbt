@@ -2392,6 +2392,8 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
         ctx.enum_ctor_arg_kinds[ctor.name] = arg_kinds
       }
     }
+    @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+      scan_needs_stmt(ctx, @core.Stmt::EnumDef(name~, params~, ctors~, span~))
     @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
       let _ = name
       let _ = params
@@ -3467,7 +3469,9 @@ fn compile_expr(
       raise WasmGenError::Unsupported("placeholder in codegen")
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
-      if ctx.fn_local_sigs.contains(name) {
+      if ctx.fn_local_sigs.contains(name) &&
+        not(ctx.fn_indices.contains(name)) &&
+        not(ctx.enum_ctor_tags.contains(name)) {
         let sig = match ctx.fn_local_sigs.get(name) {
           Some(s) => s
           None => raise WasmGenError::Unsupported("call: " + name)
@@ -3534,7 +3538,9 @@ fn compile_expr(
           emit_global_get(buf, ctx.heap_global)
           emit_local_set(buf, ctx.heap_local)
         }
-      } else if ctx.locals.contains(name) && not(ctx.fn_indices.contains(name)) {
+      } else if ctx.locals.contains(name) &&
+        not(ctx.fn_indices.contains(name)) &&
+        not(ctx.enum_ctor_tags.contains(name)) {
         let pos_args = extract_positional_exprs(args, name)
         if not(ctx.fn_local_sigs.contains(name)) {
           let guessed_params : Array[ValueKind] = []
@@ -5369,29 +5375,32 @@ fn compile_expr(
             compile_expr_i32(ctx, buf, pos_args[i])
           }
         }
-        // Pass correct env: if function is a local (closure), extract env from closure value
+        // Pass closure env only when this local is known callable in current scope.
         match ctx.locals.get(name) {
-          Some(local_idx) => {
-            let env_local = alloc_temp_local(ctx)
-            emit_local_get(buf, local_idx)
-            emit_i32_const_raw(buf, tag_mask)
-            emit_i32_and(buf)
-            emit_i32_const_raw(buf, tag_fn)
-            emit_i32_eq(buf)
-            buf.push((4).to_byte()) // if
-            buf.push((127).to_byte()) // result i32
-            emit_i32_const_raw(buf, 0) // bare fn: env = 0
-            buf.push((5).to_byte()) // else
-            // closure: env ptr = untag obj ptr
-            emit_local_get(buf, local_idx)
-            emit_local_get(buf, local_idx)
-            emit_i32_const_raw(buf, tag_mask)
-            emit_i32_and(buf)
-            emit_i32_sub(buf)
-            buf.push((11).to_byte()) // end
-            emit_local_set(buf, env_local)
-            emit_local_get(buf, env_local)
-          }
+          Some(local_idx) =>
+            if ctx.fn_local_sigs.contains(name) {
+              let env_local = alloc_temp_local(ctx)
+              emit_local_get(buf, local_idx)
+              emit_i32_const_raw(buf, tag_mask)
+              emit_i32_and(buf)
+              emit_i32_const_raw(buf, tag_fn)
+              emit_i32_eq(buf)
+              buf.push((4).to_byte()) // if
+              buf.push((127).to_byte()) // result i32
+              emit_i32_const_raw(buf, 0) // bare fn: env = 0
+              buf.push((5).to_byte()) // else
+              // closure: env ptr = untag obj ptr
+              emit_local_get(buf, local_idx)
+              emit_local_get(buf, local_idx)
+              emit_i32_const_raw(buf, tag_mask)
+              emit_i32_and(buf)
+              emit_i32_sub(buf)
+              buf.push((11).to_byte()) // end
+              emit_local_set(buf, env_local)
+              emit_local_get(buf, env_local)
+            } else {
+              emit_i32_const_raw(buf, 0)
+            }
           None => emit_i32_const_raw(buf, 0)
         }
         if ctx.heap_local >= 0 && ctx.use_heap_global {
@@ -6130,7 +6139,15 @@ fn compile_stmt(
         @core.Stmt::Let(rec~, name~, expr~, span~),
         is_last,
       )
-    @core.Stmt::ExportEnumDef(..) | @core.Stmt::ExportTypeAlias(..) =>
+    @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+      // ExportEnumDef is compiled like EnumDef for constructor metadata.
+      compile_stmt(
+        ctx,
+        buf,
+        @core.Stmt::EnumDef(name~, params~, ctors~, span~),
+        is_last,
+      )
+    @core.Stmt::ExportTypeAlias(..) =>
       // Type exports have no runtime representation in WASM
       // If this is the last statement, push unit
       if is_last {

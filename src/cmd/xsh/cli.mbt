@@ -1876,6 +1876,28 @@ fn split_env_flags(raw : String) -> Array[String] {
 }
 
 ///|
+fn has_wasm_feature_flag(flags : Array[String], feature : String) -> Bool {
+  let prefix = feature.to_lower() + "="
+  for flag in flags {
+    let token = flag.trim().to_string().to_lower()
+    if token == feature || token.has_prefix(prefix) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn with_default_bench_wasm_flags(flags : Array[String]) -> Array[String] {
+  let out = flags.copy()
+  // xsh-generated core wasm currently uses exception tags; enable by default.
+  if not(has_wasm_feature_flag(out, "exceptions")) {
+    out.push("exceptions=y")
+  }
+  out
+}
+
+///|
 fn find_command_in_path(name : String) -> String? {
   match @sys.get_env_var("PATH") {
     None => None
@@ -1971,6 +1993,7 @@ fn resolve_bench_wasm_runner(
     Some(raw) => split_env_flags(raw)
     None => []
   }
+  let wasm_flags = with_default_bench_wasm_flags(wasm_flags)
   let wasi_flags = match @sys.get_env_var("XSH_WASMTIME_WASI_FLAGS") {
     Some(raw) => split_env_flags(raw)
     None => []
@@ -2051,7 +2074,28 @@ fn compile_bench_script_to_wasm(
     no_dce=true,
     opt_level=Some("-Oz"),
   ) catch {
-    e => return Err("compile wasm error: " + e.to_string())
+    e => {
+      let primary_err = e.to_string()
+      if primary_err.contains("Optimize(") {
+        @xsh_lib.compile_module_wasm_with_opt_level(
+          db,
+          entry,
+          no_dce=true,
+          opt_level=None,
+        ) catch {
+          e2 =>
+            return Err(
+              "compile wasm error: " +
+              primary_err +
+              " (fallback without optimize failed: " +
+              e2.to_string() +
+              ")",
+            )
+        }
+      } else {
+        return Err("compile wasm error: " + primary_err)
+      }
+    }
   }
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
     e => return Err("write wasm failed: " + e.to_string())

@@ -180,6 +180,29 @@ test "xsh wasm import path" {
 }
 
 ///|
+test "xsh wasm compile export enum ctor call" {
+  let db = XshDb::new()
+  let src =
+    #|export enum Json {
+    #|  JNum(Double)
+    #|}
+    #|
+    #|export let make = (s: String) -> Json {
+    #|  let _ = s
+    #|  JNum(1.0)
+    #|}
+    #|
+    #|make("x")
+  db.set_source("main", src)
+  let wasm = try compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+}
+
+///|
 fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
   let hay = bytes.to_array()
   let pat = @utf8.encode(needle).to_array()
