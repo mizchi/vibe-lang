@@ -105,7 +105,7 @@ fn func_sig_with_env(params : Array[ValueKind], result : ValueKind) -> FuncSig {
   for kind in params {
     out.push(kind)
   }
-  out.push(ValueKind::I64)
+  out.push(ValueKind::I32)
   FuncSig::{ params: out, result }
 }
 
