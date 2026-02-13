@@ -8,11 +8,15 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 |--------|-----------:|-------------|
 | `builtin_traits.vibe` | 7 | Trait-oriented generic API (`Eq`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
 | `option.vibe` | 13 | Generic Option helpers (`is_some`, `unwrap_or`, `map_opt`, `map_or`, `or_else`, `equals`) |
+| `result.vibe` | 7 | Generic Result helpers (`is_ok`, `is_err`, `map_ok`, `map_err`, `bind`, `unwrap_or`, `to_option`) |
+| `cmp.vibe` | 4 | Compare helpers (`int/float/double/string_compare`, `maximum/minimum`, `*_by`, `*_by_key`) |
 | `int.vibe` | 14 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
 | `float.vibe` | 7 | Float helpers (`abs`, `signum`, `clamp`, `square`, `lerp`) |
 | `double.vibe` | 12 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
 | `list.vibe` | 13 | Generic Cons list helpers (`List[T]`, `map`, `fold`, `filter`, `append`, `contains_by`) |
 | `bool.vibe` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
+| `char.vibe` | 3 | ASCII classification/conversion helpers (`is_ascii_*`, `to_ascii_*`, `to_string`, `from_string`) |
+| `bytes.vibe` | 5 | Byte array helpers (`is_byte`, `clamp_byte`, `from_ascii`, `to_ascii`, `to_hex`, `from_hex`) |
 | `string.vibe` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
 | `io.vibe` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
 | `path/ref.vibe` | 2 | PathRef/DynamicPath pure model (`from_literal`, `dynamic`) + member APIs (`as_string`, `is_absolute`) |
@@ -25,7 +29,7 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 | `wasm/opcodes.vibe` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
 | `wasm/io_stream.vibe` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
-**Total: 133 tests**
+**Total: 158 tests**
 
 Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` for `string.vibe`).
 
@@ -34,8 +38,8 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 `vibe/std` is managed as layered modules. See `docs/std-module-boundaries.md` for the canonical table and allowed import matrix.
 
 - `trait-contract`: contracts (`builtin_traits.vibe`)
-- `pure-primitive`: pure scalar/string operations (`bool/int/float/double/string`)
-- `pure-data`: pure ADT/data operations (`list/option`)
+- `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)
+- `pure-data`: pure ADT/data operations (`list/option/result/bytes`)
 - `ref-model`: path and module reference model (`path/ref` + `path` facade)
 - `effect-boundary`: runtime side-effect bridge (`io/path/runtime/threads/runtime`)
 - `backend-specific`: backend-specific experimental APIs (`wasm/*`)
@@ -65,6 +69,14 @@ Boundary enforcement is active in:
 - `and`, `or`, `or_else`, `equals`, `zip_sum`
 - `option_*` prefixes are no longer exported.
 - `map` itself is reserved in xsh syntax, so Option map is named `map_opt`.
+
+`result.vibe` now exposes short names compatible with current xsh parser constraints:
+
+- `is_ok`, `is_err`, `ok`, `err`
+- `map_ok`, `map_err`, `map_or`, `bind`, `and_then`, `flatten`
+- `unwrap_or`, `unwrap_or_else`, `or`, `or_else`
+- `to_option`, `from_option`, `equals_by`
+- `map` itself is reserved in xsh syntax, so Result map is named `map_ok`.
 
 Recommended usage (collision-safe, method-style):
 
@@ -127,11 +139,15 @@ let v = None.unwrap_or(0)
 just run test \
   vibe/std/builtin_traits_test.vibe \
   vibe/std/bool_test.vibe \
+  vibe/std/cmp_test.vibe \
+  vibe/std/char_test.vibe \
+  vibe/std/bytes_test.vibe \
   vibe/std/int_test.vibe \
   vibe/std/float_test.vibe \
   vibe/std/double_test.vibe \
   vibe/std/list_test.vibe \
   vibe/std/option_test.vibe \
+  vibe/std/result_test.vibe \
   vibe/std/string_test.vibe \
   vibe/std/io_test.vibe \
   vibe/std/threads_test.vibe \

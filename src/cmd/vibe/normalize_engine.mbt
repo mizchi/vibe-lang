@@ -70,6 +70,8 @@ fn std_layer_for_path(path : String) -> StdModuleLayer? {
     return Some(StdModuleLayer::TraitContract)
   }
   if normalized.has_suffix("/vibe/std/bool.vibe") ||
+    normalized.has_suffix("/vibe/std/cmp.vibe") ||
+    normalized.has_suffix("/vibe/std/char.vibe") ||
     normalized.has_suffix("/vibe/std/int.vibe") ||
     normalized.has_suffix("/vibe/std/float.vibe") ||
     normalized.has_suffix("/vibe/std/double.vibe") ||
@@ -77,13 +79,19 @@ fn std_layer_for_path(path : String) -> StdModuleLayer? {
     return Some(StdModuleLayer::PurePrimitive)
   }
   if normalized.has_suffix("/vibe/std/list.vibe") ||
-    normalized.has_suffix("/vibe/std/option.vibe") {
+    normalized.has_suffix("/vibe/std/option.vibe") ||
+    normalized.has_suffix("/vibe/std/result.vibe") ||
+    normalized.has_suffix("/vibe/std/bytes.vibe") ||
+    normalized.has_suffix("/vibe/std/threads/spec.vibe") {
     return Some(StdModuleLayer::PureData)
   }
-  if normalized.has_suffix("/vibe/std/path.vibe") {
+  if normalized.has_suffix("/vibe/std/path/ref.vibe") ||
+    normalized.has_suffix("/vibe/std/path.vibe") {
     return Some(StdModuleLayer::RefModel)
   }
   if normalized.has_suffix("/vibe/std/io.vibe") ||
+    normalized.has_suffix("/vibe/std/path/runtime.vibe") ||
+    normalized.has_suffix("/vibe/std/threads/runtime.vibe") ||
     normalized.has_suffix("/vibe/std/threads.vibe") {
     return Some(StdModuleLayer::EffectBoundary)
   }

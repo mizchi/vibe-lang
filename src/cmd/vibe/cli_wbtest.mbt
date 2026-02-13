@@ -1205,20 +1205,41 @@ test "std layer classification covers primary modules" {
     None => "none"
   }
   assert_eq(primitive_layer, "pure-primitive")
+  let primitive_layer_cmp = match std_layer_for_path("/tmp/repo/vibe/std/cmp.vibe") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(primitive_layer_cmp, "pure-primitive")
+  let primitive_layer_char = match std_layer_for_path("/tmp/repo/vibe/std/char.vibe") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(primitive_layer_char, "pure-primitive")
 
   let data_layer = match std_layer_for_path("/tmp/repo/vibe/std/list.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer, "pure-data")
+  let data_layer_bytes = match std_layer_for_path("/tmp/repo/vibe/std/bytes.vibe") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(data_layer_bytes, "pure-data")
+  let data_layer_result = match std_layer_for_path("/tmp/repo/vibe/std/result.vibe") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(data_layer_result, "pure-data")
 
-  let ref_layer = match std_layer_for_path("/tmp/repo/vibe/std/path.vibe") {
+  let ref_layer = match std_layer_for_path("/tmp/repo/vibe/std/path/ref.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(ref_layer, "ref-model")
 
-  let effect_layer = match std_layer_for_path("/tmp/repo/vibe/std/io.vibe") {
+  let effect_layer = match
+    std_layer_for_path("/tmp/repo/vibe/std/threads/runtime.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }

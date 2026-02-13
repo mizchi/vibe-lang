@@ -1,0 +1,165 @@
+export type Byte = Int
+export type Bytes = Array[Int]
+
+let hex_nibble_char = (value: Int) -> String {
+  if value < 10 {
+    string_from_char_code(48 + value)
+  } else {
+    string_from_char_code(87 + value)
+  }
+}
+
+let hex_char_value = (code: Int) -> Int {
+  if code >= 48 && code <= 57 {
+    code - 48
+  }
+  else if code >= 65 && code <= 70 {
+    code - 55
+  }
+  else if code >= 97 && code <= 102 {
+    code - 87
+  }
+  else {
+    -1
+  }
+}
+
+export let is_byte = (value: Int) -> Bool {
+  value >= 0 && value <= 255
+}
+
+export let clamp_byte = (value: Int) -> Int {
+  if value < 0 {
+    0
+  }
+  else if value > 255 {
+    255
+  }
+  else {
+    value
+  }
+}
+
+export let length = (bytes: Bytes) -> Int {
+  array_length(bytes)
+}
+
+export let get = (bytes: Bytes, index: Int) -> Option[Int] {
+  if index < 0 || index >= array_length(bytes) {
+    None
+  } else {
+    Some(array_get(bytes, index))
+  }
+}
+
+export let equals = (a: Bytes, b: Bytes) -> Bool {
+  let len = array_length(a)
+  if len != array_length(b) {
+    false
+  }
+  else {
+    let rec loop = (i: Int) -> Bool {
+      if i >= len {
+        true
+      }
+      else if array_get(a, i) != array_get(b, i) {
+        false
+      }
+      else {
+        loop(i + 1)
+      }
+    }
+    loop(0)
+  }
+}
+
+export let from_ascii = (s: String) -> Option[Bytes] {
+  // Keep this function pure: array_builder* currently makes import/export resolution unstable.
+  let len = string_length(s)
+  let rec loop = (i: Int) -> Option[Bytes] {
+    if i >= len {
+      Some([])
+    }
+    else {
+      let code = string_char_code_at(s, i)
+      if code < 0 || code > 127 {
+        None
+      }
+      else {
+        match loop(i + 1) {
+          Some(rest) => Some(array_concat([code], rest)),
+          _ => None
+        }
+      }
+    }
+  }
+  loop(0)
+}
+
+export let to_ascii = (bytes: Bytes) -> Option[String] {
+  let len = array_length(bytes)
+  let rec loop = (i: Int, acc: String) -> Option[String] {
+    if i >= len {
+      Some(acc)
+    }
+    else {
+      let code = array_get(bytes, i)
+      if code < 0 || code > 127 {
+        None
+      }
+      else {
+        loop(i + 1, string_concat(acc, string_from_char_code(code)))
+      }
+    }
+  }
+  loop(0, "")
+}
+
+export let to_hex = (bytes: Bytes) -> String {
+  let len = array_length(bytes)
+  let rec loop = (i: Int, acc: String) -> String {
+    if i >= len {
+      acc
+    }
+    else {
+      let byte = clamp_byte(array_get(bytes, i))
+      let hi = byte / 16
+      let lo = byte % 16
+      let next = string_concat(
+        string_concat(acc, hex_nibble_char(hi)),
+        hex_nibble_char(lo)
+      )
+      loop(i + 1, next)
+    }
+  }
+  loop(0, "")
+}
+
+export let from_hex = (hex: String) -> Option[Bytes] {
+  let len = string_length(hex)
+  if len % 2 != 0 {
+    None
+  }
+  else {
+    let rec loop = (i: Int) -> Option[Bytes] {
+      if i >= len {
+        Some([])
+      }
+      else {
+        let hi = hex_char_value(string_char_code_at(hex, i))
+        let lo = hex_char_value(string_char_code_at(hex, i + 1))
+        if hi < 0 || lo < 0 {
+          None
+        }
+        else {
+          let value = hi * 16 + lo
+          match loop(i + 2) {
+            Some(rest) => Some(array_concat([value], rest)),
+            _ => None
+          }
+        }
+      }
+    }
+    loop(0)
+  }
+}
