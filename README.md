@@ -323,6 +323,7 @@ just bench-wasmtime
 just bench-compare
 just bench-kpi
 just bench-kpi bench/kpi_bench.vibe
+just bench-std-baseline-update
 just run bench examples/simple_bench.vibe
 just bench-cmd-latency
 just bench-scratch-workflow
@@ -339,6 +340,9 @@ legacy の式ベンチ (`--expr/--case/--cases`) は `interpreter` backend の�
 KPI しきい値は `VIBE_BENCH_KPI_MAX_PER_US` / `VIBE_BENCH_KPI_MAX_WASM_BYTES` / `VIBE_BENCH_KPI_MAX_SCORE` で設定可能。
 引数なしの `just bench-kpi` は `bench/kpi_bench.vibe`（数値パイプライン/状態更新の4ケース）を対象にする。
 `VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000`, `interpreter=2000/200` を使う。
+`just bench-std-baseline-update` は `vibe/std` を含む bundle-size budget
+(`bench/golden/bundle_size_budget.tsv`) と KPI snapshot
+(`bench/golden/kpi_wasm.tsv`, `bench/golden/kpi_interpreter.tsv`) を更新する。
 
 `bench-scratch-workflow` は scratch 開発フローを段階別に計測する。
 

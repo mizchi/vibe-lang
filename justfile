@@ -247,6 +247,12 @@ bench-bundle-size:
 bench-bundle-size-update:
     scripts/bench_bundle_size.sh --update
 
+# Update std-focused benchmark baselines (bundle-size + KPI snapshots)
+bench-std-baseline-update:
+    VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1 VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1 scripts/bench_bundle_size.sh --update
+    VIBE_BENCH_KPI_BACKEND=wasm VIBE_BENCH_KPI_REPORT=bench/golden/kpi_wasm.tsv scripts/bench_kpi.sh
+    VIBE_BENCH_KPI_BACKEND=interpreter VIBE_BENCH_KPI_REPORT=bench/golden/kpi_interpreter.tsv scripts/bench_kpi.sh
+
 # Regenerate advanced graph flatbuffers schema bindings
 gen-advanced-graph-fb:
     moon run src/cmd/fbgen/main.mbt --target js
