@@ -1,11 +1,71 @@
-// Base64 encode/decode
-
-let table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
+declare export let decode: (String) -> String
+declare export let encode: (String) -> String
+declare export let String::base64_decode: (String) -> String
+declare export let String::base64_encode: (String) -> String
+let table: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 let to_b64 = (i: Int) -> String {
   table.string_substring(i, i + 1)
 }
-
+let decode_char = (c: Int) -> Int {
+  if c >= 65 && c <= 90 {
+    c - 65
+  } else if c >= 97 && c <= 122 {
+    c - 97 + 26
+  } else if c >= 48 && c <= 57 {
+    c - 48 + 52
+  } else if c == 43 {
+    62
+  } else if c == 47 {
+    63
+  } else {
+    -1
+  }
+}
+let rec dec_loop = (s: String, i: Int, len: Int, out: String) -> String {
+  if i + 4 > len {
+    out
+  } else {
+    let c0 = decode_char(s.string_char_code_at(i))
+    let c1 = decode_char(s.string_char_code_at(i + 1))
+    let c2 = decode_char(s.string_char_code_at(i + 2))
+    let c3 = decode_char(s.string_char_code_at(i + 3))
+    if c2 == -1 && c3 == -1 {
+      let byte0 = c0 * 4 + c1 / 16
+      out.string_concat(string_from_char_code(byte0))
+    } else if c3 == -1 {
+      let byte0 = c0 * 4 + c1 / 16
+      let byte1 = c1 % 16 * 16 + c2 / 4
+      out.string_concat(string_from_char_code(byte0)).string_concat(string_from_char_code(byte1))
+    } else {
+      let byte0 = c0 * 4 + c1 / 16
+      let byte1 = c1 % 16 * 16 + c2 / 4
+      let byte2 = c2 % 4 * 64 + c3
+      let chunk = string_from_char_code(byte0).string_concat(string_from_char_code(byte1)).string_concat(string_from_char_code(byte2))
+      dec_loop(s, i + 4, len, out.string_concat(chunk))
+    }
+  }
+}
+decode = (s: String) -> String {
+  let len = s.string_length()
+  if len == 0 {
+    ""
+  } else {
+    dec_loop(s, 0, len, "")
+  }
+}
+let encode_pair = (a: Int, b: Int) -> String {
+  let c0 = to_b64(a / 4)
+  let x1 = a % 4 * 16
+  let y1 = b / 16
+  let c1 = to_b64(x1 + y1)
+  let c2 = to_b64(b % 16 * 4)
+  c0.string_concat(c1).string_concat(c2).string_concat("=")
+}
+let encode_single = (a: Int) -> String {
+  let c0 = to_b64(a / 4)
+  let c1 = to_b64(a % 4 * 16)
+  c0.string_concat(c1).string_concat("==")
+}
 let encode_triplet = (a: Int, b: Int, c: Int) -> String {
   let c0 = to_b64(a / 4)
   let x1 = a % 4 * 16
@@ -17,22 +77,6 @@ let encode_triplet = (a: Int, b: Int, c: Int) -> String {
   let c3 = to_b64(c % 64)
   c0.string_concat(c1).string_concat(c2).string_concat(c3)
 }
-
-let encode_pair = (a: Int, b: Int) -> String {
-  let c0 = to_b64(a / 4)
-  let x1 = a % 4 * 16
-  let y1 = b / 16
-  let c1 = to_b64(x1 + y1)
-  let c2 = to_b64(b % 16 * 4)
-  c0.string_concat(c1).string_concat(c2).string_concat("=")
-}
-
-let encode_single = (a: Int) -> String {
-  let c0 = to_b64(a / 4)
-  let c1 = to_b64(a % 4 * 16)
-  c0.string_concat(c1).string_concat("==")
-}
-
 let rec enc_loop = (s: String, i: Int, out: String) -> String {
   let len = s.string_length()
   if i + 3 <= len {
@@ -54,72 +98,14 @@ let rec enc_loop = (s: String, i: Int, out: String) -> String {
     out
   }
 }
-
-// decode_char: Base64 character code -> 0-63 index, -1 for padding/invalid
-let decode_char = (c: Int) -> Int {
-  if c >= 65 && c <= 90 {
-    // A-Z -> 0-25
-    c - 65
-  } else if c >= 97 && c <= 122 {
-    // a-z -> 26-51
-    c - 97 + 26
-  } else if c >= 48 && c <= 57 {
-    // 0-9 -> 52-61
-    c - 48 + 52
-  } else if c == 43 {
-    // + -> 62
-    62
-  } else if c == 47 {
-    // / -> 63
-    63
-  } else {
-    // = or invalid
-    -1
-  }
-}
-
-let rec dec_loop = (s: String, i: Int, len: Int, out: String) -> String {
-  if i + 4 > len {
-    out
-  } else {
-    let c0 = decode_char(s.string_char_code_at(i))
-    let c1 = decode_char(s.string_char_code_at(i + 1))
-    let c2 = decode_char(s.string_char_code_at(i + 2))
-    let c3 = decode_char(s.string_char_code_at(i + 3))
-    if c2 == -1 && c3 == -1 {
-      // two padding chars: 1 output byte
-      let byte0 = c0 * 4 + c1 / 16
-      out.string_concat(string_from_char_code(byte0))
-    } else if c3 == -1 {
-      // one padding char: 2 output bytes
-      let byte0 = c0 * 4 + c1 / 16
-      let byte1 = c1 % 16 * 16 + c2 / 4
-      out.string_concat(string_from_char_code(byte0)).string_concat(string_from_char_code(byte1))
-    } else {
-      // no padding: 3 output bytes
-      let byte0 = c0 * 4 + c1 / 16
-      let byte1 = c1 % 16 * 16 + c2 / 4
-      let byte2 = c2 % 4 * 64 + c3
-      let chunk = string_from_char_code(byte0).string_concat(string_from_char_code(byte1)).string_concat(string_from_char_code(byte2))
-      dec_loop(s, i + 4, len, out.string_concat(chunk))
-    }
-  }
-}
-
 // public API
-export let encode = (s: String) -> String {
+encode = (s: String) -> String {
   enc_loop(s, 0, "")
 }
-
-export let decode = (s: String) -> String {
-  let len = s.string_length()
-  if len == 0 {
-    ""
-  } else {
-    dec_loop(s, 0, len, "")
-  }
+String::base64_decode = (s: String) -> String {
+  decode(s)
 }
-
 // Type member exports (String::method style)
-export let String::base64_encode = (s: String) -> String { encode(s) }
-export let String::base64_decode = (s: String) -> String { decode(s) }
+String::base64_encode = (s: String) -> String {
+  encode(s)
+}

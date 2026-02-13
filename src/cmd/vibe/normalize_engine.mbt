@@ -555,10 +555,19 @@ fn normalize_source_text_flat(source : String) -> Result[String, String] {
     e => return Err("normalize: rendered parse failed: " + e.to_string())
   }
   let expected = @vibe_core.Module::{ stmts: sorted }
+  let expected_decl_assign_names = normalize_collect_decl_assign_stmt_names(
+    expected,
+  )
   let reparsed_stripped = normalize_strip_local_type_assert_module(reparsed)
   let expected_stripped = normalize_strip_local_type_assert_module(expected)
-  if @vibe_core.normalize_module(reparsed_stripped) !=
-    @vibe_core.normalize_module(expected_stripped) {
+  let reparsed_canonical = normalize_strip_decl_assign_fn_param_types(
+    reparsed_stripped, expected_decl_assign_names,
+  )
+  let expected_canonical = normalize_strip_decl_assign_fn_param_types(
+    expected_stripped, expected_decl_assign_names,
+  )
+  if @vibe_core.normalize_module(reparsed_canonical) !=
+    @vibe_core.normalize_module(expected_canonical) {
     return Err("normalize: rendered source changed semantics")
   }
   Ok(formatted)
@@ -780,9 +789,22 @@ fn normalize_render_decl_assign_stmt(
   original_expr : @vibe_core.Expr,
   rewritten_expr : @vibe_core.Expr?,
 ) -> String? {
-  let source_expr = match normalize_unwrap_local_type_assert(original_expr) {
-    Some((_, inner_expr)) => inner_expr
-    None => original_expr
+  let (declared_ty, source_expr) = match
+    normalize_unwrap_local_type_assert(original_expr) {
+    Some((ann_ty, inner_expr)) => (Some(ann_ty), inner_expr)
+    None => (None, original_expr)
+  }
+  if rewritten_expr is None {
+    match
+      normalize_render_decl_assign_fn_without_param_annotations(
+        source,
+        name,
+        declared_ty,
+        source_expr,
+      ) {
+      Some(rendered) => return Some(name + " = " + rendered)
+      None => ()
+    }
   }
   let expr_text = match
     normalize_render_stmt_expr_text(source, source_expr, rewritten_expr) {
@@ -790,6 +812,224 @@ fn normalize_render_decl_assign_stmt(
     None => return None
   }
   Some(name + " = " + expr_text)
+}
+
+///|
+fn normalize_render_decl_assign_fn_without_param_annotations(
+  source : String,
+  name : String,
+  declared_ty : @vibe_core.Type?,
+  expr : @vibe_core.Expr,
+) -> String? {
+  let decl_ty = match declared_ty {
+    Some(v) => v
+    None => return None
+  }
+  let decl_ty_text = match normalize_render_decl_annotation_type(decl_ty) {
+    Some(v) => v
+    None => return None
+  }
+  match expr {
+    @vibe_core.Expr::Fn(type_params~, params~, ..) => {
+      if type_params.length() > 0 {
+        return None
+      }
+      for param in params {
+        if param.bounds.length() > 0 {
+          return None
+        }
+      }
+      let span = expr.span()
+      let snippet = normalize_source_slice_by_span(source, span.start, span.end)
+        .trim()
+        .to_string()
+      if snippet.length() == 0 {
+        return None
+      }
+      let stripped = match normalize_strip_fn_param_annotations(snippet) {
+        Some(v) => v
+        None => return None
+      }
+      if stripped == snippet {
+        return None
+      }
+      let probe =
+        "declare export let " +
+        name +
+        ": " +
+        decl_ty_text +
+        "\n" +
+        name +
+        " = " +
+        stripped
+      let probe_ast = @parser.parse_ast(probe) catch { _ => return None }
+      let _ = @checker.type_check(probe_ast) catch { _ => return None }
+      Some(stripped)
+    }
+    _ => None
+  }
+}
+
+///|
+fn normalize_strip_fn_param_annotations(snippet : String) -> String? {
+  let mut open_index = -1
+  for i, c in snippet {
+    if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+      continue
+    }
+    if c != '(' {
+      return None
+    }
+    open_index = i
+    break
+  }
+  if open_index < 0 {
+    return None
+  }
+  let close_index = match normalize_find_matching_paren(snippet, open_index) {
+    Some(v) => v
+    None => return None
+  }
+  let inner = normalize_source_slice_by_span(
+    snippet,
+    open_index + 1,
+    close_index,
+  )
+  let stripped_inner = match normalize_strip_param_annotation_list(inner) {
+    Some(v) => v
+    None => return None
+  }
+  let prefix = normalize_source_slice_by_span(snippet, 0, open_index)
+  let suffix = normalize_source_slice_by_span(
+    snippet,
+    close_index + 1,
+    snippet.length(),
+  )
+  Some(prefix + "(" + stripped_inner + ")" + suffix)
+}
+
+///|
+fn normalize_find_matching_paren(source : String, open_index : Int) -> Int? {
+  let mut depth = 0
+  for i, c in source {
+    if i < open_index {
+      continue
+    }
+    if c == '(' {
+      depth += 1
+      continue
+    }
+    if c == ')' {
+      depth -= 1
+      if depth == 0 {
+        return Some(i)
+      }
+    }
+  }
+  None
+}
+
+///|
+fn normalize_strip_param_annotation_list(params_text : String) -> String? {
+  if params_text.trim().to_string().length() == 0 {
+    return Some("")
+  }
+  let parts : Array[String] = []
+  let mut start = 0
+  let mut paren_depth = 0
+  let mut bracket_depth = 0
+  let mut brace_depth = 0
+  for i, c in params_text {
+    if c == '(' {
+      paren_depth += 1
+      continue
+    }
+    if c == ')' {
+      paren_depth -= 1
+      continue
+    }
+    if c == '[' {
+      bracket_depth += 1
+      continue
+    }
+    if c == ']' {
+      bracket_depth -= 1
+      continue
+    }
+    if c == '{' {
+      brace_depth += 1
+      continue
+    }
+    if c == '}' {
+      brace_depth -= 1
+      continue
+    }
+    if c == ',' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
+      let part = normalize_source_slice_by_span(params_text, start, i)
+      match normalize_strip_single_param_annotation(part) {
+        Some(v) => parts.push(v)
+        None => return None
+      }
+      start = i + 1
+    }
+  }
+  let tail = normalize_source_slice_by_span(
+    params_text,
+    start,
+    params_text.length(),
+  )
+  match normalize_strip_single_param_annotation(tail) {
+    Some(v) => parts.push(v)
+    None => return None
+  }
+  Some(parts.join(", "))
+}
+
+///|
+fn normalize_strip_single_param_annotation(param_text : String) -> String? {
+  let trimmed = param_text.trim().to_string()
+  if trimmed.length() == 0 {
+    return Some(trimmed)
+  }
+  let mut paren_depth = 0
+  let mut bracket_depth = 0
+  let mut brace_depth = 0
+  for i, c in trimmed {
+    if c == '(' {
+      paren_depth += 1
+      continue
+    }
+    if c == ')' {
+      paren_depth -= 1
+      continue
+    }
+    if c == '[' {
+      bracket_depth += 1
+      continue
+    }
+    if c == ']' {
+      bracket_depth -= 1
+      continue
+    }
+    if c == '{' {
+      brace_depth += 1
+      continue
+    }
+    if c == '}' {
+      brace_depth -= 1
+      continue
+    }
+    if c == ':' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
+      let name_text = normalize_source_slice_by_span(trimmed, 0, i)
+        .trim()
+        .to_string()
+      if name_text.length() == 0 {
+        return None
+      }
+      return Some(name_text)
+    }
+  }
+  Some(trimmed)
 }
 
 ///|
@@ -1820,6 +2060,109 @@ fn normalize_unwrap_local_type_assert(
       }
     }
     _ => None
+  }
+}
+
+///|
+fn normalize_collect_decl_assign_stmt_names(
+  m : @vibe_core.Module,
+) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for stmt in m.stmts {
+    match stmt {
+      @vibe_core.Stmt::ExportLet(name~, expr~, ..) =>
+        if normalize_unwrap_local_type_assert(expr) is Some(_) {
+          out[name] = true
+        }
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn normalize_strip_decl_assign_fn_param_types(
+  m : @vibe_core.Module,
+  decl_assign_names : Map[String, Bool],
+) -> @vibe_core.Module {
+  let next : Array[@vibe_core.Stmt] = []
+  for stmt in m.stmts {
+    next.push(
+      normalize_strip_decl_assign_fn_param_types_stmt(stmt, decl_assign_names),
+    )
+  }
+  @vibe_core.Module::{ stmts: next }
+}
+
+///|
+fn normalize_strip_decl_assign_fn_param_types_stmt(
+  stmt : @vibe_core.Stmt,
+  decl_assign_names : Map[String, Bool],
+) -> @vibe_core.Stmt {
+  match stmt {
+    @vibe_core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      if not(decl_assign_names.contains(name)) {
+        stmt
+      } else {
+        @vibe_core.Stmt::ExportLet(
+          rec~,
+          name~,
+          expr=normalize_strip_decl_assign_fn_param_types_expr(expr),
+          span~,
+        )
+      }
+    _ => stmt
+  }
+}
+
+///|
+fn normalize_strip_decl_assign_fn_param_types_expr(
+  expr : @vibe_core.Expr,
+) -> @vibe_core.Expr {
+  match expr {
+    @vibe_core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
+      if type_params.length() > 0 {
+        return expr
+      }
+      let next_params : Array[@vibe_core.FuncParam] = []
+      let mut changed = false
+      for param in params {
+        if param.bounds.length() > 0 {
+          return expr
+        }
+        if param.ty != @vibe_core.Type::Unit {
+          changed = true
+        }
+        next_params.push(@vibe_core.FuncParam::{
+          name: param.name,
+          label: param.label,
+          ty: @vibe_core.Type::Unit,
+          bounds: param.bounds,
+        })
+      }
+      if not(changed) {
+        expr
+      } else {
+        @vibe_core.Expr::Fn(
+          type_params~,
+          type_bounds~,
+          params=next_params,
+          ret~,
+          effects~,
+          body~,
+          span~,
+        )
+      }
+    }
+    _ => expr
   }
 }
 

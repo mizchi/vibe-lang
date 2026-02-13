@@ -1215,6 +1215,39 @@ test "normalize source renders export let as declare signature + assignment" {
 }
 
 ///|
+test "normalize source drops rhs param annotation for declared export let assignment" {
+  let source =
+    #|declare export let inc: (Int) -> Int
+    #|inc = (v: Int) -> Int { 1 }
+  let normalized = match normalize_source_text(source) {
+    Ok(v) => v
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+  assert_true(normalized.contains("declare export let inc: (Int) -> Int"))
+  assert_true(normalized.contains("inc = (v) -> Int {"))
+  assert_false(normalized.contains("(v: Int) -> Int { 1 }"))
+}
+
+///|
+test "normalize source keeps rhs param annotation when type params exist" {
+  let source = "export let id = [T](v: T) -> T { v }"
+  let ast = @parser.parse_ast(source) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  let expr = match ast.stmts[0] {
+    @vibe_core.Stmt::ExportLet(expr~, ..) => expr
+    _ => fail("expected export let")
+  }
+  let stripped = normalize_render_decl_assign_fn_without_param_annotations(
+    source,
+    "id",
+    None,
+    expr,
+  )
+  assert_eq(stripped, None)
+}
+
+///|
 test "std layer classification covers primary modules" {
   let trait_layer = match
     std_layer_for_path("/tmp/repo/vibe/std/builtin_traits.vibe") {
@@ -1229,12 +1262,14 @@ test "std layer classification covers primary modules" {
     None => "none"
   }
   assert_eq(primitive_layer, "pure-primitive")
-  let primitive_layer_cmp = match std_layer_for_path("/tmp/repo/vibe/std/cmp.vibe") {
+  let primitive_layer_cmp = match
+    std_layer_for_path("/tmp/repo/vibe/std/cmp.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(primitive_layer_cmp, "pure-primitive")
-  let primitive_layer_char = match std_layer_for_path("/tmp/repo/vibe/std/char.vibe") {
+  let primitive_layer_char = match
+    std_layer_for_path("/tmp/repo/vibe/std/char.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
@@ -1245,12 +1280,14 @@ test "std layer classification covers primary modules" {
     None => "none"
   }
   assert_eq(data_layer, "pure-data")
-  let data_layer_bytes = match std_layer_for_path("/tmp/repo/vibe/std/bytes.vibe") {
+  let data_layer_bytes = match
+    std_layer_for_path("/tmp/repo/vibe/std/bytes.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer_bytes, "pure-data")
-  let data_layer_result = match std_layer_for_path("/tmp/repo/vibe/std/result.vibe") {
+  let data_layer_result = match
+    std_layer_for_path("/tmp/repo/vibe/std/result.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
