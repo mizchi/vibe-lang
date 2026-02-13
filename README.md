@@ -80,6 +80,11 @@ WASM 向けは 3 層で測る:
 - `js/vibe/cli.js` shell から使う JS CLI (`vibe ide` 相当)
 - `js/vibe/lsp.js` / `js/vibe/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
 
+`wasm/vibe/` には `src/lib` の配布用 wasm (`wasm-gc`) を置く:
+- `wasm/vibe/vibe.wasm`
+- `just build-wasm-vibe` で更新
+- `just test-wasm-vibe-wasmtime` で `wasmtime --invoke vibe_check` 疎通確認
+
 ## CLI
 
 ```bash

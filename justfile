@@ -36,6 +36,15 @@ test:
 build-integration-deno-wasm:
     moon build --target wasm-gc --release src/lib
 
+# Build distributable wasm service artifact (`wasm/vibe/vibe.wasm`)
+build-wasm-vibe: build-integration-deno-wasm
+    mkdir -p wasm/vibe
+    cp _build/wasm-gc/release/build/lib/lib.wasm wasm/vibe/vibe.wasm
+
+# Smoke test `wasm/vibe/vibe.wasm` with wasmtime invoke
+test-wasm-vibe-wasmtime: build-wasm-vibe
+    scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm
+
 # Run Deno integration tests (artifact-only, no command spawn)
 test-integration-deno: build-integration-deno-wasm
     deno test --allow-read tests/integration-deno
