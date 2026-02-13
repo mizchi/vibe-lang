@@ -1460,6 +1460,41 @@ test "normalize fixtures has no stale output files" {
 }
 
 ///|
+test "ensure_parent_dir_for_file creates nested directories" {
+  let root = wbtest_make_temp_dir("ensure_parent_nested")
+  let target = root + "/nested/dir/.vibe/namespaces/scratch.db"
+  match ensure_parent_dir_for_file(target, "eval") {
+    Ok(_) => ()
+    Err(err) => fail("expected mkdir success: " + err)
+  }
+  let parent = @vibe_fs.parent_path(target)
+  assert_true(@os_fs.path_exists(parent))
+  let is_dir = @os_fs.is_dir(parent) catch {
+    e => fail("is_dir failed: " + e.to_string())
+  }
+  assert_true(is_dir)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "ensure_parent_dir_for_file errors when parent path is file" {
+  let root = wbtest_make_temp_dir("ensure_parent_parent_file")
+  let parent_file = root + "/nested"
+  @os_fs.write_string_to_file(parent_file, "x") catch {
+    e => fail("write failed: " + e.to_string())
+  }
+  let target = parent_file + "/child/out.vibe"
+  match ensure_parent_dir_for_file(target, "eval") {
+    Ok(_) => fail("expected mkdir error")
+    Err(err) => {
+      assert_true(err.contains("eval:"))
+      assert_true(err.contains("not directory"))
+    }
+  }
+  wbtest_remove_if_exists(root)
+}
+
+///|
 fn wbtest_make_temp_dir(prefix : String) -> String {
   let base = "/tmp/cmd_vibe_wbtest_" + prefix + "_" + @env.now().to_string()
   for i in 0..<1000 {

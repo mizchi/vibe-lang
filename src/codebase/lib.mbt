@@ -498,7 +498,14 @@ pub fn resolve_import_path_with_registry(
       Some((ns, rest)) =>
         match registry_modules.get(ns) {
           Some(ns_root) => @vibe_fs.normalize_path(ns_root + "/" + rest)
-          None => resolve_import_path(base, import_path)
+          None =>
+            return Err(
+              "unknown namespace: " +
+              ns +
+              " (import: " +
+              import_path +
+              "). use ./ or ../ for local paths",
+            )
         }
       None => resolve_import_path(base, import_path)
     }

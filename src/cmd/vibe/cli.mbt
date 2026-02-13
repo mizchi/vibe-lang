@@ -3950,12 +3950,9 @@ fn write_eval_test_source(
 
 ///|
 fn write_eval_db_source(path : String, source : String) -> Result[Unit, String] {
-  let parent = @vibe_fs.parent_path(path)
-  if parent != "." && parent.length() > 0 && not(@os_fs.path_exists(parent)) {
-    @os_fs.create_dir(parent) catch {
-      e =>
-        return Err("failed to create db dir `" + parent + "`: " + e.to_string())
-    }
+  match ensure_parent_dir_for_file(path, "eval") {
+    Ok(_) => ()
+    Err(err) => return Err(err)
   }
   @os_fs.write_string_to_file(path, source) catch {
     e => return Err("failed to write db `" + path + "`: " + e.to_string())
@@ -3965,14 +3962,9 @@ fn write_eval_db_source(path : String, source : String) -> Result[Unit, String] 
 
 ///|
 fn write_eval_export(path : String, source : String) -> Result[Unit, String] {
-  let parent = @vibe_fs.parent_path(path)
-  if parent != "." && parent.length() > 0 && not(@os_fs.path_exists(parent)) {
-    @os_fs.create_dir(parent) catch {
-      e =>
-        return Err(
-          "failed to create export dir `" + parent + "`: " + e.to_string(),
-        )
-    }
+  match ensure_parent_dir_for_file(path, "eval") {
+    Ok(_) => ()
+    Err(err) => return Err(err)
   }
   @os_fs.write_string_to_file(path, source) catch {
     e => return Err("failed to write export `" + path + "`: " + e.to_string())

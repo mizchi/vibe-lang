@@ -283,6 +283,23 @@ test "loader load_db_with_paths resolves std namespace from index registry" {
 }
 
 ///|
+test "loader load_db_with_paths reports unknown namespace import" {
+  let root = make_temp_dir("unknown_namespace")
+  let entry = root + "/main.vibe"
+  write_file(
+    entry, "use stdd/string.vibe {  join  }\nlet main = join([\"a\"], \",\")\nexport { main }\n",
+  )
+  match load_db_with_paths(entry) {
+    Ok(_) => fail("expected unknown namespace error")
+    Err(err) => {
+      assert_true(err.contains("unknown namespace"))
+      assert_true(err.contains("stdd"))
+    }
+  }
+  remove_if_exists(root)
+}
+
+///|
 test "loader load_db_with_paths requires index version export" {
   let root = make_temp_dir("registry_version_required")
   let std_root = root + "/vibe/std"

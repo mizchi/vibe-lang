@@ -47,6 +47,17 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 - Add syntax profile controls:
   evaluate `--syntax posix-strict` vs `posix-ext` split and wire diagnostics so
   teams can enforce strict compatibility in CI.
+- Runtime/Workspace stability follow-ups from 2026-02 review:
+  - Done (2026-02-13): `eval` persistence mkdir behavior for nested DB paths.
+  - Done (2026-02-13): `eval --export` mkdir behavior for nested output paths.
+  - P1: Make `vibe new` immediately usable with std imports.
+    Scaffolding currently writes only `version` in `index.vibe`, while default
+    registry resolution points to `<root>/vibe/std` and often fails in fresh
+    projects.
+  - Done (2026-02-13): unknown namespace diagnostics in import resolution.
+  - P3: Revisit `.vibe` fallback-to-cwd behavior on root mkdir failure.
+    This can diverge lock root and storage root and should be validated or
+    removed.
 
 ## Bundle Size Plan (In Progress)
 

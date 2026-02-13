@@ -114,6 +114,57 @@ pub fn resolve_eval_include_path(
 }
 
 ///|
+fn ensure_dir_recursive_for_eval(path : String) -> Result[Unit, String] {
+  let normalized = @vibe_fs.normalize_path(path)
+  if normalized.length() == 0 || normalized == "." || normalized == "/" {
+    return Ok(())
+  }
+  if @os_fs.path_exists(normalized) {
+    let is_dir = @os_fs.is_dir(normalized) catch { _ => false }
+    if is_dir {
+      return Ok(())
+    }
+    return Err("path exists and is not directory: " + normalized)
+  }
+  let parent = @vibe_fs.parent_path(normalized)
+  if parent != normalized && parent.length() > 0 {
+    match ensure_dir_recursive_for_eval(parent) {
+      Ok(_) => ()
+      Err(err) => return Err(err)
+    }
+  }
+  match @io.create_dir(normalized) {
+    Ok(_) => Ok(())
+    Err(err) =>
+      if @os_fs.path_exists(normalized) {
+        let is_dir = @os_fs.is_dir(normalized) catch { _ => false }
+        if is_dir {
+          Ok(())
+        } else {
+          Err("mkdir failed: " + normalized + " (" + err + ")")
+        }
+      } else {
+        Err("mkdir failed: " + normalized + " (" + err + ")")
+      }
+  }
+}
+
+///|
+pub fn ensure_parent_dir_for_file(
+  path : String,
+  context : String,
+) -> Result[Unit, String] {
+  let parent = @vibe_fs.parent_path(path)
+  if parent == "." || parent.length() == 0 {
+    return Ok(())
+  }
+  match ensure_dir_recursive_for_eval(parent) {
+    Ok(_) => Ok(())
+    Err(err) => Err(context + ": " + err)
+  }
+}
+
+///|
 pub fn parse_eval_cmd_options(
   args : Array[String],
   cmd_name : String,
