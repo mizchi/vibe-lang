@@ -98,7 +98,7 @@ expect_wasm_result() {
     const wasm = fs.readFileSync('$TMP_DIR/test.wasm');
     WebAssembly.instantiate(wasm, {}).then(({instance}) => {
       const result = instance.exports.run();
-      const value = result >> 2;
+      const value = typeof result === 'bigint' ? Number(result >> 2n) : (result >> 2);
       console.log(value);
     });
   " 2>/dev/null)
