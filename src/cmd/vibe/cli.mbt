@@ -4512,6 +4512,48 @@ fn resolve_project_root_path(path : String) -> String {
 }
 
 ///|
+fn is_scaffold_seed_vibe_root(vibe_root : String) -> Bool {
+  let std_dir = @vibe_fs.normalize_path(vibe_root + "/std")
+  let encoding_dir = @vibe_fs.normalize_path(vibe_root + "/encoding")
+  let string_mod = @vibe_fs.normalize_path(std_dir + "/string.vibe")
+  let base64 = @vibe_fs.normalize_path(encoding_dir + "/base64.vibe")
+  if not(@os_fs.path_exists(std_dir)) || not(@os_fs.path_exists(encoding_dir)) {
+    return false
+  }
+  let std_is_dir = @os_fs.is_dir(std_dir) catch { _ => false }
+  if not(std_is_dir) {
+    return false
+  }
+  let encoding_is_dir = @os_fs.is_dir(encoding_dir) catch { _ => false }
+  if not(encoding_is_dir) {
+    return false
+  }
+  @os_fs.path_exists(string_mod) && @os_fs.path_exists(base64)
+}
+
+///|
+fn resolve_scaffold_seed_vibe_root_from(start : String) -> String? {
+  let mut current = resolve_project_root_path(start)
+  while true {
+    let candidate = @vibe_fs.normalize_path(current + "/vibe")
+    if is_scaffold_seed_vibe_root(candidate) {
+      return Some(candidate)
+    }
+    let parent = @vibe_fs.parent_path(current)
+    if parent == current || parent.length() == 0 {
+      return None
+    }
+    current = parent
+  }
+  None
+}
+
+///|
+fn resolve_scaffold_seed_vibe_root() -> String? {
+  resolve_scaffold_seed_vibe_root_from(@io.current_dir_or_root())
+}
+
+///|
 fn ensure_dir_recursive(path : String) -> Unit {
   if @os_fs.path_exists(path) {
     let is_dir = @os_fs.is_dir(path) catch { _ => false }
@@ -4544,7 +4586,65 @@ fn write_file_if_missing(path : String, content : String) -> Bool {
 }
 
 ///|
-fn scaffold_project_root(root : String, with_main : Bool) -> Array[String] {
+fn copy_seed_tree_if_missing(src_dir : String, dest_dir : String) -> Bool {
+  let src_norm = @vibe_fs.normalize_path(src_dir)
+  let dest_norm = @vibe_fs.normalize_path(dest_dir)
+  if src_norm == dest_norm {
+    return false
+  }
+  if not(@os_fs.path_exists(src_norm)) {
+    return false
+  }
+  let src_is_dir = @os_fs.is_dir(src_norm) catch { _ => false }
+  if not(src_is_dir) {
+    return false
+  }
+  let mut changed = false
+  if @os_fs.path_exists(dest_norm) {
+    let dest_is_dir = @os_fs.is_dir(dest_norm) catch { _ => false }
+    if not(dest_is_dir) {
+      abort("init: seed target exists and is not directory: " + dest_norm)
+    }
+  } else {
+    ensure_dir_recursive(dest_norm)
+    changed = true
+  }
+  let entries = @os_fs.read_dir(src_norm) catch {
+    e =>
+      abort("init: read dir failed: " + src_norm + " (" + e.to_string() + ")")
+  }
+  for entry in entries {
+    if entry == "." || entry == ".." {
+      continue
+    }
+    let src_path = @vibe_fs.normalize_path(src_norm + "/" + entry)
+    let dest_path = @vibe_fs.normalize_path(dest_norm + "/" + entry)
+    let child_is_dir = @os_fs.is_dir(src_path) catch { _ => false }
+    if child_is_dir {
+      if copy_seed_tree_if_missing(src_path, dest_path) {
+        changed = true
+      }
+    } else if not(@os_fs.path_exists(dest_path)) {
+      let content = match @io.read_string(src_path) {
+        Ok(v) => v
+        Err(err) => abort("init: read failed: " + src_path + " (" + err + ")")
+      }
+      @os_fs.write_string_to_file(dest_path, content) catch {
+        e =>
+          abort("init: write failed: " + dest_path + " (" + e.to_string() + ")")
+      }
+      changed = true
+    }
+  }
+  changed
+}
+
+///|
+fn scaffold_project_root_with_seed(
+  root : String,
+  with_main : Bool,
+  seed_vibe_root : String?,
+) -> Array[String] {
   ensure_dir_recursive(root)
   let created : Array[String] = []
   let index_source = "export let version = \"0.1.0\"\n"
@@ -4560,6 +4660,23 @@ fn scaffold_project_root(root : String, with_main : Bool) -> Array[String] {
     ensure_dir_recursive(vibe_dir)
     created.push(".vibe/")
   }
+  match seed_vibe_root {
+    Some(seed_root) => {
+      let seed_norm = @vibe_fs.normalize_path(seed_root)
+      if is_scaffold_seed_vibe_root(seed_norm) {
+        if copy_seed_tree_if_missing(seed_norm + "/std", root + "/vibe/std") {
+          created.push("vibe/std/")
+        }
+        if copy_seed_tree_if_missing(
+            seed_norm + "/encoding",
+            root + "/vibe/encoding",
+          ) {
+          created.push("vibe/encoding/")
+        }
+      }
+    }
+    None => ()
+  }
   if with_main {
     let main_source = "let main = 1\nexport { main }\n"
     if write_file_if_missing(root + "/main.vibe", main_source) {
@@ -4567,6 +4684,15 @@ fn scaffold_project_root(root : String, with_main : Bool) -> Array[String] {
     }
   }
   created
+}
+
+///|
+fn scaffold_project_root(root : String, with_main : Bool) -> Array[String] {
+  scaffold_project_root_with_seed(
+    root,
+    with_main,
+    resolve_scaffold_seed_vibe_root(),
+  )
 }
 
 ///|

@@ -339,11 +339,97 @@ fn symbol_alias_name(name : String) -> String {
 }
 
 ///|
+fn split_registry_like_path(path : String) -> (String, String)? {
+  for i, c in path {
+    if c == '/' {
+      if i <= 0 || i + 1 >= path.length() {
+        return None
+      }
+      let ns = path.unsafe_substring(start=0, end=i)
+      let rest = path.unsafe_substring(start=i + 1, end=path.length())
+      return Some((ns, rest))
+    }
+  }
+  None
+}
+
+///|
+fn fallback_import_root_from_vibe_segment(base_dir : String) -> String? {
+  let mut dir = @path.Path(base_dir).normalize().to_string()
+  for _ in 0..<64 {
+    let parent = @path.Path(dir).dirname().normalize().to_string()
+    if parent == dir {
+      break
+    }
+    let name = @path.Path(dir).basename().to_string()
+    if name == "vibe" {
+      return Some(parent)
+    }
+    dir = parent
+  }
+  None
+}
+
+///|
+fn resolve_import_root_dir(base_dir : String) -> String {
+  let mut dir = @path.Path(base_dir).normalize().to_string()
+  for _ in 0..<64 {
+    let index_path = @path.Path(dir)
+      .join(@path.Path("index.vibe"))
+      .normalize()
+      .to_string()
+    if @io.path_exists(index_path) {
+      return dir
+    }
+    let parent = @path.Path(dir).dirname().normalize().to_string()
+    if parent == dir {
+      break
+    }
+    dir = parent
+  }
+  match fallback_import_root_from_vibe_segment(base_dir) {
+    Some(v) => v
+    None => @path.Path(base_dir).normalize().to_string()
+  }
+}
+
+///|
+fn resolve_default_registry_path(
+  base_dir : String,
+  raw_path : String,
+) -> String? {
+  if raw_path.has_prefix("/") ||
+    raw_path.has_prefix("./") ||
+    raw_path.has_prefix("../") {
+    return None
+  }
+  match split_registry_like_path(raw_path) {
+    Some((ns, rest)) =>
+      if ns == "std" || ns == "encoding" {
+        let root = resolve_import_root_dir(base_dir)
+        let resolved = "vibe/" + ns + "/" + rest
+        Some(
+          @path.Path(root).join(@path.Path(resolved)).normalize().to_string(),
+        )
+      } else {
+        None
+      }
+    None => None
+  }
+}
+
+///|
 fn normalize_path_obj(base_dir : String, raw_path : String) -> PathObj {
   let normalized = if raw_path.has_prefix("/") {
     @path.Path(raw_path).normalize().to_string()
-  } else {
+  } else if raw_path.has_prefix("./") || raw_path.has_prefix("../") {
     @path.Path(base_dir).join(@path.Path(raw_path)).normalize().to_string()
+  } else {
+    match resolve_default_registry_path(base_dir, raw_path) {
+      Some(v) => v
+      None =>
+        @path.Path(base_dir).join(@path.Path(raw_path)).normalize().to_string()
+    }
   }
   PathObj::{ raw: raw_path, base: base_dir, normalized }
 }
