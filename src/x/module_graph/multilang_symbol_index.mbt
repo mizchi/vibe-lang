@@ -580,7 +580,7 @@ pub fn extract_vibe_graph_ir_rows(
     e => return Err("typecheck failed: " + e.to_string())
   }
   let symbol_index = @runtime.build_symbol_index_for_module(path, ast, types)
-  let module_hash = @core.git_blob_hash_string(source)
+  let module_hash = @core.content_address_hash_string(source)
   let rows : Array[GraphIrRow] = []
   for entry in symbol_index.entries {
     rows.push(GraphIrRow::{

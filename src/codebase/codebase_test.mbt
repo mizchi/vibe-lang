@@ -563,6 +563,35 @@ test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
 }
 
 ///|
+test "codebase update_lock_path_refs ignores normalize section separators in path hash" {
+  let root = make_temp_dir("lock_hash_ignore_section")
+  let entry = root + "/main.vibe"
+  let source_plain = "let main = 1\n\nexport { main }\n"
+  write_file(entry, source_plain)
+  let updated_plain = match update_lock_path_refs(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let norm = @vibe_fs.normalize_path(entry)
+  let hash_plain = match updated_plain.path_refs.get(norm) {
+    Some(v) => v
+    None => fail("expected plain path hash")
+  }
+  let source_with_sections = "//# Functions\nlet main = 1\n\nexport { main }\n"
+  write_file(entry, source_with_sections)
+  let updated_sectioned = match update_lock_path_refs(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let hash_sectioned = match updated_sectioned.path_refs.get(norm) {
+    Some(v) => v
+    None => fail("expected sectioned path hash")
+  }
+  assert_eq(hash_plain, hash_sectioned)
+  remove_if_exists(root)
+}
+
+///|
 test "codebase update_lock_path_refs captures export comments as annotations" {
   let root = make_temp_dir("annotations_capture")
   let entry = root + "/main.vibe"

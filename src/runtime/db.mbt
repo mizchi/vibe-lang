@@ -447,7 +447,7 @@ fn resolve_hash_import(
   let snapshot_key = hash_source_key(hash)
   match sources.get(rt, snapshot_key) {
     Some(content) => {
-      let actual_hash = @core.git_blob_hash_string(content)
+      let actual_hash = @core.content_address_hash_string(content)
       if actual_hash == hash {
         (snapshot_key, Some(hash))
       } else {
@@ -745,7 +745,7 @@ pub fn VibeDb::new() -> VibeDb {
               }
               match text_opt {
                 Some(content) => {
-                  let hash = @core.git_blob_hash_string(content)
+                  let hash = @core.content_address_hash_string(content)
                   let mut resolved_hash : String? = Some(hash)
                   let mut module_ref : String? = Some(
                     @core.module_ref_from_hash(hash),
@@ -1063,7 +1063,7 @@ pub fn VibeDb::new() -> VibeDb {
       None => @checker.TypeEnv::new()
       Some(content) =>
         if not(content.contains("import")) && not(content.contains("use")) {
-          let hash = @core.git_blob_hash_string(content)
+          let hash = @core.content_address_hash_string(content)
           match no_import_type_query.fetch(rt, hash) {
             Some(env) => env
             None => {
@@ -1610,7 +1610,7 @@ pub fn VibeDb::set_source(
   content : String,
 ) -> Unit {
   let _ = self.sources.set(self.rt, path, content)
-  let hash = @core.git_blob_hash_string(content)
+  let hash = @core.content_address_hash_string(content)
   let _ = self.sources.set(self.rt, hash_source_key(hash), content)
 }
 

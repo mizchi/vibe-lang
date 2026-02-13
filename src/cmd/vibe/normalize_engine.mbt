@@ -35,6 +35,12 @@ struct NormalizeInlineCandidate {
 }
 
 ///|
+struct NormalizeRenderedBlock {
+  group : NormalizeStmtGroup
+  text : String
+}
+
+///|
 enum StdModuleLayer {
   TraitContract
   PurePrimitive
@@ -570,7 +576,7 @@ fn normalize_source_text_flat(source : String) -> Result[String, String] {
     @vibe_core.normalize_module(expected_canonical) {
     return Err("normalize: rendered source changed semantics")
   }
-  Ok(formatted)
+  Ok(rendered)
 }
 
 ///|
@@ -797,10 +803,7 @@ fn normalize_render_decl_assign_stmt(
   if rewritten_expr is None {
     match
       normalize_render_decl_assign_fn_without_param_annotations(
-        source,
-        name,
-        declared_ty,
-        source_expr,
+        source, name, declared_ty, source_expr,
       ) {
       Some(rendered) => return Some(name + " = " + rendered)
       None => ()
@@ -853,8 +856,7 @@ fn normalize_render_decl_assign_fn_without_param_annotations(
       if stripped == snippet {
         return None
       }
-      let probe =
-        "declare export let " +
+      let probe = "declare export let " +
         name +
         ": " +
         decl_ty_text +
@@ -1158,6 +1160,34 @@ fn normalize_write_escaped_char(buf : StringBuilder, c : Char) -> Unit {
 }
 
 ///|
+fn normalize_stmt_group_section_name(group : NormalizeStmtGroup) -> String {
+  match group {
+    NormalizeStmtGroup::Use => "Imports"
+    NormalizeStmtGroup::TypeDecl | NormalizeStmtGroup::TraitDecl => "Types"
+    NormalizeStmtGroup::PureFn | NormalizeStmtGroup::EffectfulFn => "Functions"
+    NormalizeStmtGroup::Other => "Misc"
+  }
+}
+
+///|
+fn normalize_trim_rendered_block(text : String) -> String {
+  let mut end = text.length()
+  while end > 0 {
+    let c = text[end - 1].to_int().unsafe_to_char()
+    if c == '\n' || c == '\r' {
+      end -= 1
+    } else {
+      break
+    }
+  }
+  if end <= 0 {
+    ""
+  } else {
+    text.unsafe_substring(start=0, end~)
+  }
+}
+
+///|
 fn normalize_render_source(
   source : String,
   stmts : Array[@vibe_core.Stmt],
@@ -1168,7 +1198,7 @@ fn normalize_render_source(
     @vibe_core.Module::{ stmts, },
     inferred_annotations,
   )
-  let out = StringBuilder::new()
+  let rendered : Array[NormalizeRenderedBlock] = []
   let declare_lines : Array[String] = []
   for stmt in stmts {
     match stmt {
@@ -1183,21 +1213,22 @@ fn normalize_render_source(
       _ => ()
     }
   }
-  let write_line = fn(line : String) {
-    out.write_string(line)
-    if not(line.has_suffix("\n")) {
-      out.write_char('\n')
+  let push_rendered = fn(group : NormalizeStmtGroup, raw_text : String) {
+    let text = normalize_trim_rendered_block(raw_text)
+    if text.trim().to_string().length() == 0 {
+      return
     }
+    rendered.push({ group, text })
   }
   let mut inserted_declare_lines = false
   for stmt in stmts {
+    let group = normalize_stmt_group(stmt)
     if not(inserted_declare_lines) && declare_lines.length() > 0 {
-      let group = normalize_stmt_group(stmt)
       if group != NormalizeStmtGroup::Use &&
         group != NormalizeStmtGroup::TypeDecl &&
         group != NormalizeStmtGroup::TraitDecl {
         for line in declare_lines {
-          write_line(line)
+          push_rendered(NormalizeStmtGroup::PureFn, line)
         }
         inserted_declare_lines = true
       }
@@ -1206,7 +1237,7 @@ fn normalize_render_source(
       normalize_render_stmt(
         source, stmt, rewritten_exprs, inferred_annotations, export_decl_annotations,
       ) {
-      Some(rendered) => write_line(rendered)
+      Some(rendered_line) => push_rendered(group, rendered_line)
       None => {
         let span = stmt.span()
         let snippet = normalize_source_slice_by_span(
@@ -1214,28 +1245,51 @@ fn normalize_render_source(
           span.start,
           span.end,
         )
-        if snippet.trim().to_string().length() == 0 {
-          continue
-        }
-        write_line(snippet)
+        push_rendered(group, snippet)
       }
     }
   }
   if not(inserted_declare_lines) {
     for line in declare_lines {
-      write_line(line)
+      push_rendered(NormalizeStmtGroup::PureFn, line)
     }
   }
+  if rendered.length() == 0 {
+    return Err("normalize: no statements kept")
+  }
+  let blocks : Array[String] = []
+  let mut current_section : String? = None
+  for item in rendered {
+    let section = normalize_stmt_group_section_name(item.group)
+    match current_section {
+      Some(cur) =>
+        if cur != section {
+          blocks.push("//# " + section)
+          current_section = Some(section)
+        }
+      None => {
+        blocks.push("//# " + section)
+        current_section = Some(section)
+      }
+    }
+    blocks.push(item.text)
+  }
+  if blocks.length() == 0 {
+    return Err("normalize: no statements kept")
+  }
+  let out = StringBuilder::new()
+  for i, block in blocks {
+    if i > 0 {
+      out.write_string("\n\n")
+    }
+    out.write_string(block)
+  }
+  out.write_char('\n')
   let result = out.to_string()
-  if result.trim().to_string().length() == 0 {
-    Err("normalize: no statements kept")
-  } else {
-    let _ = @parser.parse_ast(result) catch {
-      e =>
-        return Err("normalize: rendered source parse failed: " + e.to_string())
-    }
-    Ok(result)
+  let _ = @parser.parse_ast(result) catch {
+    e => return Err("normalize: rendered source parse failed: " + e.to_string())
   }
+  Ok(result)
 }
 
 ///|

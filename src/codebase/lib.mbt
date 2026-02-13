@@ -910,7 +910,7 @@ fn collect_path_refs_impl(
       return Err("io: " + err)
     }
   }
-  out[norm] = @core.git_blob_hash_string(source)
+  out[norm] = @core.content_address_hash_string(source)
   let ast = @parser.parse_ast(source) catch {
     e => {
       let _ = stack.pop()

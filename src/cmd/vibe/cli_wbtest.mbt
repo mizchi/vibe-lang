@@ -1215,6 +1215,34 @@ test "normalize source renders export let as declare signature + assignment" {
 }
 
 ///|
+test "normalize source emits section separators for types and functions" {
+  let source =
+    #|type Box = Int
+    #|let value = 1
+  let normalized = match normalize_source_text(source) {
+    Ok(v) => v
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+  let idx_types = wbtest_substring_index(normalized, "//# Types")
+  let idx_functions = wbtest_substring_index(normalized, "//# Functions")
+  assert_true(idx_types >= 0)
+  assert_true(idx_functions >= 0)
+  assert_true(idx_types < idx_functions)
+}
+
+///|
+test "normalize source keeps blank line between top-level definitions" {
+  let source =
+    #|let a = 1
+    #|let b = 2
+  let normalized = match normalize_source_text(source) {
+    Ok(v) => v
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+  assert_true(normalized.contains("let a: Int = 1\n\nlet b: Int = 2"))
+}
+
+///|
 test "normalize source drops rhs param annotation for declared export let assignment" {
   let source =
     #|declare export let inc: (Int) -> Int
