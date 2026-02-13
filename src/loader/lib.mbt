@@ -5,7 +5,19 @@ fn apply_lock_to_db_with_fs(
   fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   db.require_path_lock(true)
-  let lock_path = @codebase.lock_file_path(entry)
+  let lock_path = @codebase.lock_file_path_with_fs(entry, fs)
+  let lock_root = @vibe_fs.parent_path(lock_path)
+  let legacy_lock_path = lock_root + "/xsh.lock"
+  let index_vdb_path = lock_root + "/index.vdb"
+  let has_lock_source = @io.path_exists_with(fs, lock_path) ||
+    @io.path_exists_with(fs, legacy_lock_path) ||
+    @io.path_exists_with(fs, index_vdb_path)
+  if has_lock_source {
+    match @codebase.update_lock_path_refs_with_fs(entry, fs) {
+      Ok(_) => ()
+      Err(err) => return Err(err)
+    }
+  }
   let lock = match @codebase.load_lock_data_with_fs(lock_path, fs) {
     Ok(data) => data
     Err(err) => return Err(err)

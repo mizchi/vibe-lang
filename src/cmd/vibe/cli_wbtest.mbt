@@ -595,6 +595,30 @@ test "cli dispatch args rejects missing command" {
 }
 
 ///|
+test "cli dispatch args parse init command" {
+  let parsed = parse_cli_dispatch_args(["xsh", "init", "my-lib"])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "init")
+      assert_eq(v.cmd_args, ["my-lib"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli dispatch args parse new command" {
+  let parsed = parse_cli_dispatch_args(["xsh", "new", "my-lib"])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "new")
+      assert_eq(v.cmd_args, ["my-lib"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
 test "cli syntax mode parse rejects unknown value" {
   let parsed = parse_cli_syntax_args(["--syntax", "foo"], "run")
   match parsed {

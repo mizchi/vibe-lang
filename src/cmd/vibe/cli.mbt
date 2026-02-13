@@ -29,6 +29,8 @@ pub fn run(args : Array[String]) -> Unit {
     "finalize" => finalize_cmd(cmd_args)
     "apply" => apply_cmd(cmd_args)
     "symbols" => symbols_cmd(cmd_args)
+    "init" => init_cmd(cmd_args)
+    "new" => new_cmd(cmd_args)
     "history" => history_cmd(cmd_args)
     "write_file" => write_file_cmd(cmd_args)
     "fmt" => fmt_cmd(cmd_args)
@@ -76,6 +78,12 @@ fn print_usage() -> Unit {
   )
   println(
     "  symbols [--json] <file>    list symbols and index inclusion status",
+  )
+  println(
+    "  init [dir]                 create index.vibe/index.lock/.vibe in target root",
+  )
+  println(
+    "  new <dir>                  scaffold a new project root (init + main.vibe)",
   )
   println("  history reset              reset scratch namespace history/db")
   println(
@@ -4503,6 +4511,101 @@ fn symbols_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
+fn resolve_project_root_path(path : String) -> String {
+  if path.has_prefix("/") {
+    @vibe_fs.normalize_path(path)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root() + "/" + path)
+  }
+}
+
+///|
+fn ensure_dir_recursive(path : String) -> Unit {
+  if @os_fs.path_exists(path) {
+    let is_dir = @os_fs.is_dir(path) catch { _ => false }
+    if not(is_dir) {
+      abort("init: path exists and is not directory: " + path)
+    }
+    return
+  }
+  let parent = @vibe_fs.parent_path(path)
+  if parent != path && parent.length() > 0 {
+    ensure_dir_recursive(parent)
+  }
+  @os_fs.create_dir(path) catch {
+    e =>
+      if not(@os_fs.path_exists(path)) {
+        abort("init: mkdir failed: " + path + " (" + e.to_string() + ")")
+      }
+  }
+}
+
+///|
+fn write_file_if_missing(path : String, content : String) -> Bool {
+  if @os_fs.path_exists(path) {
+    return false
+  }
+  @os_fs.write_string_to_file(path, content) catch {
+    e => abort("init: write failed: " + path + " (" + e.to_string() + ")")
+  }
+  true
+}
+
+///|
+fn scaffold_project_root(root : String, with_main : Bool) -> Array[String] {
+  ensure_dir_recursive(root)
+  let created : Array[String] = []
+  let index_source = "export let version = \"0.1.0\"\n"
+  let lock_source = "{\"path\":{},\"version\":{},\"symbol\":{},\"module\":{},\"annotation\":{}}\n"
+  if write_file_if_missing(root + "/index.vibe", index_source) {
+    created.push("index.vibe")
+  }
+  if write_file_if_missing(root + "/index.lock", lock_source) {
+    created.push("index.lock")
+  }
+  let vibe_dir = root + "/.vibe"
+  if not(@os_fs.path_exists(vibe_dir)) {
+    ensure_dir_recursive(vibe_dir)
+    created.push(".vibe/")
+  }
+  if with_main {
+    let main_source = "let main = 1\nexport { main }\n"
+    if write_file_if_missing(root + "/main.vibe", main_source) {
+      created.push("main.vibe")
+    }
+  }
+  created
+}
+
+///|
+fn init_cmd(args : Array[String]) -> Unit {
+  if args.length() > 1 {
+    abort("init: expected [dir]")
+  }
+  let target = if args.length() == 0 {
+    @io.current_dir_or_root()
+  } else {
+    args[0]
+  }
+  let root = resolve_project_root_path(target)
+  let created = scaffold_project_root(root, false)
+  println("initialized: " + root + " created=" + created.to_string())
+}
+
+///|
+fn new_cmd(args : Array[String]) -> Unit {
+  if args.length() != 1 {
+    abort("new: expected <dir>")
+  }
+  let root = resolve_project_root_path(args[0])
+  if @os_fs.path_exists(root) {
+    abort("new: target already exists: " + root)
+  }
+  let created = scaffold_project_root(root, true)
+  println("created: " + root + " files=" + created.to_string())
+}
+
+///|
 fn history_cmd(args : Array[String]) -> Unit {
   if args.length() == 0 {
     abort("history: expected subcommand (reset)")
@@ -5356,16 +5459,20 @@ fn find_git_dir() -> String {
 
 ///|
 fn find_vibe_dir(path : String) -> String {
-  // Look for .vibe directory, or create one in current directory
-  let base = @vibe_fs.parent_path(path)
-  let vibe_dir = base + "/.vibe"
+  // Resolve storage root from lock/index hierarchy and keep .vibe aggregated there.
+  let normalized = if path.has_prefix("/") {
+    @vibe_fs.normalize_path(path)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root() + "/" + path)
+  }
+  let vibe_dir = @codebase.vibe_dir_path(normalized)
   if @os_fs.path_exists(vibe_dir) {
     return vibe_dir
   }
-  // Create .vibe directory
+  // Create .vibe directory at the resolved root.
   @os_fs.create_dir(vibe_dir) catch {
     _ => {
-      // Try current directory
+      // Fallback to current directory for environments where parent is not writable.
       let cwd_vibe = ".vibe"
       if not(@os_fs.path_exists(cwd_vibe)) {
         @os_fs.create_dir(cwd_vibe) catch {
@@ -5580,14 +5687,29 @@ fn target_substring(s : String, start : Int, end : Int) -> String {
 
 ///|
 fn find_vibe_dir_from(start : String) -> String {
-  // Search for .vibe directory starting from given directory
-  let mut dir = if start == "" { "." } else { start }
+  let base = if start == "" { "." } else { start }
+  let normalized_base = if base.has_prefix("/") {
+    @vibe_fs.normalize_path(base)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root() + "/" + base)
+  }
+  let probe = @vibe_fs.normalize_path(normalized_base + "/__probe__.vibe")
+  let lock_scoped_vibe = @codebase.vibe_dir_path(probe)
+  if @os_fs.path_exists(lock_scoped_vibe) {
+    return lock_scoped_vibe
+  }
+  // Backward-compatible fallback: search nearest existing .vibe directory.
+  let mut dir = normalized_base
   for _ in 0..<10 {
-    let vibe_path = dir + "/.vibe"
+    let vibe_path = @vibe_fs.normalize_path(dir + "/.vibe")
     if @os_fs.path_exists(vibe_path) {
       return vibe_path
     }
-    dir = dir + "/.."
+    let parent = @vibe_fs.parent_path(dir)
+    if parent == dir || parent.length() == 0 {
+      break
+    }
+    dir = parent
   }
   abort("expand: .vibe directory not found (searched from: " + start + ")")
 }

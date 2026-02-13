@@ -1,6 +1,12 @@
 ///|
 fn make_temp_dir(prefix : String) -> String {
-  let base = "/tmp/vibe_loader_test_" + prefix
+  let tmp_root = @vibe_fs.normalize_path(@io.current_dir_or_root() + "/.tmp")
+  if not(@os_fs.path_exists(tmp_root)) {
+    @os_fs.create_dir(tmp_root) catch {
+      e => abort("create temp root failed: " + e.to_string())
+    }
+  }
+  let base = tmp_root + "/vibe_loader_test_" + prefix
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
     if not(@os_fs.path_exists(path)) {
@@ -300,6 +306,41 @@ test "loader load_db_with_paths requires index version export" {
     Ok(_) => fail("expected missing version error")
     Err(err) =>
       assert_true(err.contains("missing required `export let version"))
+  }
+  remove_if_exists(root)
+}
+
+///|
+test "loader load_db_with_paths refreshes stale index.lock path hashes" {
+  let root = make_temp_dir("lock_refresh")
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
+  let entry_source = "use ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n"
+  let lib_source = "let libv = 1\nexport { libv }\n"
+  write_file(entry, entry_source)
+  write_file(lib, lib_source)
+  let lock_path = @codebase.lock_file_path(entry)
+  write_file(
+    lock_path,
+    "{\"path\":{\"./main.vibe\":\"stale_main\",\"./lib.vibe\":\"stale_lib\"},\"version\":{},\"symbol\":{}}",
+  )
+  match load_db_with_paths(entry) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let updated = match @codebase.load_lock_data(lock_path) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let lib_norm = @vibe_fs.normalize_path(lib)
+  match updated.path_refs.get(entry_norm) {
+    Some(hash) => assert_eq(hash, @vibe_core.git_blob_hash_string(entry_source))
+    None => fail("expected entry hash in refreshed lock")
+  }
+  match updated.path_refs.get(lib_norm) {
+    Some(hash) => assert_eq(hash, @vibe_core.git_blob_hash_string(lib_source))
+    None => fail("expected lib hash in refreshed lock")
   }
   remove_if_exists(root)
 }

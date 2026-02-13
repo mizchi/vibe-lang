@@ -179,6 +179,103 @@ fn default_registry_modules(root : String) -> Map[String, String] {
 }
 
 ///|
+fn has_lock_file_with_fs(
+  dir : String,
+  fs : &@io.FileSystemAdapter,
+) -> Bool {
+  let index_lock = @vibe_fs.normalize_path(dir + "/index.lock")
+  if @io.path_exists_with(fs, index_lock) {
+    return true
+  }
+  let legacy_lock = @vibe_fs.normalize_path(dir + "/xsh.lock")
+  @io.path_exists_with(fs, legacy_lock)
+}
+
+///|
+fn has_vibe_dir_with_fs(
+  dir : String,
+  fs : &@io.FileSystemAdapter,
+) -> Bool {
+  let vibe_dir = @vibe_fs.normalize_path(dir + "/.vibe")
+  @io.path_exists_with(fs, vibe_dir)
+}
+
+///|
+fn find_storage_root_with_fs(
+  start_dir : String,
+  fs : &@io.FileSystemAdapter,
+) -> String {
+  let normalized_start = @vibe_fs.normalize_path(start_dir)
+  let mut dir = normalized_start
+  let mut nearest_index_root : String? = None
+  let mut lock_root_with_index_descendant : String? = None
+  let mut local_lock_only_root : String? = None
+  let mut has_index_descendant = false
+  for _ in 0..<64 {
+    let has_lock = has_lock_file_with_fs(dir, fs)
+    if has_lock && has_vibe_dir_with_fs(dir, fs) {
+      return dir
+    }
+    if has_lock && dir == normalized_start && local_lock_only_root == None {
+      local_lock_only_root = Some(dir)
+    }
+    if has_lock && has_index_descendant && lock_root_with_index_descendant == None {
+      lock_root_with_index_descendant = Some(dir)
+    }
+    let index_path = @vibe_fs.normalize_path(dir + "/index.vibe")
+    if @io.path_exists_with(fs, index_path) {
+      if nearest_index_root == None {
+        nearest_index_root = Some(dir)
+      }
+      has_index_descendant = true
+    }
+    let parent = @vibe_fs.parent_path(dir)
+    if parent == dir || parent.length() == 0 {
+      break
+    }
+    dir = parent
+  }
+  match lock_root_with_index_descendant {
+    Some(root) => root
+    None =>
+      match local_lock_only_root {
+        Some(root) => root
+        None =>
+          match nearest_index_root {
+            Some(root) => root
+            None => normalized_start
+          }
+      }
+  }
+}
+
+///|
+fn find_named_ancestor_dir(start_dir : String, name : String) -> String? {
+  let mut dir = @vibe_fs.normalize_path(start_dir)
+  for _ in 0..<64 {
+    if @vibe_fs.basename(dir) == name {
+      return Some(dir)
+    }
+    let parent = @vibe_fs.parent_path(dir)
+    if parent == dir || parent.length() == 0 {
+      break
+    }
+    dir = parent
+  }
+  None
+}
+
+///|
+fn is_repo_vibe_root_with_fs(
+  dir : String,
+  fs : &@io.FileSystemAdapter,
+) -> Bool {
+  let std_lock = @vibe_fs.normalize_path(dir + "/std/index.lock")
+  let encoding_lock = @vibe_fs.normalize_path(dir + "/encoding/index.lock")
+  @io.path_exists_with(fs, std_lock) && @io.path_exists_with(fs, encoding_lock)
+}
+
+///|
 fn find_index_root_with_fs(
   start_dir : String,
   fs : &@io.FileSystemAdapter,
@@ -215,6 +312,25 @@ pub fn resolve_index_root_with_fs(
 ///|
 pub fn resolve_index_root(entry : String) -> String {
   resolve_index_root_with_fs(entry, @io.default_fs_adapter())
+}
+
+///|
+pub fn resolve_lock_root_with_fs(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+) -> String {
+  let normalized_entry = if entry.has_prefix("/") {
+    @vibe_fs.normalize_path(entry)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
+  }
+  let start_dir = @vibe_fs.parent_path(normalized_entry)
+  find_storage_root_with_fs(start_dir, fs)
+}
+
+///|
+pub fn resolve_lock_root(entry : String) -> String {
+  resolve_lock_root_with_fs(entry, @io.default_fs_adapter())
 }
 
 ///|
@@ -765,6 +881,7 @@ fn collect_path_refs_impl(
   stack : Array[String],
   root : String,
   registry_modules : Map[String, String],
+  fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   let norm = @vibe_fs.normalize_path(path)
   if not(is_within_root(root, norm)) {
@@ -786,7 +903,7 @@ fn collect_path_refs_impl(
   }
   stack.push(norm)
   visited[norm] = true
-  let source = match @io.read_string(norm) {
+  let source = match @io.read_string_with(fs, norm) {
     Ok(v) => v
     Err(err) => {
       let _ = stack.pop()
@@ -820,7 +937,15 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
+                resolved,
+                out,
+                module_refs,
+                annotations,
+                visited,
+                stack,
+                root,
+                registry_modules,
+                fs,
               ) {
               Ok(_) => ()
               Err(err) => {
@@ -845,6 +970,7 @@ fn collect_path_refs(
   entry : String,
   root : String,
   registry_modules : Map[String, String],
+  fs : &@io.FileSystemAdapter,
 ) -> Result[
   (Map[String, String], Map[String, String], Map[String, String]),
   String,
@@ -856,7 +982,7 @@ fn collect_path_refs(
   let stack : Array[String] = []
   match
     collect_path_refs_impl(
-      entry, out, module_refs, annotations, visited, stack, root, registry_modules,
+      entry, out, module_refs, annotations, visited, stack, root, registry_modules, fs,
     ) {
     Ok(_) => Ok((out, module_refs, annotations))
     Err(err) => Err(err)
@@ -1199,8 +1325,43 @@ fn lock_data_to_json(lock : LockData, lock_base_dir : String) -> String {
 }
 
 ///|
+pub fn lock_file_path_with_fs(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+) -> String {
+  resolve_lock_root_with_fs(entry, fs) + "/index.lock"
+}
+
+///|
 pub fn lock_file_path(entry : String) -> String {
-  resolve_index_root(entry) + "/index.lock"
+  lock_file_path_with_fs(entry, @io.default_fs_adapter())
+}
+
+///|
+pub fn vibe_dir_path_with_fs(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+) -> String {
+  let normalized_entry = if entry.has_prefix("/") {
+    @vibe_fs.normalize_path(entry)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
+  }
+  let start_dir = @vibe_fs.parent_path(normalized_entry)
+  match find_named_ancestor_dir(start_dir, "vibe") {
+    Some(vibe_root) =>
+      if is_repo_vibe_root_with_fs(vibe_root, fs) {
+        vibe_root + "/.vibe"
+      } else {
+        resolve_lock_root_with_fs(normalized_entry, fs) + "/.vibe"
+      }
+    None => resolve_lock_root_with_fs(normalized_entry, fs) + "/.vibe"
+  }
+}
+
+///|
+pub fn vibe_dir_path(entry : String) -> String {
+  vibe_dir_path_with_fs(entry, @io.default_fs_adapter())
 }
 
 ///|
@@ -1276,19 +1437,27 @@ fn clone_lock_map(src : Map[String, String]) -> Map[String, String] {
 }
 
 ///|
-pub fn update_lock_path_refs(entry : String) -> Result[LockData, String] {
-  let root = resolve_index_root(entry)
-  let registry_modules = match load_registry_modules(root) {
+pub fn update_lock_path_refs_with_fs(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[LockData, String] {
+  let normalized_entry = if entry.has_prefix("/") {
+    @vibe_fs.normalize_path(entry)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
+  }
+  let root = resolve_index_root_with_fs(normalized_entry, fs)
+  let registry_modules = match load_registry_modules_with_fs(root, fs) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  let lock_path = lock_file_path(entry)
-  let current = match load_lock_data(lock_path) {
+  let lock_path = lock_file_path_with_fs(normalized_entry, fs)
+  let current = match load_lock_data_with_fs(lock_path, fs) {
     Ok(lock) => lock
     Err(err) => return Err(err)
   }
   let (path_refs, module_refs, annotations) = match
-    collect_path_refs(entry, root, registry_modules) {
+    collect_path_refs(normalized_entry, root, registry_modules, fs) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -1312,10 +1481,15 @@ pub fn update_lock_path_refs(entry : String) -> Result[LockData, String] {
     merged_module_refs,
     merged_annotations,
   )
-  match write_lock_data(lock_path, next_lock) {
+  match write_lock_data_with_fs(lock_path, next_lock, fs) {
     Ok(_) => Ok(next_lock)
     Err(err) => Err(err)
   }
+}
+
+///|
+pub fn update_lock_path_refs(entry : String) -> Result[LockData, String] {
+  update_lock_path_refs_with_fs(entry, @io.default_fs_adapter())
 }
 
 ///|

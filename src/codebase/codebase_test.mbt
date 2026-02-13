@@ -1,6 +1,12 @@
 ///|
 fn make_temp_dir(prefix : String) -> String {
-  let base = "/tmp/vibe_codebase_test_" + prefix
+  let tmp_root = @vibe_fs.normalize_path(@io.current_dir_or_root() + "/.tmp")
+  if not(@os_fs.path_exists(tmp_root)) {
+    @os_fs.create_dir(tmp_root) catch {
+      e => abort("create temp root failed: " + e.to_string())
+    }
+  }
+  let base = tmp_root + "/vibe_codebase_test_" + prefix
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
     if not(@os_fs.path_exists(path)) {
@@ -275,6 +281,98 @@ test "codebase lock_file_path uses index.lock filename" {
   let root = make_temp_dir("lock_file_name")
   let entry = root + "/main.vibe"
   assert_eq(lock_file_path(entry), root + "/index.lock")
+  remove_if_exists(root)
+}
+
+///|
+test "codebase lock_file_path prefers ancestor index.lock plus .vibe" {
+  let root = make_temp_dir("lock_file_ancestor_lock_vibe")
+  let project = root + "/project"
+  let nested = project + "/nested"
+  @os_fs.create_dir(project) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(nested) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(project + "/.vibe") catch {
+    e => fail(e.to_string())
+  }
+  write_file(
+    project + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  let entry = nested + "/main.vibe"
+  assert_eq(lock_file_path(entry), project + "/index.lock")
+  assert_eq(vibe_dir_path(entry), project + "/.vibe")
+  remove_if_exists(root)
+}
+
+///|
+test "codebase resolve_lock_root prefers ancestor index.lock even without .vibe" {
+  let root = make_temp_dir("lock_root_ancestor_lock_only")
+  let project = root + "/project"
+  let nested = project + "/nested"
+  @os_fs.create_dir(project) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(nested) catch {
+    e => fail(e.to_string())
+  }
+  write_file(
+    root + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(project + "/index.vibe", "export let version = \"0.1.0\"\n")
+  let entry = nested + "/main.vibe"
+  assert_eq(resolve_lock_root(entry), root)
+  assert_eq(lock_file_path(entry), root + "/index.lock")
+  assert_eq(vibe_dir_path(entry), root + "/.vibe")
+  remove_if_exists(root)
+}
+
+///|
+test "codebase vibe_dir_path prefers shared vibe/.vibe for vibe subtree" {
+  let root = make_temp_dir("vibe_shared_vibe_dir")
+  let vibe_root = root + "/vibe"
+  let std_dir = vibe_root + "/std"
+  let encoding_dir = vibe_root + "/encoding"
+  @os_fs.create_dir(vibe_root) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(std_dir) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(encoding_dir) catch {
+    e => fail(e.to_string())
+  }
+  write_file(
+    std_dir + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(
+    encoding_dir + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  let entry = std_dir + "/main.vibe"
+  assert_eq(lock_file_path(entry), std_dir + "/index.lock")
+  assert_eq(vibe_dir_path(entry), vibe_root + "/.vibe")
+  remove_if_exists(root)
+}
+
+///|
+test "codebase vibe_dir_path keeps local root for non-repo vibe dir" {
+  let root = make_temp_dir("vibe_local_non_repo")
+  let vibe_root = root + "/vibe"
+  let pkg_dir = vibe_root + "/pkg"
+  @os_fs.create_dir(vibe_root) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(pkg_dir) catch {
+    e => fail(e.to_string())
+  }
+  write_file(
+    pkg_dir + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  let entry = pkg_dir + "/main.vibe"
+  assert_eq(lock_file_path(entry), pkg_dir + "/index.lock")
+  assert_eq(vibe_dir_path(entry), pkg_dir + "/.vibe")
   remove_if_exists(root)
 }
 
