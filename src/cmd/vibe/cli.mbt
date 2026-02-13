@@ -46,6 +46,7 @@ pub fn run(args : Array[String]) -> Unit {
     "save" => save_cmd(cmd_args)
     "fetch" => fetch_cmd(cmd_args)
     "update-lock" => fetch_cmd(cmd_args)
+    "explain-import" => explain_import_cmd(cmd_args)
     "expand" => expand_cmd(cmd_args)
     "ide" => ide_cmd(cmd_args)
     "lsif" => lsif_cmd(cmd_args)
@@ -129,6 +130,9 @@ fn print_usage() -> Unit {
   )
   println("  fetch <file>                resolve imports and write index.lock")
   println("  update-lock <file>          alias for fetch")
+  println(
+    "  explain-import <file>       visualize import ref normalization and lock lookup",
+  )
   println("  ide <outline|peek-def|search> ...  symbol/type index queries")
   println("  lsif [-o out.lsif] <file>   emit LSIF via shared symbol index")
   println(

@@ -359,6 +359,7 @@ Per-item import kind:
 - `type Int` can be used as namespace activation for `Int::...` exports.
 - If a non-default qualifier (`type` / `trait`) does not match the exported
   symbol category, compiler emits a `use` diagnostic.
+- Importing a non-exported trait emits `[TROP002] non-exported trait: <Name>`.
 
 Parser compatibility:
 - `version:<name>` / `symbol:<name>` are accepted, but `@` form is canonical.
@@ -514,11 +515,13 @@ Rules:
 - Supertraits must already be defined and cannot include the trait itself.
 - `open trait` is valid only with `export` (`export open trait ...`).
 - `export trait ...` is sealed outside the defining module.
+- External impl against a sealed trait emits `[TROP001]`.
 - External impls are allowed only for traits imported as `open`.
 - `impl` type parameters must be unique.
 - Bounds in `impl [T: A + B]` are deduplicated and each bound must be a known
   trait.
 - Overlapping impls for the same trait are rejected.
+- Overlapping impl rejection emits `[TROP003]`.
 - Supertrait satisfaction is transitive (`impl Ord for T` also satisfies `Eq`
   when `trait Ord: Eq`).
 - Trait imports are explicit (`use ... { Eq }`), and only exported
@@ -598,6 +601,9 @@ Rules:
   Field-access typing (`prop(expr)`) is fallback behavior.
 - Field-access fallback currently supports record and struct fields, requiring
   exactly one positional argument.
+- For postfix/property shape calls, when function-call checking fails but a
+  field-access candidate exists, checker emits an ambiguity diagnostic with
+  both candidates and a disambiguation hint.
 
 ### Type-qualified method symbols (proposal)
 

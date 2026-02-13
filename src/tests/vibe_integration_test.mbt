@@ -204,7 +204,23 @@ test "vibe integration sealed exported trait rejects external impl" {
   )
   match compiled {
     Ok(_) => fail("expected sealed trait error")
-    Err(err) => assert_true(err.to_string().contains("trait is sealed: Eq"))
+    Err(err) => assert_true(err.to_string().contains("[TROP001]"))
+  }
+}
+
+///|
+test "vibe integration non-exported trait rejects external impl" {
+  let db = VibeDb::new()
+  let lib_source = "trait Eq"
+  let main_source = "use ./lib.vibe { Eq }\nimpl Eq for String"
+  db.set_source("./lib.vibe", lib_source)
+  db.set_source("main", main_source)
+  let compiled : Result[CompiledModule, CompileError] = try? compile_module(
+    db, "main",
+  )
+  match compiled {
+    Ok(_) => fail("expected non-exported trait error")
+    Err(err) => assert_true(err.to_string().contains("[TROP002]"))
   }
 }
 

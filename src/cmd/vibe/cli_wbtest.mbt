@@ -619,6 +619,183 @@ test "cli dispatch args parse new command" {
 }
 
 ///|
+test "cli dispatch args parse explain-import command" {
+  let parsed = parse_cli_dispatch_args(["xsh", "explain-import", "main.vibe"])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "explain-import")
+      assert_eq(v.cmd_args, ["main.vibe"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "explain import report resolves lock-backed refs" {
+  let root = wbtest_make_temp_dir("explain_import_hits")
+  let entry = root + "/main.vibe"
+  let dep = root + "/dep.vibe"
+  let dep_source = "export let value = 1\n"
+  @os_fs.write_string_to_file(dep, dep_source) catch {
+    e => fail("write dep failed: " + e.to_string())
+  }
+  let version_source = "export let value = 2\n"
+  let symbol_source = "export let value = 3\n"
+  let direct_source = "export let value = 4\n"
+  let dep_hash = @vibe_core.content_address_hash_string(dep_source)
+  let version_hash = @vibe_core.content_address_hash_string(version_source)
+  let symbol_hash = @vibe_core.content_address_hash_string(symbol_source)
+  let direct_hash = @vibe_core.content_address_hash_string(direct_source)
+  let main_source = "use ./dep.vibe { value }\n" +
+    "use version@main { value }\n" +
+    "use symbol@main/sym { value }\n" +
+    "use #\{direct_hash} { value }\n" +
+    "let x = value\n"
+  @os_fs.write_string_to_file(entry, main_source) catch {
+    e => fail("write entry failed: " + e.to_string())
+  }
+  let lock_path = @codebase.lock_file_path(entry)
+  let dep_norm = @vibe_fs.normalize_path(dep)
+  let path_refs : Map[String, String] = {}
+  path_refs[dep_norm] = dep_hash
+  let version_refs : Map[String, String] = {}
+  version_refs["main"] = version_hash
+  let symbol_refs : Map[String, String] = {}
+  symbol_refs["main/sym"] = symbol_hash
+  let lock = @codebase.LockData::new(path_refs, version_refs, symbol_refs)
+  match @codebase.write_lock_data(lock_path, lock) {
+    Ok(_) => ()
+    Err(err) => fail("write lock failed: " + err)
+  }
+  let codebase = @codebase.Codebase::new(@codebase.vibe_dir_path(entry))
+  ignore(
+    codebase.write_object(version_hash, version_source) catch {
+      e => fail("write version object failed: " + e.to_string())
+    },
+  )
+  ignore(
+    codebase.write_object(symbol_hash, symbol_source) catch {
+      e => fail("write symbol object failed: " + e.to_string())
+    },
+  )
+  ignore(
+    codebase.write_object(direct_hash, direct_source) catch {
+      e => fail("write hash object failed: " + e.to_string())
+    },
+  )
+  let report = match explain_import_report(entry) {
+    Ok(v) => v
+    Err(err) => fail("unexpected explain-import error: " + err)
+  }
+  assert_eq(report.imports.length(), 4)
+  let path_item = wbtest_find_explain_import_item(report.imports, "./dep.vibe")
+  assert_eq(path_item.ref_kind, "PathRef")
+  assert_eq(path_item.lock_lookup_status, "hit")
+  assert_eq(path_item.resolved_hash, Some(dep_hash))
+  let version_item = wbtest_find_explain_import_item(
+    report.imports,
+    "version@main",
+  )
+  assert_eq(version_item.ref_kind, "VersionRef")
+  assert_eq(version_item.lock_lookup_status, "hit")
+  assert_eq(version_item.resolved_hash, Some(version_hash))
+  let symbol_item = wbtest_find_explain_import_item(
+    report.imports,
+    "symbol@main/sym",
+  )
+  assert_eq(symbol_item.ref_kind, "SymbolRef")
+  assert_eq(symbol_item.lock_lookup_status, "hit")
+  assert_eq(symbol_item.resolved_hash, Some(symbol_hash))
+  let hash_item = wbtest_find_explain_import_item(
+    report.imports,
+    "#" + direct_hash,
+  )
+  assert_eq(hash_item.ref_kind, "HashRef")
+  assert_eq(hash_item.lock_lookup_status, "n/a")
+  assert_eq(hash_item.resolved_hash, Some(direct_hash))
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "explain import report shows miss mismatch and resolution errors" {
+  let root = wbtest_make_temp_dir("explain_import_errors")
+  let entry = root + "/main.vibe"
+  let dep = root + "/dep.vibe"
+  let dep_source = "export let value = 1\n"
+  @os_fs.write_string_to_file(dep, dep_source) catch {
+    e => fail("write dep failed: " + e.to_string())
+  }
+  let missing_hash = "1111111111111111111111111111111111111111"
+  let main_source = "use ./dep.vibe { value }\n" +
+    "use version@missing { value }\n" +
+    "use symbol@missing/sym { value }\n" +
+    "use #\{missing_hash} { value }\n" +
+    "use unknown_ns/lib.vibe { value }\n" +
+    "let x = value\n"
+  @os_fs.write_string_to_file(entry, main_source) catch {
+    e => fail("write entry failed: " + e.to_string())
+  }
+  let lock_path = @codebase.lock_file_path(entry)
+  let dep_norm = @vibe_fs.normalize_path(dep)
+  let wrong_hash = @vibe_core.content_address_hash_string(
+    "export let value = 2\n",
+  )
+  let path_refs : Map[String, String] = {}
+  path_refs[dep_norm] = wrong_hash
+  let lock = @codebase.LockData::new(path_refs, {}, {})
+  match @codebase.write_lock_data(lock_path, lock) {
+    Ok(_) => ()
+    Err(err) => fail("write lock failed: " + err)
+  }
+  let report = match explain_import_report(entry) {
+    Ok(v) => v
+    Err(err) => fail("unexpected explain-import error: " + err)
+  }
+  let path_item = wbtest_find_explain_import_item(report.imports, "./dep.vibe")
+  assert_eq(path_item.ref_kind, "PathRef")
+  assert_eq(path_item.lock_lookup_status, "mismatch")
+  assert_true(
+    match path_item.reason {
+      Some(reason) => reason.contains("lock hash differs")
+      None => false
+    },
+  )
+  let version_item = wbtest_find_explain_import_item(
+    report.imports,
+    "version@missing",
+  )
+  assert_eq(version_item.lock_lookup_status, "miss")
+  let symbol_item = wbtest_find_explain_import_item(
+    report.imports,
+    "symbol@missing/sym",
+  )
+  assert_eq(symbol_item.lock_lookup_status, "miss")
+  let hash_item = wbtest_find_explain_import_item(
+    report.imports,
+    "#" + missing_hash,
+  )
+  assert_eq(hash_item.lock_lookup_status, "n/a")
+  assert_true(
+    match hash_item.reason {
+      Some(reason) => reason.contains("hash object not found")
+      None => false
+    },
+  )
+  let ns_item = wbtest_find_explain_import_item(
+    report.imports,
+    "unknown_ns/lib.vibe",
+  )
+  assert_eq(ns_item.lock_lookup_status, "error")
+  assert_true(
+    match ns_item.reason {
+      Some(reason) => reason.contains("unknown namespace")
+      None => false
+    },
+  )
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli syntax mode parse rejects unknown value" {
   let parsed = parse_cli_syntax_args(["--syntax", "foo"], "run")
   match parsed {
@@ -1551,6 +1728,20 @@ fn wbtest_contains(paths : Array[String], target : String) -> Bool {
     }
   }
   false
+}
+
+///|
+fn wbtest_find_explain_import_item(
+  items : Array[ExplainImportItem],
+  source : String,
+) -> ExplainImportItem {
+  for item in items {
+    if item.source == source {
+      return item
+    }
+  }
+  abort("missing explain-import item: " + source)
+  items[0]
 }
 
 ///|

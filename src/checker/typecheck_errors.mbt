@@ -11,10 +11,19 @@ suberror TypeError {
     context~ : String?
   )
   BadCall(message~ : String, span~ : @core.Span)
+  PropertyAccessAmbiguous(
+    property_name~ : String,
+    function_name~ : String,
+    function_error~ : String,
+    field_type~ : @core.Type,
+    span~ : @core.Span
+  )
   BadRec(message~ : String, span~ : @core.Span)
   BadMatch(message~ : String, span~ : @core.Span)
   NonExhaustiveMatch(span~ : @core.Span)
   BadTypeDef(message~ : String, span~ : @core.Span)
+  TraitSealed(trait_name~ : String, span~ : @core.Span)
+  TraitImplOverlap(trait_name~ : String, span~ : @core.Span)
   EffectGuardNotSatisfied(
     operation~ : String,
     missing_effect~ : String?,
@@ -176,6 +185,38 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         hint: None,
         note: None,
       }
+    TypeError::PropertyAccessAmbiguous(
+      property_name~,
+      function_name~,
+      function_error~,
+      field_type~,
+      span~
+    ) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "ambiguous postfix/property access: `" + property_name + "`",
+        span: Some(span),
+        hint: Some(
+          "use `" +
+          function_name +
+          "(...)` for function-call semantics, or rename/qualify conflicting `" +
+          property_name +
+          "` symbols to keep field-access semantics",
+        ),
+        note: Some(
+          "candidate(function): `" +
+          function_name +
+          "` -> " +
+          function_error +
+          "\n" +
+          "candidate(field): receiver field `" +
+          property_name +
+          "` has type " +
+          field_type.to_string() +
+          "\n" +
+          "resolution order: function call is checked before field-access fallback",
+        ),
+      }
     TypeError::BadRec(message~, span~) =>
       @core.Diagnostic::{
         stage: "type",
@@ -206,6 +247,28 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         message: "type definition: " + message,
         span: Some(span),
         hint: None,
+        note: None,
+      }
+    TypeError::TraitSealed(trait_name~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "[TROP001] trait is sealed: " + trait_name,
+        span: Some(span),
+        hint: Some(
+          "define `" +
+          trait_name +
+          "` as `export open trait` in the source module to allow external impls",
+        ),
+        note: None,
+      }
+    TypeError::TraitImplOverlap(trait_name~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "[TROP003] overlapping impl: " + trait_name,
+        span: Some(span),
+        hint: Some(
+          "narrow the impl target or bounds so only one impl can match each concrete type",
+        ),
         note: None,
       }
     TypeError::EffectGuardNotSatisfied(
@@ -287,6 +350,20 @@ fn TypeError::resolve_vars(self : TypeError, env : TypeEnv) -> TypeError {
         actual=resolve_type(env, actual),
         span~,
         context~,
+      )
+    TypeError::PropertyAccessAmbiguous(
+      property_name~,
+      function_name~,
+      function_error~,
+      field_type~,
+      span~
+    ) =>
+      TypeError::PropertyAccessAmbiguous(
+        property_name~,
+        function_name~,
+        function_error~,
+        field_type=resolve_type(env, field_type),
+        span~,
       )
     _ => self
   }

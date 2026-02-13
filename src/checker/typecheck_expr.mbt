@@ -1540,6 +1540,106 @@ fn resolve_type_member_call_name(
 }
 
 ///|
+fn is_postfix_property_call_shape(
+  args : Array[@core.CallArg],
+  name : String,
+  call_span : @core.Span,
+) -> Bool {
+  let pos_args = extract_positional_args(args, name, call_span) catch {
+    _ => return false
+  }
+  if pos_args.length() != 1 {
+    return false
+  }
+  let recv_span = pos_args[0].span()
+  recv_span.start == call_span.start && recv_span.end < call_span.end
+}
+
+///|
+fn summarize_type_error_for_candidate(err : TypeError) -> String {
+  match err {
+    TypeError::UnknownName(name~, ..) => "unknown name: " + name
+    TypeError::UnknownType(name~, ..) => "unknown type: " + name
+    TypeError::DuplicateDecl(name~, ..) => "duplicate declaration: " + name
+    TypeError::Mismatch(expected~, actual~, context~, ..) =>
+      match context {
+        Some(ctx) =>
+          "type mismatch (" +
+          ctx +
+          "): expected " +
+          expected.to_string() +
+          ", actual " +
+          actual.to_string()
+        None =>
+          "type mismatch: expected " +
+          expected.to_string() +
+          ", actual " +
+          actual.to_string()
+      }
+    TypeError::BadCall(message~, ..) => format_bad_call(message)
+    TypeError::PropertyAccessAmbiguous(function_error~, ..) => function_error
+    TypeError::BadRec(message~, ..) => format_bad_rec(message)
+    TypeError::BadMatch(message~, ..) => format_bad_match(message)
+    TypeError::NonExhaustiveMatch(..) => "non-exhaustive match"
+    TypeError::BadTypeDef(message~, ..) => "type definition: " + message
+    TypeError::TraitSealed(trait_name~, ..) =>
+      "[TROP001] trait is sealed: " + trait_name
+    TypeError::TraitImplOverlap(trait_name~, ..) =>
+      "[TROP003] overlapping impl: " + trait_name
+    TypeError::EffectGuardNotSatisfied(
+      operation~,
+      missing_effect~,
+      missing_do_boundary~,
+      ..
+    ) => {
+      let mut detail = "effect requirements not satisfied: `" + operation + "`"
+      match missing_effect {
+        Some(effect_name) =>
+          detail = detail + " (missing effect `" + effect_name + "`)"
+        None => ()
+      }
+      if missing_do_boundary {
+        detail = detail + " (missing do boundary)"
+      }
+      detail
+    }
+  }
+}
+
+///|
+fn maybe_raise_property_access_ambiguity(
+  env : TypeEnv,
+  property_name : String,
+  function_name : String,
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+  call_span : @core.Span,
+  cause : TypeError,
+) -> Unit raise TypeError {
+  if is_postfix_property_call_shape(args, property_name, call_span) {
+    let field_candidate = try_field_access(
+      env, property_name, args, aliases, effects, allow_effect, call_span,
+    ) catch {
+      _ => None
+    }
+    match field_candidate {
+      Some(field_ty) =>
+        raise TypeError::PropertyAccessAmbiguous(
+          property_name~,
+          function_name~,
+          function_error=summarize_type_error_for_candidate(cause),
+          field_type=field_ty,
+          span=call_span,
+        )
+      None => ()
+    }
+  }
+  raise cause
+}
+
+///|
 fn type_call(
   env : TypeEnv,
   name : String,
@@ -1562,8 +1662,20 @@ fn type_call(
         @core.Type::Func(params~, ret~, effects=fn_effects) => {
           check_call_args(
             env, lookup_name, params, args, aliases, effects, allow_effect, call_span,
-          )
-          require_effects(env, effects, fn_effects, lookup_name, call_span)
+          ) catch {
+            err =>
+              maybe_raise_property_access_ambiguity(
+                env, name, lookup_name, args, aliases, effects, allow_effect, call_span,
+                err,
+              )
+          }
+          require_effects(env, effects, fn_effects, lookup_name, call_span) catch {
+            err =>
+              maybe_raise_property_access_ambiguity(
+                env, name, lookup_name, args, aliases, effects, allow_effect, call_span,
+                err,
+              )
+          }
           ret
         }
         _ =>

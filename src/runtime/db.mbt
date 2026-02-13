@@ -1283,6 +1283,19 @@ pub fn VibeDb::new() -> VibeDb {
                       note: None,
                     })
                   }
+                  let report_non_exported_trait = fn(name : String) {
+                    diags.push(rt, @core.Diagnostic::{
+                      stage: "import",
+                      message: "[TROP002] non-exported trait: " + name,
+                      span: Some(span),
+                      hint: Some(
+                        "export `" +
+                        name +
+                        "` as `export trait` (or `export open trait` for external impls)",
+                      ),
+                      note: None,
+                    })
+                  }
                   let import_namespace_members = fn(
                     item : @core.ImportItem,
                     source_root : String,
@@ -1367,10 +1380,17 @@ pub fn VibeDb::new() -> VibeDb {
                       let imported_any = import_namespace_members(
                         item, name, name,
                       )
-                      if item.kind != @core.ImportKind::Value &&
-                        not(imported_any) {
-                        report_kind_mismatch(item, name)
+                      if not(imported_any) {
+                        if import_item_accepts_trait(item) &&
+                          imported_env.has_trait(name) {
+                          report_non_exported_trait(name)
+                        } else if item.kind != @core.ImportKind::Value {
+                          report_kind_mismatch(item, name)
+                        }
                       }
+                    } else if import_item_accepts_trait(item) &&
+                      imported_env.has_trait(name) {
+                      report_non_exported_trait(name)
                     }
                   }
                 }

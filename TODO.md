@@ -5,15 +5,16 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 ## Next Up (Priority Order)
 
 - Language UX hard-point triage (spec/examples review):
-  - P1: Add desugar ambiguity diagnostics for postfix/property access.
+  - Done (2026-02-13): Add desugar ambiguity diagnostics for postfix/property
+    access.
     When `expr.prop` can resolve as function-call desugar vs field access
     fallback, emit candidate-aware diagnostics and suggested disambiguation.
-  - P1: Add `vibe explain-import <entry>` to visualize
+  - Done (2026-02-13): Add `vibe explain-import <entry>` to visualize
     `PathRef/HashRef/VersionRef/SymbolRef -> HashRef` normalization and lock
     lookups (`index.lock` hit/miss reasons).
-  - P1: Improve trait openness diagnostics.
+  - Done (2026-02-13): Improve trait openness diagnostics.
     Distinguish sealed-trait, non-exported trait, and overlapping-impl failures
-    with dedicated error codes/messages.
+    with dedicated error codes/messages (`[TROP001]`/`[TROP002]`/`[TROP003]`).
   - P2: Add formatter/lint quickfixes for grammar sharp edges.
     Auto-fix declaration separators (`;`), placeholder misuse context hints, and
     labeled-argument mistakes (`x~`/`y?`) where deterministic rewrites exist.

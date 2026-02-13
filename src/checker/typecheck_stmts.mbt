@@ -696,7 +696,7 @@ fn register_trait_impl(
     raise TypeError::BadTypeDef(message="unknown trait: " + trait_name, span~)
   }
   if not(env.trait_is_local(trait_name)) && not(env.trait_is_open(trait_name)) {
-    raise TypeError::BadTypeDef(message="trait is sealed: " + trait_name, span~)
+    raise TypeError::TraitSealed(trait_name~, span~)
   }
   ensure_unique_params(type_params, span)
   let normalized_type_bounds : Map[String, Array[String]] = {}
@@ -718,10 +718,7 @@ fn register_trait_impl(
   }
   for impl_def in env.trait_impls_for(trait_name) {
     if trait_impls_overlap(env, impl_def, incoming) {
-      raise TypeError::BadTypeDef(
-        message="overlapping impl: " + trait_name,
-        span~,
-      )
+      raise TypeError::TraitImplOverlap(trait_name~, span~)
     }
   }
   env.add_trait_impl(trait_name, incoming)
