@@ -84,10 +84,7 @@ fn std_layer_for_path(path : String) -> StdModuleLayer? {
     normalized.has_suffix("/vibe/std/string.vibe") {
     return Some(StdModuleLayer::PurePrimitive)
   }
-  if normalized.has_suffix("/vibe/std/list.vibe") ||
-    normalized.has_suffix("/vibe/std/array.vibe") ||
-    normalized.has_suffix("/vibe/std/map.vibe") ||
-    normalized.has_suffix("/vibe/std/set.vibe") ||
+  if normalized.has_suffix("/vibe/std/array.vibe") ||
     normalized.has_suffix("/vibe/std/option.vibe") ||
     normalized.has_suffix("/vibe/std/result.vibe") ||
     normalized.has_suffix("/vibe/std/bytes.vibe") ||

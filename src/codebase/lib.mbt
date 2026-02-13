@@ -175,6 +175,7 @@ fn default_registry_modules(root : String) -> Map[String, String] {
   let out : Map[String, String] = {}
   out["std"] = @vibe_fs.normalize_path(root + "/vibe/std")
   out["encoding"] = @vibe_fs.normalize_path(root + "/vibe/encoding")
+  out["collection"] = @vibe_fs.normalize_path(root + "/vibe/collection")
   out
 }
 

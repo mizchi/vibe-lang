@@ -14,9 +14,6 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 | `float.vibe` | 7 | Float helpers (`abs`, `signum`, `clamp`, `square`, `lerp`) |
 | `double.vibe` | 12 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
 | `array.vibe` | 3 | Generic array helpers (`length`, `get`, `head`, `last`, `append`, `slice`, `reverse`, `array_map`, `filter`, `fold`, `find`, `any`, `all`) |
-| `map.vibe` | 1 | Generic map helpers (`has_key`, `get`, `get_or`, `get_or_else`, `keys`, `values`, `length`, `is_empty`) |
-| `set.vibe` | 2 | String set helpers (`empty`, `contains`, `add`, `remove`, `size`, `from_array`, `set_union`, `set_intersect`, `set_difference`) |
-| `list.vibe` | 13 | Generic Cons list helpers (`List[T]`, `map`, `fold`, `filter`, `append`, `contains_by`) |
 | `bool.vibe` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
 | `char.vibe` | 3 | ASCII classification/conversion helpers (`is_ascii_*`, `to_ascii_*`, `to_string`, `from_string`) |
 | `bytes.vibe` | 5 | Byte array helpers (`is_byte`, `clamp_byte`, `from_ascii`, `to_ascii`, `to_hex`, `from_hex`) |
@@ -32,7 +29,7 @@ This directory is the xsh core library, self-hosted by porting selected parts of
 | `wasm/opcodes.vibe` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
 | `wasm/io_stream.vibe` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
-**Total: 164 tests**
+`list.vibe` / `map.vibe` / `set.vibe` moved to `vibe/collection`.
 
 Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` for `string.vibe`).
 
@@ -42,7 +39,7 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 
 - `trait-contract`: contracts (`builtin_traits.vibe`)
 - `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)
-- `pure-data`: pure ADT/data operations (`array/map/set/list/option/result/bytes`)
+- `pure-data`: pure ADT/data operations (`array/option/result/bytes`)
 - `ref-model`: path and module reference model (`path/ref` + `path` facade)
 - `effect-boundary`: runtime side-effect bridge (`io/path/runtime/threads/runtime`)
 - `backend-specific`: backend-specific experimental APIs (`wasm/*`)
@@ -149,9 +146,6 @@ just run test \
   vibe/std/float_test.vibe \
   vibe/std/double_test.vibe \
   vibe/std/array_test.vibe \
-  vibe/std/map_test.vibe \
-  vibe/std/set_test.vibe \
-  vibe/std/list_test.vibe \
   vibe/std/option_test.vibe \
   vibe/std/result_test.vibe \
   vibe/std/string_test.vibe \

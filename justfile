@@ -26,11 +26,11 @@ fmt:
 check:
     moon check --deny-warn --warn-list '{{moon_warn_list}}' --target {{target}}
 
-# Run tests (includes fixtures, examples, and core std library)
+# Run tests (includes fixtures, examples, std, collection, and encoding libraries)
 test:
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
-    _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async examples vibe/std vibe/encoding
+    _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async examples vibe/std vibe/collection vibe/encoding
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:

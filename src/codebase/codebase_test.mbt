@@ -532,6 +532,22 @@ test "codebase update_lock_path_refs validates index version format" {
 }
 
 ///|
+test "codebase load_registry_modules falls back to std encoding and collection" {
+  let root = make_temp_dir("registry_default_namespaces")
+  let modules = match load_registry_modules(root) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let std_path = @vibe_fs.normalize_path(root + "/vibe/std")
+  let encoding_path = @vibe_fs.normalize_path(root + "/vibe/encoding")
+  let collection_path = @vibe_fs.normalize_path(root + "/vibe/collection")
+  assert_eq(modules["std"], std_path)
+  assert_eq(modules["encoding"], encoding_path)
+  assert_eq(modules["collection"], collection_path)
+  remove_if_exists(root)
+}
+
+///|
 test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
   let root = make_temp_dir("registry_std")
   let std_dir = root + "/vibe/std"

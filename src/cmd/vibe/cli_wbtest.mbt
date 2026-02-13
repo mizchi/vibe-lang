@@ -1303,11 +1303,16 @@ test "std layer classification covers primary modules" {
   }
   assert_eq(primitive_layer_char, "pure-primitive")
 
-  let data_layer = match std_layer_for_path("/tmp/repo/vibe/std/list.vibe") {
+  let data_layer = match std_layer_for_path("/tmp/repo/vibe/std/array.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer, "pure-data")
+  let list_layer = match std_layer_for_path("/tmp/repo/vibe/std/list.vibe") {
+    Some(v) => std_layer_name(v)
+    None => "none"
+  }
+  assert_eq(list_layer, "none")
   let data_layer_bytes = match
     std_layer_for_path("/tmp/repo/vibe/std/bytes.vibe") {
     Some(v) => std_layer_name(v)
