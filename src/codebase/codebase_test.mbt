@@ -299,7 +299,8 @@ test "codebase lock_file_path prefers ancestor index.lock plus .vibe" {
     e => fail(e.to_string())
   }
   write_file(
-    project + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+    project + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
   )
   let entry = nested + "/main.vibe"
   assert_eq(lock_file_path(entry), project + "/index.lock")
@@ -318,9 +319,7 @@ test "codebase resolve_lock_root prefers ancestor index.lock even without .vibe"
   @os_fs.create_dir(nested) catch {
     e => fail(e.to_string())
   }
-  write_file(
-    root + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
-  )
+  write_file(root + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}")
   write_file(project + "/index.vibe", "export let version = \"0.1.0\"\n")
   let entry = nested + "/main.vibe"
   assert_eq(resolve_lock_root(entry), root)
@@ -345,10 +344,12 @@ test "codebase vibe_dir_path prefers shared vibe/.vibe for vibe subtree" {
     e => fail(e.to_string())
   }
   write_file(
-    std_dir + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+    std_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
   )
   write_file(
-    encoding_dir + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+    encoding_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
   )
   let entry = std_dir + "/main.vibe"
   assert_eq(lock_file_path(entry), std_dir + "/index.lock")
@@ -368,7 +369,8 @@ test "codebase vibe_dir_path keeps local root for non-repo vibe dir" {
     e => fail(e.to_string())
   }
   write_file(
-    pkg_dir + "/index.lock", "{\"path\":{},\"version\":{},\"symbol\":{}}",
+    pkg_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
   )
   let entry = pkg_dir + "/main.vibe"
   assert_eq(lock_file_path(entry), pkg_dir + "/index.lock")

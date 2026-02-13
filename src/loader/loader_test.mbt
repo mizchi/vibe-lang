@@ -321,8 +321,7 @@ test "loader load_db_with_paths refreshes stale index.lock path hashes" {
   write_file(lib, lib_source)
   let lock_path = @codebase.lock_file_path(entry)
   write_file(
-    lock_path,
-    "{\"path\":{\"./main.vibe\":\"stale_main\",\"./lib.vibe\":\"stale_lib\"},\"version\":{},\"symbol\":{}}",
+    lock_path, "{\"path\":{\"./main.vibe\":\"stale_main\",\"./lib.vibe\":\"stale_lib\"},\"version\":{},\"symbol\":{}}",
   )
   match load_db_with_paths(entry) {
     Ok(_) => ()

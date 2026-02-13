@@ -179,10 +179,7 @@ fn default_registry_modules(root : String) -> Map[String, String] {
 }
 
 ///|
-fn has_lock_file_with_fs(
-  dir : String,
-  fs : &@io.FileSystemAdapter,
-) -> Bool {
+fn has_lock_file_with_fs(dir : String, fs : &@io.FileSystemAdapter) -> Bool {
   let index_lock = @vibe_fs.normalize_path(dir + "/index.lock")
   if @io.path_exists_with(fs, index_lock) {
     return true
@@ -192,10 +189,7 @@ fn has_lock_file_with_fs(
 }
 
 ///|
-fn has_vibe_dir_with_fs(
-  dir : String,
-  fs : &@io.FileSystemAdapter,
-) -> Bool {
+fn has_vibe_dir_with_fs(dir : String, fs : &@io.FileSystemAdapter) -> Bool {
   let vibe_dir = @vibe_fs.normalize_path(dir + "/.vibe")
   @io.path_exists_with(fs, vibe_dir)
 }
@@ -219,7 +213,9 @@ fn find_storage_root_with_fs(
     if has_lock && dir == normalized_start && local_lock_only_root == None {
       local_lock_only_root = Some(dir)
     }
-    if has_lock && has_index_descendant && lock_root_with_index_descendant == None {
+    if has_lock &&
+      has_index_descendant &&
+      lock_root_with_index_descendant == None {
       lock_root_with_index_descendant = Some(dir)
     }
     let index_path = @vibe_fs.normalize_path(dir + "/index.vibe")
@@ -266,10 +262,7 @@ fn find_named_ancestor_dir(start_dir : String, name : String) -> String? {
 }
 
 ///|
-fn is_repo_vibe_root_with_fs(
-  dir : String,
-  fs : &@io.FileSystemAdapter,
-) -> Bool {
+fn is_repo_vibe_root_with_fs(dir : String, fs : &@io.FileSystemAdapter) -> Bool {
   let std_lock = @vibe_fs.normalize_path(dir + "/std/index.lock")
   let encoding_lock = @vibe_fs.normalize_path(dir + "/encoding/index.lock")
   @io.path_exists_with(fs, std_lock) && @io.path_exists_with(fs, encoding_lock)
@@ -937,14 +930,7 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved,
-                out,
-                module_refs,
-                annotations,
-                visited,
-                stack,
-                root,
-                registry_modules,
+                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
                 fs,
               ) {
               Ok(_) => ()
@@ -982,7 +968,8 @@ fn collect_path_refs(
   let stack : Array[String] = []
   match
     collect_path_refs_impl(
-      entry, out, module_refs, annotations, visited, stack, root, registry_modules, fs,
+      entry, out, module_refs, annotations, visited, stack, root, registry_modules,
+      fs,
     ) {
     Ok(_) => Ok((out, module_refs, annotations))
     Err(err) => Err(err)
