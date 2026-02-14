@@ -224,6 +224,12 @@ bench-cmd-compile:
 bench-scratch-workflow:
     scripts/bench_scratch_workflow.sh
 
+# Debug scratch workflow loop (`new -> eval -> finalize -> normalize`)
+# env: VIBE_SCRATCH_RUNS, VIBE_SCRATCH_TMP_PARENT, VIBE_SCRATCH_KEEP_SUCCESS,
+#      VIBE_SCRATCH_CHECK_MAIN, VIBE_SCRATCH_CLI_BUILD, VIBE_SCRATCH_CLI_BIN
+debug-scratch-workflow:
+    scripts/debug_scratch_workflow.sh
+
 # Benchmark symbol index + LSIF backend
 bench-symbol-index:
     moon bench -p benches -f symbol_index_bench.mbt
