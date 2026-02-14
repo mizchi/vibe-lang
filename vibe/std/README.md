@@ -101,9 +101,10 @@ let v = None.unwrap_or(0)
 
 ### 2. Tagged-int range limits (WASM backend)
 
-- Current runtime representation uses tagged integers.
-- Safe Int range is `-536870912 .. 536870911`.
+- Current runtime representation uses 2-bit tagged i64 integers.
+- Safe Int range is `-2305843009213693952 .. 2305843009213693951` (62-bit tagged).
 - std `int.max_value` / `int.min_value` and double-to-int saturation follow this range.
+- Hex literals are supported: `0xFF`, `0X1A2B`.
 
 ### 3. `loop` expression (unverified)
 

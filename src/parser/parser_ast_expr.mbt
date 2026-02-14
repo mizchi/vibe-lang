@@ -322,7 +322,7 @@ fn AstParser::parse_unary_expr(self : AstParser) -> @core.Expr raise ParseError 
       self.skip_trivia()
       if self.peek_kind() == int_lit() {
         let lit = self.peek()
-        if lit.text() == "9223372036854775808" {
+        if lit.text() == "2305843009213693952" {
           let span = @core.Span::new(
             self.offset_at(start_pos),
             self.offset_at(self.pos) + lit.text().length(),
@@ -1224,17 +1224,93 @@ fn AstParser::parse_paren_expr(self : AstParser) -> @core.Expr raise ParseError 
 }
 
 ///|
+fn hex_char_value(c : Char) -> Int {
+  if c >= '0' && c <= '9' {
+    c.to_int() - '0'.to_int()
+  } else if c >= 'a' && c <= 'f' {
+    c.to_int() - 'a'.to_int() + 10
+  } else {
+    c.to_int() - 'A'.to_int() + 10
+  }
+}
+
+///|
+fn parse_hex_int64(text : String, span : @core.Span) -> Int64 raise ParseError {
+  // Skip "0x" prefix
+  let mut i = 2
+  // Skip leading zeros
+  while i < text.length() {
+    let c = text[i].to_int().unsafe_to_char()
+    if c != '0' {
+      break
+    }
+    i += 1
+  }
+  let sig_len = text.length() - i
+  // Overflow guard: >16 significant hex digits always overflow Int64
+  if sig_len > 16 {
+    raise ParseError::IntLiteralOverflow(literal=text, span~)
+  }
+  // 16 significant digits with first digit >= 2 overflows tagged range
+  // (0x2000000000000000 = 2^61 > tagged max) and could overflow Int64
+  // for first digit >= 8
+  if sig_len == 16 {
+    let first = text[i].to_int().unsafe_to_char()
+    if not(first == '0' || first == '1') {
+      raise ParseError::IntLiteralOverflow(literal=text, span~)
+    }
+  }
+  // Safe to accumulate without Int64 overflow
+  let mut v : Int64 = 0L
+  let mut j = 2
+  while j < text.length() {
+    let c = text[j].to_int().unsafe_to_char()
+    v = v * 16L + hex_char_value(c).to_int64()
+    j += 1
+  }
+  v
+}
+
+///|
+fn parse_decimal_int64(
+  text : String,
+  span : @core.Span,
+) -> Int64 raise ParseError {
+  let parsed : Result[Int64, @strconv.StrConvError] = try? @strconv.parse_int64(
+    text,
+  )
+  match parsed {
+    Ok(v) => v
+    Err(_) => raise ParseError::IntLiteralOverflow(literal=text, span~)
+  }
+}
+
+///|
+fn is_hex_prefix(text : String) -> Bool {
+  if text.length() <= 2 {
+    return false
+  }
+  let c0 = text[0].to_int().unsafe_to_char()
+  let c1 = text[1].to_int().unsafe_to_char()
+  c0 == '0' && (c1 == 'x' || c1 == 'X')
+}
+
+///|
 fn parse_int_literal_token(
   tok : Token,
   span : @core.Span,
 ) -> Int64 raise ParseError {
-  let parsed : Result[Int64, @strconv.StrConvError] = try? @strconv.parse_int64(
-    tok.text(),
-  )
-  match parsed {
-    Ok(v) => v
-    Err(_) => raise ParseError::IntLiteralOverflow(literal=tok.text(), span~)
+  let text = tok.text()
+  let v : Int64 = if is_hex_prefix(text) {
+    parse_hex_int64(text, span)
+  } else {
+    parse_decimal_int64(text, span)
   }
+  // Tagged range check: max 2^61 - 1
+  if v > 2305843009213693951L {
+    raise ParseError::IntLiteralOverflow(literal=text, span~)
+  }
+  v
 }
 
 ///|

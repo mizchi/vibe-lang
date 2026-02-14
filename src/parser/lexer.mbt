@@ -43,6 +43,11 @@ fn is_digit(c : Char) -> Bool {
 }
 
 ///|
+fn is_hex_digit(c : Char) -> Bool {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+///|
 fn is_alnum(c : Char) -> Bool {
   is_alpha(c) || is_digit(c)
 }
@@ -337,6 +342,22 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
       }
       if is_digit(c) {
         let start = self.pos
+        // Check for hex prefix: 0x or 0X
+        if c == '0' && self.pos + 1 < self.input.length() {
+          let next_c = self.input[self.pos + 1].to_int().unsafe_to_char()
+          if next_c == 'x' || next_c == 'X' {
+            let _ = self.advance() // consume '0'
+            let _ = self.advance() // consume 'x'/'X'
+            while (match self.peek() {
+                    Some(ch) => is_hex_digit(ch)
+                    None => false
+                  }) {
+              let _ = self.advance()
+            }
+            let text = (try! self.input[start:self.pos]).to_string()
+            return Token::new(int_lit(), text)
+          }
+        }
         while (match self.peek() {
                 Some(ch) => is_digit(ch)
                 None => false
