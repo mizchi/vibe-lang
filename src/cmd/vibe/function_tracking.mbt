@@ -164,6 +164,7 @@ fn function_tracking_type_to_json(ty : @vibe_core.Type) -> Json {
       obj["ArrayBuilder"] = function_tracking_type_to_json(inner)
     @vibe_core.Type::MapBuilder(inner) =>
       obj["MapBuilder"] = function_tracking_type_to_json(inner)
+    @vibe_core.Type::StringBuilder => obj["StringBuilder"] = Json::null()
     @vibe_core.Type::Tuple(items) => {
       let arr : Array[Json] = []
       for item in items {
@@ -368,6 +369,7 @@ fn function_tracking_type_from_json(json : Json) -> @vibe_core.Type? {
           Some(inner) => return Some(@vibe_core.Type::MapBuilder(inner))
           None => return None
         }
+      "StringBuilder" => return Some(@vibe_core.Type::StringBuilder)
       "Tuple" =>
         match function_tracking_type_array_from_json(value) {
           Some(items) => return Some(@vibe_core.Type::Tuple(items))

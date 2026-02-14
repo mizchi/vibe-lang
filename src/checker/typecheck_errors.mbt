@@ -55,7 +55,10 @@ fn is_do_boundary_operation(name : String) -> Bool {
     | "array_builder_freeze"
     | "map_builder"
     | "map_builder_set"
-    | "map_builder_freeze" => true
+    | "map_builder_freeze"
+    | "string_builder"
+    | "string_builder_push"
+    | "string_builder_freeze" => true
     _ => false
   }
 }

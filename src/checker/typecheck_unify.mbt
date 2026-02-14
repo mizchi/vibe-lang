@@ -455,6 +455,7 @@ fn unify_types(
       unify_types(env, ae, be)
     (@core.Type::MapBuilder(av), @core.Type::MapBuilder(bv)) =>
       unify_types(env, av, bv)
+    (@core.Type::StringBuilder, @core.Type::StringBuilder) => true
     (@core.Type::Variant(ax), @core.Type::Variant(bx)) =>
       if ax.length() != bx.length() {
         false

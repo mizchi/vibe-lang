@@ -413,6 +413,7 @@ fn parse_type(json : Json) -> Type raise DeserializeError {
         let elem = parse_type(value)
         return Type::MapBuilder(elem)
       }
+      "StringBuilder" => return Type::StringBuilder
       "Tuple" => {
         let items = parse_types(value)
         return Type::Tuple(items)

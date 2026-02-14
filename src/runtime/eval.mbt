@@ -1380,6 +1380,58 @@ fn eval_call(
                 _ => raise EvalError::BadCall("addr")
               }
             }
+            "string_builder" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "string_builder",
+              )
+              if pos_args.length() != 0 {
+                raise EvalError::BadCall("string_builder")
+              }
+              { value: @core.Value::StringBuilder([]), effects: out.effects }
+            }
+            "string_builder_push" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "string_builder_push",
+              )
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("string_builder_push")
+              }
+              match pos_args[0] {
+                @core.Value::StringBuilder(chunks) =>
+                  match pos_args[1] {
+                    @core.Value::String(s) => {
+                      chunks.push(s)
+                      { value: @core.Value::Unit, effects: out.effects }
+                    }
+                    _ => raise EvalError::BadCall("string_builder_push")
+                  }
+                _ => raise EvalError::BadCall("string_builder_push")
+              }
+            }
+            "string_builder_freeze" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "string_builder_freeze",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("string_builder_freeze")
+              }
+              match pos_args[0] {
+                @core.Value::StringBuilder(chunks) => {
+                  let mut result = ""
+                  for chunk in chunks {
+                    result = result + chunk
+                  }
+                  { value: @core.Value::String(result), effects: out.effects }
+                }
+                _ => raise EvalError::BadCall("string_builder_freeze")
+              }
+            }
             "array_builder" => {
               let out = eval_args(rt, args)
               let pos_args = extract_positional_values(

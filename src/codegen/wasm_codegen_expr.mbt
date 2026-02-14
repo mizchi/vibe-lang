@@ -171,7 +171,9 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         if ctx.use_js_strings {
           ctx.need_js_equals = true
         }
-      } else if name == "array_builder" || name == "map_builder" {
+      } else if name == "array_builder" ||
+        name == "map_builder" ||
+        name == "string_builder" {
         ctx.need_heap = true
       } else if name == "map_get" {
         if ctx.use_js_strings {
@@ -2412,6 +2414,204 @@ fn compile_expr(
           emit_i64_const_raw(buf, tag_bool.to_int64())
           emit_i64_or(buf)
         }
+      } else if name == "string_builder" {
+        // string_builder() -> allocate empty array obj with len=0 (same layout as array_builder)
+        let max_cap = 256
+        require_heap(ctx)
+        let size = align4(8 + max_cap * 4)
+        let obj_local = alloc_temp_local(ctx)
+        emit_heap_alloc(ctx, buf, size, obj_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_array)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_store(buf, 4)
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+      } else if name == "string_builder_push" {
+        // string_builder_push(builder, value) -> same layout as array_builder_push
+        let pos_args = extract_positional_exprs(args, name)
+        if pos_args.length() != 2 {
+          raise WasmGenError::Unsupported("string_builder_push arity")
+        }
+        let builder_local = alloc_temp_local(ctx)
+        let ptr_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_tee(buf, builder_local)
+        emit_local_set(buf, ptr_local)
+        // store value at [ptr + 8 + len*4]
+        emit_local_get(buf, ptr_local)
+        emit_local_get(buf, ptr_local)
+        emit_i32_load(buf, 4) // len
+        emit_i32_const_raw(buf, 4)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 8)
+        // increment len
+        emit_local_get(buf, ptr_local)
+        emit_local_get(buf, ptr_local)
+        emit_i32_load(buf, 4)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_i32_store(buf, 4)
+        // return unit
+        emit_i64_const_tagged(buf, 0L)
+      } else if name == "string_builder_freeze" {
+        // string_builder_freeze(builder) -> concatenate all stored strings
+        // Two-pass: 1) sum total byte length, 2) allocate and copy
+        let pos_args = extract_positional_exprs(args, name)
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("string_builder_freeze arity")
+        }
+        require_heap(ctx)
+        let builder_ptr = alloc_temp_local(ctx)
+        let num_strings = alloc_temp_local(ctx)
+        let total_len = alloc_temp_local(ctx)
+        let result_ptr = alloc_temp_local(ctx)
+        let loop_i = alloc_temp_local(ctx)
+        let str_ptr = alloc_temp_local(ctx)
+        let str_len = alloc_temp_local(ctx)
+        let write_offset = alloc_temp_local(ctx)
+        let copy_j = alloc_temp_local(ctx)
+        let alloc_size = alloc_temp_local(ctx)
+        // untag builder pointer
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, builder_ptr)
+        // read number of strings
+        emit_local_get(buf, builder_ptr)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, num_strings)
+        // Pass 1: calculate total byte length
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, total_len)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, loop_i)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, loop_i)
+        emit_local_get(buf, num_strings)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 1) // break if i >= num_strings
+        // load string ref at builder_ptr + 8 + i*4, untag to get str_ptr
+        emit_local_get(buf, builder_ptr)
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 4)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8)
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_local_set(buf, str_ptr)
+        // total_len += str_ptr.len (at offset 4)
+        emit_local_get(buf, total_len)
+        emit_local_get(buf, str_ptr)
+        emit_i32_load(buf, 4)
+        emit_i32_add(buf)
+        emit_local_set(buf, total_len)
+        // i++
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        // Allocate result string: align4(8 + total_len)
+        emit_local_get(buf, total_len)
+        emit_i32_const_raw(buf, 11) // 8 + 3 for alignment
+        emit_i32_add(buf)
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_local_set(buf, alloc_size)
+        emit_heap_alloc_local(ctx, buf, alloc_size, result_ptr)
+        emit_local_get(buf, result_ptr)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, result_ptr)
+        emit_local_get(buf, total_len)
+        emit_i32_store(buf, 4)
+        // Pass 2: copy bytes from each string into result
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, write_offset)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, loop_i)
+        emit_block(buf) // outer block
+        emit_loop(buf) // outer loop
+        emit_local_get(buf, loop_i)
+        emit_local_get(buf, num_strings)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 1) // break if i >= num_strings
+        // load and untag string ptr
+        emit_local_get(buf, builder_ptr)
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 4)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8)
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_local_set(buf, str_ptr)
+        emit_local_get(buf, str_ptr)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, str_len)
+        // inner loop: copy str_len bytes
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, copy_j)
+        emit_block(buf) // inner block
+        emit_loop(buf) // inner loop
+        emit_local_get(buf, copy_j)
+        emit_local_get(buf, str_len)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 1) // break if j >= str_len
+        // result_ptr + 8 + write_offset + j
+        emit_local_get(buf, result_ptr)
+        emit_local_get(buf, write_offset)
+        emit_i32_add(buf)
+        emit_local_get(buf, copy_j)
+        emit_i32_add(buf)
+        // load byte from str_ptr + 8 + j
+        emit_local_get(buf, str_ptr)
+        emit_local_get(buf, copy_j)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_store8(buf, 8)
+        // j++
+        emit_local_get(buf, copy_j)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, copy_j)
+        emit_br(buf, 0)
+        emit_end(buf) // end inner loop
+        emit_end(buf) // end inner block
+        // write_offset += str_len
+        emit_local_get(buf, write_offset)
+        emit_local_get(buf, str_len)
+        emit_i32_add(buf)
+        emit_local_set(buf, write_offset)
+        // i++
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i)
+        emit_br(buf, 0)
+        emit_end(buf) // end outer loop
+        emit_end(buf) // end outer block
+        // return tagged result
+        emit_local_get(buf, result_ptr)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
       } else if name == "array_builder" {
         // array_builder() -> allocate empty array obj with len=0
         // Reserve max_capacity * 4 bytes after header for future pushes

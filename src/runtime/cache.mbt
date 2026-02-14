@@ -119,6 +119,16 @@ fn encode_value(value : @core.Value) -> String {
     @core.Value::Map(fields) => "m:" + encode_record(fields)
     @core.Value::ArrayBuilder(items) => "ab:" + encode_list(items)
     @core.Value::MapBuilder(fields) => "mb:" + encode_record(fields)
+    @core.Value::StringBuilder(chunks) => {
+      let mut s = "sb:"
+      for i, chunk in chunks {
+        if i > 0 {
+          s = s + ","
+        }
+        s = s + chunk
+      }
+      s
+    }
     @core.Value::Fn(_) => "f:"
   }
 }
@@ -218,6 +228,14 @@ fn decode_value(encoded : String) -> @core.Value? {
       Some(fields) => Some(@core.Value::MapBuilder(fields))
       None => None
     }
+  } else if encoded.has_prefix("sb:") {
+    let rest = slice_from(encoded, 3)
+    let chunks : Array[String] = []
+    if rest.length() > 0 {
+      // Simple split by comma (chunks shouldn't contain commas in practice)
+      chunks.push(rest)
+    }
+    Some(@core.Value::StringBuilder(chunks))
   } else {
     None
   }

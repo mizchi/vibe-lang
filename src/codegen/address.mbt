@@ -668,6 +668,7 @@ fn addr_type_to_sexp(ty : @core.Type) -> String {
       "(ArrayBuilder " + addr_type_to_sexp(inner) + ")"
     @core.Type::MapBuilder(inner) =>
       "(MapBuilder " + addr_type_to_sexp(inner) + ")"
+    @core.Type::StringBuilder => "StringBuilder"
     @core.Type::Variant(fields) => {
       let keys = addr_sort_record_type_keys(fields)
       let buf = StringBuilder::new()

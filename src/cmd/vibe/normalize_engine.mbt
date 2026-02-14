@@ -2394,6 +2394,7 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
     | @vibe_core.Type::ArrayBuilder(inner)
     | @vibe_core.Type::MapBuilder(inner) =>
       normalize_type_annotation_allowed(inner)
+    @vibe_core.Type::StringBuilder => true
     @vibe_core.Type::Named(args~, ..) => {
       for arg in args {
         if not(normalize_type_annotation_allowed(arg)) {
@@ -2458,6 +2459,7 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
       "ArrayBuilder[" + normalize_render_type_annotation(inner) + "]"
     @vibe_core.Type::MapBuilder(inner) =>
       "MapBuilder[" + normalize_render_type_annotation(inner) + "]"
+    @vibe_core.Type::StringBuilder => "StringBuilder"
     @vibe_core.Type::Named(name~, args~) =>
       if args.length() == 0 {
         name

@@ -15,7 +15,7 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     Introduce `ArrayBuilder`/`push`-style APIs to avoid repeated `array_concat`.
   - [x] 5. Introduce first-class `Char` and char literals. (Done: 2026-02-14)
     Reduce single-character `String`/`Int` ambiguity in parser/std code.
-  - [ ] 6. Add `String` / `Bytes` builder APIs.
+  - [x] 6. Add `String` / `Bytes` builder APIs. (Done: 2026-02-14)
     Avoid repeated `string_concat` patterns in loops and parsers.
   - [ ] 7. Improve pattern-match ergonomics for sequence-heavy tests.
     Add concise match/assert syntax to reduce deep nested `match` blocks.

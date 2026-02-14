@@ -2426,6 +2426,111 @@ fn type_call(
                 }
                 @core.Type::Char
               }
+              "string_builder" => {
+                let pos_args = extract_positional_args(
+                  args, "string_builder", call_span,
+                )
+                if pos_args.length() != 0 {
+                  raise TypeError::BadCall(
+                    message="string_builder",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "string_builder",
+                  [],
+                  call_span,
+                )
+                @core.Type::StringBuilder
+              }
+              "string_builder_push" => {
+                let pos_args = extract_positional_args(
+                  args, "string_builder_push", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="string_builder_push",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "string_builder_push",
+                  [],
+                  call_span,
+                )
+                let builder_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let value_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, builder_ty, @core.Type::StringBuilder)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::StringBuilder,
+                    actual=builder_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, value_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=value_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "string_builder_freeze" => {
+                let pos_args = extract_positional_args(
+                  args, "string_builder_freeze", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="string_builder_freeze",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "string_builder_freeze",
+                  [],
+                  call_span,
+                )
+                let builder_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, builder_ty, @core.Type::StringBuilder)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::StringBuilder,
+                    actual=builder_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
               "array_builder" => {
                 let pos_args = extract_positional_args(
                   args, "array_builder", call_span,

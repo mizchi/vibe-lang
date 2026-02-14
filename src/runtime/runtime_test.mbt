@@ -333,8 +333,9 @@ test "vibe prelude to_string works with parenthesized literal method call" {
 ///|
 test "vibe char literal" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let result : Result[EvalResult, XshError] = try?
-    rt.eval_script("let a = 'a'\nlet b = '\\n'\nlet c = '\\''")
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let a = 'a'\nlet b = '\\n'\nlet c = '\\''",
+  )
   match result {
     Err(e) => fail(e.to_string())
     Ok(_) => ()

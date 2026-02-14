@@ -389,6 +389,7 @@ pub fn Type::structural_hash(self : Type) -> Int {
     Type::ArrayBuilder(inner) =>
       combine_hash(0x41724275, inner.structural_hash())
     Type::MapBuilder(inner) => combine_hash(0x4d614275, inner.structural_hash())
+    Type::StringBuilder => 0x53744275
     Type::Variant(ctors) => {
       let mut h = 0x56617269
       for name, ty in ctors {

@@ -44,6 +44,7 @@ pub(all) enum Type {
   Map(Type)
   ArrayBuilder(Type)
   MapBuilder(Type)
+  StringBuilder
   Variant(Map[String, Type])
   Named(name~ : String, args~ : Array[Type])
   Param(String)
@@ -150,6 +151,7 @@ fn format_type_compact(ty : Type) -> String {
     Type::ArrayBuilder(inner) =>
       "ArrayBuilder[" + format_type_compact(inner) + "]"
     Type::MapBuilder(inner) => "MapBuilder[" + format_type_compact(inner) + "]"
+    Type::StringBuilder => "StringBuilder"
     Type::Variant(_) => "Variant"
     Type::Named(name~, args~) =>
       if args.length() == 0 {
@@ -214,6 +216,7 @@ pub(all) enum Value {
   Map(Map[String, Value])
   ArrayBuilder(Array[Value])
   MapBuilder(Map[String, Value])
+  StringBuilder(Array[String])
   Fn(FnValue)
 } derive(Eq)
 
@@ -313,6 +316,18 @@ pub impl Show for Value with output(self, logger) {
         value.output(logger)
       }
       logger.write_string("|}")
+    }
+    Value::StringBuilder(chunks) => {
+      logger.write_string("StringBuilder(")
+      for i, chunk in chunks {
+        if i > 0 {
+          logger.write_string(", ")
+        }
+        logger.write_string("\"")
+        logger.write_string(chunk)
+        logger.write_string("\"")
+      }
+      logger.write_string(")")
     }
     Value::Fn(fn_value) => fn_value.output(logger)
   }

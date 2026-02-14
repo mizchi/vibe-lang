@@ -900,6 +900,7 @@ fn has_num_type(ty : @core.Type) -> Bool {
     | @core.Type::Map(inner)
     | @core.Type::ArrayBuilder(inner)
     | @core.Type::MapBuilder(inner) => has_num_type(inner)
+    @core.Type::StringBuilder => false
     @core.Type::Variant(fields) => {
       let mut found = false
       for _, item in fields {
@@ -962,6 +963,7 @@ fn replace_num_type(ty : @core.Type, concrete : @core.Type) -> @core.Type {
       @core.Type::ArrayBuilder(replace_num_type(inner, concrete))
     @core.Type::MapBuilder(inner) =>
       @core.Type::MapBuilder(replace_num_type(inner, concrete))
+    @core.Type::StringBuilder => @core.Type::StringBuilder
     @core.Type::Variant(fields) => {
       let out : Map[String, @core.Type] = {}
       for name, item in fields {

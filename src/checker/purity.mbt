@@ -416,7 +416,10 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "array_builder_freeze" ||
   name == "map_builder" ||
   name == "map_builder_set" ||
-  name == "map_builder_freeze"
+  name == "map_builder_freeze" ||
+  name == "string_builder" ||
+  name == "string_builder_push" ||
+  name == "string_builder_freeze"
 }
 
 ///|

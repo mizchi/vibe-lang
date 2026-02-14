@@ -168,6 +168,16 @@ fn AstParser::parse_type_with_params(
               span=name_span,
             )
           }
+        "StringBuilder" =>
+          if args.length() == 0 {
+            @core.Type::StringBuilder
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="StringBuilder",
+              got=name,
+              span=name_span,
+            )
+          }
         _ =>
           if params.contains(name) {
             if not(args.is_empty()) {
