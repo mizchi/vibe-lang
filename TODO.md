@@ -116,6 +116,46 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`.
   Case set / golden rules are now explicit via
   `bench/bundle_size/cases.txt` + `bench/bundle_size/README.md`.
+  Progress (2026-02-15): fixed importer namespace import resolution
+  (`use std/option.vibe` via `index.vibe` + symlink) and codegen bug
+  (match arm pattern binding kind `I32` → `I64` for non-js-string backend).
+  `consumer_option_core` `unsupported -> wasm 1662`,
+  `consumer_option_extra` `unsupported -> wasm 1792` (both with DCE).
+  `consumer_double_core` / `consumer_double_rounding` remain unsupported
+  (Double type `BoxedF64` kind resolution in `resolve_numeric_kind`).
+  Importer totals: 3452 bytes (2/4 compiling, 2/4 unsupported).
+  Examples totals: 41495 bytes (no-dce baseline unchanged).
+
+### KPI Benchmark (2026-02-15)
+
+| case | per_us | wasm_bytes | size_x_latency |
+|------|--------|------------|----------------|
+| pipeline_a | 0.528 | 1446 | 764 |
+| pipeline_b | 0.539 | 1450 | 782 |
+| pair_mix_ab | 0.579 | 1525 | 884 |
+| cross_mix | 0.565 | 1571 | 887 |
+| **avg** | **0.553** | **1498** | **829** |
+
+### Bundle Size Snapshot (2026-02-15)
+
+**Importers (wasm with DCE):**
+
+| file | mode | bytes |
+|------|------|-------|
+| consumer_option_core | wasm | 1662 |
+| consumer_option_extra | wasm | 1792 |
+| consumer_double_core | unsupported | - |
+| consumer_double_rounding | unsupported | - |
+
+**Examples top 5 (wasm-no-dce):**
+
+| file | bytes |
+|------|-------|
+| json.vibe | 28654 |
+| base64.vibe | 6038 |
+| basics.vibe | 1479 |
+| module_import.vibe | 1383 |
+| effects.vibe | 1051 |
 
 ## Deferred
 
