@@ -79,7 +79,7 @@ pub fn Runtime::run_benches(
     if failed {
       continue
     }
-    let start = @env.now()
+    let start = @bench.monotonic_clock_start()
     try {
       for _ in 0..<count {
         let _ = bench_rt.eval_module(case.body)
@@ -93,9 +93,9 @@ pub fn Runtime::run_benches(
     if failed {
       continue
     }
-    let end = @env.now()
-    let elapsed_ms = (end - start).to_double()
-    let per_us = elapsed_ms * 1000.0 / count.to_double()
+    let elapsed_us = @bench.monotonic_clock_end(start)
+    let elapsed_ms = elapsed_us / 1000.0
+    let per_us = elapsed_us / count.to_double()
     results.push(BenchResult::{
       name: case.name,
       iterations: count,

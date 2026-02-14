@@ -68,6 +68,7 @@ fn type_check_stmts(
   exported_names : Map[String, Bool],
 ) -> TypeEnv raise TypeError {
   let declared_in_scope : Map[String, Bool] = {}
+  let has_exports = not(exported_names.is_empty())
   let ensure_fresh_value_binding = fn(
     name : String,
     span : @core.Span,
@@ -94,7 +95,7 @@ fn type_check_stmts(
         )
         ensure_type_member_decl_receiver_contract(env, name, scheme.ty, span)
         if name != "_" {
-          if exported_names.contains(name) {
+          if has_exports && exported_names.contains(name) {
             env.set_exported_scheme(name, scheme)
           } else {
             env.set_scheme(name, scheme)
@@ -178,7 +179,7 @@ fn type_check_stmts(
             trait_bounds: {},
             ty,
           }
-          if exported_names.contains(name) {
+          if has_exports && exported_names.contains(name) {
             env.set_exported_scheme(name, scheme)
           } else {
             env.set_scheme(name, scheme)
@@ -200,7 +201,7 @@ fn type_check_stmts(
             trait_bounds: {},
             ty: bound_ty,
           }
-          if exported_names.contains(name) {
+          if has_exports && exported_names.contains(name) {
             env.set_exported_scheme(name, scheme)
           } else {
             env.set_scheme(name, scheme)
@@ -252,8 +253,30 @@ fn type_check_stmts(
 ///|
 fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
   let exports : Map[String, Bool] = {}
-  let defined : Map[String, Bool] = {}
   let mut has_late_exports = false
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::ExportLet(rec~, name~, ..) => {
+        let _ = rec
+        exports[name] = true
+      }
+      @core.Stmt::ExportEnumDef(name~, ctors~, ..) => {
+        exports[name] = true
+        for ctor in ctors {
+          exports[ctor.name] = true
+        }
+      }
+      @core.Stmt::ExportTypeAlias(name~, ..) => exports[name] = true
+      @core.Stmt::ExportStructDef(name~, ..) => exports[name] = true
+      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
+        has_late_exports = true
+      _ => ()
+    }
+  }
+  if not(has_late_exports) {
+    return exports
+  }
+  let defined : Map[String, Bool] = {}
   for stmt in stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, ..) => {
@@ -268,31 +291,17 @@ fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
       @core.Stmt::ExportLet(rec~, name~, ..) => {
         let _ = rec
         defined[name] = true
-        exports[name] = true
       }
       @core.Stmt::ExportEnumDef(name~, ctors~, ..) => {
         defined[name] = true
-        exports[name] = true
         for ctor in ctors {
           defined[ctor.name] = true
-          exports[ctor.name] = true
         }
       }
-      @core.Stmt::ExportTypeAlias(name~, ..) => {
-        defined[name] = true
-        exports[name] = true
-      }
-      @core.Stmt::ExportStructDef(name~, ..) => {
-        defined[name] = true
-        exports[name] = true
-      }
-      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
-        has_late_exports = true
+      @core.Stmt::ExportTypeAlias(name~, ..) => defined[name] = true
+      @core.Stmt::ExportStructDef(name~, ..) => defined[name] = true
       _ => ()
     }
-  }
-  if not(has_late_exports) {
-    return exports
   }
   for stmt in stmts {
     match stmt {

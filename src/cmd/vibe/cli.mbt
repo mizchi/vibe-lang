@@ -1320,15 +1320,15 @@ fn run_bench_case(
       e => abort("bench: " + case_item.name + ": " + e.to_string())
     }
   }
-  let start = @env.now()
+  let start = @bench.monotonic_clock_start()
   for _ in 0..<count {
     let _ = rt.eval_script_with_mode(case_item.expr, syntax_mode) catch {
       e => abort("bench: " + case_item.name + ": " + e.to_string())
     }
   }
-  let end = @env.now()
-  let elapsed_ms = (end - start).to_double()
-  let per_us = elapsed_ms * 1000.0 / count.to_double()
+  let elapsed_us = @bench.monotonic_clock_end(start)
+  let elapsed_ms = elapsed_us / 1000.0
+  let per_us = elapsed_us / count.to_double()
   (elapsed_ms, per_us)
 }
 
@@ -2126,14 +2126,14 @@ fn run_wasm_case_measure(
     Ok(bytes) => bytes
     Err(err) => return Err(err)
   }
-  let start = @env.now()
+  let start = @bench.monotonic_clock_start()
   match run_wasmtime_bench_module(runner, wasm_path) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
-  let end = @env.now()
-  let elapsed_ms = (end - start).to_double()
-  let per_us = elapsed_ms * 1000.0 / count.to_double()
+  let elapsed_us = @bench.monotonic_clock_end(start)
+  let elapsed_ms = elapsed_us / 1000.0
+  let per_us = elapsed_us / count.to_double()
   Ok((elapsed_ms, per_us, wasm_bytes))
 }
 
@@ -2344,9 +2344,13 @@ fn bench_file_cmd(
   match entry_path {
     None => abort("bench-file: missing <file>")
     Some(path) => {
+      let (db, entry) = match load_entry_db(path) {
+        Err(err) => abort("bench-file: " + err)
+        Ok(v) => v
+      }
       let rt = new_runtime_with_features(features)
       for _ in 0..<warmup {
-        let compiled = match compile_entry(path) {
+        let compiled = match compile_entry_with_db(db, entry) {
           Err(err) => abort("bench-file: " + err)
           Ok(v) => v
         }
@@ -2354,9 +2358,9 @@ fn bench_file_cmd(
           e => abort("bench-file: " + e.to_string())
         }
       }
-      let start = @env.now()
+      let start = @bench.monotonic_clock_start()
       for _ in 0..<count {
-        let compiled = match compile_entry(path) {
+        let compiled = match compile_entry_with_db(db, entry) {
           Err(err) => abort("bench-file: " + err)
           Ok(v) => v
         }
@@ -2364,9 +2368,9 @@ fn bench_file_cmd(
           e => abort("bench-file: " + e.to_string())
         }
       }
-      let end = @env.now()
-      let elapsed_ms = (end - start).to_double()
-      let per_us = elapsed_ms * 1000.0 / count.to_double()
+      let elapsed_us = @bench.monotonic_clock_end(start)
+      let elapsed_ms = elapsed_us / 1000.0
+      let per_us = elapsed_us / count.to_double()
       if elapsed_ms <= 0.0 {
         println("bench-file: elapsed_ms=0; increase --n for measurable time")
       }
@@ -4221,18 +4225,21 @@ fn print_bench_report(path : String, report : @runtime.BenchReport) -> Bool {
 }
 
 ///|
-fn compile_entry(
+fn load_entry_db(
   entry_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  @loader.load_db(entry_path)
+}
+
+///|
+fn compile_entry_with_db(
+  db : @runtime.VibeDb,
+  entry : String,
 ) -> Result[@runtime.CompiledModule, String] {
-  match @loader.load_db(entry_path) {
-    Err(err) => Err(err)
-    Ok((db, entry)) => {
-      let compiled = @runtime.compile_module(db, entry) catch {
-        e => return Err(e.to_string())
-      }
-      Ok(compiled)
-    }
+  let compiled = @runtime.compile_module(db, entry) catch {
+    e => return Err(e.to_string())
   }
+  Ok(compiled)
 }
 
 ///|

@@ -50,6 +50,51 @@ pub struct CompiledModule {
 }
 
 ///|
+let compile_module_cache : Ref[Map[String, CompiledModule]] = @ref.new({})
+
+///|
+fn compile_module_cache_key(
+  path : String,
+  source : String,
+  imports : Array[ImportSpec],
+) -> String {
+  let buf = StringBuilder::new()
+  buf.write_string(path)
+  buf.write_char('\n')
+  buf.write_string(@core.git_blob_hash_string(source))
+  for imp in imports {
+    buf.write_char('\n')
+    buf.write_string(imp.path)
+    buf.write_char('|')
+    match imp.hash {
+      Some(hash) => buf.write_string(hash)
+      None => buf.write_char('-')
+    }
+    buf.write_char('|')
+    match imp.source_hash {
+      Some(source_hash) => buf.write_string(source_hash)
+      None => buf.write_char('-')
+    }
+  }
+  @core.git_blob_hash_string(buf.to_string())
+}
+
+///|
+fn compile_module_import_aliases(
+  imports : Array[ImportSpec],
+) -> Map[String, @core.Ref] {
+  let aliases : Map[String, @core.Ref] = {}
+  for imp in imports {
+    match imp.module_ref {
+      Some(m) =>
+        aliases[imp.alias_name] = @core.Ref::{ name: m, hash_prefix: None }
+      None => ()
+    }
+  }
+  aliases
+}
+
+///|
 fn wasm_coverage_kind_from_codegen(
   kind : @codegen.WasmCoveragePointKind,
 ) -> WasmCoveragePointKind {
@@ -94,43 +139,55 @@ pub fn compile_module(
     Some(s) => s
     None => raise CompileError::MissingSource(path)
   }
-  let raw_ast = @parser.parse_ast(source) catch {
-    e => raise CompileError::Parse(e)
+  let imports = db.imports(path)
+  let cache_key = compile_module_cache_key(path, source, imports)
+  match compile_module_cache.val.get(cache_key) {
+    Some(cached) => return cached
+    None => ()
   }
-  let aliases = build_alias_map(raw_ast, db.import_aliases(path))
-  let ast = desugar_method_calls(raw_ast, aliases)
-  // Use db.types() which handles import type resolution (including imported symbols)
+  // Trigger parse/import/type queries once and reuse their cached results below.
   let env = db.types(path)
-  // Check for any type errors that were collected as diagnostics
   let diags = db.diagnostics(path)
   for diag in diags {
+    if diag.stage == "parse" {
+      // Preserve CompileError::Parse API without reparsing on the success path.
+      let _ = @parser.parse_ast(source) catch {
+        e => raise CompileError::Parse(e)
+      }
+      raise CompileError::TypeDiag(diag)
+    }
     if diag.stage == "type" || diag.stage == "import" {
       raise CompileError::TypeDiag(diag)
     }
   }
+  let raw_ast = db.ast(path)
+  let aliases = build_alias_map(raw_ast, compile_module_import_aliases(imports))
+  let ast = desugar_method_calls(raw_ast, aliases)
   let mono = monoify_module(ast, env)
   let resolved_ast = db.rewrite_imports_to_hash(path, mono.ast)
   let ir = module_to_sexp(resolved_ast, aliases)
   let ir_hash = @core.git_blob_hash_string(ir)
   let module_ref = @core.module_ref_from_hash(ir_hash)
-  let imports : Array[String] = []
-  for imp in db.imports(path) {
+  let module_refs : Array[String] = []
+  for imp in imports {
     match imp.module_ref {
-      Some(r) => imports.push(r)
+      Some(r) => module_refs.push(r)
       None => ()
     }
   }
-  {
+  let compiled = {
     path,
     ir,
     ir_hash,
     module_ref,
-    imports,
+    imports: module_refs,
     aliases,
     ast: resolved_ast,
     type_env: env,
     instantiations: mono.instantiations,
   }
+  compile_module_cache.val[cache_key] = compiled
+  compiled
 }
 
 ///|

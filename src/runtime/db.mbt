@@ -1726,24 +1726,6 @@ pub fn VibeDb::get_source(self : VibeDb, path : String) -> String? {
 }
 
 ///|
-/// Build alias map from imports (alias -> module ref)
-fn VibeDb::import_aliases(
-  self : VibeDb,
-  path : String,
-) -> Map[String, @core.Ref] {
-  let imports = self.import_query.fetch(self.rt, path)
-  let aliases : Map[String, @core.Ref] = {}
-  for imp in imports {
-    match imp.module_ref {
-      Some(m) =>
-        aliases[imp.alias_name] = @core.Ref::{ name: m, hash_prefix: None }
-      None => ()
-    }
-  }
-  aliases
-}
-
-///|
 /// Collect diagnostics from parse/type stages
 pub fn VibeDb::diagnostics(
   self : VibeDb,

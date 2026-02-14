@@ -195,6 +195,19 @@ test "vibe compile fails on import diagnostics" {
 }
 
 ///|
+test "vibe compile keeps parse error variant" {
+  let db = VibeDb::new()
+  db.set_source("main", "let x =")
+  let result : Result[CompiledModule, CompileError] = try? compile_module(
+    db, "main",
+  )
+  match result {
+    Ok(_) => fail("expected parse error")
+    Err(err) => assert_true(err.to_string().contains("Parse("))
+  }
+}
+
+///|
 test "vibe hash import keeps immutable snapshot after source update" {
   let db = VibeDb::new()
   let lib_v1 = "export let y = 2"
