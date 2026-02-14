@@ -40,12 +40,16 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   - Done (2026-02-14): Add formatter/lint quickfixes for grammar sharp edges.
     Auto-fix declaration separators (`;`), placeholder misuse context hints, and
     labeled-argument mistakes (`x~`/`y?`) where deterministic rewrites exist.
-  - P2: Split backend capability errors from language-level errors.
-    `compile` diagnostics should clearly classify unsupported backend features
-    (for example wasm-js-string storage limits) vs invalid vibe programs.
-- Implement explicit Text/Object conversion builtins:
-  `from_lines` / `to_lines` and JSON-oriented variants (`from_json[l]`,
-  `to_json[l]`) with typecheck + eval + docs + fixtures.
+  - Done (2026-02-15): Split backend capability errors from language-level errors.
+    Added `BackendLimit(backend~, feature~)` variant to `WasmGenError`,
+    structured `user_message()` on `WasmCompileError`, and migrated ~30 codegen
+    sites from `Unsupported` to `BackendLimit`.
+- Done (2026-02-15): Implement explicit Text/Object conversion builtins:
+  `string_join`, `from_lines`/`to_lines`, `from_json`/`to_json`,
+  `from_jsonl`/`to_jsonl`, and JSON accessors (`json_type`, `json_get`,
+  `json_index`, `json_string`, `json_number`, `json_bool`, `json_is_null`,
+  `json_length`, `json_keys`) with opaque `Json` builtin type, typecheck,
+  eval, and fixture tests.
 - Measure graph-index gains against current search path and remote transfer:
   run `just bench-advanced-graph`, collect
   `current_cli_like` vs `graph_snapshot/json_load`, and

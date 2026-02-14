@@ -16,7 +16,7 @@ import {
 
 test("classifyFailureReason: compile unsupported", () => {
   const result = classifyFailureReason(
-    "PanicError\ncompile: Gen(Unsupported(\"call: to_double\"))\n",
+    "PanicError\ncompile: backend 'wasm' does not support: call: to_double\n",
   );
   assert.equal(result.reason, "compile_unsupported");
   assert.match(result.message, /call: to_double/);
@@ -75,7 +75,7 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
 
   fs.writeFileSync(
     logC1,
-    'PanicError\ncompile: Gen(Unsupported("call local: abs"))\n',
+    "PanicError\ncompile: backend 'wasm' does not support: call: abs\n",
   );
   fs.writeFileSync(logC2, '[coverage_wasm_source] missing coverage map\n');
 

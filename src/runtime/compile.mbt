@@ -14,6 +14,25 @@ suberror WasmCompileError {
 } derive(Show, Eq)
 
 ///|
+pub fn WasmCompileError::is_backend_limit(self : WasmCompileError) -> Bool {
+  match self {
+    Gen(e) => e.is_backend_limit()
+    _ => false
+  }
+}
+
+///|
+pub fn WasmCompileError::user_message(self : WasmCompileError) -> String {
+  match self {
+    Compile(MissingSource(path)) => "missing source: " + path
+    Compile(Parse(e)) => "parse error: " + e.to_string()
+    Compile(TypeDiag(d)) => "type error: " + d.to_string()
+    Gen(e) => e.format_message()
+    Optimize(msg) => "optimize: " + msg
+  }
+}
+
+///|
 pub enum WasmCoveragePointKind {
   Line
   BranchIfThen

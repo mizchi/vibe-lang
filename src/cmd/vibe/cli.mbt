@@ -477,7 +477,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               run_tests=opts.coverage_run_tests,
               debug_errors=opts.debug_errors,
             ) catch {
-              e => abort("compile: " + e.to_string())
+              e => abort("compile: " + e.user_message())
             }
             match @io.write_bytes_with(fs, resolved_out, coverage.bytes) {
               Ok(_) => ()
@@ -503,7 +503,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               opt_level=opts.opt_level,
               debug_errors=opts.debug_errors,
             ) catch {
-              e => abort("compile: " + e.to_string())
+              e => abort("compile: " + e.user_message())
             }
             match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
               Ok(_) => ()
@@ -521,7 +521,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               run_tests=opts.coverage_run_tests,
               debug_errors=opts.debug_errors,
             ) catch {
-              e => abort("compile: " + e.to_string())
+              e => abort("compile: " + e.user_message())
             }
             match @io.write_bytes_with(fs, resolved_out, coverage.bytes) {
               Ok(_) => ()
@@ -547,7 +547,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               opt_level=opts.opt_level,
               debug_errors=opts.debug_errors,
             ) catch {
-              e => abort("compile: " + e.to_string())
+              e => abort("compile: " + e.user_message())
             }
             match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
               Ok(_) => ()
@@ -562,7 +562,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
             no_dce=opts.no_dce,
             opt_level=opts.opt_level,
           ) catch {
-            e => abort("compile: " + e.to_string())
+            e => abort("compile: " + e.user_message())
           }
           match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
             Ok(_) => ()
@@ -576,7 +576,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
             entry,
             opt_level=opts.opt_level,
           ) catch {
-            e => abort("compile: " + e.to_string())
+            e => abort("compile: " + e.user_message())
           }
           match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
             Ok(_) => ()
@@ -592,7 +592,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
           let wit_str = @runtime.generate_module_wit(
             db, entry, package_name, world_name,
           ) catch {
-            e => abort("compile: " + e.to_string())
+            e => abort("compile: " + e.user_message())
           }
           match @io.write_string_with(fs, resolved_out, wit_str) {
             Ok(_) => ()
@@ -608,7 +608,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
           let wit_str = @runtime.generate_module_component_wit(
             db, entry, package_name, world_name,
           ) catch {
-            e => abort("compile: " + e.to_string())
+            e => abort("compile: " + e.user_message())
           }
           match @io.write_string_with(fs, resolved_out, wit_str) {
             Ok(_) => ()
@@ -1236,8 +1236,7 @@ struct WasmBenchReport {
 
 ///|
 fn is_wasm_unsupported_compile_error(message : String) -> Bool {
-  message.contains("compile wasm error: Gen(Unsupported(") ||
-  message.contains("compile: Gen(Unsupported(")
+  message.contains("backend '") && message.contains("' does not support:")
 }
 
 ///|
@@ -2092,8 +2091,8 @@ fn compile_bench_script_to_wasm(
     opt_level=Some("-Oz"),
   ) catch {
     e => {
-      let primary_err = e.to_string()
-      if primary_err.contains("Optimize(") {
+      let primary_err = e.user_message()
+      if primary_err.contains("optimize:") {
         @runtime.compile_module_wasm_with_opt_level(
           db,
           entry,
@@ -2105,7 +2104,7 @@ fn compile_bench_script_to_wasm(
               "compile wasm error: " +
               primary_err +
               " (fallback without optimize failed: " +
-              e2.to_string() +
+              e2.user_message() +
               ")",
             )
         }

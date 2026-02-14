@@ -286,7 +286,7 @@ export function classifyFailureReason(text) {
     allLines.slice(-1)[0] ??
     "unknown failure";
 
-  if (/Unsupported\(/.test(raw) || /Unsupported\("/.test(raw)) {
+  if (/does not support:/.test(raw) || /Unsupported\(/.test(raw)) {
     return {
       reason: "compile_unsupported",
       message: fallbackMessage,

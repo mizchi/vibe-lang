@@ -3,7 +3,26 @@
 suberror WasmGenError {
   UnknownName(String)
   Unsupported(String)
+  BackendLimit(backend~ : String, feature~ : String)
 } derive(Show, Eq)
+
+///|
+pub fn WasmGenError::is_backend_limit(self : WasmGenError) -> Bool {
+  match self {
+    BackendLimit(_) => true
+    _ => false
+  }
+}
+
+///|
+pub fn WasmGenError::format_message(self : WasmGenError) -> String {
+  match self {
+    BackendLimit(backend~, feature~) =>
+      "backend '" + backend + "' does not support: " + feature
+    Unsupported(msg) => "codegen: unsupported: " + msg
+    UnknownName(name) => "codegen: unknown name: " + name
+  }
+}
 
 ///|
 pub enum WasmCoveragePointKind {

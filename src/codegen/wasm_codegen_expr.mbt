@@ -7,7 +7,7 @@ fn compile_expr_i32(
   if ctx.use_js_strings {
     let kind = infer_expr_kind(ctx, expr)
     if kind == ValueKind::ExternRef {
-      raise WasmGenError::Unsupported("js-string i32 expr")
+      raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="i32 expression")
     }
   }
   compile_expr(ctx, buf, expr)
@@ -22,7 +22,7 @@ fn compile_expr_ref(
   if ctx.use_js_strings {
     let kind = infer_expr_kind(ctx, expr)
     if kind != ValueKind::ExternRef {
-      raise WasmGenError::Unsupported("js-string ref expr")
+      raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="ref expression")
     }
   }
   compile_expr(ctx, buf, expr)
@@ -986,7 +986,7 @@ fn compile_expr(
     @core.Expr::Ident(name~, span~) => {
       let _ = span
       if is_qualified_name(name) {
-        raise WasmGenError::Unsupported("qualified name: " + name)
+        raise WasmGenError::BackendLimit(backend="wasm", feature="qualified name: " + name)
       }
       match ctx.locals.get(name) {
         Some(idx) => emit_local_get(buf, idx)
@@ -1039,7 +1039,7 @@ fn compile_expr(
         not(ctx.enum_ctor_tags.contains(name)) {
         let sig = match ctx.fn_local_sigs.get(name) {
           Some(s) => s
-          None => raise WasmGenError::Unsupported("call: " + name)
+          None => raise WasmGenError::BackendLimit(backend="wasm", feature="call: " + name)
         }
         let pos_args = extract_positional_exprs(args, name)
         let sig_param_len = if sig.params.length() > 0 {
@@ -1094,7 +1094,7 @@ fn compile_expr(
         emit_local_get(buf, func_idx)
         let type_idx = match ctx.fn_sig_type_indices.get(func_sig_key(sig)) {
           Some(idx) => idx
-          None => raise WasmGenError::Unsupported("call: " + name)
+          None => raise WasmGenError::BackendLimit(backend="wasm", feature="call: " + name)
         }
         // Sync heap pointer to global before call so callee sees current heap
         if ctx.heap_local >= 0 && ctx.use_heap_global {
@@ -1140,7 +1140,7 @@ fn compile_expr(
         }
         let sig = match ctx.fn_local_sigs.get(name) {
           Some(s) => s
-          None => raise WasmGenError::Unsupported("call local: " + name)
+          None => raise WasmGenError::BackendLimit(backend="wasm", feature="call: " + name)
         }
         let sig_param_len = if sig.params.length() > 0 {
           sig.params.length() - 1
@@ -3412,7 +3412,7 @@ fn compile_expr(
         }
       } else {
         if is_qualified_name(name) {
-          raise WasmGenError::Unsupported("qualified call: " + name)
+          raise WasmGenError::BackendLimit(backend="wasm", feature="qualified call: " + name)
         }
         let pos_args = extract_positional_exprs(args, name)
         if pos_args.length() == 1 && ctx.known_record_fields.contains(name) {
@@ -3483,7 +3483,7 @@ fn compile_expr(
           emit_local_get(buf, result_local)
           emit_i64_extend_i32_s(buf)
         } else {
-          raise WasmGenError::Unsupported("call: " + name)
+          raise WasmGenError::BackendLimit(backend="wasm", feature="call: " + name)
         }
       }
     }
@@ -4818,7 +4818,7 @@ fn compile_func_body(
   if ctx.use_js_strings && result_kind != ValueKind::I32 {
     let inferred = infer_block_kind(ctx, ast, ctx.local_kinds)
     if inferred != result_kind {
-      raise WasmGenError::Unsupported("js-string return kind")
+      raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="return kind mismatch")
     }
   }
   ctx.need_heap = need_heap
@@ -5643,7 +5643,7 @@ fn emit_pat_literal(
     @core.Pat::String(value=s, span~) => {
       let _ = span
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported("js-string string pattern")
+        raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="string pattern matching")
       }
       let offset = ctx.strings.intern(s)
       emit_i64_const_raw(buf, tag_ptr64(offset, tag_obj))
