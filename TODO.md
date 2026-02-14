@@ -44,6 +44,10 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     Added `BackendLimit(backend~, feature~)` variant to `WasmGenError`,
     structured `user_message()` on `WasmCompileError`, and migrated ~30 codegen
     sites from `Unsupported` to `BackendLimit`.
+    Corrected labels: arity errors reverted to `Unsupported` (internal, not
+    backend constraints); shared codegen paths now use dynamic backend label
+    based on `ctx.use_js_strings` (operator/if/try kind mismatch,
+    `resolve_numeric_kind`).
 - Done (2026-02-15): Implement explicit Text/Object conversion builtins:
   `string_join`, `from_lines`/`to_lines`, `from_json`/`to_json`,
   `from_jsonl`/`to_jsonl`, and JSON accessors (`json_type`, `json_get`,
