@@ -511,8 +511,8 @@ fn emit_i32_trunc_f32_s(buf : ByteBuf) -> Unit {
 }
 
 ///|
-fn emit_i32_trunc_f64_s(buf : ByteBuf) -> Unit {
-  buf.push((170).to_byte())
+fn emit_i64_trunc_f64_s(buf : ByteBuf) -> Unit {
+  buf.push((176).to_byte())
 }
 
 ///|
@@ -526,13 +526,27 @@ fn emit_f32_demote_f64(buf : ByteBuf) -> Unit {
 }
 
 ///|
-fn emit_f64_convert_i32_s(buf : ByteBuf) -> Unit {
-  buf.push((183).to_byte())
+fn emit_f64_convert_i64_s(buf : ByteBuf) -> Unit {
+  buf.push((185).to_byte())
 }
 
 ///|
 fn emit_f64_promote_f32(buf : ByteBuf) -> Unit {
   buf.push((187).to_byte())
+}
+
+///|
+fn emit_i64_load(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((41).to_byte())
+  write_u32_leb(buf, 3)
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_i64_store(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((55).to_byte())
+  write_u32_leb(buf, 3)
+  write_u32_leb(buf, offset)
 }
 
 ///|

@@ -71,9 +71,8 @@ fn ensure_funcref_slot(ctx : CodegenCtx, func_idx : Int) -> Int {
 fn value_kind_key_char(kind : ValueKind) -> Char {
   match kind {
     ValueKind::I32 => 'i'
-    ValueKind::I64 => 'l'
+    ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 => 'l'
     ValueKind::ExternRef => 'r'
-    _ => 'i'
   }
 }
 
