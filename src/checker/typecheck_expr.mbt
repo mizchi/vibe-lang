@@ -4448,6 +4448,475 @@ fn type_call(
                 )
                 @core.Type::String
               }
+              "string_join" => {
+                let pos_args = extract_positional_args(
+                  args, "string_join", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="string_join",
+                    span=call_span,
+                  )
+                }
+                let arr_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let sep_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(
+                    type_equal(
+                      env,
+                      arr_ty,
+                      @core.Type::Array(@core.Type::String),
+                    ),
+                  ) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Array(@core.Type::String),
+                    actual=arr_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, sep_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=sep_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "from_lines" => {
+                let pos_args = extract_positional_args(
+                  args, "from_lines", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="from_lines", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Array(@core.Type::String)
+              }
+              "to_lines" => {
+                let pos_args = extract_positional_args(
+                  args, "to_lines", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="to_lines", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(
+                    type_equal(
+                      env,
+                      arg_ty,
+                      @core.Type::Array(@core.Type::String),
+                    ),
+                  ) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Array(@core.Type::String),
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "to_json" => {
+                let pos_args = extract_positional_args(
+                  args, "to_json", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="to_json", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arg_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "from_json" => {
+                let pos_args = extract_positional_args(
+                  args, "from_json", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="from_json", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Named(name="Json", args=[])
+              }
+              "to_jsonl" => {
+                let pos_args = extract_positional_args(
+                  args, "to_jsonl", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="to_jsonl", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_array_type = @core.Type::Array(
+                  @core.Type::Named(name="Json", args=[]),
+                )
+                if not(type_equal(env, arg_ty, json_array_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_array_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "from_jsonl" => {
+                let pos_args = extract_positional_args(
+                  args, "from_jsonl", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="from_jsonl", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Array(@core.Type::Named(name="Json", args=[]))
+              }
+              "json_type" => {
+                let pos_args = extract_positional_args(
+                  args, "json_type", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="json_type", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arg_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "json_get" => {
+                let pos_args = extract_positional_args(
+                  args, "json_get", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message="json_get", span=call_span)
+                }
+                let obj_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let key_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, obj_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=obj_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, key_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=key_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                json_type
+              }
+              "json_index" => {
+                let pos_args = extract_positional_args(
+                  args, "json_index", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message="json_index", span=call_span)
+                }
+                let arr_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let idx_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arr_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arr_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, idx_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=idx_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                json_type
+              }
+              "json_string" => {
+                let pos_args = extract_positional_args(
+                  args, "json_string", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="json_string",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arg_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "json_number" => {
+                let pos_args = extract_positional_args(
+                  args, "json_number", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="json_number",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arg_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Double
+              }
+              "json_bool" => {
+                let pos_args = extract_positional_args(
+                  args, "json_bool", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="json_bool", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arg_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "json_is_null" => {
+                let pos_args = extract_positional_args(
+                  args, "json_is_null", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="json_is_null",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arg_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "json_length" => {
+                let pos_args = extract_positional_args(
+                  args, "json_length", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="json_length",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arg_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "json_keys" => {
+                let pos_args = extract_positional_args(
+                  args, "json_keys", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="json_keys", span=call_span)
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let json_type = @core.Type::Named(name="Json", args=[])
+                if not(type_equal(env, arg_ty, json_type)) {
+                  raise TypeError::Mismatch(
+                    expected=json_type,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Array(@core.Type::String)
+              }
               _ =>
                 // Try to interpret as field access: x(p) where p is a record/struct
                 // and x is a field name

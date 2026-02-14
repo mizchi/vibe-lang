@@ -50,7 +50,23 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "__rshift" ||
   name == "__bit_and" ||
   name == "__bit_or" ||
-  name == "__bit_xor"
+  name == "__bit_xor" ||
+  name == "string_join" ||
+  name == "from_lines" ||
+  name == "to_lines" ||
+  name == "to_json" ||
+  name == "from_json" ||
+  name == "to_jsonl" ||
+  name == "from_jsonl" ||
+  name == "json_type" ||
+  name == "json_get" ||
+  name == "json_index" ||
+  name == "json_string" ||
+  name == "json_number" ||
+  name == "json_bool" ||
+  name == "json_is_null" ||
+  name == "json_length" ||
+  name == "json_keys"
 }
 
 ///|
@@ -768,6 +784,218 @@ fn eval_pure_builtin(
         _ => raise EvalError::BadCall("__to_string")
       }
     }
+    "string_join" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_join")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Array(items), @core.Value::String(sep)) => {
+          let buf = StringBuilder::new()
+          for i, item in items {
+            if i > 0 {
+              buf.write_string(sep)
+            }
+            match item {
+              @core.Value::String(s) => buf.write_string(s)
+              _ => raise EvalError::BadCall("string_join")
+            }
+          }
+          @core.Value::String(buf.to_string())
+        }
+        _ => raise EvalError::BadCall("string_join")
+      }
+    }
+    "from_lines" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("from_lines")
+      }
+      match args[0] {
+        @core.Value::String(s) => {
+          let parts : Array[@core.Value] = []
+          for part in String::split(s, "\n") {
+            parts.push(@core.Value::String(part.to_string()))
+          }
+          @core.Value::Array(parts)
+        }
+        _ => raise EvalError::BadCall("from_lines")
+      }
+    }
+    "to_lines" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("to_lines")
+      }
+      match args[0] {
+        @core.Value::Array(items) => {
+          let buf = StringBuilder::new()
+          for i, item in items {
+            if i > 0 {
+              buf.write_char('\n')
+            }
+            match item {
+              @core.Value::String(s) => buf.write_string(s)
+              _ => raise EvalError::BadCall("to_lines")
+            }
+          }
+          @core.Value::String(buf.to_string())
+        }
+        _ => raise EvalError::BadCall("to_lines")
+      }
+    }
+    "to_json" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("to_json")
+      }
+      @core.Value::String(value_to_json_string(args[0]))
+    }
+    "from_json" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("from_json")
+      }
+      match args[0] {
+        @core.Value::String(s) => parse_json_value(s)
+        _ => raise EvalError::BadCall("from_json")
+      }
+    }
+    "to_jsonl" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("to_jsonl")
+      }
+      match args[0] {
+        @core.Value::Array(items) => {
+          let buf = StringBuilder::new()
+          for i, item in items {
+            if i > 0 {
+              buf.write_char('\n')
+            }
+            buf.write_string(value_to_json_string(item))
+          }
+          @core.Value::String(buf.to_string())
+        }
+        _ => raise EvalError::BadCall("to_jsonl")
+      }
+    }
+    "from_jsonl" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("from_jsonl")
+      }
+      match args[0] {
+        @core.Value::String(s) => {
+          let result : Array[@core.Value] = []
+          for line in String::split(s, "\n") {
+            let trimmed = trim_whitespace(line.to_string())
+            if trimmed.length() > 0 {
+              result.push(parse_json_value(trimmed))
+            }
+          }
+          @core.Value::Array(result)
+        }
+        _ => raise EvalError::BadCall("from_jsonl")
+      }
+    }
+    "json_type" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("json_type")
+      }
+      let type_name = match args[0] {
+        @core.Value::Unit => "null"
+        @core.Value::Bool(_) => "bool"
+        @core.Value::Int(_) | @core.Value::Double(_) | @core.Value::Float(_) =>
+          "number"
+        @core.Value::String(_) => "string"
+        @core.Value::Array(_) => "array"
+        @core.Value::Map(_) => "object"
+        _ => raise EvalError::BadCall("json_type")
+      }
+      @core.Value::String(type_name)
+    }
+    "json_get" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("json_get")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Map(items), @core.Value::String(key)) =>
+          match items.get(key) {
+            Some(value) => value
+            None => raise EvalError::BadCall("json_get: missing key: " + key)
+          }
+        _ => raise EvalError::BadCall("json_get")
+      }
+    }
+    "json_index" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("json_index")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Array(items), @core.Value::Int(index)) => {
+          if index < 0L || index >= items.length().to_int64() {
+            raise EvalError::BadCall("json_index: out of bounds")
+          }
+          items[index.to_int()]
+        }
+        _ => raise EvalError::BadCall("json_index")
+      }
+    }
+    "json_string" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("json_string")
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::String(s)
+        _ => raise EvalError::BadCall("json_string: not a string")
+      }
+    }
+    "json_number" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("json_number")
+      }
+      match args[0] {
+        @core.Value::Double(d) => @core.Value::Double(d)
+        @core.Value::Int(n) => @core.Value::Double(n.to_double())
+        @core.Value::Float(f) => @core.Value::Double(f.to_double())
+        _ => raise EvalError::BadCall("json_number: not a number")
+      }
+    }
+    "json_bool" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("json_bool")
+      }
+      match args[0] {
+        @core.Value::Bool(b) => @core.Value::Bool(b)
+        _ => raise EvalError::BadCall("json_bool: not a bool")
+      }
+    }
+    "json_is_null" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("json_is_null")
+      }
+      @core.Value::Bool(args[0] is @core.Value::Unit)
+    }
+    "json_length" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("json_length")
+      }
+      match args[0] {
+        @core.Value::Array(items) => @core.Value::Int(items.length().to_int64())
+        @core.Value::Map(items) => @core.Value::Int(items.length().to_int64())
+        @core.Value::String(s) => @core.Value::Int(s.length().to_int64())
+        _ => raise EvalError::BadCall("json_length")
+      }
+    }
+    "json_keys" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("json_keys")
+      }
+      match args[0] {
+        @core.Value::Map(items) => {
+          let keys : Array[@core.Value] = []
+          for k, _ in items {
+            keys.push(@core.Value::String(k))
+          }
+          @core.Value::Array(keys)
+        }
+        _ => raise EvalError::BadCall("json_keys")
+      }
+    }
     _ => raise EvalError::BadCall(name)
   }
 }
@@ -981,4 +1209,401 @@ fn trim_whitespace(s : String) -> String {
   } else {
     s.unsafe_substring(start~, end~)
   }
+}
+
+///|
+fn json_escape_string(s : String) -> String {
+  let buf = StringBuilder::new()
+  buf.write_char('"')
+  let len = s.length()
+  let mut i = 0
+  while i < len {
+    let ch = s.unsafe_get(i).to_int().unsafe_to_char()
+    match ch {
+      '"' => buf.write_string("\\\"")
+      '\\' => buf.write_string("\\\\")
+      '\n' => buf.write_string("\\n")
+      '\t' => buf.write_string("\\t")
+      '\r' => buf.write_string("\\r")
+      _ =>
+        if ch.to_int() < 32 {
+          buf.write_string("\\u")
+          let code = ch.to_int()
+          let hex = "0123456789abcdef"
+          buf.write_char(
+            hex.unsafe_get((code >> 12) & 15).to_int().unsafe_to_char(),
+          )
+          buf.write_char(
+            hex.unsafe_get((code >> 8) & 15).to_int().unsafe_to_char(),
+          )
+          buf.write_char(
+            hex.unsafe_get((code >> 4) & 15).to_int().unsafe_to_char(),
+          )
+          buf.write_char(hex.unsafe_get(code & 15).to_int().unsafe_to_char())
+        } else {
+          buf.write_char(ch)
+        }
+    }
+    i = i + 1
+  }
+  buf.write_char('"')
+  buf.to_string()
+}
+
+///|
+fn value_to_json_string(value : @core.Value) -> String {
+  let buf = StringBuilder::new()
+  value_to_json_buf(value, buf)
+  buf.to_string()
+}
+
+///|
+fn value_to_json_buf(value : @core.Value, buf : StringBuilder) -> Unit {
+  match value {
+    @core.Value::Unit => buf.write_string("null")
+    @core.Value::Bool(b) => buf.write_string(if b { "true" } else { "false" })
+    @core.Value::Int(n) => buf.write_string(n.to_string())
+    @core.Value::Double(d) =>
+      if d == d.floor() && d.abs() < 1.0e15 {
+        buf.write_string(d.to_int64().to_string())
+      } else {
+        buf.write_string(d.to_string())
+      }
+    @core.Value::Float(f) => buf.write_string(f.to_string())
+    @core.Value::String(s) => buf.write_string(json_escape_string(s))
+    @core.Value::Array(items) => {
+      buf.write_char('[')
+      for i, item in items {
+        if i > 0 {
+          buf.write_char(',')
+        }
+        value_to_json_buf(item, buf)
+      }
+      buf.write_char(']')
+    }
+    @core.Value::Map(fields) => {
+      buf.write_char('{')
+      let mut first = true
+      for key, val in fields {
+        if not(first) {
+          buf.write_char(',')
+        }
+        first = false
+        buf.write_string(json_escape_string(key))
+        buf.write_char(':')
+        value_to_json_buf(val, buf)
+      }
+      buf.write_char('}')
+    }
+    _ => buf.write_string("null")
+  }
+}
+
+///|
+fn parse_json_value(input : String) -> @core.Value raise EvalError {
+  let state = JsonParser::{ input, pos: 0 }
+  state.skip_ws()
+  let result = state.parse_value()
+  state.skip_ws()
+  if state.pos != state.input.length() {
+    raise EvalError::BadCall("from_json: unexpected trailing content")
+  }
+  result
+}
+
+///|
+priv struct JsonParser {
+  input : String
+  mut pos : Int
+}
+
+///|
+fn JsonParser::peek(self : JsonParser) -> Char {
+  if self.pos >= self.input.length() {
+    '\u0000'
+  } else {
+    self.input.unsafe_get(self.pos).to_int().unsafe_to_char()
+  }
+}
+
+///|
+fn JsonParser::advance(self : JsonParser) -> Char {
+  let ch = self.peek()
+  self.pos = self.pos + 1
+  ch
+}
+
+///|
+fn JsonParser::skip_ws(self : JsonParser) -> Unit {
+  while self.pos < self.input.length() {
+    let ch = self.input.unsafe_get(self.pos).to_int().unsafe_to_char()
+    if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+      self.pos = self.pos + 1
+    } else {
+      break
+    }
+  }
+}
+
+///|
+fn JsonParser::expect(
+  self : JsonParser,
+  expected : String,
+) -> Unit raise EvalError {
+  let len = expected.length()
+  if self.pos + len > self.input.length() {
+    raise EvalError::BadCall("from_json: unexpected end of input")
+  }
+  for i in 0..<len {
+    if self.input.unsafe_get(self.pos + i) != expected.unsafe_get(i) {
+      raise EvalError::BadCall("from_json: unexpected character")
+    }
+  }
+  self.pos = self.pos + len
+}
+
+///|
+fn JsonParser::parse_value(self : JsonParser) -> @core.Value raise EvalError {
+  self.skip_ws()
+  let ch = self.peek()
+  match ch {
+    '"' => self.parse_string()
+    't' => {
+      self.expect("true")
+      @core.Value::Bool(true)
+    }
+    'f' => {
+      self.expect("false")
+      @core.Value::Bool(false)
+    }
+    'n' => {
+      self.expect("null")
+      @core.Value::Unit
+    }
+    '[' => self.parse_array()
+    '{' => self.parse_object()
+    '-' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' =>
+      self.parse_number()
+    '\u0000' => raise EvalError::BadCall("from_json: unexpected end of input")
+    _ =>
+      raise EvalError::BadCall(
+        "from_json: unexpected character: " + ch.to_string(),
+      )
+  }
+}
+
+///|
+fn JsonParser::parse_string(self : JsonParser) -> @core.Value raise EvalError {
+  let s = self.parse_string_raw()
+  @core.Value::String(s)
+}
+
+///|
+fn JsonParser::parse_string_raw(self : JsonParser) -> String raise EvalError {
+  if self.advance() != '"' {
+    raise EvalError::BadCall("from_json: expected '\"'")
+  }
+  let buf = StringBuilder::new()
+  while true {
+    if self.pos >= self.input.length() {
+      raise EvalError::BadCall("from_json: unterminated string")
+    }
+    let ch = self.advance()
+    if ch == '"' {
+      break
+    }
+    if ch == '\\' {
+      if self.pos >= self.input.length() {
+        raise EvalError::BadCall("from_json: unterminated escape")
+      }
+      let esc = self.advance()
+      match esc {
+        '"' => buf.write_char('"')
+        '\\' => buf.write_char('\\')
+        '/' => buf.write_char('/')
+        'b' => buf.write_char('\u0008')
+        'f' => buf.write_char('\u000C')
+        'n' => buf.write_char('\n')
+        't' => buf.write_char('\t')
+        'r' => buf.write_char('\r')
+        'u' => {
+          let code = self.parse_hex4()
+          match Int::to_char(code) {
+            Some(c) => buf.write_char(c)
+            None => buf.write_char('\uFFFD')
+          }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            "from_json: invalid escape: \\" + esc.to_string(),
+          )
+      }
+    } else {
+      buf.write_char(ch)
+    }
+  }
+  buf.to_string()
+}
+
+///|
+fn JsonParser::parse_hex4(self : JsonParser) -> Int raise EvalError {
+  let mut code = 0
+  for i in 0..<4 {
+    if self.pos >= self.input.length() {
+      raise EvalError::BadCall("from_json: incomplete unicode escape")
+    }
+    let _ = i
+    let ch = self.advance()
+    let digit = if ch >= '0' && ch <= '9' {
+      ch.to_int() - '0'.to_int()
+    } else if ch >= 'a' && ch <= 'f' {
+      ch.to_int() - 'a'.to_int() + 10
+    } else if ch >= 'A' && ch <= 'F' {
+      ch.to_int() - 'A'.to_int() + 10
+    } else {
+      raise EvalError::BadCall("from_json: invalid hex digit")
+    }
+    code = code * 16 + digit
+  }
+  code
+}
+
+///|
+fn JsonParser::parse_number(self : JsonParser) -> @core.Value raise EvalError {
+  let start = self.pos
+  if self.peek() == '-' {
+    self.pos = self.pos + 1
+  }
+  if self.pos >= self.input.length() {
+    raise EvalError::BadCall("from_json: unexpected end in number")
+  }
+  if self.peek() == '0' {
+    self.pos = self.pos + 1
+  } else if self.peek() >= '1' && self.peek() <= '9' {
+    while self.pos < self.input.length() &&
+          self.peek() >= '0' &&
+          self.peek() <= '9' {
+      self.pos = self.pos + 1
+    }
+  } else {
+    raise EvalError::BadCall("from_json: invalid number")
+  }
+  let mut is_float = false
+  if self.pos < self.input.length() && self.peek() == '.' {
+    is_float = true
+    self.pos = self.pos + 1
+    if self.pos >= self.input.length() || self.peek() < '0' || self.peek() > '9' {
+      raise EvalError::BadCall("from_json: invalid number after decimal point")
+    }
+    while self.pos < self.input.length() &&
+          self.peek() >= '0' &&
+          self.peek() <= '9' {
+      self.pos = self.pos + 1
+    }
+  }
+  if self.pos < self.input.length() &&
+    (self.peek() == 'e' || self.peek() == 'E') {
+    is_float = true
+    self.pos = self.pos + 1
+    if self.pos < self.input.length() &&
+      (self.peek() == '+' || self.peek() == '-') {
+      self.pos = self.pos + 1
+    }
+    if self.pos >= self.input.length() || self.peek() < '0' || self.peek() > '9' {
+      raise EvalError::BadCall("from_json: invalid number exponent")
+    }
+    while self.pos < self.input.length() &&
+          self.peek() >= '0' &&
+          self.peek() <= '9' {
+      self.pos = self.pos + 1
+    }
+  }
+  let num_str = self.input.unsafe_substring(start~, end=self.pos)
+  if is_float {
+    let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+      num_str[:],
+    )
+    match parsed {
+      Ok(d) => @core.Value::Double(d)
+      Err(_) =>
+        raise EvalError::BadCall("from_json: invalid number: " + num_str)
+    }
+  } else {
+    let parsed_int : Result[Int64, @strconv.StrConvError] = try? @strconv.parse_int64(
+      num_str[:],
+    )
+    match parsed_int {
+      Ok(n) => @core.Value::Int(n)
+      Err(_) => {
+        let parsed_dbl : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+          num_str[:],
+        )
+        match parsed_dbl {
+          Ok(d) => @core.Value::Double(d)
+          Err(_) =>
+            raise EvalError::BadCall("from_json: invalid number: " + num_str)
+        }
+      }
+    }
+  }
+}
+
+///|
+fn JsonParser::parse_array(self : JsonParser) -> @core.Value raise EvalError {
+  self.pos = self.pos + 1
+  self.skip_ws()
+  let items : Array[@core.Value] = []
+  if self.peek() == ']' {
+    self.pos = self.pos + 1
+    return @core.Value::Array(items)
+  }
+  while true {
+    self.skip_ws()
+    items.push(self.parse_value())
+    self.skip_ws()
+    if self.peek() == ',' {
+      self.pos = self.pos + 1
+    } else if self.peek() == ']' {
+      self.pos = self.pos + 1
+      break
+    } else {
+      raise EvalError::BadCall("from_json: expected ',' or ']' in array")
+    }
+  }
+  @core.Value::Array(items)
+}
+
+///|
+fn JsonParser::parse_object(self : JsonParser) -> @core.Value raise EvalError {
+  self.pos = self.pos + 1
+  self.skip_ws()
+  let fields : Map[String, @core.Value] = {}
+  if self.peek() == '}' {
+    self.pos = self.pos + 1
+    return @core.Value::Map(fields)
+  }
+  while true {
+    self.skip_ws()
+    if self.peek() != '"' {
+      raise EvalError::BadCall("from_json: expected string key in object")
+    }
+    let key = self.parse_string_raw()
+    self.skip_ws()
+    if self.advance() != ':' {
+      raise EvalError::BadCall("from_json: expected ':' in object")
+    }
+    self.skip_ws()
+    let val = self.parse_value()
+    fields[key] = val
+    self.skip_ws()
+    if self.peek() == ',' {
+      self.pos = self.pos + 1
+    } else if self.peek() == '}' {
+      self.pos = self.pos + 1
+      break
+    } else {
+      raise EvalError::BadCall("from_json: expected ',' or '}' in object")
+    }
+  }
+  @core.Value::Map(fields)
 }

@@ -17,6 +17,14 @@ fn normalize_type_inner(
       for arg in args {
         normalized_args.push(normalize_type_inner(env, arg, visiting))
       }
+      // Json is a builtin opaque type - preserve as-is (unless user defines their own Json)
+      if name == "Json" &&
+        normalized_args.length() == 0 &&
+        env.get_type_alias(name) is None &&
+        env.get_enum_def(name) is None &&
+        env.get_struct(name) is None {
+        return @core.Type::Named(name~, args=normalized_args)
+      }
       if visiting.contains(name) {
         match env.get_enum_def(name) {
           Some(_) => @core.Type::Named(name~, args=normalized_args)
