@@ -66,6 +66,7 @@ fn print_usage() -> Unit {
   println("")
   println("commands:")
   println("  run <file>                 parse/type/eval a script")
+  println("    demo: vibe run vibe/x/args/demo.vibe")
   println(
     "  eval [--db file] [--include file] [--inspect-scope] [--assert name:sig]... [--test-for name] [--run] [--export file] <expr...>  evaluate expression/script",
   )

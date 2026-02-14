@@ -1,0 +1,145 @@
+use ./parser.vibe {
+  ParseResult,
+  ArgList,
+  ArgToken,
+  parse_args,
+}
+
+test "args parse long flags, options and positionals" {
+  match parse_args(["--name=alice", "--verbose", "file1", "--level=2"]) {
+    ParseOk(items) => {
+      match items {
+        ArgCons(Opt(k1, v1), rest1) => {
+          assert(string_equals(k1, "name"))
+          assert(string_equals(v1, "alice"))
+          match rest1 {
+            ArgCons(Flag(f1), rest2) => {
+              assert(string_equals(f1, "verbose"))
+              match rest2 {
+                ArgCons(Positional(p1), rest3) => {
+                  assert(string_equals(p1, "file1"))
+                  match rest3 {
+                    ArgCons(Opt(k2, v2), ArgNil) => {
+                      assert(string_equals(k2, "level"))
+                      assert(string_equals(v2, "2"))
+                    },
+                    _ => assert(false)
+                  }
+                },
+                _ => assert(false)
+              }
+            },
+            _ => assert(false)
+          }
+        },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "args parse short clusters and short options" {
+  match parse_args(["-abc", "-o", "out.txt", "-I=src", "main.vibe"]) {
+    ParseOk(items) => {
+      match items {
+        ArgCons(Flag(a), rest1) => {
+          assert(string_equals(a, "a"))
+          match rest1 {
+            ArgCons(Flag(b), rest2) => {
+              assert(string_equals(b, "b"))
+              match rest2 {
+                ArgCons(Flag(c), rest3) => {
+                  assert(string_equals(c, "c"))
+                  match rest3 {
+                    ArgCons(Opt(k1, v1), rest4) => {
+                      assert(string_equals(k1, "o"))
+                      assert(string_equals(v1, "out.txt"))
+                      match rest4 {
+                        ArgCons(Opt(k2, v2), rest5) => {
+                          assert(string_equals(k2, "I"))
+                          assert(string_equals(v2, "src"))
+                          match rest5 {
+                            ArgCons(Positional(p1), ArgNil) => {
+                              assert(string_equals(p1, "main.vibe"))
+                            },
+                            _ => assert(false)
+                          }
+                        },
+                        _ => assert(false)
+                      }
+                    },
+                    _ => assert(false)
+                  }
+                },
+                _ => assert(false)
+              }
+            },
+            _ => assert(false)
+          }
+        },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "args parse repeated options and end-of-options marker" {
+  match parse_args([
+    "--include=a",
+    "--include=b",
+    "--include=c",
+    "--",
+    "--literal",
+    "-x",
+  ]) {
+    ParseOk(items) => {
+      match items {
+        ArgCons(Opt(k1, v1), rest1) => {
+          assert(string_equals(k1, "include"))
+          assert(string_equals(v1, "a"))
+          match rest1 {
+            ArgCons(Opt(k2, v2), rest2) => {
+              assert(string_equals(k2, "include"))
+              assert(string_equals(v2, "b"))
+              match rest2 {
+                ArgCons(Opt(k3, v3), rest3) => {
+                  assert(string_equals(k3, "include"))
+                  assert(string_equals(v3, "c"))
+                  match rest3 {
+                    ArgCons(Positional(p1), rest4) => {
+                      assert(string_equals(p1, "--literal"))
+                      match rest4 {
+                        ArgCons(Positional(p2), ArgNil) => {
+                          assert(string_equals(p2, "-x"))
+                        },
+                        _ => assert(false)
+                      }
+                    },
+                    _ => assert(false)
+                  }
+                },
+                _ => assert(false)
+              }
+            },
+            _ => assert(false)
+          }
+        },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "args reject empty option names" {
+  match parse_args(["--=bad"]) {
+    ParseErr(msg) => assert(string_contains(msg, "empty option name")),
+    _ => assert(false)
+  }
+  match parse_args(["-=x"]) {
+    ParseErr(msg) => assert(string_contains(msg, "empty option name")),
+    _ => assert(false)
+  }
+}
