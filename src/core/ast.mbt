@@ -22,6 +22,7 @@ pub(all) enum Pat {
   Float(value~ : Float, span~ : Span)
   Double(value~ : Double, span~ : Span)
   Bool(value~ : Bool, span~ : Span)
+  Char(value~ : Char, span~ : Span)
   String(value~ : String, span~ : Span)
   Or(pats~ : Array[Pat], span~ : Span)
 } derive(Show, Eq)
@@ -172,6 +173,7 @@ pub(all) enum Expr {
   Float(value~ : Float, span~ : Span)
   Double(value~ : Double, span~ : Span)
   Bool(value~ : Bool, span~ : Span)
+  Char(value~ : Char, span~ : Span)
   String(value~ : String, span~ : Span)
   Ident(name~ : String, span~ : Span)
   Placeholder(index~ : Int, span~ : Span) // _ placeholder for lambda shorthand
@@ -242,6 +244,7 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Float(span~, ..)
     | Expr::Double(span~, ..)
     | Expr::Bool(span~, ..)
+    | Expr::Char(span~, ..)
     | Expr::String(span~, ..)
     | Expr::Ident(span~, ..)
     | Expr::Placeholder(span~, ..)
@@ -280,6 +283,7 @@ pub fn Pat::span(self : Pat) -> Span {
     | Pat::Float(span~, ..)
     | Pat::Double(span~, ..)
     | Pat::Bool(span~, ..)
+    | Pat::Char(span~, ..)
     | Pat::String(span~, ..)
     | Pat::Or(span~, ..) => span
   }

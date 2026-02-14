@@ -11,9 +11,9 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     Enable canonical API names like `map` without `map_opt` / `map_ok` detours.
   - [x] 3. Reduce function-to-type-member forwarding boilerplate. (Done: 2026-02-14)
     Provide language-level sugar or auto-forwarding for `Type::method` wrappers.
-  - [ ] 4. Add linear-time array construction primitives.
+  - [x] 4. Add linear-time array construction primitives. (Done: 2026-02-14)
     Introduce `ArrayBuilder`/`push`-style APIs to avoid repeated `array_concat`.
-  - [ ] 5. Introduce first-class `Char` and char literals.
+  - [x] 5. Introduce first-class `Char` and char literals. (Done: 2026-02-14)
     Reduce single-character `String`/`Int` ambiguity in parser/std code.
   - [ ] 6. Add `String` / `Bytes` builder APIs.
     Avoid repeated `string_concat` patterns in loops and parsers.

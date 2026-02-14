@@ -309,6 +309,7 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
     Expr::Float(value~, ..) => Expr::Float(value~, span=zero_span)
     Expr::Double(value~, ..) => Expr::Double(value~, span=zero_span)
     Expr::Bool(value~, ..) => Expr::Bool(value~, span=zero_span)
+    Expr::Char(value~, ..) => Expr::Char(value~, span=zero_span)
     Expr::String(value~, ..) => Expr::String(value~, span=zero_span)
     Expr::Ident(name~, ..) =>
       Expr::Ident(name=scope.lookup(name), span=zero_span)
@@ -482,6 +483,7 @@ fn normalize_pat(pat : Pat, scope : NormScope) -> Pat {
     Pat::Float(value~, ..) => Pat::Float(value~, span=zero_span)
     Pat::Double(value~, ..) => Pat::Double(value~, span=zero_span)
     Pat::Bool(value~, ..) => Pat::Bool(value~, span=zero_span)
+    Pat::Char(value~, ..) => Pat::Char(value~, span=zero_span)
     Pat::String(value~, ..) => Pat::String(value~, span=zero_span)
     Pat::Or(pats~, ..) =>
       Pat::Or(pats=normalize_pats(pats, scope), span=zero_span)

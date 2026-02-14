@@ -206,6 +206,10 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
         let v = expect_bool(value)
         return Expr::Bool(value=v, span=zero)
       }
+      "Char" => {
+        let v = expect_char(value)
+        return Expr::Char(value=v, span=zero)
+      }
       "String" => {
         let v = expect_string(value)
         return Expr::String(value=v, span=zero)
@@ -344,6 +348,10 @@ fn parse_pat(json : Json) -> Pat raise DeserializeError {
         let v = expect_bool(value)
         return Pat::Bool(value=v, span=zero)
       }
+      "Char" => {
+        let v = expect_char(value)
+        return Pat::Char(value=v, span=zero)
+      }
       "Ctor" => {
         let inner = expect_object(value)
         let name = get_string(inner, "name")
@@ -378,6 +386,7 @@ fn parse_type(json : Json) -> Type raise DeserializeError {
       "Float" => return Type::Float
       "Double" => return Type::Double
       "Bool" => return Type::Bool
+      "Char" => return Type::Char
       "String" => return Type::String
       "Path" => return Type::Path
       "Unit" => return Type::Unit
@@ -811,6 +820,17 @@ fn expect_bool(json : Json) -> Bool raise DeserializeError {
     Json::True => true
     Json::False => false
     _ => raise DeserializeError("Expected boolean")
+  }
+}
+
+///|
+fn expect_char(json : Json) -> Char raise DeserializeError {
+  let raw = expect_string(json)
+  let chars = raw.to_array()
+  if chars.length() == 1 {
+    chars[0]
+  } else {
+    raise DeserializeError("Expected single-char string")
   }
 }
 

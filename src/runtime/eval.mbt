@@ -401,6 +401,8 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       { value: @core.Value::Double(n), effects: [] }
     @core.Expr::Bool(value=b, ..) =>
       { value: @core.Value::Bool(b), effects: [] }
+    @core.Expr::Char(value=c, ..) =>
+      { value: @core.Value::Char(c), effects: [] }
     @core.Expr::String(value=s, ..) =>
       { value: @core.Value::String(s), effects: [] }
     @core.Expr::Ident(name~, ..) =>
@@ -763,6 +765,17 @@ fn match_pattern(
           }
         _ => None
       }
+    @core.Pat::Char(value=c, ..) =>
+      match value {
+        @core.Value::Char(v) =>
+          if v == c {
+            let bindings : Map[String, @core.Value] = {}
+            Some(bindings)
+          } else {
+            None
+          }
+        _ => None
+      }
     @core.Pat::String(value=s, ..) =>
       match value {
         @core.Value::String(v) =>
@@ -946,6 +959,7 @@ fn namespace_root_from_runtime_type(rt : Runtime, ty : @core.Type) -> String? {
     @core.Type::Float => Some("Float")
     @core.Type::Double => Some("Double")
     @core.Type::Bool => Some("Bool")
+    @core.Type::Char => Some("Char")
     @core.Type::String => Some("String")
     @core.Type::Path => Some("Path")
     @core.Type::Named(name~, ..) => Some(name)

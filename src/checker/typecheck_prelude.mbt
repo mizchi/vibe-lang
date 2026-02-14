@@ -92,9 +92,9 @@ fn find_name_suggestion(
 ///|
 fn find_type_suggestion(env : TypeEnv, name : String) -> String? {
   let candidates : Array[String] = [
-    "Int", "Float", "Double", "Bool", "String", "@core.Path", "Unit", "Array", "Map",
-    "ArrayBuilder", "MapBuilder", "i32", "f32", "f64", "anyref", "eqref", "i31ref",
-    "structref", "arrayref", "funcref", "externref",
+    "Int", "Float", "Double", "Bool", "Char", "String", "@core.Path", "Unit", "Array",
+    "Map", "ArrayBuilder", "MapBuilder", "i32", "f32", "f64", "anyref", "eqref",
+    "i31ref", "structref", "arrayref", "funcref", "externref",
   ]
   for key, _ in env.enum_defs {
     candidates.push(key)

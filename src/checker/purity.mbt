@@ -74,6 +74,11 @@ fn purity_expr_inner(
       let _ = span
       true
     }
+    @core.Expr::Char(value~, span~) => {
+      let _ = value
+      let _ = span
+      true
+    }
     @core.Expr::String(value~, span~) => {
       let _ = value
       let _ = span
@@ -382,6 +387,10 @@ pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
       let _ = value
       let _ = span
     }
+    @core.Pat::Char(value~, span~) => {
+      let _ = value
+      let _ = span
+    }
     @core.Pat::String(value~, span~) => {
       let _ = value
       let _ = span
@@ -451,7 +460,9 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "string_index_of" ||
   name == "string_contains" ||
   name == "string_trim" ||
-  name == "string_from_char_code"
+  name == "string_from_char_code" ||
+  name == "char_to_int" ||
+  name == "char_from_int"
 }
 
 ///|

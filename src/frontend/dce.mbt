@@ -363,6 +363,7 @@ fn collect_refs_expr(
     | @core.Expr::Float(..)
     | @core.Expr::Double(..)
     | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
     | @core.Expr::String(..)
     | @core.Expr::Placeholder(..) => ()
     @core.Expr::Ident(name~, span~) => {
@@ -598,6 +599,7 @@ fn collect_refs_type(ty : @core.Type, refs : Map[String, Bool]) -> Unit {
     | @core.Type::Float
     | @core.Type::Double
     | @core.Type::Bool
+    | @core.Type::Char
     | @core.Type::String
     | @core.Type::Path
     | @core.Type::Unit
@@ -734,6 +736,7 @@ fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
     | @core.Pat::Float(..)
     | @core.Pat::Double(..)
     | @core.Pat::Bool(..)
+    | @core.Pat::Char(..)
     | @core.Pat::String(..) => ()
     @core.Pat::Or(pats~, span~) => {
       let _ = span

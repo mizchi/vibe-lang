@@ -157,11 +157,7 @@ test "vibe integration type namespace import auto-forwards receiver-first functi
   let probe_visited : Map[String, Bool] = {}
   let probe_path_to_hash : Map[String, String] = {}
   register_import_modules(
-    probe_rt,
-    db,
-    "probe",
-    probe_visited,
-    probe_path_to_hash,
+    probe_rt, db, "probe", probe_visited, probe_path_to_hash,
   )
   let probe_ast = @core.convert_imports_to_hash(probe_compiled.ast, fn(path) {
     probe_path_to_hash.get(path)
@@ -201,6 +197,74 @@ test "vibe integration raw identifier supports reserved names" {
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected Int(3)")
+  }
+}
+
+///|
+test "vibe integration char literal has Char type" {
+  let db = VibeDb::new()
+  let main_source =
+    #|let c: Char = 'A'
+    #|let d: Char = 'a'
+    #|if c == 'A' {
+    #|  d
+    #|} else {
+    #|  c
+    #|}
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Char(v)) => assert_eq(v, 'a')
+    _ => fail("expected Char('a')")
+  }
+}
+
+///|
+test "vibe integration imports module using array_builder helper" {
+  let db = VibeDb::new()
+  let lib_source =
+    #|export let build = (n: Int) -> Array[Int] {
+    #|  let rec loop = (i: Int, b: ArrayBuilder[Int]) -> Array[Int] {
+    #|    if i >= n {
+    #|      do {
+    #|        array_builder_freeze(b)
+    #|      }
+    #|    } else {
+    #|      do {
+    #|        array_builder_push(b, i)
+    #|        loop(i + 1, b)
+    #|      }
+    #|    }
+    #|  }
+    #|  do {
+    #|    loop(0, array_builder())
+    #|  }
+    #|}
+  let main_source = "use ./lib.vibe { build }\narray_length(build(3))"
+  db.set_source("./lib.vibe", lib_source)
+  db.set_source("main", main_source)
+  let imported_env = db.types("./lib.vibe")
+  assert_true(imported_env.get_scheme("build") is Some(_))
+  let main_env = db.types("main")
+  assert_true(main_env.get_scheme("build") is Some(_))
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
   match result.last {
     Some(@core.Value::Int(v)) => assert_eq(v, 3)
     _ => fail("expected Int(3)")

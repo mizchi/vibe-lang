@@ -149,6 +149,7 @@ fn function_tracking_type_to_json(ty : @vibe_core.Type) -> Json {
     @vibe_core.Type::Float => obj["Float"] = Json::null()
     @vibe_core.Type::Double => obj["Double"] = Json::null()
     @vibe_core.Type::Bool => obj["Bool"] = Json::null()
+    @vibe_core.Type::Char => obj["Char"] = Json::null()
     @vibe_core.Type::String => obj["String"] = Json::null()
     @vibe_core.Type::Path => obj["Path"] = Json::null()
     @vibe_core.Type::Unit => obj["Unit"] = Json::null()

@@ -240,6 +240,11 @@ fn type_expr_eff(
       let _ = span
       @core.Type::Bool
     }
+    @core.Expr::Char(value~, span~) => {
+      let _ = value
+      let _ = span
+      @core.Type::Char
+    }
     @core.Expr::String(value~, span~) => {
       let _ = value
       let _ = span
@@ -922,6 +927,17 @@ fn collect_pattern_bindings_inner(
         )
       }
     }
+    @core.Pat::Char(value~, span~) => {
+      let _ = value
+      if not(type_equal(env, scrutinee_ty, @core.Type::Char)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Char,
+          actual=scrutinee_ty,
+          span~,
+          context=Some("pattern"),
+        )
+      }
+    }
     @core.Pat::String(value~, span~) => {
       let _ = value
       if not(type_equal(env, scrutinee_ty, @core.Type::String)) {
@@ -1064,6 +1080,10 @@ fn collect_pattern_bindings_loose(
       let _ = span
     }
     @core.Pat::Bool(value~, span~) => {
+      let _ = value
+      let _ = span
+    }
+    @core.Pat::Char(value~, span~) => {
       let _ = value
       let _ = span
     }
@@ -1272,6 +1292,7 @@ fn ensure_eq_operand(
     | @core.Type::Float
     | @core.Type::Double
     | @core.Type::Bool
+    | @core.Type::Char
     | @core.Type::String => ()
     @core.Type::Var(id) =>
       if is_num_var(env, id) {
@@ -1317,6 +1338,7 @@ fn ensure_ord_operand(
     @core.Type::Int
     | @core.Type::Float
     | @core.Type::Double
+    | @core.Type::Char
     | @core.Type::String => ()
     @core.Type::Var(id) =>
       if is_num_var(env, id) {
@@ -1349,6 +1371,18 @@ fn ensure_ord_operand(
         context=Some("argument"),
       )
   }
+}
+
+///|
+fn int_char_comparable_pair(
+  env : TypeEnv,
+  left : @core.Type,
+  right : @core.Type,
+) -> Bool {
+  let l = resolve_type(env, left)
+  let r = resolve_type(env, right)
+  (l == @core.Type::Int && r == @core.Type::Char) ||
+  (l == @core.Type::Char && r == @core.Type::Int)
 }
 
 ///|
@@ -1492,6 +1526,7 @@ fn namespace_root_from_type(env : TypeEnv, ty : @core.Type) -> String? {
     @core.Type::Float => Some("Float")
     @core.Type::Double => Some("Double")
     @core.Type::Bool => Some("Bool")
+    @core.Type::Char => Some("Char")
     @core.Type::String => Some("String")
     @core.Type::Path => Some("Path")
     @core.Type::Named(name~, ..) => Some(name)
@@ -2336,6 +2371,60 @@ fn type_call(
                   )
                 }
                 @core.Type::String
+              }
+              "char_to_int" => {
+                let pos_args = extract_positional_args(
+                  args, "char_to_int", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="char_to_int",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::Char)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Char,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "char_from_int" => {
+                let pos_args = extract_positional_args(
+                  args, "char_from_int", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="char_from_int",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Char
               }
               "array_builder" => {
                 let pos_args = extract_positional_args(
@@ -3481,7 +3570,9 @@ fn type_call(
                   allow_effect,
                 )
                 ensure_eq_operand(env, a, pos_args[0].span())
-                if not(type_equal(env, b, a)) {
+                ensure_eq_operand(env, b, pos_args[1].span())
+                if not(type_equal(env, b, a)) &&
+                  not(int_char_comparable_pair(env, a, b)) {
                   raise TypeError::Mismatch(
                     expected=a,
                     actual=b,
@@ -3511,7 +3602,9 @@ fn type_call(
                   allow_effect,
                 )
                 ensure_ord_operand(env, a, pos_args[0].span())
-                if not(type_equal(env, b, a)) {
+                ensure_ord_operand(env, b, pos_args[1].span())
+                if not(type_equal(env, b, a)) &&
+                  not(int_char_comparable_pair(env, a, b)) {
                   raise TypeError::Mismatch(
                     expected=a,
                     actual=b,
@@ -4339,6 +4432,7 @@ fn is_non_expansive_expr(
     @core.Expr::Float(..) => true
     @core.Expr::Double(..) => true
     @core.Expr::Bool(..) => true
+    @core.Expr::Char(..) => true
     @core.Expr::String(..) => true
     @core.Expr::Ident(name~, span~) => {
       let _ = span

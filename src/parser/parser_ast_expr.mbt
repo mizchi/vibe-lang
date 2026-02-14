@@ -1500,7 +1500,7 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
       let chars = tok.text().to_array()
       if chars.length() == 1 {
         let span = self.span_from(start)
-        @core.Expr::Int(value=chars[0].to_int().to_int64(), span~)
+        @core.Expr::Char(value=chars[0], span~)
       } else {
         raise ParseError::UnexpectedToken(
           expected="char",

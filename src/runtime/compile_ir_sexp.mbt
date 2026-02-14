@@ -236,6 +236,10 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       let _ = span
       "(lit (bool " + (if b { "true" } else { "false" }) + "))"
     }
+    @core.Expr::Char(value=c, span~) => {
+      let _ = span
+      "(lit (char " + c.to_int().to_string() + "))"
+    }
     @core.Expr::String(value=s, span~) => {
       let _ = span
       "(lit (string " + escape_string(s) + "))"
@@ -488,6 +492,7 @@ fn type_to_sexp(ty : @core.Type) -> String {
     @core.Type::Float => "Float"
     @core.Type::Double => "Double"
     @core.Type::Bool => "Bool"
+    @core.Type::Char => "Char"
     @core.Type::String => "String"
     @core.Type::Path => "@core.Path"
     @core.Type::Unit => "Unit"
@@ -770,6 +775,10 @@ fn pat_to_sexp(pat : @core.Pat) -> String {
     @core.Pat::Bool(value=b, span~) => {
       let _ = span
       "(pat (bool " + (if b { "true" } else { "false" }) + "))"
+    }
+    @core.Pat::Char(value=c, span~) => {
+      let _ = span
+      "(pat (char " + c.to_int().to_string() + "))"
     }
     @core.Pat::String(value=s, span~) => {
       let _ = span

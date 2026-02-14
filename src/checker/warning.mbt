@@ -193,6 +193,7 @@ fn warning_collect_pattern_bindings(
     | @core.Pat::Float(..)
     | @core.Pat::Double(..)
     | @core.Pat::Bool(..)
+    | @core.Pat::Char(..)
     | @core.Pat::String(..) => ()
   }
 }
@@ -441,6 +442,7 @@ fn walk_expr(
     | @core.Expr::Float(..)
     | @core.Expr::Double(..)
     | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
     | @core.Expr::String(..)
     | @core.Expr::Placeholder(..)
     | @core.Expr::Break(..)

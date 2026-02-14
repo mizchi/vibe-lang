@@ -412,6 +412,7 @@ fn unify_types(
     (@core.Type::Float, @core.Type::Float) => true
     (@core.Type::Double, @core.Type::Double) => true
     (@core.Type::Bool, @core.Type::Bool) => true
+    (@core.Type::Char, @core.Type::Char) => true
     (@core.Type::String, @core.Type::String) => true
     (@core.Type::Path, @core.Type::Path) => true
     (@core.Type::Unit, @core.Type::Unit) => true

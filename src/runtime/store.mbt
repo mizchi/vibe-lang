@@ -478,6 +478,7 @@ fn value_hash(value : @core.Value) -> String {
     @core.Value::Float(_) => "f:"
     @core.Value::Double(_) => "d:"
     @core.Value::Bool(_) => "b:"
+    @core.Value::Char(_) => "c:"
     @core.Value::String(_) => "s:"
     @core.Value::Path(_) => "p:"
     @core.Value::Unit => "u:"

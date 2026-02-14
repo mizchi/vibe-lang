@@ -9,6 +9,7 @@ priv struct WasmFunc {
 ///|
 fn value_kind_from_type(ctx : CodegenCtx, ty : @core.Type) -> ValueKind {
   match ty {
+    @core.Type::Char => ValueKind::I64
     @core.Type::String =>
       if ctx.use_js_strings {
         ValueKind::ExternRef
@@ -296,6 +297,11 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I64
     }
+    @core.Expr::Char(value~, span~) => {
+      let _ = value
+      let _ = span
+      ValueKind::I64
+    }
     @core.Expr::String(value~, span~) => {
       let _ = value
       let _ = span
@@ -449,6 +455,8 @@ fn infer_expr_kind_with(
         "stdin_read_char" => ValueKind::I64
         "stdin_read_stream" => ValueKind::I64
         "string_from_char_code" => ValueKind::I64
+        "char_to_int" => ValueKind::I64
+        "char_from_int" => ValueKind::I64
         "threads_probe_wat" =>
           if ctx.use_js_strings {
             ValueKind::ExternRef

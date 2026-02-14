@@ -34,6 +34,7 @@ pub(all) enum Type {
   Float
   Double
   Bool
+  Char
   String
   Path
   Unit
@@ -111,6 +112,7 @@ fn format_type_compact(ty : Type) -> String {
     Type::Float => "Float"
     Type::Double => "Double"
     Type::Bool => "Bool"
+    Type::Char => "Char"
     Type::String => "String"
     Type::Path => "Path"
     Type::Unit => "Unit"
@@ -202,6 +204,7 @@ pub(all) enum Value {
   Float(Float)
   Double(Double)
   Bool(Bool)
+  Char(Char)
   String(String)
   Path(Path)
   Unit
@@ -221,6 +224,11 @@ pub impl Show for Value with output(self, logger) {
     Value::Float(n) => logger.write_string(n.to_string())
     Value::Double(n) => logger.write_string(@fp.double_to_string(n))
     Value::Bool(b) => logger.write_string(if b { "true" } else { "false" })
+    Value::Char(c) => {
+      logger.write_string("'")
+      logger.write_string(c.to_string())
+      logger.write_string("'")
+    }
     Value::String(s) => {
       logger.write_string("\"")
       logger.write_string(s)

@@ -88,6 +88,16 @@ fn AstParser::parse_type_with_params(
               span=name_span,
             )
           }
+        "Char" =>
+          if args.is_empty() {
+            @core.Type::Char
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
+          }
         "String" =>
           if args.is_empty() {
             @core.Type::String
@@ -360,6 +370,20 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
       let _ = self.bump()
       let span = self.span_from(start)
       @core.Pat::String(value=tok.text(), span~)
+    }
+    k if k == char_lit() => {
+      let _ = self.bump()
+      let chars = tok.text().to_array()
+      if chars.length() == 1 {
+        let span = self.span_from(start)
+        @core.Pat::Char(value=chars[0], span~)
+      } else {
+        raise ParseError::UnexpectedToken(
+          expected="char",
+          got=tok.text(),
+          span=self.token_span(),
+        )
+      }
     }
     k if k == name() => {
       let _ = self.bump()

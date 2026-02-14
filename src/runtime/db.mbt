@@ -351,6 +351,7 @@ fn type_member_receiver_root_name(
     @core.Type::Float => Some("Float")
     @core.Type::Double => Some("Double")
     @core.Type::Bool => Some("Bool")
+    @core.Type::Char => Some("Char")
     @core.Type::String => Some("String")
     @core.Type::Path => Some("Path")
     @core.Type::Named(name~, ..) => Some(name)
@@ -1486,7 +1487,8 @@ pub fn VibeDb::new() -> VibeDb {
                       }
                       match imported_env.get_scheme(exported_name) {
                         Some(scheme) =>
-                          match scheme_receiver_root_name(imported_env, scheme) {
+                          match
+                            scheme_receiver_root_name(imported_env, scheme) {
                             Some(recv_root) =>
                               if recv_root == source_root {
                                 import_scheme_trait_dependencies(

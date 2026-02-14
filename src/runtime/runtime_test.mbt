@@ -333,17 +333,22 @@ test "vibe prelude to_string works with parenthesized literal method call" {
 ///|
 test "vibe char literal" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt.eval_script("let a = 'a'\nlet b = '\\n'\nlet c = '\\''")
+  let result : Result[EvalResult, XshError] = try?
+    rt.eval_script("let a = 'a'\nlet b = '\\n'\nlet c = '\\''")
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
   match rt.get("a") {
-    Some(@core.Value::Int(v)) => assert_eq(v, 97)
+    Some(@core.Value::Char(v)) => assert_eq(v, 'a')
     _ => fail("missing a")
   }
   match rt.get("b") {
-    Some(@core.Value::Int(v)) => assert_eq(v, 10)
+    Some(@core.Value::Char(v)) => assert_eq(v, '\n')
     _ => fail("missing b")
   }
   match rt.get("c") {
-    Some(@core.Value::Int(v)) => assert_eq(v, 39)
+    Some(@core.Value::Char(v)) => assert_eq(v, '\'')
     _ => fail("missing c")
   }
 }
@@ -825,6 +830,37 @@ test "vibe string_from_char_code and stdio eval" {
   }
   match rt.get("d") {
     Some(@core.Value::String(v)) => assert_eq(v, "AB")
+    _ => fail("missing d")
+  }
+}
+
+///|
+test "vibe char literal and char conversion builtins eval" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let a: Char = 'A'\n" +
+    "let b = char_to_int(a)\n" +
+    "let c = char_from_int(98)\n" +
+    "let d = __to_string(c)\n" +
+    "match c {\n" +
+    "  'b' => b,\n" +
+    "  _ => 0\n" +
+    "}",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(r) =>
+      match r.last {
+        Some(@core.Value::Int(v)) => assert_eq(v, 65)
+        _ => fail("expected Int(65)")
+      }
+  }
+  match rt.get("c") {
+    Some(@core.Value::Char(v)) => assert_eq(v, 'b')
+    _ => fail("missing c")
+  }
+  match rt.get("d") {
+    Some(@core.Value::String(v)) => assert_eq(v, "b")
     _ => fail("missing d")
   }
 }

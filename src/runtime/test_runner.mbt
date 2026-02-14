@@ -249,6 +249,10 @@ fn collect_dep_expr(
       let _ = value
       let _ = span
     }
+    @core.Expr::Char(value~, span~) => {
+      let _ = value
+      let _ = span
+    }
     @core.Expr::String(value~, span~) => {
       let _ = value
       let _ = span

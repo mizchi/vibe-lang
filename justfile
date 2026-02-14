@@ -220,6 +220,14 @@ bench-audit-backends:
 bench-builder:
     scripts/bench_builder.sh
 
+# Compare array construction strategies (array_concat vs array_builder)
+bench-array-build:
+    moon run --target native src/cmd/vibe/main.mbt -- bench bench/bench_array_build_strategies.vibe
+
+# Compare char conversion strategies (char builtins vs string bridge)
+bench-char-conversion:
+    moon run --target native src/cmd/vibe/main.mbt -- bench bench/bench_char_conversion.vibe
+
 # Measure per-command latency after startup
 bench-cmd-latency:
     scripts/bench_cmd_latency.sh

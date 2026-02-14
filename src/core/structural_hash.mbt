@@ -202,6 +202,7 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
     }
     Expr::Bool(value~, ..) =>
       combine_hash(0x426f6f6c, if value { 1 } else { 0 })
+    Expr::Char(value~, ..) => combine_hash(0x43686172, value.to_int())
     Expr::String(value~, ..) => combine_hash(0x53747269, value.hash())
     Expr::Ident(name~, ..) => combine_hash(0x4964656e, name.hash())
     Expr::Placeholder(index~, ..) => combine_hash(0x506c6163, index)
@@ -353,6 +354,7 @@ pub fn Type::structural_hash(self : Type) -> Int {
     Type::Float => 0x466c6f74
     Type::Double => 0x446f7562
     Type::Bool => 0x426f6f6c
+    Type::Char => 0x43686172
     Type::String => 0x53747267
     Type::Unit => 0x556e6974
     Type::Path => 0x50617468
@@ -445,6 +447,7 @@ pub fn Pat::structural_hash(self : Pat) -> Int {
       combine_hash(0x446f7562, bits.to_int())
     }
     Pat::Bool(value~, ..) => combine_hash(0x426f6f6c, if value { 1 } else { 0 })
+    Pat::Char(value~, ..) => combine_hash(0x43686172, value.to_int())
     Pat::String(value~, ..) => combine_hash(0x53747269, value.hash())
     Pat::Or(pats~, ..) => {
       let mut h = 0x4f720000

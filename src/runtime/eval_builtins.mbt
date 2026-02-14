@@ -41,6 +41,8 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "string_contains" ||
   name == "string_trim" ||
   name == "string_from_char_code" ||
+  name == "char_to_int" ||
+  name == "char_from_int" ||
   name == "string_utf8_length" ||
   name == "string_utf16_length" ||
   name == "string_unicode_length" ||
@@ -288,6 +290,32 @@ fn eval_pure_builtin(
         _ => raise EvalError::BadCall("string_from_char_code")
       }
     }
+    "char_to_int" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("char_to_int")
+      }
+      match args[0] {
+        @core.Value::Char(ch) => @core.Value::Int(ch.to_int().to_int64())
+        _ => raise EvalError::BadCall("char_to_int")
+      }
+    }
+    "char_from_int" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("char_from_int")
+      }
+      match args[0] {
+        @core.Value::Int(code) =>
+          if code < 0L || code > 1114111L {
+            raise EvalError::BadCall("char_from_int")
+          } else {
+            match Int::to_char(code.to_int()) {
+              Some(ch) => @core.Value::Char(ch)
+              None => raise EvalError::BadCall("char_from_int")
+            }
+          }
+        _ => raise EvalError::BadCall("char_from_int")
+      }
+    }
     "__add" => {
       if args.length() != 2 {
         raise EvalError::BadCall("__add")
@@ -431,6 +459,12 @@ fn eval_pure_builtin(
           @core.Value::Bool(a == b)
         (@core.Value::Bool(a), @core.Value::Bool(b)) =>
           @core.Value::Bool(a == b)
+        (@core.Value::Char(a), @core.Value::Char(b)) =>
+          @core.Value::Bool(a == b)
+        (@core.Value::Int(a), @core.Value::Char(b)) =>
+          @core.Value::Bool(a == b.to_int().to_int64())
+        (@core.Value::Char(a), @core.Value::Int(b)) =>
+          @core.Value::Bool(a.to_int().to_int64() == b)
         (@core.Value::String(a), @core.Value::String(b)) =>
           @core.Value::Bool(a == b)
         _ => raise EvalError::BadCall("__eq")
@@ -446,6 +480,11 @@ fn eval_pure_builtin(
           @core.Value::Bool(a < b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Bool(a < b)
+        (@core.Value::Char(a), @core.Value::Char(b)) => @core.Value::Bool(a < b)
+        (@core.Value::Int(a), @core.Value::Char(b)) =>
+          @core.Value::Bool(a < b.to_int().to_int64())
+        (@core.Value::Char(a), @core.Value::Int(b)) =>
+          @core.Value::Bool(a.to_int().to_int64() < b)
         (@core.Value::String(a), @core.Value::String(b)) =>
           @core.Value::Bool(String::compare(a, b) < 0)
         _ => raise EvalError::BadCall("__lt")
@@ -684,6 +723,7 @@ fn eval_pure_builtin(
         @core.Value::Double(d) => @core.Value::String(d.to_string())
         @core.Value::Bool(b) =>
           @core.Value::String(if b { "true" } else { "false" })
+        @core.Value::Char(c) => @core.Value::String(c.to_string())
         @core.Value::Unit => @core.Value::String("()")
         _ => raise EvalError::BadCall("__to_string")
       }

@@ -15,6 +15,7 @@ let prelude_source : String =
   #|impl Show for Float
   #|impl Show for Double
   #|impl Show for Bool
+  #|impl Show for Char
   #|impl Show for String
   #|let to_string = [T: Show](x: T) -> String { __to_string(x) }
   #|let array_map = (f: (x: Num) -> Num, xs: Array[Num]) -> Array[Num] {

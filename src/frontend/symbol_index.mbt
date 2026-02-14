@@ -96,6 +96,7 @@ fn render_type(ty : @core.Type) -> String {
     @core.Type::Float => "Float"
     @core.Type::Double => "Double"
     @core.Type::Bool => "Bool"
+    @core.Type::Char => "Char"
     @core.Type::String => "String"
     @core.Type::Path => "Path"
     @core.Type::Unit => "Unit"

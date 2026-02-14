@@ -189,6 +189,8 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         ctx.need_stdin_read_char = true
       } else if name == "string_from_char_code" {
         ctx.need_heap = true
+      } else if name == "char_to_int" || name == "char_from_int" {
+        ()
       } else if name == "__to_string" {
         if not(ctx.use_js_strings) {
           ctx.need_heap = true
@@ -929,6 +931,10 @@ fn compile_expr(
     @core.Expr::Bool(value=b, span~) => {
       let _ = span
       emit_i64_const_raw(buf, tag_bool_value64(b))
+    }
+    @core.Expr::Char(value=c, span~) => {
+      let _ = span
+      emit_i64_const_tagged(buf, c.to_int().to_int64())
     }
     @core.Expr::String(value=s, span~) => {
       let _ = span
@@ -3002,6 +3008,18 @@ fn compile_expr(
         emit_i64_const_raw(buf, tag_obj.to_int64())
         emit_i64_or(buf)
         buf.push((11).to_byte()) // end if
+      } else if name == "char_to_int" {
+        let pos_args = extract_positional_exprs(args, "char_to_int")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("char_to_int arity")
+        }
+        compile_expr(ctx, buf, pos_args[0])
+      } else if name == "char_from_int" {
+        let pos_args = extract_positional_exprs(args, "char_from_int")
+        if pos_args.length() != 1 {
+          raise WasmGenError::Unsupported("char_from_int arity")
+        }
+        compile_expr(ctx, buf, pos_args[0])
       } else if name == "string_from_char_code" {
         let pos_args = extract_positional_exprs(args, "string_from_char_code")
         if pos_args.length() != 1 {
@@ -4785,6 +4803,21 @@ fn compile_pat_match(
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
     }
+    @core.Pat::Char(value~, span~) => {
+      let _ = value
+      let _ = span
+      emit_local_get(buf, value_idx)
+      emit_pat_literal(ctx, buf, pat)
+      emit_i64_eq(buf)
+      buf.push((4).to_byte())
+      buf.push((126).to_byte())
+      compile_pat_cont(
+        ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
+      )
+      buf.push((5).to_byte())
+      compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
+      buf.push((11).to_byte())
+    }
     @core.Pat::Float(value=n, span~) => {
       let _ = span
       // Combined check: tag_obj AND type==obj_float AND value==n
@@ -5206,6 +5239,10 @@ fn emit_pat_literal(
     @core.Pat::Int(value=n, span~) => {
       let _ = span
       emit_i64_const_tagged(buf, n)
+    }
+    @core.Pat::Char(value=c, span~) => {
+      let _ = span
+      emit_i64_const_tagged(buf, c.to_int().to_int64())
     }
     @core.Pat::Float(value~, span~) => {
       let _ = value

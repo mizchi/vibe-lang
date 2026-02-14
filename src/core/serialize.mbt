@@ -221,6 +221,11 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       buf.write_string(value.to_string())
       buf.write_char('}')
     }
+    Expr::Char(value~, ..) => {
+      buf.write_string("{\"Char\":")
+      serialize_string_to(value.to_string(), buf)
+      buf.write_char('}')
+    }
     Expr::String(value~, ..) => {
       buf.write_string("{\"String\":")
       serialize_string_to(value, buf)
@@ -512,6 +517,11 @@ fn serialize_pat_to(pat : Pat, buf : StringBuilder) -> Unit {
       buf.write_string(value.to_string())
       buf.write_char('}')
     }
+    Pat::Char(value~, ..) => {
+      buf.write_string("{\"Char\":")
+      serialize_string_to(value.to_string(), buf)
+      buf.write_char('}')
+    }
     Pat::String(value~, ..) => {
       buf.write_string("{\"String\":")
       serialize_string_to(value, buf)
@@ -608,6 +618,7 @@ fn serialize_type_to(ty : Type, buf : StringBuilder) -> Unit {
     Type::Float => buf.write_string("{\"Float\":{}}")
     Type::Double => buf.write_string("{\"Double\":{}}")
     Type::Bool => buf.write_string("{\"Bool\":{}}")
+    Type::Char => buf.write_string("{\"Char\":{}}")
     Type::String => buf.write_string("{\"String\":{}}")
     Type::Path => buf.write_string("{\"Path\":{}}")
     Type::Unit => buf.write_string("{\"Unit\":{}}")

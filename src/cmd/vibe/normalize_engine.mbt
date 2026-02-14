@@ -1750,6 +1750,7 @@ fn normalize_count_candidate_refs_expr(
     | @vibe_core.Expr::Float(..)
     | @vibe_core.Expr::Double(..)
     | @vibe_core.Expr::Bool(..)
+    | @vibe_core.Expr::Char(..)
     | @vibe_core.Expr::String(..)
     | @vibe_core.Expr::Placeholder(..)
     | @vibe_core.Expr::Break(..)
@@ -2375,6 +2376,7 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
     | @vibe_core.Type::Float
     | @vibe_core.Type::Double
     | @vibe_core.Type::Bool
+    | @vibe_core.Type::Char
     | @vibe_core.Type::String
     | @vibe_core.Type::Path
     | @vibe_core.Type::Unit
@@ -2431,6 +2433,7 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
     @vibe_core.Type::Float => "Float"
     @vibe_core.Type::Double => "Double"
     @vibe_core.Type::Bool => "Bool"
+    @vibe_core.Type::Char => "Char"
     @vibe_core.Type::String => "String"
     @vibe_core.Type::Path => "@core.Path"
     @vibe_core.Type::Unit => "Unit"
@@ -2963,6 +2966,7 @@ fn normalize_collect_refs_expr(
     | @vibe_core.Expr::Float(..)
     | @vibe_core.Expr::Double(..)
     | @vibe_core.Expr::Bool(..)
+    | @vibe_core.Expr::Char(..)
     | @vibe_core.Expr::String(..)
     | @vibe_core.Expr::Placeholder(..)
     | @vibe_core.Expr::Break(..)
@@ -3130,6 +3134,7 @@ fn normalize_bind_pattern_names(
     | @vibe_core.Pat::Float(..)
     | @vibe_core.Pat::Double(..)
     | @vibe_core.Pat::Bool(..)
+    | @vibe_core.Pat::Char(..)
     | @vibe_core.Pat::String(..) => ()
   }
 }

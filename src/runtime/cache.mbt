@@ -109,6 +109,7 @@ fn encode_value(value : @core.Value) -> String {
     @core.Value::Float(n) => "f32:" + n.to_string()
     @core.Value::Double(n) => "f64:" + n.to_string()
     @core.Value::Bool(b) => "b:" + (if b { "1" } else { "0" })
+    @core.Value::Char(c) => "c:" + c.to_int().to_string()
     @core.Value::String(s) => "s:" + escape_cache(s)
     @core.Value::Path(p) => "p:" + escape_cache(p.as_string())
     @core.Value::Unit => "u:"
@@ -162,6 +163,19 @@ fn decode_value(encoded : String) -> @core.Value? {
       Some(@core.Value::Bool(false))
     } else {
       None
+    }
+  } else if encoded.has_prefix("c:") {
+    let rest = slice_from(encoded, 2)
+    let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
+      rest,
+    )
+    match parsed {
+      Ok(code) =>
+        match Int::to_char(code) {
+          Some(ch) => Some(@core.Value::Char(ch))
+          None => None
+        }
+      Err(_) => None
     }
   } else if encoded.has_prefix("p:") {
     let rest = slice_from(encoded, 2)

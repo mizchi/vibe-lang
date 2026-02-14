@@ -43,7 +43,7 @@ fn known_vibe_non_command_names() -> Map[String, Bool] {
     "string_contains", "string_trim", "array_length", "array_get", "array_slice",
     "array_builder", "array_builder_push", "array_builder_freeze", "map_builder",
     "map_builder_set", "map_builder_freeze", "map_keys", "map_values", "map_has_key",
-    "record_set",
+    "record_set", "char_to_int", "char_from_int",
   ]
   for name in builtins {
     out[name] = true
