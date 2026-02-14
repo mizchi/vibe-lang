@@ -5050,7 +5050,7 @@ fn compile_function(
   let func = WasmFunc::{
     params: params_with_env,
     locals,
-    result: result_kind,
+    results: [result_kind],
     body: body_bytes,
   }
   ctx.locals = saved_locals
@@ -5116,7 +5116,7 @@ fn compile_cabi_realloc_function(
   WasmFunc::{
     params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
     locals: [ValueKind::I32, ValueKind::I32],
-    result: ValueKind::I32,
+    results: [ValueKind::I32],
     body: body.data,
   }
 }

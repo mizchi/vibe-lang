@@ -199,7 +199,7 @@ fn compute_fn_env_requirements(funcs : Array[FuncDef]) -> Array[Bool] {
 ///|
 priv struct FuncSig {
   params : Array[ValueKind]
-  result : ValueKind
+  results : Array[ValueKind]
 }
 
 ///|

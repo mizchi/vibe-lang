@@ -2,15 +2,17 @@
 fn write_func_type(
   buf : ByteBuf,
   params : Array[ValueKind],
-  result : ValueKind,
+  results : Array[ValueKind],
 ) -> Unit {
   buf.push((96).to_byte())
   write_u32_leb(buf, params.length())
   for kind in params {
     buf.push(valtype_byte(kind))
   }
-  write_u32_leb(buf, 1)
-  buf.push(valtype_byte(result))
+  write_u32_leb(buf, results.length())
+  for r in results {
+    buf.push(valtype_byte(r))
+  }
 }
 
 ///|
@@ -83,7 +85,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let builtin_count = type_count
   let func_type_indices : Array[Int] = []
   for func in funcs {
-    let key = func_sig_key_from_parts(func.params, func.result)
+    let key = func_sig_key_from_parts(func.params, func.results)
     let idx = match ctx.fn_sig_type_indices.get(key) {
       Some(i) => i
       None => builtin_count
@@ -179,7 +181,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_u32_leb(type_sec, 0)
   }
   for sig in ctx.fn_sig_order {
-    write_func_type(type_sec, sig.params, sig.result)
+    write_func_type(type_sec, sig.params, sig.results)
   }
   if ctx.need_exceptions {
     ctx.error_tag_type_index = builtin_count + ctx.fn_sig_order.length()
@@ -805,7 +807,7 @@ fn emit_module_with_coverage(
     let type_idx = ensure_sig_index(ctx, sig)
     ctx.fn_type_indices[funcs[i].span_key] = type_idx
   }
-  let run_sig = FuncSig::{ params: [], result: ValueKind::I64 }
+  let run_sig = FuncSig::{ params: [], results: [ValueKind::I64] }
   let _ = ensure_sig_index(ctx, run_sig)
   let run_ast = filter_top_level_funcs(ctx, ast)
   let func_needs_heap : Array[Bool] = []
@@ -904,7 +906,7 @@ fn emit_module_with_coverage(
   if ctx.need_stdin_read_char {
     let cabi_realloc_sig = FuncSig::{
       params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
-      result: ValueKind::I32,
+      results: [ValueKind::I32],
     }
     let _ = ensure_sig_index(ctx, cabi_realloc_sig)
     compiled_funcs.push(compile_cabi_realloc_function(ctx))

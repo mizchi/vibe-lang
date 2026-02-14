@@ -2,7 +2,7 @@
 priv struct WasmFunc {
   params : Array[ValueKind]
   locals : Array[ValueKind]
-  result : ValueKind
+  results : Array[ValueKind]
   body : Array[Byte]
 }
 
@@ -79,7 +79,7 @@ fn value_kind_key_char(kind : ValueKind) -> Char {
 ///|
 fn func_sig_key_from_parts(
   params : Array[ValueKind],
-  result : ValueKind,
+  results : Array[ValueKind],
 ) -> String {
   let sb = StringBuilder::new()
   sb.write_char('(')
@@ -90,13 +90,15 @@ fn func_sig_key_from_parts(
     sb.write_char(value_kind_key_char(params[i]))
   }
   sb.write_string(")->")
-  sb.write_char(value_kind_key_char(result))
+  for r in results {
+    sb.write_char(value_kind_key_char(r))
+  }
   sb.to_string()
 }
 
 ///|
 fn func_sig_key(sig : FuncSig) -> String {
-  func_sig_key_from_parts(sig.params, sig.result)
+  func_sig_key_from_parts(sig.params, sig.results)
 }
 
 ///|
@@ -106,7 +108,7 @@ fn func_sig_with_env(params : Array[ValueKind], result : ValueKind) -> FuncSig {
     out.push(kind)
   }
   out.push(ValueKind::I32)
-  FuncSig::{ params: out, result }
+  FuncSig::{ params: out, results: [result] }
 }
 
 ///|
@@ -496,7 +498,7 @@ fn infer_expr_kind_with(
         "threads_wait" => ValueKind::I64
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
-            Some(sig) => sig.result
+            Some(sig) => sig.results[0]
             None => ValueKind::I64
           }
         _ =>
