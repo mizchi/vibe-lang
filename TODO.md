@@ -15,7 +15,7 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   - Done (2026-02-13): Improve trait openness diagnostics.
     Distinguish sealed-trait, non-exported trait, and overlapping-impl failures
     with dedicated error codes/messages (`[TROP001]`/`[TROP002]`/`[TROP003]`).
-  - P2: Add formatter/lint quickfixes for grammar sharp edges.
+  - Done (2026-02-14): Add formatter/lint quickfixes for grammar sharp edges.
     Auto-fix declaration separators (`;`), placeholder misuse context hints, and
     labeled-argument mistakes (`x~`/`y?`) where deterministic rewrites exist.
   - P2: Split backend capability errors from language-level errors.

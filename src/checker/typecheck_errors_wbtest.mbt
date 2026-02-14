@@ -22,3 +22,18 @@ test "trait overlap diagnostic carries openness code" {
   assert_true(diag.message.contains("[TROP003]"))
   assert_true(diag.message.contains("overlapping impl: Eq"))
 }
+
+///|
+test "placeholder bad-call diagnostic carries usage hint" {
+  let diag = TypeError::BadCall(
+    message="placeholder _ can only be used in function arguments",
+    span=test_span_typecheck_errors(),
+  ).diagnostic()
+  match diag.hint {
+    Some(hint) => {
+      assert_true(hint.contains("map(xs, _ + 1)"))
+      assert_true(hint.contains("(x) ->"))
+    }
+    None => fail("expected placeholder usage hint")
+  }
+}

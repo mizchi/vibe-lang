@@ -232,6 +232,156 @@ pub fn normalize_format_source_text(source : String) -> Result[String, String] {
 }
 
 ///|
+fn normalize_next_non_trivia_token_index(
+  tokens : Array[@parser.Token],
+  start : Int,
+) -> Int? {
+  let mut i = start
+  while i < tokens.length() {
+    if not(@parser.is_trivia(tokens[i].kind())) {
+      return Some(i)
+    }
+    i += 1
+  }
+  None
+}
+
+///|
+fn normalize_trim_label_arg_suffix(label : String) -> String? {
+  let chars = label.to_array()
+  if chars.length() <= 1 {
+    return None
+  }
+  let last = chars[chars.length() - 1]
+  if last != '~' && last != '?' {
+    return None
+  }
+  let out = StringBuilder::new()
+  for i in 0..<(chars.length() - 1) {
+    out.write_char(chars[i])
+  }
+  let base = out.to_string()
+  if base.is_empty() {
+    None
+  } else {
+    Some(base)
+  }
+}
+
+///|
+fn normalize_kind_can_start_call(kind : @cst.SyntaxKind?) -> Bool {
+  match kind {
+    Some(k) =>
+      k == @parser.name() ||
+      k == @parser.rparen() ||
+      k == @parser.rbracket() ||
+      k == @parser.rbrace() ||
+      k == @parser.int_lit() ||
+      k == @parser.string_lit() ||
+      k == @parser.string_interp_lit() ||
+      k == @parser.char_lit() ||
+      k == @parser.float_lit() ||
+      k == @parser.bool_lit()
+    None => false
+  }
+}
+
+///|
+fn normalize_apply_grammar_quickfixes(source : String) -> String {
+  let tokens = @parser.tokenize(source)
+  if tokens.length() == 0 {
+    return source
+  }
+  let out = StringBuilder::new()
+  let mut cursor = 0
+  let call_paren_stack : Array[Bool] = []
+  let mut prev_non_trivia_kind : @cst.SyntaxKind? = None
+  let mut decl_pending = false
+  let mut decl_brace_depth = 0
+  let mut decl_paren_depth = 0
+  let mut decl_bracket_depth = 0
+  for i, tok in tokens {
+    let kind = tok.kind()
+    let text = tok.text()
+    let width = tok.width()
+    let end = if cursor + width > source.length() {
+      source.length()
+    } else {
+      cursor + width
+    }
+    let raw_text = source.unsafe_substring(start=cursor, end~)
+    let mut rewritten = raw_text
+    let in_decl_block = decl_brace_depth > 0
+    if in_decl_block &&
+      kind == @parser.comma() &&
+      decl_brace_depth == 1 &&
+      decl_paren_depth == 0 &&
+      decl_bracket_depth == 0 {
+      rewritten = ";"
+    }
+    let in_call_args = call_paren_stack.length() > 0 &&
+      call_paren_stack[call_paren_stack.length() - 1]
+    if in_call_args && kind == @parser.name() {
+      match normalize_next_non_trivia_token_index(tokens, i + 1) {
+        Some(next_idx) if tokens[next_idx].kind() == @parser.eq() =>
+          match normalize_trim_label_arg_suffix(text) {
+            Some(base) => rewritten = base
+            None => ()
+          }
+        _ => ()
+      }
+    }
+    out.write_string(rewritten)
+    if decl_brace_depth == 0 {
+      if decl_pending {
+        if kind == @parser.lbrace() {
+          decl_brace_depth = 1
+          decl_paren_depth = 0
+          decl_bracket_depth = 0
+          decl_pending = false
+        } else if kind == @parser.lparen() ||
+          kind == @parser.semicolon() ||
+          kind == @parser.eof() {
+          decl_pending = false
+        }
+      } else if kind == @parser.enum_kw() ||
+        kind == @parser.struct_kw() ||
+        (kind == @parser.name() && text == "suberror") {
+        decl_pending = true
+      }
+    } else if kind == @parser.lbrace() {
+      decl_brace_depth += 1
+    } else if kind == @parser.rbrace() {
+      decl_brace_depth -= 1
+    } else if kind == @parser.lparen() {
+      decl_paren_depth += 1
+    } else if kind == @parser.rparen() {
+      if decl_paren_depth > 0 {
+        decl_paren_depth -= 1
+      }
+    } else if kind == @parser.lbracket() {
+      decl_bracket_depth += 1
+    } else if kind == @parser.rbracket() {
+      if decl_bracket_depth > 0 {
+        decl_bracket_depth -= 1
+      }
+    }
+    if kind == @parser.lparen() {
+      call_paren_stack.push(normalize_kind_can_start_call(prev_non_trivia_kind))
+    } else if kind == @parser.rparen() {
+      if call_paren_stack.length() > 0 {
+        let _ = call_paren_stack.pop()
+      }
+    }
+    if not(@parser.is_trivia(kind)) {
+      prev_non_trivia_kind = Some(kind)
+    }
+    cursor = end
+  }
+  out.to_string()
+}
+
+///|
 fn NormalizeEngine::new() -> NormalizeEngine {
   let db = @ripple.Database::new()
   let rt = db.runtime()
@@ -531,7 +681,8 @@ fn normalize_node_contains_kind(
 
 ///|
 fn normalize_source_text_flat(source : String) -> Result[String, String] {
-  let ast = @parser.parse_ast(source) catch {
+  let quickfixed_source = normalize_apply_grammar_quickfixes(source)
+  let ast = @parser.parse_ast(quickfixed_source) catch {
     e => return Err("normalize: parse failed: " + e.to_string())
   }
   let optimized = normalize_optimize_module(ast)
@@ -545,7 +696,7 @@ fn normalize_source_text_flat(source : String) -> Result[String, String] {
   })
   let rendered = match
     normalize_render_source(
-      source,
+      quickfixed_source,
       sorted,
       optimized.rewritten_exprs,
       inferred_annotations,

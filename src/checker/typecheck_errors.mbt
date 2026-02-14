@@ -182,7 +182,7 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         stage: "type",
         message: format_bad_call(message),
         span: Some(span),
-        hint: None,
+        hint: bad_call_hint(message),
         note: None,
       }
     TypeError::PropertyAccessAmbiguous(
@@ -292,6 +292,7 @@ fn format_bad_call(message : String) -> String {
   match message {
     "missing positional args" => "not enough arguments"
     "too many positional args" => "too many arguments"
+    "placeholder _ can only be used in function arguments" => message
     _ =>
       if message.has_prefix("unknown label: ") ||
         message.has_prefix("duplicate label: ") ||
@@ -300,6 +301,17 @@ fn format_bad_call(message : String) -> String {
       } else {
         "unknown function: `" + message + "`"
       }
+  }
+}
+
+///|
+fn bad_call_hint(message : String) -> String? {
+  if message == "placeholder _ can only be used in function arguments" {
+    Some(
+      "use `_` only in call arguments (e.g. `map(xs, _ + 1)`), or rewrite as an explicit lambda `(x) -> ...`",
+    )
+  } else {
+    None
   }
 }
 

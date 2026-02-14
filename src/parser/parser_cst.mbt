@@ -9,6 +9,75 @@ suberror ParseError {
 } derive(Show, Eq)
 
 ///|
+fn parse_error_separator_name(expected : String) -> String? {
+  let prefix = "; ("
+  if not(expected.has_prefix(prefix)) || not(expected.has_suffix(")")) {
+    return None
+  }
+  if expected.length() <= prefix.length() + 1 {
+    return None
+  }
+  Some(
+    expected.unsafe_substring(start=prefix.length(), end=expected.length() - 1),
+  )
+}
+
+///|
+fn parse_error_trim_label_suffix(label : String) -> String? {
+  let chars = label.to_array()
+  if chars.length() <= 1 {
+    return None
+  }
+  let last = chars[chars.length() - 1]
+  if last != '~' && last != '?' {
+    return None
+  }
+  let out = StringBuilder::new()
+  for i in 0..<(chars.length() - 1) {
+    out.write_char(chars[i])
+  }
+  let base = out.to_string()
+  if base.is_empty() {
+    None
+  } else {
+    Some(base)
+  }
+}
+
+///|
+fn parse_error_unexpected_token_hint(
+  expected : String,
+  got : String,
+) -> String? {
+  let got_trimmed = got.trim().to_string()
+  if got_trimmed == "," {
+    match parse_error_separator_name(expected) {
+      Some(separator_name) =>
+        return Some(
+          "replace `,` with `;` for " +
+          separator_name +
+          " (formatter can apply this rewrite automatically)",
+        )
+      None => ()
+    }
+  }
+  if expected == "label" {
+    match parse_error_trim_label_suffix(got_trimmed) {
+      Some(base) =>
+        return Some(
+          "call-site labels use `" +
+          base +
+          " = ...`; keep suffix forms (`" +
+          got_trimmed +
+          "`) for function parameter declarations only",
+        )
+      None => ()
+    }
+  }
+  None
+}
+
+///|
 pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
   match self {
     ParseError::UnexpectedToken(expected~, got~, span~) => {
@@ -26,7 +95,7 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
         stage: "parse",
         message: "expected " + expected + ", got " + got_display,
         span: Some(span),
-        hint: None,
+        hint: parse_error_unexpected_token_hint(expected, got),
         note: None,
       }
     }
