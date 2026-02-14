@@ -128,7 +128,9 @@ fn print_usage() -> Unit {
   println(
     "  save <file>                 save module to content-addressed store",
   )
-  println("  fetch <file>                resolve imports and write index.lock")
+  println(
+    "  fetch <file>                resolve imports and sync lock payload (index.lock + index.vdb)",
+  )
   println("  update-lock <file>          alias for fetch")
   println(
     "  explain-import <file>       visualize import ref normalization and lock lookup",
@@ -4308,9 +4310,11 @@ fn fetch_cmd(args : Array[String]) -> Unit {
   }
   let updated_lock = sync_prelude_to_codebase(entry, path_locked)
   println(
-    "updated index.lock: " +
+    "updated lock refs: " +
     lock_path +
-    " (" +
+    " + " +
+    @codebase.resolve_index_root(entry) +
+    "/index.vdb (lock payload, " +
     updated_lock.path_refs.length().to_string() +
     " path refs)",
   )

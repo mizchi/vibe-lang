@@ -447,6 +447,71 @@ test "codebase load_lock_data falls back to index.lock when index.vdb has no loc
 }
 
 ///|
+test "codebase write_lock_data mirrors lock payload into index.vdb" {
+  let root = make_temp_dir("write_lock_sync_vdb")
+  let entry = root + "/main.vibe"
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let lock_path = lock_file_path(entry)
+  write_file(
+    root + "/index.vdb",
+    "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n",
+  )
+  let path_refs : Map[String, String] = {}
+  path_refs[entry_norm] = "from_lock_write"
+  let lock = LockData::new_with_meta(
+    path_refs,
+    { "main": "bbbb" },
+    { "std/prelude": "cccc" },
+    {},
+    {},
+  )
+  match write_lock_data(lock_path, lock) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let vdb_source = @os_fs.read_file_to_string(root + "/index.vdb") catch {
+    e => fail("read index.vdb failed: " + e.to_string())
+  }
+  let vdb_json : Json = @json.parse(vdb_source) catch {
+    e => fail("parse index.vdb failed: " + e.to_string())
+  }
+  match vdb_json {
+    Json::Object(vdb_obj) => {
+      match vdb_obj.get("graph_head") {
+        Some(Json::String(hash)) =>
+          assert_eq(hash, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        _ => fail("expected graph_head to be preserved")
+      }
+      match vdb_obj.get("lock") {
+        Some(Json::Object(lock_obj)) =>
+          match lock_obj.get("path") {
+            Some(Json::Object(path_obj)) =>
+              match path_obj.get("./main.vibe") {
+                Some(Json::String(hash)) => assert_eq(hash, "from_lock_write")
+                _ => fail("expected relative path lock payload in index.vdb")
+              }
+            _ => fail("expected lock.path object")
+          }
+        _ => fail("expected lock payload in index.vdb")
+      }
+    }
+    _ => fail("index.vdb must be object")
+  }
+  @os_fs.remove_file(lock_path) catch {
+    e => fail("remove index.lock failed: " + e.to_string())
+  }
+  let loaded = match load_lock_data(lock_path) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  match loaded.path_refs.get(entry_norm) {
+    Some(hash) => assert_eq(hash, "from_lock_write")
+    None => fail("expected path ref from index.vdb lock payload")
+  }
+  remove_if_exists(root)
+}
+
+///|
 test "codebase update_lock_path_refs rejects imports outside index root" {
   let root = make_temp_dir("root_guard")
   let outside_name = "vibe_codebase_test_outside_guard"

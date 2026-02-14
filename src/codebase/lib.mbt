@@ -1190,6 +1190,50 @@ fn parse_lock_data_from_index_vdb(
 }
 
 ///|
+fn read_index_vdb_object_with_fs(
+  path : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[Map[String, Json], String] {
+  let obj : Map[String, Json] = {}
+  if not(@io.path_exists_with(fs, path)) {
+    return Ok(obj)
+  }
+  let source = match @io.read_string_with(fs, path) {
+    Ok(v) => v
+    Err(err) => return Err("failed to read index.vdb: " + err)
+  }
+  let trimmed = source.trim().to_string()
+  if trimmed.length() == 0 {
+    return Ok(obj)
+  }
+  let parsed : Json = @json.parse(trimmed) catch {
+    e => return Err("index.vdb: invalid JSON: " + e.to_string())
+  }
+  match parsed {
+    Json::Object(current) => {
+      for key, value in current {
+        obj[key] = value
+      }
+      Ok(obj)
+    }
+    _ => Err("index.vdb: top-level JSON must be an object")
+  }
+}
+
+///|
+fn write_index_vdb_object_with_fs(
+  path : String,
+  obj : Map[String, Json],
+  fs : &@io.FileSystemAdapter,
+) -> Result[Unit, String] {
+  match @io.write_string_with(fs, path, Json::object(obj).stringify() + "\n") {
+    Ok(_) => ()
+    Err(err) => return Err("failed to write index.vdb: " + err)
+  }
+  Ok(())
+}
+
+///|
 fn write_json_string_literal(text : String, buf : StringBuilder) -> Unit {
   buf.write_char('"')
   for c in text {
@@ -1320,6 +1364,26 @@ fn lock_data_to_json(lock : LockData, lock_base_dir : String) -> String {
 }
 
 ///|
+fn lock_data_to_json_object(
+  lock : LockData,
+  lock_base_dir : String,
+) -> Map[String, Json] {
+  let obj : Map[String, Json] = {}
+  let parsed : Json = @json.parse(lock_data_to_json(lock, lock_base_dir)) catch {
+    _ => return obj
+  }
+  match parsed {
+    Json::Object(current) => {
+      for key, value in current {
+        obj[key] = value
+      }
+      obj
+    }
+    _ => obj
+  }
+}
+
+///|
 pub fn lock_file_path_with_fs(
   entry : String,
   fs : &@io.FileSystemAdapter,
@@ -1410,6 +1474,16 @@ pub fn write_lock_data_with_fs(
   match @io.write_string_with(fs, lock_path, content) {
     Ok(_) => ()
     Err(err) => return Err("failed to write index.lock: " + err)
+  }
+  let index_vdb_path = base_dir + "/index.vdb"
+  let index_vdb_obj = match read_index_vdb_object_with_fs(index_vdb_path, fs) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  index_vdb_obj["lock"] = Json::object(lock_data_to_json_object(lock, base_dir))
+  match write_index_vdb_object_with_fs(index_vdb_path, index_vdb_obj, fs) {
+    Ok(_) => ()
+    Err(err) => return Err(err)
   }
   Ok(())
 }
