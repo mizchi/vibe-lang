@@ -113,6 +113,7 @@ test "vibe integration import alias forwards generic helper" {
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
   let visited : Map[String, Bool] = {}
   let path_to_hash : Map[String, String] = {}
   register_import_modules(rt, db, "main", visited, path_to_hash)
@@ -126,6 +127,83 @@ test "vibe integration import alias forwards generic helper" {
   match result.last {
     Some(@core.Value::Int(v)) => assert_eq(v, 5)
     _ => fail("expected Int(5)")
+  }
+}
+
+///|
+test "vibe integration type namespace import auto-forwards receiver-first function" {
+  let db = VibeDb::new()
+  let lib_source =
+    #|export enum Maybe[T] { Nope; Yep(T) }
+    #|export let is_yep = [T](value: Maybe[T]) -> Bool {
+    #|  match value {
+    #|    Yep(_) => true,
+    #|    _ => false
+    #|  }
+    #|}
+  let main_source = "use ./lib.vibe { Maybe }\nYep(1).is_yep()"
+  db.set_source("./lib.vibe", lib_source)
+  db.set_source("main", main_source)
+  db.set_source("probe", "use ./lib.vibe { Maybe }\nlet x = 1")
+  let imported_env = db.types("./lib.vibe")
+  assert_true(imported_env.get_scheme("is_yep") is Some(_))
+  let probe_env = db.types("probe")
+  assert_true(probe_env.get_scheme("Maybe::is_yep") is Some(_))
+  let main_env = db.types("main")
+  assert_true(main_env.get_scheme("Maybe::is_yep") is Some(_))
+  let probe_compiled = compile_module(db, "probe")
+  let probe_rt = Runtime::new(@capability.CapabilitySet::new())
+  probe_rt.set_type_env(probe_compiled.type_env)
+  let probe_visited : Map[String, Bool] = {}
+  let probe_path_to_hash : Map[String, String] = {}
+  register_import_modules(
+    probe_rt,
+    db,
+    "probe",
+    probe_visited,
+    probe_path_to_hash,
+  )
+  let probe_ast = @core.convert_imports_to_hash(probe_compiled.ast, fn(path) {
+    probe_path_to_hash.get(path)
+  })
+  for name, target in probe_compiled.aliases {
+    probe_rt.set_alias(name, target)
+  }
+  let _ = probe_rt.eval_module(probe_ast)
+  assert_true(probe_rt.get("Maybe::is_yep") is Some(@core.Value::Fn(_)))
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true), got: " + result.last.to_string())
+  }
+}
+
+///|
+test "vibe integration raw identifier supports reserved names" {
+  let db = VibeDb::new()
+  let main_source =
+    #|let r#if = 1
+    #|let r#bench = 2
+    #|r#if + r#bench
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected Int(3)")
   }
 }
 
@@ -254,7 +332,7 @@ test "vibe integration export open trait allows external impl" {
 }
 
 ///|
-test "vibe integration trait bound requires explicit trait import" {
+test "vibe integration trait bound works without explicit trait import" {
   let db = VibeDb::new()
   let lib_source =
     #|export open trait Eq
@@ -263,12 +341,21 @@ test "vibe integration trait bound requires explicit trait import" {
   let main_source = "use ./lib.vibe { cmp_eq }\ncmp_eq(\"a\", \"a\")"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
-  let compiled : Result[CompiledModule, CompileError] = try? compile_module(
-    db, "main",
-  )
-  match compiled {
-    Ok(_) => fail("expected unknown trait import error")
-    Err(err) => assert_true(err.to_string().contains("Eq"))
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Bool(v)) => assert_true(v)
+    _ => fail("expected Bool(true)")
   }
 }
 

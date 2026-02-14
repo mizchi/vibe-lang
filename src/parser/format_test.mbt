@@ -294,6 +294,25 @@ test "vibe parse/format map keyword is contextual in identifier positions" {
 }
 
 ///|
+test "vibe parse/format raw identifier keeps reserved-name bindings" {
+  let input =
+    #|let r#bench = 1
+    #|let r#if = 2
+    #|r#bench + r#if
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] raw identifier failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] raw identifier format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
 test "vibe parse/format loop expression is parser-equivalent" {
   let input =
     #|let mut i = 0

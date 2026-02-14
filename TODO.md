@@ -4,6 +4,28 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 
 ## Next Up (Priority Order)
 
+- Language improvement roadmap from `vibe/x/args` + `vibe/std` review (2026-02-14):
+  - [x] 1. Stabilize cross-module trait import/export resolution. (Done: 2026-02-14)
+    Remove caller-side trait re-declaration requirements for trait-bounded APIs.
+  - [x] 2. Add reserved-keyword escape/raw identifier support. (Done: 2026-02-14)
+    Enable canonical API names like `map` without `map_opt` / `map_ok` detours.
+  - [x] 3. Reduce function-to-type-member forwarding boilerplate. (Done: 2026-02-14)
+    Provide language-level sugar or auto-forwarding for `Type::method` wrappers.
+  - [ ] 4. Add linear-time array construction primitives.
+    Introduce `ArrayBuilder`/`push`-style APIs to avoid repeated `array_concat`.
+  - [ ] 5. Introduce first-class `Char` and char literals.
+    Reduce single-character `String`/`Int` ambiguity in parser/std code.
+  - [ ] 6. Add `String` / `Bytes` builder APIs.
+    Avoid repeated `string_concat` patterns in loops and parsers.
+  - [ ] 7. Improve pattern-match ergonomics for sequence-heavy tests.
+    Add concise match/assert syntax to reduce deep nested `match` blocks.
+  - [ ] 8. Add `loop` expression with explicit tail-call optimization guarantees.
+    Keep recursive iteration code performant and predictable.
+  - [ ] 9. Revisit Int model portability (backend-independent integer surface).
+    Move toward 64-bit-safe semantics or explicit typed-int alternatives.
+  - [ ] 10. Add import/re-export simplification for forwarding modules.
+    Support `export use`-style re-export to shrink facade boilerplate.
+
 - Language UX hard-point triage (spec/examples review):
   - Done (2026-02-13): Add desugar ambiguity diagnostics for postfix/property
     access.

@@ -53,6 +53,33 @@ fn is_ident_extra(c : Char) -> Bool {
 }
 
 ///|
+fn parse_raw_identifier(text : String) -> String? {
+  if text.length() < 3 {
+    return None
+  }
+  if text[0] != 'r' || text[1] != '#' {
+    return None
+  }
+  let body = text.unsafe_substring(start=2, end=text.length())
+  if body.length() == 0 {
+    return None
+  }
+  let first = body[0].to_int().unsafe_to_char()
+  if not(is_alpha(first)) {
+    return None
+  }
+  let mut i = 1
+  while i < body.length() {
+    let c = body[i].to_int().unsafe_to_char()
+    if not(is_alnum(c) || c == '_') {
+      return None
+    }
+    i += 1
+  }
+  Some(body)
+}
+
+///|
 fn is_ident_delim(c : Char) -> Bool {
   is_whitespace_char(c) ||
   c == '\n' ||
@@ -254,6 +281,11 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
       }
       if is_alpha(c) {
         let text = self.lex_ident()
+        match parse_raw_identifier(text) {
+          Some(raw_name) =>
+            return Token::new_with_width(name(), raw_name, text.length())
+          None => ()
+        }
         let kind = match text {
           "let" => let_kw()
           "import" => import_kw()

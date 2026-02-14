@@ -198,6 +198,25 @@ pub fn Runtime::eval_module(
                   }
                 }
               }
+              // Auto-forward receiver-first exported functions as namespace members.
+              // Runtime side uses the type environment prepared at compile time
+              // (`Runtime::run_compiled` sets it) to mirror type import behavior.
+              for exported_name, _ in exports {
+                if exported_name.contains("::") {
+                  continue
+                }
+                if exported_name == source_root {
+                  continue
+                }
+                let target_name = target_prefix + exported_name
+                if not(should_bind_runtime_value(item, target_name)) {
+                  continue
+                }
+                if self.type_env.get(target_name) is Some(_) {
+                  imported_any = true
+                  bind_import(exported_name, target_name)
+                }
+              }
               imported_any
             }
             for item in spec.items {

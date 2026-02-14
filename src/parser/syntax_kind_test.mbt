@@ -115,6 +115,23 @@ test "lexer treats bench as keyword" {
 }
 
 ///|
+test "lexer accepts raw identifier for reserved keyword" {
+  let tokens = tokenize("let r#bench = 1\nr#bench")
+  if tokens[2].kind() != name() {
+    fail("r#bench binding must lex as name")
+  }
+  if tokens[2].text() != "bench" {
+    fail("raw identifier text should be unescaped to bench")
+  }
+  if tokens[8].kind() != name() {
+    fail("r#bench use must lex as name")
+  }
+  if tokens[8].text() != "bench" {
+    fail("raw identifier use text should be unescaped to bench")
+  }
+}
+
+///|
 test "lexer treats use as keyword and keeps slash namespace tokens" {
   let use_tokens = tokenize("use /vibe/std/string")
   if use_tokens[0].kind() != use_kw() {

@@ -396,9 +396,54 @@ fn token_text_for_output(tok : @cst.SyntaxToken) -> String {
     quote_string_interp_literal(tok.text())
   } else if kind == char_lit() {
     quote_char_literal(tok.text())
+  } else if kind == name() {
+    let trimmed = trim_ascii_whitespace(tok.text())
+    if should_escape_identifier_text(trimmed) {
+      "r#" + trimmed
+    } else {
+      trimmed
+    }
   } else {
     trim_ascii_whitespace(tok.text())
   }
+}
+
+///|
+fn should_escape_identifier_text(text : String) -> Bool {
+  text == "let" ||
+  text == "import" ||
+  text == "use" ||
+  text == "declare" ||
+  text == "test" ||
+  text == "if" ||
+  text == "else" ||
+  text == "match" ||
+  text == "do" ||
+  text == "try" ||
+  text == "catch" ||
+  text == "record" ||
+  text == "map" ||
+  text == "fn" ||
+  text == "rec" ||
+  text == "type" ||
+  text == "enum" ||
+  text == "while" ||
+  text == "loop" ||
+  text == "bench" ||
+  text == "mut" ||
+  text == "raise" ||
+  text == "await" ||
+  text == "yield" ||
+  text == "break" ||
+  text == "continue" ||
+  text == "export" ||
+  text == "from" ||
+  text == "as" ||
+  text == "struct" ||
+  text == "trait" ||
+  text == "impl" ||
+  text == "true" ||
+  text == "false"
 }
 
 ///|

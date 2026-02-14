@@ -236,6 +236,147 @@ fn import_trait_impls_for_type(
 }
 
 ///|
+fn collect_scheme_trait_bounds(scheme : @checker.TypeScheme) -> Array[String] {
+  let out : Array[String] = []
+  for _, bounds in scheme.trait_bounds {
+    for bound in bounds {
+      if not(array_has_string(out, bound)) {
+        out.push(bound)
+      }
+    }
+  }
+  out
+}
+
+///|
+fn import_trait_dependency_for_scheme(
+  env : @checker.TypeEnv,
+  imported_env : @checker.TypeEnv,
+  source_trait_name : String,
+  trait_aliases : Map[String, String],
+  exported_names : Map[String, Bool],
+  visiting : Map[String, Bool],
+) -> Unit {
+  if visiting.contains(source_trait_name) {
+    return
+  }
+  visiting[source_trait_name] = true
+  if not(imported_env.has_trait(source_trait_name)) {
+    return
+  }
+  if not(exported_names.contains(source_trait_name)) {
+    return
+  }
+  let local_trait_name = match trait_aliases.get(source_trait_name) {
+    Some(alias_name) => alias_name
+    None => source_trait_name
+  }
+  let source_supertraits = imported_env.trait_supertraits(source_trait_name)
+  for supertrait in source_supertraits {
+    import_trait_dependency_for_scheme(
+      env, imported_env, supertrait, trait_aliases, exported_names, visiting,
+    )
+  }
+  let local_supertraits = resolve_imported_trait_supertraits(
+    source_trait_name, local_trait_name, source_supertraits, trait_aliases,
+  )
+  if not(env.has_trait(local_trait_name)) {
+    env.import_trait(
+      local_trait_name,
+      imported_env.trait_is_open(source_trait_name),
+      local_supertraits,
+    )
+  }
+  for impl_def in imported_env.trait_impls_for(source_trait_name) {
+    maybe_add_trait_impl(env, local_trait_name, impl_def)
+  }
+}
+
+///|
+fn import_scheme_trait_dependencies(
+  env : @checker.TypeEnv,
+  imported_env : @checker.TypeEnv,
+  scheme : @checker.TypeScheme,
+  trait_aliases : Map[String, String],
+  exported_names : Map[String, Bool],
+) -> Unit {
+  let required_traits = collect_scheme_trait_bounds(scheme)
+  let visiting : Map[String, Bool] = {}
+  for trait_name in required_traits {
+    import_trait_dependency_for_scheme(
+      env, imported_env, trait_name, trait_aliases, exported_names, visiting,
+    )
+  }
+}
+
+///|
+fn variant_member_receiver_root_name(
+  imported_env : @checker.TypeEnv,
+  fields : Map[String, @core.Type],
+) -> String? {
+  let mut found : String? = None
+  for enum_name in imported_env.enum_names() {
+    match imported_env.get_enum_def(enum_name) {
+      Some(enum_def) => {
+        if enum_def.ctors.length() != fields.length() {
+          continue
+        }
+        let mut all_match = true
+        for ctor in enum_def.ctors {
+          if not(fields.contains(ctor.name)) {
+            all_match = false
+            break
+          }
+        }
+        if all_match {
+          match found {
+            None => found = Some(enum_name)
+            Some(_) => return None
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  found
+}
+
+///|
+fn type_member_receiver_root_name(
+  imported_env : @checker.TypeEnv,
+  ty : @core.Type,
+) -> String? {
+  match ty {
+    @core.Type::Int => Some("Int")
+    @core.Type::Float => Some("Float")
+    @core.Type::Double => Some("Double")
+    @core.Type::Bool => Some("Bool")
+    @core.Type::String => Some("String")
+    @core.Type::Path => Some("Path")
+    @core.Type::Named(name~, ..) => Some(name)
+    @core.Type::Variant(fields) =>
+      variant_member_receiver_root_name(imported_env, fields)
+    _ => None
+  }
+}
+
+///|
+fn scheme_receiver_root_name(
+  imported_env : @checker.TypeEnv,
+  scheme : @checker.TypeScheme,
+) -> String? {
+  match scheme.ty {
+    @core.Type::Func(params~, ..) =>
+      if params.length() == 0 {
+        None
+      } else {
+        type_member_receiver_root_name(imported_env, params[0].ty)
+      }
+    _ => None
+  }
+}
+
+///|
 fn hash_source_key(hash : String) -> String {
   "__hash__/" + hash
 }
@@ -1175,6 +1316,9 @@ pub fn VibeDb::new() -> VibeDb {
                     if item.kind == @core.ImportKind::Module {
                       match imported_env.get_scheme(source_name) {
                         Some(scheme) => {
+                          import_scheme_trait_dependencies(
+                            env, imported_env, scheme, trait_aliases, exported_names,
+                          )
                           if can_bind_import_value(target_name, span) {
                             env.set_scheme(target_name, scheme)
                           }
@@ -1206,6 +1350,9 @@ pub fn VibeDb::new() -> VibeDb {
                     if import_item_accepts_value(item, source_name) {
                       match imported_env.get_scheme(source_name) {
                         Some(scheme) => {
+                          import_scheme_trait_dependencies(
+                            env, imported_env, scheme, trait_aliases, exported_names,
+                          )
                           if can_bind_import_value(target_name, span) {
                             env.set_scheme(target_name, scheme)
                           }
@@ -1254,6 +1401,9 @@ pub fn VibeDb::new() -> VibeDb {
                             match imported_env.get_scheme(ctor.name) {
                               Some(scheme) =>
                                 if can_bind_import_value(ctor.name, span) {
+                                  import_scheme_trait_dependencies(
+                                    env, imported_env, scheme, trait_aliases, exported_names,
+                                  )
                                   env.set_scheme(ctor.name, scheme)
                                 }
                               None => ()
@@ -1315,6 +1465,41 @@ pub fn VibeDb::new() -> VibeDb {
                         if not(import_symbol(item, exported_name, target_name)) {
                           report_kind_mismatch(item, exported_name)
                         }
+                      }
+                    }
+                    // Auto-forward receiver-first exported functions as
+                    // namespace members so `use { Type }` can activate
+                    // method-style calls without manual `Type::...` wrappers.
+                    for exported_name, _ in exported_names {
+                      if exported_name.contains("::") {
+                        continue
+                      }
+                      if exported_name == source_root {
+                        continue
+                      }
+                      let target_name = target_prefix + exported_name
+                      if not(import_item_accepts_value(item, target_name)) {
+                        continue
+                      }
+                      if imported_value_decl_spans.contains(target_name) {
+                        continue
+                      }
+                      match imported_env.get_scheme(exported_name) {
+                        Some(scheme) =>
+                          match scheme_receiver_root_name(imported_env, scheme) {
+                            Some(recv_root) =>
+                              if recv_root == source_root {
+                                import_scheme_trait_dependencies(
+                                  env, imported_env, scheme, trait_aliases, exported_names,
+                                )
+                                if can_bind_import_value(target_name, span) {
+                                  env.set_scheme(target_name, scheme)
+                                  imported_any = true
+                                }
+                              }
+                            None => ()
+                          }
+                        None => ()
                       }
                     }
                     imported_any

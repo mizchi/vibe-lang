@@ -176,6 +176,12 @@ Discard binding (`let _ = ...`):
 - `let _ = ...` can be used multiple times in the same scope.
 - `let rec _ = ...` is rejected.
 
+Raw identifier:
+- `r#<ident>` escapes reserved keywords and forces identifier interpretation.
+- Example: `let r#if = 1`, `let r#bench = 2`.
+- Internally the bound name is normalized to `<ident>` (`if`, `bench` in the
+  examples).
+
 ## Labeled arguments (MoonBit-style)
 
 Definition:
@@ -403,6 +409,9 @@ Rules:
   `std/int` become resolution candidates.
 - `use <module-ref> { Int::name }` imports only that member from that
   `<module-ref>`.
+- Namespace activation (`use <module-ref> { Int }`) also auto-forwards
+  receiver-first exported functions as `Int::name` when the first argument type
+  root resolves to `Int` (including enum-variant-shaped receiver types).
 - Overwrite is forbidden:
   if an already-bound namespace or symbol key (`Int::` or `Int::name`) is
   bound to a different target module, it is a compile error.
@@ -524,8 +533,11 @@ Rules:
 - Overlapping impl rejection emits `[TROP003]`.
 - Supertrait satisfaction is transitive (`impl Ord for T` also satisfies `Eq`
   when `trait Ord: Eq`).
-- Trait imports are explicit (`use ... { Eq }`), and only exported
-  traits can be imported across modules.
+- Trait imports are explicit when directly referring to trait names
+  (`use ... { Eq }`, `trait Eq`, `impl Eq ...`), and only exported traits can be
+  imported across modules.
+- For imported value symbols with trait-bounded schemes, required exported traits
+  are auto-imported for bound resolution.
 - Import renaming preserves canonical source identity for supertrait checks
   (`Eq as MyEq` keeps relation to canonical `Eq`).
 
