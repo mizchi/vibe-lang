@@ -121,9 +121,15 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   (match arm pattern binding kind `I32` → `I64` for non-js-string backend).
   `consumer_option_core` `unsupported -> wasm 1662`,
   `consumer_option_extra` `unsupported -> wasm 1792` (both with DCE).
-  `consumer_double_core` / `consumer_double_rounding` remain unsupported
-  (Double type `BoxedF64` kind resolution in `resolve_numeric_kind`).
-  Importer totals: 3452 bytes (2/4 compiling, 2/4 unsupported).
+  Progress (2026-02-15): fixed wasm backend Double/closure support for
+  62-bit tagged values. Seven codegen bugs repaired: `value_kind_key_char`
+  sig-key collision, closure env i32→i64 storage, `int_to_double`/
+  `double_to_int` i32 truncation, `emit_unbox_f64/f32` temp local type,
+  Block handler timing for `declare export let` wrappers, capture kind
+  fallbacks.
+  `consumer_double_core` `unsupported -> wasm 3251`,
+  `consumer_double_rounding` `unsupported -> wasm 7521`.
+  Importer totals: 14226 bytes (4/4 compiling).
   Examples totals: 41495 bytes (no-dce baseline unchanged).
 
 ### KPI Benchmark (2026-02-15)
@@ -144,8 +150,8 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 |------|------|-------|
 | consumer_option_core | wasm | 1662 |
 | consumer_option_extra | wasm | 1792 |
-| consumer_double_core | unsupported | - |
-| consumer_double_rounding | unsupported | - |
+| consumer_double_core | wasm | 3251 |
+| consumer_double_rounding | wasm | 7521 |
 
 **Examples top 5 (wasm-no-dce):**
 
