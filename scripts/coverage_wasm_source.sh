@@ -72,7 +72,7 @@ if [ "$RUN_TESTS" = "1" ]; then
 fi
 
 echo "[wasm source coverage] compile: mode=$MODE no_dce=$NO_DCE run_tests=$RUN_TESTS allow_trap=$ALLOW_TRAP entry=$ENTRY_PATH"
-VIBE_TEST_COVERAGE=1 moon run src/cmd/vibe/main.mbt --target native -- "${compile_args[@]}"
+XSH_TEST_COVERAGE=1 VIBE_TEST_COVERAGE=1 moon run src/cmd/vibe/main.mbt --target native -- "${compile_args[@]}"
 
 if [ ! -f "$cov_map_path" ]; then
   echo "[wasm source coverage] missing coverage map: $cov_map_path" >&2

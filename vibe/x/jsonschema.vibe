@@ -1,0 +1,108 @@
+export enum Json {
+  JNull;
+  JBool(Bool);
+  JNum(Double);
+  JStr(String);
+  JArr(Array[Json]);
+  JObj(Map[Json])
+}
+
+export enum JsonSchema {
+  SAny;
+  SNull;
+  SBool;
+  SNumber;
+  SString;
+  SArray(JsonSchema);
+  SObject(Array[String], Array[(String, JsonSchema)]);
+  SOneOf(Array[JsonSchema])
+}
+
+export let rec validate = (schema: JsonSchema, value: Json) -> Bool {
+  let rec validate_array_items = (
+    xs: Array[Json],
+    item_schema: JsonSchema,
+    i: Int,
+  ) -> Bool {
+    if i >= array_length(xs) {
+      true
+    } else if validate(item_schema, array_get(xs, i)) {
+      validate_array_items(xs, item_schema, i + 1)
+    } else {
+      false
+    }
+  }
+
+  let rec validate_required = (
+    obj: Map[Json],
+    required: Array[String],
+    i: Int,
+  ) -> Bool {
+    if i >= array_length(required) {
+      true
+    } else if map_has_key(obj, array_get(required, i)) {
+      validate_required(obj, required, i + 1)
+    } else {
+      false
+    }
+  }
+
+  let rec validate_properties = (
+    obj: Map[Json],
+    properties: Array[(String, JsonSchema)],
+    i: Int,
+  ) -> Bool {
+    if i >= array_length(properties) {
+      true
+    } else {
+      let (key, prop_schema) = array_get(properties, i)
+      if map_has_key(obj, key) {
+        if validate(prop_schema, map_get(obj, key)) {
+          validate_properties(obj, properties, i + 1)
+        } else {
+          false
+        }
+      } else {
+        validate_properties(obj, properties, i + 1)
+      }
+    }
+  }
+
+  let rec validate_one_of = (
+    schemas: Array[JsonSchema],
+    i: Int,
+  ) -> Bool {
+    if i >= array_length(schemas) {
+      false
+    } else if validate(array_get(schemas, i), value) {
+      true
+    } else {
+      validate_one_of(schemas, i + 1)
+    }
+  }
+
+  match schema {
+    SAny => true,
+    SNull => match value { JNull => true, _ => false },
+    SBool => match value { JBool(_) => true, _ => false },
+    SNumber => match value { JNum(_) => true, _ => false },
+    SString => match value { JStr(_) => true, _ => false },
+    SArray(item_schema) =>
+      match value {
+        JArr(xs) => validate_array_items(xs, item_schema, 0),
+        _ => false
+      },
+    SObject(required, properties) =>
+      match value {
+        JObj(obj) =>
+          validate_required(obj, required, 0) &&
+          validate_properties(obj, properties, 0),
+        _ => false
+      },
+    SOneOf(schemas) => validate_one_of(schemas, 0)
+  }
+}
+
+export let JsonSchema::validate = (schema: JsonSchema, value: Json) -> Bool {
+  validate(schema, value)
+}

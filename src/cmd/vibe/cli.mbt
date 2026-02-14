@@ -4442,19 +4442,35 @@ fn collect_symbols_rows(
     Ok(v) => v
     Err(err) => return Err(err)
   }
+  let index_defs : Array[WriteFileDef] = []
+  for _, def in index.defs {
+    index_defs.push(write_file_def_from_index_def(def))
+  }
   let scratch_names : Map[String, Bool] = {}
   for candidate in scratch_candidates {
     scratch_names[candidate.def.name] = true
   }
   let index_names : Map[String, Bool] = {}
-  for _, def in index.defs {
+  for def in index_defs {
     index_names[def.name] = true
   }
   let rows : Array[SymbolsRow] = []
-  for _, def in index.defs {
+  for def in index_defs {
     let key = def.path + "#" + def.name
     let managed = lock.module_refs.contains(key)
-    let status = if scratch_names.contains(def.name) {
+    let mut has_conflicting_scratch = false
+    if scratch_names.contains(def.name) {
+      for candidate in scratch_candidates {
+        if candidate.def.name != def.name {
+          continue
+        }
+        if not(symbols_defs_equivalent(def, candidate.def)) {
+          has_conflicting_scratch = true
+          break
+        }
+      }
+    }
+    let status = if has_conflicting_scratch {
       "shadowed"
     } else if managed {
       "managed"
@@ -4473,6 +4489,21 @@ fn collect_symbols_rows(
     })
   }
   for candidate in scratch_candidates {
+    let mut has_equivalent_index = false
+    if index_names.contains(candidate.def.name) {
+      for def in index_defs {
+        if def.name != candidate.def.name {
+          continue
+        }
+        if symbols_defs_equivalent(def, candidate.def) {
+          has_equivalent_index = true
+          break
+        }
+      }
+    }
+    if has_equivalent_index {
+      continue
+    }
     let status = if index_names.contains(candidate.def.name) {
       "shadowed"
     } else {
@@ -4490,6 +4521,14 @@ fn collect_symbols_rows(
     })
   }
   Ok(rows)
+}
+
+///|
+fn symbols_defs_equivalent(a : WriteFileDef, b : WriteFileDef) -> Bool {
+  a.name == b.name &&
+  a.kind == b.kind &&
+  a.signature == b.signature &&
+  a.module_hash == b.module_hash
 }
 
 ///|

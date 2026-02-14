@@ -30,7 +30,7 @@ check:
 test:
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
-    _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async examples vibe/std vibe/collection vibe/encoding
+    _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async examples vibe/std vibe/collection vibe/encoding vibe/x
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
@@ -63,6 +63,11 @@ coverage-deno:
 # env: VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR
 coverage-wasm-source entry="examples/pattern_coverage.vibe":
     scripts/coverage_wasm_source.sh {{entry}}
+
+# Run source-level WASM coverage for eval sidecar tests (`<db>.tests/<target>_test.vibe`)
+# env: VIBE_EVAL_COVERAGE_DIR, VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR
+coverage-eval-sidecar db target:
+    scripts/coverage_eval_sidecar.sh {{db}} {{target}}
 
 # Run vibe/std coverage from *_test.vibe via wasm source coverage
 # env: VIBE_WASM_STD_COVERAGE_MODES, VIBE_WASM_STD_COVERAGE_MODE, VIBE_WASM_STD_COVERAGE_NO_DCE, VIBE_WASM_STD_COVERAGE_STRICT, VIBE_WASM_STD_COVERAGE_ALLOW_TRAP, VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE, VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE, VIBE_WASM_STD_COVERAGE_FILTER, VIBE_WASM_STD_COVERAGE_EXCLUDE, VIBE_WASM_STD_COVERAGE_MATRIX, VIBE_WASM_STD_COVERAGE_DIR
@@ -188,6 +193,10 @@ bench-kpi *paths:
 # Compare wasm js-string vs wasm gc on string-heavy workload
 bench-string-compare:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_string_compare.sh
+
+# Benchmark experimental jsonschema validator
+bench-jsonschema:
+    moon run --target native src/cmd/vibe/main.mbt -- bench vibe/x/jsonschema_bench.vibe
 
 # String benchmarks (js-string vs wasm-gc)
 bench-string-concat:
