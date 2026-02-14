@@ -600,6 +600,7 @@ pub fn build_symbol_index_for_module(
       | @core.Stmt::Assign(..)
       | @core.Stmt::IndexAssign(..)
       | @core.Stmt::LetPat(..)
+      | @core.Stmt::LetPatElse(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => ()
     }

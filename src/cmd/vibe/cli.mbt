@@ -810,7 +810,8 @@ fn finalize_stmt_is_library_side_effect(stmt : @vibe_core.Stmt) -> Bool {
     @vibe_core.Stmt::Expr(..)
     | @vibe_core.Stmt::Assign(..)
     | @vibe_core.Stmt::IndexAssign(..)
-    | @vibe_core.Stmt::LetPat(..) => true
+    | @vibe_core.Stmt::LetPat(..)
+    | @vibe_core.Stmt::LetPatElse(..) => true
     _ => false
   }
 }

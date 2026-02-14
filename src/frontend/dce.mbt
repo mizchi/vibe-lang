@@ -149,6 +149,7 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
     | @core.Stmt::Assign(..)
     | @core.Stmt::IndexAssign(..)
     | @core.Stmt::LetPat(..)
+    | @core.Stmt::LetPatElse(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..) => (None, refs)
   }
@@ -195,6 +196,12 @@ fn collect_entry_points(
         let _ = pat
         let _ = span
         collect_refs_expr(expr, empty_bound, entries)
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = pat
+        let _ = span
+        collect_refs_expr(expr, empty_bound, entries)
+        collect_refs_block(else_body, empty_bound, entries)
       }
       // Last let binding is an entry point (its value is returned by 'run')
       @core.Stmt::Let(name~, ..) => if is_last { entries[name] = true }
@@ -344,6 +351,7 @@ fn filter_reachable_stmts(
       | @core.Stmt::Assign(..)
       | @core.Stmt::IndexAssign(..)
       | @core.Stmt::LetPat(..)
+      | @core.Stmt::LetPatElse(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => out.push(stmt)
     }
@@ -456,11 +464,25 @@ fn collect_refs_expr(
       collect_refs_expr(cond, bound, refs)
       collect_refs_block(body, bound, refs)
     }
-    @core.Expr::Break(span~) => {
+    @core.Expr::Loop(params~, body~, span~) => {
       let _ = span
+      for param in params {
+        collect_refs_expr(param.init, bound, refs)
+      }
+      collect_refs_block(body, bound, refs)
     }
-    @core.Expr::Continue(span~) => {
+    @core.Expr::Break(value~, span~) => {
       let _ = span
+      match value {
+        Some(e) => collect_refs_expr(e, bound, refs)
+        None => ()
+      }
+    }
+    @core.Expr::Continue(args~, span~) => {
+      let _ = span
+      for arg in args {
+        collect_refs_expr(arg, bound, refs)
+      }
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
@@ -526,6 +548,12 @@ fn collect_refs_block(
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         collect_refs_expr(expr, scope, refs)
+        bind_pattern_names(scope, pat)
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = span
+        collect_refs_expr(expr, scope, refs)
+        collect_refs_block(else_body, scope, refs)
         bind_pattern_names(scope, pat)
       }
       @core.Stmt::Expr(expr~, span~) => {

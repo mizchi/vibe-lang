@@ -156,6 +156,12 @@ fn collect_local_value_decl_spans(
         let _ = span
         collect_pat_bind_names(pat, out)
       }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = expr
+        let _ = else_body
+        let _ = span
+        collect_pat_bind_names(pat, out)
+      }
       _ => ()
     }
   }

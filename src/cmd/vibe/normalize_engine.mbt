@@ -1707,6 +1707,11 @@ fn normalize_count_candidate_refs_stmt(
       normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
       normalize_bind_pattern_names(bound, pat)
     }
+    @vibe_core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
+      normalize_count_candidate_refs_block(else_body, bound, candidates, counts)
+      normalize_bind_pattern_names(bound, pat)
+    }
     @vibe_core.Stmt::Expr(expr~, ..) =>
       normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
     @vibe_core.Stmt::Test(body~, ..) | @vibe_core.Stmt::Bench(body~, ..) =>
@@ -1837,6 +1842,19 @@ fn normalize_count_candidate_refs_expr(
     @vibe_core.Expr::While(cond~, body~, ..) => {
       normalize_count_candidate_refs_expr(cond, bound, candidates, counts)
       normalize_count_candidate_refs_block(body, bound, candidates, counts)
+    }
+    @vibe_core.Expr::Loop(params~, body~, ..) => {
+      let loop_bound = normalize_clone_bool_map(bound)
+      for param in params {
+        normalize_count_candidate_refs_expr(
+          param.init,
+          bound,
+          candidates,
+          counts,
+        )
+        loop_bound[param.name] = true
+      }
+      normalize_count_candidate_refs_block(body, loop_bound, candidates, counts)
     }
     @vibe_core.Expr::Raise(value~, ..) =>
       normalize_count_candidate_refs_expr(value, bound, candidates, counts)
@@ -2569,6 +2587,13 @@ fn normalize_strip_local_type_assert_stmt(
         expr=normalize_strip_local_type_assert_expr(expr),
         span~,
       )
+    @vibe_core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @vibe_core.Stmt::LetPatElse(
+        pat~,
+        expr=normalize_strip_local_type_assert_expr(expr),
+        else_body=normalize_strip_local_type_assert_module(else_body),
+        span~,
+      )
     @vibe_core.Stmt::Test(name~, body~, span~) =>
       @vibe_core.Stmt::Test(
         name~,
@@ -2712,6 +2737,21 @@ fn normalize_strip_local_type_assert_expr(
             body=normalize_strip_local_type_assert_module(body),
             span~,
           )
+        @vibe_core.Expr::Loop(params~, body~, span~) => {
+          let next_params : Array[@vibe_core.LoopParam] = []
+          for param in params {
+            next_params.push(@vibe_core.LoopParam::{
+              name: param.name,
+              init: normalize_strip_local_type_assert_expr(param.init),
+              span: param.span,
+            })
+          }
+          @vibe_core.Expr::Loop(
+            params=next_params,
+            body=normalize_strip_local_type_assert_module(body),
+            span~,
+          )
+        }
         @vibe_core.Expr::Raise(value~, span~) =>
           @vibe_core.Expr::Raise(
             value=normalize_strip_local_type_assert_expr(value),
@@ -3036,6 +3076,14 @@ fn normalize_collect_refs_expr(
       normalize_collect_refs_expr(cond, bound, refs)
       normalize_collect_refs_block(body, bound, refs)
     }
+    @vibe_core.Expr::Loop(params~, body~, ..) => {
+      let loop_bound = normalize_clone_bool_map(bound)
+      for param in params {
+        normalize_collect_refs_expr(param.init, bound, refs)
+        loop_bound[param.name] = true
+      }
+      normalize_collect_refs_block(body, loop_bound, refs)
+    }
     @vibe_core.Expr::Raise(value~, ..) =>
       normalize_collect_refs_expr(value, bound, refs)
   }
@@ -3075,6 +3123,11 @@ fn normalize_collect_refs_block(
       }
       @vibe_core.Stmt::LetPat(pat~, expr~, ..) => {
         normalize_collect_refs_expr(expr, scope, refs)
+        normalize_bind_pattern_names(scope, pat)
+      }
+      @vibe_core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+        normalize_collect_refs_expr(expr, scope, refs)
+        normalize_collect_refs_block(else_body, scope, refs)
         normalize_bind_pattern_names(scope, pat)
       }
       @vibe_core.Stmt::Expr(expr~, ..) =>
@@ -3209,6 +3262,7 @@ fn normalize_stmt_group(stmt : @vibe_core.Stmt) -> NormalizeStmtGroup {
     | @vibe_core.Stmt::Assign(..)
     | @vibe_core.Stmt::IndexAssign(..)
     | @vibe_core.Stmt::LetPat(..)
+    | @vibe_core.Stmt::LetPatElse(..)
     | @vibe_core.Stmt::Expr(..) => NormalizeStmtGroup::EffectfulFn
     @vibe_core.Stmt::Test(..)
     | @vibe_core.Stmt::Bench(..)

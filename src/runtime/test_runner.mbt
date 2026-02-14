@@ -348,11 +348,16 @@ fn collect_dep_expr(
       collect_dep_expr(cond, bound, out)
       collect_dep_block(body, bound, out)
     }
-    @core.Expr::Break(span~) => {
+    @core.Expr::Break(..) => ()
+    @core.Expr::Continue(..) => ()
+    @core.Expr::Loop(params~, body~, span~) => {
       let _ = span
-    }
-    @core.Expr::Continue(span~) => {
-      let _ = span
+      let loop_bound = @checker.clone_bool_map(bound)
+      for param in params {
+        collect_dep_expr(param.init, bound, out)
+        loop_bound[param.name] = true
+      }
+      collect_dep_block(body, loop_bound, out)
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span

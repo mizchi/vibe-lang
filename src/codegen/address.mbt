@@ -254,11 +254,28 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       block_to_addr_sexp(ctx, body) +
       ")"
     }
-    @core.Expr::Break(span~) => {
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = span
+      let buf = StringBuilder::new()
+      buf.write_string("(loop (params")
+      for param in params {
+        buf.write_char(' ')
+        buf.write_string("(")
+        buf.write_string(addr_escape_string(param.name))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(ctx, param.init))
+        buf.write_char(')')
+      }
+      buf.write_string(") ")
+      buf.write_string(block_to_addr_sexp(ctx, body))
+      buf.write_char(')')
+      buf.to_string()
+    }
+    @core.Expr::Break(span~, ..) => {
       let _ = span
       "(break)"
     }
-    @core.Expr::Continue(span~) => {
+    @core.Expr::Continue(span~, ..) => {
       let _ = span
       "(continue)"
     }
@@ -415,6 +432,17 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         buf.write_string(addr_pat_to_sexp(block_ctx, pat))
         buf.write_char(' ')
         buf.write_string(expr_to_addr_sexp(block_ctx, expr))
+        buf.write_char(')')
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = span
+        bind_pattern(block_ctx, pat)
+        buf.write_string(" (let-pat-else ")
+        buf.write_string(addr_pat_to_sexp(block_ctx, pat))
+        buf.write_char(' ')
+        buf.write_string(expr_to_addr_sexp(block_ctx, expr))
+        buf.write_char(' ')
+        buf.write_string(block_to_addr_sexp(block_ctx, else_body))
         buf.write_char(')')
       }
     }

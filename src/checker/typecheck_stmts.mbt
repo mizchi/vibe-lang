@@ -210,6 +210,29 @@ fn type_check_stmts(
           record_value_binding(name)
         }
       }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = span
+        let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        let bindings = collect_pattern_bindings(env, pat, ty)
+        for name, bound_ty in bindings {
+          ensure_fresh_value_binding(name, span)
+          let scheme = TypeScheme::{
+            vars: [],
+            num_vars: [],
+            effect_vars: [],
+            trait_bounds: {},
+            ty: bound_ty,
+          }
+          if has_exports && exported_names.contains(name) {
+            env.set_exported_scheme(name, scheme)
+          } else {
+            env.set_scheme(name, scheme)
+          }
+          env.set_purity(name, false)
+          record_value_binding(name)
+        }
+        type_block(env, else_body, aliases, effects, allow_effect) |> ignore
+      }
       @core.Stmt::Assign(name~, expr~, span~) => {
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
         match env.get_scheme(name) {

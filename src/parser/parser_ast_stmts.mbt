@@ -184,6 +184,15 @@ fn AstParser::parse_let_stmt(self : AstParser) -> @core.Stmt raise ParseError {
       let pat = self.parse_pattern()
       let _ = self.expect(eq(), "=")
       let expr = self.parse_expr()
+      self.skip_trivia()
+      // Check for else clause: let Pat = expr else { body }
+      if self.peek_kind() == else_kw() {
+        let _ = self.bump() // consume else
+        let else_body = self.parse_block()
+        let _ = self.eat(semicolon())
+        let span = self.span_from(start)
+        return @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~)
+      }
       let _ = self.eat(semicolon())
       let span = self.span_from(start)
       return @core.Stmt::LetPat(pat~, expr~, span~)

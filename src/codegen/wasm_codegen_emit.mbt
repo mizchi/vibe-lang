@@ -191,10 +191,22 @@ fn emit_block(buf : ByteBuf) -> Unit {
 }
 
 ///|
+/// Emit block instruction with i64 result type
+fn emit_block_i64(buf : ByteBuf) -> Unit {
+  buf.push((2).to_byte()) // block = 0x02
+  buf.push((126).to_byte()) // i64 blocktype = 0x7E
+}
+
+///|
 /// Emit loop instruction (blocktype is void for now)
 fn emit_loop(buf : ByteBuf) -> Unit {
   buf.push((3).to_byte()) // loop = 0x03
   buf.push((64).to_byte()) // void blocktype = 0x40
+}
+
+///|
+fn emit_unreachable(buf : ByteBuf) -> Unit {
+  buf.push((0).to_byte()) // unreachable = 0x00
 }
 
 ///|

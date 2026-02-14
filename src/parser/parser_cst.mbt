@@ -663,6 +663,12 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_while_expr()
   } else if self.at(loop_kw()) {
     self.parse_loop_expr()
+  } else if self.at(name()) &&
+    self.peek().text() == "loop" &&
+    self.peek_non_trivia_ahead(1) == lparen() &&
+    self.peek_non_trivia_ahead(2) == name() &&
+    self.peek_non_trivia_ahead(3) == eq() {
+    self.parse_loop_expr()
   } else if self.at(match_kw()) {
     self.parse_match_expr()
   } else if self.at(do_kw()) {
@@ -708,6 +714,34 @@ fn Parser::parse_loop_expr(self : Parser) -> Unit {
   self.builder.start_node(while_expr())
   self.bump() // loop
   self.skip_trivia()
+  // Check for parameterized loop: loop (name = expr, ...) { body }
+  if self.at(lparen()) {
+    self.bump() // (
+    self.skip_trivia()
+    if not(self.at(rparen())) {
+      // Parse name = expr
+      self.expect(name())
+      self.expect(eq())
+      self.skip_trivia()
+      self.parse_expr()
+      while ({
+              self.skip_trivia()
+              self.at(comma())
+            }) {
+        self.bump() // ,
+        self.skip_trivia()
+        if self.at(rparen()) {
+          break
+        }
+        self.expect(name())
+        self.expect(eq())
+        self.skip_trivia()
+        self.parse_expr()
+      }
+    }
+    self.expect(rparen())
+    self.skip_trivia()
+  }
   self.parse_brace_block_tokens()
   self.builder.finish_node()
 }
@@ -875,6 +909,11 @@ fn Parser::parse_try_expr(self : Parser) -> Unit {
 fn Parser::parse_break_expr(self : Parser) -> Unit {
   self.builder.start_node(break_expr())
   self.bump() // break
+  self.skip_trivia()
+  // Parse optional break value (not } or ; or EOF)
+  if not(self.at(rbrace())) && not(self.at(semicolon())) && not(self.at(eof())) {
+    self.parse_expr()
+  }
   self.builder.finish_node()
 }
 
@@ -882,6 +921,27 @@ fn Parser::parse_break_expr(self : Parser) -> Unit {
 fn Parser::parse_continue_expr(self : Parser) -> Unit {
   self.builder.start_node(continue_expr())
   self.bump() // continue
+  self.skip_trivia()
+  // Parse optional continue arguments: continue(expr, expr, ...)
+  if self.at(lparen()) {
+    self.bump() // (
+    self.skip_trivia()
+    if not(self.at(rparen())) {
+      self.parse_expr()
+      while ({
+              self.skip_trivia()
+              self.at(comma())
+            }) {
+        self.bump() // ,
+        self.skip_trivia()
+        if self.at(rparen()) {
+          break
+        }
+        self.parse_expr()
+      }
+    }
+    self.expect(rparen())
+  }
   self.builder.finish_node()
 }
 

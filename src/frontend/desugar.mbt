@@ -104,7 +104,7 @@ fn desugar_vibe_block(
       @core.Stmt::Let(name~, ..)
       | @core.Stmt::ExportLet(name~, ..)
       | @core.Stmt::LetMut(name~, ..) => scope_map[name] = true
-      @core.Stmt::LetPat(pat~, ..) => {
+      @core.Stmt::LetPat(pat~, ..) | @core.Stmt::LetPatElse(pat~, ..) => {
         let bindings : Array[String] = []
         collect_pat_bindings(pat, bindings)
         for name in bindings {
@@ -190,6 +190,18 @@ fn desugar_vibe_stmt(
       @core.Stmt::LetPat(
         pat~,
         expr=desugar_vibe_expr(expr, scope, known_non_cmd, notes),
+        span~,
+      )
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @core.Stmt::LetPatElse(
+        pat~,
+        expr=desugar_vibe_expr(expr, scope, known_non_cmd, notes),
+        else_body=desugar_vibe_block(
+          else_body,
+          clone_scope(scope),
+          known_non_cmd,
+          notes,
+        ),
         span~,
       )
     _ => stmt
@@ -373,6 +385,39 @@ fn desugar_vibe_expr(
         body=desugar_vibe_block(body, clone_scope(scope), known_non_cmd, notes),
         span~,
       )
+    @core.Expr::Loop(params~, body~, span~) => {
+      let next_params : Array[@core.LoopParam] = []
+      for param in params {
+        next_params.push(@core.LoopParam::{
+          name: param.name,
+          init: desugar_vibe_expr(param.init, scope, known_non_cmd, notes),
+          span: param.span,
+        })
+      }
+      let next_scope = clone_scope(scope)
+      for param in params {
+        next_scope[param.name] = true
+      }
+      @core.Expr::Loop(
+        params=next_params,
+        body=desugar_vibe_block(body, next_scope, known_non_cmd, notes),
+        span~,
+      )
+    }
+    @core.Expr::Break(value~, span~) => {
+      let next_value = match value {
+        Some(e) => Some(desugar_vibe_expr(e, scope, known_non_cmd, notes))
+        None => None
+      }
+      @core.Expr::Break(value=next_value, span~)
+    }
+    @core.Expr::Continue(args~, span~) => {
+      let next_args : Array[@core.Expr] = []
+      for arg in args {
+        next_args.push(desugar_vibe_expr(arg, scope, known_non_cmd, notes))
+      }
+      @core.Expr::Continue(args=next_args, span~)
+    }
     @core.Expr::Raise(value~, span~) =>
       @core.Expr::Raise(
         value=desugar_vibe_expr(value, scope, known_non_cmd, notes),
@@ -479,6 +524,13 @@ fn desugar_stmt(
       )
     @core.Stmt::LetPat(pat~, expr~, span~) =>
       @core.Stmt::LetPat(pat~, expr=desugar_expr(expr, scope, aliases), span~)
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @core.Stmt::LetPatElse(
+        pat~,
+        expr=desugar_expr(expr, scope, aliases),
+        else_body=desugar_block(else_body, scope, aliases),
+        span~,
+      )
   }
 }
 
@@ -640,6 +692,45 @@ fn desugar_expr(
         body=desugar_block(body, next_scope, aliases),
         span~,
       )
+    }
+    @core.Expr::While(cond~, body~, span~) =>
+      @core.Expr::While(
+        cond=desugar_expr(cond, scope, aliases),
+        body=desugar_block(body, scope, aliases),
+        span~,
+      )
+    @core.Expr::Loop(params~, body~, span~) => {
+      let next_params : Array[@core.LoopParam] = []
+      for param in params {
+        next_params.push(@core.LoopParam::{
+          name: param.name,
+          init: desugar_expr(param.init, scope, aliases),
+          span: param.span,
+        })
+      }
+      let next_scope = clone_scope(scope)
+      for param in params {
+        next_scope[param.name] = true
+      }
+      @core.Expr::Loop(
+        params=next_params,
+        body=desugar_block(body, next_scope, aliases),
+        span~,
+      )
+    }
+    @core.Expr::Break(value~, span~) => {
+      let next_value = match value {
+        Some(e) => Some(desugar_expr(e, scope, aliases))
+        None => None
+      }
+      @core.Expr::Break(value=next_value, span~)
+    }
+    @core.Expr::Continue(args~, span~) => {
+      let next_args : Array[@core.Expr] = []
+      for arg in args {
+        next_args.push(desugar_expr(arg, scope, aliases))
+      }
+      @core.Expr::Continue(args=next_args, span~)
     }
     _ => expr
   }

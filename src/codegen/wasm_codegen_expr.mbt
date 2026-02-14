@@ -298,6 +298,13 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       scan_needs_expr(ctx, cond)
       scan_needs_block(ctx, body)
     }
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = span
+      for param in params {
+        scan_needs_expr(ctx, param.init)
+      }
+      scan_needs_block(ctx, body)
+    }
     _ => ()
   }
 }
@@ -360,6 +367,12 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = span
       scan_needs_expr(ctx, expr)
     }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+      let _ = pat
+      let _ = span
+      scan_needs_expr(ctx, expr)
+      scan_needs_block(ctx, else_body)
+    }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = name
       let _ = span
@@ -410,6 +423,12 @@ fn scan_strings_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = pat
       let _ = span
       scan_strings_expr(ctx, expr)
+    }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+      let _ = pat
+      let _ = span
+      scan_strings_expr(ctx, expr)
+      scan_strings(ctx, else_body)
     }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = name
@@ -525,6 +544,13 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
       scan_strings_expr(ctx, cond)
+      scan_strings(ctx, body)
+    }
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = span
+      for param in params {
+        scan_strings_expr(ctx, param.init)
+      }
       scan_strings(ctx, body)
     }
     _ => ()
@@ -909,6 +935,15 @@ fn compile_f64_cmp_to_tagged_int(
   emit_unbox_f64_expr(ctx, buf, pos_args[1])
   emit_cmp(buf)
   emit_i32_result_as_tagged_int(buf)
+}
+
+///|
+/// Adjust loop break/continue offsets when entering/leaving WASM label scopes
+fn adjust_loop_offsets(ctx : CodegenCtx, delta : Int) -> Unit {
+  if ctx.loop_break_offset >= 0 {
+    ctx.loop_break_offset += delta
+    ctx.loop_continue_offset += delta
+  }
 }
 
 ///|
@@ -3492,14 +3527,16 @@ fn compile_expr(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shr_u(buf)
       emit_i32_wrap_i64(buf)
-      buf.push((4).to_byte())
+      buf.push((4).to_byte()) // if
       buf.push(valtype_byte(if_kind))
+      adjust_loop_offsets(ctx, 1)
       emit_coverage(ctx, buf, WasmCoveragePointKind::BranchIfThen, span)
       compile_block_expr(ctx, buf, then_body)
-      buf.push((5).to_byte())
+      buf.push((5).to_byte()) // else
       emit_coverage(ctx, buf, WasmCoveragePointKind::BranchIfElse, span)
       compile_block_expr(ctx, buf, else_body)
-      buf.push((11).to_byte())
+      buf.push((11).to_byte()) // end
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Expr::Block(body~, span~) => {
       let _ = span
@@ -3529,6 +3566,8 @@ fn compile_expr(
       } else {
         ValueKind::I64
       }
+      // Adjust loop offsets for nesting (+3 label scopes: block, block, try_table)
+      adjust_loop_offsets(ctx, 3)
       // (block $outer (result <type>)
       buf.push((2).to_byte()) // block opcode
       buf.push(valtype_byte(try_kind)) // result type
@@ -3550,10 +3589,12 @@ fn compile_expr(
       write_u32_leb(buf, 1) // label depth = 1
       //   end $catch_target
       buf.push((11).to_byte())
-      //   compile catch_body
+      //   compile catch_body (at depth +2 from original: outer block + catch_target block)
+      adjust_loop_offsets(ctx, -1) // try_table ended, now at +2
       compile_block_expr(ctx, buf, catch_body)
       // end $outer
       buf.push((11).to_byte())
+      adjust_loop_offsets(ctx, -2) // both blocks ended, back to original
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
@@ -3651,21 +3692,18 @@ fn compile_expr(
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
-      // WASM while loop structure:
-      // block $exit
-      //   loop $continue
-      //     <cond>
-      //     i32.eqz          ;; invert: if cond is 0 (false), branch
-      //     br_if $exit      ;; exit if condition is false
-      //     <body>
-      //     drop             ;; discard body result
-      //     br $continue     ;; loop back
-      //   end
-      // end
-      // i32.const 0          ;; while returns unit
+      // Save loop offsets for nesting
+      let saved_break = ctx.loop_break_offset
+      let saved_continue = ctx.loop_continue_offset
+      let saved_param_locals = ctx.loop_param_locals
 
       emit_block(buf) // block $exit (label 1)
       emit_loop(buf) // loop $continue (label 0)
+
+      // Set offsets: from inside loop body, break=1 (outer block), continue=0 (inner loop)
+      ctx.loop_break_offset = 1
+      ctx.loop_continue_offset = 0
+      ctx.loop_param_locals = []
 
       // Evaluate condition
       compile_expr_i32(ctx, buf, cond)
@@ -3679,7 +3717,7 @@ fn compile_expr(
       emit_i32_eqz(buf)
       emit_br_if(buf, 1) // br_if $exit (label 1 = outer block)
 
-      // Execute body (compile_stmt with is_last=false handles dropping)
+      // Execute body
       for i in 0..<body.stmts.length() {
         compile_stmt(ctx, buf, body.stmts[i], false)
       }
@@ -3689,16 +3727,111 @@ fn compile_expr(
       emit_end(buf) // end loop
       emit_end(buf) // end block
 
+      // Restore loop offsets
+      ctx.loop_break_offset = saved_break
+      ctx.loop_continue_offset = saved_continue
+      ctx.loop_param_locals = saved_param_locals
+
       // While expression returns unit
       emit_i64_const_tagged(buf, 0L)
     }
-    @core.Expr::Break(span~) => {
+    @core.Expr::Break(value~, span~) => {
       let _ = span
-      raise WasmGenError::Unsupported("break")
+      if ctx.loop_break_offset < 0 {
+        raise WasmGenError::Unsupported("break outside loop")
+      }
+      match value {
+        Some(expr) => compile_expr(ctx, buf, expr)
+        None => emit_i64_const_tagged(buf, 0L)
+      }
+      emit_br(buf, ctx.loop_break_offset)
+      emit_unreachable(buf)
     }
-    @core.Expr::Continue(span~) => {
+    @core.Expr::Continue(args~, span~) => {
       let _ = span
-      raise WasmGenError::Unsupported("continue")
+      if ctx.loop_continue_offset < 0 {
+        raise WasmGenError::Unsupported("continue outside loop")
+      }
+      // For parameterized loop: set args to temp locals, then copy to param locals
+      if args.length() > 0 {
+        let param_locals = ctx.loop_param_locals
+        if args.length() != param_locals.length() {
+          raise WasmGenError::Unsupported("continue arity mismatch")
+        }
+        // Compile all args to temp locals first (avoid mutual overwrite)
+        let temps : Array[Int] = []
+        for arg in args {
+          let tmp = ctx.local_count
+          ctx.local_count += 1
+          ctx.local_types.push(ValueKind::I64)
+          compile_expr(ctx, buf, arg)
+          emit_local_set(buf, tmp)
+          temps.push(tmp)
+        }
+        // Copy temps to param locals
+        for i in 0..<temps.length() {
+          emit_local_get(buf, temps[i])
+          emit_local_set(buf, param_locals[i])
+        }
+      }
+      emit_br(buf, ctx.loop_continue_offset)
+      emit_unreachable(buf)
+    }
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = span
+      // Save loop offsets for nesting
+      let saved_break = ctx.loop_break_offset
+      let saved_continue = ctx.loop_continue_offset
+      let saved_param_locals = ctx.loop_param_locals
+      let saved_locals = ctx.locals.copy()
+      let saved_kinds = ctx.local_kinds.copy()
+
+      // Allocate locals for loop params and compile init expressions
+      let param_locals : Array[Int] = []
+      for param in params {
+        let idx = ctx.local_count
+        ctx.local_count += 1
+        ctx.local_types.push(ValueKind::I64)
+        compile_expr(ctx, buf, param.init)
+        emit_local_set(buf, idx)
+        ctx.locals[param.name] = idx
+        ctx.local_kinds[param.name] = ValueKind::I32
+        param_locals.push(idx)
+      }
+      ctx.loop_param_locals = param_locals
+
+      // block $exit (result i64)  -- break value lands here
+      //   loop $continue          -- continue jumps here
+      //     <body>
+      //   end
+      // end
+      emit_block_i64(buf) // block $exit (result i64)
+      emit_loop(buf) // loop $continue
+
+      // Set offsets: break=1 (outer block), continue=0 (inner loop)
+      ctx.loop_break_offset = 1
+      ctx.loop_continue_offset = 0
+
+      // Compile body
+      let len = body.stmts.length()
+      if len == 0 {
+        emit_i64_const_tagged(buf, 0L)
+      } else {
+        for i in 0..<len {
+          let is_last = i == len - 1
+          compile_stmt(ctx, buf, body.stmts[i], is_last)
+        }
+      }
+
+      emit_end(buf) // end loop
+      emit_end(buf) // end block
+
+      // Restore
+      ctx.loop_break_offset = saved_break
+      ctx.loop_continue_offset = saved_continue
+      ctx.loop_param_locals = saved_param_locals
+      restore_locals(ctx, saved_locals)
+      restore_local_kinds(ctx, saved_kinds)
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
@@ -4267,6 +4400,33 @@ fn compile_stmt(
           }
         }
         _ => raise WasmGenError::Unsupported("let pat: non-tuple/record/ctor")
+      }
+    }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+      // Desugar to match: match expr { pat => unit, _ => else_body }
+      let scrut_idx = ctx.local_count
+      ctx.local_count += 1
+      ctx.local_types.push(ValueKind::I64)
+      compile_expr_i32(ctx, buf, expr)
+      emit_local_set(buf, scrut_idx)
+      // Build 2-arm match: success (bind + unit) and fallback (else_body)
+      let success_arm = @core.MatchArm::{
+        pat,
+        cond: None,
+        expr: @core.Expr::Tuple(items=[], span~),
+        span,
+      }
+      let fallback_arm = @core.MatchArm::{
+        pat: @core.Pat::Wildcard(span~),
+        cond: None,
+        expr: @core.Expr::Block(body=else_body, span~),
+        span,
+      }
+      let arms = [success_arm, fallback_arm]
+      compile_match_chain(ctx, buf, scrut_idx, arms, 0)
+      // Drop the result if not last
+      if not(is_last) {
+        emit_drop(buf)
       }
     }
   }
@@ -4996,12 +5156,14 @@ fn compile_pat_match(
       emit_i64_eq(buf)
       buf.push((4).to_byte())
       buf.push((126).to_byte())
+      adjust_loop_offsets(ctx, 1)
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte())
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Pat::Char(value~, span~) => {
       let _ = value
@@ -5011,12 +5173,14 @@ fn compile_pat_match(
       emit_i64_eq(buf)
       buf.push((4).to_byte())
       buf.push((126).to_byte())
+      adjust_loop_offsets(ctx, 1)
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte())
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Pat::Float(value=n, span~) => {
       let _ = span
@@ -5034,12 +5198,14 @@ fn compile_pat_match(
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
+      adjust_loop_offsets(ctx, 1)
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte()) // end
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Pat::Double(value=n, span~) => {
       let _ = span
@@ -5057,12 +5223,14 @@ fn compile_pat_match(
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
+      adjust_loop_offsets(ctx, 1)
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte()) // end
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Pat::Bool(value~, span~) => {
       let _ = value
@@ -5072,12 +5240,14 @@ fn compile_pat_match(
       emit_i64_eq(buf)
       buf.push((4).to_byte())
       buf.push((126).to_byte())
+      adjust_loop_offsets(ctx, 1)
       compile_pat_cont(
         ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte())
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte())
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Pat::String(value=s, span~) => {
       let _ = span
@@ -5094,12 +5264,14 @@ fn compile_pat_match(
         // Result is i32 (0 or 1)
         buf.push((4).to_byte()) // if
         buf.push((126).to_byte()) // result i64
+        adjust_loop_offsets(ctx, 1)
         compile_pat_cont(
           ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
         )
         buf.push((5).to_byte())
         compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
         buf.push((11).to_byte())
+        adjust_loop_offsets(ctx, -1)
       } else {
         // Non-js-string mode: compare tagged pointers
         emit_local_get(buf, value_idx)
@@ -5107,12 +5279,14 @@ fn compile_pat_match(
         emit_i64_eq(buf)
         buf.push((4).to_byte())
         buf.push((126).to_byte())
+        adjust_loop_offsets(ctx, 1)
         compile_pat_cont(
           ctx, buf, cont, match_scrut_idx, arms, start, arm, bindings,
         )
         buf.push((5).to_byte())
         compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
         buf.push((11).to_byte())
+        adjust_loop_offsets(ctx, -1)
       }
     }
     @core.Pat::Ctor(name~, args~, span~) => {
@@ -5136,6 +5310,7 @@ fn compile_pat_match(
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
+      adjust_loop_offsets(ctx, 1)
       // Bind args
       if args.length() == 0 {
         compile_pat_cont(
@@ -5150,6 +5325,7 @@ fn compile_pat_match(
       buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte()) // end
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Pat::Tuple(items~, span~) => {
       let _ = span
@@ -5168,12 +5344,14 @@ fn compile_pat_match(
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
+      adjust_loop_offsets(ctx, 1)
       compile_tuple_items_cont(
         ctx, buf, raw_ptr, items, 0, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte()) // end
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Pat::Record(fields~, span~) => {
       let _ = span
@@ -5193,12 +5371,14 @@ fn compile_pat_match(
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
+      adjust_loop_offsets(ctx, 1)
       compile_record_fields_cont(
         ctx, buf, raw_ptr, ordered, 0, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte()) // end
+      adjust_loop_offsets(ctx, -1)
     }
     @core.Pat::Or(pats~, span~) => {
       let _ = span
@@ -5239,12 +5419,14 @@ fn compile_pat_match(
       // Single if-else
       buf.push((4).to_byte()) // if
       buf.push((126).to_byte()) // result i64
+      adjust_loop_offsets(ctx, 1)
       compile_record_fields_cont(
         ctx, buf, raw_ptr, ordered, 0, cont, match_scrut_idx, arms, start, arm, bindings,
       )
       buf.push((5).to_byte()) // else
       compile_match_chain(ctx, buf, match_scrut_idx, arms, start + 1)
       buf.push((11).to_byte()) // end
+      adjust_loop_offsets(ctx, -1)
     }
   }
 }
@@ -5535,6 +5717,7 @@ fn compile_guarded_arm_with_bindings(
       emit_i32_wrap_i64(buf)
       buf.push((4).to_byte())
       buf.push((126).to_byte())
+      adjust_loop_offsets(ctx, 1)
       emit_coverage(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
       compile_expr(ctx, buf, arm.expr)
       buf.push((5).to_byte())
@@ -5542,6 +5725,7 @@ fn compile_guarded_arm_with_bindings(
       restore_local_kinds(ctx, saved_kinds)
       compile_match_chain(ctx, buf, scrut_idx, arms, index + 1)
       buf.push((11).to_byte())
+      adjust_loop_offsets(ctx, -1)
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
     }

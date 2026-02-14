@@ -68,6 +68,11 @@ priv struct CodegenCtx {
   mut coverage_count_global_index : Int
   // Exported user functions (export let ...)
   exported_fns : Map[String, Bool]
+  // Loop break/continue label offsets (-1 = not in loop)
+  mut loop_break_offset : Int
+  mut loop_continue_offset : Int
+  // For parameterized loop: local indices for loop params
+  mut loop_param_locals : Array[Int]
 }
 
 ///|
@@ -155,6 +160,10 @@ fn CodegenCtx::new(
     coverage_count_global_index: -1,
     // Exported user functions
     exported_fns: {},
+    // Loop offsets
+    loop_break_offset: -1,
+    loop_continue_offset: -1,
+    loop_param_locals: [],
   }
 }
 
@@ -282,6 +291,16 @@ fn collect_captures_block(
           scope[name] = true
         }
       }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = span
+        collect_captures_expr(expr, scope, outer_bound, captures, seen)
+        collect_captures_block(else_body, scope, outer_bound, captures, seen)
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(pat, bindings)
+        for name in bindings {
+          scope[name] = true
+        }
+      }
       @core.Stmt::LetMut(name~, expr~, span~) => {
         let _ = span
         collect_captures_expr(expr, scope, outer_bound, captures, seen)
@@ -401,6 +420,13 @@ fn collect_captures_expr(
       collect_captures_expr(cond, bound, outer_bound, captures, seen)
       collect_captures_block(body, bound, outer_bound, captures, seen)
     }
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = span
+      for param in params {
+        collect_captures_expr(param.init, bound, outer_bound, captures, seen)
+      }
+      collect_captures_block(body, bound, outer_bound, captures, seen)
+    }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = ret
       let _ = effects
@@ -502,6 +528,16 @@ fn collect_nested_funcs_block(
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         collect_nested_funcs_expr(expr, scope, funcs)
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(pat, bindings)
+        for name in bindings {
+          scope[name] = true
+        }
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = span
+        collect_nested_funcs_expr(expr, scope, funcs)
+        collect_nested_funcs_block(else_body, scope, funcs, false)
         let bindings : Array[String] = []
         collect_pat_bindings_codegen(pat, bindings)
         for name in bindings {
@@ -630,6 +666,13 @@ fn collect_nested_funcs_expr(
       collect_nested_funcs_expr(cond, bound, funcs)
       collect_nested_funcs_block(body, bound, funcs, false)
     }
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = span
+      for param in params {
+        collect_nested_funcs_expr(param.init, bound, funcs)
+      }
+      collect_nested_funcs_block(body, bound, funcs, false)
+    }
     _ => ()
   }
 }
@@ -673,6 +716,16 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = expr
+        let _ = span
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(pat, bindings)
+        for b in bindings {
+          outer_bound[b] = true
+        }
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = expr
+        let _ = else_body
         let _ = span
         let bindings : Array[String] = []
         collect_pat_bindings_codegen(pat, bindings)

@@ -7,6 +7,10 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_while_expr()
   } else if self.peek_kind() == loop_kw() {
     self.parse_loop_expr()
+  } else if self.peek_kind() == name() &&
+    self.peek().text() == "loop" &&
+    self.is_parameterized_loop() {
+    self.parse_loop_expr()
   } else if self.peek_kind() == match_kw() {
     self.parse_match_expr()
   } else if self.peek_kind() == do_kw() {
@@ -367,17 +371,74 @@ fn AstParser::parse_while_expr(self : AstParser) -> @core.Expr raise ParseError 
 }
 
 ///|
+/// Check if current `name()` "loop" token starts a parameterized loop.
+/// Looks ahead for: loop ( name = ...
+fn AstParser::is_parameterized_loop(self : AstParser) -> Bool {
+  // Current token is name() "loop"
+  // Check: next non-trivia is (, then name(), then =
+  self.peek_non_trivia_ahead(1) == lparen() &&
+  self.peek_non_trivia_ahead(2) == name() &&
+  self.peek_non_trivia_ahead(3) == eq()
+}
+
+///|
 fn AstParser::parse_loop_expr(self : AstParser) -> @core.Expr raise ParseError {
   let start = self.pos
-  let loop_tok = self.expect(loop_kw(), "loop")
-  let body = self.parse_block()
-  let span = self.span_from(start)
-  let cond_span = @core.Span::new(
-    span.start,
-    span.start + loop_tok.text().length(),
-  )
-  let cond = @core.Expr::Bool(value=true, span=cond_span)
-  @core.Expr::While(cond~, body~, span~)
+  // Accept either loop_kw() or name() "loop" (for parameterized loop via name token)
+  let loop_tok = if self.peek_kind() == loop_kw() {
+    self.expect(loop_kw(), "loop")
+  } else {
+    self.expect(name(), "loop")
+  }
+  self.skip_trivia()
+  // Check if parameterized loop: loop (name = expr, ...) { body }
+  if self.peek_kind() == lparen() {
+    let _ = self.bump() // consume (
+    let params : Array[@core.LoopParam] = []
+    self.skip_trivia()
+    if self.peek_kind() != rparen() {
+      // Parse first param: name = expr
+      let param_start = self.pos
+      let param_name = self.expect(name(), "parameter name").text()
+      let _ = self.expect(eq(), "=")
+      let init = self.parse_expr()
+      let param_span = self.span_from(param_start)
+      params.push(@core.LoopParam::{ name: param_name, init, span: param_span })
+      self.skip_trivia()
+      while self.peek_kind() == comma() {
+        let _ = self.bump()
+        self.skip_trivia()
+        if self.peek_kind() == rparen() {
+          break
+        }
+        let p_start = self.pos
+        let p_name = self.expect(name(), "parameter name").text()
+        let _ = self.expect(eq(), "=")
+        let p_init = self.parse_expr()
+        let p_span = self.span_from(p_start)
+        params.push(@core.LoopParam::{
+          name: p_name,
+          init: p_init,
+          span: p_span,
+        })
+        self.skip_trivia()
+      }
+    }
+    let _ = self.expect(rparen(), ")")
+    let body = self.parse_block()
+    let span = self.span_from(start)
+    @core.Expr::Loop(params~, body~, span~)
+  } else {
+    // Bare loop { body } → desugar to while(true) { body }
+    let body = self.parse_block()
+    let span = self.span_from(start)
+    let cond_span = @core.Span::new(
+      span.start,
+      span.start + loop_tok.text().length(),
+    )
+    let cond = @core.Expr::Bool(value=true, span=cond_span)
+    @core.Expr::While(cond~, body~, span~)
+  }
 }
 
 ///|
@@ -461,8 +522,18 @@ fn AstParser::parse_try_expr(self : AstParser) -> @core.Expr raise ParseError {
 fn AstParser::parse_break_expr(self : AstParser) -> @core.Expr raise ParseError {
   let start = self.pos
   let _ = self.expect(break_kw(), "break")
+  self.skip_trivia()
+  // Check if next token starts a value expression (not } or ; or EOF)
+  let next = self.peek_kind()
+  let value : @core.Expr? = if next == rbrace() ||
+    next == semicolon() ||
+    next == eof() {
+    None
+  } else {
+    Some(self.parse_expr())
+  }
   let span = self.span_from(start)
-  @core.Expr::Break(span~)
+  @core.Expr::Break(value~, span~)
 }
 
 ///|
@@ -471,8 +542,32 @@ fn AstParser::parse_continue_expr(
 ) -> @core.Expr raise ParseError {
   let start = self.pos
   let _ = self.expect(continue_kw(), "continue")
+  self.skip_trivia()
+  // Check if continue has arguments: continue(expr, expr, ...)
+  let args : Array[@core.Expr] = if self.peek_kind() == lparen() {
+    let _ = self.bump() // consume (
+    let exprs : Array[@core.Expr] = []
+    self.skip_trivia()
+    if self.peek_kind() != rparen() {
+      exprs.push(self.parse_expr())
+      self.skip_trivia()
+      while self.peek_kind() == comma() {
+        let _ = self.bump()
+        self.skip_trivia()
+        if self.peek_kind() == rparen() {
+          break
+        }
+        exprs.push(self.parse_expr())
+        self.skip_trivia()
+      }
+    }
+    let _ = self.expect(rparen(), ")")
+    exprs
+  } else {
+    []
+  }
   let span = self.span_from(start)
-  @core.Expr::Continue(span~)
+  @core.Expr::Continue(args~, span~)
 }
 
 ///|
@@ -1917,6 +2012,13 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
       )
     @core.Stmt::LetPat(pat~, expr~, span~) =>
       @core.Stmt::LetPat(pat~, expr=desugar_expr_deep(expr), span~)
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @core.Stmt::LetPatElse(
+        pat~,
+        expr=desugar_expr_deep(expr),
+        else_body=desugar_module(else_body),
+        span~,
+      )
     // Non-expression statements pass through
     @core.Stmt::EnumDef(..)
     | @core.Stmt::TypeAlias(..)

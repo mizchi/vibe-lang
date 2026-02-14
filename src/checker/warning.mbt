@@ -300,6 +300,13 @@ fn walk_stmt(
       walk_expr(expr, scopes, out)
       declare_pattern_bindings(scopes, pat)
     }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      walk_expr(expr, scopes, out)
+      declare_pattern_bindings(scopes, pat)
+      scopes.push(warning_scope_new())
+      walk_module(else_body, scopes, out)
+      warning_scope_pop(scopes, out)
+    }
     @core.Stmt::Expr(expr~, ..) => walk_expr(expr, scopes, out)
     @core.Stmt::Import(spec~, span~, ..) =>
       for item in spec.items {
@@ -431,6 +438,14 @@ fn walk_expr(
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
     }
+    @core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        walk_expr(param.init, scopes, out)
+      }
+      scopes.push(warning_scope_new())
+      walk_module(body, scopes, out)
+      warning_scope_pop(scopes, out)
+    }
     @core.Expr::Raise(value~, ..)
     | @core.Expr::Await(expr=value, ..)
     | @core.Expr::Yield(expr=value, ..) => walk_expr(value, scopes, out)
@@ -438,15 +453,22 @@ fn walk_expr(
       for field in fields {
         walk_expr(field.expr, scopes, out)
       }
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(expr) => walk_expr(expr, scopes, out)
+        None => ()
+      }
+    @core.Expr::Continue(args~, ..) =>
+      for arg in args {
+        walk_expr(arg, scopes, out)
+      }
     @core.Expr::Int(..)
     | @core.Expr::Float(..)
     | @core.Expr::Double(..)
     | @core.Expr::Bool(..)
     | @core.Expr::Char(..)
     | @core.Expr::String(..)
-    | @core.Expr::Placeholder(..)
-    | @core.Expr::Break(..)
-    | @core.Expr::Continue(..) => ()
+    | @core.Expr::Placeholder(..) => ()
   }
 }
 

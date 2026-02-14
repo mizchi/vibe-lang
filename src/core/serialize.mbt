@@ -50,6 +50,15 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_pat_to(pat, buf)
       buf.write_string("}}")
     }
+    Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      buf.write_string("{\"LetPatElse\":{\"else_body\":")
+      serialize_module_to(else_body, buf)
+      buf.write_string(",\"expr\":")
+      serialize_expr_to(expr, buf)
+      buf.write_string(",\"pat\":")
+      serialize_pat_to(pat, buf)
+      buf.write_string("}}")
+    }
     Stmt::Assign(name~, expr~, ..) => {
       buf.write_string("{\"Assign\":{\"expr\":")
       serialize_expr_to(expr, buf)
@@ -328,6 +337,13 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
     }
     Expr::Break(..) => buf.write_string("{\"Break\":null}")
     Expr::Continue(..) => buf.write_string("{\"Continue\":null}")
+    Expr::Loop(params~, body~, ..) => {
+      buf.write_string("{\"Loop\":{\"body\":")
+      serialize_module_to(body, buf)
+      buf.write_string(",\"params\":")
+      serialize_loop_params_to(params, buf)
+      buf.write_string("}}")
+    }
     Expr::Try(try_body~, catch_body~, ..) => {
       buf.write_string("{\"Try\":{\"catch\":")
       serialize_module_to(catch_body, buf)
@@ -436,6 +452,25 @@ fn serialize_params_to(params : Array[FuncParam], buf : StringBuilder) -> Unit {
     serialize_type_to(p.ty, buf)
     buf.write_string(",\"bounds\":")
     serialize_strings_to(p.bounds, buf)
+    buf.write_char('}')
+  }
+  buf.write_char(']')
+}
+
+///|
+fn serialize_loop_params_to(
+  params : Array[LoopParam],
+  buf : StringBuilder,
+) -> Unit {
+  buf.write_char('[')
+  for i, p in params {
+    if i > 0 {
+      buf.write_char(',')
+    }
+    buf.write_string("{\"init\":")
+    serialize_expr_to(p.init, buf)
+    buf.write_string(",\"name\":")
+    serialize_string_to(p.name, buf)
     buf.write_char('}')
   }
   buf.write_char(']')

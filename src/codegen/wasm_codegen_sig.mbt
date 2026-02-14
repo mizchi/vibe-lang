@@ -580,11 +580,17 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I64
     }
-    @core.Expr::Break(span~) => {
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = params
+      let _ = body
       let _ = span
       ValueKind::I64
     }
-    @core.Expr::Continue(span~) => {
+    @core.Expr::Break(span~, ..) => {
+      let _ = span
+      ValueKind::I64
+    }
+    @core.Expr::Continue(span~, ..) => {
       let _ = span
       ValueKind::I64
     }
@@ -671,6 +677,18 @@ fn infer_stmt_kind(
     }
     @core.Stmt::LetPat(pat~, expr~, span~) => {
       let _ = span
+      let kind = infer_expr_kind_with(ctx, expr, locals)
+      let _ = kind
+      let bindings : Array[String] = []
+      collect_pat_bindings_codegen(pat, bindings)
+      for name in bindings {
+        locals[name] = ValueKind::I64
+      }
+      ValueKind::I64
+    }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+      let _ = span
+      let _ = else_body
       let kind = infer_expr_kind_with(ctx, expr, locals)
       let _ = kind
       let bindings : Array[String] = []
@@ -817,6 +835,11 @@ fn needs_heap_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Bool {
       let _ = span
       needs_heap_expr(ctx, expr)
     }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+      let _ = pat
+      let _ = span
+      needs_heap_expr(ctx, expr) || needs_heap_block(ctx, else_body)
+    }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = name
       let _ = span
@@ -926,6 +949,16 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
       needs_heap_expr(ctx, cond) || needs_heap_block(ctx, body)
+    }
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = span
+      let mut result = needs_heap_block(ctx, body)
+      for param in params {
+        if needs_heap_expr(ctx, param.init) {
+          result = true
+        }
+      }
+      result
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span

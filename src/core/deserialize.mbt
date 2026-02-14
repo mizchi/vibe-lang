@@ -56,6 +56,13 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let expr = parse_expr(get_field(inner, "expr"))
         return Stmt::LetPat(pat~, expr~, span=zero)
       }
+      "LetPatElse" => {
+        let inner = expect_object(value)
+        let pat = parse_pat(get_field(inner, "pat"))
+        let expr = parse_expr(get_field(inner, "expr"))
+        let else_body = parse_module(get_field(inner, "else_body"))
+        return Stmt::LetPatElse(pat~, expr~, else_body~, span=zero)
+      }
       "Assign" => {
         let inner = expect_object(value)
         let name = get_string(inner, "name")
@@ -292,6 +299,14 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
         let body = parse_module(get_field(inner, "body"))
         return Expr::While(cond~, body~, span=zero)
       }
+      "Loop" => {
+        let inner = expect_object(value)
+        let params = parse_loop_params(get_field(inner, "params"))
+        let body = parse_module(get_field(inner, "body"))
+        return Expr::Loop(params~, body~, span=zero)
+      }
+      "Break" => return Expr::Break(value=None, span=zero)
+      "Continue" => return Expr::Continue(args=[], span=zero)
       "Try" => {
         let inner = expect_object(value)
         let try_body = parse_module(get_field(inner, "try"))
@@ -640,6 +655,19 @@ fn parse_arms(json : Json) -> Array[MatchArm] raise DeserializeError {
     }
     let expr = parse_expr(get_field(obj, "expr"))
     out.push(MatchArm::{ pat, cond, expr, span: deser_zero_span })
+  }
+  out
+}
+
+///|
+fn parse_loop_params(json : Json) -> Array[LoopParam] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[LoopParam] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let name = get_string(obj, "name")
+    let init = parse_expr(get_field(obj, "init"))
+    out.push(LoopParam::{ name, init, span: deser_zero_span })
   }
   out
 }

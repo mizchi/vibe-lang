@@ -225,7 +225,7 @@ fn purity_expr_inner(
       let _ = span
       true
     }
-    @core.Expr::While(..) => false
+    @core.Expr::While(..) | @core.Expr::Loop(..) => false
     @core.Expr::Break(..) | @core.Expr::Continue(..) => false
     @core.Expr::Raise(value~, span~) => {
       let _ = span
@@ -278,6 +278,18 @@ fn purity_block_inner(
           break
         }
         bind_pattern_names(scope, pat)
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = span
+        if not(purity_expr_inner(env, expr, scope)) {
+          ok = false
+          break
+        }
+        bind_pattern_names(scope, pat)
+        if not(purity_block_inner(env, else_body, scope)) {
+          ok = false
+          break
+        }
       }
       @core.Stmt::LetMut(..) | @core.Stmt::Assign(..) => {
         ok = false

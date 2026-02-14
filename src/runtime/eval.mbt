@@ -45,8 +45,8 @@ suberror EvalError {
   BadCall(String)
   ImportError(String)
   FeatureDisabled(feature~ : String, operation~ : String, flag~ : String)
-  LoopBreak
-  LoopContinue
+  LoopBreak(@core.Value?)
+  LoopContinue(Array[@core.Value])
 } derive(Show, Eq)
 
 ///|
@@ -366,6 +366,21 @@ pub fn Runtime::eval_module(
         }
         last = Some(out.value)
       }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+        let out = eval_expr(self, expr)
+        extend_effects(effects, out.effects)
+        match match_pattern(pat, out.value) {
+          Some(bindings) =>
+            for name, value in bindings {
+              self.bind(name, value) |> ignore
+            }
+          None => {
+            let else_out = eval_block(self, else_body)
+            extend_effects(effects, else_out.effects)
+          }
+        }
+        last = Some(out.value)
+      }
       @core.Stmt::StructDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::ExportStructDef(..) => last = Some(@core.Value::Unit)
     }
@@ -577,8 +592,23 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       { value: @core.Value::Fn(closure), effects: [] }
     }
     @core.Expr::While(cond~, body~, ..) => eval_while_expr(rt, cond, body)
-    @core.Expr::Break(..) => raise EvalError::LoopBreak
-    @core.Expr::Continue(..) => raise EvalError::LoopContinue
+    @core.Expr::Break(value~, span~) => {
+      let _ = span
+      let val : @core.Value? = match value {
+        Some(expr) => Some(eval_expr(rt, expr).value)
+        None => None
+      }
+      raise EvalError::LoopBreak(val)
+    }
+    @core.Expr::Continue(args~, span~) => {
+      let _ = span
+      let vals : Array[@core.Value] = []
+      for arg in args {
+        vals.push(eval_expr(rt, arg).value)
+      }
+      raise EvalError::LoopContinue(vals)
+    }
+    @core.Expr::Loop(params~, body~, ..) => eval_loop_expr(rt, params, body)
     @core.Expr::Raise(value~, ..) => {
       let v = eval_expr(rt, value)
       raise EvalError::BadCall(
@@ -655,12 +685,57 @@ fn eval_while_expr(
     let body_result : Result[EvalResult, EvalError] = try? rt.eval_module(body)
     match body_result {
       Ok(body_res) => extend_effects(effects, body_res.effects)
-      Err(EvalError::LoopBreak) => break
-      Err(EvalError::LoopContinue) => continue
+      Err(EvalError::LoopBreak(_)) => break
+      Err(EvalError::LoopContinue(_)) => continue
       Err(e) => raise e
     }
   }
   { value: @core.Value::Unit, effects }
+}
+
+///|
+fn eval_loop_expr(
+  rt : Runtime,
+  params : Array[@core.LoopParam],
+  body : @core.Module,
+) -> EvalOutput raise EvalError {
+  let effects : Array[Effect] = []
+  // Initialize loop params
+  for param in params {
+    let init_out = eval_expr(rt, param.init)
+    extend_effects(effects, init_out.effects)
+    rt.bind(param.name, init_out.value) |> ignore
+  }
+  // Loop
+  let mut result : @core.Value = @core.Value::Unit
+  while true {
+    let body_result : Result[EvalResult, EvalError] = try? rt.eval_module(body)
+    match body_result {
+      Ok(body_res) => {
+        extend_effects(effects, body_res.effects)
+        // If body falls through without break, loop continues
+        continue
+      }
+      Err(EvalError::LoopBreak(val)) => {
+        result = match val {
+          Some(v) => v
+          None => @core.Value::Unit
+        }
+        break
+      }
+      Err(EvalError::LoopContinue(args)) => {
+        // Re-bind loop params
+        for i in 0..<args.length() {
+          if i < params.length() {
+            rt.bind(params[i].name, args[i]) |> ignore
+          }
+        }
+        continue
+      }
+      Err(e) => raise e
+    }
+  }
+  { value: result, effects }
 }
 
 ///|

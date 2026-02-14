@@ -698,18 +698,55 @@ fn type_expr_eff(
       }
       @core.Type::Unit
     }
-    @core.Expr::Break(span~) => {
-      if env.loop_depth <= 0 {
-        raise TypeError::BadCall(message="break used outside while loop", span~)
+    @core.Expr::Loop(params~, body~, span~) => {
+      let _ = span
+      // Type-check param init expressions and bind params in scope
+      for param in params {
+        let param_ty = type_expr_eff(
+          env,
+          param.init,
+          aliases,
+          effects,
+          allow_effect,
+        )
+        let scheme = TypeScheme::{
+          vars: [],
+          num_vars: [],
+          effect_vars: [],
+          trait_bounds: {},
+          ty: param_ty,
+        }
+        env.set_scheme(param.name, scheme)
+        env.set_purity(param.name, false)
+      }
+      env.loop_depth += 1
+      let body_ty_result : Result[@core.Type, TypeError] = try? type_block(
+        env, body, aliases, effects, allow_effect,
+      )
+      env.loop_depth -= 1
+      match body_ty_result {
+        Ok(_) => ()
+        Err(err) => raise err
       }
       @core.Type::Unit
     }
-    @core.Expr::Continue(span~) => {
+    @core.Expr::Break(value~, span~) => {
       if env.loop_depth <= 0 {
-        raise TypeError::BadCall(
-          message="continue used outside while loop",
-          span~,
-        )
+        raise TypeError::BadCall(message="break used outside loop", span~)
+      }
+      match value {
+        Some(expr) =>
+          type_expr_eff(env, expr, aliases, effects, allow_effect) |> ignore
+        None => ()
+      }
+      @core.Type::Unit
+    }
+    @core.Expr::Continue(args~, span~) => {
+      if env.loop_depth <= 0 {
+        raise TypeError::BadCall(message="continue used outside loop", span~)
+      }
+      for arg in args {
+        type_expr_eff(env, arg, aliases, effects, allow_effect) |> ignore
       }
       @core.Type::Unit
     }
@@ -1214,6 +1251,25 @@ fn type_block(
           scope_env.set_scheme(name, scheme)
           scope_env.set_purity(name, true)
         }
+        last = ty
+      }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = span
+        let ty = type_expr_eff(scope_env, expr, aliases, effects, allow_effect)
+        let bindings = collect_pattern_bindings(scope_env, pat, ty)
+        for name, bound_ty in bindings {
+          let scheme = TypeScheme::{
+            vars: [],
+            num_vars: [],
+            effect_vars: [],
+            trait_bounds: {},
+            ty: bound_ty,
+          }
+          scope_env.set_scheme(name, scheme)
+          scope_env.set_purity(name, false)
+        }
+        type_block(scope_env, else_body, aliases, effects, allow_effect)
+        |> ignore
         last = ty
       }
       @core.Stmt::Assign(name~, expr~, span~) => {

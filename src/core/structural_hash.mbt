@@ -35,6 +35,13 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, expr.structural_hash())
       h
     }
+    Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      let mut h = 0x4c504500 // "LPE\0"
+      h = combine_hash(h, pat.structural_hash())
+      h = combine_hash(h, expr.structural_hash())
+      h = combine_hash(h, else_body.structural_hash())
+      h
+    }
     Stmt::Assign(name~, expr~, ..) => {
       let mut h = 0x41737369 // "Assi"
       h = combine_hash(h, name.hash())
@@ -315,6 +322,14 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       h = combine_hash(h, body.structural_hash())
       h
     }
+    Expr::Loop(params~, body~, ..) => {
+      let mut h = 0x4c6f6f70 // "Loop"
+      for p in params {
+        h = combine_hash(h, p.structural_hash())
+      }
+      h = combine_hash(h, body.structural_hash())
+      h
+    }
     Expr::Break(..) => 0x42726561 // "Brea"
     Expr::Continue(..) => 0x436f6e74 // "Cont"
     Expr::Raise(value~, ..) => {
@@ -510,6 +525,13 @@ fn TypeCtor::structural_hash(self : TypeCtor) -> Int {
   for a in self.args {
     h = combine_hash(h, a.structural_hash())
   }
+  h
+}
+
+///|
+fn LoopParam::structural_hash(self : LoopParam) -> Int {
+  let mut h = self.name.hash()
+  h = combine_hash(h, self.init.structural_hash())
   h
 }
 

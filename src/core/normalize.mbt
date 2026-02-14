@@ -194,6 +194,17 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       let norm_pat = normalize_pat(pat, scope)
       Stmt::LetPat(pat=norm_pat, expr=norm_expr, span=zero_span)
     }
+    Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      let norm_expr = normalize_expr(expr, scope)
+      let norm_pat = normalize_pat(pat, scope)
+      let norm_else = normalize_block(else_body, scope.child_block())
+      Stmt::LetPatElse(
+        pat=norm_pat,
+        expr=norm_expr,
+        else_body=norm_else,
+        span=zero_span,
+      )
+    }
     Stmt::Assign(name~, expr~, ..) => {
       let norm_name = scope.lookup(name)
       let norm_expr = normalize_expr(expr, scope)
@@ -375,8 +386,22 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         body=normalize_block(body, scope.child_block()),
         span=zero_span,
       )
-    Expr::Break(..) => Expr::Break(span=zero_span)
-    Expr::Continue(..) => Expr::Continue(span=zero_span)
+    Expr::Loop(params~, body~, ..) => {
+      let child = scope.child_block()
+      let norm_params = normalize_loop_params(params, child)
+      Expr::Loop(
+        params=norm_params,
+        body=normalize_block(body, child),
+        span=zero_span,
+      )
+    }
+    Expr::Break(value~, ..) =>
+      Expr::Break(
+        value=value.map(fn(v) { normalize_expr(v, scope) }),
+        span=zero_span,
+      )
+    Expr::Continue(args~, ..) =>
+      Expr::Continue(args=normalize_exprs(args, scope), span=zero_span)
     Expr::Try(try_body~, catch_body~, ..) =>
       Expr::Try(
         try_body=normalize_block(try_body, scope.child_block()),
@@ -439,6 +464,21 @@ fn normalize_params(
       ty: p.ty,
       bounds: p.bounds,
     })
+  }
+  out
+}
+
+///|
+fn normalize_loop_params(
+  params : Array[LoopParam],
+  scope : NormScope,
+) -> Array[LoopParam] {
+  let out : Array[LoopParam] = []
+  let zero_span = Span::{ start: 0, end: 0 }
+  for p in params {
+    let norm_init = normalize_expr(p.init, scope)
+    let norm_name = scope.bind(p.name)
+    out.push(LoopParam::{ name: norm_name, init: norm_init, span: zero_span })
   }
   out
 }

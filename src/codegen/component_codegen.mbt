@@ -357,6 +357,10 @@ fn scan_component_wit_imports_stmt(
       scan_component_wit_imports_expr(expr, acc)
     @core.Stmt::Expr(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
     @core.Stmt::LetPat(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
+    @core.Stmt::LetPatElse(expr~, else_body~, ..) => {
+      scan_component_wit_imports_expr(expr, acc)
+      scan_component_wit_imports_block(else_body, acc)
+    }
     @core.Stmt::LetMut(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
     @core.Stmt::Assign(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
     @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
@@ -437,6 +441,12 @@ fn scan_component_wit_imports_expr(
     @core.Expr::Fn(body~, ..) => scan_component_wit_imports_block(body, acc)
     @core.Expr::While(cond~, body~, ..) => {
       scan_component_wit_imports_expr(cond, acc)
+      scan_component_wit_imports_block(body, acc)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        scan_component_wit_imports_expr(param.init, acc)
+      }
       scan_component_wit_imports_block(body, acc)
     }
     @core.Expr::Raise(value~, ..) => scan_component_wit_imports_expr(value, acc)

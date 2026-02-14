@@ -164,6 +164,16 @@ fn stmts_to_sexp(
         buf.write_string(expr_to_sexp(expr, aliases))
         buf.write_char(')')
       }
+      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
+        let _ = span
+        buf.write_string(" (let-pat-else ")
+        buf.write_string(pat_to_sexp(pat))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(expr, aliases))
+        buf.write_char(' ')
+        buf.write_string(block_to_sexp(else_body, aliases))
+        buf.write_char(')')
+      }
       @core.Stmt::StructDef(name~, params~, fields~, span~) => {
         let _ = span
         buf.write_string(" (struct ")
@@ -419,13 +429,20 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    @core.Expr::Break(span~) => {
+    @core.Expr::Break(..) => "(break)"
+    @core.Expr::Continue(..) => "(continue)"
+    @core.Expr::Loop(params~, body~, span~) => {
       let _ = span
-      "(break)"
-    }
-    @core.Expr::Continue(span~) => {
-      let _ = span
-      "(continue)"
+      let buf = StringBuilder::new()
+      buf.write_string("(loop (params")
+      for param in params {
+        buf.write_char(' ')
+        buf.write_string(escape_atom(param.name))
+      }
+      buf.write_string(") ")
+      buf.write_string(block_to_sexp(body, aliases))
+      buf.write_char(')')
+      buf.to_string()
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span

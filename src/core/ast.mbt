@@ -137,6 +137,7 @@ pub(all) enum Stmt {
   Assign(name~ : String, expr~ : Expr, span~ : Span)
   IndexAssign(target~ : Expr, index~ : Expr, value~ : Expr, span~ : Span)
   LetPat(pat~ : Pat, expr~ : Expr, span~ : Span)
+  LetPatElse(pat~ : Pat, expr~ : Expr, else_body~ : Module, span~ : Span)
   // Export statements
   ExportLet(rec~ : Bool, name~ : String, expr~ : Expr, span~ : Span)
   ExportEnumDef(
@@ -165,6 +166,13 @@ pub(all) enum Stmt {
     fields~ : Array[StructField],
     span~ : Span
   )
+} derive(Show, Eq)
+
+///|
+pub(all) struct LoopParam {
+  name : String
+  init : Expr
+  span : Span
 } derive(Show, Eq)
 
 ///|
@@ -203,8 +211,9 @@ pub(all) enum Expr {
     span~ : Span
   )
   While(cond~ : Expr, body~ : Module, span~ : Span)
-  Break(span~ : Span)
-  Continue(span~ : Span)
+  Loop(params~ : Array[LoopParam], body~ : Module, span~ : Span)
+  Break(value~ : Expr?, span~ : Span)
+  Continue(args~ : Array[Expr], span~ : Span)
   Raise(value~ : Expr, span~ : Span)
   Await(expr~ : Expr, span~ : Span)
   Yield(expr~ : Expr, span~ : Span)
@@ -261,8 +270,9 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Try(span~, ..)
     | Expr::Fn(span~, ..)
     | Expr::While(span~, ..)
-    | Expr::Break(span~)
-    | Expr::Continue(span~)
+    | Expr::Loop(span~, ..)
+    | Expr::Break(span~, ..)
+    | Expr::Continue(span~, ..)
     | Expr::Raise(span~, ..)
     | Expr::Await(span~, ..)
     | Expr::Yield(span~, ..)
@@ -305,6 +315,7 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::Assign(span~, ..)
     | Stmt::IndexAssign(span~, ..)
     | Stmt::LetPat(span~, ..)
+    | Stmt::LetPatElse(span~, ..)
     | Stmt::ExportLet(span~, ..)
     | Stmt::ExportEnumDef(span~, ..)
     | Stmt::ExportTypeAlias(span~, ..)
