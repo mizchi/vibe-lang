@@ -340,7 +340,10 @@ fn infer_expr_kind_with(
         "__index" => ValueKind::I64
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
           if pos_args.length() != 2 {
-            raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="arity: " + name)
+            raise WasmGenError::BackendLimit(
+              backend="wasm-js-string",
+              feature="arity: " + name,
+            )
           }
           let left_kind = infer_expr_kind_with(ctx, pos_args[0], locals)
           let right_kind = infer_expr_kind_with(ctx, pos_args[1], locals)
@@ -352,22 +355,36 @@ fn infer_expr_kind_with(
           } else if right_kind == ValueKind::I64 {
             left_kind
           } else {
-            raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="numeric kind mismatch")
+            raise WasmGenError::BackendLimit(
+              backend="wasm-js-string",
+              feature="numeric kind mismatch",
+            )
           }
           match resolved_kind {
             ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 =>
               resolved_kind
-            _ => raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="numeric kind")
+            _ =>
+              raise WasmGenError::BackendLimit(
+                backend="wasm-js-string",
+                feature="numeric kind",
+              )
           }
         }
         "__neg" => {
           if pos_args.length() != 1 {
-            raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="arity: " + name)
+            raise WasmGenError::BackendLimit(
+              backend="wasm-js-string",
+              feature="arity: " + name,
+            )
           }
           let kind = infer_expr_kind_with(ctx, pos_args[0], locals)
           match kind {
             ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 => kind
-            _ => raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="numeric kind")
+            _ =>
+              raise WasmGenError::BackendLimit(
+                backend="wasm-js-string",
+                feature="numeric kind",
+              )
           }
         }
         "int_to_float"
@@ -502,7 +519,10 @@ fn infer_expr_kind_with(
       let then_kind = infer_block_kind(ctx, then_body, locals)
       let else_kind = infer_block_kind(ctx, else_body, locals)
       if then_kind != else_kind {
-        raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="if kind mismatch")
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="if kind mismatch",
+        )
       }
       then_kind
     }
@@ -515,7 +535,10 @@ fn infer_expr_kind_with(
       let try_kind = infer_block_kind(ctx, try_body, locals)
       let catch_kind = infer_block_kind(ctx, catch_body, locals)
       if try_kind != catch_kind {
-        raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="try kind mismatch")
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="try kind mismatch",
+        )
       }
       try_kind
     }
@@ -1046,9 +1069,9 @@ fn infer_func_return_kind(
         raise WasmGenError::BackendLimit(
           backend="wasm-js-string",
           feature="fn return kind mismatch: declared=" +
-          declared.to_string() +
-          " inferred=" +
-          inferred.to_string(),
+            declared.to_string() +
+            " inferred=" +
+            inferred.to_string(),
         )
       }
       declared
@@ -1101,7 +1124,10 @@ fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn import_index_js_length(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_js_length) {
-    raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="length import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm-js-string",
+      feature="length import",
+    )
   }
   0
 }
@@ -1109,7 +1135,10 @@ fn import_index_js_length(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn import_index_js_char_code_at(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_js_char_code_at) {
-    raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="charCodeAt import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm-js-string",
+      feature="charCodeAt import",
+    )
   }
   let mut idx = 0
   if ctx.need_js_length {
@@ -1121,7 +1150,10 @@ fn import_index_js_char_code_at(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn import_index_js_substring(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_js_substring) {
-    raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="substring import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm-js-string",
+      feature="substring import",
+    )
   }
   let mut idx = 0
   if ctx.need_js_length {
@@ -1136,7 +1168,10 @@ fn import_index_js_substring(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn import_index_js_concat(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_js_concat) {
-    raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="concat import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm-js-string",
+      feature="concat import",
+    )
   }
   let mut idx = 0
   if ctx.need_js_length {
@@ -1154,7 +1189,10 @@ fn import_index_js_concat(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn import_index_js_equals(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_js_equals) {
-    raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="equals import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm-js-string",
+      feature="equals import",
+    )
   }
   let mut idx = 0
   if ctx.need_js_length {
@@ -1190,7 +1228,10 @@ fn import_index_after_sleep(ctx : CodegenCtx) -> Int {
 ///|
 fn import_index_stdout_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_stdout_write_char) {
-    raise WasmGenError::BackendLimit(backend="wasm", feature="stdout stream import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="stdout stream import",
+    )
   }
   import_index_after_sleep(ctx)
 }
@@ -1198,7 +1239,10 @@ fn import_index_stdout_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn import_index_stdout_write_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_stdout_write_char) {
-    raise WasmGenError::BackendLimit(backend="wasm", feature="stdout stream import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="stdout stream import",
+    )
   }
   import_index_after_sleep(ctx) + 1
 }
@@ -1206,7 +1250,10 @@ fn import_index_stdout_write_stream(ctx : CodegenCtx) -> Int raise WasmGenError 
 ///|
 fn import_index_stdin_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_stdin_read_char) {
-    raise WasmGenError::BackendLimit(backend="wasm", feature="stdin stream import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="stdin stream import",
+    )
   }
   let mut idx = import_index_after_sleep(ctx)
   if ctx.need_stdout_write_char {
@@ -1218,7 +1265,10 @@ fn import_index_stdin_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn import_index_stdin_read_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_stdin_read_char) {
-    raise WasmGenError::BackendLimit(backend="wasm", feature="stdin stream import")
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="stdin stream import",
+    )
   }
   import_index_stdin_get_stream(ctx) + 1
 }
@@ -1238,7 +1288,10 @@ fn resolve_numeric_kind(
   } else if right_kind == ValueKind::I64 {
     left_kind
   } else {
-    raise WasmGenError::BackendLimit(backend="wasm-js-string", feature="numeric kind mismatch")
+    raise WasmGenError::BackendLimit(
+      backend="wasm-js-string",
+      feature="numeric kind mismatch",
+    )
   }
 }
 
