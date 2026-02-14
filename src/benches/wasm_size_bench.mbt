@@ -66,7 +66,6 @@ test "bench: wasm.size.user_fn" {
     snapshot,
     content=(
       #|{wasm_size: Some(296), ir_size: 344, note: None}
-
     ),
   )
 }
@@ -78,7 +77,6 @@ test "bench: wasm.size.effect_ho" {
     snapshot,
     content=(
       #|{wasm_size: Some(428), ir_size: 930, note: None}
-
     ),
   )
 }
