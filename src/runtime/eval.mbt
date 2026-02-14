@@ -104,6 +104,49 @@ pub fn Runtime::eval_module(
         extend_effects(effects, out.effects)
         last = Some(out.value)
       }
+      @core.Stmt::ReExport(names~, source~, ..) => {
+        let hash = match source {
+          @core.ModuleRef::Hash(hash~) => hash
+          @core.ModuleRef::Path(path~) =>
+            raise EvalError::ImportError(
+              "Import path not resolved to hash: " + path,
+            )
+          @core.ModuleRef::Version(name~) =>
+            raise EvalError::ImportError(
+              "Import version ref not resolved to hash: " + name,
+            )
+          @core.ModuleRef::Symbol(name~) =>
+            raise EvalError::ImportError(
+              "Import symbol ref not resolved to hash: " + name,
+            )
+        }
+        match self.get_module(hash) {
+          None =>
+            raise EvalError::ImportError("Module not found in cache: " + hash)
+          Some(imported_module) => {
+            let imported_rt = self.fork_for_test()
+            let _imported_result = imported_rt.eval_module(imported_module) catch {
+              e =>
+                raise EvalError::ImportError(
+                  "Failed to evaluate imported module: " + e.to_string(),
+                )
+            }
+            let exports = @core.extract_exports(imported_module)
+            for name in names {
+              match exports.get(name) {
+                None =>
+                  raise EvalError::ImportError("Symbol not exported: " + name)
+                Some(_) =>
+                  match imported_rt.get(name) {
+                    Some(value) => self.bind(name, value) |> ignore
+                    None => () // type/enum only, no runtime value
+                  }
+              }
+            }
+          }
+        }
+        last = Some(@core.Value::Unit)
+      }
       @core.Stmt::Import(spec~, source~, ..) => {
         // Get the module hash
         let hash = match source {
@@ -320,8 +363,7 @@ pub fn Runtime::eval_module(
         }
       @core.Stmt::ExportEnumDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::ExportTypeAlias(..) => last = Some(@core.Value::Unit)
-      @core.Stmt::Export(..) | @core.Stmt::ReExport(..) =>
-        last = Some(@core.Value::Unit)
+      @core.Stmt::Export(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Test(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Bench(..) => last = Some(@core.Value::Unit)
       @core.Stmt::LetMut(name~, expr~, ..) => {

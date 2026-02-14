@@ -633,7 +633,7 @@ fn collect_and_normalize_imports(
 ) -> Unit {
   for stmt in m.stmts {
     match stmt {
-      Stmt::Import(source~, ..) =>
+      Stmt::Import(source~, ..) | Stmt::ReExport(source~, ..) =>
         match source {
           ModuleRef::Path(path~) =>
             if not(path_to_hash.contains(path)) {
@@ -678,7 +678,7 @@ pub fn collect_import_hashes(m : Module) -> Array[String] {
   let hashes : Array[String] = []
   for stmt in m.stmts {
     match stmt {
-      Stmt::Import(source~, ..) =>
+      Stmt::Import(source~, ..) | Stmt::ReExport(source~, ..) =>
         match source {
           ModuleRef::Hash(hash~) => hashes.push(hash)
           ModuleRef::Path(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>

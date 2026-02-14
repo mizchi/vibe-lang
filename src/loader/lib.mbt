@@ -93,7 +93,8 @@ fn load_sources_recursive_impl(
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
-      @vibe_core.Stmt::Import(source~, ..) =>
+      @vibe_core.Stmt::Import(source~, ..)
+      | @vibe_core.Stmt::ReExport(source~, ..) =>
         match source {
           @vibe_core.ModuleRef::Path(path~) => {
             let resolved = match

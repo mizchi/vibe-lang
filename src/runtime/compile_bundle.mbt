@@ -202,6 +202,26 @@ fn collect_reexport_defs(
         if requested.contains(name) {
           out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
         }
+      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
+        if requested.contains(name) {
+          out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
+        }
+      @core.Stmt::StructDef(name~, params~, fields~, span~) =>
+        if requested.contains(name) {
+          out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
+        }
+      @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) =>
+        if requested.contains(name) {
+          out.push(
+            @core.Stmt::TraitDef(
+              name~,
+              supertraits~,
+              open_impl~,
+              exported~,
+              span~,
+            ),
+          )
+        }
       _ => ()
     }
   }

@@ -923,7 +923,7 @@ fn collect_path_refs_impl(
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Import(source~, ..) =>
+      @core.Stmt::Import(source~, ..) | @core.Stmt::ReExport(source~, ..) =>
         match source {
           @core.ModuleRef::Path(path~) => {
             let resolved = match

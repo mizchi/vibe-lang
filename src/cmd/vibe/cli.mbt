@@ -648,7 +648,8 @@ fn run_cmd(
           let base_dir = @vibe_fs.parent_path(entry)
           for stmt in compiled.ast.stmts {
             match stmt {
-              @vibe_core.Stmt::Import(source~, ..) =>
+              @vibe_core.Stmt::Import(source~, ..)
+              | @vibe_core.Stmt::ReExport(source~, ..) =>
                 match source {
                   @vibe_core.ModuleRef::Path(path=raw_path) => {
                     // Resolve the path to find the hash
@@ -1032,7 +1033,8 @@ fn test_cmd(
         let base_dir = @vibe_fs.parent_path(entry)
         for stmt in compiled.ast.stmts {
           match stmt {
-            @vibe_core.Stmt::Import(source~, ..) =>
+            @vibe_core.Stmt::Import(source~, ..)
+            | @vibe_core.Stmt::ReExport(source~, ..) =>
               match source {
                 @vibe_core.ModuleRef::Path(path=raw_path) => {
                   let resolved = @loader.resolve_import_path(base_dir, raw_path)
@@ -1727,7 +1729,8 @@ fn run_bench_blocks_interpreter_entry(
   let base_dir = @vibe_fs.parent_path(entry)
   for stmt in compiled.ast.stmts {
     match stmt {
-      @vibe_core.Stmt::Import(source~, ..) =>
+      @vibe_core.Stmt::Import(source~, ..)
+      | @vibe_core.Stmt::ReExport(source~, ..) =>
         match source {
           @vibe_core.ModuleRef::Path(path=raw_path) => {
             let resolved = @loader.resolve_import_path(base_dir, raw_path)

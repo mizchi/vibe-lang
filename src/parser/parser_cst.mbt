@@ -110,19 +110,21 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
     ParseError::IntLiteralOverflow(literal~, span~) =>
       @core.Diagnostic::{
         stage: "parse",
-        message: "int literal overflow: `" + literal + "` is out of Int64 range",
+        message: "int literal overflow: `" +
+        literal +
+        "` exceeds tagged Int range (max 2305843009213693951)",
         span: Some(span),
         hint: Some(
-          "use a smaller literal or rewrite as `0 - 9223372036854775807 - 1`",
+          "use a smaller literal or rewrite as `0 - 2305843009213693951 - 1`",
         ),
         note: None,
       }
     ParseError::IntMinLiteralBoundary(span~) =>
       @core.Diagnostic::{
         stage: "parse",
-        message: "`-9223372036854775808` is rejected: unary `-` does not extend Int64 literal range",
+        message: "`-2305843009213693952` is rejected: unary `-` does not extend Int literal range",
         span: Some(span),
-        hint: Some("rewrite as `0 - 9223372036854775807 - 1`"),
+        hint: Some("rewrite as `0 - 2305843009213693951 - 1`"),
         note: Some(
           "parser treats `-` as unary operator applied after literal parsing",
         ),
@@ -619,6 +621,9 @@ fn Parser::parse_export_stmt(self : Parser) -> Unit {
     } else {
       self.builder.token(error_kind(), "")
     }
+  } else if self.at(use_kw()) {
+    // export use <module-ref> { items }
+    self.parse_import_stmt()
   } else if self.at(lbrace()) {
     // export { name1, name2, ... }
     self.bump()

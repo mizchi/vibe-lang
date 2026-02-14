@@ -213,7 +213,7 @@ pub fn resolve_import_hashes(
   let results : Array[(String, String)] = []
   for stmt in ast.stmts {
     match stmt {
-      Stmt::Import(source~, ..) =>
+      Stmt::Import(source~, ..) | Stmt::ReExport(source~, ..) =>
         match source {
           ModuleRef::Path(path~) =>
             match path_to_hash(path) {
@@ -245,6 +245,19 @@ pub fn convert_imports_to_hash(
               Some(hash) =>
                 new_stmts.push(
                   Stmt::Import(spec~, source=ModuleRef::Hash(hash~), span~),
+                )
+              None => new_stmts.push(stmt)
+            }
+          ModuleRef::Hash(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
+            new_stmts.push(stmt)
+        }
+      Stmt::ReExport(names~, source~, span~) =>
+        match source {
+          ModuleRef::Path(path~) =>
+            match path_to_hash(path) {
+              Some(hash) =>
+                new_stmts.push(
+                  Stmt::ReExport(names~, source=ModuleRef::Hash(hash~), span~),
                 )
               None => new_stmts.push(stmt)
             }
@@ -289,6 +302,10 @@ pub fn extract_exports(ast : Module) -> Map[String, Stmt] {
         defined.set(name, stmt)
         exports.set(name, stmt)
       }
+      Stmt::ReExport(names~, ..) =>
+        for name in names {
+          exports.set(name, stmt)
+        }
       _ => ()
     }
   }

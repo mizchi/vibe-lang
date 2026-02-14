@@ -744,7 +744,7 @@ fn detect_import_cycle_from(
   let base_dir = @path.Path(path).dirname().to_string()
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Import(source~, ..) =>
+      @core.Stmt::Import(source~, ..) | @core.Stmt::ReExport(source~, ..) =>
         match source {
           @core.ModuleRef::Path(path=raw_path) => {
             let path_obj = normalize_path_obj(base_dir, raw_path)
@@ -836,7 +836,8 @@ pub fn VibeDb::new() -> VibeDb {
     let mut has_imports = false
     for stmt in ast.stmts {
       match stmt {
-        @core.Stmt::Import(source~, span~, ..) => {
+        @core.Stmt::Import(source~, span~, ..)
+        | @core.Stmt::ReExport(source~, span~, ..) => {
           has_imports = true
           match source {
             @core.ModuleRef::Path(path~) => {
@@ -1307,9 +1308,107 @@ pub fn VibeDb::new() -> VibeDb {
           // Get the AST of the imported module to find exports
           let imported_ast = ast_query.fetch(rt, imp.path).unwrap()
           let exported_names = collect_exported_names(imported_ast)
-          // Now look up the import items in the main AST's Import statement
+          // Now look up the import items in the main AST's Import or ReExport statement
           for stmt in ast.stmts {
             match stmt {
+              @core.Stmt::ReExport(names~, source~, span~) =>
+                if import_stmt_matches_spec(base_dir, source, imp) {
+                  // Build import items from re-export names and import them
+                  let reexport_items : Array[@core.ImportItem] = names.map(fn(
+                    name,
+                  ) {
+                    @core.ImportItem::{
+                      kind: @core.ImportKind::Value,
+                      name,
+                      rename: None,
+                    }
+                  })
+                  let reexport_spec = @core.ImportSpec::{
+                    items: reexport_items,
+                  }
+                  let trait_aliases = collect_import_trait_aliases(
+                    reexport_spec, imported_env,
+                  )
+                  for name in names {
+                    if exported_names.contains(name) {
+                      let item = @core.ImportItem::{
+                        kind: @core.ImportKind::Value,
+                        name,
+                        rename: None,
+                      }
+                      // Import value
+                      if import_item_accepts_value(item, name) {
+                        match imported_env.get_scheme(name) {
+                          Some(scheme) => {
+                            import_scheme_trait_dependencies(
+                              env, imported_env, scheme, trait_aliases, exported_names,
+                            )
+                            if can_bind_import_value(name, span) {
+                              env.set_scheme(name, scheme)
+                              env.set_exported_scheme(name, scheme)
+                            }
+                          }
+                          None => ()
+                        }
+                      }
+                      // Import type (struct)
+                      match imported_env.get_struct(name) {
+                        Some(struct_def) => {
+                          env.set_struct(name, struct_def)
+                          import_trait_impls_for_type(
+                            env, imported_env, name, trait_aliases,
+                          )
+                        }
+                        None => ()
+                      }
+                      // Import type (enum)
+                      match imported_env.get_enum_def(name) {
+                        Some(enum_def) => {
+                          env.set_enum_def(name, enum_def)
+                          import_trait_impls_for_type(
+                            env, imported_env, name, trait_aliases,
+                          )
+                          for ctor in enum_def.ctors {
+                            match imported_env.get_ctor(ctor.name) {
+                              Some(ctor_info) =>
+                                env.set_ctor(ctor.name, ctor_info)
+                              None => ()
+                            }
+                            match imported_env.get_scheme(ctor.name) {
+                              Some(scheme) =>
+                                if can_bind_import_value(ctor.name, span) {
+                                  env.set_scheme(ctor.name, scheme)
+                                  env.set_exported_scheme(ctor.name, scheme)
+                                }
+                              None => ()
+                            }
+                          }
+                        }
+                        None => ()
+                      }
+                      // Import type alias
+                      match imported_env.get_type_alias(name) {
+                        Some(type_alias) => env.set_type_alias(name, type_alias)
+                        None => ()
+                      }
+                      // Import trait
+                      if imported_env.has_trait(name) {
+                        let local_supertraits = imported_env.trait_supertraits(
+                          name,
+                        )
+                        env.import_trait(
+                          name,
+                          imported_env.trait_is_open(name),
+                          local_supertraits,
+                        )
+                        let impls = imported_env.trait_impls_for(name)
+                        for impl_def in impls {
+                          env.add_trait_impl(name, impl_def)
+                        }
+                      }
+                    }
+                  }
+                }
               @core.Stmt::Import(spec~, source~, span~) =>
                 if import_stmt_matches_spec(base_dir, source, imp) {
                   let trait_aliases = collect_import_trait_aliases(
@@ -1783,6 +1882,25 @@ fn rewrite_import_sources(
             Some(hash) =>
               @core.Stmt::Import(
                 spec~,
+                source=@core.ModuleRef::Hash(hash~),
+                span~,
+              )
+            None => stmt
+          }
+        } else {
+          stmt
+        }
+        stmts.push(next_stmt)
+      }
+      @core.Stmt::ReExport(names~, source~, span~) => {
+        let _ = source
+        let next_stmt = if import_idx < imports.length() {
+          let resolved = imports[import_idx]
+          import_idx += 1
+          match resolved.hash {
+            Some(hash) =>
+              @core.Stmt::ReExport(
+                names~,
                 source=@core.ModuleRef::Hash(hash~),
                 span~,
               )

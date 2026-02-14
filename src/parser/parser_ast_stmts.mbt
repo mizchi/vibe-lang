@@ -1776,6 +1776,26 @@ fn AstParser::parse_export_stmt(
         )
       }
     }
+  } else if self.peek_kind() == use_kw() {
+    // export use <module-ref> { items }
+    let _ = self.bump() // consume 'use'
+    self.skip_trivia()
+    let source = self.parse_module_ref()
+    self.skip_trivia()
+    let items = self.parse_import_items("re-export item")
+    for item in items {
+      if item.rename != None {
+        raise ParseError::UnexpectedToken(
+          expected="plain name (rename not supported in export use)",
+          got="as",
+          span=self.span_from(start),
+        )
+      }
+    }
+    let names = items.map(fn(item) { item.name })
+    let _ = self.eat(semicolon())
+    let span = self.span_from(start)
+    @core.Stmt::ReExport(names~, source~, span~)
   } else if self.peek_kind() == name() &&
     self.peek().text() == "module" &&
     self.peek_non_trivia_ahead(1) == name() &&

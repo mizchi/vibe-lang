@@ -168,18 +168,6 @@ fn parse_spec(data : String, path : String) -> FixtureSpec raise {
 }
 
 ///|
-fn fixture_entry_path(path : String) -> String {
-  let mut base = path
-  for part in path.split("/") {
-    let s = part.to_string()
-    if s.length() > 0 {
-      base = s
-    }
-  }
-  base
-}
-
-///|
 fn resolve_import_fs_path(from_path : String, raw_path : String) -> String? {
   let is_file = fn(path : String) -> Bool {
     @os_fs.is_file(path) catch {
@@ -238,7 +226,7 @@ fn preload_module_sources(
   }
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Import(source~, ..) =>
+      @core.Stmt::Import(source~, ..) | @core.Stmt::ReExport(source~, ..) =>
         match source {
           @core.ModuleRef::Path(path~) => {
             let import_path = path
@@ -365,24 +353,23 @@ fn eval_fixture(
     let rt = Runtime::new(@capability.CapabilitySet::developer())
     return Ok(rt.eval_script(script)) catch { e => Err(e.to_string()) }
   }
-  let entry = fixture_entry_path(path)
   let db = VibeDb::new()
   let preload_visited : Map[String, Bool] = {}
-  let preload = Ok(preload_module_sources(db, entry, script, preload_visited)) catch {
+  let preload = Ok(preload_module_sources(db, path, script, preload_visited)) catch {
     e => Err(e.to_string())
   }
   match preload {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  let refs = Ok(apply_fixture_refs(db, entry, spec, preload_visited)) catch {
+  let refs = Ok(apply_fixture_refs(db, path, spec, preload_visited)) catch {
     e => Err(e.to_string())
   }
   match refs {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  let compiled = Ok(compile_module(db, entry)) catch { e => Err(e.to_string()) }
+  let compiled = Ok(compile_module(db, path)) catch { e => Err(e.to_string()) }
   let compiled = match compiled {
     Ok(c) => c
     Err(e) => return Err(e)
@@ -391,7 +378,7 @@ fn eval_fixture(
   rt.set_type_env(compiled.type_env)
   let import_visited : Map[String, Bool] = {}
   let path_to_hash : Map[String, String] = {}
-  register_fixture_import_modules(rt, db, entry, import_visited, path_to_hash)
+  register_fixture_import_modules(rt, db, path, import_visited, path_to_hash)
   for name, target in compiled.aliases {
     rt.set_alias(name, target)
   }

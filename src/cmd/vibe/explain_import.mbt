@@ -372,7 +372,8 @@ fn explain_import_collect_module(
   }
   for stmt in ast.stmts {
     match stmt {
-      @vibe_core.Stmt::Import(source=import_source, span~, ..) => {
+      @vibe_core.Stmt::Import(source=import_source, span~, ..)
+      | @vibe_core.Stmt::ReExport(source=import_source, span~, ..) => {
         let line = @vibe_core.line_info(source, span.start).0.line
         let item = match import_source {
           @vibe_core.ModuleRef::Path(path=raw_path) =>
@@ -394,7 +395,8 @@ fn explain_import_collect_module(
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
-      @vibe_core.Stmt::Import(source=import_source, ..) =>
+      @vibe_core.Stmt::Import(source=import_source, ..)
+      | @vibe_core.Stmt::ReExport(source=import_source, ..) =>
         match import_source {
           @vibe_core.ModuleRef::Path(path=raw_path) =>
             match

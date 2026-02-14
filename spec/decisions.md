@@ -32,7 +32,7 @@ Status: accepted and moved from `TODO.md`.
   `enum` variants and `struct` fields use `;`.
   Comma separators are parse errors (formatter may still normalize CST input).
 - `Int` min-literal boundary policy is fixed:
-  `-2147483648` is rejected as parse-time overflow
+  `-2305843009213693952` is rejected as parse-time overflow
   (unary minus does not extend positive literal range).
 - WASM stdio target policy is fixed:
   standard I/O APIs are defined against `wasi:io` (preview2/component path),
@@ -146,3 +146,8 @@ Status: accepted and moved from `TODO.md`.
   stores current metrics in `dist/bundle_size/current.tsv`,
   and enforces per-entry golden budgets from
   `bench/golden/bundle_size_budget.tsv`.
+- `export use` re-export syntax is implemented for facade modules:
+  `export use <module-ref> { name1, name2 }` desugars to `Stmt::ReExport`
+  (existing AST node). Named items are imported from the source module and
+  re-exported in a single statement. `as` rename is not supported (Phase 1).
+  Braces are required (no wildcard re-export).
