@@ -339,14 +339,16 @@ fn infer_expr_kind_with(
         "__index" => ValueKind::I64
         "__add" | "__sub" | "__mul" | "__div" | "__mod" => {
           if pos_args.length() != 2 {
-            raise WasmGenError::BackendLimit(
-              backend="wasm-js-string",
-              feature="arity: " + name,
-            )
+            raise WasmGenError::Unsupported("arity: " + name)
           }
           let left_kind = infer_expr_kind_with(ctx, pos_args[0], locals)
           let right_kind = infer_expr_kind_with(ctx, pos_args[1], locals)
           // When one side is I64 (generic tagged), coerce to the other side's type
+          let backend = if ctx.use_js_strings {
+            "wasm-js-string"
+          } else {
+            "wasm"
+          }
           let resolved_kind = if left_kind == right_kind {
             left_kind
           } else if left_kind == ValueKind::I64 {
@@ -355,7 +357,7 @@ fn infer_expr_kind_with(
             left_kind
           } else {
             raise WasmGenError::BackendLimit(
-              backend="wasm-js-string",
+              backend~,
               feature="numeric kind mismatch",
             )
           }
@@ -364,24 +366,26 @@ fn infer_expr_kind_with(
               resolved_kind
             _ =>
               raise WasmGenError::BackendLimit(
-                backend="wasm-js-string",
+                backend~,
                 feature="numeric kind",
               )
           }
         }
         "__neg" => {
           if pos_args.length() != 1 {
-            raise WasmGenError::BackendLimit(
-              backend="wasm-js-string",
-              feature="arity: " + name,
-            )
+            raise WasmGenError::Unsupported("arity: " + name)
           }
           let kind = infer_expr_kind_with(ctx, pos_args[0], locals)
+          let backend = if ctx.use_js_strings {
+            "wasm-js-string"
+          } else {
+            "wasm"
+          }
           match kind {
             ValueKind::I64 | ValueKind::BoxedF32 | ValueKind::BoxedF64 => kind
             _ =>
               raise WasmGenError::BackendLimit(
-                backend="wasm-js-string",
+                backend~,
                 feature="numeric kind",
               )
           }
@@ -518,10 +522,12 @@ fn infer_expr_kind_with(
       let then_kind = infer_block_kind(ctx, then_body, locals)
       let else_kind = infer_block_kind(ctx, else_body, locals)
       if then_kind != else_kind {
-        raise WasmGenError::BackendLimit(
-          backend="wasm-js-string",
-          feature="if kind mismatch",
-        )
+        let backend = if ctx.use_js_strings {
+          "wasm-js-string"
+        } else {
+          "wasm"
+        }
+        raise WasmGenError::BackendLimit(backend~, feature="if kind mismatch")
       }
       then_kind
     }
@@ -534,9 +540,13 @@ fn infer_expr_kind_with(
       let try_kind = infer_block_kind(ctx, try_body, locals)
       let catch_kind = infer_block_kind(ctx, catch_body, locals)
       if try_kind != catch_kind {
+        let backend = if ctx.use_js_strings {
+          "wasm-js-string"
+        } else {
+          "wasm"
+        }
         raise WasmGenError::BackendLimit(
-          backend="wasm-js-string",
-          feature="try kind mismatch",
+          backend~, feature="try kind mismatch",
         )
       }
       try_kind
@@ -1287,8 +1297,13 @@ fn resolve_numeric_kind(
   } else if right_kind == ValueKind::I64 {
     left_kind
   } else {
+    let backend = if ctx.use_js_strings {
+      "wasm-js-string"
+    } else {
+      "wasm"
+    }
     raise WasmGenError::BackendLimit(
-      backend="wasm-js-string",
+      backend~,
       feature="numeric kind mismatch",
     )
   }
