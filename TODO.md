@@ -17,10 +17,10 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     Reduce single-character `String`/`Int` ambiguity in parser/std code.
   - [x] 6. Add `String` / `Bytes` builder APIs. (Done: 2026-02-14)
     Avoid repeated `string_concat` patterns in loops and parsers.
-  - [ ] 7. Improve pattern-match ergonomics for sequence-heavy tests.
-    Add concise match/assert syntax to reduce deep nested `match` blocks.
-  - [ ] 8. Add `loop` expression with explicit tail-call optimization guarantees.
-    Keep recursive iteration code performant and predictable.
+  - [x] 7. Improve pattern-match ergonomics for sequence-heavy tests. (Done: 2026-02-15)
+    Add `let Pat = expr else { body }` for flat pattern unwrapping.
+  - [x] 8. Add `loop` expression with explicit tail-call optimization guarantees. (Done: 2026-02-15)
+    Add `loop (x = init, ...) { break val; continue(args) }` compiling to WASM block/loop/br.
   - [ ] 9. Revisit Int model portability (backend-independent integer surface).
     Move toward 64-bit-safe semantics or explicit typed-int alternatives.
   - [ ] 10. Add import/re-export simplification for forwarding modules.
