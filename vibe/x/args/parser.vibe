@@ -1,19 +1,17 @@
+
 export enum ArgToken {
   Positional(String);
   Flag(String);
   Opt(String, String)
 }
-
 export enum ArgList {
   ArgNil;
   ArgCons(ArgToken, ArgList)
 }
-
 export enum ParseResult {
   ParseOk(ArgList);
   ParseErr(String)
 }
-
 export let parse_args = (args: Array[String]) -> ParseResult {
   let total = array_length(args)
   let starts_with_dash = (s: String) -> Bool {
@@ -35,21 +33,18 @@ export let parse_args = (args: Array[String]) -> ParseResult {
     if j >= string_length(body) {
       tail
     } else {
-      ArgCons(
-        Flag(string_substring(body, j, j + 1)),
-        prepend_short_flags(body, j + 1, tail)
-      )
+      ArgCons(Flag(string_substring(body, j, j + 1)), prepend_short_flags(body, j + 1, tail))
     }
   }
-  let rec loop = (i: Int, stop: Bool) -> ParseResult {
+  let rec r#loop = (i: Int, stop: Bool) -> ParseResult {
     if i >= total {
       ParseOk(ArgNil)
     } else {
       let arg = array_get(args, i)
       if stop {
-        prepend_token(Positional(arg), loop(i + 1, true))
+        prepend_token(Positional(arg), r#loop(i + 1, true))
       } else if string_equals(arg, "--") {
-        loop(i + 1, true)
+        r#loop(i + 1, true)
       } else if starts_with_double_dash(arg) && string_length(arg) > 2 {
         let body = string_substring(arg, 2, string_length(arg))
         let eq_pos = string_index_of(body, "=")
@@ -58,9 +53,9 @@ export let parse_args = (args: Array[String]) -> ParseResult {
         } else if eq_pos > 0 {
           let key = string_substring(body, 0, eq_pos)
           let value = string_substring(body, eq_pos + 1, string_length(body))
-          prepend_token(Opt(key, value), loop(i + 1, false))
+          prepend_token(Opt(key, value), r#loop(i + 1, false))
         } else {
-          prepend_token(Flag(body), loop(i + 1, false))
+          prepend_token(Flag(body), r#loop(i + 1, false))
         }
       } else if starts_with_dash(arg) && string_length(arg) > 1 {
         let body = string_substring(arg, 1, string_length(arg))
@@ -70,29 +65,28 @@ export let parse_args = (args: Array[String]) -> ParseResult {
         } else if eq_pos == 1 {
           let key = string_substring(body, 0, 1)
           let value = string_substring(body, 2, string_length(body))
-          prepend_token(Opt(key, value), loop(i + 1, false))
+          prepend_token(Opt(key, value), r#loop(i + 1, false))
         } else if string_length(body) == 1 {
           if i + 1 < total {
             let next_arg = array_get(args, i + 1)
             if is_option_token(next_arg) {
-              prepend_token(Flag(body), loop(i + 1, false))
+              prepend_token(Flag(body), r#loop(i + 1, false))
             } else {
-              prepend_token(Opt(body, next_arg), loop(i + 2, false))
+              prepend_token(Opt(body, next_arg), r#loop(i + 2, false))
             }
           } else {
-            prepend_token(Flag(body), loop(i + 1, false))
+            prepend_token(Flag(body), r#loop(i + 1, false))
           }
         } else {
-          match loop(i + 1, false) {
+          match r#loop(i + 1, false) {
             ParseOk(tail) => ParseOk(prepend_short_flags(body, 0, tail)),
             ParseErr(msg) => ParseErr(msg)
           }
         }
       } else {
-        prepend_token(Positional(arg), loop(i + 1, false))
+        prepend_token(Positional(arg), r#loop(i + 1, false))
       }
     }
   }
-  loop(0, false)
+  r#loop(0, false)
 }
-
