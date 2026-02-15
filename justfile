@@ -190,6 +190,10 @@ bench-compare:
 bench-kpi *paths:
     scripts/bench_kpi.sh {{paths}}
 
+# Full KPI suite (all patterns)
+bench-kpi-full:
+    scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe
+
 # Compare wasm js-string vs wasm gc on string-heavy workload
 bench-string-compare:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/bench_string_compare.sh
@@ -273,8 +277,8 @@ bench-bundle-size-update:
 # Update std-focused benchmark baselines (bundle-size + KPI snapshots)
 bench-std-baseline-update:
     VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1 VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1 scripts/bench_bundle_size.sh --update
-    VIBE_BENCH_KPI_BACKEND=wasm VIBE_BENCH_KPI_REPORT=bench/golden/kpi_wasm.tsv scripts/bench_kpi.sh
-    VIBE_BENCH_KPI_BACKEND=interpreter VIBE_BENCH_KPI_REPORT=bench/golden/kpi_interpreter.tsv scripts/bench_kpi.sh
+    VIBE_BENCH_KPI_BACKEND=wasm VIBE_BENCH_KPI_REPORT=bench/golden/kpi_wasm.tsv scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe
+    VIBE_BENCH_KPI_BACKEND=interpreter VIBE_BENCH_KPI_REPORT=bench/golden/kpi_interpreter.tsv scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe
 
 # Regenerate advanced graph flatbuffers schema bindings
 gen-advanced-graph-fb:
