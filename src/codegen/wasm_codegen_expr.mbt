@@ -3539,16 +3539,27 @@ fn compile_expr(
     }
     @core.Expr::TupleIndex(expr~, index~, span~) => {
       let _ = span
-      // Compile the tuple expression (puts tagged i64 pointer on stack)
-      compile_expr(ctx, buf, expr)
-      // Untag pointer to i32
-      emit_i64_const_raw(buf, (-4).to_int64())
-      emit_i64_and(buf)
-      emit_i32_wrap_i64(buf)
-      // Load element at index: tuple layout is [type_tag:4][len:4][elem0:4][elem1:4]...
-      // So element i is at offset 8 + i * 4
-      emit_i32_load(buf, 8 + index * 4)
-      emit_i64_extend_i32_s(buf)
+      match detect_multivalue_call(ctx, expr) {
+        Some(kinds) => {
+          compile_expr_multivalue_call(ctx, buf, expr)
+          let n = kinds.length()
+          let temps : Array[Int] = Array::make(n, 0)
+          for i = n - 1; i >= 0; i = i - 1 {
+            let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+            temps[i] = tmp
+            emit_local_set(buf, tmp)
+          }
+          emit_local_get(buf, temps[index])
+        }
+        None => {
+          compile_expr(ctx, buf, expr)
+          emit_i64_const_raw(buf, (-4).to_int64())
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i32_load(buf, 8 + index * 4)
+          emit_i64_extend_i32_s(buf)
+        }
+      }
     }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
@@ -4340,38 +4351,16 @@ fn compile_stmt(
       match pat {
         @core.Pat::Tuple(items~, span=pat_span) => {
           let _ = pat_span
-          // Check if RHS is a multi-value function call.
-          // The call must produce multi-value results — either via direct call
-          // (emit_call) or via indirect call with multi-value fn_local_sigs.
-          let mv_call_kinds : Array[ValueKind]? = match expr {
-            @core.Expr::Call(name~, ..) => {
-              let lowered = @core.lower_wasm_intrinsic_name(name)
-              let is_direct = ctx.fn_indices.contains(lowered) &&
-                not(
-                  ctx.fn_local_sigs.contains(lowered) &&
-                  ctx.locals.contains(lowered),
-                )
-              // Also check indirect path: fn_local_sigs has multi-value sig
-              let indirect_mv = match ctx.fn_local_sigs.get(lowered) {
-                Some(sig) =>
-                  sig.results.length() > 1 && ctx.locals.contains(lowered)
-                None => false
-              }
-              if is_direct || indirect_mv {
-                match ctx.fn_multivalue_results.get(name) {
-                  Some(kinds) =>
-                    if kinds.length() == items.length() {
-                      Some(kinds)
-                    } else {
-                      None
-                    }
-                  None => None
-                }
+          let mv_call_kinds : Array[ValueKind]? = match detect_multivalue_call(
+              ctx, expr,
+            ) {
+            Some(kinds) =>
+              if kinds.length() == items.length() {
+                Some(kinds)
               } else {
                 None
               }
-            }
-            _ => None
+            None => None
           }
           match mv_call_kinds {
             Some(_) => {
@@ -4804,6 +4793,34 @@ fn emit_multivalue_from_tuple_expr(
   emit_local_set(buf, tuple_local)
   for i in 0..<kinds.length() {
     emit_load_tuple_elem(buf, tuple_local, i)
+  }
+}
+
+///|
+fn detect_multivalue_call(
+  ctx : CodegenCtx,
+  expr : @core.Expr,
+) -> Array[ValueKind]? {
+  match expr {
+    @core.Expr::Call(name~, ..) => {
+      let lowered = @core.lower_wasm_intrinsic_name(name)
+      let is_direct = ctx.fn_indices.contains(lowered) &&
+        not(
+          ctx.fn_local_sigs.contains(lowered) &&
+          ctx.locals.contains(lowered),
+        )
+      let indirect_mv = match ctx.fn_local_sigs.get(lowered) {
+        Some(sig) =>
+          sig.results.length() > 1 && ctx.locals.contains(lowered)
+        None => false
+      }
+      if is_direct || indirect_mv {
+        ctx.fn_multivalue_results.get(name)
+      } else {
+        None
+      }
+    }
+    _ => None
   }
 }
 
