@@ -36,6 +36,7 @@ pub fn run(args : Array[String]) -> Unit {
     "fmt" => fmt_cmd(cmd_args)
     "normalize" => normalize_cmd(cmd_args)
     "compile" => compile_cmd(cmd_args)
+    "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
     "repl" => repl_cmd(cmd_args, syntax_mode, runtime_features)
@@ -109,6 +110,12 @@ fn print_usage() -> Unit {
   )
   println(
     "                                     --debug-errors keeps raise string literals in wasm (debug builds)",
+  )
+  println(
+    "  precompile [--out-dir dir] [--wasm|--wasm-js-string] [-O<level>] <dir...>",
+  )
+  println(
+    "                                     precompile .vibe modules to .wasm",
   )
   println(
     "  bench [--backend wasm|interpreter] [--n N] [--warmup N] <file|dir...>  run `bench {}` blocks",

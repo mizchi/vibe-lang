@@ -62,7 +62,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     js_equals_type = type_count
     type_count += 1
   }
-  if ctx.need_sh || ctx.need_path {
+  if ctx.need_sh || ctx.need_path || ctx.need_dynamic_path_resolve {
     import_type = type_count
     type_count += 1
   }
@@ -139,7 +139,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_u32_leb(type_sec, 1)
     type_sec.push((127).to_byte())
   }
-  if ctx.need_sh || ctx.need_path {
+  if ctx.need_sh || ctx.need_path || ctx.need_dynamic_path_resolve {
     type_sec.push((96).to_byte())
     write_u32_leb(type_sec, 1)
     type_sec.push((126).to_byte()) // i64 (tagged value)
@@ -238,6 +238,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   if ctx.need_path {
     func_import_count += 1
   }
+  if ctx.need_dynamic_path_resolve {
+    func_import_count += 1
+  }
   if ctx.need_sh {
     func_import_count += 1
   }
@@ -293,6 +296,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     if ctx.need_path {
       write_name(import_sec, "xsh")
       write_name(import_sec, "path")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, import_type)
+    }
+    if ctx.need_dynamic_path_resolve {
+      write_name(import_sec, "xsh")
+      write_name(import_sec, "resolve_path")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, import_type)
     }
@@ -912,6 +921,9 @@ fn emit_module_with_coverage(
       import_count += 1
     }
     if ctx.need_path {
+      import_count += 1
+    }
+    if ctx.need_dynamic_path_resolve {
       import_count += 1
     }
     if ctx.need_sh {

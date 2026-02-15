@@ -208,7 +208,7 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
   if ctx.need_js_equals {
     count += 1
   }
-  if ctx.need_sh || ctx.need_path {
+  if ctx.need_sh || ctx.need_path || ctx.need_dynamic_path_resolve {
     count += 1
   }
   if ctx.need_sleep {
@@ -259,6 +259,9 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     count += 1
   }
   if ctx.need_path {
+    count += 1
+  }
+  if ctx.need_dynamic_path_resolve {
     count += 1
   }
   if ctx.need_sh {
@@ -882,6 +885,11 @@ fn needs_heap_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Bool {
       let _ = span
       needs_heap_expr(ctx, expr)
     }
+    @core.Stmt::Assign(name~, expr~, span~) => {
+      let _ = name
+      let _ = span
+      needs_heap_expr(ctx, expr)
+    }
     _ => false
   }
 }
@@ -894,6 +902,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
     @core.Expr::Tuple(..) => true
     @core.Expr::TupleIndex(..) => true
     @core.Expr::Record(..) => true
+    @core.Expr::StructLit(..) => true
     @core.Expr::Array(..) => true
     @core.Expr::Map(..) => true
     @core.Expr::Call(name~, args~, span~, ..) => {
@@ -924,7 +933,9 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "string_substring" ||
         name == "string_concat" ||
         name == "__to_string" ||
-        name == "string_from_char_code" {
+        name == "string_from_char_code" ||
+        name == "array_slice" ||
+        name == "array_concat" {
         return true
       }
       // Enum constructor call needs heap
@@ -1118,12 +1129,32 @@ fn import_index_path(ctx : CodegenCtx) -> Int raise WasmGenError {
 }
 
 ///|
+fn import_index_dynamic_path_resolve(
+  ctx : CodegenCtx,
+) -> Int raise WasmGenError {
+  if not(ctx.need_dynamic_path_resolve) {
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="dynamic_path_resolve import",
+    )
+  }
+  let mut idx = js_import_count(ctx)
+  if ctx.need_path {
+    idx += 1
+  }
+  idx
+}
+
+///|
 fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_sh) {
     raise WasmGenError::BackendLimit(backend="wasm", feature="sh import")
   }
   let mut idx = js_import_count(ctx)
   if ctx.need_path {
+    idx += 1
+  }
+  if ctx.need_dynamic_path_resolve {
     idx += 1
   }
   idx

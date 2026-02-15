@@ -317,6 +317,7 @@ pub fn generate_wit(
 ///|
 pub(all) struct ComponentWitImports {
   mut need_path : Bool
+  mut need_dynamic_path_resolve : Bool
   mut need_sh : Bool
   mut need_sleep : Bool
   mut need_stdout_write_char : Bool
@@ -327,6 +328,7 @@ pub(all) struct ComponentWitImports {
 fn collect_component_wit_imports(ast : @core.Module) -> ComponentWitImports {
   let acc = ComponentWitImports::{
     need_path: false,
+    need_dynamic_path_resolve: false,
     need_sh: false,
     need_sleep: false,
     need_stdout_write_char: false,
@@ -382,7 +384,8 @@ fn scan_component_wit_imports_expr(
   match expr {
     @core.Expr::Call(name~, args~, ..) => {
       match name {
-        "path" => acc.need_path = true
+        "path" | "path_ref" => acc.need_path = true
+        "dynamic_path_resolve" => acc.need_dynamic_path_resolve = true
         "sh" => acc.need_sh = true
         "sleep" => acc.need_sleep = true
         "stdout_write_char" => acc.need_stdout_write_char = true
@@ -469,10 +472,16 @@ pub fn generate_component_wit(
   let imports = collect_component_wit_imports(ast)
   let mut wit = "package " + package_name + ";\n\n"
   wit = wit + "world " + world_name + " {\n"
-  if imports.need_path || imports.need_sh || imports.need_sleep {
+  if imports.need_path ||
+    imports.need_dynamic_path_resolve ||
+    imports.need_sh ||
+    imports.need_sleep {
     wit = wit + "  import xsh: interface {\n"
     if imports.need_path {
       wit = wit + "    path: func(value: s32) -> s32;\n"
+    }
+    if imports.need_dynamic_path_resolve {
+      wit = wit + "    resolve-path: func(value: s32) -> s32;\n"
     }
     if imports.need_sh {
       wit = wit + "    sh: func(cmd: s32) -> s32;\n"

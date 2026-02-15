@@ -396,5 +396,11 @@ sleep-demo: build-async-host
 run-wasm-async file: build-async-host
     examples/async_host/target/release/vibe-async-host {{file}}
 
+# Precompile vibe/std modules to dist/std/*.wasm
+precompile-std:
+    moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
+    mkdir -p dist/std
+    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/std --out-dir dist/std --wasm
+
 # Pre-release check
 release-check: fmt info check test

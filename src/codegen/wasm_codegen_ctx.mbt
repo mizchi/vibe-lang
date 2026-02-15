@@ -26,6 +26,7 @@ priv struct CodegenCtx {
   mut fn_type_indices : Map[String, Int]
   mut need_sh : Bool
   mut need_path : Bool
+  mut need_dynamic_path_resolve : Bool
   mut need_js_length : Bool
   mut need_js_char_code_at : Bool
   mut need_js_substring : Bool
@@ -119,6 +120,7 @@ fn CodegenCtx::new(
     fn_type_indices: {},
     need_sh: false,
     need_path: false,
+    need_dynamic_path_resolve: false,
     need_js_length: false,
     need_js_char_code_at: false,
     need_js_substring: false,
@@ -550,6 +552,53 @@ fn collect_nested_funcs_block(
         let _ = span
         collect_nested_funcs_expr(expr, scope, funcs)
         scope[name] = true
+      }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        let _ = span
+        if rec {
+          scope[name] = true
+        }
+        match expr {
+          @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
+            let _ = effects
+            let key = span_key(span)
+            let captures : Array[String] = []
+            let seen : Map[String, Bool] = {}
+            let fn_bound : Map[String, Bool] = {}
+            for param in params {
+              fn_bound[param.name] = true
+            }
+            collect_captures_block(body, fn_bound, scope, captures, seen)
+            if not(skip_top_level) {
+              funcs.push(FuncDef::{
+                name: Some(name),
+                params,
+                ret,
+                body,
+                span_key: key,
+                captures,
+              })
+            }
+            let inner_bound = scope.copy()
+            for param in params {
+              inner_bound[param.name] = true
+            }
+            for cap in captures {
+              inner_bound[cap] = true
+            }
+            if rec {
+              inner_bound[name] = true
+            }
+            collect_nested_funcs_block(body, inner_bound, funcs, false)
+          }
+          _ => collect_nested_funcs_expr(expr, scope, funcs)
+        }
+        scope[name] = true
+      }
+      @core.Stmt::Assign(name~, expr~, span~) => {
+        let _ = name
+        let _ = span
+        collect_nested_funcs_expr(expr, scope, funcs)
       }
       _ => ()
     }

@@ -119,8 +119,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let _ = span
       if name == "sh" {
         ctx.need_sh = true
-      } else if name == "path" {
+      } else if name == "path" || name == "path_ref" {
         ctx.need_path = true
+      } else if name == "dynamic_path_resolve" {
+        ctx.need_dynamic_path_resolve = true
       } else if name == "string_length" {
         if ctx.use_js_strings {
           ctx.need_js_length = true
@@ -275,6 +277,13 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       }
       scan_needs_block(ctx, body)
     }
+    @core.Expr::StructLit(fields~, span~, ..) => {
+      let _ = span
+      ctx.need_heap = true
+      for field in fields {
+        scan_needs_expr(ctx, field.expr)
+      }
+    }
     _ => ()
   }
 }
@@ -348,6 +357,17 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = span
       scan_needs_expr(ctx, expr)
     }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      let _ = rec
+      let _ = name
+      let _ = span
+      scan_needs_expr(ctx, expr)
+    }
+    @core.Stmt::Assign(name~, expr~, span~) => {
+      let _ = name
+      let _ = span
+      scan_needs_expr(ctx, expr)
+    }
     _ => ()
   }
 }
@@ -405,6 +425,17 @@ fn scan_strings_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = span
       scan_strings_expr(ctx, expr)
     }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      let _ = rec
+      let _ = name
+      let _ = span
+      scan_strings_expr(ctx, expr)
+    }
+    @core.Stmt::Assign(name~, expr~, span~) => {
+      let _ = name
+      let _ = span
+      scan_strings_expr(ctx, expr)
+    }
     _ => ()
   }
 }
@@ -435,6 +466,15 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     }
     @core.Expr::TupleIndex(expr~, ..) => scan_strings_expr(ctx, expr)
     @core.Expr::Record(fields~, span~) => {
+      let _ = span
+      let ordered = sort_record_fields_expr(fields)
+      for field in ordered {
+        let _ = ctx.strings.intern(field.name)
+        ctx.known_record_fields[field.name] = true
+        scan_strings_expr(ctx, field.expr)
+      }
+    }
+    @core.Expr::StructLit(fields~, span~, ..) => {
       let _ = span
       let ordered = sort_record_fields_expr(fields)
       for field in ordered {
