@@ -116,7 +116,7 @@ test "normalize_engine: dead code elimination removes unused defs" {
 }
 
 ///|
-test "normalize_engine: full pipeline with export declare and assignment" {
+test "normalize_engine: full pipeline keeps export let for fn expressions" {
   let source =
     #|let helper = () -> Int { 1 }
     #|export let run = () -> Int { helper() }
@@ -124,16 +124,9 @@ test "normalize_engine: full pipeline with export declare and assignment" {
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => {
-      // Export let should produce declare + assignment
-      let idx_decl = wbtest_substring_index(
-        normalized, "declare export let run: () -> Int",
-      )
-      let idx_assign = wbtest_substring_index(normalized, "run = () -> Int {")
-      assert_true(idx_decl >= 0)
-      assert_true(idx_assign >= 0)
-      assert_true(idx_decl < idx_assign)
-      // Should not contain "export let run ="
-      assert_false(normalized.contains("export let run ="))
+      // Fn expressions should NOT produce declare + assignment
+      assert_false(normalized.contains("declare export let run"))
+      assert_true(normalized.contains("export let run ="))
     }
     Err(msg) => fail("normalize failed: " + msg)
   }

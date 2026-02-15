@@ -66,10 +66,11 @@ fn normalize_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
       Some("export { " + normalize_render_name_list(names) + " }")
     @vibe_core.Stmt::ReExport(names~, source~, ..) =>
       Some(
-        "export { " +
+        "export use " +
+        normalize_render_module_ref(source) +
+        " { " +
         normalize_render_name_list(names) +
-        " } from " +
-        normalize_render_module_ref(source),
+        " }",
       )
     _ => None
   }
@@ -110,6 +111,11 @@ fn normalize_render_stmt(
           source, name, expr, rewritten_expr,
         )
       }
+      // Unwrap local type assert wrapper from declare+assign to get inner expr
+      let render_expr = match normalize_unwrap_local_type_assert(expr) {
+        Some((_, inner)) => inner
+        None => expr
+      }
       if rewritten_expr is None && annotation is None {
         let snippet = normalize_source_slice_by_span(
             source,
@@ -118,12 +124,13 @@ fn normalize_render_stmt(
           )
           .trim()
           .to_string()
-        if normalize_render_stmt_accept_raw_snippet(snippet) {
+        if snippet.has_prefix("export ") &&
+          normalize_render_stmt_accept_raw_snippet(snippet) {
           return Some(snippet)
         }
       }
       normalize_render_let_stmt(
-        source, true, rec, name, expr, rewritten_expr, annotation,
+        source, true, rec, name, render_expr, rewritten_expr, annotation,
       )
     }
     _ => normalize_render_stmt_fallback(stmt)

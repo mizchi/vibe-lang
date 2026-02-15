@@ -49,6 +49,14 @@ fn normalize_collect_export_decl_annotations(
         if rec {
           continue
         }
+        let inner_expr = match normalize_unwrap_local_type_assert(expr) {
+          Some((_, inner)) => inner
+          None => expr
+        }
+        match inner_expr {
+          @vibe_core.Expr::Fn(..) => continue
+          _ => ()
+        }
         let key = normalize_stmt_key(stmt)
         match normalize_unwrap_local_type_assert(expr) {
           Some((ann_ty, _)) =>
