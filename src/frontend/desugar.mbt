@@ -4,7 +4,7 @@ pub fn desugar_method_calls(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
 ) -> @core.Module {
-  let scope : Map[String, Bool] = {}
+  let scope = DesugarScope::new()
   desugar_block(ast, scope, aliases)
 }
 
@@ -22,7 +22,7 @@ pub fn desugar_vibe_commands(ast : @core.Module) -> @core.Module {
 pub fn desugar_vibe_commands_with_notes(
   ast : @core.Module,
 ) -> (@core.Module, Array[String]) {
-  let scope : Map[String, Bool] = {}
+  let scope = DesugarScope::new()
   let known_non_cmd = known_vibe_non_command_names()
   let notes : Array[String] = []
   let desugared = desugar_vibe_block(ast, scope, known_non_cmd, notes)
@@ -73,7 +73,7 @@ fn is_command_like_name(name : String) -> Bool {
 ///|
 fn is_vibe_command_candidate(
   name : String,
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   known_non_cmd : Map[String, Bool],
 ) -> Bool {
   not(scope.contains(name)) &&
@@ -91,11 +91,11 @@ fn sh_lines_expr(name : String, span : @core.Span) -> @core.Expr {
 ///|
 fn desugar_vibe_block(
   body : @core.Module,
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   known_non_cmd : Map[String, Bool],
   notes : Array[String],
 ) -> @core.Module {
-  let scope_map = clone_scope(scope)
+  let scope_map = scope.child()
   let out : Array[@core.Stmt] = []
   for stmt in body.stmts {
     let next = desugar_vibe_stmt(stmt, scope_map, known_non_cmd, notes)
@@ -103,12 +103,12 @@ fn desugar_vibe_block(
     match stmt {
       @core.Stmt::Let(name~, ..)
       | @core.Stmt::ExportLet(name~, ..)
-      | @core.Stmt::LetMut(name~, ..) => scope_map[name] = true
+      | @core.Stmt::LetMut(name~, ..) => scope_map.bindings[name] = true
       @core.Stmt::LetPat(pat~, ..) | @core.Stmt::LetPatElse(pat~, ..) => {
         let bindings : Array[String] = []
         collect_pat_bindings(pat, bindings)
         for name in bindings {
-          scope_map[name] = true
+          scope_map.bindings[name] = true
         }
       }
       @core.Stmt::Import(spec~, ..) =>
@@ -117,8 +117,8 @@ fn desugar_vibe_block(
             (item.kind == @core.ImportKind::Type && item.name.contains("::"))
           if binds_runtime {
             match item.rename {
-              Some(local_name) => scope_map[local_name] = true
-              None => scope_map[item.name] = true
+              Some(local_name) => scope_map.bindings[local_name] = true
+              None => scope_map.bindings[item.name] = true
             }
           }
         }
@@ -131,7 +131,7 @@ fn desugar_vibe_block(
 ///|
 fn desugar_vibe_stmt(
   stmt : @core.Stmt,
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   known_non_cmd : Map[String, Bool],
   notes : Array[String],
 ) -> @core.Stmt {
@@ -198,7 +198,7 @@ fn desugar_vibe_stmt(
         expr=desugar_vibe_expr(expr, scope, known_non_cmd, notes),
         else_body=desugar_vibe_block(
           else_body,
-          clone_scope(scope),
+          scope.child(),
           known_non_cmd,
           notes,
         ),
@@ -211,7 +211,7 @@ fn desugar_vibe_stmt(
 ///|
 fn desugar_vibe_expr(
   expr : @core.Expr,
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   known_non_cmd : Map[String, Bool],
   notes : Array[String],
 ) -> @core.Expr {
@@ -247,13 +247,13 @@ fn desugar_vibe_expr(
         cond=desugar_vibe_expr(cond, scope, known_non_cmd, notes),
         then_body=desugar_vibe_block(
           then_body,
-          clone_scope(scope),
+          scope.child(),
           known_non_cmd,
           notes,
         ),
         else_body=desugar_vibe_block(
           else_body,
-          clone_scope(scope),
+          scope.child(),
           known_non_cmd,
           notes,
         ),
@@ -261,23 +261,23 @@ fn desugar_vibe_expr(
       )
     @core.Expr::Block(body~, span~) =>
       @core.Expr::Block(
-        body=desugar_vibe_block(body, clone_scope(scope), known_non_cmd, notes),
+        body=desugar_vibe_block(body, scope.child(), known_non_cmd, notes),
         span~,
       )
     @core.Expr::Do(body~, span~) =>
       @core.Expr::Do(
-        body=desugar_vibe_block(body, clone_scope(scope), known_non_cmd, notes),
+        body=desugar_vibe_block(body, scope.child(), known_non_cmd, notes),
         span~,
       )
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       let next_scrut = desugar_vibe_expr(scrutinee, scope, known_non_cmd, notes)
       for arm in arms {
-        let arm_scope = clone_scope(scope)
+        let arm_scope = scope.child()
         let bindings : Array[String] = []
         collect_pat_bindings(arm.pat, bindings)
         for name in bindings {
-          arm_scope[name] = true
+          arm_scope.bindings[name] = true
         }
         let next_cond = match arm.cond {
           Some(c) => Some(desugar_vibe_expr(c, arm_scope, known_non_cmd, notes))
@@ -344,13 +344,13 @@ fn desugar_vibe_expr(
       @core.Expr::Try(
         try_body=desugar_vibe_block(
           try_body,
-          clone_scope(scope),
+          scope.child(),
           known_non_cmd,
           notes,
         ),
         catch_body=desugar_vibe_block(
           catch_body,
-          clone_scope(scope),
+          scope.child(),
           known_non_cmd,
           notes,
         ),
@@ -365,9 +365,9 @@ fn desugar_vibe_expr(
       body~,
       span~
     ) => {
-      let next_scope = clone_scope(scope)
+      let next_scope = scope.child()
       for param in params {
-        next_scope[param.name] = true
+        next_scope.bindings[param.name] = true
       }
       @core.Expr::Fn(
         type_params~,
@@ -382,7 +382,7 @@ fn desugar_vibe_expr(
     @core.Expr::While(cond~, body~, span~) =>
       @core.Expr::While(
         cond=desugar_vibe_expr(cond, scope, known_non_cmd, notes),
-        body=desugar_vibe_block(body, clone_scope(scope), known_non_cmd, notes),
+        body=desugar_vibe_block(body, scope.child(), known_non_cmd, notes),
         span~,
       )
     @core.Expr::Loop(params~, body~, span~) => {
@@ -394,9 +394,9 @@ fn desugar_vibe_expr(
           span: param.span,
         })
       }
-      let next_scope = clone_scope(scope)
+      let next_scope = scope.child()
       for param in params {
-        next_scope[param.name] = true
+        next_scope.bindings[param.name] = true
       }
       @core.Expr::Loop(
         params=next_params,
@@ -451,10 +451,10 @@ fn desugar_vibe_expr(
 ///|
 fn desugar_block(
   body : @core.Module,
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   aliases : Map[String, @core.Ref],
 ) -> @core.Module {
-  let scope_map = clone_scope(scope)
+  let scope_map = scope.child()
   let out : Array[@core.Stmt] = []
   for stmt in body.stmts {
     let next = desugar_stmt(stmt, scope_map, aliases)
@@ -465,7 +465,7 @@ fn desugar_block(
         let _ = rec
         let _ = expr
         let _ = span
-        scope_map[name] = true
+        scope_map.bindings[name] = true
       }
       _ => ()
     }
@@ -476,7 +476,7 @@ fn desugar_block(
 ///|
 fn desugar_stmt(
   stmt : @core.Stmt,
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   aliases : Map[String, @core.Ref],
 ) -> @core.Stmt {
   match stmt {
@@ -537,7 +537,7 @@ fn desugar_stmt(
 ///|
 fn desugar_expr(
   expr : @core.Expr,
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   aliases : Map[String, @core.Ref],
 ) -> @core.Expr {
   match expr {
@@ -608,11 +608,11 @@ fn desugar_expr(
       let next_arms : Array[@core.MatchArm] = []
       let scrut = desugar_expr(scrutinee, scope, aliases)
       for arm in arms {
-        let arm_scope = clone_scope(scope)
+        let arm_scope = scope.child()
         let bindings : Array[String] = []
         collect_pat_bindings(arm.pat, bindings)
         for name in bindings {
-          arm_scope[name] = true
+          arm_scope.bindings[name] = true
         }
         let next_cond = match arm.cond {
           Some(c) => Some(desugar_expr(c, arm_scope, aliases))
@@ -666,8 +666,8 @@ fn desugar_expr(
     }
     @core.Expr::Try(try_body~, catch_body~, span~) =>
       @core.Expr::Try(
-        try_body=desugar_block(try_body, clone_scope(scope), aliases),
-        catch_body=desugar_block(catch_body, clone_scope(scope), aliases),
+        try_body=desugar_block(try_body, scope.child(), aliases),
+        catch_body=desugar_block(catch_body, scope.child(), aliases),
         span~,
       )
     @core.Expr::Fn(
@@ -679,9 +679,9 @@ fn desugar_expr(
       body~,
       span~
     ) => {
-      let next_scope = clone_scope(scope)
+      let next_scope = scope.child()
       for param in params {
-        next_scope[param.name] = true
+        next_scope.bindings[param.name] = true
       }
       @core.Expr::Fn(
         type_params~,
@@ -708,9 +708,9 @@ fn desugar_expr(
           span: param.span,
         })
       }
-      let next_scope = clone_scope(scope)
+      let next_scope = scope.child()
       for param in params {
-        next_scope[param.name] = true
+        next_scope.bindings[param.name] = true
       }
       @core.Expr::Loop(
         params=next_params,
@@ -817,10 +817,29 @@ fn collect_pat_bindings(pat : @core.Pat, out : Array[String]) -> Unit {
 }
 
 ///|
-fn clone_scope(src : Map[String, Bool]) -> Map[String, Bool] {
-  let out : Map[String, Bool] = {}
-  for k, v in src {
-    out[k] = v
+priv struct DesugarScope {
+  bindings : Map[String, Bool]
+  parent : DesugarScope?
+}
+
+///|
+fn DesugarScope::new() -> DesugarScope {
+  { bindings: {}, parent: None }
+}
+
+///|
+fn DesugarScope::child(self : DesugarScope) -> DesugarScope {
+  { bindings: {}, parent: Some(self) }
+}
+
+///|
+fn DesugarScope::contains(self : DesugarScope, name : String) -> Bool {
+  if self.bindings.contains(name) {
+    true
+  } else {
+    match self.parent {
+      Some(p) => p.contains(name)
+      None => false
+    }
   }
-  out
 }

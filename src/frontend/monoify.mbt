@@ -50,7 +50,7 @@ fn collect_instantiations(
   specializable : Map[String, @core.Expr],
 ) -> Map[String, Int] {
   let instantiations : Map[String, Int] = {}
-  let scope : Map[String, Bool] = {}
+  let scope = DesugarScope::new()
   collect_instantiations_module(
     ast, env, specializable, instantiations, scope, false,
   )
@@ -63,17 +63,17 @@ fn collect_instantiations_module(
   env : @checker.TypeEnv,
   specializable : Map[String, @core.Expr],
   instantiations : Map[String, Int],
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   track_let : Bool,
 ) -> Unit {
-  let local_scope = clone_scope(scope)
+  let local_scope = scope.child()
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) => {
         let _ = span
         let expr_scope = if rec {
-          let next = clone_scope(local_scope)
-          next[name] = true
+          let next = local_scope.child()
+          next.bindings[name] = true
           next
         } else {
           local_scope
@@ -82,7 +82,7 @@ fn collect_instantiations_module(
           expr, env, specializable, instantiations, expr_scope,
         )
         if track_let {
-          local_scope[name] = true
+          local_scope.bindings[name] = true
         }
       }
       @core.Stmt::Expr(expr~, span~) => {
@@ -116,7 +116,7 @@ fn collect_instantiations_expr(
   env : @checker.TypeEnv,
   specializable : Map[String, @core.Expr],
   instantiations : Map[String, Int],
-  scope : Map[String, Bool],
+  scope : DesugarScope,
 ) -> Unit {
   match expr {
     @core.Expr::Call(name~, args~, span~, ..) => {
@@ -216,11 +216,11 @@ fn collect_instantiations_expr(
         scrutinee, env, specializable, instantiations, scope,
       )
       for arm in arms {
-        let arm_scope = clone_scope(scope)
+        let arm_scope = scope.child()
         let bindings : Array[String] = []
         collect_pat_bindings(arm.pat, bindings)
         for name in bindings {
-          arm_scope[name] = true
+          arm_scope.bindings[name] = true
         }
         match arm.cond {
           Some(c) =>
@@ -242,9 +242,9 @@ fn collect_instantiations_expr(
       let _ = span
       let _ = ret
       let _ = effects
-      let fn_scope = clone_scope(scope)
+      let fn_scope = scope.child()
       for param in params {
-        fn_scope[param.name] = true
+        fn_scope.bindings[param.name] = true
       }
       collect_instantiations_module(
         body, env, specializable, instantiations, fn_scope, true,
@@ -281,7 +281,7 @@ fn monoify_module_top(
                 env,
                 instantiations,
                 specializable,
-                {},
+                DesugarScope::new(),
                 {},
               )
               out_stmts.push(
@@ -305,7 +305,7 @@ fn monoify_module_top(
               env,
               instantiations,
               specializable,
-              {},
+              DesugarScope::new(),
               {},
             )
             out_stmts.push(@core.Stmt::Let(rec~, name~, expr=rewritten, span~))
@@ -317,7 +317,7 @@ fn monoify_module_top(
           env,
           instantiations,
           specializable,
-          {},
+          DesugarScope::new(),
           {},
         )
         out_stmts.push(@core.Stmt::Expr(expr=rewritten, span~))
@@ -328,7 +328,7 @@ fn monoify_module_top(
           env,
           instantiations,
           specializable,
-          {},
+          DesugarScope::new(),
           {},
         )
         out_stmts.push(@core.Stmt::Test(name~, body=rewritten, span~))
@@ -339,7 +339,7 @@ fn monoify_module_top(
           env,
           instantiations,
           specializable,
-          {},
+          DesugarScope::new(),
           {},
         )
         out_stmts.push(@core.Stmt::Bench(name~, body=rewritten, span~))
@@ -356,17 +356,17 @@ fn monoify_block(
   env : @checker.TypeEnv,
   instantiations : Map[String, Int],
   specializable : Map[String, @core.Expr],
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   current_spec : Map[String, String],
 ) -> @core.Module {
   let out_stmts : Array[@core.Stmt] = []
-  let local_scope = clone_scope(scope)
+  let local_scope = scope.child()
   for stmt in body.stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) => {
         let expr_scope = if rec {
-          let next = clone_scope(local_scope)
-          next[name] = true
+          let next = local_scope.child()
+          next.bindings[name] = true
           next
         } else {
           local_scope
@@ -375,7 +375,7 @@ fn monoify_block(
           expr, env, instantiations, specializable, expr_scope, current_spec,
         )
         out_stmts.push(@core.Stmt::Let(rec~, name~, expr=rewritten, span~))
-        local_scope[name] = true
+        local_scope.bindings[name] = true
       }
       @core.Stmt::Expr(expr~, span~) => {
         let rewritten = monoify_expr(
@@ -407,7 +407,7 @@ fn monoify_expr(
   env : @checker.TypeEnv,
   instantiations : Map[String, Int],
   specializable : Map[String, @core.Expr],
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   current_spec : Map[String, String],
 ) -> @core.Expr {
   match expr {
@@ -569,11 +569,11 @@ fn monoify_expr(
         scrutinee, env, instantiations, specializable, scope, current_spec,
       )
       for arm in arms {
-        let arm_scope = clone_scope(scope)
+        let arm_scope = scope.child()
         let bindings : Array[String] = []
         collect_pat_bindings(arm.pat, bindings)
         for name in bindings {
-          arm_scope[name] = true
+          arm_scope.bindings[name] = true
         }
         let next_cond = match arm.cond {
           Some(c) =>
@@ -610,9 +610,9 @@ fn monoify_expr(
       body~,
       span~
     ) => {
-      let fn_scope = clone_scope(scope)
+      let fn_scope = scope.child()
       for param in params {
-        fn_scope[param.name] = true
+        fn_scope.bindings[param.name] = true
       }
       @core.Expr::Fn(
         type_params~,
@@ -663,9 +663,9 @@ fn specialize_fn_expr(
         Some(r) => Some(replace_num_type(r, concrete))
         None => None
       }
-      let fn_scope : Map[String, Bool] = {}
+      let fn_scope = DesugarScope::new()
       for param in params {
-        fn_scope[param.name] = true
+        fn_scope.bindings[param.name] = true
       }
       let current_spec : Map[String, String] = {}
       current_spec[name] = specialized_name(name, tag)
@@ -690,7 +690,7 @@ fn maybe_specialize_ident_arg(
   expr : @core.Expr,
   instantiations : Map[String, Int],
   specializable : Map[String, @core.Expr],
-  scope : Map[String, Bool],
+  scope : DesugarScope,
   tag : String,
 ) -> @core.Expr {
   match expr {
