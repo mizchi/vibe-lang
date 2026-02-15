@@ -9,6 +9,7 @@ priv struct CodegenCtx {
   fn_params : Map[String, Array[ValueKind]]
   fn_param_names : Map[String, Array[String]] // function name -> param names
   fn_returns : Map[String, ValueKind]
+  fn_multivalue_results : Map[String, Array[ValueKind]] // tuple-returning functions -> element kinds
   fn_return_sigs : Map[String, FuncSig] // return sig if function returns a function
   fn_closure_indices : Map[String, Int]
   fn_closure_captures : Map[String, Array[String]]
@@ -102,6 +103,7 @@ fn CodegenCtx::new(
     fn_params: {},
     fn_param_names: {},
     fn_returns: {},
+    fn_multivalue_results: {},
     fn_return_sigs: {},
     fn_closure_indices: {},
     fn_closure_captures: {},

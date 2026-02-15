@@ -112,6 +112,19 @@ fn func_sig_with_env(params : Array[ValueKind], result : ValueKind) -> FuncSig {
 }
 
 ///|
+fn func_sig_with_env_multi(
+  params : Array[ValueKind],
+  results : Array[ValueKind],
+) -> FuncSig {
+  let out : Array[ValueKind] = []
+  for kind in params {
+    out.push(kind)
+  }
+  out.push(ValueKind::I32)
+  FuncSig::{ params: out, results }
+}
+
+///|
 fn func_sig_from_type(ctx : CodegenCtx, ty : @core.Type) -> FuncSig? {
   match ty {
     @core.Type::Func(params~, ret~, effects~) => {
@@ -1285,6 +1298,124 @@ fn resolve_numeric_kind(
   } else {
     let backend = if ctx.use_js_strings { "wasm-js-string" } else { "wasm" }
     raise WasmGenError::BackendLimit(backend~, feature="numeric kind mismatch")
+  }
+}
+
+///|
+fn tuple_return_kinds(ctx : CodegenCtx, ret : @core.Type?) -> Array[ValueKind]? {
+  match ret {
+    Some(@core.Type::Tuple(items)) =>
+      if items.length() >= 2 {
+        let kinds : Array[ValueKind] = []
+        for item in items {
+          kinds.push(value_kind_from_type(ctx, item))
+        }
+        Some(kinds)
+      } else {
+        None
+      }
+    _ => None
+  }
+}
+
+///|
+fn body_always_returns_tuple(
+  body : @core.Module,
+  arity : Int,
+  self_name : String,
+) -> Bool {
+  if body.stmts.length() == 0 {
+    return false
+  }
+  let last = body.stmts[body.stmts.length() - 1]
+  match last {
+    @core.Stmt::Expr(expr~, span=_) =>
+      expr_always_returns_tuple(expr, arity, self_name)
+    _ => false
+  }
+}
+
+///|
+fn expr_always_returns_tuple(
+  expr : @core.Expr,
+  arity : Int,
+  self_name : String,
+) -> Bool {
+  match expr {
+    @core.Expr::Tuple(items~, span=_) => items.length() == arity
+    @core.Expr::If(cond=_, then_body~, else_body~, span=_) =>
+      body_always_returns_tuple(then_body, arity, self_name) &&
+      body_always_returns_tuple(else_body, arity, self_name)
+    @core.Expr::Block(body~, span=_) =>
+      body_always_returns_tuple(body, arity, self_name)
+    @core.Expr::Match(scrutinee=_, arms~, span=_) => {
+      if arms.length() == 0 {
+        return false
+      }
+      for arm in arms {
+        if not(expr_always_returns_tuple(arm.expr, arity, self_name)) {
+          return false
+        }
+      }
+      true
+    }
+    @core.Expr::Do(body~, span=_) =>
+      body_always_returns_tuple(body, arity, self_name)
+    @core.Expr::Try(try_body~, catch_body~, span=_) =>
+      body_always_returns_tuple(try_body, arity, self_name) &&
+      body_always_returns_tuple_or_raises(catch_body, arity, self_name)
+    @core.Expr::Raise(..) => true // never returns, vacuously compatible
+    @core.Expr::Call(name~, ..) =>
+      // Self-recursive call returns same tuple type
+      name == self_name
+    _ => false
+  }
+}
+
+///|
+fn body_always_returns_tuple_or_raises(
+  body : @core.Module,
+  arity : Int,
+  self_name : String,
+) -> Bool {
+  if body.stmts.length() == 0 {
+    return false
+  }
+  let last = body.stmts[body.stmts.length() - 1]
+  match last {
+    @core.Stmt::Expr(expr~, span=_) =>
+      expr_always_returns_tuple(expr, arity, self_name) ||
+      expr_always_raises(expr)
+    _ => false
+  }
+}
+
+///|
+fn expr_always_raises(expr : @core.Expr) -> Bool {
+  match expr {
+    @core.Expr::Raise(..) => true
+    @core.Expr::Block(body~, span=_) | @core.Expr::Do(body~, span=_) => {
+      if body.stmts.length() == 0 {
+        return false
+      }
+      let last = body.stmts[body.stmts.length() - 1]
+      match last {
+        @core.Stmt::Expr(expr~, span=_) => expr_always_raises(expr)
+        _ => false
+      }
+    }
+    @core.Expr::If(cond=_, then_body~, else_body~, span=_) => {
+      let then_raises = match then_body.stmts[then_body.stmts.length() - 1] {
+        @core.Stmt::Expr(expr~, span=_) => expr_always_raises(expr)
+        _ => false
+      }
+      let else_raises = match else_body.stmts[else_body.stmts.length() - 1] {
+        @core.Stmt::Expr(expr~, span=_) => expr_always_raises(expr)
+        _ => false
+      }
+      then_raises && else_raises
+    }
+    _ => false
   }
 }
 
