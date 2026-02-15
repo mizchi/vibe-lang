@@ -1,9 +1,22 @@
 ///|
-// Global counter to avoid type var id collisions across env forks.
-let global_next_type_var : Ref[Int] = @ref.new(0)
+pub struct TypecheckSession {
+  next_type_var : Ref[Int]
+  cached_prelude_env : Ref[TypeEnv?]
+}
 
 ///|
-let cached_prelude_env : Ref[TypeEnv?] = @ref.new(None)
+pub fn TypecheckSession::new() -> TypecheckSession {
+  { next_type_var: @ref.new(0), cached_prelude_env: @ref.new(None) }
+}
+
+///|
+pub fn TypecheckSession::reset(self : TypecheckSession) -> Unit {
+  self.next_type_var.val = 0
+  self.cached_prelude_env.val = None
+}
+
+///|
+let default_typecheck_session : TypecheckSession = TypecheckSession::new()
 
 ///|
 pub struct CtorInfo {

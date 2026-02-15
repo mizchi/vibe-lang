@@ -1840,8 +1840,7 @@ test "vibe posix mode multiple desugars in block" {
 test "vibe posix mode let binding prevents desugar" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
-    "let cat = \"meow\"\n" +
-    "let out = cat",
+    "let cat = \"meow\"\n" + "let out = cat",
     ParserMode::PosixMode,
   )
   match result {

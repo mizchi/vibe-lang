@@ -49,7 +49,7 @@ fn build_dep_graph(stmts : Array[@core.Stmt]) -> Map[String, Map[String, Bool]] 
       Some(n) =>
         match graph.get(n) {
           Some(existing) => {
-            let merged = clone_bool_map(existing)
+            let merged = @core.clone_bool_map(existing)
             for ref_name, _ in refs {
               merged[ref_name] = true
             }
@@ -360,261 +360,43 @@ fn filter_reachable_stmts(
 }
 
 ///|
-/// Collect references from an expression (adapted from test_runner.mbt)
+/// Collect references from an expression using the generic walker with DCE filtering.
 fn collect_refs_expr(
   expr : @core.Expr,
   bound : Map[String, Bool],
   refs : Map[String, Bool],
 ) -> Unit {
-  match expr {
-    @core.Expr::Int(..)
-    | @core.Expr::Float(..)
-    | @core.Expr::Double(..)
-    | @core.Expr::Bool(..)
-    | @core.Expr::Char(..)
-    | @core.Expr::String(..)
-    | @core.Expr::Placeholder(..) => ()
-    @core.Expr::Ident(name~, span~) => {
-      let _ = span
-      add_ref_name(name, bound, refs)
-    }
-    @core.Expr::Call(name~, args~, span~, ..) => {
-      let _ = span
-      add_ref_name(name, bound, refs)
-      for arg in args {
-        collect_refs_expr(arg.expr, bound, refs)
-      }
-    }
-    @core.Expr::Tuple(items~, span~) => {
-      let _ = span
-      for item in items {
-        collect_refs_expr(item, bound, refs)
-      }
-    }
-    @core.Expr::TupleIndex(expr~, ..) => collect_refs_expr(expr, bound, refs)
-    @core.Expr::Record(fields~, span~) => {
-      let _ = span
-      for field in fields {
-        collect_refs_expr(field.expr, bound, refs)
-      }
-    }
-    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
-      let _ = span
-      let _ = type_args
-      add_ref_name(name, bound, refs)
-      for field in fields {
-        collect_refs_expr(field.expr, bound, refs)
-      }
-    }
-    @core.Expr::Array(items~, span~) => {
-      let _ = span
-      for item in items {
-        collect_refs_expr(item, bound, refs)
-      }
-    }
-    @core.Expr::Map(fields~, span~) => {
-      let _ = span
-      for field in fields {
-        collect_refs_expr(field.expr, bound, refs)
-      }
-    }
-    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
-      let _ = span
-      collect_refs_expr(cond, bound, refs)
-      collect_refs_block(then_body, bound, refs)
-      collect_refs_block(else_body, bound, refs)
-    }
-    @core.Expr::Block(body~, span~) => {
-      let _ = span
-      collect_refs_block(body, bound, refs)
-    }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      collect_refs_block(body, bound, refs)
-    }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
-      let _ = span
-      collect_refs_block(try_body, bound, refs)
-      collect_refs_block(catch_body, bound, refs)
-    }
-    @core.Expr::Match(scrutinee~, arms~, span~) => {
-      let _ = span
-      collect_refs_expr(scrutinee, bound, refs)
-      for arm in arms {
-        let arm_bound = clone_bool_map(bound)
-        bind_pattern_names(arm_bound, arm.pat)
-        match arm.cond {
-          Some(cond) => collect_refs_expr(cond, arm_bound, refs)
-          None => ()
-        }
-        collect_refs_expr(arm.expr, arm_bound, refs)
-      }
-    }
-    @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
-      let _ = span
-      let _ = ret
-      let fn_bound = clone_bool_map(bound)
-      for param in params {
-        fn_bound[param.name] = true
-      }
-      collect_refs_block(body, fn_bound, refs)
-    }
-    @core.Expr::While(cond~, body~, span~) => {
-      let _ = span
-      collect_refs_expr(cond, bound, refs)
-      collect_refs_block(body, bound, refs)
-    }
-    @core.Expr::Loop(params~, body~, span~) => {
-      let _ = span
-      for param in params {
-        collect_refs_expr(param.init, bound, refs)
-      }
-      collect_refs_block(body, bound, refs)
-    }
-    @core.Expr::Break(value~, span~) => {
-      let _ = span
-      match value {
-        Some(e) => collect_refs_expr(e, bound, refs)
-        None => ()
-      }
-    }
-    @core.Expr::Continue(args~, span~) => {
-      let _ = span
-      for arg in args {
-        collect_refs_expr(arg, bound, refs)
-      }
-    }
-    @core.Expr::Raise(value~, span~) => {
-      let _ = span
-      collect_refs_expr(value, bound, refs)
-    }
-    @core.Expr::Await(expr~, span~) => {
-      let _ = span
-      collect_refs_expr(expr, bound, refs)
-    }
-    @core.Expr::Yield(expr~, span~) => {
-      let _ = span
-      collect_refs_expr(expr, bound, refs)
-    }
-  }
+  @core.walk_expr_refs(expr, bound, refs, add_ref_name)
 }
 
 ///|
-/// Collect references from a block
+/// Collect references from a block using the generic walker with DCE filtering.
+/// Additionally walks type-level refs (EnumDef, StructDef, TypeAlias)
+/// which is DCE-specific.
 fn collect_refs_block(
   body : @core.Module,
   bound : Map[String, Bool],
   refs : Map[String, Bool],
 ) -> Unit {
-  let scope = clone_bool_map(bound)
+  @core.walk_block_refs(body, bound, refs, add_ref_name)
+  // DCE also needs type-level refs from type definitions in blocks
   for stmt in body.stmts {
     match stmt {
-      @core.Stmt::Let(rec~, name~, expr~, span~) => {
-        let _ = span
-        if rec {
-          scope[name] = true
-        }
-        collect_refs_expr(expr, scope, refs)
-        if not(rec) {
-          scope[name] = true
-        }
-      }
-      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
-        let _ = span
-        if rec {
-          scope[name] = true
-        }
-        collect_refs_expr(expr, scope, refs)
-        if not(rec) {
-          scope[name] = true
-        }
-      }
-      @core.Stmt::LetMut(name~, expr~, span~) => {
-        let _ = span
-        collect_refs_expr(expr, scope, refs)
-        scope[name] = true
-      }
-      @core.Stmt::Assign(name~, expr~, span~) => {
-        let _ = span
-        add_ref_name(name, scope, refs)
-        collect_refs_expr(expr, scope, refs)
-      }
-      @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
-        let _ = span
-        collect_refs_expr(target, scope, refs)
-        collect_refs_expr(index, scope, refs)
-        collect_refs_expr(value, scope, refs)
-      }
-      @core.Stmt::LetPat(pat~, expr~, span~) => {
-        let _ = span
-        collect_refs_expr(expr, scope, refs)
-        bind_pattern_names(scope, pat)
-      }
-      @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
-        let _ = span
-        collect_refs_expr(expr, scope, refs)
-        collect_refs_block(else_body, scope, refs)
-        bind_pattern_names(scope, pat)
-      }
-      @core.Stmt::Expr(expr~, span~) => {
-        let _ = span
-        collect_refs_expr(expr, scope, refs)
-      }
-      @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
-        let _ = params
-        let _ = span
-        scope[name] = true
+      @core.Stmt::EnumDef(ctors~, ..) | @core.Stmt::ExportEnumDef(ctors~, ..) =>
         for ctor in ctors {
           for arg in ctor.args {
             collect_refs_type(arg, refs)
           }
         }
-      }
-      @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
-        let _ = params
-        let _ = span
-        scope[name] = true
-        for ctor in ctors {
-          for arg in ctor.args {
-            collect_refs_type(arg, refs)
-          }
-        }
-      }
-      @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
-        let _ = params
-        let _ = span
-        scope[name] = true
+      @core.Stmt::TypeAlias(target~, ..)
+      | @core.Stmt::ExportTypeAlias(target~, ..) =>
         collect_refs_type(target, refs)
-      }
-      @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) => {
-        let _ = params
-        let _ = span
-        scope[name] = true
-        collect_refs_type(target, refs)
-      }
-      @core.Stmt::StructDef(name~, params~, fields~, span~) => {
-        let _ = params
-        let _ = span
-        scope[name] = true
+      @core.Stmt::StructDef(fields~, ..)
+      | @core.Stmt::ExportStructDef(fields~, ..) =>
         for field in fields {
           collect_refs_type(field.ty, refs)
         }
-      }
-      @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
-        let _ = params
-        let _ = span
-        scope[name] = true
-        for field in fields {
-          collect_refs_type(field.ty, refs)
-        }
-      }
-      @core.Stmt::Test(..)
-      | @core.Stmt::Bench(..)
-      | @core.Stmt::Import(..)
-      | @core.Stmt::TraitDef(..)
-      | @core.Stmt::TraitImpl(..)
-      | @core.Stmt::Export(..)
-      | @core.Stmt::ReExport(..) => ()
+      _ => ()
     }
   }
 }
@@ -716,62 +498,4 @@ fn dce_is_builtin_name(name : String) -> Bool {
   name == "map_builder" ||
   name == "map_builder_set" ||
   name == "map_builder_freeze"
-}
-
-///|
-fn clone_bool_map(m : Map[String, Bool]) -> Map[String, Bool] {
-  let out : Map[String, Bool] = {}
-  for k, v in m {
-    out[k] = v
-  }
-  out
-}
-
-///|
-fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
-  match pat {
-    @core.Pat::Wildcard(..) => ()
-    @core.Pat::Bind(name~, span~) => {
-      let _ = span
-      bound[name] = true
-    }
-    @core.Pat::Ctor(name~, args~, span~) => {
-      let _ = name
-      let _ = span
-      for arg in args {
-        bind_pattern_names(bound, arg)
-      }
-    }
-    @core.Pat::Tuple(items~, span~) => {
-      let _ = span
-      for item in items {
-        bind_pattern_names(bound, item)
-      }
-    }
-    @core.Pat::Record(fields~, span~) => {
-      let _ = span
-      for field in fields {
-        bind_pattern_names(bound, field.pat)
-      }
-    }
-    @core.Pat::Struct(name~, fields~, span~) => {
-      let _ = name
-      let _ = span
-      for field in fields {
-        bind_pattern_names(bound, field.pat)
-      }
-    }
-    @core.Pat::Int(..)
-    | @core.Pat::Float(..)
-    | @core.Pat::Double(..)
-    | @core.Pat::Bool(..)
-    | @core.Pat::Char(..)
-    | @core.Pat::String(..) => ()
-    @core.Pat::Or(pats~, span~) => {
-      let _ = span
-      for p in pats {
-        bind_pattern_names(bound, p)
-      }
-    }
-  }
 }

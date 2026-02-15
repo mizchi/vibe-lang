@@ -25,16 +25,21 @@ pub fn type_check_with_aliases(
 
 ///|
 pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
-  match cached_prelude_env.val {
+  match default_typecheck_session.cached_prelude_env.val {
     Some(seed) => seed.clone_for_module()
     None => {
       let seed = TypeEnv::new()
       ensure_prelude_option(seed)
       ensure_prelude_functions(seed, {})
-      cached_prelude_env.val = Some(seed)
+      default_typecheck_session.cached_prelude_env.val = Some(seed)
       seed.clone_for_module()
     }
   }
+}
+
+///|
+pub fn get_default_typecheck_session() -> TypecheckSession {
+  default_typecheck_session
 }
 
 ///|

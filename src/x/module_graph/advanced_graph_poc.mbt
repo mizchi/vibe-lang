@@ -551,9 +551,7 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
       None => ()
     }
     if not(has_type_link) {
-      issues.push(
-        "def missing type link: " + def_id + " (" + type_key + ")",
-      )
+      issues.push("def missing type link: " + def_id + " (" + type_key + ")")
     }
   }
   issues

@@ -172,8 +172,8 @@ pub fn ensure_prelude_functions(
 
 ///|
 fn fresh_type_var(env : TypeEnv) -> @core.Type {
-  let id = global_next_type_var.val
-  global_next_type_var.val += 1
+  let id = default_typecheck_session.next_type_var.val
+  default_typecheck_session.next_type_var.val += 1
   if env.next_var <= id {
     env.next_var = id + 1
   }

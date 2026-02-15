@@ -626,9 +626,12 @@ test "advanced graph mixed-language index from IR" {
   assert_eq(ts_num.length(), 1)
   // JSON roundtrip preserves language_id
   let json_str = index.to_json().stringify()
-  let roundtrip = match advanced_graph_index_from_json(
-    @json.parse(json_str) catch { _ => fail("json parse failed") },
-  ) {
+  let roundtrip = match
+    advanced_graph_index_from_json(
+      @json.parse(json_str) catch {
+        _ => fail("json parse failed")
+      },
+    ) {
     Ok(v) => v
     Err(err) => fail("json roundtrip failed: " + err)
   }

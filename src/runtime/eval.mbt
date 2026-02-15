@@ -1038,55 +1038,6 @@ fn eval_block(rt : Runtime, body : @core.Module) -> EvalOutput raise EvalError {
 }
 
 ///|
-fn variant_namespace_root_from_runtime_type(
-  rt : Runtime,
-  fields : Map[String, @core.Type],
-) -> String? {
-  let mut found : String? = None
-  for enum_name in rt.type_env.enum_names() {
-    match rt.type_env.get_enum_def(enum_name) {
-      Some(enum_def) => {
-        if enum_def.ctors.length() != fields.length() {
-          continue
-        }
-        let mut all_match = true
-        for ctor in enum_def.ctors {
-          if not(fields.contains(ctor.name)) {
-            all_match = false
-            break
-          }
-        }
-        if all_match {
-          match found {
-            None => found = Some(enum_name)
-            Some(_) => return None
-          }
-        }
-      }
-      None => ()
-    }
-  }
-  found
-}
-
-///|
-fn namespace_root_from_runtime_type(rt : Runtime, ty : @core.Type) -> String? {
-  match ty {
-    @core.Type::Int => Some("Int")
-    @core.Type::Float => Some("Float")
-    @core.Type::Double => Some("Double")
-    @core.Type::Bool => Some("Bool")
-    @core.Type::Char => Some("Char")
-    @core.Type::String => Some("String")
-    @core.Type::Path => Some("Path")
-    @core.Type::Named(name~, ..) => Some(name)
-    @core.Type::Variant(fields) =>
-      variant_namespace_root_from_runtime_type(rt, fields)
-    _ => None
-  }
-}
-
-///|
 fn resolve_type_member_call_name_rt(
   rt : Runtime,
   name : String,
@@ -1107,7 +1058,7 @@ fn resolve_type_member_call_name_rt(
     Some(expr) =>
       match rt.type_env.get_expr_type(expr.span()) {
         Some(recv_ty) =>
-          match namespace_root_from_runtime_type(rt, recv_ty) {
+          match rt.type_env.namespace_root(recv_ty) {
             Some(root) => {
               let candidate = root + "::" + name
               match rt.get(candidate) {
