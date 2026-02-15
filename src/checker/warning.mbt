@@ -353,6 +353,94 @@ fn walk_stmt(
 }
 
 ///|
+fn is_eq_on_ident(cond : @core.Expr) -> String? {
+  match cond {
+    @core.Expr::Call(name~, args~, ..) => {
+      let fn_name = name
+      if (fn_name == "__eq" || fn_name == "eq") && args.length() == 2 {
+        match args[0].expr {
+          @core.Expr::Ident(name~, ..) => Some(name)
+          _ =>
+            match args[1].expr {
+              @core.Expr::Ident(name~, ..) => Some(name)
+              _ => None
+            }
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+fn get_chain_next(else_body : @core.Module, target : String) -> @core.Expr? {
+  if else_body.stmts.length() == 1 {
+    match else_body.stmts[0] {
+      @core.Stmt::Expr(expr~, ..) =>
+        match expr {
+          @core.Expr::If(cond~, ..) =>
+            match is_eq_on_ident(cond) {
+              Some(name) => if name == target { Some(expr) } else { None }
+              None => None
+            }
+          _ => None
+        }
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+///|
+fn count_eq_chain(expr : @core.Expr, target : String) -> Int {
+  match expr {
+    @core.Expr::If(cond~, else_body~, ..) =>
+      match is_eq_on_ident(cond) {
+        Some(name) =>
+          if name == target {
+            match get_chain_next(else_body, target) {
+              Some(next_if) => 1 + count_eq_chain(next_if, target)
+              None => 1
+            }
+          } else {
+            0
+          }
+        None => 0
+      }
+    _ => 0
+  }
+}
+
+///|
+fn walk_eq_chain(
+  expr : @core.Expr,
+  target : String,
+  scopes : Array[WarningScope],
+  out : Array[@core.Diagnostic],
+) -> Unit {
+  match expr {
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      walk_expr(cond, scopes, out)
+      scopes.push(warning_scope_new())
+      walk_module(then_body, scopes, out)
+      warning_scope_pop(scopes, out)
+      match get_chain_next(else_body, target) {
+        Some(next_if) => walk_eq_chain(next_if, target, scopes, out)
+        None => {
+          scopes.push(warning_scope_new())
+          walk_module(else_body, scopes, out)
+          warning_scope_pop(scopes, out)
+        }
+      }
+    }
+    _ => walk_expr(expr, scopes, out)
+  }
+}
+
+///|
 fn walk_expr(
   expr : @core.Expr,
   scopes : Array[WarningScope],
@@ -383,14 +471,43 @@ fn walk_expr(
       for field in fields {
         walk_expr(field.expr, scopes, out)
       }
-    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
-      walk_expr(cond, scopes, out)
-      scopes.push(warning_scope_new())
-      walk_module(then_body, scopes, out)
-      warning_scope_pop(scopes, out)
-      scopes.push(warning_scope_new())
-      walk_module(else_body, scopes, out)
-      warning_scope_pop(scopes, out)
+    @core.Expr::If(cond~, then_body~, else_body~, span~) => {
+      let chain_handled : Bool = match is_eq_on_ident(cond) {
+        Some(target) => {
+          let depth = count_eq_chain(expr, target)
+          if depth >= 3 {
+            out.push(@core.Diagnostic::{
+              stage: "warning",
+              message: "if-else chain on `" +
+              target +
+              "` with " +
+              depth.to_string() +
+              " branches can be rewritten as match",
+              span: Some(span),
+              hint: Some(
+                "use `match " +
+                target +
+                " { ... }` instead of chained `==` comparisons",
+              ),
+              note: None,
+            })
+            walk_eq_chain(expr, target, scopes, out)
+            true
+          } else {
+            false
+          }
+        }
+        None => false
+      }
+      if !chain_handled {
+        walk_expr(cond, scopes, out)
+        scopes.push(warning_scope_new())
+        walk_module(then_body, scopes, out)
+        warning_scope_pop(scopes, out)
+        scopes.push(warning_scope_new())
+        walk_module(else_body, scopes, out)
+        warning_scope_pop(scopes, out)
+      }
     }
     @core.Expr::Block(body~, ..) | @core.Expr::Do(body~, ..) => {
       scopes.push(warning_scope_new())
