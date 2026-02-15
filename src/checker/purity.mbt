@@ -6,26 +6,51 @@ pub struct PurityInfo {
 } derive(Show, Eq)
 
 ///|
+priv struct PurityScope {
+  bindings : Map[String, Bool]
+  parent : PurityScope?
+}
+
+///|
+fn PurityScope::new() -> PurityScope {
+  { bindings: {}, parent: None }
+}
+
+///|
+fn PurityScope::child(self : PurityScope) -> PurityScope {
+  { bindings: {}, parent: Some(self) }
+}
+
+///|
+fn PurityScope::get(self : PurityScope, name : String) -> Bool? {
+  match self.bindings.get(name) {
+    Some(v) => Some(v)
+    None =>
+      match self.parent {
+        Some(p) => p.get(name)
+        None => None
+      }
+  }
+}
+
+///|
 pub fn purity_for_let(
   env : TypeEnv,
   rec : Bool,
   name : String,
   expr : @core.Expr,
 ) -> PurityInfo {
-  let locals : Map[String, Bool] = {}
+  let locals = PurityScope::new()
   if rec {
-    locals[name] = true
+    locals.bindings[name] = true
   }
   match expr {
     @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = ret
-      let fn_locals : Map[String, Bool] = {}
-      for key, val in locals {
-        fn_locals[key] = val
-      }
+      let fn_locals = locals.child()
       for param in params {
-        fn_locals[param.name] = true
+        fn_locals.bindings[param.name] = true
       }
       let body_pure = purity_block_inner(env, body, fn_locals)
       PurityInfo::{ expr: true, value: body_pure }
@@ -39,19 +64,19 @@ pub fn purity_for_let(
 
 ///|
 pub fn purity_expr(env : TypeEnv, expr : @core.Expr) -> Bool {
-  purity_expr_inner(env, expr, {})
+  purity_expr_inner(env, expr, PurityScope::new())
 }
 
 ///|
 pub fn purity_block(env : TypeEnv, body : @core.Module) -> Bool {
-  purity_block_inner(env, body, {})
+  purity_block_inner(env, body, PurityScope::new())
 }
 
 ///|
 fn purity_expr_inner(
   env : TypeEnv,
   expr : @core.Expr,
-  locals : Map[String, Bool],
+  locals : PurityScope,
 ) -> Bool {
   match expr {
     @core.Expr::Int(value~, span~) => {
@@ -194,8 +219,8 @@ fn purity_expr_inner(
       } else {
         let mut ok = true
         for arm in arms {
-          let arm_locals = clone_bool_map(locals)
-          bind_pattern_names(arm_locals, arm.pat)
+          let arm_locals = locals.child()
+          bind_pattern_names(arm_locals.bindings, arm.pat)
           match arm.cond {
             Some(cond) =>
               if not(purity_expr_inner(env, cond, arm_locals)) {
@@ -239,9 +264,9 @@ fn purity_expr_inner(
 fn purity_block_inner(
   env : TypeEnv,
   body : @core.Module,
-  locals : Map[String, Bool],
+  locals : PurityScope,
 ) -> Bool {
-  let scope = clone_bool_map(locals)
+  let scope = locals.child()
   let mut ok = true
   for stmt in body.stmts {
     match stmt {
@@ -252,7 +277,7 @@ fn purity_block_inner(
           ok = false
           break
         }
-        scope[name] = info.value
+        scope.bindings[name] = info.value
       }
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
@@ -277,7 +302,7 @@ fn purity_block_inner(
           ok = false
           break
         }
-        bind_pattern_names(scope, pat)
+        bind_pattern_names(scope.bindings, pat)
       }
       @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
         let _ = span
@@ -285,7 +310,7 @@ fn purity_block_inner(
           ok = false
           break
         }
-        bind_pattern_names(scope, pat)
+        bind_pattern_names(scope.bindings, pat)
         if not(purity_block_inner(env, else_body, scope)) {
           ok = false
           break
@@ -307,19 +332,19 @@ fn purity_for_let_in_scope(
   rec : Bool,
   name : String,
   expr : @core.Expr,
-  locals : Map[String, Bool],
+  locals : PurityScope,
 ) -> PurityInfo {
-  let scope = clone_bool_map(locals)
+  let scope = locals.child()
   if rec {
-    scope[name] = true
+    scope.bindings[name] = true
   }
   match expr {
     @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = ret
-      let fn_locals = clone_bool_map(scope)
+      let fn_locals = scope.child()
       for param in params {
-        fn_locals[param.name] = true
+        fn_locals.bindings[param.name] = true
       }
       let body_pure = purity_block_inner(env, body, fn_locals)
       PurityInfo::{ expr: true, value: body_pure }
@@ -335,7 +360,7 @@ fn purity_for_let_in_scope(
 fn purity_all(
   env : TypeEnv,
   items : Array[@core.Expr],
-  locals : Map[String, Bool],
+  locals : PurityScope,
 ) -> Bool {
   let mut ok = true
   for item in items {
