@@ -66,8 +66,8 @@ fn unknown_span() -> @core.Span {
 }
 
 ///|
-fn span_key(span : @core.Span) -> String {
-  span.start.to_string() + ":" + span.end.to_string()
+fn span_key(span : @core.Span) -> Int64 {
+  (span.start.to_int64() << 32) | span.end.to_int64()
 }
 
 ///|

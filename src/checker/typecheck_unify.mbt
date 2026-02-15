@@ -1,6 +1,12 @@
 ///|
 fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError {
   let resolved = resolve_type(env, ty)
+  // Fast path: ground types need no normalization
+  match resolved {
+    Int | Float | Double | Bool | Char | String | Path | Unit | StringBuilder
+    | Never | Var(_) | Param(_) => return resolved
+    _ => ()
+  }
   let visiting : Map[String, Bool] = {}
   normalize_type_inner(env, resolved, visiting)
 }
