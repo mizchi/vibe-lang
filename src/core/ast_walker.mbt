@@ -4,6 +4,36 @@
 /// with a pluggable `on_name` callback for filtering.
 
 ///|
+/// Scope-chain for efficient scope management in AST walkers.
+/// Creating a child scope is O(1) instead of O(N) map copying.
+pub struct WalkerScope {
+  bindings : Map[String, Bool]
+  parent : WalkerScope?
+}
+
+///|
+pub fn WalkerScope::new() -> WalkerScope {
+  { bindings: {}, parent: None }
+}
+
+///|
+pub fn WalkerScope::child(self : WalkerScope) -> WalkerScope {
+  { bindings: {}, parent: Some(self) }
+}
+
+///|
+pub fn WalkerScope::contains(self : WalkerScope, name : String) -> Bool {
+  if self.bindings.contains(name) {
+    true
+  } else {
+    match self.parent {
+      Some(p) => p.contains(name)
+      None => false
+    }
+  }
+}
+
+///|
 /// Clone a `Map[String, Bool]` (shallow copy).
 pub fn clone_bool_map(m : Map[String, Bool]) -> Map[String, Bool] {
   let out : Map[String, Bool] = {}
@@ -64,12 +94,18 @@ pub fn bind_pattern_names_walker(bound : Map[String, Bool], pat : Pat) -> Unit {
 }
 
 ///|
+/// Bind all variable names introduced by a pattern into a WalkerScope.
+pub fn bind_pattern_names_scope(scope : WalkerScope, pat : Pat) -> Unit {
+  bind_pattern_names_walker(scope.bindings, pat)
+}
+
+///|
 /// Walk an expression, collecting free variable references via `on_name`.
 pub fn walk_expr_refs(
   expr : Expr,
-  bound : Map[String, Bool],
+  bound : WalkerScope,
   refs : Map[String, Bool],
-  on_name : (String, Map[String, Bool], Map[String, Bool]) -> Unit,
+  on_name : (String, WalkerScope, Map[String, Bool]) -> Unit,
 ) -> Unit {
   match expr {
     Expr::Int(..)
@@ -146,8 +182,8 @@ pub fn walk_expr_refs(
       let _ = span
       walk_expr_refs(scrutinee, bound, refs, on_name)
       for arm in arms {
-        let arm_bound = clone_bool_map(bound)
-        bind_pattern_names_walker(arm_bound, arm.pat)
+        let arm_bound = bound.child()
+        bind_pattern_names_scope(arm_bound, arm.pat)
         match arm.cond {
           Some(cond) => walk_expr_refs(cond, arm_bound, refs, on_name)
           None => ()
@@ -158,9 +194,9 @@ pub fn walk_expr_refs(
     Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = ret
-      let fn_bound = clone_bool_map(bound)
+      let fn_bound = bound.child()
       for param in params {
-        fn_bound[param.name] = true
+        fn_bound.bindings[param.name] = true
       }
       walk_block_refs(body, fn_bound, refs, on_name)
     }
@@ -171,10 +207,10 @@ pub fn walk_expr_refs(
     }
     Expr::Loop(params~, body~, span~) => {
       let _ = span
-      let loop_bound = clone_bool_map(bound)
+      let loop_bound = bound.child()
       for param in params {
         walk_expr_refs(param.init, bound, refs, on_name)
-        loop_bound[param.name] = true
+        loop_bound.bindings[param.name] = true
       }
       walk_block_refs(body, loop_bound, refs, on_name)
     }
@@ -212,11 +248,11 @@ pub fn walk_expr_refs(
 /// here -- callers that need type refs should handle them separately.
 pub fn walk_block_refs(
   body : Module,
-  bound : Map[String, Bool],
+  bound : WalkerScope,
   refs : Map[String, Bool],
-  on_name : (String, Map[String, Bool], Map[String, Bool]) -> Unit,
+  on_name : (String, WalkerScope, Map[String, Bool]) -> Unit,
 ) -> Unit {
-  let scope = clone_bool_map(bound)
+  let scope = bound.child()
   for stmt in body.stmts {
     walk_stmt_refs(stmt, scope, refs, on_name)
   }
@@ -227,26 +263,26 @@ pub fn walk_block_refs(
 /// free variable references via `on_name`.
 pub fn walk_stmt_refs(
   stmt : Stmt,
-  scope : Map[String, Bool],
+  scope : WalkerScope,
   refs : Map[String, Bool],
-  on_name : (String, Map[String, Bool], Map[String, Bool]) -> Unit,
+  on_name : (String, WalkerScope, Map[String, Bool]) -> Unit,
 ) -> Unit {
   match stmt {
     Stmt::Let(rec~, name~, expr~, span~)
     | Stmt::ExportLet(rec~, name~, expr~, span~) => {
       let _ = span
       if rec {
-        scope[name] = true
+        scope.bindings[name] = true
       }
       walk_expr_refs(expr, scope, refs, on_name)
       if not(rec) {
-        scope[name] = true
+        scope.bindings[name] = true
       }
     }
     Stmt::LetMut(name~, expr~, span~) => {
       let _ = span
       walk_expr_refs(expr, scope, refs, on_name)
-      scope[name] = true
+      scope.bindings[name] = true
     }
     Stmt::Assign(name~, expr~, span~) => {
       let _ = span
@@ -262,13 +298,13 @@ pub fn walk_stmt_refs(
     Stmt::LetPat(pat~, expr~, span~) => {
       let _ = span
       walk_expr_refs(expr, scope, refs, on_name)
-      bind_pattern_names_walker(scope, pat)
+      bind_pattern_names_scope(scope, pat)
     }
     Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
       let _ = span
       walk_expr_refs(expr, scope, refs, on_name)
       walk_block_refs(else_body, scope, refs, on_name)
-      bind_pattern_names_walker(scope, pat)
+      bind_pattern_names_scope(scope, pat)
     }
     Stmt::Expr(expr~, span~) => {
       let _ = span
@@ -281,7 +317,7 @@ pub fn walk_stmt_refs(
     | Stmt::TypeAlias(name~, ..)
     | Stmt::ExportTypeAlias(name~, ..)
     | Stmt::StructDef(name~, ..)
-    | Stmt::ExportStructDef(name~, ..) => scope[name] = true
+    | Stmt::ExportStructDef(name~, ..) => scope.bindings[name] = true
     Stmt::Import(..)
     | Stmt::TraitDef(..)
     | Stmt::TraitImpl(..)

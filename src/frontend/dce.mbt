@@ -67,12 +67,12 @@ fn build_dep_graph(stmts : Array[@core.Stmt]) -> Map[String, Map[String, Bool]] 
 /// Extract definition name and its references from a statement
 fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
   let refs : Map[String, Bool] = {}
-  let bound : Map[String, Bool] = {}
+  let bound = @core.WalkerScope::new()
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) => {
       let _ = span
       if rec {
-        bound[name] = true
+        bound.bindings[name] = true
       }
       collect_refs_expr(expr, bound, refs)
       (Some(name), refs)
@@ -80,7 +80,7 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
       let _ = span
       if rec {
-        bound[name] = true
+        bound.bindings[name] = true
       }
       collect_refs_expr(expr, bound, refs)
       (Some(name), refs)
@@ -164,7 +164,7 @@ fn collect_entry_points(
   include_tests~ : Bool,
 ) -> Map[String, Bool] {
   let entries : Map[String, Bool] = {}
-  let empty_bound : Map[String, Bool] = {}
+  let empty_bound = @core.WalkerScope::new()
   let len = stmts.length()
   for i, stmt in stmts {
     let is_last = i == len - 1
@@ -363,7 +363,7 @@ fn filter_reachable_stmts(
 /// Collect references from an expression using the generic walker with DCE filtering.
 fn collect_refs_expr(
   expr : @core.Expr,
-  bound : Map[String, Bool],
+  bound : @core.WalkerScope,
   refs : Map[String, Bool],
 ) -> Unit {
   @core.walk_expr_refs(expr, bound, refs, add_ref_name)
@@ -375,7 +375,7 @@ fn collect_refs_expr(
 /// which is DCE-specific.
 fn collect_refs_block(
   body : @core.Module,
-  bound : Map[String, Bool],
+  bound : @core.WalkerScope,
   refs : Map[String, Bool],
 ) -> Unit {
   @core.walk_block_refs(body, bound, refs, add_ref_name)
@@ -453,7 +453,7 @@ fn collect_refs_type(ty : @core.Type, refs : Map[String, Bool]) -> Unit {
 /// Add a reference if not bound locally and not a builtin
 fn add_ref_name(
   name : String,
-  bound : Map[String, Bool],
+  bound : @core.WalkerScope,
   refs : Map[String, Bool],
 ) -> Unit {
   if bound.contains(name) {

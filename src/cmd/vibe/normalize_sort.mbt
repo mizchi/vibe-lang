@@ -191,12 +191,12 @@ fn normalize_stmt_def_name(stmt : @vibe_core.Stmt) -> String? {
 ///|
 fn normalize_collect_stmt_refs(stmt : @vibe_core.Stmt) -> Map[String, Bool] {
   let refs : Map[String, Bool] = {}
-  let bound : Map[String, Bool] = {}
+  let bound = @vibe_core.WalkerScope::new()
   match stmt {
     @vibe_core.Stmt::Let(rec~, name~, expr~, ..)
     | @vibe_core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
       if rec {
-        bound[name] = true
+        bound.bindings[name] = true
       }
       @vibe_core.walk_expr_refs(expr, bound, refs, normalize_add_ref_name)
     }
@@ -210,7 +210,7 @@ fn normalize_collect_stmt_refs(stmt : @vibe_core.Stmt) -> Map[String, Bool] {
 ///|
 fn normalize_add_ref_name(
   name : String,
-  bound : Map[String, Bool],
+  bound : @vibe_core.WalkerScope,
   refs : Map[String, Bool],
 ) -> Unit {
   if bound.contains(name) {

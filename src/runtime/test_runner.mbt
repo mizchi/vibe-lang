@@ -189,14 +189,14 @@ fn deps_equal(a : Map[String, String], b : Map[String, String]) -> Bool {
 ///|
 fn collect_dep_names(body : @core.Module) -> Map[String, Bool] {
   let out : Map[String, Bool] = {}
-  @core.walk_block_refs(body, {}, out, add_dep_name)
+  @core.walk_block_refs(body, @core.WalkerScope::new(), out, add_dep_name)
   out
 }
 
 ///|
 fn add_dep_name(
   name : String,
-  bound : Map[String, Bool],
+  bound : @core.WalkerScope,
   out : Map[String, Bool],
 ) -> Unit {
   if bound.contains(name) {

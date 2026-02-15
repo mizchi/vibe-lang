@@ -2,7 +2,7 @@
 /// Helper: default on_name that adds any unbound name (no filtering).
 fn add_all_refs(
   name : String,
-  bound : Map[String, Bool],
+  bound : WalkerScope,
   refs : Map[String, Bool],
 ) -> Unit {
   if not(bound.contains(name)) {
@@ -20,7 +20,7 @@ test "walk_expr_refs collects free variable from Ident" {
   let refs : Map[String, Bool] = {}
   walk_expr_refs(
     Expr::Ident(name="x", span=empty_span()),
-    {},
+    WalkerScope::new(),
     refs,
     add_all_refs,
   )
@@ -30,7 +30,8 @@ test "walk_expr_refs collects free variable from Ident" {
 ///|
 test "walk_expr_refs skips bound variable" {
   let refs : Map[String, Bool] = {}
-  let bound : Map[String, Bool] = { "x": true }
+  let bound = WalkerScope::new()
+  bound.bindings["x"] = true
   walk_expr_refs(
     Expr::Ident(name="x", span=empty_span()),
     bound,
@@ -56,7 +57,7 @@ test "walk_expr_refs collects call name and arg refs" {
       ],
       span=empty_span(),
     ),
-    {},
+    WalkerScope::new(),
     refs,
     add_all_refs,
   )
@@ -92,7 +93,7 @@ test "walk_expr_refs fn params bind correctly" {
       },
       span=empty_span(),
     ),
-    {},
+    WalkerScope::new(),
     refs,
     add_all_refs,
   )
@@ -126,7 +127,7 @@ test "walk_expr_refs match arm binds pattern names" {
       ],
       span=empty_span(),
     ),
-    {},
+    WalkerScope::new(),
     refs,
     add_all_refs,
   )
@@ -154,7 +155,7 @@ test "walk_block_refs let binding scopes correctly" {
         ),
       ],
     },
-    {},
+    WalkerScope::new(),
     refs,
     add_all_refs,
   )
