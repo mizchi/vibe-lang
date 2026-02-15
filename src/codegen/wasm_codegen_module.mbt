@@ -794,6 +794,7 @@ fn emit_module_with_coverage(
   // Multi-value return analysis: detect top-level functions that always
   // return tuple literals. Nested functions are excluded because they're
   // called through indirect paths where multi-value adds re-boxing overhead.
+  // Pass 1: identify functions eligible without cross-function Call support
   for i in 0..<funcs.length() {
     let f = funcs[i]
     if not(top_keys.contains(f.span_key)) {
@@ -807,6 +808,35 @@ fn emit_module_with_coverage(
               ctx.fn_multivalue_results[name] = kinds
             }
           None => ()
+        }
+      None => ()
+    }
+  }
+  // Pass 2: functions calling already-eligible functions also become eligible
+  let eligible_arity : Map[String, Int] = {}
+  for entry in ctx.fn_multivalue_results {
+    eligible_arity[entry.0] = entry.1.length()
+  }
+  for i in 0..<funcs.length() {
+    let f = funcs[i]
+    if not(top_keys.contains(f.span_key)) {
+      continue
+    }
+    match f.name {
+      Some(name) =>
+        if not(ctx.fn_multivalue_results.contains(name)) {
+          match tuple_return_kinds(ctx, f.ret) {
+            Some(kinds) =>
+              if body_always_returns_tuple(
+                  f.body,
+                  kinds.length(),
+                  name,
+                  eligible_fns=Some(eligible_arity),
+                ) {
+                ctx.fn_multivalue_results[name] = kinds
+              }
+            None => ()
+          }
         }
       None => ()
     }

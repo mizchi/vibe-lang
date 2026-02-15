@@ -1323,6 +1323,7 @@ fn body_always_returns_tuple(
   body : @core.Module,
   arity : Int,
   self_name : String,
+  eligible_fns? : Map[String, Int]? = None,
 ) -> Bool {
   if body.stmts.length() == 0 {
     return false
@@ -1330,7 +1331,7 @@ fn body_always_returns_tuple(
   let last = body.stmts[body.stmts.length() - 1]
   match last {
     @core.Stmt::Expr(expr~, span=_) =>
-      expr_always_returns_tuple(expr, arity, self_name)
+      expr_always_returns_tuple(expr, arity, self_name, eligible_fns~)
     _ => false
   }
 }
@@ -1340,34 +1341,50 @@ fn expr_always_returns_tuple(
   expr : @core.Expr,
   arity : Int,
   self_name : String,
+  eligible_fns? : Map[String, Int]? = None,
 ) -> Bool {
   match expr {
     @core.Expr::Tuple(items~, span=_) => items.length() == arity
     @core.Expr::If(cond=_, then_body~, else_body~, span=_) =>
-      body_always_returns_tuple(then_body, arity, self_name) &&
-      body_always_returns_tuple(else_body, arity, self_name)
+      body_always_returns_tuple(then_body, arity, self_name, eligible_fns~) &&
+      body_always_returns_tuple(else_body, arity, self_name, eligible_fns~)
     @core.Expr::Block(body~, span=_) =>
-      body_always_returns_tuple(body, arity, self_name)
+      body_always_returns_tuple(body, arity, self_name, eligible_fns~)
     @core.Expr::Match(scrutinee=_, arms~, span=_) => {
       if arms.length() == 0 {
         return false
       }
       for arm in arms {
-        if not(expr_always_returns_tuple(arm.expr, arity, self_name)) {
+        if not(
+            expr_always_returns_tuple(arm.expr, arity, self_name, eligible_fns~),
+          ) {
           return false
         }
       }
       true
     }
     @core.Expr::Do(body~, span=_) =>
-      body_always_returns_tuple(body, arity, self_name)
+      body_always_returns_tuple(body, arity, self_name, eligible_fns~)
     @core.Expr::Try(try_body~, catch_body~, span=_) =>
-      body_always_returns_tuple(try_body, arity, self_name) &&
-      body_always_returns_tuple_or_raises(catch_body, arity, self_name)
+      body_always_returns_tuple(try_body, arity, self_name, eligible_fns~) &&
+      body_always_returns_tuple_or_raises(
+        catch_body,
+        arity,
+        self_name,
+        eligible_fns~,
+      )
     @core.Expr::Raise(..) => true // never returns, vacuously compatible
     @core.Expr::Call(name~, ..) =>
-      // Self-recursive call returns same tuple type
-      name == self_name
+      // Self-recursive call or call to known multi-value function with matching arity
+      name == self_name ||
+      (match eligible_fns {
+        Some(s) =>
+          match s.get(name) {
+            Some(a) => a == arity
+            None => false
+          }
+        None => false
+      })
     _ => false
   }
 }
@@ -1377,6 +1394,7 @@ fn body_always_returns_tuple_or_raises(
   body : @core.Module,
   arity : Int,
   self_name : String,
+  eligible_fns? : Map[String, Int]? = None,
 ) -> Bool {
   if body.stmts.length() == 0 {
     return false
@@ -1384,7 +1402,7 @@ fn body_always_returns_tuple_or_raises(
   let last = body.stmts[body.stmts.length() - 1]
   match last {
     @core.Stmt::Expr(expr~, span=_) =>
-      expr_always_returns_tuple(expr, arity, self_name) ||
+      expr_always_returns_tuple(expr, arity, self_name, eligible_fns~) ||
       expr_always_raises(expr)
     _ => false
   }
