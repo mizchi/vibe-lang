@@ -777,11 +777,24 @@ fn generalize(env : TypeEnv, ty : @core.Type) -> TypeScheme raise TypeError {
   let resolved = resolve_type(env, ty)
   let normalized = normalize_type(env, resolved)
   let free_ty = free_vars_in_type(env, normalized)
-  let free_env = free_vars_in_env(env)
+  let free_effects = free_effect_vars_in_type(env, normalized)
+  // Fast path: fully determined type — skip O(n) env scans
+  if free_ty.is_empty() && free_effects.is_empty() {
+    return TypeScheme::{
+      vars: [],
+      num_vars: [],
+      effect_vars: [],
+      trait_bounds: {},
+      ty: normalized,
+    }
+  }
   let vars : Array[Int] = []
-  for id, _ in free_ty {
-    if not(free_env.contains(id)) {
-      vars.push(id)
+  if not(free_ty.is_empty()) {
+    let free_env = free_vars_in_env(env)
+    for id, _ in free_ty {
+      if not(free_env.contains(id)) {
+        vars.push(id)
+      }
     }
   }
   let num_vars : Array[Int] = []
@@ -790,12 +803,13 @@ fn generalize(env : TypeEnv, ty : @core.Type) -> TypeScheme raise TypeError {
       num_vars.push(id)
     }
   }
-  let free_effects = free_effect_vars_in_type(env, normalized)
-  let free_effect_env = free_effect_vars_in_env(env)
   let effect_vars : Array[String] = []
-  for name, _ in free_effects {
-    if not(free_effect_env.contains(name)) {
-      effect_vars.push(name)
+  if not(free_effects.is_empty()) {
+    let free_effect_env = free_effect_vars_in_env(env)
+    for name, _ in free_effects {
+      if not(free_effect_env.contains(name)) {
+        effect_vars.push(name)
+      }
     }
   }
   let trait_bounds : Map[Int, Array[String]] = {}
