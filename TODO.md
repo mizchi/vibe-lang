@@ -54,14 +54,26 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
   `json_index`, `json_string`, `json_number`, `json_bool`, `json_is_null`,
   `json_length`, `json_keys`) with opaque `Json` builtin type, typecheck,
   eval, and fixture tests.
-- Measure graph-index gains against current search path and remote transfer:
-  run `just bench-advanced-graph`, collect
-  `current_cli_like` vs `graph_snapshot/json_load`, and
-  `apply_full_snapshot` vs `apply_delta` ratios on CI fixture sizes.
-- Generalize symbol/type/signature indexing beyond vibe:
-  extract language-agnostic graph IR (`symbol/type/signature/ref/call/import`),
-  add `language_id`-aware storage keys, and define stable hash/id contracts for
-  incremental updates.
+- Done (2026-02-15): Measure graph-index gains against current search path and
+  remote transfer. Benchmark results (`just bench-advanced-graph`, 21 cases):
+
+  | Scenario | Time | Speedup vs baseline |
+  |----------|------|---------------------|
+  | `current_cli_like` (baseline) | 330.73 ms | 1x |
+  | `graph_snapshot_query` | 132.73 µs | **2492x** |
+  | `graph_json_load_query` | 1.49 ms | **222x** |
+
+  | Format | Full Snapshot | Delta | Delta speedup |
+  |--------|--------------|-------|---------------|
+  | JSON | 1.47 ms | 1.21 ms | 1.2x |
+  | CBOR | 2.53 ms | 1.83 ms | 1.4x |
+  | Flexbuffer | 4.25 ms | 3.75 ms | 1.1x |
+
+- Done (2026-02-15): Generalize symbol/type/signature indexing beyond vibe:
+  added `language_id` to `AdvancedGraphDef`, `language_ids` to manifest,
+  language-aware index keys (`"vibe::symbol::foo"`), `language_id?` query
+  filtering, `build_advanced_graph_index_from_ir` builder, and updated
+  JSON/Flatbuffer codecs with mixed-language test.
 - Add multi-language frontend adapters:
   implement a tree-sitter-based extractor as baseline and layer optional
   semantic providers (compiler/LSP) for type-resolution gaps; keep
@@ -69,9 +81,10 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 - Expand object pipeline operators on typed rows:
   add first-class `where/select` contracts over record-like objects and align
   parser/desugar/typecheck behavior for `|>` chains.
-- Harden PosixMode compatibility guardrails:
-  add regression fixture set for POSIX-text behavior (`|`, quoting, redirects),
-  and ensure object ops require explicit `|>` + conversion boundaries.
+- Done (2026-02-15): Harden PosixMode compatibility guardrails:
+  added 7 regression tests (bare command desugar, echo pipeline, nested scope
+  shadows, builtin names preserved, unknown command error, multiple desugars,
+  let binding prevents desugar).
 - Replace `sh_lines` preview backend with host-backed execution strategy:
   native target uses real process output capture; non-native targets keep
   deterministic fallback semantics with explicit capability diagnostics.
@@ -85,9 +98,9 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
     nearest ancestor `vibe/` and works immediately with std imports in that
     layout.
   - Done (2026-02-13): unknown namespace diagnostics in import resolution.
-  - P3: Revisit `.vibe` fallback-to-cwd behavior on root mkdir failure.
-    This can diverge lock root and storage root and should be validated or
-    removed.
+  - Done (2026-02-15): Removed `.vibe` fallback-to-cwd behavior on root mkdir
+    failure. Now aborts with clear error message instead of silently diverging
+    lock root and storage root.
 
 ## Bundle Size Plan (In Progress)
 

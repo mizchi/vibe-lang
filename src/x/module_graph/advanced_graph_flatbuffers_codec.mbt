@@ -52,6 +52,7 @@ fn fb_collect_def_strings(
   pool_values : Array[String],
   pool_index : Map[String, Int],
 ) -> Unit {
+  ignore(fb_intern_string(pool_values, pool_index, def.language_id))
   ignore(fb_intern_string(pool_values, pool_index, def.def_id))
   ignore(fb_intern_string(pool_values, pool_index, def.name))
   ignore(fb_intern_string(pool_values, pool_index, def.kind))
@@ -86,6 +87,7 @@ fn fb_collect_manifest_strings(
   ignore(fb_intern_string(pool_values, pool_index, manifest.created_at))
   fb_collect_string_array(manifest.features, pool_values, pool_index)
   fb_collect_string_array(manifest.chunk_roots, pool_values, pool_index)
+  fb_collect_string_array(manifest.language_ids, pool_values, pool_index)
 }
 
 ///|
@@ -175,6 +177,15 @@ fn fb_build_def_offsets(
               pool_index,
               def.module_hash,
               "defs.module_hash",
+            ),
+          ),
+        )
+        ignore(
+          db.add_language_id(
+            fb_pool_index_or_abort(
+              pool_index,
+              def.language_id,
+              "defs.language_id",
             ),
           ),
         )
@@ -400,6 +411,12 @@ fn advanced_graph_index_to_flatbuffer_bytes(
   let strings_offset = builder.create_offset_vector(
     fb_build_string_offsets(builder, pool_values),
   )
+  let language_ids_offset = fb_build_int_vector_from_strings(
+    builder,
+    pool_index,
+    index.manifest.language_ids,
+    "index.manifest.language_ids",
+  )
   let root = FbIndexBuilder::new(builder)
   ignore(root.set_features_offset(features_offset))
   ignore(root.set_chunk_roots_offset(chunk_roots_offset))
@@ -407,6 +424,7 @@ fn advanced_graph_index_to_flatbuffer_bytes(
   ignore(root.set_symbol_index_offset(symbol_index_offset))
   ignore(root.set_type_index_offset(type_index_offset))
   ignore(root.set_strings_offset(strings_offset))
+  ignore(root.set_language_ids_offset(language_ids_offset))
   root.start()
   ignore(root.add_schema_version(index.manifest.schema_version))
   ignore(
@@ -483,12 +501,23 @@ fn advanced_graph_index_from_flatbuffer_bytes(
     Ok(v) => v
     Err(err) => return Err("index flatbuffer: " + err)
   }
+  let language_ids = match
+    fb_decode_string_array_from_index_vector(
+      root.language_ids_length(),
+      i => root.language_ids(i),
+      pool_values,
+      "index.manifest.language_ids",
+    ) {
+    Ok(v) => v
+    Err(_) => ["vibe"]
+  }
   let manifest = AdvancedGraphManifest::{
     schema_version: root.schema_version(),
     base_commit,
     created_at,
     features,
     chunk_roots,
+    language_ids,
   }
   let defs : Map[String, AdvancedGraphDef] = {}
   for i in 0..<root.defs_length() {
@@ -554,7 +583,17 @@ fn advanced_graph_index_from_flatbuffer_bytes(
       Ok(v) => v
       Err(err) => return Err("index flatbuffer: " + err)
     }
+    let language_id = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.language_id(),
+        "index.defs[" + i.to_string() + "].language_id",
+      ) {
+      Ok(v) => v
+      Err(_) => "vibe"
+    }
     defs[def_id] = AdvancedGraphDef::{
+      language_id,
       def_id,
       name,
       kind,
@@ -713,6 +752,18 @@ fn advanced_graph_delta_to_flatbuffer_bytes(
   let strings_offset = builder.create_offset_vector(
     fb_build_string_offsets(builder, pool_values),
   )
+  let base_language_ids_offset = fb_build_int_vector_from_strings(
+    builder,
+    pool_index,
+    delta.base_manifest.language_ids,
+    "delta.base.language_ids",
+  )
+  let target_language_ids_offset = fb_build_int_vector_from_strings(
+    builder,
+    pool_index,
+    delta.target_manifest.language_ids,
+    "delta.target.language_ids",
+  )
   let root = FbDeltaBuilder::new(builder)
   ignore(root.set_base_features_offset(base_features_offset))
   ignore(root.set_base_chunk_roots_offset(base_chunk_roots_offset))
@@ -725,6 +776,8 @@ fn advanced_graph_delta_to_flatbuffer_bytes(
   ignore(root.set_type_upserts_offset(type_upserts_offset))
   ignore(root.set_type_removes_offset(type_removes_offset))
   ignore(root.set_strings_offset(strings_offset))
+  ignore(root.set_base_language_ids_offset(base_language_ids_offset))
+  ignore(root.set_target_language_ids_offset(target_language_ids_offset))
   root.start()
   ignore(root.add_schema_version(delta.schema_version))
   ignore(root.add_base_schema_version(delta.base_manifest.schema_version))
@@ -821,12 +874,23 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
+  let base_language_ids = match
+    fb_decode_string_array_from_index_vector(
+      root.base_language_ids_length(),
+      i => root.base_language_ids(i),
+      pool_values,
+      "delta.base.language_ids",
+    ) {
+    Ok(v) => v
+    Err(_) => ["vibe"]
+  }
   let base_manifest = AdvancedGraphManifest::{
     schema_version: root.base_schema_version(),
     base_commit,
     created_at: base_created_at,
     features: base_features,
     chunk_roots: base_chunk_roots,
+    language_ids: base_language_ids,
   }
   let target_commit = match
     fb_string_from_pool(
@@ -866,12 +930,23 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
     Ok(v) => v
     Err(err) => return Err("delta flatbuffer: " + err)
   }
+  let target_language_ids = match
+    fb_decode_string_array_from_index_vector(
+      root.target_language_ids_length(),
+      i => root.target_language_ids(i),
+      pool_values,
+      "delta.target.language_ids",
+    ) {
+    Ok(v) => v
+    Err(_) => ["vibe"]
+  }
   let target_manifest = AdvancedGraphManifest::{
     schema_version: root.target_schema_version(),
     base_commit: target_commit,
     created_at: target_created_at,
     features: target_features,
     chunk_roots: target_chunk_roots,
+    language_ids: target_language_ids,
   }
   let removed_def_ids = match
     fb_decode_string_array_from_index_vector(
@@ -947,7 +1022,17 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
       Ok(v) => v
       Err(err) => return Err("delta flatbuffer: " + err)
     }
+    let language_id = match
+      fb_string_from_pool(
+        pool_values,
+        def_row.language_id(),
+        "delta.upsert_defs[" + i.to_string() + "].language_id",
+      ) {
+      Ok(v) => v
+      Err(_) => "vibe"
+    }
     upsert_defs.push(AdvancedGraphDef::{
+      language_id,
       def_id,
       name,
       kind,

@@ -5647,16 +5647,11 @@ fn find_vibe_dir(path : String) -> String {
   }
   // Create .vibe directory at the resolved root.
   @os_fs.create_dir(vibe_dir) catch {
-    _ => {
-      // Fallback to current directory for environments where parent is not writable.
-      let cwd_vibe = ".vibe"
-      if not(@os_fs.path_exists(cwd_vibe)) {
-        @os_fs.create_dir(cwd_vibe) catch {
-          e => abort("save: mkdir .vibe: " + e.to_string())
-        }
-      }
-      return cwd_vibe
-    }
+    e =>
+      abort(
+        "save: cannot create .vibe directory at " + vibe_dir +
+        ": " + e.to_string(),
+      )
   }
   vibe_dir
 }

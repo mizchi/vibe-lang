@@ -1681,3 +1681,175 @@ test "vibe bench runner failure" {
   assert_eq(report.failed, 1)
   assert_eq(report.failures.length(), 1)
 }
+
+///|
+test "vibe posix mode bare command desugar" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let run = () -> Array[String] with {Stdout} {\n" +
+    "  do { echo }\n" +
+    "}\n" +
+    "let out = run()",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => {
+      assert_true(eval_result.effects.length() >= 1)
+      match eval_result.effects[0] {
+        Effect::PosixDesugar(note) => {
+          assert_true(note.contains("echo"))
+          assert_true(note.contains("sh_lines(\"echo\")"))
+        }
+        _ => fail("expected posix desugar note")
+      }
+      match eval_result.effects[1] {
+        Effect::ShellExec(cmd) => assert_eq(cmd, "echo")
+        _ => fail("expected shell effect")
+      }
+    }
+  }
+  match rt.get("out") {
+    Some(@core.Value::Array(_)) => ()
+    _ => fail("expected out array")
+  }
+}
+
+///|
+test "vibe posix mode echo pipeline" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let run = () -> Array[String] with {Stdout} {\n" +
+    "  do {\n" +
+    "    echo |> where((line: String) -> Bool { string_contains(line, \"\") })\n" +
+    "  }\n" +
+    "}\n" +
+    "let out = run()",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected posix mode error: " + err.to_string())
+    Ok(eval_result) => {
+      assert_true(eval_result.effects.length() >= 2)
+      match eval_result.effects[0] {
+        Effect::PosixDesugar(note) => {
+          assert_true(note.contains("echo"))
+          assert_true(note.contains("sh_lines(\"echo\")"))
+        }
+        _ => fail("expected posix desugar note for echo")
+      }
+      match eval_result.effects[1] {
+        Effect::ShellExec(cmd) => assert_eq(cmd, "echo")
+        _ => fail("expected shell effect for echo")
+      }
+    }
+  }
+}
+
+///|
+test "vibe posix mode nested scope shadows command" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let f = (ls: Array[String]) -> Int {\n" +
+    "  array_length(ls)\n" +
+    "}\n" +
+    "let n = f([\"a\", \"b\"])",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => assert_eq(eval_result.effects.length(), 0)
+  }
+  match rt.get("n") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("expected int result")
+  }
+}
+
+///|
+test "vibe posix mode builtin names preserved" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let x = string_concat(\"hello\", \" world\")\n" +
+    "let n = array_length([1, 2, 3])",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => assert_eq(eval_result.effects.length(), 0)
+  }
+  match rt.get("x") {
+    Some(@core.Value::String(v)) => assert_eq(v, "hello world")
+    _ => fail("expected string result")
+  }
+  match rt.get("n") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected int result")
+  }
+}
+
+///|
+test "vibe posix mode unknown command error" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let run = () -> Array[String] with {Stdout} {\n" +
+    "  do { zzz }\n" +
+    "}\n" +
+    "let out = run()",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Ok(_) => fail("expected error for unknown command")
+    Err(_) => ()
+  }
+}
+
+///|
+test "vibe posix mode multiple desugars in block" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let run = () -> Array[String] with {Stdout} {\n" +
+    "  do {\n" +
+    "    let a = ls\n" +
+    "    let b = echo\n" +
+    "    a\n" +
+    "  }\n" +
+    "}\n" +
+    "let out = run()",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => {
+      let desugar_count = {
+        let mut count = 0
+        for effect in eval_result.effects {
+          match effect {
+            Effect::PosixDesugar(_) => count = count + 1
+            _ => ()
+          }
+        }
+        count
+      }
+      assert_eq(desugar_count, 2)
+    }
+  }
+}
+
+///|
+test "vibe posix mode let binding prevents desugar" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let cat = \"meow\"\n" +
+    "let out = cat",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => assert_eq(eval_result.effects.length(), 0)
+  }
+  match rt.get("out") {
+    Some(@core.Value::String(v)) => assert_eq(v, "meow")
+    _ => fail("expected string result")
+  }
+}

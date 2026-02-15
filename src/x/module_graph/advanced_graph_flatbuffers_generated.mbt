@@ -118,6 +118,11 @@ pub fn FbDef::module_hash(self : FbDef) -> Int {
 }
 
 ///|
+pub fn FbDef::language_id(self : FbDef) -> Int {
+  self.table.get_int32(8, 0)
+}
+
+///|
 /// FbDef builder
 pub struct FbDefBuilder {
   builder : @flatbuffers.Builder
@@ -132,7 +137,7 @@ pub fn FbDefBuilder::new(builder : @flatbuffers.Builder) -> FbDefBuilder {
 
 ///|
 pub fn FbDefBuilder::start(self : FbDefBuilder) -> Unit {
-  self.builder.start_object(8)
+  self.builder.start_object(9)
 }
 
 ///|
@@ -192,6 +197,15 @@ pub fn FbDefBuilder::add_module_hash(
   value : Int,
 ) -> FbDefBuilder {
   self.builder.add_int32(7, value, 0)
+  self
+}
+
+///|
+pub fn FbDefBuilder::add_language_id(
+  self : FbDefBuilder,
+  value : Int,
+) -> FbDefBuilder {
+  self.builder.add_int32(8, value, 0)
   self
 }
 
@@ -392,6 +406,16 @@ pub fn FbIndex::strings_table(
 }
 
 ///|
+pub fn FbIndex::language_ids_length(self : FbIndex) -> Int {
+  self.table.get_vector_length(9)
+}
+
+///|
+pub fn FbIndex::language_ids(self : FbIndex, index : Int) -> Int {
+  self.table.get_vector_int32(9, index)
+}
+
+///|
 /// FbIndex builder
 pub struct FbIndexBuilder {
   builder : @flatbuffers.Builder
@@ -459,8 +483,17 @@ pub fn FbIndexBuilder::set_strings_offset(
 }
 
 ///|
+pub fn FbIndexBuilder::set_language_ids_offset(
+  self : FbIndexBuilder,
+  offset : Int,
+) -> FbIndexBuilder {
+  self.vector_offsets.set("language_ids", offset)
+  self
+}
+
+///|
 pub fn FbIndexBuilder::start(self : FbIndexBuilder) -> Unit {
-  self.builder.start_object(9)
+  self.builder.start_object(10)
 }
 
 ///|
@@ -514,6 +547,10 @@ pub fn FbIndexBuilder::finish_fields(self : FbIndexBuilder) -> Unit {
   }
   match self.vector_offsets.get("strings") {
     Some(offset) => self.builder.add_offset(8, offset)
+    None => ()
+  }
+  match self.vector_offsets.get("language_ids") {
+    Some(offset) => self.builder.add_offset(9, offset)
     None => ()
   }
 }
@@ -699,6 +736,26 @@ pub fn FbDelta::strings_table(
 }
 
 ///|
+pub fn FbDelta::base_language_ids_length(self : FbDelta) -> Int {
+  self.table.get_vector_length(18)
+}
+
+///|
+pub fn FbDelta::base_language_ids(self : FbDelta, index : Int) -> Int {
+  self.table.get_vector_int32(18, index)
+}
+
+///|
+pub fn FbDelta::target_language_ids_length(self : FbDelta) -> Int {
+  self.table.get_vector_length(19)
+}
+
+///|
+pub fn FbDelta::target_language_ids(self : FbDelta, index : Int) -> Int {
+  self.table.get_vector_int32(19, index)
+}
+
+///|
 /// FbDelta builder
 pub struct FbDeltaBuilder {
   builder : @flatbuffers.Builder
@@ -811,8 +868,26 @@ pub fn FbDeltaBuilder::set_strings_offset(
 }
 
 ///|
+pub fn FbDeltaBuilder::set_base_language_ids_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
+  self.vector_offsets.set("base_language_ids", offset)
+  self
+}
+
+///|
+pub fn FbDeltaBuilder::set_target_language_ids_offset(
+  self : FbDeltaBuilder,
+  offset : Int,
+) -> FbDeltaBuilder {
+  self.vector_offsets.set("target_language_ids", offset)
+  self
+}
+
+///|
 pub fn FbDeltaBuilder::start(self : FbDeltaBuilder) -> Unit {
-  self.builder.start_object(18)
+  self.builder.start_object(20)
 }
 
 ///|
@@ -922,6 +997,14 @@ pub fn FbDeltaBuilder::finish_fields(self : FbDeltaBuilder) -> Unit {
   }
   match self.vector_offsets.get("strings") {
     Some(offset) => self.builder.add_offset(17, offset)
+    None => ()
+  }
+  match self.vector_offsets.get("base_language_ids") {
+    Some(offset) => self.builder.add_offset(18, offset)
+    None => ()
+  }
+  match self.vector_offsets.get("target_language_ids") {
+    Some(offset) => self.builder.add_offset(19, offset)
     None => ()
   }
 }

@@ -6,11 +6,13 @@ pub struct AdvancedGraphManifest {
   created_at : String
   features : Array[String]
   chunk_roots : Array[String]
+  language_ids : Array[String]
 } derive(Show, Eq)
 
 ///|
 /// Flattened definition node for symbol/type lookup.
 pub struct AdvancedGraphDef {
+  language_id : String
   def_id : String
   name : String
   kind : String
@@ -212,6 +214,7 @@ fn graph_def_from_entry(
   let module_hash = module_hash_for_path(db, entry.path)
   let def_id = def_id_from_entry(entry)
   AdvancedGraphDef::{
+    language_id: "vibe",
     def_id,
     name: entry.name,
     kind: @runtime.symbol_kind_name(entry.kind),
@@ -229,8 +232,16 @@ fn remove_def_from_indexes(
   types : Map[String, Array[String]],
   def : AdvancedGraphDef,
 ) -> Unit {
-  remove_index_id(symbols, def.name, def.def_id)
-  remove_index_id(types, def.signature, def.def_id)
+  remove_index_id(
+    symbols,
+    multilang_symbol_key(def.language_id, def.name),
+    def.def_id,
+  )
+  remove_index_id(
+    types,
+    multilang_type_key(def.language_id, def.signature),
+    def.def_id,
+  )
 }
 
 ///|
@@ -261,8 +272,16 @@ pub fn build_advanced_graph_index(
   for entry in symbol_index.entries {
     let node = graph_def_from_entry(db, entry)
     defs[node.def_id] = node
-    push_index_id(symbols, node.name, node.def_id)
-    push_index_id(types, node.signature, node.def_id)
+    push_index_id(
+      symbols,
+      multilang_symbol_key(node.language_id, node.name),
+      node.def_id,
+    )
+    push_index_id(
+      types,
+      multilang_type_key(node.language_id, node.signature),
+      node.def_id,
+    )
   }
   let manifest = AdvancedGraphManifest::{
     schema_version: 1,
@@ -270,6 +289,65 @@ pub fn build_advanced_graph_index(
     created_at,
     features: default_graph_features(),
     chunk_roots: ["inline://chunk0"],
+    language_ids: ["vibe"],
+  }
+  AdvancedGraphIndex::{
+    manifest,
+    defs,
+    symbol_index: symbols,
+    type_index: types,
+  }
+}
+
+///|
+/// Build POC sidecar index from language-agnostic IR rows.
+pub fn build_advanced_graph_index_from_ir(
+  rows : Array[GraphIrRow],
+  base_commit? : String = "",
+  created_at? : String = "",
+) -> AdvancedGraphIndex {
+  let defs : Map[String, AdvancedGraphDef] = {}
+  let symbols : Map[String, Array[String]] = {}
+  let types : Map[String, Array[String]] = {}
+  let lang_set : Map[String, Bool] = {}
+  for row in rows {
+    let ir_def = ml_normalize_row(row)
+    let node = AdvancedGraphDef::{
+      language_id: row.language_id,
+      def_id: ir_def.def_id,
+      name: row.name,
+      kind: row.kind,
+      signature: row.signature,
+      path: row.path,
+      start: row.start,
+      end: row.end,
+      module_hash: row.module_hash,
+    }
+    defs[node.def_id] = node
+    push_index_id(
+      symbols,
+      multilang_symbol_key(node.language_id, node.name),
+      node.def_id,
+    )
+    push_index_id(
+      types,
+      multilang_type_key(node.language_id, node.signature),
+      node.def_id,
+    )
+    lang_set[row.language_id] = true
+  }
+  let language_ids : Array[String] = []
+  for lang, _ in lang_set {
+    language_ids.push(lang)
+  }
+  language_ids.sort()
+  let manifest = AdvancedGraphManifest::{
+    schema_version: 1,
+    base_commit,
+    created_at,
+    features: default_graph_features(),
+    chunk_roots: ["inline://chunk0"],
+    language_ids,
   }
   AdvancedGraphIndex::{
     manifest,
@@ -309,8 +387,16 @@ pub fn update_advanced_graph_index_incremental(
   for entry in next_entries.entries {
     let node = graph_def_from_entry(db, entry)
     defs[node.def_id] = node
-    push_index_id(symbols, node.name, node.def_id)
-    push_index_id(types, node.signature, node.def_id)
+    push_index_id(
+      symbols,
+      multilang_symbol_key(node.language_id, node.name),
+      node.def_id,
+    )
+    push_index_id(
+      types,
+      multilang_type_key(node.language_id, node.signature),
+      node.def_id,
+    )
   }
   let next_base_commit = if base_commit.length() > 0 {
     base_commit
@@ -328,6 +414,7 @@ pub fn update_advanced_graph_index_incremental(
     created_at: next_created_at,
     features: base.manifest.features,
     chunk_roots: base.manifest.chunk_roots,
+    language_ids: base.manifest.language_ids,
   }
   AdvancedGraphIndex::{
     manifest: next_manifest,
@@ -341,6 +428,7 @@ pub fn update_advanced_graph_index_incremental(
 pub fn AdvancedGraphIndex::query_symbol(
   self : AdvancedGraphIndex,
   query : String,
+  language_id? : String,
 ) -> Array[AdvancedGraphDef] {
   let out : Array[AdvancedGraphDef] = []
   let seen : Map[String, Bool] = {}
@@ -349,12 +437,23 @@ pub fn AdvancedGraphIndex::query_symbol(
     collect_defs_by_ids(self.defs, ids, seen, out)
     return out
   }
-  match self.symbol_index.get(query) {
+  let key = match language_id {
+    Some(lang) => multilang_symbol_key(lang, query)
+    None => query
+  }
+  let lang_prefix = match language_id {
+    Some(lang) => lang + "::symbol::"
+    None => ""
+  }
+  match self.symbol_index.get(key) {
     Some(ids) => collect_defs_by_ids(self.defs, ids, seen, out)
     None => ()
   }
   for name, ids in self.symbol_index {
-    if name == query {
+    if name == key {
+      continue
+    }
+    if lang_prefix.length() > 0 && not(name.has_prefix(lang_prefix)) {
       continue
     }
     if name.contains(query) {
@@ -368,6 +467,7 @@ pub fn AdvancedGraphIndex::query_symbol(
 pub fn AdvancedGraphIndex::query_type(
   self : AdvancedGraphIndex,
   query : String,
+  language_id? : String,
 ) -> Array[AdvancedGraphDef] {
   let out : Array[AdvancedGraphDef] = []
   let seen : Map[String, Bool] = {}
@@ -376,12 +476,23 @@ pub fn AdvancedGraphIndex::query_type(
     collect_defs_by_ids(self.defs, ids, seen, out)
     return out
   }
-  match self.type_index.get(query) {
+  let key = match language_id {
+    Some(lang) => multilang_type_key(lang, query)
+    None => query
+  }
+  let lang_prefix = match language_id {
+    Some(lang) => lang + "::type::"
+    None => ""
+  }
+  match self.type_index.get(key) {
     Some(ids) => collect_defs_by_ids(self.defs, ids, seen, out)
     None => ()
   }
   for sig, ids in self.type_index {
-    if sig == query {
+    if sig == key {
+      continue
+    }
+    if lang_prefix.length() > 0 && not(sig.has_prefix(lang_prefix)) {
       continue
     }
     if sig.contains(query) {
@@ -410,8 +521,9 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
     }
   }
   for def_id, def in self.defs {
+    let symbol_key = multilang_symbol_key(def.language_id, def.name)
     let mut has_symbol_link = false
-    match self.symbol_index.get(def.name) {
+    match self.symbol_index.get(symbol_key) {
       Some(ids) =>
         for id in ids {
           if id == def_id {
@@ -422,10 +534,13 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
       None => ()
     }
     if not(has_symbol_link) {
-      issues.push("def missing symbol link: " + def_id + " (" + def.name + ")")
+      issues.push(
+        "def missing symbol link: " + def_id + " (" + symbol_key + ")",
+      )
     }
+    let type_key = multilang_type_key(def.language_id, def.signature)
     let mut has_type_link = false
-    match self.type_index.get(def.signature) {
+    match self.type_index.get(type_key) {
       Some(ids) =>
         for id in ids {
           if id == def_id {
@@ -437,7 +552,7 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
     }
     if not(has_type_link) {
       issues.push(
-        "def missing type link: " + def_id + " (" + def.signature + ")",
+        "def missing type link: " + def_id + " (" + type_key + ")",
       )
     }
   }
@@ -688,6 +803,7 @@ pub fn apply_advanced_graph_delta(
       created_at: base.manifest.created_at,
       features: base.manifest.features,
       chunk_roots: base.manifest.chunk_roots,
+      language_ids: base.manifest.language_ids,
     }
   }
   AdvancedGraphIndex::{
@@ -918,6 +1034,7 @@ pub fn estimate_transfer_time_ms(
 ///|
 fn advanced_graph_def_to_json(def : AdvancedGraphDef) -> Json {
   let item : Map[String, Json] = {}
+  item["language_id"] = Json::string(def.language_id)
   item["def_id"] = Json::string(def.def_id)
   item["name"] = Json::string(def.name)
   item["kind"] = Json::string(def.kind)
@@ -937,6 +1054,10 @@ fn parse_advanced_graph_def(
   let obj = match item {
     Json::Object(o) => o
     _ => return Err(context + ": must be object")
+  }
+  let language_id = match get_object_string_field(obj, "language_id", context) {
+    Ok(v) => v
+    Err(_) => "vibe"
   }
   let def_id = match get_object_string_field(obj, "def_id", context) {
     Ok(v) => v
@@ -971,6 +1092,7 @@ fn parse_advanced_graph_def(
     Err(err) => return Err(err)
   }
   Ok(AdvancedGraphDef::{
+    language_id,
     def_id,
     name,
     kind,
@@ -990,6 +1112,7 @@ fn advanced_graph_manifest_to_json(manifest : AdvancedGraphManifest) -> Json {
   obj["created_at"] = Json::string(manifest.created_at)
   obj["features"] = json_string_array(manifest.features)
   obj["chunk_roots"] = json_string_array(manifest.chunk_roots)
+  obj["language_ids"] = json_string_array(manifest.language_ids)
   Json::object(obj)
 }
 
@@ -1031,12 +1154,21 @@ fn parse_advanced_graph_manifest(
       }
     Err(err) => return Err(err)
   }
+  let language_ids = match get_object_field(obj, "language_ids", context) {
+    Ok(v) =>
+      match parse_json_string_array(v, context + ".language_ids") {
+        Ok(items) => items
+        Err(err) => return Err(err)
+      }
+    Err(_) => ["vibe"]
+  }
   Ok(AdvancedGraphManifest::{
     schema_version,
     base_commit,
     created_at,
     features,
     chunk_roots,
+    language_ids,
   })
 }
 

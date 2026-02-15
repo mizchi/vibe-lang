@@ -566,3 +566,74 @@ test "advanced graph poc wal load with threshold compaction" {
   remove_file_if_exists(snapshot_path)
   remove_file_if_exists(wal_path)
 }
+
+///|
+test "advanced graph mixed-language index from IR" {
+  let all_rows : Array[GraphIrRow] = [
+    new_graph_ir_row(
+      "vibe",
+      "/tmp/test.vibe",
+      "add",
+      "function",
+      "(Int, Int) -> Int",
+      0,
+      40,
+      "vibe_hash_1",
+      ["Int"],
+      [],
+      [],
+      [],
+    ),
+    new_graph_ir_row(
+      "typescript",
+      "/tmp/test.ts",
+      "add",
+      "function",
+      "(number, number) => number",
+      0,
+      50,
+      "ts_hash_1",
+      ["number"],
+      [],
+      [],
+      [],
+    ),
+  ]
+  let index = build_advanced_graph_index_from_ir(
+    all_rows,
+    base_commit="mixed01",
+    created_at="2026-02-15T00:00:00Z",
+  )
+  assert_eq(index.manifest.language_ids.length(), 2)
+  assert_true(index.manifest.language_ids.contains("typescript"))
+  assert_true(index.manifest.language_ids.contains("vibe"))
+  let issues = index.verify()
+  assert_eq(issues.length(), 0)
+  // query with language_id filter
+  let vibe_add = index.query_symbol("add", language_id="vibe")
+  assert_eq(vibe_add.length(), 1)
+  assert_eq(vibe_add[0].language_id, "vibe")
+  let ts_add = index.query_symbol("add", language_id="typescript")
+  assert_eq(ts_add.length(), 1)
+  assert_eq(ts_add[0].language_id, "typescript")
+  // query without language_id returns both (via contains fallback)
+  let all_add = index.query_symbol("add")
+  assert_eq(all_add.length(), 2)
+  // type query with language_id filter
+  let vibe_int = index.query_type("Int", language_id="vibe")
+  assert_eq(vibe_int.length(), 1)
+  let ts_num = index.query_type("number", language_id="typescript")
+  assert_eq(ts_num.length(), 1)
+  // JSON roundtrip preserves language_id
+  let json_str = index.to_json().stringify()
+  let roundtrip = match advanced_graph_index_from_json(
+    @json.parse(json_str) catch { _ => fail("json parse failed") },
+  ) {
+    Ok(v) => v
+    Err(err) => fail("json roundtrip failed: " + err)
+  }
+  assert_eq(roundtrip.manifest.language_ids.length(), 2)
+  let rt_vibe = roundtrip.query_symbol("add", language_id="vibe")
+  assert_eq(rt_vibe.length(), 1)
+  assert_eq(rt_vibe[0].language_id, "vibe")
+}

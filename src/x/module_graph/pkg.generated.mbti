@@ -37,6 +37,8 @@ pub fn apply_advanced_graph_delta(AdvancedGraphIndex, AdvancedGraphDelta) -> Adv
 
 pub fn build_advanced_graph_index(@runtime.VibeDb, Array[String], base_commit? : String, created_at? : String) -> AdvancedGraphIndex
 
+pub fn build_advanced_graph_index_from_ir(Array[GraphIrRow], base_commit? : String, created_at? : String) -> AdvancedGraphIndex
+
 pub fn build_multilang_symbol_index(Array[GraphIrRow]) -> MultiLangSymbolIndex
 
 pub fn compact_advanced_graph_snapshot_wal(String, String) -> Result[AdvancedGraphIndex, String]
@@ -73,6 +75,7 @@ pub fn write_advanced_graph_index(String, AdvancedGraphIndex) -> Result[Unit, St
 
 // Types and methods
 pub struct AdvancedGraphDef {
+  language_id : String
   def_id : String
   name : String
   kind : String
@@ -110,8 +113,8 @@ pub struct AdvancedGraphIndex {
 }
 pub fn AdvancedGraphIndex::collect_defs_by_module_hashes(Self, Array[String]) -> Array[AdvancedGraphDef]
 pub fn AdvancedGraphIndex::collect_module_hashes(Self) -> Map[String, Bool]
-pub fn AdvancedGraphIndex::query_symbol(Self, String) -> Array[AdvancedGraphDef]
-pub fn AdvancedGraphIndex::query_type(Self, String) -> Array[AdvancedGraphDef]
+pub fn AdvancedGraphIndex::query_symbol(Self, String, language_id? : String) -> Array[AdvancedGraphDef]
+pub fn AdvancedGraphIndex::query_type(Self, String, language_id? : String) -> Array[AdvancedGraphDef]
 pub fn AdvancedGraphIndex::to_cbor_bytes(Self) -> Bytes
 pub fn AdvancedGraphIndex::to_flexbuffer_bytes(Self) -> Bytes
 pub fn AdvancedGraphIndex::to_json(Self) -> Json
@@ -125,6 +128,7 @@ pub struct AdvancedGraphManifest {
   created_at : String
   features : Array[String]
   chunk_roots : Array[String]
+  language_ids : Array[String]
 }
 pub impl Eq for AdvancedGraphManifest
 pub impl Show for AdvancedGraphManifest
@@ -161,6 +165,7 @@ pub fn FbDef::def_id(Self) -> Int
 pub fn FbDef::end(Self) -> Int
 pub fn FbDef::from_buffer(@flatbuffers.ByteBuffer) -> Self
 pub fn FbDef::kind(Self) -> Int
+pub fn FbDef::language_id(Self) -> Int
 pub fn FbDef::module_hash(Self) -> Int
 pub fn FbDef::name(Self) -> Int
 pub fn FbDef::path(Self) -> Int
@@ -175,6 +180,7 @@ pub struct FbDefBuilder {
 pub fn FbDefBuilder::add_def_id(Self, Int) -> Self
 pub fn FbDefBuilder::add_end(Self, Int) -> Self
 pub fn FbDefBuilder::add_kind(Self, Int) -> Self
+pub fn FbDefBuilder::add_language_id(Self, Int) -> Self
 pub fn FbDefBuilder::add_module_hash(Self, Int) -> Self
 pub fn FbDefBuilder::add_name(Self, Int) -> Self
 pub fn FbDefBuilder::add_path(Self, Int) -> Self
@@ -195,6 +201,8 @@ pub fn FbDelta::base_chunk_roots_length(Self) -> Int
 pub fn FbDelta::base_created_at(Self) -> Int
 pub fn FbDelta::base_features(Self, Int) -> Int
 pub fn FbDelta::base_features_length(Self) -> Int
+pub fn FbDelta::base_language_ids(Self, Int) -> Int
+pub fn FbDelta::base_language_ids_length(Self) -> Int
 pub fn FbDelta::base_schema_version(Self) -> Int
 pub fn FbDelta::from_buffer(@flatbuffers.ByteBuffer) -> Self
 pub fn FbDelta::removed_def_ids(Self, Int) -> Int
@@ -212,6 +220,8 @@ pub fn FbDelta::target_chunk_roots_length(Self) -> Int
 pub fn FbDelta::target_created_at(Self) -> Int
 pub fn FbDelta::target_features(Self, Int) -> Int
 pub fn FbDelta::target_features_length(Self) -> Int
+pub fn FbDelta::target_language_ids(Self, Int) -> Int
+pub fn FbDelta::target_language_ids_length(Self) -> Int
 pub fn FbDelta::target_schema_version(Self) -> Int
 pub fn FbDelta::type_removes(Self, Int) -> Int
 pub fn FbDelta::type_removes_length(Self) -> Int
@@ -238,12 +248,14 @@ pub fn FbDeltaBuilder::finish_fields(Self) -> Unit
 pub fn FbDeltaBuilder::new(@flatbuffers.Builder) -> Self
 pub fn FbDeltaBuilder::set_base_chunk_roots_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_base_features_offset(Self, Int) -> Self
+pub fn FbDeltaBuilder::set_base_language_ids_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_removed_def_ids_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_strings_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_symbol_removes_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_symbol_upserts_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_target_chunk_roots_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_target_features_offset(Self, Int) -> Self
+pub fn FbDeltaBuilder::set_target_language_ids_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_type_removes_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_type_upserts_offset(Self, Int) -> Self
 pub fn FbDeltaBuilder::set_upsert_defs_offset(Self, Int) -> Self
@@ -261,6 +273,8 @@ pub fn FbIndex::defs_table(Self, Int) -> @flatbuffers.Table?
 pub fn FbIndex::features(Self, Int) -> Int
 pub fn FbIndex::features_length(Self) -> Int
 pub fn FbIndex::from_buffer(@flatbuffers.ByteBuffer) -> Self
+pub fn FbIndex::language_ids(Self, Int) -> Int
+pub fn FbIndex::language_ids_length(Self) -> Int
 pub fn FbIndex::schema_version(Self) -> Int
 pub fn FbIndex::strings_length(Self) -> Int
 pub fn FbIndex::strings_table(Self, Int) -> @flatbuffers.Table?
@@ -284,6 +298,7 @@ pub fn FbIndexBuilder::new(@flatbuffers.Builder) -> Self
 pub fn FbIndexBuilder::set_chunk_roots_offset(Self, Int) -> Self
 pub fn FbIndexBuilder::set_defs_offset(Self, Int) -> Self
 pub fn FbIndexBuilder::set_features_offset(Self, Int) -> Self
+pub fn FbIndexBuilder::set_language_ids_offset(Self, Int) -> Self
 pub fn FbIndexBuilder::set_strings_offset(Self, Int) -> Self
 pub fn FbIndexBuilder::set_symbol_index_offset(Self, Int) -> Self
 pub fn FbIndexBuilder::set_type_index_offset(Self, Int) -> Self
