@@ -7,6 +7,13 @@ pub enum Effect {
   StdinReadChar(Int)
   StdoutWriteStream(String)
   StdinReadStream(Int, String)
+  FsReadFile(String, String)
+  FsWriteFile(String, String)
+  FsExists(String, Bool)
+  SocketTcpConnect(String, Int64, Int64)
+  SocketTcpRead(Int64, Int64, String)
+  SocketTcpWrite(Int64, String)
+  SocketTcpClose(Int64)
 } derive(Show, Eq)
 
 ///|
@@ -1431,6 +1438,169 @@ fn eval_call(
                   { value: @core.Value::String(chunk), effects }
                 }
                 _ => raise EvalError::BadCall("stdin_read_stream")
+              }
+            }
+            "fs_read_file" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "fs_read_file",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("fs_read_file")
+              }
+              match pos_args[0] {
+                @core.Value::String(path) => {
+                  match @io.read_string(path) {
+                    Ok(content) => {
+                      let effects = out.effects
+                      effects.push(Effect::FsReadFile(path, content))
+                      { value: @core.Value::String(content), effects }
+                    }
+                    Err(err) => raise EvalError::BadCall("fs_read_file: " + err)
+                  }
+                }
+                _ => raise EvalError::BadCall("fs_read_file")
+              }
+            }
+            "fs_write_file" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "fs_write_file",
+              )
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("fs_write_file")
+              }
+              match (pos_args[0], pos_args[1]) {
+                (@core.Value::String(path), @core.Value::String(content)) => {
+                  match @io.write_string(path, content) {
+                    Ok(_) => {
+                      let effects = out.effects
+                      effects.push(Effect::FsWriteFile(path, content))
+                      { value: @core.Value::Unit, effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("fs_write_file: " + err)
+                  }
+                }
+                _ => raise EvalError::BadCall("fs_write_file")
+              }
+            }
+            "fs_exists" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "fs_exists",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("fs_exists")
+              }
+              match pos_args[0] {
+                @core.Value::String(path) => {
+                  let exists = @io.path_exists(path)
+                  let effects = out.effects
+                  effects.push(Effect::FsExists(path, exists))
+                  { value: @core.Value::Bool(exists), effects }
+                }
+                _ => raise EvalError::BadCall("fs_exists")
+              }
+            }
+            "socket_tcp_connect" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "socket_tcp_connect",
+              )
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("socket_tcp_connect")
+              }
+              match (pos_args[0], pos_args[1]) {
+                (@core.Value::String(host), @core.Value::Int(port)) => {
+                  match @backend.tcp_connect(host, port.to_int()) {
+                    Ok(fd) => {
+                      let effects = out.effects
+                      let fd64 = fd.to_int64()
+                      effects.push(Effect::SocketTcpConnect(host, port, fd64))
+                      { value: @core.Value::Int(fd64), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("socket_tcp_connect: " + err)
+                  }
+                }
+                _ => raise EvalError::BadCall("socket_tcp_connect")
+              }
+            }
+            "socket_tcp_read" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "socket_tcp_read",
+              )
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("socket_tcp_read")
+              }
+              match (pos_args[0], pos_args[1]) {
+                (@core.Value::Int(fd), @core.Value::Int(max_bytes)) => {
+                  match @backend.tcp_read(fd.to_int(), max_bytes.to_int()) {
+                    Ok(data) => {
+                      let effects = out.effects
+                      effects.push(Effect::SocketTcpRead(fd, max_bytes, data))
+                      { value: @core.Value::String(data), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("socket_tcp_read: " + err)
+                  }
+                }
+                _ => raise EvalError::BadCall("socket_tcp_read")
+              }
+            }
+            "socket_tcp_write" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "socket_tcp_write",
+              )
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("socket_tcp_write")
+              }
+              match (pos_args[0], pos_args[1]) {
+                (@core.Value::Int(fd), @core.Value::String(data)) => {
+                  match @backend.tcp_write(fd.to_int(), data) {
+                    Ok(_) => {
+                      let effects = out.effects
+                      effects.push(Effect::SocketTcpWrite(fd, data))
+                      { value: @core.Value::Unit, effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("socket_tcp_write: " + err)
+                  }
+                }
+                _ => raise EvalError::BadCall("socket_tcp_write")
+              }
+            }
+            "socket_tcp_close" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "socket_tcp_close",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("socket_tcp_close")
+              }
+              match pos_args[0] {
+                @core.Value::Int(fd) => {
+                  match @backend.tcp_close(fd.to_int()) {
+                    Ok(_) => {
+                      let effects = out.effects
+                      effects.push(Effect::SocketTcpClose(fd))
+                      { value: @core.Value::Unit, effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("socket_tcp_close: " + err)
+                  }
+                }
+                _ => raise EvalError::BadCall("socket_tcp_close")
               }
             }
             "addr" => {

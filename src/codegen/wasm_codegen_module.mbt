@@ -42,6 +42,21 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let mut wasi_stream_get_type = -1
   let mut stdout_write_char_type = -1
   let mut stdin_read_char_type = -1
+  let mut fs_get_dirs_type = -1
+  let mut fs_open_at_type = -1
+  let mut fs_read_type = -1
+  let mut fs_write_type = -1
+  let mut fs_stat_at_type = -1
+  let mut socket_instance_network_type = -1
+  let mut socket_create_tcp_type = -1
+  let mut socket_start_connect_type = -1
+  let mut socket_finish_connect_type = -1
+  let mut socket_subscribe_type = -1
+  let mut socket_poll_type = -1
+  let mut socket_shutdown_type = -1
+  let mut socket_resource_drop_type = -1
+  let mut socket_stream_read_type = -1
+  let mut socket_stream_write_type = -1
   if ctx.need_js_length {
     js_length_type = type_count
     type_count += 1
@@ -80,6 +95,55 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
   if ctx.need_stdin_read_char {
     stdin_read_char_type = type_count
+    type_count += 1
+  }
+  if ctx.need_fs {
+    // fs_get_dirs_type: (i32) -> () — shared by get-directories and resource-drop
+    fs_get_dirs_type = type_count
+    type_count += 1
+    // fs_open_at_type: (i32, i32, i32, i32, i32, i32, i32) -> ()
+    fs_open_at_type = type_count
+    type_count += 1
+    // fs_read_type: (i32, i64, i64, i32) -> ()
+    fs_read_type = type_count
+    type_count += 1
+    // fs_write_type: (i32, i32, i32, i64, i32) -> ()
+    fs_write_type = type_count
+    type_count += 1
+    // fs_stat_at_type: (i32, i32, i32, i32, i32) -> ()
+    fs_stat_at_type = type_count
+    type_count += 1
+  }
+  if ctx.need_socket {
+    // socket_instance_network_type: () -> (i32)
+    socket_instance_network_type = type_count
+    type_count += 1
+    // socket_create_tcp_type: (i32, i32) -> ()
+    socket_create_tcp_type = type_count
+    type_count += 1
+    // socket_start_connect_type: (i32 x 15) -> ()
+    socket_start_connect_type = type_count
+    type_count += 1
+    // socket_finish_connect_type: (i32, i32) -> ()
+    socket_finish_connect_type = type_count
+    type_count += 1
+    // socket_subscribe_type: (i32) -> (i32)
+    socket_subscribe_type = type_count
+    type_count += 1
+    // socket_poll_type: (i32, i32, i32) -> ()
+    socket_poll_type = type_count
+    type_count += 1
+    // socket_shutdown_type: (i32, i32, i32) -> ()
+    socket_shutdown_type = type_count
+    type_count += 1
+    // socket_resource_drop_type: (i32) -> ()
+    socket_resource_drop_type = type_count
+    type_count += 1
+    // socket_stream_read_type: (i32, i64, i32) -> () — same as stdin read
+    socket_stream_read_type = type_count
+    type_count += 1
+    // socket_stream_write_type: (i32, i32, i32, i32) -> () — same as stdout write
+    socket_stream_write_type = type_count
     type_count += 1
   }
   let builtin_count = type_count
@@ -180,6 +244,116 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_sec.push((127).to_byte())
     write_u32_leb(type_sec, 0)
   }
+  if ctx.need_fs {
+    // fs_get_dirs_type: (func (param i32) -> ()) — get-directories & resource-drop
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte()) // i32
+    write_u32_leb(type_sec, 0)
+    // fs_open_at_type: (func (param i32 i32 i32 i32 i32 i32 i32) -> ())
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 7)
+    type_sec.push((127).to_byte()) // i32 self
+    type_sec.push((127).to_byte()) // i32 path-flags
+    type_sec.push((127).to_byte()) // i32 path-ptr
+    type_sec.push((127).to_byte()) // i32 path-len
+    type_sec.push((127).to_byte()) // i32 open-flags
+    type_sec.push((127).to_byte()) // i32 desc-flags
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+    // fs_read_type: (func (param i32 i64 i64 i32) -> ())
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 4)
+    type_sec.push((127).to_byte()) // i32 self
+    type_sec.push((126).to_byte()) // i64 length
+    type_sec.push((126).to_byte()) // i64 offset
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+    // fs_write_type: (func (param i32 i32 i32 i64 i32) -> ())
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 5)
+    type_sec.push((127).to_byte()) // i32 self
+    type_sec.push((127).to_byte()) // i32 buf-ptr
+    type_sec.push((127).to_byte()) // i32 buf-len
+    type_sec.push((126).to_byte()) // i64 offset
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+    // fs_stat_at_type: (func (param i32 i32 i32 i32 i32) -> ())
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 5)
+    type_sec.push((127).to_byte()) // i32 self
+    type_sec.push((127).to_byte()) // i32 path-flags
+    type_sec.push((127).to_byte()) // i32 path-ptr
+    type_sec.push((127).to_byte()) // i32 path-len
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+  }
+  if ctx.need_socket {
+    // socket_instance_network_type: () -> (i32)
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 0)
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte()) // i32
+    // socket_create_tcp_type: (i32, i32) -> ()
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 2)
+    type_sec.push((127).to_byte()) // i32 family
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+    // socket_start_connect_type: (i32 x 15) -> ()
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 15)
+    for i = 0; i < 15; i = i + 1 {
+      type_sec.push((127).to_byte()) // i32
+    }
+    write_u32_leb(type_sec, 0)
+    // socket_finish_connect_type: (i32, i32) -> ()
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 2)
+    type_sec.push((127).to_byte()) // i32 self
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+    // socket_subscribe_type: (i32) -> (i32)
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte()) // i32 self
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte()) // i32 pollable
+    // socket_poll_type: (i32, i32, i32) -> ()
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 3)
+    type_sec.push((127).to_byte()) // i32 list_ptr
+    type_sec.push((127).to_byte()) // i32 list_len
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+    // socket_shutdown_type: (i32, i32, i32) -> ()
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 3)
+    type_sec.push((127).to_byte()) // i32 self
+    type_sec.push((127).to_byte()) // i32 shutdown-type
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+    // socket_resource_drop_type: (i32) -> ()
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte()) // i32 handle
+    write_u32_leb(type_sec, 0)
+    // socket_stream_read_type: (i32, i64, i32) -> ()
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 3)
+    type_sec.push((127).to_byte()) // i32 self
+    type_sec.push((126).to_byte()) // i64 len
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+    // socket_stream_write_type: (i32, i32, i32, i32) -> ()
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 4)
+    type_sec.push((127).to_byte()) // i32 self
+    type_sec.push((127).to_byte()) // i32 ptr
+    type_sec.push((127).to_byte()) // i32 len
+    type_sec.push((127).to_byte()) // i32 retptr
+    write_u32_leb(type_sec, 0)
+  }
   for sig in ctx.fn_sig_order {
     write_func_type(type_sec, sig.params, sig.results)
   }
@@ -253,6 +427,12 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
   if ctx.need_stdin_read_char {
     func_import_count += 2
+  }
+  if ctx.need_fs {
+    func_import_count += 6
+  }
+  if ctx.need_socket {
+    func_import_count += 13
   }
   let global_import_count = if ctx.use_js_strings {
     ctx.js_strings.names.length()
@@ -337,6 +517,105 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, stdin_read_char_type)
     }
+    if ctx.need_fs {
+      // 1. get-directories
+      write_name(import_sec, "wasi:filesystem/preopens@0.3.0")
+      write_name(import_sec, "get-directories")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_get_dirs_type)
+      // 2. open-at
+      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "[method]descriptor.open-at")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_open_at_type)
+      // 3. read
+      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "[method]descriptor.read")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_read_type)
+      // 4. write
+      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "[method]descriptor.write")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_write_type)
+      // 5. stat-at
+      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "[method]descriptor.stat-at")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_stat_at_type)
+      // 6. resource-drop descriptor
+      write_name(import_sec, "wasi:filesystem/types@0.3.0")
+      write_name(import_sec, "[resource-drop]descriptor")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, fs_get_dirs_type)
+    }
+    if ctx.need_socket {
+      // 1. instance-network
+      write_name(import_sec, "wasi:sockets/instance-network@0.2.0")
+      write_name(import_sec, "instance-network")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_instance_network_type)
+      // 2. create-tcp-socket
+      write_name(import_sec, "wasi:sockets/tcp-create-socket@0.2.0")
+      write_name(import_sec, "create-tcp-socket")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_create_tcp_type)
+      // 3. start-connect
+      write_name(import_sec, "wasi:sockets/tcp@0.2.0")
+      write_name(import_sec, "[method]tcp-socket.start-connect")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_start_connect_type)
+      // 4. finish-connect
+      write_name(import_sec, "wasi:sockets/tcp@0.2.0")
+      write_name(import_sec, "[method]tcp-socket.finish-connect")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_finish_connect_type)
+      // 5. subscribe
+      write_name(import_sec, "wasi:sockets/tcp@0.2.0")
+      write_name(import_sec, "[method]tcp-socket.subscribe")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_subscribe_type)
+      // 6. poll
+      write_name(import_sec, "wasi:io/poll@0.2.0")
+      write_name(import_sec, "poll")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_poll_type)
+      // 7. input-stream.blocking-read
+      write_name(import_sec, "wasi:io/streams@0.2.0")
+      write_name(import_sec, "[method]input-stream.blocking-read")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_stream_read_type)
+      // 8. output-stream.blocking-write-and-flush
+      write_name(import_sec, "wasi:io/streams@0.2.0")
+      write_name(import_sec, "[method]output-stream.blocking-write-and-flush")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_stream_write_type)
+      // 9. shutdown
+      write_name(import_sec, "wasi:sockets/tcp@0.2.0")
+      write_name(import_sec, "[method]tcp-socket.shutdown")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_shutdown_type)
+      // 10. resource-drop tcp-socket
+      write_name(import_sec, "wasi:sockets/tcp@0.2.0")
+      write_name(import_sec, "[resource-drop]tcp-socket")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_resource_drop_type)
+      // 11. resource-drop input-stream
+      write_name(import_sec, "wasi:io/streams@0.2.0")
+      write_name(import_sec, "[resource-drop]input-stream")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_resource_drop_type)
+      // 12. resource-drop output-stream
+      write_name(import_sec, "wasi:io/streams@0.2.0")
+      write_name(import_sec, "[resource-drop]output-stream")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_resource_drop_type)
+      // 13. resource-drop pollable
+      write_name(import_sec, "wasi:io/poll@0.2.0")
+      write_name(import_sec, "[resource-drop]pollable")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, socket_resource_drop_type)
+    }
     if ctx.use_js_strings {
       for name in ctx.js_strings.names {
         write_name(import_sec, "string_constants")
@@ -419,12 +698,16 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let coverage_bytes = coverage_count * 4
   let need_globals = ctx.use_heap_global ||
     ctx.need_stack_switching ||
-    ctx.coverage_enabled
+    ctx.coverage_enabled ||
+    ctx.need_fs ||
+    ctx.need_socket
   if need_globals {
     let global_sec = ByteBuf::new()
     let global_count = (if ctx.use_heap_global { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
-      (if ctx.coverage_enabled { 2 } else { 0 })
+      (if ctx.coverage_enabled { 2 } else { 0 }) +
+      (if ctx.need_fs { 1 } else { 0 }) +
+      (if ctx.need_socket { 1 } else { 0 })
     write_u32_leb(global_sec, global_count)
     // Heap pointer global
     if ctx.use_heap_global {
@@ -457,6 +740,20 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       emit_i32_const_raw(global_sec, coverage_count)
       global_sec.push((11).to_byte()) // end
     }
+    if ctx.need_fs {
+      // fs_root_descriptor global: i32, mutable, init = -1 (uninitialized)
+      global_sec.push((127).to_byte()) // i32
+      global_sec.push((1).to_byte()) // mutable
+      emit_i32_const_raw(global_sec, -1)
+      global_sec.push((11).to_byte()) // end
+    }
+    if ctx.need_socket {
+      // socket_table_base global: i32, mutable, init = 0 (unallocated)
+      global_sec.push((127).to_byte()) // i32
+      global_sec.push((1).to_byte()) // mutable
+      emit_i32_const_raw(global_sec, 0)
+      global_sec.push((11).to_byte()) // end
+    }
     write_section(buf, 6, global_sec.data)
   }
 
@@ -464,7 +761,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let user_export_count = ctx.exported_fns.length()
   let export_count = 2 +
     user_export_count +
-    (if ctx.need_stdin_read_char { 1 } else { 0 }) +
+    (if ctx.need_stdin_read_char || ctx.need_socket { 1 } else { 0 }) +
     (if ctx.need_exceptions { 1 } else { 0 }) +
     (if ctx.need_stack_switching { 3 } else { 0 }) + // await_tag + sleep_tag + global
     (if ctx.coverage_enabled { 2 } else { 0 })
@@ -474,7 +771,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   export_sec.push((0).to_byte()) // func export
   let run_index = func_import_count + funcs.length() - 1
   write_u32_leb(export_sec, run_index)
-  if ctx.need_stdin_read_char {
+  if ctx.need_stdin_read_char || ctx.need_socket {
     write_name(export_sec, "cabi_realloc")
     export_sec.push((0).to_byte()) // func export
     write_u32_leb(export_sec, run_index - 1)
@@ -886,7 +1183,7 @@ fn emit_module_with_coverage(
     func_needs_heap.push(need)
   }
   let run_need_heap = needs_heap_block(ctx, run_ast)
-  if any_user_heap || ctx.need_stdin_read_char {
+  if any_user_heap || ctx.need_stdin_read_char || ctx.need_fs || ctx.need_socket {
     ctx.use_heap_global = true
     let global_imports = if ctx.use_js_strings {
       ctx.js_strings.names.length()
@@ -972,7 +1269,7 @@ fn emit_module_with_coverage(
       ),
     )
   }
-  if ctx.need_stdin_read_char {
+  if ctx.need_stdin_read_char || ctx.need_socket {
     let cabi_realloc_sig = FuncSig::{
       params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
       results: [ValueKind::I32],

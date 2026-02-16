@@ -135,17 +135,31 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           if ctx.use_js_strings {
             ctx.need_js_equals = true
           }
-        "array_builder" | "map_builder" | "string_builder" =>
+        "array_builder" | "map_builder" | "string_builder" | "map_keys" |
+        "map_values" =>
           ctx.need_heap = true
         "sleep" => ctx.need_sleep = true
         "stdout_write_char" | "stdout_write_stream" =>
           ctx.need_stdout_write_char = true
         "stdin_read_char" | "stdin_read_stream" =>
           ctx.need_stdin_read_char = true
+        "fs_read_file" | "fs_write_file" | "fs_exists" => {
+          ctx.need_fs = true
+          ctx.need_heap = true
+        }
+        "socket_tcp_connect" | "socket_tcp_read" | "socket_tcp_write" |
+        "socket_tcp_close" => {
+          ctx.need_socket = true
+          ctx.need_heap = true
+        }
         "string_from_char_code" | "to_double" => ctx.need_heap = true
         "char_to_int" | "char_from_int" => ()
         "__to_string" => if not(ctx.use_js_strings) { ctx.need_heap = true }
-        _ => ()
+        _ =>
+          // Enum constructor calls require heap allocation
+          if ctx.enum_ctor_tags.contains(name) {
+            ctx.need_heap = true
+          }
       }
       for arg in args {
         scan_needs_expr(ctx, arg.expr)

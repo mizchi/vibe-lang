@@ -863,6 +863,311 @@ fn type_call(
                 }
                 @core.Type::String
               }
+              "fs_read_file" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_read_file", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="fs_read_file",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_read_file",
+                  builtin_effects("fs_read_file"),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "fs_write_file" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_write_file", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="fs_write_file",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_write_file",
+                  builtin_effects("fs_write_file"),
+                  call_span,
+                )
+                let path_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, path_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=path_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let content_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, content_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=content_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "fs_exists" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_exists", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="fs_exists",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_exists",
+                  builtin_effects("fs_exists"),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "socket_tcp_connect" => {
+                let pos_args = extract_positional_args(
+                  args, "socket_tcp_connect", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="socket_tcp_connect",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "socket_tcp_connect",
+                  builtin_effects("socket_tcp_connect"),
+                  call_span,
+                )
+                let host_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, host_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=host_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let port_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, port_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=port_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "socket_tcp_read" => {
+                let pos_args = extract_positional_args(
+                  args, "socket_tcp_read", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="socket_tcp_read",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "socket_tcp_read",
+                  builtin_effects("socket_tcp_read"),
+                  call_span,
+                )
+                let handle_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, handle_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=handle_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let max_bytes_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, max_bytes_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=max_bytes_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "socket_tcp_write" => {
+                let pos_args = extract_positional_args(
+                  args, "socket_tcp_write", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="socket_tcp_write",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "socket_tcp_write",
+                  builtin_effects("socket_tcp_write"),
+                  call_span,
+                )
+                let handle_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, handle_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=handle_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let data_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, data_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=data_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "socket_tcp_close" => {
+                let pos_args = extract_positional_args(
+                  args, "socket_tcp_close", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="socket_tcp_close",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "socket_tcp_close",
+                  builtin_effects("socket_tcp_close"),
+                  call_span,
+                )
+                let handle_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, handle_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=handle_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
               "string_from_char_code" => {
                 let pos_args = extract_positional_args(
                   args, "string_from_char_code", call_span,

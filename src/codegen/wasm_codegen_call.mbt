@@ -1744,6 +1744,130 @@ fn compile_call_by_name(
         emit_i64_or(buf)
       }
     }
+    "string_index_of" => {
+      // string_index_of(str, sub) -> Int (byte offset or -1)
+      let pos_args = extract_positional_exprs(args, "string_index_of")
+      if pos_args.length() != 2 {
+        raise WasmGenError::Unsupported("string_index_of arity")
+      }
+      if ctx.use_js_strings {
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="string_index_of",
+        )
+      } else {
+        let str_ptr = alloc_temp_local(ctx)
+        let str_len = alloc_temp_local(ctx)
+        let sub_ptr = alloc_temp_local(ctx)
+        let sub_len = alloc_temp_local(ctx)
+        let outer_i = alloc_temp_local(ctx)
+        let inner_j = alloc_temp_local(ctx)
+        let result_local = alloc_temp_local(ctx)
+        let matched = alloc_temp_local(ctx)
+        let limit_local = alloc_temp_local(ctx)
+        // get str pointer and length
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, str_ptr)
+        emit_local_get(buf, str_ptr)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, str_len)
+        // get sub pointer and length
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, sub_ptr)
+        emit_local_get(buf, sub_ptr)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, sub_len)
+        // result = -1 (not found)
+        emit_i32_const_raw(buf, -1)
+        emit_local_set(buf, result_local)
+        // limit = str_len - sub_len + 1
+        emit_local_get(buf, str_len)
+        emit_local_get(buf, sub_len)
+        emit_i32_sub(buf)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, limit_local)
+        // if sub_len > str_len, skip search (limit <= 0)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, outer_i)
+        emit_block(buf) // block (for breaking when found)
+        emit_loop(buf) // outer loop
+        // if outer_i >= limit, break
+        emit_local_get(buf, outer_i)
+        emit_local_get(buf, limit_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1) // break to block
+        // check if all sub bytes match at position outer_i
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, matched)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, inner_j)
+        emit_block(buf) // inner block (for breaking when mismatch)
+        emit_loop(buf) // inner loop
+        emit_local_get(buf, inner_j)
+        emit_local_get(buf, sub_len)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1) // break inner block (all matched)
+        // compare str[outer_i + inner_j] == sub[inner_j]
+        emit_local_get(buf, str_ptr)
+        emit_local_get(buf, outer_i)
+        emit_i32_add(buf)
+        emit_local_get(buf, inner_j)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8) // str byte
+        emit_local_get(buf, sub_ptr)
+        emit_local_get(buf, inner_j)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8) // sub byte
+        emit_i32_eq(buf)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if (not equal)
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, matched)
+        emit_br(buf, 2) // break inner block
+        buf.push((11).to_byte()) // end if
+        // inner_j++
+        emit_local_get(buf, inner_j)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, inner_j)
+        emit_br(buf, 0) // continue inner loop
+        emit_end(buf) // end inner loop
+        emit_end(buf) // end inner block
+        // if matched, set result and break outer
+        emit_local_get(buf, matched)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, outer_i)
+        emit_local_set(buf, result_local)
+        emit_br(buf, 1) // break outer block
+        buf.push((11).to_byte()) // end if
+        // outer_i++
+        emit_local_get(buf, outer_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, outer_i)
+        emit_br(buf, 0) // continue outer loop
+        emit_end(buf) // end outer loop
+        emit_end(buf) // end outer block
+        // tag result as int
+        emit_local_get(buf, result_local)
+        emit_i64_extend_i32_s(buf)
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shl(buf)
+        emit_i64_const_raw(buf, tag_int.to_int64())
+        emit_i64_or(buf)
+      }
+    }
     "string_builder" => {
       // string_builder() -> allocate empty array obj with len=0 (same layout as array_builder)
       let max_cap = 256
@@ -2092,6 +2216,278 @@ fn compile_call_by_name(
         raise WasmGenError::Unsupported("map_builder_freeze arity")
       }
       compile_expr_i32(ctx, buf, pos_args[0])
+    }
+    "map_has_key" => {
+      // map_has_key(map, key) -> linear search for key, return tagged bool
+      let pos_args = extract_positional_exprs(args, name)
+      if pos_args.length() != 2 {
+        raise WasmGenError::Unsupported("map_has_key arity")
+      }
+      let map_ptr = alloc_temp_local(ctx)
+      let map_len = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      let found_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, map_ptr)
+      emit_local_get(buf, map_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, map_len)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, found_local)
+      if ctx.use_js_strings {
+        let key_kind = infer_expr_kind(ctx, pos_args[1])
+        if key_kind == ValueKind::ExternRef {
+          ctx.need_extern_table = true
+          ctx.need_js_equals = true
+          let key_local = alloc_temp_local_with_kind(ctx, ValueKind::ExternRef)
+          compile_expr(ctx, buf, pos_args[1])
+          emit_local_set(buf, key_local)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, map_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, map_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // slot index
+          emit_table_get(buf, ctx.extern_table_index)
+          emit_local_get(buf, key_local)
+          emit_call(buf, import_index_js_equals(ctx))
+          buf.push((4).to_byte()) // if (equals)
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, found_local)
+          buf.push((11).to_byte()) // end if (equals)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if (i < len)
+          buf.push((11).to_byte()) // end loop
+        } else {
+          let key_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, key_local)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, map_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, map_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // key
+          emit_local_get(buf, key_local)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          emit_i32_const_raw(buf, 1)
+          emit_local_set(buf, found_local)
+          buf.push((11).to_byte()) // end if
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if
+          buf.push((11).to_byte()) // end loop
+        }
+      } else {
+        // non-js-string mode: keys are i32 string pointers
+        let key_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, key_local)
+        buf.push((3).to_byte()) // loop
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, loop_i)
+        emit_local_get(buf, map_len)
+        emit_i32_lt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, map_ptr)
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 8)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8) // key
+        emit_local_get(buf, key_local)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, found_local)
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, loop_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i)
+        buf.push((12).to_byte()) // br
+        write_u32_leb(buf, 1) // to loop
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end loop
+      }
+      // convert found_local (i32: 0 or 1) to tagged bool
+      emit_local_get(buf, found_local)
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      emit_i64_const_raw(buf, tag_bool.to_int64())
+      emit_i64_or(buf)
+    }
+    "map_keys" => {
+      // map_keys(map) -> allocate new array with keys from map
+      let pos_args = extract_positional_exprs(args, name)
+      if pos_args.length() != 1 {
+        raise WasmGenError::Unsupported("map_keys arity")
+      }
+      require_heap(ctx)
+      let map_ptr = alloc_temp_local(ctx)
+      let map_len = alloc_temp_local(ctx)
+      let arr_ptr = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      // get map pointer
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, map_ptr)
+      emit_local_get(buf, map_ptr)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, map_len)
+      // allocate array: [tag:i32, len:i32, elem:i32 * len]
+      // size = 8 + len * 4, but len is dynamic so use max_cap approach
+      let max_cap = 128
+      let size = align4(8 + max_cap * 4)
+      emit_heap_alloc(ctx, buf, size, arr_ptr)
+      // set array tag
+      emit_local_get(buf, arr_ptr)
+      emit_i32_const_raw(buf, obj_array)
+      emit_i32_store(buf, 0)
+      // set array len = map_len
+      emit_local_get(buf, arr_ptr)
+      emit_local_get(buf, map_len)
+      emit_i32_store(buf, 4)
+      // copy keys: loop i = 0..len, arr[8+i*4] = map[8+i*8]
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      buf.push((3).to_byte()) // loop
+      buf.push((64).to_byte()) // void
+      emit_local_get(buf, loop_i)
+      emit_local_get(buf, map_len)
+      emit_i32_lt_s(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      // store: arr[8 + i*4] = map[8 + i*8]
+      emit_local_get(buf, arr_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      // load key from map
+      emit_local_get(buf, map_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8)
+      // store to array
+      emit_i32_store(buf, 8)
+      // i++
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, loop_i)
+      buf.push((12).to_byte()) // br
+      write_u32_leb(buf, 0) // to loop
+      buf.push((11).to_byte()) // end if
+      buf.push((11).to_byte()) // end loop
+      // return tagged arr_ptr
+      emit_local_get(buf, arr_ptr)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "map_values" => {
+      // map_values(map) -> allocate new array with values from map
+      let pos_args = extract_positional_exprs(args, name)
+      if pos_args.length() != 1 {
+        raise WasmGenError::Unsupported("map_values arity")
+      }
+      require_heap(ctx)
+      let map_ptr = alloc_temp_local(ctx)
+      let map_len = alloc_temp_local(ctx)
+      let arr_ptr = alloc_temp_local(ctx)
+      let loop_i = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, map_ptr)
+      emit_local_get(buf, map_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, map_len)
+      let max_cap = 128
+      let size = align4(8 + max_cap * 4)
+      emit_heap_alloc(ctx, buf, size, arr_ptr)
+      emit_local_get(buf, arr_ptr)
+      emit_i32_const_raw(buf, obj_array)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, arr_ptr)
+      emit_local_get(buf, map_len)
+      emit_i32_store(buf, 4)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, loop_i)
+      buf.push((3).to_byte()) // loop
+      buf.push((64).to_byte()) // void
+      emit_local_get(buf, loop_i)
+      emit_local_get(buf, map_len)
+      emit_i32_lt_s(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      // store: arr[8 + i*4] = map[8 + i*8 + 4] (value at offset +4 from key)
+      emit_local_get(buf, arr_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, map_ptr)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 12) // value at key_offset + 4
+      emit_i32_store(buf, 8)
+      emit_local_get(buf, loop_i)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, loop_i)
+      buf.push((12).to_byte()) // br
+      write_u32_leb(buf, 0) // to loop
+      buf.push((11).to_byte()) // end if
+      buf.push((11).to_byte()) // end loop
+      emit_local_get(buf, arr_ptr)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
     }
     "array_length" => {
       // array_length(arr) -> load len field, shift left 2 (tag as int)
@@ -2551,6 +2947,943 @@ fn compile_call_by_name(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
       buf.push((11).to_byte()) // end if
+    }
+    "fs_exists" => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported("fs_exists requires --wasm backend")
+      }
+      let pos_args = extract_positional_exprs(args, "fs_exists")
+      if pos_args.length() != 1 {
+        raise WasmGenError::Unsupported("fs_exists arity")
+      }
+      require_heap(ctx)
+      let raw_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let ret_area_local = alloc_temp_local(ctx)
+      let root_desc_local = alloc_temp_local(ctx)
+      let fs_global = fs_root_descriptor_global_index(ctx)
+      // Initialize root descriptor if needed
+      emit_global_get(buf, fs_global)
+      emit_i32_const_raw(buf, -1)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_get_directories(ctx))
+      // Load first descriptor from list: retptr[0]=list_ptr, retptr[4]=list_len
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 0)
+      emit_i32_load(buf, 0) // first entry: descriptor handle at [list_ptr+0]
+      emit_global_set(buf, fs_global)
+      buf.push((11).to_byte()) // end if
+      emit_global_get(buf, fs_global)
+      emit_local_set(buf, root_desc_local)
+      // Extract path string: raw_ptr, len
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, raw_local)
+      emit_local_get(buf, raw_local)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, len_local)
+      // Allocate retptr for stat-at result (needs ~96 bytes)
+      emit_heap_alloc(ctx, buf, align4(96), ret_area_local)
+      // Sync heap before WASI call
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      // stat-at(root_desc, 0, path_ptr, path_len, retptr)
+      emit_local_get(buf, root_desc_local)
+      emit_i32_const_raw(buf, 0) // path-flags: no symlink follow
+      emit_local_get(buf, raw_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // path data ptr
+      emit_local_get(buf, len_local)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_stat_at(ctx))
+      // Reload heap after WASI call
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      // Check discriminant: 0=ok (exists), 1=err (not exists)
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load8_u(buf, 0)
+      emit_i32_eqz(buf) // 0 means ok -> true
+      buf.push((4).to_byte()) // if
+      buf.push((126).to_byte()) // result i64
+      emit_i64_const_raw(buf, tag_int_value64(1L)) // true
+      buf.push((5).to_byte()) // else
+      emit_i64_const_raw(buf, tag_int_value64(0L)) // false
+      buf.push((11).to_byte()) // end if
+    }
+    "fs_read_file" => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported(
+          "fs_read_file requires --wasm backend",
+        )
+      }
+      let pos_args = extract_positional_exprs(args, "fs_read_file")
+      if pos_args.length() != 1 {
+        raise WasmGenError::Unsupported("fs_read_file arity")
+      }
+      require_heap(ctx)
+      let raw_local = alloc_temp_local(ctx)
+      let len_local = alloc_temp_local(ctx)
+      let ret_area_local = alloc_temp_local(ctx)
+      let root_desc_local = alloc_temp_local(ctx)
+      let opened_desc_local = alloc_temp_local(ctx)
+      let data_ptr_local = alloc_temp_local(ctx)
+      let data_len_local = alloc_temp_local(ctx)
+      let obj_local = alloc_temp_local(ctx)
+      let copy_i_local = alloc_temp_local(ctx)
+      let alloc_size_local = alloc_temp_local(ctx)
+      let fs_global = fs_root_descriptor_global_index(ctx)
+      // Initialize root descriptor if needed
+      emit_global_get(buf, fs_global)
+      emit_i32_const_raw(buf, -1)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_get_directories(ctx))
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 0)
+      emit_i32_load(buf, 0)
+      emit_global_set(buf, fs_global)
+      buf.push((11).to_byte()) // end if
+      emit_global_get(buf, fs_global)
+      emit_local_set(buf, root_desc_local)
+      // Extract path string
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, raw_local)
+      emit_local_get(buf, raw_local)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, len_local)
+      // Allocate retptr for open-at result
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      // Sync heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      // open-at(root_desc, 0, path_ptr, path_len, 0, 1, retptr)
+      // open-flags=0 (none), desc-flags=1 (read)
+      emit_local_get(buf, root_desc_local)
+      emit_i32_const_raw(buf, 0) // path-flags
+      emit_local_get(buf, raw_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // path data ptr
+      emit_local_get(buf, len_local)
+      emit_i32_const_raw(buf, 0) // open-flags: none
+      emit_i32_const_raw(buf, 1) // desc-flags: read
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_open_at(ctx))
+      // Reload heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      // Check open result: retptr[0] discriminant
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load8_u(buf, 0)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if (ok)
+      buf.push((126).to_byte()) // result i64
+      // opened_desc = retptr[4]
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, opened_desc_local)
+      // Allocate retptr for read result
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      // Sync heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      // read(opened_desc, max_len=0x7FFFFFFF, offset=0, retptr)
+      emit_local_get(buf, opened_desc_local)
+      // i64.const 0x7FFFFFFF (max read length)
+      buf.push((66).to_byte())
+      write_i64_leb(buf, 0x7FFFFFFFL)
+      // i64.const 0 (offset)
+      buf.push((66).to_byte())
+      buf.push((0).to_byte())
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_read(ctx))
+      // Reload heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      // resource-drop opened descriptor
+      emit_local_get(buf, opened_desc_local)
+      emit_call(buf, import_index_fs_resource_drop(ctx))
+      // Check read result: retptr[0] discriminant
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load8_u(buf, 0)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if (ok)
+      buf.push((126).to_byte()) // result i64
+      // data_ptr = retptr[4], data_len = retptr[8]
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, data_ptr_local)
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 8)
+      emit_local_set(buf, data_len_local)
+      // Allocate vibe string: align4(8 + data_len)
+      emit_local_get(buf, data_len_local)
+      emit_i32_const_raw(buf, 11) // (len + 8 + 3) & ~3 == (len + 11) & -4
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      emit_local_set(buf, alloc_size_local)
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
+      // Write string header
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_string) // tag = obj_string
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, data_len_local)
+      emit_i32_store(buf, 4)
+      // Copy bytes from data_ptr to obj+8
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, copy_i_local)
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, copy_i_local)
+      emit_local_get(buf, data_len_local)
+      emit_i32_lt_s(buf)
+      emit_i32_eqz(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, copy_i_local)
+      emit_i32_add(buf)
+      emit_local_get(buf, data_ptr_local)
+      emit_local_get(buf, copy_i_local)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 0)
+      emit_i32_store8(buf, 8)
+      emit_local_get(buf, copy_i_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, copy_i_local)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // Return tagged string pointer
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+      buf.push((5).to_byte()) // else (read error)
+      // Return empty string on read error
+      emit_heap_alloc(ctx, buf, align4(8), obj_local)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_string)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_store(buf, 4)
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+      buf.push((11).to_byte()) // end if (read)
+      buf.push((5).to_byte()) // else (open error)
+      // Return empty string on open error
+      emit_heap_alloc(ctx, buf, align4(8), obj_local)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_string)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_store(buf, 4)
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+      buf.push((11).to_byte()) // end if (open)
+    }
+    "fs_write_file" => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported(
+          "fs_write_file requires --wasm backend",
+        )
+      }
+      let pos_args = extract_positional_exprs(args, "fs_write_file")
+      if pos_args.length() != 2 {
+        raise WasmGenError::Unsupported("fs_write_file arity")
+      }
+      require_heap(ctx)
+      let path_raw_local = alloc_temp_local(ctx)
+      let path_len_local = alloc_temp_local(ctx)
+      let content_raw_local = alloc_temp_local(ctx)
+      let content_len_local = alloc_temp_local(ctx)
+      let ret_area_local = alloc_temp_local(ctx)
+      let root_desc_local = alloc_temp_local(ctx)
+      let opened_desc_local = alloc_temp_local(ctx)
+      let fs_global = fs_root_descriptor_global_index(ctx)
+      // Initialize root descriptor if needed
+      emit_global_get(buf, fs_global)
+      emit_i32_const_raw(buf, -1)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if
+      buf.push((64).to_byte()) // void
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_get_directories(ctx))
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 0)
+      emit_i32_load(buf, 0)
+      emit_global_set(buf, fs_global)
+      buf.push((11).to_byte()) // end if
+      emit_global_get(buf, fs_global)
+      emit_local_set(buf, root_desc_local)
+      // Extract path string
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, path_raw_local)
+      emit_local_get(buf, path_raw_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, path_len_local)
+      // Extract content string
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, content_raw_local)
+      emit_local_get(buf, content_raw_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, content_len_local)
+      // Allocate retptr for open-at result
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      // Sync heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      // open-at(root_desc, 0, path_ptr, path_len, 5, 2, retptr)
+      // open-flags=5 (create|truncate), desc-flags=2 (write)
+      emit_local_get(buf, root_desc_local)
+      emit_i32_const_raw(buf, 0) // path-flags
+      emit_local_get(buf, path_raw_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // path data ptr
+      emit_local_get(buf, path_len_local)
+      emit_i32_const_raw(buf, 5) // open-flags: create(1) | truncate(4) = 5
+      emit_i32_const_raw(buf, 2) // desc-flags: write(2)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_open_at(ctx))
+      // Reload heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      // Check open result
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load8_u(buf, 0)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if (ok)
+      buf.push((126).to_byte()) // result i64
+      // opened_desc = retptr[4]
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, opened_desc_local)
+      // Allocate retptr for write result
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      // Sync heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      // write(opened_desc, content_data_ptr, content_len, offset=0, retptr)
+      emit_local_get(buf, opened_desc_local)
+      emit_local_get(buf, content_raw_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // content data ptr
+      emit_local_get(buf, content_len_local)
+      // i64.const 0 (offset)
+      buf.push((66).to_byte())
+      buf.push((0).to_byte())
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_fs_write(ctx))
+      // Reload heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      // resource-drop opened descriptor
+      emit_local_get(buf, opened_desc_local)
+      emit_call(buf, import_index_fs_resource_drop(ctx))
+      // Return Unit
+      emit_i64_const_raw(buf, tag_int_value64(0L))
+      buf.push((5).to_byte()) // else (open error)
+      emit_i64_const_raw(buf, tag_int_value64(0L))
+      buf.push((11).to_byte()) // end if
+    }
+    "socket_tcp_connect" => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported(
+          "socket_tcp_connect requires --wasm backend",
+        )
+      }
+      let pos_args = extract_positional_exprs(args, "socket_tcp_connect")
+      if pos_args.length() != 2 {
+        raise WasmGenError::Unsupported("socket_tcp_connect arity")
+      }
+      require_heap(ctx)
+      let host_raw_local = alloc_temp_local(ctx)
+      let host_len_local = alloc_temp_local(ctx)
+      let ret_area_local = alloc_temp_local(ctx)
+      let network_local = alloc_temp_local(ctx)
+      let socket_local = alloc_temp_local(ctx)
+      let pollable_local = alloc_temp_local(ctx)
+      let input_stream_local = alloc_temp_local(ctx)
+      let output_stream_local = alloc_temp_local(ctx)
+      let port_local = alloc_temp_local(ctx)
+      let table_base_local = alloc_temp_local(ctx)
+      let slot_local = alloc_temp_local(ctx)
+      let a_local = alloc_temp_local(ctx)
+      let b_local = alloc_temp_local(ctx)
+      let c_local = alloc_temp_local(ctx)
+      let d_local = alloc_temp_local(ctx)
+      let i_local = alloc_temp_local(ctx)
+      let acc_local = alloc_temp_local(ctx)
+      let sock_global = socket_table_global_index(ctx)
+      // Extract host string
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, host_raw_local)
+      emit_local_get(buf, host_raw_local)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, host_len_local)
+      // Extract port (untag)
+      compile_expr(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, port_local)
+      // Parse IPv4 address: host bytes -> a.b.c.d
+      // Initialize accumulators
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, a_local)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, b_local)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, c_local)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, d_local)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, acc_local)
+      emit_i32_const_raw(buf, 0) // octet_index
+      emit_local_set(buf, slot_local)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, i_local)
+      // Loop over host bytes
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, i_local)
+      emit_local_get(buf, host_len_local)
+      emit_i32_ge_s(buf)
+      emit_br_if(buf, 1) // break if i >= len
+      // Load byte
+      emit_local_get(buf, host_raw_local)
+      emit_local_get(buf, i_local)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 8) // +8 for string data offset
+      // Check if '.' (0x2E)
+      emit_i32_const_raw(buf, 0x2E)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (is dot)
+      buf.push((64).to_byte()) // void
+      // Store acc into current octet, advance
+      emit_local_get(buf, slot_local)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if slot==0
+      buf.push((64).to_byte())
+      emit_local_get(buf, acc_local)
+      emit_local_set(buf, a_local)
+      buf.push((5).to_byte()) // else
+      emit_local_get(buf, slot_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if slot==1
+      buf.push((64).to_byte())
+      emit_local_get(buf, acc_local)
+      emit_local_set(buf, b_local)
+      buf.push((5).to_byte()) // else
+      emit_local_get(buf, acc_local)
+      emit_local_set(buf, c_local)
+      buf.push((11).to_byte()) // end if slot==1
+      buf.push((11).to_byte()) // end if slot==0
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, acc_local)
+      emit_local_get(buf, slot_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, slot_local)
+      buf.push((5).to_byte()) // else (digit)
+      // acc = acc * 10 + (byte - '0')
+      emit_local_get(buf, acc_local)
+      emit_i32_const_raw(buf, 10)
+      emit_i32_mul(buf)
+      emit_local_get(buf, host_raw_local)
+      emit_local_get(buf, i_local)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 8) // +8 for string data offset
+      emit_i32_const_raw(buf, 0x30) // '0'
+      emit_i32_sub(buf)
+      emit_i32_add(buf)
+      emit_local_set(buf, acc_local)
+      buf.push((11).to_byte()) // end if (dot/digit)
+      // i++
+      emit_local_get(buf, i_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, i_local)
+      emit_br(buf, 0) // continue loop
+      emit_end(buf) // end loop
+      emit_end(buf) // end block
+      // Last octet
+      emit_local_get(buf, acc_local)
+      emit_local_set(buf, d_local)
+      // Allocate connection table if not yet done (256 bytes for 16 entries)
+      emit_global_get(buf, sock_global)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if (table not allocated)
+      buf.push((64).to_byte())
+      emit_heap_alloc(ctx, buf, 256, table_base_local)
+      emit_local_get(buf, table_base_local)
+      emit_global_set(buf, sock_global)
+      buf.push((11).to_byte()) // end if
+      emit_global_get(buf, sock_global)
+      emit_local_set(buf, table_base_local)
+      // Allocate retptr (16 bytes)
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      // Sync heap before WASI calls
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      // 1. instance-network() -> network
+      emit_call(buf, import_index_socket_instance_network(ctx))
+      emit_local_set(buf, network_local)
+      // 2. create-tcp-socket(family=0 IPv4, retptr)
+      emit_i32_const_raw(buf, 0) // IPv4
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_socket_create_tcp(ctx))
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 0) // discriminant
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if ok
+      buf.push((126).to_byte()) // result i64
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 4) // socket handle
+      emit_local_set(buf, socket_local)
+      // 3. start-connect(self, network, disc=0, port, a, b, c, d, 0,0,0,0,0,0, retptr)
+      emit_local_get(buf, socket_local)
+      emit_local_get(buf, network_local)
+      emit_i32_const_raw(buf, 0) // disc: IPv4
+      emit_local_get(buf, port_local)
+      emit_local_get(buf, a_local)
+      emit_local_get(buf, b_local)
+      emit_local_get(buf, c_local)
+      emit_local_get(buf, d_local)
+      emit_i32_const_raw(buf, 0) // padding
+      emit_i32_const_raw(buf, 0)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_const_raw(buf, 0)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_socket_start_connect(ctx))
+      // 4. subscribe(socket) -> pollable
+      emit_local_get(buf, socket_local)
+      emit_call(buf, import_index_socket_subscribe(ctx))
+      emit_local_set(buf, pollable_local)
+      // 5. poll([pollable], 1, retptr) - write pollable handle to retptr area
+      emit_local_get(buf, ret_area_local)
+      emit_local_get(buf, pollable_local)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, ret_area_local) // list_ptr
+      emit_i32_const_raw(buf, 1) // list_len
+      emit_local_get(buf, ret_area_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // retptr (offset by 8 to avoid clobbering list)
+      emit_call(buf, import_index_socket_poll(ctx))
+      // 6. resource-drop pollable
+      emit_local_get(buf, pollable_local)
+      emit_call(buf, import_index_socket_drop_pollable(ctx))
+      // 7. finish-connect(socket, retptr)
+      emit_local_get(buf, socket_local)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_socket_finish_connect(ctx))
+      // Reload heap after WASI calls
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      // Check finish-connect result
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 0) // discriminant
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if ok
+      buf.push((126).to_byte()) // result i64
+      // input_stream = retptr[4], output_stream = retptr[8]
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, input_stream_local)
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 8)
+      emit_local_set(buf, output_stream_local)
+      // Find free slot in connection table
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, slot_local)
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, slot_local)
+      emit_i32_const_raw(buf, 16)
+      emit_i32_ge_s(buf)
+      emit_br_if(buf, 1) // break if slot >= 16
+      // Check in_use flag: table_base + slot*16 + 12
+      emit_local_get(buf, table_base_local)
+      emit_local_get(buf, slot_local)
+      emit_i32_const_raw(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 12) // in_use
+      emit_i32_eqz(buf)
+      emit_br_if(buf, 1) // break if in_use == 0
+      emit_local_get(buf, slot_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, slot_local)
+      emit_br(buf, 0) // continue
+      emit_end(buf) // end loop
+      emit_end(buf) // end block
+      // Store entry: [socket, input_stream, output_stream, 1]
+      // entry_addr = table_base + slot * 16
+      emit_local_get(buf, table_base_local)
+      emit_local_get(buf, slot_local)
+      emit_i32_const_raw(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_set(buf, ret_area_local) // reuse as entry_addr
+      emit_local_get(buf, ret_area_local)
+      emit_local_get(buf, socket_local)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, ret_area_local)
+      emit_local_get(buf, input_stream_local)
+      emit_i32_store(buf, 4)
+      emit_local_get(buf, ret_area_local)
+      emit_local_get(buf, output_stream_local)
+      emit_i32_store(buf, 8)
+      emit_local_get(buf, ret_area_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_store(buf, 12) // in_use = 1
+      // Return slot as tagged int
+      emit_local_get(buf, slot_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      buf.push((5).to_byte()) // else (finish-connect failed)
+      emit_i64_const_raw(buf, tag_int_value64(-1L))
+      buf.push((11).to_byte()) // end if (finish-connect)
+      buf.push((5).to_byte()) // else (create-tcp-socket failed)
+      emit_i64_const_raw(buf, tag_int_value64(-1L))
+      buf.push((11).to_byte()) // end if (create-tcp-socket)
+    }
+    "socket_tcp_read" => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported(
+          "socket_tcp_read requires --wasm backend",
+        )
+      }
+      let pos_args = extract_positional_exprs(args, "socket_tcp_read")
+      if pos_args.length() != 2 {
+        raise WasmGenError::Unsupported("socket_tcp_read arity")
+      }
+      require_heap(ctx)
+      let handle_local = alloc_temp_local(ctx)
+      let max_bytes_local = alloc_temp_local(ctx)
+      let table_base_local = alloc_temp_local(ctx)
+      let entry_addr_local = alloc_temp_local(ctx)
+      let input_stream_local = alloc_temp_local(ctx)
+      let ret_area_local = alloc_temp_local(ctx)
+      let data_ptr_local = alloc_temp_local(ctx)
+      let data_len_local = alloc_temp_local(ctx)
+      let obj_local = alloc_temp_local(ctx)
+      let copy_i_local = alloc_temp_local(ctx)
+      let alloc_size_local = alloc_temp_local(ctx)
+      let sock_global = socket_table_global_index(ctx)
+      // Extract handle (untag)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, handle_local)
+      // Extract max_bytes (untag)
+      compile_expr(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, max_bytes_local)
+      // Load table base
+      emit_global_get(buf, sock_global)
+      emit_local_set(buf, table_base_local)
+      // entry_addr = table_base + handle * 16
+      emit_local_get(buf, table_base_local)
+      emit_local_get(buf, handle_local)
+      emit_i32_const_raw(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_set(buf, entry_addr_local)
+      // input_stream = entry[4]
+      emit_local_get(buf, entry_addr_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, input_stream_local)
+      // Allocate retptr
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      // Sync heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      // blocking-read(input_stream, max_bytes as i64, retptr)
+      emit_local_get(buf, input_stream_local)
+      emit_local_get(buf, max_bytes_local)
+      emit_i64_extend_i32_u(buf) // convert to i64
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_socket_stream_read(ctx))
+      // Reload heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      // Check result: retptr[0] discriminant
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load8_u(buf, 0)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if ok
+      buf.push((126).to_byte()) // result i64
+      // data_ptr = retptr[4], data_len = retptr[8]
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, data_ptr_local)
+      emit_local_get(buf, ret_area_local)
+      emit_i32_load(buf, 8)
+      emit_local_set(buf, data_len_local)
+      // Allocate vibe string: align4(8 + data_len)
+      emit_local_get(buf, data_len_local)
+      emit_i32_const_raw(buf, 11)
+      emit_i32_add(buf)
+      emit_i32_const_raw(buf, -4)
+      emit_i32_and(buf)
+      emit_local_set(buf, alloc_size_local)
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
+      // Write string header
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_string)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, data_len_local)
+      emit_i32_store(buf, 4)
+      // Copy bytes
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, copy_i_local)
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, copy_i_local)
+      emit_local_get(buf, data_len_local)
+      emit_i32_lt_s(buf)
+      emit_i32_eqz(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, copy_i_local)
+      emit_i32_add(buf)
+      emit_local_get(buf, data_ptr_local)
+      emit_local_get(buf, copy_i_local)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 0)
+      emit_i32_store8(buf, 8)
+      emit_local_get(buf, copy_i_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, copy_i_local)
+      emit_br(buf, 0)
+      emit_end(buf) // end loop
+      emit_end(buf) // end block
+      // Return tagged string pointer
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+      buf.push((5).to_byte()) // else (read error)
+      // Return empty string on error
+      emit_heap_alloc(ctx, buf, align4(8), obj_local)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_string)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_store(buf, 4)
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+      buf.push((11).to_byte()) // end if
+    }
+    "socket_tcp_write" => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported(
+          "socket_tcp_write requires --wasm backend",
+        )
+      }
+      let pos_args = extract_positional_exprs(args, "socket_tcp_write")
+      if pos_args.length() != 2 {
+        raise WasmGenError::Unsupported("socket_tcp_write arity")
+      }
+      require_heap(ctx)
+      let handle_local = alloc_temp_local(ctx)
+      let data_raw_local = alloc_temp_local(ctx)
+      let data_len_local = alloc_temp_local(ctx)
+      let table_base_local = alloc_temp_local(ctx)
+      let entry_addr_local = alloc_temp_local(ctx)
+      let output_stream_local = alloc_temp_local(ctx)
+      let ret_area_local = alloc_temp_local(ctx)
+      let sock_global = socket_table_global_index(ctx)
+      // Extract handle (untag)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, handle_local)
+      // Extract data string
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, data_raw_local)
+      emit_local_get(buf, data_raw_local)
+      emit_i32_load(buf, 4) // len
+      emit_local_set(buf, data_len_local)
+      // Load table base
+      emit_global_get(buf, sock_global)
+      emit_local_set(buf, table_base_local)
+      // entry_addr = table_base + handle * 16
+      emit_local_get(buf, table_base_local)
+      emit_local_get(buf, handle_local)
+      emit_i32_const_raw(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_set(buf, entry_addr_local)
+      // output_stream = entry[8]
+      emit_local_get(buf, entry_addr_local)
+      emit_i32_load(buf, 8)
+      emit_local_set(buf, output_stream_local)
+      // Allocate retptr
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      // Sync heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_local_get(buf, ctx.heap_local)
+        emit_global_set(buf, ctx.heap_global)
+      }
+      // blocking-write-and-flush(output_stream, data_ptr+8, data_len, retptr)
+      emit_local_get(buf, output_stream_local)
+      emit_local_get(buf, data_raw_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_add(buf) // data ptr
+      emit_local_get(buf, data_len_local)
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_socket_stream_write(ctx))
+      // Reload heap
+      if ctx.heap_local >= 0 && ctx.use_heap_global {
+        emit_global_get(buf, ctx.heap_global)
+        emit_local_set(buf, ctx.heap_local)
+      }
+      // Return Unit (tagged 0)
+      emit_i64_const_raw(buf, tag_int_value64(0L))
+    }
+    "socket_tcp_close" => {
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported(
+          "socket_tcp_close requires --wasm backend",
+        )
+      }
+      let pos_args = extract_positional_exprs(args, "socket_tcp_close")
+      if pos_args.length() != 1 {
+        raise WasmGenError::Unsupported("socket_tcp_close arity")
+      }
+      require_heap(ctx)
+      let handle_local = alloc_temp_local(ctx)
+      let table_base_local = alloc_temp_local(ctx)
+      let entry_addr_local = alloc_temp_local(ctx)
+      let socket_local = alloc_temp_local(ctx)
+      let input_stream_local = alloc_temp_local(ctx)
+      let output_stream_local = alloc_temp_local(ctx)
+      let ret_area_local = alloc_temp_local(ctx)
+      let sock_global = socket_table_global_index(ctx)
+      // Extract handle (untag)
+      compile_expr(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, handle_local)
+      // Load table base
+      emit_global_get(buf, sock_global)
+      emit_local_set(buf, table_base_local)
+      // entry_addr = table_base + handle * 16
+      emit_local_get(buf, table_base_local)
+      emit_local_get(buf, handle_local)
+      emit_i32_const_raw(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_set(buf, entry_addr_local)
+      // Load 3 handles
+      emit_local_get(buf, entry_addr_local)
+      emit_i32_load(buf, 0)
+      emit_local_set(buf, socket_local)
+      emit_local_get(buf, entry_addr_local)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, input_stream_local)
+      emit_local_get(buf, entry_addr_local)
+      emit_i32_load(buf, 8)
+      emit_local_set(buf, output_stream_local)
+      // Allocate retptr for shutdown
+      emit_heap_alloc(ctx, buf, align4(16), ret_area_local)
+      // shutdown(socket, 2=both, retptr)
+      emit_local_get(buf, socket_local)
+      emit_i32_const_raw(buf, 2) // both
+      emit_local_get(buf, ret_area_local)
+      emit_call(buf, import_index_socket_shutdown(ctx))
+      // resource-drop input-stream
+      emit_local_get(buf, input_stream_local)
+      emit_call(buf, import_index_socket_drop_input(ctx))
+      // resource-drop output-stream
+      emit_local_get(buf, output_stream_local)
+      emit_call(buf, import_index_socket_drop_output(ctx))
+      // resource-drop tcp-socket
+      emit_local_get(buf, socket_local)
+      emit_call(buf, import_index_socket_drop_tcp(ctx))
+      // Mark entry as free: in_use = 0
+      emit_local_get(buf, entry_addr_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_store(buf, 12) // in_use = 0
+      // Return Unit (tagged 0)
+      emit_i64_const_raw(buf, tag_int_value64(0L))
     }
     "char_to_int" => {
       let pos_args = extract_positional_exprs(args, "char_to_int")

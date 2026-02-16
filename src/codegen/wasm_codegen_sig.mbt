@@ -276,6 +276,12 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
   if ctx.need_stdin_read_char {
     count += 2
   }
+  if ctx.need_fs {
+    count += 6
+  }
+  if ctx.need_socket {
+    count += 13
+  }
   count
 }
 
@@ -935,7 +941,16 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "__to_string" ||
         name == "string_from_char_code" ||
         name == "array_slice" ||
-        name == "array_concat" {
+        name == "array_concat" ||
+        name == "map_keys" ||
+        name == "map_values" ||
+        name == "fs_read_file" ||
+        name == "fs_write_file" ||
+        name == "fs_exists" ||
+        name == "socket_tcp_connect" ||
+        name == "socket_tcp_read" ||
+        name == "socket_tcp_write" ||
+        name == "socket_tcp_close" {
         return true
       }
       // Enum constructor call needs heap
@@ -1310,6 +1325,159 @@ fn import_index_stdin_read_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
     )
   }
   import_index_stdin_get_stream(ctx) + 1
+}
+
+///|
+fn import_index_after_stdin(ctx : CodegenCtx) -> Int {
+  let mut idx = import_index_after_sleep(ctx)
+  if ctx.need_stdout_write_char {
+    idx += 2
+  }
+  if ctx.need_stdin_read_char {
+    idx += 2
+  }
+  idx
+}
+
+///|
+fn import_index_fs_get_directories(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_fs) {
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="fs WASI import",
+    )
+  }
+  import_index_after_stdin(ctx)
+}
+
+///|
+fn import_index_fs_open_at(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_get_directories(ctx) + 1
+}
+
+///|
+fn import_index_fs_read(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_get_directories(ctx) + 2
+}
+
+///|
+fn import_index_fs_write(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_get_directories(ctx) + 3
+}
+
+///|
+fn import_index_fs_stat_at(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_get_directories(ctx) + 4
+}
+
+///|
+fn import_index_fs_resource_drop(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_fs_get_directories(ctx) + 5
+}
+
+///|
+fn fs_root_descriptor_global_index(ctx : CodegenCtx) -> Int {
+  (if ctx.use_heap_global { 1 } else { 0 }) +
+    (if ctx.need_stack_switching { 1 } else { 0 }) +
+    (if ctx.coverage_enabled { 2 } else { 0 })
+}
+
+///|
+fn import_index_after_fs(ctx : CodegenCtx) -> Int {
+  let mut idx = import_index_after_stdin(ctx)
+  if ctx.need_fs {
+    idx += 6
+  }
+  idx
+}
+
+///|
+fn import_index_socket_instance_network(
+  ctx : CodegenCtx,
+) -> Int raise WasmGenError {
+  if not(ctx.need_socket) {
+    raise WasmGenError::BackendLimit(
+      backend="wasm",
+      feature="socket WASI import",
+    )
+  }
+  import_index_after_fs(ctx)
+}
+
+///|
+fn import_index_socket_create_tcp(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 1
+}
+
+///|
+fn import_index_socket_start_connect(
+  ctx : CodegenCtx,
+) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 2
+}
+
+///|
+fn import_index_socket_finish_connect(
+  ctx : CodegenCtx,
+) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 3
+}
+
+///|
+fn import_index_socket_subscribe(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 4
+}
+
+///|
+fn import_index_socket_poll(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 5
+}
+
+///|
+fn import_index_socket_stream_read(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 6
+}
+
+///|
+fn import_index_socket_stream_write(
+  ctx : CodegenCtx,
+) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 7
+}
+
+///|
+fn import_index_socket_shutdown(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 8
+}
+
+///|
+fn import_index_socket_drop_tcp(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 9
+}
+
+///|
+fn import_index_socket_drop_input(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 10
+}
+
+///|
+fn import_index_socket_drop_output(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 11
+}
+
+///|
+fn import_index_socket_drop_pollable(
+  ctx : CodegenCtx,
+) -> Int raise WasmGenError {
+  import_index_socket_instance_network(ctx) + 12
+}
+
+///|
+fn socket_table_global_index(ctx : CodegenCtx) -> Int {
+  (if ctx.use_heap_global { 1 } else { 0 }) +
+    (if ctx.need_stack_switching { 1 } else { 0 }) +
+    (if ctx.coverage_enabled { 2 } else { 0 }) +
+    (if ctx.need_fs { 1 } else { 0 })
 }
 
 ///|

@@ -322,6 +322,8 @@ pub(all) struct ComponentWitImports {
   mut need_sleep : Bool
   mut need_stdout_write_char : Bool
   mut need_stdin_read_char : Bool
+  mut need_fs : Bool
+  mut need_socket : Bool
 }
 
 ///|
@@ -333,6 +335,8 @@ fn collect_component_wit_imports(ast : @core.Module) -> ComponentWitImports {
     need_sleep: false,
     need_stdout_write_char: false,
     need_stdin_read_char: false,
+    need_fs: false,
+    need_socket: false,
   }
   scan_component_wit_imports_block(ast, acc)
   acc
@@ -392,6 +396,10 @@ fn scan_component_wit_imports_expr(
         "stdout_write_stream" => acc.need_stdout_write_char = true
         "stdin_read_char" => acc.need_stdin_read_char = true
         "stdin_read_stream" => acc.need_stdin_read_char = true
+        "fs_read_file" | "fs_write_file" | "fs_exists" => acc.need_fs = true
+        "socket_tcp_connect" | "socket_tcp_read" | "socket_tcp_write" |
+        "socket_tcp_close" =>
+          acc.need_socket = true
         _ => ()
       }
       for arg in args {
@@ -499,6 +507,19 @@ pub fn generate_component_wit(
   }
   if imports.need_stdout_write_char || imports.need_stdin_read_char {
     wit = wit + "  import wasi:io/streams@0.2.0;\n"
+  }
+  if imports.need_fs {
+    wit = wit + "  import wasi:filesystem/types@0.3.0;\n"
+    wit = wit + "  import wasi:filesystem/preopens@0.3.0;\n"
+  }
+  if imports.need_socket {
+    wit = wit + "  import wasi:sockets/instance-network@0.2.0;\n"
+    wit = wit + "  import wasi:sockets/tcp-create-socket@0.2.0;\n"
+    wit = wit + "  import wasi:sockets/tcp@0.2.0;\n"
+    wit = wit + "  import wasi:io/poll@0.2.0;\n"
+    if not(imports.need_stdout_write_char) && not(imports.need_stdin_read_char) {
+      wit = wit + "  import wasi:io/streams@0.2.0;\n"
+    }
   }
   wit = wit + "  export run: func() -> s32;\n"
   wit = wit + "}\n"

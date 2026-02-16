@@ -11,7 +11,7 @@ fn parse_precompile_cmd_args(
   args : Array[String],
 ) -> Result[PrecompileOptions, String] {
   let dirs : Array[String] = []
-  let mut out_dir = "dist/std"
+  let mut out_dir = "dist"
   let mut wasm_js_string = false
   let mut opt_level : String? = None
   let mut i = 0
@@ -49,6 +49,20 @@ fn parse_precompile_cmd_args(
 }
 
 ///|
+fn strip_first_path_component(path : String) -> String {
+  let buf = StringBuilder::new()
+  let mut found_slash = false
+  for c in path {
+    if found_slash {
+      buf.write_char(c)
+    } else if c == '/' {
+      found_slash = true
+    }
+  }
+  buf.to_string()
+}
+
+///|
 fn precompile_cmd(args : Array[String]) -> Unit {
   let opts = match parse_precompile_cmd_args(args) {
     Ok(v) => v
@@ -68,8 +82,21 @@ fn precompile_cmd(args : Array[String]) -> Unit {
         continue
       }
     }
+    // Compute output subdirectory: strip first path component from dir
+    // e.g. "vibe/std" -> "std", "vibe/std/path" -> "std/path"
+    let dir_suffix = strip_first_path_component(dir)
+    let file_out_dir = if dir_suffix.length() > 0 {
+      opts.out_dir + "/" + dir_suffix
+    } else {
+      opts.out_dir
+    }
+    ensure_dir_recursive(file_out_dir)
     for entry in entries {
       if not(entry.has_suffix(".vibe")) {
+        continue
+      }
+      // Skip entries that are too short to be valid filenames (e.g. ".vibe" artifacts)
+      if entry.length() <= 5 {
         continue
       }
       if entry.has_suffix("_test.vibe") || entry.has_suffix("_bench.vibe") {
@@ -81,7 +108,7 @@ fn precompile_cmd(args : Array[String]) -> Unit {
         precompile_one_file(
           fs,
           path,
-          opts.out_dir,
+          file_out_dir,
           opts.wasm_js_string,
           opts.opt_level,
         ) {

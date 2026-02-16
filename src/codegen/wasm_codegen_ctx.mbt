@@ -62,6 +62,10 @@ priv struct CodegenCtx {
   // StdIO char-level import functions
   mut need_stdout_write_char : Bool
   mut need_stdin_read_char : Bool
+  // Filesystem WASI imports
+  mut need_fs : Bool
+  // Socket WASI imports
+  mut need_socket : Bool
   // Source-level coverage instrumentation
   coverage_enabled : Bool
   coverage_points : Array[WasmCoveragePoint]
@@ -156,6 +160,10 @@ fn CodegenCtx::new(
     // StdIO char-level import functions
     need_stdout_write_char: false,
     need_stdin_read_char: false,
+    // Filesystem WASI imports
+    need_fs: false,
+    // Socket WASI imports
+    need_socket: false,
     // Source-level coverage instrumentation
     coverage_enabled,
     coverage_points: [],

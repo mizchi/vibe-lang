@@ -456,7 +456,14 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "map_builder_freeze" ||
   name == "string_builder" ||
   name == "string_builder_push" ||
-  name == "string_builder_freeze"
+  name == "string_builder_freeze" ||
+  name == "fs_read_file" ||
+  name == "fs_write_file" ||
+  name == "fs_exists" ||
+  name == "socket_tcp_connect" ||
+  name == "socket_tcp_read" ||
+  name == "socket_tcp_write" ||
+  name == "socket_tcp_close"
 }
 
 ///|

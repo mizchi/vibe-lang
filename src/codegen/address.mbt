@@ -914,5 +914,12 @@ fn is_builtin(name : String) -> Bool {
   name == "float_to_double" ||
   name == "double_to_int" ||
   name == "double_to_float" ||
-  name == "__to_string"
+  name == "__to_string" ||
+  name == "fs_read_file" ||
+  name == "fs_write_file" ||
+  name == "fs_exists" ||
+  name == "socket_tcp_connect" ||
+  name == "socket_tcp_read" ||
+  name == "socket_tcp_write" ||
+  name == "socket_tcp_close"
 }

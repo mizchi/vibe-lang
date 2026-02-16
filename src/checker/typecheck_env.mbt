@@ -259,6 +259,11 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     "stdin_read_stream" => [@core.EffectAtom::Const("Stdin")]
     "sleep" => [@core.EffectAtom::Const("Async")]
     "dynamic_path_resolve" => [@core.EffectAtom::Const("Env")]
+    "fs_read_file" | "fs_write_file" | "fs_exists" =>
+      [@core.EffectAtom::Const("Fs")]
+    "socket_tcp_connect" | "socket_tcp_read" | "socket_tcp_write" |
+    "socket_tcp_close" =>
+      [@core.EffectAtom::Const("Net")]
     _ => []
   }
 }
