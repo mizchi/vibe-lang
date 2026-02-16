@@ -415,5 +415,19 @@ precompile:
     mkdir -p dist/std dist/std/path dist/std/threads dist/std/wasm dist/fs dist/socket dist/http dist/collection dist/encoding dist/x dist/x/args
     _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/std vibe/std/path vibe/std/threads vibe/std/wasm vibe/fs vibe/socket vibe/http vibe/collection vibe/encoding vibe/x vibe/x/args --out-dir dist --wasm
 
+# Create a new ADR (usage: just adr "タイトル slug")
+adr title:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="docs/adr"
+    last=$(ls "$dir"/[0-9]*.md 2>/dev/null | sort -r | head -1 | sed 's|.*/0*\([0-9][0-9]*\).*|\1|' || echo "")
+    if [ -z "$last" ]; then last="-1"; fi
+    next=$(printf "%04d" $(( last + 1 )))
+    slug=$(echo "{{title}}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')
+    file="$dir/${next}-${slug}.md"
+    today=$(date +%Y-%m-%d)
+    sed -e "s/NNNN/${next}/g" -e "s/YYYY-MM-DD/${today}/g" -e "s/タイトル/{{title}}/g" "$dir/TEMPLATE.md" > "$file"
+    echo "Created: $file"
+
 # Pre-release check
 release-check: fmt info check test
