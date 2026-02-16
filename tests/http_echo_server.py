@@ -29,11 +29,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/echo":
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length).decode("utf-8") if length > 0 else ""
+            body = self._read_body()
             self._respond(200, body)
         else:
             self._respond(404, "not found")
+
+    def _read_body(self):
+        """Read request body supporting both Content-Length and chunked transfer encoding."""
+        transfer_encoding = self.headers.get("Transfer-Encoding", "")
+        if "chunked" in transfer_encoding.lower():
+            chunks = []
+            while True:
+                size_line = self.rfile.readline().strip()
+                chunk_size = int(size_line, 16)
+                if chunk_size == 0:
+                    self.rfile.readline()  # trailing CRLF
+                    break
+                chunks.append(self.rfile.read(chunk_size).decode("utf-8"))
+                self.rfile.readline()  # trailing CRLF
+            return "".join(chunks)
+        else:
+            length = int(self.headers.get("Content-Length", 0))
+            return self.rfile.read(length).decode("utf-8") if length > 0 else ""
 
     def _respond(self, status, body, content_type="text/plain"):
         encoded = body.encode("utf-8")
