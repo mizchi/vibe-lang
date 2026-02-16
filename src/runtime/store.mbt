@@ -199,6 +199,7 @@ pub struct Runtime {
   thread_runtime : ThreadRuntime
   // Module cache for import resolution: hash -> Module
   module_cache : Map[String, @core.Module]
+  mut prelude_loaded : Bool
 }
 
 ///|
@@ -225,13 +226,22 @@ pub fn Runtime::new_with_features(
     mut_vars: {},
     thread_runtime: ThreadRuntime::new(),
     module_cache: {},
+    prelude_loaded: false,
   }
   let env = @checker.TypeEnv::new()
   let _ = try! @checker.ensure_prelude_option(env)
   let _ = try! @checker.ensure_prelude_functions(env, {})
   rt.type_env = env
-  let _ = try! rt.eval_module(@checker.prelude_ast())
+  rt.ensure_prelude()
   rt
+}
+
+///|
+fn Runtime::ensure_prelude(self : Runtime) -> Unit {
+  if not(self.prelude_loaded) {
+    let _ = try? self.eval_module(@checker.prelude_ast())
+    self.prelude_loaded = true
+  }
 }
 
 ///|
@@ -389,6 +399,7 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     mut_vars: self.mut_vars.copy(),
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
+    prelude_loaded: self.prelude_loaded,
   }
 }
 
@@ -413,6 +424,7 @@ fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime 
     mut_vars: self.mut_vars.copy(),
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
+    prelude_loaded: self.prelude_loaded,
   }
 }
 

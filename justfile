@@ -232,6 +232,19 @@ bench-array-build:
 bench-char-conversion:
     moon run --target native src/cmd/vibe/main.mbt -- bench bench/bench_char_conversion.vibe
 
+# HTTP request latency benchmark (interpreter, requires network)
+# env: VIBE_BENCH_HTTP_N (default 50), VIBE_BENCH_HTTP_WARMUP (default 5)
+# Run HTTP E2E tests (requires network, starts test server)
+test-http-e2e:
+    scripts/test_http_e2e.sh
+
+# Run HTTP WASM fallback tests (compilation + graceful error on wasm)
+test-http-wasm:
+    scripts/test_http_wasm_fallback.sh
+
+bench-http:
+    scripts/bench_http.sh
+
 # Measure per-command latency after startup
 bench-cmd-latency:
     scripts/bench_cmd_latency.sh

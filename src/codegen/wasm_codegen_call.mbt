@@ -3881,7 +3881,7 @@ fn compile_call_by_name(
       // Return Unit (tagged 0)
       emit_i64_const_raw(buf, tag_int_value64(0L))
     }
-    // --- HTTP builtins (P3 draft — trap stub, interpreter-only for now) ---
+    // --- HTTP builtins (P3 draft — raise error, interpreter-only for now) ---
     "http_request"
     | "http_response_status"
     | "http_response_header"
@@ -3893,10 +3893,20 @@ fn compile_call_by_name(
     | "http_request_url"
     | "http_request_header"
     | "http_request_body"
-    | "http_respond" =>
-      // WASI P3 HTTP is draft; emit unreachable trap for WASM target.
-      // HTTP builtins work via interpreter (native backend) only.
-      buf.push((0).to_byte()) // unreachable
+    | "http_respond" => {
+      // WASI P3 HTTP is draft; emit raise with error message instead of
+      // unreachable trap so the error is catchable by try/catch.
+      let msg = name + " is not available on wasm target"
+      if not(ctx.use_js_strings) && not(ctx.embed_error_strings) {
+        emit_i64_const_tagged(buf, intern_error_code(ctx, msg).to_int64())
+      } else if ctx.use_js_strings {
+        emit_string_const(ctx, buf, msg)
+      } else {
+        emit_string_const(ctx, buf, msg)
+      }
+      buf.push((8).to_byte()) // throw
+      write_u32_leb(buf, ctx.error_tag_index)
+    }
     "char_to_int" => {
       let pos_args = extract_positional_exprs(args, "char_to_int")
       if pos_args.length() != 1 {

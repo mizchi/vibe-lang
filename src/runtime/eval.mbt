@@ -1672,8 +1672,7 @@ fn eval_call(
               }
               match (pos_args[0], pos_args[1]) {
                 (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
-                  match
-                    @backend.http_response_header(handle.to_int(), hdr_name) {
+                  match @backend.http_response_header(handle.to_int(), hdr_name) {
                     Ok(hdr_val) => {
                       let effects = out.effects
                       effects.push(
@@ -1827,8 +1826,7 @@ fn eval_call(
               }
               match (pos_args[0], pos_args[1]) {
                 (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
-                  match
-                    @backend.http_request_header(handle.to_int(), hdr_name) {
+                  match @backend.http_request_header(handle.to_int(), hdr_name) {
                     Ok(hdr_val) => {
                       let effects = out.effects
                       effects.push(
@@ -1887,13 +1885,7 @@ fn eval_call(
                 @core.Value::String(s) => s
                 _ => raise EvalError::BadCall("http_respond")
               }
-              match
-                @backend.http_respond(
-                  handle.to_int(),
-                  status.to_int(),
-                  headers,
-                  body,
-                ) {
+              match @backend.http_respond(handle.to_int(), status.to_int(), headers, body) {
                 Ok(_) => {
                   let effects = out.effects
                   effects.push(
