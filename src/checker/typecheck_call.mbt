@@ -1603,6 +1603,107 @@ fn type_call(
                 }
                 @core.Type::Unit
               }
+              "llm_complete" => {
+                // (system: String, user: String) -> String with { Llm }
+                let pos_args = extract_positional_args(
+                  args, "llm_complete", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="llm_complete",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "llm_complete",
+                  builtin_effects("llm_complete"),
+                  call_span,
+                )
+                for i = 0; i < 2; i = i + 1 {
+                  let ty = type_expr_eff(
+                    env,
+                    pos_args[i],
+                    aliases,
+                    effects,
+                    allow_effect,
+                  )
+                  if not(type_equal(env, ty, @core.Type::String)) {
+                    raise TypeError::Mismatch(
+                      expected=@core.Type::String,
+                      actual=ty,
+                      span=pos_args[i].span(),
+                      context=Some("argument"),
+                    )
+                  }
+                }
+                @core.Type::String
+              }
+              "rlm_run" => {
+                // (task: String, prompt: String) -> String with { Llm }
+                let pos_args = extract_positional_args(
+                  args, "rlm_run", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message="rlm_run", span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "rlm_run",
+                  builtin_effects("rlm_run"),
+                  call_span,
+                )
+                for i = 0; i < 2; i = i + 1 {
+                  let ty = type_expr_eff(
+                    env,
+                    pos_args[i],
+                    aliases,
+                    effects,
+                    allow_effect,
+                  )
+                  if not(type_equal(env, ty, @core.Type::String)) {
+                    raise TypeError::Mismatch(
+                      expected=@core.Type::String,
+                      actual=ty,
+                      span=pos_args[i].span(),
+                      context=Some("argument"),
+                    )
+                  }
+                }
+                @core.Type::String
+              }
+              "rlm_finalize" => {
+                // (value: String) -> String
+                let pos_args = extract_positional_args(
+                  args, "rlm_finalize", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="rlm_finalize",
+                    span=call_span,
+                  )
+                }
+                let ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
               "string_from_char_code" => {
                 let pos_args = extract_positional_args(
                   args, "string_from_char_code", call_span,

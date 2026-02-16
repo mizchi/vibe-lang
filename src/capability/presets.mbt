@@ -61,6 +61,7 @@ pub fn CapabilitySet::agent(
     McpCall(mcp_tools),
     A2ADelegate(a2a_agents),
     A2AReceive,
+    LlmCall(["*"]),
   ]
   // Add network capabilities
   for host in allowed_hosts {
@@ -92,5 +93,6 @@ pub fn CapabilitySet::unrestricted() -> CapabilitySet {
     EnvRead(["*"]),
     EnvWrite(["*"]),
     ProcessSpawn(["*"]),
+    LlmCall(["*"]),
   ])
 }

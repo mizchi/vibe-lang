@@ -50,6 +50,9 @@ pub enum Capability {
   EnvRead(Array[String]) // Read specific env vars
   EnvWrite(Array[String]) // Write specific env vars
   ProcessSpawn(Array[String]) // Spawn specific commands
+
+  // LLM capabilities
+  LlmCall(Array[String]) // Call LLM with allowed model patterns
 }
 
 ///|
@@ -122,4 +125,10 @@ pub fn Capability::clock_read() -> Capability {
 /// Create random read capability
 pub fn Capability::random_read() -> Capability {
   RandomRead
+}
+
+///|
+/// Create an LLM call capability
+pub fn Capability::llm_call(models : Array[String]) -> Capability {
+  LlmCall(models)
 }

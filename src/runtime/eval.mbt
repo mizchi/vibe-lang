@@ -26,6 +26,8 @@ pub enum Effect {
   HttpRequestHeader(Int64, String, String)
   HttpRequestBody(Int64, String)
   HttpRespond(Int64, Int, String, String)
+  LlmComplete(String, String, String) // (model, prompt_preview, response_preview)
+  RlmTrace(String) // JSON trace event
 } derive(Show, Eq)
 
 ///|
@@ -1902,6 +1904,81 @@ fn eval_call(
                   { value: @core.Value::Unit, effects }
                 }
                 Err(err) => raise EvalError::BadCall("http_respond: " + err)
+              }
+            }
+            "llm_complete" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "llm_complete")
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("llm_complete")
+              }
+              let system = match pos_args[0] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("llm_complete")
+              }
+              let user = match pos_args[1] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("llm_complete")
+              }
+              let config = match LlmConfig::from_env() {
+                Some(c) => c
+                None =>
+                  raise EvalError::BadCall(
+                    "llm_complete: VIBE_LLM_PROVIDER env var not set",
+                  )
+              }
+              if not(rt.caps().can_call_llm(config.model)) {
+                raise EvalError::PermissionDenied("llm_call:" + config.model)
+              }
+              let response = llm_complete(config, system, user)
+              let effects = out.effects
+              effects.push(
+                Effect::LlmComplete(
+                  config.model,
+                  truncate_preview(user, 80),
+                  truncate_preview(response, 80),
+                ),
+              )
+              { value: @core.Value::String(response), effects }
+            }
+            "rlm_run" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "rlm_run")
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("rlm_run")
+              }
+              let task = match pos_args[0] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("rlm_run")
+              }
+              let prompt = match pos_args[1] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("rlm_run")
+              }
+              let budget = RlmBudget::default()
+              let result = rlm_run_loop(rt, task, prompt, budget)
+              let effects = out.effects
+              effects.push(
+                Effect::RlmTrace(
+                  "{\"task\":" +
+                  json_escape_string(truncate_preview(task, 80)) +
+                  ",\"steps\":" +
+                  budget.steps_used.to_string() +
+                  "}",
+                ),
+              )
+              { value: @core.Value::String(result), effects }
+            }
+            "rlm_finalize" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "rlm_finalize")
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("rlm_finalize")
+              }
+              match pos_args[0] {
+                @core.Value::String(s) =>
+                  { value: @core.Value::String(s), effects: out.effects }
+                _ => raise EvalError::BadCall("rlm_finalize")
               }
             }
             "addr" => {

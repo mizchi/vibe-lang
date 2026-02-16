@@ -194,6 +194,20 @@ pub fn CapabilitySet::can_read_env(
 }
 
 ///|
+/// Check if LLM call is allowed
+pub fn CapabilitySet::can_call_llm(
+  self : CapabilitySet,
+  model : String,
+) -> Bool {
+  self.has(fn(cap) {
+    match cap {
+      LlmCall(models) => models.contains(model) || models.contains("*")
+      _ => false
+    }
+  })
+}
+
+///|
 /// Check if process spawn is allowed
 pub fn CapabilitySet::can_spawn(self : CapabilitySet, cmd : String) -> Bool {
   self.has(fn(cap) {

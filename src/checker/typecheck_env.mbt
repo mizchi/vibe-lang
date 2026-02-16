@@ -277,6 +277,7 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     | "http_request_header"
     | "http_request_body"
     | "http_respond" => [@core.EffectAtom::Const("Net")]
+    "llm_complete" | "rlm_run" => [@core.EffectAtom::Const("Llm")]
     _ => []
   }
 }
