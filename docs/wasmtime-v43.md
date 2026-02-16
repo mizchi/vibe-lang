@@ -214,7 +214,7 @@ just build-wasmtime-submodule
 just wasmtime-submodule run --help
 
 # vibe scripts/* が使う wasmtime を submodule 版へ切替
-XSH_USE_WASMTIME_SUBMODULE=1 just component-run vibe/std/test_import.vibe
+VIBE_USE_WASMTIME_SUBMODULE=1 just component-run vibe/std/test_import.vibe
 ```
 
 ## 9. `deps/wasmtime` 実測メモ (2026-02-09)
@@ -267,19 +267,19 @@ XSH_USE_WASMTIME_SUBMODULE=1 just component-run vibe/std/test_import.vibe
 
 ## 11. vibe との接続点（現状）
 
-- バイナリ切替は `scripts/wasmtime_bin.sh` と `XSH_USE_WASMTIME_SUBMODULE=1` で統一済み。
-- `scripts/wasmtime_run.sh` 経由で `XSH_WASMTIME_WASM_FLAGS` / `XSH_WASMTIME_WASI_FLAGS` を注入できる。
+- バイナリ切替は `scripts/wasmtime_bin.sh` と `VIBE_USE_WASMTIME_SUBMODULE=1` で統一済み。
+- `scripts/wasmtime_run.sh` 経由で `VIBE_WASMTIME_WASM_FLAGS` / `VIBE_WASMTIME_WASI_FLAGS` を注入できる。
 - 2 つの環境変数は空白区切りで複数指定でき、各トークンが `-W` / `-S` として渡される。
-- `justfile` 側でも `xsh_wasmtime_wasm_flags` / `xsh_wasmtime_wasi_flags` として env を取り込み、
+- `justfile` 側でも `vibe_wasmtime_wasm_flags` / `vibe_wasmtime_wasi_flags` として env を取り込み、
   `component-run` / `bench-*` / `test-component-e2e` / `test-interpreter-wasm` などのタスクへ伝搬される。
 - 現在値は `just show-wasmtime-flags` で確認できる。
 
 例:
 
 ```bash
-XSH_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
-XSH_WASMTIME_WASI_FLAGS='p3=y' \
-XSH_USE_WASMTIME_SUBMODULE=1 \
+VIBE_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
+VIBE_WASMTIME_WASI_FLAGS='p3=y' \
+VIBE_USE_WASMTIME_SUBMODULE=1 \
 just component-run script.vibe
 ```
 
@@ -362,10 +362,10 @@ just component-run script.vibe
 実行例:
 
 ```bash
-XSH_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
+VIBE_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
 ```
 
 デフォルト（未指定時）では次のフラグを適用する:
 
-- `XSH_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'`
-- `XSH_WASMTIME_WASI_FLAGS='threads=y'`
+- `VIBE_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'`
+- `VIBE_WASMTIME_WASI_FLAGS='threads=y'`

@@ -3,7 +3,7 @@
 このドキュメントは、`mizchi/bit` を **Git 互換のまま** 拡張し、
 木構造グラフ/シンボル検索/増分更新を扱うための設計メモである。
 
-- 対象: xsh の `HashRef / VersionRef / SymbolRef` モデルと連携するバックエンド
+- 対象: vibe の `HashRef / VersionRef / SymbolRef` モデルと連携するバックエンド
 - 前提: 実装はリアルタイムで進行中。ここでは方針と契約のみ定義する
 - 非目標: Git の object wire format (`blob/tree/commit/tag`) 自体の変更
 
@@ -108,9 +108,9 @@ rename に耐えるため、「表示名」ではなく「定義位置+hash」�
 - `bit op diff <op-a> <op-b>`
 - `bit op apply <op-id>`
 
-## 7. xsh との接続点
+## 7. vibe との接続点
 
-xsh 側は以下を満たすと接続しやすい:
+vibe 側は以下を満たすと接続しやすい:
 
 1. `HashRef` を実行時の唯一IDにする
 2. `VersionRef/SymbolRef` は alias として rebind 可能にする

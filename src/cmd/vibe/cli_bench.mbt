@@ -791,7 +791,7 @@ fn resolve_wasmtime_bin_for_bench(
   }
   let local_release = project_root + "/deps/wasmtime/target/release/wasmtime"
   let local_debug = project_root + "/deps/wasmtime/target/debug/wasmtime"
-  let use_submodule = match @sys.get_env_var("XSH_USE_WASMTIME_SUBMODULE") {
+  let use_submodule = match @sys.get_env_var("VIBE_USE_WASMTIME_SUBMODULE") {
     Some(value) => value.trim().to_string() == "1"
     None => false
   }
@@ -803,7 +803,7 @@ fn resolve_wasmtime_bin_for_bench(
       return Ok(local_debug)
     }
     return Err(
-      "XSH_USE_WASMTIME_SUBMODULE=1 but deps/wasmtime binary is not built. run: just build-wasmtime-submodule",
+      "VIBE_USE_WASMTIME_SUBMODULE=1 but deps/wasmtime binary is not built. run: just build-wasmtime-submodule",
     )
   }
   match find_command_in_path("wasmtime") {
@@ -830,12 +830,12 @@ fn resolve_bench_wasm_runner(
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  let wasm_flags = match @sys.get_env_var("XSH_WASMTIME_WASM_FLAGS") {
+  let wasm_flags = match @sys.get_env_var("VIBE_WASMTIME_WASM_FLAGS") {
     Some(raw) => split_env_flags(raw)
     None => []
   }
   let wasm_flags = with_default_bench_wasm_flags(wasm_flags)
-  let wasi_flags = match @sys.get_env_var("XSH_WASMTIME_WASI_FLAGS") {
+  let wasi_flags = match @sys.get_env_var("VIBE_WASMTIME_WASI_FLAGS") {
     Some(raw) => split_env_flags(raw)
     None => []
   }

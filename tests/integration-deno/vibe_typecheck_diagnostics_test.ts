@@ -14,7 +14,7 @@ function assertTrue(actual: boolean, msg?: string): void {
   }
 }
 
-Deno.test("xsh wasm api returns type diagnostics json", async () => {
+Deno.test("vibe wasm api returns type diagnostics json", async () => {
   const service = await createVibeService();
   const report = await service.check("1 + true\n") as {
     ok: boolean;
@@ -27,7 +27,7 @@ Deno.test("xsh wasm api returns type diagnostics json", async () => {
   assertEquals(report.diagnostics[0].stage, "type");
 });
 
-Deno.test("xsh wasm api returns ok for valid source", async () => {
+Deno.test("vibe wasm api returns ok for valid source", async () => {
   const service = await createVibeService();
   const report = await service.check("1 + 2\n") as {
     ok: boolean;
@@ -37,7 +37,7 @@ Deno.test("xsh wasm api returns ok for valid source", async () => {
   assertEquals(report.error_count, 0);
 });
 
-Deno.test("xsh wasm api init injects prelude and kv", async () => {
+Deno.test("vibe wasm api init injects prelude and kv", async () => {
   const service = await createVibeService();
   const init = await service.init({
     prelude: "let triple = (x: Int) -> Int { x * 3 }",
@@ -69,7 +69,7 @@ Deno.test("xsh wasm api init injects prelude and kv", async () => {
   assertEquals(projectReport.error_count, 0);
 });
 
-Deno.test("xsh wasm api bootstrap option initializes state", async () => {
+Deno.test("vibe wasm api bootstrap option initializes state", async () => {
   const service = await createVibeService({
     bootstrap: {
       prelude: "let inc = (x: Int) -> Int { x + 1 }",
@@ -83,7 +83,7 @@ Deno.test("xsh wasm api bootstrap option initializes state", async () => {
   assertEquals(report.error_count, 0);
 });
 
-Deno.test("xsh wasm api formats source", async () => {
+Deno.test("vibe wasm api formats source", async () => {
   const service = await createVibeService();
   const report = await service.format("let  x=1") as {
     ok: boolean;
@@ -95,7 +95,7 @@ Deno.test("xsh wasm api formats source", async () => {
   assertTrue(report.formatted.includes("let x = 1"));
 });
 
-Deno.test("xsh wasm api checkProject works for single-file entry", async () => {
+Deno.test("vibe wasm api checkProject works for single-file entry", async () => {
   const service = await createVibeService();
   const report = await service.checkProject({
     entry: "/main.vibe",
@@ -114,7 +114,7 @@ Deno.test("xsh wasm api checkProject works for single-file entry", async () => {
   assertEquals(report.unsupported_imports, false);
 });
 
-Deno.test("xsh wasm api checkProject resolves imports", async () => {
+Deno.test("vibe wasm api checkProject resolves imports", async () => {
   const service = await createVibeService();
   const report = await service.checkProject({
     entry: "/main.vibe",
@@ -134,7 +134,7 @@ Deno.test("xsh wasm api checkProject resolves imports", async () => {
   assertEquals(report.unsupported_imports, false);
 });
 
-Deno.test("xsh wasm api ide outline returns symbols", async () => {
+Deno.test("vibe wasm api ide outline returns symbols", async () => {
   const service = await createVibeService();
   const result = await service.ideOutline({
     source: "let foo = 1\nlet bar = foo\n",
@@ -148,7 +148,7 @@ Deno.test("xsh wasm api ide outline returns symbols", async () => {
   assertTrue(result.symbols!.some((s) => s.name === "foo"));
 });
 
-Deno.test("xsh wasm api ide peek-def and search work", async () => {
+Deno.test("vibe wasm api ide peek-def and search work", async () => {
   const service = await createVibeService();
   const source = "let foo = 1\nlet bar = foo\n";
 
@@ -177,7 +177,7 @@ Deno.test("xsh wasm api ide peek-def and search work", async () => {
   assertTrue(search.matches!.some((m) => m.name === "bar"));
 });
 
-Deno.test("xsh wasm api ide supports imports via project request", async () => {
+Deno.test("vibe wasm api ide supports imports via project request", async () => {
   const service = await createVibeService();
   const files = {
     "/main.vibe": "use ./lib.vibe { value }\nlet out = value\n",

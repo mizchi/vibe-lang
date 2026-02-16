@@ -1,7 +1,7 @@
 (module
   (type (;0;) (func (param i64) (result i64)))
   (type (;1;) (func (result i64)))
-  (import "xsh" "path" (func (;0;) (type 0)))
+  (import "vibe" "path" (func (;0;) (type 0)))
   (func (;1;) (type 1)
     i64.const 1
     call 0

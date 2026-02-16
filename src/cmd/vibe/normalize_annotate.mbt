@@ -128,7 +128,7 @@ fn normalize_unwrap_local_type_assert(
           ..
         ) =>
           if rec ||
-            not(name.has_prefix("__xsh_local_type_assert_")) ||
+            not(name.has_prefix("__vibe_local_type_assert_")) ||
             params.length() != 1 ||
             helper_body.stmts.length() != 1 {
             return None

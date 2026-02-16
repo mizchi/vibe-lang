@@ -1848,6 +1848,320 @@ fn type_call(
                 }
                 @core.Type::String
               }
+              "string_starts_with" | "string_ends_with" => {
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                let str_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let sub_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, str_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=str_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, sub_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=sub_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "string_replace" | "string_replace_all" => {
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 3 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                let str_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let pat_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let rep_ty = type_expr_eff(
+                  env,
+                  pos_args[2],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, str_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=str_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, pat_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=pat_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, rep_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=rep_ty,
+                    span=pos_args[2].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "string_trim_start" | "string_trim_end" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  name,
+                  @core.Type::String,
+                  @core.Type::String,
+                )
+              "string_last_index_of" | "string_count" => {
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                let str_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let sub_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, str_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=str_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, sub_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=sub_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "int_abs" | "int_signum" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  name,
+                  @core.Type::Int,
+                  @core.Type::Int,
+                )
+              "int_is_even" | "int_is_odd" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  name,
+                  @core.Type::Int,
+                  @core.Type::Bool,
+                )
+              "int_max" | "int_min" => {
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, a, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, b, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "int_clamp" => {
+                let pos_args = extract_positional_args(
+                  args, "int_clamp", call_span,
+                )
+                if pos_args.length() != 3 {
+                  raise TypeError::BadCall(message="int_clamp", span=call_span)
+                }
+                let x_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let lo_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let hi_ty = type_expr_eff(
+                  env,
+                  pos_args[2],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, x_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=x_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, lo_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=lo_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, hi_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=hi_ty,
+                    span=pos_args[2].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "double_abs" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  name,
+                  @core.Type::Double,
+                  @core.Type::Double,
+                )
+              "double_max" | "double_min" => {
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                let a = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let b = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, a, @core.Type::Double)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Double,
+                    actual=a,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                if not(type_equal(env, b, @core.Type::Double)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Double,
+                    actual=b,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Double
+              }
+              "double_floor" | "double_ceil" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  name,
+                  @core.Type::Double,
+                  @core.Type::Double,
+                )
               "__add" => {
                 let pos_args = extract_positional_args(args, "__add", call_span)
                 if pos_args.length() != 2 {

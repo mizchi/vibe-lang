@@ -4,11 +4,11 @@ fn parse_cli_syntax_mode(
   cmd_name : String,
 ) -> Result[@runtime.ParserMode, String] {
   match value {
-    "xsh" => Ok(@runtime.ParserMode::XshMode)
+    "vibe" => Ok(@runtime.ParserMode::XshMode)
     "posix" => Ok(@runtime.ParserMode::PosixMode)
     _ =>
       Err(
-        cmd_name + ": unsupported syntax `" + value + "` (expected: xsh|posix)",
+        cmd_name + ": unsupported syntax `" + value + "` (expected: vibe|posix)",
       )
   }
 }
@@ -43,7 +43,7 @@ pub fn parse_cli_syntax_args(
     if arg == "--syntax" {
       if i + 1 >= args.length() {
         return Err(
-          cmd_name + ": missing value for --syntax (expected: xsh|posix)",
+          cmd_name + ": missing value for --syntax (expected: vibe|posix)",
         )
       }
       match parse_cli_syntax_mode(args[i + 1], cmd_name) {

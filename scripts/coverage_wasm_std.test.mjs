@@ -130,7 +130,7 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
   );
 
   const markdown = buildMarkdown(report);
-  assert.match(markdown, /^# xsh\/std wasm source coverage report/m);
+  assert.match(markdown, /^# vibe\/std wasm source coverage report/m);
   assert.match(markdown, /## Failure Reasons/m);
   assert.match(markdown, /compile_unsupported/);
   assert.match(markdown, /spec unexpected failures/m);

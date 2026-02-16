@@ -30,7 +30,7 @@ Parser dispatch is explicit:
 - static/compile-oriented commands (`check`, `test`, `compile`, `hash`, `save`,
   `fetch`, `update-lock`, `bench-file`, `wasm-repl-stdin`) remain vibe-only.
 - Runtime API preview:
-  `Runtime::eval_script_with_mode(script, PosixMode)` supports xshell-style
+  `Runtime::eval_script_with_mode(script, PosixMode)` supports vibe shell-style
   command-head desugaring (`ls` -> `sh_lines("ls")`).
 - In `--syntax posix`, each unresolved bare identifier command-head rewrite
   emits a runtime note (`note: posix-mode command-head desugar: ...`) so
@@ -471,8 +471,8 @@ Current lock file:
     (`path`/`version`/`symbol`/`module`/`annotation` or `lock` object),
     that payload is used as lock source.
   - If `index.vdb` has no lock payload, loader falls back to `index.lock`.
-  - Legacy compatibility: if `index.lock` is absent and `xsh.lock` exists in the
-    same directory, loader reads `xsh.lock`.
+  - Legacy compatibility: if `index.lock` is absent and `vibe.lock` exists in the
+    same directory, loader reads `vibe.lock`.
 - Shape:
   - `path`: `{ "<path-key>": "<hash>" }`
   - `version`: `{ "<name>": "<hash>" }`
@@ -676,7 +676,7 @@ use ./std/stringify.vibe { Int::to_string as int_to_string }
 - `--nostd` disables all implicit prelude imports.
 - In `--nostd`, all type/member namespaces must be imported explicitly.
 
-## xshell command pipeline (PosixMode preview)
+## vibe shell command pipeline (PosixMode preview)
 
 ```vibe
 let run = () -> Array[String] with {Stdout} {
@@ -733,14 +733,14 @@ Notes:
 - Optional name form: `test "name" { ... }` (label only).
 Runtime API:
 - `Runtime::run_script_tests(script)` parses, type-checks, and runs tests with isolated envs.
-- `Runtime::eval_script_with_mode(script, PosixMode)` enables preview xshell
+- `Runtime::eval_script_with_mode(script, PosixMode)` enables preview vibe shell
   command-head desugaring.
 CLI:
 - `moon run --target native src/cmd/vibe -- run <file>` executes a script (ignores `test {}`).
 - `moon run --target native src/cmd/vibe -- eval [--db tmp1.db] [--include index.vdb] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
   - `--include` accepts path forms and alias forms:
     - `--include=bit:<path>`: explicit alias to path-backed source.
-    - `--include=vibe/std@0.1.0.vdb`: named alias resolved from `XSH_LIB_DIR` (fallback: `$HOME/.vibe/lib`).
+    - `--include=vibe/std@0.1.0.vdb`: named alias resolved from `VIBE_LIB_DIR` (fallback: `$HOME/.vibe/lib`).
   - `.vdb` alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
 - `moon run --target native src/cmd/vibe -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/cmd/vibe -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
@@ -786,9 +786,9 @@ Bench:
   (`per_us` + `wasm_bytes`) to `dist/bench_kpi/latest.tsv`.
   - Default target (no args): `bench/kpi_bench.vibe` with numeric pipeline/state-mix cases.
   - Default iterations/warmup: `wasm=20000/1000`, `interpreter=2000/200`.
-  - `XSH_BENCH_KPI_N` / `XSH_BENCH_KPI_WARMUP` to tune iterations.
-  - Optional thresholds: `XSH_BENCH_KPI_MAX_PER_US`,
-    `XSH_BENCH_KPI_MAX_WASM_BYTES`, `XSH_BENCH_KPI_MAX_SCORE`.
+  - `VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` to tune iterations.
+  - Optional thresholds: `VIBE_BENCH_KPI_MAX_PER_US`,
+    `VIBE_BENCH_KPI_MAX_WASM_BYTES`, `VIBE_BENCH_KPI_MAX_SCORE`.
 - 言語組み込み benchmark:
   - `bench "name" { ... }` を `.vibe` に書き、`vibe bench <file|dir...>` で実行。
   - backend は `--backend wasm|interpreter`（`<file|dir...>` 指定時のデフォルトは `wasm`）。
@@ -808,10 +808,10 @@ Bench:
   resident wasmtime instance.
 - `just bench-scratch-workflow` benchmarks scratch workflow stages
   (`eval` / `finalize` / `export+apply` / `full`) and supports:
-  - `XSH_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (comma-separated)
-  - `XSH_BENCH_CHAIN=<N>`
-  - `XSH_BENCH_WARMUP=<N>` / `XSH_BENCH_RUNS=<N>`
-  - `XSH_BENCH_EXPORT_JSON=<path>` for hyperfine JSON export
+  - `VIBE_BENCH_SCENARIOS=all|eval|finalize|export_apply|full` (comma-separated)
+  - `VIBE_BENCH_CHAIN=<N>`
+  - `VIBE_BENCH_WARMUP=<N>` / `VIBE_BENCH_RUNS=<N>`
+  - `VIBE_BENCH_EXPORT_JSON=<path>` for hyperfine JSON export
 - `just run-wasm-js-string examples/string_basic.vibe` compiles with `--wasm-js-string`
   and runs the result using a JS engine (Node/WebAssembly builtins).
 
@@ -821,7 +821,7 @@ Bench:
 - `compile_module_wasm_js_string(db, path)` emits a module that uses wasm js-string builtins.
 - Supported: `let`, expression statements, block expressions `{ ... }`, `do { ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; only inside `do`), `+/-/==/<` on `Int` (`==` is syntax sugar lowering to `eq`), `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
 - Not supported: `import`, qualified calls, or external symbols. Tuple/record patterns are supported, but nested tuple/record patterns are not.
-- Exports: `run` (i32) and `memory`. Import: `xsh.sh` when `sh(...)` is used.
+- Exports: `run` (i32) and `memory`. Import: `vibe.sh` when `sh(...)` is used.
 - `--wasm-js-string` imports:
   - `wasm:js-string.length/charCodeAt/substring/concat/equals` (as needed).
   - `string_constants.<literal>` globals for string literals.
@@ -835,7 +835,7 @@ Bench:
   - Tagged values use the low 2 bits: `00` = `Int` (fixnum), `01` = `Obj`, `11` = `Bool` (`10` unused).
   - `Int` is encoded as `value << 2` (tag bits `00`).
   - `Bool` is encoded as `(0|1) << 2` with tag bits `11`.
-  - `xsh.path` returns a **tagged pointer** (`ptr | 1`).
+  - `vibe.path` returns a **tagged pointer** (`ptr | 1`).
   - String literals are emitted as **tagged pointers** (`ptr | 1`).
   - Callers must clear tag bits (`ptr & ~3`) before reading object headers.
 
@@ -853,7 +853,7 @@ Bench:
 - Builtins are limited to fixed-arity core ops (`+/-/==/<` on `Int`,
   `not/and/or` on `Bool`, plus `path/sh`; internally lowered to
   `add/sub/eq/lt/not/and/or/path/sh`).
-- `sh` / `path` depend on host imports (`xsh.sh`, `xsh.path`).
+- `sh` / `path` depend on host imports (`vibe.sh`, `vibe.path`).
 - No user-defined functions, modules, or recursion in wasm backend yet.
 
 ## Pure result cache (Unison-style)

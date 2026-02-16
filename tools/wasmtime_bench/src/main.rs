@@ -39,9 +39,9 @@ fn main() -> Result<()> {
         .with_context(|| format!("failed to load {wasm_path}"))?;
 
     let mut linker = Linker::new(&engine);
-    // Provide no-op imports for xsh.path / xsh.sh when present
-    linker.func_wrap("xsh", "path", |x: i32| -> i32 { x })?;
-    linker.func_wrap("xsh", "sh", |_x: i32| -> i32 { 0 })?;
+    // Provide no-op imports for vibe.path / vibe.sh when present
+    linker.func_wrap("vibe", "path", |x: i32| -> i32 { x })?;
+    linker.func_wrap("vibe", "sh", |_x: i32| -> i32 { 0 })?;
 
     let mut store = Store::new(&engine, ());
     let instance = linker

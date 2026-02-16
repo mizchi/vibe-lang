@@ -476,7 +476,7 @@ pub fn generate_component_wit(
     imports.need_dynamic_path_resolve ||
     imports.need_sh ||
     imports.need_sleep {
-    wit = wit + "  import xsh: interface {\n"
+    wit = wit + "  import vibe: interface {\n"
     if imports.need_path {
       wit = wit + "    path: func(value: s32) -> s32;\n"
     }

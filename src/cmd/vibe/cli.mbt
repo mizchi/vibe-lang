@@ -103,7 +103,7 @@ fn print_usage() -> Unit {
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
   )
   println(
-    "                                     --coverage is test-only (set XSH_TEST_COVERAGE=1)",
+    "                                     --coverage is test-only (set VIBE_TEST_COVERAGE=1)",
   )
   println(
     "                                     --coverage-run-tests executes top-level test blocks in coverage mode",
@@ -152,7 +152,7 @@ fn print_usage() -> Unit {
     "    ref: push|pull|push-delta|pull-delta <scope> <file>  git/bit distributed refs",
   )
   println("  lsp                         start LSP server (stdin/stdout)")
-  println("  parser commands: --syntax xsh|posix (default: xsh)")
+  println("  parser commands: --syntax vibe|posix (default: vibe)")
   println("  runtime flags: --unstable-async --unstable-threads")
 }
 
@@ -419,7 +419,7 @@ fn parse_bool_flag(value : String) -> Bool {
 
 ///|
 fn compile_coverage_test_mode_enabled() -> Bool {
-  match @sys.get_env_var("XSH_TEST_COVERAGE") {
+  match @sys.get_env_var("VIBE_TEST_COVERAGE") {
     Some(raw) => parse_bool_flag(raw)
     None => false
   }
@@ -433,7 +433,7 @@ fn ensure_compile_coverage_allowed(
   if not(coverage) || test_mode_enabled {
     Ok(())
   } else {
-    Err("compile: --coverage is test-only (set XSH_TEST_COVERAGE=1)")
+    Err("compile: --coverage is test-only (set VIBE_TEST_COVERAGE=1)")
   }
 }
 

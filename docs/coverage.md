@@ -20,17 +20,17 @@ just coverage-moon
 - `_build/coverage/moon/html/index.html`
 
 環境変数:
-- `XSH_MOON_COVERAGE_TARGET` (`native` / `wasm` / `wasm-gc` / `js`)
-- `XSH_MOON_COVERAGE_PACKAGE` (例: `parser`)
-- `XSH_MOON_COVERAGE_MIN_LINE` (行カバレッジ閾値, 整数%)
-- `XSH_MOON_COVERAGE_DIR` (出力先ディレクトリ)
+- `VIBE_MOON_COVERAGE_TARGET` (`native` / `wasm` / `wasm-gc` / `js`)
+- `VIBE_MOON_COVERAGE_PACKAGE` (例: `parser`)
+- `VIBE_MOON_COVERAGE_MIN_LINE` (行カバレッジ閾値, 整数%)
+- `VIBE_MOON_COVERAGE_DIR` (出力先ディレクトリ)
 
 例:
 
 ```bash
-XSH_MOON_COVERAGE_TARGET=wasm-gc \
-XSH_MOON_COVERAGE_PACKAGE=parser \
-XSH_MOON_COVERAGE_MIN_LINE=70 \
+VIBE_MOON_COVERAGE_TARGET=wasm-gc \
+VIBE_MOON_COVERAGE_PACKAGE=parser \
+VIBE_MOON_COVERAGE_MIN_LINE=70 \
 just coverage-moon
 ```
 
@@ -49,15 +49,15 @@ just coverage-deno
 - `_build/coverage/deno/html/index.html`
 
 環境変数:
-- `XSH_DENO_COVERAGE_FILTER` (テスト絞り込み)
-- `XSH_DENO_COVERAGE_MIN_LINE` (行カバレッジ閾値, 整数%)
-- `XSH_DENO_COVERAGE_DIR` (出力先ディレクトリ)
+- `VIBE_DENO_COVERAGE_FILTER` (テスト絞り込み)
+- `VIBE_DENO_COVERAGE_MIN_LINE` (行カバレッジ閾値, 整数%)
+- `VIBE_DENO_COVERAGE_DIR` (出力先ディレクトリ)
 
 例:
 
 ```bash
-XSH_DENO_COVERAGE_FILTER='xsh wasm api' \
-XSH_DENO_COVERAGE_MIN_LINE=60 \
+VIBE_DENO_COVERAGE_FILTER='vibe wasm api' \
+VIBE_DENO_COVERAGE_MIN_LINE=60 \
 just coverage-deno
 ```
 
@@ -85,16 +85,16 @@ just coverage-wasm-source examples/pattern_coverage.vibe
 - `_build/coverage/wasm-source/<entry>.wasm.cov.json`
 
 環境変数:
-- `XSH_WASM_SOURCE_COVERAGE_MODE` (`wasm` / `wasm-js-string`)
-- `XSH_WASM_SOURCE_COVERAGE_NO_DCE` (`0` / `1`)
-- `XSH_WASM_SOURCE_COVERAGE_RUN_TESTS` (`0` / `1`)
-- `XSH_WASM_SOURCE_COVERAGE_ALLOW_TRAP` (`0` / `1`)
-- `XSH_WASM_SOURCE_COVERAGE_DIR` (出力先ディレクトリ)
+- `VIBE_WASM_SOURCE_COVERAGE_MODE` (`wasm` / `wasm-js-string`)
+- `VIBE_WASM_SOURCE_COVERAGE_NO_DCE` (`0` / `1`)
+- `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS` (`0` / `1`)
+- `VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP` (`0` / `1`)
+- `VIBE_WASM_SOURCE_COVERAGE_DIR` (出力先ディレクトリ)
 
 実装上の制約:
-- `compile --coverage` は test 専用で、`XSH_TEST_COVERAGE=1` が必要
+- `compile --coverage` は test 専用で、`VIBE_TEST_COVERAGE=1` が必要
 - 通常開発では `coverage-wasm-source` ツール経由でのみ生成する
-- `XSH_WASM_SOURCE_COVERAGE_RUN_TESTS=1` で `test {}` を実行可能
+- `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1` で `test {}` を実行可能
   (`compile --coverage --coverage-run-tests`)
 
 ### vibe/std 一括計測
@@ -114,17 +114,17 @@ just coverage-wasm-std
 - `_build/coverage/wasm-std/failures.txt`
 
 環境変数:
-- `XSH_WASM_STD_COVERAGE_MODES` (カンマ or 空白区切り; 例: `wasm,wasm-js-string`)
-- `XSH_WASM_STD_COVERAGE_MODE` (単一モード指定; `MODES` 未指定時のみ利用)
-- `XSH_WASM_STD_COVERAGE_NO_DCE` (`0` / `1`)
-- `XSH_WASM_STD_COVERAGE_STRICT` (`0` / `1`)
-- `XSH_WASM_STD_COVERAGE_ALLOW_TRAP` (`0` / `1`)
-- `XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE` (`0..100`, 任意)
-- `XSH_WASM_STD_COVERAGE_MIN_LINE_RATE` (`0..100`, 任意)
-- `XSH_WASM_STD_COVERAGE_FILTER` (`rg` パターン)
-- `XSH_WASM_STD_COVERAGE_EXCLUDE` (`rg` パターン)
-- `XSH_WASM_STD_COVERAGE_MATRIX` (backend capability matrix JSON)
-- `XSH_WASM_STD_COVERAGE_DIR` (出力先ディレクトリ)
+- `VIBE_WASM_STD_COVERAGE_MODES` (カンマ or 空白区切り; 例: `wasm,wasm-js-string`)
+- `VIBE_WASM_STD_COVERAGE_MODE` (単一モード指定; `MODES` 未指定時のみ利用)
+- `VIBE_WASM_STD_COVERAGE_NO_DCE` (`0` / `1`)
+- `VIBE_WASM_STD_COVERAGE_STRICT` (`0` / `1`)
+- `VIBE_WASM_STD_COVERAGE_ALLOW_TRAP` (`0` / `1`)
+- `VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE` (`0..100`, 任意)
+- `VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE` (`0..100`, 任意)
+- `VIBE_WASM_STD_COVERAGE_FILTER` (`rg` パターン)
+- `VIBE_WASM_STD_COVERAGE_EXCLUDE` (`rg` パターン)
+- `VIBE_WASM_STD_COVERAGE_MATRIX` (backend capability matrix JSON)
+- `VIBE_WASM_STD_COVERAGE_DIR` (出力先ディレクトリ)
 
 デフォルトでは `wasm -> wasm-js-string` の順でフォールバック実行する。
 各試行の結果は `attempts.tsv` と `cases/*.log` に残り、`report.json` には以下が入る。
@@ -140,7 +140,7 @@ just coverage-wasm-std
 `vibe/std/backend_capabilities.json` をデフォルト matrix として読み込み、
 失敗ケースごとに `expected_backend` (`wasm` / `wasm-js-string` / `either`)
 を参照して `spec_status` を付与する。
-`XSH_WASM_STD_COVERAGE_STRICT=1` では `unexpected_failure` または
+`VIBE_WASM_STD_COVERAGE_STRICT=1` では `unexpected_failure` または
 `mismatch_case_count > 0` の場合に失敗する。
 
 coverage の有効性判断は、全体率だけでなく `cases(total/measured/failed)` と `failure_reason_counts` を併せて行う。
@@ -152,8 +152,8 @@ line 率は `line point` の重複ではなく `raw.lines` の unique line 数�
 `excluded=true` として line KPI から除外する。
 
 ```bash
-XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE=50 \
-XSH_WASM_STD_COVERAGE_MIN_LINE_RATE=55 \
+VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE=50 \
+VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE=55 \
 just coverage-wasm-std
 ```
 

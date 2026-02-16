@@ -232,8 +232,8 @@ fn wrap_local_let_with_annotation(
   raw_expr : @core.Expr,
   span : @core.Span,
 ) -> @core.Expr {
-  let helper_name = "__xsh_local_type_assert_" + span.start.to_string()
-  let helper_param_name = "__xsh_local_type_assert_value"
+  let helper_name = "__vibe_local_type_assert_" + span.start.to_string()
+  let helper_param_name = "__vibe_local_type_assert_value"
   let helper_param = @core.FuncParam::{
     name: helper_param_name,
     label: @core.ParamLabel::Positional,

@@ -256,7 +256,7 @@ test "loader load_db_with_paths rejects import outside index root" {
 test "loader load_db_with_paths resolves std namespace from index registry" {
   let root = make_temp_dir("registry_std")
   let std_root = root + "/vibe/std"
-  @os_fs.create_dir(root + "/xsh") catch {
+  @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_root) catch {
@@ -303,7 +303,7 @@ test "loader load_db_with_paths reports unknown namespace import" {
 test "loader load_db_with_paths requires index version export" {
   let root = make_temp_dir("registry_version_required")
   let std_root = root + "/vibe/std"
-  @os_fs.create_dir(root + "/xsh") catch {
+  @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_root) catch {

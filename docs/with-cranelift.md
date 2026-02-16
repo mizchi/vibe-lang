@@ -109,10 +109,10 @@ imports used by the existing backend.
 
 ### Naming / 名前解決
 
-- Use wasm import names as external symbols (module `xsh`).
-  wasm の import 名を外部シンボル名として使う (module `xsh`)。
-- Example symbols: `xsh.sh`, `xsh.path`.
-  例: `xsh.sh`, `xsh.path`。
+- Use wasm import names as external symbols (module `vibe`).
+  wasm の import 名を外部シンボル名として使う (module `vibe`)。
+- Example symbols: `vibe.sh`, `vibe.path`.
+  例: `vibe.sh`, `vibe.path`。
 - The sandbox loader resolves symbol -> host function pointer.
   sandbox ローダがシンボルからホスト関数へ解決する。
 
@@ -132,10 +132,10 @@ imports used by the existing backend.
 The exact signatures should match the wasm backend and be finalized later.
 シグネチャは wasm バックエンドと一致させ、後で確定する。
 
-- `xsh.sh`: effectful shell execution (used only inside `do {}`).
-  `xsh.sh`: 副作用付きのシェル実行 (`do {}` 内のみ)。
-- `xsh.path`: constructs a Path value.
-  `xsh.path`: Path 値を構築する。
+- `vibe.sh`: effectful shell execution (used only inside `do {}`).
+  `vibe.sh`: 副作用付きのシェル実行 (`do {}` 内のみ)。
+- `vibe.path`: constructs a Path value.
+  `vibe.path`: Path 値を構築する。
 
 ### Versioning / バージョニング
 

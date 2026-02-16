@@ -1,6 +1,6 @@
-# xsh Core Library (Self-hosted std)
+# vibe Core Library (Self-hosted std)
 
-This directory is the xsh core library, self-hosted by porting selected parts of the MoonBit core library.
+This directory is the vibe core library, self-hosted by porting selected parts of the MoonBit core library.
 
 ## Implemented Modules
 
@@ -51,8 +51,8 @@ Compatibility facades:
 
 Boundary enforcement is active in:
 
-- `xsh check`
-- `xsh normalize`
+- `vibe check`
+- `vibe normalize`
 
 ## Trait-oriented API Surface
 
@@ -68,19 +68,19 @@ Boundary enforcement is active in:
 - `map_opt`, `map_or`, `flatten`, `flatmap`, `filter`, `zip`
 - `and`, `or`, `or_else`, `equals`, `zip_sum`
 - `option_*` prefixes are no longer exported.
-- `map` itself is reserved in xsh syntax, so Option map is named `map_opt`.
+- `map` itself is reserved in vibe syntax, so Option map is named `map_opt`.
 
-`result.vibe` now exposes short names compatible with current xsh parser constraints:
+`result.vibe` now exposes short names compatible with current vibe parser constraints:
 
 - `is_ok`, `is_err`, `ok`, `err`
 - `map_ok`, `map_err`, `map_or`, `bind`, `and_then`, `flatten`
 - `unwrap_or`, `unwrap_or_else`, `or`, `or_else`
 - `to_option`, `from_option`, `equals_by`
-- `map` itself is reserved in xsh syntax, so Result map is named `map_ok`.
+- `map` itself is reserved in vibe syntax, so Result map is named `map_ok`.
 
 Recommended usage (collision-safe, method-style):
 
-```xsh
+```vibe
 use ./vibe/std/option.vibe { is_some, unwrap_or }
 let ok = Some(1).is_some()
 let v = None.unwrap_or(0)
@@ -127,6 +127,7 @@ let v = None.unwrap_or(0)
 
 3. **Cross-module trait import/export** - make trait-bounded APIs reusable across module boundaries
 4. **Typeclass-style trait methods** - trait contracts with member APIs
+
 
 ### Phase 3: Data structure improvements
 

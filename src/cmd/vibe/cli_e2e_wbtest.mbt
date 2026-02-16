@@ -200,7 +200,7 @@ test "cli compile coverage guard rejects outside test mode" {
     Ok(_) => fail("expected rejection")
     Err(msg) =>
       assert_eq(
-        msg, "compile: --coverage is test-only (set XSH_TEST_COVERAGE=1)",
+        msg, "compile: --coverage is test-only (set VIBE_TEST_COVERAGE=1)",
       )
   }
 }
@@ -399,8 +399,8 @@ test "cli eval without db uses scratch namespace db" {
   let root = wbtest_make_temp_dir("eval_default_scratch_db")
   let scratch_db = root + "/scratch.db"
   let out_path = root + "/out.vibe"
-  let prev = @sys.get_env_var("XSH_SCRATCH_DB_PATH")
-  @sys.set_env_var("XSH_SCRATCH_DB_PATH", scratch_db)
+  let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
+  @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(["let", "seed", "=", "10"], @runtime.ParserMode::XshMode, features)
   eval_cmd(
@@ -410,8 +410,8 @@ test "cli eval without db uses scratch namespace db" {
   )
   eval_cmd(["--export=" + out_path], @runtime.ParserMode::XshMode, features)
   match prev {
-    Some(value) => @sys.set_env_var("XSH_SCRATCH_DB_PATH", value)
-    None => @sys.unset_env_var("XSH_SCRATCH_DB_PATH")
+    Some(value) => @sys.set_env_var("VIBE_SCRATCH_DB_PATH", value)
+    None => @sys.unset_env_var("VIBE_SCRATCH_DB_PATH")
   }
   assert_true(@os_fs.path_exists(scratch_db))
   let scratch_source = @os_fs.read_file_to_string(scratch_db) catch {
@@ -433,15 +433,15 @@ test "cli eval without db uses scratch namespace db" {
 test "cli history reset clears scratch namespace db" {
   let root = wbtest_make_temp_dir("history_reset_scratch")
   let scratch_db = root + "/scratch.db"
-  let prev = @sys.get_env_var("XSH_SCRATCH_DB_PATH")
-  @sys.set_env_var("XSH_SCRATCH_DB_PATH", scratch_db)
+  let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
+  @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(["let", "v", "=", "1"], @runtime.ParserMode::XshMode, features)
   assert_true(@os_fs.path_exists(scratch_db))
   history_cmd(["reset"])
   match prev {
-    Some(value) => @sys.set_env_var("XSH_SCRATCH_DB_PATH", value)
-    None => @sys.unset_env_var("XSH_SCRATCH_DB_PATH")
+    Some(value) => @sys.set_env_var("VIBE_SCRATCH_DB_PATH", value)
+    None => @sys.unset_env_var("VIBE_SCRATCH_DB_PATH")
   }
   assert_false(@os_fs.path_exists(scratch_db))
   wbtest_remove_if_exists(scratch_db)
@@ -492,8 +492,8 @@ test "cli symbols marks shadowed when scratch overrides index symbol" {
     e => fail("write entry failed: " + e.to_string())
   }
   apply_cmd([entry])
-  let prev = @sys.get_env_var("XSH_SCRATCH_DB_PATH")
-  @sys.set_env_var("XSH_SCRATCH_DB_PATH", scratch_db)
+  let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
+  @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(["let", "foo", "=", "1"], @runtime.ParserMode::XshMode, features)
   let rows = match collect_symbols_rows(entry) {
@@ -501,8 +501,8 @@ test "cli symbols marks shadowed when scratch overrides index symbol" {
     Err(err) => fail("collect symbols failed: " + err)
   }
   match prev {
-    Some(value) => @sys.set_env_var("XSH_SCRATCH_DB_PATH", value)
-    None => @sys.unset_env_var("XSH_SCRATCH_DB_PATH")
+    Some(value) => @sys.set_env_var("VIBE_SCRATCH_DB_PATH", value)
+    None => @sys.unset_env_var("VIBE_SCRATCH_DB_PATH")
   }
   let mut has_shadowed_scratch = false
   let mut has_shadowed_index = false
@@ -530,14 +530,14 @@ test "cli write_file selector name prefers scratch namespace symbol" {
     e => fail("write entry failed: " + e.to_string())
   }
   apply_cmd([entry])
-  let prev = @sys.get_env_var("XSH_SCRATCH_DB_PATH")
-  @sys.set_env_var("XSH_SCRATCH_DB_PATH", scratch_db)
+  let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
+  @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(["let", "foo", "=", "1"], @runtime.ParserMode::XshMode, features)
   write_file_cmd(["--entry=" + entry, "foo", out_path])
   match prev {
-    Some(value) => @sys.set_env_var("XSH_SCRATCH_DB_PATH", value)
-    None => @sys.unset_env_var("XSH_SCRATCH_DB_PATH")
+    Some(value) => @sys.set_env_var("VIBE_SCRATCH_DB_PATH", value)
+    None => @sys.unset_env_var("VIBE_SCRATCH_DB_PATH")
   }
   let written = @os_fs.read_file_to_string(out_path) catch {
     e => fail("read write_file output failed: " + e.to_string())
@@ -722,15 +722,15 @@ test "cli eval db workflow supports include scripts" {
 test "cli eval include supports hash alias from vdb file" {
   let root = wbtest_make_temp_dir("eval_db_hash_alias")
   let lib_root = root + "/lib"
-  let lib_xsh = lib_root + "/xsh"
+  let lib_vibe = lib_root + "/vibe"
   @os_fs.create_dir(lib_root) catch {
     e => fail("create lib root failed: " + e.to_string())
   }
-  @os_fs.create_dir(lib_xsh) catch {
-    e => fail("create lib xsh dir failed: " + e.to_string())
+  @os_fs.create_dir(lib_vibe) catch {
+    e => fail("create lib vibe dir failed: " + e.to_string())
   }
   let db_path = root + "/tmp1.db"
-  let include_path = lib_xsh + "/std@0.1.0.vdb"
+  let include_path = lib_vibe + "/std@0.1.0.vdb"
   let out_path = root + "/main.vibe"
   let seed_source = "let seed = 21\n"
   let seed_hash = .git_blob_hash_string(seed_source)
@@ -781,7 +781,7 @@ test "cli eval include supports hash alias from vdb file" {
   wbtest_remove_if_exists(out_path)
   wbtest_remove_if_exists(include_path)
   wbtest_remove_if_exists(db_path)
-  wbtest_remove_if_exists(lib_xsh)
+  wbtest_remove_if_exists(lib_vibe)
   wbtest_remove_if_exists(lib_root)
   wbtest_remove_if_exists(root)
 }

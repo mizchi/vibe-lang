@@ -106,7 +106,7 @@ Status: accepted and moved from `TODO.md`.
   `export let version = "<semver>"` (simple `x.y.z` form).
 - Eval include alias workflow is fixed for local registry usage:
   `vibe eval --include vibe/std@<version>.vdb` resolves aliases from
-  `XSH_LIB_DIR` (fallback `$HOME/.vibe/lib`), and `.vdb` can point to
+  `VIBE_LIB_DIR` (fallback `$HOME/.vibe/lib`), and `.vdb` can point to
   object content via `hash:<sha1>` / `{ "hash": "<sha1>" }`.
 - Advanced graph distributed refs workflow is introduced:
   snapshot/delta payloads can be stored as git/bit objects and addressed by
@@ -117,10 +117,10 @@ Status: accepted and moved from `TODO.md`.
 - Loop control semantics are implemented end-to-end:
   `break` / `continue` parse as dedicated expressions, are type-checked
   as while-only controls, and are supported in evaluator + canonical IR/docs.
-- xshell object pipeline compatibility model is fixed:
+- vibe shell object pipeline compatibility model is fixed:
   `|` is text-lane only, `|>` is object-lane only, and text/object boundary
   crossing must be explicit conversion calls.
-  Design memo is tracked in `spec/xshell.md`.
+  Design memo is tracked in `spec/vibe-shell.md`.
 - Symbol/type/signature indexing backend is implemented and shared:
   `vibe ide` (`outline`/`peek-def`/`search`) and `vibe lsif` consume the same
   module-level symbol index (`src/frontend/symbol_index.mbt`).
@@ -140,9 +140,9 @@ Status: accepted and moved from `TODO.md`.
   (`bench/importers` is runtime-first:
   `wasm` -> `wasm-js-string` -> no-dce fallback),
   supports optional `bench/importers-no-dce` diagnostics via
-  `XSH_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`,
+  `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`,
   supports opt-in `vibe/std/*.vibe` surfaces via
-  `XSH_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`,
+  `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`,
   stores current metrics in `dist/bundle_size/current.tsv`,
   and enforces per-entry golden budgets from
   `bench/golden/bundle_size_budget.tsv`.

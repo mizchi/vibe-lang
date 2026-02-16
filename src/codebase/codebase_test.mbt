@@ -379,10 +379,10 @@ test "codebase vibe_dir_path keeps local root for non-repo vibe dir" {
 }
 
 ///|
-test "codebase load_lock_data falls back to legacy xsh.lock" {
+test "codebase load_lock_data falls back to legacy vibe.lock" {
   let root = make_temp_dir("legacy_lock")
   let entry = root + "/main.vibe"
-  let legacy_path = root + "/xsh.lock"
+  let legacy_path = root + "/vibe.lock"
   write_file(
     legacy_path, "{\"path\":{\"./main.vibe\":\"abcd\"},\"version\":{},\"symbol\":{}}",
   )
@@ -545,7 +545,7 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
 test "codebase update_lock_path_refs requires index version export" {
   let root = make_temp_dir("registry_version_required")
   let std_dir = root + "/vibe/std"
-  @os_fs.create_dir(root + "/xsh") catch {
+  @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_dir) catch {
@@ -573,7 +573,7 @@ test "codebase update_lock_path_refs requires index version export" {
 test "codebase update_lock_path_refs validates index version format" {
   let root = make_temp_dir("registry_version_format")
   let std_dir = root + "/vibe/std"
-  @os_fs.create_dir(root + "/xsh") catch {
+  @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_dir) catch {
@@ -616,7 +616,7 @@ test "codebase load_registry_modules falls back to std encoding and collection" 
 test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
   let root = make_temp_dir("registry_std")
   let std_dir = root + "/vibe/std"
-  @os_fs.create_dir(root + "/xsh") catch {
+  @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
   @os_fs.create_dir(std_dir) catch {

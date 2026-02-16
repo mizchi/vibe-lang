@@ -185,7 +185,7 @@ fn has_lock_file_with_fs(dir : String, fs : &@io.FileSystemAdapter) -> Bool {
   if @io.path_exists_with(fs, index_lock) {
     return true
   }
-  let legacy_lock = @vibe_fs.normalize_path(dir + "/xsh.lock")
+  let legacy_lock = @vibe_fs.normalize_path(dir + "/vibe.lock")
   @io.path_exists_with(fs, legacy_lock)
 }
 
@@ -1443,7 +1443,7 @@ pub fn load_lock_data_with_fs(
   }
   let mut target = lock_path
   if not(@io.path_exists_with(fs, target)) {
-    let legacy_path = base_dir + "/xsh.lock"
+    let legacy_path = base_dir + "/vibe.lock"
     if @io.path_exists_with(fs, legacy_path) {
       target = legacy_path
     } else {

@@ -104,7 +104,7 @@ just run index ref pull vibe/std@0.1.0 /tmp/advanced-graph-index.restored.json
 - loader は lock 読み込み時に `index.vdb` を先に見る。
   - `index.vdb` に lock payload (`path/version/symbol/module/annotation` または `lock` object) があれば採用。
   - lock payload が無い場合は `index.lock` へ fallback。
-  - `index.lock` が無ければ `xsh.lock` へ fallback（legacy）。
+  - `index.lock` が無ければ `vibe.lock` へ fallback（legacy）。
 
 ## 次ステップ
 

@@ -252,12 +252,10 @@ async function main() {
     throw new Error('missing export "memory"');
   }
 
-  const counterBaseExport = exports.__xsh_cov_base ?? exports.__vibe_cov_base;
-  const counterCountExport = exports.__xsh_cov_count ?? exports.__vibe_cov_count;
-  const counterBaseName =
-    exports.__xsh_cov_base !== undefined ? "__xsh_cov_base" : "__vibe_cov_base";
-  const counterCountName =
-    exports.__xsh_cov_count !== undefined ? "__xsh_cov_count" : "__vibe_cov_count";
+  const counterBaseExport = exports.__vibe_cov_base;
+  const counterCountExport = exports.__vibe_cov_count;
+  const counterBaseName = "__vibe_cov_base";
+  const counterCountName = "__vibe_cov_count";
   const counterBase = ensureExportNumber(counterBaseExport, counterBaseName);
   const counterCount = ensureExportNumber(counterCountExport, counterCountName);
   if (counterCount < 0) {

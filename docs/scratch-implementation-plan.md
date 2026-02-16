@@ -26,7 +26,7 @@
 
 実装メモ:
 
-- `XSH_SCRATCH_DB_PATH` をテスト/開発向け override として受け付ける。
+- `VIBE_SCRATCH_DB_PATH` をテスト/開発向け override として受け付ける。
 
 ### 2. symbol 一覧 CLI
 

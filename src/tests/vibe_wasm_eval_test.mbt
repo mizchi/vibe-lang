@@ -470,9 +470,9 @@ fn run_wasm(bytes : Bytes) -> WasmEvalResult raise WasmEvalError {
             raise WasmEvalError::Unsupported("import kind")
           }
           let _ = sec.read_leb_u32()
-          if module_name == "xsh" && name == "sh" {
+          if module_name == "vibe" && name == "sh" {
             sh_index = Some(import_index)
-          } else if module_name == "xsh" && name == "path" {
+          } else if module_name == "vibe" && name == "path" {
             path_index = Some(import_index)
           }
           import_index += 1

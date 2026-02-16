@@ -84,8 +84,8 @@ test "vibe wasm coverage exports counters and collects points" {
     v => v
   }
   assert_true(artifact.bytes.length() >= 8)
-  assert_true(bytes_contains_ascii(artifact.bytes, "__xsh_cov_base"))
-  assert_true(bytes_contains_ascii(artifact.bytes, "__xsh_cov_count"))
+  assert_true(bytes_contains_ascii(artifact.bytes, "__vibe_cov_base"))
+  assert_true(bytes_contains_ascii(artifact.bytes, "__vibe_cov_count"))
   assert_true(artifact.counter_base >= 0)
   assert_true(artifact.counter_count >= 3)
   assert_eq(artifact.counter_count, artifact.points.length())
@@ -162,7 +162,7 @@ test "vibe wasm import sh" {
   } noraise {
     b => b
   }
-  assert_true(bytes_contains_ascii(wasm, "xsh"))
+  assert_true(bytes_contains_ascii(wasm, "vibe"))
   assert_true(bytes_contains_ascii(wasm, "sh"))
 }
 
@@ -175,7 +175,7 @@ test "vibe wasm import path" {
   } noraise {
     b => b
   }
-  assert_true(bytes_contains_ascii(wasm, "xsh"))
+  assert_true(bytes_contains_ascii(wasm, "vibe"))
   assert_true(bytes_contains_ascii(wasm, "path"))
 }
 
@@ -338,7 +338,7 @@ fn wasm_has_custom_section_named(bytes : Bytes, section_name : String) -> Bool {
 
 ///|
 fn wasm_error_map_contains(bytes : Bytes, code : Int, message : String) -> Bool {
-  let payload = match find_custom_section_payload(bytes, "xsh.error_map") {
+  let payload = match find_custom_section_payload(bytes, "vibe.error_map") {
     Some(v) => v
     None => return false
   }
@@ -432,7 +432,7 @@ test "vibe wasm strips raise string literal in default build" {
     b => b
   }
   assert_false(bytes_contains_ascii(wasm, needle))
-  assert_false(wasm_has_custom_section_named(wasm, "xsh.error_map"))
+  assert_false(wasm_has_custom_section_named(wasm, "vibe.error_map"))
 }
 
 ///|
@@ -453,7 +453,7 @@ test "vibe wasm keeps raise string literal when debug errors enabled" {
     b => b
   }
   assert_true(bytes_contains_ascii(wasm, needle))
-  assert_true(wasm_has_custom_section_named(wasm, "xsh.error_map"))
+  assert_true(wasm_has_custom_section_named(wasm, "vibe.error_map"))
   assert_true(wasm_error_map_contains(wasm, 1, needle))
 }
 
@@ -466,7 +466,7 @@ test "vibe wasm import sleep" {
   } noraise {
     b => b
   }
-  assert_true(bytes_contains_ascii(wasm, "xsh"))
+  assert_true(bytes_contains_ascii(wasm, "vibe"))
   assert_true(bytes_contains_ascii(wasm, "sleep"))
 }
 

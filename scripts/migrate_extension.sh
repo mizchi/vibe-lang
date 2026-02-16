@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FROM_EXT=".xsh"
+FROM_EXT=".vibe"
 TO_EXT=".vibe"
 APPLY=0
 DRY_RUN=0
@@ -12,7 +12,7 @@ Usage:
   scripts/migrate_extension.sh [options]
 
 Options:
-  --from <ext>   source extension (default: .xsh)
+  --from <ext>   source extension (default: .vibe)
   --to <ext>     destination extension (default: .vibe)
   --apply        perform git mv and in-file replacements
   --dry-run      print planned changes without modifying files
@@ -20,7 +20,7 @@ Options:
 
 Notes:
   - Works only on git-tracked files.
-  - Replaces extension literals in tracked files (e.g. ".xsh" -> ".vibe").
+  - Replaces extension literals in tracked files (e.g. ".vibe" -> target ext).
 EOF
 }
 

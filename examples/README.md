@@ -1,6 +1,6 @@
-# xsh Examples
+# vibe Examples
 
-This directory contains runnable examples of xsh language features.
+This directory contains runnable examples of vibe language features.
 
 ## Recommended Entry Point
 
@@ -22,7 +22,7 @@ just run test examples/syntax.vibe
 
 ## Core Library
 
-- `vibe/std/`: xsh core library (self-hosted std modules)
+- `vibe/std/`: vibe core library (self-hosted std modules)
 - `vibe/std/wasm/types.vibe`: wasm-facing type aliases (`I32`/`F32`/`F64`)
 - `vibe/std/wasm/opcodes.vibe`: wasm opcode-style APIs (`i32_add`, `f64_promote_f32`, ...)
 - `vibe/std/wasm/io_stream.vibe`: component-friendly stream I/O helpers

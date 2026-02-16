@@ -248,10 +248,10 @@ fn to_absolute_db_path(index_root : String, db_path : String) -> String {
 fn resolve_scratch_db_path_for_index_root(
   index_root : String,
 ) -> Result[(String, String), String] {
-  match @sys.get_env_var("XSH_SCRATCH_DB_PATH") {
+  match @sys.get_env_var("VIBE_SCRATCH_DB_PATH") {
     Some(path) =>
       if path.trim().to_string().length() == 0 {
-        Err("XSH_SCRATCH_DB_PATH must not be empty")
+        Err("VIBE_SCRATCH_DB_PATH must not be empty")
       } else {
         Ok((default_scratch_ns_name(), @loader.resolve_entry_path(path)))
       }
@@ -419,7 +419,7 @@ fn load_eval_include_source(
     Some(hash) => {
       let roots : Array[String] = []
       let include_parent = @vibe_fs.parent_path(path)
-      if path_last_segment(include_parent) == "xsh" {
+      if path_last_segment(include_parent) == "vibe" {
         roots.push(@vibe_fs.parent_path(include_parent))
       }
       if roots.length() == 0 || roots[0] != include_lib_dir {

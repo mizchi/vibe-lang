@@ -7,7 +7,7 @@ fn apply_lock_to_db_with_fs(
   db.require_path_lock(true)
   let lock_path = @codebase.lock_file_path_with_fs(entry, fs)
   let lock_root = @vibe_fs.parent_path(lock_path)
-  let legacy_lock_path = lock_root + "/xsh.lock"
+  let legacy_lock_path = lock_root + "/vibe.lock"
   let index_vdb_path = lock_root + "/index.vdb"
   let has_lock_source = @io.path_exists_with(fs, lock_path) ||
     @io.path_exists_with(fs, legacy_lock_path) ||

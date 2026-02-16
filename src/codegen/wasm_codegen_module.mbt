@@ -294,25 +294,25 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_u32_leb(import_sec, js_equals_type)
     }
     if ctx.need_path {
-      write_name(import_sec, "xsh")
+      write_name(import_sec, "vibe")
       write_name(import_sec, "path")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, import_type)
     }
     if ctx.need_dynamic_path_resolve {
-      write_name(import_sec, "xsh")
+      write_name(import_sec, "vibe")
       write_name(import_sec, "resolve_path")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, import_type)
     }
     if ctx.need_sh {
-      write_name(import_sec, "xsh")
+      write_name(import_sec, "vibe")
       write_name(import_sec, "sh")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, import_type)
     }
     if ctx.need_sleep {
-      write_name(import_sec, "xsh")
+      write_name(import_sec, "vibe")
       write_name(import_sec, "sleep")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, sleep_type)
@@ -512,10 +512,10 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     write_u32_leb(export_sec, ctx.async_result_global_index)
   }
   if ctx.coverage_enabled {
-    write_name(export_sec, "__xsh_cov_base")
+    write_name(export_sec, "__vibe_cov_base")
     export_sec.push((3).to_byte()) // global export
     write_u32_leb(export_sec, ctx.coverage_base_global_index)
-    write_name(export_sec, "__xsh_cov_count")
+    write_name(export_sec, "__vibe_cov_count")
     export_sec.push((3).to_byte()) // global export
     write_u32_leb(export_sec, ctx.coverage_count_global_index)
   }
@@ -615,7 +615,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   if ctx.embed_error_strings && ctx.error_codes.names.length() > 0 {
     write_custom_section(
       buf,
-      "xsh.error_map",
+      "vibe.error_map",
       build_error_map_custom_content(ctx),
     )
   }

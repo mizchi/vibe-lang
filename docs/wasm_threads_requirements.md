@@ -43,8 +43,8 @@ WASI Threads モジュールとして必要な形:
 
 `vibe` の env 変数にすると:
 
-- `XSH_WASMTIME_WASI_FLAGS='threads=y'`
-- `XSH_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'`
+- `VIBE_WASMTIME_WASI_FLAGS='threads=y'`
+- `VIBE_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'`
 
 ## 3. 失敗パターン（実測）
 
@@ -77,16 +77,16 @@ WASI Threads モジュールとして必要な形:
 just wasi-threads-probe
 
 # submodule wasmtime を使う
-XSH_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
+VIBE_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
 
 # 直接実行
-XSH_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
+VIBE_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
 ```
 
 ## 6. 実装時チェックリスト
 
 - [ ] ゲスト wasm が threads ABI (`env::memory`, `wasi::thread-spawn`, `wasi_thread_start`) を持つ
-- [ ] `XSH_WASMTIME_WASI_FLAGS` に `threads=y` が入っている
-- [ ] `XSH_WASMTIME_WASM_FLAGS` に `threads=y shared-memory=y` が入っている
+- [ ] `VIBE_WASMTIME_WASI_FLAGS` に `threads=y` が入っている
+- [ ] `VIBE_WASMTIME_WASM_FLAGS` に `threads=y shared-memory=y` が入っている
 - [ ] 実行環境の wasmtime バージョンを確認する
 - [ ] 必要なら並列実行の実測（時間短縮）で動作を裏取りする

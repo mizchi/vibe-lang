@@ -5,7 +5,7 @@
 Included:
 
 - `threads.mbt`
-  - recommended flag helpers for `XSH_WASMTIME_WASM_FLAGS` / `XSH_WASMTIME_WASI_FLAGS`
+  - recommended flag helpers for `VIBE_WASMTIME_WASM_FLAGS` / `VIBE_WASMTIME_WASI_FLAGS`
   - embedded probe WAT source (`probe_wat()`)
 - `wasi_threads_probe.wat`
   - imports:

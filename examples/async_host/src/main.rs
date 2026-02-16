@@ -22,9 +22,9 @@ fn main() -> Result<()> {
     // Create linker and define host functions
     let mut linker = Linker::new(&engine);
 
-    // Define xsh.sleep import function
-    // xsh tagged integers: actual_value = tagged_value >> 2
-    linker.func_wrap("xsh", "sleep", |tagged_ms: i32| {
+    // Define vibe.sleep import function
+    // vibe tagged integers: actual_value = tagged_value >> 2
+    linker.func_wrap("vibe", "sleep", |tagged_ms: i32| {
         let ms = (tagged_ms >> 2) as u64;
         println!("[host] sleeping for {}ms", ms);
         thread::sleep(Duration::from_millis(ms));
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     let result = run.call(&mut store, ())?;
     let elapsed = start.elapsed();
 
-    // xsh tagged integer: actual_value = result >> 2
+    // vibe tagged integer: actual_value = result >> 2
     let untagged = result >> 2;
     println!("[host] run() returned: {} (tagged: {})", untagged, result);
     println!("[host] elapsed time: {:?}", elapsed);

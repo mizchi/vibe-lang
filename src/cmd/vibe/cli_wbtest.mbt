@@ -551,7 +551,7 @@ test "cli runtime flags parse with unstable flags" {
 ///|
 test "cli dispatch args parse leading unstable flags" {
   let parsed = parse_cli_dispatch_args([
-    "xsh", "--unstable-async", "--unstable-threads", "run", "main.vibe",
+    "vibe", "--unstable-async", "--unstable-threads", "run", "main.vibe",
   ])
   match parsed {
     Ok(v) => {
@@ -568,7 +568,7 @@ test "cli dispatch args parse leading unstable flags" {
 ///|
 test "cli dispatch args merges leading and trailing unstable flags" {
   let parsed = parse_cli_dispatch_args([
-    "xsh", "--unstable-async", "run", "--unstable-threads", "--syntax", "posix",
+    "vibe", "--unstable-async", "run", "--unstable-threads", "--syntax", "posix",
     "main.vibe",
   ])
   match parsed {
@@ -586,7 +586,7 @@ test "cli dispatch args merges leading and trailing unstable flags" {
 ///|
 test "cli dispatch args rejects missing command" {
   let parsed = parse_cli_dispatch_args([
-    "xsh", "--unstable-async", "--unstable-threads",
+    "vibe", "--unstable-async", "--unstable-threads",
   ])
   match parsed {
     Ok(_) => fail("expected error")
@@ -596,7 +596,7 @@ test "cli dispatch args rejects missing command" {
 
 ///|
 test "cli dispatch args parse init command" {
-  let parsed = parse_cli_dispatch_args(["xsh", "init", "my-lib"])
+  let parsed = parse_cli_dispatch_args(["vibe", "init", "my-lib"])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "init")
@@ -608,7 +608,7 @@ test "cli dispatch args parse init command" {
 
 ///|
 test "cli dispatch args parse new command" {
-  let parsed = parse_cli_dispatch_args(["xsh", "new", "my-lib"])
+  let parsed = parse_cli_dispatch_args(["vibe", "new", "my-lib"])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "new")
@@ -620,7 +620,7 @@ test "cli dispatch args parse new command" {
 
 ///|
 test "cli dispatch args parse explain-import command" {
-  let parsed = parse_cli_dispatch_args(["xsh", "explain-import", "main.vibe"])
+  let parsed = parse_cli_dispatch_args(["vibe", "explain-import", "main.vibe"])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "explain-import")
@@ -801,7 +801,7 @@ test "cli syntax mode parse rejects unknown value" {
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
-      assert_eq(msg, "run: unsupported syntax `foo` (expected: xsh|posix)")
+      assert_eq(msg, "run: unsupported syntax `foo` (expected: vibe|posix)")
   }
 }
 
@@ -811,7 +811,7 @@ test "cli syntax mode parse rejects missing value" {
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
-      assert_eq(msg, "run: missing value for --syntax (expected: xsh|posix)")
+      assert_eq(msg, "run: missing value for --syntax (expected: vibe|posix)")
   }
 }
 

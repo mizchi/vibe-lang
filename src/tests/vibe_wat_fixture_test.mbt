@@ -61,7 +61,7 @@ fn replace_suffix(
 ///|
 test "wasm wat fixtures" {
   let fixture_dir = "fixtures/wasm"
-  let update_mode = match @sys.get_env_var("XSH_WAT_FIXTURE_UPDATE") {
+  let update_mode = match @sys.get_env_var("VIBE_WAT_FIXTURE_UPDATE") {
     Some(v) => {
       let lowered = v.trim().to_string().to_lower()
       lowered == "1" || lowered == "true" || lowered == "yes"

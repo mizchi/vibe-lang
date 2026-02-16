@@ -1,4 +1,4 @@
-# xsh Collection Library
+# vibe Collection Library
 
 Collection-oriented modules are split from `vibe/std` and managed in this package.
 

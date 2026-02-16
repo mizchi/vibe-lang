@@ -66,7 +66,27 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "json_bool" ||
   name == "json_is_null" ||
   name == "json_length" ||
-  name == "json_keys"
+  name == "json_keys" ||
+  name == "string_starts_with" ||
+  name == "string_ends_with" ||
+  name == "string_replace" ||
+  name == "string_replace_all" ||
+  name == "string_trim_start" ||
+  name == "string_trim_end" ||
+  name == "string_last_index_of" ||
+  name == "string_count" ||
+  name == "int_abs" ||
+  name == "int_max" ||
+  name == "int_min" ||
+  name == "int_clamp" ||
+  name == "int_signum" ||
+  name == "int_is_even" ||
+  name == "int_is_odd" ||
+  name == "double_abs" ||
+  name == "double_max" ||
+  name == "double_min" ||
+  name == "double_floor" ||
+  name == "double_ceil"
 }
 
 ///|
@@ -994,6 +1014,320 @@ fn eval_pure_builtin(
           @core.Value::Array(keys)
         }
         _ => raise EvalError::BadCall("json_keys")
+      }
+    }
+    "string_starts_with" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_starts_with")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::String(s), @core.Value::String(prefix)) =>
+          @core.Value::Bool(String::has_prefix(s, prefix[:]))
+        _ => raise EvalError::BadCall("string_starts_with")
+      }
+    }
+    "string_ends_with" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_ends_with")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::String(s), @core.Value::String(suffix)) =>
+          @core.Value::Bool(String::has_suffix(s, suffix[:]))
+        _ => raise EvalError::BadCall("string_ends_with")
+      }
+    }
+    "string_replace" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall("string_replace")
+      }
+      match (args[0], args[1], args[2]) {
+        (
+          @core.Value::String(s),
+          @core.Value::String(pattern),
+          @core.Value::String(replacement),
+        ) =>
+          match String::find(s, pattern[:]) {
+            None => @core.Value::String(s)
+            Some(idx) => {
+              let before = String::unsafe_substring(s, start=0, end=idx)
+              let after = String::unsafe_substring(
+                s,
+                start=idx + pattern.length(),
+                end=s.length(),
+              )
+              @core.Value::String(before + replacement + after)
+            }
+          }
+        _ => raise EvalError::BadCall("string_replace")
+      }
+    }
+    "string_replace_all" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall("string_replace_all")
+      }
+      match (args[0], args[1], args[2]) {
+        (
+          @core.Value::String(s),
+          @core.Value::String(pattern),
+          @core.Value::String(replacement),
+        ) =>
+          if pattern.length() == 0 {
+            @core.Value::String(s)
+          } else {
+            @core.Value::String(
+              String::replace(s, old=pattern[:], new=replacement[:]),
+            )
+          }
+        _ => raise EvalError::BadCall("string_replace_all")
+      }
+    }
+    "string_trim_start" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_trim_start")
+      }
+      match args[0] {
+        @core.Value::String(s) => {
+          let len = s.length()
+          let mut start = 0
+          while start < len &&
+                is_whitespace(s.unsafe_get(start).to_int().unsafe_to_char()) {
+            start = start + 1
+          }
+          if start == 0 {
+            @core.Value::String(s)
+          } else {
+            @core.Value::String(String::unsafe_substring(s, start~, end=len))
+          }
+        }
+        _ => raise EvalError::BadCall("string_trim_start")
+      }
+    }
+    "string_trim_end" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_trim_end")
+      }
+      match args[0] {
+        @core.Value::String(s) => {
+          let len = s.length()
+          let mut end = len
+          while end > 0 &&
+                is_whitespace(s.unsafe_get(end - 1).to_int().unsafe_to_char()) {
+            end = end - 1
+          }
+          if end == len {
+            @core.Value::String(s)
+          } else {
+            @core.Value::String(String::unsafe_substring(s, start=0, end~))
+          }
+        }
+        _ => raise EvalError::BadCall("string_trim_end")
+      }
+    }
+    "string_last_index_of" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_last_index_of")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::String(s), @core.Value::String(sub)) => {
+          let s_len = s.length()
+          let sub_len = sub.length()
+          if sub_len > s_len {
+            @core.Value::Int(-1L)
+          } else if sub_len == 0 {
+            @core.Value::Int(s_len.to_int64())
+          } else {
+            let mut i = s_len - sub_len
+            let mut found = -1L
+            while i >= 0 {
+              if String::has_prefix(
+                  String::unsafe_substring(s, start=i, end=i + sub_len),
+                  sub[:],
+                ) {
+                found = i.to_int64()
+                break
+              }
+              i = i - 1
+            }
+            @core.Value::Int(found)
+          }
+        }
+        _ => raise EvalError::BadCall("string_last_index_of")
+      }
+    }
+    "string_count" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("string_count")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::String(s), @core.Value::String(sub)) => {
+          let s_len = s.length()
+          let sub_len = sub.length()
+          if sub_len == 0 || sub_len > s_len {
+            @core.Value::Int(0L)
+          } else {
+            let mut count = 0L
+            let mut i = 0
+            while i <= s_len - sub_len {
+              if String::has_prefix(
+                  String::unsafe_substring(s, start=i, end=i + sub_len),
+                  sub[:],
+                ) {
+                count = count + 1L
+                i = i + sub_len
+              } else {
+                i = i + 1
+              }
+            }
+            @core.Value::Int(count)
+          }
+        }
+        _ => raise EvalError::BadCall("string_count")
+      }
+    }
+    "int_abs" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("int_abs")
+      }
+      match args[0] {
+        @core.Value::Int(x) =>
+          if x < 0L {
+            @core.Value::Int(-x)
+          } else {
+            @core.Value::Int(x)
+          }
+        _ => raise EvalError::BadCall("int_abs")
+      }
+    }
+    "int_max" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("int_max")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Int(a), @core.Value::Int(b)) =>
+          @core.Value::Int(if a > b { a } else { b })
+        _ => raise EvalError::BadCall("int_max")
+      }
+    }
+    "int_min" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("int_min")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Int(a), @core.Value::Int(b)) =>
+          @core.Value::Int(if a < b { a } else { b })
+        _ => raise EvalError::BadCall("int_min")
+      }
+    }
+    "int_clamp" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall("int_clamp")
+      }
+      match (args[0], args[1], args[2]) {
+        (@core.Value::Int(x), @core.Value::Int(lo), @core.Value::Int(hi)) =>
+          @core.Value::Int(if x < lo { lo } else if x > hi { hi } else { x })
+        _ => raise EvalError::BadCall("int_clamp")
+      }
+    }
+    "int_signum" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("int_signum")
+      }
+      match args[0] {
+        @core.Value::Int(x) =>
+          @core.Value::Int(if x < 0L { -1L } else if x > 0L { 1L } else { 0L })
+        _ => raise EvalError::BadCall("int_signum")
+      }
+    }
+    "int_is_even" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("int_is_even")
+      }
+      match args[0] {
+        @core.Value::Int(x) => @core.Value::Bool(x % 2L == 0L)
+        _ => raise EvalError::BadCall("int_is_even")
+      }
+    }
+    "int_is_odd" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("int_is_odd")
+      }
+      match args[0] {
+        @core.Value::Int(x) => @core.Value::Bool(x % 2L != 0L)
+        _ => raise EvalError::BadCall("int_is_odd")
+      }
+    }
+    "double_abs" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("double_abs")
+      }
+      match args[0] {
+        @core.Value::Double(x) =>
+          @core.Value::Double(if x < 0.0 { -x } else { x })
+        _ => raise EvalError::BadCall("double_abs")
+      }
+    }
+    "double_max" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("double_max")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Double(if a > b { a } else { b })
+        _ => raise EvalError::BadCall("double_max")
+      }
+    }
+    "double_min" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall("double_min")
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Double(a), @core.Value::Double(b)) =>
+          @core.Value::Double(if a < b { a } else { b })
+        _ => raise EvalError::BadCall("double_min")
+      }
+    }
+    "double_floor" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("double_floor")
+      }
+      match args[0] {
+        @core.Value::Double(x) => {
+          let min_int_d = -2305843009213693952.0
+          if x <= min_int_d {
+            @core.Value::Double(min_int_d)
+          } else {
+            let i = x.to_int64()
+            let d = i.to_double()
+            if d > x {
+              @core.Value::Double((i - 1L).to_double())
+            } else {
+              @core.Value::Double(d)
+            }
+          }
+        }
+        _ => raise EvalError::BadCall("double_floor")
+      }
+    }
+    "double_ceil" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("double_ceil")
+      }
+      match args[0] {
+        @core.Value::Double(x) => {
+          let max_int_d = 2305843009213693951.0
+          if x >= max_int_d {
+            @core.Value::Double(max_int_d)
+          } else {
+            let i = x.to_int64()
+            let d = i.to_double()
+            if d < x {
+              @core.Value::Double((i + 1L).to_double())
+            } else {
+              @core.Value::Double(d)
+            }
+          }
+        }
+        _ => raise EvalError::BadCall("double_ceil")
       }
     }
     _ => raise EvalError::BadCall(name)

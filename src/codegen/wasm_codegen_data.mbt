@@ -117,60 +117,35 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
   match expr {
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
-      if name == "sh" {
-        ctx.need_sh = true
-      } else if name == "path" || name == "path_ref" {
-        ctx.need_path = true
-      } else if name == "dynamic_path_resolve" {
-        ctx.need_dynamic_path_resolve = true
-      } else if name == "string_length" {
-        if ctx.use_js_strings {
-          ctx.need_js_length = true
-        }
-      } else if name == "string_char_code_at" {
-        if ctx.use_js_strings {
-          ctx.need_js_char_code_at = true
-        }
-      } else if name == "string_substring" {
-        if ctx.use_js_strings {
-          ctx.need_js_substring = true
-        }
-      } else if name == "string_concat" {
-        if ctx.use_js_strings {
-          ctx.need_js_concat = true
-        }
-      } else if name == "string_equals" {
-        if ctx.use_js_strings {
-          ctx.need_js_equals = true
-        }
-      } else if name == "array_builder" ||
-        name == "map_builder" ||
-        name == "string_builder" {
-        ctx.need_heap = true
-      } else if name == "map_get" {
-        if ctx.use_js_strings {
-          ctx.need_js_equals = true
-        }
-      } else if name == "sleep" {
-        ctx.need_sleep = true
-      } else if name == "stdout_write_char" {
-        ctx.need_stdout_write_char = true
-      } else if name == "stdout_write_stream" {
-        ctx.need_stdout_write_char = true
-      } else if name == "stdin_read_char" {
-        ctx.need_stdin_read_char = true
-      } else if name == "stdin_read_stream" {
-        ctx.need_stdin_read_char = true
-      } else if name == "string_from_char_code" {
-        ctx.need_heap = true
-      } else if name == "char_to_int" || name == "char_from_int" {
-        ()
-      } else if name == "__to_string" {
-        if not(ctx.use_js_strings) {
+      match name {
+        "sh" => ctx.need_sh = true
+        "path" | "path_ref" => ctx.need_path = true
+        "dynamic_path_resolve" => ctx.need_dynamic_path_resolve = true
+        "string_length" => if ctx.use_js_strings { ctx.need_js_length = true }
+        "string_char_code_at" =>
+          if ctx.use_js_strings {
+            ctx.need_js_char_code_at = true
+          }
+        "string_substring" =>
+          if ctx.use_js_strings {
+            ctx.need_js_substring = true
+          }
+        "string_concat" => if ctx.use_js_strings { ctx.need_js_concat = true }
+        "string_equals" | "map_get" =>
+          if ctx.use_js_strings {
+            ctx.need_js_equals = true
+          }
+        "array_builder" | "map_builder" | "string_builder" =>
           ctx.need_heap = true
-        }
-      } else if name == "to_double" {
-        ctx.need_heap = true
+        "sleep" => ctx.need_sleep = true
+        "stdout_write_char" | "stdout_write_stream" =>
+          ctx.need_stdout_write_char = true
+        "stdin_read_char" | "stdin_read_stream" =>
+          ctx.need_stdin_read_char = true
+        "string_from_char_code" | "to_double" => ctx.need_heap = true
+        "char_to_int" | "char_from_int" => ()
+        "__to_string" => if not(ctx.use_js_strings) { ctx.need_heap = true }
+        _ => ()
       }
       for arg in args {
         scan_needs_expr(ctx, arg.expr)

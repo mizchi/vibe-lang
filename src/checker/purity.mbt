@@ -502,7 +502,27 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "string_trim" ||
   name == "string_from_char_code" ||
   name == "char_to_int" ||
-  name == "char_from_int"
+  name == "char_from_int" ||
+  name == "string_starts_with" ||
+  name == "string_ends_with" ||
+  name == "string_replace" ||
+  name == "string_replace_all" ||
+  name == "string_trim_start" ||
+  name == "string_trim_end" ||
+  name == "string_last_index_of" ||
+  name == "string_count" ||
+  name == "int_abs" ||
+  name == "int_max" ||
+  name == "int_min" ||
+  name == "int_clamp" ||
+  name == "int_signum" ||
+  name == "int_is_even" ||
+  name == "int_is_odd" ||
+  name == "double_abs" ||
+  name == "double_max" ||
+  name == "double_min" ||
+  name == "double_floor" ||
+  name == "double_ceil"
 }
 
 ///|

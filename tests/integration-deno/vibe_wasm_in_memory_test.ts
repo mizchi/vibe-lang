@@ -6,7 +6,7 @@ function assertTrue(actual: boolean, msg?: string): void {
   }
 }
 
-Deno.test("xsh wasm artifact instantiates in deno", async () => {
+Deno.test("vibe wasm artifact instantiates in deno", async () => {
   const service = await createVibeService();
   const report = await service.check("1 + 2\n") as { ok: boolean };
   assertTrue(report.ok);

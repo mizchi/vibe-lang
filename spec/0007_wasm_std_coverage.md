@@ -12,7 +12,7 @@ Source: TODO.md "vibe/std wasm-source coverage 実用化" 各 [done 2026-02-10/1
 1. **Multi-mode フォールバック**: `wasm -> wasm-js-string` の順で試行し、`_build/coverage/wasm-std/attempts.tsv` と `cases/*.log` を出力
 2. **レポート拡張**: `report.md` / `report.json` に `failed_case_details[]`, `failure_reason_counts`, `execution.trap_case_count` を追加
 3. **Backend capability matrix**: `vibe/std/backend_capabilities.json` で各テストファイルの expected backend (`wasm` / `wasm-js-string` / `either`) を管理。集計時に `spec_status` (`expected_failure` / `unexpected_failure`) を判定
-4. **Coverage KPI gate**: `XSH_WASM_STD_COVERAGE_MIN_MEASURED_RATE` / `XSH_WASM_STD_COVERAGE_MIN_LINE_RATE` で下限を指定し、未達時に `coverage-wasm-std` を失敗させる
+4. **Coverage KPI gate**: `VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE` / `VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE` で下限を指定し、未達時に `coverage-wasm-std` を失敗させる
 5. **Codegen 修正**: `abs` / `to_double` / `go` 系の local function alias、method-style 呼び出し、同名ローカル再帰関数のシグネチャ衝突、captured function param 呼び出しを解消
 6. **Runtime trap 修正**: tagged-int 範囲の不整合（`int/double` 飽和境界）を修正し、実行 trap を 0 件化
 
