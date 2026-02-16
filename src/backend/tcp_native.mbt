@@ -8,19 +8,11 @@ extern "C" fn vibe_tcp_connect(
 
 ///|
 #borrow(buf)
-extern "C" fn vibe_tcp_read(
-  fd : Int,
-  buf : Bytes,
-  buf_len : Int,
-) -> Int = "vibe_tcp_read"
+extern "C" fn vibe_tcp_read(fd : Int, buf : Bytes, buf_len : Int) -> Int = "vibe_tcp_read"
 
 ///|
 #borrow(buf)
-extern "C" fn vibe_tcp_write(
-  fd : Int,
-  buf : Bytes,
-  buf_len : Int,
-) -> Int = "vibe_tcp_write"
+extern "C" fn vibe_tcp_write(fd : Int, buf : Bytes, buf_len : Int) -> Int = "vibe_tcp_write"
 
 ///|
 extern "C" fn vibe_tcp_close(fd : Int) -> Int = "vibe_tcp_close"

@@ -399,8 +399,8 @@ run-wasm-async file: build-async-host
 # Precompile all vibe modules to dist/**/*.wasm
 precompile:
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
-    mkdir -p dist/std dist/std/path dist/std/threads dist/std/wasm dist/fs dist/socket dist/collection dist/encoding dist/x dist/x/args
-    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/std vibe/std/path vibe/std/threads vibe/std/wasm vibe/fs vibe/socket vibe/collection vibe/encoding vibe/x vibe/x/args --out-dir dist --wasm
+    mkdir -p dist/std dist/std/path dist/std/threads dist/std/wasm dist/fs dist/socket dist/http dist/collection dist/encoding dist/x dist/x/args
+    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/std vibe/std/path vibe/std/threads vibe/std/wasm vibe/fs vibe/socket vibe/http vibe/collection vibe/encoding vibe/x vibe/x/args --out-dir dist --wasm
 
 # Pre-release check
 release-check: fmt info check test

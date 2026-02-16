@@ -3022,9 +3022,7 @@ fn compile_call_by_name(
     }
     "fs_read_file" => {
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported(
-          "fs_read_file requires --wasm backend",
-        )
+        raise WasmGenError::Unsupported("fs_read_file requires --wasm backend")
       }
       let pos_args = extract_positional_exprs(args, "fs_read_file")
       if pos_args.length() != 1 {
@@ -3215,9 +3213,7 @@ fn compile_call_by_name(
     }
     "fs_write_file" => {
       if ctx.use_js_strings {
-        raise WasmGenError::Unsupported(
-          "fs_write_file requires --wasm backend",
-        )
+        raise WasmGenError::Unsupported("fs_write_file requires --wasm backend")
       }
       let pos_args = extract_positional_exprs(args, "fs_write_file")
       if pos_args.length() != 2 {
@@ -3885,6 +3881,22 @@ fn compile_call_by_name(
       // Return Unit (tagged 0)
       emit_i64_const_raw(buf, tag_int_value64(0L))
     }
+    // --- HTTP builtins (P3 draft — trap stub, interpreter-only for now) ---
+    "http_request"
+    | "http_response_status"
+    | "http_response_header"
+    | "http_response_body"
+    | "http_close"
+    | "http_listen"
+    | "http_accept"
+    | "http_request_method"
+    | "http_request_url"
+    | "http_request_header"
+    | "http_request_body"
+    | "http_respond" =>
+      // WASI P3 HTTP is draft; emit unreachable trap for WASM target.
+      // HTTP builtins work via interpreter (native backend) only.
+      buf.push((0).to_byte()) // unreachable
     "char_to_int" => {
       let pos_args = extract_positional_exprs(args, "char_to_int")
       if pos_args.length() != 1 {

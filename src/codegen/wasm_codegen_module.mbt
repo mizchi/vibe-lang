@@ -761,7 +761,11 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let user_export_count = ctx.exported_fns.length()
   let export_count = 2 +
     user_export_count +
-    (if ctx.need_stdin_read_char || ctx.need_socket { 1 } else { 0 }) +
+    (if ctx.need_stdin_read_char || ctx.need_socket || ctx.need_http {
+      1
+    } else {
+      0
+    }) +
     (if ctx.need_exceptions { 1 } else { 0 }) +
     (if ctx.need_stack_switching { 3 } else { 0 }) + // await_tag + sleep_tag + global
     (if ctx.coverage_enabled { 2 } else { 0 })
@@ -771,7 +775,7 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   export_sec.push((0).to_byte()) // func export
   let run_index = func_import_count + funcs.length() - 1
   write_u32_leb(export_sec, run_index)
-  if ctx.need_stdin_read_char || ctx.need_socket {
+  if ctx.need_stdin_read_char || ctx.need_socket || ctx.need_http {
     write_name(export_sec, "cabi_realloc")
     export_sec.push((0).to_byte()) // func export
     write_u32_leb(export_sec, run_index - 1)
@@ -1183,7 +1187,11 @@ fn emit_module_with_coverage(
     func_needs_heap.push(need)
   }
   let run_need_heap = needs_heap_block(ctx, run_ast)
-  if any_user_heap || ctx.need_stdin_read_char || ctx.need_fs || ctx.need_socket {
+  if any_user_heap ||
+    ctx.need_stdin_read_char ||
+    ctx.need_fs ||
+    ctx.need_socket ||
+    ctx.need_http {
     ctx.use_heap_global = true
     let global_imports = if ctx.use_js_strings {
       ctx.js_strings.names.length()
@@ -1269,7 +1277,7 @@ fn emit_module_with_coverage(
       ),
     )
   }
-  if ctx.need_stdin_read_char || ctx.need_socket {
+  if ctx.need_stdin_read_char || ctx.need_socket || ctx.need_http {
     let cabi_realloc_sig = FuncSig::{
       params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
       results: [ValueKind::I32],

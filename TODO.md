@@ -180,6 +180,18 @@ Spec-locked decisions are tracked in `spec/decisions.md`.
 | module_import.vibe | 1383 |
 | effects.vibe | 1051 |
 
+## vibe/http 残課題 (2026-02-16)
+
+- [ ] WASM codegen: HTTP builtins は現在 `unreachable` trap を emit。WASI P3 HTTP (`wasi:http@0.3.0-draft`) が安定したら実装する
+  - Client: `wasi:http/handler.handle` で outgoing-request 送信
+  - Server: `wasi:http/handler` export で incoming-request 受信 (wasmtime serve 連携)
+- [ ] WASM server (http_listen/accept/respond): Phase 2。インタプリタのみ動作
+- [ ] HTTPS/TLS 非対応: HTTP のみ (port 80 デフォルト)
+- [ ] IPv4 のみ: DNS 解決・IPv6 未対応。`inet_pton` でリテラル IP のみ
+- [ ] `moon info` で mbti 自動再生成ができない (手動で `pkg.generated.mbti` を編集した)
+  - 原因: `--deny-warn` が `unused_constructor` を error にするため `moon info` が失敗する循環依存
+  - 回避: mbti を先に手動更新してから check を通す
+
 ## Deferred
 
 - none

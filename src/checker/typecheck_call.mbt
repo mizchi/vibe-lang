@@ -953,10 +953,7 @@ fn type_call(
                   args, "fs_exists", call_span,
                 )
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall(
-                    message="fs_exists",
-                    span=call_span,
-                  )
+                  raise TypeError::BadCall(message="fs_exists", span=call_span)
                 }
                 require_effect_guard(
                   env,
@@ -1163,6 +1160,444 @@ fn type_call(
                     expected=@core.Type::Int,
                     actual=handle_ty,
                     span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              // --- HTTP Client builtins ---
+              "http_request" => {
+                // (method, url, headers, body) -> Int
+                let pos_args = extract_positional_args(
+                  args, "http_request", call_span,
+                )
+                if pos_args.length() != 4 {
+                  raise TypeError::BadCall(
+                    message="http_request",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_request",
+                  builtin_effects("http_request"),
+                  call_span,
+                )
+                for i = 0; i < 4; i = i + 1 {
+                  let ty = type_expr_eff(
+                    env,
+                    pos_args[i],
+                    aliases,
+                    effects,
+                    allow_effect,
+                  )
+                  if not(type_equal(env, ty, @core.Type::String)) {
+                    raise TypeError::Mismatch(
+                      expected=@core.Type::String,
+                      actual=ty,
+                      span=pos_args[i].span(),
+                      context=Some("argument"),
+                    )
+                  }
+                }
+                @core.Type::Int
+              }
+              "http_response_status" => {
+                // (handle) -> Int
+                let pos_args = extract_positional_args(
+                  args, "http_response_status", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="http_response_status",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_response_status",
+                  builtin_effects("http_response_status"),
+                  call_span,
+                )
+                let ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "http_response_header" => {
+                // (handle, name) -> String
+                let pos_args = extract_positional_args(
+                  args, "http_response_header", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="http_response_header",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_response_header",
+                  builtin_effects("http_response_header"),
+                  call_span,
+                )
+                let handle_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, handle_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=handle_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let name_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, name_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=name_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "http_response_body" => {
+                // (handle) -> String
+                let pos_args = extract_positional_args(
+                  args, "http_response_body", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="http_response_body",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_response_body",
+                  builtin_effects("http_response_body"),
+                  call_span,
+                )
+                let ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "http_close" => {
+                // (handle) -> Unit
+                let pos_args = extract_positional_args(
+                  args, "http_close", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="http_close", span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_close",
+                  builtin_effects("http_close"),
+                  call_span,
+                )
+                let ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              // --- HTTP Server builtins ---
+              "http_listen" => {
+                // (port) -> Int
+                let pos_args = extract_positional_args(
+                  args, "http_listen", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="http_listen",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_listen",
+                  builtin_effects("http_listen"),
+                  call_span,
+                )
+                let ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "http_accept" => {
+                // (server_handle) -> Int
+                let pos_args = extract_positional_args(
+                  args, "http_accept", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="http_accept",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_accept",
+                  builtin_effects("http_accept"),
+                  call_span,
+                )
+                let ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Int
+              }
+              "http_request_method"
+              | "http_request_url"
+              | "http_request_body" => {
+                // (req_handle) -> String
+                let name = name
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  name,
+                  builtin_effects(name),
+                  call_span,
+                )
+                let ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "http_request_header" => {
+                // (req_handle, name) -> String
+                let pos_args = extract_positional_args(
+                  args, "http_request_header", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="http_request_header",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_request_header",
+                  builtin_effects("http_request_header"),
+                  call_span,
+                )
+                let handle_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, handle_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=handle_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let name_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, name_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=name_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
+              }
+              "http_respond" => {
+                // (req_handle, status, headers, body) -> Unit
+                let pos_args = extract_positional_args(
+                  args, "http_respond", call_span,
+                )
+                if pos_args.length() != 4 {
+                  raise TypeError::BadCall(
+                    message="http_respond",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "http_respond",
+                  builtin_effects("http_respond"),
+                  call_span,
+                )
+                // arg 0: req_handle (Int)
+                let handle_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, handle_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=handle_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                // arg 1: status (Int)
+                let status_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, status_ty, @core.Type::Int)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::Int,
+                    actual=status_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                // arg 2: headers (String)
+                let headers_ty = type_expr_eff(
+                  env,
+                  pos_args[2],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, headers_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=headers_ty,
+                    span=pos_args[2].span(),
+                    context=Some("argument"),
+                  )
+                }
+                // arg 3: body (String)
+                let body_ty = type_expr_eff(
+                  env,
+                  pos_args[3],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, body_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=body_ty,
+                    span=pos_args[3].span(),
                     context=Some("argument"),
                   )
                 }

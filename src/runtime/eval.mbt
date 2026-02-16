@@ -14,6 +14,18 @@ pub enum Effect {
   SocketTcpRead(Int64, Int64, String)
   SocketTcpWrite(Int64, String)
   SocketTcpClose(Int64)
+  HttpRequest(String, String, String, String, Int64)
+  HttpResponseStatus(Int64, Int)
+  HttpResponseHeader(Int64, String, String)
+  HttpResponseBody(Int64, String)
+  HttpClose(Int64)
+  HttpListen(Int, Int64)
+  HttpAccept(Int64, Int64)
+  HttpRequestMethod(Int64, String)
+  HttpRequestUrl(Int64, String)
+  HttpRequestHeader(Int64, String, String)
+  HttpRequestBody(Int64, String)
+  HttpRespond(Int64, Int, String, String)
 } derive(Show, Eq)
 
 ///|
@@ -1442,15 +1454,12 @@ fn eval_call(
             }
             "fs_read_file" => {
               let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "fs_read_file",
-              )
+              let pos_args = extract_positional_values(out.args, "fs_read_file")
               if pos_args.length() != 1 {
                 raise EvalError::BadCall("fs_read_file")
               }
               match pos_args[0] {
-                @core.Value::String(path) => {
+                @core.Value::String(path) =>
                   match @io.read_string(path) {
                     Ok(content) => {
                       let effects = out.effects
@@ -1459,7 +1468,6 @@ fn eval_call(
                     }
                     Err(err) => raise EvalError::BadCall("fs_read_file: " + err)
                   }
-                }
                 _ => raise EvalError::BadCall("fs_read_file")
               }
             }
@@ -1473,7 +1481,7 @@ fn eval_call(
                 raise EvalError::BadCall("fs_write_file")
               }
               match (pos_args[0], pos_args[1]) {
-                (@core.Value::String(path), @core.Value::String(content)) => {
+                (@core.Value::String(path), @core.Value::String(content)) =>
                   match @io.write_string(path, content) {
                     Ok(_) => {
                       let effects = out.effects
@@ -1483,16 +1491,12 @@ fn eval_call(
                     Err(err) =>
                       raise EvalError::BadCall("fs_write_file: " + err)
                   }
-                }
                 _ => raise EvalError::BadCall("fs_write_file")
               }
             }
             "fs_exists" => {
               let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "fs_exists",
-              )
+              let pos_args = extract_positional_values(out.args, "fs_exists")
               if pos_args.length() != 1 {
                 raise EvalError::BadCall("fs_exists")
               }
@@ -1516,7 +1520,7 @@ fn eval_call(
                 raise EvalError::BadCall("socket_tcp_connect")
               }
               match (pos_args[0], pos_args[1]) {
-                (@core.Value::String(host), @core.Value::Int(port)) => {
+                (@core.Value::String(host), @core.Value::Int(port)) =>
                   match @backend.tcp_connect(host, port.to_int()) {
                     Ok(fd) => {
                       let effects = out.effects
@@ -1527,7 +1531,6 @@ fn eval_call(
                     Err(err) =>
                       raise EvalError::BadCall("socket_tcp_connect: " + err)
                   }
-                }
                 _ => raise EvalError::BadCall("socket_tcp_connect")
               }
             }
@@ -1541,7 +1544,7 @@ fn eval_call(
                 raise EvalError::BadCall("socket_tcp_read")
               }
               match (pos_args[0], pos_args[1]) {
-                (@core.Value::Int(fd), @core.Value::Int(max_bytes)) => {
+                (@core.Value::Int(fd), @core.Value::Int(max_bytes)) =>
                   match @backend.tcp_read(fd.to_int(), max_bytes.to_int()) {
                     Ok(data) => {
                       let effects = out.effects
@@ -1551,7 +1554,6 @@ fn eval_call(
                     Err(err) =>
                       raise EvalError::BadCall("socket_tcp_read: " + err)
                   }
-                }
                 _ => raise EvalError::BadCall("socket_tcp_read")
               }
             }
@@ -1565,7 +1567,7 @@ fn eval_call(
                 raise EvalError::BadCall("socket_tcp_write")
               }
               match (pos_args[0], pos_args[1]) {
-                (@core.Value::Int(fd), @core.Value::String(data)) => {
+                (@core.Value::Int(fd), @core.Value::String(data)) =>
                   match @backend.tcp_write(fd.to_int(), data) {
                     Ok(_) => {
                       let effects = out.effects
@@ -1575,7 +1577,6 @@ fn eval_call(
                     Err(err) =>
                       raise EvalError::BadCall("socket_tcp_write: " + err)
                   }
-                }
                 _ => raise EvalError::BadCall("socket_tcp_write")
               }
             }
@@ -1589,7 +1590,7 @@ fn eval_call(
                 raise EvalError::BadCall("socket_tcp_close")
               }
               match pos_args[0] {
-                @core.Value::Int(fd) => {
+                @core.Value::Int(fd) =>
                   match @backend.tcp_close(fd.to_int()) {
                     Ok(_) => {
                       let effects = out.effects
@@ -1599,8 +1600,308 @@ fn eval_call(
                     Err(err) =>
                       raise EvalError::BadCall("socket_tcp_close: " + err)
                   }
-                }
                 _ => raise EvalError::BadCall("socket_tcp_close")
+              }
+            }
+            // --- HTTP Client builtins ---
+            "http_request" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "http_request")
+              if pos_args.length() != 4 {
+                raise EvalError::BadCall("http_request")
+              }
+              let meth = match pos_args[0] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("http_request")
+              }
+              let url = match pos_args[1] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("http_request")
+              }
+              let headers = match pos_args[2] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("http_request")
+              }
+              let body = match pos_args[3] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("http_request")
+              }
+              match @backend.http_request(meth, url, headers, body) {
+                Ok(handle) => {
+                  let effects = out.effects
+                  let h64 = handle.to_int64()
+                  effects.push(
+                    Effect::HttpRequest(meth, url, headers, body, h64),
+                  )
+                  { value: @core.Value::Int(h64), effects }
+                }
+                Err(err) => raise EvalError::BadCall("http_request: " + err)
+              }
+            }
+            "http_response_status" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "http_response_status",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("http_response_status")
+              }
+              match pos_args[0] {
+                @core.Value::Int(handle) =>
+                  match @backend.http_response_status(handle.to_int()) {
+                    Ok(status) => {
+                      let effects = out.effects
+                      effects.push(Effect::HttpResponseStatus(handle, status))
+                      { value: @core.Value::Int(status.to_int64()), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("http_response_status: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_response_status")
+              }
+            }
+            "http_response_header" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "http_response_header",
+              )
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("http_response_header")
+              }
+              match (pos_args[0], pos_args[1]) {
+                (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
+                  match
+                    @backend.http_response_header(handle.to_int(), hdr_name) {
+                    Ok(hdr_val) => {
+                      let effects = out.effects
+                      effects.push(
+                        Effect::HttpResponseHeader(handle, hdr_name, hdr_val),
+                      )
+                      { value: @core.Value::String(hdr_val), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("http_response_header: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_response_header")
+              }
+            }
+            "http_response_body" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "http_response_body",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("http_response_body")
+              }
+              match pos_args[0] {
+                @core.Value::Int(handle) =>
+                  match @backend.http_response_body(handle.to_int()) {
+                    Ok(body) => {
+                      let effects = out.effects
+                      effects.push(Effect::HttpResponseBody(handle, body))
+                      { value: @core.Value::String(body), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("http_response_body: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_response_body")
+              }
+            }
+            "http_close" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "http_close")
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("http_close")
+              }
+              match pos_args[0] {
+                @core.Value::Int(handle) =>
+                  match @backend.http_close(handle.to_int()) {
+                    Ok(_) => {
+                      let effects = out.effects
+                      effects.push(Effect::HttpClose(handle))
+                      { value: @core.Value::Unit, effects }
+                    }
+                    Err(err) => raise EvalError::BadCall("http_close: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_close")
+              }
+            }
+            // --- HTTP Server builtins ---
+            "http_listen" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "http_listen")
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("http_listen")
+              }
+              match pos_args[0] {
+                @core.Value::Int(port) =>
+                  match @backend.http_listen(port.to_int()) {
+                    Ok(handle) => {
+                      let effects = out.effects
+                      let h64 = handle.to_int64()
+                      effects.push(Effect::HttpListen(port.to_int(), h64))
+                      { value: @core.Value::Int(h64), effects }
+                    }
+                    Err(err) => raise EvalError::BadCall("http_listen: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_listen")
+              }
+            }
+            "http_accept" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "http_accept")
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("http_accept")
+              }
+              match pos_args[0] {
+                @core.Value::Int(server_handle) =>
+                  match @backend.http_accept(server_handle.to_int()) {
+                    Ok(req_handle) => {
+                      let effects = out.effects
+                      let rh64 = req_handle.to_int64()
+                      effects.push(Effect::HttpAccept(server_handle, rh64))
+                      { value: @core.Value::Int(rh64), effects }
+                    }
+                    Err(err) => raise EvalError::BadCall("http_accept: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_accept")
+              }
+            }
+            "http_request_method" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "http_request_method",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("http_request_method")
+              }
+              match pos_args[0] {
+                @core.Value::Int(handle) =>
+                  match @backend.http_request_method(handle.to_int()) {
+                    Ok(meth) => {
+                      let effects = out.effects
+                      effects.push(Effect::HttpRequestMethod(handle, meth))
+                      { value: @core.Value::String(meth), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("http_request_method: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_request_method")
+              }
+            }
+            "http_request_url" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "http_request_url",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("http_request_url")
+              }
+              match pos_args[0] {
+                @core.Value::Int(handle) =>
+                  match @backend.http_request_url(handle.to_int()) {
+                    Ok(url) => {
+                      let effects = out.effects
+                      effects.push(Effect::HttpRequestUrl(handle, url))
+                      { value: @core.Value::String(url), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("http_request_url: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_request_url")
+              }
+            }
+            "http_request_header" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "http_request_header",
+              )
+              if pos_args.length() != 2 {
+                raise EvalError::BadCall("http_request_header")
+              }
+              match (pos_args[0], pos_args[1]) {
+                (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
+                  match
+                    @backend.http_request_header(handle.to_int(), hdr_name) {
+                    Ok(hdr_val) => {
+                      let effects = out.effects
+                      effects.push(
+                        Effect::HttpRequestHeader(handle, hdr_name, hdr_val),
+                      )
+                      { value: @core.Value::String(hdr_val), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("http_request_header: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_request_header")
+              }
+            }
+            "http_request_body" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(
+                out.args,
+                "http_request_body",
+              )
+              if pos_args.length() != 1 {
+                raise EvalError::BadCall("http_request_body")
+              }
+              match pos_args[0] {
+                @core.Value::Int(handle) =>
+                  match @backend.http_request_body(handle.to_int()) {
+                    Ok(body) => {
+                      let effects = out.effects
+                      effects.push(Effect::HttpRequestBody(handle, body))
+                      { value: @core.Value::String(body), effects }
+                    }
+                    Err(err) =>
+                      raise EvalError::BadCall("http_request_body: " + err)
+                  }
+                _ => raise EvalError::BadCall("http_request_body")
+              }
+            }
+            "http_respond" => {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, "http_respond")
+              if pos_args.length() != 4 {
+                raise EvalError::BadCall("http_respond")
+              }
+              let handle = match pos_args[0] {
+                @core.Value::Int(v) => v
+                _ => raise EvalError::BadCall("http_respond")
+              }
+              let status = match pos_args[1] {
+                @core.Value::Int(v) => v
+                _ => raise EvalError::BadCall("http_respond")
+              }
+              let headers = match pos_args[2] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("http_respond")
+              }
+              let body = match pos_args[3] {
+                @core.Value::String(s) => s
+                _ => raise EvalError::BadCall("http_respond")
+              }
+              match
+                @backend.http_respond(
+                  handle.to_int(),
+                  status.to_int(),
+                  headers,
+                  body,
+                ) {
+                Ok(_) => {
+                  let effects = out.effects
+                  effects.push(
+                    Effect::HttpRespond(handle, status.to_int(), headers, body),
+                  )
+                  { value: @core.Value::Unit, effects }
+                }
+                Err(err) => raise EvalError::BadCall("http_respond: " + err)
               }
             }
             "addr" => {

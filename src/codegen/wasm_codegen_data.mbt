@@ -135,9 +135,11 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           if ctx.use_js_strings {
             ctx.need_js_equals = true
           }
-        "array_builder" | "map_builder" | "string_builder" | "map_keys" |
-        "map_values" =>
-          ctx.need_heap = true
+        "array_builder"
+        | "map_builder"
+        | "string_builder"
+        | "map_keys"
+        | "map_values" => ctx.need_heap = true
         "sleep" => ctx.need_sleep = true
         "stdout_write_char" | "stdout_write_stream" =>
           ctx.need_stdout_write_char = true
@@ -147,9 +149,26 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           ctx.need_fs = true
           ctx.need_heap = true
         }
-        "socket_tcp_connect" | "socket_tcp_read" | "socket_tcp_write" |
-        "socket_tcp_close" => {
+        "socket_tcp_connect"
+        | "socket_tcp_read"
+        | "socket_tcp_write"
+        | "socket_tcp_close" => {
           ctx.need_socket = true
+          ctx.need_heap = true
+        }
+        "http_request"
+        | "http_response_status"
+        | "http_response_header"
+        | "http_response_body"
+        | "http_close"
+        | "http_listen"
+        | "http_accept"
+        | "http_request_method"
+        | "http_request_url"
+        | "http_request_header"
+        | "http_request_body"
+        | "http_respond" => {
+          ctx.need_http = true
           ctx.need_heap = true
         }
         "string_from_char_code" | "to_double" => ctx.need_heap = true

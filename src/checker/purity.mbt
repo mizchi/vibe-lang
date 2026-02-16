@@ -463,7 +463,19 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "socket_tcp_connect" ||
   name == "socket_tcp_read" ||
   name == "socket_tcp_write" ||
-  name == "socket_tcp_close"
+  name == "socket_tcp_close" ||
+  name == "http_request" ||
+  name == "http_response_status" ||
+  name == "http_response_header" ||
+  name == "http_response_body" ||
+  name == "http_close" ||
+  name == "http_listen" ||
+  name == "http_accept" ||
+  name == "http_request_method" ||
+  name == "http_request_url" ||
+  name == "http_request_header" ||
+  name == "http_request_body" ||
+  name == "http_respond"
 }
 
 ///|

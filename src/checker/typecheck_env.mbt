@@ -261,9 +261,22 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     "dynamic_path_resolve" => [@core.EffectAtom::Const("Env")]
     "fs_read_file" | "fs_write_file" | "fs_exists" =>
       [@core.EffectAtom::Const("Fs")]
-    "socket_tcp_connect" | "socket_tcp_read" | "socket_tcp_write" |
-    "socket_tcp_close" =>
-      [@core.EffectAtom::Const("Net")]
+    "socket_tcp_connect"
+    | "socket_tcp_read"
+    | "socket_tcp_write"
+    | "socket_tcp_close" => [@core.EffectAtom::Const("Net")]
+    "http_request"
+    | "http_response_status"
+    | "http_response_header"
+    | "http_response_body"
+    | "http_close"
+    | "http_listen"
+    | "http_accept"
+    | "http_request_method"
+    | "http_request_url"
+    | "http_request_header"
+    | "http_request_body"
+    | "http_respond" => [@core.EffectAtom::Const("Net")]
     _ => []
   }
 }

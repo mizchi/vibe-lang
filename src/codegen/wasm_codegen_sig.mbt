@@ -950,7 +950,19 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "socket_tcp_connect" ||
         name == "socket_tcp_read" ||
         name == "socket_tcp_write" ||
-        name == "socket_tcp_close" {
+        name == "socket_tcp_close" ||
+        name == "http_request" ||
+        name == "http_response_status" ||
+        name == "http_response_header" ||
+        name == "http_response_body" ||
+        name == "http_close" ||
+        name == "http_listen" ||
+        name == "http_accept" ||
+        name == "http_request_method" ||
+        name == "http_request_url" ||
+        name == "http_request_header" ||
+        name == "http_request_body" ||
+        name == "http_respond" {
         return true
       }
       // Enum constructor call needs heap
@@ -1342,10 +1354,7 @@ fn import_index_after_stdin(ctx : CodegenCtx) -> Int {
 ///|
 fn import_index_fs_get_directories(ctx : CodegenCtx) -> Int raise WasmGenError {
   if not(ctx.need_fs) {
-    raise WasmGenError::BackendLimit(
-      backend="wasm",
-      feature="fs WASI import",
-    )
+    raise WasmGenError::BackendLimit(backend="wasm", feature="fs WASI import")
   }
   import_index_after_stdin(ctx)
 }
@@ -1378,8 +1387,8 @@ fn import_index_fs_resource_drop(ctx : CodegenCtx) -> Int raise WasmGenError {
 ///|
 fn fs_root_descriptor_global_index(ctx : CodegenCtx) -> Int {
   (if ctx.use_heap_global { 1 } else { 0 }) +
-    (if ctx.need_stack_switching { 1 } else { 0 }) +
-    (if ctx.coverage_enabled { 2 } else { 0 })
+  (if ctx.need_stack_switching { 1 } else { 0 }) +
+  (if ctx.coverage_enabled { 2 } else { 0 })
 }
 
 ///|
@@ -1439,9 +1448,7 @@ fn import_index_socket_stream_read(ctx : CodegenCtx) -> Int raise WasmGenError {
 }
 
 ///|
-fn import_index_socket_stream_write(
-  ctx : CodegenCtx,
-) -> Int raise WasmGenError {
+fn import_index_socket_stream_write(ctx : CodegenCtx) -> Int raise WasmGenError {
   import_index_socket_instance_network(ctx) + 7
 }
 
@@ -1475,9 +1482,9 @@ fn import_index_socket_drop_pollable(
 ///|
 fn socket_table_global_index(ctx : CodegenCtx) -> Int {
   (if ctx.use_heap_global { 1 } else { 0 }) +
-    (if ctx.need_stack_switching { 1 } else { 0 }) +
-    (if ctx.coverage_enabled { 2 } else { 0 }) +
-    (if ctx.need_fs { 1 } else { 0 })
+  (if ctx.need_stack_switching { 1 } else { 0 }) +
+  (if ctx.coverage_enabled { 2 } else { 0 }) +
+  (if ctx.need_fs { 1 } else { 0 })
 }
 
 ///|

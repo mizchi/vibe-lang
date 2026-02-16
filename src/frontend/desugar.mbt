@@ -43,9 +43,11 @@ fn known_vibe_non_command_names() -> Map[String, Bool] {
     "string_contains", "string_trim", "array_length", "array_get", "array_slice",
     "array_builder", "array_builder_push", "array_builder_freeze", "map_builder",
     "map_builder_set", "map_builder_freeze", "map_keys", "map_values", "map_has_key",
-    "record_set", "char_to_int", "char_from_int",
-    "fs_read_file", "fs_write_file", "fs_exists",
-    "socket_tcp_connect", "socket_tcp_read", "socket_tcp_write", "socket_tcp_close",
+    "record_set", "char_to_int", "char_from_int", "fs_read_file", "fs_write_file",
+    "fs_exists", "socket_tcp_connect", "socket_tcp_read", "socket_tcp_write", "socket_tcp_close",
+    "http_request", "http_response_status", "http_response_header", "http_response_body",
+    "http_close", "http_listen", "http_accept", "http_request_method", "http_request_url",
+    "http_request_header", "http_request_body", "http_respond",
   ]
   for name in builtins {
     out[name] = true

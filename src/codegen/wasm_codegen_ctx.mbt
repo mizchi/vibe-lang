@@ -66,6 +66,8 @@ priv struct CodegenCtx {
   mut need_fs : Bool
   // Socket WASI imports
   mut need_socket : Bool
+  // HTTP WASI imports (P3 draft — stub for now)
+  mut need_http : Bool
   // Source-level coverage instrumentation
   coverage_enabled : Bool
   coverage_points : Array[WasmCoveragePoint]
@@ -164,6 +166,8 @@ fn CodegenCtx::new(
     need_fs: false,
     // Socket WASI imports
     need_socket: false,
+    // HTTP WASI imports
+    need_http: false,
     // Source-level coverage instrumentation
     coverage_enabled,
     coverage_points: [],
