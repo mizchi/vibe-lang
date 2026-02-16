@@ -543,7 +543,7 @@ fn run_bench_blocks_interpreter_entry(
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
-  let compiled = @runtime.compile_module(db, entry) catch {
+  let compiled = @runtime_compile.compile_module(db, entry) catch {
     e => return Err("compile error: " + e.to_string())
   }
   let rt = new_runtime_with_features(features)
@@ -898,7 +898,7 @@ fn compile_bench_script_to_wasm(
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
-  let wasm_bytes = @runtime.compile_module_wasm_with_opt_level(
+  let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
     db,
     entry,
     no_dce=true,
@@ -907,7 +907,7 @@ fn compile_bench_script_to_wasm(
     e => {
       let primary_err = e.user_message()
       if primary_err.contains("optimize:") {
-        @runtime.compile_module_wasm_with_opt_level(
+        @runtime_compile.compile_module_wasm_with_opt_level(
           db,
           entry,
           no_dce=true,
@@ -1174,7 +1174,7 @@ fn bench_file_cmd(
           Err(err) => abort("bench-file: " + err)
           Ok(v) => v
         }
-        let _ = rt.run_compiled(compiled) catch {
+        let _ = @runtime_compile.run_compiled(rt, compiled) catch {
           e => abort("bench-file: " + e.to_string())
         }
       }
@@ -1184,7 +1184,7 @@ fn bench_file_cmd(
           Err(err) => abort("bench-file: " + err)
           Ok(v) => v
         }
-        let _ = rt.run_compiled(compiled) catch {
+        let _ = @runtime_compile.run_compiled(rt, compiled) catch {
           e => abort("bench-file: " + e.to_string())
         }
       }

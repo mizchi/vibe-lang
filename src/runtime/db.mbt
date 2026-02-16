@@ -229,7 +229,7 @@ pub fn VibeDb::ast_with_hash_imports(
 }
 
 ///|
-fn VibeDb::rewrite_imports_to_hash(
+pub fn VibeDb::rewrite_imports_to_hash(
   self : VibeDb,
   path : String,
   ast : @core.Module,

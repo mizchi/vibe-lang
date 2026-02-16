@@ -3,7 +3,7 @@
 test "vibe wasm header" {
   let db = VibeDb::new()
   db.set_source("main", "let x = 1\nx")
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -20,7 +20,11 @@ test "vibe wasm compile with wite opt level" {
   let db = VibeDb::new()
   db.set_source("main", "let x = 1\nx")
   let wasm = try
-    compile_module_wasm_with_opt_level(db, "main", opt_level=Some("-Oz"))
+    @runtime_compile.compile_module_wasm_with_opt_level(
+      db,
+      "main",
+      opt_level=Some("-Oz"),
+    )
   catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -37,7 +41,7 @@ test "vibe wasm compile with wite opt level" {
 test "vibe wasm compile rejects unknown wite opt level" {
   let db = VibeDb::new()
   db.set_source("main", "let x = 1\nx")
-  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm_with_opt_level(
+  let result : Result[Bytes, WasmCompileError] = try? @runtime_compile.compile_module_wasm_with_opt_level(
     db,
     "main",
     opt_level=Some("-Ox"),
@@ -59,7 +63,7 @@ test "vibe wasm compile rejects unknown wite opt level" {
 test "vibe wasm export run" {
   let db = VibeDb::new()
   db.set_source("main", "let x = 1\nx")
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -78,7 +82,9 @@ test "vibe wasm coverage exports counters and collects points" {
     #|  0
     #|}
   db.set_source("main", src)
-  let artifact = try compile_module_wasm_with_coverage(db, "main") catch {
+  let artifact = try
+    @runtime_compile.compile_module_wasm_with_coverage(db, "main")
+  catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     v => v
@@ -117,13 +123,19 @@ test "vibe wasm coverage run-tests keeps test-referenced branches" {
     #|}
     #|0
   db.set_source("main", src)
-  let baseline = try compile_module_wasm_with_coverage(db, "main") catch {
+  let baseline = try
+    @runtime_compile.compile_module_wasm_with_coverage(db, "main")
+  catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     v => v
   }
   let run_tests = try
-    compile_module_wasm_with_coverage(db, "main", run_tests=true)
+    @runtime_compile.compile_module_wasm_with_coverage(
+      db,
+      "main",
+      run_tests=true,
+    )
   catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -157,7 +169,7 @@ test "vibe wasm coverage run-tests keeps test-referenced branches" {
 test "vibe wasm import sh" {
   let db = VibeDb::new()
   db.set_source("main", "do { sh(\"ls\") }")
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -170,7 +182,7 @@ test "vibe wasm import sh" {
 test "vibe wasm import path" {
   let db = VibeDb::new()
   db.set_source("main", "let p = path(\"a/../b\")\np")
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -194,7 +206,7 @@ test "vibe wasm compile export enum ctor call" {
     #|
     #|make("x")
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -395,7 +407,7 @@ test "vibe wasm omits table/element when no function values are used" {
     #|let dec = (x: Int) -> Int { x - 1 }
     #|inc(1) + dec(2)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -412,7 +424,7 @@ test "vibe wasm keeps table/element when function values are used" {
     #|let id = (x: Int) -> Int { x }
     #|apply(id, 7)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -426,7 +438,7 @@ test "vibe wasm strips raise string literal in default build" {
   let db = VibeDb::new()
   let needle = "ERR_LITERAL_ONLY_FOR_DEBUG_9f0d5c2a"
   db.set_source("main", raise_literal_source(needle))
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -441,7 +453,7 @@ test "vibe wasm keeps raise string literal when debug errors enabled" {
   let needle = "ERR_LITERAL_ONLY_FOR_DEBUG_9f0d5c2a"
   db.set_source("main", raise_literal_source(needle))
   let wasm = try
-    compile_module_wasm_with_opt_level(
+    @runtime_compile.compile_module_wasm_with_opt_level(
       db,
       "main",
       opt_level=None,
@@ -461,7 +473,7 @@ test "vibe wasm keeps raise string literal when debug errors enabled" {
 test "vibe wasm import sleep" {
   let db = VibeDb::new()
   db.set_source("main", "do { sleep(100) }")
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -481,7 +493,7 @@ test "vibe wasm enum and match" {
     #|  Err => 0
     #|}
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -508,7 +520,7 @@ test "vibe wasm enum import and match" {
     #|is_null(x)
   db.set_source("./lib.vibe", lib_src)
   db.set_source("main", main_src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -527,7 +539,7 @@ test "vibe wasm export user functions" {
     #|let helper = (x: Int) -> Int { x + 1 }
     #|add(1, 2)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -552,7 +564,7 @@ test "vibe wasm accepts i32/f32/f64 type aliases" {
     #|let _ = id_f32(2.5f)
     #|42
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -572,7 +584,7 @@ test "vibe wasm supports direct vibe/wasm type member calls" {
     #|let d = vibe/wasm/f32::add(1.5f, 2.5f)
     #|if c == 1 { a + b + float_to_int(d) } else { 0 }
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -595,7 +607,9 @@ test "vibe wasm-gc supports direct ref type member eq calls" {
     #|let externref_eq = (a: externref, b: externref) -> i32 { vibe/wasm/externref::eq(a, b) }
     #|0
   db.set_source("main", src)
-  let wasm = try @runtime.compile_module_wasm_gc_no_dce(db, "main") catch {
+  let wasm = try
+    @runtime_compile.compile_module_wasm_gc_no_dce(db, "main")
+  catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -613,7 +627,7 @@ test "vibe wasm compiles std wasm opcode module" {
   }
   let db = VibeDb::new()
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -642,7 +656,7 @@ test "vibe wasm compiles multiple local recursive `go` helpers" {
     #|reverse_count(5) + take_count(3)
   let db = VibeDb::new()
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -664,7 +678,7 @@ test "vibe wasm compiles numeric conversion builtins" {
     #|let f = double_to_float(b)
     #|c + d + float_to_int(f) + double_to_int(e)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -682,7 +696,7 @@ test "vibe wasm uses f32/f64 compare opcodes for typed params" {
     #|let double_eq = (a: Double, b: Double) -> Bool { a == b }
     #|if float_eq(1.0f, 1.0f) && double_eq(1.0, 1.0) { 1 } else { 0 }
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -701,7 +715,7 @@ test "vibe wasm compiles function alias calls" {
     #|let abs = abs_impl
     #|abs(-3.5)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -722,7 +736,7 @@ test "vibe wasm compiles local recursive helper calls" {
     #|}
     #|run(5)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -743,7 +757,7 @@ test "vibe wasm compiles recursive helper with captured function param" {
     #|}
     #|apply_n((x: Int) -> Int { x + 2 }, 3)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -760,7 +774,7 @@ test "vibe wasm compiles Int method-style to_double call" {
     #|let d = v.to_double()
     #|double_to_int(d)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -778,7 +792,7 @@ test "vibe wasm imports stdio char builtins" {
     #|  stdin_read_char()
     #|}
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -804,7 +818,7 @@ test "vibe wasm imports stdio stream builtins" {
     #|  stdin_read_stream(8)
     #|}
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -842,7 +856,7 @@ test "vibe wasm compiles while with stdio char builtins" {
     #|}
     #|run()
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -857,7 +871,7 @@ test "vibe wasm compiles string_from_char_code builtin" {
   let src =
     #|string_from_char_code(65)
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -877,7 +891,7 @@ test "vibe wasm compiles non-js string builtins" {
     #|let part = string_substring(joined, 1, 3)
     #|if string_equals(part, "bc") { len + code } else { 0 }
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -894,7 +908,7 @@ test "vibe wasm compiles __to_string builtin" {
     #|let s2 = __to_string(true)
     #|if string_equals(s1, "42") && string_equals(s2, "true") { 1 } else { 0 }
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -916,7 +930,7 @@ test "vibe wasm compiles threads builtin thunks" {
     #|let wait_w = () -> Int { threads_wait(1) }
     #|0
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b
@@ -932,7 +946,7 @@ test "vibe wasm rejects unknown record accessor call" {
     #|let hints = record { kind: "ok" }
     #|unknown_accessor(hints)
   db.set_source("main", src)
-  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm(
+  let result : Result[Bytes, WasmCompileError] = try? @runtime_compile.compile_module_wasm(
     db, "main",
   )
   match result {
@@ -961,7 +975,7 @@ test "vibe wasm compiles wasm primitive memory and conversion builtins" {
     #|let g = i32_trunc_f64_s(e)
     #|a + b + c + f + g
   db.set_source("main", src)
-  let wasm = try compile_module_wasm(db, "main") catch {
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b

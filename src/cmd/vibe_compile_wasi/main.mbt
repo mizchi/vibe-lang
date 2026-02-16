@@ -239,7 +239,7 @@ fn compile_cmd(
   }
   match opts.mode {
     CompileMode::Ir => {
-      let compiled = @runtime.compile_module(db, entry) catch {
+      let compiled = @runtime_compile.compile_module(db, entry) catch {
         e => return Err("compile: " + e.to_string())
       }
       match @io.write_string_with(fs, resolved_out, compiled.ir) {
@@ -248,7 +248,7 @@ fn compile_cmd(
       }
     }
     CompileMode::Wasm => {
-      let wasm_bytes = @runtime.compile_module_wasm_with_opt_level(
+      let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
         db,
         entry,
         no_dce=opts.no_dce,
@@ -262,7 +262,7 @@ fn compile_cmd(
       }
     }
     CompileMode::WasmJsString => {
-      let wasm_bytes = @runtime.compile_module_wasm_js_string_with_opt_level(
+      let wasm_bytes = @runtime_compile.compile_module_wasm_js_string_with_opt_level(
         db,
         entry,
         no_dce=opts.no_dce,
@@ -276,7 +276,7 @@ fn compile_cmd(
       }
     }
     CompileMode::WasmGc => {
-      let wasm_bytes = @runtime.compile_module_wasm_gc_with_opt_level(
+      let wasm_bytes = @runtime_compile.compile_module_wasm_gc_with_opt_level(
         db,
         entry,
         no_dce=opts.no_dce,
@@ -290,7 +290,7 @@ fn compile_cmd(
       }
     }
     CompileMode::Component => {
-      let wasm_bytes = @runtime.compile_module_component_with_opt_level(
+      let wasm_bytes = @runtime_compile.compile_module_component_with_opt_level(
         db,
         entry,
         opt_level=opts.opt_level,
@@ -306,7 +306,7 @@ fn compile_cmd(
       let basename = get_basename(entry)
       let package_name = "local:" + basename
       let world_name = basename
-      let wit_str = .generate_module_wit(
+      let wit_str = @runtime_compile.generate_module_wit(
         db, entry, package_name, world_name,
       ) catch {
         e => return Err("compile: " + e.to_string())
@@ -320,7 +320,7 @@ fn compile_cmd(
       let basename = get_basename(entry)
       let package_name = "local:" + basename
       let world_name = basename
-      let wit_str = .generate_module_component_wit(
+      let wit_str = @runtime_compile.generate_module_component_wit(
         db, entry, package_name, world_name,
       ) catch {
         e => return Err("compile: " + e.to_string())

@@ -13,20 +13,20 @@ fn snapshot_sizes(
 ) -> SizeSnapshot raise {
   let db = @runtime.VibeDb::new()
   db.set_source(name, source)
-  let compiled = try @runtime.compile_module(db, name) catch {
+  let compiled = try @runtime_compile.compile_module(db, name) catch {
     e => fail("[\{name}] compile error: \{e.to_string()}")
   } noraise {
     c => c
   }
   let ir_size = compiled.ir.length()
   let wasm_result : Result[Int, String] = if use_js_strings {
-    try @runtime.compile_module_wasm_js_string(db, name) catch {
+    try @runtime_compile.compile_module_wasm_js_string(db, name) catch {
       e => Err(e.to_string())
     } noraise {
       wasm => Ok(wasm.length())
     }
   } else {
-    try @runtime.compile_module_wasm(db, name) catch {
+    try @runtime_compile.compile_module_wasm(db, name) catch {
       e => Err(e.to_string())
     } noraise {
       wasm => Ok(wasm.length())

@@ -353,19 +353,21 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
 }
 
 ///|
-fn coverage_point_kind_name(kind : @runtime.WasmCoveragePointKind) -> String {
+fn coverage_point_kind_name(
+  kind : @runtime_compile.WasmCoveragePointKind,
+) -> String {
   match kind {
-    @runtime.WasmCoveragePointKind::Line => "line"
-    @runtime.WasmCoveragePointKind::BranchIfThen => "branch_if_then"
-    @runtime.WasmCoveragePointKind::BranchIfElse => "branch_if_else"
-    @runtime.WasmCoveragePointKind::BranchMatchArm => "branch_match_arm"
+    @runtime_compile.WasmCoveragePointKind::Line => "line"
+    @runtime_compile.WasmCoveragePointKind::BranchIfThen => "branch_if_then"
+    @runtime_compile.WasmCoveragePointKind::BranchIfElse => "branch_if_else"
+    @runtime_compile.WasmCoveragePointKind::BranchMatchArm => "branch_match_arm"
   }
 }
 
 ///|
 fn coverage_point_json(
   source : String,
-  point : @runtime.WasmCoveragePoint,
+  point : @runtime_compile.WasmCoveragePoint,
 ) -> Json {
   let obj : Map[String, Json] = {}
   let span_obj : Map[String, Json] = {}
@@ -384,7 +386,7 @@ fn write_wasm_coverage_sidecar_with(
   out_path : String,
   entry_path : String,
   source : String,
-  coverage : @runtime.WasmCoverageArtifact,
+  coverage : @runtime_compile.WasmCoverageArtifact,
 ) -> Unit {
   let points : Array[Json] = []
   for point in coverage.points {
@@ -465,7 +467,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
       }
       match opts.mode {
         CompileMode::Ir => {
-          let compiled = @runtime.compile_module(db, entry) catch {
+          let compiled = @runtime_compile.compile_module(db, entry) catch {
             e => abort("compile: " + e.to_string())
           }
           match @io.write_string_with(fs, resolved_out, compiled.ir) {
@@ -476,7 +478,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
         }
         CompileMode::Wasm =>
           if opts.coverage {
-            let coverage = @runtime.compile_module_wasm_with_coverage(
+            let coverage = @runtime_compile.compile_module_wasm_with_coverage(
               db,
               entry,
               no_dce=opts.no_dce,
@@ -503,7 +505,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               coverage,
             )
           } else {
-            let wasm_bytes = @runtime.compile_module_wasm_with_opt_level(
+            let wasm_bytes = @runtime_compile.compile_module_wasm_with_opt_level(
               db,
               entry,
               no_dce=opts.no_dce,
@@ -520,7 +522,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
           }
         CompileMode::WasmJsString =>
           if opts.coverage {
-            let coverage = @runtime.compile_module_wasm_js_string_with_coverage(
+            let coverage = @runtime_compile.compile_module_wasm_js_string_with_coverage(
               db,
               entry,
               no_dce=opts.no_dce,
@@ -547,7 +549,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               coverage,
             )
           } else {
-            let wasm_bytes = @runtime.compile_module_wasm_js_string_with_opt_level(
+            let wasm_bytes = @runtime_compile.compile_module_wasm_js_string_with_opt_level(
               db,
               entry,
               no_dce=opts.no_dce,
@@ -563,7 +565,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
             println("wrote " + resolved_out)
           }
         CompileMode::WasmGc => {
-          let wasm_bytes = @runtime.compile_module_wasm_gc_with_opt_level(
+          let wasm_bytes = @runtime_compile.compile_module_wasm_gc_with_opt_level(
             db,
             entry,
             no_dce=opts.no_dce,
@@ -578,7 +580,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
           println("wrote " + resolved_out)
         }
         CompileMode::Component => {
-          let wasm_bytes = @runtime.compile_module_component_with_opt_level(
+          let wasm_bytes = @runtime_compile.compile_module_component_with_opt_level(
             db,
             entry,
             opt_level=opts.opt_level,
@@ -596,7 +598,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
           let basename = get_basename(entry)
           let package_name = "local:" + basename
           let world_name = basename
-          let wit_str = @runtime.generate_module_wit(
+          let wit_str = @runtime_compile.generate_module_wit(
             db, entry, package_name, world_name,
           ) catch {
             e => abort("compile: " + e.user_message())
@@ -612,7 +614,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
           let wit_ident = sanitize_wit_ident(basename)
           let package_name = "local:" + wit_ident
           let world_name = wit_ident
-          let wit_str = @runtime.generate_module_component_wit(
+          let wit_str = @runtime_compile.generate_module_component_wit(
             db, entry, package_name, world_name,
           ) catch {
             e => abort("compile: " + e.user_message())
@@ -643,7 +645,7 @@ fn run_cmd(
       match @loader.load_db(entry_path) {
         Err(err) => abort("run: " + err)
         Ok((db, entry)) => {
-          let compiled = @runtime.compile_module(db, entry) catch {
+          let compiled = @runtime_compile.compile_module(db, entry) catch {
             e => abort("run: " + e.to_string())
           }
           let rt = new_runtime_with_features(features)
@@ -1024,7 +1026,7 @@ fn test_cmd(
         failed = true
       }
       Ok((db, entry)) => {
-        let compiled = @runtime.compile_module(db, entry) catch {
+        let compiled = @runtime_compile.compile_module(db, entry) catch {
           e => {
             println("[\{entry_path}] compile error: \{e.to_string()}")
             failed = true
@@ -1254,8 +1256,8 @@ fn load_entry_db(
 fn compile_entry_with_db(
   db : @runtime.VibeDb,
   entry : String,
-) -> Result[@runtime.CompiledModule, String] {
-  let compiled = @runtime.compile_module(db, entry) catch {
+) -> Result[@runtime_compile.CompiledModule, String] {
+  let compiled = @runtime_compile.compile_module(db, entry) catch {
     e => return Err(e.to_string())
   }
   Ok(compiled)

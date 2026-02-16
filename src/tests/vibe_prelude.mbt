@@ -1,5 +1,5 @@
 ///|
-pub using @runtime {
+pub using @runtime_compile {
   compile_module,
   compile_module_component,
   compile_module_component_with_opt_level,
@@ -11,10 +11,10 @@ pub using @runtime {
 }
 
 ///|
-pub using @runtime {type CompileError}
+pub using @runtime_compile {type CompileError}
 
 ///|
-pub using @runtime {type CompiledModule}
+pub using @runtime_compile {type CompiledModule}
 
 ///|
 pub using @runtime {type EvalResult}
@@ -23,16 +23,16 @@ pub using @runtime {type EvalResult}
 pub using @runtime {type Runtime}
 
 ///|
-pub using @runtime {type WasmCompileError}
+pub using @runtime_compile {type WasmCompileError}
 
 ///|
-pub using @runtime {type WasmCoverageArtifact}
+pub using @runtime_compile {type WasmCoverageArtifact}
 
 ///|
-pub using @runtime {type WasmCoveragePoint}
+pub using @runtime_compile {type WasmCoveragePoint}
 
 ///|
-pub using @runtime {type WasmCoveragePointKind}
+pub using @runtime_compile {type WasmCoveragePointKind}
 
 ///|
 pub using @runtime {type VibeDb}

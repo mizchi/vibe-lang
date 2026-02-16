@@ -49,6 +49,12 @@ function ensureExportFunctions(exports, wasmPath) {
   if (!exports.vibe_ide_search) {
     throw new Error(`missing export "vibe_ide_search" in ${wasmPath}`);
   }
+  if (!exports.vibe_eval) {
+    throw new Error(`missing export "vibe_eval" in ${wasmPath}`);
+  }
+  if (!exports.vibe_eval_reset) {
+    throw new Error(`missing export "vibe_eval_reset" in ${wasmPath}`);
+  }
 }
 
 function writeSource(memory, source, inputPtr, outputPtr) {
@@ -78,12 +84,21 @@ function toRequestJson(request) {
   return JSON.stringify(request);
 }
 
+function buildDefaultImports() {
+  const noop = () => {};
+  const handler = { get: () => noop };
+  return {
+    __moonbit_sys_unstable: new Proxy({}, handler),
+    __moonbit_fs_unstable: new Proxy({}, handler),
+  };
+}
+
 export async function createVibeService(options = {}) {
   const wasmPath = options.wasmPath ?? DEFAULT_WASM_PATH;
   const inputPtr = options.inputPtr ?? DEFAULT_INPUT_PTR;
   const outputPtr = options.outputPtr ?? DEFAULT_OUTPUT_PTR;
   const outputCap = options.outputCap ?? DEFAULT_OUTPUT_CAP;
-  const imports = options.imports ?? {};
+  const imports = { ...buildDefaultImports(), ...options.imports };
 
   const bytes = await loadWasmBytes(wasmPath);
   const { instance } = await WebAssembly.instantiate(bytes, imports);
@@ -98,6 +113,8 @@ export async function createVibeService(options = {}) {
   const wasmIdeOutline = exports.vibe_ide_outline;
   const wasmIdePeekDef = exports.vibe_ide_peek_def;
   const wasmIdeSearch = exports.vibe_ide_search;
+  const wasmEval = exports.vibe_eval;
+  const wasmEvalReset = exports.vibe_eval_reset;
 
   async function rawInit(request) {
     const payload = toRequestJson(request);
@@ -170,6 +187,28 @@ export async function createVibeService(options = {}) {
     return JSON.parse(await rawIdeSearch(request));
   }
 
+  async function rawEval(request) {
+    const payload = toRequestJson(request);
+    const sourceLen = writeSource(memory, payload, inputPtr, outputPtr);
+    const outLen = wasmEval(inputPtr, sourceLen, outputPtr, outputCap);
+    return readOutput(memory, outLen, outputPtr, outputCap);
+  }
+
+  async function rawEvalReset(request) {
+    const payload = toRequestJson(request ?? {});
+    const sourceLen = writeSource(memory, payload, inputPtr, outputPtr);
+    const outLen = wasmEvalReset(inputPtr, sourceLen, outputPtr, outputCap);
+    return readOutput(memory, outLen, outputPtr, outputCap);
+  }
+
+  async function vibeEval(request) {
+    return JSON.parse(await rawEval(request));
+  }
+
+  async function evalReset(request) {
+    return JSON.parse(await rawEvalReset(request));
+  }
+
   async function checkProject(project) {
     if (!(project.entry in project.files)) {
       throw new Error(`entry not found in files: ${project.entry}`);
@@ -205,6 +244,10 @@ export async function createVibeService(options = {}) {
     idePeekDef,
     ideSearch,
     checkProject,
+    rawEval,
+    rawEvalReset,
+    eval: vibeEval,
+    evalReset,
   };
 }
 

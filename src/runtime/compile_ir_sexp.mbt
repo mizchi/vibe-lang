@@ -1,6 +1,6 @@
 ///|
 /// Convert module to canonical S-expression for hashing.
-fn module_to_sexp(
+pub fn module_to_sexp(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
 ) -> String {

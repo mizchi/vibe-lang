@@ -118,6 +118,28 @@ export type IdeOutlineResult = IdeOutlineOkResult | IdeErrorResult;
 export type IdePeekDefResult = IdePeekDefOkResult | IdeErrorResult;
 export type IdeSearchResult = IdeSearchOkResult | IdeErrorResult;
 
+export interface EvalRequest {
+  source: string;
+}
+
+export interface EvalOkResult {
+  ok: true;
+  value: string | null;
+  value_type: string;
+  diagnostics: Diagnostic[];
+}
+
+export interface EvalErrorResult {
+  ok: false;
+  diagnostics: Diagnostic[];
+}
+
+export type EvalResult = EvalOkResult | EvalErrorResult;
+
+export interface EvalResetResult {
+  ok: true;
+}
+
 export interface VibeServiceOptions {
   wasmPath?: string;
   inputPtr?: number;
@@ -145,6 +167,10 @@ export interface VibeService {
   idePeekDef(request: IdePeekDefRequest): Promise<IdePeekDefResult>;
   ideSearch(request: IdeSearchRequest): Promise<IdeSearchResult>;
   checkProject(project: ProjectCheckRequest): Promise<ProjectCheckResult>;
+  rawEval(request: EvalRequest | string): Promise<string>;
+  rawEvalReset(request?: object | string): Promise<string>;
+  eval(request: EvalRequest): Promise<EvalResult>;
+  evalReset(request?: object): Promise<EvalResetResult>;
 }
 
 export function createVibeService(

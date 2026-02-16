@@ -23,7 +23,7 @@ fn bench_dce(
   }
   db.set_source("main", main_source)
   // Compile main module
-  let compiled = try @runtime.compile_module(db, "main") catch {
+  let compiled = try @runtime_compile.compile_module(db, "main") catch {
     e => fail("[\{name}] compile error: \{e.to_string()}")
   } noraise {
     c => c
@@ -35,14 +35,14 @@ fn bench_dce(
   let stmts_after = bundled_with_dce.stmts.length()
   // Compile to WASM with and without DCE
   let wasm_no_dce : Int? = try
-    @runtime.compile_module_wasm_no_dce(db, "main")
+    @runtime_compile.compile_module_wasm_no_dce(db, "main")
   catch {
     _ => None
   } noraise {
     wasm => Some(wasm.length())
   }
   let wasm_with_dce : Int? = try
-    @runtime.compile_module_wasm(db, "main")
+    @runtime_compile.compile_module_wasm(db, "main")
   catch {
     _ => None
   } noraise {

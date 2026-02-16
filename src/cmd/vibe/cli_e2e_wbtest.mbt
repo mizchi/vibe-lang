@@ -20,7 +20,7 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
   }
   match codebase.read_object(main_hash) {
     Some(json) => {
-      let _ = .deserialize_module(json) catch {
+      let _ = @vibe_core.deserialize_module(json) catch {
         e => fail("deserialize saved module failed: " + e.to_string())
       }
     }
@@ -36,11 +36,11 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
   let entry_norm = @loader.resolve_entry_path(entry)
   let lib_norm = @loader.resolve_import_path(root, "./lib.vibe")
   match lock.path_refs.get(entry_norm) {
-    Some(hash) => assert_eq(hash, .git_blob_hash_string(entry_source))
+    Some(hash) => assert_eq(hash, @vibe_core.git_blob_hash_string(entry_source))
     None => fail("expected entry lock ref")
   }
   match lock.path_refs.get(lib_norm) {
-    Some(hash) => assert_eq(hash, .git_blob_hash_string(lib_source))
+    Some(hash) => assert_eq(hash, @vibe_core.git_blob_hash_string(lib_source))
     None => fail("expected import lock ref")
   }
   let prelude_hash = match lock.version_refs.get("prelude") {
@@ -53,7 +53,7 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
   }
   match codebase.read_object(prelude_hash) {
     Some(json) => {
-      let _ = .deserialize_module(json) catch {
+      let _ = @vibe_core.deserialize_module(json) catch {
         e => fail("deserialize prelude module failed: " + e.to_string())
       }
     }
@@ -171,7 +171,7 @@ test "cli wasm bench compile uses size-oriented optimize level" {
     Ok(v) => v
     Err(err) => fail("load source db failed: " + err)
   }
-  let baseline_wasm = @runtime.compile_module_wasm_with_opt_level(
+  let baseline_wasm = @runtime_compile.compile_module_wasm_with_opt_level(
     db,
     entry,
     no_dce=true,
@@ -658,7 +658,7 @@ test "cli eval db workflow persists namespace and exports module" {
   }
   let resolved = @loader.resolve_entry_path(out_path)
   match lock.path_refs.get(resolved) {
-    Some(hash) => assert_eq(hash, .git_blob_hash_string(exported))
+    Some(hash) => assert_eq(hash, @vibe_core.git_blob_hash_string(exported))
     None => fail("expected path ref for exported module")
   }
   wbtest_remove_if_exists(out_path)
@@ -733,7 +733,7 @@ test "cli eval include supports hash alias from vdb file" {
   let include_path = lib_vibe + "/std@0.1.0.vdb"
   let out_path = root + "/main.vibe"
   let seed_source = "let seed = 21\n"
-  let seed_hash = .git_blob_hash_string(seed_source)
+  let seed_hash = @vibe_core.git_blob_hash_string(seed_source)
   let codebase = @codebase.Codebase::new(lib_root)
   let _ = codebase.write_object(seed_hash, seed_source) catch {
     e => fail("write alias object failed: " + e.to_string())
@@ -1377,7 +1377,7 @@ test "cli finalize export workflow supports fetch and apply" {
   }
   let resolved = @loader.resolve_entry_path(out_path)
   match lock.path_refs.get(resolved) {
-    Some(hash) => assert_eq(hash, .git_blob_hash_string(exported))
+    Some(hash) => assert_eq(hash, @vibe_core.git_blob_hash_string(exported))
     None => fail("expected path ref for exported module")
   }
   apply_cmd([out_path])

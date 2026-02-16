@@ -983,7 +983,7 @@ fn eval_run_interpreter_with_caps(
     e => raise WasmRunError::Compile(e.to_string())
   }
   let rt = Runtime::new(caps)
-  let result = rt.run_compiled(compiled) catch {
+  let result = @runtime_compile.run_compiled(rt, compiled) catch {
     e => raise WasmRunError::Eval(e.to_string())
   }
   let value = match result.last {

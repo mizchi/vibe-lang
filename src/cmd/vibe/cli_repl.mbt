@@ -839,7 +839,7 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
           let tmp_path = "/tmp/wasm_repl_" + counter.to_string() + ".vibe"
           db.set_source(tmp_path, line_str)
           // Compile to WASM
-          let wasm_bytes = @runtime.compile_module_wasm(db, tmp_path) catch {
+          let wasm_bytes = @runtime_compile.compile_module_wasm(db, tmp_path) catch {
             e => {
               println("error: " + e.to_string())
               if prompt_enabled {

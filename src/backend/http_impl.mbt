@@ -1,17 +1,13 @@
 ///|
 priv enum HttpEntry {
-  ClientResponse(
-    status~ : Int,
-    headers~ : Map[String, String],
-    body~ : String,
-  )
+  ClientResponse(status~ : Int, headers~ : Map[String, String], body~ : String)
   ServerHandle(@http.Server)
   ServerRequest(
     conn~ : @http.ServerConnection,
     meth~ : String,
     url~ : String,
     headers~ : Map[String, String],
-    body~ : String,
+    body~ : String
   )
 }
 
@@ -123,11 +119,7 @@ pub fn http_request(
         return
       }
     }
-    let body_text = try {
-      data.text()
-    } catch {
-      _ => ""
-    }
+    let body_text = data.text() catch { _ => "" }
     let handle = http_alloc_handle(
       HttpEntry::ClientResponse(
         status=response.code,
@@ -194,9 +186,7 @@ pub fn http_close(handle : Int) -> Result[Unit, String] {
 pub fn http_listen(port : Int) -> Result[Int, String] {
   let out : Ref[Result[Int, String]] = @ref.new(Err("not initialized"))
   @async.run_async_main(async fn() {
-    let server = try {
-      @http.Server::new(port=port)
-    } catch {
+    let server = @http.Server::new(port~) catch {
       err => {
         out.val = Err(err.to_string())
         return
@@ -212,22 +202,17 @@ pub fn http_listen(port : Int) -> Result[Int, String] {
 pub fn http_accept(server_handle : Int) -> Result[Int, String] {
   let server = match http_get_entry(server_handle) {
     Some(ServerHandle(s)) => s
-    _ =>
-      return Err("invalid server handle: " + server_handle.to_string())
+    _ => return Err("invalid server handle: " + server_handle.to_string())
   }
   let out : Ref[Result[Int, String]] = @ref.new(Err("not initialized"))
   @async.run_async_main(async fn() {
-    let (conn, _addr) = try {
-      server.accept()
-    } catch {
+    let (conn, _addr) = server.accept() catch {
       err => {
         out.val = Err(err.to_string())
         return
       }
     }
-    let request = try {
-      conn.read_request()
-    } catch {
+    let request = conn.read_request() catch {
       err => {
         out.val = Err(err.to_string())
         return

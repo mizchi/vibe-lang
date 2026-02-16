@@ -94,7 +94,7 @@ let overhead_large_source : String =
 test "bench: dce.overhead.analysis.small" (b : @bench.T) {
   let db = @runtime.VibeDb::new()
   db.set_source("main", overhead_small_source)
-  let compiled = try? @runtime.compile_module(db, "main")
+  let compiled = try? @runtime_compile.compile_module(db, "main")
   match compiled {
     Ok(c) => {
       let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
@@ -109,7 +109,7 @@ test "bench: dce.overhead.analysis.small" (b : @bench.T) {
 test "bench: dce.overhead.analysis.medium" (b : @bench.T) {
   let db = @runtime.VibeDb::new()
   db.set_source("main", overhead_medium_source)
-  let compiled = try? @runtime.compile_module(db, "main")
+  let compiled = try? @runtime_compile.compile_module(db, "main")
   match compiled {
     Ok(c) => {
       let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
@@ -124,7 +124,7 @@ test "bench: dce.overhead.analysis.medium" (b : @bench.T) {
 test "bench: dce.overhead.analysis.large" (b : @bench.T) {
   let db = @runtime.VibeDb::new()
   db.set_source("main", overhead_large_source)
-  let compiled = try? @runtime.compile_module(db, "main")
+  let compiled = try? @runtime_compile.compile_module(db, "main")
   match compiled {
     Ok(c) => {
       let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
@@ -139,7 +139,9 @@ test "bench: dce.overhead.analysis.large" (b : @bench.T) {
 test "bench: dce.overhead.compile_no_dce.medium" (b : @bench.T) {
   let db = @runtime.VibeDb::new()
   db.set_source("main", overhead_medium_source)
-  b.bench(fn() { b.keep(try? @runtime.compile_module_wasm_no_dce(db, "main")) })
+  b.bench(fn() {
+    b.keep(try? @runtime_compile.compile_module_wasm_no_dce(db, "main"))
+  })
 }
 
 ///|
@@ -147,7 +149,7 @@ test "bench: dce.overhead.compile_no_dce.medium" (b : @bench.T) {
 test "bench: dce.overhead.compile_with_dce.medium" (b : @bench.T) {
   let db = @runtime.VibeDb::new()
   db.set_source("main", overhead_medium_source)
-  b.bench(fn() { b.keep(try? @runtime.compile_module_wasm(db, "main")) })
+  b.bench(fn() { b.keep(try? @runtime_compile.compile_module_wasm(db, "main")) })
 }
 
 ///|
@@ -155,7 +157,9 @@ test "bench: dce.overhead.compile_with_dce.medium" (b : @bench.T) {
 test "bench: dce.overhead.compile_no_dce.large" (b : @bench.T) {
   let db = @runtime.VibeDb::new()
   db.set_source("main", overhead_large_source)
-  b.bench(fn() { b.keep(try? @runtime.compile_module_wasm_no_dce(db, "main")) })
+  b.bench(fn() {
+    b.keep(try? @runtime_compile.compile_module_wasm_no_dce(db, "main"))
+  })
 }
 
 ///|
@@ -163,5 +167,5 @@ test "bench: dce.overhead.compile_no_dce.large" (b : @bench.T) {
 test "bench: dce.overhead.compile_with_dce.large" (b : @bench.T) {
   let db = @runtime.VibeDb::new()
   db.set_source("main", overhead_large_source)
-  b.bench(fn() { b.keep(try? @runtime.compile_module_wasm(db, "main")) })
+  b.bench(fn() { b.keep(try? @runtime_compile.compile_module_wasm(db, "main")) })
 }

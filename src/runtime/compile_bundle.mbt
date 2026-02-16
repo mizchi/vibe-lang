@@ -2,7 +2,7 @@
 /// Bundle a module with all its dependencies for WASM compilation.
 /// This inlines all exported definitions from dependencies and removes imports.
 /// Applies DCE to eliminate unused definitions.
-fn bundle_for_wasm(
+pub fn bundle_for_wasm(
   db : VibeDb,
   path : String,
   ast : @core.Module,

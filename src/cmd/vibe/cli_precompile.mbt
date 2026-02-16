@@ -148,11 +148,15 @@ fn precompile_one_file(
     Err(err) => return Err(err)
   }
   let wasm_bytes = if wasm_js_string {
-    @runtime.compile_module_wasm_js_string_with_opt_level(db, entry, opt_level~) catch {
+    @runtime_compile.compile_module_wasm_js_string_with_opt_level(
+      db,
+      entry,
+      opt_level~,
+    ) catch {
       e => return Err(e.user_message())
     }
   } else {
-    @runtime.compile_module_wasm_with_opt_level(db, entry, opt_level~) catch {
+    @runtime_compile.compile_module_wasm_with_opt_level(db, entry, opt_level~) catch {
       e => return Err(e.user_message())
     }
   }
