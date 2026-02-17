@@ -664,6 +664,8 @@ fn Parser::parse_expr(self : Parser) -> Unit {
   self.skip_trivia()
   if self.at(if_kw()) {
     self.parse_if_expr()
+  } else if self.at(name()) && self.peek().text() == "for" {
+    self.parse_for_in_expr()
   } else if self.at(while_kw()) {
     self.parse_while_expr()
   } else if self.at(loop_kw()) {
@@ -707,6 +709,29 @@ fn Parser::parse_expr(self : Parser) -> Unit {
 fn Parser::parse_while_expr(self : Parser) -> Unit {
   self.builder.start_node(while_expr())
   self.bump() // while
+  self.skip_trivia()
+  self.parse_expr()
+  self.skip_trivia()
+  self.parse_brace_block_tokens()
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_for_in_expr(self : Parser) -> Unit {
+  // Reuse while_expr node kind since for-in desugars to while
+  self.builder.start_node(while_expr())
+  self.bump() // for
+  self.skip_trivia()
+  // Parse binding name(s)
+  self.expect(name())
+  self.skip_trivia()
+  if self.at(comma()) {
+    self.bump() // ,
+    self.skip_trivia()
+    self.expect(name())
+    self.skip_trivia()
+  }
+  self.expect(name()) // contextual keyword "in"
   self.skip_trivia()
   self.parse_expr()
   self.skip_trivia()

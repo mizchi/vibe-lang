@@ -88,6 +88,16 @@ pub fn declare_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn for_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(95)
+}
+
+///|
+pub fn in_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(96)
+}
+
+///|
 pub fn test_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(24)
 }

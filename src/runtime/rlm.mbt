@@ -44,6 +44,7 @@ fn rlm_system_prompt() -> String {
     #|### Control Flow
     #|- `if cond { expr } else { expr }`
     #|- `while cond { body }`
+    #|- `for x in arr { body }` / `for i, x in arr { body }` (array iteration)
     #|- `match value { Some(x) => x, None => 0 }` (must be exhaustive)
     #|
     #|### Types
