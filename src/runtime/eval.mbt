@@ -26,6 +26,11 @@ pub enum Effect {
   HttpRequestHeader(Int64, String, String)
   HttpRequestBody(Int64, String)
   HttpRespond(Int64, Int, String, String)
+  FsReadDir(String, Int) // (path, entry_count)
+  FsIsDir(String, Bool) // (path, result)
+  FsMkdir(String) // (path)
+  FsGetCwd(String) // (cwd)
+  FsChdir(String) // (new_cwd)
   LlmComplete(String, String, String) // (model, prompt_preview, response_preview)
   RlmTrace(String) // JSON trace event
 } derive(Show, Eq)
@@ -40,6 +45,20 @@ pub struct EvalResult {
 fn extend_effects(dest : Array[Effect], src : Array[Effect]) -> Unit {
   for eff in src {
     dest.push(eff)
+  }
+}
+
+///|
+fn mkdir_recursive(path : String) -> Unit {
+  if @io.path_exists(path) {
+    return
+  }
+  let parent = @path.Path(path).dirname().normalize().to_string()
+  if parent != path && parent != "/" && parent != "." {
+    mkdir_recursive(parent)
+  }
+  if not(@io.path_exists(path)) {
+    @io.create_dir(path) |> ignore
   }
 }
 
@@ -1063,6 +1082,8 @@ fn eval_expr_with_bindings(
 fn eval_block(rt : Runtime, body : @core.Module) -> EvalOutput raise EvalError {
   let scope_rt = rt.fork_for_test()
   let res = scope_rt.eval_module(body)
+  // Propagate cwd changes back (cd semantics)
+  rt.cwd = scope_rt.cwd
   let value = match res.last {
     Some(v) => v
     None => @core.Value::Unit
@@ -1506,15 +1527,17 @@ fn eval_builtin_call(
         raise EvalError::BadCall("fs_read_file")
       }
       match pos_args[0] {
-        @core.Value::String(path) =>
-          match @io.read_string(path) {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          match @io.read_string(resolved) {
             Ok(content) => {
               let effects = out.effects
-              effects.push(Effect::FsReadFile(path, content))
+              effects.push(Effect::FsReadFile(resolved, content))
               { value: @core.Value::String(content), effects }
             }
             Err(err) => raise EvalError::BadCall("fs_read_file: " + err)
           }
+        }
         _ => raise EvalError::BadCall("fs_read_file")
       }
     }
@@ -1525,15 +1548,17 @@ fn eval_builtin_call(
         raise EvalError::BadCall("fs_write_file")
       }
       match (pos_args[0], pos_args[1]) {
-        (@core.Value::String(path), @core.Value::String(content)) =>
-          match @io.write_string(path, content) {
+        (@core.Value::String(path), @core.Value::String(content)) => {
+          let resolved = rt.resolve_path(path)
+          match @io.write_string(resolved, content) {
             Ok(_) => {
               let effects = out.effects
-              effects.push(Effect::FsWriteFile(path, content))
+              effects.push(Effect::FsWriteFile(resolved, content))
               { value: @core.Value::Unit, effects }
             }
             Err(err) => raise EvalError::BadCall("fs_write_file: " + err)
           }
+        }
         _ => raise EvalError::BadCall("fs_write_file")
       }
     }
@@ -1545,12 +1570,135 @@ fn eval_builtin_call(
       }
       match pos_args[0] {
         @core.Value::String(path) => {
-          let exists = @io.path_exists(path)
+          let resolved = rt.resolve_path(path)
+          let exists = @io.path_exists(resolved)
           let effects = out.effects
-          effects.push(Effect::FsExists(path, exists))
+          effects.push(Effect::FsExists(resolved, exists))
           { value: @core.Value::Bool(exists), effects }
         }
         _ => raise EvalError::BadCall("fs_exists")
+      }
+    }
+    "fs_readdir" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_readdir")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_readdir")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_read(resolved)) {
+            raise EvalError::PermissionDenied("fs_read:" + resolved)
+          }
+          match @io.read_dir(resolved) {
+            Ok(entries) => {
+              let values : Array[@core.Value] = []
+              for entry in entries {
+                values.push(@core.Value::String(entry))
+              }
+              let effects = out.effects
+              effects.push(Effect::FsReadDir(resolved, entries.length()))
+              { value: @core.Value::Array(values), effects }
+            }
+            Err(err) => raise EvalError::BadCall("fs_readdir: " + err)
+          }
+        }
+        _ => raise EvalError::BadCall("fs_readdir")
+      }
+    }
+    "fs_is_dir" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_is_dir")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_is_dir")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_read(resolved)) {
+            raise EvalError::PermissionDenied("fs_read:" + resolved)
+          }
+          let result = @io.is_directory(resolved)
+          let effects = out.effects
+          effects.push(Effect::FsIsDir(resolved, result))
+          { value: @core.Value::Bool(result), effects }
+        }
+        _ => raise EvalError::BadCall("fs_is_dir")
+      }
+    }
+    "fs_mkdir" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_mkdir")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_mkdir")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_write(resolved)) {
+            raise EvalError::PermissionDenied("fs_write:" + resolved)
+          }
+          match @io.create_dir(resolved) {
+            Ok(_) => {
+              let effects = out.effects
+              effects.push(Effect::FsMkdir(resolved))
+              { value: @core.Value::Unit, effects }
+            }
+            Err(err) => raise EvalError::BadCall("fs_mkdir: " + err)
+          }
+        }
+        _ => raise EvalError::BadCall("fs_mkdir")
+      }
+    }
+    "fs_mkdir_p" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_mkdir_p")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_mkdir_p")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_write(resolved)) {
+            raise EvalError::PermissionDenied("fs_write:" + resolved)
+          }
+          mkdir_recursive(resolved)
+          let effects = out.effects
+          effects.push(Effect::FsMkdir(resolved))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("fs_mkdir_p")
+      }
+    }
+    "fs_getcwd" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_getcwd")
+      if pos_args.length() != 0 {
+        raise EvalError::BadCall("fs_getcwd")
+      }
+      let effects = out.effects
+      effects.push(Effect::FsGetCwd(rt.cwd))
+      { value: @core.Value::String(rt.cwd), effects }
+    }
+    "fs_chdir" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_chdir")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_chdir")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_read(resolved)) {
+            raise EvalError::PermissionDenied("fs_read:" + resolved)
+          }
+          rt.cwd = resolved
+          let effects = out.effects
+          effects.push(Effect::FsChdir(resolved))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("fs_chdir")
       }
     }
     "socket_tcp_connect" => {
@@ -2210,6 +2358,8 @@ fn eval_user_call(
     scope.bind(name, value) |> ignore
   }
   let body_out = eval_block(scope, fn_val.body)
+  // Propagate cwd changes back to caller (cd semantics)
+  rt.cwd = scope.cwd
   let effects = out.effects
   extend_effects(effects, body_out.effects)
   if use_cache {

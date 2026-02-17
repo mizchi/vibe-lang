@@ -460,6 +460,12 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "fs_read_file" ||
   name == "fs_write_file" ||
   name == "fs_exists" ||
+  name == "fs_readdir" ||
+  name == "fs_is_dir" ||
+  name == "fs_mkdir" ||
+  name == "fs_mkdir_p" ||
+  name == "fs_getcwd" ||
+  name == "fs_chdir" ||
   name == "socket_tcp_connect" ||
   name == "socket_tcp_read" ||
   name == "socket_tcp_write" ||

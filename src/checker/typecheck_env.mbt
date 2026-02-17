@@ -259,8 +259,15 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     "stdin_read_stream" => [@core.EffectAtom::Const("Stdin")]
     "sleep" => [@core.EffectAtom::Const("Async")]
     "dynamic_path_resolve" => [@core.EffectAtom::Const("Env")]
-    "fs_read_file" | "fs_write_file" | "fs_exists" =>
-      [@core.EffectAtom::Const("Fs")]
+    "fs_read_file"
+    | "fs_write_file"
+    | "fs_exists"
+    | "fs_readdir"
+    | "fs_is_dir"
+    | "fs_mkdir"
+    | "fs_mkdir_p"
+    | "fs_getcwd"
+    | "fs_chdir" => [@core.EffectAtom::Const("Fs")]
     "socket_tcp_connect"
     | "socket_tcp_read"
     | "socket_tcp_write"

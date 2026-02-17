@@ -1040,6 +1040,149 @@ fn type_call(
                 }
                 @core.Type::Bool
               }
+              "fs_readdir" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_readdir", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="fs_readdir", span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_readdir",
+                  builtin_effects("fs_readdir"),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Array(@core.Type::String)
+              }
+              "fs_is_dir" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_is_dir", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="fs_is_dir", span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_is_dir",
+                  builtin_effects("fs_is_dir"),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "fs_mkdir" | "fs_mkdir_p" => {
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  name,
+                  builtin_effects(name),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "fs_getcwd" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_getcwd", call_span,
+                )
+                if pos_args.length() != 0 {
+                  raise TypeError::BadCall(message="fs_getcwd", span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_getcwd",
+                  builtin_effects("fs_getcwd"),
+                  call_span,
+                )
+                @core.Type::String
+              }
+              "fs_chdir" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_chdir", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="fs_chdir", span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_chdir",
+                  builtin_effects("fs_chdir"),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
               "socket_tcp_connect" => {
                 let pos_args = extract_positional_args(
                   args, "socket_tcp_connect", call_span,

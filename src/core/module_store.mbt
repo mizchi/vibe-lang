@@ -302,6 +302,11 @@ pub fn extract_exports(ast : Module) -> Map[String, Stmt] {
         defined.set(name, stmt)
         exports.set(name, stmt)
       }
+      Stmt::StructDef(name~, ..) => defined.set(name, stmt)
+      Stmt::ExportStructDef(name~, ..) => {
+        defined.set(name, stmt)
+        exports.set(name, stmt)
+      }
       Stmt::ReExport(names~, ..) =>
         for name in names {
           exports.set(name, stmt)

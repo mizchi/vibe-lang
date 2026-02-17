@@ -194,6 +194,13 @@ pub fn write_bytes(path : String, content : Bytes) -> Result[Unit, String] {
 }
 
 ///|
+pub fn is_directory(path : String) -> Bool {
+  @os_fs.is_dir(path) catch {
+    _ => false
+  }
+}
+
+///|
 fn split_output_lines(text : String) -> Array[String] {
   let out : Array[String] = []
   for part in text.split("\n") {

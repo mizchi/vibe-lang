@@ -208,6 +208,7 @@ pub struct Runtime {
   // Module cache for import resolution: hash -> Module
   module_cache : Map[String, @core.Module]
   mut prelude_loaded : Bool
+  mut cwd : String
 }
 
 ///|
@@ -235,6 +236,7 @@ pub fn Runtime::new_with_features(
     thread_runtime: ThreadRuntime::new(),
     module_cache: {},
     prelude_loaded: false,
+    cwd: @io.current_dir_or_root(),
   }
   let env = @checker.TypeEnv::new()
   let _ = try! @checker.ensure_prelude_option(env)
@@ -249,6 +251,15 @@ fn Runtime::ensure_prelude(self : Runtime) -> Unit {
   if not(self.prelude_loaded) {
     let _ = try? self.eval_module(@checker.prelude_ast())
     self.prelude_loaded = true
+  }
+}
+
+///|
+pub fn Runtime::resolve_path(self : Runtime, raw : String) -> String {
+  if raw.has_prefix("/") {
+    @path.Path(raw).normalize().to_string()
+  } else {
+    @path.Path(self.cwd).join(@path.Path(raw)).normalize().to_string()
   }
 }
 
@@ -413,6 +424,7 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
     prelude_loaded: self.prelude_loaded,
+    cwd: self.cwd,
   }
 }
 
@@ -438,6 +450,7 @@ fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime 
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
     prelude_loaded: self.prelude_loaded,
+    cwd: self.cwd,
   }
 }
 
