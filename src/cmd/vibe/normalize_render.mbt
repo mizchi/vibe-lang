@@ -485,7 +485,7 @@ fn normalize_render_expr_for_stmt(
 fn normalize_render_expr(expr : @vibe_core.Expr) -> String? {
   match expr {
     @vibe_core.Expr::Int(value~, ..) => Some(value.to_string())
-    @vibe_core.Expr::Float(value~, ..) => Some(value.to_string())
+    @vibe_core.Expr::Float(value~, ..) => Some(value.to_string() + "f")
     @vibe_core.Expr::Double(value~, ..) => Some(value.to_string())
     @vibe_core.Expr::Bool(value~, ..) =>
       Some(if value { "true" } else { "false" })
@@ -590,7 +590,7 @@ fn normalize_stmt_group_section_name(group : NormalizeStmtGroup) -> String {
   match group {
     NormalizeStmtGroup::Use => "Imports"
     NormalizeStmtGroup::TypeDecl | NormalizeStmtGroup::TraitDecl => "Types"
-    NormalizeStmtGroup::PureFn | NormalizeStmtGroup::EffectfulFn => "Functions"
+    NormalizeStmtGroup::FnDef => "Functions"
     NormalizeStmtGroup::Other => "Misc"
   }
 }
@@ -654,7 +654,7 @@ fn normalize_render_source(
         group != NormalizeStmtGroup::TypeDecl &&
         group != NormalizeStmtGroup::TraitDecl {
         for line in declare_lines {
-          push_rendered(NormalizeStmtGroup::PureFn, line)
+          push_rendered(NormalizeStmtGroup::FnDef, line)
         }
         inserted_declare_lines = true
       }
@@ -677,7 +677,7 @@ fn normalize_render_source(
   }
   if not(inserted_declare_lines) {
     for line in declare_lines {
-      push_rendered(NormalizeStmtGroup::PureFn, line)
+      push_rendered(NormalizeStmtGroup::FnDef, line)
     }
   }
   if rendered.length() == 0 {

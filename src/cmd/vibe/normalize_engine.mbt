@@ -9,8 +9,7 @@ enum NormalizeStmtGroup {
   Use
   TypeDecl
   TraitDecl
-  PureFn
-  EffectfulFn
+  FnDef
   Other
 } derive(Show, Eq)
 

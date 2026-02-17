@@ -1,4 +1,3 @@
-// JSON parser benchmark (canonical implementation is in vibe/encoding/json.vibe)
 
 enum Json {
   JNull;
@@ -8,6 +7,7 @@ enum Json {
   JArr(Array[Json]);
   JObj(Map[Json])
 }
+let item = "{\"id\":1,\"name\":\"alice\",\"active\":true,\"score\":123.456e-2,\"tags\":[\"vibe\",\"bench\",\"json\"],\"meta\":{\"a\":1,\"b\":2,\"c\":[1,2,3]}}"
 let is_ws = (c: Int) -> Bool {
   c == ' ' || c == '\n' || c == '\t' || c == '\r'
 }
@@ -26,53 +26,16 @@ let rec skip_ws = (s: String, len: Int, i: Int) -> Int {
 let is_digit = (c: Int) -> Bool {
   c >= '0' && c < ':'
 }
-let rec apply_exponent = (value: Double, exp: Int) -> Double {
-  if exp == 0 {
-    value
-  }
-  else if exp < 0 {
-    apply_exponent(value / 10.0, exp + 1)
-  }
-  else {
-    apply_exponent(value * 10.0, exp - 1)
-  }
-}
-let digit_to_double = (c: Int) -> Double {
-  int_to_double(c - '0')
-}
-let rec parse_digits_int = (s: String, len: Int, i: Int, acc: Int) -> (Int, Int) {
-  if i < len {
-    let c = string_char_code_at(s, i)
-    if is_digit(c) {
-      parse_digits_int(s, len, i + 1, acc * 10 + (c - '0'))
-    } else {
-      (acc, i)
-    }
+let rec join_items = (it: String, n: Int) -> String {
+  if n <= 1 {
+    it
   } else {
-    (acc, i)
+    string_concat(it, string_concat(",", join_items(it, n - 1)))
   }
 }
-let rec starts_with_from = (s: String, len: Int, i: Int, word: String, wi: Int, wlen: Int) -> Bool {
-  if wi >= wlen {
-    true
-  }
-  else {
-    let si = i + wi
-    if si >= len {
-      false
-    }
-    else if string_char_code_at(s, si) == string_char_code_at(word, wi) {
-      starts_with_from(s, len, i, word, wi + 1, wlen)
-    }
-    else {
-      false
-    }
-  }
-}
-let starts_with = (s: String, len: Int, i: Int, word: String) -> Bool {
-  let wlen = string_length(word)
-  i + wlen <= len && starts_with_from(s, len, i, word, 0, wlen)
-}
+let json_large = string_concat("{\"items\":[", string_concat(join_items(item, 8), "],\"ok\":true,\"version\":1}"))
+let json_small = "{\"name\":\"vibe\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
+let json_medium = "{\"users\":[{\"id\":1,\"name\":\"alice\",\"tags\":[\"x\",\"y\",\"z\"],\"active\":true},{\"id\":2,\"name\":\"bob\",\"tags\":[],\"active\":false}],\"config\":{\"retry\":3,\"ratio\":0.125,\"title\":\"hello\\nworld\"},\"nil\":null}"
 let parse_string = (s: String, len: Int, i: Int) -> (String, Int)with {
   Error
 } {
@@ -130,6 +93,20 @@ let parse_string = (s: String, len: Int, i: Int) -> (String, Int)with {
     scan(i + 1, i + 1, "")
   }
 }
+let rec apply_exponent = (value: Double, exp: Int) -> Double {
+  if exp == 0 {
+    value
+  }
+  else if exp < 0 {
+    apply_exponent(value / 10.0, exp + 1)
+  }
+  else {
+    apply_exponent(value * 10.0, exp - 1)
+  }
+}
+let digit_to_double = (c: Int) -> Double {
+  int_to_double(c - '0')
+}
 let rec parse_fraction = (s: String, len: Int, i: Int, acc: Double, scale: Double, seen: Bool) -> (Double, Int)with {
   Error
 } {
@@ -147,6 +124,39 @@ let rec parse_fraction = (s: String, len: Int, i: Int, acc: Double, scale: Doubl
   } else {
     raise "expected fraction"
   }
+}
+let rec parse_digits_int = (s: String, len: Int, i: Int, acc: Int) -> (Int, Int) {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if is_digit(c) {
+      parse_digits_int(s, len, i + 1, acc * 10 + (c - '0'))
+    } else {
+      (acc, i)
+    }
+  } else {
+    (acc, i)
+  }
+}
+let rec starts_with_from = (s: String, len: Int, i: Int, word: String, wi: Int, wlen: Int) -> Bool {
+  if wi >= wlen {
+    true
+  }
+  else {
+    let si = i + wi
+    if si >= len {
+      false
+    }
+    else if string_char_code_at(s, si) == string_char_code_at(word, wi) {
+      starts_with_from(s, len, i, word, wi + 1, wlen)
+    }
+    else {
+      false
+    }
+  }
+}
+let starts_with = (s: String, len: Int, i: Int, word: String) -> Bool {
+  let wlen = string_length(word)
+  i + wlen <= len && starts_with_from(s, len, i, word, 0, wlen)
 }
 let rec parse_digits_double = (s: String, len: Int, i: Int, acc: Double, seen: Bool) -> (Double, Int)with {
   Error
@@ -397,7 +407,6 @@ let parse = (s: String) -> (Json, Int)with {
     raise "trailing input"
   }
 }
-
 let parse_ok = (s: String) -> Bool {
   try {
     let (_, end) = parse(s)
@@ -406,24 +415,6 @@ let parse_ok = (s: String) -> Bool {
     false
   }
 }
-
-let item = "{\"id\":1,\"name\":\"alice\",\"active\":true,\"score\":123.456e-2,\"tags\":[\"vibe\",\"bench\",\"json\"],\"meta\":{\"a\":1,\"b\":2,\"c\":[1,2,3]}}"
-
-let rec join_items = (it: String, n: Int) -> String {
-  if n <= 1 {
-    it
-  } else {
-    string_concat(it, string_concat(",", join_items(it, n - 1)))
-  }
-}
-
-let json_small = "{\"name\":\"vibe\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
-let json_medium = "{\"users\":[{\"id\":1,\"name\":\"alice\",\"tags\":[\"x\",\"y\",\"z\"],\"active\":true},{\"id\":2,\"name\":\"bob\",\"tags\":[],\"active\":false}],\"config\":{\"retry\":3,\"ratio\":0.125,\"title\":\"hello\\nworld\"},\"nil\":null}"
-let json_large = string_concat(
-  "{\"items\":[",
-  string_concat(join_items(item, 8), "],\"ok\":true,\"version\":1}")
-)
-
 bench "json_parse_small" {
   let mut sink = 0
   if parse_ok(json_small) {
@@ -432,7 +423,6 @@ bench "json_parse_small" {
     sink = sink
   }
 }
-
 bench "json_parse_medium" {
   let mut sink = 0
   if parse_ok(json_medium) {
@@ -441,7 +431,6 @@ bench "json_parse_medium" {
     sink = sink
   }
 }
-
 bench "json_parse_large" {
   let mut sink = 0
   if parse_ok(json_large) {

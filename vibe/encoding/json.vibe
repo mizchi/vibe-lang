@@ -1,15 +1,4 @@
 
-declare export let json_get: (Json, String) -> Json with { Error }
-declare export let json_as_str: (Json) -> String with { Error }
-declare export let json_as_num: (Json) -> Double with { Error }
-declare export let json_as_bool: (Json) -> Bool with { Error }
-declare export let json_as_arr: (Json) -> Array[Json] with { Error }
-declare export let json_as_obj: (Json) -> Map[Json] with { Error }
-declare export let stringify: (Json) -> String
-declare export let parse: (String) -> (Json, Int) with { Error }
-declare export let parse_ok: (String) -> Bool
-declare export let parse_err: (String) -> Bool
-
 export enum Json {
   JNull;
   JBool(Bool);
@@ -18,163 +7,6 @@ export enum Json {
   JArr(Array[Json]);
   JObj(Map[Json])
 }
-
-// --- helpers ---
-
-json_get = (j: Json, key: String) -> Json with { Error } {
-  match j {
-    JObj(m) => if map_has_key(m, key) {
-      map_get(m, key)
-    } else {
-      raise string_concat("key not found: ", key)
-    },
-    _ => raise "not an object"
-  }
-}
-
-json_as_str = (j: Json) -> String with { Error } {
-  match j {
-    JStr(s) => s,
-    _ => raise "not a string"
-  }
-}
-
-json_as_num = (j: Json) -> Double with { Error } {
-  match j {
-    JNum(n) => n,
-    _ => raise "not a number"
-  }
-}
-
-json_as_bool = (j: Json) -> Bool with { Error } {
-  match j {
-    JBool(b) => b,
-    _ => raise "not a bool"
-  }
-}
-
-json_as_arr = (j: Json) -> Array[Json] with { Error } {
-  match j {
-    JArr(a) => a,
-    _ => raise "not an array"
-  }
-}
-
-json_as_obj = (j: Json) -> Map[Json] with { Error } {
-  match j {
-    JObj(m) => m,
-    _ => raise "not an object"
-  }
-}
-
-// --- stringify ---
-
-let escape_string = (s: String) -> String {
-  let len = string_length(s)
-  let rec go = (i: Int, acc: String) -> String {
-    if i < len {
-      let c = string_char_code_at(s, i)
-      let esc = if c == '"' {
-        "\\\""
-      } else if c == '\\' {
-        "\\\\"
-      } else if c == '\n' {
-        "\\n"
-      } else if c == '\t' {
-        "\\t"
-      } else if c == '\r' {
-        "\\r"
-      } else {
-        string_from_char_code(c)
-      }
-      go(i + 1, string_concat(acc, esc))
-    } else {
-      acc
-    }
-  }
-  string_concat(string_concat("\"", go(0, "")), "\"")
-}
-
-let format_number = (n: Double) -> String {
-  let s = __to_string(n)
-  let len = string_length(s)
-  if len >= 2 && string_char_code_at(s, len - 1) == '0' && string_char_code_at(s, len - 2) == '.' {
-    string_substring(s, 0, len - 2)
-  } else {
-    s
-  }
-}
-
-let rec stringify_impl = (j: Json) -> String {
-  let stringify_array = (arr: Array[Json]) -> String {
-    let len = array_length(arr)
-    let rec go = (i: Int, acc: String) -> String {
-      if i < len {
-        let sep = if i > 0 { "," } else { "" }
-        go(i + 1, string_concat(string_concat(acc, sep), stringify_impl(array_get(arr, i))))
-      } else {
-        acc
-      }
-    }
-    string_concat(string_concat("[", go(0, "")), "]")
-  }
-  let stringify_object = (m: Map[Json]) -> String {
-    let keys = map_keys(m)
-    let len = array_length(keys)
-    let rec go = (i: Int, acc: String) -> String {
-      if i < len {
-        let sep = if i > 0 { "," } else { "" }
-        let k = array_get(keys, i)
-        let entry = string_concat(string_concat(escape_string(k), ":"), stringify_impl(map_get(m, k)))
-        go(i + 1, string_concat(string_concat(acc, sep), entry))
-      } else {
-        acc
-      }
-    }
-    string_concat(string_concat("{", go(0, "")), "}")
-  }
-  match j {
-    JNull => "null",
-    JBool(b) => if b { "true" } else { "false" },
-    JNum(n) => format_number(n),
-    JStr(s) => escape_string(s),
-    JArr(arr) => stringify_array(arr),
-    JObj(m) => stringify_object(m)
-  }
-}
-
-stringify = (j: Json) -> String {
-  stringify_impl(j)
-}
-
-// --- collection helpers (workaround for empty literal + let rec) ---
-
-let empty_json_array = () -> Array[Json] {
-  array_slice([JNull], 0, 0)
-}
-
-let make_empty_map = () -> Map[Json] {
-  do {
-    let b = map_builder()
-    map_builder_freeze(b)
-  }
-}
-
-let build_json_map = (keys: Array[String], vals: Array[Json]) -> Map[Json] {
-  do {
-    let b = map_builder()
-    let len = array_length(keys)
-    let mut i = 0
-    while i < len {
-      map_builder_set(b, array_get(keys, i), array_get(vals, i))
-      i += 1
-    }
-    map_builder_freeze(b)
-  }
-}
-
-// --- parser internals ---
-
 let is_ws = (c: Int) -> Bool {
   c == ' ' || c == '\n' || c == '\t' || c == '\r'
 }
@@ -193,52 +25,57 @@ let rec skip_ws = (s: String, len: Int, i: Int) -> Int {
 let is_digit = (c: Int) -> Bool {
   c >= '0' && c < ':'
 }
-let rec apply_exponent = (value: Double, exp: Int) -> Double {
-  if exp == 0 {
-    value
-  }
-  else if exp < 0 {
-    apply_exponent(value / 10.0, exp + 1)
-  }
-  else {
-    apply_exponent(value * 10.0, exp - 1)
-  }
-}
-let digit_to_double = (c: Int) -> Double {
-  int_to_double(c - 48)
-}
-let rec parse_digits_int = (s: String, len: Int, i: Int, acc: Int) -> (Int, Int) {
-  if i < len {
-    let c = string_char_code_at(s, i)
-    if is_digit(c) {
-      parse_digits_int(s, len, i + 1, acc * 10 + (c - 48))
+export let json_get = (j: Json, key: String) -> Json with {
+  Error
+} {
+  match j {
+    JObj(m) => if map_has_key(m, key) {
+      map_get(m, key)
     } else {
-      (acc, i)
-    }
-  } else {
-    (acc, i)
+      raise string_concat("key not found: ", key)
+    },
+    _ => raise "not an object"
   }
 }
-let rec starts_with_from = (s: String, len: Int, i: Int, word: String, wi: Int, wlen: Int) -> Bool {
-  if wi >= wlen {
-    true
-  }
-  else {
-    let si = i + wi
-    if si >= len {
-      false
-    }
-    else if string_char_code_at(s, si) == string_char_code_at(word, wi) {
-      starts_with_from(s, len, i, word, wi + 1, wlen)
-    }
-    else {
-      false
-    }
+export let json_as_arr = (j: Json) -> Array[Json] with {
+  Error
+} {
+  match j {
+    JArr(a) => a,
+    _ => raise "not an array"
   }
 }
-let starts_with = (s: String, len: Int, i: Int, word: String) -> Bool {
-  let wlen = string_length(word)
-  i + wlen <= len && starts_with_from(s, len, i, word, 0, wlen)
+export let json_as_num = (j: Json) -> Double with {
+  Error
+} {
+  match j {
+    JNum(n) => n,
+    _ => raise "not a number"
+  }
+}
+export let json_as_obj = (j: Json) -> Map[Json] with {
+  Error
+} {
+  match j {
+    JObj(m) => m,
+    _ => raise "not an object"
+  }
+}
+export let json_as_str = (j: Json) -> String with {
+  Error
+} {
+  match j {
+    JStr(s) => s,
+    _ => raise "not a string"
+  }
+}
+export let json_as_bool = (j: Json) -> Bool with {
+  Error
+} {
+  match j {
+    JBool(b) => b,
+    _ => raise "not a bool"
+  }
 }
 let parse_string = (s: String, len: Int, i: Int) -> (String, Int)with {
   Error
@@ -299,6 +136,124 @@ let parse_string = (s: String, len: Int, i: Int) -> (String, Int)with {
     scan(i + 1, i + 1, "")
   }
 }
+let escape_string = (s: String) -> String {
+  let len = string_length(s)
+  let rec go = (i: Int, acc: String) -> String {
+    if i < len {
+      let c = string_char_code_at(s, i)
+      let esc = if c == '"' {
+        "\\\""
+      } else if c == '\\' {
+        "\\\\"
+      } else if c == '\n' {
+        "\\n"
+      } else if c == '\t' {
+        "\\t"
+      } else if c == '\r' {
+        "\\r"
+      } else {
+        string_from_char_code(c)
+      }
+      go(i + 1, string_concat(acc, esc))
+    } else {
+      acc
+    }
+  }
+  string_concat(string_concat("\"", go(0, "")), "\"")
+}
+let format_number = (n: Double) -> String {
+  let s = __to_string(n)
+  let len = string_length(s)
+  if len >= 2 && string_char_code_at(s, len - 1) == '0' && string_char_code_at(s, len - 2) == '.' {
+    string_substring(s, 0, len - 2)
+  } else {
+    s
+  }
+}
+let rec apply_exponent = (value: Double, exp: Int) -> Double {
+  if exp == 0 {
+    value
+  }
+  else if exp < 0 {
+    apply_exponent(value / 10.0, exp + 1)
+  }
+  else {
+    apply_exponent(value * 10.0, exp - 1)
+  }
+}
+let build_json_map = (keys: Array[String], vals: Array[Json]) -> Map[Json] {
+  do {
+    let b = map_builder()
+    let len = array_length(keys)
+    let mut i = 0
+    while i < len {
+      map_builder_set(b, array_get(keys, i), array_get(vals, i))
+      i += 1
+    }
+    map_builder_freeze(b)
+  }
+}
+let make_empty_map = () -> Map[Json] {
+  do {
+    let b = map_builder()
+    map_builder_freeze(b)
+  }
+}
+let rec stringify_impl = (j: Json) -> String {
+  let stringify_array = (arr: Array[Json]) -> String {
+    let len = array_length(arr)
+    let rec go = (i: Int, acc: String) -> String {
+      if i < len {
+        let sep = if i > 0 {
+          ","
+        } else {
+          ""
+        }
+        go(i + 1, string_concat(string_concat(acc, sep), stringify_impl(array_get(arr, i))))
+      } else {
+        acc
+      }
+    }
+    string_concat(string_concat("[", go(0, "")), "]")
+  }
+  let stringify_object = (m: Map[Json]) -> String {
+    let keys = map_keys(m)
+    let len = array_length(keys)
+    let rec go = (i: Int, acc: String) -> String {
+      if i < len {
+        let sep = if i > 0 {
+          ","
+        } else {
+          ""
+        }
+        let k = array_get(keys, i)
+        let entry = string_concat(string_concat(escape_string(k), ":"), stringify_impl(map_get(m, k)))
+        go(i + 1, string_concat(string_concat(acc, sep), entry))
+      } else {
+        acc
+      }
+    }
+    string_concat(string_concat("{", go(0, "")), "}")
+  }
+  match j {
+    JNull => "null",
+    JBool(b) => if b {
+      "true"
+    } else {
+      "false"
+    },
+    JNum(n) => format_number(n),
+    JStr(s) => escape_string(s),
+    JArr(arr) => stringify_array(arr),
+    JObj(m) => stringify_object(m)
+  }
+}
+export let stringify = (j: Json) -> String {
+  stringify_impl(j)
+}
+let digit_to_double = (c: Int) -> Double {
+  int_to_double(c - 48)
+}
 let rec parse_fraction = (s: String, len: Int, i: Int, acc: Double, scale: Double, seen: Bool) -> (Double, Int)with {
   Error
 } {
@@ -316,6 +271,44 @@ let rec parse_fraction = (s: String, len: Int, i: Int, acc: Double, scale: Doubl
   } else {
     raise "expected fraction"
   }
+}
+let empty_json_array = () -> Array[Json] {
+  array_slice([
+    JNull
+  ], 0, 0)
+}
+let rec parse_digits_int = (s: String, len: Int, i: Int, acc: Int) -> (Int, Int) {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if is_digit(c) {
+      parse_digits_int(s, len, i + 1, acc * 10 + (c - 48))
+    } else {
+      (acc, i)
+    }
+  } else {
+    (acc, i)
+  }
+}
+let rec starts_with_from = (s: String, len: Int, i: Int, word: String, wi: Int, wlen: Int) -> Bool {
+  if wi >= wlen {
+    true
+  }
+  else {
+    let si = i + wi
+    if si >= len {
+      false
+    }
+    else if string_char_code_at(s, si) == string_char_code_at(word, wi) {
+      starts_with_from(s, len, i, word, wi + 1, wlen)
+    }
+    else {
+      false
+    }
+  }
+}
+let starts_with = (s: String, len: Int, i: Int, word: String) -> Bool {
+  let wlen = string_length(word)
+  i + wlen <= len && starts_with_from(s, len, i, word, 0, wlen)
 }
 let rec parse_digits_double = (s: String, len: Int, i: Int, acc: Double, seen: Bool) -> (Double, Int)with {
   Error
@@ -537,10 +530,7 @@ let rec parse_value = (s: String, len: Int, i: Int) -> (Json, Int)with {
     }
   }
 }
-
-// --- public parse API ---
-
-parse = (s: String) -> (Json, Int)with {
+export let parse = (s: String) -> (Json, Int)with {
   Error
 } {
   let len = string_length(s)
@@ -552,8 +542,7 @@ parse = (s: String) -> (Json, Int)with {
     raise "trailing input"
   }
 }
-
-parse_ok = (s: String) -> Bool {
+export let parse_ok = (s: String) -> Bool {
   try {
     let (_, end) = parse(s)
     end == s.string_length()
@@ -561,7 +550,6 @@ parse_ok = (s: String) -> Bool {
     false
   }
 }
-
-parse_err = (s: String) -> Bool {
+export let parse_err = (s: String) -> Bool {
   not(parse_ok(s))
 }

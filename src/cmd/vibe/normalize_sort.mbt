@@ -5,23 +5,18 @@ fn normalize_sort_stmts(
   let use_stmts : Array[@vibe_core.Stmt] = []
   let type_stmts : Array[@vibe_core.Stmt] = []
   let trait_stmts : Array[@vibe_core.Stmt] = []
-  let pure_fn_stmts : Array[@vibe_core.Stmt] = []
-  let effectful_fn_stmts : Array[@vibe_core.Stmt] = []
+  let fn_stmts : Array[@vibe_core.Stmt] = []
   let other_stmts : Array[@vibe_core.Stmt] = []
   for stmt in stmts {
     match normalize_stmt_group(stmt) {
       NormalizeStmtGroup::Use => use_stmts.push(stmt)
       NormalizeStmtGroup::TypeDecl => type_stmts.push(stmt)
       NormalizeStmtGroup::TraitDecl => trait_stmts.push(stmt)
-      NormalizeStmtGroup::PureFn => pure_fn_stmts.push(stmt)
-      NormalizeStmtGroup::EffectfulFn => effectful_fn_stmts.push(stmt)
+      NormalizeStmtGroup::FnDef => fn_stmts.push(stmt)
       NormalizeStmtGroup::Other => other_stmts.push(stmt)
     }
   }
-  let pure_fn_sorted = normalize_sort_stmt_defs_topo_alpha(pure_fn_stmts)
-  let effectful_fn_sorted = normalize_sort_stmt_defs_topo_alpha(
-    effectful_fn_stmts,
-  )
+  let fn_sorted = normalize_sort_stmt_defs_topo_alpha(fn_stmts)
   let out : Array[@vibe_core.Stmt] = []
   for stmt in use_stmts {
     out.push(stmt)
@@ -32,10 +27,7 @@ fn normalize_sort_stmts(
   for stmt in trait_stmts {
     out.push(stmt)
   }
-  for stmt in pure_fn_sorted {
-    out.push(stmt)
-  }
-  for stmt in effectful_fn_sorted {
+  for stmt in fn_sorted {
     out.push(stmt)
   }
   for stmt in other_stmts {
@@ -268,28 +260,17 @@ fn normalize_stmt_group(stmt : @vibe_core.Stmt) -> NormalizeStmtGroup {
     | @vibe_core.Stmt::ExportStructDef(..) => NormalizeStmtGroup::TypeDecl
     @vibe_core.Stmt::TraitDef(..) | @vibe_core.Stmt::TraitImpl(..) =>
       NormalizeStmtGroup::TraitDecl
-    @vibe_core.Stmt::Let(expr~, ..) | @vibe_core.Stmt::ExportLet(expr~, ..) =>
-      if normalize_expr_is_effectful_fn(expr) {
-        NormalizeStmtGroup::EffectfulFn
-      } else {
-        NormalizeStmtGroup::PureFn
-      }
-    @vibe_core.Stmt::LetMut(..)
+    @vibe_core.Stmt::Let(..)
+    | @vibe_core.Stmt::ExportLet(..)
+    | @vibe_core.Stmt::LetMut(..)
     | @vibe_core.Stmt::Assign(..)
     | @vibe_core.Stmt::IndexAssign(..)
     | @vibe_core.Stmt::LetPat(..)
     | @vibe_core.Stmt::LetPatElse(..)
-    | @vibe_core.Stmt::Expr(..) => NormalizeStmtGroup::EffectfulFn
+    | @vibe_core.Stmt::Expr(..) => NormalizeStmtGroup::FnDef
     @vibe_core.Stmt::Test(..)
     | @vibe_core.Stmt::Bench(..)
     | @vibe_core.Stmt::Export(..) => NormalizeStmtGroup::Other
   }
 }
 
-///|
-fn normalize_expr_is_effectful_fn(expr : @vibe_core.Expr) -> Bool {
-  match expr {
-    @vibe_core.Expr::Fn(effects~, ..) => effects.length() > 0
-    _ => false
-  }
-}

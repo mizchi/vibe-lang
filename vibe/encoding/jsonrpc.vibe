@@ -1,14 +1,12 @@
 
-use ./json.vibe { Json, parse, stringify, json_get, json_as_str, json_as_num, json_as_obj }
-
-// --- types ---
-
+use ./json.vibe {
+  Json, parse, stringify, json_get, json_as_str, json_as_num, json_as_obj
+}
 export enum RpcId {
   IdNum(Int);
   IdStr(String);
   IdNull
 }
-
 // RpcMessage variants:
 //   Request(method, params, id)
 //   Notification(method, params)
@@ -20,16 +18,27 @@ export enum RpcMessage {
   SuccessResponse(RpcId, Json);
   ErrorResponse(RpcId, Int, String, Json)
 }
-
-declare export let parse_message: (String) -> RpcMessage with { Error }
-declare export let stringify_request: (String, Json, RpcId) -> String
-declare export let stringify_notification: (String, Json) -> String
-declare export let stringify_response: (RpcId, Json) -> String
-declare export let stringify_error: (RpcId, Int, String, Json) -> String
-
-// --- parse helpers ---
-
-let parse_rpc_id = (j: Json) -> RpcId with { Error } {
+let require_key = (obj: Map[Json], key: String) -> Json with {
+  Error
+} {
+  if map_has_key(obj, key) {
+    map_get(obj, key)
+  } else {
+    raise string_concat("missing key: ", key)
+  }
+}
+let get_string = (obj: Map[Json], key: String) -> String with {
+  Error
+} {
+  let v = require_key(obj, key)
+  match v {
+    JStr(s) => s,
+    _ => raise string_concat("expected string for key: ", key)
+  }
+}
+let parse_rpc_id = (j: Json) -> RpcId with {
+  Error
+} {
   match j {
     JNum(n) => IdNum(double_to_int(n)),
     JStr(s) => IdStr(s),
@@ -37,26 +46,9 @@ let parse_rpc_id = (j: Json) -> RpcId with { Error } {
     _ => raise "invalid id"
   }
 }
-
-let require_key = (obj: Map[Json], key: String) -> Json with { Error } {
-  if map_has_key(obj, key) {
-    map_get(obj, key)
-  } else {
-    raise string_concat("missing key: ", key)
-  }
-}
-
-let get_string = (obj: Map[Json], key: String) -> String with { Error } {
-  let v = require_key(obj, key)
-  match v {
-    JStr(s) => s,
-    _ => raise string_concat("expected string for key: ", key)
-  }
-}
-
-// --- parse message ---
-
-parse_message = (input: String) -> RpcMessage with { Error } {
+export let parse_message = (input: String) -> RpcMessage with {
+  Error
+} {
   let (json, _) = parse(input)
   let obj = match json {
     JObj(m) => m,
@@ -108,9 +100,6 @@ parse_message = (input: String) -> RpcMessage with { Error } {
     raise "invalid message: missing method, result, or error"
   }
 }
-
-// --- stringify helpers ---
-
 let rpc_id_json_str = (id: RpcId) -> String {
   match id {
     IdNum(n) => stringify(JNum(int_to_double(n))),
@@ -118,40 +107,16 @@ let rpc_id_json_str = (id: RpcId) -> String {
     IdNull => "null"
   }
 }
-
-stringify_request = (method: String, params: Json, id: RpcId) -> String {
-  string_concat(string_concat(string_concat(string_concat(
-    "{\"jsonrpc\":\"2.0\",\"method\":",
-    stringify(JStr(method))),
-    ",\"params\":"),
-    stringify(params)),
-    string_concat(",\"id\":", string_concat(rpc_id_json_str(id), "}")))
+export let stringify_error = (id: RpcId, code: Int, message: String, data: Json) -> String {
+  let err_str = string_concat(string_concat(string_concat(string_concat("{\"code\":", stringify(JNum(int_to_double(code)))), ",\"message\":"), stringify(JStr(message))), string_concat(",\"data\":", string_concat(stringify(data), "}")))
+  string_concat(string_concat("{\"jsonrpc\":\"2.0\",\"error\":", err_str), string_concat(",\"id\":", string_concat(rpc_id_json_str(id), "}")))
 }
-
-stringify_notification = (method: String, params: Json) -> String {
-  string_concat(string_concat(string_concat(
-    "{\"jsonrpc\":\"2.0\",\"method\":",
-    stringify(JStr(method))),
-    ",\"params\":"),
-    string_concat(stringify(params), "}"))
+export let stringify_request = (method: String, params: Json, id: RpcId) -> String {
+  string_concat(string_concat(string_concat(string_concat("{\"jsonrpc\":\"2.0\",\"method\":", stringify(JStr(method))), ",\"params\":"), stringify(params)), string_concat(",\"id\":", string_concat(rpc_id_json_str(id), "}")))
 }
-
-stringify_response = (id: RpcId, result: Json) -> String {
-  string_concat(string_concat(
-    "{\"jsonrpc\":\"2.0\",\"result\":",
-    stringify(result)),
-    string_concat(",\"id\":", string_concat(rpc_id_json_str(id), "}")))
+export let stringify_response = (id: RpcId, result: Json) -> String {
+  string_concat(string_concat("{\"jsonrpc\":\"2.0\",\"result\":", stringify(result)), string_concat(",\"id\":", string_concat(rpc_id_json_str(id), "}")))
 }
-
-stringify_error = (id: RpcId, code: Int, message: String, data: Json) -> String {
-  let err_str = string_concat(string_concat(string_concat(string_concat(
-    "{\"code\":",
-    stringify(JNum(int_to_double(code)))),
-    ",\"message\":"),
-    stringify(JStr(message))),
-    string_concat(",\"data\":", string_concat(stringify(data), "}")))
-  string_concat(string_concat(
-    "{\"jsonrpc\":\"2.0\",\"error\":",
-    err_str),
-    string_concat(",\"id\":", string_concat(rpc_id_json_str(id), "}")))
+export let stringify_notification = (method: String, params: Json) -> String {
+  string_concat(string_concat(string_concat("{\"jsonrpc\":\"2.0\",\"method\":", stringify(JStr(method))), ",\"params\":"), string_concat(stringify(params), "}"))
 }

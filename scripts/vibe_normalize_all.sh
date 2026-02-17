@@ -25,13 +25,8 @@ fi
 SOURCE_ROOTS=(examples vibe)
 
 # Directories to exclude from normalize
-# - examples, examples/*: normalizer changes semantics (effects.vibe, syntax.vibe)
-# - vibe/std, vibe/std/*: normalizer changes semantics
-# - vibe/encoding: normalizer changes semantics (json import resolution)
-# - vibe/http: normalizer changes semantics
-# - vibe/socket: normalizer changes semantics
-# These exclusions should be removed once the normalizer bugs are fixed.
-EXCLUDE_DIRS="examples|examples/golden_wat|examples/wasm|vibe/std|vibe/std/path|vibe/std/threads|vibe/std/wasm|vibe/encoding|vibe/http|vibe/socket"
+# - examples/wasm: cross-root imports (../../vibe/std/wasm/...) not supported
+EXCLUDE_DIRS="examples/wasm"
 
 # Collect unique directories containing .vibe files (excluding known problematic dirs)
 DIRS=()
