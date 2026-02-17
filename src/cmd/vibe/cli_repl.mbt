@@ -6,16 +6,16 @@ fn repl_cmd(
   enable_llm~ : Bool,
 ) -> Unit {
   if args.length() != 0 {
-    abort("repl: no args supported")
+    abort("shell: no args supported")
   }
   let rt = new_cli_runtime(features, enable_llm~)
   let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
     Ok(v) => v
-    Err(err) => abort("repl: " + err)
+    Err(err) => abort("shell: " + err)
   }
   let restored_source = match load_eval_db_source(scratch_db_path) {
     Ok(v) => v
-    Err(err) => abort("repl: " + err)
+    Err(err) => abort("shell: " + err)
   }
   let mut restore_error : String = ""
   if restored_source.trim().length() > 0 {
@@ -683,7 +683,7 @@ fn repl_stdin_cmd(
 ) -> Unit {
   run_eval_line_repl_with_prompt(
     args,
-    "repl-stdin",
+    "shell-stdin",
     "vibe> ",
     syntax_mode,
     features,
@@ -700,7 +700,7 @@ fn repl_wasi_cmd(
 ) -> Unit {
   run_eval_line_repl_with_prompt(
     args,
-    "repl-wasi",
+    "shell-wasi",
     "wasi> ",
     syntax_mode,
     features,
@@ -820,19 +820,19 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
       }
       "-o" | "--out-dir" => {
         if i + 1 >= args.length() {
-          abort("wasm-repl-stdin: missing output directory after " + arg)
+          abort("wasm-shell-stdin: missing output directory after " + arg)
         }
         out_dir = args[i + 1]
         i += 2
       }
-      _ => abort("wasm-repl-stdin: unknown arg " + arg)
+      _ => abort("wasm-shell-stdin: unknown arg " + arg)
     }
   }
   // Ensure output directory exists
   if not(@os_fs.path_exists(out_dir)) {
     @os_fs.create_dir(out_dir) catch {
       e =>
-        abort("wasm-repl-stdin: failed to create output dir: " + e.to_string())
+        abort("wasm-shell-stdin: failed to create output dir: " + e.to_string())
     }
   }
   async fn repl_loop() {

@@ -271,7 +271,7 @@ fn parse_cmd_args() -> Result[LineReplOptions, String] {
   for i in 1..<args.length() {
     tail.push(args[i])
   }
-  parse_line_repl_options(tail, "repl-wasi", "wasi> ")
+  parse_line_repl_options(tail, "shell-wasi", "wasi> ")
 }
 
 ///|
@@ -341,7 +341,7 @@ fn main {
     Err(msg) => {
       let io = WasiLineIo::new()
       io.writeln(msg)
-      io.writeln("usage: repl-wasi [--no-prompt] [--tty|--no-tty]")
+      io.writeln("usage: shell-wasi [--no-prompt] [--tty|--no-tty]")
       return
     }
   }

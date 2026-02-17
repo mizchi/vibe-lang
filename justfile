@@ -109,8 +109,8 @@ test-update:
 run *args:
     moon run --target native src/cmd/vibe -- {{args}}
 
-# Build wasm line REPL package (wasi preview2 imports)
-build-repl-wasi-wasm:
+# Build wasm line shell package (wasi preview2 imports)
+build-shell-wasi-wasm:
     moon build --target wasm src/cmd/vibe_wasi
 
 # Build wasm compiler CLI package (filesystem adapter via src/io)

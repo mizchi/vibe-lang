@@ -86,7 +86,7 @@ test "pipe completion detection" {
 }
 
 ///|
-test "repl input rows grow with height" {
+test "shell input rows grow with height" {
   assert_eq(repl_input_rows_for_height(20), 9)
   assert_eq(repl_input_rows_for_height(10), 5)
   assert_eq(repl_input_rows_for_height(6), 1)
@@ -116,8 +116,8 @@ test "editor content start col reflects gutter" {
 }
 
 ///|
-test "line repl options parse default" {
-  let parsed = parse_line_repl_options([], "repl-stdin", "vibe> ")
+test "line shell options parse default" {
+  let parsed = parse_line_repl_options([], "shell-stdin", "vibe> ")
   match parsed {
     Ok(opts) => {
       assert_eq(opts.prompt, "vibe> ")
@@ -132,10 +132,10 @@ test "line repl options parse default" {
 }
 
 ///|
-test "line repl options parse tty and no prompt" {
+test "line shell options parse tty and no prompt" {
   let parsed = parse_line_repl_options(
     ["--no-prompt", "--tty"],
-    "repl-stdin",
+    "shell-stdin",
     "vibe> ",
   )
   match parsed {
@@ -151,11 +151,11 @@ test "line repl options parse tty and no prompt" {
 }
 
 ///|
-test "line repl options reject unknown arg" {
-  let parsed = parse_line_repl_options(["--wat"], "repl-stdin", "vibe> ")
+test "line shell options reject unknown arg" {
+  let parsed = parse_line_repl_options(["--wat"], "shell-stdin", "vibe> ")
   match parsed {
     Ok(_) => fail("expected error")
-    Err(msg) => assert_eq(msg, "repl-stdin: unknown arg --wat")
+    Err(msg) => assert_eq(msg, "shell-stdin: unknown arg --wat")
   }
 }
 
@@ -828,9 +828,9 @@ test "cli syntax mode support matrix" {
     Err(msg) => fail("unexpected eval error: " + msg)
   }
   match
-    ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "repl") {
+    ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "shell") {
     Ok(_) => ()
-    Err(msg) => fail("unexpected repl error: " + msg)
+    Err(msg) => fail("unexpected shell error: " + msg)
   }
   match
     ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "compile") {
@@ -1062,7 +1062,7 @@ test "bench case source parse skips comments and blanks" {
 }
 
 ///|
-test "line repl extract let name" {
+test "line shell extract let name" {
   match extract_let_name_line("let foo = 1") {
     Some(name) => assert_eq(name, "foo")
     None => fail("missing foo")

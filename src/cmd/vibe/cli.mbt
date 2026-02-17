@@ -40,12 +40,12 @@ pub fn run(args : Array[String]) -> Unit {
     "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
-    "repl" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "repl-stdin" =>
+    "shell" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "shell-stdin" =>
       repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "repl-wasi" =>
+    "shell-wasi" =>
       repl_wasi_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "wasm-repl-stdin" => wasm_repl_stdin_cmd(cmd_args)
+    "wasm-shell-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
     "fetch" => fetch_cmd(cmd_args)
@@ -129,14 +129,16 @@ fn print_usage() -> Unit {
     "        (legacy expr mode: --expr EXPR | --case NAME=EXPR | --cases FILE)",
   )
   println("  bench-file [--n N] [--warmup N] <file>")
-  println("  repl                        interactive TUI shell")
+  println("  shell                       interactive TUI shell")
   println(
-    "  repl-stdin [--no-prompt] [--tty|--no-tty]  read-eval-print loop (stdin)",
+    "  shell-stdin [--no-prompt] [--tty|--no-tty]  read-eval-print loop (stdin)",
   )
   println(
-    "  repl-wasi [--no-prompt] [--tty|--no-tty]   wasi-friendly line repl",
+    "  shell-wasi [--no-prompt] [--tty|--no-tty]   wasi-friendly line shell",
   )
-  println("  wasm-repl-stdin [--no-prompt] [-o dir]  compile each expr to WASM")
+  println(
+    "  wasm-shell-stdin [--no-prompt] [-o dir]  compile each expr to WASM",
+  )
   println("  hash <file>                 compute normalized AST hash")
   println(
     "  save <file>                 save module to content-addressed store",
@@ -218,10 +220,10 @@ fn command_requires_parser(cmd : String) -> Bool {
     | "compile"
     | "bench"
     | "bench-file"
-    | "repl"
-    | "repl-stdin"
-    | "repl-wasi"
-    | "wasm-repl-stdin"
+    | "shell"
+    | "shell-stdin"
+    | "shell-wasi"
+    | "wasm-shell-stdin"
     | "hash"
     | "save"
     | "fetch"

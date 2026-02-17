@@ -209,7 +209,7 @@ fn render_messages(state : ReplViewState) -> @tui.TuiNode {
 ///|
 fn render_header(state : ReplViewState) -> @tui.TuiNode {
   let w = chat_width(state)
-  let title = truncate_text("vibe repl", w - 1)
+  let title = truncate_text("vibe shell", w - 1)
   let hint = truncate_text(
     "Tab: completion | Up/Down: history | Ctrl+C: quit",
     w - 1,

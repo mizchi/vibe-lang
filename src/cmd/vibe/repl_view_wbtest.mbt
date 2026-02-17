@@ -1,5 +1,5 @@
 ///|
-test "repl view renders header and output" {
+test "shell view renders header and output" {
   let editor = @editor.EditorState::new_with_kind(
     "add(1,2)",
     3,
@@ -17,6 +17,6 @@ test "repl view renders header and output" {
   let (row, col) = repl_cursor_pos(view, editor)
   assert_true(row >= 0)
   assert_true(col >= 0)
-  assert_true(output.contains("vibe repl"))
+  assert_true(output.contains("vibe shell"))
   assert_true(output.contains("last: Int(3)"))
 }

@@ -6,7 +6,7 @@ fn main {
 }
 
 ///|
-/// Keep repl helpers referenced in JS builds to avoid unused warnings.
+/// Keep shell helpers referenced in JS builds to avoid unused warnings.
 fn touch_cli_helpers() -> Unit {
   let _ = detect_completion_context("let x = 1", 5)
   let _ = is_in_fn_param_context("fn(", 2)
@@ -50,8 +50,8 @@ pub fn print_js_usage() -> Unit {
   println(
     "reason: moonbit async stdio lacks stdin/stdout values on js/wasm targets.",
   )
-  println("use: --target native + `repl-stdin` / `repl-wasi`")
+  println("use: --target native + `shell-stdin` / `shell-wasi`")
   println(
-    "for wasm stdio repl build: `moon build --target wasm src/cmd/vibe_wasi`",
+    "for wasm stdio shell build: `moon build --target wasm src/cmd/vibe_wasi`",
   )
 }
