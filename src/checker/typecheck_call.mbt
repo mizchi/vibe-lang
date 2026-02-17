@@ -42,6 +42,7 @@ pub fn TypeEnv::namespace_root(self : TypeEnv, ty : @core.Type) -> String? {
     @core.Type::Char => Some("Char")
     @core.Type::String => Some("String")
     @core.Type::Path => Some("Path")
+    @core.Type::PromptText => Some("PromptText")
     @core.Type::Named(name~, ..) => Some(name)
     @core.Type::Variant(fields) => self.variant_namespace_root(fields)
     _ => None
@@ -397,6 +398,63 @@ fn type_call(
                   )
                 }
                 @core.Type::Bool
+              }
+              "prompt_text" => {
+                let pos_args = extract_positional_args(
+                  args, "prompt_text", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="prompt_text",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(
+                    type_equal(env, arg_ty, @core.Type::String) ||
+                    type_equal(env, arg_ty, @core.Type::PromptText),
+                  ) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::PromptText
+              }
+              "prompt_text_to_string" => {
+                let pos_args = extract_positional_args(
+                  args, "prompt_text_to_string", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="prompt_text_to_string",
+                    span=call_span,
+                  )
+                }
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::PromptText)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::PromptText,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
               }
               "dynamic_path_resolve" => {
                 let pos_args = extract_positional_args(
@@ -1630,7 +1688,10 @@ fn type_call(
                     effects,
                     allow_effect,
                   )
-                  if not(type_equal(env, ty, @core.Type::String)) {
+                  if not(
+                      type_equal(env, ty, @core.Type::String) ||
+                      type_equal(env, ty, @core.Type::PromptText),
+                    ) {
                     raise TypeError::Mismatch(
                       expected=@core.Type::String,
                       actual=ty,
@@ -1642,7 +1703,7 @@ fn type_call(
                 @core.Type::String
               }
               "rlm_run" => {
-                // (task: String, prompt: String) -> String with { Llm }
+                // (task: String, prompt: String|PromptText) -> String with { Llm }
                 let pos_args = extract_positional_args(
                   args, "rlm_run", call_span,
                 )
@@ -1665,7 +1726,10 @@ fn type_call(
                     effects,
                     allow_effect,
                   )
-                  if not(type_equal(env, ty, @core.Type::String)) {
+                  if not(
+                      type_equal(env, ty, @core.Type::String) ||
+                      type_equal(env, ty, @core.Type::PromptText),
+                    ) {
                     raise TypeError::Mismatch(
                       expected=@core.Type::String,
                       actual=ty,

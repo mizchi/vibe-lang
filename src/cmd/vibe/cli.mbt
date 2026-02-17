@@ -41,8 +41,10 @@ pub fn run(args : Array[String]) -> Unit {
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
     "repl" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "repl-stdin" => repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
-    "repl-wasi" => repl_wasi_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "repl-stdin" =>
+      repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "repl-wasi" =>
+      repl_wasi_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "wasm-repl-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
@@ -155,7 +157,9 @@ fn print_usage() -> Unit {
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax vibe|posix (default: vibe)")
   println("  runtime flags: --unstable-async --unstable-threads")
-  println("  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)")
+  println(
+    "  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)",
+  )
 }
 
 ///|

@@ -1836,10 +1836,12 @@ fn eval_builtin_call(
       }
       let system = match pos_args[0] {
         @core.Value::String(s) => s
+        @core.Value::PromptText(pt) => pt.as_string()
         _ => raise EvalError::BadCall("llm_complete")
       }
       let user = match pos_args[1] {
         @core.Value::String(s) => s
+        @core.Value::PromptText(pt) => pt.as_string()
         _ => raise EvalError::BadCall("llm_complete")
       }
       let config = match LlmConfig::from_env() {
@@ -1871,10 +1873,12 @@ fn eval_builtin_call(
       }
       let task = match pos_args[0] {
         @core.Value::String(s) => s
+        @core.Value::PromptText(pt) => pt.as_string()
         _ => raise EvalError::BadCall("rlm_run")
       }
       let prompt = match pos_args[1] {
         @core.Value::String(s) => s
+        @core.Value::PromptText(pt) => pt.as_string()
         _ => raise EvalError::BadCall("rlm_run")
       }
       let budget = RlmBudget::default()

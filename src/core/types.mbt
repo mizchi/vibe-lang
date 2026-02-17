@@ -37,6 +37,7 @@ pub(all) enum Type {
   Char
   String
   Path
+  PromptText
   Unit
   Tuple(Array[Type])
   Record(Map[String, Type])
@@ -84,6 +85,21 @@ pub fn Path::as_string(self : Path) -> String {
 }
 
 ///|
+pub(all) struct PromptText {
+  content : String
+} derive(Show, Eq)
+
+///|
+pub fn PromptText::new(content : String) -> PromptText {
+  PromptText::{ content, }
+}
+
+///|
+pub fn PromptText::as_string(self : PromptText) -> String {
+  self.content
+}
+
+///|
 pub(all) struct FnValue {
   params : Array[FuncParam]
   body : Module
@@ -116,6 +132,7 @@ fn format_type_compact(ty : Type) -> String {
     Type::Char => "Char"
     Type::String => "String"
     Type::Path => "Path"
+    Type::PromptText => "PromptText"
     Type::Unit => "Unit"
     Type::Never => "Never"
     Type::Tuple(items) => {
@@ -209,6 +226,7 @@ pub(all) enum Value {
   Char(Char)
   String(String)
   Path(Path)
+  PromptText(PromptText)
   Unit
   Tuple(Array[Value])
   Record(Map[String, Value])
@@ -240,6 +258,11 @@ pub impl Show for Value with output(self, logger) {
     Value::Path(p) => {
       logger.write_string("path(\"")
       logger.write_string(p.raw)
+      logger.write_string("\")")
+    }
+    Value::PromptText(pt) => {
+      logger.write_string("prompt(\"")
+      logger.write_string(pt.content)
       logger.write_string("\")")
     }
     Value::Unit => logger.write_string("()")

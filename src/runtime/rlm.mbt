@@ -70,11 +70,12 @@ fn rlm_is_prelude_name(name : String) -> Bool {
 fn rlm_collect_bindings(rt : Runtime) -> Array[(String, String)] {
   let bindings : Array[(String, String)] = []
   for name, _hash in rt.env {
-    // Skip internal/prelude bindings and prompt
+    // Skip internal/prelude bindings, prompt, and PromptText values
     if name.has_prefix("_") || name == "prompt" || rlm_is_prelude_name(name) {
       continue
     }
     match rt.get(name) {
+      Some(@core.Value::PromptText(_)) => () // skip PromptText bindings
       Some(value) => {
         let value_str = value.to_string()
         let preview = truncate_preview(value_str, 120)
@@ -84,6 +85,21 @@ fn rlm_collect_bindings(rt : Runtime) -> Array[(String, String)] {
     }
   }
   bindings
+}
+
+///|
+fn rlm_collect_prompt_bindings(rt : Runtime) -> Array[(String, String)] {
+  let prompts : Array[(String, String)] = []
+  for name, _hash in rt.env {
+    if name.has_prefix("_") || rlm_is_prelude_name(name) {
+      continue
+    }
+    match rt.get(name) {
+      Some(@core.Value::PromptText(pt)) => prompts.push((name, pt.as_string()))
+      _ => ()
+    }
+  }
+  prompts
 }
 
 ///|
@@ -180,7 +196,22 @@ pub fn rlm_run_loop(
     raise EvalError::PermissionDenied("llm_call:" + config.model)
   }
 
-  let system = rlm_system_prompt()
+  let prompt_bindings = rlm_collect_prompt_bindings(sandbox)
+  let extra_context = if prompt_bindings.length() > 0 {
+    let buf = StringBuilder::new()
+    buf.write_string("\n\nEnvironment prompts:\n")
+    for binding in prompt_bindings {
+      buf.write_string("- ")
+      buf.write_string(binding.0)
+      buf.write_string(": ")
+      buf.write_string(binding.1)
+      buf.write_char('\n')
+    }
+    buf.to_string()
+  } else {
+    ""
+  }
+  let system = rlm_system_prompt() + extra_context
   let mut error_feedback = ""
   let trace : Array[String] = []
 

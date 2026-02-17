@@ -10,6 +10,7 @@ fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError 
     | Char
     | String
     | Path
+    | PromptText
     | Unit
     | StringBuilder
     | Never
@@ -439,6 +440,8 @@ fn unify_types(
     (@core.Type::Char, @core.Type::Char) => true
     (@core.Type::String, @core.Type::String) => true
     (@core.Type::Path, @core.Type::Path) => true
+    (@core.Type::PromptText, @core.Type::PromptText) => true
+    (@core.Type::String, @core.Type::PromptText) => true
     (@core.Type::Unit, @core.Type::Unit) => true
     (@core.Type::Tuple(xs), @core.Type::Tuple(ys)) =>
       if xs.length() != ys.length() {

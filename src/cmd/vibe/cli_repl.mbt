@@ -676,7 +676,12 @@ fn repl_stdin_cmd(
   enable_llm~ : Bool,
 ) -> Unit {
   run_eval_line_repl_with_prompt(
-    args, "repl-stdin", "vibe> ", syntax_mode, features, enable_llm~,
+    args,
+    "repl-stdin",
+    "vibe> ",
+    syntax_mode,
+    features,
+    enable_llm~,
   )
 }
 
@@ -688,7 +693,12 @@ fn repl_wasi_cmd(
   enable_llm~ : Bool,
 ) -> Unit {
   run_eval_line_repl_with_prompt(
-    args, "repl-wasi", "wasi> ", syntax_mode, features, enable_llm~,
+    args,
+    "repl-wasi",
+    "wasi> ",
+    syntax_mode,
+    features,
+    enable_llm~,
   )
 }
 

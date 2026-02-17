@@ -112,6 +112,7 @@ fn encode_value(value : @core.Value) -> String {
     @core.Value::Char(c) => "c:" + c.to_int().to_string()
     @core.Value::String(s) => "s:" + escape_cache(s)
     @core.Value::Path(p) => "p:" + escape_cache(p.as_string())
+    @core.Value::PromptText(pt) => "pt:" + escape_cache(pt.as_string())
     @core.Value::Unit => "u:"
     @core.Value::Tuple(items) => "t:" + encode_list(items)
     @core.Value::Record(fields) => "r:" + encode_record(fields)
@@ -187,6 +188,9 @@ fn decode_value(encoded : String) -> @core.Value? {
         }
       Err(_) => None
     }
+  } else if encoded.has_prefix("pt:") {
+    let rest = slice_from(encoded, 3)
+    Some(@core.Value::PromptText(@core.PromptText::new(unescape_cache(rest))))
   } else if encoded.has_prefix("p:") {
     let rest = slice_from(encoded, 2)
     Some(@core.Value::Path(@core.Path::new(unescape_cache(rest))))

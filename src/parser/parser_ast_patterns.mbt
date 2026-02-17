@@ -118,6 +118,16 @@ fn AstParser::parse_type_with_params(
               span=name_span,
             )
           }
+        "PromptText" =>
+          if args.is_empty() {
+            @core.Type::PromptText
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="type",
+              got=name,
+              span=name_span,
+            )
+          }
         "Unit" =>
           if args.is_empty() {
             @core.Type::Unit

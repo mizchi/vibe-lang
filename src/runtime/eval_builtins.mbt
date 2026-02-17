@@ -86,7 +86,9 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "double_max" ||
   name == "double_min" ||
   name == "double_floor" ||
-  name == "double_ceil"
+  name == "double_ceil" ||
+  name == "prompt_text" ||
+  name == "prompt_text_to_string"
 }
 
 ///|
@@ -1328,6 +1330,26 @@ fn eval_pure_builtin(
           }
         }
         _ => raise EvalError::BadCall("double_ceil")
+      }
+    }
+    "prompt_text" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("prompt_text")
+      }
+      match args[0] {
+        @core.Value::String(s) =>
+          @core.Value::PromptText(@core.PromptText::new(s))
+        @core.Value::PromptText(_) as pt => pt
+        _ => raise EvalError::BadCall("prompt_text")
+      }
+    }
+    "prompt_text_to_string" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("prompt_text_to_string")
+      }
+      match args[0] {
+        @core.Value::PromptText(pt) => @core.Value::String(pt.as_string())
+        _ => raise EvalError::BadCall("prompt_text_to_string")
       }
     }
     _ => raise EvalError::BadCall(name)

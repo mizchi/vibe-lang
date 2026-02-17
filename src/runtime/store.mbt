@@ -493,6 +493,7 @@ fn value_hash(value : @core.Value) -> String {
     @core.Value::Char(_) => "c:"
     @core.Value::String(_) => "s:"
     @core.Value::Path(_) => "p:"
+    @core.Value::PromptText(_) => "pt:"
     @core.Value::Unit => "u:"
     @core.Value::Tuple(_) => "t:"
     @core.Value::Record(_) => "r:"

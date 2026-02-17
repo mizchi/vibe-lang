@@ -99,6 +99,7 @@ fn render_type(ty : @core.Type) -> String {
     @core.Type::Char => "Char"
     @core.Type::String => "String"
     @core.Type::Path => "Path"
+    @core.Type::PromptText => "PromptText"
     @core.Type::Unit => "Unit"
     @core.Type::Never => "Never"
     @core.Type::Tuple(items) =>

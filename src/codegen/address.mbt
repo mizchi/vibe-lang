@@ -646,6 +646,7 @@ fn addr_type_to_sexp(ty : @core.Type) -> String {
     @core.Type::Char => "Char"
     @core.Type::String => "String"
     @core.Type::Path => "@core.Path"
+    @core.Type::PromptText => "PromptText"
     @core.Type::Unit => "Unit"
     @core.Type::Named(name~, args~) => {
       let buf = StringBuilder::new()

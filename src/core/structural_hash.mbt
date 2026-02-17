@@ -373,6 +373,7 @@ pub fn Type::structural_hash(self : Type) -> Int {
     Type::String => 0x53747267
     Type::Unit => 0x556e6974
     Type::Path => 0x50617468
+    Type::PromptText => 0x50726d74
     Type::Never => 0x4e657665
     Type::Named(name~, args~) => {
       let mut h = 0x4e616d65

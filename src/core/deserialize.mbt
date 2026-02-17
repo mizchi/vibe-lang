@@ -404,6 +404,7 @@ fn parse_type(json : Json) -> Type raise DeserializeError {
       "Char" => return Type::Char
       "String" => return Type::String
       "Path" => return Type::Path
+      "PromptText" => return Type::PromptText
       "Unit" => return Type::Unit
       "Never" => return Type::Never
       "Named" => {

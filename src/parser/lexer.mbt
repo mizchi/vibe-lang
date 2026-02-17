@@ -545,22 +545,87 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           }
         '^' => Token::new(bit_xor(), "^")
         '.' => Token::new(dot(), ".")
-        '#' => {
-          // Hash reference: #abc12345
-          let start = self.pos - 1
-          while (match self.peek() {
-                  Some(ch) => is_alnum(ch)
-                  None => false
-                }) {
-            let _ = self.advance()
+        '#' =>
+          if self.peek() == Some('|') {
+            // Multiline string literal: #| lines joined by newline
+            self.lex_multiline_string()
+          } else {
+            // Hash reference: #abc12345
+            let start = self.pos - 1
+            while (match self.peek() {
+                    Some(ch) => is_alnum(ch)
+                    None => false
+                  }) {
+              let _ = self.advance()
+            }
+            let text = self.input.unsafe_substring(start~, end=self.pos)
+            Token::new(hash_ref(), text)
           }
-          let text = self.input.unsafe_substring(start~, end=self.pos)
-          Token::new(hash_ref(), text)
-        }
         _ => Token::new(error_kind(), c.to_string())
       }
     }
   }
+}
+
+///|
+/// Lex a multiline string literal starting with #|
+/// Consecutive #| lines are joined by newlines.
+fn Lexer::lex_multiline_string(self : Lexer) -> Token {
+  let start = self.pos - 1 // include the '#' already consumed
+  let buf = StringBuilder::new()
+  let mut first_line = true
+  let mut running = true
+  // We are positioned after '#', peek should be '|'
+  while running {
+    // Consume '|'
+    let _ = self.advance()
+    // Read content until end of line
+    let line_buf = StringBuilder::new()
+    while (match self.peek() {
+            Some('\n') | None => false
+            _ => true
+          }) {
+      let _ = self.advance()
+      // Re-read the char we just consumed from the position before advance
+      let ch = self.input[self.pos - 1].to_int().unsafe_to_char()
+      line_buf.write_char(ch)
+    }
+    if not(first_line) {
+      buf.write_char('\n')
+    }
+    first_line = false
+    buf.write_string(line_buf.to_string())
+    // Consume the newline if present
+    if self.peek() == Some('\n') {
+      let _ = self.advance()
+    } else {
+      running = false
+      continue
+    }
+    // Check if next line starts with optional whitespace followed by #|
+    let saved_pos = self.pos
+    while (match self.peek() {
+            Some(' ') | Some('\t') => true
+            _ => false
+          }) {
+      let _ = self.advance()
+    }
+    if self.peek() == Some('#') {
+      let _ = self.advance()
+      if self.peek() == Some('|') {
+        continue // next #| line
+      } else {
+        // Not a continuation, restore position
+        self.pos = saved_pos
+        running = false
+      }
+    } else {
+      self.pos = saved_pos
+      running = false
+    }
+  }
+  let width = self.pos - start
+  Token::new_with_width(string_lit(), buf.to_string(), width)
 }
 
 ///|

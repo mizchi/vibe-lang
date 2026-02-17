@@ -278,6 +278,7 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
     | @vibe_core.Type::Char
     | @vibe_core.Type::String
     | @vibe_core.Type::Path
+    | @vibe_core.Type::PromptText
     | @vibe_core.Type::Unit
     | @vibe_core.Type::Never => true
     @vibe_core.Type::Tuple(items) => {
@@ -336,6 +337,7 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
     @vibe_core.Type::Char => "Char"
     @vibe_core.Type::String => "String"
     @vibe_core.Type::Path => "@core.Path"
+    @vibe_core.Type::PromptText => "PromptText"
     @vibe_core.Type::Unit => "Unit"
     @vibe_core.Type::Never => "Never"
     @vibe_core.Type::Tuple(items) => {
