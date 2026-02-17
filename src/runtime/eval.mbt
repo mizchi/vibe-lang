@@ -1145,1018 +1145,913 @@ fn eval_call(
             }
           }
         } else {
-          match name {
-            "sleep" => {
-              require_unstable_async(rt, "sleep")
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "sleep")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("sleep")
-              }
-              if not(rt.caps().can_read_clock()) {
-                raise EvalError::PermissionDenied("clock_read")
-              }
-              match pos_args[0] {
-                @core.Value::Int(ms) => {
-                  @io.sleep_ms(ms)
-                  { value: @core.Value::Unit, effects: out.effects }
-                }
-                _ => raise EvalError::BadCall("sleep")
-              }
-            }
-            "dynamic_path_resolve" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "dynamic_path_resolve",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("dynamic_path_resolve")
-              }
-              match pos_args[0] {
-                @core.Value::String(raw_path) => {
-                  let cwd = @io.current_dir_or_root()
-                  let resolved = if raw_path.has_prefix("/") {
-                    @path.Path(raw_path).normalize().to_string()
-                  } else {
-                    @path.Path(cwd)
-                    .join(@path.Path(raw_path))
-                    .normalize()
-                    .to_string()
-                  }
-                  {
-                    value: @core.Value::Path(@core.Path::new(resolved)),
-                    effects: out.effects,
-                  }
-                }
-                _ => raise EvalError::BadCall("dynamic_path_resolve")
-              }
-            }
-            "threads_probe_wat" => {
-              require_unstable_threads(rt, "threads_probe_wat")
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "threads_probe_wat",
-              )
-              if pos_args.length() != 0 {
-                raise EvalError::BadCall("threads_probe_wat")
-              }
-              {
-                value: @core.Value::String(@x_threads.probe_wat()),
-                effects: out.effects,
-              }
-            }
-            "threads_runtime_hints" => {
-              require_unstable_threads(rt, "threads_runtime_hints")
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "threads_runtime_hints",
-              )
-              if pos_args.length() != 0 {
-                raise EvalError::BadCall("threads_runtime_hints")
-              }
-              let wasm_flags = @x_threads.recommended_wasm_flags()
-              let wasi_flags = @x_threads.recommended_wasi_flags()
-              let wasm_values : Array[@core.Value] = []
-              for flag in wasm_flags {
-                wasm_values.push(@core.Value::String(flag))
-              }
-              let wasi_values : Array[@core.Value] = []
-              for flag in wasi_flags {
-                wasi_values.push(@core.Value::String(flag))
-              }
-              let fields : Map[String, @core.Value] = {}
-              fields["wasm_flags"] = @core.Value::Array(wasm_values)
-              fields["wasi_flags"] = @core.Value::Array(wasi_values)
-              fields["wasm_env"] = @core.Value::String(
-                @x_threads.flags_to_env_value(wasm_flags),
-              )
-              fields["wasi_env"] = @core.Value::String(
-                @x_threads.flags_to_env_value(wasi_flags),
-              )
-              { value: @core.Value::Record(fields), effects: out.effects }
-            }
-            "threads_channel_new" => {
-              require_unstable_threads(rt, "threads_channel_new")
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "threads_channel_new",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("threads_channel_new")
-              }
-              match pos_args[0] {
-                @core.Value::Int(capacity) =>
-                  {
-                    value: @core.Value::Int(
-                      rt.threads_channel_new(capacity.to_int()).to_int64(),
-                    ),
-                    effects: out.effects,
-                  }
-                _ => raise EvalError::BadCall("threads_channel_new")
-              }
-            }
-            "threads_send" => {
-              require_unstable_threads(rt, "threads_send")
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "threads_send")
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("threads_send")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::Int(channel_id), @core.Value::String(message)) =>
-                  match rt.threads_send(channel_id.to_int(), message) {
-                    Some(ok) =>
-                      { value: @core.Value::Bool(ok), effects: out.effects }
-                    None => raise EvalError::BadCall("threads_send")
-                  }
-                _ => raise EvalError::BadCall("threads_send")
-              }
-            }
-            "threads_recv" => {
-              require_unstable_threads(rt, "threads_recv")
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "threads_recv")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("threads_recv")
-              }
-              match pos_args[0] {
-                @core.Value::Int(channel_id) =>
-                  match rt.threads_recv(channel_id.to_int()) {
-                    Some(message) =>
-                      {
-                        value: @core.Value::String(message),
-                        effects: out.effects,
-                      }
-                    None => raise EvalError::BadCall("threads_recv")
-                  }
-                _ => raise EvalError::BadCall("threads_recv")
-              }
-            }
-            "threads_spawn" => {
-              require_unstable_threads(rt, "threads_spawn")
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "threads_spawn",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("threads_spawn")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::String(name), @core.Value::Int(mailbox)) =>
-                  match rt.threads_spawn(name, mailbox.to_int()) {
-                    Some(task_id) =>
-                      {
-                        value: @core.Value::Int(task_id.to_int64()),
-                        effects: out.effects,
-                      }
-                    None => raise EvalError::BadCall("threads_spawn")
-                  }
-                _ => raise EvalError::BadCall("threads_spawn")
-              }
-            }
-            "threads_wait" => {
-              require_unstable_threads(rt, "threads_wait")
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "threads_wait")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("threads_wait")
-              }
-              match pos_args[0] {
-                @core.Value::Int(task_id) =>
-                  match rt.threads_wait(task_id.to_int()) {
-                    Some(status) =>
-                      {
-                        value: @core.Value::Int(status.to_int64()),
-                        effects: out.effects,
-                      }
-                    None => raise EvalError::BadCall("threads_wait")
-                  }
-                _ => raise EvalError::BadCall("threads_wait")
-              }
-            }
-            "sh" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "sh")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("sh")
-              }
-              match pos_args[0] {
-                @core.Value::String(cmd) => {
-                  if not(rt.caps().can_spawn("sh")) {
-                    raise EvalError::PermissionDenied("process_spawn")
-                  }
-                  let effects = out.effects
-                  effects.push(Effect::ShellExec(cmd))
-                  { value: @core.Value::Unit, effects }
-                }
-                _ => raise EvalError::BadCall("sh")
-              }
-            }
-            "sh_lines" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "sh_lines")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("sh_lines")
-              }
-              match pos_args[0] {
-                @core.Value::String(cmd) => {
-                  if not(rt.caps().can_spawn("sh")) {
-                    raise EvalError::PermissionDenied("process_spawn")
-                  }
-                  let effects = out.effects
-                  effects.push(Effect::ShellExec(cmd))
-                  let lines = execute_shell_lines(cmd) catch {
-                    _ => raise EvalError::BadCall("sh_lines")
-                  }
-                  let values : Array[@core.Value] = []
-                  for line in lines {
-                    values.push(@core.Value::String(line))
-                  }
-                  { value: @core.Value::Array(values), effects }
-                }
-                _ => raise EvalError::BadCall("sh_lines")
-              }
-            }
-            "stdout_write_char" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "stdout_write_char",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("stdout_write_char")
-              }
-              match pos_args[0] {
-                @core.Value::Int(code) => {
-                  let effects = out.effects
-                  effects.push(Effect::StdoutWriteChar(code.to_int()))
-                  { value: @core.Value::Unit, effects }
-                }
-                _ => raise EvalError::BadCall("stdout_write_char")
-              }
-            }
-            "stdin_read_char" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "stdin_read_char",
-              )
-              if pos_args.length() != 0 {
-                raise EvalError::BadCall("stdin_read_char")
-              }
-              let code = -1
-              let effects = out.effects
-              effects.push(Effect::StdinReadChar(code))
-              { value: @core.Value::Int(code.to_int64()), effects }
-            }
-            "stdout_write_stream" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "stdout_write_stream",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("stdout_write_stream")
-              }
-              match pos_args[0] {
-                @core.Value::String(text) => {
-                  let effects = out.effects
-                  effects.push(Effect::StdoutWriteStream(text))
-                  { value: @core.Value::Unit, effects }
-                }
-                _ => raise EvalError::BadCall("stdout_write_stream")
-              }
-            }
-            "stdin_read_stream" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "stdin_read_stream",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("stdin_read_stream")
-              }
-              match pos_args[0] {
-                @core.Value::Int(len) => {
-                  if len < 0L {
-                    raise EvalError::BadCall("stdin_read_stream")
-                  }
-                  let chunk = ""
-                  let effects = out.effects
-                  effects.push(Effect::StdinReadStream(len.to_int(), chunk))
-                  { value: @core.Value::String(chunk), effects }
-                }
-                _ => raise EvalError::BadCall("stdin_read_stream")
-              }
-            }
-            "fs_read_file" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "fs_read_file")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("fs_read_file")
-              }
-              match pos_args[0] {
-                @core.Value::String(path) =>
-                  match @io.read_string(path) {
-                    Ok(content) => {
-                      let effects = out.effects
-                      effects.push(Effect::FsReadFile(path, content))
-                      { value: @core.Value::String(content), effects }
-                    }
-                    Err(err) => raise EvalError::BadCall("fs_read_file: " + err)
-                  }
-                _ => raise EvalError::BadCall("fs_read_file")
-              }
-            }
-            "fs_write_file" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "fs_write_file",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("fs_write_file")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::String(path), @core.Value::String(content)) =>
-                  match @io.write_string(path, content) {
-                    Ok(_) => {
-                      let effects = out.effects
-                      effects.push(Effect::FsWriteFile(path, content))
-                      { value: @core.Value::Unit, effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("fs_write_file: " + err)
-                  }
-                _ => raise EvalError::BadCall("fs_write_file")
-              }
-            }
-            "fs_exists" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "fs_exists")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("fs_exists")
-              }
-              match pos_args[0] {
-                @core.Value::String(path) => {
-                  let exists = @io.path_exists(path)
-                  let effects = out.effects
-                  effects.push(Effect::FsExists(path, exists))
-                  { value: @core.Value::Bool(exists), effects }
-                }
-                _ => raise EvalError::BadCall("fs_exists")
-              }
-            }
-            "socket_tcp_connect" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "socket_tcp_connect",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("socket_tcp_connect")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::String(host), @core.Value::Int(port)) =>
-                  match @backend.tcp_connect(host, port.to_int()) {
-                    Ok(fd) => {
-                      let effects = out.effects
-                      let fd64 = fd.to_int64()
-                      effects.push(Effect::SocketTcpConnect(host, port, fd64))
-                      { value: @core.Value::Int(fd64), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("socket_tcp_connect: " + err)
-                  }
-                _ => raise EvalError::BadCall("socket_tcp_connect")
-              }
-            }
-            "socket_tcp_read" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "socket_tcp_read",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("socket_tcp_read")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::Int(fd), @core.Value::Int(max_bytes)) =>
-                  match @backend.tcp_read(fd.to_int(), max_bytes.to_int()) {
-                    Ok(data) => {
-                      let effects = out.effects
-                      effects.push(Effect::SocketTcpRead(fd, max_bytes, data))
-                      { value: @core.Value::String(data), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("socket_tcp_read: " + err)
-                  }
-                _ => raise EvalError::BadCall("socket_tcp_read")
-              }
-            }
-            "socket_tcp_write" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "socket_tcp_write",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("socket_tcp_write")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::Int(fd), @core.Value::String(data)) =>
-                  match @backend.tcp_write(fd.to_int(), data) {
-                    Ok(_) => {
-                      let effects = out.effects
-                      effects.push(Effect::SocketTcpWrite(fd, data))
-                      { value: @core.Value::Unit, effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("socket_tcp_write: " + err)
-                  }
-                _ => raise EvalError::BadCall("socket_tcp_write")
-              }
-            }
-            "socket_tcp_close" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "socket_tcp_close",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("socket_tcp_close")
-              }
-              match pos_args[0] {
-                @core.Value::Int(fd) =>
-                  match @backend.tcp_close(fd.to_int()) {
-                    Ok(_) => {
-                      let effects = out.effects
-                      effects.push(Effect::SocketTcpClose(fd))
-                      { value: @core.Value::Unit, effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("socket_tcp_close: " + err)
-                  }
-                _ => raise EvalError::BadCall("socket_tcp_close")
-              }
-            }
-            // --- HTTP Client builtins ---
-            "http_request" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "http_request")
-              if pos_args.length() != 4 {
-                raise EvalError::BadCall("http_request")
-              }
-              let meth = match pos_args[0] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("http_request")
-              }
-              let url = match pos_args[1] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("http_request")
-              }
-              let headers = match pos_args[2] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("http_request")
-              }
-              let body = match pos_args[3] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("http_request")
-              }
-              match @backend.http_request(meth, url, headers, body) {
-                Ok(handle) => {
-                  let effects = out.effects
-                  let h64 = handle.to_int64()
-                  effects.push(
-                    Effect::HttpRequest(meth, url, headers, body, h64),
-                  )
-                  { value: @core.Value::Int(h64), effects }
-                }
-                Err(err) => raise EvalError::BadCall("http_request: " + err)
-              }
-            }
-            "http_response_status" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "http_response_status",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("http_response_status")
-              }
-              match pos_args[0] {
-                @core.Value::Int(handle) =>
-                  match @backend.http_response_status(handle.to_int()) {
-                    Ok(status) => {
-                      let effects = out.effects
-                      effects.push(Effect::HttpResponseStatus(handle, status))
-                      { value: @core.Value::Int(status.to_int64()), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("http_response_status: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_response_status")
-              }
-            }
-            "http_response_header" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "http_response_header",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("http_response_header")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
-                  match
-                    @backend.http_response_header(handle.to_int(), hdr_name) {
-                    Ok(hdr_val) => {
-                      let effects = out.effects
-                      effects.push(
-                        Effect::HttpResponseHeader(handle, hdr_name, hdr_val),
-                      )
-                      { value: @core.Value::String(hdr_val), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("http_response_header: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_response_header")
-              }
-            }
-            "http_response_body" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "http_response_body",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("http_response_body")
-              }
-              match pos_args[0] {
-                @core.Value::Int(handle) =>
-                  match @backend.http_response_body(handle.to_int()) {
-                    Ok(body) => {
-                      let effects = out.effects
-                      effects.push(Effect::HttpResponseBody(handle, body))
-                      { value: @core.Value::String(body), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("http_response_body: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_response_body")
-              }
-            }
-            "http_close" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "http_close")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("http_close")
-              }
-              match pos_args[0] {
-                @core.Value::Int(handle) =>
-                  match @backend.http_close(handle.to_int()) {
-                    Ok(_) => {
-                      let effects = out.effects
-                      effects.push(Effect::HttpClose(handle))
-                      { value: @core.Value::Unit, effects }
-                    }
-                    Err(err) => raise EvalError::BadCall("http_close: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_close")
-              }
-            }
-            // --- HTTP Server builtins ---
-            "http_listen" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "http_listen")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("http_listen")
-              }
-              match pos_args[0] {
-                @core.Value::Int(port) =>
-                  match @backend.http_listen(port.to_int()) {
-                    Ok(handle) => {
-                      let effects = out.effects
-                      let h64 = handle.to_int64()
-                      effects.push(Effect::HttpListen(port.to_int(), h64))
-                      { value: @core.Value::Int(h64), effects }
-                    }
-                    Err(err) => raise EvalError::BadCall("http_listen: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_listen")
-              }
-            }
-            "http_accept" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "http_accept")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("http_accept")
-              }
-              match pos_args[0] {
-                @core.Value::Int(server_handle) =>
-                  match @backend.http_accept(server_handle.to_int()) {
-                    Ok(req_handle) => {
-                      let effects = out.effects
-                      let rh64 = req_handle.to_int64()
-                      effects.push(Effect::HttpAccept(server_handle, rh64))
-                      { value: @core.Value::Int(rh64), effects }
-                    }
-                    Err(err) => raise EvalError::BadCall("http_accept: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_accept")
-              }
-            }
-            "http_request_method" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "http_request_method",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("http_request_method")
-              }
-              match pos_args[0] {
-                @core.Value::Int(handle) =>
-                  match @backend.http_request_method(handle.to_int()) {
-                    Ok(meth) => {
-                      let effects = out.effects
-                      effects.push(Effect::HttpRequestMethod(handle, meth))
-                      { value: @core.Value::String(meth), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("http_request_method: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_request_method")
-              }
-            }
-            "http_request_url" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "http_request_url",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("http_request_url")
-              }
-              match pos_args[0] {
-                @core.Value::Int(handle) =>
-                  match @backend.http_request_url(handle.to_int()) {
-                    Ok(url) => {
-                      let effects = out.effects
-                      effects.push(Effect::HttpRequestUrl(handle, url))
-                      { value: @core.Value::String(url), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("http_request_url: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_request_url")
-              }
-            }
-            "http_request_header" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "http_request_header",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("http_request_header")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
-                  match
-                    @backend.http_request_header(handle.to_int(), hdr_name) {
-                    Ok(hdr_val) => {
-                      let effects = out.effects
-                      effects.push(
-                        Effect::HttpRequestHeader(handle, hdr_name, hdr_val),
-                      )
-                      { value: @core.Value::String(hdr_val), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("http_request_header: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_request_header")
-              }
-            }
-            "http_request_body" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "http_request_body",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("http_request_body")
-              }
-              match pos_args[0] {
-                @core.Value::Int(handle) =>
-                  match @backend.http_request_body(handle.to_int()) {
-                    Ok(body) => {
-                      let effects = out.effects
-                      effects.push(Effect::HttpRequestBody(handle, body))
-                      { value: @core.Value::String(body), effects }
-                    }
-                    Err(err) =>
-                      raise EvalError::BadCall("http_request_body: " + err)
-                  }
-                _ => raise EvalError::BadCall("http_request_body")
-              }
-            }
-            "http_respond" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "http_respond")
-              if pos_args.length() != 4 {
-                raise EvalError::BadCall("http_respond")
-              }
-              let handle = match pos_args[0] {
-                @core.Value::Int(v) => v
-                _ => raise EvalError::BadCall("http_respond")
-              }
-              let status = match pos_args[1] {
-                @core.Value::Int(v) => v
-                _ => raise EvalError::BadCall("http_respond")
-              }
-              let headers = match pos_args[2] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("http_respond")
-              }
-              let body = match pos_args[3] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("http_respond")
-              }
-              match
-                @backend.http_respond(
-                  handle.to_int(),
-                  status.to_int(),
-                  headers,
-                  body,
-                ) {
-                Ok(_) => {
-                  let effects = out.effects
-                  effects.push(
-                    Effect::HttpRespond(handle, status.to_int(), headers, body),
-                  )
-                  { value: @core.Value::Unit, effects }
-                }
-                Err(err) => raise EvalError::BadCall("http_respond: " + err)
-              }
-            }
-            "llm_complete" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "llm_complete")
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("llm_complete")
-              }
-              let system = match pos_args[0] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("llm_complete")
-              }
-              let user = match pos_args[1] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("llm_complete")
-              }
-              let config = match LlmConfig::from_env() {
-                Some(c) => c
-                None =>
-                  raise EvalError::BadCall(
-                    "llm_complete: VIBE_LLM_PROVIDER env var not set",
-                  )
-              }
-              if not(rt.caps().can_call_llm(config.model)) {
-                raise EvalError::PermissionDenied("llm_call:" + config.model)
-              }
-              let response = llm_complete(config, system, user)
-              let effects = out.effects
-              effects.push(
-                Effect::LlmComplete(
-                  config.model,
-                  truncate_preview(user, 80),
-                  truncate_preview(response, 80),
-                ),
-              )
-              { value: @core.Value::String(response), effects }
-            }
-            "rlm_run" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "rlm_run")
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("rlm_run")
-              }
-              let task = match pos_args[0] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("rlm_run")
-              }
-              let prompt = match pos_args[1] {
-                @core.Value::String(s) => s
-                _ => raise EvalError::BadCall("rlm_run")
-              }
-              let budget = RlmBudget::default()
-              let result = rlm_run_loop(rt, task, prompt, budget)
-              let effects = out.effects
-              effects.push(
-                Effect::RlmTrace(
-                  "{\"task\":" +
-                  json_escape_string(truncate_preview(task, 80)) +
-                  ",\"steps\":" +
-                  budget.steps_used.to_string() +
-                  "}",
-                ),
-              )
-              { value: @core.Value::String(result), effects }
-            }
-            "rlm_finalize" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "rlm_finalize")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("rlm_finalize")
-              }
-              match pos_args[0] {
-                @core.Value::String(s) =>
-                  { value: @core.Value::String(s), effects: out.effects }
-                _ => raise EvalError::BadCall("rlm_finalize")
-              }
-            }
-            "addr" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "addr")
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("addr")
-              }
-              match pos_args[0] {
-                @core.Value::String(addr) =>
-                  match rt.get_by_addr(addr) {
-                    Some(v) => { value: v, effects: out.effects }
-                    None => raise EvalError::BadCall("addr")
-                  }
-                _ => raise EvalError::BadCall("addr")
-              }
-            }
-            "string_builder" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "string_builder",
-              )
-              if pos_args.length() != 0 {
-                raise EvalError::BadCall("string_builder")
-              }
-              { value: @core.Value::StringBuilder([]), effects: out.effects }
-            }
-            "string_builder_push" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "string_builder_push",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("string_builder_push")
-              }
-              match pos_args[0] {
-                @core.Value::StringBuilder(chunks) =>
-                  match pos_args[1] {
-                    @core.Value::String(s) => {
-                      chunks.push(s)
-                      { value: @core.Value::Unit, effects: out.effects }
-                    }
-                    _ => raise EvalError::BadCall("string_builder_push")
-                  }
-                _ => raise EvalError::BadCall("string_builder_push")
-              }
-            }
-            "string_builder_freeze" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "string_builder_freeze",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("string_builder_freeze")
-              }
-              match pos_args[0] {
-                @core.Value::StringBuilder(chunks) => {
-                  let mut result = ""
-                  for chunk in chunks {
-                    result = result + chunk
-                  }
-                  { value: @core.Value::String(result), effects: out.effects }
-                }
-                _ => raise EvalError::BadCall("string_builder_freeze")
-              }
-            }
-            "array_builder" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "array_builder",
-              )
-              if pos_args.length() != 0 {
-                raise EvalError::BadCall("array_builder")
-              }
-              { value: @core.Value::ArrayBuilder([]), effects: out.effects }
-            }
-            "array_builder_push" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "array_builder_push",
-              )
-              if pos_args.length() != 2 {
-                raise EvalError::BadCall("array_builder_push")
-              }
-              match pos_args[0] {
-                @core.Value::ArrayBuilder(items) => {
-                  items.push(pos_args[1])
-                  { value: @core.Value::Unit, effects: out.effects }
-                }
-                _ => raise EvalError::BadCall("array_builder_push")
-              }
-            }
-            "array_builder_freeze" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "array_builder_freeze",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("array_builder_freeze")
-              }
-              match pos_args[0] {
-                @core.Value::ArrayBuilder(items) => {
-                  let snapshot = clone_value_array(items)
-                  { value: @core.Value::Array(snapshot), effects: out.effects }
-                }
-                _ => raise EvalError::BadCall("array_builder_freeze")
-              }
-            }
-            "map_builder" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(out.args, "map_builder")
-              if pos_args.length() != 0 {
-                raise EvalError::BadCall("map_builder")
-              }
-              { value: @core.Value::MapBuilder({}), effects: out.effects }
-            }
-            "map_builder_set" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "map_builder_set",
-              )
-              if pos_args.length() != 3 {
-                raise EvalError::BadCall("map_builder_set")
-              }
-              match (pos_args[0], pos_args[1]) {
-                (@core.Value::MapBuilder(items), @core.Value::String(key)) => {
-                  items[key] = pos_args[2]
-                  { value: @core.Value::Unit, effects: out.effects }
-                }
-                _ => raise EvalError::BadCall("map_builder_set")
-              }
-            }
-            "map_builder_freeze" => {
-              let out = eval_args(rt, args)
-              let pos_args = extract_positional_values(
-                out.args,
-                "map_builder_freeze",
-              )
-              if pos_args.length() != 1 {
-                raise EvalError::BadCall("map_builder_freeze")
-              }
-              match pos_args[0] {
-                @core.Value::MapBuilder(items) => {
-                  let snapshot = clone_value_map(items)
-                  { value: @core.Value::Map(snapshot), effects: out.effects }
-                }
-                _ => raise EvalError::BadCall("map_builder_freeze")
-              }
-            }
-            _ => {
-              // Try field access: field_name(value) where value is a record
-              let field_args_out = eval_args(rt, args)
-              let field_pos = extract_positional_values(
-                field_args_out.args,
-                name,
-              )
-              if field_pos.length() == 1 {
-                match field_pos[0] {
-                  @core.Value::Record(record_fields) =>
-                    match record_fields.get(name) {
-                      Some(v) => { value: v, effects: field_args_out.effects }
-                      None => raise EvalError::BadCall(name)
-                    }
-                  _ => raise EvalError::BadCall(name)
-                }
-              } else {
-                raise EvalError::BadCall(name)
-              }
-            }
+          eval_builtin_call(rt, name, args)
+        }
+    }
+  }
+}
+
+///|
+fn eval_builtin_call(
+  rt : Runtime,
+  name : String,
+  args : Array[@core.CallArg],
+) -> EvalOutput raise EvalError {
+  match name {
+    "sleep" => {
+      require_unstable_async(rt, "sleep")
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "sleep")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("sleep")
+      }
+      if not(rt.caps().can_read_clock()) {
+        raise EvalError::PermissionDenied("clock_read")
+      }
+      match pos_args[0] {
+        @core.Value::Int(ms) => {
+          @io.sleep_ms(ms)
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ => raise EvalError::BadCall("sleep")
+      }
+    }
+    "dynamic_path_resolve" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "dynamic_path_resolve")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("dynamic_path_resolve")
+      }
+      match pos_args[0] {
+        @core.Value::String(raw_path) => {
+          let cwd = @io.current_dir_or_root()
+          let resolved = if raw_path.has_prefix("/") {
+            @path.Path(raw_path).normalize().to_string()
+          } else {
+            @path.Path(cwd).join(@path.Path(raw_path)).normalize().to_string()
+          }
+          {
+            value: @core.Value::Path(@core.Path::new(resolved)),
+            effects: out.effects,
           }
         }
+        _ => raise EvalError::BadCall("dynamic_path_resolve")
+      }
+    }
+    "threads_probe_wat" => {
+      require_unstable_threads(rt, "threads_probe_wat")
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "threads_probe_wat")
+      if pos_args.length() != 0 {
+        raise EvalError::BadCall("threads_probe_wat")
+      }
+      {
+        value: @core.Value::String(@x_threads.probe_wat()),
+        effects: out.effects,
+      }
+    }
+    "threads_runtime_hints" => {
+      require_unstable_threads(rt, "threads_runtime_hints")
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(
+        out.args,
+        "threads_runtime_hints",
+      )
+      if pos_args.length() != 0 {
+        raise EvalError::BadCall("threads_runtime_hints")
+      }
+      let wasm_flags = @x_threads.recommended_wasm_flags()
+      let wasi_flags = @x_threads.recommended_wasi_flags()
+      let wasm_values : Array[@core.Value] = []
+      for flag in wasm_flags {
+        wasm_values.push(@core.Value::String(flag))
+      }
+      let wasi_values : Array[@core.Value] = []
+      for flag in wasi_flags {
+        wasi_values.push(@core.Value::String(flag))
+      }
+      let fields : Map[String, @core.Value] = {}
+      fields["wasm_flags"] = @core.Value::Array(wasm_values)
+      fields["wasi_flags"] = @core.Value::Array(wasi_values)
+      fields["wasm_env"] = @core.Value::String(
+        @x_threads.flags_to_env_value(wasm_flags),
+      )
+      fields["wasi_env"] = @core.Value::String(
+        @x_threads.flags_to_env_value(wasi_flags),
+      )
+      { value: @core.Value::Record(fields), effects: out.effects }
+    }
+    "threads_channel_new" => {
+      require_unstable_threads(rt, "threads_channel_new")
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "threads_channel_new")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("threads_channel_new")
+      }
+      match pos_args[0] {
+        @core.Value::Int(capacity) =>
+          {
+            value: @core.Value::Int(
+              rt.threads_channel_new(capacity.to_int()).to_int64(),
+            ),
+            effects: out.effects,
+          }
+        _ => raise EvalError::BadCall("threads_channel_new")
+      }
+    }
+    "threads_send" => {
+      require_unstable_threads(rt, "threads_send")
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "threads_send")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("threads_send")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Int(channel_id), @core.Value::String(message)) =>
+          match rt.threads_send(channel_id.to_int(), message) {
+            Some(ok) => { value: @core.Value::Bool(ok), effects: out.effects }
+            None => raise EvalError::BadCall("threads_send")
+          }
+        _ => raise EvalError::BadCall("threads_send")
+      }
+    }
+    "threads_recv" => {
+      require_unstable_threads(rt, "threads_recv")
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "threads_recv")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("threads_recv")
+      }
+      match pos_args[0] {
+        @core.Value::Int(channel_id) =>
+          match rt.threads_recv(channel_id.to_int()) {
+            Some(message) =>
+              { value: @core.Value::String(message), effects: out.effects }
+            None => raise EvalError::BadCall("threads_recv")
+          }
+        _ => raise EvalError::BadCall("threads_recv")
+      }
+    }
+    "threads_spawn" => {
+      require_unstable_threads(rt, "threads_spawn")
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "threads_spawn")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("threads_spawn")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::String(name), @core.Value::Int(mailbox)) =>
+          match rt.threads_spawn(name, mailbox.to_int()) {
+            Some(task_id) =>
+              {
+                value: @core.Value::Int(task_id.to_int64()),
+                effects: out.effects,
+              }
+            None => raise EvalError::BadCall("threads_spawn")
+          }
+        _ => raise EvalError::BadCall("threads_spawn")
+      }
+    }
+    "threads_wait" => {
+      require_unstable_threads(rt, "threads_wait")
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "threads_wait")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("threads_wait")
+      }
+      match pos_args[0] {
+        @core.Value::Int(task_id) =>
+          match rt.threads_wait(task_id.to_int()) {
+            Some(status) =>
+              {
+                value: @core.Value::Int(status.to_int64()),
+                effects: out.effects,
+              }
+            None => raise EvalError::BadCall("threads_wait")
+          }
+        _ => raise EvalError::BadCall("threads_wait")
+      }
+    }
+    "sh" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "sh")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("sh")
+      }
+      match pos_args[0] {
+        @core.Value::String(cmd) => {
+          if not(rt.caps().can_spawn("sh")) {
+            raise EvalError::PermissionDenied("process_spawn")
+          }
+          let effects = out.effects
+          effects.push(Effect::ShellExec(cmd))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("sh")
+      }
+    }
+    "sh_lines" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "sh_lines")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("sh_lines")
+      }
+      match pos_args[0] {
+        @core.Value::String(cmd) => {
+          if not(rt.caps().can_spawn("sh")) {
+            raise EvalError::PermissionDenied("process_spawn")
+          }
+          let effects = out.effects
+          effects.push(Effect::ShellExec(cmd))
+          let lines = execute_shell_lines(cmd) catch {
+            _ => raise EvalError::BadCall("sh_lines")
+          }
+          let values : Array[@core.Value] = []
+          for line in lines {
+            values.push(@core.Value::String(line))
+          }
+          { value: @core.Value::Array(values), effects }
+        }
+        _ => raise EvalError::BadCall("sh_lines")
+      }
+    }
+    "stdout_write_char" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "stdout_write_char")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("stdout_write_char")
+      }
+      match pos_args[0] {
+        @core.Value::Int(code) => {
+          let effects = out.effects
+          effects.push(Effect::StdoutWriteChar(code.to_int()))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("stdout_write_char")
+      }
+    }
+    "stdin_read_char" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "stdin_read_char")
+      if pos_args.length() != 0 {
+        raise EvalError::BadCall("stdin_read_char")
+      }
+      let code = -1
+      let effects = out.effects
+      effects.push(Effect::StdinReadChar(code))
+      { value: @core.Value::Int(code.to_int64()), effects }
+    }
+    "stdout_write_stream" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "stdout_write_stream")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("stdout_write_stream")
+      }
+      match pos_args[0] {
+        @core.Value::String(text) => {
+          let effects = out.effects
+          effects.push(Effect::StdoutWriteStream(text))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("stdout_write_stream")
+      }
+    }
+    "stdin_read_stream" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "stdin_read_stream")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("stdin_read_stream")
+      }
+      match pos_args[0] {
+        @core.Value::Int(len) => {
+          if len < 0L {
+            raise EvalError::BadCall("stdin_read_stream")
+          }
+          let chunk = ""
+          let effects = out.effects
+          effects.push(Effect::StdinReadStream(len.to_int(), chunk))
+          { value: @core.Value::String(chunk), effects }
+        }
+        _ => raise EvalError::BadCall("stdin_read_stream")
+      }
+    }
+    "fs_read_file" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_read_file")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_read_file")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) =>
+          match @io.read_string(path) {
+            Ok(content) => {
+              let effects = out.effects
+              effects.push(Effect::FsReadFile(path, content))
+              { value: @core.Value::String(content), effects }
+            }
+            Err(err) => raise EvalError::BadCall("fs_read_file: " + err)
+          }
+        _ => raise EvalError::BadCall("fs_read_file")
+      }
+    }
+    "fs_write_file" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_write_file")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("fs_write_file")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::String(path), @core.Value::String(content)) =>
+          match @io.write_string(path, content) {
+            Ok(_) => {
+              let effects = out.effects
+              effects.push(Effect::FsWriteFile(path, content))
+              { value: @core.Value::Unit, effects }
+            }
+            Err(err) => raise EvalError::BadCall("fs_write_file: " + err)
+          }
+        _ => raise EvalError::BadCall("fs_write_file")
+      }
+    }
+    "fs_exists" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_exists")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_exists")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let exists = @io.path_exists(path)
+          let effects = out.effects
+          effects.push(Effect::FsExists(path, exists))
+          { value: @core.Value::Bool(exists), effects }
+        }
+        _ => raise EvalError::BadCall("fs_exists")
+      }
+    }
+    "socket_tcp_connect" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "socket_tcp_connect")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("socket_tcp_connect")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::String(host), @core.Value::Int(port)) =>
+          match @backend.tcp_connect(host, port.to_int()) {
+            Ok(fd) => {
+              let effects = out.effects
+              let fd64 = fd.to_int64()
+              effects.push(Effect::SocketTcpConnect(host, port, fd64))
+              { value: @core.Value::Int(fd64), effects }
+            }
+            Err(err) => raise EvalError::BadCall("socket_tcp_connect: " + err)
+          }
+        _ => raise EvalError::BadCall("socket_tcp_connect")
+      }
+    }
+    "socket_tcp_read" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "socket_tcp_read")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("socket_tcp_read")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Int(fd), @core.Value::Int(max_bytes)) =>
+          match @backend.tcp_read(fd.to_int(), max_bytes.to_int()) {
+            Ok(data) => {
+              let effects = out.effects
+              effects.push(Effect::SocketTcpRead(fd, max_bytes, data))
+              { value: @core.Value::String(data), effects }
+            }
+            Err(err) => raise EvalError::BadCall("socket_tcp_read: " + err)
+          }
+        _ => raise EvalError::BadCall("socket_tcp_read")
+      }
+    }
+    "socket_tcp_write" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "socket_tcp_write")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("socket_tcp_write")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Int(fd), @core.Value::String(data)) =>
+          match @backend.tcp_write(fd.to_int(), data) {
+            Ok(_) => {
+              let effects = out.effects
+              effects.push(Effect::SocketTcpWrite(fd, data))
+              { value: @core.Value::Unit, effects }
+            }
+            Err(err) => raise EvalError::BadCall("socket_tcp_write: " + err)
+          }
+        _ => raise EvalError::BadCall("socket_tcp_write")
+      }
+    }
+    "socket_tcp_close" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "socket_tcp_close")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("socket_tcp_close")
+      }
+      match pos_args[0] {
+        @core.Value::Int(fd) =>
+          match @backend.tcp_close(fd.to_int()) {
+            Ok(_) => {
+              let effects = out.effects
+              effects.push(Effect::SocketTcpClose(fd))
+              { value: @core.Value::Unit, effects }
+            }
+            Err(err) => raise EvalError::BadCall("socket_tcp_close: " + err)
+          }
+        _ => raise EvalError::BadCall("socket_tcp_close")
+      }
+    }
+    // --- HTTP Client builtins ---
+    "http_request" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_request")
+      if pos_args.length() != 4 {
+        raise EvalError::BadCall("http_request")
+      }
+      let meth = match pos_args[0] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("http_request")
+      }
+      let url = match pos_args[1] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("http_request")
+      }
+      let headers = match pos_args[2] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("http_request")
+      }
+      let body = match pos_args[3] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("http_request")
+      }
+      match @backend.http_request(meth, url, headers, body) {
+        Ok(handle) => {
+          let effects = out.effects
+          let h64 = handle.to_int64()
+          effects.push(Effect::HttpRequest(meth, url, headers, body, h64))
+          { value: @core.Value::Int(h64), effects }
+        }
+        Err(err) => raise EvalError::BadCall("http_request: " + err)
+      }
+    }
+    "http_response_status" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_response_status")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("http_response_status")
+      }
+      match pos_args[0] {
+        @core.Value::Int(handle) =>
+          match @backend.http_response_status(handle.to_int()) {
+            Ok(status) => {
+              let effects = out.effects
+              effects.push(Effect::HttpResponseStatus(handle, status))
+              { value: @core.Value::Int(status.to_int64()), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_response_status: " + err)
+          }
+        _ => raise EvalError::BadCall("http_response_status")
+      }
+    }
+    "http_response_header" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_response_header")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("http_response_header")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
+          match @backend.http_response_header(handle.to_int(), hdr_name) {
+            Ok(hdr_val) => {
+              let effects = out.effects
+              effects.push(
+                Effect::HttpResponseHeader(handle, hdr_name, hdr_val),
+              )
+              { value: @core.Value::String(hdr_val), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_response_header: " + err)
+          }
+        _ => raise EvalError::BadCall("http_response_header")
+      }
+    }
+    "http_response_body" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_response_body")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("http_response_body")
+      }
+      match pos_args[0] {
+        @core.Value::Int(handle) =>
+          match @backend.http_response_body(handle.to_int()) {
+            Ok(body) => {
+              let effects = out.effects
+              effects.push(Effect::HttpResponseBody(handle, body))
+              { value: @core.Value::String(body), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_response_body: " + err)
+          }
+        _ => raise EvalError::BadCall("http_response_body")
+      }
+    }
+    "http_close" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_close")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("http_close")
+      }
+      match pos_args[0] {
+        @core.Value::Int(handle) =>
+          match @backend.http_close(handle.to_int()) {
+            Ok(_) => {
+              let effects = out.effects
+              effects.push(Effect::HttpClose(handle))
+              { value: @core.Value::Unit, effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_close: " + err)
+          }
+        _ => raise EvalError::BadCall("http_close")
+      }
+    }
+    // --- HTTP Server builtins ---
+    "http_listen" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_listen")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("http_listen")
+      }
+      match pos_args[0] {
+        @core.Value::Int(port) =>
+          match @backend.http_listen(port.to_int()) {
+            Ok(handle) => {
+              let effects = out.effects
+              let h64 = handle.to_int64()
+              effects.push(Effect::HttpListen(port.to_int(), h64))
+              { value: @core.Value::Int(h64), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_listen: " + err)
+          }
+        _ => raise EvalError::BadCall("http_listen")
+      }
+    }
+    "http_accept" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_accept")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("http_accept")
+      }
+      match pos_args[0] {
+        @core.Value::Int(server_handle) =>
+          match @backend.http_accept(server_handle.to_int()) {
+            Ok(req_handle) => {
+              let effects = out.effects
+              let rh64 = req_handle.to_int64()
+              effects.push(Effect::HttpAccept(server_handle, rh64))
+              { value: @core.Value::Int(rh64), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_accept: " + err)
+          }
+        _ => raise EvalError::BadCall("http_accept")
+      }
+    }
+    "http_request_method" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_request_method")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("http_request_method")
+      }
+      match pos_args[0] {
+        @core.Value::Int(handle) =>
+          match @backend.http_request_method(handle.to_int()) {
+            Ok(meth) => {
+              let effects = out.effects
+              effects.push(Effect::HttpRequestMethod(handle, meth))
+              { value: @core.Value::String(meth), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_request_method: " + err)
+          }
+        _ => raise EvalError::BadCall("http_request_method")
+      }
+    }
+    "http_request_url" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_request_url")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("http_request_url")
+      }
+      match pos_args[0] {
+        @core.Value::Int(handle) =>
+          match @backend.http_request_url(handle.to_int()) {
+            Ok(url) => {
+              let effects = out.effects
+              effects.push(Effect::HttpRequestUrl(handle, url))
+              { value: @core.Value::String(url), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_request_url: " + err)
+          }
+        _ => raise EvalError::BadCall("http_request_url")
+      }
+    }
+    "http_request_header" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_request_header")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("http_request_header")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
+          match @backend.http_request_header(handle.to_int(), hdr_name) {
+            Ok(hdr_val) => {
+              let effects = out.effects
+              effects.push(Effect::HttpRequestHeader(handle, hdr_name, hdr_val))
+              { value: @core.Value::String(hdr_val), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_request_header: " + err)
+          }
+        _ => raise EvalError::BadCall("http_request_header")
+      }
+    }
+    "http_request_body" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_request_body")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("http_request_body")
+      }
+      match pos_args[0] {
+        @core.Value::Int(handle) =>
+          match @backend.http_request_body(handle.to_int()) {
+            Ok(body) => {
+              let effects = out.effects
+              effects.push(Effect::HttpRequestBody(handle, body))
+              { value: @core.Value::String(body), effects }
+            }
+            Err(err) => raise EvalError::BadCall("http_request_body: " + err)
+          }
+        _ => raise EvalError::BadCall("http_request_body")
+      }
+    }
+    "http_respond" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "http_respond")
+      if pos_args.length() != 4 {
+        raise EvalError::BadCall("http_respond")
+      }
+      let handle = match pos_args[0] {
+        @core.Value::Int(v) => v
+        _ => raise EvalError::BadCall("http_respond")
+      }
+      let status = match pos_args[1] {
+        @core.Value::Int(v) => v
+        _ => raise EvalError::BadCall("http_respond")
+      }
+      let headers = match pos_args[2] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("http_respond")
+      }
+      let body = match pos_args[3] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("http_respond")
+      }
+      match
+        @backend.http_respond(handle.to_int(), status.to_int(), headers, body) {
+        Ok(_) => {
+          let effects = out.effects
+          effects.push(
+            Effect::HttpRespond(handle, status.to_int(), headers, body),
+          )
+          { value: @core.Value::Unit, effects }
+        }
+        Err(err) => raise EvalError::BadCall("http_respond: " + err)
+      }
+    }
+    "llm_complete" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "llm_complete")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("llm_complete")
+      }
+      let system = match pos_args[0] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("llm_complete")
+      }
+      let user = match pos_args[1] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("llm_complete")
+      }
+      let config = match LlmConfig::from_env() {
+        Some(c) => c
+        None =>
+          raise EvalError::BadCall(
+            "llm_complete: VIBE_LLM_PROVIDER env var not set",
+          )
+      }
+      if not(rt.caps().can_call_llm(config.model)) {
+        raise EvalError::PermissionDenied("llm_call:" + config.model)
+      }
+      let response = llm_complete(config, system, user)
+      let effects = out.effects
+      effects.push(
+        Effect::LlmComplete(
+          config.model,
+          truncate_preview(user, 80),
+          truncate_preview(response, 80),
+        ),
+      )
+      { value: @core.Value::String(response), effects }
+    }
+    "rlm_run" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "rlm_run")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("rlm_run")
+      }
+      let task = match pos_args[0] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("rlm_run")
+      }
+      let prompt = match pos_args[1] {
+        @core.Value::String(s) => s
+        _ => raise EvalError::BadCall("rlm_run")
+      }
+      let budget = RlmBudget::default()
+      let result = rlm_run_loop(rt, task, prompt, budget)
+      let effects = out.effects
+      effects.push(
+        Effect::RlmTrace(
+          "{\"task\":" +
+          json_escape_string(truncate_preview(task, 80)) +
+          ",\"steps\":" +
+          budget.steps_used.to_string() +
+          "}",
+        ),
+      )
+      { value: @core.Value::String(result), effects }
+    }
+    "rlm_finalize" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "rlm_finalize")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("rlm_finalize")
+      }
+      match pos_args[0] {
+        @core.Value::String(s) =>
+          { value: @core.Value::String(s), effects: out.effects }
+        _ => raise EvalError::BadCall("rlm_finalize")
+      }
+    }
+    "addr" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "addr")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("addr")
+      }
+      match pos_args[0] {
+        @core.Value::String(addr) =>
+          match rt.get_by_addr(addr) {
+            Some(v) => { value: v, effects: out.effects }
+            None => raise EvalError::BadCall("addr")
+          }
+        _ => raise EvalError::BadCall("addr")
+      }
+    }
+    "string_builder" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "string_builder")
+      if pos_args.length() != 0 {
+        raise EvalError::BadCall("string_builder")
+      }
+      { value: @core.Value::StringBuilder([]), effects: out.effects }
+    }
+    "string_builder_push" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "string_builder_push")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("string_builder_push")
+      }
+      match pos_args[0] {
+        @core.Value::StringBuilder(chunks) =>
+          match pos_args[1] {
+            @core.Value::String(s) => {
+              chunks.push(s)
+              { value: @core.Value::Unit, effects: out.effects }
+            }
+            _ => raise EvalError::BadCall("string_builder_push")
+          }
+        _ => raise EvalError::BadCall("string_builder_push")
+      }
+    }
+    "string_builder_freeze" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(
+        out.args,
+        "string_builder_freeze",
+      )
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("string_builder_freeze")
+      }
+      match pos_args[0] {
+        @core.Value::StringBuilder(chunks) => {
+          let mut result = ""
+          for chunk in chunks {
+            result = result + chunk
+          }
+          { value: @core.Value::String(result), effects: out.effects }
+        }
+        _ => raise EvalError::BadCall("string_builder_freeze")
+      }
+    }
+    "array_builder" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "array_builder")
+      if pos_args.length() != 0 {
+        raise EvalError::BadCall("array_builder")
+      }
+      { value: @core.Value::ArrayBuilder([]), effects: out.effects }
+    }
+    "array_builder_push" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "array_builder_push")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("array_builder_push")
+      }
+      match pos_args[0] {
+        @core.Value::ArrayBuilder(items) => {
+          items.push(pos_args[1])
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ => raise EvalError::BadCall("array_builder_push")
+      }
+    }
+    "array_builder_freeze" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "array_builder_freeze")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("array_builder_freeze")
+      }
+      match pos_args[0] {
+        @core.Value::ArrayBuilder(items) => {
+          let snapshot = clone_value_array(items)
+          { value: @core.Value::Array(snapshot), effects: out.effects }
+        }
+        _ => raise EvalError::BadCall("array_builder_freeze")
+      }
+    }
+    "map_builder" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "map_builder")
+      if pos_args.length() != 0 {
+        raise EvalError::BadCall("map_builder")
+      }
+      { value: @core.Value::MapBuilder({}), effects: out.effects }
+    }
+    "map_builder_set" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "map_builder_set")
+      if pos_args.length() != 3 {
+        raise EvalError::BadCall("map_builder_set")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::MapBuilder(items), @core.Value::String(key)) => {
+          items[key] = pos_args[2]
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ => raise EvalError::BadCall("map_builder_set")
+      }
+    }
+    "map_builder_freeze" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "map_builder_freeze")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("map_builder_freeze")
+      }
+      match pos_args[0] {
+        @core.Value::MapBuilder(items) => {
+          let snapshot = clone_value_map(items)
+          { value: @core.Value::Map(snapshot), effects: out.effects }
+        }
+        _ => raise EvalError::BadCall("map_builder_freeze")
+      }
+    }
+    _ => {
+      // Try field access: field_name(value) where value is a record
+      let field_args_out = eval_args(rt, args)
+      let field_pos = extract_positional_values(field_args_out.args, name)
+      if field_pos.length() == 1 {
+        match field_pos[0] {
+          @core.Value::Record(record_fields) =>
+            match record_fields.get(name) {
+              Some(v) => { value: v, effects: field_args_out.effects }
+              None => raise EvalError::BadCall(name)
+            }
+          _ => raise EvalError::BadCall(name)
+        }
+      } else {
+        raise EvalError::BadCall(name)
+      }
     }
   }
 }
