@@ -147,7 +147,7 @@ test "bench: dce.dependency_chain" {
   inspect(
     result,
     content=(
-      #|{name: "dependency_chain", stmts_before: 7, stmts_after: 6, wasm_no_dce: Some(790), wasm_with_dce: Some(758), reduction_percent: Some(4.050632911392405)}
+      #|{name: "dependency_chain", stmts_before: 7, stmts_after: 6, wasm_no_dce: Some(822), wasm_with_dce: Some(790), reduction_percent: Some(3.8929440389294405)}
     ),
   )
 }

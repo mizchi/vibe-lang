@@ -81,6 +81,9 @@ priv struct CodegenCtx {
   mut loop_continue_offset : Int
   // For parameterized loop: local indices for loop params
   mut loop_param_locals : Array[Int]
+  // Forward-declared function tracking for mutual recursion back-patch
+  // Maps function name -> span_key for forward-declarable functions
+  forward_fn_keys : Map[String, String]
 }
 
 ///|
@@ -180,6 +183,8 @@ fn CodegenCtx::new(
     loop_break_offset: -1,
     loop_continue_offset: -1,
     loop_param_locals: [],
+    // Forward function tracking
+    forward_fn_keys: {},
   }
 }
 
@@ -745,6 +750,16 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
   let funcs : Array[FuncDef] = []
   // Build outer_bound: all top-level non-function bindings that precede each function
   let outer_bound : Map[String, Bool] = {}
+  // Pre-populate: forward-declarable functions (Fn with explicit return type)
+  // so that mutual references are included in capture lists
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr=@core.Expr::Fn(ret=Some(_), ..), ..)
+      | @core.Stmt::ExportLet(name~, expr=@core.Expr::Fn(ret=Some(_), ..), ..) =>
+        outer_bound[name] = true
+      _ => ()
+    }
+  }
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) => {

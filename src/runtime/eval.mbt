@@ -96,6 +96,28 @@ pub fn Runtime::eval_module(
 ) -> EvalResult raise EvalError {
   let effects : Array[Effect] = []
   let mut last : @core.Value? = None
+  // Pre-scan: identify forward-declarable functions and compute stable
+  // addresses. All forward function addresses are computed here so that
+  // closures capture a consistent addr_env for mutual references.
+  let forward_fn_addrs : Map[String, String] = {} // name → pre-computed addr
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(rec=false, name~, expr~, ..)
+      | @core.Stmt::ExportLet(rec=false, name~, expr~, ..) =>
+        if name != "_" {
+          match expr {
+            @core.Expr::Fn(ret=Some(_), ..) => {
+              let addr = @codegen.expr_address(expr, self.addr_env, Some(name))
+              self.env[name] = addr
+              self.addr_env[name] = addr
+              forward_fn_addrs[name] = addr
+            }
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+  }
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, ..) =>
@@ -104,18 +126,32 @@ pub fn Runtime::eval_module(
           extend_effects(effects, out.effects)
           last = Some(out.value)
         } else {
-          let info = @checker.purity_for_let(self.type_env, rec, name, expr)
-          let use_addr = rec || info.expr
-          let addr = @codegen.expr_address(
+          let is_forward = forward_fn_addrs.contains(name)
+          let effective_rec = rec || is_forward
+          let info = @checker.purity_for_let(
+            self.type_env,
+            effective_rec,
+            name,
             expr,
-            self.addr_env,
-            if rec {
-              Some(name)
-            } else {
-              None
-            },
           )
-          if rec {
+          let use_addr = effective_rec || info.expr
+          // For forward functions, reuse the pre-computed address to stay
+          // consistent with what other closures captured.
+          let addr = match forward_fn_addrs.get(name) {
+            Some(pre_addr) => pre_addr
+            None =>
+              @codegen.expr_address(
+                expr,
+                self.addr_env,
+                if effective_rec {
+                  Some(name)
+                } else {
+                  None
+                },
+              )
+          }
+          if effective_rec && not(is_forward) {
+            // Forward functions already registered in pre-scan
             self.env[name] = addr
             self.addr_env[name] = addr
           }
@@ -370,18 +406,29 @@ pub fn Runtime::eval_module(
           extend_effects(effects, out.effects)
           last = Some(out.value)
         } else {
-          let info = @checker.purity_for_let(self.type_env, rec, name, expr)
-          let use_addr = rec || info.expr
-          let addr = @codegen.expr_address(
+          let is_forward = forward_fn_addrs.contains(name)
+          let effective_rec = rec || is_forward
+          let info = @checker.purity_for_let(
+            self.type_env,
+            effective_rec,
+            name,
             expr,
-            self.addr_env,
-            if rec {
-              Some(name)
-            } else {
-              None
-            },
           )
-          if rec {
+          let use_addr = effective_rec || info.expr
+          let addr = match forward_fn_addrs.get(name) {
+            Some(pre_addr) => pre_addr
+            None =>
+              @codegen.expr_address(
+                expr,
+                self.addr_env,
+                if effective_rec {
+                  Some(name)
+                } else {
+                  None
+                },
+              )
+          }
+          if effective_rec && not(is_forward) {
             self.env[name] = addr
             self.addr_env[name] = addr
           }

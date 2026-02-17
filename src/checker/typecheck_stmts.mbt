@@ -91,21 +91,93 @@ fn type_check_stmts(
     }
     declared_in_scope[name] = true
   }
+  // ── Pre-scan: register provisional types for forward-declarable functions ──
+  // Save type var counter before pre-scan to restore afterwards.
+  // Pre-scan type vars are only used inside generalized schemes (replaced on
+  // instantiation), so reusing the same IDs in the main loop is safe.
+  let forward_fns : Map[String, Bool] = {}
+  let saved_next_type_var = default_typecheck_session.next_type_var.val
+  let saved_env_next_var = env.next_var
+  for stmt in stmts {
+    let fn_info : (String, @core.Expr)? = match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, ..) =>
+        if not(rec) && name != "_" {
+          Some((name, expr))
+        } else {
+          None
+        }
+      @core.Stmt::ExportLet(rec~, name~, expr~, ..) =>
+        if not(rec) && name != "_" {
+          Some((name, expr))
+        } else {
+          None
+        }
+      _ => None
+    }
+    match fn_info {
+      Some((name, expr)) =>
+        // Only pre-register if name is not already in env (avoids
+        // overwriting schemes from previous passes, e.g. version tracking)
+        if env.get_scheme(name) is None {
+          match expr {
+            @core.Expr::Fn(
+              type_params~,
+              type_bounds~,
+              params~,
+              ret=Some(r),
+              effects=fn_effects,
+              span=fn_span,
+              ..
+            ) => {
+              // Try to build provisional type; skip on failure (e.g. trait not
+              // yet defined during prelude loading).
+              let result : Result[TypeScheme, TypeError] = try? build_forward_fn_scheme(
+                env, type_params, type_bounds, params, r, fn_effects, fn_span,
+              )
+              match result {
+                Ok(scheme) => {
+                  env.set_scheme(name, scheme)
+                  env.set_purity(name, true)
+                  forward_fns[name] = true
+                }
+                Err(_) => ()
+              }
+            }
+            _ => ()
+          }
+        }
+      None => ()
+    }
+  }
+  // Clean up pre-scan artifacts from env (trait_bounds, num_vars) for
+  // IDs that will be re-allocated by the main loop.
+  let pre_scan_end = default_typecheck_session.next_type_var.val
+  for id = saved_next_type_var; id < pre_scan_end; id = id + 1 {
+    env.var_trait_bounds.remove(id)
+    env.num_vars.remove(id)
+  }
+  // Restore counters so the main loop starts from the same IDs as before.
+  default_typecheck_session.next_type_var.val = saved_next_type_var
+  env.next_var = saved_env_next_var
   for stmt in stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) => {
         ensure_fresh_value_binding(name, span)
+        let effective_rec = rec || forward_fns.contains(name)
         let scheme = type_let_expr(
-          env, rec, name, expr, span, aliases, effects, allow_effect,
+          env, effective_rec, name, expr, span, aliases, effects, allow_effect,
         )
         ensure_type_member_decl_receiver_contract(env, name, scheme.ty, span)
         if name != "_" {
           if has_exports && exported_names.contains(name) {
+            if forward_fns.contains(name) {
+              env.bindings.remove(name)
+            }
             env.set_exported_scheme(name, scheme)
           } else {
             env.set_scheme(name, scheme)
           }
-          let info = purity_for_let(env, rec, name, expr)
+          let info = purity_for_let(env, effective_rec, name, expr)
           env.set_purity(name, info.value)
           record_value_binding(name)
         }
@@ -133,13 +205,20 @@ fn type_check_stmts(
       @core.Stmt::Import(..) => ()
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
         ensure_fresh_value_binding(name, span)
+        let effective_rec = rec || forward_fns.contains(name)
         let scheme = type_let_expr(
-          env, rec, name, expr, span, aliases, effects, allow_effect,
+          env, effective_rec, name, expr, span, aliases, effects, allow_effect,
         )
         ensure_type_member_decl_receiver_contract(env, name, scheme.ty, span)
         if name != "_" {
+          // If this is a forward function, remove the provisional pre-scan
+          // binding so set_exported_scheme sees it as a fresh registration
+          // (avoids spurious version bump from pre-scan provisional type).
+          if forward_fns.contains(name) {
+            env.bindings.remove(name)
+          }
           env.set_exported_scheme(name, scheme)
-          let info = purity_for_let(env, rec, name, expr)
+          let info = purity_for_let(env, effective_rec, name, expr)
           env.set_purity(name, info.value)
           record_value_binding(name)
         }
@@ -889,4 +968,75 @@ fn register_struct_def(
     field_defs.push(StructFieldDef::{ name: field.name, ty: normalized })
   }
   env.set_struct(name, StructDef::{ name, params, fields: field_defs })
+}
+
+///|
+/// Build a provisional TypeScheme for a forward-declarable function.
+/// Used in the pre-scan phase to register function signatures before
+/// type-checking bodies, enabling mutual recursion.
+fn build_forward_fn_scheme(
+  env : TypeEnv,
+  type_params : Array[String],
+  type_bounds : Map[String, Array[String]],
+  params : Array[@core.FuncParam],
+  ret : @core.Type,
+  effects : Array[@core.EffectAtom],
+  fn_span : @core.Span,
+) -> TypeScheme raise TypeError {
+  let type_param_vars : Map[String, @core.Type] = {}
+  for tp in type_params {
+    type_param_vars[tp] = fresh_type_var(env)
+    match type_bounds.get(tp) {
+      Some(bounds) => {
+        let deduped = dedup_trait_bounds(bounds)
+        ensure_traits_defined(env, deduped, fn_span)
+        match type_param_vars.get(tp) {
+          Some(@core.Type::Var(id)) => add_var_trait_bounds(env, id, deduped)
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  let mut uses_num = false
+  for param in params {
+    if has_num_type(param.ty) {
+      uses_num = true
+      break
+    }
+  }
+  if not(uses_num) {
+    uses_num = has_num_type(ret)
+  }
+  let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }
+  let resolved_params : Array[@core.FuncParam] = []
+  for param in params {
+    let param_ty_with_num = match num_var {
+      Some(n) => replace_num_type(param.ty, n)
+      None => param.ty
+    }
+    let param_ty = substitute_type_params(param_ty_with_num, type_param_vars)
+    let resolved = normalize_type(env, param_ty)
+    // Note: bounds are NOT checked here; the main loop's type_let_expr(rec=true)
+    // will perform full bound checking when the function body is type-checked.
+    resolved_params.push(@core.FuncParam::{
+      name: param.name,
+      label: param.label,
+      ty: resolved,
+      bounds: param.bounds,
+    })
+  }
+  let ret_ty_with_num = match num_var {
+    Some(n) => replace_num_type(ret, n)
+    None => ret
+  }
+  let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
+  let resolved_ret = normalize_type(env, ret_ty)
+  let normalized_effects = normalize_effects(effects, fn_span)
+  let provisional_fn_ty = @core.Type::Func(
+    params=resolved_params,
+    ret=resolved_ret,
+    effects=normalized_effects,
+  )
+  generalize(env, provisional_fn_ty)
 }

@@ -60,6 +60,15 @@ fn NormScope::lookup(self : NormScope, name : String) -> String {
 pub fn normalize_module(m : Module) -> Module {
   let scope = NormScope::new()
   let canonical_stmts = canonicalize_export_list_stmts(m.stmts)
+  // Pre-bind: forward-declarable function names (Fn with explicit return type)
+  for stmt in canonical_stmts {
+    match stmt {
+      Stmt::Let(rec=false, name~, expr=Expr::Fn(ret=Some(_), ..), ..)
+      | Stmt::ExportLet(rec=false, name~, expr=Expr::Fn(ret=Some(_), ..), ..) =>
+        scope.bind(name) |> ignore
+      _ => ()
+    }
+  }
   Module::{ stmts: normalize_stmts(canonical_stmts, scope) }
 }
 
@@ -177,12 +186,23 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
   let zero_span = Span::{ start: 0, end: 0 }
   match stmt {
     Stmt::Let(rec~, name~, expr~, ..) => {
-      // For recursive, bind name first so it's visible in expr
-      let norm_name = if rec { scope.bind(name) } else { name }
-      let norm_expr = normalize_expr(expr, scope)
-      // For non-recursive, bind after normalizing expr
-      let final_name = if rec { norm_name } else { scope.bind(name) }
-      Stmt::Let(rec~, name=final_name, expr=norm_expr, span=zero_span)
+      let already_bound = scope.bindings.contains(name)
+      if already_bound {
+        // Forward-declared: name already bound in pre-scan
+        let norm_name = scope.lookup(name)
+        let norm_expr = normalize_expr(expr, scope)
+        Stmt::Let(rec~, name=norm_name, expr=norm_expr, span=zero_span)
+      } else if rec {
+        // Recursive: bind name first so it's visible in expr
+        let norm_name = scope.bind(name)
+        let norm_expr = normalize_expr(expr, scope)
+        Stmt::Let(rec~, name=norm_name, expr=norm_expr, span=zero_span)
+      } else {
+        // Non-recursive: bind after normalizing expr
+        let norm_expr = normalize_expr(expr, scope)
+        let final_name = scope.bind(name)
+        Stmt::Let(rec~, name=final_name, expr=norm_expr, span=zero_span)
+      }
     }
     Stmt::LetMut(name~, expr~, ..) => {
       let norm_expr = normalize_expr(expr, scope)
@@ -253,10 +273,20 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
     Stmt::Import(spec~, source~, ..) =>
       Stmt::Import(spec~, source~, span=zero_span)
     Stmt::ExportLet(rec~, name~, expr~, ..) => {
-      let norm_name = if rec { scope.bind(name) } else { name }
-      let norm_expr = normalize_expr(expr, scope)
-      let final_name = if rec { norm_name } else { scope.bind(name) }
-      Stmt::ExportLet(rec~, name=final_name, expr=norm_expr, span=zero_span)
+      let already_bound = scope.bindings.contains(name)
+      if already_bound {
+        let norm_name = scope.lookup(name)
+        let norm_expr = normalize_expr(expr, scope)
+        Stmt::ExportLet(rec~, name=norm_name, expr=norm_expr, span=zero_span)
+      } else if rec {
+        let norm_name = scope.bind(name)
+        let norm_expr = normalize_expr(expr, scope)
+        Stmt::ExportLet(rec~, name=norm_name, expr=norm_expr, span=zero_span)
+      } else {
+        let norm_expr = normalize_expr(expr, scope)
+        let final_name = scope.bind(name)
+        Stmt::ExportLet(rec~, name=final_name, expr=norm_expr, span=zero_span)
+      }
     }
     Stmt::ExportEnumDef(name~, params~, ctors~, ..) =>
       Stmt::ExportEnumDef(

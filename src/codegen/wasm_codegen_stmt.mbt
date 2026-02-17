@@ -72,15 +72,19 @@ fn compile_stmt(
             emit_local_set(buf, idx)
           }
           // Back-patch self-reference for recursive closures
-          if rec {
+          let is_forward_fn = match fn_ret {
+            Some(_) => true
+            None => false
+          }
+          if rec || is_forward_fn {
             let captures = match ctx.fn_closure_captures.get(key) {
               Some(list) => list
               None => []
             }
             for i in 0..<captures.length() {
-              if captures[i] == name {
-                // Found self-reference capture at slot i
-                // Load env pointer (untag obj ptr), write closure value to slot
+              let cap_name = captures[i]
+              if cap_name == name {
+                // Self-reference capture at slot i
                 let env_local = alloc_temp_local(ctx)
                 emit_local_get(buf, idx)
                 emit_i64_const_raw(buf, (-4).to_int64())
@@ -91,8 +95,60 @@ fn compile_stmt(
                 emit_local_get(buf, idx) // closure value (i64)
                 emit_i32_wrap_i64(buf) // truncate to i32 for memory store
                 emit_i32_store(buf, 8 + i * 4) // write to capture slot
-                break
+              } else if is_forward_fn && ctx.forward_fn_keys.contains(cap_name) {
+                // Mutual reference: capture of another forward function
+                match ctx.locals.get(cap_name) {
+                  Some(cap_local) => {
+                    // Already compiled — patch this capture slot
+                    let env_local = alloc_temp_local(ctx)
+                    emit_local_get(buf, idx)
+                    emit_i64_const_raw(buf, (-4).to_int64())
+                    emit_i64_and(buf)
+                    emit_i32_wrap_i64(buf)
+                    emit_local_set(buf, env_local)
+                    emit_local_get(buf, env_local)
+                    emit_local_get(buf, cap_local)
+                    emit_i32_wrap_i64(buf)
+                    emit_i32_store(buf, 8 + i * 4)
+                  }
+                  None => () // Not yet compiled — will be patched by reverse pass below
+                }
               }
+            }
+            // Reverse back-patch: patch previously compiled forward functions
+            // that capture THIS function
+            if is_forward_fn {
+              for other_name, other_key in ctx.forward_fn_keys {
+                if other_name == name {
+                  continue
+                }
+                match ctx.locals.get(other_name) {
+                  Some(other_local) => {
+                    let other_captures = match
+                      ctx.fn_closure_captures.get(other_key) {
+                      Some(list) => list
+                      None => []
+                    }
+                    for j in 0..<other_captures.length() {
+                      if other_captures[j] == name {
+                        let env_local = alloc_temp_local(ctx)
+                        emit_local_get(buf, other_local)
+                        emit_i64_const_raw(buf, (-4).to_int64())
+                        emit_i64_and(buf)
+                        emit_i32_wrap_i64(buf)
+                        emit_local_set(buf, env_local)
+                        emit_local_get(buf, env_local)
+                        emit_local_get(buf, idx)
+                        emit_i32_wrap_i64(buf)
+                        emit_i32_store(buf, 8 + j * 4)
+                      }
+                    }
+                  }
+                  None => ()
+                }
+              }
+              // Register this forward function for future back-patches
+              ctx.forward_fn_keys[name] = key
             }
           }
         }
