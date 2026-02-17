@@ -355,3 +355,12 @@ pub impl Show for Value with output(self, logger) {
     Value::Fn(fn_value) => fn_value.output(logger)
   }
 }
+
+///|
+pub fn Value::is_mutable_builder(self : Value) -> Bool {
+  match self {
+    Value::ArrayBuilder(_) | Value::MapBuilder(_) | Value::StringBuilder(_) =>
+      true
+    _ => false
+  }
+}

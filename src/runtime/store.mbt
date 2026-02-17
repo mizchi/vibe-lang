@@ -2,6 +2,7 @@
 /// Content-addressed store and runtime for vibe
 pub struct Store {
   values : Map[String, @core.Value]
+  mut next_uid : Int
 } derive(Show, Eq)
 
 ///|
@@ -54,7 +55,14 @@ pub fn RuntimeFeatureFlags::is_unstable_threads_enabled(
 
 ///|
 fn Store::new() -> Store {
-  { values: {} }
+  { values: {}, next_uid: 0 }
+}
+
+///|
+fn Store::next_unique_id(self : Store) -> String {
+  let id = self.next_uid
+  self.next_uid = id + 1
+  "__uid:" + id.to_string()
 }
 
 ///|
@@ -285,10 +293,15 @@ fn Runtime::threads_wait(self : Runtime, task_id : Int) -> Int? {
 
 ///|
 fn Runtime::bind(self : Runtime, name : String, value : @core.Value) -> String {
-  let hash = value_hash(value)
-  self.store.put(hash, value)
-  self.env[name] = hash
-  hash
+  // Mutable builder types need unique IDs to avoid content-hash collisions
+  let key = if value.is_mutable_builder() {
+    self.store.next_unique_id()
+  } else {
+    value_hash(value)
+  }
+  self.store.put(key, value)
+  self.env[name] = key
+  key
 }
 
 ///|
@@ -402,7 +415,6 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     prelude_loaded: self.prelude_loaded,
   }
 }
-
 
 ///|
 fn Runtime::env_snapshot(self : Runtime) -> Map[String, String] {

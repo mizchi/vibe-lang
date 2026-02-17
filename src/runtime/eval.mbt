@@ -618,7 +618,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         None => { value: @core.Value::Unit, effects }
       }
     }
-    @core.Expr::Do(body~, ..) => eval_block(rt, body)
+    @core.Expr::Do(body~, ..) => eval_block_shared_mut(rt, body)
     @core.Expr::Fn(
       type_params=_,
       type_bounds=_,
@@ -1065,22 +1065,43 @@ fn eval_block_shared_mut(
   rt : Runtime,
   body : @core.Module,
 ) -> EvalOutput raise EvalError {
-  // Snapshot existing env keys before evaluating
-  let pre_keys : Map[String, Bool] = {}
-  for k, _ in rt.env {
-    pre_keys[k] = true
+  // Snapshot existing env (key -> hash) and mut_vars before evaluating
+  let pre_env : Map[String, String] = {}
+  for k, v in rt.env {
+    pre_env[k] = v
+  }
+  let pre_mut : Map[String, Bool] = {}
+  for k, v in rt.mut_vars {
+    pre_mut[k] = v
   }
   // Evaluate directly on rt so mutations propagate
   let res = rt.eval_module(body)
-  // Remove any new bindings added by the block (scope them out)
-  let new_keys : Array[String] = []
+  // Remove new bindings and restore shadowed ones
+  let to_remove : Array[String] = []
   for k, _ in rt.env {
-    if not(pre_keys.contains(k)) {
-      new_keys.push(k)
+    if not(pre_env.contains(k)) {
+      to_remove.push(k)
     }
   }
-  for k in new_keys {
+  for k in to_remove {
     rt.env.remove(k)
+  }
+  // Restore any bindings that were shadowed (value changed by a new let, not by mutation)
+  for k, old_hash in pre_env {
+    // Only restore if the variable is NOT mutable (mutable vars should keep their mutated value)
+    if not(pre_mut.contains(k)) {
+      rt.env[k] = old_hash
+    }
+  }
+  // Restore mut_vars: remove entries added by the block
+  let mut_to_remove : Array[String] = []
+  for k, _ in rt.mut_vars {
+    if not(pre_mut.contains(k)) {
+      mut_to_remove.push(k)
+    }
+  }
+  for k in mut_to_remove {
+    rt.mut_vars.remove(k)
   }
   let value = match res.last {
     Some(v) => v
