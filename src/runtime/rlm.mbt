@@ -238,6 +238,16 @@ pub fn rlm_run_loop(
     // Extract code from response
     let code = rlm_extract_code(response)
 
+    // Debug trace
+    println(
+      "[rlm step " +
+      budget.steps_used.to_string() +
+      "/" +
+      budget.max_steps.to_string() +
+      "] " +
+      truncate_preview(code, 200),
+    )
+
     // Record trace
     trace.push(
       "{\"step\":" +
@@ -277,8 +287,14 @@ pub fn rlm_run_loop(
     // Evaluate the code in sandbox
     let eval_result = try? sandbox.eval_script(eval_code)
     match eval_result {
-      Ok(_) => error_feedback = ""
-      Err(e) => error_feedback = e.to_string()
+      Ok(_) => {
+        error_feedback = ""
+        println("[rlm] => ok")
+      }
+      Err(e) => {
+        error_feedback = e.to_string()
+        println("[rlm] => error: " + truncate_preview(error_feedback, 200))
+      }
     }
   }
   raise EvalError::BadCall("rlm_run: unexpected loop exit")
