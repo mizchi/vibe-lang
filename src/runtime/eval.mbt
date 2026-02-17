@@ -570,9 +570,9 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       match cond_out.value {
         @core.Value::Bool(b) => {
           let branch_out = if b {
-            eval_block(rt, then_body)
+            eval_block_shared_mut(rt, then_body)
           } else {
-            eval_block(rt, else_body)
+            eval_block_shared_mut(rt, else_body)
           }
           extend_effects(effects, branch_out.effects)
           { value: branch_out.value, effects }
@@ -1051,6 +1051,37 @@ fn eval_expr_with_bindings(
 fn eval_block(rt : Runtime, body : @core.Module) -> EvalOutput raise EvalError {
   let scope_rt = rt.fork_for_test()
   let res = scope_rt.eval_module(body)
+  let value = match res.last {
+    Some(v) => v
+    None => @core.Value::Unit
+  }
+  { value, effects: res.effects }
+}
+
+///|
+/// Evaluate block with shared mut_vars (for if/while branches).
+/// New let bindings are scoped, but mutations to existing mut vars propagate.
+fn eval_block_shared_mut(
+  rt : Runtime,
+  body : @core.Module,
+) -> EvalOutput raise EvalError {
+  // Snapshot existing env keys before evaluating
+  let pre_keys : Map[String, Bool] = {}
+  for k, _ in rt.env {
+    pre_keys[k] = true
+  }
+  // Evaluate directly on rt so mutations propagate
+  let res = rt.eval_module(body)
+  // Remove any new bindings added by the block (scope them out)
+  let new_keys : Array[String] = []
+  for k, _ in rt.env {
+    if not(pre_keys.contains(k)) {
+      new_keys.push(k)
+    }
+  }
+  for k in new_keys {
+    rt.env.remove(k)
+  }
   let value = match res.last {
     Some(v) => v
     None => @core.Value::Unit

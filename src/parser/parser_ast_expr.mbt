@@ -348,13 +348,19 @@ fn AstParser::parse_if_expr(self : AstParser) -> @core.Expr raise ParseError {
   let _ = self.expect(if_kw(), "if")
   let cond = self.parse_expr()
   let then_body = self.parse_block()
-  let _ = self.expect(else_kw(), "else")
-  let else_body = if self.peek_kind() == lbrace() {
-    self.parse_block()
+  self.skip_trivia()
+  let else_body = if self.peek_kind() == else_kw() {
+    let _ = self.bump()
+    if self.peek_kind() == lbrace() {
+      self.parse_block()
+    } else {
+      let expr = self.parse_expr()
+      let expr_span = expr.span()
+      @core.Module::{ stmts: [@core.Stmt::Expr(expr~, span=expr_span)] }
+    }
   } else {
-    let expr = self.parse_expr()
-    let expr_span = expr.span()
-    @core.Module::{ stmts: [@core.Stmt::Expr(expr~, span=expr_span)] }
+    // if without else: implicit empty else block returning Unit
+    @core.Module::{ stmts: [] }
   }
   let span = self.span_from(start)
   @core.Expr::If(cond~, then_body~, else_body~, span~)

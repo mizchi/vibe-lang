@@ -403,6 +403,7 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
   }
 }
 
+
 ///|
 fn Runtime::env_snapshot(self : Runtime) -> Map[String, String] {
   clone_string_map(self.env)
