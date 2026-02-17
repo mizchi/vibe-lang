@@ -429,5 +429,13 @@ adr title:
     sed -e "s/NNNN/${next}/g" -e "s/YYYY-MM-DD/${today}/g" -e "s/タイトル/{{title}}/g" "$dir/TEMPLATE.md" > "$file"
     echo "Created: $file"
 
+# Normalize all .vibe files (fix mode)
+vibe-normalize:
+    scripts/vibe_normalize_all.sh
+
+# Verify all .vibe files are already normalized (CI / pre-commit)
+vibe-normalize-check:
+    scripts/vibe_normalize_all.sh --check
+
 # Pre-release check
-release-check: fmt info check test
+release-check: fmt info check test vibe-normalize

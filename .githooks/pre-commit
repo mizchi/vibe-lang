@@ -1,3 +1,24 @@
 #!/bin/sh
+set -e
 
 moon check
+
+# Normalize staged .vibe files and verify no diff
+STAGED_VIBE=$(git diff --cached --name-only --diff-filter=ACM -- '*.vibe' | grep -v '^bench/' || true)
+if [ -n "$STAGED_VIBE" ]; then
+  VIBE_BIN="_build/native/debug/build/cmd/vibe/vibe.exe"
+  if [ ! -x "$VIBE_BIN" ]; then
+    moon build --target native src/cmd/vibe --warn-list '-29'
+  fi
+
+  echo "=== vibe normalize (staged files) ==="
+  echo "$STAGED_VIBE" | xargs "$VIBE_BIN" normalize --write
+
+  CHANGED=$(echo "$STAGED_VIBE" | xargs git diff --name-only -- || true)
+  if [ -n "$CHANGED" ]; then
+    echo "ERROR: The following staged .vibe files are not normalized:" >&2
+    echo "$CHANGED" >&2
+    echo "Run 'just vibe-normalize' and re-stage." >&2
+    exit 1
+  fi
+fi
