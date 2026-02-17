@@ -1,0 +1,160 @@
+use ./json.vibe {
+  Json,
+  parse,
+  parse_ok,
+  parse_err,
+  stringify,
+  json_get,
+  json_as_str,
+  json_as_num,
+  json_as_bool,
+  json_as_arr,
+  json_as_obj,
+}
+
+// --- parse tests (from examples/json.vibe) ---
+
+let input = "{\"name\":\"vibe\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
+
+test "json_parser_complex" {
+  assert(parse_ok(input))
+}
+
+test "json_parser_numbers" {
+  assert(parse_ok("0"))
+  assert(parse_ok("-12"))
+  assert(parse_ok("3.5"))
+  assert(parse_ok("1e3"))
+  assert(parse_ok("1.25e-2"))
+  assert(parse_ok("1E+2"))
+  assert(parse_ok("-0.0"))
+}
+
+test "json_parser_whitespace_nested_string" {
+  assert(parse_ok(" \n\t{\"a\": 1}\n "))
+  assert(parse_ok("{\"a\":[true,false,null,{\"b\":2}],\"c\":{}}"))
+  assert(parse_ok("\"he\\\\llo\\n\\t\\\"/\""))
+}
+
+test "json_parser_errors" {
+  assert(parse_ok("[]"))
+  assert(parse_err("\"abc"))
+  assert(parse_err("true false"))
+  assert(parse_err("1e"))
+  assert(parse_err("1e+"))
+  assert(parse_err("1e-"))
+  assert(parse_err("[1,]"))
+  assert(parse_err("{\"a\":1,}"))
+  assert(parse_err("\"a\\b\""))
+  assert(parse_err("01"))
+  assert(parse_err("-01"))
+  assert(parse_err("00"))
+  assert(parse_err(".1"))
+  assert(parse_err("1."))
+  assert(parse_err("+1"))
+  assert(parse_err("-"))
+  assert(parse_err("\"a\nb\""))
+}
+
+// --- stringify tests ---
+
+test "stringify_null" {
+  assert(string_equals(stringify(JNull), "null"))
+}
+
+test "stringify_bool" {
+  assert(string_equals(stringify(JBool(true)), "true"))
+  assert(string_equals(stringify(JBool(false)), "false"))
+}
+
+test "stringify_number" {
+  assert(string_equals(stringify(JNum(0.0)), "0"))
+  assert(string_equals(stringify(JNum(42.0)), "42"))
+  assert(string_equals(stringify(JNum(3.14)), "3.14"))
+  assert(string_equals(stringify(JNum(-1.0)), "-1"))
+}
+
+test "stringify_string" {
+  assert(string_equals(stringify(JStr("hello")), "\"hello\""))
+  assert(string_equals(stringify(JStr("")), "\"\""))
+}
+
+test "stringify_escape_quote" {
+  assert(string_equals(stringify(JStr("a\"b")), "\"a\\\"b\""))
+}
+test "stringify_escape_backslash" {
+  assert(string_equals(stringify(JStr("a\\b")), "\"a\\\\b\""))
+}
+test "stringify_escape_newline" {
+  assert(string_equals(stringify(JStr("a\nb")), "\"a\\nb\""))
+}
+test "stringify_escape_tab" {
+  assert(string_equals(stringify(JStr("a\tb")), "\"a\\tb\""))
+}
+test "stringify_escape_cr" {
+  let cr_str = string_concat(string_concat("a", string_from_char_code(13)), "b")
+  assert(string_equals(stringify(JStr(cr_str)), "\"a\\rb\""))
+}
+
+test "stringify_array" {
+  let (empty_arr, _) = parse("[]")
+  assert(string_equals(stringify(empty_arr), "[]"))
+  assert(string_equals(stringify(JArr([JNum(1.0), JNum(2.0), JNum(3.0)])), "[1,2,3]"))
+  assert(string_equals(stringify(JArr([JStr("a"), JNull, JBool(true)])), "[\"a\",null,true]"))
+}
+
+test "stringify_object" {
+  let (empty_obj, _) = parse("{}")
+  assert(string_equals(stringify(empty_obj), "{}"))
+  assert(string_equals(stringify(JObj(map { "x": JNum(1.0) })), "{\"x\":1}"))
+}
+
+// --- roundtrip tests ---
+
+test "roundtrip_simple" {
+  let original = "{\"name\":\"vibe\",\"ok\":true}"
+  let (parsed, _) = parse(original)
+  let serialized = stringify(parsed)
+  assert(parse_ok(serialized))
+}
+
+test "roundtrip_array" {
+  let original = "[1,2,3]"
+  let (parsed, _) = parse(original)
+  let serialized = stringify(parsed)
+  assert(string_equals(serialized, "[1,2,3]"))
+}
+
+test "roundtrip_nested" {
+  let original = "{\"a\":[1,true,null],\"b\":{\"c\":\"hello\"}}"
+  let (parsed, _) = parse(original)
+  let serialized = stringify(parsed)
+  assert(parse_ok(serialized))
+}
+
+// --- accessor tests ---
+
+test "json_get" {
+  let (j, _) = parse("{\"name\":\"vibe\",\"ver\":1}")
+  let name = json_get(j, "name")
+  assert(string_equals(json_as_str(name), "vibe"))
+  let ver = json_get(j, "ver")
+  assert(eq(json_as_num(ver), 1.0))
+}
+
+test "json_as_bool" {
+  let (j, _) = parse("true")
+  assert(json_as_bool(j))
+}
+
+test "json_as_arr" {
+  let (j, _) = parse("[1,2]")
+  let arr = json_as_arr(j)
+  assert(eq(array_length(arr), 2))
+}
+
+test "json_as_obj" {
+  let (j, _) = parse("{\"a\":1}")
+  let m = json_as_obj(j)
+  assert(map_has_key(m, "a"))
+}

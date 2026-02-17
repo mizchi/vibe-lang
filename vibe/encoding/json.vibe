@@ -1,6 +1,16 @@
-// JSON parser benchmark (canonical implementation is in vibe/encoding/json.vibe)
 
-enum Json {
+declare export let json_get: (Json, String) -> Json with { Error }
+declare export let json_as_str: (Json) -> String with { Error }
+declare export let json_as_num: (Json) -> Double with { Error }
+declare export let json_as_bool: (Json) -> Bool with { Error }
+declare export let json_as_arr: (Json) -> Array[Json] with { Error }
+declare export let json_as_obj: (Json) -> Map[Json] with { Error }
+declare export let stringify: (Json) -> String
+declare export let parse: (String) -> (Json, Int) with { Error }
+declare export let parse_ok: (String) -> Bool
+declare export let parse_err: (String) -> Bool
+
+export enum Json {
   JNull;
   JBool(Bool);
   JNum(Double);
@@ -8,6 +18,163 @@ enum Json {
   JArr(Array[Json]);
   JObj(Map[Json])
 }
+
+// --- helpers ---
+
+json_get = (j: Json, key: String) -> Json with { Error } {
+  match j {
+    JObj(m) => if map_has_key(m, key) {
+      map_get(m, key)
+    } else {
+      raise string_concat("key not found: ", key)
+    },
+    _ => raise "not an object"
+  }
+}
+
+json_as_str = (j: Json) -> String with { Error } {
+  match j {
+    JStr(s) => s,
+    _ => raise "not a string"
+  }
+}
+
+json_as_num = (j: Json) -> Double with { Error } {
+  match j {
+    JNum(n) => n,
+    _ => raise "not a number"
+  }
+}
+
+json_as_bool = (j: Json) -> Bool with { Error } {
+  match j {
+    JBool(b) => b,
+    _ => raise "not a bool"
+  }
+}
+
+json_as_arr = (j: Json) -> Array[Json] with { Error } {
+  match j {
+    JArr(a) => a,
+    _ => raise "not an array"
+  }
+}
+
+json_as_obj = (j: Json) -> Map[Json] with { Error } {
+  match j {
+    JObj(m) => m,
+    _ => raise "not an object"
+  }
+}
+
+// --- stringify ---
+
+let escape_string = (s: String) -> String {
+  let len = string_length(s)
+  let rec go = (i: Int, acc: String) -> String {
+    if i < len {
+      let c = string_char_code_at(s, i)
+      let esc = if c == '"' {
+        "\\\""
+      } else if c == '\\' {
+        "\\\\"
+      } else if c == '\n' {
+        "\\n"
+      } else if c == '\t' {
+        "\\t"
+      } else if c == '\r' {
+        "\\r"
+      } else {
+        string_from_char_code(c)
+      }
+      go(i + 1, string_concat(acc, esc))
+    } else {
+      acc
+    }
+  }
+  string_concat(string_concat("\"", go(0, "")), "\"")
+}
+
+let format_number = (n: Double) -> String {
+  let s = __to_string(n)
+  let len = string_length(s)
+  if len >= 2 && string_char_code_at(s, len - 1) == '0' && string_char_code_at(s, len - 2) == '.' {
+    string_substring(s, 0, len - 2)
+  } else {
+    s
+  }
+}
+
+let rec stringify_impl = (j: Json) -> String {
+  let stringify_array = (arr: Array[Json]) -> String {
+    let len = array_length(arr)
+    let rec go = (i: Int, acc: String) -> String {
+      if i < len {
+        let sep = if i > 0 { "," } else { "" }
+        go(i + 1, string_concat(string_concat(acc, sep), stringify_impl(array_get(arr, i))))
+      } else {
+        acc
+      }
+    }
+    string_concat(string_concat("[", go(0, "")), "]")
+  }
+  let stringify_object = (m: Map[Json]) -> String {
+    let keys = map_keys(m)
+    let len = array_length(keys)
+    let rec go = (i: Int, acc: String) -> String {
+      if i < len {
+        let sep = if i > 0 { "," } else { "" }
+        let k = array_get(keys, i)
+        let entry = string_concat(string_concat(escape_string(k), ":"), stringify_impl(map_get(m, k)))
+        go(i + 1, string_concat(string_concat(acc, sep), entry))
+      } else {
+        acc
+      }
+    }
+    string_concat(string_concat("{", go(0, "")), "}")
+  }
+  match j {
+    JNull => "null",
+    JBool(b) => if b { "true" } else { "false" },
+    JNum(n) => format_number(n),
+    JStr(s) => escape_string(s),
+    JArr(arr) => stringify_array(arr),
+    JObj(m) => stringify_object(m)
+  }
+}
+
+stringify = (j: Json) -> String {
+  stringify_impl(j)
+}
+
+// --- collection helpers (workaround for empty literal + let rec) ---
+
+let empty_json_array = () -> Array[Json] {
+  array_slice([JNull], 0, 0)
+}
+
+let make_empty_map = () -> Map[Json] {
+  do {
+    let b = map_builder()
+    map_builder_freeze(b)
+  }
+}
+
+let build_json_map = (keys: Array[String], vals: Array[Json]) -> Map[Json] {
+  do {
+    let b = map_builder()
+    let len = array_length(keys)
+    let mut i = 0
+    while i < len {
+      map_builder_set(b, array_get(keys, i), array_get(vals, i))
+      i += 1
+    }
+    map_builder_freeze(b)
+  }
+}
+
+// --- parser internals ---
+
 let is_ws = (c: Int) -> Bool {
   c == ' ' || c == '\n' || c == '\t' || c == '\r'
 }
@@ -38,13 +205,13 @@ let rec apply_exponent = (value: Double, exp: Int) -> Double {
   }
 }
 let digit_to_double = (c: Int) -> Double {
-  int_to_double(c - '0')
+  int_to_double(c - 48)
 }
 let rec parse_digits_int = (s: String, len: Int, i: Int, acc: Int) -> (Int, Int) {
   if i < len {
     let c = string_char_code_at(s, i)
     if is_digit(c) {
-      parse_digits_int(s, len, i + 1, acc * 10 + (c - '0'))
+      parse_digits_int(s, len, i + 1, acc * 10 + (c - 48))
     } else {
       (acc, i)
     }
@@ -116,6 +283,8 @@ let parse_string = (s: String, len: Int, i: Int) -> (String, Int)with {
               "\n"
             } else if esc == 't' {
               "\t"
+            } else if esc == 'r' {
+              string_from_char_code(13)
             } else {
               raise "invalid escape"
             }
@@ -262,84 +431,6 @@ let parse_number = (s: String, len: Int, i: Int) -> (Json, Int)with {
 let rec parse_value = (s: String, len: Int, i: Int) -> (Json, Int)with {
   Error
 } {
-  let parse_array = (i: Int) -> (Json, Int)with {
-    Error
-  } {
-    do {
-      let idx = skip_ws(s, len, i + 1)
-      if idx < len {
-        if string_char_code_at(s, idx) == ']' {
-          (JArr(array_builder_freeze(array_builder())), idx + 1)
-        } else {
-          let builder = array_builder()
-          let rec parse_items = (i: Int) -> (Json, Int)with {
-            Error
-          } {
-            let (value, next) = parse_value(s, len, i)
-            array_builder_push(builder, value)
-            let next_idx = skip_ws(s, len, next)
-            if next_idx < len {
-              let ch = string_char_code_at(s, next_idx)
-              if ch == ',' {
-                parse_items(next_idx + 1)
-              } else if ch == ']' {
-                (JArr(array_builder_freeze(builder)), next_idx + 1)
-              } else {
-                raise "expected , or ]"
-              }
-            } else {
-              raise "expected , or ]"
-            }
-          }
-          parse_items(idx)
-        }
-      } else {
-        raise "unexpected eof"
-      }
-    }
-  }
-  let parse_object = (i: Int) -> (Json, Int)with {
-    Error
-  } {
-    do {
-      let idx = skip_ws(s, len, i + 1)
-      if idx < len {
-        if string_char_code_at(s, idx) == '}' {
-          (JObj(map_builder_freeze(map_builder())), idx + 1)
-        } else {
-          let builder = map_builder()
-          let rec parse_members = (i: Int) -> (Json, Int)with {
-            Error
-          } {
-            let (key, next) = parse_string(s, len, i)
-            let colon_idx = skip_ws(s, len, next)
-            if colon_idx >= len || string_char_code_at(s, colon_idx) != ':' {
-              raise "expected :"
-            } else {
-              let (value, next_val) = parse_value(s, len, colon_idx + 1)
-              map_builder_set(builder, key, value)
-              let next_idx = skip_ws(s, len, next_val)
-              if next_idx < len {
-                let ch = string_char_code_at(s, next_idx)
-                if ch == ',' {
-                  parse_members(next_idx + 1)
-                } else if ch == '}' {
-                  (JObj(map_builder_freeze(builder)), next_idx + 1)
-                } else {
-                  raise "expected , or }"
-                }
-              } else {
-                raise "expected , or }"
-              }
-            }
-          }
-          parse_members(idx)
-        }
-      } else {
-        raise "unexpected eof"
-      }
-    }
-  }
   let idx = skip_ws(s, len, i)
   if idx >= len {
     raise "unexpected eof"
@@ -372,10 +463,71 @@ let rec parse_value = (s: String, len: Int, i: Int) -> (Json, Int)with {
       (JStr(value), next)
     }
     else if c == '[' {
-      parse_array(idx)
+      do {
+        let arr_start = skip_ws(s, len, idx + 1)
+        if arr_start >= len {
+          raise "unexpected eof"
+        } else if string_char_code_at(s, arr_start) == ']' {
+          (JArr(empty_json_array()), arr_start + 1)
+        } else {
+          let b = array_builder()
+          let (first_val, first_next) = parse_value(s, len, arr_start)
+          array_builder_push(b, first_val)
+          let mut cur = skip_ws(s, len, first_next)
+          while cur < len && string_char_code_at(s, cur) == ',' {
+            let (v, nx) = parse_value(s, len, cur + 1)
+            array_builder_push(b, v)
+            cur = skip_ws(s, len, nx)
+          }
+          if cur < len && string_char_code_at(s, cur) == ']' {
+            (JArr(array_builder_freeze(b)), cur + 1)
+          } else {
+            raise "expected , or ]"
+          }
+        }
+      }
     }
     else if c == '{' {
-      parse_object(idx)
+      do {
+        let obj_start = skip_ws(s, len, idx + 1)
+        if obj_start >= len {
+          raise "unexpected eof"
+        } else if string_char_code_at(s, obj_start) == '}' {
+          (JObj(make_empty_map()), obj_start + 1)
+        } else {
+          let kb = array_builder()
+          let vb = array_builder()
+          let (first_key, kn) = parse_string(s, len, obj_start)
+          let colon1 = skip_ws(s, len, kn)
+          if colon1 >= len || string_char_code_at(s, colon1) != ':' {
+            raise "expected :"
+          } else {
+            let (first_val, vn) = parse_value(s, len, colon1 + 1)
+            array_builder_push(kb, first_key)
+            array_builder_push(vb, first_val)
+            let mut cur = skip_ws(s, len, vn)
+            while cur < len && string_char_code_at(s, cur) == ',' {
+              let ws_after_comma = skip_ws(s, len, cur + 1)
+              let (k, kn2) = parse_string(s, len, ws_after_comma)
+              let colon2 = skip_ws(s, len, kn2)
+              if colon2 >= len || string_char_code_at(s, colon2) != ':' {
+                raise "expected :"
+              }
+              let (v, vn2) = parse_value(s, len, colon2 + 1)
+              array_builder_push(kb, k)
+              array_builder_push(vb, v)
+              cur = skip_ws(s, len, vn2)
+            }
+            if cur < len && string_char_code_at(s, cur) == '}' {
+              let keys = array_builder_freeze(kb)
+              let vals = array_builder_freeze(vb)
+              (JObj(build_json_map(keys, vals)), cur + 1)
+            } else {
+              raise "expected , or }"
+            }
+          }
+        }
+      }
     }
     else if c == '-' || is_digit(c) {
       parse_number(s, len, idx)
@@ -385,7 +537,10 @@ let rec parse_value = (s: String, len: Int, i: Int) -> (Json, Int)with {
     }
   }
 }
-let parse = (s: String) -> (Json, Int)with {
+
+// --- public parse API ---
+
+parse = (s: String) -> (Json, Int)with {
   Error
 } {
   let len = string_length(s)
@@ -398,7 +553,7 @@ let parse = (s: String) -> (Json, Int)with {
   }
 }
 
-let parse_ok = (s: String) -> Bool {
+parse_ok = (s: String) -> Bool {
   try {
     let (_, end) = parse(s)
     end == s.string_length()
@@ -407,45 +562,6 @@ let parse_ok = (s: String) -> Bool {
   }
 }
 
-let item = "{\"id\":1,\"name\":\"alice\",\"active\":true,\"score\":123.456e-2,\"tags\":[\"vibe\",\"bench\",\"json\"],\"meta\":{\"a\":1,\"b\":2,\"c\":[1,2,3]}}"
-
-let rec join_items = (it: String, n: Int) -> String {
-  if n <= 1 {
-    it
-  } else {
-    string_concat(it, string_concat(",", join_items(it, n - 1)))
-  }
-}
-
-let json_small = "{\"name\":\"vibe\",\"nums\":[1.5,2,3.25],\"ok\":true,\"meta\":null}"
-let json_medium = "{\"users\":[{\"id\":1,\"name\":\"alice\",\"tags\":[\"x\",\"y\",\"z\"],\"active\":true},{\"id\":2,\"name\":\"bob\",\"tags\":[],\"active\":false}],\"config\":{\"retry\":3,\"ratio\":0.125,\"title\":\"hello\\nworld\"},\"nil\":null}"
-let json_large = string_concat(
-  "{\"items\":[",
-  string_concat(join_items(item, 8), "],\"ok\":true,\"version\":1}")
-)
-
-let mut sink = 0
-
-bench "json_parse_small" {
-  if parse_ok(json_small) {
-    sink = sink + 1
-  } else {
-    sink = sink
-  }
-}
-
-bench "json_parse_medium" {
-  if parse_ok(json_medium) {
-    sink = sink + 1
-  } else {
-    sink = sink
-  }
-}
-
-bench "json_parse_large" {
-  if parse_ok(json_large) {
-    sink = sink + 1
-  } else {
-    sink = sink
-  }
+parse_err = (s: String) -> Bool {
+  not(parse_ok(s))
 }
