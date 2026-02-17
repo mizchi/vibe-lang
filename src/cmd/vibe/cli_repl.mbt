@@ -3,11 +3,12 @@ fn repl_cmd(
   args : Array[String],
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
 ) -> Unit {
   if args.length() != 0 {
     abort("repl: no args supported")
   }
-  let rt = new_runtime_with_features(features)
+  let rt = new_cli_runtime(features, enable_llm~)
   let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
     Ok(v) => v
     Err(err) => abort("repl: " + err)
@@ -672,9 +673,10 @@ fn repl_stdin_cmd(
   args : Array[String],
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
 ) -> Unit {
   run_eval_line_repl_with_prompt(
-    args, "repl-stdin", "vibe> ", syntax_mode, features,
+    args, "repl-stdin", "vibe> ", syntax_mode, features, enable_llm~,
   )
 }
 
@@ -683,9 +685,10 @@ fn repl_wasi_cmd(
   args : Array[String],
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
 ) -> Unit {
   run_eval_line_repl_with_prompt(
-    args, "repl-wasi", "wasi> ", syntax_mode, features,
+    args, "repl-wasi", "wasi> ", syntax_mode, features, enable_llm~,
   )
 }
 
@@ -707,6 +710,7 @@ fn run_eval_line_repl_with_prompt(
   prompt : String,
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
 ) -> Unit {
   let options = match parse_line_repl_options(args, cmd_name, prompt) {
     Ok(opts) => opts
@@ -717,7 +721,7 @@ fn run_eval_line_repl_with_prompt(
     Err(err) => abort(cmd_name + ": " + err)
   }
   async fn repl_loop() {
-    let rt = new_runtime_with_features(features)
+    let rt = new_cli_runtime(features, enable_llm~)
     let mut scratch_source = match load_eval_db_source(scratch_db_path) {
       Ok(v) => v
       Err(err) => {

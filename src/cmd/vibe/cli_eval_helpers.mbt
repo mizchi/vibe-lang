@@ -699,12 +699,13 @@ fn eval_cmd(
   args : Array[String],
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
 ) -> Unit {
   let options = match parse_eval_cmd_options(args, "eval") {
     Ok(opts) => opts
     Err(msg) => abort(msg)
   }
-  let rt = new_runtime_with_features(features)
+  let rt = new_cli_runtime(features, enable_llm~)
   let (namespace_name, db_path) = match options.db_path {
     Some(path) => ("explicit", @loader.resolve_entry_path(path))
     None =>

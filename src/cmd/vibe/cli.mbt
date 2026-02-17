@@ -15,6 +15,7 @@ pub fn run(args : Array[String]) -> Unit {
     parsed.unstable_async,
     parsed.unstable_threads,
   )
+  let enable_llm = parsed.enable_llm
   if command_requires_parser(cmd) {
     match ensure_cli_parser_mode_supported(syntax_mode, cmd) {
       Ok(_) => ()
@@ -22,8 +23,8 @@ pub fn run(args : Array[String]) -> Unit {
     }
   }
   match cmd {
-    "run" => run_cmd(cmd_args, syntax_mode, runtime_features)
-    "eval" => eval_cmd(cmd_args, syntax_mode, runtime_features)
+    "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "eval" => eval_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "test" => test_cmd(cmd_args, runtime_features)
     "check" => check_cmd(cmd_args)
     "finalize" => finalize_cmd(cmd_args)
@@ -39,9 +40,9 @@ pub fn run(args : Array[String]) -> Unit {
     "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
-    "repl" => repl_cmd(cmd_args, syntax_mode, runtime_features)
-    "repl-stdin" => repl_stdin_cmd(cmd_args, syntax_mode, runtime_features)
-    "repl-wasi" => repl_wasi_cmd(cmd_args, syntax_mode, runtime_features)
+    "repl" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "repl-stdin" => repl_stdin_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
+    "repl-wasi" => repl_wasi_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "wasm-repl-stdin" => wasm_repl_stdin_cmd(cmd_args)
     "hash" => hash_cmd(cmd_args)
     "save" => save_cmd(cmd_args)
@@ -154,6 +155,7 @@ fn print_usage() -> Unit {
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax vibe|posix (default: vibe)")
   println("  runtime flags: --unstable-async --unstable-threads")
+  println("  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)")
 }
 
 ///|
@@ -173,6 +175,28 @@ fn new_runtime_with_features(
     @capability.CapabilitySet::developer(),
     features,
   )
+}
+
+///|
+fn new_runtime_with_llm(
+  features : @runtime.RuntimeFeatureFlags,
+) -> @runtime.Runtime {
+  let caps = @capability.CapabilitySet::developer()
+    .add(@capability.Capability::llm_call(["*"]))
+    .add(@capability.Capability::net_connect("*", None))
+  @runtime.Runtime::new_with_features(caps, features)
+}
+
+///|
+fn new_cli_runtime(
+  features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
+) -> @runtime.Runtime {
+  if enable_llm {
+    new_runtime_with_llm(features)
+  } else {
+    new_runtime_with_features(features)
+  }
 }
 
 ///|
@@ -635,6 +659,7 @@ fn run_cmd(
   args : Array[String],
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
 ) -> Unit {
   if args.length() != 1 {
     abort("run: expected <file>")
@@ -648,7 +673,7 @@ fn run_cmd(
           let compiled = @runtime_compile.compile_module(db, entry) catch {
             e => abort("run: " + e.to_string())
           }
-          let rt = new_runtime_with_features(features)
+          let rt = new_cli_runtime(features, enable_llm~)
           rt.set_type_env(compiled.type_env)
           // Build path-to-hash mapping and load imported modules into runtime cache
           let path_to_hash : Map[String, String] = {}
@@ -699,7 +724,7 @@ fn run_cmd(
       let source = @os_fs.read_file_to_string(resolved) catch {
         e => abort("run: " + e.to_string())
       }
-      let rt = new_runtime_with_features(features)
+      let rt = new_cli_runtime(features, enable_llm~)
       let result = rt.eval_script_with_mode(source, syntax_mode) catch {
         e => abort("run: " + e.to_string())
       }

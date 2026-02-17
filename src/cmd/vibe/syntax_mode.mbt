@@ -19,6 +19,7 @@ pub struct CliRuntimeArgs {
   cmd_args : Array[String]
   unstable_async : Bool
   unstable_threads : Bool
+  enable_llm : Bool
 } derive(Show, Eq)
 
 ///|
@@ -28,6 +29,7 @@ pub struct CliDispatchArgs {
   cmd_args : Array[String]
   unstable_async : Bool
   unstable_threads : Bool
+  enable_llm : Bool
 } derive(Show, Eq)
 
 ///|
@@ -76,16 +78,18 @@ pub fn parse_cli_runtime_args(
   let filtered : Array[String] = []
   let mut unstable_async = false
   let mut unstable_threads = false
+  let mut enable_llm = false
   for arg in args {
     match arg {
       "--unstable-async" => unstable_async = true
       "--unstable-threads" => unstable_threads = true
+      "--llm" => enable_llm = true
       _ => filtered.push(arg)
     }
   }
   match parse_cli_syntax_args(filtered, cmd_name) {
     Ok((syntax_mode, cmd_args)) =>
-      Ok({ syntax_mode, cmd_args, unstable_async, unstable_threads })
+      Ok({ syntax_mode, cmd_args, unstable_async, unstable_threads, enable_llm })
     Err(err) => Err(err)
   }
 }
@@ -108,6 +112,7 @@ pub fn parse_cli_dispatch_args(
   }
   let mut global_unstable_async = false
   let mut global_unstable_threads = false
+  let mut global_enable_llm = false
   let mut cmd_index = 1
   while cmd_index < args.length() {
     match args[cmd_index] {
@@ -117,6 +122,10 @@ pub fn parse_cli_dispatch_args(
       }
       "--unstable-threads" => {
         global_unstable_threads = true
+        cmd_index += 1
+      }
+      "--llm" => {
+        global_enable_llm = true
         cmd_index += 1
       }
       _ => break
@@ -135,6 +144,7 @@ pub fn parse_cli_dispatch_args(
         cmd_args: cli_args.cmd_args,
         unstable_async: cli_args.unstable_async || global_unstable_async,
         unstable_threads: cli_args.unstable_threads || global_unstable_threads,
+        enable_llm: cli_args.enable_llm || global_enable_llm,
       })
     Err(err) => Err(err)
   }
