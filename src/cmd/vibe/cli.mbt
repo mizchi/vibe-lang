@@ -74,7 +74,9 @@ fn print_usage() -> Unit {
   println(
     "  eval [--db file] [--include file] [--inspect-scope] [--assert name:sig]... [--test-for name] [--run] [--export file] <expr...>  evaluate expression/script",
   )
-  println("  test <file|dir...>         run test blocks in scripts")
+  println(
+    "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs)",
+  )
   println("  check <file...>            parse/type check scripts")
   println(
     "  finalize [--db file] [--export file] [--library] [--print] [--dry-run]  refactor scratch/db source",
@@ -1039,10 +1041,45 @@ fn test_cmd(
   if args.length() == 0 {
     abort("test: expected <file|dir...>")
   }
-  let entry_paths = resolve_test_entry_paths(args)
+  // Parse --jobs and --report-json flags
+  let mut jobs = 0 // 0 = auto (unlimited concurrency)
+  let mut report_json = false
+  let path_args : Array[String] = []
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "--jobs" {
+      i += 1
+      if i < args.length() {
+        jobs = @strconv.parse_int(args[i]) catch { _ => 0 }
+      }
+    } else if arg == "--report-json" {
+      report_json = true
+    } else {
+      path_args.push(arg)
+    }
+    i += 1
+  }
+  let entry_paths = resolve_test_entry_paths(path_args)
   if entry_paths.length() == 0 {
     abort("test: no test files found")
   }
+  if report_json {
+    test_cmd_report_json(entry_paths, features)
+    return
+  }
+  if entry_paths.length() > 1 && jobs != 1 {
+    test_cmd_parallel(entry_paths, features, jobs)
+    return
+  }
+  test_cmd_sequential(entry_paths, features)
+}
+
+///|
+fn test_cmd_sequential(
+  entry_paths : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   let mut failed = false
   let mut total = 0
   let mut passed = 0
@@ -1064,10 +1101,8 @@ fn test_cmd(
         }
         let rt = new_runtime_with_features(features)
         rt.set_type_env(compiled.type_env)
-        // Build path-to-hash mapping and load imported modules into runtime cache
         let path_to_hash : Map[String, String] = {}
         load_imports_into_runtime(rt, db, entry, path_to_hash)
-        // Also add mappings for raw paths from the AST
         let base_dir = @vibe_fs.parent_path(entry)
         for stmt in compiled.ast.stmts {
           match stmt {
@@ -1088,7 +1123,6 @@ fn test_cmd(
             _ => ()
           }
         }
-        // Convert the AST's import paths to hashes
         let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
           path,
         ) {
@@ -1115,6 +1149,262 @@ fn test_cmd(
   if failed {
     abort("test: failures detected")
   }
+}
+
+///|
+fn make_test_report_json(
+  entry_path : String,
+  report : @runtime.TestReport,
+) -> Json {
+  let failures_arr : Array[Json] = []
+  for failure in report.failures {
+    let f : Map[String, Json] = {}
+    f["name"] = Json::string(
+      match failure.name {
+        Some(n) => n
+        None => "<unnamed>"
+      },
+    )
+    f["error"] = Json::string(failure.error)
+    failures_arr.push(Json::object(f))
+  }
+  let obj : Map[String, Json] = {}
+  obj["file"] = Json::string(entry_path)
+  obj["total"] = Json::number(report.total.to_double())
+  obj["passed"] = Json::number(report.passed.to_double())
+  obj["failed"] = Json::number(report.failed.to_double())
+  obj["failures"] = Json::array(failures_arr)
+  Json::object(obj)
+}
+
+///|
+fn make_error_report_json(
+  entry_path : String,
+  phase : String,
+  error : String,
+) -> Json {
+  let f : Map[String, Json] = {}
+  f["name"] = Json::string(phase)
+  f["error"] = Json::string(error)
+  let obj : Map[String, Json] = {}
+  obj["file"] = Json::string(entry_path)
+  obj["total"] = Json::number(0.0)
+  obj["passed"] = Json::number(0.0)
+  obj["failed"] = Json::number(1.0)
+  obj["failures"] = Json::array([Json::object(f)])
+  Json::object(obj)
+}
+
+///|
+fn test_cmd_report_json(
+  entry_paths : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
+  let mut any_failed = false
+  for entry_path in entry_paths {
+    match @loader.load_db(entry_path) {
+      Err(err) => {
+        println(make_error_report_json(entry_path, "load", err).stringify())
+        any_failed = true
+      }
+      Ok((db, entry)) => {
+        let compiled = @runtime_compile.compile_module(db, entry) catch {
+          e => {
+            println(
+              make_error_report_json(entry_path, "compile", e.to_string()).stringify(),
+            )
+            any_failed = true
+            continue
+          }
+        }
+        let rt = new_runtime_with_features(features)
+        rt.set_type_env(compiled.type_env)
+        let path_to_hash : Map[String, String] = {}
+        load_imports_into_runtime(rt, db, entry, path_to_hash)
+        let base_dir = @vibe_fs.parent_path(entry)
+        for stmt in compiled.ast.stmts {
+          match stmt {
+            @vibe_core.Stmt::Import(source~, ..)
+            | @vibe_core.Stmt::ReExport(source~, ..) =>
+              match source {
+                @vibe_core.ModuleRef::Path(path=raw_path) => {
+                  let resolved = @loader.resolve_import_path(base_dir, raw_path)
+                  match path_to_hash.get(resolved) {
+                    Some(hash) => path_to_hash[raw_path] = hash
+                    None => ()
+                  }
+                }
+                @vibe_core.ModuleRef::Hash(_)
+                | @vibe_core.ModuleRef::Version(_)
+                | @vibe_core.ModuleRef::Symbol(_) => ()
+              }
+            _ => ()
+          }
+        }
+        let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
+          path,
+        ) {
+          path_to_hash.get(path)
+        })
+        for name, target in compiled.aliases {
+          rt.set_alias(name, target)
+        }
+        let report = rt.run_tests(converted_ast) catch {
+          e => {
+            println(
+              make_error_report_json(entry_path, "eval", e.to_string()).stringify(),
+            )
+            any_failed = true
+            continue
+          }
+        }
+        println(make_test_report_json(entry_path, report).stringify())
+        if report.failed > 0 {
+          any_failed = true
+        }
+      }
+    }
+  }
+  if any_failed {
+    abort("test: failures detected")
+  }
+}
+
+///|
+fn parse_report_json_int(json : Json, key : String) -> Int {
+  match json {
+    Json::Object(obj) =>
+      match obj.get(key) {
+        Some(Json::Number(n, ..)) => n.to_int()
+        _ => 0
+      }
+    _ => 0
+  }
+}
+
+///|
+fn parse_report_json_string(json : Json, key : String) -> String {
+  match json {
+    Json::Object(obj) =>
+      match obj.get(key) {
+        Some(Json::String(s)) => s
+        _ => ""
+      }
+    _ => ""
+  }
+}
+
+///|
+fn find_last_json_line(text : String) -> String {
+  let lines = text.split("\n")
+  let mut last = ""
+  for line in lines {
+    let trimmed = line.to_string().trim().to_string()
+    if trimmed.length() > 0 && trimmed.has_prefix("{") {
+      last = trimmed
+    }
+  }
+  last
+}
+
+///|
+fn test_cmd_parallel(
+  entry_paths : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+  jobs : Int,
+) -> Unit {
+  let exe = @env.args()[0]
+  let tasks : Array[async () -> (String, Int, String, String)] = []
+  for path in entry_paths {
+    let sub_args : Array[String] = ["test", path, "--report-json"]
+    if features.is_unstable_async_enabled() {
+      sub_args.push("--unstable-async")
+    }
+    if features.is_unstable_threads_enabled() {
+      sub_args.push("--unstable-threads")
+    }
+    let captured_path = path
+    let captured_args = sub_args
+    tasks.push(async fn() {
+      let (code, stdout_data, stderr_data) = @async_process.collect_output(
+        exe[:],
+        captured_args[:],
+      )
+      let out = stdout_data.text() catch { _ => "" }
+      let err = stderr_data.text() catch { _ => "" }
+      (captured_path, code, out, err)
+    })
+  }
+  @async.run_async_main(async fn() {
+    let results = if jobs > 0 {
+      @async.all(tasks[:], max_concurrent=jobs)
+    } else {
+      @async.all(tasks[:])
+    }
+    let mut total = 0
+    let mut passed = 0
+    let mut failed_count = 0
+    let mut any_failed = false
+    let file_count = entry_paths.length()
+    for result in results {
+      let (path, code, stdout_text, stderr_text) = result
+      if code != 0 && stdout_text.trim().to_string().length() == 0 {
+        println("\{path}: fail (process exited with code \{code})")
+        if stderr_text.trim().to_string().length() > 0 {
+          println("  stderr: \{stderr_text.trim().to_string()}")
+        }
+        any_failed = true
+        failed_count += 1
+        total += 1
+        continue
+      }
+      let json_line = find_last_json_line(stdout_text)
+      let json : Json = @json.parse(json_line) catch {
+        _ => {
+          println("\{path}: fail (invalid JSON report)")
+          if stdout_text.trim().to_string().length() > 0 {
+            println("  stdout: \{stdout_text.trim().to_string()}")
+          }
+          any_failed = true
+          failed_count += 1
+          total += 1
+          continue
+        }
+      }
+      let file_total = parse_report_json_int(json, "total")
+      let file_passed = parse_report_json_int(json, "passed")
+      let file_failed = parse_report_json_int(json, "failed")
+      total += file_total
+      passed += file_passed
+      failed_count += file_failed
+      let status = if file_failed == 0 { "ok" } else { "fail" }
+      println("\{path}: \{status} (\{file_passed}/\{file_total})")
+      if file_failed > 0 {
+        any_failed = true
+        match json {
+          Json::Object(obj) =>
+            match obj.get("failures") {
+              Some(Json::Array(failures)) => {
+                println("  failures:")
+                for f in failures {
+                  let name = parse_report_json_string(f, "name")
+                  let error = parse_report_json_string(f, "error")
+                  println("  - \{name}: \{error}")
+                }
+              }
+              _ => ()
+            }
+          _ => ()
+        }
+      }
+    }
+    println(
+      "summary: files=\{file_count} total=\{total} passed=\{passed} failed=\{failed_count}",
+    )
+    if any_failed {
+      abort("test: failures detected")
+    }
+  })
 }
 
 ///|
