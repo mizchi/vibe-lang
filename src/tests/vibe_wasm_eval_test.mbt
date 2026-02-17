@@ -1472,3 +1472,116 @@ test "vibe wasm eval matches interpreter for shell effects" {
     "do { sh(\"echo hello\") }\ndo { sh(\"echo world\") }\n42",
   )
 }
+
+///|
+test "vibe backends match: arithmetic operators" {
+  assert_eval_backends_same("1 + 2")
+  assert_eval_backends_same("10 - 3")
+  assert_eval_backends_same("3 * 4")
+  assert_eval_backends_same("10 / 3")
+  assert_eval_backends_same("10 % 3")
+  assert_eval_backends_same("-5")
+  assert_eval_backends_same("-(3 + 2)")
+  assert_eval_backends_same("1 + 2 * 3")
+  assert_eval_backends_same("(1 + 2) * 3")
+}
+
+///|
+test "vibe backends match: comparison operators" {
+  assert_eval_backends_same("1 == 1")
+  assert_eval_backends_same("1 != 2")
+  assert_eval_backends_same("1 < 2")
+  assert_eval_backends_same("2 > 1")
+  assert_eval_backends_same("1 <= 1")
+  assert_eval_backends_same("2 >= 1")
+  assert_eval_backends_same("1 > 2")
+  assert_eval_backends_same("1 >= 2")
+  assert_eval_backends_same("3 <= 2")
+  assert_eval_backends_same("0 == 0")
+}
+
+///|
+test "vibe backends match: bitwise operators" {
+  assert_eval_backends_same("5 & 3")
+  assert_eval_backends_same("5 | 3")
+  assert_eval_backends_same("5 ^ 3")
+  assert_eval_backends_same("1 << 3")
+  assert_eval_backends_same("8 >> 2")
+  assert_eval_backends_same("0 & 0")
+  assert_eval_backends_same("255 & 15")
+}
+
+///|
+test "vibe backends match: boolean expressions" {
+  assert_eval_backends_same("true")
+  assert_eval_backends_same("false")
+  assert_eval_backends_same("not(false)")
+  assert_eval_backends_same("and(true, true)")
+  assert_eval_backends_same("or(false, true)")
+  assert_eval_backends_same("and(true, false)")
+  assert_eval_backends_same("not(or(false, false))")
+  assert_eval_backends_same("and(not(false), true)")
+}
+
+///|
+test "vibe backends match: block expressions" {
+  assert_eval_backends_same("{ let x = 10\n x }")
+  assert_eval_backends_same("{ let a = 1\n let b = 2\n a + b }")
+  assert_eval_backends_same("{ let x = { let y = 3\n y * 2 }\n x + 1 }")
+}
+
+///|
+test "vibe backends match: nested conditionals" {
+  assert_eval_backends_same("if true { if false { 1 } else { 2 } } else { 3 }")
+  assert_eval_backends_same("if false { 1 } else { if true { 2 } else { 3 } }")
+  assert_eval_backends_same(
+    "if 1 < 2 { if 3 > 4 { 10 } else { 20 } } else { 30 }",
+  )
+}
+
+///|
+test "vibe backends match: match expressions" {
+  assert_eval_backends_same("match 2 { 1 => 10, 2 => 20, _ => 0 }")
+  assert_eval_backends_same("match 5 { v => v + 1 }")
+  assert_eval_backends_same("match 3 { v if v < 5 => 1, _ => 0 }")
+  assert_eval_backends_same("match 10 { v if v < 5 => 1, _ => 0 }")
+  assert_eval_backends_same("match (1, 2) { (a, b) => a + b, _ => 0 }")
+  assert_eval_backends_same(
+    "match (1, (2, 3)) { (a, (b, c)) => a + b + c, _ => 0 }",
+  )
+  assert_eval_backends_same(
+    "match record { a: 1, b: 2 } { record { a: x, b: y } => x + y, _ => 0 }",
+  )
+}
+
+///|
+test "vibe backends match: let binding chains" {
+  assert_eval_backends_same("let a = 1\nlet b = a + 2\nlet c = b * 3\nc")
+  assert_eval_backends_same("let x = 10\nlet y = x - 3\ny")
+  assert_eval_backends_same("let a = 5\nlet b = a\nlet c = b\nc")
+}
+
+///|
+test "vibe backends match: edge cases" {
+  assert_eval_backends_same("0")
+  assert_eval_backends_same("add(0, 0)")
+  assert_eval_backends_same("1000 * 1000")
+  assert_eval_backends_same("sub(0, 1)")
+  assert_eval_backends_same("\"\"")
+  assert_eval_backends_same("\"hello world\"")
+}
+
+///|
+test "vibe backends match: nested collections" {
+  assert_eval_backends_same("[1, 2, 3]")
+  assert_eval_backends_same("[[1, 2], [3, 4]]")
+  assert_eval_backends_same("map { a: 1, b: 2, c: 3 }")
+  assert_eval_backends_same("[map { x: 1 }, map { x: 2 }]")
+}
+
+///|
+test "vibe backends match: mixed expressions" {
+  assert_eval_backends_same("if eq(1, 1) { add(2, 3) } else { 0 }")
+  assert_eval_backends_same("let x = mul(3, 3)\nadd(x, 1)")
+  assert_eval_backends_same("match true { true => 1, false => 0 }")
+}
