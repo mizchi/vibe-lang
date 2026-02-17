@@ -548,3 +548,35 @@ fn is_pure_builtin_name(name : String) -> Bool {
 pub fn clone_bool_map(src : Map[String, Bool]) -> Map[String, Bool] {
   src.copy()
 }
+
+///|
+pub fn check_toplevel_purity(
+  env : TypeEnv,
+  stmts : Array[@core.Stmt],
+) -> Unit raise TypeError {
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let info = purity_for_let(env, rec, name, expr)
+        if not(info.expr) {
+          raise TypeError::TopLevelImpure(name~, span~)
+        }
+      }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        let info = purity_for_let(env, rec, name, expr)
+        if not(info.expr) {
+          raise TypeError::TopLevelImpure(name~, span~)
+        }
+      }
+      @core.Stmt::LetMut(name~, span~, ..) =>
+        raise TypeError::TopLevelImpure(name~, span~)
+      @core.Stmt::Assign(name~, span~, ..) =>
+        raise TypeError::TopLevelImpure(name~, span~)
+      @core.Stmt::Expr(expr~, span~) =>
+        if not(purity_expr(env, expr)) {
+          raise TypeError::TopLevelImpure(name="_", span~)
+        }
+      _ => ()
+    }
+  }
+}

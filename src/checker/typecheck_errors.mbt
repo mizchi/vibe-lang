@@ -30,6 +30,7 @@ suberror TypeError {
     missing_do_boundary~ : Bool,
     span~ : @core.Span
   )
+  TopLevelImpure(name~ : String, span~ : @core.Span)
 } derive(Show, Eq)
 
 ///|
@@ -286,6 +287,14 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         span: Some(span),
         hint: effect_guard_hint(operation, missing_effect, missing_do_boundary),
         note: effect_guard_note(operation, missing_effect, missing_do_boundary),
+      }
+    TypeError::TopLevelImpure(name~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "top-level binding must be pure: " + name,
+        span: Some(span),
+        hint: Some("move side effects into `let main = () -> { ... }`"),
+        note: None,
       }
   }
 }

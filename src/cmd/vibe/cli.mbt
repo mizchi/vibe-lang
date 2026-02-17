@@ -69,7 +69,7 @@ fn print_usage() -> Unit {
   println("vibe <command> [args]")
   println("")
   println("commands:")
-  println("  run <file>                 parse/type/eval a script")
+  println("  run <file>                 run a script (requires `let main`)")
   println("    demo: vibe run vibe/x/args/demo.vibe")
   println(
     "  eval [--db file] [--include file] [--inspect-scope] [--assert name:sig]... [--test-for name] [--run] [--export file] <expr...>  evaluate expression/script",
@@ -718,11 +718,19 @@ fn run_cmd(
           for name, target in compiled.aliases {
             rt.set_alias(name, target)
           }
-          // Evaluate the converted module
-          let result = rt.eval_module(converted_ast) catch {
+          // Check top-level purity
+          @checker.check_toplevel_purity(compiled.type_env, converted_ast.stmts) catch {
+            e => abort("run: " + e.diagnostic().message)
+          }
+          // Load top-level definitions into runtime
+          let _ = rt.eval_module(converted_ast) catch {
             e => abort("run: " + e.to_string())
           }
-          print_eval_result(result)
+          // Execute main entry point
+          let main_result = rt.call_main() catch {
+            e => abort("run: " + e.to_string())
+          }
+          print_eval_result(main_result)
         }
       }
     @runtime.ParserMode::PosixMode => {

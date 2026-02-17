@@ -157,7 +157,7 @@ fn type_check_stmts(
           body.stmts,
           aliases,
           effects,
-          allow_effect,
+          true,
           {},
         )
       }
@@ -169,7 +169,7 @@ fn type_check_stmts(
           body.stmts,
           aliases,
           effects,
-          allow_effect,
+          true,
           {},
         )
       }
