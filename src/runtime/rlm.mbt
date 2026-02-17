@@ -26,7 +26,106 @@ fn RlmBudget::check(self : RlmBudget) -> String? {
 
 ///|
 fn rlm_system_prompt() -> String {
-  "You are a vibe language agent. You write vibe code to accomplish the given task.\n\nVibe syntax basics:\n- `let x = expr` binds a value\n- `let x: Type = expr` with type annotation\n- String, Int, Bool, Array, Record types\n- `string_split(s, delim)` splits string\n- `string_length(s)` returns length\n- `string_join(arr, sep)` joins array with separator\n- `string_contains(s, sub)` checks substring\n- `string_trim(s)` trims whitespace\n- `string_slice(s, start, end)` extracts substring\n- `array_length(arr)` returns array length\n- `to_string(v)` converts value to string\n- `int_parse(s)` parses string to int\n- Arithmetic: +, -, *, /, %\n- Comparison: ==, !=, <, >, <=, >=\n- Boolean: &&, ||, !\n- If: `if cond { expr } else { expr }`\n- Array literal: [1, 2, 3]\n- Record literal: { key: value }\n\nRules:\n1. Write ONE statement per turn (let binding or expression).\n2. Each let binding accumulates in the session.\n3. When done, call `rlm_finalize(result_string)` with the final answer.\n4. If you encounter an error, try a different approach.\n5. Keep answers concise and focused on the task.\n\nRespond with ONLY vibe code, no explanation or markdown."
+  let syntax =
+    #|## Vibe Language Syntax
+    #|
+    #|### Bindings
+    #|- `let x = expr` immutable binding
+    #|- `let mut x = expr` mutable binding (reassign with `x = new_val`)
+    #|- `let x: Type = expr` with type annotation
+    #|- `let rec f = (n: Int) -> Int { if n < 2 { 1 } else { n * f(n - 1) } }` recursive function
+    #|
+    #|### Functions
+    #|- Named: `let add = (a: Int, b: Int) -> Int { a + b }`
+    #|- Generic: `let id = [T](x: T) -> T { x }`
+    #|- Lambda: `fn(x) { x + 1 }` or `(x: Int) -> x + 1`
+    #|- Last expression is the return value (no `return` keyword)
+    #|
+    #|### Control Flow
+    #|- `if cond { expr } else { expr }`
+    #|- `while cond { body }`
+    #|- `match value { Some(x) => x, None => 0 }` (must be exhaustive)
+    #|
+    #|### Types
+    #|- Primitives: Int, Float, Double, Bool, Char, String, Unit
+    #|- Collections: Array[T], Map[T] (string-keyed)
+    #|- Composite: (A, B) tuple, record { x: Int, y: String }
+    #|- Option[T]: Some(value) | None
+    #|- Result[T, E]: Ok(value) | Err(error)
+    #|
+    #|### Operators
+    #|- Arithmetic: +, -, *, /, %
+    #|- Comparison: ==, !=, <, >, <=, >=
+    #|- Logical: &&, ||, !
+    #|- Pipe: `expr |> func` (passes as first argument)
+    #|
+    #|### Literals
+    #|- Array: [1, 2, 3]
+    #|- Record: record { name: "Alice", age: 30 }
+    #|- Map: { "a": 1, "b": 2 }
+    #|- Tuple: (1, "two", true)
+    #|- String interpolation: "hello \(name)"
+  let builtins =
+    #|## Builtin Functions
+    #|
+    #|### String
+    #|- string_length(s) -> Int
+    #|- string_substring(s, start, end) -> String
+    #|- string_concat(s1, s2) -> String
+    #|- string_split(s, sep) -> Array[String]
+    #|- string_join(arr, sep) -> String
+    #|- string_contains(s, sub) -> Bool
+    #|- string_index_of(s, sub) -> Int (-1 if not found)
+    #|- string_trim(s) -> String
+    #|- string_starts_with(s, prefix) -> Bool
+    #|- string_ends_with(s, suffix) -> Bool
+    #|- string_replace(s, old, new) -> String
+    #|- string_replace_all(s, old, new) -> String
+    #|- string_char_code_at(s, i) -> Int
+    #|- string_from_char_code(code) -> String
+    #|
+    #|### Array
+    #|- array_length(arr) -> Int
+    #|- array_get(arr, index) -> T
+    #|- array_slice(arr, start, end) -> Array[T]
+    #|
+    #|### Map
+    #|- map_get(m, key) -> T
+    #|- map_keys(m) -> Array[String]
+    #|- map_values(m) -> Array[T]
+    #|- map_has_key(m, key) -> Bool
+    #|
+    #|### Conversion
+    #|- to_string(value) -> String
+    #|- int_to_float(n) -> Float
+    #|- int_to_double(n) -> Double
+    #|- float_to_int(f) -> Int
+    #|- double_to_int(d) -> Int
+    #|
+    #|### Math
+    #|- int_abs(n) -> Int
+    #|- int_max(a, b) -> Int
+    #|- int_min(a, b) -> Int
+    #|- double_abs(d) -> Double
+    #|- double_floor(d) -> Double
+    #|- double_ceil(d) -> Double
+    #|
+    #|### JSON
+    #|- to_json(value) -> String
+    #|- from_json(s) -> Value
+    #|- json_get(obj, key) -> Value
+    #|- json_keys(obj) -> Array[String]
+  let rules =
+    #|## RLM Rules
+    #|
+    #|1. Write ONE let binding or expression per turn.
+    #|2. Each binding accumulates in the session — use previous bindings freely.
+    #|3. When the task is complete, call `rlm_finalize(result_string)` with the final answer as a String.
+    #|4. If you get an error, read the error message and try a different approach.
+    #|5. Do NOT write multiple statements in one turn.
+    #|6. Do NOT use markdown code fences or explanations — respond with ONLY vibe code.
+    #|7. Use `to_string(value)` to convert non-string values before passing to rlm_finalize.
+  syntax + "\n\n" + builtins + "\n\n" + rules
 }
 
 ///|
@@ -42,16 +141,31 @@ fn rlm_build_user_message(
     for binding in bindings {
       msg = msg + "  let " + binding.0 + " = " + binding.1 + "\n"
     }
+    msg = msg +
+      "\nYou already have the above bindings. Do NOT redefine them. Build on them or call rlm_finalize if the task is done.\n"
   }
+  let next_step = budget.steps_used + 1
+  let remaining = budget.max_steps - budget.steps_used
   msg = msg +
     "\nBudget: step " +
-    (budget.steps_used + 1).to_string() +
+    next_step.to_string() +
     "/" +
     budget.max_steps.to_string() +
-    "\n"
-  if error_feedback.length() > 0 {
-    msg = msg + "\nPrevious error:\n" + error_feedback + "\n"
+    " (" +
+    remaining.to_string() +
+    " remaining)\n"
+  if remaining <= budget.max_steps / 2 {
+    msg = msg +
+      "WARNING: Budget is running low. Finalize soon with rlm_finalize(to_string(result)).\n"
   }
+  if error_feedback.length() > 0 {
+    msg = msg +
+      "\nPrevious error:\n" +
+      error_feedback +
+      "\nFix: try a different syntax. Remember: `let rec f = (args) -> Type { body }` for recursion.\n"
+  }
+  msg = msg +
+    "\nWrite your next vibe statement (ONE statement only). When done, call: rlm_finalize(to_string(your_result))\n"
   msg
 }
 
