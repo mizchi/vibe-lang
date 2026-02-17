@@ -699,7 +699,7 @@ fn eval_cmd(
   args : Array[String],
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
-  enable_llm~ : Bool = false,
+  enable_llm? : Bool = false,
 ) -> Unit {
   let options = match parse_eval_cmd_options(args, "eval") {
     Ok(opts) => opts
