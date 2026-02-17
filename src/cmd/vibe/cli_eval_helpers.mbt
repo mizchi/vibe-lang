@@ -744,9 +744,13 @@ fn eval_cmd(
   }
   next_source = source
   if source.trim().length() > 0 {
-    let _ = rt.eval_script_with_mode(source, syntax_mode) catch {
+    try {
+      rt.eval_script_with_mode(source, syntax_mode) |> ignore
+    } catch {
       e =>
-        abort("eval: failed to restore db `" + db_path + "`: " + e.to_string())
+        println(
+          "warn: failed to restore db `" + db_path + "`: " + e.to_string(),
+        )
     }
   }
   match options.expr {

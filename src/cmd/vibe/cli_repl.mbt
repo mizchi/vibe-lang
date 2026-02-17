@@ -17,9 +17,12 @@ fn repl_cmd(
     Ok(v) => v
     Err(err) => abort("repl: " + err)
   }
+  let mut restore_error : String = ""
   if restored_source.trim().length() > 0 {
-    let _ = rt.eval_script_with_mode(restored_source, syntax_mode) catch {
-      e => abort("repl: failed to restore namespace db: " + e.to_string())
+    try {
+      rt.eval_script_with_mode(restored_source, syntax_mode) |> ignore
+    } catch {
+      e => restore_error = e.to_string()
     }
   }
   let (initial_cols, initial_rows) = @tui.get_terminal_size()
@@ -663,6 +666,9 @@ fn repl_cmd(
 
   do_render()
   push_output_line("namespace: " + namespace_name + " db=" + scratch_db_path)
+  if restore_error.length() > 0 {
+    push_output_line("warn: failed to restore db: " + restore_error)
+  }
   do_render()
   @tui.start_keypress_listener(handle_key)
   cleanup_once()
@@ -740,11 +746,10 @@ fn run_eval_line_repl_with_prompt(
       }
     }
     if scratch_source.trim().length() > 0 {
-      let _ = rt.eval_script_with_mode(scratch_source, syntax_mode) catch {
-        e => {
-          println("error: failed to restore namespace db: " + e.to_string())
-          return
-        }
+      try {
+        rt.eval_script_with_mode(scratch_source, syntax_mode) |> ignore
+      } catch {
+        e => println("warn: failed to restore db: " + e.to_string())
       }
     }
     let input = @stdio.stdin
