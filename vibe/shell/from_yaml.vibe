@@ -1,0 +1,510 @@
+
+export let _yaml_is_digit = (ch: String) -> Bool {
+  if string_equals(ch, "0") {
+    true
+  }
+  else if string_equals(ch, "1") {
+    true
+  }
+  else if string_equals(ch, "2") {
+    true
+  }
+  else if string_equals(ch, "3") {
+    true
+  }
+  else if string_equals(ch, "4") {
+    true
+  }
+  else if string_equals(ch, "5") {
+    true
+  }
+  else if string_equals(ch, "6") {
+    true
+  }
+  else if string_equals(ch, "7") {
+    true
+  }
+  else if string_equals(ch, "8") {
+    true
+  }
+  else if string_equals(ch, "9") {
+    true
+  }
+  else {
+    false
+  }
+}
+export let _yaml_is_number = (s: String) -> Bool {
+  let len = string_length(s)
+  if len == 0 {
+    false
+  } else {
+    let mut start = 0
+    let first = string_substring(s, 0, 1)
+    if string_equals(first, "-") {
+      if len == 1 {
+        start = -1
+      }
+      if len > 1 {
+        start = 1
+      }
+    }
+    if start < 0 {
+      false
+    } else {
+      let mut i = start
+      let mut valid = true
+      let mut has_dot = false
+      while i < len {
+        let ch = string_substring(s, i, i + 1)
+        if string_equals(ch, ".") {
+          if has_dot {
+            valid = false
+          }
+          has_dot = true
+        }
+        if not(string_equals(ch, ".")) {
+          if not(_yaml_is_digit(ch)) {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      valid
+    }
+  }
+}
+export let _yaml_find_colon = (line: String) -> Int {
+  let len = string_length(line)
+  let mut i = 0
+  let mut in_sq = false
+  let mut in_dq = false
+  let mut found = -1
+  while i < len {
+    let ch = string_substring(line, i, i + 1)
+    let was_sq = in_sq
+    let was_dq = in_dq
+    if was_sq {
+      if string_equals(ch, "'") {
+        in_sq = false
+      }
+    }
+    if not(was_sq) {
+      if was_dq {
+        if string_equals(ch, "\"") {
+          in_dq = false
+        }
+      }
+    }
+    if not(was_sq) {
+      if not(was_dq) {
+        if string_equals(ch, "'") {
+          in_sq = true
+        }
+        if string_equals(ch, "\"") {
+          in_dq = true
+        }
+        if string_equals(ch, ":") {
+          if found < 0 {
+            if i + 1 >= len {
+              found = i
+            }
+            if i + 1 < len {
+              let next = string_substring(line, i + 1, i + 2)
+              if string_equals(next, " ") {
+                found = i
+              }
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+export let _yaml_escape_json = (s: String) -> String {
+  do {
+    let sb = string_builder()
+    let len = string_length(s)
+    let mut i = 0
+    while i < len {
+      let ch = string_substring(s, i, i + 1)
+      if string_equals(ch, "\\") {
+        string_builder_push(sb, "\\\\")
+      }
+      if string_equals(ch, "\"") {
+        string_builder_push(sb, "\\\"")
+      }
+      if string_equals(ch, "\n") {
+        string_builder_push(sb, "\\n")
+      }
+      if string_equals(ch, "\t") {
+        string_builder_push(sb, "\\t")
+      }
+      if not(string_equals(ch, "\\")) {
+        if not(string_equals(ch, "\"")) {
+          if not(string_equals(ch, "\n")) {
+            if not(string_equals(ch, "\t")) {
+              string_builder_push(sb, ch)
+            }
+          }
+        }
+      }
+      i = i + 1
+    }
+    string_builder_freeze(sb)
+  }
+}
+export let _yaml_count_indent = (line: String) -> Int {
+  let len = string_length(line)
+  let mut i = 0
+  let mut result = -1
+  while i < len {
+    if result < 0 {
+      let ch = string_substring(line, i, i + 1)
+      if not(string_equals(ch, " ")) {
+        result = i
+      }
+    }
+    i = i + 1
+  }
+  if result < 0 {
+    len
+  } else {
+    result
+  }
+}
+export let _yaml_strip_comment = (line: String) -> String {
+  let len = string_length(line)
+  let mut i = 0
+  let mut in_sq = false
+  let mut in_dq = false
+  let mut result_end = len
+  while i < len {
+    let ch = string_substring(line, i, i + 1)
+    let was_sq = in_sq
+    let was_dq = in_dq
+    if was_sq {
+      if string_equals(ch, "'") {
+        in_sq = false
+      }
+    }
+    if not(was_sq) {
+      if was_dq {
+        if string_equals(ch, "\"") {
+          in_dq = false
+        }
+      }
+    }
+    if not(was_sq) {
+      if not(was_dq) {
+        if string_equals(ch, "'") {
+          in_sq = true
+        }
+        if string_equals(ch, "\"") {
+          in_dq = true
+        }
+        if string_equals(ch, "#") {
+          if result_end == len {
+            if i == 0 {
+              result_end = 0
+            }
+            if i > 0 {
+              let prev = string_substring(line, i - 1, i)
+              if string_equals(prev, " ") {
+                result_end = i
+              }
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  if result_end == len {
+    line
+  } else {
+    string_trim(string_substring(line, 0, result_end))
+  }
+}
+export let _yaml_scalar_to_json = (s: String) -> String {
+  let trimmed = string_trim(s)
+  if string_equals(trimmed, "true") {
+    "true"
+  } else if string_equals(trimmed, "false") {
+    "false"
+  } else if string_equals(trimmed, "null") {
+    "null"
+  } else if string_equals(trimmed, "~") {
+    "null"
+  } else if string_equals(trimmed, "") {
+    "null"
+  } else if _yaml_is_number(trimmed) {
+    trimmed
+  } else {
+    let len = string_length(trimmed)
+    let first = string_substring(trimmed, 0, 1)
+    let last = string_substring(trimmed, len - 1, len)
+    if string_equals(first, "\"") {
+      if string_equals(last, "\"") {
+        let inner = string_substring(trimmed, 1, len - 1)
+        do {
+          let sb = string_builder()
+          string_builder_push(sb, "\"")
+          string_builder_push(sb, _yaml_escape_json(inner))
+          string_builder_push(sb, "\"")
+          string_builder_freeze(sb)
+        }
+      } else {
+        do {
+          let sb = string_builder()
+          string_builder_push(sb, "\"")
+          string_builder_push(sb, _yaml_escape_json(trimmed))
+          string_builder_push(sb, "\"")
+          string_builder_freeze(sb)
+        }
+      }
+    } else if string_equals(first, "'") {
+      if string_equals(last, "'") {
+        let inner = string_substring(trimmed, 1, len - 1)
+        do {
+          let sb = string_builder()
+          string_builder_push(sb, "\"")
+          string_builder_push(sb, _yaml_escape_json(inner))
+          string_builder_push(sb, "\"")
+          string_builder_freeze(sb)
+        }
+      } else {
+        do {
+          let sb = string_builder()
+          string_builder_push(sb, "\"")
+          string_builder_push(sb, _yaml_escape_json(trimmed))
+          string_builder_push(sb, "\"")
+          string_builder_freeze(sb)
+        }
+      }
+    } else {
+      do {
+        let sb = string_builder()
+        string_builder_push(sb, "\"")
+        string_builder_push(sb, _yaml_escape_json(trimmed))
+        string_builder_push(sb, "\"")
+        string_builder_freeze(sb)
+      }
+    }
+  }
+}
+export let _yaml_parse_block = (lines_arr: Array[String], indents_arr: Array[Int], num_lines: Int, cursor: Array[Int], base_indent: Int) -> String {
+  let idx = array_get(cursor, 0)
+  if idx >= num_lines {
+    "null"
+  } else {
+    let line = array_get(lines_arr, idx)
+    let trimmed = string_trim(line)
+    let content = string_substring(trimmed, 0, string_length(trimmed))
+    if string_starts_with(content, "- ") {
+      do {
+        let sb = string_builder()
+        string_builder_push(sb, "[")
+        let mut first = true
+        while array_get(cursor, 0) < num_lines {
+          let ci = array_get(cursor, 0)
+          let cur_indent = array_get(indents_arr, ci)
+          let mut skip_line = false
+          if cur_indent < base_indent {
+            cursor[0] = num_lines + ci + 1
+            skip_line = true
+          }
+          if cur_indent > base_indent {
+            if not(skip_line) {
+              cursor[0] = num_lines + ci + 1
+              skip_line = true
+            }
+          }
+          if not(skip_line) {
+            let cur_line = array_get(lines_arr, ci)
+            let cur_trimmed = string_trim(cur_line)
+            if not(string_starts_with(cur_trimmed, "- ")) {
+              cursor[0] = num_lines + ci + 1
+            }
+            if string_starts_with(cur_trimmed, "- ") {
+              if not(first) {
+                string_builder_push(sb, ",")
+              }
+              first = false
+              let item_str = string_substring(cur_trimmed, 2, string_length(cur_trimmed))
+              let colon_pos = _yaml_find_colon(item_str)
+              cursor[0] = ci + 1
+              if colon_pos >= 0 {
+                let item_key = string_trim(string_substring(item_str, 0, colon_pos))
+                let item_val_str = string_trim(string_substring(item_str, colon_pos + 1, string_length(item_str)))
+                if string_equals(item_val_str, "") {
+                  let item_cursor_ok = array_get(cursor, 0) < num_lines
+                  let item_indent_ok = if item_cursor_ok {
+                    array_get(indents_arr, array_get(cursor, 0)) > cur_indent
+                  } else {
+                    false
+                  }
+                  if item_indent_ok {
+                    let next_ind2 = array_get(indents_arr, array_get(cursor, 0))
+                    let sub = _yaml_parse_block(lines_arr, indents_arr, num_lines, cursor, next_ind2)
+                    string_builder_push(sb, "{\"")
+                    string_builder_push(sb, _yaml_escape_json(item_key))
+                    string_builder_push(sb, "\":")
+                    string_builder_push(sb, sub)
+                    string_builder_push(sb, "}")
+                  }
+                  if not(item_indent_ok) {
+                    string_builder_push(sb, "{\"")
+                    string_builder_push(sb, _yaml_escape_json(item_key))
+                    string_builder_push(sb, "\":null}")
+                  }
+                }
+                if not(string_equals(item_val_str, "")) {
+                  string_builder_push(sb, "{\"")
+                  string_builder_push(sb, _yaml_escape_json(item_key))
+                  string_builder_push(sb, "\":")
+                  string_builder_push(sb, _yaml_scalar_to_json(item_val_str))
+                  string_builder_push(sb, "}")
+                }
+              }
+              if not(colon_pos >= 0) {
+                let scalar_cursor_ok = array_get(cursor, 0) < num_lines
+                let scalar_indent_ok = if scalar_cursor_ok {
+                  array_get(indents_arr, array_get(cursor, 0)) > cur_indent
+                } else {
+                  false
+                }
+                if scalar_indent_ok {
+                  let next_ind3 = array_get(indents_arr, array_get(cursor, 0))
+                  let sub2 = _yaml_parse_block(lines_arr, indents_arr, num_lines, cursor, next_ind3)
+                  string_builder_push(sb, sub2)
+                }
+                if not(scalar_indent_ok) {
+                  string_builder_push(sb, _yaml_scalar_to_json(item_str))
+                }
+              }
+            }
+          }
+        }
+        if array_get(cursor, 0) > num_lines {
+          let real_cursor = array_get(cursor, 0) - num_lines - 1
+          cursor[0] = real_cursor
+        }
+        string_builder_push(sb, "]")
+        string_builder_freeze(sb)
+      }
+    } else {
+      let colon_pos = _yaml_find_colon(content)
+      if colon_pos >= 0 {
+        do {
+          let sb = string_builder()
+          string_builder_push(sb, "{")
+          let mut first = true
+          while array_get(cursor, 0) < num_lines {
+            let ci = array_get(cursor, 0)
+            let cur_indent = array_get(indents_arr, ci)
+            let mut skip_line = false
+            if cur_indent < base_indent {
+              cursor[0] = num_lines + ci + 1
+              skip_line = true
+            }
+            if cur_indent > base_indent {
+              if not(skip_line) {
+                cursor[0] = num_lines + ci + 1
+                skip_line = true
+              }
+            }
+            if not(skip_line) {
+              let cur_line = array_get(lines_arr, ci)
+              let cur_trimmed = string_trim(cur_line)
+              let cp = _yaml_find_colon(cur_trimmed)
+              if cp < 0 {
+                cursor[0] = num_lines + ci + 1
+              }
+              if cp >= 0 {
+                if not(first) {
+                  string_builder_push(sb, ",")
+                }
+                first = false
+                let key = string_trim(string_substring(cur_trimmed, 0, cp))
+                let val_str = string_trim(string_substring(cur_trimmed, cp + 1, string_length(cur_trimmed)))
+                cursor[0] = ci + 1
+                if string_equals(val_str, "") {
+                  let cursor_ok = array_get(cursor, 0) < num_lines
+                  let indent_ok = if cursor_ok {
+                    array_get(indents_arr, array_get(cursor, 0)) > base_indent
+                  } else {
+                    false
+                  }
+                  if indent_ok {
+                    let next_ind = array_get(indents_arr, array_get(cursor, 0))
+                    let sub = _yaml_parse_block(lines_arr, indents_arr, num_lines, cursor, next_ind)
+                    string_builder_push(sb, "\"")
+                    string_builder_push(sb, _yaml_escape_json(key))
+                    string_builder_push(sb, "\":")
+                    string_builder_push(sb, sub)
+                  }
+                  if not(indent_ok) {
+                    string_builder_push(sb, "\"")
+                    string_builder_push(sb, _yaml_escape_json(key))
+                    string_builder_push(sb, "\":null")
+                  }
+                }
+                if not(string_equals(val_str, "")) {
+                  string_builder_push(sb, "\"")
+                  string_builder_push(sb, _yaml_escape_json(key))
+                  string_builder_push(sb, "\":")
+                  string_builder_push(sb, _yaml_scalar_to_json(val_str))
+                }
+              }
+            }
+          }
+          if array_get(cursor, 0) > num_lines {
+            let real_cursor = array_get(cursor, 0) - num_lines - 1
+            cursor[0] = real_cursor
+          }
+          string_builder_push(sb, "}")
+          string_builder_freeze(sb)
+        }
+      } else {
+        cursor[0] = idx + 1
+        _yaml_scalar_to_json(content)
+      }
+    }
+  }
+}
+export let from_yaml = (text: String) -> String {
+  let cr = string_from_char_code(13)
+  let cleaned = string_replace_all(text, cr, "")
+  let raw_lines = string_split(cleaned, "\n")
+  let num_raw = array_length(raw_lines)
+  do {
+    let lines_b = array_builder()
+    let indents_b = array_builder()
+    let mut i = 0
+    while i < num_raw {
+      let line = array_get(raw_lines, i)
+      let stripped = _yaml_strip_comment(line)
+      let trimmed = string_trim(stripped)
+      if not(string_equals(trimmed, "")) {
+        array_builder_push(lines_b, stripped)
+        array_builder_push(indents_b, _yaml_count_indent(stripped))
+      }
+      i = i + 1
+    }
+    let lines_arr = array_builder_freeze(lines_b)
+    let indents_arr = array_builder_freeze(indents_b)
+    let num_lines = array_length(lines_arr)
+    if num_lines == 0 {
+      "null"
+    } else {
+      let base = array_get(indents_arr, 0)
+      let cursor = [
+        0
+      ]
+      _yaml_parse_block(lines_arr, indents_arr, num_lines, cursor, base)
+    }
+  }
+}

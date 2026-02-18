@@ -47,11 +47,40 @@ fn print_ide_outline_entry(
 }
 
 ///|
+fn print_graph_ir_outline_entry(row : @x_exp.GraphIrRow) -> Unit {
+  println(row.kind + " " + row.name + " : " + row.signature)
+}
+
+///|
 fn ide_outline_cmd(args : Array[String]) -> Unit {
   if args.length() != 1 {
     abort("ide outline: expected <file>")
   }
-  match @loader.load_db_with_paths(args[0]) {
+  let path = args[0]
+  // For non-.vibe files, use multi-language extractor
+  match @x_exp.detect_language_id(path) {
+    Some("vibe") | None => ()
+    Some(_) => {
+      let source = @os_fs.read_file_to_string(path) catch {
+        e => abort("ide outline: " + e.to_string())
+      }
+      match @x_exp.extract_graph_ir_rows_by_ext(path, source) {
+        Ok(rows) => {
+          if rows.length() == 0 {
+            println("No symbols found in " + path)
+            return
+          }
+          println("Outline: " + path)
+          for row in rows {
+            print_graph_ir_outline_entry(row)
+          }
+        }
+        Err(err) => abort("ide outline: " + err)
+      }
+      return
+    }
+  }
+  match @loader.load_db_with_paths(path) {
     Ok((db, entry, _)) => {
       let index = @runtime.build_symbol_index(db, [entry])
       if index.entries.length() == 0 {

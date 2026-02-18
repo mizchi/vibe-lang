@@ -1827,3 +1827,80 @@ test "vibe posix mode let binding prevents desugar" {
     _ => fail("expected string result")
   }
 }
+
+///|
+test "vibe where prelude filters integers" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let xs = [1, 2, 3, 4, 5]\n" +
+    "let ys = where(xs, (x: Int) -> Bool { x > 3 })\n" +
+    "let n = array_length(ys)",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("n") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("expected filtered size 2")
+  }
+}
+
+///|
+test "vibe select projects record fields" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let r = record { name: \"alice\", age: 30, city: \"tokyo\" }\n" +
+    "let s = select(r, \"name\", \"age\")",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("s") {
+    Some(@core.Value::Record(map)) => {
+      assert_eq(map.length(), 2)
+      match map.get("name") {
+        Some(@core.Value::String(v)) => assert_eq(v, "alice")
+        _ => fail("expected name field")
+      }
+      match map.get("age") {
+        Some(@core.Value::Int(v)) => assert_eq(v, 30)
+        _ => fail("expected age field")
+      }
+    }
+    _ => fail("expected record")
+  }
+}
+
+///|
+test "vibe select projects array of records" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script(
+    "let xs = [record { name: \"a\", x: 1 }, record { name: \"b\", x: 2 }]\n" +
+    "let ys = select(xs, \"name\")\n" +
+    "let n = array_length(ys)",
+  )
+  match result {
+    Err(err) => fail(err.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("n") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("expected 2 projected records")
+  }
+  match rt.get("ys") {
+    Some(@core.Value::Array(items)) =>
+      match items[0] {
+        @core.Value::Record(m) => {
+          assert_eq(m.length(), 1)
+          match m.get("name") {
+            Some(@core.Value::String(v)) => assert_eq(v, "a")
+            _ => fail("expected name field")
+          }
+        }
+        _ => fail("expected record element")
+      }
+    _ => fail("expected array")
+  }
+}

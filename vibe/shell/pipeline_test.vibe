@@ -2,7 +2,11 @@
 use ./pipeline.vibe {
   where_entry, names, take_str, take_entries, drop_str, count_str, count_entries, lines, grep,
   basename, dirname, extname, sort_str, uniq, rev_str, head_str, tail_str,
-  join_str, split, wc, wc_l, trim, upper, lower, replace, contains_str
+  join_str, split, wc, wc_l, trim, upper, lower, replace, contains_str,
+  cut, tr, seq, seq_step, nl, paste, tac, expand,
+  starts_with, ends_with, char_at, index_of, last_index_of, len, count, repeat_str,
+  pad_left, pad_right, map_str, filter_str,
+  jq, jq_str, jq_num, jq_arr
 }
 use ./types.vibe {
   type FileEntry
@@ -214,4 +218,186 @@ test "replace replaces pattern" {
 test "contains_str checks substring" {
   assert(contains_str("hello world", "world"))
   assert(not(contains_str("hello", "xyz")))
+}
+test "cut extracts fields" {
+  let xs = [
+    "a:b:c",
+    "d:e:f"
+  ]
+  let result = cut(xs, ":", 1)
+  assert(array_length(result) == 2)
+  assert(string_equals(array_get(result, 0), "b"))
+  assert(string_equals(array_get(result, 1), "e"))
+}
+test "tr translates characters" {
+  assert(string_equals(tr("hello", "elo", "ELO"), "hELLO"))
+  assert(string_equals(tr("abc", "a", "x"), "xbc"))
+}
+test "seq generates number sequence" {
+  let result = seq(1, 5)
+  assert(array_length(result) == 5)
+  assert(string_equals(array_get(result, 0), "1"))
+  assert(string_equals(array_get(result, 4), "5"))
+}
+test "seq_step generates stepped sequence" {
+  let result = seq_step(0, 2, 6)
+  assert(array_length(result) == 4)
+  assert(string_equals(array_get(result, 0), "0"))
+  assert(string_equals(array_get(result, 1), "2"))
+  assert(string_equals(array_get(result, 3), "6"))
+}
+test "nl numbers lines" {
+  let xs = [
+    "a",
+    "b",
+    "c"
+  ]
+  let result = nl(xs, "\t")
+  assert(array_length(result) == 3)
+  assert(string_equals(array_get(result, 0), "1\ta"))
+  assert(string_equals(array_get(result, 2), "3\tc"))
+}
+test "paste merges two arrays" {
+  let xs = [
+    "a",
+    "b"
+  ]
+  let ys = [
+    "1",
+    "2"
+  ]
+  let result = paste(xs, ys, "\t")
+  assert(array_length(result) == 2)
+  assert(string_equals(array_get(result, 0), "a\t1"))
+  assert(string_equals(array_get(result, 1), "b\t2"))
+}
+test "tac reverses lines" {
+  assert(string_equals(tac("a\nb\nc"), "c\nb\na"))
+}
+test "expand replaces tabs" {
+  assert(string_equals(expand("\thello", 4), "    hello"))
+  assert(string_equals(expand("a\tb", 2), "a  b"))
+}
+test "starts_with checks prefix" {
+  assert(starts_with("hello world", "hello"))
+  assert(not(starts_with("hello", "world")))
+}
+test "ends_with checks suffix" {
+  assert(ends_with("hello world", "world"))
+  assert(not(ends_with("hello", "world")))
+}
+test "char_at returns character" {
+  assert(string_equals(char_at("hello", 0), "h"))
+  assert(string_equals(char_at("hello", 4), "o"))
+}
+test "index_of finds first occurrence" {
+  assert(index_of("hello world", "world") == 6)
+  assert(index_of("hello", "xyz") == -1)
+}
+test "last_index_of finds last occurrence" {
+  assert(last_index_of("abcabc", "abc") == 3)
+  assert(last_index_of("hello", "xyz") == -1)
+}
+test "len returns string length" {
+  assert(len("hello") == 5)
+  assert(len("") == 0)
+}
+test "count counts occurrences" {
+  assert(count("abcabcabc", "abc") == 3)
+  assert(count("hello", "xyz") == 0)
+}
+test "repeat_str repeats string" {
+  assert(string_equals(repeat_str("ab", 3), "ababab"))
+  assert(string_equals(repeat_str("x", 0), ""))
+}
+test "pad_left pads string" {
+  assert(string_equals(pad_left("hi", 5, " "), "   hi"))
+  assert(string_equals(pad_left("hello", 3, " "), "hello"))
+}
+test "pad_right pads string" {
+  assert(string_equals(pad_right("hi", 5, " "), "hi   "))
+  assert(string_equals(pad_right("hello", 3, " "), "hello"))
+}
+test "map_str transforms elements" {
+  let xs = [
+    "hello",
+    "world"
+  ]
+  let result = map_str(xs, (s: String) -> String {
+    string_to_upper(s)
+  })
+  assert(string_equals(array_get(result, 0), "HELLO"))
+  assert(string_equals(array_get(result, 1), "WORLD"))
+}
+test "filter_str filters elements" {
+  let xs = [
+    "hello",
+    "hi",
+    "hey",
+    "world"
+  ]
+  let result = filter_str(xs, (s: String) -> Bool {
+    string_starts_with(s, "h")
+  })
+  assert(array_length(result) == 3)
+}
+test "jq extracts field as JSON" {
+  let result = jq("{\"name\":\"vibe\",\"ver\":1}", "name")
+  assert(string_equals(result, "\"vibe\""))
+}
+test "jq navigates dotted path" {
+  assert(string_equals(jq("{\"a\":{\"b\":{\"c\":42}}}", "a.b.c"), "42"))
+}
+test "jq indexes array with [n]" {
+  assert(string_equals(jq("[10,20,30]", "[0]"), "10"))
+  assert(string_equals(jq("[10,20,30]", "[2]"), "30"))
+}
+test "jq returns keys as JSON array" {
+  let keys_json = jq("{\"a\":1,\"b\":2}", "keys")
+  let keys = jq_arr(keys_json)
+  assert(array_length(keys) == 2)
+}
+test "jq returns values as JSON array" {
+  let vals_json = jq("{\"a\":1,\"b\":2}", "values")
+  let vals = jq_arr(vals_json)
+  assert(array_length(vals) == 2)
+}
+test "jq returns type" {
+  assert(string_equals(jq_str("42", "type"), "number"))
+  assert(string_equals(jq_str("\"hello\"", "type"), "string"))
+  assert(string_equals(jq_str("null", "type"), "null"))
+  assert(string_equals(jq_str("[1,2]", "type"), "array"))
+  assert(string_equals(jq_str("{\"a\":1}", "type"), "object"))
+}
+test "jq returns length" {
+  assert(string_equals(jq("[1,2,3]", "length"), "3"))
+  assert(string_equals(jq("{\"a\":1,\"b\":2}", "length"), "2"))
+}
+test "jq with dot prefix" {
+  assert(string_equals(jq("{\"x\":1}", ".x"), "1"))
+  assert(string_equals(jq("{\"a\":{\"b\":2}}", ".a.b"), "2"))
+}
+test "jq_str extracts string field" {
+  assert(string_equals(jq_str("{\"name\":\"vibe\"}", "name"), "vibe"))
+}
+test "jq_str with dotted path" {
+  assert(string_equals(jq_str("{\"a\":{\"name\":\"deep\"}}", "a.name"), "deep"))
+}
+test "jq_num extracts number field" {
+  assert(eq(jq_num("{\"x\":3.14}", "x"), 3.14))
+}
+test "jq_arr expands array elements" {
+  let result = jq_arr("[1,2,3]")
+  assert(array_length(result) == 3)
+  assert(string_equals(array_get(result, 0), "1"))
+  assert(string_equals(array_get(result, 2), "3"))
+}
+test "jq pipeline: map over array" {
+  let arr = "[{\"name\":\"a\"},{\"name\":\"b\"}]"
+  let result = jq_arr(arr)|>map_str((item: String) -> String {
+    jq_str(item, "name")
+  })
+  assert(array_length(result) == 2)
+  assert(string_equals(array_get(result, 0), "a"))
+  assert(string_equals(array_get(result, 1), "b"))
 }

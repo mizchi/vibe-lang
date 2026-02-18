@@ -36,7 +36,7 @@ fn known_vibe_non_command_names() -> Map[String, Bool] {
     out[name] = true
   }
   let builtins = [
-    "path", "addr", "sh", "sh_lines", "sleep", "stdin_read_char", "stdin_read_stream",
+    "path", "addr", "sh", "sh_lines", "sleep", "select", "stdin_read_char", "stdin_read_stream",
     "stdout_write_char", "stdout_write_stream", "string_from_char_code", "string_length",
     "string_utf8_length", "string_utf16_length", "string_unicode_length", "string_char_code_at",
     "string_substring", "string_concat", "string_equals", "string_split", "string_index_of",

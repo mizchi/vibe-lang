@@ -1,0 +1,73 @@
+
+use ./from_yaml.vibe {
+  from_yaml, _yaml_scalar_to_json, _yaml_count_indent,
+  _yaml_strip_comment, _yaml_find_colon, _yaml_is_number
+}
+use ./pipeline.vibe {
+  jq_str, jq_num, jq_arr, jq
+}
+test "yaml simple key-value" {
+  let data = from_yaml("name: vibe")
+  assert(string_equals(jq_str(data, "name"), "vibe"))
+}
+test "yaml number value" {
+  let data = from_yaml("port: 8080")
+  assert(eq(jq_num(data, "port"), 8080.0))
+}
+test "yaml bool and null" {
+  let data = from_yaml("flag: true\nval: null")
+  assert(string_equals(jq(data, "flag"), "true"))
+  assert(string_equals(jq(data, "val"), "null"))
+}
+test "yaml nested object" {
+  let data = from_yaml("db:\n  host: localhost\n  port: 5432")
+  assert(string_equals(jq_str(data, "db.host"), "localhost"))
+  assert(eq(jq_num(data, "db.port"), 5432.0))
+}
+test "yaml list" {
+  let data = from_yaml("- a\n- b\n- c")
+  let items = jq_arr(data)
+  assert(array_length(items) == 3)
+  assert(string_equals(jq_str(data, "[0]"), "a"))
+  assert(string_equals(jq_str(data, "[2]"), "c"))
+}
+test "yaml list in mapping" {
+  let data = from_yaml("items:\n  - x\n  - y")
+  let items = jq(data, "items")|>jq_arr()
+  assert(array_length(items) == 2)
+}
+test "yaml quoted string with colon" {
+  let data = from_yaml("msg: 'hello: world'")
+  assert(string_equals(jq_str(data, "msg"), "hello: world"))
+}
+test "yaml comment stripping" {
+  let data = from_yaml("key: val # this is a comment")
+  assert(string_equals(jq_str(data, "key"), "val"))
+}
+test "yaml tilde is null" {
+  let data = from_yaml("x: ~")
+  assert(string_equals(jq(data, "x"), "null"))
+}
+test "_yaml_scalar_to_json" {
+  assert(string_equals(_yaml_scalar_to_json("true"), "true"))
+  assert(string_equals(_yaml_scalar_to_json("false"), "false"))
+  assert(string_equals(_yaml_scalar_to_json("null"), "null"))
+  assert(string_equals(_yaml_scalar_to_json("42"), "42"))
+  assert(string_equals(_yaml_scalar_to_json("hello"), "\"hello\""))
+}
+test "_yaml_count_indent" {
+  assert(_yaml_count_indent("hello") == 0)
+  assert(_yaml_count_indent("  hello") == 2)
+  assert(_yaml_count_indent("    hello") == 4)
+}
+test "_yaml_find_colon" {
+  assert(_yaml_find_colon("key: val") == 3)
+  assert(_yaml_find_colon("'a: b': val") == 6)
+  assert(_yaml_find_colon("no colon here") == -1)
+}
+test "yaml multiple keys" {
+  let data = from_yaml("a: 1\nb: 2\nc: 3")
+  assert(eq(jq_num(data, "a"), 1.0))
+  assert(eq(jq_num(data, "b"), 2.0))
+  assert(eq(jq_num(data, "c"), 3.0))
+}

@@ -1,0 +1,64 @@
+
+use ./from_csv.vibe {
+  from_csv, _csv_parse_line, _csv_is_number, _csv_escape_json
+}
+use ./pipeline.vibe {
+  jq_str, jq_num, jq_arr, jq, map_str
+}
+test "csv basic: name and age" {
+  let data = from_csv("name,age\nalice,30\nbob,25")
+  let rows = jq_arr(data)
+  assert(array_length(rows) == 2)
+  assert(string_equals(jq_str(array_get(rows, 0), "name"), "alice"))
+  assert(string_equals(jq_str(array_get(rows, 1), "name"), "bob"))
+}
+test "csv number detection" {
+  let data = from_csv("name,age\nalice,30")
+  let row = jq(data, "[0]")
+  assert(eq(jq_num(row, "age"), 30.0))
+}
+test "csv quoted field with comma" {
+  let data = from_csv("name,desc\nalice,\"hello, world\"")
+  let row = jq(data, "[0]")
+  assert(string_equals(jq_str(row, "desc"), "hello, world"))
+}
+test "csv escaped double quote" {
+  let data = from_csv("name,desc\nalice,\"say \"\"hi\"\"\"")
+  let row = jq(data, "[0]")
+  assert(string_equals(jq_str(row, "desc"), "say \"hi\""))
+}
+test "csv empty field" {
+  let data = from_csv("a,b,c\n1,,3")
+  let row = jq(data, "[0]")
+  assert(string_equals(jq_str(row, "b"), ""))
+}
+test "csv pipeline: from_csv |> jq_arr |> map_str" {
+  let names = from_csv("name,age\nalice,30\nbob,25")
+  |>jq_arr()
+  |>map_str((row: String) -> String {
+    jq_str(row, "name")
+  })
+  assert(array_length(names) == 2)
+  assert(string_equals(array_get(names, 0), "alice"))
+  assert(string_equals(array_get(names, 1), "bob"))
+}
+test "_csv_is_number" {
+  assert(_csv_is_number("42"))
+  assert(_csv_is_number("3.14"))
+  assert(_csv_is_number("-1"))
+  assert(not(_csv_is_number("")))
+  assert(not(_csv_is_number("abc")))
+  assert(not(_csv_is_number("1.2.3")))
+}
+test "_csv_parse_line basic" {
+  let fields = _csv_parse_line("a,b,c")
+  assert(array_length(fields) == 3)
+  assert(string_equals(array_get(fields, 0), "a"))
+  assert(string_equals(array_get(fields, 1), "b"))
+  assert(string_equals(array_get(fields, 2), "c"))
+}
+test "_csv_escape_json" {
+  assert(string_equals(_csv_escape_json("hello"), "hello"))
+  assert(string_equals(_csv_escape_json("a\"b"), "a\\\"b"))
+  assert(string_equals(_csv_escape_json("a\\b"), "a\\\\b"))
+}

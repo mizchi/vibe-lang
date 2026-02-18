@@ -209,13 +209,17 @@ pub fn is_file(path : String) -> Bool {
 
 ///|
 pub fn remove_file(path : String) -> Result[Unit, String] {
-  @os_fs.remove_file(path) catch { e => return Err(e.to_string()) }
+  @os_fs.remove_file(path) catch {
+    e => return Err(e.to_string())
+  }
   Ok(())
 }
 
 ///|
 pub fn remove_dir(path : String) -> Result[Unit, String] {
-  @os_fs.remove_dir(path) catch { e => return Err(e.to_string()) }
+  @os_fs.remove_dir(path) catch {
+    e => return Err(e.to_string())
+  }
   Ok(())
 }
 

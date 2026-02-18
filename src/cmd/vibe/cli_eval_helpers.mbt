@@ -744,9 +744,7 @@ fn eval_cmd(
   }
   next_source = source
   if source.trim().length() > 0 {
-    try {
-      rt.eval_script_with_mode(source, syntax_mode) |> ignore
-    } catch {
+    try rt.eval_script_with_mode(source, syntax_mode) |> ignore catch {
       e =>
         println(
           "warn: failed to restore db `" + db_path + "`: " + e.to_string(),

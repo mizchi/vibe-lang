@@ -1296,10 +1296,7 @@ fn type_call(
                   args, "fs_is_file", call_span,
                 )
                 if pos_args.length() != 1 {
-                  raise TypeError::BadCall(
-                    message="fs_is_file",
-                    span=call_span,
-                  )
+                  raise TypeError::BadCall(message="fs_is_file", span=call_span)
                 }
                 require_effect_guard(
                   env,
@@ -1376,10 +1373,7 @@ fn type_call(
                   args, "fs_append", call_span,
                 )
                 if pos_args.length() != 2 {
-                  raise TypeError::BadCall(
-                    message="fs_append",
-                    span=call_span,
-                  )
+                  raise TypeError::BadCall(message="fs_append", span=call_span)
                 }
                 require_effect_guard(
                   env,

@@ -19,9 +19,7 @@ fn repl_cmd(
   }
   let mut restore_error : String = ""
   if restored_source.trim().length() > 0 {
-    try {
-      rt.eval_script_with_mode(restored_source, syntax_mode) |> ignore
-    } catch {
+    try rt.eval_script_with_mode(restored_source, syntax_mode) |> ignore catch {
       e => restore_error = e.to_string()
     }
   }
@@ -746,9 +744,9 @@ fn run_eval_line_repl_with_prompt(
       }
     }
     if scratch_source.trim().length() > 0 {
-      try {
+      try
         rt.eval_script_with_mode(scratch_source, syntax_mode) |> ignore
-      } catch {
+      catch {
         e => println("warn: failed to restore db: " + e.to_string())
       }
     }

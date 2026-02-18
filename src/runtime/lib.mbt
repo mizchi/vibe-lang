@@ -74,7 +74,7 @@ pub fn Runtime::eval_script_with_mode(
       ast,
       aliases,
     )
-    self.type_env = next_env
+    self.type_env = next_env.compact_for_eval()
   } catch {
     e => raise XshError::Type(e)
   }

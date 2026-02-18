@@ -2,6 +2,146 @@
 use ./types.vibe {
   type FileEntry
 }
+export let jq = (text: String, expr: String) -> String {
+  let root = from_json(text)
+  let e = if string_starts_with(expr, ".") {
+    string_substring(expr, 1, string_length(expr))
+  } else {
+    expr
+  }
+  if string_equals(e, "") {
+    to_json(root)
+  } else if string_equals(e, "keys") {
+    do {
+      let ks = json_keys(root)
+      let sb = string_builder()
+      string_builder_push(sb, "[")
+      let mut i = 0
+      while i < array_length(ks) {
+        if i > 0 {
+          string_builder_push(sb, ",")
+        }
+        string_builder_push(sb, "\"")
+        string_builder_push(sb, array_get(ks, i))
+        string_builder_push(sb, "\"")
+        i = i + 1
+      }
+      string_builder_push(sb, "]")
+      string_builder_freeze(sb)
+    }
+  } else if string_equals(e, "values") {
+    do {
+      let ks = json_keys(root)
+      let sb = string_builder()
+      string_builder_push(sb, "[")
+      let mut i = 0
+      while i < array_length(ks) {
+        if i > 0 {
+          string_builder_push(sb, ",")
+        }
+        string_builder_push(sb, to_json(json_get(root, array_get(ks, i))))
+        i = i + 1
+      }
+      string_builder_push(sb, "]")
+      string_builder_freeze(sb)
+    }
+  } else if string_equals(e, "type") {
+    do {
+      let sb = string_builder()
+      string_builder_push(sb, "\"")
+      string_builder_push(sb, json_type(root))
+      string_builder_push(sb, "\"")
+      string_builder_freeze(sb)
+    }
+  } else if string_equals(e, "length") {
+    __to_string(json_length(root))
+  } else if string_starts_with(e, "[") {
+    let close_idx = string_index_of(e, "]")
+    let idx_str = string_substring(e, 1, close_idx)
+    let idx_len = string_length(idx_str)
+    let mut idx = 0
+    let mut k = 0
+    while k < idx_len {
+      let c = string_substring(idx_str, k, k + 1)
+      let d = if string_equals(c, "0") {
+        0
+      }
+      else if string_equals(c, "1") {
+        1
+      }
+      else if string_equals(c, "2") {
+        2
+      }
+      else if string_equals(c, "3") {
+        3
+      }
+      else if string_equals(c, "4") {
+        4
+      }
+      else if string_equals(c, "5") {
+        5
+      }
+      else if string_equals(c, "6") {
+        6
+      }
+      else if string_equals(c, "7") {
+        7
+      }
+      else if string_equals(c, "8") {
+        8
+      }
+      else {
+        9
+      }
+      idx = idx * 10 + d
+      k = k + 1
+    }
+    to_json(json_index(root, idx))
+  } else if string_contains(e, ".") {
+    let parts = string_split(e, ".")
+    let mut cur = root
+    let mut i = 0
+    while i < array_length(parts) {
+      cur = json_get(cur, array_get(parts, i))
+      i = i + 1
+    }
+    to_json(cur)
+  } else {
+    to_json(json_get(root, e))
+  }
+}
+export let nl = (xs: Array[String], sep: String) -> Array[String] {
+  do {
+    let result = array_builder()
+    let mut i = 0
+    while i < array_length(xs) {
+      let num = __to_string(i + 1)
+      array_builder_push(result, string_concat(string_concat(num, sep), array_get(xs, i)))
+      i = i + 1
+    }
+    array_builder_freeze(result)
+  }
+}
+export let tr = (text: String, src_chars: String, dst_chars: String) -> String {
+  do {
+    let sb = string_builder()
+    let len = string_length(text)
+    let mut i = 0
+    while i < len {
+      let ch = string_substring(text, i, i + 1)
+      let idx = string_index_of(src_chars, ch)
+      if idx >= 0 {
+        if idx < string_length(dst_chars) {
+          string_builder_push(sb, string_substring(dst_chars, idx, idx + 1))
+        }
+      } else {
+        string_builder_push(sb, ch)
+      }
+      i = i + 1
+    }
+    string_builder_freeze(sb)
+  }
+}
 export let wc = (text: String) -> Int {
   let trimmed = string_trim(text)
   if string_equals(trimmed, "") {
@@ -20,6 +160,36 @@ export let wc = (text: String) -> Int {
       }
       array_length(array_builder_freeze(result))
     }
+  }
+}
+export let cut = (xs: Array[String], delim: String, field: Int) -> Array[String] {
+  do {
+    let result = array_builder()
+    let mut i = 0
+    while i < array_length(xs) {
+      let parts = string_split(array_get(xs, i), delim)
+      if field < array_length(parts) {
+        array_builder_push(result, array_get(parts, field))
+      } else {
+        array_builder_push(result, "")
+      }
+      i = i + 1
+    }
+    array_builder_freeze(result)
+  }
+}
+export let len = (text: String) -> Int {
+  string_length(text)
+}
+export let seq = (first: Int, last: Int) -> Array[String] {
+  do {
+    let result = array_builder()
+    let mut i = first
+    while i <= last {
+      array_builder_push(result, __to_string(i))
+      i = i + 1
+    }
+    array_builder_freeze(result)
   }
 }
 export let grep = (xs: Array[String], pattern: String) -> Array[String] {
@@ -66,6 +236,9 @@ export let wc_l = (text: String) -> Int {
     array_length(ls)
   }
 }
+export let count = (text: String, sub: String) -> Int {
+  string_count(text, sub)
+}
 export let lines = (text: String) -> Array[String] {
   string_split(text, "\n")
 }
@@ -84,11 +257,85 @@ export let names = (entries: Array[FileEntry]) -> Array[String] {
     array_builder_freeze(result)
   }
 }
+export let paste = (xs: Array[String], ys: Array[String], sep: String) -> Array[String] {
+  do {
+    let result = array_builder()
+    let len_x = array_length(xs)
+    let len_y = array_length(ys)
+    let max_len = if len_x > len_y {
+      len_x
+    } else {
+      len_y
+    }
+    let mut i = 0
+    while i < max_len {
+      let x = if i < len_x {
+        array_get(xs, i)
+      } else {
+        ""
+      }
+      let y = if i < len_y {
+        array_get(ys, i)
+      } else {
+        ""
+      }
+      array_builder_push(result, string_concat(string_concat(x, sep), y))
+      i = i + 1
+    }
+    array_builder_freeze(result)
+  }
+}
 export let split = (text: String, sep: String) -> Array[String] {
   string_split(text, sep)
 }
 export let upper = (text: String) -> String {
   string_to_upper(text)
+}
+export let expand = (text: String, tab_width: Int) -> String {
+  do {
+    let sb = string_builder()
+    let len = string_length(text)
+    let spaces_sb = string_builder()
+    let mut s = 0
+    while s < tab_width {
+      string_builder_push(spaces_sb, " ")
+      s = s + 1
+    }
+    let spaces = string_builder_freeze(spaces_sb)
+    let mut i = 0
+    while i < len {
+      let ch = string_substring(text, i, i + 1)
+      if string_equals(ch, "\t") {
+        string_builder_push(sb, spaces)
+      } else {
+        string_builder_push(sb, ch)
+      }
+      i = i + 1
+    }
+    string_builder_freeze(sb)
+  }
+}
+export let jq_arr = (text: String) -> Array[String] {
+  do {
+    let j = from_json(text)
+    let n = json_length(j)
+    let result = array_builder()
+    let mut i = 0
+    while i < n {
+      array_builder_push(result, to_json(json_index(j, i)))
+      i = i + 1
+    }
+    array_builder_freeze(result)
+  }
+}
+export let jq_num = (text: String, expr: String) -> Double {
+  json_number(from_json(jq(text, expr)))
+}
+export let jq_str = (text: String, expr: String) -> String {
+  json_string(from_json(jq(text, expr)))
+}
+export let char_at = (text: String, idx: Int) -> String {
+  string_substring(text, idx, idx + 1)
 }
 export let dirname = (path: String) -> String {
   let idx = string_last_index_of(path, "/")
@@ -98,6 +345,17 @@ export let dirname = (path: String) -> String {
     "/"
   } else {
     string_substring(path, 0, idx)
+  }
+}
+export let map_str = (xs: Array[String], f: (String) -> String) -> Array[String] {
+  do {
+    let result = array_builder()
+    let mut i = 0
+    while i < array_length(xs) {
+      array_builder_push(result, f(array_get(xs, i)))
+      i = i + 1
+    }
+    array_builder_freeze(result)
   }
 }
 export let replace = (text: String, pattern: String, replacement: String) -> String {
@@ -114,6 +372,11 @@ export let rev_str = (xs: Array[String]) -> Array[String] {
     }
     array_builder_freeze(result)
   }
+}
+export let tac = (text: String) -> String {
+  let ls = string_split(text, "\n")
+  let reversed = rev_str(ls)
+  string_join(reversed, "\n")
 }
 export let basename = (path: String) -> String {
   let idx = string_last_index_of(path, "/")
@@ -149,8 +412,58 @@ export let drop_str = (xs: Array[String], n: Int) -> Array[String] {
     array_builder_freeze(result)
   }
 }
+export let index_of = (text: String, sub: String) -> Int {
+  string_index_of(text, sub)
+}
 export let join_str = (xs: Array[String], sep: String) -> String {
   string_join(xs, sep)
+}
+export let pad_left = (text: String, width: Int, pad: String) -> String {
+  let text_len = string_length(text)
+  if text_len >= width {
+    text
+  } else {
+    do {
+      let pad_len = string_length(pad)
+      let sb = string_builder()
+      let mut filled = 0
+      let needed = width - text_len
+      while filled < needed {
+        if pad_len > 0 {
+          let remaining = needed - filled
+          if remaining >= pad_len {
+            string_builder_push(sb, pad)
+            filled = filled + pad_len
+          } else {
+            string_builder_push(sb, string_substring(pad, 0, remaining))
+            filled = filled + remaining
+          }
+        } else {
+          filled = needed
+        }
+      }
+      string_builder_push(sb, text)
+      string_builder_freeze(sb)
+    }
+  }
+}
+export let seq_step = (first: Int, incr: Int, last: Int) -> Array[String] {
+  do {
+    let result = array_builder()
+    let mut i = first
+    if incr > 0 {
+      while i <= last {
+        array_builder_push(result, __to_string(i))
+        i = i + incr
+      }
+    } else if incr < 0 {
+      while i >= last {
+        array_builder_push(result, __to_string(i))
+        i = i + incr
+      }
+    }
+    array_builder_freeze(result)
+  }
 }
 export let sort_str = (xs: Array[String]) -> Array[String] {
   let len = array_length(xs)
@@ -212,6 +525,66 @@ export let head_str = (xs: Array[String], n: Int) -> Array[String] {
 export let count_str = (xs: Array[String]) -> Int {
   array_length(xs)
 }
+export let ends_with = (text: String, suffix: String) -> Bool {
+  string_ends_with(text, suffix)
+}
+export let pad_right = (text: String, width: Int, pad: String) -> String {
+  let text_len = string_length(text)
+  if text_len >= width {
+    text
+  } else {
+    do {
+      let pad_len = string_length(pad)
+      let sb = string_builder()
+      string_builder_push(sb, text)
+      let mut filled = 0
+      let needed = width - text_len
+      while filled < needed {
+        if pad_len > 0 {
+          let remaining = needed - filled
+          if remaining >= pad_len {
+            string_builder_push(sb, pad)
+            filled = filled + pad_len
+          } else {
+            string_builder_push(sb, string_substring(pad, 0, remaining))
+            filled = filled + remaining
+          }
+        } else {
+          filled = needed
+        }
+      }
+      string_builder_freeze(sb)
+    }
+  }
+}
+export let filter_str = (xs: Array[String], f: (String) -> Bool) -> Array[String] {
+  do {
+    let result = array_builder()
+    let mut i = 0
+    while i < array_length(xs) {
+      let item = array_get(xs, i)
+      if f(item) {
+        array_builder_push(result, item)
+      }
+      i = i + 1
+    }
+    array_builder_freeze(result)
+  }
+}
+export let repeat_str = (text: String, n: Int) -> String {
+  do {
+    let sb = string_builder()
+    let mut i = 0
+    while i < n {
+      string_builder_push(sb, text)
+      i = i + 1
+    }
+    string_builder_freeze(sb)
+  }
+}
+export let starts_with = (text: String, prefix: String) -> Bool {
+  string_starts_with(text, prefix)
+}
 export let where_entry = (entries: Array[FileEntry], pred: (FileEntry) -> Bool) -> Array[FileEntry] {
   do {
     let result = array_builder()
@@ -248,4 +621,7 @@ export let take_entries = (xs: Array[FileEntry], n: Int) -> Array[FileEntry] {
 }
 export let count_entries = (xs: Array[FileEntry]) -> Int {
   array_length(xs)
+}
+export let last_index_of = (text: String, sub: String) -> Int {
+  string_last_index_of(text, sub)
 }

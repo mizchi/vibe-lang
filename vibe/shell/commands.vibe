@@ -74,14 +74,89 @@ export let pwd = () -> String with {
     fs_getcwd()
   }
 }
+export let tee = (text: String, path: String) -> String with {
+  Fs
+} {
+  do {
+    fs_write_file(path, text)
+  }
+  text
+}
 export let echo = (text: String) -> String {
   text
+}
+export let exec = (cmd: String) -> Unit with {
+  Stdout
+} {
+  do {
+    sh(cmd)
+  }
+}
+export let find = (dir: String) -> Array[FileEntry] with {
+  Fs
+} {
+  let result = array_builder()
+  let queue_paths = array_builder()
+  let initial_names = do {
+    fs_readdir(dir)
+  }
+  let mut k = 0
+  while k < array_length(initial_names) {
+    let name = array_get(initial_names, k)
+    let full = string_concat(string_concat(dir, "/"), name)
+    array_builder_push(queue_paths, full)
+    k = k + 1
+  }
+  let mut paths = array_builder_freeze(queue_paths)
+  while array_length(paths) > 0 {
+    let next_paths = array_builder()
+    let mut i = 0
+    while i < array_length(paths) {
+      let p = array_get(paths, i)
+      let n = do {
+        let idx = string_last_index_of(p, "/")
+        if idx < 0 {
+          p
+        } else {
+          string_substring(p, idx + 1, string_length(p))
+        }
+      }
+      let is_directory = do {
+        fs_is_dir(p)
+      }
+      array_builder_push(result, FileEntry::{
+        name: n, path: p, is_dir: is_directory
+      })
+      if is_directory {
+        let child_names = do {
+          fs_readdir(p)
+        }
+        let mut j = 0
+        while j < array_length(child_names) {
+          let cname = array_get(child_names, j)
+          let cpath = string_concat(string_concat(p, "/"), cname)
+          array_builder_push(next_paths, cpath)
+          j = j + 1
+        }
+      }
+      i = i + 1
+    }
+    paths = array_builder_freeze(next_paths)
+  }
+  array_builder_freeze(result)
 }
 export let mkdir = (path: String) -> Unit with {
   Fs
 } {
   do {
     fs_mkdir(path)
+  }
+}
+export let print = (text: String) -> Unit with {
+  Stdout
+} {
+  do {
+    stdout_write_stream(text)
   }
 }
 export let touch = (path: String) -> Unit with {
@@ -161,6 +236,44 @@ export let mkdir_p = (path: String) -> Unit with {
 } {
   do {
     fs_mkdir_p(path)
+  }
+}
+export let println = (text: String) -> Unit with {
+  Stdout
+} {
+  do {
+    stdout_write_stream(text)
+  }
+  do {
+    stdout_write_char(10)
+  }
+}
+export let realpath = (p: String) -> String with {
+  Env
+} {
+  do {
+    path_to_string(dynamic_path_resolve(p))
+  }
+}
+export let sleep_ms = (ms: Int) -> Unit with {
+  Async
+} {
+  do {
+    sleep(ms)
+  }
+}
+export let read_line = () -> String with {
+  Stdin
+} {
+  do {
+    stdin_read_stream(4096)
+  }
+}
+export let exec_lines = (cmd: String) -> Array[String] with {
+  Stdout
+} {
+  do {
+    sh_lines(cmd)
   }
 }
 export let write_file = (path: String, content: String) -> Unit with {

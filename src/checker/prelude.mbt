@@ -125,7 +125,7 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
-  #|let where = (xs: Array[String], pred: (x: String) -> Bool) -> Array[String] {
+  #|let where = (xs: Array[Num], pred: (x: Num) -> Bool) -> Array[Num] {
   #|  do {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
