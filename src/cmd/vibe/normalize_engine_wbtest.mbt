@@ -299,3 +299,85 @@ test "normalize_engine: many definitions topo sort correctness" {
     Err(msg) => fail("normalize failed: " + msg)
   }
 }
+
+///|
+test "merge: dedup last wins" {
+  let sources = [
+    "let foo = 1\nlet bar = foo",
+    "let foo = 2\nexport let out = foo + bar\nexport { out }",
+  ]
+  let result = normalize_merge_sources(sources, false)
+  match result {
+    Ok(normalized) => {
+      // foo=2 should win (last definition)
+      assert_true(normalized.contains("let foo"))
+      // bar should be kept (only one definition)
+      assert_true(normalized.contains("let bar"))
+      // export should be preserved
+      assert_true(normalized.contains("export let out"))
+    }
+    Err(msg) => fail("merge failed: " + msg)
+  }
+}
+
+///|
+test "merge: DCE after dedup" {
+  let sources = [
+    "let unused = 1\nlet used = 10",
+    "export let out = used\nexport { out }",
+  ]
+  let result = normalize_merge_sources(sources, false)
+  match result {
+    Ok(normalized) => {
+      assert_false(normalized.contains("let unused"))
+      assert_true(normalized.contains("export let out"))
+    }
+    Err(msg) => fail("merge failed: " + msg)
+  }
+}
+
+///|
+test "merge: library mode removes side-effects" {
+  let sources = [
+    "let helper = () -> Int { 42 }\nexport let out = helper()\nexport { out }",
+    "print(out)",
+  ]
+  let result = normalize_merge_sources(sources, true)
+  match result {
+    Ok(normalized) => {
+      assert_false(normalized.contains("print"))
+      assert_true(normalized.contains("export let out"))
+    }
+    Err(msg) => fail("merge failed: " + msg)
+  }
+}
+
+///|
+test "merge: type dedup last wins" {
+  let sources = ["type Meters = Int", "type Meters = Float"]
+  let result = normalize_merge_sources(sources, false)
+  match result {
+    Ok(normalized) => {
+      assert_true(normalized.contains("type Meters = Float"))
+      assert_false(normalized.contains("type Meters = Int"))
+    }
+    Err(msg) => fail("merge failed: " + msg)
+  }
+}
+
+///|
+test "merge: export preservation" {
+  let sources = [
+    "let a = 1",
+    "let b = 2\nexport let c = a + b\nexport { c }",
+  ]
+  let result = normalize_merge_sources(sources, false)
+  match result {
+    Ok(normalized) => {
+      assert_true(normalized.contains("export let c"))
+      assert_true(normalized.contains("let a"))
+      assert_true(normalized.contains("let b"))
+    }
+    Err(msg) => fail("merge failed: " + msg)
+  }
+}

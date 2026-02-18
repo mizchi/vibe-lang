@@ -399,3 +399,154 @@ fn normalize_source_text_flat(source : String) -> Result[String, String] {
   }
   Ok(rendered)
 }
+
+///|
+fn merge_stmt_def_name(stmt : @vibe_core.Stmt) -> String? {
+  match stmt {
+    @vibe_core.Stmt::Let(name~, ..)
+    | @vibe_core.Stmt::ExportLet(name~, ..)
+    | @vibe_core.Stmt::LetMut(name~, ..)
+    | @vibe_core.Stmt::EnumDef(name~, ..)
+    | @vibe_core.Stmt::ExportEnumDef(name~, ..)
+    | @vibe_core.Stmt::TypeAlias(name~, ..)
+    | @vibe_core.Stmt::ExportTypeAlias(name~, ..)
+    | @vibe_core.Stmt::StructDef(name~, ..)
+    | @vibe_core.Stmt::ExportStructDef(name~, ..)
+    | @vibe_core.Stmt::TraitDef(name~, ..) => Some(name)
+    _ => None
+  }
+}
+
+///|
+fn merge_dedup_stmts(
+  stmts : Array[@vibe_core.Stmt],
+) -> Array[@vibe_core.Stmt] {
+  let len = stmts.length()
+  let seen : Map[String, Unit] = {}
+  let keep : Array[Bool] = Array::make(len, false)
+  // Reverse scan: mark the LAST definition for each name
+  for j = 0; j < len; j = j + 1 {
+    let i = len - 1 - j
+    let stmt = stmts[i]
+    match merge_stmt_def_name(stmt) {
+      Some(name) =>
+        if not(seen.contains(name)) {
+          seen[name] = ()
+          keep[i] = true
+        }
+      None => keep[i] = true
+    }
+  }
+  let result : Array[@vibe_core.Stmt] = []
+  for i = 0; i < len; i = i + 1 {
+    if keep[i] {
+      result.push(stmts[i])
+    }
+  }
+  result
+}
+
+///|
+fn merge_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
+  match stmt {
+    @vibe_core.Stmt::Export(names~, ..) => {
+      Some("export { " + names.join(", ") + " }")
+    }
+    @vibe_core.Stmt::ReExport(names~, source~, ..) => {
+      let src = match source {
+        @vibe_core.ModuleRef::Path(path~) => path
+        @vibe_core.ModuleRef::Hash(hash~) => "#" + hash
+        @vibe_core.ModuleRef::Version(name~) => "version@" + name
+        @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name
+      }
+      Some("export { " + names.join(", ") + " } from " + src)
+    }
+    _ => None
+  }
+}
+
+///|
+fn merge_prefilter_stmts(
+  stmts : Array[@vibe_core.Stmt],
+  library_mode : Bool,
+) -> Array[@vibe_core.Stmt] {
+  let out : Array[@vibe_core.Stmt] = []
+  for stmt in stmts {
+    match stmt {
+      @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
+      @vibe_core.Stmt::Expr(..)
+      | @vibe_core.Stmt::Assign(..)
+      | @vibe_core.Stmt::IndexAssign(..)
+      | @vibe_core.Stmt::LetPat(..)
+      | @vibe_core.Stmt::LetPatElse(..) =>
+        if not(library_mode) {
+          out.push(stmt)
+        }
+      _ => out.push(stmt)
+    }
+  }
+  out
+}
+
+///|
+fn merge_render_deduped(
+  source : String,
+  stmts : Array[@vibe_core.Stmt],
+) -> String {
+  let out = StringBuilder::new()
+  for stmt in stmts {
+    match merge_render_stmt_fallback(stmt) {
+      Some(rendered) => {
+        out.write_string(rendered)
+        if not(rendered.has_suffix("\n")) {
+          out.write_char('\n')
+        }
+      }
+      None => {
+        let span = stmt.span()
+        let snippet = normalize_source_slice_by_span(
+          source, span.start, span.end,
+        )
+        if snippet.trim().to_string().length() == 0 {
+          continue
+        }
+        out.write_string(snippet)
+        if not(snippet.has_suffix("\n")) {
+          out.write_char('\n')
+        }
+      }
+    }
+  }
+  out.to_string()
+}
+
+///|
+fn normalize_merge_sources(
+  sources : Array[String],
+  library_mode : Bool,
+) -> Result[String, String] {
+  // [1] Concatenate all sources
+  let buf = StringBuilder::new()
+  for i, src in sources {
+    if i > 0 {
+      buf.write_char('\n')
+    }
+    buf.write_string(src)
+  }
+  let combined = buf.to_string()
+  // [2] Parse
+  let ast = @parser.parse_ast(combined) catch {
+    e => return Err("merge: parse failed: " + e.to_string())
+  }
+  // [3] Dedup (last wins)
+  let deduped = merge_dedup_stmts(ast.stmts)
+  // [4] Prefilter (library mode)
+  let filtered = merge_prefilter_stmts(deduped, library_mode)
+  // [5] Render from source spans
+  let rendered = merge_render_deduped(combined, filtered)
+  if rendered.trim().to_string().length() == 0 {
+    return Err("merge: no statements kept after dedup")
+  }
+  // [6] Normalize
+  normalize_source_text(rendered)
+}

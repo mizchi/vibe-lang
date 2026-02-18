@@ -1424,16 +1424,34 @@ fn normalize_cmd(args : Array[String]) -> Unit {
   }
   let mut write = false
   let mut skip_unchanged = false
+  let mut merge = false
+  let mut library_mode = false
+  let mut output_path : String? = None
   let files : Array[String] = []
-  for arg in args {
-    match arg {
+  let mut i = 0
+  while i < args.length() {
+    match args[i] {
       "--write" | "-w" => write = true
       "--skip-unchanged" => skip_unchanged = true
-      _ => files.push(arg)
+      "--merge" => merge = true
+      "--library" => library_mode = true
+      "-o" => {
+        i += 1
+        if i >= args.length() {
+          abort("normalize: -o requires a path argument")
+        }
+        output_path = Some(args[i])
+      }
+      _ => files.push(args[i])
     }
+    i += 1
   }
   if files.length() == 0 {
     abort("normalize: expected <file...>")
+  }
+  if merge {
+    normalize_merge_cmd(files, library_mode, output_path)
+    return
   }
   if not(write) && files.length() > 1 {
     abort("normalize: use --write for multiple files")
@@ -1480,6 +1498,35 @@ fn normalize_cmd(args : Array[String]) -> Unit {
     println(
       "normalize: \{written} written, \{skipped} skipped (unchanged)",
     )
+  }
+}
+
+///|
+fn normalize_merge_cmd(
+  files : Array[String],
+  library_mode : Bool,
+  output_path : String?,
+) -> Unit {
+  let sources : Array[String] = []
+  for path in files {
+    let resolved = @loader.resolve_entry_path(path)
+    let source = @os_fs.read_file_to_string(resolved) catch {
+      e => abort("normalize --merge: " + e.to_string())
+    }
+    sources.push(source)
+  }
+  let result = match normalize_merge_sources(sources, library_mode) {
+    Ok(v) => v
+    Err(err) => abort("normalize --merge: " + err)
+  }
+  match output_path {
+    Some(path) => {
+      @os_fs.write_string_to_file(path, result) catch {
+        e => abort("normalize --merge: " + e.to_string())
+      }
+      println("normalize --merge: written to \{path}")
+    }
+    None => println(result)
   }
 }
 
