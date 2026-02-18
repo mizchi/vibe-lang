@@ -209,13 +209,18 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let _ = span
       "(do " + block_to_addr_sexp(ctx, body) + ")"
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      "(try " +
-      block_to_addr_sexp(ctx, try_body) +
-      " " +
-      block_to_addr_sexp(ctx, catch_body) +
-      ")"
+      let buf = StringBuilder::new()
+      buf.write_string("(handle ")
+      buf.write_string(block_to_addr_sexp(ctx, body))
+      buf.write_string(" (arms")
+      for arm in arms {
+        buf.write_char(' ')
+        buf.write_string(addr_match_arm_to_sexp(ctx, arm))
+      }
+      buf.write_string("))")
+      buf.to_string()
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = span
@@ -282,10 +287,6 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
     @core.Expr::Raise(value~, span~) => {
       let _ = span
       "(raise " + expr_to_addr_sexp(ctx, value) + ")"
-    }
-    @core.Expr::Await(expr~, span~) => {
-      let _ = span
-      "(await " + expr_to_addr_sexp(ctx, expr) + ")"
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span

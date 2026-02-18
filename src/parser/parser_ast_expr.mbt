@@ -17,16 +17,14 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_match_expr()
   } else if self.peek_kind() == do_kw() {
     self.parse_do_expr()
-  } else if self.peek_kind() == try_kw() {
-    self.parse_try_expr()
+  } else if self.peek_kind() == handle_kw() {
+    self.parse_handle_expr()
   } else if self.peek_kind() == break_kw() {
     self.parse_break_expr()
   } else if self.peek_kind() == continue_kw() {
     self.parse_continue_expr()
   } else if self.peek_kind() == raise_kw() {
     self.parse_raise_expr()
-  } else if self.peek_kind() == await_kw() {
-    self.parse_await_expr()
   } else if self.peek_kind() == yield_kw() {
     self.parse_yield_expr()
   } else if self.peek_kind() == record_kw() {
@@ -708,15 +706,60 @@ fn AstParser::parse_do_expr(self : AstParser) -> @core.Expr raise ParseError {
 }
 
 ///|
-fn AstParser::parse_try_expr(self : AstParser) -> @core.Expr raise ParseError {
+fn AstParser::parse_handle_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
   let start = self.pos
-  let _ = self.expect(try_kw(), "try")
-  let try_body = self.parse_block()
-  self.skip_trivia()
-  let _ = self.expect(catch_kw(), "catch")
-  let catch_body = self.parse_block()
+  let _ = self.expect(handle_kw(), "handle")
+  let body = self.parse_block()
+  let _ = self.expect(lbrace(), "{")
+  let arms : Array[@core.MatchArm] = []
+  while ({
+          self.skip_trivia()
+          self.peek_kind() != rbrace()
+        }) {
+    if self.peek_kind() == eof() {
+      raise ParseError::UnexpectedEof(span=self.token_span())
+    }
+    let first_pat = self.parse_pattern()
+    self.skip_trivia()
+    let pat = if self.peek_kind() == bit_or() {
+      let pats : Array[@core.Pat] = [first_pat]
+      while ({
+              self.skip_trivia()
+              self.peek_kind() == bit_or()
+            }) {
+        let _ = self.bump()
+        pats.push(self.parse_pattern())
+      }
+      let span = @core.Span::merge(
+        pats[0].span(),
+        pats[pats.length() - 1].span(),
+      )
+      @core.Pat::Or(pats~, span~)
+    } else {
+      first_pat
+    }
+    self.skip_trivia()
+    let mut cond : @core.Expr? = None
+    if self.peek_kind() == if_kw() {
+      let _ = self.bump()
+      cond = Some(self.parse_expr())
+    }
+    let _ = self.expect(arrow(), "=>")
+    let expr = self.parse_expr()
+    let mut arm_span = @core.Span::merge(pat.span(), expr.span())
+    match cond {
+      Some(c) => arm_span = @core.Span::merge(arm_span, c.span())
+      None => ()
+    }
+    arms.push(@core.MatchArm::{ pat, cond, expr, span: arm_span })
+    let _ = self.eat(comma())
+    let _ = self.eat(semicolon())
+  }
+  let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
-  @core.Expr::Try(try_body~, catch_body~, span~)
+  @core.Expr::Handle(body~, arms~, span~)
 }
 
 ///|
@@ -778,15 +821,6 @@ fn AstParser::parse_raise_expr(self : AstParser) -> @core.Expr raise ParseError 
   let value = self.parse_expr()
   let span = self.span_from(start)
   @core.Expr::Raise(value~, span~)
-}
-
-///|
-fn AstParser::parse_await_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let start = self.pos
-  let _ = self.expect(await_kw(), "await")
-  let expr = self.parse_expr()
-  let span = self.span_from(start)
-  @core.Expr::Await(expr~, span~)
 }
 
 ///|
@@ -2059,11 +2093,10 @@ fn contains_placeholder(expr : @core.Expr) -> Bool {
     @core.Expr::Block(..)
     | @core.Expr::Match(..)
     | @core.Expr::Do(..)
-    | @core.Expr::Try(..)
+    | @core.Expr::Handle(..)
     | @core.Expr::Fn(..)
     | @core.Expr::While(..) => false // Don't look inside blocks/lambdas
     @core.Expr::Raise(value~, ..) => contains_placeholder(value)
-    @core.Expr::Await(expr~, ..) => contains_placeholder(expr)
     @core.Expr::Yield(expr~, ..) => contains_placeholder(expr)
     _ => false
   }
@@ -2134,8 +2167,6 @@ fn reindex_placeholders(expr : @core.Expr, counter : Ref[Int]) -> @core.Expr {
       )
     @core.Expr::Raise(value~, span~) =>
       @core.Expr::Raise(value=reindex_placeholders(value, counter), span~)
-    @core.Expr::Await(expr~, span~) =>
-      @core.Expr::Await(expr=reindex_placeholders(expr, counter), span~)
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(expr=reindex_placeholders(expr, counter), span~)
     _ => expr
@@ -2206,8 +2237,6 @@ fn replace_placeholders(expr : @core.Expr) -> @core.Expr {
       )
     @core.Expr::Raise(value~, span~) =>
       @core.Expr::Raise(value=replace_placeholders(value), span~)
-    @core.Expr::Await(expr~, span~) =>
-      @core.Expr::Await(expr=replace_placeholders(expr), span~)
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(expr=replace_placeholders(expr), span~)
     _ => expr
@@ -2396,12 +2425,18 @@ fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
     }
     @core.Expr::Do(body~, span~) =>
       @core.Expr::Do(body=desugar_module(body), span~)
-    @core.Expr::Try(try_body~, catch_body~, span~) =>
-      @core.Expr::Try(
-        try_body=desugar_module(try_body),
-        catch_body=desugar_module(catch_body),
-        span~,
-      )
+    @core.Expr::Handle(body~, arms~, span~) => {
+      let new_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        new_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: arm.cond.map(desugar_expr_deep),
+          expr: desugar_expr_deep(arm.expr),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Handle(body=desugar_module(body), arms=new_arms, span~)
+    }
     @core.Expr::Fn(
       type_params~,
       type_bounds~,
@@ -2428,8 +2463,6 @@ fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
       )
     @core.Expr::Raise(value~, span~) =>
       @core.Expr::Raise(value=desugar_expr_deep(value), span~)
-    @core.Expr::Await(expr=e, span~) =>
-      @core.Expr::Await(expr=desugar_expr_deep(e), span~)
     @core.Expr::Yield(expr=e, span~) =>
       @core.Expr::Yield(expr=desugar_expr_deep(e), span~)
     _ => expr

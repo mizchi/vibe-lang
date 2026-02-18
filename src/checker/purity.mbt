@@ -207,10 +207,30 @@ fn purity_expr_inner(
       let _ = span
       purity_block_inner(env, body, locals)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      purity_block_inner(env, try_body, locals) &&
-      purity_block_inner(env, catch_body, locals)
+      if not(purity_block_inner(env, body, locals)) {
+        false
+      } else {
+        let mut ok = true
+        for arm in arms {
+          let arm_locals = locals.child()
+          bind_pattern_names(arm_locals.bindings, arm.pat)
+          match arm.cond {
+            Some(cond) =>
+              if not(purity_expr_inner(env, cond, arm_locals)) {
+                ok = false
+                break
+              }
+            None => ()
+          }
+          if not(purity_expr_inner(env, arm.expr, arm_locals)) {
+            ok = false
+            break
+          }
+        }
+        ok
+      }
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
@@ -256,7 +276,7 @@ fn purity_expr_inner(
       let _ = span
       purity_expr_inner(env, value, locals)
     }
-    @core.Expr::Await(..) | @core.Expr::Yield(..) => false
+    @core.Expr::Yield(..) => false
   }
 }
 

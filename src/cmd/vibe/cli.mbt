@@ -1495,9 +1495,7 @@ fn normalize_cmd(args : Array[String]) -> Unit {
     }
   }
   if skip_unchanged && write {
-    println(
-      "normalize: \{written} written, \{skipped} skipped (unchanged)",
-    )
+    println("normalize: \{written} written, \{skipped} skipped (unchanged)")
   }
 }
 

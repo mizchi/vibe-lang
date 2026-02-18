@@ -554,7 +554,7 @@ test "vibe integration imported suberror can be raised as Error" {
     #|  raise AppError("boom")
     #|}
     #|let run = () -> String {
-    #|  try { fail(); "ok" } catch { "caught" }
+    #|  handle { fail(); "ok" } { _ => "caught" }
     #|}
     #|run()
   db.set_source("./lib.vibe", lib_source)
@@ -667,5 +667,40 @@ test "vibe integration module-qualified import rejects member path" {
     Ok(_) => fail("expected parse error for module member import")
     Err(err) =>
       assert_true(err.to_string().contains("`use <module-ref> { module foo }`"))
+  }
+}
+
+///|
+test "vibe integration handle catches error" {
+  let db = VibeDb::new()
+  let main_source =
+    #|let fail = () -> String with {Error} { raise "oops" }
+    #|handle { fail() } {
+    #|  Error(e) => e
+    #|}
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::String(v)) => assert_true(v.contains("oops"))
+    _ => fail("expected String containing oops")
+  }
+}
+
+///|
+test "vibe integration handle passthrough" {
+  let db = VibeDb::new()
+  let main_source =
+    #|handle { 42 } {
+    #|  Error(_) => -1
+    #|}
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int(42)")
   }
 }

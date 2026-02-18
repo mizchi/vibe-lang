@@ -307,19 +307,15 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
       }
       "Break" => return Expr::Break(value=None, span=zero)
       "Continue" => return Expr::Continue(args=[], span=zero)
-      "Try" => {
+      "Handle" => {
         let inner = expect_object(value)
-        let try_body = parse_module(get_field(inner, "try"))
-        let catch_body = parse_module(get_field(inner, "catch"))
-        return Expr::Try(try_body~, catch_body~, span=zero)
+        let body = parse_module(get_field(inner, "body"))
+        let arms = parse_arms(get_field(inner, "arms"))
+        return Expr::Handle(body~, arms~, span=zero)
       }
       "Raise" => {
         let v = parse_expr(value)
         return Expr::Raise(value=v, span=zero)
-      }
-      "Await" => {
-        let expr = parse_expr(value)
-        return Expr::Await(expr~, span=zero)
       }
       "Yield" => {
         let expr = parse_expr(value)

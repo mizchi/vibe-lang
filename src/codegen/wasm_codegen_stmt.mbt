@@ -753,34 +753,32 @@ fn compile_expr_multivalue(
       let _ = span
       compile_block_multivalue(ctx, buf, body, kinds)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
-      let _ = span
-      // Multi-value try: use type index for multi-value blocktype
+    @core.Expr::Handle(body~, arms~, span~) => {
+      // Phase 1: compile Handle like Try multivalue, using first arm's expr as catch_body
+      let catch_body_mod : @core.Module = match arms[0].expr {
+        @core.Expr::Block(body=blk_body, ..) => blk_body
+        other => @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
+      }
       let sig = FuncSig::{ params: [], results: kinds }
       let type_idx = ensure_sig_index(ctx, sig)
       adjust_loop_offsets(ctx, 3)
-      // (block $outer (type T)  ;; multi-value result
       buf.push((2).to_byte())
       write_i32_leb(buf, type_idx)
-      //   (block $catch_target  ;; no result
       buf.push((2).to_byte())
       buf.push((64).to_byte())
-      //     (try_table (type T) (catch_all 0)
       buf.push((31).to_byte())
       write_i32_leb(buf, type_idx)
       write_u32_leb(buf, 1)
       buf.push((2).to_byte())
       write_u32_leb(buf, 0)
-      //       try_body as multi-value
-      compile_block_multivalue(ctx, buf, try_body, kinds)
-      buf.push((11).to_byte()) // end try_table
-      buf.push((12).to_byte()) // br $outer
+      compile_block_multivalue(ctx, buf, body, kinds)
+      buf.push((11).to_byte())
+      buf.push((12).to_byte())
       write_u32_leb(buf, 1)
-      buf.push((11).to_byte()) // end $catch_target
+      buf.push((11).to_byte())
       adjust_loop_offsets(ctx, -1)
-      // catch_body: may return multi-value or raise
-      compile_block_multivalue(ctx, buf, catch_body, kinds)
-      buf.push((11).to_byte()) // end $outer
+      compile_block_multivalue(ctx, buf, catch_body_mod, kinds)
+      buf.push((11).to_byte())
       adjust_loop_offsets(ctx, -2)
     }
     @core.Expr::Raise(..) =>

@@ -418,9 +418,7 @@ fn merge_stmt_def_name(stmt : @vibe_core.Stmt) -> String? {
 }
 
 ///|
-fn merge_dedup_stmts(
-  stmts : Array[@vibe_core.Stmt],
-) -> Array[@vibe_core.Stmt] {
+fn merge_dedup_stmts(stmts : Array[@vibe_core.Stmt]) -> Array[@vibe_core.Stmt] {
   let len = stmts.length()
   let seen : Map[String, Unit] = {}
   let keep : Array[Bool] = Array::make(len, false)
@@ -449,9 +447,8 @@ fn merge_dedup_stmts(
 ///|
 fn merge_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
   match stmt {
-    @vibe_core.Stmt::Export(names~, ..) => {
+    @vibe_core.Stmt::Export(names~, ..) =>
       Some("export { " + names.join(", ") + " }")
-    }
     @vibe_core.Stmt::ReExport(names~, source~, ..) => {
       let src = match source {
         @vibe_core.ModuleRef::Path(path~) => path
@@ -505,7 +502,9 @@ fn merge_render_deduped(
       None => {
         let span = stmt.span()
         let snippet = normalize_source_slice_by_span(
-          source, span.start, span.end,
+          source,
+          span.start,
+          span.end,
         )
         if snippet.trim().to_string().length() == 0 {
           continue
@@ -521,7 +520,7 @@ fn merge_render_deduped(
 }
 
 ///|
-fn normalize_merge_sources(
+pub fn normalize_merge_sources(
   sources : Array[String],
   library_mode : Bool,
 ) -> Result[String, String] {

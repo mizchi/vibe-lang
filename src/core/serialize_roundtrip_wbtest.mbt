@@ -490,41 +490,6 @@ test "roundtrip: while loop and block" {
 }
 
 ///|
-test "roundtrip: try-catch and raise" {
-  let m = Module::{
-    stmts: [
-      Stmt::Expr(
-        expr=Expr::Try(
-          try_body=Module::{
-            stmts: [
-              Stmt::Expr(
-                expr=Expr::Raise(
-                  value=Expr::String(value="error", span=zero_span()),
-                  span=zero_span(),
-                ),
-                span=zero_span(),
-              ),
-            ],
-          },
-          catch_body=Module::{
-            stmts: [
-              Stmt::Expr(
-                expr=Expr::Int(value=0L, span=zero_span()),
-                span=zero_span(),
-              ),
-            ],
-          },
-          span=zero_span(),
-        ),
-        span=zero_span(),
-      ),
-    ],
-  }
-  let result = roundtrip_module(m)
-  assert_eq(result, m)
-}
-
-///|
 test "roundtrip: pattern variants (ctor, tuple, record, or)" {
   let m = Module::{
     stmts: [
@@ -761,27 +726,9 @@ test "roundtrip: loop with params and continue" {
 }
 
 ///|
-test "roundtrip: await and yield" {
+test "roundtrip: yield" {
   let m = Module::{
     stmts: [
-      Stmt::Expr(
-        expr=Expr::Await(
-          expr=Expr::Call(
-            name="fetch",
-            type_args=[],
-            args=[
-              CallArg::{
-                label: None,
-                expr: Expr::String(value="url", span=zero_span()),
-                span: zero_span(),
-              },
-            ],
-            span=zero_span(),
-          ),
-          span=zero_span(),
-        ),
-        span=zero_span(),
-      ),
       Stmt::Expr(
         expr=Expr::Yield(
           expr=Expr::Int(value=1L, span=zero_span()),

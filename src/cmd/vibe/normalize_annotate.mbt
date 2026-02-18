@@ -590,12 +590,22 @@ fn normalize_strip_local_type_assert_expr(
             body=normalize_strip_local_type_assert_module(body),
             span~,
           )
-        @vibe_core.Expr::Try(try_body~, catch_body~, span~) =>
-          @vibe_core.Expr::Try(
-            try_body=normalize_strip_local_type_assert_module(try_body),
-            catch_body=normalize_strip_local_type_assert_module(catch_body),
+        @vibe_core.Expr::Handle(body~, arms~, span~) => {
+          let new_arms : Array[@vibe_core.MatchArm] = []
+          for arm in arms {
+            new_arms.push(@vibe_core.MatchArm::{
+              pat: arm.pat,
+              cond: arm.cond.map(normalize_strip_local_type_assert_expr),
+              expr: normalize_strip_local_type_assert_expr(arm.expr),
+              span: arm.span,
+            })
+          }
+          @vibe_core.Expr::Handle(
+            body=normalize_strip_local_type_assert_module(body),
+            arms=new_arms,
             span~,
           )
+        }
         @vibe_core.Expr::Fn(
           type_params~,
           type_bounds~,
@@ -638,11 +648,6 @@ fn normalize_strip_local_type_assert_expr(
         @vibe_core.Expr::Raise(value~, span~) =>
           @vibe_core.Expr::Raise(
             value=normalize_strip_local_type_assert_expr(value),
-            span~,
-          )
-        @vibe_core.Expr::Await(expr~, span~) =>
-          @vibe_core.Expr::Await(
-            expr=normalize_strip_local_type_assert_expr(expr),
             span~,
           )
         @vibe_core.Expr::Yield(expr~, span~) =>

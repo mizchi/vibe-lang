@@ -295,7 +295,6 @@ fn normalize_count_candidate_refs_expr(
         normalize_count_candidate_refs_expr(item, bound, candidates, counts)
       }
     @vibe_core.Expr::TupleIndex(expr~, ..)
-    | @vibe_core.Expr::Await(expr~, ..)
     | @vibe_core.Expr::Yield(expr~, ..) =>
       normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
     @vibe_core.Expr::Record(fields~, ..)
@@ -328,11 +327,25 @@ fn normalize_count_candidate_refs_expr(
     }
     @vibe_core.Expr::Block(body~, ..) | @vibe_core.Expr::Do(body~, ..) =>
       normalize_count_candidate_refs_block(body, bound, candidates, counts)
-    @vibe_core.Expr::Try(try_body~, catch_body~, ..) => {
-      normalize_count_candidate_refs_block(try_body, bound, candidates, counts)
-      normalize_count_candidate_refs_block(
-        catch_body, bound, candidates, counts,
-      )
+    @vibe_core.Expr::Handle(body~, arms~, ..) => {
+      normalize_count_candidate_refs_block(body, bound, candidates, counts)
+      for arm in arms {
+        let arm_bound = bound.child()
+        @vibe_core.bind_pattern_names_scope(arm_bound, arm.pat)
+        match arm.cond {
+          Some(cond) =>
+            normalize_count_candidate_refs_expr(
+              cond, arm_bound, candidates, counts,
+            )
+          None => ()
+        }
+        normalize_count_candidate_refs_expr(
+          arm.expr,
+          arm_bound,
+          candidates,
+          counts,
+        )
+      }
     }
     @vibe_core.Expr::Match(scrutinee~, arms~, ..) => {
       normalize_count_candidate_refs_expr(scrutinee, bound, candidates, counts)

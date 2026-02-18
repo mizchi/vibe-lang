@@ -549,13 +549,22 @@ fn infer_expr_kind_with(
       let _ = span
       infer_block_kind(ctx, body, locals)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      let try_kind = infer_block_kind(ctx, try_body, locals)
-      let catch_kind = infer_block_kind(ctx, catch_body, locals)
-      if try_kind != catch_kind {
-        let backend = if ctx.use_js_strings { "wasm-js-string" } else { "wasm" }
-        raise WasmGenError::BackendLimit(backend~, feature="try kind mismatch")
+      let try_kind = infer_block_kind(ctx, body, locals)
+      if arms.length() > 0 {
+        let catch_kind = infer_expr_kind_with(ctx, arms[0].expr, locals)
+        if try_kind != catch_kind {
+          let backend = if ctx.use_js_strings {
+            "wasm-js-string"
+          } else {
+            "wasm"
+          }
+          raise WasmGenError::BackendLimit(
+            backend~,
+            feature="handle kind mismatch",
+          )
+        }
       }
       try_kind
     }
@@ -638,10 +647,6 @@ fn infer_expr_kind_with(
       let _ = value
       let _ = span
       ValueKind::I64
-    }
-    @core.Expr::Await(expr~, span~) => {
-      let _ = span
-      infer_expr_kind_with(ctx, expr, locals)
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = expr
@@ -1011,9 +1016,19 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       let _ = span
       needs_heap_block(ctx, body)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      needs_heap_block(ctx, try_body) || needs_heap_block(ctx, catch_body)
+      let mut result = needs_heap_block(ctx, body)
+      for arm in arms {
+        if needs_heap_expr(ctx, arm.expr) {
+          result = true
+        }
+        match arm.cond {
+          Some(c) => if needs_heap_expr(ctx, c) { result = true }
+          None => ()
+        }
+      }
+      result
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
@@ -1032,10 +1047,6 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
     @core.Expr::Raise(value~, span~) => {
       let _ = span
       needs_heap_expr(ctx, value)
-    }
-    @core.Expr::Await(expr~, span~) => {
-      let _ = span
-      needs_heap_expr(ctx, expr)
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span
@@ -1571,14 +1582,25 @@ fn expr_always_returns_tuple(
     }
     @core.Expr::Do(body~, span=_) =>
       body_always_returns_tuple(body, arity, self_name, eligible_fns~)
-    @core.Expr::Try(try_body~, catch_body~, span=_) =>
-      body_always_returns_tuple(try_body, arity, self_name, eligible_fns~) &&
-      body_always_returns_tuple_or_raises(
-        catch_body,
+    @core.Expr::Handle(body~, arms~, span=_) => {
+      let body_ok = body_always_returns_tuple(
+        body,
         arity,
         self_name,
         eligible_fns~,
       )
+      if not(body_ok) {
+        return false
+      }
+      for arm in arms {
+        if not(
+            expr_always_returns_tuple(arm.expr, arity, self_name, eligible_fns~),
+          ) {
+          return false
+        }
+      }
+      true
+    }
     @core.Expr::Raise(..) => true // never returns, vacuously compatible
     @core.Expr::Call(name~, ..) =>
       // Self-recursive call or call to known multi-value function with matching arity
@@ -1591,54 +1613,6 @@ fn expr_always_returns_tuple(
           }
         None => false
       })
-    _ => false
-  }
-}
-
-///|
-fn body_always_returns_tuple_or_raises(
-  body : @core.Module,
-  arity : Int,
-  self_name : String,
-  eligible_fns? : Map[String, Int]? = None,
-) -> Bool {
-  if body.stmts.length() == 0 {
-    return false
-  }
-  let last = body.stmts[body.stmts.length() - 1]
-  match last {
-    @core.Stmt::Expr(expr~, span=_) =>
-      expr_always_returns_tuple(expr, arity, self_name, eligible_fns~) ||
-      expr_always_raises(expr)
-    _ => false
-  }
-}
-
-///|
-fn expr_always_raises(expr : @core.Expr) -> Bool {
-  match expr {
-    @core.Expr::Raise(..) => true
-    @core.Expr::Block(body~, span=_) | @core.Expr::Do(body~, span=_) => {
-      if body.stmts.length() == 0 {
-        return false
-      }
-      let last = body.stmts[body.stmts.length() - 1]
-      match last {
-        @core.Stmt::Expr(expr~, span=_) => expr_always_raises(expr)
-        _ => false
-      }
-    }
-    @core.Expr::If(cond=_, then_body~, else_body~, span=_) => {
-      let then_raises = match then_body.stmts[then_body.stmts.length() - 1] {
-        @core.Stmt::Expr(expr~, span=_) => expr_always_raises(expr)
-        _ => false
-      }
-      let else_raises = match else_body.stmts[else_body.stmts.length() - 1] {
-        @core.Stmt::Expr(expr~, span=_) => expr_always_raises(expr)
-        _ => false
-      }
-      then_raises && else_raises
-    }
     _ => false
   }
 }

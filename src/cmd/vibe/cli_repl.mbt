@@ -1,13 +1,53 @@
 ///|
 fn repl_cmd(
   args : Array[String],
+  _syntax_mode : @runtime.ParserMode,
+  features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
+) -> Unit {
+  let mut tui_mode = false
+  let mut ai_mode = false
+  let sub_args : Array[String] = []
+  let mut i = 0
+  while i < args.length() {
+    match args[i] {
+      "--tui" => {
+        tui_mode = true
+        i += 1
+      }
+      "--ai" => {
+        ai_mode = true
+        i += 1
+      }
+      _ => {
+        sub_args.push(args[i])
+        i += 1
+      }
+    }
+  }
+  // Default shell uses XshMode; POSIX commands via posix_fallback in TTY mode
+  let syntax_mode = @runtime.ParserMode::XshMode
+  if ai_mode {
+    repl_ai_cmd(sub_args, syntax_mode, features, enable_llm~)
+    return
+  }
+  if tui_mode {
+    if sub_args.length() != 0 {
+      abort("shell --tui: no extra args supported")
+    }
+    repl_tui_cmd(syntax_mode, features, enable_llm~)
+    return
+  }
+  // Default: interactive line REPL with readline-like editing
+  repl_interactive_cmd(sub_args, syntax_mode, features, enable_llm~)
+}
+
+///|
+fn repl_tui_cmd(
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
 ) -> Unit {
-  if args.length() != 0 {
-    abort("shell: no args supported")
-  }
   let rt = new_cli_runtime(features, enable_llm~)
   let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
     Ok(v) => v
@@ -893,4 +933,611 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
   }
 
   @async.run_async_main(repl_loop)
+}
+
+///|
+fn print_ai_symbols(
+  scratch_db_path : String,
+  scratch_source : String,
+  print_line? : (String) -> Unit = fn(s) { println(s) },
+) -> Unit {
+  let symbols = collect_eval_scope_symbols(scratch_db_path, scratch_source)
+  if symbols.length() > 0 {
+    print_line("symbols:")
+    for symbol in symbols {
+      print_line(
+        "  " + symbol.kind + "\t" + symbol.name + "\t" + symbol.signature,
+      )
+    }
+  }
+}
+
+///|
+fn repl_ai_cmd(
+  args : Array[String],
+  syntax_mode : @runtime.ParserMode,
+  features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
+) -> Unit {
+  let mut prompt_enabled = true
+  let mut i = 0
+  while i < args.length() {
+    match args[i] {
+      "--no-prompt" => {
+        prompt_enabled = false
+        i += 1
+      }
+      _ => abort("shell --ai: unknown arg " + args[i])
+    }
+  }
+  let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
+    Ok(v) => v
+    Err(err) => abort("shell --ai: " + err)
+  }
+  async fn repl_loop() {
+    let rt = new_cli_runtime(features, enable_llm~)
+    let mut scratch_source = match load_eval_db_source(scratch_db_path) {
+      Ok(v) => v
+      Err(err) => {
+        println("error: " + err)
+        return
+      }
+    }
+    if scratch_source.trim().length() > 0 {
+      try
+        rt.eval_script_with_mode(scratch_source, syntax_mode) |> ignore
+      catch {
+        e => println("warn: failed to restore db: " + e.to_string())
+      }
+    }
+    // header
+    println("cwd: " + @io.current_dir_or_root())
+    println("namespace: " + namespace_name + " db=" + scratch_db_path)
+    print_ai_symbols(scratch_db_path, scratch_source)
+    let input = @stdio.stdin
+    let prompt = "> "
+    if prompt_enabled {
+      @stdio.stdout.write(prompt)
+    }
+    while input.read_until("\n") is Some(line) {
+      let trimmed = line.trim()
+      if trimmed.is_empty() {
+        if prompt_enabled {
+          @stdio.stdout.write(prompt)
+        }
+        continue
+      }
+      let line_str = trimmed.to_string()
+      match line_str {
+        ":q" | ":quit" | ":exit" | "exit" => break
+        _ => {
+          let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
+            e => {
+              println("error: " + e.to_string())
+              if prompt_enabled {
+                @stdio.stdout.write(prompt)
+              }
+              continue
+            }
+          }
+          print_eval_result(result)
+          let let_name = extract_let_name(line_str)
+          match let_name {
+            Some(name) =>
+              match rt.get_addr(name) {
+                Some(addr) => println("addr: " + name + "#" + short_hash(addr))
+                None => ()
+              }
+            None => ()
+          }
+          scratch_source = append_eval_db_source(scratch_source, line_str)
+          match write_eval_db_source(scratch_db_path, scratch_source) {
+            Ok(_) => ()
+            Err(err) => println("error: failed to persist namespace db: " + err)
+          }
+          if let_name is Some(_) {
+            print_ai_symbols(scratch_db_path, scratch_source)
+          }
+        }
+      }
+      if prompt_enabled {
+        @stdio.stdout.write(prompt)
+      }
+    }
+  }
+
+  @async.run_async_main(repl_loop)
+}
+
+///|
+fn repl_interactive_cmd(
+  args : Array[String],
+  syntax_mode : @runtime.ParserMode,
+  features : @runtime.RuntimeFeatureFlags,
+  enable_llm~ : Bool,
+) -> Unit {
+  let mut prompt_enabled = true
+  let mut i = 0
+  while i < args.length() {
+    match args[i] {
+      "--no-prompt" => {
+        prompt_enabled = false
+        i += 1
+      }
+      _ => abort("shell: unknown arg " + args[i])
+    }
+  }
+  let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
+    Ok(v) => v
+    Err(err) => abort("shell: " + err)
+  }
+  let rt = new_cli_runtime(features, enable_llm~)
+  let scratch_source = match load_eval_db_source(scratch_db_path) {
+    Ok(v) => v
+    Err(err) => abort("shell: " + err)
+  }
+  if scratch_source.trim().length() > 0 {
+    try rt.eval_script_with_mode(scratch_source, syntax_mode) |> ignore catch {
+      e => println("warn: failed to restore db: " + e.to_string())
+    }
+  }
+  // header
+  println("cwd: " + @io.current_dir_or_root())
+  println("namespace: " + namespace_name + " db=" + scratch_db_path)
+  print_ai_symbols(scratch_db_path, scratch_source)
+  // Detect TTY for readline-like editing
+  let use_raw = @tui_io.is_tty() && prompt_enabled
+  if use_raw {
+    repl_interactive_raw_loop(
+      rt, syntax_mode, scratch_db_path, scratch_source, prompt_enabled,
+    )
+  } else {
+    repl_interactive_plain_loop(
+      rt, syntax_mode, scratch_db_path, scratch_source, prompt_enabled,
+    )
+  }
+}
+
+///|
+fn repl_interactive_plain_loop(
+  rt : @runtime.Runtime,
+  syntax_mode : @runtime.ParserMode,
+  scratch_db_path : String,
+  initial_source : String,
+  prompt_enabled : Bool,
+) -> Unit {
+  async fn repl_loop() {
+    let mut scratch_source = initial_source
+    let input = @stdio.stdin
+    let prompt = "> "
+    if prompt_enabled {
+      @stdio.stdout.write(prompt)
+    }
+    while input.read_until("\n") is Some(line) {
+      let trimmed = line.trim()
+      if trimmed.is_empty() {
+        if prompt_enabled {
+          @stdio.stdout.write(prompt)
+        }
+        continue
+      }
+      let line_str = trimmed.to_string()
+      match line_str {
+        ":q" | ":quit" | ":exit" | "exit" => break
+        _ =>
+          scratch_source = run_interactive_line(
+            rt, syntax_mode, scratch_db_path, scratch_source, line_str,
+          )
+      }
+      if prompt_enabled {
+        @stdio.stdout.write(prompt)
+      }
+    }
+  }
+
+  @async.run_async_main(repl_loop)
+}
+
+///|
+fn run_interactive_line(
+  rt : @runtime.Runtime,
+  syntax_mode : @runtime.ParserMode,
+  scratch_db_path : String,
+  scratch_source : String,
+  line_str : String,
+  posix_fallback? : Bool = false,
+  print_line? : (String) -> Unit = fn(s) { println(s) },
+) -> String {
+  fn print_result(result : @runtime.EvalResult) {
+    match result.last {
+      Some(value) => print_line("last: " + value.to_string())
+      None => ()
+    }
+    for effect in result.effects {
+      match effect {
+        @runtime.Effect::PosixDesugar(message) => print_line("note: " + message)
+        _ => print_line("effect: " + effect.to_string())
+      }
+    }
+  }
+
+  let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
+    e => {
+      // Fallback: if XshMode fails with UnknownName, retry as POSIX shell command
+      if posix_fallback {
+        let err_str = e.to_string()
+        if err_str.contains("UnknownName") {
+          let wrapped = "do { " + line_str + " }"
+          let retry = rt.eval_script_with_mode(
+            wrapped,
+            @runtime.ParserMode::PosixMode,
+          ) catch {
+            _ => {
+              // Show original error if posix fallback also fails
+              print_line("error: " + e.to_string())
+              return scratch_source
+            }
+          }
+          print_result(retry)
+          return scratch_source
+        }
+      }
+      print_line("error: " + e.to_string())
+      return scratch_source
+    }
+  }
+  print_result(result)
+  let let_name = extract_let_name(line_str)
+  match let_name {
+    Some(name) =>
+      match rt.get_addr(name) {
+        Some(addr) => print_line("addr: " + name + "#" + short_hash(addr))
+        None => ()
+      }
+    None => ()
+  }
+  let next_source = append_eval_db_source(scratch_source, line_str)
+  match write_eval_db_source(scratch_db_path, next_source) {
+    Ok(_) => ()
+    Err(err) => {
+      print_line("error: failed to persist namespace db: " + err)
+      return scratch_source
+    }
+  }
+  if let_name is Some(_) {
+    print_ai_symbols(scratch_db_path, next_source, print_line~)
+  }
+  next_source
+}
+
+///|
+fn repl_interactive_raw_loop(
+  rt : @runtime.Runtime,
+  syntax_mode : @runtime.ParserMode,
+  scratch_db_path : String,
+  initial_source : String,
+  prompt_enabled : Bool,
+) -> Unit {
+  let scratch_source_ref = Ref::new(initial_source)
+  let line_buf = StringBuilder::new()
+  let cursor_pos = Ref::new(0)
+  let history : Array[String] = []
+  let history_idx = Ref::new(-1)
+  let history_draft = Ref::new("")
+  let prompt = "> "
+  let done = Ref::new(false)
+  fn raw_println(s : String) -> Unit {
+    @tui.print_raw(s + "\r\n")
+  }
+
+  fn line_buf_to_string() -> String {
+    line_buf.to_string()
+  }
+
+  fn line_buf_length() -> Int {
+    line_buf_to_string().to_array().length()
+  }
+
+  fn redraw_line() {
+    let text = line_buf_to_string()
+    @tui.print_raw("\r" + @render.ansi_clear_line())
+    if prompt_enabled {
+      @tui.print_raw(prompt)
+    }
+    @tui.print_raw(text)
+    let text_len = text.to_array().length()
+    let back = text_len - cursor_pos.val
+    if back > 0 {
+      @tui.print_raw(@render.ansi_move_left(n=back))
+    }
+  }
+
+  fn set_line(text : String) {
+    line_buf.reset()
+    line_buf.write_string(text)
+    cursor_pos.val = text.to_array().length()
+    redraw_line()
+  }
+
+  fn insert_char(ch : Char) {
+    let text = line_buf_to_string()
+    let chars = text.to_array()
+    let pos = cursor_pos.val
+    let next = StringBuilder::new()
+    let mut idx = 0
+    while idx < pos && idx < chars.length() {
+      next.write_char(chars[idx])
+      idx += 1
+    }
+    next.write_char(ch)
+    while idx < chars.length() {
+      next.write_char(chars[idx])
+      idx += 1
+    }
+    line_buf.reset()
+    line_buf.write_string(next.to_string())
+    cursor_pos.val = pos + 1
+    redraw_line()
+  }
+
+  fn delete_back() {
+    let pos = cursor_pos.val
+    if pos <= 0 {
+      return
+    }
+    let text = line_buf_to_string()
+    let chars = text.to_array()
+    let next = StringBuilder::new()
+    let mut idx = 0
+    while idx < pos - 1 {
+      next.write_char(chars[idx])
+      idx += 1
+    }
+    idx = pos
+    while idx < chars.length() {
+      next.write_char(chars[idx])
+      idx += 1
+    }
+    line_buf.reset()
+    line_buf.write_string(next.to_string())
+    cursor_pos.val = pos - 1
+    redraw_line()
+  }
+
+  fn delete_forward() {
+    let pos = cursor_pos.val
+    let text = line_buf_to_string()
+    let chars = text.to_array()
+    if pos >= chars.length() {
+      return
+    }
+    let next = StringBuilder::new()
+    let mut idx = 0
+    while idx < pos {
+      next.write_char(chars[idx])
+      idx += 1
+    }
+    idx = pos + 1
+    while idx < chars.length() {
+      next.write_char(chars[idx])
+      idx += 1
+    }
+    line_buf.reset()
+    line_buf.write_string(next.to_string())
+    redraw_line()
+  }
+
+  fn move_left() {
+    if cursor_pos.val > 0 {
+      cursor_pos.val -= 1
+      @tui.print_raw(@render.ansi_move_left())
+    }
+  }
+
+  fn move_right() {
+    if cursor_pos.val < line_buf_length() {
+      cursor_pos.val += 1
+      @tui.print_raw(@render.ansi_move_right())
+    }
+  }
+
+  fn move_home() {
+    if cursor_pos.val > 0 {
+      @tui.print_raw(@render.ansi_move_left(n=cursor_pos.val))
+      cursor_pos.val = 0
+    }
+  }
+
+  fn move_end() {
+    let len = line_buf_length()
+    if cursor_pos.val < len {
+      @tui.print_raw(@render.ansi_move_right(n=len - cursor_pos.val))
+      cursor_pos.val = len
+    }
+  }
+
+  fn history_prev() {
+    if history.length() == 0 {
+      return
+    }
+    if history_idx.val == -1 {
+      history_draft.val = line_buf_to_string()
+    }
+    if history_idx.val + 1 < history.length() {
+      history_idx.val += 1
+      let pos = history.length() - 1 - history_idx.val
+      set_line(history[pos])
+    }
+  }
+
+  fn history_next() {
+    if history_idx.val <= 0 {
+      if history_idx.val == 0 {
+        history_idx.val = -1
+        set_line(history_draft.val)
+      }
+      return
+    }
+    history_idx.val -= 1
+    let pos = history.length() - 1 - history_idx.val
+    set_line(history[pos])
+  }
+
+  fn kill_line() {
+    line_buf.reset()
+    cursor_pos.val = 0
+    redraw_line()
+  }
+
+  fn kill_to_end() {
+    let text = line_buf_to_string()
+    let chars = text.to_array()
+    let next = StringBuilder::new()
+    let mut idx = 0
+    while idx < cursor_pos.val && idx < chars.length() {
+      next.write_char(chars[idx])
+      idx += 1
+    }
+    line_buf.reset()
+    line_buf.write_string(next.to_string())
+    redraw_line()
+  }
+
+  fn submit_line() {
+    @tui.print_raw("\r\n")
+    let text = line_buf_to_string().trim().to_string()
+    line_buf.reset()
+    cursor_pos.val = 0
+    history_idx.val = -1
+    if text.length() == 0 {
+      if prompt_enabled {
+        @tui.print_raw(prompt)
+      }
+      return
+    }
+    match text {
+      ":q" | ":quit" | ":exit" | "exit" => {
+        done.val = true
+        @tui.stop_keypress_listener()
+        return
+      }
+      _ => ()
+    }
+    if history.length() == 0 || history[history.length() - 1] != text {
+      history.push(text)
+    }
+    scratch_source_ref.val = run_interactive_line(
+      rt,
+      syntax_mode,
+      scratch_db_path,
+      scratch_source_ref.val,
+      text,
+      posix_fallback=true,
+      print_line=raw_println,
+    )
+    if prompt_enabled {
+      @tui.print_raw(prompt)
+    }
+  }
+
+  fn handle_key(input : String) {
+    if done.val {
+      return
+    }
+    if input.length() == 0 {
+      return
+    }
+    // Handle printable multi-char paste
+    if input.length() > 1 &&
+      input[0].to_int() != 0x1b &&
+      @tui.is_printable_string(input) {
+      for _, ch in input {
+        insert_char(ch)
+      }
+      return
+    }
+    let event = @tui.parse_input(input)
+    if event.is_ctrl_c() {
+      if line_buf_length() > 0 {
+        @tui.print_raw("^C\r\n")
+        line_buf.reset()
+        cursor_pos.val = 0
+        history_idx.val = -1
+        if prompt_enabled {
+          @tui.print_raw(prompt)
+        }
+      } else {
+        @tui.print_raw("\r\n")
+        done.val = true
+        @tui.stop_keypress_listener()
+      }
+      return
+    }
+    match event {
+      @tui.InputEvent::Key(key_event) =>
+        match key_event {
+          @tui.KeyEvent::Special(@tui.SpecialKey::Enter, _) => submit_line()
+          @tui.KeyEvent::Special(@tui.SpecialKey::Backspace, _) => delete_back()
+          @tui.KeyEvent::Special(@tui.SpecialKey::Delete, _) => delete_forward()
+          @tui.KeyEvent::Special(@tui.SpecialKey::Up, _) => history_prev()
+          @tui.KeyEvent::Special(@tui.SpecialKey::Down, _) => history_next()
+          @tui.KeyEvent::Special(@tui.SpecialKey::Left, _) => move_left()
+          @tui.KeyEvent::Special(@tui.SpecialKey::Right, _) => move_right()
+          @tui.KeyEvent::Special(@tui.SpecialKey::Home, _) => move_home()
+          @tui.KeyEvent::Special(@tui.SpecialKey::End, _) => move_end()
+          @tui.KeyEvent::Char('a', @tui.KeyModifier::Ctrl) => move_home()
+          @tui.KeyEvent::Char('e', @tui.KeyModifier::Ctrl) => move_end()
+          @tui.KeyEvent::Char('u', @tui.KeyModifier::Ctrl) => kill_line()
+          @tui.KeyEvent::Char('k', @tui.KeyModifier::Ctrl) => kill_to_end()
+          @tui.KeyEvent::Char('d', @tui.KeyModifier::Ctrl) =>
+            if line_buf_length() == 0 {
+              @tui.print_raw("\r\n")
+              done.val = true
+              @tui.stop_keypress_listener()
+            } else {
+              delete_forward()
+            }
+          @tui.KeyEvent::Char('l', @tui.KeyModifier::Ctrl) => {
+            @tui.print_raw(@render.ansi_clear_screen())
+            @tui.print_raw(@render.ansi_move_to(0, 0))
+            redraw_line()
+          }
+          @tui.KeyEvent::Char('w', @tui.KeyModifier::Ctrl) => {
+            let text = line_buf_to_string()
+            let chars = text.to_array()
+            let mut p = cursor_pos.val
+            while p > 0 && chars[p - 1] == ' ' {
+              p -= 1
+            }
+            while p > 0 && chars[p - 1] != ' ' {
+              p -= 1
+            }
+            let next = StringBuilder::new()
+            let mut idx = 0
+            while idx < p {
+              next.write_char(chars[idx])
+              idx += 1
+            }
+            idx = cursor_pos.val
+            while idx < chars.length() {
+              next.write_char(chars[idx])
+              idx += 1
+            }
+            line_buf.reset()
+            line_buf.write_string(next.to_string())
+            cursor_pos.val = p
+            redraw_line()
+          }
+          @tui.KeyEvent::Char(ch, @tui.KeyModifier::None)
+          | @tui.KeyEvent::Char(ch, @tui.KeyModifier::Shift) => insert_char(ch)
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+
+  if prompt_enabled {
+    @tui.print_raw(prompt)
+  }
+  @tui.start_keypress_listener(handle_key)
 }

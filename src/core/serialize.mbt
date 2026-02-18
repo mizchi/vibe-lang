@@ -344,21 +344,16 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_loop_params_to(params, buf)
       buf.write_string("}}")
     }
-    Expr::Try(try_body~, catch_body~, ..) => {
-      buf.write_string("{\"Try\":{\"catch\":")
-      serialize_module_to(catch_body, buf)
-      buf.write_string(",\"try\":")
-      serialize_module_to(try_body, buf)
+    Expr::Handle(body~, arms~, ..) => {
+      buf.write_string("{\"Handle\":{\"arms\":")
+      serialize_arms_to(arms, buf)
+      buf.write_string(",\"body\":")
+      serialize_module_to(body, buf)
       buf.write_string("}}")
     }
     Expr::Raise(value~, ..) => {
       buf.write_string("{\"Raise\":")
       serialize_expr_to(value, buf)
-      buf.write_char('}')
-    }
-    Expr::Await(expr=inner, ..) => {
-      buf.write_string("{\"Await\":")
-      serialize_expr_to(inner, buf)
       buf.write_char('}')
     }
     Expr::Yield(expr=inner, ..) => {

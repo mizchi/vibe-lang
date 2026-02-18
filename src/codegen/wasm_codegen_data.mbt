@@ -227,11 +227,17 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let _ = span
       scan_needs_block(ctx, body)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
       ctx.need_exceptions = true
-      scan_needs_block(ctx, try_body)
-      scan_needs_block(ctx, catch_body)
+      scan_needs_block(ctx, body)
+      for arm in arms {
+        scan_needs_expr(ctx, arm.expr)
+        match arm.cond {
+          Some(c) => scan_needs_expr(ctx, c)
+          None => ()
+        }
+      }
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
@@ -263,11 +269,6 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         None => ()
       }
       scan_needs_block(ctx, body)
-    }
-    @core.Expr::Await(expr~, span~) => {
-      let _ = span
-      ctx.need_stack_switching = true
-      scan_needs_expr(ctx, expr)
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span
@@ -531,10 +532,16 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
       let _ = span
       scan_strings(ctx, body)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      scan_strings(ctx, try_body)
-      scan_strings(ctx, catch_body)
+      scan_strings(ctx, body)
+      for arm in arms {
+        scan_strings_expr(ctx, arm.expr)
+        match arm.cond {
+          Some(c) => scan_strings_expr(ctx, c)
+          None => ()
+        }
+      }
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params

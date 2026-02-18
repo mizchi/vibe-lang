@@ -173,10 +173,18 @@ pub fn walk_expr_refs(
       let _ = span
       walk_block_refs(body, bound, refs, on_name)
     }
-    Expr::Try(try_body~, catch_body~, span~) => {
+    Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      walk_block_refs(try_body, bound, refs, on_name)
-      walk_block_refs(catch_body, bound, refs, on_name)
+      walk_block_refs(body, bound, refs, on_name)
+      for arm in arms {
+        let arm_bound = bound.child()
+        bind_pattern_names_scope(arm_bound, arm.pat)
+        match arm.cond {
+          Some(cond) => walk_expr_refs(cond, arm_bound, refs, on_name)
+          None => ()
+        }
+        walk_expr_refs(arm.expr, arm_bound, refs, on_name)
+      }
     }
     Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
@@ -230,10 +238,6 @@ pub fn walk_expr_refs(
     Expr::Raise(value~, span~) => {
       let _ = span
       walk_expr_refs(value, bound, refs, on_name)
-    }
-    Expr::Await(expr~, span~) => {
-      let _ = span
-      walk_expr_refs(expr, bound, refs, on_name)
     }
     Expr::Yield(expr~, span~) => {
       let _ = span

@@ -432,16 +432,14 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
       )
     Expr::Continue(args~, ..) =>
       Expr::Continue(args=normalize_exprs(args, scope), span=zero_span)
-    Expr::Try(try_body~, catch_body~, ..) =>
-      Expr::Try(
-        try_body=normalize_block(try_body, scope.child_block()),
-        catch_body=normalize_block(catch_body, scope.child_block()),
+    Expr::Handle(body~, arms~, ..) =>
+      Expr::Handle(
+        body=normalize_block(body, scope.child_block()),
+        arms=normalize_arms(arms, scope),
         span=zero_span,
       )
     Expr::Raise(value~, ..) =>
       Expr::Raise(value=normalize_expr(value, scope), span=zero_span)
-    Expr::Await(expr~, ..) =>
-      Expr::Await(expr=normalize_expr(expr, scope), span=zero_span)
     Expr::Yield(expr~, ..) =>
       Expr::Yield(expr=normalize_expr(expr, scope), span=zero_span)
     Expr::StructLit(name~, type_args~, fields~, ..) =>

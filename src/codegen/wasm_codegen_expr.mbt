@@ -414,42 +414,36 @@ fn compile_expr(
       let _ = span
       compile_block_expr(ctx, buf, body)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
-      let _ = span
+    @core.Expr::Handle(body~, arms~, span~) => {
+      // Phase 1: compile Handle like Try, using first arm's expr as catch_body
+      let catch_body_mod : @core.Module = match arms[0].expr {
+        @core.Expr::Block(body=blk_body, ..) => blk_body
+        other => @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
+      }
       let try_kind = if ctx.use_js_strings {
-        infer_block_kind(ctx, try_body, ctx.local_kinds)
+        infer_block_kind(ctx, body, ctx.local_kinds)
       } else {
         ValueKind::I64
       }
-      // Adjust loop offsets for nesting (+3 label scopes: block, block, try_table)
       adjust_loop_offsets(ctx, 3)
-      // (block $outer (result <type>)
-      buf.push((2).to_byte()) // block opcode
-      buf.push(valtype_byte(try_kind)) // result type
-      //   (block $catch_target  ;; catch_all: no result
-      buf.push((2).to_byte()) // block opcode
-      buf.push((64).to_byte()) // empty type (0x40)
-      //     (try_table (result <type>) (catch_all 0)
-      buf.push((31).to_byte()) // try_table opcode = 0x1F
-      buf.push(valtype_byte(try_kind)) // result type
-      write_u32_leb(buf, 1) // catch clause count = 1
-      buf.push((2).to_byte()) // catch_all = 0x02
-      write_u32_leb(buf, 0) // label depth = 0 ($catch_target)
-      //       compile try_body
-      compile_block_expr(ctx, buf, try_body)
-      //     end try_table
+      buf.push((2).to_byte())
+      buf.push(valtype_byte(try_kind))
+      buf.push((2).to_byte())
+      buf.push((64).to_byte())
+      buf.push((31).to_byte())
+      buf.push(valtype_byte(try_kind))
+      write_u32_leb(buf, 1)
+      buf.push((2).to_byte())
+      write_u32_leb(buf, 0)
+      compile_block_expr(ctx, buf, body)
       buf.push((11).to_byte())
-      //     br $outer (label depth = 1)
-      buf.push((12).to_byte()) // br opcode
-      write_u32_leb(buf, 1) // label depth = 1
-      //   end $catch_target
+      buf.push((12).to_byte())
+      write_u32_leb(buf, 1)
       buf.push((11).to_byte())
-      //   compile catch_body (at depth +2 from original: outer block + catch_target block)
-      adjust_loop_offsets(ctx, -1) // try_table ended, now at +2
-      compile_block_expr(ctx, buf, catch_body)
-      // end $outer
+      adjust_loop_offsets(ctx, -1)
+      compile_block_expr(ctx, buf, catch_body_mod)
       buf.push((11).to_byte())
-      adjust_loop_offsets(ctx, -2) // both blocks ended, back to original
+      adjust_loop_offsets(ctx, -2)
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
@@ -703,19 +697,6 @@ fn compile_expr(
       }
       buf.push((8).to_byte()) // throw opcode = 0x08
       write_u32_leb(buf, ctx.error_tag_index) // tag index
-    }
-    @core.Expr::Await(expr~, span~) => {
-      let _ = span
-      // Compile the expression to get the value to yield
-      compile_expr_i32(ctx, buf, expr)
-      // Emit suspend instruction with await tag
-      // suspend opcode = 0xe2, tag_index
-      buf.push((0xe2).to_byte())
-      write_u32_leb(buf, ctx.await_tag_index)
-      // After resume, read resolved value from async_result global
-      // global.get opcode = 0x23
-      buf.push((0x23).to_byte())
-      write_u32_leb(buf, ctx.async_result_global_index)
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span

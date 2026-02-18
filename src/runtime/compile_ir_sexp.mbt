@@ -386,13 +386,18 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_char(')')
       buf.to_string()
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
       let buf = StringBuilder::new()
-      buf.write_string("(try ")
-      buf.write_string(block_to_sexp(try_body, aliases))
-      buf.write_char(' ')
-      buf.write_string(block_to_sexp(catch_body, aliases))
+      buf.write_string("(handle ")
+      buf.write_string(block_to_sexp(body, aliases))
+      for arm in arms {
+        buf.write_string(" (arm ")
+        buf.write_string(pat_to_sexp(arm.pat))
+        buf.write_string(" => ")
+        buf.write_string(expr_to_sexp(arm.expr, aliases))
+        buf.write_char(')')
+      }
       buf.write_char(')')
       buf.to_string()
     }
@@ -447,10 +452,6 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
     @core.Expr::Raise(value~, span~) => {
       let _ = span
       "(raise " + expr_to_sexp(value, aliases) + ")"
-    }
-    @core.Expr::Await(expr~, span~) => {
-      let _ = span
-      "(await " + expr_to_sexp(expr, aliases) + ")"
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span

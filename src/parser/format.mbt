@@ -419,8 +419,6 @@ fn should_escape_identifier_text(text : String) -> Bool {
   text == "else" ||
   text == "match" ||
   text == "do" ||
-  text == "try" ||
-  text == "catch" ||
   text == "record" ||
   text == "map" ||
   text == "fn" ||
@@ -432,7 +430,6 @@ fn should_escape_identifier_text(text : String) -> Bool {
   text == "bench" ||
   text == "mut" ||
   text == "raise" ||
-  text == "await" ||
   text == "yield" ||
   text == "break" ||
   text == "continue" ||
@@ -683,7 +680,6 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == loop_kw() ||
   kind == match_kw() ||
   kind == do_kw() ||
-  kind == try_kw() ||
   kind == break_kw() ||
   kind == continue_kw() ||
   kind == raise_kw() ||
@@ -769,8 +765,6 @@ fn is_match_brace(
       prev != record_kw() &&
       prev != map_kw() &&
       prev != do_kw() &&
-      prev != try_kw() &&
-      prev != catch_kw() &&
       prev != if_kw() &&
       prev != else_kw()
     None => false
@@ -1003,8 +997,6 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == else_kw() ||
   kind == match_kw() ||
   kind == do_kw() ||
-  kind == try_kw() ||
-  kind == catch_kw() ||
   kind == record_kw() ||
   kind == map_kw() ||
   kind == fn_kw() ||
@@ -1014,7 +1006,6 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == continue_kw() ||
   kind == mut_kw() ||
   kind == raise_kw() ||
-  kind == await_kw() ||
   kind == yield_kw() ||
   kind == struct_kw() ||
   kind == trait_kw() ||

@@ -153,16 +153,6 @@ pub fn map_kw() -> @cst.SyntaxKind {
 }
 
 ///|
-pub fn try_kw() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(61)
-}
-
-///|
-pub fn catch_kw() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(62)
-}
-
-///|
 pub fn while_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(63)
 }
@@ -175,11 +165,6 @@ pub fn mut_kw() -> @cst.SyntaxKind {
 ///|
 pub fn raise_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(65)
-}
-
-///|
-pub fn await_kw() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(87)
 }
 
 ///|
@@ -215,11 +200,6 @@ pub fn while_expr() -> @cst.SyntaxKind {
 ///|
 pub fn raise_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(125)
-}
-
-///|
-pub fn await_expr() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(126)
 }
 
 ///|
@@ -530,11 +510,6 @@ pub fn map_expr() -> @cst.SyntaxKind {
 }
 
 ///|
-pub fn try_expr() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(123)
-}
-
-///|
 pub fn export_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(73)
 }
@@ -602,6 +577,16 @@ pub fn trait_kw() -> @cst.SyntaxKind {
 ///|
 pub fn impl_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(86)
+}
+
+///|
+pub fn handle_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(97)
+}
+
+///|
+pub fn handle_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(134)
 }
 
 ///|

@@ -427,10 +427,17 @@ fn collect_captures_expr(
       let _ = span
       collect_captures_block(body, bound, outer_bound, captures, seen)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      collect_captures_block(try_body, bound, outer_bound, captures, seen)
-      collect_captures_block(catch_body, bound, outer_bound, captures, seen)
+      collect_captures_block(body, bound, outer_bound, captures, seen)
+      for arm in arms {
+        collect_captures_expr(arm.expr, bound, outer_bound, captures, seen)
+        match arm.cond {
+          Some(c) =>
+            collect_captures_expr(c, bound, outer_bound, captures, seen)
+          None => ()
+        }
+      }
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
@@ -720,10 +727,16 @@ fn collect_nested_funcs_expr(
       let _ = span
       collect_nested_funcs_block(body, bound, funcs, false)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      collect_nested_funcs_block(try_body, bound, funcs, false)
-      collect_nested_funcs_block(catch_body, bound, funcs, false)
+      collect_nested_funcs_block(body, bound, funcs, false)
+      for arm in arms {
+        collect_nested_funcs_expr(arm.expr, bound, funcs)
+        match arm.cond {
+          Some(c) => collect_nested_funcs_expr(c, bound, funcs)
+          None => ()
+        }
+      }
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span

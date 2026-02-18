@@ -246,10 +246,10 @@ fn raise_literal_source(message : String) -> String {
     #|let fail = () -> Int with {Error} {
     #|  raise "@MSG@"
     #|}
-    #|try {
+    #|handle {
     #|  fail()
-    #|} catch {
-    #|  0
+    #|} {
+    #|  Error(_) => 0
     #|}
   src.replace(old="@MSG@", new=message)
 }

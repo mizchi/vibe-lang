@@ -344,22 +344,24 @@ fn desugar_vibe_expr(
       }
       @core.Expr::Map(fields=out, span~)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) =>
-      @core.Expr::Try(
-        try_body=desugar_vibe_block(
-          try_body,
-          scope.child(),
-          known_non_cmd,
-          notes,
-        ),
-        catch_body=desugar_vibe_block(
-          catch_body,
-          scope.child(),
-          known_non_cmd,
-          notes,
-        ),
+    @core.Expr::Handle(body~, arms~, span~) => {
+      let new_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        new_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: arm.cond.map(fn(c) {
+            desugar_vibe_expr(c, scope, known_non_cmd, notes)
+          }),
+          expr: desugar_vibe_expr(arm.expr, scope, known_non_cmd, notes),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Handle(
+        body=desugar_vibe_block(body, scope.child(), known_non_cmd, notes),
+        arms=new_arms,
         span~,
       )
+    }
     @core.Expr::Fn(
       type_params~,
       type_bounds~,
@@ -425,11 +427,6 @@ fn desugar_vibe_expr(
     @core.Expr::Raise(value~, span~) =>
       @core.Expr::Raise(
         value=desugar_vibe_expr(value, scope, known_non_cmd, notes),
-        span~,
-      )
-    @core.Expr::Await(expr~, span~) =>
-      @core.Expr::Await(
-        expr=desugar_vibe_expr(expr, scope, known_non_cmd, notes),
         span~,
       )
     @core.Expr::Yield(expr~, span~) =>
@@ -668,12 +665,22 @@ fn desugar_expr(
       }
       @core.Expr::Map(fields=out, span~)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) =>
-      @core.Expr::Try(
-        try_body=desugar_block(try_body, scope.child(), aliases),
-        catch_body=desugar_block(catch_body, scope.child(), aliases),
+    @core.Expr::Handle(body~, arms~, span~) => {
+      let new_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        new_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: arm.cond.map(fn(c) { desugar_expr(c, scope, aliases) }),
+          expr: desugar_expr(arm.expr, scope, aliases),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Handle(
+        body=desugar_block(body, scope.child(), aliases),
+        arms=new_arms,
         span~,
       )
+    }
     @core.Expr::Fn(
       type_params~,
       type_bounds~,

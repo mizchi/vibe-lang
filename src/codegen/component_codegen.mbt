@@ -449,9 +449,15 @@ fn scan_component_wit_imports_expr(
       scan_component_wit_imports_block(else_body, acc)
     }
     @core.Expr::Block(body~, ..) => scan_component_wit_imports_block(body, acc)
-    @core.Expr::Try(try_body~, catch_body~, ..) => {
-      scan_component_wit_imports_block(try_body, acc)
-      scan_component_wit_imports_block(catch_body, acc)
+    @core.Expr::Handle(body~, arms~, ..) => {
+      scan_component_wit_imports_block(body, acc)
+      for arm in arms {
+        scan_component_wit_imports_expr(arm.expr, acc)
+        match arm.cond {
+          Some(cond) => scan_component_wit_imports_expr(cond, acc)
+          None => ()
+        }
+      }
     }
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       scan_component_wit_imports_expr(scrutinee, acc)
@@ -476,7 +482,6 @@ fn scan_component_wit_imports_expr(
       scan_component_wit_imports_block(body, acc)
     }
     @core.Expr::Raise(value~, ..) => scan_component_wit_imports_expr(value, acc)
-    @core.Expr::Await(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
     @core.Expr::Yield(expr~, ..) => scan_component_wit_imports_expr(expr, acc)
     _ => ()
   }

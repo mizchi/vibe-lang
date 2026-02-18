@@ -680,16 +680,12 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_match_expr()
   } else if self.at(do_kw()) {
     self.parse_do_expr()
-  } else if self.at(try_kw()) {
-    self.parse_try_expr()
   } else if self.at(break_kw()) {
     self.parse_break_expr()
   } else if self.at(continue_kw()) {
     self.parse_continue_expr()
   } else if self.at(raise_kw()) {
     self.parse_raise_expr()
-  } else if self.at(await_kw()) {
-    self.parse_await_expr()
   } else if self.at(yield_kw()) {
     self.parse_yield_expr()
   } else if self.at(record_kw()) {
@@ -923,19 +919,6 @@ fn Parser::parse_do_expr(self : Parser) -> Unit {
 }
 
 ///|
-fn Parser::parse_try_expr(self : Parser) -> Unit {
-  self.builder.start_node(try_expr())
-  self.bump() // try
-  self.skip_trivia()
-  self.parse_brace_block_tokens()
-  self.skip_trivia()
-  self.expect(catch_kw())
-  self.skip_trivia()
-  self.parse_brace_block_tokens()
-  self.builder.finish_node()
-}
-
-///|
 fn Parser::parse_break_expr(self : Parser) -> Unit {
   self.builder.start_node(break_expr())
   self.bump() // break
@@ -979,15 +962,6 @@ fn Parser::parse_continue_expr(self : Parser) -> Unit {
 fn Parser::parse_raise_expr(self : Parser) -> Unit {
   self.builder.start_node(raise_expr())
   self.bump() // raise
-  self.skip_trivia()
-  self.parse_expr()
-  self.builder.finish_node()
-}
-
-///|
-fn Parser::parse_await_expr(self : Parser) -> Unit {
-  self.builder.start_node(await_expr())
-  self.bump() // await
   self.skip_trivia()
   self.parse_expr()
   self.builder.finish_node()

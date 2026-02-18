@@ -1080,7 +1080,7 @@ fn eval_pure_builtin(
             @core.Value::String(s)
           } else {
             @core.Value::String(
-              String::replace(s, old=pattern[:], new=replacement[:]),
+              String::replace_all(s, old=pattern[:], new=replacement[:]),
             )
           }
         _ => raise EvalError::BadCall("string_replace_all")

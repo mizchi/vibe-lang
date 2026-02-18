@@ -200,7 +200,6 @@ pub(all) enum Expr {
   Block(body~ : Module, span~ : Span)
   Match(scrutinee~ : Expr, arms~ : Array[MatchArm], span~ : Span)
   Do(body~ : Module, span~ : Span)
-  Try(try_body~ : Module, catch_body~ : Module, span~ : Span)
   Fn(
     type_params~ : Array[String],
     type_bounds~ : Map[String, Array[String]],
@@ -215,8 +214,8 @@ pub(all) enum Expr {
   Break(value~ : Expr?, span~ : Span)
   Continue(args~ : Array[Expr], span~ : Span)
   Raise(value~ : Expr, span~ : Span)
-  Await(expr~ : Expr, span~ : Span)
   Yield(expr~ : Expr, span~ : Span)
+  Handle(body~ : Module, arms~ : Array[MatchArm], span~ : Span)
   StructLit(
     name~ : String,
     type_args~ : Array[Type],
@@ -267,15 +266,14 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Block(span~, ..)
     | Expr::Match(span~, ..)
     | Expr::Do(span~, ..)
-    | Expr::Try(span~, ..)
     | Expr::Fn(span~, ..)
     | Expr::While(span~, ..)
     | Expr::Loop(span~, ..)
     | Expr::Break(span~, ..)
     | Expr::Continue(span~, ..)
     | Expr::Raise(span~, ..)
-    | Expr::Await(span~, ..)
     | Expr::Yield(span~, ..)
+    | Expr::Handle(span~, ..)
     | Expr::StructLit(span~, ..) => span
   }
 }

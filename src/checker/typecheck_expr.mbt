@@ -1,4 +1,29 @@
 ///|
+/// Bind handle arm pattern variables into the arm environment.
+/// Effect patterns (Ctor) bind their args as String directly,
+/// bypassing collect_pattern_bindings which expects enum scrutinees.
+fn bind_handle_arm_pat(
+  arm_env : TypeEnv,
+  env : TypeEnv,
+  pat : @core.Pat,
+) -> Unit raise TypeError {
+  match pat {
+    @core.Pat::Ctor(args~, ..) =>
+      for arg in args {
+        if arg is @core.Pat::Bind(name~, ..) {
+          arm_env.set(name, @core.Type::String)
+        }
+      }
+    _ => {
+      let bindings = collect_pattern_bindings(env, pat, @core.Type::String)
+      for name, ty in bindings {
+        arm_env.set(name, ty)
+      }
+    }
+  }
+}
+
+///|
 fn type_struct_lit(
   env : TypeEnv,
   name : String,
@@ -418,21 +443,50 @@ fn type_expr_eff(
       let _ = span
       type_block(env, body, aliases, effects, allow_effect)
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
-      let try_scope = effect_scope_extend(effects, [
-        @core.EffectAtom::Const("Error"),
-      ])
-      let try_ty = type_block(env, try_body, aliases, try_scope, allow_effect)
-      let catch_ty = type_block(env, catch_body, aliases, effects, allow_effect)
-      if not(type_equal(env, try_ty, catch_ty)) {
-        raise TypeError::Mismatch(
-          expected=try_ty,
-          actual=catch_ty,
-          span~,
-          context=Some("try/catch branches"),
-        )
+    @core.Expr::Handle(body~, arms~, span~) => {
+      let handle_effects : Array[@core.EffectAtom] = []
+      for arm in arms {
+        match arm.pat {
+          @core.Pat::Ctor(name~, ..) =>
+            handle_effects.push(@core.EffectAtom::Const(name))
+          @core.Pat::Wildcard(..) | @core.Pat::Bind(..) =>
+            handle_effects.push(@core.EffectAtom::Const("Error"))
+          _ => ()
+        }
       }
-      try_ty
+      let body_scope = effect_scope_extend(effects, handle_effects)
+      let body_ty = type_block(env, body, aliases, body_scope, allow_effect)
+      for arm in arms {
+        let arm_env = clone_env(env)
+        bind_handle_arm_pat(arm_env, env, arm.pat)
+        if arm.cond is Some(c) {
+          let g_ty = type_expr_eff(arm_env, c, aliases, effects, allow_effect)
+          if not(type_equal(env, g_ty, @core.Type::Bool)) {
+            raise TypeError::Mismatch(
+              expected=@core.Type::Bool,
+              actual=g_ty,
+              span=c.span(),
+              context=Some("handle guard"),
+            )
+          }
+        }
+        let arm_ty = type_expr_eff(
+          arm_env,
+          arm.expr,
+          aliases,
+          effects,
+          allow_effect,
+        )
+        if not(type_equal(env, body_ty, arm_ty)) {
+          raise TypeError::Mismatch(
+            expected=body_ty,
+            actual=arm_ty,
+            span~,
+            context=Some("handle branches"),
+          )
+        }
+      }
+      body_ty
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       if arms.is_empty() {
@@ -767,17 +821,6 @@ fn type_expr_eff(
         span,
       )
       @core.Type::Never
-    }
-    @core.Expr::Await(expr~, span~) => {
-      let inner_ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
-      require_effects(
-        env,
-        effects,
-        [@core.EffectAtom::Const("Async")],
-        "await",
-        span,
-      )
-      inner_ty
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)

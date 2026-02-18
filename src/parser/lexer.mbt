@@ -301,8 +301,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "else" => else_kw()
           "match" => match_kw()
           "do" => do_kw()
-          "try" => try_kw()
-          "catch" => catch_kw()
           "record" => record_kw()
           "map" =>
             if self.peek_next_significant_char() == Some('{') {
@@ -324,8 +322,8 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "bench" => bench_kw()
           "mut" => mut_kw()
           "raise" => raise_kw()
-          "await" => await_kw()
           "yield" => yield_kw()
+          "handle" => handle_kw()
           "break" => break_kw()
           "continue" => continue_kw()
           "export" => export_kw()

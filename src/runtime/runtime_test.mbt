@@ -385,15 +385,15 @@ test "vibe fn effect requires declaration" {
     Some(@core.Value::Int(v)) => assert_eq(v, 1)
     _ => fail("effect ok")
   }
-  let rt_try = Runtime::new(@capability.CapabilitySet::new())
-  let _ = rt_try.eval_script(
+  let rt_handle = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt_handle.eval_script(
     "let f = (x: Int) -> Int with {Error} { x }\n" +
-    "let g = (y: Int) -> Int { try { f(y) } catch { 0 } }\n" +
+    "let g = (y: Int) -> Int { handle { f(y) } { Error(_) => 0 } }\n" +
     "let r = g(1)",
   )
-  match rt_try.get("r") {
+  match rt_handle.get("r") {
     Some(@core.Value::Int(v)) => assert_eq(v, 1)
-    _ => fail("effect try")
+    _ => fail("effect handle")
   }
 }
 
@@ -529,37 +529,6 @@ test "vibe sleep requires unstable async flag" {
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-async"))
     Ok(_) => fail("expected unstable async gate error")
-  }
-}
-
-///|
-test "vibe await requires unstable async flag" {
-  let rt = Runtime::new(@capability.CapabilitySet::developer())
-  let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let run = () -> Int with {Async} { await 1 }\n" + "run()",
-  )
-  match result {
-    Err(err) => assert_true(err.to_string().contains("--unstable-async"))
-    Ok(_) => fail("expected unstable async gate error")
-  }
-}
-
-///|
-test "vibe await works when unstable async is enabled" {
-  let rt = Runtime::new_with_features(
-    @capability.CapabilitySet::developer(),
-    RuntimeFeatureFlags::unstable_async_only(),
-  )
-  let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let run = () -> Int with {Async} { await 1 }\n" + "run()",
-  )
-  match result {
-    Err(err) => fail(err.to_string())
-    Ok(eval_result) =>
-      match eval_result.last {
-        Some(@core.Value::Int(v)) => assert_eq(v, 1)
-        _ => fail("expected last int value")
-      }
   }
 }
 

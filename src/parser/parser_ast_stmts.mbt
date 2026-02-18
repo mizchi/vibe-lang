@@ -1074,12 +1074,29 @@ fn rewrite_module_expr(
         body=rewrite_module_block(module_name, body, locals),
         span~,
       )
-    @core.Expr::Try(try_body~, catch_body~, span~) =>
-      @core.Expr::Try(
-        try_body=rewrite_module_block(module_name, try_body, locals),
-        catch_body=rewrite_module_block(module_name, catch_body, locals),
+    @core.Expr::Handle(body~, arms~, span~) => {
+      let next_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        let pat_bindings : Array[String] = []
+        collect_pat_bindings_for_module(arm.pat, pat_bindings)
+        let arm_locals = module_locals_without(locals, pat_bindings)
+        let next_cond = match arm.cond {
+          Some(c) => Some(rewrite_module_expr(module_name, c, arm_locals))
+          None => None
+        }
+        next_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: next_cond,
+          expr: rewrite_module_expr(module_name, arm.expr, arm_locals),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Handle(
+        body=rewrite_module_block(module_name, body, locals),
+        arms=next_arms,
         span~,
       )
+    }
     @core.Expr::Fn(
       type_params~,
       type_bounds~,
@@ -1113,11 +1130,6 @@ fn rewrite_module_expr(
     @core.Expr::Raise(value~, span~) =>
       @core.Expr::Raise(
         value=rewrite_module_expr(module_name, value, locals),
-        span~,
-      )
-    @core.Expr::Await(expr~, span~) =>
-      @core.Expr::Await(
-        expr=rewrite_module_expr(module_name, expr, locals),
         span~,
       )
     @core.Expr::Yield(expr~, span~) =>

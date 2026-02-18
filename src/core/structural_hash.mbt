@@ -283,12 +283,6 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       h = combine_hash(h, body.structural_hash())
       h
     }
-    Expr::Try(try_body~, catch_body~, ..) => {
-      let mut h = 0x54727900 // "Try\0"
-      h = combine_hash(h, try_body.structural_hash())
-      h = combine_hash(h, catch_body.structural_hash())
-      h
-    }
     Expr::Fn(type_params~, type_bounds~, params~, ret~, effects~, body~, ..) => {
       let mut h = 0x466e0000 // "Fn\0\0"
       for tp in type_params {
@@ -337,14 +331,17 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       h = combine_hash(h, value.structural_hash())
       h
     }
-    Expr::Await(expr~, ..) => {
-      let mut h = 0x41776169 // "Awai"
-      h = combine_hash(h, expr.structural_hash())
-      h
-    }
     Expr::Yield(expr~, ..) => {
       let mut h = 0x5969656c // "Yiel"
       h = combine_hash(h, expr.structural_hash())
+      h
+    }
+    Expr::Handle(body~, arms~, ..) => {
+      let mut h = 0x48616e64 // "Hand"
+      h = combine_hash(h, body.structural_hash())
+      for a in arms {
+        h = combine_hash(h, a.structural_hash())
+      }
       h
     }
     Expr::StructLit(name~, type_args~, fields~, ..) => {

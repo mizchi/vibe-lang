@@ -303,8 +303,7 @@ test "normalize_engine: many definitions topo sort correctness" {
 ///|
 test "merge: dedup last wins" {
   let sources = [
-    "let foo = 1\nlet bar = foo",
-    "let foo = 2\nexport let out = foo + bar\nexport { out }",
+    "let foo = 1\nlet bar = foo", "let foo = 2\nexport let out = foo + bar\nexport { out }",
   ]
   let result = normalize_merge_sources(sources, false)
   match result {
@@ -323,8 +322,7 @@ test "merge: dedup last wins" {
 ///|
 test "merge: DCE after dedup" {
   let sources = [
-    "let unused = 1\nlet used = 10",
-    "export let out = used\nexport { out }",
+    "let unused = 1\nlet used = 10", "export let out = used\nexport { out }",
   ]
   let result = normalize_merge_sources(sources, false)
   match result {
@@ -339,8 +337,7 @@ test "merge: DCE after dedup" {
 ///|
 test "merge: library mode removes side-effects" {
   let sources = [
-    "let helper = () -> Int { 42 }\nexport let out = helper()\nexport { out }",
-    "print(out)",
+    "let helper = () -> Int { 42 }\nexport let out = helper()\nexport { out }", "print(out)",
   ]
   let result = normalize_merge_sources(sources, true)
   match result {
@@ -367,10 +364,7 @@ test "merge: type dedup last wins" {
 
 ///|
 test "merge: export preservation" {
-  let sources = [
-    "let a = 1",
-    "let b = 2\nexport let c = a + b\nexport { c }",
-  ]
+  let sources = ["let a = 1", "let b = 2\nexport let c = a + b\nexport { c }"]
   let result = normalize_merge_sources(sources, false)
   match result {
     Ok(normalized) => {

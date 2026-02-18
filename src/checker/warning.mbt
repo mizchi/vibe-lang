@@ -514,13 +514,20 @@ fn walk_expr(
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
     }
-    @core.Expr::Try(try_body~, catch_body~, ..) => {
+    @core.Expr::Handle(body~, arms~, ..) => {
       scopes.push(warning_scope_new())
-      walk_module(try_body, scopes, out)
+      walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
-      scopes.push(warning_scope_new())
-      walk_module(catch_body, scopes, out)
-      warning_scope_pop(scopes, out)
+      for arm in arms {
+        scopes.push(warning_scope_new())
+        declare_pattern_bindings(scopes, arm.pat)
+        match arm.cond {
+          Some(cond) => walk_expr(cond, scopes, out)
+          None => ()
+        }
+        walk_expr(arm.expr, scopes, out)
+        warning_scope_pop(scopes, out)
+      }
     }
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       walk_expr(scrutinee, scopes, out)
@@ -563,9 +570,8 @@ fn walk_expr(
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
     }
-    @core.Expr::Raise(value~, ..)
-    | @core.Expr::Await(expr=value, ..)
-    | @core.Expr::Yield(expr=value, ..) => walk_expr(value, scopes, out)
+    @core.Expr::Raise(value~, ..) | @core.Expr::Yield(expr=value, ..) =>
+      walk_expr(value, scopes, out)
     @core.Expr::StructLit(fields~, ..) =>
       for field in fields {
         walk_expr(field.expr, scopes, out)

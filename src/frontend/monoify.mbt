@@ -201,14 +201,33 @@ fn collect_instantiations_expr(
         body, env, specializable, instantiations, scope, true,
       )
     }
-    @core.Expr::Try(try_body~, catch_body~, span~) => {
+    @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
       collect_instantiations_module(
-        try_body, env, specializable, instantiations, scope, true,
+        body, env, specializable, instantiations, scope, true,
       )
-      collect_instantiations_module(
-        catch_body, env, specializable, instantiations, scope, true,
-      )
+      for arm in arms {
+        let arm_scope = scope.child()
+        let bindings : Array[String] = []
+        collect_pat_bindings(arm.pat, bindings)
+        for name in bindings {
+          arm_scope.bindings[name] = true
+        }
+        match arm.cond {
+          Some(c) =>
+            collect_instantiations_expr(
+              c, env, specializable, instantiations, arm_scope,
+            )
+          None => ()
+        }
+        collect_instantiations_expr(
+          arm.expr,
+          env,
+          specializable,
+          instantiations,
+          arm_scope,
+        )
+      }
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
@@ -553,16 +572,47 @@ fn monoify_expr(
         ),
         span~,
       )
-    @core.Expr::Try(try_body~, catch_body~, span~) =>
-      @core.Expr::Try(
-        try_body=monoify_block(
-          try_body, env, instantiations, specializable, scope, current_spec,
+    @core.Expr::Handle(body~, arms~, span~) => {
+      let next_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        let arm_scope = scope.child()
+        let bindings : Array[String] = []
+        collect_pat_bindings(arm.pat, bindings)
+        for name in bindings {
+          arm_scope.bindings[name] = true
+        }
+        let next_cond = match arm.cond {
+          Some(c) =>
+            Some(
+              monoify_expr(
+                c, env, instantiations, specializable, arm_scope, current_spec,
+              ),
+            )
+          None => None
+        }
+        let next_expr = monoify_expr(
+          arm.expr,
+          env,
+          instantiations,
+          specializable,
+          arm_scope,
+          current_spec,
+        )
+        next_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: next_cond,
+          expr: next_expr,
+          span: arm.span,
+        })
+      }
+      @core.Expr::Handle(
+        body=monoify_block(
+          body, env, instantiations, specializable, scope, current_spec,
         ),
-        catch_body=monoify_block(
-          catch_body, env, instantiations, specializable, scope, current_spec,
-        ),
+        arms=next_arms,
         span~,
       )
+    }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       let scrut = monoify_expr(

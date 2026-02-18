@@ -665,9 +665,42 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
     }
     @core.Expr::Block(body~, ..) => eval_block(rt, body)
-    @core.Expr::Try(try_body~, catch_body~, ..) =>
-      eval_block(rt, try_body) catch {
-        _ => eval_block(rt, catch_body)
+    @core.Expr::Handle(body~, arms~, ..) =>
+      eval_block(rt, body) catch {
+        e => {
+          let error_str = @core.Value::String(e.to_string())
+          let error_val = @core.Value::Record({ "Error": error_str })
+          let mut matched = false
+          let mut result : EvalOutput = {
+            value: @core.Value::Unit,
+            effects: [],
+          }
+          for arm in arms {
+            match match_pattern(arm.pat, error_val) {
+              Some(bindings) => {
+                let guard_ok = match arm.cond {
+                  Some(c) =>
+                    match eval_expr_with_bindings(rt, c, bindings).value {
+                      @core.Value::Bool(b) => b
+                      _ => raise EvalError::BadCall("handle guard")
+                    }
+                  None => true
+                }
+                if guard_ok {
+                  result = eval_expr_with_bindings(rt, arm.expr, bindings)
+                  matched = true
+                  break
+                }
+              }
+              None => ()
+            }
+          }
+          if matched {
+            result
+          } else {
+            raise e
+          }
+        }
       }
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       let scrutinee_out = eval_expr(rt, scrutinee)
@@ -764,12 +797,6 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
           _ => "raise"
         },
       )
-    }
-    @core.Expr::Await(expr~, ..) => {
-      require_unstable_async(rt, "await")
-      // For now, await just evaluates the expression synchronously
-      // Future: handle Future[T] values and suspend/resume
-      eval_expr(rt, expr)
     }
     @core.Expr::Yield(expr~, ..) => {
       require_unstable_async(rt, "yield")
