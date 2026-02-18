@@ -7,6 +7,61 @@ suberror XshError {
 } derive(Show, Eq)
 
 ///|
+pub fn XshError::format_for_repl(
+  self : XshError,
+  source : String,
+) -> String {
+  match self {
+    XshError::Type(type_err) => type_err.diagnostic().render("<repl>", source)
+    XshError::Parse(parse_err) =>
+      parse_err.diagnostic().render("<repl>", source)
+    XshError::Eval(eval_err) => "error: " + eval_err.to_string()
+  }
+}
+
+///|
+/// Format any Error for REPL display. Tries XshError diagnostic, falls back to string.
+/// `unwrap_prefix` is the prefix added by wrapping (e.g. "do { "), used to adjust span offsets.
+pub fn format_error_for_repl(
+  e : Error,
+  source : String,
+  unwrap_prefix~ : String = "",
+) -> String {
+  let offset = unwrap_prefix.length()
+  match e {
+    XshError::Type(type_err) => {
+      let diag = type_err.diagnostic()
+      if offset > 0 {
+        // Shift span back by prefix length and render against original source
+        let suffix_len = 2 // strip " }" suffix
+        let end = source.length() - suffix_len
+        let original = try source[offset:end].to_string() catch { _ => source }
+        let shifted = match diag.span {
+          Some(span) =>
+            @core.Diagnostic::{
+              ..diag,
+              span: Some(
+                @core.Span::{
+                  start: span.start - offset,
+                  end: span.end - offset,
+                },
+              ),
+            }
+          None => diag
+        }
+        shifted.render("<repl>", original)
+      } else {
+        diag.render("<repl>", source)
+      }
+    }
+    XshError::Parse(parse_err) =>
+      parse_err.diagnostic().render("<repl>", source)
+    XshError::Eval(eval_err) => "error: " + eval_err.to_string()
+    _ => "error: " + e.to_string()
+  }
+}
+
+///|
 pub(all) enum ParserMode {
   XshMode
   PosixMode

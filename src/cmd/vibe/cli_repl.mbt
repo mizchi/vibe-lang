@@ -353,7 +353,10 @@ fn repl_tui_cmd(
   }
 
   fn push_output_line(line : String) -> Unit {
-    outputs.push(line)
+    // Split multi-line strings into separate output entries
+    for part in line.split("\n") {
+      outputs.push(part.to_string())
+    }
   }
 
   fn run_command(cmd : String) -> Bool {
@@ -368,7 +371,39 @@ fn repl_tui_cmd(
     push_output_line("> " + trimmed)
     let result = rt.eval_script_with_mode(trimmed, syntax_mode) catch {
       e => {
-        push_output_line("error: " + e.to_string())
+        // Fallback: if XshMode fails with name resolution, retry with PosixMode desugar
+        let err_str = e.to_string()
+        if err_str.contains("UnknownName") || err_str.contains("BadCall") {
+          let wrapped = "do { " + trimmed + " }"
+          let retry = rt.eval_script_with_mode(
+            wrapped, @runtime.ParserMode::PosixMode,
+          ) catch {
+            retry_err => {
+              push_output_line(format_repl_error(retry_err, wrapped, unwrap_prefix="do { "))
+              return true
+            }
+          }
+          match retry.last {
+            Some(@vibe_core.Value::Array(items)) =>
+              for item in items {
+                match item {
+                  @vibe_core.Value::String(s) => push_output_line(s)
+                  other => push_output_line(other.to_string())
+                }
+              }
+            Some(value) => push_output_line(value.to_string())
+            None => ()
+          }
+          for effect in retry.effects {
+            match effect {
+              @runtime.Effect::ShellExec(_)
+              | @runtime.Effect::PosixDesugar(_) => ()
+              _ => push_output_line("effect: " + effect.to_string())
+            }
+          }
+          return true
+        }
+        push_output_line(format_repl_error(e, trimmed))
         return true
       }
     }
@@ -810,7 +845,28 @@ fn run_eval_line_repl_with_prompt(
         _ => {
           let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
             e => {
-              println("error: " + e.to_string())
+              // Fallback: if XshMode fails with name resolution, retry with PosixMode
+              let err_str = e.to_string()
+              if err_str.contains("UnknownName") || err_str.contains("BadCall") {
+                let wrapped = "do { " + line_str + " }"
+                let retry = rt.eval_script_with_mode(
+                  wrapped, @runtime.ParserMode::PosixMode,
+                ) catch {
+                  retry_err => {
+                    println(format_repl_error(retry_err, wrapped, unwrap_prefix="do { "))
+                    if options.prompt_enabled {
+                      @stdio.stdout.write(options.prompt)
+                    }
+                    continue
+                  }
+                }
+                print_eval_result(retry)
+                if options.prompt_enabled {
+                  @stdio.stdout.write(options.prompt)
+                }
+                continue
+              }
+              println(format_repl_error(e, line_str))
               if options.prompt_enabled {
                 @stdio.stdout.write(options.prompt)
               }
@@ -1109,15 +1165,18 @@ fn repl_interactive_plain_loop(
   async fn repl_loop() {
     let mut scratch_source = initial_source
     let input = @stdio.stdin
-    let prompt = "> "
+    fn get_prompt() -> String {
+      @vibe_fs.basename(@io.current_dir_or_root()) + "> "
+    }
+
     if prompt_enabled {
-      @stdio.stdout.write(prompt)
+      @stdio.stdout.write(get_prompt())
     }
     while input.read_until("\n") is Some(line) {
       let trimmed = line.trim()
       if trimmed.is_empty() {
         if prompt_enabled {
-          @stdio.stdout.write(prompt)
+          @stdio.stdout.write(get_prompt())
         }
         continue
       }
@@ -1125,12 +1184,15 @@ fn repl_interactive_plain_loop(
       match line_str {
         ":q" | ":quit" | ":exit" | "exit" => break
         _ =>
-          scratch_source = run_interactive_line(
-            rt, syntax_mode, scratch_db_path, scratch_source, line_str,
-          )
+          if not(handle_cd_builtin(rt, line_str, fn(s) { println(s) })) {
+            scratch_source = run_interactive_line(
+              rt, syntax_mode, scratch_db_path, scratch_source, line_str,
+              posix_fallback=true,
+            )
+          }
       }
       if prompt_enabled {
-        @stdio.stdout.write(prompt)
+        @stdio.stdout.write(get_prompt())
       }
     }
   }
@@ -1149,32 +1211,60 @@ fn run_interactive_line(
   print_line? : (String) -> Unit = fn(s) { println(s) },
 ) -> String {
   fn print_result(result : @runtime.EvalResult) {
-    match result.last {
-      Some(value) => print_line("last: " + value.to_string())
-      None => ()
-    }
-    for effect in result.effects {
-      match effect {
-        @runtime.Effect::PosixDesugar(message) => print_line("note: " + message)
-        _ => print_line("effect: " + effect.to_string())
+    let is_shell = result.effects
+      .iter()
+      .any(fn(e) {
+        match e {
+          @runtime.Effect::ShellExec(_) => true
+          _ => false
+        }
+      })
+    if is_shell {
+      match result.last {
+        Some(@vibe_core.Value::Array(items)) =>
+          for item in items {
+            match item {
+              @vibe_core.Value::String(s) => print_line(s)
+              other => print_line(other.to_string())
+            }
+          }
+        Some(value) => print_line(value.to_string())
+        None => ()
+      }
+      for effect in result.effects {
+        match effect {
+          @runtime.Effect::ShellExec(_) | @runtime.Effect::PosixDesugar(_) => ()
+          _ => print_line("effect: " + effect.to_string())
+        }
+      }
+    } else {
+      match result.last {
+        Some(value) => print_line("last: " + value.to_string())
+        None => ()
+      }
+      for effect in result.effects {
+        match effect {
+          @runtime.Effect::PosixDesugar(message) =>
+            print_line("note: " + message)
+          _ => print_line("effect: " + effect.to_string())
+        }
       }
     }
   }
 
   let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
     e => {
-      // Fallback: if XshMode fails with UnknownName, retry as POSIX shell command
+      // Fallback: if XshMode fails with name resolution, retry with PosixMode desugar
       if posix_fallback {
         let err_str = e.to_string()
-        if err_str.contains("UnknownName") {
+        if err_str.contains("UnknownName") || err_str.contains("BadCall") {
           let wrapped = "do { " + line_str + " }"
           let retry = rt.eval_script_with_mode(
-            wrapped,
-            @runtime.ParserMode::PosixMode,
+            wrapped, @runtime.ParserMode::PosixMode,
           ) catch {
-            _ => {
-              // Show original error if posix fallback also fails
-              print_line("error: " + e.to_string())
+            retry_err => {
+              // Show PosixMode error (more informative after desugar)
+              print_line(format_repl_error(retry_err, wrapped, unwrap_prefix="do { "))
               return scratch_source
             }
           }
@@ -1182,7 +1272,7 @@ fn run_interactive_line(
           return scratch_source
         }
       }
-      print_line("error: " + e.to_string())
+      print_line(format_repl_error(e, line_str))
       return scratch_source
     }
   }
@@ -1224,10 +1314,16 @@ fn repl_interactive_raw_loop(
   let history : Array[String] = []
   let history_idx = Ref::new(-1)
   let history_draft = Ref::new("")
-  let prompt = "> "
+  fn get_prompt() -> String {
+    @vibe_fs.basename(@io.current_dir_or_root()) + "> "
+  }
+
   let done = Ref::new(false)
   fn raw_println(s : String) -> Unit {
-    @tui.print_raw(s + "\r\n")
+    // Split multi-line strings so each line gets proper \r\n in raw terminal mode
+    for part in s.split("\n") {
+      @tui.print_raw(part.to_string() + "\r\n")
+    }
   }
 
   fn line_buf_to_string() -> String {
@@ -1242,7 +1338,7 @@ fn repl_interactive_raw_loop(
     let text = line_buf_to_string()
     @tui.print_raw("\r" + @render.ansi_clear_line())
     if prompt_enabled {
-      @tui.print_raw(prompt)
+      @tui.print_raw(get_prompt())
     }
     @tui.print_raw(text)
     let text_len = text.to_array().length()
@@ -1411,7 +1507,7 @@ fn repl_interactive_raw_loop(
     history_idx.val = -1
     if text.length() == 0 {
       if prompt_enabled {
-        @tui.print_raw(prompt)
+        @tui.print_raw(get_prompt())
       }
       return
     }
@@ -1426,17 +1522,19 @@ fn repl_interactive_raw_loop(
     if history.length() == 0 || history[history.length() - 1] != text {
       history.push(text)
     }
-    scratch_source_ref.val = run_interactive_line(
-      rt,
-      syntax_mode,
-      scratch_db_path,
-      scratch_source_ref.val,
-      text,
-      posix_fallback=true,
-      print_line=raw_println,
-    )
+    if not(handle_cd_builtin(rt, text, raw_println)) {
+      scratch_source_ref.val = run_interactive_line(
+        rt,
+        syntax_mode,
+        scratch_db_path,
+        scratch_source_ref.val,
+        text,
+        posix_fallback=true,
+        print_line=raw_println,
+      )
+    }
     if prompt_enabled {
-      @tui.print_raw(prompt)
+      @tui.print_raw(get_prompt())
     }
   }
 
@@ -1464,7 +1562,7 @@ fn repl_interactive_raw_loop(
         cursor_pos.val = 0
         history_idx.val = -1
         if prompt_enabled {
-          @tui.print_raw(prompt)
+          @tui.print_raw(get_prompt())
         }
       } else {
         @tui.print_raw("\r\n")
@@ -1537,7 +1635,94 @@ fn repl_interactive_raw_loop(
   }
 
   if prompt_enabled {
-    @tui.print_raw(prompt)
+    @tui.print_raw(get_prompt())
   }
   @tui.start_keypress_listener(handle_key)
+}
+
+///|
+#borrow(path)
+extern "c" fn c_chdir(path : Bytes) -> Int = "chdir"
+
+///|
+fn process_chdir(dir : String) -> Bool {
+  let encoded = @utf8.encode(dir[:])
+  let n = encoded.length()
+  let path_bytes = Bytes::makei(n + 1, fn(i) {
+    if i == n {
+      b'\x00'
+    } else {
+      encoded[i]
+    }
+  })
+  c_chdir(path_bytes) == 0
+}
+
+///|
+/// Handle `cd` as a REPL built-in. Returns true if the line was handled.
+fn handle_cd_builtin(
+  rt : @runtime.Runtime,
+  line : String,
+  print_line : (String) -> Unit,
+) -> Bool {
+  if not(line == "cd" || line.has_prefix("cd ")) {
+    return false
+  }
+  let arg = if line == "cd" {
+    match @sys.get_env_var("HOME") {
+      Some(home) => home
+      None => "/"
+    }
+  } else {
+    let chars = line.to_array()
+    let rest = StringBuilder::new()
+    for i in 3..<chars.length() {
+      rest.write_char(chars[i])
+    }
+    rest.to_string().trim().to_string()
+  }
+  // Resolve relative paths against current cwd
+  let target = if arg.has_prefix("/") {
+    arg
+  } else {
+    let cwd = @io.current_dir_or_root()
+    if cwd.has_suffix("/") {
+      cwd + arg
+    } else {
+      cwd + "/" + arg
+    }
+  }
+  if process_chdir(target) {
+    // Update runtime cwd via fs_chdir
+    let new_cwd = @io.current_dir_or_root()
+    let script = "fs_chdir(\"" + escape_string_for_vibe(new_cwd) + "\")"
+    try rt.eval_script(script) |> ignore catch {
+      _ => ()
+    }
+  } else {
+    print_line("cd: no such file or directory: " + arg)
+  }
+  true
+}
+
+///|
+fn format_repl_error(
+  e : Error,
+  source : String,
+  unwrap_prefix~ : String = "",
+) -> String {
+  @runtime.format_error_for_repl(e, source, unwrap_prefix~)
+}
+
+///|
+fn escape_string_for_vibe(s : String) -> String {
+  let buf = StringBuilder::new()
+  for ch in s {
+    match ch {
+      '\\' => buf.write_string("\\\\")
+      '"' => buf.write_string("\\\"")
+      _ => buf.write_char(ch)
+    }
+  }
+  buf.to_string()
 }

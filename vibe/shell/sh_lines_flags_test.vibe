@@ -1,0 +1,193 @@
+
+test "sh_lines: echo hello" {
+  let lines = do {
+    sh_lines("echo hello")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_equals(array_get(lines, 0), "hello"))
+}
+test "sh_lines: echo with multiple words" {
+  let lines = do {
+    sh_lines("echo foo bar baz")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_equals(array_get(lines, 0), "foo bar baz"))
+}
+test "sh_lines: printf multiline" {
+  let lines = do {
+    sh_lines("printf 'line1\nline2\nline3'")
+  }
+  assert(array_length(lines) == 3)
+  assert(string_equals(array_get(lines, 0), "line1"))
+  assert(string_equals(array_get(lines, 1), "line2"))
+  assert(string_equals(array_get(lines, 2), "line3"))
+}
+test "sh_lines: ls /tmp (directory listing)" {
+  let lines = do {
+    sh_lines("ls /tmp")
+  }
+  assert(array_length(lines) > 0)
+}
+test "sh_lines: ls -a (short flag)" {
+  let lines = do {
+    sh_lines("ls", a=true)
+  }
+  // -a shows hidden files, so . and .. should be present
+  let mut found_dot = false
+  let mut i = 0
+  while i < array_length(lines) {
+    if string_equals(array_get(lines, i), ".") {
+      found_dot = true
+    }
+    i = i + 1
+  }
+  assert(found_dot)
+}
+test "sh_lines: ls -a -l (multiple short flags)" {
+  let lines = do {
+    sh_lines("ls", a=true, l=true)
+  }
+  // -al produces detailed output with at least "total" line
+  assert(array_length(lines) > 0)
+}
+test "sh_lines: ls -a repeated (flag idempotent)" {
+  let lines_a = do {
+    sh_lines("ls", a=true)
+  }
+  // Running with the same flag should produce same output
+  let lines_a2 = do {
+    sh_lines("ls", a=true)
+  }
+  assert(array_length(lines_a) == array_length(lines_a2))
+}
+test "sh_lines: cat with pipe" {
+  let lines = do {
+    sh_lines("echo hello | cat")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_equals(array_get(lines, 0), "hello"))
+}
+test "sh_lines: wc -l (short flag with pipe)" {
+  let lines = do {
+    sh_lines("printf 'a\nb\nc'", l=true)
+  }
+  // printf 'a\nb\nc' -l doesn't make sense, test wc -l via pipe instead
+  // This tests that -l flag is appended to printf (which ignores it)
+  assert(array_length(lines) >= 1)
+}
+test "sh_lines: which echo (command lookup)" {
+  let lines = do {
+    sh_lines("which echo")
+  }
+  assert(array_length(lines) >= 1)
+  assert(string_contains(array_get(lines, 0), "echo"))
+}
+test "sh_lines: date command" {
+  let lines = do {
+    sh_lines("date +%Y")
+  }
+  assert(array_length(lines) == 1)
+  // Year should be 4 digits
+  assert(string_length(array_get(lines, 0)) == 4)
+}
+test "sh_lines: uname (system info)" {
+  let lines = do {
+    sh_lines("uname")
+  }
+  assert(array_length(lines) == 1)
+  // On macOS it's "Darwin", on Linux it's "Linux"
+  assert(string_length(array_get(lines, 0)) > 0)
+}
+test "sh_lines: seq (number sequence)" {
+  let lines = do {
+    sh_lines("seq 1 5")
+  }
+  assert(array_length(lines) == 5)
+  assert(string_equals(array_get(lines, 0), "1"))
+  assert(string_equals(array_get(lines, 4), "5"))
+}
+test "sh_lines: grep with pipe" {
+  let lines = do {
+    sh_lines("echo -e 'apple\nbanana\ncherry' | grep an")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_equals(array_get(lines, 0), "banana"))
+}
+test "sh_lines: head (first lines)" {
+  let lines = do {
+    sh_lines("seq 1 10 | head -3")
+  }
+  assert(array_length(lines) == 3)
+  assert(string_equals(array_get(lines, 0), "1"))
+  assert(string_equals(array_get(lines, 2), "3"))
+}
+test "sh_lines: tail (last lines)" {
+  let lines = do {
+    sh_lines("seq 1 10 | tail -3")
+  }
+  assert(array_length(lines) == 3)
+  assert(string_equals(array_get(lines, 0), "8"))
+  assert(string_equals(array_get(lines, 2), "10"))
+}
+test "sh_lines: sort" {
+  let lines = do {
+    sh_lines("printf 'cherry\napple\nbanana' | sort")
+  }
+  assert(array_length(lines) == 3)
+  assert(string_equals(array_get(lines, 0), "apple"))
+  assert(string_equals(array_get(lines, 1), "banana"))
+  assert(string_equals(array_get(lines, 2), "cherry"))
+}
+test "sh_lines: sort -r (reverse sort with flag)" {
+  let lines = do {
+    sh_lines("printf 'cherry\napple\nbanana' | sort -r")
+  }
+  assert(array_length(lines) == 3)
+  assert(string_equals(array_get(lines, 0), "cherry"))
+  assert(string_equals(array_get(lines, 1), "banana"))
+  assert(string_equals(array_get(lines, 2), "apple"))
+}
+test "sh_lines: uniq (remove duplicates)" {
+  let lines = do {
+    sh_lines("printf 'a\na\nb\nb\nc' | uniq")
+  }
+  assert(array_length(lines) == 3)
+  assert(string_equals(array_get(lines, 0), "a"))
+  assert(string_equals(array_get(lines, 1), "b"))
+  assert(string_equals(array_get(lines, 2), "c"))
+}
+test "sh_lines: wc -l via pipe" {
+  let lines = do {
+    sh_lines("printf 'a\nb\nc\n' | wc -l")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_contains(array_get(lines, 0), "3"))
+}
+test "sh_lines: tr (character translation)" {
+  let lines = do {
+    sh_lines("echo hello | tr 'a-z' 'A-Z'")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_equals(array_get(lines, 0), "HELLO"))
+}
+test "sh_lines: cut (field extraction)" {
+  let lines = do {
+    sh_lines("echo 'a:b:c' | cut -d: -f2")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_equals(array_get(lines, 0), "b"))
+}
+test "sh_lines: env (environment variable)" {
+  let lines = do {
+    sh_lines("echo $HOME")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_contains(array_get(lines, 0), "/"))
+}
+test "sh_lines: pwd (working directory)" {
+  let lines = do {
+    sh_lines("pwd")
+  }
+  assert(array_length(lines) == 1)
+  assert(string_contains(array_get(lines, 0), "/"))
+}

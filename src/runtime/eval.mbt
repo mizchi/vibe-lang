@@ -1517,18 +1517,55 @@ fn eval_builtin_call(
     }
     "sh_lines" => {
       let out = eval_args(rt, args)
-      let pos_args = extract_positional_values(out.args, "sh_lines")
-      if pos_args.length() != 1 {
-        raise EvalError::BadCall("sh_lines")
+      // Extract positional arg (cmd string) and optional labeled args (Bool flags)
+      let mut cmd_value : @core.Value? = None
+      let short_flags : Array[String] = []
+      let long_flags : Array[String] = []
+      for arg in out.args {
+        match arg.label {
+          None =>
+            if cmd_value is None {
+              cmd_value = Some(arg.value)
+            } else {
+              raise EvalError::BadCall("sh_lines")
+            }
+          Some(label) =>
+            match arg.value {
+              @core.Value::Bool(true) =>
+                if label.to_array().length() == 1 {
+                  short_flags.push(label)
+                } else {
+                  long_flags.push(label)
+                }
+              @core.Value::Bool(false) => () // false flags are omitted
+              _ => raise EvalError::BadCall("sh_lines")
+            }
+        }
       }
-      match pos_args[0] {
-        @core.Value::String(cmd) => {
+      match cmd_value {
+        Some(@core.Value::String(cmd)) => {
           if not(rt.caps().can_spawn("sh")) {
             raise EvalError::PermissionDenied("process_spawn")
           }
+          // Reconstruct full command with flags
+          let full_cmd = if short_flags.length() == 0 &&
+            long_flags.length() == 0 {
+            cmd
+          } else {
+            let parts : Array[String] = [cmd]
+            if short_flags.length() > 0 {
+              short_flags.sort_by(fn(a, b) { a.compare(b) })
+              parts.push("-" + short_flags.join(""))
+            }
+            long_flags.sort_by(fn(a, b) { a.compare(b) })
+            for flag in long_flags {
+              parts.push("--" + flag)
+            }
+            parts.join(" ")
+          }
           let effects = out.effects
-          effects.push(Effect::ShellExec(cmd))
-          let lines = execute_shell_lines(cmd) catch {
+          effects.push(Effect::ShellExec(full_cmd))
+          let lines = execute_shell_lines(full_cmd) catch {
             _ => raise EvalError::BadCall("sh_lines")
           }
           let values : Array[@core.Value] = []

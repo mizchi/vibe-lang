@@ -543,9 +543,15 @@ fn type_call(
                 @core.Type::Unit
               }
               "sh_lines" => {
-                let pos_args = extract_positional_args(
-                  args, "sh_lines", call_span,
-                )
+                // Extract positional arg (cmd string) and optional labeled args (Bool flags)
+                let pos_args : Array[@core.Expr] = []
+                let label_args : Array[@core.CallArg] = []
+                for arg in args {
+                  match arg.label {
+                    Some(_) => label_args.push(arg)
+                    None => pos_args.push(arg.expr)
+                  }
+                }
                 if pos_args.length() != 1 {
                   raise TypeError::BadCall(message="sh_lines", span=call_span)
                 }
@@ -571,6 +577,24 @@ fn type_call(
                     span=pos_args[0].span(),
                     context=Some("argument"),
                   )
+                }
+                // Validate labeled args are all Bool
+                for larg in label_args {
+                  let lty = type_expr_eff(
+                    env,
+                    larg.expr,
+                    aliases,
+                    effects,
+                    allow_effect,
+                  )
+                  if not(type_equal(env, lty, @core.Type::Bool)) {
+                    raise TypeError::Mismatch(
+                      expected=@core.Type::Bool,
+                      actual=lty,
+                      span=larg.span,
+                      context=Some("flag argument"),
+                    )
+                  }
                 }
                 @core.Type::Array(@core.Type::String)
               }

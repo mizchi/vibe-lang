@@ -93,6 +93,97 @@ fn sh_lines_expr(name : String, span : @core.Span) -> @core.Expr {
 }
 
 ///|
+/// Check if all args are labeled (for command-call desugar).
+/// Type checking of arg values is deferred to the type checker.
+fn try_all_labeled_args(args : Array[@core.CallArg]) -> Bool {
+  if args.length() == 0 {
+    return false
+  }
+  for arg in args {
+    match arg.label {
+      None => return false
+      Some(_) => ()
+    }
+  }
+  true
+}
+
+///|
+/// Build `sh_lines("cmd", a=true, l=true, ...)` AST with sorted labels.
+fn sh_lines_with_flags_expr(
+  cmd : String,
+  flags : Array[String],
+  span : @core.Span,
+) -> @core.Expr {
+  flags.sort_by(fn(a, b) { a.compare(b) })
+  let args : Array[@core.CallArg] = []
+  let cmd_expr = @core.Expr::String(value=cmd, span~)
+  args.push(@core.CallArg::{ label: None, expr: cmd_expr, span })
+  for flag in flags {
+    let bool_expr = @core.Expr::Bool(value=true, span~)
+    args.push(@core.CallArg::{ label: Some(flag), expr: bool_expr, span })
+  }
+  @core.Expr::Call(name="sh_lines", type_args=[], args~, span~)
+}
+
+///|
+/// Try to extract a POSIX command with flags from a `__sub`/`__neg` chain.
+/// Returns `Some((cmd_name, flags))` if the expression is a chain like:
+///   `__sub(__sub(Ident("ls"), Ident("al")), __neg(Ident("all")))`
+/// Otherwise returns `None`.
+fn try_extract_posix_command(
+  expr : @core.Expr,
+  scope : DesugarScope,
+  known_non_cmd : Map[String, Bool],
+) -> (String, Array[String])? {
+  match expr {
+    @core.Expr::Call(name="__sub", args~, ..) => {
+      if args.length() != 2 {
+        return None
+      }
+      let lhs = args[0].expr
+      let rhs = args[1].expr
+      // Recurse on lhs
+      let (cmd, flags) = match
+        try_extract_posix_command(lhs, scope, known_non_cmd) {
+        Some(result) => result
+        None => return None
+      }
+      // rhs is either Ident (short flags) or __neg(Ident) (long flag)
+      match rhs {
+        @core.Expr::Ident(name~, ..) => {
+          // Short flags: each char becomes a flag
+          for ch in name {
+            flags.push(ch.to_string())
+          }
+          Some((cmd, flags))
+        }
+        @core.Expr::Call(name="__neg", args=neg_args, ..) => {
+          if neg_args.length() != 1 {
+            return None
+          }
+          match neg_args[0].expr {
+            @core.Expr::Ident(name~, ..) => {
+              flags.push(name)
+              Some((cmd, flags))
+            }
+            _ => None
+          }
+        }
+        _ => None
+      }
+    }
+    @core.Expr::Ident(name~, ..) =>
+      if is_vibe_command_candidate(name, scope, known_non_cmd) {
+        Some((name, []))
+      } else {
+        None
+      }
+    _ => None
+  }
+}
+
+///|
 fn desugar_vibe_block(
   body : @core.Module,
   scope : DesugarScope,
@@ -236,6 +327,58 @@ fn desugar_vibe_expr(
         expr
       }
     @core.Expr::Call(name~, type_args~, args~, span~) => {
+      // Try POSIX flag extraction for __sub chains: ls -al → sh_lines("ls", a=true, l=true)
+      if name == "__sub" {
+        match try_extract_posix_command(expr, scope, known_non_cmd) {
+          Some((cmd, flags)) => {
+            let flag_desc = flags.iter().map(fn(f) { f + "=true" }).collect()
+            let flag_str = flag_desc.join(", ")
+            notes.push(
+              "desugared `" +
+              cmd +
+              "` with flags (offset " +
+              span.start.to_string() +
+              ") to sh_lines(\"" +
+              cmd +
+              "\", " +
+              flag_str +
+              ")",
+            )
+            return sh_lines_with_flags_expr(cmd, flags, span)
+          }
+          None => ()
+        }
+      }
+      // Try function-call style command: ls() or ls(l=true) → sh_lines("ls", ...)
+      // Type checking of labeled args is deferred to the checker (Mismatch error).
+      if is_vibe_command_candidate(name, scope, known_non_cmd) &&
+        (args.length() == 0 || try_all_labeled_args(args)) {
+        notes.push(
+          "desugared `" +
+          name +
+          "(...)` (offset " +
+          span.start.to_string() +
+          ") to sh_lines(\"" +
+          name +
+          "\", ...)",
+        )
+        if args.length() == 0 {
+          return sh_lines_expr(name, span)
+        }
+        // Pass labeled args through to sh_lines; checker validates types
+        let sh_args : Array[@core.CallArg] = []
+        let cmd_expr = @core.Expr::String(value=name, span~)
+        sh_args.push(@core.CallArg::{ label: None, expr: cmd_expr, span })
+        for arg in args {
+          sh_args.push(arg)
+        }
+        return @core.Expr::Call(
+          name="sh_lines",
+          type_args=[],
+          args=sh_args,
+          span~,
+        )
+      }
       let next_args : Array[@core.CallArg] = []
       for arg in args {
         next_args.push(@core.CallArg::{
