@@ -264,6 +264,15 @@ bench-scratch-workflow:
 debug-scratch-workflow:
     scripts/debug_scratch_workflow.sh
 
+# Benchmark vibe normalize on all .vibe files
+# env: VIBE_BENCH_NORMALIZE_RUNS (default: 1)
+bench-normalize:
+    scripts/bench_normalize.sh
+
+# Benchmark vibe normalize (release build)
+bench-normalize-release:
+    scripts/bench_normalize.sh --release
+
 # Benchmark symbol index + LSIF backend
 bench-symbol-index:
     moon bench -p benches -f symbol_index_bench.mbt
@@ -432,6 +441,10 @@ adr title:
 # Normalize all .vibe files (fix mode)
 vibe-normalize:
     scripts/vibe_normalize_all.sh
+
+# Normalize, skipping files whose hash matches cache
+vibe-normalize-cached:
+    scripts/vibe_normalize_all.sh --skip-cached
 
 # Verify all .vibe files are already normalized (CI / pre-commit)
 vibe-normalize-check:

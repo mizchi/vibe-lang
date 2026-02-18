@@ -1423,10 +1423,12 @@ fn normalize_cmd(args : Array[String]) -> Unit {
     abort("normalize: expected <file...>")
   }
   let mut write = false
+  let mut skip_unchanged = false
   let files : Array[String] = []
   for arg in args {
     match arg {
       "--write" | "-w" => write = true
+      "--skip-unchanged" => skip_unchanged = true
       _ => files.push(arg)
     }
   }
@@ -1436,6 +1438,8 @@ fn normalize_cmd(args : Array[String]) -> Unit {
   if not(write) && files.length() > 1 {
     abort("normalize: use --write for multiple files")
   }
+  let mut skipped = 0
+  let mut written = 0
   for path in files {
     let resolved = @loader.resolve_entry_path(path)
     let source = @os_fs.read_file_to_string(resolved) catch {
@@ -1460,12 +1464,22 @@ fn normalize_cmd(args : Array[String]) -> Unit {
       normalized
     }
     if write {
+      if skip_unchanged && output == source {
+        skipped += 1
+        continue
+      }
       @os_fs.write_string_to_file(resolved, output) catch {
         e => abort("normalize: " + e.to_string())
       }
+      written += 1
     } else {
       println(output)
     }
+  }
+  if skip_unchanged && write {
+    println(
+      "normalize: \{written} written, \{skipped} skipped (unchanged)",
+    )
   }
 }
 
