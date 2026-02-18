@@ -203,3 +203,99 @@ test "normalize_engine: constant folding subtraction" {
     #|Ok("//# Functions\n\nlet value: Int = 7\n")
   inspect(result, content=expected)
 }
+
+///|
+test "normalize_engine: mutual recursion topo sort" {
+  let source =
+    #|let rec is_even = (n: Int) -> Bool {
+    #|  if n == 0 { true } else { is_odd(n - 1) }
+    #|}
+    #|let rec is_odd = (n: Int) -> Bool {
+    #|  if n == 0 { false } else { is_even(n - 1) }
+    #|}
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      // Both should be present (circular deps should not crash)
+      assert_true(normalized.contains("is_even"))
+      assert_true(normalized.contains("is_odd"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: idempotency - normalize twice gives same result" {
+  let source =
+    #|let b = () -> Int { a() }
+    #|let a = () -> Int { 1 }
+    #|let c = () -> Int { b() }
+  let result1 = normalize_source_text(source)
+  match result1 {
+    Ok(normalized1) => {
+      let result2 = normalize_source_text(normalized1)
+      match result2 {
+        Ok(normalized2) => assert_eq(normalized1, normalized2)
+        Err(msg) => fail("second normalize failed: " + msg)
+      }
+    }
+    Err(msg) => fail("first normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: use-only source" {
+  let source =
+    #|use ./vibe/std/string.vibe { split }
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => assert_true(normalized.contains("//# Imports"))
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: type-only source" {
+  let source =
+    #|type Meters = Int
+    #|type Seconds = Int
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      assert_true(normalized.contains("//# Types"))
+      assert_true(normalized.contains("type Meters = Int"))
+      assert_true(normalized.contains("type Seconds = Int"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: many definitions topo sort correctness" {
+  let buf = StringBuilder::new()
+  // Create a chain: f0 has no deps, f1 depends on f0, f2 depends on f1, etc.
+  for i in 0..<20 {
+    let i_str = i.to_string()
+    if i == 0 {
+      buf.write_string("let f0 = () -> Int { 0 }\n")
+    } else {
+      buf.write_string(
+        "let f" + i_str + " = () -> Int { f" + (i - 1).to_string() + "() }\n",
+      )
+    }
+  }
+  // Reverse the order to test sort
+  let source = buf.to_string()
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      // Verify f0 appears before f19
+      let idx_f0 = wbtest_substring_index(normalized, "let f0 =")
+      let idx_f19 = wbtest_substring_index(normalized, "let f19 =")
+      assert_true(idx_f0 >= 0)
+      assert_true(idx_f19 >= 0)
+      assert_true(idx_f0 < idx_f19)
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}

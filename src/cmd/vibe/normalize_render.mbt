@@ -619,10 +619,12 @@ fn normalize_render_source(
   stmts : Array[@vibe_core.Stmt],
   rewritten_exprs : Map[String, @vibe_core.Expr],
   inferred_annotations : Map[String, String],
+  env : @checker.TypeEnv,
 ) -> Result[String, String] {
   let export_decl_annotations = normalize_collect_export_decl_annotations(
     @vibe_core.Module::{ stmts, },
     inferred_annotations,
+    env,
   )
   let rendered : Array[NormalizeRenderedBlock] = []
   let declare_lines : Array[String] = []

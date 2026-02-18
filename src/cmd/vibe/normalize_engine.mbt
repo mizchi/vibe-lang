@@ -359,15 +359,20 @@ fn normalize_source_text_flat(source : String) -> Result[String, String] {
   if sorted.length() == 0 {
     return Ok("")
   }
-  let inferred_annotations = normalize_collect_inferred_annotations(@vibe_core.Module::{
-    stmts: sorted,
-  })
+  let sorted_module = @vibe_core.Module::{ stmts: sorted }
+  let env = @checker.type_check(sorted_module) catch {
+    _ => @checker.TypeEnv::new()
+  }
+  let inferred_annotations = normalize_collect_inferred_annotations(
+    sorted_module, env,
+  )
   let rendered = match
     normalize_render_source(
       quickfixed_source,
       sorted,
       optimized.rewritten_exprs,
       inferred_annotations,
+      env,
     ) {
     Ok(v) => v
     Err(err) => return Err(err)

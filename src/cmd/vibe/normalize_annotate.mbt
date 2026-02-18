@@ -1,8 +1,8 @@
 ///|
 fn normalize_collect_inferred_annotations(
   ast : @vibe_core.Module,
+  env : @checker.TypeEnv,
 ) -> Map[String, String] {
-  let env = @checker.type_check(ast) catch { _ => return {} }
   let out : Map[String, String] = {}
   for stmt in ast.stmts {
     match stmt {
@@ -40,8 +40,8 @@ fn normalize_collect_inferred_annotations(
 fn normalize_collect_export_decl_annotations(
   ast : @vibe_core.Module,
   inferred_annotations : Map[String, String],
+  env : @checker.TypeEnv,
 ) -> Map[String, String] {
-  let env = @checker.type_check(ast) catch { _ => return {} }
   let out : Map[String, String] = {}
   for stmt in ast.stmts {
     match stmt {

@@ -1,4 +1,5 @@
 ///| Canonical statement sorting for order-independent normalization.
+
 ///| Ensures normalize_module produces the same result regardless of input order.
 
 ///|
@@ -66,8 +67,7 @@ fn canonical_group(stmt : Stmt) -> CanonicalGroup {
     | Stmt::LetPat(..)
     | Stmt::LetPatElse(..)
     | Stmt::Expr(..) => CanonicalGroup::FnDef
-    Stmt::Test(..) | Stmt::Bench(..) | Stmt::Export(..) =>
-      CanonicalGroup::Other
+    Stmt::Test(..) | Stmt::Bench(..) | Stmt::Export(..) => CanonicalGroup::Other
   }
 }
 
@@ -149,11 +149,7 @@ fn canonical_sort_fns_topo_alpha(stmts : Array[Stmt]) -> Array[Stmt] {
     indegree[def.0] = deps.length()
     for dep_name, _ in deps {
       match dependents.get(dep_name) {
-        Some(existing) => {
-          let next = clone_bool_map(existing)
-          next[def.0] = true
-          dependents[dep_name] = next
-        }
+        Some(existing) => existing[def.0] = true
         None => {
           let next : Map[String, Bool] = {}
           next[def.0] = true
@@ -162,15 +158,17 @@ fn canonical_sort_fns_topo_alpha(stmts : Array[Stmt]) -> Array[Stmt] {
       }
     }
   }
+  // Collect initial ready set and sort in descending order so pop() gives smallest
   let ready : Array[String] = []
   for name, deg in indegree {
     if deg == 0 {
       ready.push(name)
     }
   }
+  ready.sort_by(fn(a, b) { canonical_name_compare(b, a) })
   let ordered_names : Array[String] = []
   while ready.length() > 0 {
-    let name = match canonical_pop_smallest(ready) {
+    let name = match ready.pop() {
       Some(v) => v
       None => break
     }
@@ -183,7 +181,7 @@ fn canonical_sort_fns_topo_alpha(stmts : Array[Stmt]) -> Array[Stmt] {
               let next = deg - 1
               indegree[dependent_name] = next
               if next == 0 {
-                ready.push(dependent_name)
+                canonical_sorted_insert(ready, dependent_name)
               }
             }
             None => ()
@@ -237,12 +235,14 @@ fn canonical_sort_fns_topo_alpha(stmts : Array[Stmt]) -> Array[Stmt] {
 }
 
 ///|
-fn canonical_pop_smallest(names : Array[String]) -> String? {
-  if names.length() == 0 {
-    return None
+/// Insert a name into a descending-sorted array maintaining order.
+/// The array is sorted in descending canonical order so that pop() yields the smallest.
+fn canonical_sorted_insert(arr : Array[String], name : String) -> Unit {
+  let mut pos = arr.length()
+  while pos > 0 && canonical_name_compare(arr[pos - 1], name) < 0 {
+    pos -= 1
   }
-  names.sort_by(fn(a, b) { canonical_name_compare(b, a) })
-  names.pop()
+  arr.insert(pos, name)
 }
 
 ///|
