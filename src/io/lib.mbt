@@ -201,6 +201,30 @@ pub fn is_directory(path : String) -> Bool {
 }
 
 ///|
+pub fn is_file(path : String) -> Bool {
+  @os_fs.is_file(path) catch {
+    _ => false
+  }
+}
+
+///|
+pub fn remove_file(path : String) -> Result[Unit, String] {
+  @os_fs.remove_file(path) catch { e => return Err(e.to_string()) }
+  Ok(())
+}
+
+///|
+pub fn remove_dir(path : String) -> Result[Unit, String] {
+  @os_fs.remove_dir(path) catch { e => return Err(e.to_string()) }
+  Ok(())
+}
+
+///|
+pub fn get_env_var(name : String) -> String? {
+  @sys.get_env_var(name)
+}
+
+///|
 fn split_output_lines(text : String) -> Array[String] {
   let out : Array[String] = []
   for part in text.split("\n") {

@@ -88,7 +88,10 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "double_floor" ||
   name == "double_ceil" ||
   name == "prompt_text" ||
-  name == "prompt_text_to_string"
+  name == "prompt_text_to_string" ||
+  name == "select" ||
+  name == "string_to_upper" ||
+  name == "string_to_lower"
 }
 
 ///|
@@ -1352,6 +1355,69 @@ fn eval_pure_builtin(
         _ => raise EvalError::BadCall("prompt_text_to_string")
       }
     }
+    "string_to_upper" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_to_upper")
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::String(s.to_upper())
+        _ => raise EvalError::BadCall("string_to_upper")
+      }
+    }
+    "string_to_lower" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall("string_to_lower")
+      }
+      match args[0] {
+        @core.Value::String(s) => @core.Value::String(s.to_lower())
+        _ => raise EvalError::BadCall("string_to_lower")
+      }
+    }
+    "select" => {
+      if args.length() < 2 {
+        raise EvalError::BadCall("select")
+      }
+      let field_names : Array[String] = []
+      for i in 1..<args.length() {
+        match args[i] {
+          @core.Value::String(s) => field_names.push(s)
+          _ => raise EvalError::BadCall("select")
+        }
+      }
+      match args[0] {
+        @core.Value::Record(map) => {
+          let out : Map[String, @core.Value] = {}
+          for name in field_names {
+            match map.get(name) {
+              Some(v) => out[name] = v
+              None => raise EvalError::BadCall("select: missing field: " + name)
+            }
+          }
+          @core.Value::Record(out)
+        }
+        @core.Value::Array(items) => {
+          let result : Array[@core.Value] = []
+          for item in items {
+            match item {
+              @core.Value::Record(map) => {
+                let out : Map[String, @core.Value] = {}
+                for name in field_names {
+                  match map.get(name) {
+                    Some(v) => out[name] = v
+                    None =>
+                      raise EvalError::BadCall("select: missing field: " + name)
+                  }
+                }
+                result.push(@core.Value::Record(out))
+              }
+              _ => raise EvalError::BadCall("select")
+            }
+          }
+          @core.Value::Array(result)
+        }
+        _ => raise EvalError::BadCall("select")
+      }
+    }
     _ => raise EvalError::BadCall(name)
   }
 }
@@ -1460,6 +1526,12 @@ fn join_shell_args(parts : Array[String], start : Int) -> String {
 
 ///|
 fn execute_shell_lines(cmd : String) -> Array[String] raise EvalError {
+  // Try host-backed execution first (native target)
+  match @backend.exec_command_lines(cmd) {
+    Ok(lines) => return lines
+    Err(_) => () // fall through to deterministic fallback
+  }
+  // Deterministic fallback for non-native targets
   let parts = split_shell_args(cmd)
   if parts.length() == 0 {
     raise EvalError::BadCall("sh_lines")

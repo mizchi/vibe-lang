@@ -100,7 +100,7 @@ pub fn StructDef::get_field(self : StructDef, name : String) -> StructFieldDef? 
 
 ///|
 pub struct TypeEnv {
-  bindings : Map[String, TypeScheme]
+  bindings : ScopedMap[TypeScheme]
   addr_types : Map[String, @core.Type]
   enum_defs : Map[String, EnumDef]
   struct_defs : Map[String, StructDef]
@@ -109,7 +109,7 @@ pub struct TypeEnv {
   traits : Map[String, TraitDefInfo]
   trait_impls : Map[String, Array[TraitImplDef]]
   fn_versions : Map[String, ApiSemver]
-  purities : Map[String, Bool]
+  purities : ScopedMap[Bool]
   expr_types : Map[Int64, @core.Type]
   num_vars : Map[Int, Bool]
   var_trait_bounds : Map[Int, Array[String]]
@@ -267,7 +267,13 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     | "fs_mkdir"
     | "fs_mkdir_p"
     | "fs_getcwd"
-    | "fs_chdir" => [@core.EffectAtom::Const("Fs")]
+    | "fs_chdir"
+    | "fs_remove"
+    | "fs_is_file"
+    | "fs_copy"
+    | "fs_rename"
+    | "fs_append" => [@core.EffectAtom::Const("Fs")]
+    "env_get" => [@core.EffectAtom::Const("Env")]
     "socket_tcp_connect"
     | "socket_tcp_read"
     | "socket_tcp_write"
@@ -651,7 +657,7 @@ fn unify_effect_sets(
 ///|
 pub fn TypeEnv::new() -> TypeEnv {
   {
-    bindings: {},
+    bindings: ScopedMap::new(),
     addr_types: {},
     enum_defs: {},
     struct_defs: {},
@@ -660,7 +666,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     traits: {},
     trait_impls: {},
     fn_versions: {},
-    purities: {},
+    purities: ScopedMap::new(),
     expr_types: {},
     num_vars: {},
     var_trait_bounds: {},
@@ -705,7 +711,7 @@ pub fn TypeEnv::get_expr_type(self : TypeEnv, span : @core.Span) -> @core.Type? 
 ///|
 pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
   {
-    bindings: self.bindings.copy(),
+    bindings: self.bindings.fork(),
     addr_types: self.addr_types.copy(),
     enum_defs: self.enum_defs.copy(),
     struct_defs: self.struct_defs.copy(),
@@ -714,7 +720,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     traits: self.traits.copy(),
     trait_impls: self.trait_impls.copy(),
     fn_versions: self.fn_versions.copy(),
-    purities: self.purities.copy(),
+    purities: self.purities.fork(),
     expr_types: self.expr_types,
     num_vars: self.num_vars.copy(),
     var_trait_bounds: self.var_trait_bounds.copy(),
@@ -731,7 +737,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
 ///|
 pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
   {
-    bindings: self.bindings.copy(),
+    bindings: self.bindings.fork(),
     addr_types: self.addr_types.copy(),
     enum_defs: self.enum_defs.copy(),
     struct_defs: self.struct_defs.copy(),
@@ -740,7 +746,7 @@ pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
     traits: self.traits.copy(),
     trait_impls: self.trait_impls.copy(),
     fn_versions: self.fn_versions.copy(),
-    purities: self.purities.copy(),
+    purities: self.purities.fork(),
     expr_types: self.expr_types,
     num_vars: self.num_vars.copy(),
     var_trait_bounds: self.var_trait_bounds.copy(),
@@ -1024,4 +1030,31 @@ pub fn TypeEnv::set_addr_type(
   ty : @core.Type,
 ) -> Unit {
   self.addr_types[addr] = ty
+}
+
+///|
+/// Compact after eval: merge scoped bindings back and clear temp state.
+pub fn TypeEnv::compact_for_eval(self : TypeEnv) -> TypeEnv {
+  {
+    bindings: self.bindings.merge_up_or_self(),
+    addr_types: self.addr_types,
+    enum_defs: self.enum_defs,
+    struct_defs: self.struct_defs,
+    type_aliases: self.type_aliases,
+    ctor_index: self.ctor_index,
+    traits: self.traits,
+    trait_impls: self.trait_impls,
+    fn_versions: self.fn_versions,
+    purities: self.purities.merge_up_or_self(),
+    expr_types: self.expr_types,
+    subs: {},
+    effect_subs: {},
+    num_vars: {},
+    var_trait_bounds: {},
+    next_var: self.next_var,
+    next_effect_var: self.next_effect_var,
+    loop_depth: self.loop_depth,
+    active_rec_fn: self.active_rec_fn,
+    active_rec_fn_has_type_params: self.active_rec_fn_has_type_params,
+  }
 }

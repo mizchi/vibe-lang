@@ -31,6 +31,12 @@ pub enum Effect {
   FsMkdir(String) // (path)
   FsGetCwd(String) // (cwd)
   FsChdir(String) // (new_cwd)
+  FsRemove(String) // (path)
+  FsIsFile(String, Bool) // (path, result)
+  FsCopy(String, String) // (src, dst)
+  FsRename(String, String) // (old, new)
+  FsAppend(String, String) // (path, content_preview)
+  EnvGet(String, String) // (name, value)
   LlmComplete(String, String, String) // (model, prompt_preview, response_preview)
   RlmTrace(String) // JSON trace event
 } derive(Show, Eq)
@@ -1746,6 +1752,179 @@ fn eval_builtin_call(
           { value: @core.Value::Unit, effects }
         }
         _ => raise EvalError::BadCall("fs_chdir")
+      }
+    }
+    "fs_remove" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_remove")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_remove")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_write(resolved)) {
+            raise EvalError::PermissionDenied("fs_write:" + resolved)
+          }
+          if @io.is_file(resolved) {
+            match @io.remove_file(resolved) {
+              Ok(_) => ()
+              Err(err) => raise EvalError::BadCall("fs_remove: " + err)
+            }
+          } else if @io.is_directory(resolved) {
+            match @io.remove_dir(resolved) {
+              Ok(_) => ()
+              Err(err) => raise EvalError::BadCall("fs_remove: " + err)
+            }
+          } else {
+            raise EvalError::BadCall("fs_remove: not found: " + resolved)
+          }
+          let effects = out.effects
+          effects.push(Effect::FsRemove(resolved))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("fs_remove")
+      }
+    }
+    "fs_is_file" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_is_file")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("fs_is_file")
+      }
+      match pos_args[0] {
+        @core.Value::String(path) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_read(resolved)) {
+            raise EvalError::PermissionDenied("fs_read:" + resolved)
+          }
+          let result = @io.is_file(resolved)
+          let effects = out.effects
+          effects.push(Effect::FsIsFile(resolved, result))
+          { value: @core.Value::Bool(result), effects }
+        }
+        _ => raise EvalError::BadCall("fs_is_file")
+      }
+    }
+    "fs_copy" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_copy")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("fs_copy")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::String(src), @core.Value::String(dst)) => {
+          let resolved_src = rt.resolve_path(src)
+          let resolved_dst = rt.resolve_path(dst)
+          if not(rt.caps().can_read(resolved_src)) {
+            raise EvalError::PermissionDenied("fs_read:" + resolved_src)
+          }
+          if not(rt.caps().can_write(resolved_dst)) {
+            raise EvalError::PermissionDenied("fs_write:" + resolved_dst)
+          }
+          match @io.read_string(resolved_src) {
+            Ok(content) =>
+              match @io.write_string(resolved_dst, content) {
+                Ok(_) => ()
+                Err(err) => raise EvalError::BadCall("fs_copy: " + err)
+              }
+            Err(err) => raise EvalError::BadCall("fs_copy: " + err)
+          }
+          let effects = out.effects
+          effects.push(Effect::FsCopy(resolved_src, resolved_dst))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("fs_copy")
+      }
+    }
+    "fs_rename" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_rename")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("fs_rename")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::String(old_path), @core.Value::String(new_path)) => {
+          let resolved_old = rt.resolve_path(old_path)
+          let resolved_new = rt.resolve_path(new_path)
+          if not(rt.caps().can_read(resolved_old)) {
+            raise EvalError::PermissionDenied("fs_read:" + resolved_old)
+          }
+          if not(rt.caps().can_write(resolved_old)) {
+            raise EvalError::PermissionDenied("fs_write:" + resolved_old)
+          }
+          if not(rt.caps().can_write(resolved_new)) {
+            raise EvalError::PermissionDenied("fs_write:" + resolved_new)
+          }
+          match @io.read_string(resolved_old) {
+            Ok(content) => {
+              match @io.write_string(resolved_new, content) {
+                Ok(_) => ()
+                Err(err) => raise EvalError::BadCall("fs_rename: " + err)
+              }
+              match @io.remove_file(resolved_old) {
+                Ok(_) => ()
+                Err(err) => raise EvalError::BadCall("fs_rename: " + err)
+              }
+            }
+            Err(err) => raise EvalError::BadCall("fs_rename: " + err)
+          }
+          let effects = out.effects
+          effects.push(Effect::FsRename(resolved_old, resolved_new))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("fs_rename")
+      }
+    }
+    "fs_append" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "fs_append")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall("fs_append")
+      }
+      match (pos_args[0], pos_args[1]) {
+        (@core.Value::String(path), @core.Value::String(content)) => {
+          let resolved = rt.resolve_path(path)
+          if not(rt.caps().can_write(resolved)) {
+            raise EvalError::PermissionDenied("fs_write:" + resolved)
+          }
+          let existing = if @io.path_exists(resolved) {
+            match @io.read_string(resolved) {
+              Ok(s) => s
+              Err(err) => raise EvalError::BadCall("fs_append: " + err)
+            }
+          } else {
+            ""
+          }
+          let new_content = existing + content
+          match @io.write_string(resolved, new_content) {
+            Ok(_) => ()
+            Err(err) => raise EvalError::BadCall("fs_append: " + err)
+          }
+          let effects = out.effects
+          effects.push(Effect::FsAppend(resolved, content))
+          { value: @core.Value::Unit, effects }
+        }
+        _ => raise EvalError::BadCall("fs_append")
+      }
+    }
+    "env_get" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "env_get")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("env_get")
+      }
+      match pos_args[0] {
+        @core.Value::String(name) => {
+          let value = match @io.get_env_var(name) {
+            Some(v) => v
+            None => ""
+          }
+          let effects = out.effects
+          effects.push(Effect::EnvGet(name, value))
+          { value: @core.Value::String(value), effects }
+        }
+        _ => raise EvalError::BadCall("env_get")
       }
     }
     "socket_tcp_connect" => {

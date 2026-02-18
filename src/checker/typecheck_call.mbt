@@ -574,6 +574,82 @@ fn type_call(
                 }
                 @core.Type::Array(@core.Type::String)
               }
+              "select" => {
+                let pos_args = extract_positional_args(
+                  args, "select", call_span,
+                )
+                if pos_args.length() < 2 {
+                  raise TypeError::BadCall(message="select", span=call_span)
+                }
+                let target_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                let field_names : Array[String] = []
+                for i in 1..<pos_args.length() {
+                  let arg_ty = type_expr_eff(
+                    env,
+                    pos_args[i],
+                    aliases,
+                    effects,
+                    allow_effect,
+                  )
+                  if not(type_equal(env, arg_ty, @core.Type::String)) {
+                    raise TypeError::Mismatch(
+                      expected=@core.Type::String,
+                      actual=arg_ty,
+                      span=pos_args[i].span(),
+                      context=Some("select field name"),
+                    )
+                  }
+                  match pos_args[i] {
+                    @core.Expr::String(value~, ..) => field_names.push(value)
+                    _ =>
+                      raise TypeError::BadCall(
+                        message="select: field names must be string literals",
+                        span=pos_args[i].span(),
+                      )
+                  }
+                }
+                match target_ty {
+                  @core.Type::Record(fields) => {
+                    let result_fields : Map[String, @core.Type] = {}
+                    for name in field_names {
+                      match fields.get(name) {
+                        Some(ty) => result_fields[name] = ty
+                        None =>
+                          raise TypeError::BadCall(
+                            message="select: unknown field: " + name,
+                            span=call_span,
+                          )
+                      }
+                    }
+                    @core.Type::Record(result_fields)
+                  }
+                  @core.Type::Array(@core.Type::Record(fields) as _elem_ty) => {
+                    let result_fields : Map[String, @core.Type] = {}
+                    for name in field_names {
+                      match fields.get(name) {
+                        Some(ty) => result_fields[name] = ty
+                        None =>
+                          raise TypeError::BadCall(
+                            message="select: unknown field: " + name,
+                            span=call_span,
+                          )
+                      }
+                    }
+                    @core.Type::Array(@core.Type::Record(result_fields))
+                  }
+                  _ =>
+                    raise TypeError::BadCall(
+                      message="select: first argument must be Record or Array[Record]",
+                      span=pos_args[0].span(),
+                    )
+                }
+              }
               "sleep" => {
                 let pos_args = extract_positional_args(args, "sleep", call_span)
                 if pos_args.length() != 1 {
@@ -1182,6 +1258,200 @@ fn type_call(
                   )
                 }
                 @core.Type::Unit
+              }
+              "fs_remove" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_remove", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="fs_remove", span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_remove",
+                  builtin_effects("fs_remove"),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "fs_is_file" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_is_file", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(
+                    message="fs_is_file",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_is_file",
+                  builtin_effects("fs_is_file"),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Bool
+              }
+              "fs_copy" | "fs_rename" => {
+                let pos_args = extract_positional_args(args, name, call_span)
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(message=name, span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  name,
+                  builtin_effects(name),
+                  call_span,
+                )
+                let src_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, src_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=src_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let dst_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, dst_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=dst_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "fs_append" => {
+                let pos_args = extract_positional_args(
+                  args, "fs_append", call_span,
+                )
+                if pos_args.length() != 2 {
+                  raise TypeError::BadCall(
+                    message="fs_append",
+                    span=call_span,
+                  )
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "fs_append",
+                  builtin_effects("fs_append"),
+                  call_span,
+                )
+                let path_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, path_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=path_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                let content_ty = type_expr_eff(
+                  env,
+                  pos_args[1],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, content_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=content_ty,
+                    span=pos_args[1].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::Unit
+              }
+              "env_get" => {
+                let pos_args = extract_positional_args(
+                  args, "env_get", call_span,
+                )
+                if pos_args.length() != 1 {
+                  raise TypeError::BadCall(message="env_get", span=call_span)
+                }
+                require_effect_guard(
+                  env,
+                  effects,
+                  allow_effect,
+                  "env_get",
+                  builtin_effects("env_get"),
+                  call_span,
+                )
+                let arg_ty = type_expr_eff(
+                  env,
+                  pos_args[0],
+                  aliases,
+                  effects,
+                  allow_effect,
+                )
+                if not(type_equal(env, arg_ty, @core.Type::String)) {
+                  raise TypeError::Mismatch(
+                    expected=@core.Type::String,
+                    actual=arg_ty,
+                    span=pos_args[0].span(),
+                    context=Some("argument"),
+                  )
+                }
+                @core.Type::String
               }
               "socket_tcp_connect" => {
                 let pos_args = extract_positional_args(
@@ -3211,6 +3481,18 @@ fn type_call(
                   name,
                   @core.Type::Double,
                   @core.Type::Double,
+                )
+              "string_to_upper" | "string_to_lower" =>
+                type_check_unary_convert(
+                  env,
+                  args,
+                  call_span,
+                  aliases,
+                  effects,
+                  allow_effect,
+                  name,
+                  @core.Type::String,
+                  @core.Type::String,
                 )
               "__add" => {
                 let pos_args = extract_positional_args(args, "__add", call_span)

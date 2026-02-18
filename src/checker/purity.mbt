@@ -466,6 +466,12 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "fs_mkdir_p" ||
   name == "fs_getcwd" ||
   name == "fs_chdir" ||
+  name == "fs_remove" ||
+  name == "fs_is_file" ||
+  name == "fs_copy" ||
+  name == "fs_rename" ||
+  name == "fs_append" ||
+  name == "env_get" ||
   name == "socket_tcp_connect" ||
   name == "socket_tcp_read" ||
   name == "socket_tcp_write" ||
@@ -547,7 +553,9 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "double_max" ||
   name == "double_min" ||
   name == "double_floor" ||
-  name == "double_ceil"
+  name == "double_ceil" ||
+  name == "string_to_upper" ||
+  name == "string_to_lower"
 }
 
 ///|
