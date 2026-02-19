@@ -65,7 +65,9 @@ Completed items are archived in `docs/DONE.md`.
   - [x] cross-module trait 制約（既知ギャップ）を解消し、`List` など利用側モジュールの impl を有効化する
   - [x] `run_script_tests` / `run_script_benches` の type env 同期と `for-in` 生成 span の衝突を解消し、runtime dispatch を安定化する
   - 対象: `src/checker/prelude.mbt`, `src/parser/parser_ast_expr.mbt`, `vibe/std/array.vibe`, `vibe/collection/list.vibe`
-- [ ] collection の型汎用性を拡張する（`Map` key 制約、`Set` の `StringSet` 専用性）
+- [x] collection の型汎用性を拡張する（`Map` key 制約、`Set` の `StringSet` 専用性）
+  - [x] `vibe/collection/map.vibe` に trait-bound key accessors (`has_by`/`get_by`/`get_or_by`) を追加し、非 String key の呼び出し面を統一する
+  - [x] `vibe/collection/set.vibe` に trait-bound accessors (`contains_by`/`add_by`/`remove_by`/`from_array_by`) を追加し、`StringSet` API で非 String 値を扱えるようにする
   - 対象: `vibe/collection/map.vibe`, `vibe/collection/set.vibe`, `vibe/collection/README.md`
 - [ ] `from_csv` / `from_yaml` の戻り値を JSON 文字列から構造化型へ寄せる設計を検討する
   - 対象: `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`, `vibe/shell/pipeline.vibe`
