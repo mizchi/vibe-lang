@@ -507,6 +507,8 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "http_request_url" ||
   name == "http_request_header" ||
   name == "http_request_body" ||
+  name == "__perform" ||
+  name == "__resume" ||
   name == "http_respond"
 }
 

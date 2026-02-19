@@ -390,8 +390,11 @@ show-wasmtime-flags:
     echo "VIBE_WASMTIME_WASI_FLAGS={{vibe_wasmtime_wasi_flags}}"
 
 # Run minimal WASI Threads probe module (requires wasmtime + wasm-tools)
-wasi-threads-probe:
+experimental_wasi_threads_probe:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} src/x/threads/run_probe.sh
+
+# Backward-compatible alias
+wasi-threads-probe: experimental_wasi_threads_probe
 
 # Initialize wasmtime submodule for experimental runtime flags
 wasmtime-submodule-init:
@@ -429,6 +432,13 @@ wasmtime-x64 *args:
       wasmtime {{args}}'
 
 # Run wasmtime with stack-switching enabled (x86_64 only)
+experimental_wasmtime_stack_switching file *args:
+    container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\
+      curl -sSf https://wasmtime.dev/install.sh | bash >/dev/null 2>&1 && \
+      export PATH="$HOME/.wasmtime/bin:$PATH" && \
+      wasmtime run -W stack-switching=y -W exceptions=y -W function-references=y {{args}} /work/{{file}}'
+
+# Backward-compatible alias
 wasmtime-stack-switching file *args:
     container run --platform linux/amd64 -v $(pwd):/work -v /tmp:/tmp rust:bookworm bash -c '\
       curl -sSf https://wasmtime.dev/install.sh | bash >/dev/null 2>&1 && \

@@ -115,6 +115,16 @@ Error handling:
 - `handle` handles `Error` locally and does not require the caller to declare
   `{Error}`.
 - `throw(...)` accepts values that satisfy the `Error` trait.
+- `perform(...)` emits an effect operation for `handle`:
+  - `perform(Foo(...))` requires effect `{Foo}` and can be handled by `Foo(...)` arm.
+  - non-constructor payload falls back to `{Error}` (and must satisfy `Error` trait).
+- `resume(...)` is only valid inside `handle` arms.
+  - current interpreter semantics are one-shot:
+    `resume(v)` replaces the matching `perform` site result with `v` and
+    re-evaluates the handled body.
+  - wasm backend currently does not provide continuation-style resume runtime;
+    `resume` codegen is a temporary fallback behavior until stack-switching-aware
+    lowering is implemented.
 - `String` is a built-in `Error`, and user code can define new error types with
   `suberror`.
 

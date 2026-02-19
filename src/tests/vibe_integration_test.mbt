@@ -743,3 +743,119 @@ test "vibe integration handle passthrough" {
     _ => fail("expected Int(42)")
   }
 }
+
+///|
+test "vibe integration perform handle typed payload" {
+  let db = VibeDb::new()
+  let main_source =
+    #|enum Eff {
+    #|  Ask(Int)
+    #|}
+    #|let run = () -> Int {
+    #|  handle {
+    #|    perform(Ask(41))
+    #|  } {
+    #|    Ask(v) => add(v, 1)
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int(42)")
+  }
+}
+
+///|
+test "vibe integration perform multi-layer handle" {
+  let db = VibeDb::new()
+  let main_source =
+    #|enum Eff {
+    #|  Ask(Int);
+    #|  Log(String);
+    #|}
+    #|let program = () -> Int with {Ask, Log} {
+    #|  perform(Log("start"))
+    #|}
+    #|let with_log = () -> Int with {Ask} {
+    #|  handle {
+    #|    program()
+    #|  } {
+    #|    Log(_) => perform(Ask(32))
+    #|  }
+    #|}
+    #|let run = () -> Int {
+    #|  handle {
+    #|    with_log()
+    #|  } {
+    #|    Ask(v) => v
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 32)
+    _ => fail("expected Int(32)")
+  }
+}
+
+///|
+test "vibe integration resume continues after perform" {
+  let db = VibeDb::new()
+  let main_source =
+    #|enum Eff {
+    #|  Ask(Int)
+    #|}
+    #|let run = () -> Int {
+    #|  handle {
+    #|    add(1, perform(Ask(41)))
+    #|  } {
+    #|    Ask(v) => resume(add(v, 1))
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 43)
+    _ => fail("expected Int(43)")
+  }
+}
+
+///|
+test "vibe integration resume multi-layer perform" {
+  let db = VibeDb::new()
+  let main_source =
+    #|enum Eff {
+    #|  Ask(Int);
+    #|  Log(String);
+    #|}
+    #|let run = () -> Int {
+    #|  handle {
+    #|    handle {
+    #|      add(10, perform(Log("x")))
+    #|    } {
+    #|      Log(_) => resume(perform(Ask(32)))
+    #|    }
+    #|  } {
+    #|    Ask(v) => resume(add(v, 1))
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = rt.eval_module(compiled.ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 43)
+    _ => fail("expected Int(43)")
+  }
+}

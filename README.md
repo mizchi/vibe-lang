@@ -256,7 +256,7 @@ just show-wasmtime-flags
 # defaults to:
 #   VIBE_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'
 #   VIBE_WASMTIME_WASI_FLAGS='threads=y'
-VIBE_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
+VIBE_USE_WASMTIME_SUBMODULE=1 just experimental_wasi_threads_probe
 
 # direct runner under x/threads
 VIBE_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
@@ -266,7 +266,7 @@ VIBE_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
 
 ```bash
 # Via container (for stack-switching support)
-just wasmtime-stack-switching /tmp/out.wasm
+just experimental_wasmtime_stack_switching /tmp/out.wasm
 ```
 
 ## Project Structure

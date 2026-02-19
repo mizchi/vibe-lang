@@ -16,9 +16,11 @@ just run test examples/syntax.vibe
 
 - `effects.vibe`: `with {Error}` / `try { ... } catch { ... }`
 - `async.vibe`: `await` and async effect combinations
+- `perform_handle.vibe`: `perform(...)` + `handle` による多層エフェクト/回復パターン
 - `module_export.vibe`, `module_import.vibe`: module export/import basics
 - `module_types_export.vibe`, `module_types_import.vibe`: importing types from modules
 - `pattern_coverage.vibe`: exhaustive pattern coverage examples
+- `trait_map_set.vibe`: map/set の trait パターン（`Hash` 境界と custom key adapter）
 
 ## Core Library
 

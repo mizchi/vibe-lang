@@ -207,6 +207,7 @@ pub struct Runtime {
   thread_runtime : ThreadRuntime
   // Module cache for import resolution: hash -> Module
   module_cache : Map[String, @core.Module]
+  perform_resume_overrides : Map[String, @core.Value]
   mut prelude_loaded : Bool
   mut cwd : String
 }
@@ -235,6 +236,7 @@ pub fn Runtime::new_with_features(
     mut_vars: {},
     thread_runtime: ThreadRuntime::new(),
     module_cache: {},
+    perform_resume_overrides: {},
     prelude_loaded: false,
     cwd: @io.current_dir_or_root(),
   }
@@ -423,6 +425,7 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     mut_vars: self.mut_vars.copy(),
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
+    perform_resume_overrides: self.perform_resume_overrides.copy(),
     prelude_loaded: self.prelude_loaded,
     cwd: self.cwd,
   }
@@ -449,6 +452,7 @@ fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime 
     mut_vars: self.mut_vars.copy(),
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
+    perform_resume_overrides: self.perform_resume_overrides.copy(),
     prelude_loaded: self.prelude_loaded,
     cwd: self.cwd,
   }

@@ -123,6 +123,43 @@ test "cli symbols cmd options parse json" {
 }
 
 ///|
+test "normalize options parse check single file" {
+  let parsed = parse_normalize_cmd_options(["--check", "examples/main.vibe"])
+  match parsed {
+    Ok(opts) => {
+      assert_true(opts.check)
+      assert_false(opts.write)
+      assert_eq(opts.files, ["examples/main.vibe"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "normalize options parse check multiple files" {
+  let parsed = parse_normalize_cmd_options(
+    ["--check", "examples/a.vibe", "examples/b.vibe"],
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_true(opts.check)
+      assert_eq(opts.files.length(), 2)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "normalize options reject check and write together" {
+  let parsed = parse_normalize_cmd_options(["--check", "--write", "a.vibe"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(msg, "normalize: --check cannot be combined with --write")
+  }
+}
+
+///|
 test "cli bench backend parse" {
   match parse_bench_backend("wasm") {
     Some(backend) => assert_eq(bench_backend_name(backend), "wasm")

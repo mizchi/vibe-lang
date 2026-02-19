@@ -1,0 +1,52 @@
+
+enum Eff {
+  Ask(Int);
+  Log(String);
+}
+let fail = () -> Int with {
+  Error
+} {
+  throw("division by zero")
+}
+let recover = (fallback: Int) -> Int {
+  handle {
+    fail()
+  } {
+    Error(_) => fallback
+  }
+}
+let ask_once = () -> Int with {
+  Ask
+} {
+  perform(Ask(41))
+}
+let multi_layer = () -> Int {
+  handle {
+    handle {
+      add(10, perform(Log("start")))
+    } {
+      Log(_) => resume(perform(Ask(32)))
+    }
+  } {
+    Ask(v) => resume(add(v, 1))
+  }
+}
+let ask_plus_one = () -> Int {
+  handle {
+    add(1, ask_once())
+  } {
+    Ask(v) => resume(add(v, 1))
+  }
+}
+let main = () -> Int {
+  add(ask_plus_one(), multi_layer())
+}
+test "perform+handle typed payload" {
+  assert(eq(ask_plus_one(), 43))
+}
+test "perform+handle multi-layer" {
+  assert(eq(multi_layer(), 43))
+}
+test "throw is still handled by Error" {
+  assert(eq(recover(7), 7))
+}

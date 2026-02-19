@@ -68,16 +68,16 @@ WASI Threads モジュールとして必要な形:
 
 - `src/x/threads/wasi_threads_probe.wat`
 - `src/x/threads/run_probe.sh`
-- `just wasi-threads-probe`
+- `just experimental_wasi_threads_probe`
 
 実行:
 
 ```bash
 # system wasmtime を使う
-just wasi-threads-probe
+just experimental_wasi_threads_probe
 
 # submodule wasmtime を使う
-VIBE_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
+VIBE_USE_WASMTIME_SUBMODULE=1 just experimental_wasi_threads_probe
 
 # 直接実行
 VIBE_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh

@@ -36,6 +36,7 @@ pub struct TypeEnv {
   mut next_var : Int
   mut next_effect_var : Int
   mut loop_depth : Int
+  mut handle_arm_depth : Int
   mut active_rec_fn : String?
   mut active_rec_fn_has_type_params : Bool
   subs : Map[Int, @core.Type]
@@ -61,6 +62,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     next_var: 0,
     next_effect_var: 0,
     loop_depth: 0,
+    handle_arm_depth: 0,
     active_rec_fn: None,
     active_rec_fn_has_type_params: false,
     subs: {},

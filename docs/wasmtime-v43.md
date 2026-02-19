@@ -357,12 +357,12 @@ just component-run script.vibe
 - `src/x/threads/wasi_threads_probe.wat`
 - `src/x/threads/run_probe.sh`
 - `scripts/run_wasi_threads_probe.sh`
-- `just wasi-threads-probe`
+- `just experimental_wasi_threads_probe`
 
 実行例:
 
 ```bash
-VIBE_USE_WASMTIME_SUBMODULE=1 just wasi-threads-probe
+VIBE_USE_WASMTIME_SUBMODULE=1 just experimental_wasi_threads_probe
 ```
 
 デフォルト（未指定時）では次のフラグを適用する:

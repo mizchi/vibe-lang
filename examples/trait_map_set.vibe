@@ -1,0 +1,195 @@
+
+struct UserId {
+  value: Int;
+}
+type HashSet = Map[Bool]
+impl Hash for UserId
+let hash_key = [K: Hash](key: K) -> String {
+  __to_string(key)
+}
+let set_size = (s: HashSet) -> Int {
+  array_length(map_keys(s))
+}
+let set_empty = () -> HashSet {
+  map {
+  }
+}
+let map_get_by = [K: Hash, V](m: Map[V], key: K) -> Option[V] {
+  let skey = hash_key(key)
+  if map_has_key(m, skey) {
+    Some(map_get(m, skey))
+  } else {
+    None
+  }
+}
+let map_set_by = [K: Hash, V](m: Map[V], key: K, value: V) -> Map[V] {
+  do {
+    let b = map_builder()
+    let ks = map_keys(m)
+    let mut i = 0
+    while i < array_length(ks) {
+      let k = array_get(ks, i)
+      map_builder_set(b, k, map_get(m, k))
+      i += 1
+    }
+    map_builder_set(b, hash_key(key), value)
+    map_builder_freeze(b)
+  }
+}
+let set_add_by = [K: Hash](s: HashSet, key: K) -> HashSet {
+  map_set_by(s, key, true)
+}
+let user_id_key = (id: UserId) -> String {
+  __to_string(id.value)
+}
+let map_get_with = [K, V](m: Map[V], key: K, key_to_string: (K) -> String) -> Option[V] {
+  let skey = key_to_string(key)
+  if map_has_key(m, skey) {
+    Some(map_get(m, skey))
+  } else {
+    None
+  }
+}
+let map_set_with = [K, V](m: Map[V], key: K, value: V, key_to_string: (K) -> String,) -> Map[V] {
+  do {
+    let b = map_builder()
+    let ks = map_keys(m)
+    let mut i = 0
+    while i < array_length(ks) {
+      let k = array_get(ks, i)
+      map_builder_set(b, k, map_get(m, k))
+      i += 1
+    }
+    map_builder_set(b, key_to_string(key), value)
+    map_builder_freeze(b)
+  }
+}
+let set_add_with = [K](s: HashSet, key: K, key_to_string: (K) -> String) -> HashSet {
+  map_set_with(s, key, true, key_to_string)
+}
+let set_remove_by = [K: Hash](s: HashSet, key: K) -> HashSet {
+  let skey = hash_key(key)
+  do {
+    let b = map_builder()
+    let ks = map_keys(s)
+    let mut i = 0
+    while i < array_length(ks) {
+      let k = array_get(ks, i)
+      if not(string_equals(k, skey)) {
+        map_builder_set(b, k, true)
+      }
+      i += 1
+    }
+    map_builder_freeze(b)
+  }
+}
+let build_user_map = () -> Map[String] {
+  let mut users: Map[String] = map {
+  }
+  users = map_set_with(users, UserId::{
+    value: 1
+  }, "alice", user_id_key)
+  users = map_set_with(users, UserId::{
+    value: 2
+  }, "bob", user_id_key)
+  users
+}
+let build_user_set = () -> HashSet {
+  let mut s = set_empty()
+  s = set_add_with(s, UserId::{
+    value: 1
+  }, user_id_key)
+  s = set_add_with(s, UserId::{
+    value: 2
+  }, user_id_key)
+  s = set_add_with(s, UserId::{
+    value: 2
+  }, user_id_key)
+  s
+}
+let set_contains_by = [K: Hash](s: HashSet, key: K) -> Bool {
+  map_has_key(s, hash_key(key))
+}
+let set_remove_with = [K](s: HashSet, key: K, key_to_string: (K) -> String) -> HashSet {
+  let skey = key_to_string(key)
+  do {
+    let b = map_builder()
+    let ks = map_keys(s)
+    let mut i = 0
+    while i < array_length(ks) {
+      let k = array_get(ks, i)
+      if not(string_equals(k, skey)) {
+        map_builder_set(b, k, true)
+      }
+      i += 1
+    }
+    map_builder_freeze(b)
+  }
+}
+let set_contains_with = [K](s: HashSet, key: K, key_to_string: (K) -> String) -> Bool {
+  map_has_key(s, key_to_string(key))
+}
+let map_get_or_else_by = [K: Hash, V](m: Map[V], key: K, default: () -> V) -> V {
+  match map_get_by(m, key) {
+    Some(v) => v,
+    None => default()
+  }
+}
+let map_get_or_else_with = [K, V](m: Map[V], key: K, key_to_string: (K) -> String, default: () -> V,) -> V {
+  match map_get_with(m, key, key_to_string) {
+    Some(v) => v,
+    None => default()
+  }
+}
+test "map trait pattern with hash-bound key" {
+  let scores: Map[Int] = map {
+    "1": 10,
+    "2": 20
+  }
+  match map_get_by(scores, 1) {
+    Some(v) => assert(eq(v, 10)),
+    None => assert(false)
+  }
+  let fallback = map_get_or_else_by(scores, 999, () -> Int {
+    -1
+  })
+  assert(eq(fallback, -1))
+  let scores2 = map_set_by(scores, 3, 30)
+  assert(eq(array_length(map_keys(scores2)), 3))
+}
+test "set trait pattern with hash-bound key" {
+  let mut s = set_empty()
+  s = set_add_by(s, 1)
+  s = set_add_by(s, 2)
+  s = set_add_by(s, 2)
+  assert(eq(set_size(s), 2))
+  assert(set_contains_by(s, 1))
+  let s2 = set_remove_by(s, 2)
+  assert(not(set_contains_by(s2, 2)))
+}
+test "map/set custom key adapter pattern" {
+  let users = build_user_map()
+  match map_get_with(users, UserId::{
+    value: 1
+  }, user_id_key) {
+    Some(name) => assert(string_equals(name, "alice")),
+    None => assert(false)
+  }
+  let fallback = map_get_or_else_with(users, UserId::{
+    value: 999
+  }, user_id_key, () -> String {
+    "guest"
+  })
+  assert(string_equals(fallback, "guest"))
+  let s = build_user_set()
+  assert(eq(set_size(s), 2))
+  assert(set_contains_with(s, UserId::{
+    value: 1
+  }, user_id_key))
+  let s2 = set_remove_with(s, UserId::{
+    value: 2
+  }, user_id_key)
+  assert(not(set_contains_with(s2, UserId::{
+    value: 2
+  }, user_id_key)))
+}

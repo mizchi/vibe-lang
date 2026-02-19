@@ -99,7 +99,7 @@ fn print_usage() -> Unit {
   )
   println("  fmt [--dry-run] <file...>  normalize + format scripts")
   println(
-    "  normalize [--write] <file...>  normalize declaration order + DCE (+fmt)",
+    "  normalize [--write|--check] <file...>  normalize declaration order + DCE (+fmt)",
   )
   println(
     "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--debug-errors] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
@@ -1419,45 +1419,21 @@ fn test_cmd_parallel(
 
 ///|
 fn normalize_cmd(args : Array[String]) -> Unit {
-  if args.length() == 0 {
-    abort("normalize: expected <file...>")
+  let options = match parse_normalize_cmd_options(args) {
+    Ok(v) => v
+    Err(msg) => abort(msg)
   }
-  let mut write = false
-  let mut skip_unchanged = false
-  let mut merge = false
-  let mut library_mode = false
-  let mut output_path : String? = None
-  let files : Array[String] = []
-  let mut i = 0
-  while i < args.length() {
-    match args[i] {
-      "--write" | "-w" => write = true
-      "--skip-unchanged" => skip_unchanged = true
-      "--merge" => merge = true
-      "--library" => library_mode = true
-      "-o" => {
-        i += 1
-        if i >= args.length() {
-          abort("normalize: -o requires a path argument")
-        }
-        output_path = Some(args[i])
-      }
-      _ => files.push(args[i])
-    }
-    i += 1
-  }
-  if files.length() == 0 {
-    abort("normalize: expected <file...>")
-  }
-  if merge {
-    normalize_merge_cmd(files, library_mode, output_path)
+  if options.merge {
+    normalize_merge_cmd(options.files, options.library_mode, options.output_path)
     return
   }
-  if not(write) && files.length() > 1 {
-    abort("normalize: use --write for multiple files")
-  }
+  let write = options.write
+  let check = options.check
+  let skip_unchanged = options.skip_unchanged
+  let files = options.files
   let mut skipped = 0
   let mut written = 0
+  let mut changed = 0
   for path in files {
     let resolved = @loader.resolve_entry_path(path)
     let source = @os_fs.read_file_to_string(resolved) catch {
@@ -1476,10 +1452,17 @@ fn normalize_cmd(args : Array[String]) -> Unit {
       Ok(v) => v
       Err(err) => abort("normalize: " + err)
     }
-    let output = if write {
+    let output = if write || check {
       apply_lock_annotations_for_format(resolved, normalized)
     } else {
       normalized
+    }
+    if check {
+      if output != source {
+        changed += 1
+        println("normalize: not normalized: \{path}")
+      }
+      continue
     }
     if write {
       if skip_unchanged && output == source {
@@ -1494,9 +1477,86 @@ fn normalize_cmd(args : Array[String]) -> Unit {
       println(output)
     }
   }
+  if check {
+    if changed > 0 {
+      abort("normalize: \{changed} file(s) are not normalized")
+    }
+    println("normalize: \{files.length()} files already normalized")
+    return
+  }
   if skip_unchanged && write {
     println("normalize: \{written} written, \{skipped} skipped (unchanged)")
   }
+}
+
+///|
+struct NormalizeCmdOptions {
+  write : Bool
+  check : Bool
+  skip_unchanged : Bool
+  merge : Bool
+  library_mode : Bool
+  output_path : String?
+  files : Array[String]
+}
+
+///|
+fn parse_normalize_cmd_options(
+  args : Array[String],
+) -> Result[NormalizeCmdOptions, String] {
+  if args.length() == 0 {
+    return Err("normalize: expected <file...>")
+  }
+  let mut write = false
+  let mut check = false
+  let mut skip_unchanged = false
+  let mut merge = false
+  let mut library_mode = false
+  let mut output_path : String? = None
+  let files : Array[String] = []
+  let mut i = 0
+  while i < args.length() {
+    match args[i] {
+      "--write" | "-w" => write = true
+      "--check" => check = true
+      "--skip-unchanged" => skip_unchanged = true
+      "--merge" => merge = true
+      "--library" => library_mode = true
+      "-o" => {
+        i += 1
+        if i >= args.length() {
+          return Err("normalize: -o requires a path argument")
+        }
+        output_path = Some(args[i])
+      }
+      _ => files.push(args[i])
+    }
+    i += 1
+  }
+  if files.length() == 0 {
+    return Err("normalize: expected <file...>")
+  }
+  if check && write {
+    return Err("normalize: --check cannot be combined with --write")
+  }
+  if check && skip_unchanged {
+    return Err("normalize: --check cannot be combined with --skip-unchanged")
+  }
+  if check && merge {
+    return Err("normalize: --check cannot be combined with --merge")
+  }
+  if not(write) && not(check) && files.length() > 1 && not(merge) {
+    return Err("normalize: use --write or --check for multiple files")
+  }
+  Ok({
+    write: write,
+    check: check,
+    skip_unchanged: skip_unchanged,
+    merge: merge,
+    library_mode: library_mode,
+    output_path: output_path,
+    files: files,
+  })
 }
 
 ///|

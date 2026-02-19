@@ -159,7 +159,6 @@ test "line shell options reject unknown arg" {
   }
 }
 
-///|
 test "eval cmd options parse db and expression" {
   let parsed = parse_eval_cmd_options(
     ["--db=tmp1.db", "--include=index.vdb", "let", "value", "=", "1"],

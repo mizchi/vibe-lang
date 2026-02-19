@@ -244,31 +244,82 @@ fn call_or_throw_expr(
   args : Array[@core.CallArg],
   span : @core.Span,
 ) -> @core.Expr raise ParseError {
-  if name != "throw" {
+  if name != "throw" && name != "perform" && name != "resume" {
     return @core.Expr::Call(name~, type_args~, args~, span~)
+  }
+  if name == "throw" {
+    if type_args.length() != 0 {
+      raise ParseError::UnexpectedToken(
+        expected="throw(<expr>)",
+        got="throw[<type>](...)",
+        span~,
+      )
+    }
+    if args.length() != 1 {
+      raise ParseError::UnexpectedToken(
+        expected="throw(<expr>)",
+        got="throw(...)",
+        span~,
+      )
+    }
+    match args[0].label {
+      Some(_) =>
+        raise ParseError::UnexpectedToken(
+          expected="throw(<expr>)",
+          got="throw(label=...)",
+          span~,
+        )
+      None => return @core.Expr::Raise(value=args[0].expr, span~)
+    }
+  }
+  if name == "perform" {
+    if type_args.length() != 0 {
+      raise ParseError::UnexpectedToken(
+        expected="perform(<expr>)",
+        got="perform[<type>](...)",
+        span~,
+      )
+    }
+    if args.length() != 1 {
+      raise ParseError::UnexpectedToken(
+        expected="perform(<expr>)",
+        got="perform(...)",
+        span~,
+      )
+    }
+    match args[0].label {
+      Some(_) =>
+        raise ParseError::UnexpectedToken(
+          expected="perform(<expr>)",
+          got="perform(label=...)",
+          span~,
+        )
+      None =>
+        return @core.Expr::Call(name="__perform", type_args=[], args~, span~)
+    }
   }
   if type_args.length() != 0 {
     raise ParseError::UnexpectedToken(
-      expected="throw(<expr>)",
-      got="throw[<type>](...)",
+      expected="resume(<expr>)",
+      got="resume[<type>](...)",
       span~,
     )
   }
   if args.length() != 1 {
     raise ParseError::UnexpectedToken(
-      expected="throw(<expr>)",
-      got="throw(...)",
+      expected="resume(<expr>)",
+      got="resume(...)",
       span~,
     )
   }
   match args[0].label {
     Some(_) =>
       raise ParseError::UnexpectedToken(
-        expected="throw(<expr>)",
-        got="throw(label=...)",
+        expected="resume(<expr>)",
+        got="resume(label=...)",
         span~,
       )
-    None => @core.Expr::Raise(value=args[0].expr, span~)
+    None => @core.Expr::Call(name="__resume", type_args=[], args~, span~)
   }
 }
 

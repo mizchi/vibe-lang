@@ -3344,6 +3344,28 @@ fn compile_call_builtin_pre_user_inner(
       )
       compile_expr(ctx, buf, pos_args[0])
     }
+    "__perform" => {
+      let pos_args = extract_positional_exprs_with_arity(args, "__perform", 1)
+      if ctx.use_js_strings {
+        compile_expr(ctx, buf, pos_args[0])
+      } else {
+        compile_expr_i32(ctx, buf, pos_args[0])
+      }
+      buf.push((8).to_byte()) // throw
+      write_u32_leb(buf, ctx.error_tag_index)
+    }
+    "__resume" => {
+      let pos_args = extract_positional_exprs_with_arity(args, "__resume", 1)
+      // Experimental fallback: encode resume as throw on wasm backend.
+      // Proper continuation resume requires stack-switching-aware lowering.
+      if ctx.use_js_strings {
+        compile_expr(ctx, buf, pos_args[0])
+      } else {
+        compile_expr_i32(ctx, buf, pos_args[0])
+      }
+      buf.push((8).to_byte()) // throw
+      write_u32_leb(buf, ctx.error_tag_index)
+    }
     "string_from_char_code" => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "string_from_char_code", 1,

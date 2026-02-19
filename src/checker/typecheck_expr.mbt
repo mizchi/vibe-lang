@@ -1,18 +1,34 @@
 ///|
 /// Bind handle arm pattern variables into the arm environment.
-/// Effect patterns (Ctor) bind their args as String directly,
-/// bypassing collect_pattern_bindings which expects enum scrutinees.
+/// For known constructors, bind with the ctor payload type.
+/// Fallback to String binding for unknown constructors (`Error(...)` etc).
 fn bind_handle_arm_pat(
   arm_env : TypeEnv,
   env : TypeEnv,
   pat : @core.Pat,
 ) -> Unit raise TypeError {
   match pat {
-    @core.Pat::Ctor(args~, ..) =>
-      for arg in args {
-        if arg is @core.Pat::Bind(name~, ..) {
-          arm_env.set(name, @core.Type::String)
+    @core.Pat::Ctor(name~, args~, ..) =>
+      match env.get_ctor(name) {
+        Some(info) => {
+          let inst = instantiate_ctor(arm_env, info)
+          let effect_row : Map[String, @core.Type] = {}
+          effect_row[name] = inst.payload
+          let bindings = collect_pattern_bindings(
+            arm_env,
+            pat,
+            @core.Type::Variant(effect_row),
+          )
+          for bind_name, bind_ty in bindings {
+            arm_env.set(bind_name, bind_ty)
+          }
         }
+        None =>
+          for arg in args {
+            if arg is @core.Pat::Bind(name~, ..) {
+              arm_env.set(name, @core.Type::String)
+            }
+          }
       }
     _ => {
       let bindings = collect_pattern_bindings(env, pat, @core.Type::String)
@@ -237,6 +253,110 @@ fn ctor_payload_type(
 }
 
 ///|
+fn infer_perform_effect_name(env : TypeEnv, value_expr : @core.Expr) -> String {
+  match value_expr {
+    @core.Expr::Call(name~, ..) | @core.Expr::Ident(name~, ..) =>
+      match env.get_ctor(name) {
+        Some(_) => name
+        None => "Error"
+      }
+    _ => "Error"
+  }
+}
+
+///|
+fn type_perform_expr(
+  env : TypeEnv,
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+  span : @core.Span,
+) -> @core.Type raise TypeError {
+  let pos_args = extract_positional_args(args, "perform", span)
+  if pos_args.length() != 1 {
+    raise TypeError::BadCall(message="perform", span~)
+  }
+  let value_expr = pos_args[0]
+  let value_ty = type_expr_eff(env, value_expr, aliases, effects, allow_effect)
+  let effect_name = infer_perform_effect_name(env, value_expr)
+  if effect_name == "Error" {
+    let _ = ensure_type_satisfies_bounds(
+      env,
+      value_ty,
+      ["Error"],
+      span,
+      "perform",
+    )
+  }
+  require_effects(
+    env,
+    effects,
+    [@core.EffectAtom::Const(effect_name)],
+    "perform",
+    span,
+  )
+  @core.Type::Never
+}
+
+///|
+fn type_resume_expr(
+  env : TypeEnv,
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+  span : @core.Span,
+) -> @core.Type raise TypeError {
+  let pos_args = extract_positional_args(args, "resume", span)
+  if pos_args.length() != 1 {
+    raise TypeError::BadCall(message="resume", span~)
+  }
+  if env.handle_arm_depth <= 0 {
+    raise TypeError::BadCall(
+      message="resume used outside handle arm",
+      span~,
+    )
+  }
+  let _ = type_expr_eff(
+    env,
+    pos_args[0],
+    aliases,
+    effects,
+    allow_effect,
+  )
+  fresh_type_var(env)
+}
+
+///|
+fn type_handle_arm_expr(
+  env : TypeEnv,
+  arm : @core.MatchArm,
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+) -> @core.Type raise TypeError {
+  if arm.cond is Some(c) {
+    let g_ty = type_expr_eff(env, c, aliases, effects, allow_effect)
+    if not(type_equal(env, g_ty, @core.Type::Bool)) {
+      raise TypeError::Mismatch(
+        expected=@core.Type::Bool,
+        actual=g_ty,
+        span=c.span(),
+        context=Some("handle guard"),
+      )
+    }
+  }
+  type_expr_eff(
+    env,
+    arm.expr,
+    aliases,
+    effects,
+    allow_effect,
+  )
+}
+
+///|
 fn type_expr_eff(
   env : TypeEnv,
   expr : @core.Expr,
@@ -311,6 +431,10 @@ fn type_expr_eff(
     @core.Expr::Call(name~, args~, span~, ..) =>
       if has_alias_prefix(name, aliases) {
         @core.Type::Unit
+      } else if name == "__perform" {
+        type_perform_expr(env, args, aliases, effects, allow_effect, span)
+      } else if name == "__resume" {
+        type_resume_expr(env, args, aliases, effects, allow_effect, span)
       } else {
         type_call(env, name, args, aliases, effects, allow_effect, span)
       }
@@ -458,25 +582,20 @@ fn type_expr_eff(
       let body_ty = type_block(env, body, aliases, body_scope, allow_effect)
       for arm in arms {
         let arm_env = clone_env(env)
+        arm_env.handle_arm_depth += 1
         bind_handle_arm_pat(arm_env, env, arm.pat)
-        if arm.cond is Some(c) {
-          let g_ty = type_expr_eff(arm_env, c, aliases, effects, allow_effect)
-          if not(type_equal(env, g_ty, @core.Type::Bool)) {
-            raise TypeError::Mismatch(
-              expected=@core.Type::Bool,
-              actual=g_ty,
-              span=c.span(),
-              context=Some("handle guard"),
-            )
-          }
-        }
-        let arm_ty = type_expr_eff(
+        let arm_ty_result : Result[@core.Type, TypeError] = try? type_handle_arm_expr(
           arm_env,
-          arm.expr,
+          arm,
           aliases,
           effects,
           allow_effect,
         )
+        arm_env.handle_arm_depth -= 1
+        let arm_ty = match arm_ty_result {
+          Ok(ty) => ty
+          Err(err) => raise err
+        }
         if not(type_equal(env, body_ty, arm_ty)) {
           raise TypeError::Mismatch(
             expected=body_ty,

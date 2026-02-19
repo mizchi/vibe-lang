@@ -91,9 +91,75 @@ suberror EvalError {
   BadCall(String)
   ImportError(String)
   FeatureDisabled(feature~ : String, operation~ : String, flag~ : String)
+  Performed(@core.Value, String)
+  Resume(@core.Value)
   LoopBreak(@core.Value?)
   LoopContinue(Array[@core.Value])
 } derive(Show, Eq)
+
+///|
+fn wrap_error_effect(payload : @core.Value) -> @core.Value {
+  let fields : Map[String, @core.Value] = {}
+  fields["Error"] = payload
+  @core.Value::Record(fields)
+}
+
+///|
+fn normalize_performed_value(value : @core.Value) -> @core.Value {
+  match value {
+    @core.Value::Record(_) => value
+    _ => wrap_error_effect(value)
+  }
+}
+
+///|
+fn perform_site_key(span : @core.Span) -> String {
+  span.start.to_string() + ":" + span.end.to_string()
+}
+
+///|
+fn eval_handle_expr(
+  rt : Runtime,
+  body : @core.Module,
+  arms : Array[@core.MatchArm],
+) -> EvalOutput raise EvalError {
+  eval_block(rt, body) catch {
+    e =>
+      match e {
+        EvalError::Performed(performed_value, site_key) => {
+          for arm in arms {
+            match match_pattern(arm.pat, performed_value) {
+              Some(bindings) => {
+                let guard_ok = match arm.cond {
+                  Some(c) =>
+                    match eval_expr_with_bindings(rt, c, bindings).value {
+                      @core.Value::Bool(b) => b
+                      _ => raise EvalError::BadCall("handle guard")
+                    }
+                  None => true
+                }
+                if guard_ok {
+                  return eval_expr_with_bindings(rt, arm.expr, bindings) catch {
+                    e =>
+                      match e {
+                        EvalError::Resume(resume_value) => {
+                          rt.perform_resume_overrides[site_key] = resume_value
+                          eval_handle_expr(rt, body, arms)
+                        }
+                        _ => raise e
+                      }
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          raise EvalError::Performed(performed_value, site_key)
+        }
+        _ => raise e
+      }
+  }
+}
 
 ///|
 pub fn Runtime::eval_module(
@@ -584,7 +650,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared before eval
       raise EvalError::UnknownName("_")
-    @core.Expr::Call(name~, args~, ..) => eval_call(rt, name, args)
+    @core.Expr::Call(name~, args~, span~, ..) => eval_call(rt, name, args, span)
     @core.Expr::Tuple(items~, ..) => {
       let values : Array[@core.Value] = []
       let effects : Array[Effect] = []
@@ -665,43 +731,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       }
     }
     @core.Expr::Block(body~, ..) => eval_block(rt, body)
-    @core.Expr::Handle(body~, arms~, ..) =>
-      eval_block(rt, body) catch {
-        e => {
-          let error_str = @core.Value::String(e.to_string())
-          let error_val = @core.Value::Record({ "Error": error_str })
-          let mut matched = false
-          let mut result : EvalOutput = {
-            value: @core.Value::Unit,
-            effects: [],
-          }
-          for arm in arms {
-            match match_pattern(arm.pat, error_val) {
-              Some(bindings) => {
-                let guard_ok = match arm.cond {
-                  Some(c) =>
-                    match eval_expr_with_bindings(rt, c, bindings).value {
-                      @core.Value::Bool(b) => b
-                      _ => raise EvalError::BadCall("handle guard")
-                    }
-                  None => true
-                }
-                if guard_ok {
-                  result = eval_expr_with_bindings(rt, arm.expr, bindings)
-                  matched = true
-                  break
-                }
-              }
-              None => ()
-            }
-          }
-          if matched {
-            result
-          } else {
-            raise e
-          }
-        }
-      }
+    @core.Expr::Handle(body~, arms~, ..) => eval_handle_expr(rt, body, arms)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       let scrutinee_out = eval_expr(rt, scrutinee)
       let effects = scrutinee_out.effects
@@ -791,11 +821,9 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
     @core.Expr::Loop(params~, body~, ..) => eval_loop_expr(rt, params, body)
     @core.Expr::Raise(value~, ..) => {
       let v = eval_expr(rt, value)
-      raise EvalError::BadCall(
-        match v.value {
-          @core.Value::String(s) => s
-          _ => "throw"
-        },
+      raise EvalError::Performed(
+        wrap_error_effect(v.value),
+        "__throw",
       )
     }
     @core.Expr::Yield(expr~, ..) => {
@@ -1264,6 +1292,7 @@ fn eval_call(
   rt : Runtime,
   name : String,
   args : Array[@core.CallArg],
+  call_span : @core.Span,
 ) -> EvalOutput raise EvalError {
   let name = match resolve_type_member_call_name_rt(rt, name, args) {
     Some(candidate) => candidate
@@ -1310,7 +1339,7 @@ fn eval_call(
             }
           }
         } else {
-          eval_builtin_call(rt, name, args)
+          eval_builtin_call(rt, name, args, call_span)
         }
     }
   }
@@ -1321,8 +1350,37 @@ fn eval_builtin_call(
   rt : Runtime,
   name : String,
   args : Array[@core.CallArg],
+  call_span : @core.Span,
 ) -> EvalOutput raise EvalError {
   match name {
+    "__perform" => {
+      let site_key = perform_site_key(call_span)
+      match rt.perform_resume_overrides.get(site_key) {
+        Some(v) => {
+          rt.perform_resume_overrides.remove(site_key)
+          { value: v, effects: [] }
+        }
+        None => {
+          let out = eval_args(rt, args)
+          let pos_args = extract_positional_values(out.args, "__perform")
+          if pos_args.length() != 1 {
+            raise EvalError::BadCall("__perform")
+          }
+          raise EvalError::Performed(
+            normalize_performed_value(pos_args[0]),
+            site_key,
+          )
+        }
+      }
+    }
+    "__resume" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "__resume")
+      if pos_args.length() != 1 {
+        raise EvalError::BadCall("__resume")
+      }
+      raise EvalError::Resume(pos_args[0])
+    }
     "sleep" => {
       require_unstable_async(rt, "sleep")
       let out = eval_args(rt, args)
