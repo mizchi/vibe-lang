@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run `vibe normalize --write` on all .vibe source files.
+# Run `vibe normalize` on all .vibe source files.
 # Files are processed per-directory to keep each invocation fast.
 # Usage:
 #   scripts/vibe_normalize_all.sh                              — normalize --write (fix mode)
@@ -118,11 +118,19 @@ for dir in "${DIRS[@]}"; do
     done
     TOTAL=$((TOTAL + ${#FILES[@]}))
     if [ ${#CHANGED_FILES[@]} -gt 0 ]; then
-      "$VIBE_BIN" normalize --write "${CHANGED_FILES[@]}"
+      if [ "$MODE" = "check" ]; then
+        "$VIBE_BIN" normalize --check "${CHANGED_FILES[@]}"
+      else
+        "$VIBE_BIN" normalize --write "${CHANGED_FILES[@]}"
+      fi
     fi
   else
     TOTAL=$((TOTAL + ${#FILES[@]}))
-    "$VIBE_BIN" normalize --write "${FILES[@]}"
+    if [ "$MODE" = "check" ]; then
+      "$VIBE_BIN" normalize --check "${FILES[@]}"
+    else
+      "$VIBE_BIN" normalize --write "${FILES[@]}"
+    fi
   fi
 done
 
@@ -138,23 +146,7 @@ if [ "$USE_CACHE" = "1" ]; then
   done
 fi
 
-ALL_VIBE=()
-for root in "${SOURCE_ROOTS[@]}"; do
-  while IFS= read -r f; do
-    ALL_VIBE+=("$f")
-  done < <(find "$root" -name '*.vibe' -type f | filter_excluded_files)
-done
-
 if [ "$MODE" = "check" ]; then
-  CHANGED=$(git diff --name-only -- "${ALL_VIBE[@]}" || true)
-  if [ -n "$CHANGED" ]; then
-    echo "ERROR: The following files are not normalized:" >&2
-    echo "$CHANGED" >&2
-    echo "" >&2
-    echo "Run 'just vibe-normalize' to fix." >&2
-    git checkout -- "${ALL_VIBE[@]}"
-    exit 1
-  fi
   if [ "$USE_CACHE" = "1" ]; then
     echo "normalize: $TOTAL files OK ($SKIPPED cached, $((TOTAL - SKIPPED)) checked)"
   else

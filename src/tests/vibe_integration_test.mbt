@@ -859,3 +859,62 @@ test "vibe integration resume multi-layer perform" {
     _ => fail("expected Int(43)")
   }
 }
+
+///|
+test "vibe integration resume rejects mismatched resumed value type" {
+  let db = VibeDb::new()
+  let main_source =
+    #|enum Eff {
+    #|  Ask(Int)
+    #|}
+    #|let run = () -> Int {
+    #|  handle {
+    #|    let resumed: Int = perform(Ask(41))
+    #|    add(1, resumed)
+    #|  } {
+    #|    Ask(v) => resume("oops")
+    #|  }
+    #|}
+    #|run()
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = try? rt.eval_module(compiled.ast)
+  match result {
+    Ok(_) => fail("expected runtime error for resume value")
+    Err(err) =>
+      assert_true(err.to_string().contains("resume value type mismatch"))
+  }
+}
+
+///|
+test "vibe integration resume rejects prior effects before perform" {
+  let db = VibeDb::new()
+  let main_source =
+    #|enum Eff {
+    #|  Ask(Int)
+    #|}
+    #|let run = () -> Int with {Ask, Stdout} {
+    #|  do { stdout_write_char(65) }
+    #|  add(1, perform(Ask(41)))
+    #|}
+    #|let main = () -> Int with {Stdout} {
+    #|  handle {
+    #|    run()
+    #|  } {
+    #|    Ask(v) => resume(v)
+    #|  }
+    #|}
+    #|main()
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result = try? rt.eval_module(compiled.ast)
+  match result {
+    Ok(_) => fail("expected runtime error for resume after prior effects")
+    Err(err) =>
+      assert_true(
+        err.to_string().contains("resume cannot continue after prior effects"),
+      )
+  }
+}

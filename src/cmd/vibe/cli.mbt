@@ -1424,7 +1424,11 @@ fn normalize_cmd(args : Array[String]) -> Unit {
     Err(msg) => abort(msg)
   }
   if options.merge {
-    normalize_merge_cmd(options.files, options.library_mode, options.output_path)
+    normalize_merge_cmd(
+      options.files,
+      options.library_mode,
+      options.output_path,
+    )
     return
   }
   let write = options.write
@@ -1513,28 +1517,71 @@ fn parse_normalize_cmd_options(
   let mut merge = false
   let mut library_mode = false
   let mut output_path : String? = None
+  let mut positional_only = false
   let files : Array[String] = []
   let mut i = 0
   while i < args.length() {
-    match args[i] {
-      "--write" | "-w" => write = true
-      "--check" => check = true
-      "--skip-unchanged" => skip_unchanged = true
-      "--merge" => merge = true
-      "--library" => library_mode = true
+    let arg = args[i]
+    if positional_only {
+      files.push(arg)
+      i += 1
+      continue
+    }
+    if arg == "--" {
+      positional_only = true
+      i += 1
+      continue
+    }
+    match arg {
+      "--write" | "-w" => {
+        write = true
+        i += 1
+        continue
+      }
+      "--check" => {
+        check = true
+        i += 1
+        continue
+      }
+      "--skip-unchanged" => {
+        skip_unchanged = true
+        i += 1
+        continue
+      }
+      "--merge" => {
+        merge = true
+        i += 1
+        continue
+      }
+      "--library" => {
+        library_mode = true
+        i += 1
+        continue
+      }
       "-o" => {
         i += 1
         if i >= args.length() {
           return Err("normalize: -o requires a path argument")
         }
         output_path = Some(args[i])
+        i += 1
+        continue
       }
-      _ => files.push(args[i])
+      _ => {
+        if arg.has_prefix("-") {
+          return Err("normalize: unknown option " + arg)
+        }
+        files.push(arg)
+        i += 1
+        continue
+      }
     }
-    i += 1
   }
   if files.length() == 0 {
     return Err("normalize: expected <file...>")
+  }
+  if output_path is Some(_) && not(merge) {
+    return Err("normalize: -o is only valid with --merge")
   }
   if check && write {
     return Err("normalize: --check cannot be combined with --write")
@@ -1548,15 +1595,7 @@ fn parse_normalize_cmd_options(
   if not(write) && not(check) && files.length() > 1 && not(merge) {
     return Err("normalize: use --write or --check for multiple files")
   }
-  Ok({
-    write: write,
-    check: check,
-    skip_unchanged: skip_unchanged,
-    merge: merge,
-    library_mode: library_mode,
-    output_path: output_path,
-    files: files,
-  })
+  Ok({ write, check, skip_unchanged, merge, library_mode, output_path, files })
 }
 
 ///|

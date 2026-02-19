@@ -265,6 +265,26 @@ fn infer_perform_effect_name(env : TypeEnv, value_expr : @core.Expr) -> String {
 }
 
 ///|
+fn infer_handle_arm_effect_name(pat : @core.Pat) -> String? {
+  match pat {
+    @core.Pat::Ctor(name~, ..) => Some(name)
+    @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => Some("Error")
+    _ => None
+  }
+}
+
+///|
+fn infer_handle_arm_resume_expected(
+  env : TypeEnv,
+  pat : @core.Pat,
+) -> @core.Type? {
+  match infer_handle_arm_effect_name(pat) {
+    Some(effect_name) => env.handle_resume_types.get(effect_name)
+    _ => None
+  }
+}
+
+///|
 fn type_perform_expr(
   env : TypeEnv,
   args : Array[@core.CallArg],
@@ -296,7 +316,22 @@ fn type_perform_expr(
     "perform",
     span,
   )
-  @core.Type::Never
+  let ret_ty = fresh_type_var(env)
+  if env.handle_resume_types_active {
+    match env.handle_resume_types.get(effect_name) {
+      Some(expected_ty) =>
+        if not(type_equal(env, expected_ty, ret_ty)) {
+          raise TypeError::Mismatch(
+            expected=expected_ty,
+            actual=ret_ty,
+            span~,
+            context=Some("perform resume type"),
+          )
+        }
+      None => env.handle_resume_types[effect_name] = ret_ty
+    }
+  }
+  ret_ty
 }
 
 ///|
@@ -313,18 +348,48 @@ fn type_resume_expr(
     raise TypeError::BadCall(message="resume", span~)
   }
   if env.handle_arm_depth <= 0 {
+    raise TypeError::BadCall(message="resume used outside handle arm", span~)
+  }
+  let arg_ty = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+  if not(env.handle_resume_types_active) {
     raise TypeError::BadCall(
-      message="resume used outside handle arm",
+      message="resume used outside resumable handle",
       span~,
     )
   }
-  let _ = type_expr_eff(
-    env,
-    pos_args[0],
-    aliases,
-    effects,
-    allow_effect,
-  )
+  let effect_name = match env.handle_arm_effect_name {
+    Some(name) => name
+    None =>
+      raise TypeError::BadCall(message="resume used outside effect arm", span~)
+  }
+  match env.handle_arm_resume_expected {
+    Some(expected_ty) =>
+      if not(type_equal(env, expected_ty, arg_ty)) {
+        raise TypeError::Mismatch(
+          expected=expected_ty,
+          actual=arg_ty,
+          span=pos_args[0].span(),
+          context=Some("resume value"),
+        )
+      }
+    None => ()
+  }
+  match env.handle_resume_types.get(effect_name) {
+    Some(expected_ty) =>
+      if not(type_equal(env, expected_ty, arg_ty)) {
+        raise TypeError::Mismatch(
+          expected=expected_ty,
+          actual=arg_ty,
+          span=pos_args[0].span(),
+          context=Some("resume value"),
+        )
+      }
+    None =>
+      raise TypeError::BadCall(
+        message="resume has no matching perform for effect: " + effect_name,
+        span~,
+      )
+  }
   fresh_type_var(env)
 }
 
@@ -347,13 +412,7 @@ fn type_handle_arm_expr(
       )
     }
   }
-  type_expr_eff(
-    env,
-    arm.expr,
-    aliases,
-    effects,
-    allow_effect,
-  )
+  type_expr_eff(env, arm.expr, aliases, effects, allow_effect)
 }
 
 ///|
@@ -579,24 +638,35 @@ fn type_expr_eff(
         }
       }
       let body_scope = effect_scope_extend(effects, handle_effects)
-      let body_ty = type_block(env, body, aliases, body_scope, allow_effect)
+      let body_env = clone_env(env)
+      body_env.handle_resume_types = {}
+      body_env.handle_resume_types_active = true
+      body_env.handle_arm_effect_name = None
+      body_env.handle_arm_resume_expected = None
+      let body_ty = type_block(
+        body_env, body, aliases, body_scope, allow_effect,
+      )
+      let inferred_resume_types = body_env.handle_resume_types.copy()
       for arm in arms {
         let arm_env = clone_env(env)
         arm_env.handle_arm_depth += 1
-        bind_handle_arm_pat(arm_env, env, arm.pat)
+        arm_env.handle_resume_types = inferred_resume_types.copy()
+        arm_env.handle_resume_types_active = true
+        arm_env.handle_arm_effect_name = infer_handle_arm_effect_name(arm.pat)
+        arm_env.handle_arm_resume_expected = infer_handle_arm_resume_expected(
+          body_env,
+          arm.pat,
+        )
+        bind_handle_arm_pat(arm_env, body_env, arm.pat)
         let arm_ty_result : Result[@core.Type, TypeError] = try? type_handle_arm_expr(
-          arm_env,
-          arm,
-          aliases,
-          effects,
-          allow_effect,
+          arm_env, arm, aliases, effects, allow_effect,
         )
         arm_env.handle_arm_depth -= 1
         let arm_ty = match arm_ty_result {
           Ok(ty) => ty
           Err(err) => raise err
         }
-        if not(type_equal(env, body_ty, arm_ty)) {
+        if not(type_equal(arm_env, body_ty, arm_ty)) {
           raise TypeError::Mismatch(
             expected=body_ty,
             actual=arm_ty,

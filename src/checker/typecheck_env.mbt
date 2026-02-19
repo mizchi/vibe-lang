@@ -37,6 +37,10 @@ pub struct TypeEnv {
   mut next_effect_var : Int
   mut loop_depth : Int
   mut handle_arm_depth : Int
+  mut handle_resume_types : Map[String, @core.Type]
+  mut handle_resume_types_active : Bool
+  mut handle_arm_effect_name : String?
+  mut handle_arm_resume_expected : @core.Type?
   mut active_rec_fn : String?
   mut active_rec_fn_has_type_params : Bool
   subs : Map[Int, @core.Type]
@@ -63,6 +67,10 @@ pub fn TypeEnv::new() -> TypeEnv {
     next_effect_var: 0,
     loop_depth: 0,
     handle_arm_depth: 0,
+    handle_resume_types: {},
+    handle_resume_types_active: false,
+    handle_arm_effect_name: None,
+    handle_arm_resume_expected: None,
     active_rec_fn: None,
     active_rec_fn_has_type_params: false,
     subs: {},

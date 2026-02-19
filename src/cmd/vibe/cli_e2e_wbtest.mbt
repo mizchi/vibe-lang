@@ -137,9 +137,9 @@ test "normalize options parse check single file" {
 
 ///|
 test "normalize options parse check multiple files" {
-  let parsed = parse_normalize_cmd_options(
-    ["--check", "examples/a.vibe", "examples/b.vibe"],
-  )
+  let parsed = parse_normalize_cmd_options([
+    "--check", "examples/a.vibe", "examples/b.vibe",
+  ])
   match parsed {
     Ok(opts) => {
       assert_true(opts.check)
@@ -156,6 +156,24 @@ test "normalize options reject check and write together" {
     Ok(_) => fail("expected error")
     Err(msg) =>
       assert_eq(msg, "normalize: --check cannot be combined with --write")
+  }
+}
+
+///|
+test "normalize options reject unknown option" {
+  let parsed = parse_normalize_cmd_options(["--check", "--wat", "a.vibe"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "normalize: unknown option --wat")
+  }
+}
+
+///|
+test "normalize options reject -o without merge" {
+  let parsed = parse_normalize_cmd_options(["-o", "/tmp/out.vibe", "a.vibe"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "normalize: -o is only valid with --merge")
   }
 }
 

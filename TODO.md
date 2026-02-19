@@ -30,6 +30,12 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `src/cmd/vibe/*test*.mbt`
 - [ ] `cmd/vibe` の package 依存をサブコマンド単位に整理して未使用 import を解消する
   - 対象: `src/cmd/vibe/moon.pkg`
+- [x] `normalize` オプション解析を厳格化する（未知オプションをファイル扱いしない）
+  - 対象: `src/cmd/vibe/cli.mbt`, `src/cmd/vibe/cli_e2e_wbtest.mbt`
+- [x] `normalize -o` を `--merge` 専用に制約し、誤用時は明示エラーにする
+  - 対象: `src/cmd/vibe/cli.mbt`, `src/cmd/vibe/cli_e2e_wbtest.mbt`
+- [x] `vibe-normalize --check` を非破壊化する（`--write` + `git checkout` を廃止）
+  - 対象: `scripts/vibe_normalize_all.sh`
 
 ## vibe/ Library UX
 
@@ -88,6 +94,12 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `src/runtime/db.mbt`
 - [ ] runtime package の責務を整理し、frontend 再公開 API を縮小する
   - 対象: `src/runtime/frontend_bridge.mbt`, `src/runtime/pkg.generated.mbti`
+- [ ] `resume` の one-shot 実装で `perform` 前副作用が二重実行される問題を解消する
+  - 対象: `src/runtime/eval.mbt`, `src/runtime/store.mbt`
+- [ ] `resume` 引数型を継続先型と接続し、実行時型崩壊を型検査で防ぐ
+  - 対象: `src/checker/typecheck_expr.mbt`, `src/checker/typecheck_env*.mbt`
+- [ ] `perform` サイト識別キー（`start:end`）の衝突/リーク耐性を強化する
+  - 対象: `src/runtime/eval.mbt`, `src/runtime/store.mbt`
 
 ## Testing
 
