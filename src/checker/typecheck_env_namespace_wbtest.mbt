@@ -3,7 +3,10 @@ test "TypeEnv::namespace_root resolves primitive and named roots" {
   let env = TypeEnv::new()
   assert_eq(env.namespace_root(@core.Type::Int), Some("Int"))
   assert_eq(env.namespace_root(@core.Type::String), Some("String"))
-  assert_eq(env.namespace_root(@core.Type::Named(name="User", args=[])), Some("User"))
+  assert_eq(
+    env.namespace_root(@core.Type::Named(name="User", args=[])),
+    Some("User"),
+  )
 }
 
 ///|

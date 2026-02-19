@@ -684,8 +684,6 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_break_expr()
   } else if self.at(continue_kw()) {
     self.parse_continue_expr()
-  } else if self.at(raise_kw()) {
-    self.parse_raise_expr()
   } else if self.at(yield_kw()) {
     self.parse_yield_expr()
   } else if self.at(record_kw()) {
@@ -958,16 +956,6 @@ fn Parser::parse_continue_expr(self : Parser) -> Unit {
   self.builder.finish_node()
 }
 
-///|
-fn Parser::parse_raise_expr(self : Parser) -> Unit {
-  self.builder.start_node(raise_expr())
-  self.bump() // raise
-  self.skip_trivia()
-  self.parse_expr()
-  self.builder.finish_node()
-}
-
-///|
 fn Parser::parse_yield_expr(self : Parser) -> Unit {
   self.builder.start_node(yield_expr())
   self.bump() // yield

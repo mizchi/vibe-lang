@@ -588,13 +588,7 @@ fn type_call_builtin_handler_runtime_memory(
     }
     _ =>
       type_call_builtin_handler_json_and_fallback(
-        env,
-        name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
+        env, name, args, aliases, effects, allow_effect, call_span,
       )
   }
 }

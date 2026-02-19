@@ -794,7 +794,7 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
       raise EvalError::BadCall(
         match v.value {
           @core.Value::String(s) => s
-          _ => "raise"
+          _ => "throw"
         },
       )
     }

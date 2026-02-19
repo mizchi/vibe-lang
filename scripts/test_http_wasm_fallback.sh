@@ -26,17 +26,17 @@ WASM_OUT=$(mktemp /tmp/http_wasm_XXXXXX.wasm)
 "$CLI_BIN" compile --wasm --no-dce "$TEST_FILE" -o "$WASM_OUT"
 echo "  compile: OK ($(wc -c < "$WASM_OUT" | tr -d ' ') bytes)"
 
-# Test 3: WASM execution — HTTP builtins raise catchable errors
+# Test 3: WASM execution — HTTP builtins throw catchable errors
 echo ""
 echo "--- Test 3: WASM execution (wasmtime) ---"
 # The test file's run function exercises try/catch around HTTP builtins.
-# On WASM, http_request throws an exception caught by try/catch → returns -1.
+# On WASM, http_request throws an exception caught by handle → returns -1.
 OUTPUT=$("$WASMTIME" run --wasm exceptions "$WASM_OUT" 2>&1) && {
   echo "  execution: OK"
 } || {
   # If wasmtime exits non-zero, check if it's an uncaught exception vs. trap
   if echo "$OUTPUT" | grep -q "unreachable"; then
-    echo "  FAIL: wasm trap (unreachable) — HTTP builtins should raise, not trap"
+    echo "  FAIL: wasm trap (unreachable) — HTTP builtins should throw, not trap"
     rm -f "$WASM_OUT"
     exit 1
   elif echo "$OUTPUT" | grep -q "thrown Wasm exception"; then

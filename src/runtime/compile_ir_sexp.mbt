@@ -451,7 +451,7 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
     }
     @core.Expr::Raise(value~, span~) => {
       let _ = span
-      "(raise " + expr_to_sexp(value, aliases) + ")"
+      "(throw " + expr_to_sexp(value, aliases) + ")"
     }
     @core.Expr::Yield(expr~, span~) => {
       let _ = span

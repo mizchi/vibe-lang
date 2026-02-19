@@ -241,10 +241,10 @@ fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
 }
 
 ///|
-fn raise_literal_source(message : String) -> String {
+fn throw_literal_source(message : String) -> String {
   let src =
     #|let fail = () -> Int with {Error} {
-    #|  raise "@MSG@"
+    #|  throw("@MSG@")
     #|}
     #|handle {
     #|  fail()
@@ -434,10 +434,10 @@ test "vibe wasm keeps table/element when function values are used" {
 }
 
 ///|
-test "vibe wasm strips raise string literal in default build" {
+test "vibe wasm strips throw string literal in default build" {
   let db = VibeDb::new()
   let needle = "ERR_LITERAL_ONLY_FOR_DEBUG_9f0d5c2a"
-  db.set_source("main", raise_literal_source(needle))
+  db.set_source("main", throw_literal_source(needle))
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -448,10 +448,10 @@ test "vibe wasm strips raise string literal in default build" {
 }
 
 ///|
-test "vibe wasm keeps raise string literal when debug errors enabled" {
+test "vibe wasm keeps throw string literal when debug errors enabled" {
   let db = VibeDb::new()
   let needle = "ERR_LITERAL_ONLY_FOR_DEBUG_9f0d5c2a"
-  db.set_source("main", raise_literal_source(needle))
+  db.set_source("main", throw_literal_source(needle))
   let wasm = try
     @runtime_compile.compile_module_wasm_with_opt_level(
       db,

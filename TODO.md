@@ -94,6 +94,21 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] `serialize` / `deserialize` の手書き対称実装に対して round-trip property test を追加する
   - 対象: `src/core/serialize.mbt`, `src/core/deserialize.mbt`
 
+## Compiler / Language Incident Follow-up (2026-02)
+
+- [x] `eval_report_json` の `value_type_name` で `@core.Value` の新規バリアントを取りこぼさない
+  - 事象: `PromptText` 追加後に `build-wasm-vibe` が `partial_match` で失敗
+  - 回帰テスト: `src/lib/lib_wbtest.mbt` (`eval_report_json` の `PromptText` 型名確認)
+- [x] 旧 `import { ... } from ...` 記法の parse error を migration ヒント付きで固定する
+  - 事象: `.vibe` の旧記法が混入すると parser で停止し、bundle-size case の mode が変わる
+  - 回帰テスト: `scripts/test_codegen_unsupported.sh` (`use <module-ref> { ... }` を期待)
+- [ ] bundle-size の `unsupported` baseline case と「現行構文のサイズ評価 case」を分離する
+  - 目的: syntax migration と pure size regression を別軸で管理する
+  - 対象: `bench/bundle_size/cases.txt`, `bench/golden/bundle_size_budget.tsv`, `bench/bundle_size/README.md`
+- [ ] `examples/*.vibe` のサイズ予算運用ルール（テスト追加/関数追加の扱い）を明文化する
+  - 目的: サンプル拡張で budget が偶発的に揺れる問題を防ぐ
+  - 対象: `bench/bundle_size/README.md`, `docs/vibe.md`
+
 ## Language Features
 
 - [ ] Multi-language frontend adapters:

@@ -584,13 +584,13 @@ test "vibe integration for-in uses imported Iterable impl and type members" {
 }
 
 ///|
-test "vibe integration imported suberror can be raised as Error" {
+test "vibe integration imported suberror can be thrown as Error" {
   let db = VibeDb::new()
   let lib_source = "export suberror AppError(String);"
   let main_source =
     #|use ./lib.vibe { AppError }
     #|let fail = () -> Unit with {Error} {
-    #|  raise AppError("boom")
+    #|  throw(AppError("boom"))
     #|}
     #|let run = () -> String {
     #|  handle { fail(); "ok" } { _ => "caught" }
@@ -713,7 +713,7 @@ test "vibe integration module-qualified import rejects member path" {
 test "vibe integration handle catches error" {
   let db = VibeDb::new()
   let main_source =
-    #|let fail = () -> String with {Error} { raise "oops" }
+    #|let fail = () -> String with {Error} { throw("oops") }
     #|handle { fail() } {
     #|  Error(e) => e
     #|}

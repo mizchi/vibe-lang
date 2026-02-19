@@ -116,19 +116,25 @@ echo "========================================"
 echo ""
 
 # ============================================
-# Test: Async/Await (accepted by codegen)
+# Test: Handle/Yield codegen behavior
 # ============================================
-log_info "Testing async/await compile path..."
+log_info "Testing handle/yield compile path..."
 
-# await/yield currently compile for wasm backend.
+# handle is the canonical error boundary syntax.
+expect_compile_success "handle expression compiles" \
+'let value = handle {
+  1
+} {
+  Error(_) => 2
+}
+value'
+
+# yield currently compiles for wasm backend.
 # Note: running these modules on Node may require wasmfx/stack-switching support.
-expect_compile_success "await expression compiles" \
-'let x = await 42
-x'
-
 expect_compile_success "yield expression compiles" \
 'let x = yield 42
 x'
+
 
 echo ""
 
@@ -143,6 +149,19 @@ expect_wasm_result "export undefined symbol is ignored in wasm backend" \
 'export { foo }
 42' \
 "42"
+
+echo ""
+
+# ============================================
+# Test: Legacy syntax rejection (import -> use)
+# ============================================
+log_info "Testing legacy import syntax rejection..."
+
+expect_compile_error "legacy import syntax suggests use-form migration" \
+'import { add } from "./lib.vibe"
+let x = add(1, 2)
+x' \
+"use <module-ref> { ... }"
 
 echo ""
 

@@ -114,7 +114,7 @@ fn print_usage() -> Unit {
     "                                     --coverage-run-tests executes top-level test blocks in coverage mode",
   )
   println(
-    "                                     --debug-errors keeps raise string literals in wasm (debug builds)",
+    "                                     --debug-errors keeps throw string literals in wasm (debug builds)",
   )
   println(
     "  precompile [--out-dir dir] [--wasm|--wasm-js-string] [-O<level>] <dir...>",

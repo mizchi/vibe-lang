@@ -24,7 +24,7 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
   } else if self.peek_kind() == continue_kw() {
     self.parse_continue_expr()
   } else if self.peek_kind() == raise_kw() {
-    self.parse_raise_expr()
+    self.parse_removed_raise_expr()
   } else if self.peek_kind() == yield_kw() {
     self.parse_yield_expr()
   } else if self.peek_kind() == record_kw() {
@@ -235,6 +235,41 @@ fn call2(name : String, left : @core.Expr, right : @core.Expr) -> @core.Expr {
     ],
     span~,
   )
+}
+
+///|
+fn call_or_throw_expr(
+  name : String,
+  type_args : Array[@core.Type],
+  args : Array[@core.CallArg],
+  span : @core.Span,
+) -> @core.Expr raise ParseError {
+  if name != "throw" {
+    return @core.Expr::Call(name~, type_args~, args~, span~)
+  }
+  if type_args.length() != 0 {
+    raise ParseError::UnexpectedToken(
+      expected="throw(<expr>)",
+      got="throw[<type>](...)",
+      span~,
+    )
+  }
+  if args.length() != 1 {
+    raise ParseError::UnexpectedToken(
+      expected="throw(<expr>)",
+      got="throw(...)",
+      span~,
+    )
+  }
+  match args[0].label {
+    Some(_) =>
+      raise ParseError::UnexpectedToken(
+        expected="throw(<expr>)",
+        got="throw(label=...)",
+        span~,
+      )
+    None => @core.Expr::Raise(value=args[0].expr, span~)
+  }
 }
 
 ///|
@@ -842,12 +877,18 @@ fn AstParser::parse_continue_expr(
 }
 
 ///|
-fn AstParser::parse_raise_expr(self : AstParser) -> @core.Expr raise ParseError {
+fn AstParser::parse_removed_raise_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
   let start = self.pos
+  let tok = self.peek()
   let _ = self.expect(raise_kw(), "raise")
-  let value = self.parse_expr()
   let span = self.span_from(start)
-  @core.Expr::Raise(value~, span~)
+  raise ParseError::UnexpectedToken(
+    expected="throw(<expr>)",
+    got=tok.text(),
+    span~,
+  )
 }
 
 ///|
@@ -1660,11 +1701,11 @@ fn AstParser::parse_call_or_primary(
         let args = self.parse_args()
         let _ = self.expect(rparen(), ")")
         let span = self.span_from(start)
-        @core.Expr::Call(name=qualified_name, type_args~, args~, span~)
+        call_or_throw_expr(qualified_name, type_args, args, span)
       } else {
         // name[Type] without parens - might be generic function reference
         let span = self.span_from(start)
-        @core.Expr::Call(name=qualified_name, type_args~, args=[], span~)
+        call_or_throw_expr(qualified_name, type_args, [], span)
       }
     } else if self.peek_kind() == double_colon() &&
       @core.is_ctor_name(base_name) &&
@@ -1701,11 +1742,18 @@ fn AstParser::parse_call_or_primary(
       let args = self.parse_args()
       let _ = self.expect(rparen(), ")")
       let span = self.span_from(start)
-      @core.Expr::Call(name=qualified_name, type_args=[], args~, span~)
+      call_or_throw_expr(qualified_name, [], args, span)
     } else if base_name == "_" {
       // Placeholder for lambda shorthand: _ * 2 → x -> x * 2
       let span = self.span_from(start)
       @core.Expr::Placeholder(index=0, span~)
+    } else if qualified_name == "throw" {
+      let span = self.span_from(start)
+      raise ParseError::UnexpectedToken(
+        expected="throw(<expr>)",
+        got=qualified_name,
+        span~,
+      )
     } else {
       let span = self.span_from(start)
       @core.Expr::Ident(name=qualified_name, span~)

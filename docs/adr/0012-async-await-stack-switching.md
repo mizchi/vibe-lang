@@ -1,7 +1,7 @@
 # ADR-0012: Async/Await (Stack Switching + WASI P3)
 
 - Date: 2026-02-17
-- Status: proposed
+- Status: superseded by ADR-0016
 
 ## Context
 

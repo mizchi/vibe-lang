@@ -11,6 +11,8 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
   - `docs/module_design.md`
   - `docs/module-system.md`
   - `docs/async_design.md`
+- Incident log for compiler/language regressions:
+  - `docs/compiler_language_incidents.md`
 
 ## Goals
 
@@ -37,7 +39,7 @@ Parser dispatch is explicit:
   migration behavior is explicit in `run`/`repl` output.
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
-`test`, `try`) exists as helper logic only and does not switch parser modes.
+`test`, `handle`, `throw`) exists as helper logic only and does not switch parser modes.
 
 ## Effects
 
@@ -69,7 +71,7 @@ Rules:
   - `stdin_read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
 - Runtime gate (current CLI behavior):
-  - `sleep(...)`, `await`, `yield` execution is disabled by default.
+  - `sleep(...)`, `yield` execution is disabled by default.
   - enable with `--unstable-async` (`vibe run/test/repl/bench ...`).
   - `threads_probe_wat()` execution is disabled by default.
   - `threads_runtime_hints()` execution is disabled by default.
@@ -80,10 +82,9 @@ Rules:
 `effect-set` checks and `do` checks are independent.
 
 1. Effect-set check:
-   - Calls to functions with effects, `raise`, `await`, and `yield` are checked
+   - Calls to functions with effects, `throw`, and `yield` are checked
      against the current effect scope.
-   - `try { ... } catch { ... }` extends only the `try` branch scope with
-     `{Error}`.
+   - `handle { ... } { ... }` localizes `Error` handling to the handled block.
 2. Do-boundary check:
    - Direct effectful builtins (`sh`, stdio, `sleep`) and mutable builder APIs
      (`array_builder*`, `map_builder*`) require an effect-allowed context.
@@ -110,10 +111,10 @@ let g = (y: Int) -> Int with {Error} { f(y) }
 
 Error handling:
 - Calling a function with `{Error}` from a non-`{Error}` function requires
-  `try { ... } catch { ... }`.
-- `try` handles `Error` locally and does not require the caller to declare
+  `handle { ... } { ... }`.
+- `handle` handles `Error` locally and does not require the caller to declare
   `{Error}`.
-- `raise` accepts values that satisfy the `Error` trait.
+- `throw(...)` accepts values that satisfy the `Error` trait.
 - `String` is a built-in `Error`, and user code can define new error types with
   `suberror`.
 
@@ -130,7 +131,7 @@ suberror AppError {
 }
 
 let fail = () -> Unit with {Error} {
-  raise Io("io")
+  throw(Io("io"))
 }
 ```
 
@@ -144,7 +145,7 @@ Rules:
 - At call sites, type variables and effect variables are instantiated together.
 - If a callee's effect requirement escapes through a wrapper, the wrapper must
   declare a compatible effect set.
-- `try { ... } catch { ... }` can localize `{Error}` even inside generic wrappers.
+- `handle { ... } { ... }` can localize `{Error}` even inside generic wrappers.
 - Trait bounds and effect checks are independent constraints; either can fail
   first depending on the call shape.
 
@@ -154,9 +155,9 @@ Examples:
 // error: wrapper body calls effect-polymorphic callback without declaring {e}
 let apply = [T](f: (x: T) -> T with {e}, x: T) -> T { f(x) }
 
-// ok: Error is localized by try/catch in generic wrapper
+// ok: Error is localized by handle in generic wrapper
 let apply_safe = [T](f: (x: T) -> T with {Error}, x: T) -> T {
-  try { f(x) } catch { x }
+  handle { f(x) } { _ => x }
 }
 ```
 
@@ -694,7 +695,7 @@ Rules:
 - `where(xs, pred)` is available in prelude for `Array[String]` stream-style
   filtering.
 
-## while / break / continue / await / yield (current)
+## while / break / continue / yield (current)
 
 ```vibe
 while cond {
@@ -703,7 +704,6 @@ while cond {
 
 break
 continue
-await task()
 yield value
 ```
 
@@ -714,10 +714,10 @@ Rules:
 - Using `break`/`continue` outside `while` is a type error.
 - Runtime loop control uses `break` to exit the nearest loop and `continue` to
   start the next iteration.
-- `await expr` requires `{Async}` and returns the inner expression type.
 - `yield expr` requires `{Async}` and returns `Unit`.
-- Runtime execution for `await` / `yield` is gated by `--unstable-async`
+- Runtime execution for `yield` is gated by `--unstable-async`
   (disabled by default in CLI entrypoints).
+- Error boundary syntax is `handle { ... } { Error(_) => ... }`.
 
 ## Test blocks (MoonBit-style)
 
@@ -919,11 +919,10 @@ Current hashing behavior for statements:
 (struct-lit "Type" (field "k" <expr>) ...)
 (array <expr> ...)
 (map (field "k" <expr>) ...)
-(try (block (stmts ...)) (block (stmts ...)))
+(handle (block (stmts ...)) (arms (arm <pat> (guard <expr>)? <expr>) ...))
 (fn (params (param "x" pos <type>) ...) (ret <type>|_) (effects <eff> ...) (block (stmts ...)))
 (while <expr> (block (stmts ...)))
-(raise <expr>)
-(await <expr>)
+(throw <expr>)
 (yield <expr>)
 ```
 

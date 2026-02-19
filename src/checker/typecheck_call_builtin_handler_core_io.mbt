@@ -830,14 +830,7 @@ fn type_call_builtin_handler_core_io(
       )
     _ =>
       type_call_builtin_handler_collection_numeric(
-        env,
-        name,
-        builtin_name,
-        args,
-        aliases,
-        effects,
-        allow_effect,
-        call_span,
+        env, name, builtin_name, args, aliases, effects, allow_effect, call_span,
       )
   }
 }

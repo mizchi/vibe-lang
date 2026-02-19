@@ -676,7 +676,10 @@ fn MonoifyContext::add_instantiation(
 }
 
 ///|
-fn MonoifyContext::tags_for_name(self : MonoifyContext, name : String) -> Array[String] {
+fn MonoifyContext::tags_for_name(
+  self : MonoifyContext,
+  name : String,
+) -> Array[String] {
   let prefix = name + ":"
   let out : Array[String] = []
   for key, _ in self.instantiations {

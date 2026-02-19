@@ -1276,6 +1276,7 @@ fn value_type_name(value : @core.Value) -> String {
     @core.Value::Char(_) => "Char"
     @core.Value::String(_) => "String"
     @core.Value::Path(_) => "Path"
+    @core.Value::PromptText(_) => "PromptText"
     @core.Value::Unit => "Unit"
     @core.Value::Tuple(_) => "Tuple"
     @core.Value::Record(_) => "Record"

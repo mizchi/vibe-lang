@@ -69,7 +69,7 @@ fn effect_not_allowed_hint(name : String) -> String? {
   if is_do_boundary_operation(name) {
     Some("wrap in `do { ... }` to allow side effects")
   } else if name == "Error" {
-    Some("declare `with {Error}` or handle with `try { ... } catch { ... }`")
+    Some("declare `with {Error}` or handle with `handle { ... } { ... }`")
   } else if name == "effect" {
     Some("declare a compatible `with { ... }` effect set on this function")
   } else {

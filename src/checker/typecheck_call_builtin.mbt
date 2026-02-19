@@ -190,13 +190,6 @@ fn type_call_builtin(
 ) -> @core.Type raise TypeError {
   let builtin_name = @core.lower_wasm_intrinsic_name(name)
   type_call_builtin_handler_core_io(
-    env,
-    name,
-    builtin_name,
-    args,
-    aliases,
-    effects,
-    allow_effect,
-    call_span,
+    env, name, builtin_name, args, aliases, effects, allow_effect, call_span,
   )
 }

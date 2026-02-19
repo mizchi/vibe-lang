@@ -46,6 +46,18 @@ std/string::from_char_code(65)
 - `module` import は `.xm` ソースのみ対応し、`foo::...` 形式 export を取り込む。
 - アクセス子は `::` を正規とする。
 
+### 旧 import 記法の移行
+
+- 旧記法:
+  ```vibe
+  import { add } from "./lib.vibe"
+  ```
+- 新記法:
+  ```vibe
+  use ./lib.vibe { add }
+  ```
+- 現行 parser は旧記法に対して `use <module-ref> { ... }` を期待する parse error を返す。
+
 ## import kind
 - `use <path> { x }`: `value`
 - `use <path> { type T }`: `type`

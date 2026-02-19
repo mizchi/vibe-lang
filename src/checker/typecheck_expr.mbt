@@ -811,13 +811,13 @@ fn type_expr_eff(
         val_ty,
         ["Error"],
         span,
-        "raise",
+        "throw",
       )
       require_effects(
         env,
         effects,
         [@core.EffectAtom::Const("Error")],
-        "raise",
+        "throw",
         span,
       )
       @core.Type::Never

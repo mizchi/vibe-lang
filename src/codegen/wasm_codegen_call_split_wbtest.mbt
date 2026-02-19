@@ -119,9 +119,7 @@ test "compile_call_record_field_fallback_by_name handles known field" {
   ctx.known_record_fields["id"] = true
   let buf = ByteBuf::new()
   let args = [call_split_test_arg(call_split_test_int(1L))]
-  let handled = compile_call_record_field_fallback_by_name(
-    ctx, buf, "id", args,
-  ) catch {
+  let handled = compile_call_record_field_fallback_by_name(ctx, buf, "id", args) catch {
     err => fail(err.to_string())
   }
   assert_true(handled)
