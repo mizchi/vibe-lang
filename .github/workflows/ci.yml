@@ -45,6 +45,68 @@ jobs:
             echo "| Per-file avg | ${avg_us}us |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  bundle-size-compiler:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Moon update
+        run: moon update
+
+      - name: Compiler bundle-size golden
+        run: scripts/bench_compiler_bundle_size.sh
+
+  bundle-size-product-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MoonBit CLI
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Moon update
+        run: moon update
+
+      - name: Product bundle-size monitor (non-blocking)
+        id: product_bundle_size
+        run: |
+          set +e
+          scripts/bench_bundle_size.sh
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Product bundle-size summary
+        if: always()
+        run: |
+          echo "### Product WASM Bundle Size" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.product_bundle_size.outputs.status }}" = "0" ]; then
+            echo "- Status: within budget" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Status: regression detected (monitor-only; non-blocking)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f dist/bundle_size/current.tsv ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Current report: \`dist/bundle_size/current.tsv\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload product bundle-size report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-size-product-report
+          path: dist/bundle_size/current.tsv
+          if-no-files-found: ignore
+
   wasm-vibe-smoke:
     runs-on: ubuntu-latest
     steps:

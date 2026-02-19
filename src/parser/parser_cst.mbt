@@ -956,6 +956,7 @@ fn Parser::parse_continue_expr(self : Parser) -> Unit {
   self.builder.finish_node()
 }
 
+///|
 fn Parser::parse_yield_expr(self : Parser) -> Unit {
   self.builder.start_node(yield_expr())
   self.bump() // yield

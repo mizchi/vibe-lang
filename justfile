@@ -287,16 +287,44 @@ bench-advanced-graph:
 bench-typechecker:
     moon bench -p benches -f checker_bench.mbt
 
-# Benchmark bundle size for examples/ + use-case importers (bench/bundle_size/)
+# Product bundle-size monitor (live examples/ + use-case importers).
+# This captures product-facing size drift, including source edits.
 # Default importer mode is runtime-first (`--wasm`/`--wasm-js-string`).
 # Set `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1` to add no-dce diagnostics.
 # Set `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include vibe/std module surfaces.
 bench-bundle-size:
     scripts/bench_bundle_size.sh
 
-# Update bundle-size golden budgets
+# Alias: explicit product monitor task name
+bench-bundle-size-product:
+    scripts/bench_bundle_size.sh
+
+# Update product bundle-size golden budgets
 bench-bundle-size-update:
     scripts/bench_bundle_size.sh --update
+
+# Alias: explicit product monitor update task name
+bench-bundle-size-product-update:
+    scripts/bench_bundle_size.sh --update
+
+# Compiler bundle-size guard (fixed fixtures + importer cases).
+# This isolates compiler/codegen regressions from live examples changes.
+bench-bundle-size-compiler:
+    scripts/bench_compiler_bundle_size.sh
+
+# Update compiler bundle-size golden budget
+bench-bundle-size-compiler-update:
+    scripts/bench_compiler_bundle_size.sh --update
+
+# Run wasm bundle-size monitoring set:
+# - compiler guard: strict (always gating)
+# - product monitor: non-fatal by default
+bench-bundle-size-monitor:
+    scripts/monitor_wasm_bundle_size.sh
+
+# Strict monitor mode: fail if product monitor regresses too
+bench-bundle-size-monitor-strict:
+    VIBE_WASM_BUNDLE_MONITOR_STRICT_PRODUCT=1 scripts/monitor_wasm_bundle_size.sh
 
 # Update std-focused benchmark baselines (bundle-size + KPI snapshots)
 bench-std-baseline-update:
@@ -452,5 +480,8 @@ vibe-normalize-cached:
 vibe-normalize-check:
     scripts/vibe_normalize_all.sh --check
 
-# Pre-release check
-release-check: fmt info check test vibe-normalize
+# Pre-release check (includes wasm bundle-size monitor)
+release-check: fmt info check test vibe-normalize bench-bundle-size-monitor
+
+# Alias for teams used to `check-release`
+check-release: release-check
