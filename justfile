@@ -14,6 +14,8 @@ vibe_wasmtime_wasm_flags := env_var_or_default("VIBE_WASMTIME_WASM_FLAGS", "")
 vibe_wasmtime_wasi_flags := env_var_or_default("VIBE_WASMTIME_WASI_FLAGS", "")
 # suppress noisy import-liveness warnings while keeping other warnings active
 moon_warn_list := env_var_or_default("VIBE_MOON_WARN_LIST", "-29")
+vibe_test_ulimit_n := env_var_or_default("VIBE_TEST_ULIMIT_N", "8192")
+vibe_test_jobs := env_var_or_default("VIBE_TEST_JOBS", "1")
 
 # Default task: check and test
 default: check test
@@ -30,7 +32,7 @@ check:
 test:
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
-    _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async examples vibe/std vibe/collection vibe/encoding vibe/x vibe/x/args
+    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/std vibe/collection vibe/encoding vibe/x vibe/x/args
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
