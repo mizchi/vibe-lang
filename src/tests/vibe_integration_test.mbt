@@ -545,6 +545,45 @@ test "vibe integration trait alias keeps supertrait chain" {
 }
 
 ///|
+test "vibe integration for-in uses imported Iterable impl and type members" {
+  let db = VibeDb::new()
+  let lib_source =
+    #|export enum List[T] {
+    #|  Nil;
+    #|  Cons(T, List[T])
+    #|}
+    #|impl [T] Iterable for List[T]
+    #|export let of3 = [T](a: T, b: T, c: T) -> List[T] {
+    #|  Cons(a, Cons(b, Cons(c, Nil)))
+    #|}
+    #|export let iter_length = [T](xs: List[T]) -> Int {
+    #|  let rec go = (rest: List[T], acc: Int) -> Int {
+    #|    match rest {
+    #|      Nil => acc,
+    #|      Cons(_, t) => go(t, acc + 1)
+    #|    }
+    #|  }
+    #|  go(xs, 0)
+    #|}
+    #|export let rec iter_get = [T](xs: List[T], index: Int) -> T {
+    #|  match xs {
+    #|    Cons(h, t) => if index == 0 { h } else { iter_get(t, index - 1) },
+    #|    Nil => iter_get(xs, index)
+    #|  }
+    #|}
+  let main_source =
+    #|use ./lib.vibe { List, of3 }
+    #|let values = for x in of3(1, 2, 3) {
+    #|  x + 1
+    #|}
+    #|values
+  db.set_source("./lib.vibe", lib_source)
+  db.set_source("main", main_source)
+  let compiled = compile_module(db, "main")
+  assert_true(compiled.type_env.get_scheme("values") is Some(_))
+}
+
+///|
 test "vibe integration imported suberror can be raised as Error" {
   let db = VibeDb::new()
   let lib_source = "export suberror AppError(String);"

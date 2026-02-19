@@ -376,10 +376,13 @@ fn repl_tui_cmd(
         if err_str.contains("UnknownName") || err_str.contains("BadCall") {
           let wrapped = "do { " + trimmed + " }"
           let retry = rt.eval_script_with_mode(
-            wrapped, @runtime.ParserMode::PosixMode,
+            wrapped,
+            @runtime.ParserMode::PosixMode,
           ) catch {
             retry_err => {
-              push_output_line(format_repl_error(retry_err, wrapped, unwrap_prefix="do { "))
+              push_output_line(
+                format_repl_error(retry_err, wrapped, unwrap_prefix="do { "),
+              )
               return true
             }
           }
@@ -850,10 +853,17 @@ fn run_eval_line_repl_with_prompt(
               if err_str.contains("UnknownName") || err_str.contains("BadCall") {
                 let wrapped = "do { " + line_str + " }"
                 let retry = rt.eval_script_with_mode(
-                  wrapped, @runtime.ParserMode::PosixMode,
+                  wrapped,
+                  @runtime.ParserMode::PosixMode,
                 ) catch {
                   retry_err => {
-                    println(format_repl_error(retry_err, wrapped, unwrap_prefix="do { "))
+                    println(
+                      format_repl_error(
+                        retry_err,
+                        wrapped,
+                        unwrap_prefix="do { ",
+                      ),
+                    )
                     if options.prompt_enabled {
                       @stdio.stdout.write(options.prompt)
                     }
@@ -1186,7 +1196,11 @@ fn repl_interactive_plain_loop(
         _ =>
           if not(handle_cd_builtin(rt, line_str, fn(s) { println(s) })) {
             scratch_source = run_interactive_line(
-              rt, syntax_mode, scratch_db_path, scratch_source, line_str,
+              rt,
+              syntax_mode,
+              scratch_db_path,
+              scratch_source,
+              line_str,
               posix_fallback=true,
             )
           }
@@ -1260,11 +1274,14 @@ fn run_interactive_line(
         if err_str.contains("UnknownName") || err_str.contains("BadCall") {
           let wrapped = "do { " + line_str + " }"
           let retry = rt.eval_script_with_mode(
-            wrapped, @runtime.ParserMode::PosixMode,
+            wrapped,
+            @runtime.ParserMode::PosixMode,
           ) catch {
             retry_err => {
               // Show PosixMode error (more informative after desugar)
-              print_line(format_repl_error(retry_err, wrapped, unwrap_prefix="do { "))
+              print_line(
+                format_repl_error(retry_err, wrapped, unwrap_prefix="do { "),
+              )
               return scratch_source
             }
           }
@@ -1709,7 +1726,7 @@ fn handle_cd_builtin(
 fn format_repl_error(
   e : Error,
   source : String,
-  unwrap_prefix~ : String = "",
+  unwrap_prefix? : String = "",
 ) -> String {
   @runtime.format_error_for_repl(e, source, unwrap_prefix~)
 }

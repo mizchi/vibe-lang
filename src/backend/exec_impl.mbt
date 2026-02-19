@@ -22,9 +22,7 @@ pub fn exec_command_lines(cmd : String) -> Result[Array[String], String] {
   let actual_len = out_len[0]
   let text = utf8_to_string(buf, actual_len)
   if exit_code != 0 {
-    return Err(
-      "command exited with code " + exit_code.to_string() + ": " + cmd,
-    )
+    return Err("command exited with code " + exit_code.to_string() + ": " + cmd)
   }
   let lines : Array[String] = []
   for part_view in text.split("\n") {

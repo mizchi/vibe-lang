@@ -1579,6 +1579,40 @@ test "vibe test runner report" {
 }
 
 ///|
+test "vibe test runner keeps checked type env for iterable for-in dispatch" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script = "enum List[T] { Nil; Cons(T, List[T]) }\n" +
+    "impl [T] Iterable for List[T]\n" +
+    "let of3 = [T](a: T, b: T, c: T) -> List[T] {\n" +
+    "  Cons(a, Cons(b, Cons(c, Nil)))\n" +
+    "}\n" +
+    "let List::iter_length = [T](xs: List[T]) -> Int {\n" +
+    "  let rec len = (rest: List[T], acc: Int) -> Int {\n" +
+    "    match rest { Nil => acc, Cons(_, t) => len(t, acc + 1) }\n" +
+    "  }\n" +
+    "  len(xs, 0)\n" +
+    "}\n" +
+    "let rec List::iter_get = [T](xs: List[T], index: Int) -> T {\n" +
+    "  match xs {\n" +
+    "    Cons(h, t) => if index == 0 { h } else { List::iter_get(t, index - 1) },\n" +
+    "    Nil => List::iter_get(xs, index)\n" +
+    "  }\n" +
+    "}\n" +
+    "test {\n" +
+    "  let mut s = 0\n" +
+    "  let _ = for x in of3(1, 2, 3) {\n" +
+    "    s = s + x\n" +
+    "    x\n" +
+    "  }\n" +
+    "  assert(eq(s, 6))\n" +
+    "}\n"
+  let report = rt.run_script_tests(script)
+  assert_eq(report.total, 1)
+  assert_eq(report.passed, 1)
+  assert_eq(report.failed, 0)
+}
+
+///|
 test "vibe test cache invalidates on update" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let report1 = rt.run_script_tests(

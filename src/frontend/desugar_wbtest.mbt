@@ -14,15 +14,12 @@ fn make_bool(value : Bool) -> @core.Expr {
 }
 
 ///|
-fn make_call(
-  name : String,
-  args : Array[@core.CallArg],
-) -> @core.Expr {
+fn make_call(name : String, args : Array[@core.CallArg]) -> @core.Expr {
   @core.Expr::Call(name~, type_args=[], args~, span=test_span())
 }
 
 ///|
-fn make_arg(expr : @core.Expr, label~ : String? = None) -> @core.CallArg {
+fn make_arg(expr : @core.Expr, label? : String? = None) -> @core.CallArg {
   @core.CallArg::{ label, expr, span: test_span() }
 }
 
@@ -59,10 +56,10 @@ test "try_extract_posix_command: known name (path) returns None" {
 ///|
 test "try_extract_posix_command: __sub short flags (ls -al)" {
   // ls - al → __sub(Ident("ls"), Ident("al"))
-  let expr = make_call(
-    "__sub",
-    [make_arg(make_ident("ls")), make_arg(make_ident("al"))],
-  )
+  let expr = make_call("__sub", [
+    make_arg(make_ident("ls")),
+    make_arg(make_ident("al")),
+  ])
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
@@ -79,10 +76,7 @@ test "try_extract_posix_command: __sub short flags (ls -al)" {
 test "try_extract_posix_command: __sub __neg long flag (ls --all)" {
   // ls - (-all) → __sub(Ident("ls"), __neg(Ident("all")))
   let neg_all = make_call("__neg", [make_arg(make_ident("all"))])
-  let expr = make_call(
-    "__sub",
-    [make_arg(make_ident("ls")), make_arg(neg_all)],
-  )
+  let expr = make_call("__sub", [make_arg(make_ident("ls")), make_arg(neg_all)])
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
@@ -97,14 +91,11 @@ test "try_extract_posix_command: __sub __neg long flag (ls --all)" {
 ///|
 test "try_extract_posix_command: chained flags (ls -l -a)" {
   // ls - l - a → __sub(__sub(Ident("ls"), Ident("l")), Ident("a"))
-  let inner = make_call(
-    "__sub",
-    [make_arg(make_ident("ls")), make_arg(make_ident("l"))],
-  )
-  let expr = make_call(
-    "__sub",
-    [make_arg(inner), make_arg(make_ident("a"))],
-  )
+  let inner = make_call("__sub", [
+    make_arg(make_ident("ls")),
+    make_arg(make_ident("l")),
+  ])
+  let expr = make_call("__sub", [make_arg(inner), make_arg(make_ident("a"))])
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
@@ -121,14 +112,8 @@ test "try_extract_posix_command: chained flags (ls -l -a)" {
 test "try_extract_posix_command: long + short (ls --all -l)" {
   // __sub(__sub(Ident("ls"), __neg(Ident("all"))), Ident("l"))
   let neg_all = make_call("__neg", [make_arg(make_ident("all"))])
-  let inner = make_call(
-    "__sub",
-    [make_arg(make_ident("ls")), make_arg(neg_all)],
-  )
-  let expr = make_call(
-    "__sub",
-    [make_arg(inner), make_arg(make_ident("l"))],
-  )
+  let inner = make_call("__sub", [make_arg(make_ident("ls")), make_arg(neg_all)])
+  let expr = make_call("__sub", [make_arg(inner), make_arg(make_ident("l"))])
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
@@ -194,10 +179,7 @@ test "desugar_vibe_commands: ls() → sh_lines no flags" {
 ///|
 test "desugar_vibe_commands: ls(l=true) → sh_lines with flag" {
   // Simulate: ls(l=true)
-  let call = make_call(
-    "ls",
-    [make_arg(make_bool(true), label=Some("l"))],
-  )
+  let call = make_call("ls", [make_arg(make_bool(true), label=Some("l"))])
   let ast = @core.Module::{
     stmts: [@core.Stmt::Expr(expr=call, span=test_span())],
   }
@@ -225,13 +207,10 @@ test "desugar_vibe_commands: ls(l=true) → sh_lines with flag" {
 
 ///|
 test "desugar_vibe_commands: ls(l=true, a=true) preserves order" {
-  let call = make_call(
-    "ls",
-    [
-      make_arg(make_bool(true), label=Some("l")),
-      make_arg(make_bool(true), label=Some("a")),
-    ],
-  )
+  let call = make_call("ls", [
+    make_arg(make_bool(true), label=Some("l")),
+    make_arg(make_bool(true), label=Some("a")),
+  ])
   let ast = @core.Module::{
     stmts: [@core.Stmt::Expr(expr=call, span=test_span())],
   }
@@ -249,13 +228,11 @@ test "desugar_vibe_commands: ls(l=true, a=true) preserves order" {
 ///|
 test "desugar_vibe_commands: ls -al → sh_lines with flags" {
   // __sub(Ident("ls"), Ident("al"))
-  let expr = make_call(
-    "__sub",
-    [make_arg(make_ident("ls")), make_arg(make_ident("al"))],
-  )
-  let ast = @core.Module::{
-    stmts: [@core.Stmt::Expr(expr~, span=test_span())],
-  }
+  let expr = make_call("__sub", [
+    make_arg(make_ident("ls")),
+    make_arg(make_ident("al")),
+  ])
+  let ast = @core.Module::{ stmts: [@core.Stmt::Expr(expr~, span=test_span())] }
   let (desugared, notes) = desugar_vibe_commands_with_notes(ast)
   assert_true(notes.length() > 0)
   match desugared.stmts[0] {
@@ -276,10 +253,7 @@ test "desugar_vibe_commands: ls -al → sh_lines with flags" {
 ///|
 test "desugar_vibe_commands: known name not desugared" {
   // path(a=true) should NOT be desugared (path is a builtin)
-  let call = make_call(
-    "path",
-    [make_arg(make_bool(true), label=Some("a"))],
-  )
+  let call = make_call("path", [make_arg(make_bool(true), label=Some("a"))])
   let ast = @core.Module::{
     stmts: [@core.Stmt::Expr(expr=call, span=test_span())],
   }

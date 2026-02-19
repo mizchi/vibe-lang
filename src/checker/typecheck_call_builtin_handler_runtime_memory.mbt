@@ -1,0 +1,600 @@
+///|
+fn type_call_builtin_handler_runtime_memory(
+  env : TypeEnv,
+  name : String,
+  builtin_name : String,
+  args : Array[@core.CallArg],
+  aliases : Map[String, @core.Ref],
+  effects : EffectScope,
+  allow_effect : Bool,
+  call_span : @core.Span,
+) -> @core.Type raise TypeError {
+  match builtin_name {
+    "__assert" => {
+      let pos_args = extract_positional_args(args, "__assert", call_span)
+      if pos_args.length() != 1 {
+        raise TypeError::BadCall(message="__assert", span=call_span)
+      }
+      let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+      if not(type_equal(env, a, @core.Type::Bool)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Bool,
+          actual=a,
+          span=pos_args[0].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Unit
+    }
+    "record_set" => {
+      let pos_args = extract_positional_args(args, "record_set", call_span)
+      if pos_args.length() != 3 {
+        raise TypeError::BadCall(message="record_set", span=call_span)
+      }
+      let record_ty = normalize_type(
+        env,
+        type_expr_eff(env, pos_args[0], aliases, effects, allow_effect),
+      )
+      let field_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, field_ty, @core.Type::String)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::String,
+          actual=field_ty,
+          span=pos_args[1].span(),
+          context=Some("record field name"),
+        )
+      }
+      let value_ty = type_expr_eff(
+        env,
+        pos_args[2],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      match record_ty {
+        @core.Type::Record(fields) =>
+          match pos_args[1] {
+            @core.Expr::String(value=name, span~) =>
+              match fields.get(name) {
+                Some(expect) =>
+                  if not(type_equal(env, expect, value_ty)) {
+                    raise TypeError::Mismatch(
+                      expected=expect,
+                      actual=value_ty,
+                      span=pos_args[2].span(),
+                      context=Some("record field value"),
+                    )
+                  }
+                None => raise TypeError::BadCall(message="record_set", span~)
+              }
+            _ => ()
+          }
+        _ => raise TypeError::BadCall(message="record_set", span=call_span)
+      }
+      record_ty
+    }
+    "map_keys" => {
+      let pos_args = extract_positional_args(args, "map_keys", call_span)
+      if pos_args.length() != 1 {
+        raise TypeError::BadCall(message="map_keys", span=call_span)
+      }
+      let map_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let resolved = normalize_type(env, map_ty)
+      match resolved {
+        @core.Type::Map(_) => @core.Type::Array(@core.Type::String)
+        _ => raise TypeError::BadCall(message="map_keys", span=call_span)
+      }
+    }
+    "map_values" => {
+      let pos_args = extract_positional_args(args, "map_values", call_span)
+      if pos_args.length() != 1 {
+        raise TypeError::BadCall(message="map_values", span=call_span)
+      }
+      let map_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let resolved = normalize_type(env, map_ty)
+      match resolved {
+        @core.Type::Map(elem_ty) => @core.Type::Array(elem_ty)
+        _ => raise TypeError::BadCall(message="map_values", span=call_span)
+      }
+    }
+    "map_has_key" => {
+      let pos_args = extract_positional_args(args, "map_has_key", call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message="map_has_key", span=call_span)
+      }
+      let map_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let resolved = normalize_type(env, map_ty)
+      match resolved {
+        @core.Type::Map(_) => ()
+        _ => raise TypeError::BadCall(message="map_has_key", span=call_span)
+      }
+      let key_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, key_ty, @core.Type::String)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::String,
+          actual=key_ty,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Bool
+    }
+    "array_slice" => {
+      let pos_args = extract_positional_args(args, "array_slice", call_span)
+      if pos_args.length() != 3 {
+        raise TypeError::BadCall(message="array_slice", span=call_span)
+      }
+      let array_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      let resolved = normalize_type(env, array_ty)
+      let elem_ty = match resolved {
+        @core.Type::Array(elem_ty) => elem_ty
+        _ => raise TypeError::BadCall(message="array_slice", span=call_span)
+      }
+      let start_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, start_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=start_ty,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      let end_ty = type_expr_eff(
+        env,
+        pos_args[2],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, end_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=end_ty,
+          span=pos_args[2].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Array(elem_ty)
+    }
+    "int_to_float" | "f32_convert_i32_s" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Int,
+        @core.Type::Float,
+      )
+    "int_to_double" | "f64_convert_i32_s" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Int,
+        @core.Type::Double,
+      )
+    "float_to_int" | "i32_trunc_f32_s" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Float,
+        @core.Type::Int,
+      )
+    "float_to_double" | "f64_promote_f32" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Float,
+        @core.Type::Double,
+      )
+    "double_to_int" | "i32_trunc_f64_s" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Double,
+        @core.Type::Int,
+      )
+    "double_to_float" | "f32_demote_f64" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        name,
+        @core.Type::Double,
+        @core.Type::Float,
+      )
+    "i32_shr_u" => {
+      let pos_args = extract_positional_args(args, name, call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message=name, span=call_span)
+      }
+      let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
+      let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
+      if not(type_equal(env, a, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=a,
+          span=pos_args[0].span(),
+          context=Some("bit operation"),
+        )
+      }
+      if not(type_equal(env, b, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=b,
+          span=pos_args[1].span(),
+          context=Some("bit operation"),
+        )
+      }
+      @core.Type::Int
+    }
+    "f32_neg" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        "f32_neg",
+        @core.Type::Float,
+        @core.Type::Float,
+      )
+    "f64_neg" =>
+      type_check_unary_convert(
+        env,
+        args,
+        call_span,
+        aliases,
+        effects,
+        allow_effect,
+        "f64_neg",
+        @core.Type::Double,
+        @core.Type::Double,
+      )
+    "i32_load" | "i32_load8_u" => {
+      let pos_args = extract_positional_args(args, name, call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message=name, span=call_span)
+      }
+      let base_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, base_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=base_ty,
+          span=pos_args[0].span(),
+          context=Some("argument"),
+        )
+      }
+      let offset_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=offset_ty,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Int
+    }
+    "i32_store" | "i32_store8" => {
+      let pos_args = extract_positional_args(args, name, call_span)
+      if pos_args.length() != 3 {
+        raise TypeError::BadCall(message=name, span=call_span)
+      }
+      let base_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, base_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=base_ty,
+          span=pos_args[0].span(),
+          context=Some("argument"),
+        )
+      }
+      let offset_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=offset_ty,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      let value_ty = type_expr_eff(
+        env,
+        pos_args[2],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, value_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=value_ty,
+          span=pos_args[2].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Unit
+    }
+    "f32_load" => {
+      let pos_args = extract_positional_args(args, name, call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message=name, span=call_span)
+      }
+      let base_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, base_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=base_ty,
+          span=pos_args[0].span(),
+          context=Some("argument"),
+        )
+      }
+      let offset_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=offset_ty,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Float
+    }
+    "f64_load" => {
+      let pos_args = extract_positional_args(args, name, call_span)
+      if pos_args.length() != 2 {
+        raise TypeError::BadCall(message=name, span=call_span)
+      }
+      let base_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, base_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=base_ty,
+          span=pos_args[0].span(),
+          context=Some("argument"),
+        )
+      }
+      let offset_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=offset_ty,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Double
+    }
+    "f32_store" => {
+      let pos_args = extract_positional_args(args, name, call_span)
+      if pos_args.length() != 3 {
+        raise TypeError::BadCall(message=name, span=call_span)
+      }
+      let base_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, base_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=base_ty,
+          span=pos_args[0].span(),
+          context=Some("argument"),
+        )
+      }
+      let offset_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=offset_ty,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      let value_ty = type_expr_eff(
+        env,
+        pos_args[2],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, value_ty, @core.Type::Float)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Float,
+          actual=value_ty,
+          span=pos_args[2].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Unit
+    }
+    "f64_store" => {
+      let pos_args = extract_positional_args(args, name, call_span)
+      if pos_args.length() != 3 {
+        raise TypeError::BadCall(message=name, span=call_span)
+      }
+      let base_ty = type_expr_eff(
+        env,
+        pos_args[0],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, base_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=base_ty,
+          span=pos_args[0].span(),
+          context=Some("argument"),
+        )
+      }
+      let offset_ty = type_expr_eff(
+        env,
+        pos_args[1],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Int,
+          actual=offset_ty,
+          span=pos_args[1].span(),
+          context=Some("argument"),
+        )
+      }
+      let value_ty = type_expr_eff(
+        env,
+        pos_args[2],
+        aliases,
+        effects,
+        allow_effect,
+      )
+      if not(type_equal(env, value_ty, @core.Type::Double)) {
+        raise TypeError::Mismatch(
+          expected=@core.Type::Double,
+          actual=value_ty,
+          span=pos_args[2].span(),
+          context=Some("argument"),
+        )
+      }
+      @core.Type::Unit
+    }
+    _ =>
+      type_call_builtin_handler_json_and_fallback(
+        env,
+        name,
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+      )
+  }
+}

@@ -11,13 +11,18 @@ let prelude_source : String =
   #|let or = (x: Bool, y: Bool) -> Bool { if x { true } else { y } }
   #|let assert = (cond: Bool) -> Unit { __assert(cond) }
   #|trait Show
+  #|trait Iterable
   #|impl Show for Int
   #|impl Show for Float
   #|impl Show for Double
   #|impl Show for Bool
   #|impl Show for Char
   #|impl Show for String
+  #|impl [T] Iterable for Array[T]
   #|let to_string = [T: Show](x: T) -> String { __to_string(x) }
+  #|let iter_require = [C: Iterable](xs: C) -> C { xs }
+  #|let iter_length = [T](xs: Array[T]) -> Int { array_length(xs) }
+  #|let iter_get = [T](xs: Array[T], index: Int) -> T { array_get(xs, index) }
   #|let array_map = (f: (x: Num) -> Num, xs: Array[Num]) -> Array[Num] {
   #|  do {
   #|    let b = array_builder()
@@ -151,7 +156,8 @@ pub fn prelude_ast() -> @core.Module {
 pub fn prelude_names() -> Array[String] {
   [
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "to_string",
-    "array_map", "array_fold", "array_filter", "array_foreach", "array_concat", "array_reverse",
-    "array_any", "array_all", "array_find", "where",
+    "iter_require", "iter_length", "iter_get", "array_map", "array_fold", "array_filter",
+    "array_foreach", "array_concat", "array_reverse", "array_any", "array_all", "array_find",
+    "where",
   ]
 }

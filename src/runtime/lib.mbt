@@ -7,10 +7,7 @@ suberror XshError {
 } derive(Show, Eq)
 
 ///|
-pub fn XshError::format_for_repl(
-  self : XshError,
-  source : String,
-) -> String {
+pub fn XshError::format_for_repl(self : XshError, source : String) -> String {
   match self {
     XshError::Type(type_err) => type_err.diagnostic().render("<repl>", source)
     XshError::Parse(parse_err) =>
@@ -25,7 +22,7 @@ pub fn XshError::format_for_repl(
 pub fn format_error_for_repl(
   e : Error,
   source : String,
-  unwrap_prefix~ : String = "",
+  unwrap_prefix? : String = "",
 ) -> String {
   let offset = unwrap_prefix.length()
   match e {
@@ -35,17 +32,15 @@ pub fn format_error_for_repl(
         // Shift span back by prefix length and render against original source
         let suffix_len = 2 // strip " }" suffix
         let end = source.length() - suffix_len
-        let original = try source[offset:end].to_string() catch { _ => source }
+        let original = source[offset:end].to_string() catch { _ => source }
         let shifted = match diag.span {
           Some(span) =>
             @core.Diagnostic::{
               ..diag,
-              span: Some(
-                @core.Span::{
-                  start: span.start - offset,
-                  end: span.end - offset,
-                },
-              ),
+              span: Some(@core.Span::{
+                start: span.start - offset,
+                end: span.end - offset,
+              }),
             }
           None => diag
         }
@@ -168,7 +163,12 @@ pub fn Runtime::run_script_tests_with_mode(
   let aliases = self.aliases
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
-    let _ = @checker.type_check_with_env(self.type_env.clone(), ast, aliases)
+    let next_env = @checker.type_check_with_env(
+      self.type_env.fork_for_check(),
+      ast,
+      aliases,
+    )
+    self.type_env = next_env.compact_for_eval()
   } catch {
     e => raise XshError::Type(e)
   }
@@ -190,7 +190,12 @@ pub fn Runtime::run_script_benches_with_mode(
   let aliases = self.aliases
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
-    let _ = @checker.type_check_with_env(self.type_env.clone(), ast, aliases)
+    let next_env = @checker.type_check_with_env(
+      self.type_env.fork_for_check(),
+      ast,
+      aliases,
+    )
+    self.type_env = next_env.compact_for_eval()
   } catch {
     e => raise XshError::Type(e)
   }

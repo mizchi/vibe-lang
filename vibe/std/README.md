@@ -6,14 +6,14 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 
 | Module | Test Count | Description |
 |--------|-----------:|-------------|
-| `builtin_traits.vibe` | 7 | Trait-oriented generic API (`Eq`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
+| `builtin_traits.vibe` | 8 | Trait-oriented generic API (`Eq`/`Hash`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
 | `option.vibe` | 13 | Generic Option helpers (`is_some`, `unwrap_or`, `map_opt`, `map_or`, `or_else`, `equals`) |
 | `result.vibe` | 7 | Generic Result helpers (`is_ok`, `is_err`, `map_ok`, `map_err`, `bind`, `unwrap_or`, `to_option`) |
 | `cmp.vibe` | 4 | Compare helpers (`int/float/double/string_compare`, `maximum/minimum`, `*_by`, `*_by_key`) |
 | `int.vibe` | 14 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
 | `float.vibe` | 7 | Float helpers (`abs`, `signum`, `clamp`, `square`, `lerp`) |
 | `double.vibe` | 12 | Double helpers (`abs`, `signum`, `floor`/`ceil`/`round`, `lerp`) |
-| `array.vibe` | 3 | Generic array helpers (`length`, `get`, `head`, `last`, `append`, `slice`, `reverse`, `array_map`, `filter`, `fold`, `find`, `any`, `all`) |
+| `array.vibe` | 4 | Generic array helpers (`length`, `get`, `head`, `last`, `append`, `slice`, `reverse`, `array_map`, `iter`, `zip`, `flatmap`, `filter`, `fold`, `find`, `any`, `all`) |
 | `bool.vibe` | 8 | Boolean helpers (`to_int`, `implies`, `xor`, `nand`, `nor`) |
 | `char.vibe` | 3 | ASCII classification/conversion helpers (`is_ascii_*`, `to_ascii_*`, `to_string`, `from_string`) |
 | `bytes.vibe` | 5 | Byte array helpers (`is_byte`, `clamp_byte`, `from_ascii`, `to_ascii`, `to_hex`, `from_hex`) |
@@ -35,7 +35,7 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 
 ## Module Boundary (Layered Responsibilities)
 
-`vibe/std` is managed as layered modules. See `docs/std-module-boundaries.md` for the canonical table and allowed import matrix.
+`vibe/std` is managed as layered modules. See `docs/adr/0005-std-layered-boundaries.md` for the canonical table and allowed import matrix.
 
 - `trait-contract`: contracts (`builtin_traits.vibe`)
 - `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)
@@ -49,16 +49,39 @@ Compatibility facades:
 - `path.vibe` delegates conceptually to `path/ref.vibe` + `path/runtime.vibe`.
 - `threads.vibe` delegates conceptually to `threads/spec.vibe` + `threads/runtime.vibe`.
 
+Path import rule (recommended):
+
+- quick usage: `use ./vibe/std/path.vibe { ... }`
+- contract/runtime splitを明示したい場合:
+  - pure model: `use ./vibe/std/path/ref.vibe { ... }`
+  - effect bridge: `use ./vibe/std/path/runtime.vibe { ... }`
+- facade / split import の両方は `path_test.vibe`, `path_ref_test.vibe`, `path_runtime_test.vibe` で継続回帰する。
+
 Boundary enforcement is active in:
 
 - `vibe check`
 - `vibe normalize`
+
+## Effect Signature Policy
+
+`vibe/std` は pure 層と effect 境界を意図的に分離し、関数シグネチャで副作用を可視化する。
+
+- pure modules (`pure-primitive`, `pure-data`, `ref-model`) は `with {...}` を持たない。
+- runtime bridge (`effect-boundary`) は host builtin への薄い委譲に限定し、effect を明示する。
+- effect の種類は責務に合わせる:
+  - file/path: `with {Fs}` / `with {Env}`
+  - network: `with {Net}`
+  - stdio: `with {Stdin}` / `with {Stdout}`
+  - async runtime: `with {Async}`
+- 新規 API を追加する場合、pure 変換ロジックは pure module に置き、effect module には混在させない。
+- 実験 API は `threads/runtime` のように runtime wrapper 側へ隔離し、必要な unstable flag をドキュメントに明記する。
 
 ## Trait-oriented API Surface
 
 `builtin_traits.vibe` provides the canonical trait-first API:
 
 - `cmp_eq`, `cmp_ne` for equality (`T: Eq`)
+- `hash_require` for hashability bounds (`T: Hash`)
 - `ord_min`, `ord_max`, `ord_clamp`, `ord_between` for ordering (`T: Ord`)
 - `num_add`, `num_sub`, `num_mul`, `num_div`, `num_abs`, `num_square`, `num_clamp`
 
@@ -77,6 +100,21 @@ Boundary enforcement is active in:
 - `unwrap_or`, `unwrap_or_else`, `or`, `or_else`
 - `to_option`, `from_option`, `equals_by`
 - `map` itself is reserved in vibe syntax, so Result map is named `map_ok`.
+
+### Canonical Naming / Alias Policy
+
+`vibe/std` では parser 予約語制約を前提に、以下を canonical API 名として扱う。
+
+- Option: `map_opt`, `flatmap`, `map_or`, `unwrap_or`, `unwrap_or_else`
+- Result: `map_ok`, `bind`, `map_or`, `unwrap_or`, `unwrap_or_else`
+- Array: `array_map`, `flatmap`, `filter`, `fold`
+
+互換 alias 運用ルール:
+
+1. 新旧 API が併存する期間でも README では canonical 名のみを一次記載する。
+2. alias は最低 2 回の minor リリース相当期間を維持する。
+3. 期間後は `*_compat` 相当の互換面へ隔離し、既定 import からは外す。
+4. 削除前には `vibe normalize` の自動変換候補へ追加し、移行コストを固定化する。
 
 Recommended usage (collision-safe, method-style):
 
@@ -132,7 +170,7 @@ let v = None.unwrap_or(0)
 ### Phase 3: Data structure improvements
 
 5. **Mutable fields** - `enum List { Cons(Int, mut tail: List); Nil }`
-6. **Array builtin expansion** - `iter`, `zip`, `flatmap`
+6. **Collection iteration expansion** - list/collection への `iter`, `zip`, `flatmap` 展開
 
 ## Running Tests
 

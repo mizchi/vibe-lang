@@ -117,8 +117,8 @@ fn collect_instantiations_expr(
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
       if ctx.specializable.contains(name) && not(scope.contains(name)) {
-        match tag_for_call(ctx.env, name, args) {
-          Some(tag) => add_instantiation(ctx.instantiations, name, tag)
+        match ctx.tag_for_call(name, args) {
+          Some(tag) => ctx.add_instantiation(name, tag)
           None => ()
         }
       }
@@ -227,7 +227,7 @@ fn monoify_module_top(ast : @core.Module, ctx : MonoifyContext) -> @core.Module 
             let _ = effects
             let _ = body
             let _ = fn_span
-            let tags = tags_for_name(ctx.instantiations, name)
+            let tags = ctx.tags_for_name(name)
             if tags.is_empty() {
               let rewritten = monoify_expr(expr, ctx, DesugarScope::new(), {})
               out_stmts.push(
@@ -330,9 +330,9 @@ fn monoify_expr(
           @core.Expr::Call(name=mapped, type_args~, args=next_args, span~)
         None =>
           if ctx.specializable.contains(name) && not(scope.contains(name)) {
-            match tag_for_call(ctx.env, name, args) {
+            match ctx.tag_for_call(name, args) {
               Some(tag) =>
-                if ctx.instantiations.contains(inst_key(name, tag)) {
+                if ctx.has_instantiation(name, tag) {
                   let updated_args : Array[@core.CallArg] = []
                   for arg in next_args {
                     let adjusted = maybe_specialize_ident_arg(
@@ -566,8 +566,8 @@ fn maybe_specialize_ident_arg(
 }
 
 ///|
-fn tag_for_call(
-  env : @checker.TypeEnv,
+fn MonoifyContext::tag_for_call(
+  self : MonoifyContext,
   name : String,
   args : Array[@core.CallArg],
 ) -> String? {
@@ -575,23 +575,23 @@ fn tag_for_call(
   match name {
     "add" | "sub" | "mul" | "div" | "eq" | "lt" =>
       if pos_args.length() >= 1 {
-        num_tag_from_expr(env, pos_args[0].expr)
+        self.num_tag_from_expr(pos_args[0].expr)
       } else {
         None
       }
     "array_map" | "array_filter" =>
       if pos_args.length() >= 2 {
-        array_elem_tag_from_expr(env, pos_args[1].expr)
+        self.array_elem_tag_from_expr(pos_args[1].expr)
       } else {
         None
       }
     "array_fold" =>
       if pos_args.length() >= 2 {
-        match num_tag_from_expr(env, pos_args[1].expr) {
+        match self.num_tag_from_expr(pos_args[1].expr) {
           Some(tag) => Some(tag)
           None =>
             if pos_args.length() >= 3 {
-              array_elem_tag_from_expr(env, pos_args[2].expr)
+              self.array_elem_tag_from_expr(pos_args[2].expr)
             } else {
               None
             }
@@ -615,19 +615,22 @@ fn positional_args(args : Array[@core.CallArg]) -> Array[@core.CallArg] {
 }
 
 ///|
-fn num_tag_from_expr(env : @checker.TypeEnv, expr : @core.Expr) -> String? {
-  match env.get_expr_type(expr.span()) {
+fn MonoifyContext::num_tag_from_expr(
+  self : MonoifyContext,
+  expr : @core.Expr,
+) -> String? {
+  match self.env.get_expr_type(expr.span()) {
     Some(ty) => num_tag_from_type(ty)
     None => None
   }
 }
 
 ///|
-fn array_elem_tag_from_expr(
-  env : @checker.TypeEnv,
+fn MonoifyContext::array_elem_tag_from_expr(
+  self : MonoifyContext,
   expr : @core.Expr,
 ) -> String? {
-  match env.get_expr_type(expr.span()) {
+  match self.env.get_expr_type(expr.span()) {
     Some(@core.Type::Array(inner)) => num_tag_from_type(inner)
     _ => None
   }
@@ -659,27 +662,24 @@ fn inst_key(name : String, tag : String) -> String {
 }
 
 ///|
-fn add_instantiation(
-  instantiations : Map[String, Int],
+fn MonoifyContext::add_instantiation(
+  self : MonoifyContext,
   name : String,
   tag : String,
 ) -> Unit {
   let key = inst_key(name, tag)
-  let count = match instantiations.get(key) {
+  let count = match self.instantiations.get(key) {
     Some(c) => c
     None => 0
   }
-  instantiations[key] = count + 1
+  self.instantiations[key] = count + 1
 }
 
 ///|
-fn tags_for_name(
-  instantiations : Map[String, Int],
-  name : String,
-) -> Array[String] {
+fn MonoifyContext::tags_for_name(self : MonoifyContext, name : String) -> Array[String] {
   let prefix = name + ":"
   let out : Array[String] = []
-  for key, _ in instantiations {
+  for key, _ in self.instantiations {
     if String::has_prefix(key, prefix) {
       out.push(
         String::unsafe_substring(
@@ -691,6 +691,15 @@ fn tags_for_name(
     }
   }
   out
+}
+
+///|
+fn MonoifyContext::has_instantiation(
+  self : MonoifyContext,
+  name : String,
+  tag : String,
+) -> Bool {
+  self.instantiations.contains(inst_key(name, tag))
 }
 
 ///|

@@ -97,3 +97,33 @@ test "compile_call_builtin_post_user returns false for unknown" {
   }
   assert_false(handled)
 }
+
+///|
+test "compile_call_enum_ctor_by_name handles zero-arity ctor" {
+  let ctx = CodegenCtx::new(false)
+  ctx.heap_local = alloc_temp_local(ctx)
+  ctx.enum_ctor_tags["CtorX"] = 7
+  ctx.enum_ctor_arities["CtorX"] = 0
+  let buf = ByteBuf::new()
+  let args : Array[@core.CallArg] = []
+  let handled = compile_call_enum_ctor_by_name(ctx, buf, "CtorX", args) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(handled)
+  assert_true(buf.len() > 0)
+}
+
+///|
+test "compile_call_record_field_fallback_by_name handles known field" {
+  let ctx = CodegenCtx::new(false)
+  ctx.known_record_fields["id"] = true
+  let buf = ByteBuf::new()
+  let args = [call_split_test_arg(call_split_test_int(1L))]
+  let handled = compile_call_record_field_fallback_by_name(
+    ctx, buf, "id", args,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(handled)
+  assert_true(buf.len() > 0)
+}

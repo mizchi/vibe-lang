@@ -571,7 +571,29 @@ fn type_matches_impl_target(
             }
             ok
           }
-        _ => false
+        _ =>
+          match env.namespace_root(a) {
+            Some(root_name) =>
+              if root_name != pn {
+                false
+              } else {
+                let normalized_pattern : Result[@core.Type, TypeError] = try? normalize_type(
+                  env, p,
+                )
+                match normalized_pattern {
+                  Ok(expanded_pattern) =>
+                    if expanded_pattern == p {
+                      false
+                    } else {
+                      type_matches_impl_target(
+                        env, expanded_pattern, a, mapping,
+                      )
+                    }
+                  Err(_) => false
+                }
+              }
+            None => false
+          }
       }
     @core.Type::Tuple(ps) =>
       match a {

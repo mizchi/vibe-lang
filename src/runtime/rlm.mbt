@@ -44,7 +44,7 @@ fn rlm_system_prompt() -> String {
     #|### Control Flow
     #|- `if cond { expr } else { expr }`
     #|- `while cond { body }`
-    #|- `for x in arr { body }` / `for i, x in arr { body }` (array iteration)
+    #|- `for x in arr { body }` / `for i, x in arr { body }` (`iter_require` + `iter_length` / `iter_get` protocol。現状 `Iterable` は prelude 側で Array 実装のみ有効)
     #|- `match value { Some(x) => x, None => 0 }` (must be exhaustive)
     #|
     #|### Types
