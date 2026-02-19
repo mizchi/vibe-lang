@@ -42,8 +42,8 @@ test "try_extract_posix_command: bare ident (ls)" {
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
-      assert_eq!(cmd, "ls")
-      assert_eq!(flags.length(), 0)
+      assert_eq(cmd, "ls")
+      assert_eq(flags.length(), 0)
     }
     None => abort("expected Some")
   }
@@ -53,7 +53,7 @@ test "try_extract_posix_command: bare ident (ls)" {
 test "try_extract_posix_command: known name (path) returns None" {
   let expr = make_ident("path")
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
-  assert_true!(result is None)
+  assert_true(result is None)
 }
 
 ///|
@@ -66,10 +66,10 @@ test "try_extract_posix_command: __sub short flags (ls -al)" {
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
-      assert_eq!(cmd, "ls")
-      assert_eq!(flags.length(), 2)
-      assert_eq!(flags[0], "a")
-      assert_eq!(flags[1], "l")
+      assert_eq(cmd, "ls")
+      assert_eq(flags.length(), 2)
+      assert_eq(flags[0], "a")
+      assert_eq(flags[1], "l")
     }
     None => abort("expected Some")
   }
@@ -86,9 +86,9 @@ test "try_extract_posix_command: __sub __neg long flag (ls --all)" {
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
-      assert_eq!(cmd, "ls")
-      assert_eq!(flags.length(), 1)
-      assert_eq!(flags[0], "all")
+      assert_eq(cmd, "ls")
+      assert_eq(flags.length(), 1)
+      assert_eq(flags[0], "all")
     }
     None => abort("expected Some")
   }
@@ -108,10 +108,10 @@ test "try_extract_posix_command: chained flags (ls -l -a)" {
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
-      assert_eq!(cmd, "ls")
-      assert_eq!(flags.length(), 2)
-      assert_eq!(flags[0], "l")
-      assert_eq!(flags[1], "a")
+      assert_eq(cmd, "ls")
+      assert_eq(flags.length(), 2)
+      assert_eq(flags[0], "l")
+      assert_eq(flags[1], "a")
     }
     None => abort("expected Some")
   }
@@ -132,10 +132,10 @@ test "try_extract_posix_command: long + short (ls --all -l)" {
   let result = try_extract_posix_command(expr, empty_scope(), empty_known())
   match result {
     Some((cmd, flags)) => {
-      assert_eq!(cmd, "ls")
-      assert_eq!(flags.length(), 2)
-      assert_eq!(flags[0], "all")
-      assert_eq!(flags[1], "l")
+      assert_eq(cmd, "ls")
+      assert_eq(flags.length(), 2)
+      assert_eq(flags[0], "all")
+      assert_eq(flags[1], "l")
     }
     None => abort("expected Some")
   }
@@ -147,19 +147,19 @@ test "try_all_labeled_args: all labeled" {
     make_arg(make_bool(true), label=Some("a")),
     make_arg(make_bool(true), label=Some("l")),
   ]
-  assert_true!(try_all_labeled_args(args))
+  assert_true(try_all_labeled_args(args))
 }
 
 ///|
 test "try_all_labeled_args: empty args" {
   let args : Array[@core.CallArg] = []
-  assert_false!(try_all_labeled_args(args))
+  assert_false(try_all_labeled_args(args))
 }
 
 ///|
 test "try_all_labeled_args: positional arg fails" {
   let args = [make_arg(make_bool(true))]
-  assert_false!(try_all_labeled_args(args))
+  assert_false(try_all_labeled_args(args))
 }
 
 ///|
@@ -167,7 +167,7 @@ test "try_all_labeled_args: non-bool labeled passes (type check deferred)" {
   let args = [
     make_arg(@core.Expr::Int(value=1, span=test_span()), label=Some("a")),
   ]
-  assert_true!(try_all_labeled_args(args))
+  assert_true(try_all_labeled_args(args))
 }
 
 ///|
@@ -177,13 +177,13 @@ test "desugar_vibe_commands: ls() → sh_lines no flags" {
     stmts: [@core.Stmt::Expr(expr=call, span=test_span())],
   }
   let (desugared, notes) = desugar_vibe_commands_with_notes(ast)
-  assert_true!(notes.length() > 0)
+  assert_true(notes.length() > 0)
   match desugared.stmts[0] {
     @core.Stmt::Expr(expr=@core.Expr::Call(name="sh_lines", args~, ..), ..) => {
-      assert_eq!(args.length(), 1)
-      assert_true!(args[0].label is None)
+      assert_eq(args.length(), 1)
+      assert_true(args[0].label is None)
       match args[0].expr {
-        @core.Expr::String(value~, ..) => assert_eq!(value, "ls")
+        @core.Expr::String(value~, ..) => assert_eq(value, "ls")
         _ => abort("expected String arg")
       }
     }
@@ -202,18 +202,18 @@ test "desugar_vibe_commands: ls(l=true) → sh_lines with flag" {
     stmts: [@core.Stmt::Expr(expr=call, span=test_span())],
   }
   let (desugared, notes) = desugar_vibe_commands_with_notes(ast)
-  assert_true!(notes.length() > 0)
+  assert_true(notes.length() > 0)
   // Check the desugared output is a sh_lines call
   match desugared.stmts[0] {
     @core.Stmt::Expr(expr=@core.Expr::Call(name="sh_lines", args~, ..), ..) => {
       // First arg: positional String "ls"
-      assert_true!(args[0].label is None)
+      assert_true(args[0].label is None)
       match args[0].expr {
-        @core.Expr::String(value~, ..) => assert_eq!(value, "ls")
+        @core.Expr::String(value~, ..) => assert_eq(value, "ls")
         _ => abort("expected String arg")
       }
       // Second arg: labeled Bool l=true
-      assert_eq!(args[1].label, Some("l"))
+      assert_eq(args[1].label, Some("l"))
       match args[1].expr {
         @core.Expr::Bool(value=true, ..) => ()
         _ => abort("expected Bool(true)")
@@ -239,8 +239,8 @@ test "desugar_vibe_commands: ls(l=true, a=true) preserves order" {
   match desugared.stmts[0] {
     @core.Stmt::Expr(expr=@core.Expr::Call(name="sh_lines", args~, ..), ..) => {
       // Labels preserve input order: l, a
-      assert_eq!(args[1].label, Some("l"))
-      assert_eq!(args[2].label, Some("a"))
+      assert_eq(args[1].label, Some("l"))
+      assert_eq(args[2].label, Some("a"))
     }
     _ => abort("expected sh_lines call")
   }
@@ -257,17 +257,17 @@ test "desugar_vibe_commands: ls -al → sh_lines with flags" {
     stmts: [@core.Stmt::Expr(expr~, span=test_span())],
   }
   let (desugared, notes) = desugar_vibe_commands_with_notes(ast)
-  assert_true!(notes.length() > 0)
+  assert_true(notes.length() > 0)
   match desugared.stmts[0] {
     @core.Stmt::Expr(expr=@core.Expr::Call(name="sh_lines", args~, ..), ..) => {
       // First arg: "ls"
       match args[0].expr {
-        @core.Expr::String(value~, ..) => assert_eq!(value, "ls")
+        @core.Expr::String(value~, ..) => assert_eq(value, "ls")
         _ => abort("expected String")
       }
       // Flags sorted: a, l
-      assert_eq!(args[1].label, Some("a"))
-      assert_eq!(args[2].label, Some("l"))
+      assert_eq(args[1].label, Some("a"))
+      assert_eq(args[2].label, Some("l"))
     }
     _ => abort("expected sh_lines call")
   }
@@ -284,7 +284,7 @@ test "desugar_vibe_commands: known name not desugared" {
     stmts: [@core.Stmt::Expr(expr=call, span=test_span())],
   }
   let (desugared, notes) = desugar_vibe_commands_with_notes(ast)
-  assert_eq!(notes.length(), 0)
+  assert_eq(notes.length(), 0)
   match desugared.stmts[0] {
     @core.Stmt::Expr(expr=@core.Expr::Call(name="path", ..), ..) => ()
     _ => abort("expected path call unchanged")

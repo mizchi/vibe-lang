@@ -5,16 +5,24 @@ pub struct MonoifyResult {
 } derive(Show, Eq)
 
 ///|
+priv struct MonoifyContext {
+  env : @checker.TypeEnv
+  instantiations : Map[String, Int]
+  specializable : Map[String, @core.Expr]
+}
+
+///|
 pub fn monoify_module(
   ast : @core.Module,
   env : @checker.TypeEnv,
 ) -> MonoifyResult {
   let specializable = collect_specializable_defs(ast)
   let instantiations = collect_instantiations(ast, env, specializable)
+  let ctx : MonoifyContext = { env, instantiations, specializable }
   if instantiations.is_empty() {
     return { ast, instantiations }
   }
-  let rewritten = monoify_module_top(ast, env, instantiations, specializable)
+  let rewritten = monoify_module_top(ast, ctx)
   { ast: rewritten, instantiations }
 }
 
@@ -50,19 +58,16 @@ fn collect_instantiations(
   specializable : Map[String, @core.Expr],
 ) -> Map[String, Int] {
   let instantiations : Map[String, Int] = {}
+  let ctx : MonoifyContext = { env, instantiations, specializable }
   let scope = DesugarScope::new()
-  collect_instantiations_module(
-    ast, env, specializable, instantiations, scope, false,
-  )
+  collect_instantiations_module(ast, ctx, scope, false)
   instantiations
 }
 
 ///|
 fn collect_instantiations_module(
   ast : @core.Module,
-  env : @checker.TypeEnv,
-  specializable : Map[String, @core.Expr],
-  instantiations : Map[String, Int],
+  ctx : MonoifyContext,
   scope : DesugarScope,
   track_let : Bool,
 ) -> Unit {
@@ -78,32 +83,24 @@ fn collect_instantiations_module(
         } else {
           local_scope
         }
-        collect_instantiations_expr(
-          expr, env, specializable, instantiations, expr_scope,
-        )
+        collect_instantiations_expr(expr, ctx, expr_scope)
         if track_let {
           local_scope.bindings[name] = true
         }
       }
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
-        collect_instantiations_expr(
-          expr, env, specializable, instantiations, local_scope,
-        )
+        collect_instantiations_expr(expr, ctx, local_scope)
       }
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
         let _ = span
-        collect_instantiations_module(
-          body, env, specializable, instantiations, local_scope, true,
-        )
+        collect_instantiations_module(body, ctx, local_scope, true)
       }
       @core.Stmt::Bench(name~, body~, span~) => {
         let _ = name
         let _ = span
-        collect_instantiations_module(
-          body, env, specializable, instantiations, local_scope, true,
-        )
+        collect_instantiations_module(body, ctx, local_scope, true)
       }
       _ => ()
     }
@@ -113,99 +110,63 @@ fn collect_instantiations_module(
 ///|
 fn collect_instantiations_expr(
   expr : @core.Expr,
-  env : @checker.TypeEnv,
-  specializable : Map[String, @core.Expr],
-  instantiations : Map[String, Int],
+  ctx : MonoifyContext,
   scope : DesugarScope,
 ) -> Unit {
   match expr {
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
-      if specializable.contains(name) && not(scope.contains(name)) {
-        match tag_for_call(env, name, args) {
-          Some(tag) => add_instantiation(instantiations, name, tag)
+      if ctx.specializable.contains(name) && not(scope.contains(name)) {
+        match tag_for_call(ctx.env, name, args) {
+          Some(tag) => add_instantiation(ctx.instantiations, name, tag)
           None => ()
         }
       }
       for arg in args {
-        collect_instantiations_expr(
-          arg.expr,
-          env,
-          specializable,
-          instantiations,
-          scope,
-        )
+        collect_instantiations_expr(arg.expr, ctx, scope)
       }
     }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
       for item in items {
-        collect_instantiations_expr(
-          item, env, specializable, instantiations, scope,
-        )
+        collect_instantiations_expr(item, ctx, scope)
       }
     }
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       for field in fields {
-        collect_instantiations_expr(
-          field.expr,
-          env,
-          specializable,
-          instantiations,
-          scope,
-        )
+        collect_instantiations_expr(field.expr, ctx, scope)
       }
     }
     @core.Expr::Array(items~, span~) => {
       let _ = span
       for item in items {
-        collect_instantiations_expr(
-          item, env, specializable, instantiations, scope,
-        )
+        collect_instantiations_expr(item, ctx, scope)
       }
     }
     @core.Expr::Map(fields~, span~) => {
       let _ = span
       for field in fields {
-        collect_instantiations_expr(
-          field.expr,
-          env,
-          specializable,
-          instantiations,
-          scope,
-        )
+        collect_instantiations_expr(field.expr, ctx, scope)
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
       let _ = span
-      collect_instantiations_expr(
-        cond, env, specializable, instantiations, scope,
-      )
-      collect_instantiations_module(
-        then_body, env, specializable, instantiations, scope, true,
-      )
-      collect_instantiations_module(
-        else_body, env, specializable, instantiations, scope, true,
-      )
+      collect_instantiations_expr(cond, ctx, scope)
+      collect_instantiations_module(then_body, ctx, scope, true)
+      collect_instantiations_module(else_body, ctx, scope, true)
     }
     @core.Expr::Block(body~, span~) => {
       let _ = span
-      collect_instantiations_module(
-        body, env, specializable, instantiations, scope, true,
-      )
+      collect_instantiations_module(body, ctx, scope, true)
     }
     @core.Expr::Do(body~, span~) => {
       let _ = span
-      collect_instantiations_module(
-        body, env, specializable, instantiations, scope, true,
-      )
+      collect_instantiations_module(body, ctx, scope, true)
     }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      collect_instantiations_module(
-        body, env, specializable, instantiations, scope, true,
-      )
+      collect_instantiations_module(body, ctx, scope, true)
       for arm in arms {
         let arm_scope = scope.child()
         let bindings : Array[String] = []
@@ -214,26 +175,15 @@ fn collect_instantiations_expr(
           arm_scope.bindings[name] = true
         }
         match arm.cond {
-          Some(c) =>
-            collect_instantiations_expr(
-              c, env, specializable, instantiations, arm_scope,
-            )
+          Some(c) => collect_instantiations_expr(c, ctx, arm_scope)
           None => ()
         }
-        collect_instantiations_expr(
-          arm.expr,
-          env,
-          specializable,
-          instantiations,
-          arm_scope,
-        )
+        collect_instantiations_expr(arm.expr, ctx, arm_scope)
       }
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
-      collect_instantiations_expr(
-        scrutinee, env, specializable, instantiations, scope,
-      )
+      collect_instantiations_expr(scrutinee, ctx, scope)
       for arm in arms {
         let arm_scope = scope.child()
         let bindings : Array[String] = []
@@ -242,19 +192,10 @@ fn collect_instantiations_expr(
           arm_scope.bindings[name] = true
         }
         match arm.cond {
-          Some(c) =>
-            collect_instantiations_expr(
-              c, env, specializable, instantiations, arm_scope,
-            )
+          Some(c) => collect_instantiations_expr(c, ctx, arm_scope)
           None => ()
         }
-        collect_instantiations_expr(
-          arm.expr,
-          env,
-          specializable,
-          instantiations,
-          arm_scope,
-        )
+        collect_instantiations_expr(arm.expr, ctx, arm_scope)
       }
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
@@ -265,27 +206,20 @@ fn collect_instantiations_expr(
       for param in params {
         fn_scope.bindings[param.name] = true
       }
-      collect_instantiations_module(
-        body, env, specializable, instantiations, fn_scope, true,
-      )
+      collect_instantiations_module(body, ctx, fn_scope, true)
     }
     _ => ()
   }
 }
 
 ///|
-fn monoify_module_top(
-  ast : @core.Module,
-  env : @checker.TypeEnv,
-  instantiations : Map[String, Int],
-  specializable : Map[String, @core.Expr],
-) -> @core.Module {
+fn monoify_module_top(ast : @core.Module, ctx : MonoifyContext) -> @core.Module {
   let out_stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) =>
         match expr {
-          @core.Expr::Fn(params~, ret~, effects~, body~, span=fn_span, ..) if specializable.contains(
+          @core.Expr::Fn(params~, ret~, effects~, body~, span=fn_span, ..) if ctx.specializable.contains(
               name,
             ) => {
             let _ = params
@@ -293,25 +227,16 @@ fn monoify_module_top(
             let _ = effects
             let _ = body
             let _ = fn_span
-            let tags = tags_for_name(instantiations, name)
+            let tags = tags_for_name(ctx.instantiations, name)
             if tags.is_empty() {
-              let rewritten = monoify_expr(
-                expr,
-                env,
-                instantiations,
-                specializable,
-                DesugarScope::new(),
-                {},
-              )
+              let rewritten = monoify_expr(expr, ctx, DesugarScope::new(), {})
               out_stmts.push(
                 @core.Stmt::Let(rec~, name~, expr=rewritten, span~),
               )
             } else {
               for tag in tags {
                 let new_name = specialized_name(name, tag)
-                let specialized = specialize_fn_expr(
-                  expr, name, tag, env, instantiations, specializable,
-                )
+                let specialized = specialize_fn_expr(expr, name, tag, ctx)
                 out_stmts.push(
                   @core.Stmt::Let(rec~, name=new_name, expr=specialized, span~),
                 )
@@ -319,48 +244,20 @@ fn monoify_module_top(
             }
           }
           _ => {
-            let rewritten = monoify_expr(
-              expr,
-              env,
-              instantiations,
-              specializable,
-              DesugarScope::new(),
-              {},
-            )
+            let rewritten = monoify_expr(expr, ctx, DesugarScope::new(), {})
             out_stmts.push(@core.Stmt::Let(rec~, name~, expr=rewritten, span~))
           }
         }
       @core.Stmt::Expr(expr~, span~) => {
-        let rewritten = monoify_expr(
-          expr,
-          env,
-          instantiations,
-          specializable,
-          DesugarScope::new(),
-          {},
-        )
+        let rewritten = monoify_expr(expr, ctx, DesugarScope::new(), {})
         out_stmts.push(@core.Stmt::Expr(expr=rewritten, span~))
       }
       @core.Stmt::Test(name~, body~, span~) => {
-        let rewritten = monoify_block(
-          body,
-          env,
-          instantiations,
-          specializable,
-          DesugarScope::new(),
-          {},
-        )
+        let rewritten = monoify_block(body, ctx, DesugarScope::new(), {})
         out_stmts.push(@core.Stmt::Test(name~, body=rewritten, span~))
       }
       @core.Stmt::Bench(name~, body~, span~) => {
-        let rewritten = monoify_block(
-          body,
-          env,
-          instantiations,
-          specializable,
-          DesugarScope::new(),
-          {},
-        )
+        let rewritten = monoify_block(body, ctx, DesugarScope::new(), {})
         out_stmts.push(@core.Stmt::Bench(name~, body=rewritten, span~))
       }
       _ => out_stmts.push(stmt)
@@ -372,9 +269,7 @@ fn monoify_module_top(
 ///|
 fn monoify_block(
   body : @core.Module,
-  env : @checker.TypeEnv,
-  instantiations : Map[String, Int],
-  specializable : Map[String, @core.Expr],
+  ctx : MonoifyContext,
   scope : DesugarScope,
   current_spec : Map[String, String],
 ) -> @core.Module {
@@ -390,28 +285,20 @@ fn monoify_block(
         } else {
           local_scope
         }
-        let rewritten = monoify_expr(
-          expr, env, instantiations, specializable, expr_scope, current_spec,
-        )
+        let rewritten = monoify_expr(expr, ctx, expr_scope, current_spec)
         out_stmts.push(@core.Stmt::Let(rec~, name~, expr=rewritten, span~))
         local_scope.bindings[name] = true
       }
       @core.Stmt::Expr(expr~, span~) => {
-        let rewritten = monoify_expr(
-          expr, env, instantiations, specializable, local_scope, current_spec,
-        )
+        let rewritten = monoify_expr(expr, ctx, local_scope, current_spec)
         out_stmts.push(@core.Stmt::Expr(expr=rewritten, span~))
       }
       @core.Stmt::Test(name~, body~, span~) => {
-        let rewritten = monoify_block(
-          body, env, instantiations, specializable, local_scope, current_spec,
-        )
+        let rewritten = monoify_block(body, ctx, local_scope, current_spec)
         out_stmts.push(@core.Stmt::Test(name~, body=rewritten, span~))
       }
       @core.Stmt::Bench(name~, body~, span~) => {
-        let rewritten = monoify_block(
-          body, env, instantiations, specializable, local_scope, current_spec,
-        )
+        let rewritten = monoify_block(body, ctx, local_scope, current_spec)
         out_stmts.push(@core.Stmt::Bench(name~, body=rewritten, span~))
       }
       _ => out_stmts.push(stmt)
@@ -423,9 +310,7 @@ fn monoify_block(
 ///|
 fn monoify_expr(
   expr : @core.Expr,
-  env : @checker.TypeEnv,
-  instantiations : Map[String, Int],
-  specializable : Map[String, @core.Expr],
+  ctx : MonoifyContext,
   scope : DesugarScope,
   current_spec : Map[String, String],
 ) -> @core.Expr {
@@ -433,14 +318,7 @@ fn monoify_expr(
     @core.Expr::Call(name~, type_args~, args~, span~) => {
       let next_args : Array[@core.CallArg] = []
       for arg in args {
-        let rewritten = monoify_expr(
-          arg.expr,
-          env,
-          instantiations,
-          specializable,
-          scope,
-          current_spec,
-        )
+        let rewritten = monoify_expr(arg.expr, ctx, scope, current_spec)
         next_args.push(@core.CallArg::{
           label: arg.label,
           expr: rewritten,
@@ -451,16 +329,15 @@ fn monoify_expr(
         Some(mapped) =>
           @core.Expr::Call(name=mapped, type_args~, args=next_args, span~)
         None =>
-          if specializable.contains(name) && not(scope.contains(name)) {
-            match tag_for_call(env, name, args) {
+          if ctx.specializable.contains(name) && not(scope.contains(name)) {
+            match tag_for_call(ctx.env, name, args) {
               Some(tag) =>
-                if instantiations.contains(inst_key(name, tag)) {
+                if ctx.instantiations.contains(inst_key(name, tag)) {
                   let updated_args : Array[@core.CallArg] = []
                   for arg in next_args {
                     let adjusted = maybe_specialize_ident_arg(
                       arg.expr,
-                      instantiations,
-                      specializable,
+                      ctx,
                       scope,
                       tag,
                     )
@@ -490,11 +367,7 @@ fn monoify_expr(
     @core.Expr::Tuple(items~, span~) => {
       let out : Array[@core.Expr] = []
       for item in items {
-        out.push(
-          monoify_expr(
-            item, env, instantiations, specializable, scope, current_spec,
-          ),
-        )
+        out.push(monoify_expr(item, ctx, scope, current_spec))
       }
       @core.Expr::Tuple(items=out, span~)
     }
@@ -503,14 +376,7 @@ fn monoify_expr(
       for field in fields {
         out.push(@core.RecordFieldExpr::{
           name: field.name,
-          expr: monoify_expr(
-            field.expr,
-            env,
-            instantiations,
-            specializable,
-            scope,
-            current_spec,
-          ),
+          expr: monoify_expr(field.expr, ctx, scope, current_spec),
           span: field.span,
         })
       }
@@ -519,11 +385,7 @@ fn monoify_expr(
     @core.Expr::Array(items~, span~) => {
       let out : Array[@core.Expr] = []
       for item in items {
-        out.push(
-          monoify_expr(
-            item, env, instantiations, specializable, scope, current_spec,
-          ),
-        )
+        out.push(monoify_expr(item, ctx, scope, current_spec))
       }
       @core.Expr::Array(items=out, span~)
     }
@@ -532,14 +394,7 @@ fn monoify_expr(
       for field in fields {
         out.push(@core.MapFieldExpr::{
           key: field.key,
-          expr: monoify_expr(
-            field.expr,
-            env,
-            instantiations,
-            specializable,
-            scope,
-            current_spec,
-          ),
+          expr: monoify_expr(field.expr, ctx, scope, current_spec),
           span: field.span,
         })
       }
@@ -547,31 +402,18 @@ fn monoify_expr(
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) =>
       @core.Expr::If(
-        cond=monoify_expr(
-          cond, env, instantiations, specializable, scope, current_spec,
-        ),
-        then_body=monoify_block(
-          then_body, env, instantiations, specializable, scope, current_spec,
-        ),
-        else_body=monoify_block(
-          else_body, env, instantiations, specializable, scope, current_spec,
-        ),
+        cond=monoify_expr(cond, ctx, scope, current_spec),
+        then_body=monoify_block(then_body, ctx, scope, current_spec),
+        else_body=monoify_block(else_body, ctx, scope, current_spec),
         span~,
       )
     @core.Expr::Block(body~, span~) =>
       @core.Expr::Block(
-        body=monoify_block(
-          body, env, instantiations, specializable, scope, current_spec,
-        ),
+        body=monoify_block(body, ctx, scope, current_spec),
         span~,
       )
     @core.Expr::Do(body~, span~) =>
-      @core.Expr::Do(
-        body=monoify_block(
-          body, env, instantiations, specializable, scope, current_spec,
-        ),
-        span~,
-      )
+      @core.Expr::Do(body=monoify_block(body, ctx, scope, current_spec), span~)
     @core.Expr::Handle(body~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       for arm in arms {
@@ -582,22 +424,10 @@ fn monoify_expr(
           arm_scope.bindings[name] = true
         }
         let next_cond = match arm.cond {
-          Some(c) =>
-            Some(
-              monoify_expr(
-                c, env, instantiations, specializable, arm_scope, current_spec,
-              ),
-            )
+          Some(c) => Some(monoify_expr(c, ctx, arm_scope, current_spec))
           None => None
         }
-        let next_expr = monoify_expr(
-          arm.expr,
-          env,
-          instantiations,
-          specializable,
-          arm_scope,
-          current_spec,
-        )
+        let next_expr = monoify_expr(arm.expr, ctx, arm_scope, current_spec)
         next_arms.push(@core.MatchArm::{
           pat: arm.pat,
           cond: next_cond,
@@ -606,18 +436,14 @@ fn monoify_expr(
         })
       }
       @core.Expr::Handle(
-        body=monoify_block(
-          body, env, instantiations, specializable, scope, current_spec,
-        ),
+        body=monoify_block(body, ctx, scope, current_spec),
         arms=next_arms,
         span~,
       )
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
-      let scrut = monoify_expr(
-        scrutinee, env, instantiations, specializable, scope, current_spec,
-      )
+      let scrut = monoify_expr(scrutinee, ctx, scope, current_spec)
       for arm in arms {
         let arm_scope = scope.child()
         let bindings : Array[String] = []
@@ -626,22 +452,10 @@ fn monoify_expr(
           arm_scope.bindings[name] = true
         }
         let next_cond = match arm.cond {
-          Some(c) =>
-            Some(
-              monoify_expr(
-                c, env, instantiations, specializable, arm_scope, current_spec,
-              ),
-            )
+          Some(c) => Some(monoify_expr(c, ctx, arm_scope, current_spec))
           None => None
         }
-        let next_expr = monoify_expr(
-          arm.expr,
-          env,
-          instantiations,
-          specializable,
-          arm_scope,
-          current_spec,
-        )
+        let next_expr = monoify_expr(arm.expr, ctx, arm_scope, current_spec)
         next_arms.push(@core.MatchArm::{
           pat: arm.pat,
           cond: next_cond,
@@ -670,9 +484,7 @@ fn monoify_expr(
         params~,
         ret~,
         effects~,
-        body=monoify_block(
-          body, env, instantiations, specializable, fn_scope, current_spec,
-        ),
+        body=monoify_block(body, ctx, fn_scope, current_spec),
         span~,
       )
     }
@@ -685,9 +497,7 @@ fn specialize_fn_expr(
   expr : @core.Expr,
   name : String,
   tag : String,
-  env : @checker.TypeEnv,
-  instantiations : Map[String, Int],
-  specializable : Map[String, @core.Expr],
+  ctx : MonoifyContext,
 ) -> @core.Expr {
   match expr {
     @core.Expr::Fn(
@@ -725,9 +535,7 @@ fn specialize_fn_expr(
         params=updated_params,
         ret=updated_ret,
         effects~,
-        body=monoify_block(
-          body, env, instantiations, specializable, fn_scope, current_spec,
-        ),
+        body=monoify_block(body, ctx, fn_scope, current_spec),
         span~,
       )
     }
@@ -738,15 +546,14 @@ fn specialize_fn_expr(
 ///|
 fn maybe_specialize_ident_arg(
   expr : @core.Expr,
-  instantiations : Map[String, Int],
-  specializable : Map[String, @core.Expr],
+  ctx : MonoifyContext,
   scope : DesugarScope,
   tag : String,
 ) -> @core.Expr {
   match expr {
     @core.Expr::Ident(name~, span~) =>
-      if specializable.contains(name) && not(scope.contains(name)) {
-        if instantiations.contains(inst_key(name, tag)) {
+      if ctx.specializable.contains(name) && not(scope.contains(name)) {
+        if ctx.instantiations.contains(inst_key(name, tag)) {
           @core.Expr::Ident(name=specialized_name(name, tag), span~)
         } else {
           expr
