@@ -19,6 +19,14 @@ fn call_split_test_arg(expr : @core.Expr) -> @core.CallArg {
 }
 
 ///|
+fn call_split_test_call(
+  name : String,
+  args : Array[@core.CallArg],
+) -> @core.Expr {
+  @core.Expr::Call(name~, type_args=[], args~, span=call_split_test_span())
+}
+
+///|
 test "extract_positional_exprs_with_arity returns positional args" {
   let args = [
     call_split_test_arg(call_split_test_int(1L)),
@@ -70,6 +78,100 @@ test "compile_call_builtin_pre_user returns false for unknown" {
     err => fail(err.to_string())
   }
   assert_false(handled)
+}
+
+///|
+test "compile_call_builtin_pre_user emits wasm fallback throw for from_json" {
+  let ctx = CodegenCtx::new(false)
+  ctx.need_exceptions = true
+  let buf = ByteBuf::new()
+  let args = [call_split_test_arg(call_split_test_string("{}"))]
+  let handled = compile_call_builtin_pre_user(
+    ctx, buf, "from_json", args, false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(handled)
+  assert_true(buf.len() > 0)
+}
+
+///|
+test "compile_call_builtin_pre_user keeps user fn priority for fallback names" {
+  let ctx = CodegenCtx::new(false)
+  let buf = ByteBuf::new()
+  let args = [call_split_test_arg(call_split_test_string("{}"))]
+  let handled = compile_call_builtin_pre_user(ctx, buf, "from_json", args, true) catch {
+    err => fail(err.to_string())
+  }
+  assert_false(handled)
+}
+
+///|
+test "compile_call_builtin_pre_user handles __set_index" {
+  let ctx = CodegenCtx::new(false)
+  let buf = ByteBuf::new()
+  let args = [
+    call_split_test_arg(call_split_test_int(0L)),
+    call_split_test_arg(call_split_test_int(0L)),
+    call_split_test_arg(call_split_test_int(1L)),
+  ]
+  let handled = compile_call_builtin_pre_user(
+    ctx, buf, "__set_index", args, false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(handled)
+  assert_true(buf.len() > 0)
+}
+
+///|
+test "compile_call_by_name handles __set_index" {
+  let ctx = CodegenCtx::new(false)
+  let buf = ByteBuf::new()
+  let args = [
+    call_split_test_arg(call_split_test_int(0L)),
+    call_split_test_arg(call_split_test_int(0L)),
+    call_split_test_arg(call_split_test_int(1L)),
+  ]
+  compile_call_by_name(ctx, buf, "__set_index", args) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(buf.len() > 0)
+}
+
+///|
+test "scan_needs_expr enables exceptions for wasm fallback builtins" {
+  let ctx = CodegenCtx::new(false)
+  let expr = call_split_test_call("from_json", [
+    call_split_test_arg(call_split_test_string("{}")),
+  ])
+  scan_needs_expr(ctx, expr)
+  assert_true(ctx.need_exceptions)
+}
+
+///|
+test "needs_heap_expr returns true for map_builder call" {
+  let ctx = CodegenCtx::new(false)
+  let expr = call_split_test_call("map_builder", [])
+  assert_true(needs_heap_expr(ctx, expr))
+}
+
+///|
+test "scan_needs_stmt registers struct fields as known record fields" {
+  let ctx = CodegenCtx::new(false)
+  let field = @core.StructField::{
+    name: "name",
+    ty: @core.Type::String,
+    span: call_split_test_span(),
+  }
+  let stmt = @core.Stmt::StructDef(
+    name="FileEntry",
+    params=[],
+    fields=[field],
+    span=call_split_test_span(),
+  )
+  scan_needs_stmt(ctx, stmt)
+  assert_true(ctx.known_record_fields.contains("name"))
 }
 
 ///|

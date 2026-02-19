@@ -176,8 +176,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         "char_to_int" | "char_from_int" => ()
         "__to_string" => if not(ctx.use_js_strings) { ctx.need_heap = true }
         _ =>
-          // Enum constructor calls require heap allocation
-          if ctx.enum_ctor_tags.contains(name) {
+          if is_wasm_runtime_fallback_builtin(name) {
+            ctx.need_exceptions = true
+          } else if ctx.enum_ctor_tags.contains(name) {
+            // Enum constructor calls require heap allocation.
             ctx.need_heap = true
           }
       }
@@ -331,6 +333,19 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
     }
     @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
       scan_needs_stmt(ctx, @core.Stmt::EnumDef(name~, params~, ctors~, span~))
+    @core.Stmt::StructDef(name~, params~, fields~, span~) => {
+      let _ = name
+      let _ = params
+      let _ = span
+      for field in fields {
+        ctx.known_record_fields[field.name] = true
+      }
+    }
+    @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
+      scan_needs_stmt(
+        ctx,
+        @core.Stmt::StructDef(name~, params~, fields~, span~),
+      )
     @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
       let _ = name
       let _ = params

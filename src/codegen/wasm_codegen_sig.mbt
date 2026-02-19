@@ -947,6 +947,15 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "string_from_char_code" ||
         name == "array_slice" ||
         name == "array_concat" ||
+        name == "array_builder" ||
+        name == "array_builder_push" ||
+        name == "array_builder_freeze" ||
+        name == "map_builder" ||
+        name == "map_builder_set" ||
+        name == "map_builder_freeze" ||
+        name == "string_builder" ||
+        name == "string_builder_push" ||
+        name == "string_builder_freeze" ||
         name == "map_keys" ||
         name == "map_values" ||
         name == "fs_read_file" ||

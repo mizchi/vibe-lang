@@ -1949,6 +1949,35 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 8)
       emit_i64_extend_i32_s(buf)
     }
+    "__set_index" => {
+      // __set_index(arr, idx, value) -> arr[idx] = value; return value
+      // This is used by index-assignment desugaring (e.g. cursor[0] = x).
+      let pos_args = extract_positional_exprs_with_arity(args, "__set_index", 3)
+      let ptr_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      let value_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, idx_local)
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_local_set(buf, value_local)
+      emit_local_get(buf, ptr_local)
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, value_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 8)
+      emit_local_get(buf, value_local)
+    }
     "map_get" => {
       // map_get(map, key) -> linear search for key, return value
       let pos_args = extract_positional_exprs_with_arity(args, "map_get", 2)
@@ -3342,6 +3371,8 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
+    _ if not(is_user_fn) && is_wasm_runtime_fallback_builtin(name) =>
+      emit_wasm_runtime_fallback_throw(ctx, buf, name)
     _ => raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
   }
 }
