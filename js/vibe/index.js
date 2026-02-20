@@ -9,7 +9,7 @@ const DEFAULT_INPUT_PTR = 1024;
 const DEFAULT_OUTPUT_PTR = 32768;
 const DEFAULT_OUTPUT_CAP = 32768;
 
-async function loadWasmBytes(path) {
+async function loadWasmSource(path) {
   if (typeof Deno !== "undefined" && typeof Deno.readFile === "function") {
     return await Deno.readFile(path);
   }
@@ -21,7 +21,32 @@ async function loadWasmBytes(path) {
   if (!response.ok) {
     throw new Error(`failed to fetch wasm: ${path}`);
   }
-  return new Uint8Array(await response.arrayBuffer());
+  return response;
+}
+
+async function instantiateWasm(source, imports) {
+  if (
+    typeof WebAssembly.Module !== "undefined" &&
+    source instanceof WebAssembly.Module
+  ) {
+    const instance = await WebAssembly.instantiate(source, imports);
+    return { instance };
+  }
+  if (typeof Response !== "undefined" && source instanceof Response) {
+    if (typeof WebAssembly.instantiateStreaming === "function") {
+      return await WebAssembly.instantiateStreaming(
+        Promise.resolve(source),
+        imports,
+      );
+    }
+    const bytes = new Uint8Array(await source.arrayBuffer());
+    const module = await WebAssembly.compile(bytes);
+    const instance = await WebAssembly.instantiate(module, imports);
+    return { instance };
+  }
+  const module = await WebAssembly.compile(source);
+  const instance = await WebAssembly.instantiate(module, imports);
+  return { instance };
 }
 
 function ensureExportFunctions(exports, wasmPath) {
@@ -84,12 +109,275 @@ function toRequestJson(request) {
   return JSON.stringify(request);
 }
 
-function buildDefaultImports() {
-  const noop = () => {};
-  const handler = { get: () => noop };
+function buildImportModule(moduleImpl, fallbackFn) {
+  return new Proxy(moduleImpl, {
+    get(target, key) {
+      if (key in target) {
+        return target[key];
+      }
+      return fallbackFn;
+    },
+  });
+}
+
+function normalizeCodePoint(value) {
+  const code = Number(value);
+  if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) {
+    return 0;
+  }
+  return Math.trunc(code);
+}
+
+function detectCurrentDir() {
+  try {
+    if (typeof Deno !== "undefined" && typeof Deno.cwd === "function") {
+      return Deno.cwd();
+    }
+  } catch (_err) {
+    // Fall through to process cwd or root.
+  }
+  if (typeof process !== "undefined" && typeof process.cwd === "function") {
+    return process.cwd();
+  }
+  return "/";
+}
+
+function createMoonbitHostState() {
   return {
-    __moonbit_sys_unstable: new Proxy({}, handler),
-    __moonbit_fs_unstable: new Proxy({}, handler),
+    env: new Map(),
+    lastError: "",
+    lastFileContent: new Uint8Array(),
+    lastDirFiles: [],
+  };
+}
+
+function createMoonbitFsImportModule(state) {
+  function externString(value) {
+    return { value: String(value) };
+  }
+  function externStringArray(values) {
+    const list = Array.from(values);
+    list.push("ffi_end_of_/string_array");
+    return { values: list };
+  }
+  function externByteArray(bytes) {
+    return { bytes: Uint8Array.from(bytes) };
+  }
+  function readExternString(externValue) {
+    if (
+      externValue &&
+      typeof externValue === "object" &&
+      typeof externValue.value === "string"
+    ) {
+      return externValue.value;
+    }
+    return "";
+  }
+
+  const impl = {
+    begin_create_string() {
+      return { chars: [] };
+    },
+    string_append_char(handle, ch) {
+      if (!handle || !Array.isArray(handle.chars)) {
+        return;
+      }
+      handle.chars.push(String.fromCodePoint(normalizeCodePoint(ch)));
+    },
+    finish_create_string(handle) {
+      if (!handle || !Array.isArray(handle.chars)) {
+        return externString("");
+      }
+      return externString(handle.chars.join(""));
+    },
+    begin_read_string(externValue) {
+      return { value: readExternString(externValue), index: 0 };
+    },
+    string_read_char(handle) {
+      if (!handle || typeof handle.value !== "string") {
+        return -1;
+      }
+      if (handle.index >= handle.value.length) {
+        return -1;
+      }
+      const code = handle.value.codePointAt(handle.index);
+      if (code === undefined) {
+        return -1;
+      }
+      handle.index += code > 0xffff ? 2 : 1;
+      return code;
+    },
+    finish_read_string(_handle) {
+      // no-op
+    },
+    begin_read_string_array(externValue) {
+      if (
+        externValue &&
+        typeof externValue === "object" &&
+        Array.isArray(externValue.values)
+      ) {
+        return { values: externValue.values, index: 0 };
+      }
+      return { values: ["ffi_end_of_/string_array"], index: 0 };
+    },
+    string_array_read_string(handle) {
+      if (!handle || !Array.isArray(handle.values)) {
+        return externString("ffi_end_of_/string_array");
+      }
+      if (handle.index >= handle.values.length) {
+        return externString("ffi_end_of_/string_array");
+      }
+      const value = handle.values[handle.index];
+      handle.index += 1;
+      return externString(value);
+    },
+    finish_read_string_array(_handle) {
+      // no-op
+    },
+    begin_create_byte_array() {
+      return { bytes: [] };
+    },
+    byte_array_append_byte(handle, value) {
+      if (!handle || !Array.isArray(handle.bytes)) {
+        return;
+      }
+      handle.bytes.push(normalizeCodePoint(value) & 0xff);
+    },
+    finish_create_byte_array(handle) {
+      if (!handle || !Array.isArray(handle.bytes)) {
+        return externByteArray([]);
+      }
+      return externByteArray(handle.bytes);
+    },
+    begin_read_byte_array(externValue) {
+      if (
+        externValue &&
+        typeof externValue === "object" &&
+        externValue.bytes instanceof Uint8Array
+      ) {
+        return { bytes: externValue.bytes, index: 0 };
+      }
+      return { bytes: new Uint8Array(), index: 0 };
+    },
+    byte_array_read_byte(handle) {
+      if (!handle || !(handle.bytes instanceof Uint8Array)) {
+        return -1;
+      }
+      if (handle.index >= handle.bytes.length) {
+        return -1;
+      }
+      const value = handle.bytes[handle.index];
+      handle.index += 1;
+      return value;
+    },
+    finish_read_byte_array(_handle) {
+      // no-op
+    },
+    current_dir() {
+      return externString(detectCurrentDir());
+    },
+    get_env_var(externKey) {
+      const key = readExternString(externKey);
+      return externString(state.env.get(key) ?? "");
+    },
+    get_env_var_exists(externKey) {
+      const key = readExternString(externKey);
+      return state.env.has(key);
+    },
+    get_env_vars() {
+      const flat = [];
+      for (const [key, value] of state.env.entries()) {
+        flat.push(key, value);
+      }
+      return externStringArray(flat);
+    },
+    set_env_var(externKey, externValue) {
+      state.env.set(readExternString(externKey), readExternString(externValue));
+    },
+    unset_env_var(externKey) {
+      state.env.delete(readExternString(externKey));
+    },
+    args_get() {
+      return externStringArray([]);
+    },
+    get_error_message() {
+      return externString(state.lastError);
+    },
+    get_file_content() {
+      return externByteArray(state.lastFileContent);
+    },
+    get_dir_files() {
+      return externStringArray(state.lastDirFiles);
+    },
+    read_file_to_bytes_new(_path) {
+      state.lastError = "unsupported in default JS host";
+      state.lastFileContent = new Uint8Array();
+      return -1;
+    },
+    write_bytes_to_file_new(_path, _content) {
+      state.lastError = "unsupported in default JS host";
+      return -1;
+    },
+    path_exists(_path) {
+      return false;
+    },
+    create_dir_new(_path) {
+      state.lastError = "unsupported in default JS host";
+      return -1;
+    },
+    read_dir_new(_path) {
+      state.lastError = "unsupported in default JS host";
+      state.lastDirFiles = [];
+      return -1;
+    },
+    is_file_new(_path) {
+      state.lastError = "unsupported in default JS host";
+      return -1;
+    },
+    is_dir_new(_path) {
+      state.lastError = "unsupported in default JS host";
+      return -1;
+    },
+    remove_file_new(_path) {
+      state.lastError = "unsupported in default JS host";
+      return -1;
+    },
+    remove_dir_new(_path) {
+      state.lastError = "unsupported in default JS host";
+      return -1;
+    },
+  };
+
+  return buildImportModule(impl, () => 0);
+}
+
+function createMoonbitSysImportModule() {
+  const impl = {
+    is_windows() {
+      return false;
+    },
+    exit(_code) {
+      // no-op
+    },
+  };
+  return buildImportModule(impl, () => 0);
+}
+
+function createSpectestImportModule() {
+  const impl = {
+    print_char(_ch) {
+      // no-op
+    },
+  };
+  return buildImportModule(impl, () => 0);
+}
+
+function buildDefaultImports() {
+  const state = createMoonbitHostState();
+  return {
+    __moonbit_sys_unstable: createMoonbitSysImportModule(),
+    __moonbit_fs_unstable: createMoonbitFsImportModule(state),
+    spectest: createSpectestImportModule(),
   };
 }
 
@@ -100,8 +388,8 @@ export async function createVibeService(options = {}) {
   const outputCap = options.outputCap ?? DEFAULT_OUTPUT_CAP;
   const imports = { ...buildDefaultImports(), ...options.imports };
 
-  const bytes = await loadWasmBytes(wasmPath);
-  const { instance } = await WebAssembly.instantiate(bytes, imports);
+  const wasmSource = options.wasmModule ?? await loadWasmSource(wasmPath);
+  const { instance } = await instantiateWasm(wasmSource, imports);
   const exports = instance.exports;
   ensureExportFunctions(exports, wasmPath);
 

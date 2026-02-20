@@ -142,6 +142,7 @@ export interface EvalResetResult {
 
 export interface VibeServiceOptions {
   wasmPath?: string;
+  wasmModule?: WebAssembly.Module;
   inputPtr?: number;
   outputPtr?: number;
   outputCap?: number;
