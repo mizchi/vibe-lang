@@ -389,6 +389,51 @@ test "eval include path resolves named vbundle alias from lib dir" {
 }
 
 ///|
+test "resolve vibe lib dir prefers VIBE_LIB_ROOT over VIBE_LIB_DIR" {
+  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
+  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
+  let prev_home = @sys.get_env_var("HOME")
+  @sys.set_env_var("VIBE_LIB_ROOT", "/tmp/vibe-lib-root")
+  @sys.set_env_var("VIBE_LIB_DIR", "/tmp/vibe-lib-dir")
+  @sys.set_env_var("HOME", "/tmp/vibe-home")
+  let resolved = resolve_vibe_lib_dir("/work/project")
+  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
+  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
+  wbtest_restore_env_var("HOME", prev_home)
+  assert_eq(resolved, "/tmp/vibe-lib-root")
+}
+
+///|
+test "resolve vibe lib dir falls back to VIBE_LIB_DIR" {
+  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
+  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
+  let prev_home = @sys.get_env_var("HOME")
+  @sys.unset_env_var("VIBE_LIB_ROOT")
+  @sys.set_env_var("VIBE_LIB_DIR", "local/lib")
+  @sys.set_env_var("HOME", "/tmp/vibe-home")
+  let resolved = resolve_vibe_lib_dir("/work/project")
+  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
+  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
+  wbtest_restore_env_var("HOME", prev_home)
+  assert_eq(resolved, "/work/project/local/lib")
+}
+
+///|
+test "resolve vibe lib dir falls back to HOME default" {
+  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
+  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
+  let prev_home = @sys.get_env_var("HOME")
+  @sys.unset_env_var("VIBE_LIB_ROOT")
+  @sys.unset_env_var("VIBE_LIB_DIR")
+  @sys.set_env_var("HOME", "/tmp/vibe-home")
+  let resolved = resolve_vibe_lib_dir("/work/project")
+  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
+  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
+  wbtest_restore_env_var("HOME", prev_home)
+  assert_eq(resolved, "/tmp/vibe-home/.vibe/lib")
+}
+
+///|
 test "finalize cmd options parse default" {
   let parsed = parse_finalize_cmd_args([])
   match parsed {
@@ -1867,5 +1912,13 @@ fn wbtest_remove_if_exists(path : String) -> Unit {
       wbtest_remove_if_exists(path + "/" + name)
     }
     ignore(@os_fs.remove_dir(path) catch { _ => () })
+  }
+}
+
+///|
+fn wbtest_restore_env_var(name : String, prev : String?) -> Unit {
+  match prev {
+    Some(value) => @sys.set_env_var(name, value)
+    None => @sys.unset_env_var(name)
   }
 }

@@ -747,11 +747,11 @@ Runtime API:
   command-head desugaring.
 CLI:
 - `moon run --target native src/cmd/vibe -- run <file>` executes a script (ignores `test {}`).
-- `moon run --target native src/cmd/vibe -- eval [--db tmp1.db] [--include index.vdb] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
+- `moon run --target native src/cmd/vibe -- eval [--db tmp1.db] [--include index.vbundle] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
   - `--include` accepts path forms and alias forms:
     - `--include=bit:<path>`: explicit alias to path-backed source.
-    - `--include=vibe/builtin@0.1.0.vdb`: named alias resolved from `VIBE_LIB_DIR` (fallback: `$HOME/.vibe/lib`).
-  - `.vdb` alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
+    - `--include=vibe/builtin@0.1.0.vbundle`: named alias resolved from `VIBE_LIB_ROOT` (fallback: `VIBE_LIB_DIR`, then `$HOME/.vibe/lib`).
+  - alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
 - `moon run --target native src/cmd/vibe -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/cmd/vibe -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - `moon run --target wasm src/cmd/vibe_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.

@@ -395,6 +395,59 @@ test "cli bundle pack verify and cat workflow" {
 }
 
 ///|
+test "cli bundle pack writes alias and object cache under VIBE_LIB_ROOT" {
+  let root = wbtest_make_temp_dir("bundle_pack_cache_root")
+  let lib_root = root + "/lib-root"
+  let entry = root + "/index.vibe"
+  let out_path = root + "/demo@0.1.0.vbundle"
+  @os_fs.write_string_to_file(
+    entry, "export let version = \"0.1.0\"\nlet value = 1\nexport { value }\n",
+  ) catch {
+    e => fail("write entry failed: " + e.to_string())
+  }
+  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
+  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
+  @sys.set_env_var("VIBE_LIB_ROOT", lib_root)
+  @sys.set_env_var("VIBE_LIB_DIR", root + "/legacy-lib")
+  bundle_pack_cmd([
+    "--scope", "demo/pkg", "--version", "0.1.0", "--entry", root, "-o", out_path,
+  ])
+  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
+  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
+  let alias_path = lib_root + "/demo/pkg@0.1.0.vbundle"
+  assert_true(@os_fs.path_exists(alias_path))
+  let alias_source = @os_fs.read_file_to_string(alias_path) catch {
+    e => fail("read alias failed: " + e.to_string())
+  }
+  let alias_trimmed = alias_source.trim().to_string()
+  assert_true(alias_trimmed.has_prefix("hash:"))
+  let bundle_hash = alias_trimmed
+    .unsafe_substring(start=5, end=alias_trimmed.length())
+    .trim()
+    .to_string()
+  assert_eq(bundle_hash.length(), 40)
+  let hash_dir = bundle_hash.unsafe_substring(start=0, end=2)
+  let hash_file = bundle_hash.unsafe_substring(start=2, end=bundle_hash.length())
+  let object_path = lib_root + "/objects/" + hash_dir + "/" + hash_file
+  assert_true(@os_fs.path_exists(object_path))
+  let object_source = @os_fs.read_file_to_string(object_path) catch {
+    e => fail("read object failed: " + e.to_string())
+  }
+  let object_json : Json = @json.parse(object_source) catch {
+    e => fail("parse object failed: " + e.to_string())
+  }
+  match object_json {
+    Json::Object(obj) =>
+      match obj.get("format") {
+        Some(Json::String(value)) => assert_eq(value, "vbundle-1")
+        _ => fail("cached object must be packed vbundle")
+      }
+    _ => fail("cached object must be JSON object")
+  }
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli bundle migrate copies legacy vdb to vbundle" {
   let root = wbtest_make_temp_dir("bundle_migrate")
   let legacy = root + "/legacy.vdb"
@@ -944,6 +997,91 @@ test "cli eval include supports hash alias from vbundle file" {
   wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(lib_vibe)
   wbtest_remove_if_exists(lib_root)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
+  let root = wbtest_make_temp_dir("eval_db_named_alias_lib_root")
+  let lib_root = root + "/lib-root"
+  let legacy_lib = root + "/legacy-lib"
+  let db_path = root + "/tmp1.db"
+  let out_path = root + "/main.vibe"
+  let alias_path = lib_root + "/vibe/builtin@0.1.0.vbundle"
+  let legacy_alias_path = legacy_lib + "/vibe/builtin@0.1.0.vbundle"
+  let seed_source = "let seed = 50\n"
+  let seed_hash = @vibe_core.git_blob_hash_string(seed_source)
+  let codebase = @codebase.Codebase::new(lib_root)
+  let _ = codebase.write_object(seed_hash, seed_source) catch {
+    e => fail("write alias object failed: " + e.to_string())
+  }
+  @os_fs.create_dir(lib_root + "/vibe") catch {
+    e => fail("create lib_root/vibe failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(alias_path, "hash:" + seed_hash + "\n") catch {
+    e => fail("write lib root alias failed: " + e.to_string())
+  }
+  @os_fs.create_dir(legacy_lib) catch {
+    e => fail("create legacy lib failed: " + e.to_string())
+  }
+  @os_fs.create_dir(legacy_lib + "/vibe") catch {
+    e => fail("create legacy lib/vibe failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    legacy_alias_path,
+    "hash:0000000000000000000000000000000000000000\n",
+  ) catch {
+    e => fail("write legacy alias failed: " + e.to_string())
+  }
+  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
+  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
+  @sys.set_env_var("VIBE_LIB_ROOT", lib_root)
+  @sys.set_env_var("VIBE_LIB_DIR", legacy_lib)
+  let features = @runtime.RuntimeFeatureFlags::stable()
+  eval_cmd(
+    [
+      "--db=" + db_path,
+      "--include=vibe/builtin@0.1.0.vbundle",
+      "let",
+      "answer",
+      "=",
+      "seed",
+      "+",
+      "2",
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  eval_cmd(
+    [
+      "--db=" + db_path,
+      "--include=vibe/builtin@0.1.0.vbundle",
+      "export",
+      "{",
+      "answer",
+      "}",
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  eval_cmd(
+    [
+      "--db=" + db_path,
+      "--include=vibe/builtin@0.1.0.vbundle",
+      "--export=" + out_path,
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
+  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
+  let exported = @os_fs.read_file_to_string(out_path) catch {
+    e => fail("read exported module failed: " + e.to_string())
+  }
+  assert_true(exported.contains("let answer = seed + 2"))
+  assert_true(exported.contains("export { answer }"))
+  wbtest_remove_if_exists(out_path)
+  wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(root)
 }
 

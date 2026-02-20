@@ -78,7 +78,11 @@ fn parse_eval_type_assertion(
 
 ///|
 pub fn resolve_vibe_lib_dir(base_dir : String) -> String {
-  match @sys.get_env_var("VIBE_LIB_DIR") {
+  let lib_root = match @sys.get_env_var("VIBE_LIB_ROOT") {
+    Some(path) => Some(path)
+    None => @sys.get_env_var("VIBE_LIB_DIR")
+  }
+  match lib_root {
     Some(path) =>
       if path.has_prefix("/") {
         @vibe_fs.normalize_path(path)

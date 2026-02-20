@@ -976,15 +976,43 @@ fn bundle_pack_cmd(args : Array[String]) -> Unit {
   if output_path.has_prefix("dist/") {
     ensure_dist_dir()
   }
+  let bundle_source = Json::object(root_obj).stringify()
   match ensure_parent_dir_for_file(output_path, "bundle pack") {
     Ok(_) => ()
     Err(err) => abort("bundle pack: " + err)
   }
   @os_fs.write_string_to_file(
     output_path,
-    Json::object(root_obj).stringify() + "\n",
+    bundle_source + "\n",
   ) catch {
     e => abort("bundle pack: write failed: " + e.to_string())
+  }
+  let lib_root = resolve_vibe_lib_dir(@io.current_dir_or_root())
+  match ensure_dir_recursive_for_eval(lib_root) {
+    Ok(_) => ()
+    Err(err) => abort("bundle pack: " + err)
+  }
+  let cache_codebase = @codebase.Codebase::new(lib_root)
+  let bundle_hash = @vibe_core.git_blob_hash_string(bundle_source)
+  let _ = cache_codebase.write_object(bundle_hash, bundle_source) catch {
+    e => abort("bundle pack: write cache object failed: " + e.to_string())
+  }
+  let alias_path = @vibe_fs.normalize_path(
+    lib_root + "/" + scope_value + "@" + version_value + ".vbundle",
+  )
+  let output_norm = if output_path.has_prefix("/") {
+    @vibe_fs.normalize_path(output_path)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root() + "/" + output_path)
+  }
+  if alias_path != output_norm {
+    match ensure_parent_dir_for_file(alias_path, "bundle pack") {
+      Ok(_) => ()
+      Err(err) => abort("bundle pack: " + err)
+    }
+    @os_fs.write_string_to_file(alias_path, "hash:" + bundle_hash + "\n") catch {
+      e => abort("bundle pack: write alias failed: " + e.to_string())
+    }
   }
   println(
     "bundle pack: wrote " +
@@ -994,7 +1022,9 @@ fn bundle_pack_cmd(args : Array[String]) -> Unit {
     " version=" +
     version_value +
     " objects=" +
-    objects_obj.length().to_string(),
+    objects_obj.length().to_string() +
+    " cache=" +
+    bundle_hash,
   )
 }
 
