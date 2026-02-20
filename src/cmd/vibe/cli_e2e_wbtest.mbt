@@ -99,6 +99,172 @@ test "cli index ref args reject unknown action" {
 }
 
 ///|
+test "shell meta command names include ide helpers" {
+  let names = repl_meta_command_names()
+  assert_true(wbtest_contains(names, ":view"))
+  assert_true(wbtest_contains(names, ":outline"))
+  assert_true(wbtest_contains(names, ":peek"))
+}
+
+///|
+test "shell meta command ignores non-meta input" {
+  let lines : Array[String] = []
+  let result = handle_repl_meta_command(
+    "let value = 1",
+    "/tmp/repl_meta_ignore.db",
+    "",
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::NotMeta)
+  assert_eq(lines.length(), 0)
+}
+
+///|
+test "shell meta view resolves current module symbol" {
+  let lines : Array[String] = []
+  let source = "let base = 10\nlet inc = (x: Int) -> Int { x + base }\n"
+  let result = handle_repl_meta_command(
+    ":view inc",
+    "/tmp/repl_meta_view.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("inc : (x: Int) -> Int"))
+}
+
+///|
+test "shell meta outline defaults to current module" {
+  let lines : Array[String] = []
+  let source = "let base = 10\nlet inc = (x: Int) -> Int { x + base }\n"
+  let result = handle_repl_meta_command(
+    ":outline",
+    "/tmp/repl_meta_outline.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("outline: current"))
+  assert_true(text.contains("\tbase\t"))
+  assert_true(text.contains("\tinc\t"))
+}
+
+///|
+test "shell meta peek reports missing symbol" {
+  let lines : Array[String] = []
+  let source = "let base = 10\n"
+  let result = handle_repl_meta_command(
+    ":peek __wb_missing_symbol_1",
+    "/tmp/repl_meta_peek.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  assert_eq(lines.length(), 1)
+  assert_eq(lines[0], "symbol not found: __wb_missing_symbol_1")
+}
+
+///|
+test "shell meta unknown command is handled" {
+  let lines : Array[String] = []
+  let result = handle_repl_meta_command(
+    ":unknown",
+    "/tmp/repl_meta_unknown.db",
+    "",
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  assert_eq(lines.length(), 1)
+  assert_eq(lines[0], "unknown command: :unknown")
+}
+
+///|
+test "shell vibe parser extracts subcommand args and pipeline" {
+  match repl_parse_vibe_shell_invocation("vibe view inc |> json_get(\"ok\")") {
+    Some(invocation) => {
+      assert_eq(invocation.subcommand, "view")
+      assert_eq(invocation.args, ["inc"])
+      match invocation.pipeline_tail {
+        Some(tail) => assert_eq(tail, "json_get(\"ok\")")
+        None => fail("expected pipeline tail")
+      }
+    }
+    None => fail("expected vibe shell invocation")
+  }
+}
+
+///|
+test "shell vibe command prints help json by default" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "vibe",
+    "/tmp/repl_vibe_help.db",
+    "",
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  assert_eq(lines.length(), 1)
+  assert_true(lines[0].contains("\"command\":\"help\""))
+  assert_true(lines[0].contains("\"ok\":true"))
+}
+
+///|
+test "shell vibe command supports pipeline transform over json payload" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let source = "let inc = (x: Int) -> Int { x + 1 }\n"
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "vibe view inc |> json_get(\"ok\")",
+    "/tmp/repl_vibe_pipeline.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("last: true"))
+}
+
+///|
+test "shell warns when binding reserved vibe subcommand name" {
+  let root = wbtest_make_temp_dir("repl_reserved_binding_warn")
+  let scratch_db_path = root + "/scratch.db"
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let _ = run_interactive_line(
+    rt,
+    @runtime.ParserMode::XshMode,
+    scratch_db_path,
+    "",
+    "let view = 1",
+    print_line=fn(s) { lines.push(s) },
+  )
+  let text = wbtest_join_lines(lines)
+  assert_true(
+    text.contains(
+      "warn: `view` is reserved for shell commands; use `view(...)` for explicit function call.",
+    ),
+  )
+  wbtest_remove_if_exists(scratch_db_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli symbols cmd options parse default" {
   let parsed = parse_symbols_cmd_args(["main.vibe"])
   match parsed {

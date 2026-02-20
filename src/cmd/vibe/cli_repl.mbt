@@ -43,6 +43,814 @@ fn repl_cmd(
 }
 
 ///|
+enum ReplMetaCommandResult {
+  NotMeta
+  HandledContinue
+  HandledExit
+} derive(Show, Eq)
+
+///|
+struct ReplSymbolMatch {
+  entry : @runtime.SymbolEntry
+  source : String
+}
+
+///|
+struct VibeShellInvocation {
+  subcommand : String
+  args : Array[String]
+  pipeline_tail : String?
+}
+
+///|
+fn repl_meta_command_names() -> Array[String] {
+  [":q", ":quit", ":exit", ":view", ":outline", ":peek"]
+}
+
+///|
+fn repl_is_space_char(c : Char) -> Bool {
+  c == ' ' || c == '\t'
+}
+
+///|
+fn repl_split_words(line : String) -> Array[String] {
+  let out : Array[String] = []
+  let buf = StringBuilder::new()
+  let mut in_token = false
+  for ch in line {
+    if repl_is_space_char(ch) {
+      if in_token {
+        out.push(buf.to_string())
+        buf.reset()
+        in_token = false
+      }
+    } else {
+      buf.write_char(ch)
+      in_token = true
+    }
+  }
+  if in_token {
+    out.push(buf.to_string())
+  }
+  out
+}
+
+///|
+fn repl_split_first_pipeline(line : String) -> (String, String?) {
+  let parts : Array[String] = []
+  for part_view in line.split("|>") {
+    parts.push(part_view.to_string())
+  }
+  if parts.length() <= 1 {
+    return (line, None)
+  }
+  let tail = StringBuilder::new()
+  for i in 1..<parts.length() {
+    if i > 1 {
+      tail.write_string("|>")
+    }
+    tail.write_string(parts[i])
+  }
+  let pipe_tail = tail.to_string().trim().to_string()
+  let maybe_tail = if pipe_tail.length() == 0 { None } else { Some(pipe_tail) }
+  (parts[0], maybe_tail)
+}
+
+///|
+fn repl_reserved_shell_command_names() -> Array[String] {
+  [
+    "vibe", "view", "outline", "peek", "symbols", "search", "rename", "normalize",
+    "help",
+  ]
+}
+
+///|
+fn repl_is_reserved_shell_command_name(name : String) -> Bool {
+  for cmd in repl_reserved_shell_command_names() {
+    if cmd == name {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn repl_warn_reserved_shell_binding(
+  name : String,
+  print_line : (String) -> Unit,
+) -> Unit {
+  if repl_is_reserved_shell_command_name(name) {
+    print_line(
+      "warn: `" +
+      name +
+      "` is reserved for shell commands; use `" +
+      name +
+      "(...)` for explicit function call.",
+    )
+  }
+}
+
+///|
+fn repl_symbol_key(entry : @runtime.SymbolEntry) -> String {
+  entry.path +
+  "|" +
+  entry.name +
+  "|" +
+  entry.signature +
+  "|" +
+  entry.span.start.to_string() +
+  "|" +
+  entry.span.end.to_string()
+}
+
+///|
+fn repl_collect_symbol_matches_from_entries(
+  db : @runtime.VibeDb,
+  entries : Array[@runtime.SymbolEntry],
+) -> Array[ReplSymbolMatch] {
+  let out : Array[ReplSymbolMatch] = []
+  let seen : Map[String, Bool] = {}
+  for entry in entries {
+    let key = repl_symbol_key(entry)
+    if seen.contains(key) {
+      continue
+    }
+    seen[key] = true
+    match db.get_source(entry.path) {
+      Some(source) => out.push({ entry, source })
+      None => ()
+    }
+  }
+  out
+}
+
+///|
+fn repl_collect_current_symbol_matches(
+  scratch_db_path : String,
+  scratch_source : String,
+  symbol : String?,
+) -> Array[ReplSymbolMatch] {
+  if scratch_source.trim().to_string().length() == 0 {
+    return []
+  }
+  let db = @runtime.VibeDb::new()
+  db.set_source(scratch_db_path, scratch_source)
+  let index = @runtime.build_symbol_index(db, [scratch_db_path])
+  let entries : Array[@runtime.SymbolEntry] = []
+  for entry in index.entries {
+    if entry.path != scratch_db_path {
+      continue
+    }
+    match symbol {
+      Some(name) => if entry.name == name { entries.push(entry) }
+      None => entries.push(entry)
+    }
+  }
+  repl_collect_symbol_matches_from_entries(db, entries)
+}
+
+///|
+fn repl_workspace_entry_path() -> String {
+  @vibe_fs.normalize_path(current_workspace_index_root() + "/index.vibe")
+}
+
+///|
+fn repl_load_workspace_symbol_matches(
+  symbol : String?,
+) -> Result[Array[ReplSymbolMatch], String] {
+  let workspace_entry = repl_workspace_entry_path()
+  if not(@os_fs.path_exists(workspace_entry)) {
+    return Ok([])
+  }
+  match @loader.load_db_with_paths(workspace_entry) {
+    Ok((db, _, paths)) => {
+      let index = @runtime.build_symbol_index(db, paths)
+      let entries : Array[@runtime.SymbolEntry] = []
+      match symbol {
+        Some(name) =>
+          for entry in index.find_exact(name) {
+            entries.push(entry)
+          }
+        None =>
+          for entry in index.entries {
+            entries.push(entry)
+          }
+      }
+      Ok(repl_collect_symbol_matches_from_entries(db, entries))
+    }
+    Err(err) => Err(err)
+  }
+}
+
+///|
+fn repl_symbol_match_location(item : ReplSymbolMatch) -> String {
+  let (line, column) = symbol_line_col(item.source, item.entry.span)
+  item.entry.path + ":" + line.to_string() + ":" + column.to_string()
+}
+
+///|
+fn repl_print_multiple_matches(
+  symbol : String,
+  matches : Array[ReplSymbolMatch],
+  print_line : (String) -> Unit,
+) -> Unit {
+  print_line("multiple matches for " + symbol + ":")
+  for item in matches {
+    let entry = item.entry
+    print_line(
+      "  " +
+      @runtime.symbol_kind_name(entry.kind) +
+      " " +
+      entry.name +
+      " : " +
+      entry.signature +
+      " @ " +
+      repl_symbol_match_location(item),
+    )
+  }
+}
+
+///|
+fn repl_resolve_symbol_matches(
+  symbol : String,
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Array[ReplSymbolMatch] {
+  let current = repl_collect_current_symbol_matches(
+    scratch_db_path,
+    scratch_source,
+    Some(symbol),
+  )
+  if current.length() > 0 {
+    return current
+  }
+  match repl_load_workspace_symbol_matches(Some(symbol)) {
+    Ok(matches) => matches
+    Err(_) => []
+  }
+}
+
+///|
+fn repl_print_outline_entries(
+  entries : Array[ReplSymbolMatch],
+  print_line : (String) -> Unit,
+) -> Unit {
+  for item in entries {
+    let entry = item.entry
+    print_line(
+      @runtime.symbol_kind_name(entry.kind) +
+      "\t" +
+      entry.name +
+      "\t" +
+      repl_symbol_match_location(item) +
+      "\t" +
+      entry.signature,
+    )
+  }
+}
+
+///|
+fn repl_symbol_match_to_json(
+  item : ReplSymbolMatch,
+  include_snippet? : Bool = false,
+) -> Json {
+  let entry = item.entry
+  let (line, column) = symbol_line_col(item.source, entry.span)
+  let obj : Map[String, Json] = {}
+  obj["name"] = Json::string(entry.name)
+  obj["kind"] = Json::string(@runtime.symbol_kind_name(entry.kind))
+  obj["signature"] = Json::string(entry.signature)
+  obj["path"] = Json::string(entry.path)
+  obj["line"] = Json::number(line.to_double())
+  obj["column"] = Json::number(column.to_double())
+  obj["location"] = Json::string(repl_symbol_match_location(item))
+  if include_snippet {
+    obj["snippet"] = Json::string(
+      symbol_line_text(item.source, entry.span).trim().to_string(),
+    )
+  }
+  Json::object(obj)
+}
+
+///|
+fn repl_symbol_matches_to_json(
+  matches : Array[ReplSymbolMatch],
+  include_snippet? : Bool = false,
+) -> Json {
+  let items : Array[Json] = []
+  for item in matches {
+    items.push(repl_symbol_match_to_json(item, include_snippet~))
+  }
+  Json::array(items)
+}
+
+///|
+fn repl_vibe_error_json(command : String, message : String) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["ok"] = Json::boolean(false)
+  obj["command"] = Json::string(command)
+  obj["error"] = Json::string(message)
+  Json::object(obj)
+}
+
+///|
+fn repl_parse_vibe_shell_invocation(line : String) -> VibeShellInvocation? {
+  let trimmed = line.trim().to_string()
+  if trimmed.length() == 0 {
+    return None
+  }
+  let (head, pipeline_tail) = repl_split_first_pipeline(trimmed)
+  let tokens = repl_split_words(head.trim().to_string())
+  if tokens.length() == 0 {
+    return None
+  }
+  if tokens[0] != "vibe" {
+    return None
+  }
+  if tokens.length() == 1 {
+    return Some({ subcommand: "help", args: [], pipeline_tail })
+  }
+  Some({ subcommand: tokens[1], args: args_tail(tokens, 2), pipeline_tail })
+}
+
+///|
+fn repl_vibe_symbols_json(
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Json {
+  let current = repl_collect_current_symbol_matches(
+    scratch_db_path,
+    scratch_source,
+    None,
+  )
+  let scope = if current.length() > 0 { "current" } else { "workspace" }
+  let items = if current.length() > 0 {
+    current
+  } else {
+    match repl_load_workspace_symbol_matches(None) {
+      Ok(matches) => matches
+      Err(_) => []
+    }
+  }
+  let obj : Map[String, Json] = {}
+  obj["ok"] = Json::boolean(true)
+  obj["command"] = Json::string("symbols")
+  obj["scope"] = Json::string(scope)
+  obj["items"] = repl_symbol_matches_to_json(items)
+  Json::object(obj)
+}
+
+///|
+fn repl_vibe_outline_json(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Json {
+  if args.length() > 1 {
+    return repl_vibe_error_json("outline", "usage: vibe outline [target]")
+  }
+  if args.length() == 0 {
+    let current = repl_collect_current_symbol_matches(
+      scratch_db_path,
+      scratch_source,
+      None,
+    )
+    let scope = if current.length() > 0 { "current" } else { "workspace" }
+    let items = if current.length() > 0 {
+      current
+    } else {
+      match repl_load_workspace_symbol_matches(None) {
+        Ok(matches) => matches
+        Err(_) => []
+      }
+    }
+    let obj : Map[String, Json] = {}
+    obj["ok"] = Json::boolean(true)
+    obj["command"] = Json::string("outline")
+    obj["scope"] = Json::string(scope)
+    obj["items"] = repl_symbol_matches_to_json(items)
+    return Json::object(obj)
+  }
+  let target = args[0]
+  let entry_path = if target == "." || target == "project" {
+    repl_workspace_entry_path()
+  } else {
+    @loader.resolve_entry_path(target)
+  }
+  match @loader.load_db_with_paths(entry_path) {
+    Ok((db, entry, paths)) => {
+      let index = @runtime.build_symbol_index(db, paths)
+      let items = repl_collect_symbol_matches_from_entries(db, index.entries)
+      let obj : Map[String, Json] = {}
+      obj["ok"] = Json::boolean(true)
+      obj["command"] = Json::string("outline")
+      obj["scope"] = Json::string("target")
+      obj["target"] = Json::string(entry)
+      obj["items"] = repl_symbol_matches_to_json(items)
+      Json::object(obj)
+    }
+    Err(err) => repl_vibe_error_json("outline", err)
+  }
+}
+
+///|
+fn repl_vibe_view_json(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Json {
+  if args.length() != 1 {
+    return repl_vibe_error_json("view", "usage: vibe view <symbol>")
+  }
+  let symbol = args[0]
+  let matches = repl_resolve_symbol_matches(
+    symbol, scratch_db_path, scratch_source,
+  )
+  if matches.length() == 0 {
+    return repl_vibe_error_json("view", "symbol not found: " + symbol)
+  }
+  let obj : Map[String, Json] = {}
+  obj["command"] = Json::string("view")
+  if matches.length() > 1 {
+    obj["ok"] = Json::boolean(false)
+    obj["error"] = Json::string("multiple matches")
+    obj["query"] = Json::string(symbol)
+    obj["candidates"] = repl_symbol_matches_to_json(matches)
+  } else {
+    obj["ok"] = Json::boolean(true)
+    obj["item"] = repl_symbol_match_to_json(matches[0])
+  }
+  Json::object(obj)
+}
+
+///|
+fn repl_vibe_peek_json(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Json {
+  if args.length() != 1 {
+    return repl_vibe_error_json("peek", "usage: vibe peek <symbol>")
+  }
+  let symbol = args[0]
+  let matches = repl_resolve_symbol_matches(
+    symbol, scratch_db_path, scratch_source,
+  )
+  if matches.length() == 0 {
+    return repl_vibe_error_json("peek", "symbol not found: " + symbol)
+  }
+  let obj : Map[String, Json] = {}
+  obj["command"] = Json::string("peek")
+  if matches.length() > 1 {
+    obj["ok"] = Json::boolean(false)
+    obj["error"] = Json::string("multiple matches")
+    obj["query"] = Json::string(symbol)
+    obj["candidates"] = repl_symbol_matches_to_json(
+      matches,
+      include_snippet=true,
+    )
+  } else {
+    obj["ok"] = Json::boolean(true)
+    obj["item"] = repl_symbol_match_to_json(matches[0], include_snippet=true)
+  }
+  Json::object(obj)
+}
+
+///|
+fn repl_vibe_normalize_json(
+  args : Array[String],
+  scratch_source : String,
+) -> Json {
+  if args.length() > 1 {
+    return repl_vibe_error_json("normalize", "usage: vibe normalize [file]")
+  }
+  let (target, source) = if args.length() == 0 {
+    ("scratch", scratch_source)
+  } else {
+    let path = @loader.resolve_entry_path(args[0])
+    let content = @os_fs.read_file_to_string(path) catch {
+      e =>
+        return repl_vibe_error_json(
+          "normalize",
+          "read failed: " + e.to_string(),
+        )
+    }
+    (path, content)
+  }
+  if source.trim().to_string().length() == 0 {
+    return repl_vibe_error_json("normalize", "source is empty")
+  }
+  match normalize_source_text(source) {
+    Ok(normalized) => {
+      let obj : Map[String, Json] = {}
+      obj["ok"] = Json::boolean(true)
+      obj["command"] = Json::string("normalize")
+      obj["target"] = Json::string(target)
+      obj["normalized"] = Json::string(normalized)
+      Json::object(obj)
+    }
+    Err(err) => repl_vibe_error_json("normalize", err)
+  }
+}
+
+///|
+fn repl_vibe_help_json() -> Json {
+  let commands : Array[Json] = []
+  commands.push(Json::string("vibe symbols"))
+  commands.push(Json::string("vibe outline [target]"))
+  commands.push(Json::string("vibe view <symbol>"))
+  commands.push(Json::string("vibe peek <symbol>"))
+  commands.push(Json::string("vibe normalize [file]"))
+  let obj : Map[String, Json] = {}
+  obj["ok"] = Json::boolean(true)
+  obj["command"] = Json::string("help")
+  obj["commands"] = Json::array(commands)
+  Json::object(obj)
+}
+
+///|
+fn repl_vibe_subcommand_json(
+  invocation : VibeShellInvocation,
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Json {
+  match invocation.subcommand {
+    "help" => repl_vibe_help_json()
+    "symbols" => repl_vibe_symbols_json(scratch_db_path, scratch_source)
+    "outline" =>
+      repl_vibe_outline_json(invocation.args, scratch_db_path, scratch_source)
+    "view" =>
+      repl_vibe_view_json(invocation.args, scratch_db_path, scratch_source)
+    "peek" =>
+      repl_vibe_peek_json(invocation.args, scratch_db_path, scratch_source)
+    "normalize" => repl_vibe_normalize_json(invocation.args, scratch_source)
+    other => repl_vibe_error_json("vibe", "unknown subcommand: " + other)
+  }
+}
+
+///|
+fn repl_print_eval_result_for_shell(
+  result : @runtime.EvalResult,
+  print_line : (String) -> Unit,
+) -> Unit {
+  let is_shell = result.effects
+    .iter()
+    .any(fn(e) {
+      match e {
+        @runtime.Effect::ShellExec(_) => true
+        _ => false
+      }
+    })
+  if is_shell {
+    match result.last {
+      Some(@vibe_core.Value::Array(items)) =>
+        for item in items {
+          match item {
+            @vibe_core.Value::String(s) => print_line(s)
+            other => print_line(other.to_string())
+          }
+        }
+      Some(value) => print_line(value.to_string())
+      None => ()
+    }
+    for effect in result.effects {
+      match effect {
+        @runtime.Effect::ShellExec(_) | @runtime.Effect::PosixDesugar(_) => ()
+        _ => print_line("effect: " + effect.to_string())
+      }
+    }
+  } else {
+    match result.last {
+      Some(value) => print_line("last: " + value.to_string())
+      None => ()
+    }
+    for effect in result.effects {
+      match effect {
+        @runtime.Effect::PosixDesugar(message) => print_line("note: " + message)
+        _ => print_line("effect: " + effect.to_string())
+      }
+    }
+  }
+}
+
+///|
+fn handle_repl_vibe_shell_command(
+  rt : @runtime.Runtime,
+  syntax_mode : @runtime.ParserMode,
+  line : String,
+  scratch_db_path : String,
+  scratch_source : String,
+  print_line : (String) -> Unit,
+) -> ReplMetaCommandResult {
+  let invocation = match repl_parse_vibe_shell_invocation(line) {
+    Some(v) => v
+    None => return ReplMetaCommandResult::NotMeta
+  }
+  let payload = repl_vibe_subcommand_json(
+    invocation, scratch_db_path, scratch_source,
+  )
+  let payload_text = payload.stringify()
+  match invocation.pipeline_tail {
+    None => {
+      print_line(payload_text)
+      ReplMetaCommandResult::HandledContinue
+    }
+    Some(pipe_tail) => {
+      let expression = "from_json(\"" +
+        escape_string_for_vibe(payload_text) +
+        "\") |> " +
+        pipe_tail
+      let result = rt.eval_script_with_mode(expression, syntax_mode) catch {
+        e => {
+          print_line(format_repl_error(e, expression))
+          return ReplMetaCommandResult::HandledContinue
+        }
+      }
+      repl_print_eval_result_for_shell(result, print_line)
+      ReplMetaCommandResult::HandledContinue
+    }
+  }
+}
+
+///|
+fn repl_handle_view_meta_command(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+  print_line : (String) -> Unit,
+) -> ReplMetaCommandResult {
+  if args.length() != 1 {
+    print_line("usage: :view <symbol>")
+    return ReplMetaCommandResult::HandledContinue
+  }
+  let symbol = args[0]
+  let matches = repl_resolve_symbol_matches(
+    symbol, scratch_db_path, scratch_source,
+  )
+  if matches.length() == 0 {
+    print_line("symbol not found: " + symbol)
+    return ReplMetaCommandResult::HandledContinue
+  }
+  if matches.length() > 1 {
+    repl_print_multiple_matches(symbol, matches, print_line)
+    return ReplMetaCommandResult::HandledContinue
+  }
+  let item = matches[0]
+  print_line(item.entry.name + " : " + item.entry.signature)
+  print_line("at " + repl_symbol_match_location(item))
+  ReplMetaCommandResult::HandledContinue
+}
+
+///|
+fn repl_handle_peek_meta_command(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+  print_line : (String) -> Unit,
+) -> ReplMetaCommandResult {
+  if args.length() != 1 {
+    print_line("usage: :peek <symbol>")
+    return ReplMetaCommandResult::HandledContinue
+  }
+  let symbol = args[0]
+  let matches = repl_resolve_symbol_matches(
+    symbol, scratch_db_path, scratch_source,
+  )
+  if matches.length() == 0 {
+    print_line("symbol not found: " + symbol)
+    return ReplMetaCommandResult::HandledContinue
+  }
+  if matches.length() > 1 {
+    repl_print_multiple_matches(symbol, matches, print_line)
+    return ReplMetaCommandResult::HandledContinue
+  }
+  let item = matches[0]
+  let entry = item.entry
+  print_line(
+    @runtime.symbol_kind_name(entry.kind) +
+    " " +
+    entry.name +
+    " : " +
+    entry.signature,
+  )
+  print_line("at " + repl_symbol_match_location(item))
+  let snippet = symbol_line_text(item.source, entry.span).trim().to_string()
+  if snippet.length() > 0 {
+    print_line(snippet)
+  }
+  ReplMetaCommandResult::HandledContinue
+}
+
+///|
+fn repl_handle_outline_meta_command(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+  print_line : (String) -> Unit,
+) -> ReplMetaCommandResult {
+  if args.length() > 1 {
+    print_line("usage: :outline [target]")
+    return ReplMetaCommandResult::HandledContinue
+  }
+  if args.length() == 0 {
+    let current = repl_collect_current_symbol_matches(
+      scratch_db_path,
+      scratch_source,
+      None,
+    )
+    if current.length() > 0 {
+      print_line("outline: current")
+      repl_print_outline_entries(current, print_line)
+      return ReplMetaCommandResult::HandledContinue
+    }
+    match repl_load_workspace_symbol_matches(None) {
+      Ok(workspace) =>
+        if workspace.length() == 0 {
+          print_line("no symbols found in current module or workspace")
+          ReplMetaCommandResult::HandledContinue
+        } else {
+          print_line("outline: workspace")
+          repl_print_outline_entries(workspace, print_line)
+          ReplMetaCommandResult::HandledContinue
+        }
+      Err(err) => {
+        print_line("outline: " + err)
+        ReplMetaCommandResult::HandledContinue
+      }
+    }
+  } else {
+    let target = args[0]
+    let entry_path = if target == "." || target == "project" {
+      repl_workspace_entry_path()
+    } else {
+      @loader.resolve_entry_path(target)
+    }
+    match @loader.load_db_with_paths(entry_path) {
+      Ok((db, entry, paths)) => {
+        let index = @runtime.build_symbol_index(db, paths)
+        let items = repl_collect_symbol_matches_from_entries(db, index.entries)
+        if items.length() == 0 {
+          print_line("no symbols found in " + entry)
+        } else {
+          print_line("outline: " + entry)
+          repl_print_outline_entries(items, print_line)
+        }
+        ReplMetaCommandResult::HandledContinue
+      }
+      Err(err) => {
+        print_line("outline: " + err)
+        ReplMetaCommandResult::HandledContinue
+      }
+    }
+  }
+}
+
+///|
+fn handle_repl_meta_command(
+  line : String,
+  scratch_db_path : String,
+  scratch_source : String,
+  print_line : (String) -> Unit,
+) -> ReplMetaCommandResult {
+  let trimmed = line.trim().to_string()
+  if trimmed.length() == 0 {
+    return ReplMetaCommandResult::NotMeta
+  }
+  match trimmed {
+    ":q" | ":quit" | ":exit" | "exit" =>
+      return ReplMetaCommandResult::HandledExit
+    _ => ()
+  }
+  if not(trimmed.has_prefix(":")) {
+    return ReplMetaCommandResult::NotMeta
+  }
+  let parts = repl_split_words(trimmed)
+  if parts.length() == 0 {
+    return ReplMetaCommandResult::HandledContinue
+  }
+  let cmd = parts[0]
+  let cmd_args = args_tail(parts, 1)
+  match cmd {
+    ":view" =>
+      repl_handle_view_meta_command(
+        cmd_args, scratch_db_path, scratch_source, print_line,
+      )
+    ":outline" =>
+      repl_handle_outline_meta_command(
+        cmd_args, scratch_db_path, scratch_source, print_line,
+      )
+    ":peek" =>
+      repl_handle_peek_meta_command(
+        cmd_args, scratch_db_path, scratch_source, print_line,
+      )
+    _ => {
+      print_line("unknown command: " + cmd)
+      ReplMetaCommandResult::HandledContinue
+    }
+  }
+}
+
+///|
 fn repl_tui_cmd(
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
@@ -131,6 +939,7 @@ fn repl_tui_cmd(
   }
 
   let shell_commands = collect_shell_commands()
+  let repl_meta_commands = repl_meta_command_names()
   let vibe_builtins = ["sh", "path", "addr", "exit"]
   let vibe_keywords = [
     "let", "rec", "if", "match", "do", "record", "test", "import", "true", "false",
@@ -364,11 +1173,31 @@ fn repl_tui_cmd(
     if trimmed.length() == 0 {
       return true
     }
-    match trimmed {
-      ":q" | ":quit" | ":exit" | "exit" => return false
-      _ => ()
-    }
     push_output_line("> " + trimmed)
+    match
+      handle_repl_meta_command(
+        trimmed,
+        scratch_db_path,
+        scratch_source_ref.val,
+        push_output_line,
+      ) {
+      ReplMetaCommandResult::HandledExit => return false
+      ReplMetaCommandResult::HandledContinue => return true
+      ReplMetaCommandResult::NotMeta => ()
+    }
+    match
+      handle_repl_vibe_shell_command(
+        rt,
+        syntax_mode,
+        trimmed,
+        scratch_db_path,
+        scratch_source_ref.val,
+        push_output_line,
+      ) {
+      ReplMetaCommandResult::HandledExit => return false
+      ReplMetaCommandResult::HandledContinue => return true
+      ReplMetaCommandResult::NotMeta => ()
+    }
     let result = rt.eval_script_with_mode(trimmed, syntax_mode) catch {
       e => {
         // Fallback: if XshMode fails with name resolution, retry with PosixMode desugar
@@ -435,6 +1264,7 @@ fn repl_tui_cmd(
     match extract_let_name(trimmed) {
       Some(name) => {
         push_unique(vibe_names, name)
+        repl_warn_reserved_shell_binding(name, push_output_line)
         match rt.get_addr(name) {
           Some(addr) =>
             push_output_line("addr: " + name + "#" + short_hash(addr))
@@ -518,6 +1348,11 @@ fn repl_tui_cmd(
           idx -= 1
         }
         for item in shell_commands {
+          if item.has_prefix(prefix) {
+            push_unique(items, item)
+          }
+        }
+        for item in repl_meta_commands {
           if item.has_prefix(prefix) {
             push_unique(items, item)
           }
@@ -843,61 +1678,87 @@ fn run_eval_line_repl_with_prompt(
         continue
       }
       let line_str = trimmed.to_string()
-      match line_str {
-        ":q" | ":quit" | ":exit" | "exit" => break
-        _ => {
-          let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
-            e => {
-              // Fallback: if XshMode fails with name resolution, retry with PosixMode
-              let err_str = e.to_string()
-              if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-                let wrapped = "do { " + line_str + " }"
-                let retry = rt.eval_script_with_mode(
-                  wrapped,
-                  @runtime.ParserMode::PosixMode,
-                ) catch {
-                  retry_err => {
-                    println(
-                      format_repl_error(
-                        retry_err,
-                        wrapped,
-                        unwrap_prefix="do { ",
-                      ),
-                    )
-                    if options.prompt_enabled {
-                      @stdio.stdout.write(options.prompt)
-                    }
-                    continue
-                  }
-                }
-                print_eval_result(retry)
+      match
+        handle_repl_meta_command(line_str, scratch_db_path, scratch_source, fn(
+          s,
+        ) {
+          println(s)
+        }) {
+        ReplMetaCommandResult::HandledExit => break
+        ReplMetaCommandResult::HandledContinue => {
+          if options.prompt_enabled {
+            @stdio.stdout.write(options.prompt)
+          }
+          continue
+        }
+        ReplMetaCommandResult::NotMeta => ()
+      }
+      match
+        handle_repl_vibe_shell_command(
+          rt,
+          syntax_mode,
+          line_str,
+          scratch_db_path,
+          scratch_source,
+          fn(s) { println(s) },
+        ) {
+        ReplMetaCommandResult::HandledExit => break
+        ReplMetaCommandResult::HandledContinue => {
+          if options.prompt_enabled {
+            @stdio.stdout.write(options.prompt)
+          }
+          continue
+        }
+        ReplMetaCommandResult::NotMeta => ()
+      }
+      let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
+        e => {
+          // Fallback: if XshMode fails with name resolution, retry with PosixMode
+          let err_str = e.to_string()
+          if err_str.contains("UnknownName") || err_str.contains("BadCall") {
+            let wrapped = "do { " + line_str + " }"
+            let retry = rt.eval_script_with_mode(
+              wrapped,
+              @runtime.ParserMode::PosixMode,
+            ) catch {
+              retry_err => {
+                println(
+                  format_repl_error(retry_err, wrapped, unwrap_prefix="do { "),
+                )
                 if options.prompt_enabled {
                   @stdio.stdout.write(options.prompt)
                 }
                 continue
               }
-              println(format_repl_error(e, line_str))
-              if options.prompt_enabled {
-                @stdio.stdout.write(options.prompt)
-              }
-              continue
             }
+            print_eval_result(retry)
+            if options.prompt_enabled {
+              @stdio.stdout.write(options.prompt)
+            }
+            continue
           }
-          print_eval_result(result)
-          match extract_let_name(line_str) {
-            Some(name) =>
-              match rt.get_addr(name) {
-                Some(addr) => println("addr: " + name + "#" + short_hash(addr))
-                None => ()
-              }
+          println(format_repl_error(e, line_str))
+          if options.prompt_enabled {
+            @stdio.stdout.write(options.prompt)
+          }
+          continue
+        }
+      }
+      print_eval_result(result)
+      match extract_let_name(line_str) {
+        Some(name) => {
+          repl_warn_reserved_shell_binding(name, fn(s) { println(s) })
+          match rt.get_addr(name) {
+            Some(addr) => println("addr: " + name + "#" + short_hash(addr))
             None => ()
           }
-          scratch_source = append_eval_db_source(scratch_source, line_str)
-          match write_eval_db_source(scratch_db_path, scratch_source) {
-            Ok(_) => ()
-            Err(err) => println("error: failed to persist namespace db: " + err)
-          }
         }
+        None => ()
+      }
+      scratch_source = append_eval_db_source(scratch_source, line_str)
+      match write_eval_db_source(scratch_db_path, scratch_source) {
+        Ok(_) => ()
+        Err(err) => println("error: failed to persist namespace db: " + err)
       }
       if options.prompt_enabled {
         @stdio.stdout.write(options.prompt)
@@ -1074,37 +1935,67 @@ fn repl_ai_cmd(
         continue
       }
       let line_str = trimmed.to_string()
-      match line_str {
-        ":q" | ":quit" | ":exit" | "exit" => break
-        _ => {
-          let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
-            e => {
-              println("error: " + e.to_string())
-              if prompt_enabled {
-                @stdio.stdout.write(prompt)
-              }
-              continue
-            }
+      match
+        handle_repl_meta_command(line_str, scratch_db_path, scratch_source, fn(
+          s,
+        ) {
+          println(s)
+        }) {
+        ReplMetaCommandResult::HandledExit => break
+        ReplMetaCommandResult::HandledContinue => {
+          if prompt_enabled {
+            @stdio.stdout.write(prompt)
           }
-          print_eval_result(result)
-          let let_name = extract_let_name(line_str)
-          match let_name {
-            Some(name) =>
-              match rt.get_addr(name) {
-                Some(addr) => println("addr: " + name + "#" + short_hash(addr))
-                None => ()
-              }
+          continue
+        }
+        ReplMetaCommandResult::NotMeta => ()
+      }
+      match
+        handle_repl_vibe_shell_command(
+          rt,
+          syntax_mode,
+          line_str,
+          scratch_db_path,
+          scratch_source,
+          fn(s) { println(s) },
+        ) {
+        ReplMetaCommandResult::HandledExit => break
+        ReplMetaCommandResult::HandledContinue => {
+          if prompt_enabled {
+            @stdio.stdout.write(prompt)
+          }
+          continue
+        }
+        ReplMetaCommandResult::NotMeta => ()
+      }
+      let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
+        e => {
+          println("error: " + e.to_string())
+          if prompt_enabled {
+            @stdio.stdout.write(prompt)
+          }
+          continue
+        }
+      }
+      print_eval_result(result)
+      let let_name = extract_let_name(line_str)
+      match let_name {
+        Some(name) => {
+          repl_warn_reserved_shell_binding(name, fn(s) { println(s) })
+          match rt.get_addr(name) {
+            Some(addr) => println("addr: " + name + "#" + short_hash(addr))
             None => ()
           }
-          scratch_source = append_eval_db_source(scratch_source, line_str)
-          match write_eval_db_source(scratch_db_path, scratch_source) {
-            Ok(_) => ()
-            Err(err) => println("error: failed to persist namespace db: " + err)
-          }
-          if let_name is Some(_) {
-            print_ai_symbols(scratch_db_path, scratch_source)
-          }
         }
+        None => ()
+      }
+      scratch_source = append_eval_db_source(scratch_source, line_str)
+      match write_eval_db_source(scratch_db_path, scratch_source) {
+        Ok(_) => ()
+        Err(err) => println("error: failed to persist namespace db: " + err)
+      }
+      if let_name is Some(_) {
+        print_ai_symbols(scratch_db_path, scratch_source)
       }
       if prompt_enabled {
         @stdio.stdout.write(prompt)
@@ -1224,46 +2115,21 @@ fn run_interactive_line(
   posix_fallback? : Bool = false,
   print_line? : (String) -> Unit = fn(s) { println(s) },
 ) -> String {
-  fn print_result(result : @runtime.EvalResult) {
-    let is_shell = result.effects
-      .iter()
-      .any(fn(e) {
-        match e {
-          @runtime.Effect::ShellExec(_) => true
-          _ => false
-        }
-      })
-    if is_shell {
-      match result.last {
-        Some(@vibe_core.Value::Array(items)) =>
-          for item in items {
-            match item {
-              @vibe_core.Value::String(s) => print_line(s)
-              other => print_line(other.to_string())
-            }
-          }
-        Some(value) => print_line(value.to_string())
-        None => ()
-      }
-      for effect in result.effects {
-        match effect {
-          @runtime.Effect::ShellExec(_) | @runtime.Effect::PosixDesugar(_) => ()
-          _ => print_line("effect: " + effect.to_string())
-        }
-      }
-    } else {
-      match result.last {
-        Some(value) => print_line("last: " + value.to_string())
-        None => ()
-      }
-      for effect in result.effects {
-        match effect {
-          @runtime.Effect::PosixDesugar(message) =>
-            print_line("note: " + message)
-          _ => print_line("effect: " + effect.to_string())
-        }
-      }
-    }
+  match
+    handle_repl_meta_command(
+      line_str, scratch_db_path, scratch_source, print_line,
+    ) {
+    ReplMetaCommandResult::HandledExit => return scratch_source
+    ReplMetaCommandResult::HandledContinue => return scratch_source
+    ReplMetaCommandResult::NotMeta => ()
+  }
+  match
+    handle_repl_vibe_shell_command(
+      rt, syntax_mode, line_str, scratch_db_path, scratch_source, print_line,
+    ) {
+    ReplMetaCommandResult::HandledExit => return scratch_source
+    ReplMetaCommandResult::HandledContinue => return scratch_source
+    ReplMetaCommandResult::NotMeta => ()
   }
 
   let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
@@ -1285,7 +2151,7 @@ fn run_interactive_line(
               return scratch_source
             }
           }
-          print_result(retry)
+          repl_print_eval_result_for_shell(retry, print_line)
           return scratch_source
         }
       }
@@ -1293,14 +2159,16 @@ fn run_interactive_line(
       return scratch_source
     }
   }
-  print_result(result)
+  repl_print_eval_result_for_shell(result, print_line)
   let let_name = extract_let_name(line_str)
   match let_name {
-    Some(name) =>
+    Some(name) => {
+      repl_warn_reserved_shell_binding(name, print_line)
       match rt.get_addr(name) {
         Some(addr) => print_line("addr: " + name + "#" + short_hash(addr))
         None => ()
       }
+    }
     None => ()
   }
   let next_source = append_eval_db_source(scratch_source, line_str)
