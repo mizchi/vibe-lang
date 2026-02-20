@@ -163,6 +163,25 @@ test "vibe parse/format import list supports module qualifier alias" {
 }
 
 ///|
+test "vibe parse/format import keyword is parser-equivalent" {
+  let input =
+    #|import ./math.vibe
+    #|use ./math.vibe { add }
+    #|add(1, 2)
+  let ast = parse_ast(input) catch {
+    e => fail("[parse] import keyword failed: \{e.to_string()}")
+  }
+  let formatted = format_script(input)
+  let reparsed = parse_ast(formatted) catch {
+    e =>
+      fail(
+        "[reparse] import keyword format result failed: \{e.to_string()}\n---\n\{formatted}",
+      )
+  }
+  assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
 test "vibe parse rejects quoted use source" {
   let input = "use \"./mod.vibe\" { value }\nvalue"
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)

@@ -46,6 +46,13 @@ pub fn VibeDb::new() -> VibeDb {
       match stmt {
         @core.Stmt::Import(source~, span~, ..)
         | @core.Stmt::ReExport(source~, span~, ..) => {
+          match stmt {
+            @core.Stmt::Import(spec~, ..) =>
+              if spec.items.length() == 0 {
+                continue
+              }
+            _ => ()
+          }
           has_imports = true
           match source {
             @core.ModuleRef::Path(path~) => {

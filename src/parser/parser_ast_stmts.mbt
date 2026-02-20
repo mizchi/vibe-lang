@@ -13,14 +13,7 @@ fn AstParser::parse_stmt(
     k if k == trait_kw() => Some(self.parse_trait_stmt())
     k if k == impl_kw() => Some(self.parse_impl_stmt())
     k if k == use_kw() => Some(self.parse_import_stmt())
-    k if k == import_kw() => {
-      let tok = self.bump()
-      raise ParseError::UnexpectedToken(
-        expected="`use <module-ref> { ... }`",
-        got=tok.text(),
-        span=self.token_span(),
-      )
-    }
+    k if k == import_kw() => Some(self.parse_import_stmt())
     k if k == declare_kw() => {
       self.parse_declare_export_let_stmt(
         declared_export_let_types, declared_export_let_assigned,
@@ -1346,11 +1339,27 @@ fn AstParser::parse_import_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
   let start = self.pos
-  let _ = self.expect(use_kw(), "use")
+  let head = self.peek_kind()
+  if head != use_kw() && head != import_kw() {
+    raise ParseError::UnexpectedToken(
+      expected="`use` or `import`",
+      got=self.peek().text(),
+      span=self.token_span(),
+    )
+  }
+  let _ = self.bump()
   self.skip_trivia()
   let source = self.parse_module_ref()
   self.skip_trivia()
-  let items = if self.peek_kind() == lbrace() {
+  let items = if head == import_kw() {
+    if self.peek_kind() == as_kw() {
+      let _ = self.bump()
+      self.skip_trivia()
+      let _ = self.expect(name(), "alias name")
+      self.skip_trivia()
+    }
+    []
+  } else if self.peek_kind() == lbrace() {
     self.parse_import_items("use name")
   } else {
     let rename : String? = if self.peek_kind() == as_kw() {

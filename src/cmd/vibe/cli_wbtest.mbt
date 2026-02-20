@@ -389,6 +389,26 @@ test "eval include path resolves named vbundle alias from lib dir" {
 }
 
 ///|
+test "eval include path resolves latest named vbundle alias when version omitted" {
+  let root = wbtest_make_temp_dir("eval_include_latest_alias")
+  let vibe_dir = root + "/vibe"
+  @os_fs.create_dir(vibe_dir) catch {
+    e => fail("create vibe dir failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(vibe_dir + "/builtin@0.1.0.vbundle", "hash:a\n") catch {
+    e => fail("write builtin@0.1.0 alias failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(vibe_dir + "/builtin@1.2.0.vbundle", "hash:b\n") catch {
+    e => fail("write builtin@1.2.0 alias failed: " + e.to_string())
+  }
+  let resolved = resolve_eval_include_path(
+    "/work/project", "vibe/builtin.vbundle", root,
+  )
+  assert_eq(resolved, root + "/vibe/builtin@1.2.0.vbundle")
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "resolve vibe lib dir prefers VIBE_LIB_ROOT over VIBE_LIB_DIR" {
   let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
   let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")

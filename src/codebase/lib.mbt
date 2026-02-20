@@ -901,7 +901,40 @@ fn collect_path_refs_impl(
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Import(source~, ..) | @core.Stmt::ReExport(source~, ..) =>
+      @core.Stmt::Import(spec~, source~, ..) => {
+        if spec.items.length() == 0 {
+          continue
+        }
+        match source {
+          @core.ModuleRef::Path(path~) => {
+            let resolved = match
+              resolve_import_path_with_registry(
+                base, path, root, registry_modules,
+              ) {
+              Ok(v) => v
+              Err(err) => {
+                let _ = stack.pop()
+                return Err(err)
+              }
+            }
+            match
+              collect_path_refs_impl(
+                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
+                fs,
+              ) {
+              Ok(_) => ()
+              Err(err) => {
+                let _ = stack.pop()
+                return Err(err)
+              }
+            }
+          }
+          @core.ModuleRef::Hash(..)
+          | @core.ModuleRef::Version(..)
+          | @core.ModuleRef::Symbol(..) => ()
+        }
+      }
+      @core.Stmt::ReExport(source~, ..) =>
         match source {
           @core.ModuleRef::Path(path~) => {
             let resolved = match

@@ -981,10 +981,7 @@ fn bundle_pack_cmd(args : Array[String]) -> Unit {
     Ok(_) => ()
     Err(err) => abort("bundle pack: " + err)
   }
-  @os_fs.write_string_to_file(
-    output_path,
-    bundle_source + "\n",
-  ) catch {
+  @os_fs.write_string_to_file(output_path, bundle_source + "\n") catch {
     e => abort("bundle pack: write failed: " + e.to_string())
   }
   let lib_root = resolve_vibe_lib_dir(@io.current_dir_or_root())

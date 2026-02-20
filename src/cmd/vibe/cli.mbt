@@ -1516,6 +1516,295 @@ fn normalize_is_simple_semver(text : String) -> Bool {
 }
 
 ///|
+fn normalize_parse_digits(text : String) -> Int? {
+  if text.length() == 0 {
+    return None
+  }
+  let mut value = 0
+  for _, c in text {
+    if c < '0' || c > '9' {
+      return None
+    }
+    value = value * 10 + c.to_int() - '0'.to_int()
+  }
+  Some(value)
+}
+
+///|
+fn normalize_parse_semver(text : String) -> (Int, Int, Int)? {
+  let parts : Array[String] = []
+  for part in text.split(".") {
+    parts.push(part.to_string())
+  }
+  if parts.length() != 3 {
+    return None
+  }
+  let major = match normalize_parse_digits(parts[0]) {
+    Some(v) => v
+    None => return None
+  }
+  let minor = match normalize_parse_digits(parts[1]) {
+    Some(v) => v
+    None => return None
+  }
+  let patch = match normalize_parse_digits(parts[2]) {
+    Some(v) => v
+    None => return None
+  }
+  Some((major, minor, patch))
+}
+
+///|
+fn normalize_compare_semver(a : (Int, Int, Int), b : (Int, Int, Int)) -> Int {
+  let (a_major, a_minor, a_patch) = a
+  let (b_major, b_minor, b_patch) = b
+  if a_major < b_major {
+    -1
+  } else if a_major > b_major {
+    1
+  } else if a_minor < b_minor {
+    -1
+  } else if a_minor > b_minor {
+    1
+  } else if a_patch < b_patch {
+    -1
+  } else if a_patch > b_patch {
+    1
+  } else {
+    0
+  }
+}
+
+///|
+fn normalize_scope_parent_and_name(scope : String) -> (String, String) {
+  let mut last_slash : Int? = None
+  for i, c in scope {
+    if c == '/' {
+      last_slash = Some(i)
+    }
+  }
+  match last_slash {
+    Some(i) =>
+      (
+        scope.unsafe_substring(start=0, end=i),
+        scope.unsafe_substring(start=i + 1, end=scope.length()),
+      )
+    None => ("", scope)
+  }
+}
+
+///|
+fn normalize_resolve_latest_scope_version(
+  lib_root : String,
+  scope : String,
+) -> String? {
+  let (parent, leaf) = normalize_scope_parent_and_name(scope)
+  if leaf.length() == 0 {
+    return None
+  }
+  let dir = if parent.length() == 0 {
+    @vibe_fs.normalize_path(lib_root)
+  } else {
+    @vibe_fs.normalize_path(lib_root + "/" + parent)
+  }
+  let entries = @os_fs.read_dir(dir) catch { _ => return None }
+  let prefix = leaf + "@"
+  let suffix = ".vbundle"
+  let mut best_version : String? = None
+  let mut best_semver : (Int, Int, Int)? = None
+  for entry in entries {
+    if not(entry.has_prefix(prefix)) || not(entry.has_suffix(suffix)) {
+      continue
+    }
+    let ver_start = prefix.length()
+    let ver_end = entry.length() - suffix.length()
+    if ver_end <= ver_start {
+      continue
+    }
+    let version = entry.unsafe_substring(start=ver_start, end=ver_end)
+    match normalize_parse_semver(version) {
+      Some(semver) =>
+        match best_semver {
+          Some(prev) =>
+            if normalize_compare_semver(semver, prev) > 0 {
+              best_semver = Some(semver)
+              best_version = Some(version)
+            }
+          None => {
+            best_semver = Some(semver)
+            best_version = Some(version)
+          }
+        }
+      None => ()
+    }
+  }
+  best_version
+}
+
+///|
+fn normalize_line_leading_ws_len(line : String) -> Int {
+  let mut i = 0
+  while i < line.length() {
+    let c = line[i].to_int().unsafe_to_char()
+    if c == ' ' || c == '\t' {
+      i += 1
+      continue
+    }
+    break
+  }
+  i
+}
+
+///|
+fn normalize_split_ws_tokens(text : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < text.length() {
+    while i < text.length() {
+      let c = text[i].to_int().unsafe_to_char()
+      if c == ' ' || c == '\t' {
+        i += 1
+        continue
+      }
+      break
+    }
+    let start = i
+    while i < text.length() {
+      let c = text[i].to_int().unsafe_to_char()
+      if c == ' ' || c == '\t' {
+        break
+      }
+      i += 1
+    }
+    if i > start {
+      out.push(text.unsafe_substring(start~, end=i))
+    }
+  }
+  out
+}
+
+///|
+fn normalize_resolve_index_import_line(
+  line : String,
+  lib_root : String,
+) -> Result[String, String] {
+  let trimmed = line.trim().to_string()
+  let head = if trimmed.has_prefix("import ") {
+    "import "
+  } else if trimmed.has_prefix("use ") {
+    "use "
+  } else {
+    return Ok(line)
+  }
+  let leading_ws = normalize_line_leading_ws_len(line)
+  let import_head_end = leading_ws + head.length()
+  if import_head_end >= line.length() {
+    return Ok(line)
+  }
+  let rest = line.unsafe_substring(start=import_head_end, end=line.length())
+  // Resolve only bare `import/use <scope>` declarations.
+  if rest.contains("{") {
+    return Ok(line)
+  }
+  let mut rest_trimmed = rest.trim().to_string()
+  let has_semicolon = rest_trimmed.has_suffix(";")
+  if has_semicolon && rest_trimmed.length() > 0 {
+    rest_trimmed = rest_trimmed
+      .unsafe_substring(start=0, end=rest_trimmed.length() - 1)
+      .trim()
+      .to_string()
+  }
+  let tokens = normalize_split_ws_tokens(rest_trimmed)
+  if tokens.length() == 0 {
+    return Ok(line)
+  }
+  let scope_buf = StringBuilder::new()
+  let mut alias_name : String? = None
+  let mut i = 0
+  while i < tokens.length() {
+    let token = tokens[i]
+    if token == "as" {
+      if i + 1 < tokens.length() {
+        alias_name = Some(tokens[i + 1])
+      }
+      break
+    }
+    scope_buf.write_string(token)
+    i += 1
+  }
+  let scope = scope_buf.to_string()
+  if scope.length() == 0 {
+    return Ok(line)
+  }
+  if scope.contains("@") ||
+    scope.has_prefix("./") ||
+    scope.has_prefix("../") ||
+    scope.has_prefix("/") ||
+    scope.has_suffix(".vibe") ||
+    scope.has_suffix(".xm") ||
+    scope.has_suffix(".wasm") ||
+    scope.has_suffix(".vbundle") ||
+    not(scope.contains("/")) {
+    return Ok(line)
+  }
+  let version = match normalize_resolve_latest_scope_version(lib_root, scope) {
+    Some(v) => v
+    None =>
+      return Err(
+        "normalize: import `" +
+        scope +
+        "` missing version; no local alias found under " +
+        lib_root,
+      )
+  }
+  let prefix = if leading_ws == 0 {
+    ""
+  } else {
+    line.unsafe_substring(start=0, end=leading_ws)
+  }
+  let out = StringBuilder::new()
+  out.write_string(prefix)
+  out.write_string(head)
+  out.write_string(scope)
+  out.write_char('@')
+  out.write_string(version)
+  match alias_name {
+    Some(alias_name2) => {
+      out.write_string(" as ")
+      out.write_string(alias_name2)
+    }
+    None => ()
+  }
+  if has_semicolon {
+    out.write_char(';')
+  }
+  Ok(out.to_string())
+}
+
+///|
+fn normalize_resolve_index_import_versions(
+  source : String,
+  lib_root : String,
+) -> Result[String, String] {
+  let lines : Array[String] = []
+  for part in source.split("\n") {
+    lines.push(part.to_string())
+  }
+  let out = StringBuilder::new()
+  for i, line in lines {
+    let resolved = match normalize_resolve_index_import_line(line, lib_root) {
+      Ok(v) => v
+      Err(err) => return Err(err)
+    }
+    if i > 0 {
+      out.write_char('\n')
+    }
+    out.write_string(resolved)
+  }
+  Ok(out.to_string())
+}
+
+///|
 fn normalize_ensure_index_version_export(
   source : String,
 ) -> Result[String, String] {
@@ -1591,17 +1880,10 @@ fn normalize_directory_to_index_source(
   let index_path = @vibe_fs.normalize_path(dir + "/index.vibe")
   let source_paths : Array[String] = []
   for path in files {
-    if path != index_path {
-      source_paths.push(path)
-    }
+    source_paths.push(path)
   }
   if source_paths.length() == 0 {
-    let has_index = @os_fs.path_exists(index_path)
-    if has_index {
-      source_paths.push(index_path)
-    } else {
-      return Err("normalize: no .vibe files found in directory: " + dir)
-    }
+    return Err("normalize: no .vibe files found in directory: " + dir)
   }
   let seen : Map[String, String] = {}
   let normalized_sources : Array[String] = []
@@ -1630,7 +1912,14 @@ fn normalize_directory_to_index_source(
     Ok(v) => v
     Err(err) => return Err("normalize: " + err)
   }
-  let with_version = match normalize_ensure_index_version_export(merged) {
+  let lib_root = resolve_vibe_lib_dir(@io.current_dir_or_root())
+  let resolved_imports = match
+    normalize_resolve_index_import_versions(merged, lib_root) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let with_version = match
+    normalize_ensure_index_version_export(resolved_imports) {
     Ok(v) => v
     Err(err) => return Err(err)
   }

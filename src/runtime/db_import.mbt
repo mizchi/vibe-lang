@@ -312,6 +312,10 @@ fn rewrite_import_sources(
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(spec~, source~, span~) => {
+        if spec.items.length() == 0 {
+          stmts.push(stmt)
+          continue
+        }
         let _ = source
         let next_stmt = if import_idx < imports.length() {
           let resolved = imports[import_idx]

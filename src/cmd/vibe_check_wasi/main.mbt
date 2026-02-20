@@ -100,8 +100,10 @@ fn check_ast_without_imports(
   ast : @core.Module,
 ) -> (Array[@core.Diagnostic], Int, Int) {
   let desugared = @frontend.desugar_method_calls(ast, {})
-  let typed : Result[@checker.TypeEnv, @checker.TypeError] = try?
-    @checker.type_check_with_aliases(desugared, {})
+  let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check_with_aliases(
+    desugared,
+    {},
+  )
   match typed {
     Ok(_) => {
       let warnings = @checker.collect_warnings(ast)

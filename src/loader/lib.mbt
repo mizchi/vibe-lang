@@ -93,8 +93,53 @@ fn load_sources_recursive_impl(
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
-      @vibe_core.Stmt::Import(source~, ..)
-      | @vibe_core.Stmt::ReExport(source~, ..) =>
+      @vibe_core.Stmt::Import(spec~, source~, ..) => {
+        if spec.items.length() == 0 {
+          continue
+        }
+        match source {
+          @vibe_core.ModuleRef::Path(path~) => {
+            let resolved = match
+              @codebase.resolve_import_path_with_registry(
+                base, path, root, registry_modules,
+              ) {
+              Ok(v) => v
+              Err(err) => {
+                let _ = stack.pop()
+                return Err(err)
+              }
+            }
+            if resolved.has_suffix(".wasm") {
+              if not(visited.contains(resolved)) {
+                visited.set(resolved, true)
+                let wasm_bytes = match @io.read_bytes_with(fs, resolved) {
+                  Ok(v) => v
+                  Err(err) => {
+                    let _ = stack.pop()
+                    return Err("io: " + err)
+                  }
+                }
+                db.set_binary_source(resolved, wasm_bytes)
+              }
+            } else {
+              match
+                load_sources_recursive_impl(
+                  db, resolved, visited, stack, fs, root, registry_modules,
+                ) {
+                Ok(_) => ()
+                Err(err) => {
+                  let _ = stack.pop()
+                  return Err(err)
+                }
+              }
+            }
+          }
+          @vibe_core.ModuleRef::Hash(..)
+          | @vibe_core.ModuleRef::Version(..)
+          | @vibe_core.ModuleRef::Symbol(..) => ()
+        }
+      }
+      @vibe_core.Stmt::ReExport(source~, ..) =>
         match source {
           @vibe_core.ModuleRef::Path(path~) => {
             let resolved = match

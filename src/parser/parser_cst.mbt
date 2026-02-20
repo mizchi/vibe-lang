@@ -324,11 +324,7 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
     k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
     k if k == use_kw() => self.parse_import_stmt()
-    k if k == import_kw() => {
-      self.builder.start_node(error_kind())
-      self.bump()
-      self.builder.finish_node()
-    }
+    k if k == import_kw() => self.parse_import_stmt()
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_block()
     k if k == bench_kw() => self.parse_bench_block()
@@ -543,37 +539,18 @@ fn Parser::parse_bench_block(self : Parser) -> Unit {
 ///|
 fn Parser::parse_import_stmt(self : Parser) -> Unit {
   self.builder.start_node(import_stmt())
-  let head = self.peek_kind()
   self.bump() // import | use
   self.skip_trivia()
-  if head == import_kw() {
-    if self.at(lbrace()) {
-      self.parse_brace_block_tokens()
-      self.skip_trivia()
-      self.expect(from_kw())
-      self.skip_trivia()
-      while not(self.at(eof())) &&
-            not(self.at(semicolon())) &&
-            not(self.at(newline())) {
-        self.bump()
-      }
-    } else if self.at(name()) || self.at(string_lit()) {
-      self.bump()
-    } else {
-      self.builder.token(error_kind(), "")
-    }
-  } else {
-    // use <source> { ... } / use <source>
-    while not(self.at(eof())) &&
-          not(self.at(semicolon())) &&
-          not(self.at(newline())) &&
-          not(self.at(lbrace())) {
-      self.bump()
-    }
-    self.skip_trivia()
-    if self.at(lbrace()) {
-      self.parse_brace_block_tokens()
-    }
+  // import <source> [as alias] / use <source> { ... } / use <source>
+  while not(self.at(eof())) &&
+        not(self.at(semicolon())) &&
+        not(self.at(newline())) &&
+        not(self.at(lbrace())) {
+    self.bump()
+  }
+  self.skip_trivia()
+  if self.at(lbrace()) {
+    self.parse_brace_block_tokens()
   }
   self.skip_trivia()
   if self.at(semicolon()) {
