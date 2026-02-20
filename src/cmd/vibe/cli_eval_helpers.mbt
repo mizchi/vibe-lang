@@ -476,7 +476,11 @@ fn load_eval_include_source(
       }
       for root in roots {
         match try_load_hash_source_from_root(root, hash) {
-          Some(content) => return Ok(content)
+          Some(content) =>
+            match parse_include_vbundle_entry_source(content) {
+              Some(entry_source) => return Ok(entry_source)
+              None => return Ok(content)
+            }
           None => ()
         }
       }

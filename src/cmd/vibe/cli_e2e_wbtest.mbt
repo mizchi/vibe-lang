@@ -448,6 +448,159 @@ test "cli bundle pack writes alias and object cache under VIBE_LIB_ROOT" {
 }
 
 ///|
+test "cli bundle and eval named alias workflow covers root priority and dir fallback" {
+  let root = wbtest_make_temp_dir("bundle_eval_named_alias_workflow")
+  let lib_root = root + "/lib-root"
+  let legacy_lib = root + "/legacy-lib"
+  let pkg_root = root + "/pkg"
+  @os_fs.create_dir(pkg_root) catch {
+    e => fail("create pkg root failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    pkg_root + "/index.vibe",
+    "export let version = \"0.1.0\"\nlet seed = 70\nexport { seed }\n",
+  ) catch {
+    e => fail("write package entry failed: " + e.to_string())
+  }
+  let bundle_out = root + "/seed@0.1.0.vbundle"
+  let include_spec = "seed/pkg@0.1.0.vbundle"
+  let alias_path = lib_root + "/" + include_spec
+  let legacy_alias_path = legacy_lib + "/" + include_spec
+  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
+  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
+  @sys.set_env_var("VIBE_LIB_ROOT", lib_root)
+  @sys.set_env_var("VIBE_LIB_DIR", legacy_lib)
+  bundle_cmd([
+    "pack",
+    "--scope",
+    "seed/pkg",
+    "--version",
+    "0.1.0",
+    "--entry",
+    pkg_root,
+    "-o",
+    bundle_out,
+  ])
+  bundle_cmd(["verify", bundle_out])
+  assert_true(@os_fs.path_exists(alias_path))
+  let alias_source = @os_fs.read_file_to_string(alias_path) catch {
+    e => fail("read alias failed: " + e.to_string())
+  }
+  let alias_trimmed = alias_source.trim().to_string()
+  assert_true(alias_trimmed.has_prefix("hash:"))
+  let bundle_hash = alias_trimmed
+    .unsafe_substring(start=5, end=alias_trimmed.length())
+    .trim()
+    .to_string()
+  let hash_dir = bundle_hash.unsafe_substring(start=0, end=2)
+  let hash_file = bundle_hash.unsafe_substring(start=2, end=bundle_hash.length())
+  let object_path = lib_root + "/objects/" + hash_dir + "/" + hash_file
+  assert_true(@os_fs.path_exists(object_path))
+  match ensure_parent_dir_for_file(legacy_alias_path, "test setup") {
+    Ok(_) => ()
+    Err(err) => fail("ensure legacy alias dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(
+    legacy_alias_path,
+    "hash:0000000000000000000000000000000000000000\n",
+  ) catch {
+    e => fail("write legacy alias failed: " + e.to_string())
+  }
+  let features = @runtime.RuntimeFeatureFlags::stable()
+  let db_root_priority = root + "/root_priority.db"
+  let out_root_priority = root + "/root_priority.vibe"
+  eval_cmd(
+    [
+      "--db=" + db_root_priority,
+      "--include=" + include_spec,
+      "let",
+      "answer",
+      "=",
+      "seed",
+      "+",
+      "1",
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  eval_cmd(
+    [
+      "--db=" + db_root_priority,
+      "--include=" + include_spec,
+      "export",
+      "{",
+      "answer",
+      "}",
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  eval_cmd(
+    [
+      "--db=" + db_root_priority,
+      "--include=" + include_spec,
+      "--export=" + out_root_priority,
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  let exported_root_priority = @os_fs.read_file_to_string(out_root_priority) catch {
+    e => fail("read root priority export failed: " + e.to_string())
+  }
+  assert_true(exported_root_priority.contains("let answer = seed + 1"))
+  @sys.unset_env_var("VIBE_LIB_ROOT")
+  @sys.set_env_var("VIBE_LIB_DIR", lib_root)
+  let db_dir_fallback = root + "/dir_fallback.db"
+  let out_dir_fallback = root + "/dir_fallback.vibe"
+  eval_cmd(
+    [
+      "--db=" + db_dir_fallback,
+      "--include=" + include_spec,
+      "let",
+      "answer",
+      "=",
+      "seed",
+      "+",
+      "3",
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  eval_cmd(
+    [
+      "--db=" + db_dir_fallback,
+      "--include=" + include_spec,
+      "export",
+      "{",
+      "answer",
+      "}",
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  eval_cmd(
+    [
+      "--db=" + db_dir_fallback,
+      "--include=" + include_spec,
+      "--export=" + out_dir_fallback,
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  let exported_dir_fallback = @os_fs.read_file_to_string(out_dir_fallback) catch {
+    e => fail("read dir fallback export failed: " + e.to_string())
+  }
+  assert_true(exported_dir_fallback.contains("let answer = seed + 3"))
+  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
+  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
+  wbtest_remove_if_exists(out_root_priority)
+  wbtest_remove_if_exists(out_dir_fallback)
+  wbtest_remove_if_exists(db_root_priority)
+  wbtest_remove_if_exists(db_dir_fallback)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli bundle migrate copies legacy vdb to vbundle" {
   let root = wbtest_make_temp_dir("bundle_migrate")
   let legacy = root + "/legacy.vdb"
