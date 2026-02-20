@@ -28,11 +28,15 @@ fmt:
 check:
     moon check --deny-warn --warn-list '{{moon_warn_list}}' --target {{target}}
 
+# Verify index.lock files do not contain temporary probe/debug entries
+check-lock-clean:
+    scripts/check_lock_clean.sh
+
 # Run tests (includes examples, std, io, fs, shell, socket, http, rlm, collection, encoding, x)
 test:
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
-    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/std vibe/io vibe/fs vibe/shell vibe/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/collection vibe/encoding vibe/x vibe/x/args
+    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/builtin vibe/io vibe/fs vibe/shell vibe/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/collection vibe/encoding vibe/x vibe/x/args
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
@@ -71,7 +75,7 @@ coverage-wasm-source entry="examples/pattern_coverage.vibe":
 coverage-eval-sidecar db target:
     scripts/coverage_eval_sidecar.sh {{db}} {{target}}
 
-# Run vibe/std coverage from *_test.vibe via wasm source coverage
+# Run vibe/builtin coverage from *_test.vibe via wasm source coverage
 # env: VIBE_WASM_STD_COVERAGE_MODES, VIBE_WASM_STD_COVERAGE_MODE, VIBE_WASM_STD_COVERAGE_NO_DCE, VIBE_WASM_STD_COVERAGE_STRICT, VIBE_WASM_STD_COVERAGE_ALLOW_TRAP, VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE, VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE, VIBE_WASM_STD_COVERAGE_FILTER, VIBE_WASM_STD_COVERAGE_EXCLUDE, VIBE_WASM_STD_COVERAGE_MATRIX, VIBE_WASM_STD_COVERAGE_DIR
 coverage-wasm-std:
     scripts/coverage_wasm_std.sh
@@ -291,7 +295,7 @@ bench-typechecker:
 # This captures product-facing size drift, including source edits.
 # Default importer mode is runtime-first (`--wasm`/`--wasm-js-string`).
 # Set `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1` to add no-dce diagnostics.
-# Set `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include vibe/std module surfaces.
+# Set `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include vibe/builtin module surfaces.
 bench-bundle-size:
     scripts/bench_bundle_size.sh
 
@@ -462,7 +466,7 @@ run-wasm-async file: build-async-host
 precompile:
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
     mkdir -p dist/std dist/std/path dist/std/threads dist/std/wasm dist/fs dist/socket dist/http dist/collection dist/encoding dist/x dist/x/args
-    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/std vibe/std/path vibe/std/threads vibe/std/wasm vibe/fs vibe/socket vibe/http vibe/collection vibe/encoding vibe/x vibe/x/args --out-dir dist --wasm
+    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/builtin vibe/builtin/path vibe/builtin/threads vibe/builtin/wasm vibe/fs vibe/socket vibe/http vibe/collection vibe/encoding vibe/x vibe/x/args --out-dir dist --wasm
 
 # Create a new ADR (usage: just adr "タイトル slug")
 adr title:

@@ -145,7 +145,7 @@ test "codebase update_lock_path_refs gathers transitive local imports" {
 }
 
 ///|
-test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
+test "codebase update_lock_path_refs prunes stale path/module refs and keeps non-path refs" {
   let root = make_temp_dir("update_lock")
   let entry = root + "/main.vibe"
   let lib = root + "/lib.vibe"
@@ -166,10 +166,7 @@ test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
   let old_norm = @vibe_fs.normalize_path(old)
   assert_true(updated.path_refs.contains(entry_norm))
   assert_true(updated.path_refs.contains(lib_norm))
-  match updated.path_refs.get(old_norm) {
-    Some(hash) => assert_eq(hash, "1111")
-    None => fail("expected existing path ref to remain")
-  }
+  assert_false(updated.path_refs.contains(old_norm))
   match updated.version_refs.get("main") {
     Some(hash) => assert_eq(hash, "2222")
     None => fail("expected version ref")
@@ -178,14 +175,8 @@ test "codebase update_lock_path_refs merges path refs and keeps non-path refs" {
     Some(hash) => assert_eq(hash, "3333")
     None => fail("expected symbol ref")
   }
-  match updated.module_refs.get("legacy#x") {
-    Some(hash) => assert_eq(hash, "4444")
-    None => fail("expected existing module ref")
-  }
-  match updated.annotations.get("legacy#x") {
-    Some(note) => assert_eq(note, "note")
-    None => fail("expected existing annotation")
-  }
+  assert_false(updated.module_refs.contains("legacy#x"))
+  assert_false(updated.annotations.contains("legacy#x"))
   match updated.module_refs.get(entry_norm + "#main") {
     Some(hash) => assert_true(hash.length() > 0)
     None => fail("expected entry export module ref")
@@ -524,7 +515,7 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
   let outside_lib = outside + "/lib.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/std\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
   )
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
@@ -544,7 +535,7 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
 ///|
 test "codebase update_lock_path_refs requires index version export" {
   let root = make_temp_dir("registry_version_required")
-  let std_dir = root + "/vibe/std"
+  let std_dir = root + "/vibe/builtin"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -555,7 +546,7 @@ test "codebase update_lock_path_refs requires index version export" {
   let std_mod = std_dir + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let module = record { std: \"./vibe/std\" }\n",
+    "export let module = record { std: \"./vibe/builtin\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -572,7 +563,7 @@ test "codebase update_lock_path_refs requires index version export" {
 ///|
 test "codebase update_lock_path_refs validates index version format" {
   let root = make_temp_dir("registry_version_format")
-  let std_dir = root + "/vibe/std"
+  let std_dir = root + "/vibe/builtin"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -583,7 +574,7 @@ test "codebase update_lock_path_refs validates index version format" {
   let std_mod = std_dir + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"v1\"\nexport let module = record { std: \"./vibe/std\" }\n",
+    "export let version = \"v1\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -603,10 +594,11 @@ test "codebase load_registry_modules falls back to std encoding and collection" 
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let std_path = @vibe_fs.normalize_path(root + "/vibe/std")
+  let builtin_path = @vibe_fs.normalize_path(root + "/vibe/builtin")
   let encoding_path = @vibe_fs.normalize_path(root + "/vibe/encoding")
   let collection_path = @vibe_fs.normalize_path(root + "/vibe/collection")
-  assert_eq(modules["std"], std_path)
+  assert_eq(modules["builtin"], builtin_path)
+  assert_eq(modules["std"], builtin_path)
   assert_eq(modules["encoding"], encoding_path)
   assert_eq(modules["collection"], collection_path)
   remove_if_exists(root)
@@ -615,7 +607,7 @@ test "codebase load_registry_modules falls back to std encoding and collection" 
 ///|
 test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
   let root = make_temp_dir("registry_std")
-  let std_dir = root + "/vibe/std"
+  let std_dir = root + "/vibe/builtin"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -626,7 +618,7 @@ test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
   let std_mod = std_dir + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/std\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(

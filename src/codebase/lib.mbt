@@ -173,7 +173,8 @@ fn split_registry_import_path(path : String) -> (String, String)? {
 ///|
 fn default_registry_modules(root : String) -> Map[String, String] {
   let out : Map[String, String] = {}
-  out["std"] = @vibe_fs.normalize_path(root + "/vibe/std")
+  out["builtin"] = @vibe_fs.normalize_path(root + "/vibe/builtin")
+  out["std"] = @vibe_fs.normalize_path(root + "/vibe/builtin")
   out["encoding"] = @vibe_fs.normalize_path(root + "/vibe/encoding")
   out["collection"] = @vibe_fs.normalize_path(root + "/vibe/collection")
   out["rlm"] = @vibe_fs.normalize_path(root + "/vibe/rlm")
@@ -265,9 +266,11 @@ fn find_named_ancestor_dir(start_dir : String, name : String) -> String? {
 
 ///|
 fn is_repo_vibe_root_with_fs(dir : String, fs : &@io.FileSystemAdapter) -> Bool {
+  let builtin_lock = @vibe_fs.normalize_path(dir + "/builtin/index.lock")
   let std_lock = @vibe_fs.normalize_path(dir + "/std/index.lock")
   let encoding_lock = @vibe_fs.normalize_path(dir + "/encoding/index.lock")
-  @io.path_exists_with(fs, std_lock) && @io.path_exists_with(fs, encoding_lock)
+  (@io.path_exists_with(fs, builtin_lock) || @io.path_exists_with(fs, std_lock)) &&
+  @io.path_exists_with(fs, encoding_lock)
 }
 
 ///|
@@ -790,33 +793,6 @@ fn collect_module_export_annotations(
   }
 }
 
-///|
-fn clear_annotations_for_paths(
-  annotations : Map[String, String],
-  path_refs : Map[String, String],
-) -> Unit {
-  if path_refs.length() == 0 {
-    return
-  }
-  let stale_keys : Array[String] = []
-  for key, _ in annotations {
-    let mut matched = false
-    for path, _ in path_refs {
-      if key.has_prefix(path + "#") {
-        matched = true
-        break
-      }
-    }
-    if matched {
-      stale_keys.push(key)
-    }
-  }
-  for key in stale_keys {
-    annotations.remove(key)
-  }
-}
-
-///|
 pub fn apply_annotations_to_source(
   path : String,
   source : String,
@@ -1497,16 +1473,6 @@ pub fn write_lock_data(
   write_lock_data_with_fs(lock_path, lock, @io.default_fs_adapter())
 }
 
-///|
-fn clone_lock_map(src : Map[String, String]) -> Map[String, String] {
-  let out : Map[String, String] = {}
-  for key, value in src {
-    out[key] = value
-  }
-  out
-}
-
-///|
 pub fn update_lock_path_refs_with_fs(
   entry : String,
   fs : &@io.FileSystemAdapter,
@@ -1531,25 +1497,12 @@ pub fn update_lock_path_refs_with_fs(
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  let merged_path_refs = clone_lock_map(current.path_refs)
-  for path, hash in path_refs {
-    merged_path_refs[path] = hash
-  }
-  let merged_module_refs = clone_lock_map(current.module_refs)
-  for key, hash in module_refs {
-    merged_module_refs[key] = hash
-  }
-  let merged_annotations = clone_lock_map(current.annotations)
-  clear_annotations_for_paths(merged_annotations, path_refs)
-  for key, note in annotations {
-    merged_annotations[key] = note
-  }
   let next_lock = LockData::new_with_meta(
-    merged_path_refs,
+    path_refs,
     current.version_refs,
     current.symbol_refs,
-    merged_module_refs,
-    merged_annotations,
+    module_refs,
+    annotations,
   )
   match write_lock_data_with_fs(lock_path, next_lock, fs) {
     Ok(_) => Ok(next_lock)
