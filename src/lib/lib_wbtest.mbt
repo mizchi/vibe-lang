@@ -31,7 +31,7 @@ test "ide_search_report_json finds signature text" {
 
 ///|
 test "check_project_report_json resolves imports" {
-  let request = "{\"entry\":\"/main.vibe\",\"files\":{\"/main.vibe\":\"use \\\"./lib.vibe\\\" { value }\\nlet out = value\\n\",\"/lib.vibe\":\"export let value = 1\\n\"}}"
+  let request = "{\"entry\":\"/main.vibe\",\"files\":{\"/main.vibe\":\"use ./lib.vibe { value }\\nlet out = value\\n\",\"/lib.vibe\":\"export let value = 1\\n\"}}"
   let json = check_project_report_json(request)
   assert_true(json.contains("\"ok\":true"))
   assert_true(json.contains("\"entry\":\"/main.vibe\""))
@@ -40,7 +40,7 @@ test "check_project_report_json resolves imports" {
 
 ///|
 test "ide_peek_def_report_json resolves imported symbol" {
-  let request = "{\"entry\":\"/main.vibe\",\"path\":\"/main.vibe\",\"symbol\":\"value\",\"files\":{\"/main.vibe\":\"use \\\"./lib.vibe\\\" { value }\\nlet out = value\\n\",\"/lib.vibe\":\"export let value = 1\\n\"}}"
+  let request = "{\"entry\":\"/main.vibe\",\"path\":\"/main.vibe\",\"symbol\":\"value\",\"files\":{\"/main.vibe\":\"use ./lib.vibe { value }\\nlet out = value\\n\",\"/lib.vibe\":\"export let value = 1\\n\"}}"
   let json = ide_peek_def_report_json(request)
   assert_true(json.contains("\"ok\":true"))
   assert_true(json.contains("\"path\":\"/lib.vibe\""))
@@ -66,7 +66,7 @@ test "init_state_report_json injects kv files for project requests" {
     "{\"kv\":{\"/lib.vibe\":\"export let value = 7\\n\"}}",
   )
   assert_true(init.contains("\"ok\":true"))
-  let request = "{\"entry\":\"/main.vibe\",\"files\":{\"/main.vibe\":\"use \\\"./lib.vibe\\\" { value }\\nlet out = value\\n\"}}"
+  let request = "{\"entry\":\"/main.vibe\",\"files\":{\"/main.vibe\":\"use ./lib.vibe { value }\\nlet out = value\\n\"}}"
   let report = check_project_report_json(request)
   assert_true(report.contains("\"ok\":true"))
   assert_true(report.contains("\"error_count\":0"))

@@ -1454,7 +1454,7 @@ test "cli finalize library mode keeps re-export stmt parseable" {
   let db_path = root + "/tmp1.db"
   let source = "let local = 1\n" +
     "local\n" +
-    "export { helper } from \"./mod.vibe\"\n"
+    "export { helper } from ./mod.vibe\n"
   match write_eval_db_source(db_path, source) {
     Ok(_) => ()
     Err(err) => fail("write seed db failed: " + err)

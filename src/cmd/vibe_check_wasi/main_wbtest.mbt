@@ -48,3 +48,13 @@ test "parse_cmd_args rejects check and format mixed input" {
     Err(err) => assert_eq(err, "check: choose either --check or --format")
   }
 }
+
+///|
+test "check_source supports method-call desugaring without imports" {
+  let source =
+    #|let n = 1
+    #|let s = n.to_string()
+    #|s
+  let (_diags, errors, _warnings) = check_source(source)
+  assert_eq(errors, 0)
+}

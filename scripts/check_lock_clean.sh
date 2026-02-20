@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="${VIBE_LOCK_CHECK_ROOT:-$(dirname "$SCRIPT_DIR")}"
 cd "$PROJECT_ROOT"
 
 LOCK_FILES=()

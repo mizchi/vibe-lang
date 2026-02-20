@@ -32,9 +32,18 @@ check:
 check-lock-clean:
     scripts/check_lock_clean.sh
 
+# Self-test lock contamination checker patterns
+test-lock-clean:
+    scripts/check_lock_clean_test.sh
+
 # Run tests (includes examples, std, io, fs, shell, socket, http, rlm, collection, encoding, x)
 test:
+    scripts/check_lock_clean.sh
+    scripts/check_lock_clean_test.sh
     moon test --target {{target}} --warn-list '{{moon_warn_list}}'
+    moon test -p mizchi/vibe/lib --target wasm-gc --warn-list '{{moon_warn_list}}'
+    moon test -p mizchi/vibe/cmd/vibe -f cli_e2e_wbtest.mbt --target native --warn-list '{{moon_warn_list}}'
+    moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
     ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/builtin vibe/io vibe/fs vibe/shell vibe/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/collection vibe/encoding vibe/x vibe/x/args
 
