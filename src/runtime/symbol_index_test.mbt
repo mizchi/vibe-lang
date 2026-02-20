@@ -118,3 +118,16 @@ test "symbol index lsif output includes metadata and documents" {
   assert_true(has_document)
   assert_true(range_count > 0)
 }
+
+///|
+test "symbol index deduplicates identical module hash across paths" {
+  let db = VibeDb::new()
+  let source =
+    #|let shared = 1
+  db.set_source("/workspace/a.vibe", source)
+  db.set_source("/workspace/b.vibe", source)
+  let index = build_symbol_index(db, ["/workspace/a.vibe", "/workspace/b.vibe"])
+  let exact = index.find_exact("shared")
+  assert_eq(exact.length(), 1)
+  assert_eq(exact[0].path, "/workspace/a.vibe")
+}

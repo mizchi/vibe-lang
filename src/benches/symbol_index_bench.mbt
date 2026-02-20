@@ -65,6 +65,35 @@ fn bench_type_check(ast : @core.Module) -> @checker.TypeEnv {
 }
 
 ///|
+fn build_symbol_index_fixture_with_duplicate_modules(
+  module_count : Int,
+  def_count : Int,
+) -> Array[(String, String)] {
+  let shared_source = gen_symbol_index_source(def_count)
+  let fixtures : Array[(String, String)] = []
+  for i in 0..<module_count {
+    let path = "/bench/symbol_index_dup/mod_" + i.to_string() + ".vibe"
+    fixtures.push((path, shared_source))
+  }
+  fixtures
+}
+
+///|
+fn build_symbol_index_fixture_with_unique_modules(
+  module_count : Int,
+  def_count : Int,
+) -> Array[(String, String)] {
+  let base_source = gen_symbol_index_source(def_count)
+  let fixtures : Array[(String, String)] = []
+  for i in 0..<module_count {
+    let path = "/bench/symbol_index_unique/mod_" + i.to_string() + ".vibe"
+    let source = base_source + "// unique-" + i.to_string() + "\n"
+    fixtures.push((path, source))
+  }
+  fixtures
+}
+
+///|
 test "bench: symbol_index.build_module_index" (b : @bench.T) {
   let source = gen_symbol_index_source(1000)
   let ast = bench_parse(source)
@@ -73,6 +102,38 @@ test "bench: symbol_index.build_module_index" (b : @bench.T) {
     let index = @runtime.build_symbol_index_for_module(
       bench_symbol_path, ast, env,
     )
+    b.keep(index.entries.length())
+  })
+}
+
+///|
+test "bench: symbol_index.build_db_index.duplicate_hash_paths" (b : @bench.T) {
+  let fixtures = build_symbol_index_fixture_with_duplicate_modules(80, 300)
+  b.bench(fn() {
+    let db = @runtime.VibeDb::new()
+    let paths : Array[String] = []
+    for _, fixture in fixtures {
+      let (path, source) = fixture
+      db.set_source(path, source)
+      paths.push(path)
+    }
+    let index = @runtime.build_symbol_index(db, paths)
+    b.keep(index.entries.length())
+  })
+}
+
+///|
+test "bench: symbol_index.build_db_index.unique_hash_paths" (b : @bench.T) {
+  let fixtures = build_symbol_index_fixture_with_unique_modules(80, 300)
+  b.bench(fn() {
+    let db = @runtime.VibeDb::new()
+    let paths : Array[String] = []
+    for _, fixture in fixtures {
+      let (path, source) = fixture
+      db.set_source(path, source)
+      paths.push(path)
+    }
+    let index = @runtime.build_symbol_index(db, paths)
     b.keep(index.entries.length())
   })
 }

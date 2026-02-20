@@ -1121,37 +1121,42 @@ fn parse_lock_data(
     e => return Err("index.lock: invalid JSON: " + e.to_string())
   }
   match json {
-    Json::Object(obj) => {
-      let path_refs = match parse_lock_path_map(obj.get("path"), base_dir) {
-        Ok(v) => v
-        Err(err) => return Err(err)
-      }
-      let version_refs = match
-        parse_lock_ref_map(obj.get("version"), "version") {
-        Ok(v) => v
-        Err(err) => return Err(err)
-      }
-      let symbol_refs = match parse_lock_ref_map(obj.get("symbol"), "symbol") {
-        Ok(v) => v
-        Err(err) => return Err(err)
-      }
-      let module_refs = match parse_lock_ref_map(obj.get("module"), "module") {
-        Ok(v) => v
-        Err(err) => return Err(err)
-      }
-      let annotations = match
-        parse_lock_string_map(obj.get("annotation"), "annotation") {
-        Ok(v) => v
-        Err(err) => return Err(err)
-      }
-      Ok(
-        LockData::new_with_meta(
-          path_refs, version_refs, symbol_refs, module_refs, annotations,
-        ),
-      )
-    }
+    Json::Object(obj) => parse_lock_data_from_object(obj, base_dir)
     _ => Err("index.lock: top-level JSON must be an object")
   }
+}
+
+///|
+fn parse_lock_data_from_object(
+  obj : Map[String, Json],
+  base_dir : String,
+) -> Result[LockData, String] {
+  let path_refs = match parse_lock_path_map(obj.get("path"), base_dir) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let version_refs = match parse_lock_ref_map(obj.get("version"), "version") {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let symbol_refs = match parse_lock_ref_map(obj.get("symbol"), "symbol") {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let module_refs = match parse_lock_ref_map(obj.get("module"), "module") {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let annotations = match
+    parse_lock_string_map(obj.get("annotation"), "annotation") {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  Ok(
+    LockData::new_with_meta(
+      path_refs, version_refs, symbol_refs, module_refs, annotations,
+    ),
+  )
 }
 
 ///|
@@ -1179,19 +1184,17 @@ fn parse_lock_data_from_index_vbundle(
   match json {
     Json::Object(obj) =>
       if has_lock_payload_fields(obj) {
-        match parse_lock_data(trimmed, base_dir) {
+        match parse_lock_data_from_object(obj, base_dir) {
           Ok(v) => Ok(Some(v))
           Err(err) => Err("index.vbundle: " + err)
         }
       } else {
         match obj.get("lock") {
-          Some(Json::Object(lock_obj)) => {
-            let lock_json = Json::object(lock_obj).stringify()
-            match parse_lock_data(lock_json, base_dir) {
+          Some(Json::Object(lock_obj)) =>
+            match parse_lock_data_from_object(lock_obj, base_dir) {
               Ok(v) => Ok(Some(v))
               Err(err) => Err("index.vbundle: " + err)
             }
-          }
           Some(_) => Err("index.vbundle: `lock` must be an object")
           None => Ok(None)
         }
