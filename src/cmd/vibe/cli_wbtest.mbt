@@ -162,7 +162,7 @@ test "line shell options reject unknown arg" {
 ///|
 test "eval cmd options parse db and expression" {
   let parsed = parse_eval_cmd_options(
-    ["--db=tmp1.db", "--include=index.vdb", "let", "value", "=", "1"],
+    ["--db=tmp1.db", "--include=index.vbundle", "let", "value", "=", "1"],
     "eval",
   )
   match parsed {
@@ -175,7 +175,7 @@ test "eval cmd options parse db and expression" {
         Some(_) => fail("unexpected export path")
         None => ()
       }
-      assert_eq(opts.include_paths, ["index.vdb"])
+      assert_eq(opts.include_paths, ["index.vbundle"])
       match opts.expr {
         Some(expr) => assert_eq(expr, "let value = 1")
         None => fail("expected expression")
@@ -188,7 +188,7 @@ test "eval cmd options parse db and expression" {
 ///|
 test "eval cmd options parse export only" {
   let parsed = parse_eval_cmd_options(
-    ["--db", "tmp1.db", "--include", "index.vdb", "--export", "out.vibe"],
+    ["--db", "tmp1.db", "--include", "index.vbundle", "--export", "out.vibe"],
     "eval",
   )
   match parsed {
@@ -201,7 +201,7 @@ test "eval cmd options parse export only" {
         Some(path) => assert_eq(path, "out.vibe")
         None => fail("expected export path")
       }
-      assert_eq(opts.include_paths, ["index.vdb"])
+      assert_eq(opts.include_paths, ["index.vbundle"])
       match opts.expr {
         Some(_) => fail("unexpected expression")
         None => ()
@@ -237,14 +237,14 @@ test "eval cmd options allows export without db" {
 test "eval cmd options parse multiple includes" {
   let parsed = parse_eval_cmd_options(
     [
-      "--db", "tmp1.db", "--include", "index.vdb", "--include=bit:/tmp/std.vdb",
+      "--db", "tmp1.db", "--include", "index.vbundle", "--include=bit:/tmp/std.vbundle",
       "let", "x", "=", "1",
     ],
     "eval",
   )
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.include_paths, ["index.vdb", "bit:/tmp/std.vdb"])
+      assert_eq(opts.include_paths, ["index.vbundle", "bit:/tmp/std.vbundle"])
       match opts.expr {
         Some(expr) => assert_eq(expr, "let x = 1")
         None => fail("expected expression")
@@ -381,11 +381,11 @@ test "eval cmd options reject missing include value" {
 }
 
 ///|
-test "eval include path resolves named vdb alias from lib dir" {
+test "eval include path resolves named vbundle alias from lib dir" {
   let resolved = resolve_eval_include_path(
-    "/work/project", "vibe/builtin@0.1.0.vdb", "/home/test/.vibe/lib",
+    "/work/project", "vibe/builtin@0.1.0.vbundle", "/home/test/.vibe/lib",
   )
-  assert_eq(resolved, "/home/test/.vibe/lib/vibe/builtin@0.1.0.vdb")
+  assert_eq(resolved, "/home/test/.vibe/lib/vibe/builtin@0.1.0.vbundle")
 }
 
 ///|

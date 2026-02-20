@@ -591,16 +591,16 @@ fn print_graph_def_entry(def : @x_exp.AdvancedGraphDef) -> Unit {
 }
 
 ///|
-fn write_index_vdb_graph_head(
+fn write_index_vbundle_graph_head(
   index_root : String,
   graph_head : String,
   function_tracking : Json,
 ) -> Result[Unit, String] {
-  let index_vdb_path = index_root + "/index.vdb"
-  let vdb_obj = load_index_vdb_object(index_vdb_path)
-  vdb_obj["graph_head"] = Json::string(graph_head)
-  vdb_obj["function_tracking"] = function_tracking
-  write_index_vdb_object(index_vdb_path, vdb_obj)
+  let index_vbundle_path = index_root + "/index.vbundle"
+  let vbundle_obj = load_index_vbundle_object(index_vbundle_path)
+  vbundle_obj["graph_head"] = Json::string(graph_head)
+  vbundle_obj["function_tracking"] = function_tracking
+  write_index_vbundle_object(index_vbundle_path, vbundle_obj)
 }
 
 ///|
@@ -624,12 +624,13 @@ fn sync_graph_head_for_loaded_db(
   let _ = codebase.write_object(graph_head, index_json) catch {
     e => return Err("sync graph snapshot object: " + e.to_string())
   }
-  let index_vdb_path = index_root + "/index.vdb"
-  let vdb_obj = load_index_vdb_object(index_vdb_path)
+  let index_vbundle_path = index_root + "/index.vbundle"
+  let vbundle_obj = load_index_vbundle_object(index_vbundle_path)
   let function_tracking = compute_function_tracking_json(
-    db, paths, index, vdb_obj,
+    db, paths, index, vbundle_obj,
   )
-  match write_index_vdb_graph_head(index_root, graph_head, function_tracking) {
+  match
+    write_index_vbundle_graph_head(index_root, graph_head, function_tracking) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
@@ -719,7 +720,7 @@ fn index_build_cmd(args : Array[String]) -> Unit {
             out_path +
             " (" +
             index.defs.length().to_string() +
-            " defs), index.vdb graph_head=" +
+            " defs), index.vbundle graph_head=" +
             short_hash(graph_head),
           )
         Err(err) => abort("index build: " + err)
@@ -774,6 +775,457 @@ fn index_verify_cmd(args : Array[String]) -> Unit {
     println("index verify: " + issue)
   }
   abort("index verify: failed (" + issues.length().to_string() + " issues)")
+}
+
+///|
+fn bundle_normalize_hash(hash : String) -> String {
+  if hash.has_prefix("#") && hash.length() > 1 {
+    hash.unsafe_substring(start=1, end=hash.length())
+  } else {
+    hash
+  }
+}
+
+///|
+fn bundle_read_json_file(path : String) -> Result[Map[String, Json], String] {
+  let source = @os_fs.read_file_to_string(path) catch {
+    e => return Err("bundle: read failed: " + path + " (" + e.to_string() + ")")
+  }
+  let parsed : Json = @json.parse(source) catch {
+    e => return Err("bundle: invalid JSON: " + e.to_string())
+  }
+  match parsed {
+    Json::Object(obj) => Ok(obj)
+    _ => Err("bundle: top-level JSON must be an object")
+  }
+}
+
+///|
+fn bundle_collect_lock_hashes(lock_obj : Map[String, Json]) -> Array[String] {
+  let hashes : Array[String] = []
+  let push_hash = fn(raw : String) {
+    let normalized = bundle_normalize_hash(raw.trim().to_string())
+    if normalized.length() == 0 {
+      return
+    }
+    for existing in hashes {
+      if existing == normalized {
+        return
+      }
+    }
+    hashes.push(normalized)
+  }
+  let collect_map = fn(field : String) {
+    match lock_obj.get(field) {
+      Some(Json::Object(entries)) =>
+        for _, value in entries {
+          match value {
+            Json::String(hash) => push_hash(hash)
+            _ => ()
+          }
+        }
+      _ => ()
+    }
+  }
+  collect_map("path")
+  collect_map("version")
+  collect_map("symbol")
+  hashes
+}
+
+///|
+fn bundle_pack_cmd(args : Array[String]) -> Unit {
+  let mut scope : String? = None
+  let mut version : String? = None
+  let mut entry_path : String? = None
+  let mut out_path : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "--scope" => {
+        i += 1
+        if i >= args.length() {
+          abort("bundle pack: missing value after --scope")
+        }
+        scope = Some(args[i])
+      }
+      "--version" => {
+        i += 1
+        if i >= args.length() {
+          abort("bundle pack: missing value after --version")
+        }
+        version = Some(args[i])
+      }
+      "--entry" => {
+        i += 1
+        if i >= args.length() {
+          abort("bundle pack: missing value after --entry")
+        }
+        entry_path = Some(args[i])
+      }
+      "-o" | "--out" => {
+        i += 1
+        if i >= args.length() {
+          abort("bundle pack: missing value after " + arg)
+        }
+        out_path = Some(args[i])
+      }
+      _ => abort("bundle pack: unknown arg " + arg)
+    }
+    i += 1
+  }
+  let scope_value = match scope {
+    Some(v) => v
+    None => abort("bundle pack: required --scope <scope>")
+  }
+  let version_value = match version {
+    Some(v) => v
+    None => abort("bundle pack: required --version <version>")
+  }
+  let entry_arg = match entry_path {
+    Some(v) => v
+    None => "."
+  }
+  let output_path = match out_path {
+    Some(v) => v
+    None => scope_value + "@" + version_value + ".vbundle"
+  }
+  let (_db, entry, lock, _index, _graph_head) = match
+    resolve_entry_artifacts(entry_arg) {
+    Ok(v) => v
+    Err(err) => abort("bundle pack: " + err)
+  }
+  let index_root = @codebase.resolve_index_root(entry)
+  let index_vbundle_path = index_root + "/index.vbundle"
+  let refs_obj = load_index_vbundle_object(index_vbundle_path)
+  let lock_obj = match refs_obj.get("lock") {
+    Some(Json::Object(obj)) => obj
+    _ => {}
+  }
+  let path_hash_contents : Map[String, String] = {}
+  for path, hash in lock.path_refs {
+    let source = @os_fs.read_file_to_string(path) catch { _ => continue }
+    let normalized_hash = bundle_normalize_hash(hash)
+    let actual_hash = @vibe_core.git_blob_hash_string(source)
+    if normalized_hash == actual_hash {
+      path_hash_contents[normalized_hash] = source
+    }
+  }
+  let object_hashes : Array[String] = []
+  let push_hash = fn(hash : String) {
+    let normalized = bundle_normalize_hash(hash)
+    if normalized.length() == 0 {
+      return
+    }
+    for existing in object_hashes {
+      if existing == normalized {
+        return
+      }
+    }
+    object_hashes.push(normalized)
+  }
+  for hash in bundle_collect_lock_hashes(lock_obj) {
+    push_hash(hash)
+  }
+  for _, hash in lock.path_refs {
+    push_hash(hash)
+  }
+  for _, hash in lock.version_refs {
+    push_hash(hash)
+  }
+  for _, hash in lock.symbol_refs {
+    push_hash(hash)
+  }
+  for _, hash in lock.module_refs {
+    push_hash(hash)
+  }
+  match refs_obj.get("graph_head") {
+    Some(Json::String(hash)) => push_hash(hash)
+    _ => ()
+  }
+  object_hashes.sort()
+  let vibe_dir = find_vibe_dir(index_root + "/index.vibe")
+  let codebase = @codebase.Codebase::new(vibe_dir)
+  let objects_obj : Map[String, Json] = {}
+  for hash in object_hashes {
+    match codebase.read_object(hash) {
+      Some(content) => objects_obj[hash] = Json::string(content)
+      None =>
+        match path_hash_contents.get(hash) {
+          Some(content) => objects_obj[hash] = Json::string(content)
+          None => ()
+        }
+    }
+  }
+  let meta_obj : Map[String, Json] = {}
+  meta_obj["scope"] = Json::string(scope_value)
+  meta_obj["version"] = Json::string(version_value)
+  meta_obj["entry"] = Json::string(entry)
+  match lock.path_refs.get(entry) {
+    Some(hash) =>
+      meta_obj["entry_hash"] = Json::string(bundle_normalize_hash(hash))
+    None => ()
+  }
+  meta_obj["created_at"] = Json::string(@env.now().to_string())
+  let root_obj : Map[String, Json] = {}
+  root_obj["format"] = Json::string("vbundle-1")
+  root_obj["meta"] = Json::object(meta_obj)
+  root_obj["refs"] = Json::object(refs_obj)
+  root_obj["objects"] = Json::object(objects_obj)
+  if output_path.has_prefix("dist/") {
+    ensure_dist_dir()
+  }
+  match ensure_parent_dir_for_file(output_path, "bundle pack") {
+    Ok(_) => ()
+    Err(err) => abort("bundle pack: " + err)
+  }
+  @os_fs.write_string_to_file(
+    output_path,
+    Json::object(root_obj).stringify() + "\n",
+  ) catch {
+    e => abort("bundle pack: write failed: " + e.to_string())
+  }
+  println(
+    "bundle pack: wrote " +
+    output_path +
+    " scope=" +
+    scope_value +
+    " version=" +
+    version_value +
+    " objects=" +
+    objects_obj.length().to_string(),
+  )
+}
+
+///|
+fn bundle_verify_cmd(args : Array[String]) -> Unit {
+  if args.length() != 1 {
+    abort("bundle verify: expected <file.vbundle>")
+  }
+  let path = args[0]
+  let root = match bundle_read_json_file(path) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let refs_obj = match root.get("refs") {
+    Some(Json::Object(obj)) => obj
+    _ => abort("bundle verify: missing `refs` object")
+  }
+  let objects_obj = match root.get("objects") {
+    Some(Json::Object(obj)) => obj
+    _ => abort("bundle verify: missing `objects` object")
+  }
+  let issues : Array[String] = []
+  for hash, value in objects_obj {
+    match value {
+      Json::String(content) => {
+        let actual = @vibe_core.git_blob_hash_string(content)
+        if actual != hash {
+          issues.push(
+            "object hash mismatch: expected " + hash + ", got " + actual,
+          )
+        }
+      }
+      _ => issues.push("object payload must be string for hash " + hash)
+    }
+  }
+  let lock_obj = match refs_obj.get("lock") {
+    Some(Json::Object(obj)) => obj
+    _ => refs_obj
+  }
+  for hash in bundle_collect_lock_hashes(lock_obj) {
+    if not(objects_obj.contains(hash)) {
+      issues.push("lock ref hash missing in objects: " + hash)
+    }
+  }
+  match refs_obj.get("graph_head") {
+    Some(Json::String(hash)) => {
+      let normalized = bundle_normalize_hash(hash)
+      if normalized.length() > 0 && not(objects_obj.contains(normalized)) {
+        issues.push("graph_head missing in objects: " + normalized)
+      }
+    }
+    _ => ()
+  }
+  if issues.length() > 0 {
+    for issue in issues {
+      println("bundle verify: " + issue)
+    }
+    abort("bundle verify: failed (" + issues.length().to_string() + " issues)")
+  }
+  println(
+    "bundle verify: ok (" + objects_obj.length().to_string() + " objects)",
+  )
+}
+
+///|
+fn bundle_inspect_cmd(args : Array[String]) -> Unit {
+  let mut output_json = false
+  let mut path : String? = None
+  for arg in args {
+    if arg == "--json" {
+      output_json = true
+      continue
+    }
+    match path {
+      Some(_) => abort("bundle inspect: unexpected extra arg: " + arg)
+      None => path = Some(arg)
+    }
+  }
+  let bundle_path = match path {
+    Some(v) => v
+    None => abort("bundle inspect: expected <file.vbundle>")
+  }
+  if output_json {
+    let source = @os_fs.read_file_to_string(bundle_path) catch {
+      e => abort("bundle inspect: read failed: " + e.to_string())
+    }
+    println(source)
+    return
+  }
+  let root = match bundle_read_json_file(bundle_path) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let meta_obj = match root.get("meta") {
+    Some(Json::Object(obj)) => obj
+    _ => {}
+  }
+  let scope = match meta_obj.get("scope") {
+    Some(Json::String(v)) => v
+    _ => ""
+  }
+  let version = match meta_obj.get("version") {
+    Some(Json::String(v)) => v
+    _ => ""
+  }
+  let refs_obj = match root.get("refs") {
+    Some(Json::Object(obj)) => obj
+    _ => {}
+  }
+  let objects_obj = match root.get("objects") {
+    Some(Json::Object(obj)) => obj
+    _ => {}
+  }
+  println("bundle inspect: " + bundle_path)
+  println("  scope: " + scope)
+  println("  version: " + version)
+  println("  refs keys: " + refs_obj.length().to_string())
+  println("  objects: " + objects_obj.length().to_string())
+}
+
+///|
+fn bundle_cat_cmd(args : Array[String]) -> Unit {
+  if args.length() < 3 {
+    abort("bundle cat: expected <file.vbundle> --hash <sha1>")
+  }
+  let bundle_path = args[0]
+  let mut hash : String? = None
+  let mut i = 1
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "--hash" => {
+        i += 1
+        if i >= args.length() {
+          abort("bundle cat: missing value after --hash")
+        }
+        hash = Some(bundle_normalize_hash(args[i]))
+      }
+      _ => abort("bundle cat: unknown arg " + arg)
+    }
+    i += 1
+  }
+  let hash_value = match hash {
+    Some(v) => v
+    None => abort("bundle cat: required --hash <sha1>")
+  }
+  let root = match bundle_read_json_file(bundle_path) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let objects_obj = match root.get("objects") {
+    Some(Json::Object(obj)) => obj
+    _ => abort("bundle cat: missing `objects`")
+  }
+  match objects_obj.get(hash_value) {
+    Some(Json::String(content)) => println(content)
+    Some(_) => abort("bundle cat: object payload is not string: " + hash_value)
+    None => abort("bundle cat: hash not found: " + hash_value)
+  }
+}
+
+///|
+fn bundle_migrate_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    abort("bundle migrate: expected <index.vdb> [-o out.vbundle]")
+  }
+  let mut input_path : String? = None
+  let mut out_path : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "-o" | "--out" => {
+        i += 1
+        if i >= args.length() {
+          abort("bundle migrate: missing value after " + arg)
+        }
+        out_path = Some(args[i])
+      }
+      _ =>
+        match input_path {
+          Some(_) => abort("bundle migrate: unexpected extra arg: " + arg)
+          None => input_path = Some(arg)
+        }
+    }
+    i += 1
+  }
+  let input = match input_path {
+    Some(v) => v
+    None => abort("bundle migrate: expected <index.vdb>")
+  }
+  let output = match out_path {
+    Some(v) => v
+    None =>
+      if input.has_suffix(".vdb") {
+        input.unsafe_substring(start=0, end=input.length() - 4) + ".vbundle"
+      } else {
+        input + ".vbundle"
+      }
+  }
+  let source = @os_fs.read_file_to_string(input) catch {
+    e => abort("bundle migrate: read failed: " + e.to_string())
+  }
+  let _ : Json = @json.parse(source) catch {
+    e => abort("bundle migrate: invalid JSON input: " + e.to_string())
+  }
+  match ensure_parent_dir_for_file(output, "bundle migrate") {
+    Ok(_) => ()
+    Err(err) => abort("bundle migrate: " + err)
+  }
+  @os_fs.write_string_to_file(output, source) catch {
+    e => abort("bundle migrate: write failed: " + e.to_string())
+  }
+  println("bundle migrate: wrote " + output)
+}
+
+///|
+fn bundle_cmd(args : Array[String]) -> Unit {
+  if args.length() == 0 {
+    abort("bundle: expected subcommand (pack|verify|inspect|cat|migrate)")
+  }
+  let sub = args[0]
+  let sub_args = args_tail(args, 1)
+  match sub {
+    "pack" => bundle_pack_cmd(sub_args)
+    "verify" => bundle_verify_cmd(sub_args)
+    "inspect" => bundle_inspect_cmd(sub_args)
+    "cat" => bundle_cat_cmd(sub_args)
+    "migrate" => bundle_migrate_cmd(sub_args)
+    _ => abort("bundle: unknown subcommand: " + sub)
+  }
 }
 
 ///|

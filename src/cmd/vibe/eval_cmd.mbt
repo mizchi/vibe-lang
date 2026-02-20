@@ -17,8 +17,8 @@ pub struct EvalTypeAssertion {
 } derive(Show, Eq)
 
 ///|
-fn is_named_vdb_alias(spec : String) -> Bool {
-  if not(spec.has_suffix(".vdb")) {
+fn is_named_vbundle_alias(spec : String) -> Bool {
+  if not(spec.has_suffix(".vbundle")) {
     return false
   }
   if spec.has_prefix("/") || spec.has_prefix("./") || spec.has_prefix("../") {
@@ -104,7 +104,7 @@ pub fn resolve_eval_include_path(
   } else {
     include_spec
   }
-  if is_named_vdb_alias(spec) {
+  if is_named_vbundle_alias(spec) {
     @vibe_fs.normalize_path(include_lib_dir + "/" + spec)
   } else if spec.has_prefix("/") {
     @vibe_fs.normalize_path(spec)

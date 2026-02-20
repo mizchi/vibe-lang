@@ -793,6 +793,7 @@ fn collect_module_export_annotations(
   }
 }
 
+///|
 pub fn apply_annotations_to_source(
   path : String,
   source : String,
@@ -1130,7 +1131,7 @@ fn has_lock_payload_fields(obj : Map[String, Json]) -> Bool {
 }
 
 ///|
-fn parse_lock_data_from_index_vdb(
+fn parse_lock_data_from_index_vbundle(
   content : String,
   base_dir : String,
 ) -> Result[LockData?, String] {
@@ -1139,7 +1140,7 @@ fn parse_lock_data_from_index_vdb(
     return Ok(None)
   }
   let json : Json = @json.parse(trimmed) catch {
-    // Keep compatibility with non-lock `index.vdb` payloads.
+    // Keep compatibility with non-lock `index.vbundle` payloads.
     _ => return Ok(None)
   }
   match json {
@@ -1147,7 +1148,7 @@ fn parse_lock_data_from_index_vdb(
       if has_lock_payload_fields(obj) {
         match parse_lock_data(trimmed, base_dir) {
           Ok(v) => Ok(Some(v))
-          Err(err) => Err("index.vdb: " + err)
+          Err(err) => Err("index.vbundle: " + err)
         }
       } else {
         match obj.get("lock") {
@@ -1155,10 +1156,10 @@ fn parse_lock_data_from_index_vdb(
             let lock_json = Json::object(lock_obj).stringify()
             match parse_lock_data(lock_json, base_dir) {
               Ok(v) => Ok(Some(v))
-              Err(err) => Err("index.vdb: " + err)
+              Err(err) => Err("index.vbundle: " + err)
             }
           }
-          Some(_) => Err("index.vdb: `lock` must be an object")
+          Some(_) => Err("index.vbundle: `lock` must be an object")
           None => Ok(None)
         }
       }
@@ -1167,7 +1168,7 @@ fn parse_lock_data_from_index_vdb(
 }
 
 ///|
-fn read_index_vdb_object_with_fs(
+fn read_index_vbundle_object_with_fs(
   path : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[Map[String, Json], String] {
@@ -1177,14 +1178,14 @@ fn read_index_vdb_object_with_fs(
   }
   let source = match @io.read_string_with(fs, path) {
     Ok(v) => v
-    Err(err) => return Err("failed to read index.vdb: " + err)
+    Err(err) => return Err("failed to read index.vbundle: " + err)
   }
   let trimmed = source.trim().to_string()
   if trimmed.length() == 0 {
     return Ok(obj)
   }
   let parsed : Json = @json.parse(trimmed) catch {
-    e => return Err("index.vdb: invalid JSON: " + e.to_string())
+    e => return Err("index.vbundle: invalid JSON: " + e.to_string())
   }
   match parsed {
     Json::Object(current) => {
@@ -1193,19 +1194,19 @@ fn read_index_vdb_object_with_fs(
       }
       Ok(obj)
     }
-    _ => Err("index.vdb: top-level JSON must be an object")
+    _ => Err("index.vbundle: top-level JSON must be an object")
   }
 }
 
 ///|
-fn write_index_vdb_object_with_fs(
+fn write_index_vbundle_object_with_fs(
   path : String,
   obj : Map[String, Json],
   fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   match @io.write_string_with(fs, path, Json::object(obj).stringify() + "\n") {
     Ok(_) => ()
-    Err(err) => return Err("failed to write index.vdb: " + err)
+    Err(err) => return Err("failed to write index.vbundle: " + err)
   }
   Ok(())
 }
@@ -1406,13 +1407,14 @@ pub fn load_lock_data_with_fs(
   fs : &@io.FileSystemAdapter,
 ) -> Result[LockData, String] {
   let base_dir = @vibe_fs.parent_path(lock_path)
-  let index_vdb_path = base_dir + "/index.vdb"
-  if @io.path_exists_with(fs, index_vdb_path) {
-    let index_vdb_content = match @io.read_string_with(fs, index_vdb_path) {
+  let index_vbundle_path = base_dir + "/index.vbundle"
+  if @io.path_exists_with(fs, index_vbundle_path) {
+    let index_vbundle_content = match
+      @io.read_string_with(fs, index_vbundle_path) {
       Ok(v) => v
-      Err(err) => return Err("failed to read index.vdb: " + err)
+      Err(err) => return Err("failed to read index.vbundle: " + err)
     }
-    match parse_lock_data_from_index_vdb(index_vdb_content, base_dir) {
+    match parse_lock_data_from_index_vbundle(index_vbundle_content, base_dir) {
       Ok(Some(lock)) => return Ok(lock)
       Ok(None) => ()
       Err(err) => return Err(err)
@@ -1452,13 +1454,19 @@ pub fn write_lock_data_with_fs(
     Ok(_) => ()
     Err(err) => return Err("failed to write index.lock: " + err)
   }
-  let index_vdb_path = base_dir + "/index.vdb"
-  let index_vdb_obj = match read_index_vdb_object_with_fs(index_vdb_path, fs) {
+  let index_vbundle_path = base_dir + "/index.vbundle"
+  let index_vbundle_obj = match
+    read_index_vbundle_object_with_fs(index_vbundle_path, fs) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  index_vdb_obj["lock"] = Json::object(lock_data_to_json_object(lock, base_dir))
-  match write_index_vdb_object_with_fs(index_vdb_path, index_vdb_obj, fs) {
+  index_vbundle_obj["lock"] = Json::object(
+    lock_data_to_json_object(lock, base_dir),
+  )
+  match
+    write_index_vbundle_object_with_fs(
+      index_vbundle_path, index_vbundle_obj, fs,
+    ) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
@@ -1473,6 +1481,7 @@ pub fn write_lock_data(
   write_lock_data_with_fs(lock_path, lock, @io.default_fs_adapter())
 }
 
+///|
 pub fn update_lock_path_refs_with_fs(
   entry : String,
   fs : &@io.FileSystemAdapter,

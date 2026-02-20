@@ -8,10 +8,10 @@ fn apply_lock_to_db_with_fs(
   let lock_path = @codebase.lock_file_path_with_fs(entry, fs)
   let lock_root = @vibe_fs.parent_path(lock_path)
   let legacy_lock_path = lock_root + "/vibe.lock"
-  let index_vdb_path = lock_root + "/index.vdb"
+  let index_vbundle_path = lock_root + "/index.vbundle"
   let has_lock_source = @io.path_exists_with(fs, lock_path) ||
     @io.path_exists_with(fs, legacy_lock_path) ||
-    @io.path_exists_with(fs, index_vdb_path)
+    @io.path_exists_with(fs, index_vbundle_path)
   if has_lock_source {
     match @codebase.update_lock_path_refs_with_fs(entry, fs) {
       Ok(_) => ()
@@ -148,11 +148,27 @@ pub fn resolve_entry_path_with_fs(
   path : String,
   fs : &@io.FileSystemAdapter,
 ) -> String {
-  if path.has_prefix("/") {
+  let resolved = if path.has_prefix("/") {
     @vibe_fs.normalize_path(path)
   } else {
     let cwd = @io.current_dir_or_root_with(fs)
     @vibe_fs.normalize_path(cwd + "/" + path)
+  }
+  if resolved.has_suffix(".vibe") ||
+    resolved.has_suffix(".xm") ||
+    resolved.has_suffix(".wasm") ||
+    resolved.has_suffix(".db") ||
+    resolved.has_suffix(".lock") ||
+    resolved.has_suffix(".vbundle") {
+    return resolved
+  }
+  let index_entry = @vibe_fs.normalize_path(resolved + "/index.vibe")
+  if @io.path_exists_with(fs, index_entry) {
+    return index_entry
+  }
+  match @io.read_dir_with(fs, resolved) {
+    Ok(_) => index_entry
+    Err(_) => resolved
   }
 }
 

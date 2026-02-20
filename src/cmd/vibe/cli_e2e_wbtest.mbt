@@ -178,6 +178,50 @@ test "normalize options reject -o without merge" {
 }
 
 ///|
+test "cli normalize directory writes merged index with version" {
+  let root = wbtest_make_temp_dir("normalize_dir_index")
+  let a_path = root + "/a.vibe"
+  let b_path = root + "/b.vibe"
+  @os_fs.write_string_to_file(a_path, "let foo = 1\nexport { foo }\n") catch {
+    e => fail("write a.vibe failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(b_path, "let bar = 2\nexport { bar }\n") catch {
+    e => fail("write b.vibe failed: " + e.to_string())
+  }
+  normalize_cmd(["--write", root])
+  let index_path = root + "/index.vibe"
+  assert_true(@os_fs.path_exists(index_path))
+  let index_source = @os_fs.read_file_to_string(index_path) catch {
+    e => fail("read index.vibe failed: " + e.to_string())
+  }
+  assert_true(index_source.contains("export let version = \"0.1.0\""))
+  assert_true(index_source.contains("foo"))
+  assert_true(index_source.contains("bar"))
+  assert_true(@os_fs.path_exists(a_path))
+  assert_true(@os_fs.path_exists(b_path))
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli normalize directory rejects duplicate top-level definitions" {
+  let root = wbtest_make_temp_dir("normalize_dir_conflict")
+  @os_fs.write_string_to_file(root + "/a.vibe", "let foo = 1\nexport { foo }\n") catch {
+    e => fail("write a.vibe failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(root + "/b.vibe", "let foo = 2\nexport { foo }\n") catch {
+    e => fail("write b.vibe failed: " + e.to_string())
+  }
+  match normalize_directory_to_index_source(root, false) {
+    Ok(_) => fail("expected duplicate definition error")
+    Err(err) => {
+      assert_true(err.contains("duplicate value"))
+      assert_true(err.contains("`foo`"))
+    }
+  }
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli bench backend parse" {
   match parse_bench_backend("wasm") {
     Some(backend) => assert_eq(bench_backend_name(backend), "wasm")
@@ -273,7 +317,7 @@ test "cli compile coverage guard allows test mode" {
 }
 
 ///|
-test "cli index build writes index.vdb graph head" {
+test "cli index build writes index.vbundle graph head" {
   let root = wbtest_make_temp_dir("index_build_vdb")
   let entry = root + "/main.vibe"
   let out_path = root + "/advanced-graph-index.json"
@@ -282,21 +326,21 @@ test "cli index build writes index.vdb graph head" {
   }
   index_build_cmd(["-o", out_path, entry])
   assert_true(@os_fs.path_exists(out_path))
-  let vdb_path = root + "/index.vdb"
+  let vdb_path = root + "/index.vbundle"
   assert_true(@os_fs.path_exists(vdb_path))
   let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
-    e => fail("read index.vdb failed: " + e.to_string())
+    e => fail("read index.vbundle failed: " + e.to_string())
   }
   let vdb_json : Json = @json.parse(vdb_source) catch {
-    e => fail("parse index.vdb failed: " + e.to_string())
+    e => fail("parse index.vbundle failed: " + e.to_string())
   }
   let graph_head = match vdb_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.vdb must include graph_head")
+        _ => fail("index.vbundle must include graph_head")
       }
-    _ => fail("index.vdb must be object")
+    _ => fail("index.vbundle must be object")
   }
   assert_eq(graph_head.length(), 40)
   let codebase = @codebase.Codebase::new(find_vibe_dir(entry))
@@ -304,6 +348,68 @@ test "cli index build writes index.vdb graph head" {
     Some(content) => assert_true(content.contains("\"defs\""))
     None => fail("expected graph snapshot object")
   }
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli bundle pack verify and cat workflow" {
+  let root = wbtest_make_temp_dir("bundle_pack_verify")
+  let entry = root + "/index.vibe"
+  let out_path = root + "/demo@0.1.0.vbundle"
+  @os_fs.write_string_to_file(
+    entry, "export let version = \"0.1.0\"\nlet value = 1\nexport { value }\n",
+  ) catch {
+    e => fail("write entry failed: " + e.to_string())
+  }
+  bundle_pack_cmd([
+    "--scope", "demo/pkg", "--version", "0.1.0", "--entry", root, "-o", out_path,
+  ])
+  assert_true(@os_fs.path_exists(out_path))
+  bundle_verify_cmd([out_path])
+  let source = @os_fs.read_file_to_string(out_path) catch {
+    e => fail("read vbundle failed: " + e.to_string())
+  }
+  let json : Json = @json.parse(source) catch {
+    e => fail("parse vbundle failed: " + e.to_string())
+  }
+  let first_hash = match json {
+    Json::Object(obj) =>
+      match obj.get("objects") {
+        Some(Json::Object(objects)) => {
+          let mut found = ""
+          for hash, _ in objects {
+            found = hash
+            break
+          }
+          if found.length() == 0 {
+            fail("bundle must include at least one object")
+          }
+          found
+        }
+        _ => fail("bundle objects missing")
+      }
+    _ => fail("bundle root must be object")
+  }
+  bundle_cat_cmd([out_path, "--hash", first_hash])
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli bundle migrate copies legacy vdb to vbundle" {
+  let root = wbtest_make_temp_dir("bundle_migrate")
+  let legacy = root + "/legacy.vdb"
+  let out = root + "/legacy.vbundle"
+  @os_fs.write_string_to_file(
+    legacy, "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n",
+  ) catch {
+    e => fail("write legacy vdb failed: " + e.to_string())
+  }
+  bundle_migrate_cmd([legacy])
+  assert_true(@os_fs.path_exists(out))
+  let migrated = @os_fs.read_file_to_string(out) catch {
+    e => fail("read migrated vbundle failed: " + e.to_string())
+  }
+  assert_true(migrated.contains("graph_head"))
   wbtest_remove_if_exists(root)
 }
 
@@ -331,21 +437,21 @@ test "cli check resolves lock and graph artifacts" {
   let lib_norm = @loader.resolve_import_path(root, "./lib.vibe")
   assert_true(lock.path_refs.contains(entry_norm))
   assert_true(lock.path_refs.contains(lib_norm))
-  let vdb_path = root + "/index.vdb"
+  let vdb_path = root + "/index.vbundle"
   assert_true(@os_fs.path_exists(vdb_path))
   let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
-    e => fail("read index.vdb failed: " + e.to_string())
+    e => fail("read index.vbundle failed: " + e.to_string())
   }
   let vdb_json : Json = @json.parse(vdb_source) catch {
-    e => fail("parse index.vdb failed: " + e.to_string())
+    e => fail("parse index.vbundle failed: " + e.to_string())
   }
   let graph_head = match vdb_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.vdb must include graph_head")
+        _ => fail("index.vbundle must include graph_head")
       }
-    _ => fail("index.vdb must be object")
+    _ => fail("index.vbundle must be object")
   }
   let codebase = @codebase.Codebase::new(find_vibe_dir(entry))
   match codebase.read_object(graph_head) {
@@ -372,21 +478,21 @@ test "cli apply resolves lock and graph artifacts" {
   }
   let resolved = @loader.resolve_entry_path(entry)
   assert_true(lock.path_refs.contains(resolved))
-  let vdb_path = root + "/index.vdb"
+  let vdb_path = root + "/index.vbundle"
   assert_true(@os_fs.path_exists(vdb_path))
   let vdb_source = @os_fs.read_file_to_string(vdb_path) catch {
-    e => fail("read index.vdb failed: " + e.to_string())
+    e => fail("read index.vbundle failed: " + e.to_string())
   }
   let vdb_json : Json = @json.parse(vdb_source) catch {
-    e => fail("parse index.vdb failed: " + e.to_string())
+    e => fail("parse index.vbundle failed: " + e.to_string())
   }
   let graph_head = match vdb_json {
     Json::Object(obj) =>
       match obj.get("graph_head") {
         Some(Json::String(hash)) => hash
-        _ => fail("index.vdb must include graph_head")
+        _ => fail("index.vbundle must include graph_head")
       }
-    _ => fail("index.vdb must be object")
+    _ => fail("index.vbundle must be object")
   }
   let codebase = @codebase.Codebase::new(find_vibe_dir(entry))
   match codebase.read_object(graph_head) {
@@ -725,7 +831,7 @@ test "cli eval db workflow persists namespace and exports module" {
 test "cli eval db workflow supports include scripts" {
   let root = wbtest_make_temp_dir("eval_db_include_workflow")
   let db_path = root + "/tmp1.db"
-  let include_path = root + "/index.vdb"
+  let include_path = root + "/index.vbundle"
   let out_path = root + "/main.vibe"
   let features = @runtime.RuntimeFeatureFlags::stable()
   @os_fs.write_string_to_file(include_path, "let seed = 10\n") catch {
@@ -774,7 +880,7 @@ test "cli eval db workflow supports include scripts" {
 }
 
 ///|
-test "cli eval include supports hash alias from vdb file" {
+test "cli eval include supports hash alias from vbundle file" {
   let root = wbtest_make_temp_dir("eval_db_hash_alias")
   let lib_root = root + "/lib"
   let lib_vibe = lib_root + "/vibe"
@@ -785,7 +891,7 @@ test "cli eval include supports hash alias from vdb file" {
     e => fail("create lib vibe dir failed: " + e.to_string())
   }
   let db_path = root + "/tmp1.db"
-  let include_path = lib_vibe + "/std@0.1.0.vdb"
+  let include_path = lib_vibe + "/std@0.1.0.vbundle"
   let out_path = root + "/main.vibe"
   let seed_source = "let seed = 21\n"
   let seed_hash = @vibe_core.git_blob_hash_string(seed_source)
@@ -838,6 +944,64 @@ test "cli eval include supports hash alias from vdb file" {
   wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(lib_vibe)
   wbtest_remove_if_exists(lib_root)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli eval include supports packed vbundle entry source" {
+  let root = wbtest_make_temp_dir("eval_db_include_packed_vbundle")
+  let include_entry = root + "/index.vibe"
+  let include_bundle = root + "/seed@0.1.0.vbundle"
+  let db_path = root + "/tmp1.db"
+  let out_path = root + "/main.vibe"
+  @os_fs.write_string_to_file(
+    include_entry, "export let version = \"0.1.0\"\nlet seed = 30\nexport { seed }\n",
+  ) catch {
+    e => fail("write include entry failed: " + e.to_string())
+  }
+  bundle_pack_cmd([
+    "--scope", "seed/pkg", "--version", "0.1.0", "--entry", root, "-o", include_bundle,
+  ])
+  let features = @runtime.RuntimeFeatureFlags::stable()
+  eval_cmd(
+    [
+      "--db=" + db_path,
+      "--include=" + include_bundle,
+      "let",
+      "answer",
+      "=",
+      "seed",
+      "+",
+      "2",
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  eval_cmd(
+    [
+      "--db=" + db_path,
+      "--include=" + include_bundle,
+      "export",
+      "{",
+      "answer",
+      "}",
+    ],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  eval_cmd(
+    ["--db=" + db_path, "--include=" + include_bundle, "--export=" + out_path],
+    @runtime.ParserMode::XshMode,
+    features,
+  )
+  let exported = @os_fs.read_file_to_string(out_path) catch {
+    e => fail("read exported module failed: " + e.to_string())
+  }
+  assert_true(exported.contains("let answer = seed + 2"))
+  assert_true(exported.contains("export { answer }"))
+  wbtest_remove_if_exists(out_path)
+  wbtest_remove_if_exists(db_path)
+  wbtest_remove_if_exists(include_bundle)
   wbtest_remove_if_exists(root)
 }
 
@@ -1541,20 +1705,20 @@ fn read_function_tracking_record(
   index_root : String,
   key : String,
 ) -> FunctionTrackingRecord {
-  let path = index_root + "/index.vdb"
+  let path = index_root + "/index.vbundle"
   let source = @os_fs.read_file_to_string(path) catch {
-    e => abort("read index.vdb failed: " + e.to_string())
+    e => abort("read index.vbundle failed: " + e.to_string())
   }
   let json : Json = @json.parse(source) catch {
-    e => abort("parse index.vdb failed: " + e.to_string())
+    e => abort("parse index.vbundle failed: " + e.to_string())
   }
   let obj = match json {
     Json::Object(map) => map
-    _ => abort("index.vdb must be object")
+    _ => abort("index.vbundle must be object")
   }
   let tracking = match obj.get("function_tracking") {
     Some(Json::Object(value)) => value
-    _ => abort("index.vdb must include function_tracking object")
+    _ => abort("index.vbundle must include function_tracking object")
   }
   let records = match tracking.get("records") {
     Some(Json::Object(value)) => value

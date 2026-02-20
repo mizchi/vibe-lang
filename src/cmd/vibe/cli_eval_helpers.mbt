@@ -166,7 +166,7 @@ fn default_ns_db_rel_path(ns_name : String) -> String {
 }
 
 ///|
-fn load_index_vdb_object(path : String) -> Map[String, Json] {
+fn load_index_vbundle_object(path : String) -> Map[String, Json] {
   let obj : Map[String, Json] = {}
   if not(@os_fs.path_exists(path)) {
     return obj
@@ -185,22 +185,24 @@ fn load_index_vdb_object(path : String) -> Map[String, Json] {
 }
 
 ///|
-fn write_index_vdb_object(
-  index_vdb_path : String,
+fn write_index_vbundle_object(
+  index_vbundle_path : String,
   obj : Map[String, Json],
 ) -> Result[Unit, String] {
   @os_fs.write_string_to_file(
-    index_vdb_path,
+    index_vbundle_path,
     Json::object(obj).stringify() + "\n",
   ) catch {
-    e => return Err("write index.vdb: " + e.to_string())
+    e => return Err("write index.vbundle: " + e.to_string())
   }
   Ok(())
 }
 
 ///|
-fn resolve_active_ns_name_from_index_vdb(vdb : Map[String, Json]) -> String {
-  match vdb.get("active_namespace") {
+fn resolve_active_ns_name_from_index_vbundle(
+  vbundle : Map[String, Json],
+) -> String {
+  match vbundle.get("active_namespace") {
     Some(Json::String(name)) =>
       if name.trim().to_string().length() > 0 {
         name.trim().to_string()
@@ -212,11 +214,11 @@ fn resolve_active_ns_name_from_index_vdb(vdb : Map[String, Json]) -> String {
 }
 
 ///|
-fn resolve_ns_db_rel_path_from_index_vdb(
-  vdb : Map[String, Json],
+fn resolve_ns_db_rel_path_from_index_vbundle(
+  vbundle : Map[String, Json],
   ns_name : String,
 ) -> String {
-  match vdb.get("namespaces") {
+  match vbundle.get("namespaces") {
     Some(Json::Object(namespaces)) =>
       match namespaces.get(ns_name) {
         Some(Json::Object(ns_obj)) =>
@@ -257,14 +259,14 @@ fn resolve_scratch_db_path_for_index_root(
       }
     None => {
       let vibe_dir = find_vibe_dir(index_root + "/index.vibe")
-      let index_vdb_path = index_root + "/index.vdb"
-      let vdb = load_index_vdb_object(index_vdb_path)
-      let ns_name = resolve_active_ns_name_from_index_vdb(vdb)
-      let db_rel = resolve_ns_db_rel_path_from_index_vdb(vdb, ns_name)
+      let index_vbundle_path = index_root + "/index.vbundle"
+      let vbundle = load_index_vbundle_object(index_vbundle_path)
+      let ns_name = resolve_active_ns_name_from_index_vbundle(vbundle)
+      let db_rel = resolve_ns_db_rel_path_from_index_vbundle(vbundle, ns_name)
       let db_path = to_absolute_db_path(index_root, db_rel)
-      let next_vdb = clone_json_map(vdb)
-      next_vdb["active_namespace"] = Json::string(ns_name)
-      let namespaces = match vdb.get("namespaces") {
+      let next_vbundle = clone_json_map(vbundle)
+      next_vbundle["active_namespace"] = Json::string(ns_name)
+      let namespaces = match vbundle.get("namespaces") {
         Some(Json::Object(current)) => clone_json_map(current)
         _ => {}
       }
@@ -272,16 +274,16 @@ fn resolve_scratch_db_path_for_index_root(
         Some(Json::Object(current)) => clone_json_map(current)
         _ => {}
       }
-      let db_path_in_vdb = if db_path.has_prefix(vibe_dir) {
+      let db_path_in_vbundle = if db_path.has_prefix(vibe_dir) {
         default_ns_db_rel_path(ns_name)
       } else {
         db_path
       }
-      ns_obj["db_path"] = Json::string(db_path_in_vdb)
+      ns_obj["db_path"] = Json::string(db_path_in_vbundle)
       ns_obj["updated_at"] = Json::string(@env.now().to_string())
       namespaces[ns_name] = Json::object(ns_obj)
-      next_vdb["namespaces"] = Json::object(namespaces)
-      match write_index_vdb_object(index_vdb_path, next_vdb) {
+      next_vbundle["namespaces"] = Json::object(namespaces)
+      match write_index_vbundle_object(index_vbundle_path, next_vbundle) {
         Ok(_) => ()
         Err(err) => return Err(err)
       }
@@ -345,6 +347,53 @@ fn parse_include_hash_alias(source : String) -> String? {
       _ => None
     }
   }
+}
+
+///|
+fn parse_include_vbundle_entry_source(source : String) -> String? {
+  let trimmed = source.trim().to_string()
+  if trimmed.length() == 0 {
+    return None
+  }
+  let parsed : Json = @json.parse(trimmed) catch { _ => return None }
+  let root = match parsed {
+    Json::Object(obj) => obj
+    _ => return None
+  }
+  let is_vbundle = match root.get("format") {
+    Some(Json::String(format)) => format == "vbundle-1"
+    _ => false
+  }
+  if not(is_vbundle) {
+    return None
+  }
+  let entry_hash = match root.get("meta") {
+    Some(Json::Object(meta)) =>
+      match meta.get("entry_hash") {
+        Some(Json::String(hash)) => bundle_normalize_hash(hash)
+        _ => ""
+      }
+    _ => ""
+  }
+  let objects = match root.get("objects") {
+    Some(Json::Object(obj)) => obj
+    _ => return None
+  }
+  if entry_hash.length() > 0 {
+    match objects.get(entry_hash) {
+      Some(Json::String(content)) => return Some(content)
+      _ => ()
+    }
+  }
+  if objects.length() == 1 {
+    for _, value in objects {
+      match value {
+        Json::String(content) => return Some(content)
+        _ => return None
+      }
+    }
+  }
+  None
 }
 
 ///|
@@ -439,7 +488,11 @@ fn load_eval_include_source(
         "` not found in local stores",
       )
     }
-    None => Ok(source)
+    None =>
+      match parse_include_vbundle_entry_source(source) {
+        Some(entry_source) => Ok(entry_source)
+        None => Ok(source)
+      }
   }
 }
 

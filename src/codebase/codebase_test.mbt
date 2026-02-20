@@ -390,15 +390,15 @@ test "codebase load_lock_data falls back to legacy vibe.lock" {
 }
 
 ///|
-test "codebase load_lock_data prefers index.vdb lock payload over index.lock" {
-  let root = make_temp_dir("index_vdb_lock_priority")
+test "codebase load_lock_data prefers index.vbundle lock payload over index.lock" {
+  let root = make_temp_dir("index_vbundle_lock_priority")
   let entry = root + "/main.vibe"
   let lock_path = lock_file_path(entry)
   write_file(
     lock_path, "{\"path\":{\"./main.vibe\":\"from_lock\"},\"version\":{},\"symbol\":{}}",
   )
   write_file(
-    root + "/index.vdb",
+    root + "/index.vbundle",
     "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"path\":{\"./main.vibe\":\"from_vdb\"},\"version\":{},\"symbol\":{}}",
   )
   let loaded = match load_lock_data(lock_path) {
@@ -408,21 +408,21 @@ test "codebase load_lock_data prefers index.vdb lock payload over index.lock" {
   let entry_norm = @vibe_fs.normalize_path(entry)
   match loaded.path_refs.get(entry_norm) {
     Some(hash) => assert_eq(hash, "from_vdb")
-    None => fail("expected path ref from index.vdb")
+    None => fail("expected path ref from index.vbundle")
   }
   remove_if_exists(root)
 }
 
 ///|
-test "codebase load_lock_data falls back to index.lock when index.vdb has no lock data" {
-  let root = make_temp_dir("index_vdb_fallback")
+test "codebase load_lock_data falls back to index.lock when index.vbundle has no lock data" {
+  let root = make_temp_dir("index_vbundle_fallback")
   let entry = root + "/main.vibe"
   let lock_path = lock_file_path(entry)
   write_file(
     lock_path, "{\"path\":{\"./main.vibe\":\"from_lock\"},\"version\":{},\"symbol\":{}}",
   )
   write_file(
-    root + "/index.vdb",
+    root + "/index.vbundle",
     "{\"graph_head\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
   )
   let loaded = match load_lock_data(lock_path) {
@@ -438,13 +438,13 @@ test "codebase load_lock_data falls back to index.lock when index.vdb has no loc
 }
 
 ///|
-test "codebase write_lock_data mirrors lock payload into index.vdb" {
+test "codebase write_lock_data mirrors lock payload into index.vbundle" {
   let root = make_temp_dir("write_lock_sync_vdb")
   let entry = root + "/main.vibe"
   let entry_norm = @vibe_fs.normalize_path(entry)
   let lock_path = lock_file_path(entry)
   write_file(
-    root + "/index.vdb",
+    root + "/index.vbundle",
     "{\"graph_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n",
   )
   let path_refs : Map[String, String] = {}
@@ -460,11 +460,11 @@ test "codebase write_lock_data mirrors lock payload into index.vdb" {
     Ok(_) => ()
     Err(err) => fail(err)
   }
-  let vdb_source = @os_fs.read_file_to_string(root + "/index.vdb") catch {
-    e => fail("read index.vdb failed: " + e.to_string())
+  let vdb_source = @os_fs.read_file_to_string(root + "/index.vbundle") catch {
+    e => fail("read index.vbundle failed: " + e.to_string())
   }
   let vdb_json : Json = @json.parse(vdb_source) catch {
-    e => fail("parse index.vdb failed: " + e.to_string())
+    e => fail("parse index.vbundle failed: " + e.to_string())
   }
   match vdb_json {
     Json::Object(vdb_obj) => {
@@ -479,14 +479,15 @@ test "codebase write_lock_data mirrors lock payload into index.vdb" {
             Some(Json::Object(path_obj)) =>
               match path_obj.get("./main.vibe") {
                 Some(Json::String(hash)) => assert_eq(hash, "from_lock_write")
-                _ => fail("expected relative path lock payload in index.vdb")
+                _ =>
+                  fail("expected relative path lock payload in index.vbundle")
               }
             _ => fail("expected lock.path object")
           }
-        _ => fail("expected lock payload in index.vdb")
+        _ => fail("expected lock payload in index.vbundle")
       }
     }
-    _ => fail("index.vdb must be object")
+    _ => fail("index.vbundle must be object")
   }
   @os_fs.remove_file(lock_path) catch {
     e => fail("remove index.lock failed: " + e.to_string())
@@ -497,7 +498,7 @@ test "codebase write_lock_data mirrors lock payload into index.vdb" {
   }
   match loaded.path_refs.get(entry_norm) {
     Some(hash) => assert_eq(hash, "from_lock_write")
-    None => fail("expected path ref from index.vdb lock payload")
+    None => fail("expected path ref from index.vbundle lock payload")
   }
   remove_if_exists(root)
 }

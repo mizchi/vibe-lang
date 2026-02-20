@@ -55,6 +55,7 @@ pub fn run(args : Array[String]) -> Unit {
     "ide" => ide_cmd(cmd_args)
     "lsif" => lsif_cmd(cmd_args)
     "index" => index_cmd(cmd_args)
+    "bundle" => bundle_cmd(cmd_args)
     "lsp" => lsp_cmd(cmd_args)
     "help" => print_usage()
     _ => {
@@ -144,7 +145,7 @@ fn print_usage() -> Unit {
     "  save <file>                 save module to content-addressed store",
   )
   println(
-    "  fetch <file>                resolve imports and sync lock payload (index.lock + index.vdb)",
+    "  fetch <file>                resolve imports and sync lock payload (index.lock + index.vbundle)",
   )
   println("  update-lock <file>          alias for fetch")
   println(
@@ -157,6 +158,9 @@ fn print_usage() -> Unit {
   )
   println(
     "    ref: push|pull|push-delta|pull-delta <scope> <file>  git/bit distributed refs",
+  )
+  println(
+    "  bundle <pack|verify|inspect|cat|migrate> ...  vbundle distribution utilities",
   )
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax vibe|posix (default: vibe)")
@@ -1418,6 +1422,222 @@ fn test_cmd_parallel(
 }
 
 ///|
+fn normalize_collect_decl_or_conflict(
+  seen : Map[String, String],
+  kind : String,
+  name : String,
+  source_path : String,
+) -> Result[Unit, String] {
+  let key = kind + ":" + name
+  match seen.get(key) {
+    Some(prev_path) =>
+      if prev_path == source_path {
+        Ok(())
+      } else {
+        Err(
+          "normalize: duplicate " +
+          kind +
+          " `" +
+          name +
+          "` across files: " +
+          prev_path +
+          " and " +
+          source_path,
+        )
+      }
+    None => {
+      seen[key] = source_path
+      Ok(())
+    }
+  }
+}
+
+///|
+fn normalize_collect_top_level_decls(
+  seen : Map[String, String],
+  source_path : String,
+  source : String,
+) -> Result[Unit, String] {
+  let ast = @parser.parse_ast(source) catch {
+    e =>
+      return Err(
+        "normalize: parse failed for `" + source_path + "`: " + e.to_string(),
+      )
+  }
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Let(name~, ..)
+      | @vibe_core.Stmt::ExportLet(name~, ..)
+      | @vibe_core.Stmt::LetMut(name~, ..) =>
+        match
+          normalize_collect_decl_or_conflict(seen, "value", name, source_path) {
+          Ok(_) => ()
+          Err(err) => return Err(err)
+        }
+      @vibe_core.Stmt::EnumDef(name~, ..)
+      | @vibe_core.Stmt::ExportEnumDef(name~, ..)
+      | @vibe_core.Stmt::TypeAlias(name~, ..)
+      | @vibe_core.Stmt::ExportTypeAlias(name~, ..)
+      | @vibe_core.Stmt::StructDef(name~, ..)
+      | @vibe_core.Stmt::ExportStructDef(name~, ..) =>
+        match
+          normalize_collect_decl_or_conflict(seen, "type", name, source_path) {
+          Ok(_) => ()
+          Err(err) => return Err(err)
+        }
+      @vibe_core.Stmt::TraitDef(name~, ..) =>
+        match
+          normalize_collect_decl_or_conflict(seen, "trait", name, source_path) {
+          Ok(_) => ()
+          Err(err) => return Err(err)
+        }
+      _ => ()
+    }
+  }
+  Ok(())
+}
+
+///|
+fn normalize_is_simple_semver(text : String) -> Bool {
+  let parts : Array[String] = []
+  for part in text.split(".") {
+    let normalized = part.to_string()
+    if normalized.length() == 0 {
+      return false
+    }
+    for c in normalized {
+      if c < '0' || c > '9' {
+        return false
+      }
+    }
+    parts.push(normalized)
+  }
+  parts.length() == 3
+}
+
+///|
+fn normalize_ensure_index_version_export(
+  source : String,
+) -> Result[String, String] {
+  let ast = @parser.parse_ast(source) catch {
+    e => return Err("normalize: merged parse failed: " + e.to_string())
+  }
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::ExportLet(name~, expr~, ..) =>
+        if name == "version" {
+          match expr {
+            @vibe_core.Expr::String(value~, ..) =>
+              if normalize_is_simple_semver(value) {
+                return Ok(source)
+              } else {
+                return Err(
+                  "normalize: index.vibe `export let version` must be semver like \"0.1.0\"",
+                )
+              }
+            _ =>
+              return Err(
+                "normalize: index.vibe `export let version` must be a string literal",
+              )
+          }
+        }
+      _ => ()
+    }
+  }
+  if source.trim().to_string().length() == 0 {
+    Ok("export let version = \"0.1.0\"\n")
+  } else {
+    Ok("export let version = \"0.1.0\"\n\n" + source)
+  }
+}
+
+///|
+fn normalize_directory_vibe_files(
+  dir : String,
+) -> Result[Array[String], String] {
+  let files : Array[String] = []
+  let entries = @os_fs.read_dir(dir) catch {
+    e =>
+      return Err(
+        "normalize: read dir failed: " + dir + " (" + e.to_string() + ")",
+      )
+  }
+  for name in entries {
+    if name == "." || name == ".." {
+      continue
+    }
+    if not(name.has_suffix(".vibe")) {
+      continue
+    }
+    let path = @vibe_fs.normalize_path(dir + "/" + name)
+    let is_file = @os_fs.is_file(path) catch { _ => false }
+    if is_file {
+      files.push(path)
+    }
+  }
+  files.sort()
+  Ok(files)
+}
+
+///|
+fn normalize_directory_to_index_source(
+  dir : String,
+  library_mode : Bool,
+) -> Result[(String, String), String] {
+  let files = match normalize_directory_vibe_files(dir) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let index_path = @vibe_fs.normalize_path(dir + "/index.vibe")
+  let source_paths : Array[String] = []
+  for path in files {
+    if path != index_path {
+      source_paths.push(path)
+    }
+  }
+  if source_paths.length() == 0 {
+    let has_index = @os_fs.path_exists(index_path)
+    if has_index {
+      source_paths.push(index_path)
+    } else {
+      return Err("normalize: no .vibe files found in directory: " + dir)
+    }
+  }
+  let seen : Map[String, String] = {}
+  let normalized_sources : Array[String] = []
+  for path in source_paths {
+    let source = @os_fs.read_file_to_string(path) catch {
+      e => return Err("normalize: " + e.to_string())
+    }
+    let layering_violations = std_layering_violations_for_source(path, source)
+    if layering_violations.length() > 0 {
+      for violation in layering_violations {
+        println("normalize: \{path}: \{violation}")
+      }
+      return Err("normalize: std layering violation(s) found")
+    }
+    match normalize_collect_top_level_decls(seen, path, source) {
+      Ok(_) => ()
+      Err(err) => return Err(err)
+    }
+    let normalized = match normalize_format_file_source(path) {
+      Ok(v) => v
+      Err(err) => return Err("normalize: " + err)
+    }
+    normalized_sources.push(normalized)
+  }
+  let merged = match normalize_merge_sources(normalized_sources, library_mode) {
+    Ok(v) => v
+    Err(err) => return Err("normalize: " + err)
+  }
+  let with_version = match normalize_ensure_index_version_export(merged) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  Ok((with_version, index_path))
+}
+
+///|
 fn normalize_cmd(args : Array[String]) -> Unit {
   let options = match parse_normalize_cmd_options(args) {
     Ok(v) => v
@@ -1439,6 +1659,54 @@ fn normalize_cmd(args : Array[String]) -> Unit {
   let mut written = 0
   let mut changed = 0
   for path in files {
+    let absolute_input = if path.has_prefix("/") {
+      @vibe_fs.normalize_path(path)
+    } else {
+      @vibe_fs.normalize_path(@io.current_dir_or_root() + "/" + path)
+    }
+    let is_dir_input = @os_fs.is_dir(absolute_input) catch { _ => false }
+    if is_dir_input {
+      let (normalized_dir, index_path) = match
+        normalize_directory_to_index_source(
+          absolute_input,
+          options.library_mode,
+        ) {
+        Ok(v) => v
+        Err(err) => abort(err)
+      }
+      let existing = if @os_fs.path_exists(index_path) {
+        @os_fs.read_file_to_string(index_path) catch {
+          _ => ""
+        }
+      } else {
+        ""
+      }
+      let output = if write || check {
+        apply_lock_annotations_for_format(index_path, normalized_dir)
+      } else {
+        normalized_dir
+      }
+      if check {
+        if output != existing {
+          changed += 1
+          println("normalize: not normalized: \{index_path}")
+        }
+        continue
+      }
+      if write {
+        if skip_unchanged && output == existing {
+          skipped += 1
+          continue
+        }
+        @os_fs.write_string_to_file(index_path, output) catch {
+          e => abort("normalize: " + e.to_string())
+        }
+        written += 1
+      } else {
+        println(output)
+      }
+      continue
+    }
     let resolved = @loader.resolve_entry_path(path)
     let source = @os_fs.read_file_to_string(resolved) catch {
       e => abort("normalize: " + e.to_string())
@@ -1820,7 +2088,7 @@ fn fetch_cmd(args : Array[String]) -> Unit {
     lock_path +
     " + " +
     @codebase.resolve_index_root(entry) +
-    "/index.vdb (lock payload, " +
+    "/index.vbundle (lock payload, " +
     updated_lock.path_refs.length().to_string() +
     " path refs)",
   )
@@ -1847,9 +2115,9 @@ fn apply_cmd(args : Array[String]) -> Unit {
         short_hash(graph_head) +
         " defs=" +
         index.defs.length().to_string() +
-        " index_vdb=" +
+        " index_vbundle=" +
         index_root +
-        "/index.vdb",
+        "/index.vbundle",
       )
     }
   }
@@ -2324,10 +2592,10 @@ fn history_cmd(args : Array[String]) -> Unit {
       }
       if hard {
         let index_root = current_workspace_index_root()
-        let index_vdb_path = index_root + "/index.vdb"
-        let vdb = load_index_vdb_object(index_vdb_path)
-        let next_vdb = clone_json_map(vdb)
-        let namespaces = match vdb.get("namespaces") {
+        let index_vbundle_path = index_root + "/index.vbundle"
+        let vbundle = load_index_vbundle_object(index_vbundle_path)
+        let next_vbundle = clone_json_map(vbundle)
+        let namespaces = match vbundle.get("namespaces") {
           Some(Json::Object(current)) => clone_json_map(current)
           _ => {}
         }
@@ -2339,9 +2607,9 @@ fn history_cmd(args : Array[String]) -> Unit {
         ns_obj["history_head"] = Json::string("")
         ns_obj["updated_at"] = Json::string(@env.now().to_string())
         namespaces[namespace_name] = Json::object(ns_obj)
-        next_vdb["active_namespace"] = Json::string(namespace_name)
-        next_vdb["namespaces"] = Json::object(namespaces)
-        match write_index_vdb_object(index_vdb_path, next_vdb) {
+        next_vbundle["active_namespace"] = Json::string(namespace_name)
+        next_vbundle["namespaces"] = Json::object(namespaces)
+        match write_index_vbundle_object(index_vbundle_path, next_vbundle) {
           Ok(_) => ()
           Err(err) => abort("history reset: " + err)
         }

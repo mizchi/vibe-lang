@@ -169,6 +169,27 @@ test "loader load_db_with_paths loads transitive modules" {
 }
 
 ///|
+test "loader resolve_entry_path_with_fs uses index.vibe for directory" {
+  let root = "/workspace"
+  let pkg = root + "/pkg"
+  let fs = MemIoAdapter::new(root)
+  match fs.create_dir(pkg) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    fs.write_string(
+      pkg + "/index.vibe",
+      "export let version = \"0.1.0\"\nlet main = 1\nexport { main }\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let resolved = resolve_entry_path_with_fs(pkg, fs)
+  assert_eq(resolved, @vibe_fs.normalize_path(pkg + "/index.vibe"))
+}
+
+///|
 test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
   let root = "/workspace"
   let entry = root + "/main.vibe"
@@ -206,6 +227,36 @@ test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
     Some(source) => assert_eq(source, "let libv = 1\nexport { libv }\n")
     None => fail("expected imported source")
   }
+}
+
+///|
+test "loader load_db_with_paths resolves directory to index.vibe" {
+  let root = make_temp_dir("dir_index_entry")
+  write_file(
+    root + "/index.vibe",
+    "export let version = \"0.1.0\"\nlet main = 1\nexport { main }\n",
+  )
+  let loaded = match load_db_with_paths(root) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (_db, resolved, paths) = loaded
+  let index_path = @vibe_fs.normalize_path(root + "/index.vibe")
+  assert_eq(resolved, index_path)
+  assert_true(contains_path(paths, index_path))
+  remove_if_exists(root)
+}
+
+///|
+test "loader load_db_with_paths requires version in directory index.vibe" {
+  let root = make_temp_dir("dir_index_version_required")
+  write_file(root + "/index.vibe", "let main = 1\nexport { main }\n")
+  match load_db_with_paths(root) {
+    Ok(_) => fail("expected missing version error")
+    Err(err) =>
+      assert_true(err.contains("missing required `export let version"))
+  }
+  remove_if_exists(root)
 }
 
 ///|
