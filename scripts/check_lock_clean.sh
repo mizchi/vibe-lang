@@ -7,9 +7,15 @@ PROJECT_ROOT="${VIBE_LOCK_CHECK_ROOT:-$(dirname "$SCRIPT_DIR")}"
 cd "$PROJECT_ROOT"
 
 LOCK_FILES=()
-while IFS= read -r file; do
-  LOCK_FILES+=("$file")
-done < <(rg --files -g '**/index.lock')
+if git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  while IFS= read -r file; do
+    LOCK_FILES+=("$file")
+  done < <(git -C "$PROJECT_ROOT" ls-files '**/index.lock')
+else
+  while IFS= read -r file; do
+    LOCK_FILES+=("$file")
+  done < <(rg --files -g '**/index.lock')
+fi
 
 if [ "${#LOCK_FILES[@]}" -eq 0 ]; then
   echo "lock-check: no index.lock files found"
@@ -30,4 +36,75 @@ if [ -n "$matches" ]; then
   exit 1
 fi
 
-echo "lock-check: ${#LOCK_FILES[@]} index.lock files clean"
+echo "lock-check: scanned ${#LOCK_FILES[@]} index.lock files"
+
+missing_vbundle=()
+invalid_vbundle=()
+mismatch_vbundle=()
+missing_manifest=()
+invalid_manifest=()
+
+for lock_path in "${LOCK_FILES[@]}"; do
+  case "$lock_path" in
+    vibe/*) ;;
+    *) continue ;;
+  esac
+
+  lock_dir="$(dirname "$lock_path")"
+  vbundle_path="$lock_dir/index.vbundle"
+  manifest_path="$lock_dir/index.vibe"
+
+  if [ ! -f "$vbundle_path" ]; then
+    missing_vbundle+=("$vbundle_path")
+  else
+    if ! jq -e '.lock and (.lock | type == "object")' "$vbundle_path" >/dev/null 2>&1; then
+      invalid_vbundle+=("$vbundle_path")
+    else
+      lock_norm="$(jq -cS . "$lock_path")"
+      vbundle_lock_norm="$(jq -cS .lock "$vbundle_path")"
+      if [ "$lock_norm" != "$vbundle_lock_norm" ]; then
+        mismatch_vbundle+=("$vbundle_path")
+      fi
+    fi
+  fi
+
+  if [ ! -f "$manifest_path" ]; then
+    missing_manifest+=("$manifest_path")
+  else
+    if ! rg -q '^[[:space:]]*export[[:space:]]+let[[:space:]]+version[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' "$manifest_path"; then
+      invalid_manifest+=("$manifest_path")
+    fi
+  fi
+done
+
+if [ "${#missing_vbundle[@]}" -gt 0 ]; then
+  printf '%s\n' "${missing_vbundle[@]}" >&2
+  echo "lock-check: missing index.vbundle for vibe modules" >&2
+  exit 1
+fi
+
+if [ "${#invalid_vbundle[@]}" -gt 0 ]; then
+  printf '%s\n' "${invalid_vbundle[@]}" >&2
+  echo "lock-check: index.vbundle must include lock object" >&2
+  exit 1
+fi
+
+if [ "${#mismatch_vbundle[@]}" -gt 0 ]; then
+  printf '%s\n' "${mismatch_vbundle[@]}" >&2
+  echo "lock-check: index.vbundle lock payload mismatch (run sync/generate step)" >&2
+  exit 1
+fi
+
+if [ "${#missing_manifest[@]}" -gt 0 ]; then
+  printf '%s\n' "${missing_manifest[@]}" >&2
+  echo "lock-check: missing index.vibe for vibe modules" >&2
+  exit 1
+fi
+
+if [ "${#invalid_manifest[@]}" -gt 0 ]; then
+  printf '%s\n' "${invalid_manifest[@]}" >&2
+  echo 'lock-check: index.vibe must include export let version = "x.y.z"' >&2
+  exit 1
+fi
+
+echo "lock-check: vibe module metadata synchronized"
