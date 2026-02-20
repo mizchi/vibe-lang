@@ -235,7 +235,7 @@ test "loader load_db_with_paths rejects import outside index root" {
   let outside_lib = outside + "/lib.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/std\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
   )
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
@@ -255,7 +255,7 @@ test "loader load_db_with_paths rejects import outside index root" {
 ///|
 test "loader load_db_with_paths resolves std namespace from index registry" {
   let root = make_temp_dir("registry_std")
-  let std_root = root + "/vibe/std"
+  let std_root = root + "/vibe/builtin"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -266,7 +266,7 @@ test "loader load_db_with_paths resolves std namespace from index registry" {
   let std_mod = std_root + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/std\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -302,7 +302,7 @@ test "loader load_db_with_paths reports unknown namespace import" {
 ///|
 test "loader load_db_with_paths requires index version export" {
   let root = make_temp_dir("registry_version_required")
-  let std_root = root + "/vibe/std"
+  let std_root = root + "/vibe/builtin"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -313,7 +313,7 @@ test "loader load_db_with_paths requires index version export" {
   let std_mod = std_root + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let module = record { std: \"./vibe/std\" }\n",
+    "export let module = record { std: \"./vibe/builtin\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(

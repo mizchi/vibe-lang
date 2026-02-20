@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const opcodesPath = 'vibe/std/wasm/opcodes.vibe';
+const opcodesPath = 'vibe/builtin/wasm/opcodes.vibe';
 const outPath = 'src/core/wasm_intrinsics.mbt';
 
 const opcodesSrc = readFileSync(opcodesPath, 'utf8');

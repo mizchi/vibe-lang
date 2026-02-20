@@ -32,8 +32,8 @@ m::inc(41)
 ```
 
 ```vibe
-use /vibe/std/string
-std/string::from_char_code(65)
+use /vibe/builtin/string
+builtin/string::from_char_code(65)
 ```
 
 ## 意味論
@@ -41,7 +41,7 @@ std/string::from_char_code(65)
 - `export module foo { ... }` は `foo::...` を export する。
 - `use <path> { ... }` は Rust 風に source 先行で import できる。
 - `use <path>` は namespace import の省略形。
-- `/vibe/...` の場合は `/vibe/` を落とした名前空間を使う（例: `/vibe/std/string` -> `std/string::...`）。
+- `/vibe/...` の場合は `/vibe/` を落とした名前空間を使う（例: `/vibe/builtin/string` -> `builtin/string::...`）。
 - `import { ... } from ...` は廃止され、parse error になる。
 - `module` import は `.xm` ソースのみ対応し、`foo::...` 形式 export を取り込む。
 - アクセス子は `::` を正規とする。

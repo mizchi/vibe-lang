@@ -3,8 +3,8 @@ set -euo pipefail
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
   echo "usage: $0 <input.vibe> [output.component.wasm] [invoke-signature]" >&2
-  echo "example: $0 vibe/std/test_import.vibe" >&2
-  echo "example: $0 vibe/std/test_import.vibe /tmp/out.component.wasm 'run()'" >&2
+  echo "example: $0 vibe/builtin/test_import.vibe" >&2
+  echo "example: $0 vibe/builtin/test_import.vibe /tmp/out.component.wasm 'run()'" >&2
   exit 1
 fi
 

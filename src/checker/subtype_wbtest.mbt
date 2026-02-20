@@ -41,10 +41,10 @@ fn fn_param_with_bounds(
 ///|
 test "trait subtype basic" {
   let script =
-    #|trait Eq
-    #|impl Eq for Int
+    #|trait MyEq
+    #|impl MyEq for Int
   let env = parse_and_check(script)
-  let trait_ty = @core.Type::Named(name="Eq", args=[])
+  let trait_ty = @core.Type::Named(name="MyEq", args=[])
   assert_true(is_type_subtype(env, @core.Type::Int, trait_ty))
   assert_false(is_type_subtype(env, @core.Type::String, trait_ty))
 }
@@ -52,11 +52,11 @@ test "trait subtype basic" {
 ///|
 test "trait subtype generic impl" {
   let script =
-    #|trait Eq
-    #|impl Eq for Int
-    #|impl[T: Eq] Eq for Array[T]
+    #|trait MyEq
+    #|impl MyEq for Int
+    #|impl[T: MyEq] MyEq for Array[T]
   let env = parse_and_check(script)
-  let trait_ty = @core.Type::Named(name="Eq", args=[])
+  let trait_ty = @core.Type::Named(name="MyEq", args=[])
   assert_true(
     is_type_subtype(env, @core.Type::Array(@core.Type::Int), trait_ty),
   )
@@ -68,12 +68,12 @@ test "trait subtype generic impl" {
 ///|
 test "trait subtype supertrait relation" {
   let script =
-    #|trait Eq
-    #|trait Ord: Eq
-    #|impl Ord for Int
+    #|trait MyEq
+    #|trait MyOrd: MyEq
+    #|impl MyOrd for Int
   let env = parse_and_check(script)
-  let eq_ty = @core.Type::Named(name="Eq", args=[])
-  let ord_ty = @core.Type::Named(name="Ord", args=[])
+  let eq_ty = @core.Type::Named(name="MyEq", args=[])
+  let ord_ty = @core.Type::Named(name="MyOrd", args=[])
   assert_true(is_type_subtype(env, @core.Type::Int, ord_ty))
   assert_true(is_type_subtype(env, @core.Type::Int, eq_ty))
 }
@@ -81,17 +81,17 @@ test "trait subtype supertrait relation" {
 ///|
 test "api version bump uses subtype relation" {
   let script =
-    #|trait Eq
-    #|impl Eq for Int
+    #|trait MyEq
+    #|impl MyEq for Int
   let env = parse_and_check(script)
   let old_ty = @core.Type::Func(
     params=[fn_param("x", @core.Type::Int)],
-    ret=@core.Type::Named(name="Eq", args=[]),
+    ret=@core.Type::Named(name="MyEq", args=[]),
     effects=[],
   )
   let same_ty = @core.Type::Func(
     params=[fn_param("x", @core.Type::Int)],
-    ret=@core.Type::Named(name="Eq", args=[]),
+    ret=@core.Type::Named(name="MyEq", args=[]),
     effects=[],
   )
   let narrower_ty = @core.Type::Func(
@@ -159,16 +159,16 @@ test "api version bump is minor when parameter bound is loosened" {
 ///|
 test "api version bump treats supertrait bound as looser" {
   let script =
-    #|trait Eq
-    #|trait Ord: Eq
+    #|trait MyEq
+    #|trait MyOrd: MyEq
   let env = parse_and_check(script)
   let old_ty = @core.Type::Func(
-    params=[fn_param_with_bounds("x", @core.Type::Int, ["Ord"])],
+    params=[fn_param_with_bounds("x", @core.Type::Int, ["MyOrd"])],
     ret=@core.Type::Int,
     effects=[],
   )
   let new_ty = @core.Type::Func(
-    params=[fn_param_with_bounds("x", @core.Type::Int, ["Eq"])],
+    params=[fn_param_with_bounds("x", @core.Type::Int, ["MyEq"])],
     ret=@core.Type::Int,
     effects=[],
   )

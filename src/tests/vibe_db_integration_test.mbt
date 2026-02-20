@@ -341,8 +341,8 @@ test "vibe wasm import reports type mismatch on call" {
 ///|
 test "vibe db path std module has no type diagnostics" {
   let db = VibeDb::new()
-  let source = @os_fs.read_file_to_string("vibe/std/path.vibe") catch {
-    e => fail("failed to read vibe/std/path.vibe: " + e.to_string())
+  let source = @os_fs.read_file_to_string("vibe/builtin/path.vibe") catch {
+    e => fail("failed to read vibe/builtin/path.vibe: " + e.to_string())
   }
   db.set_source("path", source)
   let env = db.types("path")

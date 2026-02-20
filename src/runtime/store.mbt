@@ -243,6 +243,7 @@ pub fn Runtime::new_with_features(
   let env = @checker.TypeEnv::new()
   let _ = try! @checker.ensure_prelude_option(env)
   let _ = try! @checker.ensure_prelude_functions(env, {})
+  @checker.ensure_builtin_modules(env, {})
   rt.type_env = env
   rt.ensure_prelude()
   rt

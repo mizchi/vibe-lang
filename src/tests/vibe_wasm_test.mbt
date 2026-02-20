@@ -620,7 +620,9 @@ test "vibe wasm-gc supports direct ref type member eq calls" {
 
 ///|
 test "vibe wasm compiles std wasm opcode module" {
-  let src = try @os_fs.read_file_to_string("vibe/std/wasm/opcodes.vibe") catch {
+  let src = try
+    @os_fs.read_file_to_string("vibe/builtin/wasm/opcodes.vibe")
+  catch {
     e => fail("read error: " + e.to_string())
   } noraise {
     s => s

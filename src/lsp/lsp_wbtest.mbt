@@ -143,7 +143,7 @@ test "LspServer/handle_message/initialize" {
 test "LspServer/handle_message/codeAction trait import quickfix" {
   let server = LspServer::new()
   let uri = "file://test.vibe"
-  let source = "let same = [T: Eq](x: T, y: T) -> Bool { x == y }"
+  let source = "let same = [T: LocalEq](x: T, y: T) -> Bool { x == y }"
   let open_json = Json::object({
     "jsonrpc": Json::string("2.0"),
     "method": Json::string("textDocument/didOpen"),
@@ -187,7 +187,7 @@ test "LspServer/handle_message/codeAction trait import quickfix" {
             Json::Object(obj) =>
               match obj.get("title") {
                 Some(Json::String(title)) =>
-                  assert_true(title.contains("Import Eq"))
+                  assert_true(title.contains("Import Eq as LocalEq"))
                 _ => fail("missing title")
               }
             _ => fail("code action must be object")
@@ -329,7 +329,7 @@ test "LspServer/handle_message/hover includes hash" {
 ///|
 test "trait_import_code_actions skips already imported trait" {
   let source =
-    #|use ./vibe/std/builtin_traits.vibe {  Eq  }
+    #|use ./vibe/builtin/builtin_traits.vibe {  Eq  }
     #|let same = [T: Eq](x: T, y: T) -> Bool { x == y }
   let actions = trait_import_code_actions("file://test.vibe", source)
   match actions {

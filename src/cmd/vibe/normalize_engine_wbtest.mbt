@@ -246,7 +246,7 @@ test "normalize_engine: idempotency - normalize twice gives same result" {
 ///|
 test "normalize_engine: use-only source" {
   let source =
-    #|use ./vibe/std/string.vibe { split }
+    #|use ./vibe/builtin/string.vibe { split }
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => assert_true(normalized.contains("//# Imports"))

@@ -83,7 +83,7 @@ fn precompile_cmd(args : Array[String]) -> Unit {
       }
     }
     // Compute output subdirectory: strip first path component from dir
-    // e.g. "vibe/std" -> "std", "vibe/std/path" -> "std/path"
+    // e.g. "vibe/builtin" -> "builtin", "vibe/builtin/path" -> "builtin/path"
     let dir_suffix = strip_first_path_component(dir)
     let file_out_dir = if dir_suffix.length() > 0 {
       opts.out_dir + "/" + dir_suffix

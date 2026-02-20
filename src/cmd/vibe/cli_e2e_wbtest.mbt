@@ -71,13 +71,13 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
 ///|
 test "cli index ref args parse push" {
   let parsed = parse_index_ref_args([
-    "push", "vibe/std@0.1.0", "/tmp/advanced-graph-index.json",
+    "push", "vibe/builtin@0.1.0", "/tmp/advanced-graph-index.json",
   ])
   match parsed {
     Ok(action) =>
       match action {
         IndexRefAction::PushIndex(scope, path) => {
-          assert_eq(scope, "vibe/std@0.1.0")
+          assert_eq(scope, "vibe/builtin@0.1.0")
           assert_eq(path, "/tmp/advanced-graph-index.json")
         }
         _ => fail("expected push action")

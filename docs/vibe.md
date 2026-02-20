@@ -253,7 +253,7 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `threads_recv(channel_id: Int)` -> `String` (`""` when empty)
 - `threads_spawn(name: String, channel_id: Int)` -> `Int` (task id)
 - `threads_wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
-- `vibe/std/threads.vibe` は test-safe な pure contract 層を分離:
+- `vibe/builtin/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
   - これらは通常 `vibe test` で実行可能
   - runtime 呼び出し
@@ -277,8 +277,8 @@ Rules:
 - Canonical type names (`Int`/`Float`/`Double`) remain the public spec baseline.
 
 Core std module:
-- `vibe/std/wasm/types.vibe` provides an official wasm-facing entrypoint (`I32`/`F32`/`F64` aliases and helpers).
-- `vibe/std/wasm/opcodes.vibe` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
+- `vibe/builtin/wasm/types.vibe` provides an official wasm-facing entrypoint (`I32`/`F32`/`F64` aliases and helpers).
+- `vibe/builtin/wasm/opcodes.vibe` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
   - Naming rule: wasm `i32.add` is exposed as vibe `i32_add` (dot replaced with `_`).
 
 ## Names, hashes, versions, and symbols (Unison-style)
@@ -406,10 +406,10 @@ functions.
 Current forms:
 
 ```vibe
-use ./vibe/std/int.vibe { type Int }             // also imports Int::*
-use ./vibe/std/int.vibe { Int }                  // namespace activation
-use ./vibe/std/int.vibe { Int::to_string }       // single member
-use ./vibe/std/int.vibe { Int::to_string as int_to_string }
+use ./vibe/builtin/int.vibe { type Int }             // also imports Int::*
+use ./vibe/builtin/int.vibe { Int }                  // namespace activation
+use ./vibe/builtin/int.vibe { Int::to_string }       // single member
+use ./vibe/builtin/int.vibe { Int::to_string as int_to_string }
 ```
 
 Rules:
@@ -437,7 +437,7 @@ Rules:
 - `SymbolRef`: symbol pointer.
 
 Notes:
-- `PathRef` is unquoted (`use ./vibe/std/string.vibe { ... }`).
+- `PathRef` is unquoted (`use ./vibe/builtin/string.vibe { ... }`).
 - `use` source is semantically `ModuleRef`; non-module assets should be split to a future `AssetRef` lane.
 
 Dependency resolution is Nix-like: path inputs are handled as typed path objects
@@ -500,7 +500,7 @@ Current lock file:
   - Path imports are rejected when resolved path escapes index root.
   - `index.vibe` may define `export let module = record { <ns>: "<dir>" }` to map
     namespace imports (for example `std/...`) under root.
-  - Default namespace mapping includes `std -> ./vibe/std`.
+  - Default namespace mapping includes `builtin -> ./vibe/builtin`.
 - CLI:
   - `vibe apply <entry>` resolves recursive path imports, updates `index.lock`,
     injects prelude refs, and updates `index.vdb.graph_head`.
@@ -750,7 +750,7 @@ CLI:
 - `moon run --target native src/cmd/vibe -- eval [--db tmp1.db] [--include index.vdb] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
   - `--include` accepts path forms and alias forms:
     - `--include=bit:<path>`: explicit alias to path-backed source.
-    - `--include=vibe/std@0.1.0.vdb`: named alias resolved from `VIBE_LIB_DIR` (fallback: `$HOME/.vibe/lib`).
+    - `--include=vibe/builtin@0.1.0.vdb`: named alias resolved from `VIBE_LIB_DIR` (fallback: `$HOME/.vibe/lib`).
   - `.vdb` alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
 - `moon run --target native src/cmd/vibe -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/cmd/vibe -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.

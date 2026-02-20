@@ -169,3 +169,48 @@ pub fn ensure_prelude_functions(
     }
   }
 }
+
+///|
+pub fn ensure_builtin_modules(
+  env : TypeEnv,
+  aliases : Map[String, @core.Ref],
+) -> Unit {
+  match env.get_purity("__builtins_loaded") {
+    Some(_) => ()
+    None => {
+      // Save prelude bindings so builtins don't overwrite them
+      let preserved : Map[String, TypeScheme] = {}
+      for name in prelude_names() {
+        match env.get_scheme(name) {
+          Some(scheme) => preserved[name] = scheme
+          None => ()
+        }
+      }
+      builtin_lenient_mode.val = true
+      for pair in builtin_module_sources {
+        let (_, source) = pair
+        let parsed = try? @parser.parse_ast(source)
+        match parsed {
+          Ok(m) => {
+            let exported_names = collect_exported_names(m.stmts)
+            let _ = try? type_check_stmts(
+              env,
+              m.stmts,
+              aliases,
+              effect_scope_all(),
+              false,
+              exported_names,
+            )
+          }
+          Err(_) => continue
+        }
+      }
+      builtin_lenient_mode.val = false
+      // Restore prelude bindings that were overwritten
+      for name, scheme in preserved {
+        env.set_scheme(name, scheme)
+      }
+      env.set_purity("__builtins_loaded", true)
+    }
+  }
+}

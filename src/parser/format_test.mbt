@@ -172,7 +172,9 @@ test "vibe parse rejects quoted use source" {
       assert_true(
         err
         .to_string()
-        .contains("module path without quotes (e.g. ./vibe/std/string.vibe)"),
+        .contains(
+          "module path without quotes (e.g. ./vibe/builtin/string.vibe)",
+        ),
       )
   }
 }

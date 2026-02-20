@@ -1,4 +1,7 @@
 ///|
+let builtin_lenient_mode : Ref[Bool] = @ref.new(false)
+
+///|
 pub fn type_check(ast : @core.Module) -> TypeEnv raise TypeError {
   type_check_with_aliases(ast, {})
 }
@@ -24,17 +27,37 @@ pub fn type_check_with_aliases(
 }
 
 ///|
-pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
+fn ensure_prelude_seed() -> TypeEnv raise TypeError {
   match default_typecheck_session.cached_prelude_env.val {
-    Some(seed) => seed.clone_for_module()
+    Some(seed) => seed
     None => {
       let seed = TypeEnv::new()
       ensure_prelude_option(seed)
       ensure_prelude_functions(seed, {})
       default_typecheck_session.cached_prelude_env.val = Some(seed)
-      seed.clone_for_module()
+      seed
     }
   }
+}
+
+///|
+pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
+  match default_typecheck_session.cached_builtins_env.val {
+    Some(seed) => seed.clone_for_module()
+    None => {
+      let prelude_seed = ensure_prelude_seed()
+      let builtins_seed = prelude_seed.clone_for_module()
+      ensure_builtin_modules(builtins_seed, {})
+      default_typecheck_session.cached_builtins_env.val = Some(builtins_seed)
+      builtins_seed.clone_for_module()
+    }
+  }
+}
+
+///|
+pub fn get_prelude_only_env_for_module() -> TypeEnv raise TypeError {
+  let seed = ensure_prelude_seed()
+  seed.clone_for_module()
 }
 
 ///|
@@ -519,6 +542,9 @@ fn register_trait_def(
     )
   }
   if env.has_trait(name) {
+    if builtin_lenient_mode.val {
+      return
+    }
     raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
   }
   let normalized_supertraits = dedup_trait_bounds(supertraits)
@@ -856,6 +882,9 @@ fn register_trait_impl(
   }
   for impl_def in env.trait_impls_for(trait_name) {
     if trait_impls_overlap(env, impl_def, incoming) {
+      if builtin_lenient_mode.val {
+        return
+      }
       raise TypeError::TraitImplOverlap(trait_name~, span~)
     }
   }
@@ -884,11 +913,181 @@ fn instantiate_trait_impl_target(
 }
 
 ///|
+fn trait_impl_targets_may_overlap_many(
+  left : Array[@core.Type],
+  right : Array[@core.Type],
+) -> Bool {
+  if left.length() != right.length() {
+    return false
+  }
+  let mut i = 0
+  while i < left.length() {
+    if not(trait_impl_targets_may_overlap(left[i], right[i])) {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
+///|
+fn trait_impl_targets_may_overlap(
+  left : @core.Type,
+  right : @core.Type,
+) -> Bool {
+  match left {
+    @core.Type::Param(_) | @core.Type::Var(_) => true
+    _ =>
+      match right {
+        @core.Type::Param(_) | @core.Type::Var(_) => true
+        _ => trait_impl_targets_may_overlap_concrete(left, right)
+      }
+  }
+}
+
+///|
+fn trait_impl_targets_may_overlap_concrete(
+  left : @core.Type,
+  right : @core.Type,
+) -> Bool {
+  match left {
+    @core.Type::Int =>
+      match right {
+        @core.Type::Int => true
+        _ => false
+      }
+    @core.Type::Float =>
+      match right {
+        @core.Type::Float => true
+        _ => false
+      }
+    @core.Type::Double =>
+      match right {
+        @core.Type::Double => true
+        _ => false
+      }
+    @core.Type::Bool =>
+      match right {
+        @core.Type::Bool => true
+        _ => false
+      }
+    @core.Type::Char =>
+      match right {
+        @core.Type::Char => true
+        _ => false
+      }
+    @core.Type::String =>
+      match right {
+        @core.Type::String => true
+        _ => false
+      }
+    @core.Type::Path =>
+      match right {
+        @core.Type::Path => true
+        _ => false
+      }
+    @core.Type::PromptText =>
+      match right {
+        @core.Type::PromptText => true
+        _ => false
+      }
+    @core.Type::Unit =>
+      match right {
+        @core.Type::Unit => true
+        _ => false
+      }
+    @core.Type::StringBuilder =>
+      match right {
+        @core.Type::StringBuilder => true
+        _ => false
+      }
+    @core.Type::Never =>
+      match right {
+        @core.Type::Never => true
+        _ => false
+      }
+    @core.Type::Tuple(left_items) =>
+      match right {
+        @core.Type::Tuple(right_items) =>
+          trait_impl_targets_may_overlap_many(left_items, right_items)
+        _ => false
+      }
+    @core.Type::Array(left_item) =>
+      match right {
+        @core.Type::Array(right_item) =>
+          trait_impl_targets_may_overlap(left_item, right_item)
+        _ => false
+      }
+    @core.Type::Map(left_item) =>
+      match right {
+        @core.Type::Map(right_item) =>
+          trait_impl_targets_may_overlap(left_item, right_item)
+        _ => false
+      }
+    @core.Type::ArrayBuilder(left_item) =>
+      match right {
+        @core.Type::ArrayBuilder(right_item) =>
+          trait_impl_targets_may_overlap(left_item, right_item)
+        _ => false
+      }
+    @core.Type::MapBuilder(left_item) =>
+      match right {
+        @core.Type::MapBuilder(right_item) =>
+          trait_impl_targets_may_overlap(left_item, right_item)
+        _ => false
+      }
+    @core.Type::Named(name=left_name, args=left_args) =>
+      match right {
+        @core.Type::Named(name=right_name, args=right_args) =>
+          left_name == right_name &&
+          trait_impl_targets_may_overlap_many(left_args, right_args)
+        _ => false
+      }
+    @core.Type::Func(params=left_params, ret=left_ret, ..) =>
+      match right {
+        @core.Type::Func(params=right_params, ret=right_ret, ..) => {
+          if left_params.length() != right_params.length() {
+            return false
+          }
+          let mut i = 0
+          while i < left_params.length() {
+            if not(
+                trait_impl_targets_may_overlap(
+                  left_params[i].ty,
+                  right_params[i].ty,
+                ),
+              ) {
+              return false
+            }
+            i += 1
+          }
+          trait_impl_targets_may_overlap(left_ret, right_ret)
+        }
+        _ => false
+      }
+    @core.Type::Record(_) =>
+      match right {
+        @core.Type::Record(_) => true
+        _ => false
+      }
+    @core.Type::Variant(_) =>
+      match right {
+        @core.Type::Variant(_) => true
+        _ => false
+      }
+    @core.Type::Param(_) | @core.Type::Var(_) => true
+  }
+}
+
+///|
 fn trait_impls_overlap(
   env : TypeEnv,
   left : TraitImplDef,
   right : TraitImplDef,
 ) -> Bool {
+  if not(trait_impl_targets_may_overlap(left.target, right.target)) {
+    return false
+  }
   let overlap_env = clone_env(env)
   let left_target = instantiate_trait_impl_target(overlap_env, left)
   let right_target = instantiate_trait_impl_target(overlap_env, right)

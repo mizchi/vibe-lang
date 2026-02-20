@@ -73,21 +73,27 @@ pub fn TypeEnv::set_exported_scheme(
     Some(prev_scheme) => {
       let prev_ty = resolve_type(self, prev_scheme.ty)
       match (prev_ty, next_ty) {
-        (@core.Type::Func(..), @core.Type::Func(..)) => {
-          let current = match self.fn_versions.get(name) {
-            Some(version) => version
-            None => semver_init()
+        (@core.Type::Func(..), @core.Type::Func(..)) =>
+          match self.fn_versions.get(name) {
+            Some(current) => {
+              let bump = if prev_ty == next_ty {
+                ApiVersionBump::Patch
+              } else {
+                classify_function_api_change(self, prev_ty, next_ty)
+              }
+              self.fn_versions[name] = semver_apply(current, bump)
+            }
+            None => self.fn_versions[name] = semver_init()
           }
-          let bump = classify_function_api_change(self, prev_ty, next_ty)
-          self.fn_versions[name] = semver_apply(current, bump)
-        }
-        (@core.Type::Func(..), _) => {
-          let current = match self.fn_versions.get(name) {
-            Some(version) => version
-            None => semver_init()
+        (@core.Type::Func(..), _) =>
+          match self.fn_versions.get(name) {
+            Some(current) =>
+              self.fn_versions[name] = semver_apply(
+                current,
+                ApiVersionBump::Major,
+              )
+            None => self.fn_versions[name] = semver_init()
           }
-          self.fn_versions[name] = semver_apply(current, ApiVersionBump::Major)
-        }
         (_, @core.Type::Func(..)) => self.fn_versions[name] = semver_init()
         _ => ()
       }

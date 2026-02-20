@@ -214,7 +214,7 @@ just build-wasmtime-submodule
 just wasmtime-submodule run --help
 
 # vibe scripts/* が使う wasmtime を submodule 版へ切替
-VIBE_USE_WASMTIME_SUBMODULE=1 just component-run vibe/std/test_import.vibe
+VIBE_USE_WASMTIME_SUBMODULE=1 just component-run vibe/builtin/test_import.vibe
 ```
 
 ## 9. `deps/wasmtime` 実測メモ (2026-02-09)

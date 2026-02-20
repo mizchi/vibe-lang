@@ -227,6 +227,19 @@ fn prelude_env_or_empty() -> @checker.TypeEnv {
 }
 
 ///|
+fn prelude_only_env_or_empty() -> @checker.TypeEnv {
+  let base = @checker.get_prelude_only_env_for_module() catch {
+    _ => @checker.TypeEnv::new()
+  }
+  apply_injected_prelude_to_env(base)
+}
+
+///|
+fn is_builtin_module_path(path : String) -> Bool {
+  path.contains("/vibe/builtin/") && not(path.has_suffix("_test.vibe"))
+}
+
+///|
 fn analyze_module(
   module_path : String,
   files : Map[String, String],
@@ -263,7 +276,11 @@ fn analyze_module(
   }
   visiting[module_path] = true
   let aliases : Map[String, @core.Ref] = {}
-  let env = prelude_env_or_empty()
+  let env = if is_builtin_module_path(module_path) {
+    prelude_only_env_or_empty()
+  } else {
+    prelude_env_or_empty()
+  }
   let local_diags : Array[@core.Diagnostic] = []
   for stmt in ast.stmts {
     match stmt {

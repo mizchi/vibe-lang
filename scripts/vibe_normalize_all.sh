@@ -58,7 +58,7 @@ for root in "${SOURCE_ROOTS[@]}"; do
 done
 
 # Directories to exclude from normalize
-# - examples/wasm: cross-root imports (../../vibe/std/wasm/...) not supported
+# - examples/wasm: cross-root imports (../../vibe/builtin/wasm/...) not supported
 EXCLUDE_DIRS_RAW="${VIBE_NORMALIZE_EXCLUDE_DIRS:-examples/wasm}"
 EXCLUDE_DIRS_RAW="${EXCLUDE_DIRS_RAW//,/ }"
 EXCLUDE_DIRS_REGEX="$(echo "$EXCLUDE_DIRS_RAW" | awk '{$1=$1; print}' | tr ' ' '|')"

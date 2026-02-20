@@ -395,14 +395,15 @@ pub fn VibeDb::new() -> VibeDb {
                 None
               } else {
                 let desugared = desugar_method_calls(ast, {})
-                let env = try
-                  @checker.type_check_with_aliases(desugared, {})
+                let env = try! @checker.get_prelude_only_env_for_module()
+                let typed = try
+                  @checker.type_check_with_env(env, desugared, {})
                 catch {
                   _ => None
                 } noraise {
                   typed => Some(typed)
                 }
-                env
+                typed
               }
             }
           }
@@ -428,7 +429,7 @@ pub fn VibeDb::new() -> VibeDb {
               let ast = ast_query.fetch(rt, path).unwrap()
               let aliases = build_alias_map_from_ast(ast, imports)
               let desugared = desugar_method_calls(ast, aliases)
-              let env = try! @checker.get_cached_prelude_env_for_module()
+              let env = try! @checker.get_prelude_only_env_for_module()
               @checker.type_check_with_env(env, desugared, aliases) catch {
                 e => {
                   diags.push(rt, e.diagnostic())
@@ -442,7 +443,7 @@ pub fn VibeDb::new() -> VibeDb {
           let ast = ast_query.fetch(rt, path).unwrap()
           let aliases = build_alias_map_from_ast(ast, imports)
           let desugared = desugar_method_calls(ast, aliases)
-          let env = try! @checker.get_cached_prelude_env_for_module()
+          let env = try! @checker.get_prelude_only_env_for_module()
           @checker.type_check_with_env(env, desugared, aliases) catch {
             e => {
               diags.push(rt, e.diagnostic())
@@ -476,7 +477,7 @@ pub fn VibeDb::new() -> VibeDb {
     let aliases = build_alias_map_from_ast(ast, imports)
     let desugared = desugar_method_calls(ast, aliases)
     let base_dir = @path.Path(file_path).dirname().to_string()
-    let env = try! @checker.get_cached_prelude_env_for_module()
+    let env = try! @checker.get_prelude_only_env_for_module()
     let local_value_decl_spans = collect_local_value_decl_spans(ast)
     let imported_value_decl_spans : Map[String, @core.Span] = {}
     let report_duplicate_import_value = fn(name : String, span : @core.Span) {

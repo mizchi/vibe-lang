@@ -82,10 +82,10 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
   fs.writeFileSync(
     attemptsPath,
     [
-      `vibe/std/a_test.vibe\twasm\t0\t${reportAPath}.log\t${reportAPath}`,
-      `vibe/std/b_test.vibe\twasm\t0\t${reportBPath}.log\t${reportBPath}`,
-      `vibe/std/c_test.vibe\twasm\t1\t${logC1}\t-`,
-      `vibe/std/c_test.vibe\twasm-js-string\t1\t${logC2}\t-`,
+      `vibe/builtin/a_test.vibe\twasm\t0\t${reportAPath}.log\t${reportAPath}`,
+      `vibe/builtin/b_test.vibe\twasm\t0\t${reportBPath}.log\t${reportBPath}`,
+      `vibe/builtin/c_test.vibe\twasm\t1\t${logC1}\t-`,
+      `vibe/builtin/c_test.vibe\twasm-js-string\t1\t${logC2}\t-`,
     ].join("\n") + "\n",
   );
 
@@ -94,13 +94,13 @@ test("readAttemptsTsv + buildAggregatedReport + buildMarkdown", () => {
     path: "inline",
     defaults: { expected_backend: "wasm" },
     cases: {
-      "vibe/std/c_test.vibe": { expected_backend: "wasm-js-string" },
+      "vibe/builtin/c_test.vibe": { expected_backend: "wasm-js-string" },
     },
   };
 
   const report = buildAggregatedReport({
     reportPaths: [reportAPath, reportBPath],
-    failedCases: ["vibe/std/c_test.vibe"],
+    failedCases: ["vibe/builtin/c_test.vibe"],
     attempts,
     totalCases: 3,
     backendMatrix: matrix,
@@ -141,18 +141,18 @@ test("expectedBackendForCase: defaults and per-case override", () => {
     path: "inline",
     defaults: { expected_backend: "wasm" },
     cases: {
-      "vibe/std/io_test.vibe": {
+      "vibe/builtin/io_test.vibe": {
         expected_backend: "wasm-js-string",
         note: "requires js-string",
       },
     },
   };
-  const a = expectedBackendForCase(matrix, "vibe/std/int_test.vibe");
+  const a = expectedBackendForCase(matrix, "vibe/builtin/int_test.vibe");
   assert.equal(a.expected_backend, "wasm");
   assert.deepEqual(a.expected_modes, ["wasm"]);
   assert.equal(a.source, "default");
 
-  const b = expectedBackendForCase(matrix, "vibe/std/io_test.vibe");
+  const b = expectedBackendForCase(matrix, "vibe/builtin/io_test.vibe");
   assert.equal(b.expected_backend, "wasm-js-string");
   assert.deepEqual(b.expected_modes, ["wasm-js-string"]);
   assert.equal(b.source, "case");
@@ -168,7 +168,7 @@ test("loadBackendMatrix: parses json file", () => {
       format: "vibe-std-backend-capability-matrix-v1",
       defaults: { expected_backend: "wasm" },
       cases: {
-        "vibe/std/io_test.vibe": { expected_backend: "wasm-js-string" },
+        "vibe/builtin/io_test.vibe": { expected_backend: "wasm-js-string" },
       },
     }),
   );
@@ -176,7 +176,7 @@ test("loadBackendMatrix: parses json file", () => {
   assert.equal(matrix.path, matrixPath);
   assert.equal(matrix.defaults.expected_backend, "wasm");
   assert.equal(
-    matrix.cases["vibe/std/io_test.vibe"].expected_backend,
+    matrix.cases["vibe/builtin/io_test.vibe"].expected_backend,
     "wasm-js-string",
   );
 });
@@ -184,7 +184,7 @@ test("loadBackendMatrix: parses json file", () => {
 test("buildAggregatedReport: classifies expected_failure when expected backend not attempted", () => {
   const attempts = [
     {
-      case_path: "vibe/std/io_test.vibe",
+      case_path: "vibe/builtin/io_test.vibe",
       mode: "wasm",
       exit_code: 1,
       log_path: "",
@@ -195,12 +195,12 @@ test("buildAggregatedReport: classifies expected_failure when expected backend n
     path: "inline",
     defaults: { expected_backend: "wasm" },
     cases: {
-      "vibe/std/io_test.vibe": { expected_backend: "wasm-js-string" },
+      "vibe/builtin/io_test.vibe": { expected_backend: "wasm-js-string" },
     },
   };
   const report = buildAggregatedReport({
     reportPaths: [],
-    failedCases: ["vibe/std/io_test.vibe"],
+    failedCases: ["vibe/builtin/io_test.vibe"],
     attempts,
     totalCases: 1,
     backendMatrix: matrix,
@@ -217,7 +217,7 @@ test("buildAggregatedReport: detects measured mode mismatch", () => {
   const reportPath = path.join(dir, "vibe__std__mismatch.report.json");
   const attempts = [
     {
-      case_path: "vibe/std/mismatch_test.vibe",
+      case_path: "vibe/builtin/mismatch_test.vibe",
       mode: "wasm-js-string",
       exit_code: 0,
       log_path: `${reportPath}.log`,
@@ -261,7 +261,7 @@ test("buildAggregatedReport: ignores excluded lines in line totals", () => {
   const reportPath = path.join(dir, "vibe__std__excluded.report.json");
   const attempts = [
     {
-      case_path: "vibe/std/excluded_test.vibe",
+      case_path: "vibe/builtin/excluded_test.vibe",
       mode: "wasm",
       exit_code: 0,
       log_path: `${reportPath}.log`,

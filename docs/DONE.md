@@ -44,5 +44,5 @@ Completed items archived from `TODO.md`.
 - `vibe explain-import <entry>` for lock lookup visualization.
 - Trait openness diagnostics (`[TROP001]`/`[TROP002]`/`[TROP003]`).
 - `eval` persistence mkdir for nested DB/export paths.
-- `vibe new` seeds `vibe/std` + `vibe/encoding` from nearest ancestor.
+- `vibe new` seeds `vibe/builtin` + `vibe/encoding` from nearest ancestor.
 - Unknown namespace diagnostics in import resolution.

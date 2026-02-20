@@ -97,9 +97,9 @@ just coverage-wasm-source examples/pattern_coverage.vibe
 - `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1` で `test {}` を実行可能
   (`compile --coverage --coverage-run-tests`)
 
-### vibe/std 一括計測
+### vibe/builtin 一括計測
 
-`vibe/std/**/*_test.vibe` をまとめて回すときは:
+`vibe/builtin/**/*_test.vibe` をまとめて回すときは:
 
 ```bash
 just coverage-wasm-std
@@ -137,7 +137,7 @@ just coverage-wasm-std
 - `spec.mismatch_case_count`:
   計測成功ケースの実行 backend が `expected_backend` と不一致だった件数
 
-`vibe/std/backend_capabilities.json` をデフォルト matrix として読み込み、
+`vibe/builtin/backend_capabilities.json` をデフォルト matrix として読み込み、
 失敗ケースごとに `expected_backend` (`wasm` / `wasm-js-string` / `either`)
 を参照して `spec_status` を付与する。
 `VIBE_WASM_STD_COVERAGE_STRICT=1` では `unexpected_failure` または
@@ -162,7 +162,7 @@ just coverage-wasm-std
 実測（このリポジトリ現状）:
 - MoonBit coverage (`just coverage-moon`): `18718/29541` (`63.36%`)
 - Deno integration coverage (`just coverage-deno`): `All files line 69.9%`
-- vibe/std wasm coverage (`just coverage-wasm-std`): `626/626` (`100.00%`)
+- vibe/builtin wasm coverage (`just coverage-wasm-std`): `626/626` (`100.00%`)
 
 運用判断:
 - `coverage-moon` はコンパイラ/型検査本体の回帰検知に有効（本命KPI）。

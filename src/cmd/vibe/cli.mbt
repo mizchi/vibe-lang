@@ -2073,22 +2073,28 @@ fn resolve_project_root_path(path : String) -> String {
 
 ///|
 fn is_scaffold_seed_vibe_root(vibe_root : String) -> Bool {
+  let builtin_dir = @vibe_fs.normalize_path(vibe_root + "/builtin")
   let std_dir = @vibe_fs.normalize_path(vibe_root + "/std")
   let encoding_dir = @vibe_fs.normalize_path(vibe_root + "/encoding")
-  let string_mod = @vibe_fs.normalize_path(std_dir + "/string.vibe")
+  let has_builtin = @os_fs.path_exists(builtin_dir) ||
+    @os_fs.path_exists(std_dir)
+  let string_mod = @vibe_fs.normalize_path(builtin_dir + "/string.vibe")
+  let string_mod_legacy = @vibe_fs.normalize_path(std_dir + "/string.vibe")
   let base64 = @vibe_fs.normalize_path(encoding_dir + "/base64.vibe")
-  if not(@os_fs.path_exists(std_dir)) || not(@os_fs.path_exists(encoding_dir)) {
+  if not(has_builtin) || not(@os_fs.path_exists(encoding_dir)) {
     return false
   }
-  let std_is_dir = @os_fs.is_dir(std_dir) catch { _ => false }
-  if not(std_is_dir) {
+  let builtin_is_dir = (@os_fs.is_dir(builtin_dir) catch { _ => false }) ||
+    (@os_fs.is_dir(std_dir) catch { _ => false })
+  if not(builtin_is_dir) {
     return false
   }
   let encoding_is_dir = @os_fs.is_dir(encoding_dir) catch { _ => false }
   if not(encoding_is_dir) {
     return false
   }
-  @os_fs.path_exists(string_mod) && @os_fs.path_exists(base64)
+  (@os_fs.path_exists(string_mod) || @os_fs.path_exists(string_mod_legacy)) &&
+  @os_fs.path_exists(base64)
 }
 
 ///|
@@ -2224,8 +2230,11 @@ fn scaffold_project_root_with_seed(
     Some(seed_root) => {
       let seed_norm = @vibe_fs.normalize_path(seed_root)
       if is_scaffold_seed_vibe_root(seed_norm) {
-        if copy_seed_tree_if_missing(seed_norm + "/std", root + "/vibe/std") {
-          created.push("vibe/std/")
+        if copy_seed_tree_if_missing(
+            seed_norm + "/builtin",
+            root + "/vibe/builtin",
+          ) {
+          created.push("vibe/builtin/")
         }
         if copy_seed_tree_if_missing(
             seed_norm + "/encoding",

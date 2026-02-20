@@ -1093,8 +1093,6 @@ test "vibe type alias still works" {
 test "vibe trait bound on type parameter" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
-    #|trait Eq
-    #|impl Eq for Int
     #|let id = [T: Eq](x: T) -> T { x }
     #|let y = id(42)
   let _ = rt.eval_script(script)
@@ -1108,10 +1106,9 @@ test "vibe trait bound on type parameter" {
 test "vibe trait bound violation is type error" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
-    #|trait Eq
-    #|impl Eq for Int
     #|let id = [T: Eq](x: T) -> T { x }
-    #|id("nope")
+    #|let f = (x: Int) -> Int { x }
+    #|id(f)
   let result : Result[EvalResult, XshError] = try? rt.eval_script(script)
   match result {
     Err(_) => ()
@@ -1406,12 +1403,12 @@ test "vibe ctor match" {
 test "vibe type def and ctor call" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "enum Result[T] { Ok(T); Err }\ntype IntResult = Result[Int]",
+    "enum MyResult[T] { MyOk(T); MyErr }\ntype IntResult = MyResult[Int]",
   )
   let _ = rt.eval_script(
-    "let f = (x: IntResult) -> Int { match x { Ok(v) => v, Err => 0 } }",
+    "let f = (x: IntResult) -> Int { match x { MyOk(v) => v, MyErr => 0 } }",
   )
-  let _ = rt.eval_script("let r = f(Ok(2))")
+  let _ = rt.eval_script("let r = f(MyOk(2))")
   match rt.get("r") {
     Some(@core.Value::Int(v)) => assert_eq(v, 2)
     _ => fail("type def call")
@@ -1422,7 +1419,7 @@ test "vibe type def and ctor call" {
 test "vibe match exhaustiveness for type def" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "enum Result[T] { Ok(T); Err }\nlet x = match Ok(1) { Ok(v) => v }",
+    "enum MyResult[T] { MyOk(T); MyErr }\nlet x = match MyOk(1) { MyOk(v) => v }",
   )
   match result {
     Err(_) => ()

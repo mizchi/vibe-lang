@@ -9,7 +9,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     ctor_index: self.ctor_index.copy(),
     traits: self.traits.copy(),
     trait_impls: self.trait_impls.copy(),
-    fn_versions: self.fn_versions.copy(),
+    fn_versions: {},
     purities: self.purities.fork(),
     expr_types: self.expr_types,
     num_vars: self.num_vars.copy(),

@@ -119,10 +119,10 @@ if [[ -d "$ROOT_DIR/bench/bundle_size" ]]; then
 fi
 
 if [[ "$INCLUDE_STD_SURFACES" == "1" ]]; then
-  active_groups+=("vibe/std")
+  active_groups+=("vibe/builtin")
   while IFS= read -r path; do
-    compile_entry "vibe/std" "$path" "1"
-  done < <(find "$ROOT_DIR/vibe/std" -maxdepth 1 -type f -name '*.vibe' ! -name '*_test.vibe' | sed "s#^$ROOT_DIR/##" | sort)
+    compile_entry "vibe/builtin" "$path" "1"
+  done < <(find "$ROOT_DIR/vibe/builtin" -maxdepth 1 -type f -name '*.vibe' ! -name '*_test.vibe' | sed "s#^$ROOT_DIR/##" | sort)
 fi
 
 {

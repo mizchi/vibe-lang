@@ -26,7 +26,7 @@ refs/bit/index/<scope>/graph/wal_head   # delta chain node hash
 refs/bit/index/<scope>/lock/head        # (reserved)
 ```
 
-`<scope>` は `vibe/std@0.1.0` 形式。`..` を含む scope は拒否。
+`<scope>` は `vibe/builtin@0.1.0` 形式。`..` を含む scope は拒否。
 
 ### delta chain
 

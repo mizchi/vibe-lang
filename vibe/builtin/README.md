@@ -35,7 +35,7 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 
 ## Module Boundary (Layered Responsibilities)
 
-`vibe/std` is managed as layered modules. See `docs/adr/0005-std-layered-boundaries.md` for the canonical table and allowed import matrix.
+`vibe/builtin` is managed as layered modules. See `docs/adr/0005-std-layered-boundaries.md` for the canonical table and allowed import matrix.
 
 - `trait-contract`: contracts (`builtin_traits.vibe`)
 - `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)
@@ -51,10 +51,10 @@ Compatibility facades:
 
 Path import rule (recommended):
 
-- quick usage: `use ./vibe/std/path.vibe { ... }`
+- quick usage: `use ./vibe/builtin/path.vibe { ... }`
 - contract/runtime splitを明示したい場合:
-  - pure model: `use ./vibe/std/path/ref.vibe { ... }`
-  - effect bridge: `use ./vibe/std/path/runtime.vibe { ... }`
+  - pure model: `use ./vibe/builtin/path/ref.vibe { ... }`
+  - effect bridge: `use ./vibe/builtin/path/runtime.vibe { ... }`
 - facade / split import の両方は `path_test.vibe`, `path_ref_test.vibe`, `path_runtime_test.vibe` で継続回帰する。
 
 Boundary enforcement is active in:
@@ -64,7 +64,7 @@ Boundary enforcement is active in:
 
 ## Effect Signature Policy
 
-`vibe/std` は pure 層と effect 境界を意図的に分離し、関数シグネチャで副作用を可視化する。
+`vibe/builtin` は pure 層と effect 境界を意図的に分離し、関数シグネチャで副作用を可視化する。
 
 - pure modules (`pure-primitive`, `pure-data`, `ref-model`) は `with {...}` を持たない。
 - runtime bridge (`effect-boundary`) は host builtin への薄い委譲に限定し、effect を明示する。
@@ -103,7 +103,7 @@ Boundary enforcement is active in:
 
 ### Canonical Naming / Alias Policy
 
-`vibe/std` では parser 予約語制約を前提に、以下を canonical API 名として扱う。
+`vibe/builtin` では parser 予約語制約を前提に、以下を canonical API 名として扱う。
 
 - Option: `map_opt`, `flatmap`, `map_or`, `unwrap_or`, `unwrap_or_else`
 - Result: `map_ok`, `bind`, `map_or`, `unwrap_or`, `unwrap_or_else`
@@ -119,7 +119,7 @@ Boundary enforcement is active in:
 Recommended usage (collision-safe, method-style):
 
 ```vibe
-use ./vibe/std/option.vibe { is_some, unwrap_or }
+use ./vibe/builtin/option.vibe { is_some, unwrap_or }
 let ok = Some(1).is_some()
 let v = None.unwrap_or(0)
 ```
@@ -177,35 +177,35 @@ let v = None.unwrap_or(0)
 ```bash
 # Run in interpreter
 just run test \
-  vibe/std/builtin_traits_test.vibe \
-  vibe/std/bool_test.vibe \
-  vibe/std/cmp_test.vibe \
-  vibe/std/char_test.vibe \
-  vibe/std/bytes_test.vibe \
-  vibe/std/int_test.vibe \
-  vibe/std/float_test.vibe \
-  vibe/std/double_test.vibe \
-  vibe/std/array_test.vibe \
-  vibe/std/option_test.vibe \
-  vibe/std/result_test.vibe \
-  vibe/std/string_test.vibe \
-  vibe/std/io_test.vibe \
-  vibe/std/threads_test.vibe \
-  vibe/std/wasm/types_test.vibe \
-  vibe/std/wasm/opcodes_test.vibe \
-  vibe/std/wasm/io_stream_test.vibe
+  vibe/builtin/builtin_traits_test.vibe \
+  vibe/builtin/bool_test.vibe \
+  vibe/builtin/cmp_test.vibe \
+  vibe/builtin/char_test.vibe \
+  vibe/builtin/bytes_test.vibe \
+  vibe/builtin/int_test.vibe \
+  vibe/builtin/float_test.vibe \
+  vibe/builtin/double_test.vibe \
+  vibe/builtin/array_test.vibe \
+  vibe/builtin/option_test.vibe \
+  vibe/builtin/result_test.vibe \
+  vibe/builtin/string_test.vibe \
+  vibe/builtin/io_test.vibe \
+  vibe/builtin/threads_test.vibe \
+  vibe/builtin/wasm/types_test.vibe \
+  vibe/builtin/wasm/opcodes_test.vibe \
+  vibe/builtin/wasm/io_stream_test.vibe
 
 # Validate WASM compilation (import/export usage)
-just run compile --wasm vibe/std/test_import.vibe -o /tmp/test.wasm
+just run compile --wasm vibe/builtin/test_import.vibe -o /tmp/test.wasm
 wasmtime run --invoke run /tmp/test.wasm  # -> 484 (untagged: 121)
 ```
 
 ## Notes
 
-- `vibe/std/test_import.vibe` is only for compilation validation (no `test` blocks).
-- `vibe/std/io.vibe` depends on `string_*` builtins, so it is primarily interpreter-oriented rather than pure Core WASM (`--wasm`) today.
-- `vibe/std/threads.vibe` では runtime wrappers
+- `vibe/builtin/test_import.vibe` is only for compilation validation (no `test` blocks).
+- `vibe/builtin/io.vibe` depends on `string_*` builtins, so it is primarily interpreter-oriented rather than pure Core WASM (`--wasm`) today.
+- `vibe/builtin/threads.vibe` では runtime wrappers
   (`probe_wat` / `runtime_hints` / `channel_new` / `spawn` / `send` / `recv` / `wait`)
   の実行に `--unstable-threads` が必要。
   `task_spec` / `channel_spec` / `actor_spec` / `deployment_plan` / `recommended_*` は通常テストで実行可能。
-- `vibe/std/wasm/io_stream.vibe` is a stream I/O / TUI helper API for Core WASM components.
+- `vibe/builtin/wasm/io_stream.vibe` is a stream I/O / TUI helper API for Core WASM components.

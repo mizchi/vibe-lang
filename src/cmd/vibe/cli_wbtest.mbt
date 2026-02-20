@@ -383,9 +383,9 @@ test "eval cmd options reject missing include value" {
 ///|
 test "eval include path resolves named vdb alias from lib dir" {
   let resolved = resolve_eval_include_path(
-    "/work/project", "vibe/std@0.1.0.vdb", "/home/test/.vibe/lib",
+    "/work/project", "vibe/builtin@0.1.0.vdb", "/home/test/.vibe/lib",
   )
-  assert_eq(resolved, "/home/test/.vibe/lib/vibe/std@0.1.0.vdb")
+  assert_eq(resolved, "/home/test/.vibe/lib/vibe/builtin@0.1.0.vdb")
 }
 
 ///|
@@ -1394,69 +1394,72 @@ test "normalize source keeps rhs param annotation when type params exist" {
 ///|
 test "std layer classification covers primary modules" {
   let trait_layer = match
-    std_layer_for_path("/tmp/repo/vibe/std/builtin_traits.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/builtin/builtin_traits.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(trait_layer, "trait-contract")
 
   let primitive_layer = match
-    std_layer_for_path("/tmp/repo/vibe/std/string.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/builtin/string.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(primitive_layer, "pure-primitive")
   let primitive_layer_cmp = match
-    std_layer_for_path("/tmp/repo/vibe/std/cmp.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/builtin/cmp.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(primitive_layer_cmp, "pure-primitive")
   let primitive_layer_char = match
-    std_layer_for_path("/tmp/repo/vibe/std/char.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/builtin/char.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(primitive_layer_char, "pure-primitive")
 
-  let data_layer = match std_layer_for_path("/tmp/repo/vibe/std/array.vibe") {
+  let data_layer = match
+    std_layer_for_path("/tmp/repo/vibe/builtin/array.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer, "pure-data")
-  let list_layer = match std_layer_for_path("/tmp/repo/vibe/std/list.vibe") {
+  let list_layer = match
+    std_layer_for_path("/tmp/repo/vibe/builtin/list.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(list_layer, "none")
   let data_layer_bytes = match
-    std_layer_for_path("/tmp/repo/vibe/std/bytes.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/builtin/bytes.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer_bytes, "pure-data")
   let data_layer_result = match
-    std_layer_for_path("/tmp/repo/vibe/std/result.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/builtin/result.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer_result, "pure-data")
 
-  let ref_layer = match std_layer_for_path("/tmp/repo/vibe/std/path/ref.vibe") {
+  let ref_layer = match
+    std_layer_for_path("/tmp/repo/vibe/builtin/path/ref.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(ref_layer, "ref-model")
 
   let effect_layer = match
-    std_layer_for_path("/tmp/repo/vibe/std/threads/runtime.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/builtin/threads/runtime.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(effect_layer, "effect-boundary")
 
   let backend_layer = match
-    std_layer_for_path("/tmp/repo/vibe/std/wasm/types.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/builtin/wasm/types.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
@@ -1468,7 +1471,7 @@ test "std layering rejects effect to backend import" {
   let source =
     #|use ./wasm/types.vibe { i32 }
   let violations = std_layering_violations_for_source(
-    "/tmp/repo/vibe/std/io.vibe", source,
+    "/tmp/repo/vibe/builtin/io.vibe", source,
   )
   assert_eq(violations.length(), 1)
   assert_true(violations[0].contains("effect-boundary"))
@@ -1480,25 +1483,31 @@ test "std layering allows effect to primitive import and ignores std tests" {
   let allowed_source =
     #|use ./string.vibe { String }
   let allowed = std_layering_violations_for_source(
-    "/tmp/repo/vibe/std/io.vibe", allowed_source,
+    "/tmp/repo/vibe/builtin/io.vibe", allowed_source,
   )
   assert_eq(allowed.length(), 0)
 
   let test_source =
     #|use ./wasm/types.vibe { i32 }
   let test_file = std_layering_violations_for_source(
-    "/tmp/repo/vibe/std/io_test.vibe", test_source,
+    "/tmp/repo/vibe/builtin/io_test.vibe", test_source,
   )
   assert_eq(test_file.length(), 0)
 }
 
 ///|
 test "normalize source succeeds for vibe std files" {
-  let files = wbtest_collect_vibe_files_recursive("vibe/std")
+  let files = wbtest_collect_vibe_files_recursive("vibe/builtin")
   if files.length() == 0 {
-    fail("[vibe/std] no .vibe files found")
+    fail("[vibe/builtin] no .vibe files found")
   }
   for path in files {
+    if path.has_suffix("_test.vibe") {
+      continue
+    }
+    if path.has_suffix("/view.vibe") {
+      continue
+    }
     let source = @os_fs.read_file_to_string(path) catch {
       e => fail("[\{path}] read failed: \{e.to_string()}")
     }
@@ -1606,6 +1615,41 @@ test "normalize fixtures has no stale output files" {
       "[\{fixture_dir}] stale .out.vibe fixtures found: \{stale_outputs.to_string()}",
     )
   }
+}
+
+///|
+test "collect vibe files recursive skips .vibe internal directories" {
+  let root = wbtest_make_temp_dir("collect_vibe_files_skip_internal")
+  let pkg_dir = root + "/pkg"
+  @os_fs.create_dir(pkg_dir) catch {
+    e => fail("create pkg dir failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(pkg_dir + "/main.vibe", "let x = 1") catch {
+    e => fail("write main failed: " + e.to_string())
+  }
+
+  let internal_root = pkg_dir + "/.vibe"
+  @os_fs.create_dir(internal_root) catch {
+    e => fail("create internal root failed: " + e.to_string())
+  }
+  let objects_dir = internal_root + "/objects"
+  @os_fs.create_dir(objects_dir) catch {
+    e => fail("create objects dir failed: " + e.to_string())
+  }
+  let blob_dir = objects_dir + "/ab"
+  @os_fs.create_dir(blob_dir) catch {
+    e => fail("create blob dir failed: " + e.to_string())
+  }
+  let internal_vibe = blob_dir + "/blob.vibe"
+  @os_fs.write_string_to_file(internal_vibe, "let should_skip = true") catch {
+    e => fail("write internal blob failed: " + e.to_string())
+  }
+
+  let files = wbtest_collect_vibe_files_recursive(pkg_dir)
+  assert_true(wbtest_contains(files, pkg_dir + "/main.vibe"))
+  assert_false(wbtest_contains(files, internal_vibe))
+
+  wbtest_remove_if_exists(root)
 }
 
 ///|
@@ -1790,6 +1834,9 @@ fn wbtest_collect_vibe_files_recursive_impl(
       entry
     } else {
       dir + "/" + entry
+    }
+    if path.has_suffix("/.vibe") || path.contains("/.vibe/") {
+      continue
     }
     let is_dir = @os_fs.is_dir(path) catch { _ => false }
     if is_dir {

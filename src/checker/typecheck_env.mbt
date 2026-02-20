@@ -2,17 +2,23 @@
 pub struct TypecheckSession {
   next_type_var : Ref[Int]
   cached_prelude_env : Ref[TypeEnv?]
+  cached_builtins_env : Ref[TypeEnv?]
 }
 
 ///|
 pub fn TypecheckSession::new() -> TypecheckSession {
-  { next_type_var: @ref.new(0), cached_prelude_env: @ref.new(None) }
+  {
+    next_type_var: @ref.new(0),
+    cached_prelude_env: @ref.new(None),
+    cached_builtins_env: @ref.new(None),
+  }
 }
 
 ///|
 pub fn TypecheckSession::reset(self : TypecheckSession) -> Unit {
   self.next_type_var.val = 0
   self.cached_prelude_env.val = None
+  self.cached_builtins_env.val = None
 }
 
 ///|

@@ -27,7 +27,7 @@ Only files listed there are measured for `bench/importers`.
   (`wasm` -> `wasm-js-string` -> `wasm-no-dce` fallback)
 - Optional no-dce diagnostic group:
   `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1 just bench-bundle-size`
-- `vibe/std` surface scan is opt-in:
+- `vibe/builtin` surface scan is opt-in:
   `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1 just bench-bundle-size`
 - Compiler-only fixed-fixture guard is separate:
   `just bench-bundle-size-compiler`
@@ -37,6 +37,6 @@ Only files listed there are measured for `bench/importers`.
 ## Std Baseline Snapshot
 
 - `just bench-std-baseline-update` updates:
-  - `bench/golden/bundle_size_budget.tsv` (with `vibe/std` + importer no-dce groups)
+  - `bench/golden/bundle_size_budget.tsv` (with `vibe/builtin` + importer no-dce groups)
   - `bench/golden/kpi_wasm.tsv`
   - `bench/golden/kpi_interpreter.tsv`
