@@ -2876,31 +2876,52 @@ fn bind_call_values(
   args : Array[EvalArgValue],
 ) -> Map[String, @core.Value] raise EvalError {
   let positional : Array[@core.FuncParam] = []
+  let mut variadic_param : @core.FuncParam? = None
   for param in params {
-    if param.label == @core.ParamLabel::Positional {
-      positional.push(param)
+    if not(@core.ParamLabel::is_positional(param.label)) {
+      continue
+    }
+    match param.label {
+      @core.ParamLabel::Variadic =>
+        match variadic_param {
+          Some(_) => raise EvalError::BadCall("duplicate variadic params")
+          None => variadic_param = Some(param)
+        }
+      _ =>
+        if variadic_param is Some(_) {
+          raise EvalError::BadCall(
+            "positional param after variadic is unsupported",
+          )
+        } else {
+          positional.push(param)
+        }
     }
   }
   let mut pos_index = 0
+  let variadic_values : Array[@core.Value] = []
   let bound : Map[String, @core.Value] = {}
   let used_labels : Map[String, Bool] = {}
   for arg in args {
     match arg.label {
-      None => {
-        if pos_index >= positional.length() {
-          raise EvalError::BadCall("too many positional args")
+      None =>
+        if pos_index < positional.length() {
+          let param = positional[pos_index]
+          pos_index += 1
+          bound[param.name] = arg.value
+        } else {
+          match variadic_param {
+            Some(_) => variadic_values.push(arg.value)
+            None => raise EvalError::BadCall("too many positional args")
+          }
         }
-        let param = positional[pos_index]
-        pos_index += 1
-        bound[param.name] = arg.value
-      }
       Some(label) => {
         if used_labels.contains(label) {
           raise EvalError::BadCall("duplicate label: " + label)
         }
         let mut found : @core.FuncParam? = None
         for param in params {
-          if param.label != @core.ParamLabel::Positional && param.name == label {
+          if not(@core.ParamLabel::is_positional(param.label)) &&
+            param.name == label {
             found = Some(param)
             break
           }
@@ -2917,6 +2938,10 @@ fn bind_call_values(
   }
   if pos_index != positional.length() {
     raise EvalError::BadCall("missing positional args")
+  }
+  match variadic_param {
+    Some(param) => bound[param.name] = @core.Value::Array(variadic_values)
+    None => ()
   }
   for param in params {
     if param.label == @core.ParamLabel::Required &&

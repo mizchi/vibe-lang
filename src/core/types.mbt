@@ -2,6 +2,7 @@
 /// Types and values for vibe
 pub(all) enum ParamLabel {
   Positional
+  Variadic
   Required
   Optional
 } derive(Show, Eq)
@@ -10,6 +11,7 @@ pub(all) enum ParamLabel {
 pub fn ParamLabel::is_positional(self : ParamLabel) -> Bool {
   match self {
     ParamLabel::Positional => true
+    ParamLabel::Variadic => true
     _ => false
   }
 }

@@ -10,7 +10,7 @@ fn AstParser::parse_type_with_params(
 ) -> @core.Type raise ParseError {
   self.skip_trivia()
   let tok = self.peek()
-  match tok.kind() {
+  let base_ty = match tok.kind() {
     k if k == name() => {
       let name_start = self.pos
       let _ = self.bump()
@@ -215,6 +215,25 @@ fn AstParser::parse_type_with_params(
         span=self.token_span(),
       )
   }
+  self.parse_array_type_suffixes(base_ty)
+}
+
+///|
+fn AstParser::parse_array_type_suffixes(
+  self : AstParser,
+  base_ty : @core.Type,
+) -> @core.Type raise ParseError {
+  let mut out = base_ty
+  while ({
+          self.skip_trivia()
+          self.peek_kind() == lbracket() &&
+          self.peek_non_trivia_ahead(1) == rbracket()
+        }) {
+    let _ = self.bump()
+    let _ = self.expect(rbracket(), "]")
+    out = @core.Type::Array(out)
+  }
+  out
 }
 
 ///|
@@ -302,6 +321,10 @@ fn AstParser::parse_type_args(
   let args : Array[@core.Type] = []
   self.skip_trivia()
   if self.peek_kind() == lbracket() {
+    // Keep empty `[]` for postfix array suffix parsing.
+    if self.peek_non_trivia_ahead(1) == rbracket() {
+      return args
+    }
     let _ = self.bump()
     self.skip_trivia()
     if self.peek_kind() != rbracket() {

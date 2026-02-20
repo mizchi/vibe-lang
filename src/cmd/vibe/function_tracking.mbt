@@ -92,6 +92,7 @@ fn function_tracking_semver_apply(
 fn function_tracking_label_to_string(label : @vibe_core.ParamLabel) -> String {
   match label {
     @vibe_core.ParamLabel::Positional => "positional"
+    @vibe_core.ParamLabel::Variadic => "variadic"
     @vibe_core.ParamLabel::Required => "required"
     @vibe_core.ParamLabel::Optional => "optional"
   }
@@ -101,6 +102,7 @@ fn function_tracking_label_to_string(label : @vibe_core.ParamLabel) -> String {
 fn function_tracking_label_from_string(text : String) -> @vibe_core.ParamLabel? {
   match text {
     "positional" => Some(@vibe_core.ParamLabel::Positional)
+    "variadic" => Some(@vibe_core.ParamLabel::Variadic)
     "required" => Some(@vibe_core.ParamLabel::Required)
     "optional" => Some(@vibe_core.ParamLabel::Optional)
     _ => None

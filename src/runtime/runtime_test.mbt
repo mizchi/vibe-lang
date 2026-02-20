@@ -479,6 +479,24 @@ test "vibe fn labeled and optional args" {
 }
 
 ///|
+test "vibe fn variadic positional args" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let _ = rt.eval_script(
+    "let collect = (head: Int, ...xs: String[]) -> Int { head + array_length(xs) }\n" +
+    "let a = collect(2, \"x\", \"y\", \"z\")\n" +
+    "let b = collect(3)",
+  )
+  match rt.get("a") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 5)
+    _ => fail("variadic a")
+  }
+  match rt.get("b") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("variadic b")
+  }
+}
+
+///|
 test "vibe stdout permission requires effect" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(

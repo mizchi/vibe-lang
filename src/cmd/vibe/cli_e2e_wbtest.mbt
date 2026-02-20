@@ -104,6 +104,7 @@ test "shell meta command names include ide helpers" {
   assert_true(wbtest_contains(names, ":view"))
   assert_true(wbtest_contains(names, ":outline"))
   assert_true(wbtest_contains(names, ":peek"))
+  assert_true(wbtest_contains(names, ":type"))
 }
 
 ///|
@@ -196,7 +197,54 @@ test "shell vibe parser extracts subcommand args and pipeline" {
 }
 
 ///|
-test "shell vibe command prints help json by default" {
+test "shell vibe parser accepts bare subcommand" {
+  match repl_parse_vibe_shell_invocation("symbols") {
+    Some(invocation) => {
+      assert_eq(invocation.subcommand, "symbols")
+      assert_eq(invocation.args.length(), 0)
+      assert_eq(invocation.pipeline_tail, None)
+    }
+    None => fail("expected bare vibe shell invocation")
+  }
+}
+
+///|
+test "shell symbols options parse default local only" {
+  match repl_parse_symbols_options([]) {
+    Ok(opts) => {
+      assert_true(opts.include_local)
+      assert_false(opts.include_builtin)
+      assert_false(opts.include_shell)
+    }
+    Err(err) => fail("unexpected error: " + err)
+  }
+}
+
+///|
+test "shell symbols options parse explicit scopes" {
+  match repl_parse_symbols_options(["--scope", "builtin,shell"]) {
+    Ok(opts) => {
+      assert_false(opts.include_local)
+      assert_true(opts.include_builtin)
+      assert_true(opts.include_shell)
+    }
+    Err(err) => fail("unexpected error: " + err)
+  }
+}
+
+///|
+test "shell symbols options reject unknown scope" {
+  match repl_parse_symbols_options(["--scope", "wat"]) {
+    Ok(_) => fail("expected error")
+    Err(err) =>
+      assert_eq(
+        err, "symbols: unknown scope wat (expected local|builtin|shell|all)",
+      )
+  }
+}
+
+///|
+test "shell vibe command prints readable help by default" {
   let lines : Array[String] = []
   let rt = new_cli_runtime(
     @runtime.RuntimeFeatureFlags::stable(),
@@ -211,9 +259,99 @@ test "shell vibe command prints help json by default" {
     fn(s) { lines.push(s) },
   )
   assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("vibe commands:"))
+  assert_true(text.contains("symbols"))
+}
+
+///|
+test "shell vibe command supports --json for help output" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "vibe help --json",
+    "/tmp/repl_vibe_help_json.db",
+    "",
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
   assert_eq(lines.length(), 1)
   assert_true(lines[0].contains("\"command\":\"help\""))
   assert_true(lines[0].contains("\"ok\":true"))
+}
+
+///|
+test "shell vibe bare command prints symbols in readable format" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "symbols",
+    "/tmp/repl_symbols_help.db",
+    "let x = 1\n",
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("local scope (1)"))
+  assert_true(text.contains("| kind | name | signature | address |"))
+  assert_true(text.contains("| value | x | Int |"))
+  assert_false(text.contains("/tmp/repl_symbols_help.db"))
+}
+
+///|
+test "shell vibe symbols supports scope flags for builtin and shell" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "symbols --builtin --shell",
+    "/tmp/repl_symbols_scope.db",
+    "let x = 1\n",
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("builtin scope ("))
+  assert_true(text.contains("shell commands ("))
+  assert_true(text.contains("| kind | name | signature | address |"))
+  assert_true(text.contains("| vibe | vibe |"))
+}
+
+///|
+test "shell vibe symbols supports --json output" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "symbols --json",
+    "/tmp/repl_symbols_json.db",
+    "let x = 1\n",
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  assert_eq(lines.length(), 1)
+  assert_true(lines[0].contains("\"command\":\"symbols\""))
+  assert_true(lines[0].contains("\"scopes\":[\"local\"]"))
+  assert_true(lines[0].contains("\"address\":\""))
+  assert_false(lines[0].contains("/tmp/repl_symbols_json.db"))
 }
 
 ///|
@@ -235,6 +373,92 @@ test "shell vibe command supports pipeline transform over json payload" {
   assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("last: true"))
+}
+
+///|
+test "shell meta type prints symbol signature" {
+  let lines : Array[String] = []
+  let source = "let inc = (x: Int) -> Int { x + 1 }\n"
+  let result = handle_repl_meta_command(
+    ":type inc",
+    "/tmp/repl_meta_type.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("inc : (x: Int) -> Int"))
+}
+
+///|
+test "shell vibe type prints readable signature by default" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let source = "let inc = (x: Int) -> Int { x + 1 }\n"
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "type inc",
+    "/tmp/repl_vibe_type.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("inc : (x: Int) -> Int"))
+}
+
+///|
+test "shell vibe type supports --json output" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let source = "let inc = (x: Int) -> Int { x + 1 }\n"
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "type inc --json",
+    "/tmp/repl_vibe_type_json.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  assert_eq(lines.length(), 1)
+  assert_true(lines[0].contains("\"command\":\"type\""))
+  assert_true(lines[0].contains("\"signature\":\"(x: Int) -> Int\""))
+}
+
+///|
+test "shell vibe normalize accepts entry symbols and drops pure expr stmt" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let source = "let f = (v: Int) { v * 2 }\n" +
+    "f(3)\n" +
+    "let x = 3\n" +
+    "let y = f(x)\n"
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "normalize x y",
+    "/tmp/repl_vibe_normalize_symbols.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("normalize: scratch"))
+  assert_true(text.contains("let f = (v: Int) -> Int { v * 2 }"))
+  assert_true(text.contains("let y: Int = f(x)"))
+  assert_false(text.contains("f(3)"))
+  assert_true(text.contains("export { x, y }"))
 }
 
 ///|
@@ -262,6 +486,49 @@ test "shell warns when binding reserved vibe subcommand name" {
   )
   wbtest_remove_if_exists(scratch_db_path)
   wbtest_remove_if_exists(root)
+}
+
+///|
+test "shell restore resets duplicate scratch source" {
+  let root = wbtest_make_temp_dir("repl_restore_duplicate_decl")
+  let scratch_db_path = root + "/scratch.db"
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let source = "let x = 1\nlet x = 2\n"
+  let restored = repl_restore_scratch_source(
+    rt,
+    @runtime.ParserMode::XshMode,
+    scratch_db_path,
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(restored, "")
+  let saved = @os_fs.read_file_to_string(scratch_db_path) catch {
+    e => fail("read scratch db failed: " + e.to_string())
+  }
+  assert_eq(saved, "")
+  let text = wbtest_join_lines(lines)
+  assert_true(text.contains("failed to restore db"))
+  assert_true(text.contains("reset namespace db"))
+  wbtest_remove_if_exists(scratch_db_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "append eval db source formats persisted script" {
+  let saved1 = append_eval_db_source("", "let f = (v: Int) { v * 2 }")
+  assert_true(saved1.contains("let f = (v: Int) {"))
+  assert_true(saved1.contains("  v * 2"))
+  assert_true(saved1.has_suffix("\n"))
+  let saved2 = append_eval_db_source(saved1, "let x=1")
+  assert_true(saved2.contains("let x = 1"))
+  assert_true(saved2.has_suffix("\n"))
+  let _ = @parser.parse_ast(saved2) catch {
+    e => fail("saved source parse failed: " + e.to_string())
+  }
 }
 
 ///|
@@ -1457,7 +1724,8 @@ test "cli eval db workflow persists namespace and exports module" {
   }
   assert_true(exported.contains("let base = 40"))
   assert_true(exported.contains("let answer = base + 2"))
-  assert_true(exported.contains("export { answer }"))
+  assert_true(exported.contains("export {"))
+  assert_true(exported.contains("\n  answer"))
   fetch_cmd([out_path])
   let lock_path = @codebase.lock_file_path(out_path)
   let lock = match @codebase.load_lock_data(lock_path) {
@@ -1519,7 +1787,8 @@ test "cli eval db workflow supports include scripts" {
     e => fail("read exported module failed: " + e.to_string())
   }
   assert_true(exported.contains("let answer = seed + 2"))
-  assert_true(exported.contains("export { answer }"))
+  assert_true(exported.contains("export {"))
+  assert_true(exported.contains("\n  answer"))
   wbtest_remove_if_exists(out_path)
   wbtest_remove_if_exists(include_path)
   wbtest_remove_if_exists(db_path)
@@ -1585,7 +1854,8 @@ test "cli eval include supports hash alias from vbundle file" {
     e => fail("read exported module failed: " + e.to_string())
   }
   assert_true(exported.contains("let answer = seed + 1"))
-  assert_true(exported.contains("export { answer }"))
+  assert_true(exported.contains("export {"))
+  assert_true(exported.contains("\n  answer"))
   wbtest_remove_if_exists(out_path)
   wbtest_remove_if_exists(include_path)
   wbtest_remove_if_exists(db_path)
@@ -1672,7 +1942,8 @@ test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
     e => fail("read exported module failed: " + e.to_string())
   }
   assert_true(exported.contains("let answer = seed + 2"))
-  assert_true(exported.contains("export { answer }"))
+  assert_true(exported.contains("export {"))
+  assert_true(exported.contains("\n  answer"))
   wbtest_remove_if_exists(out_path)
   wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(root)
@@ -1750,7 +2021,8 @@ test "cli eval include resolves latest named alias when version omitted" {
     e => fail("read exported module failed: " + e.to_string())
   }
   assert_true(exported.contains("let answer = seed + 3"))
-  assert_true(exported.contains("export { answer }"))
+  assert_true(exported.contains("export {"))
+  assert_true(exported.contains("\n  answer"))
   wbtest_remove_if_exists(out_path)
   wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(root)
@@ -1807,7 +2079,8 @@ test "cli eval include supports packed vbundle entry source" {
     e => fail("read exported module failed: " + e.to_string())
   }
   assert_true(exported.contains("let answer = seed + 2"))
-  assert_true(exported.contains("export { answer }"))
+  assert_true(exported.contains("export {"))
+  assert_true(exported.contains("\n  answer"))
   wbtest_remove_if_exists(out_path)
   wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(include_bundle)
@@ -1878,9 +2151,11 @@ test "cli eval db workflow validates scope symbols and types per step" {
     e => fail("read exported module failed: " + e.to_string())
   }
   assert_true(exported.contains("let base = 40"))
-  assert_true(exported.contains("let inc = (x: Int) -> Int { x + base }"))
+  assert_true(exported.contains("let inc = (x: Int) -> Int"))
+  assert_true(exported.contains("x + base"))
   assert_true(exported.contains("let answer = inc"))
-  assert_true(exported.contains("export { answer }"))
+  assert_true(exported.contains("export {"))
+  assert_true(exported.contains("\n  answer"))
   wbtest_remove_if_exists(out_path)
   wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(root)
@@ -1985,10 +2260,12 @@ test "cli eval db complex workflow validates chained function scope types" {
     e => fail("read exported module failed: " + e.to_string())
   }
   assert_true(exported.contains("let base = 10"))
-  assert_true(exported.contains("let add_base = (x: Int) -> Int { x + base }"))
+  assert_true(exported.contains("let add_base = (x: Int) -> Int"))
+  assert_true(exported.contains("x + base"))
   assert_true(exported.contains("let add_twice = (x: Int) -> Int"))
   assert_true(exported.contains("let result = add_twice"))
-  assert_true(exported.contains("export { add_base , add_twice , result }"))
+  assert_true(exported.contains("export {"))
+  assert_true(exported.contains("add_base, add_twice, result"))
   wbtest_remove_if_exists(out_path)
   wbtest_remove_if_exists(db_path)
   wbtest_remove_if_exists(root)
@@ -2091,7 +2368,8 @@ test "cli write_file handles complex eval exported module" {
   assert_true(full_source.contains("let add_base = (x: Int) -> Int"))
   assert_true(full_source.contains("let add_twice = (x: Int) -> Int"))
   assert_true(full_source.contains("let result = add_twice"))
-  assert_true(full_source.contains("export { add_base , add_twice , result }"))
+  assert_true(full_source.contains("export {"))
+  assert_true(full_source.contains("add_base, add_twice, result"))
   wbtest_remove_if_exists(full_path)
   wbtest_remove_if_exists(no_deps_path)
   wbtest_remove_if_exists(out_path)

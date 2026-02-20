@@ -63,8 +63,24 @@ struct VibeShellInvocation {
 }
 
 ///|
+struct ReplSymbolsOptions {
+  include_local : Bool
+  include_builtin : Bool
+  include_shell : Bool
+} derive(Show, Eq)
+
+///|
+struct ReplSymbolsRow {
+  scope : String
+  kind : String
+  name : String
+  signature : String
+  address : String
+} derive(Show, Eq)
+
+///|
 fn repl_meta_command_names() -> Array[String] {
-  [":q", ":quit", ":exit", ":view", ":outline", ":peek"]
+  [":q", ":quit", ":exit", ":view", ":outline", ":peek", ":type"]
 }
 
 ///|
@@ -120,8 +136,23 @@ fn repl_split_first_pipeline(line : String) -> (String, String?) {
 fn repl_reserved_shell_command_names() -> Array[String] {
   [
     "vibe", "view", "outline", "peek", "symbols", "search", "rename", "normalize",
-    "help",
+    "help", "type",
   ]
+}
+
+///|
+fn repl_vibe_shell_subcommand_names() -> Array[String] {
+  ["help", "symbols", "outline", "view", "peek", "type", "normalize"]
+}
+
+///|
+fn repl_is_vibe_shell_subcommand(name : String) -> Bool {
+  for subcommand in repl_vibe_shell_subcommand_names() {
+    if subcommand == name {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -148,6 +179,304 @@ fn repl_warn_reserved_shell_binding(
       "(...)` for explicit function call.",
     )
   }
+}
+
+///|
+fn repl_symbols_default_options() -> ReplSymbolsOptions {
+  { include_local: true, include_builtin: false, include_shell: false }
+}
+
+///|
+fn repl_symbols_scope_bits(scope : String) -> (Bool, Bool, Bool)? {
+  match scope {
+    "local" => Some((true, false, false))
+    "builtin" => Some((false, true, false))
+    "shell" => Some((false, false, true))
+    "all" => Some((true, true, true))
+    _ => None
+  }
+}
+
+///|
+fn repl_symbols_parse_scope_value(
+  value : String,
+  include_local : Bool,
+  include_builtin : Bool,
+  include_shell : Bool,
+) -> Result[(Bool, Bool, Bool), String] {
+  let mut next_local = include_local
+  let mut next_builtin = include_builtin
+  let mut next_shell = include_shell
+  let mut consumed = false
+  for part_view in value.split(",") {
+    let part = part_view.to_string().trim().to_string()
+    if part.length() == 0 {
+      continue
+    }
+    match repl_symbols_scope_bits(part) {
+      Some((l, b, s)) => {
+        next_local = next_local || l
+        next_builtin = next_builtin || b
+        next_shell = next_shell || s
+        consumed = true
+      }
+      None =>
+        return Err(
+          "symbols: unknown scope " +
+          part +
+          " (expected local|builtin|shell|all)",
+        )
+    }
+  }
+  if not(consumed) {
+    return Err("symbols: missing value for --scope")
+  }
+  Ok((next_local, next_builtin, next_shell))
+}
+
+///|
+fn repl_parse_symbols_options(
+  args : Array[String],
+) -> Result[ReplSymbolsOptions, String] {
+  let mut include_local = false
+  let mut include_builtin = false
+  let mut include_shell = false
+  let mut explicit = false
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "--local" => {
+        include_local = true
+        explicit = true
+        i += 1
+      }
+      "--builtin" => {
+        include_builtin = true
+        explicit = true
+        i += 1
+      }
+      "--shell" => {
+        include_shell = true
+        explicit = true
+        i += 1
+      }
+      "--all" => {
+        include_local = true
+        include_builtin = true
+        include_shell = true
+        explicit = true
+        i += 1
+      }
+      "--scope" => {
+        if i + 1 >= args.length() {
+          return Err("symbols: missing value for --scope")
+        }
+        explicit = true
+        match
+          repl_symbols_parse_scope_value(
+            args[i + 1],
+            include_local,
+            include_builtin,
+            include_shell,
+          ) {
+          Ok((next_local, next_builtin, next_shell)) => {
+            include_local = next_local
+            include_builtin = next_builtin
+            include_shell = next_shell
+          }
+          Err(err) => return Err(err)
+        }
+        i += 2
+      }
+      _ => return Err("symbols: unknown option " + arg)
+    }
+  }
+  if not(explicit) {
+    return Ok(repl_symbols_default_options())
+  }
+  Ok({ include_local, include_builtin, include_shell })
+}
+
+///|
+fn repl_symbols_selected_scopes(opts : ReplSymbolsOptions) -> Array[String] {
+  let scopes : Array[String] = []
+  if opts.include_local {
+    scopes.push("local")
+  }
+  if opts.include_builtin {
+    scopes.push("builtin")
+  }
+  if opts.include_shell {
+    scopes.push("shell")
+  }
+  scopes
+}
+
+///|
+fn repl_collect_path_shell_commands() -> Array[String] {
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = {}
+  match @sys.get_env_var("PATH") {
+    None => ()
+    Some(path) =>
+      for dir_view in path.split(":") {
+        let dir = dir_view.to_string()
+        let entries = @os_fs.read_dir(dir) catch { _ => [] }
+        for name in entries {
+          if seen.contains(name) {
+            continue
+          }
+          let full_path = dir + "/" + name
+          let is_file = @os_fs.is_file(full_path) catch { _ => false }
+          if is_file {
+            seen[name] = true
+            out.push(name)
+          }
+        }
+      }
+  }
+  out
+}
+
+///|
+fn repl_shell_builtin_function_names() -> Array[String] {
+  ["sh", "path", "addr", "exit"]
+}
+
+///|
+fn repl_symbols_local_name_set(
+  rows : Array[ReplSymbolsRow],
+) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for row in rows {
+    out[row.name] = true
+  }
+  out
+}
+
+///|
+fn repl_collect_local_symbols_rows(
+  rt : @runtime.Runtime,
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Array[ReplSymbolsRow] {
+  let matches = repl_collect_current_symbol_matches(
+    scratch_db_path,
+    scratch_source,
+    None,
+  )
+  let out : Array[ReplSymbolsRow] = []
+  for item in matches {
+    let entry = item.entry
+    let address = match rt.get_addr(entry.name) {
+      Some(addr) => addr
+      None => eval_scope_symbol_id_from_entry(entry)
+    }
+    out.push({
+      scope: "local",
+      kind: @runtime.symbol_kind_name(entry.kind),
+      name: entry.name,
+      signature: entry.signature,
+      address,
+    })
+  }
+  out
+}
+
+///|
+fn repl_collect_builtin_symbols_rows(
+  rt : @runtime.Runtime,
+  local_names : Map[String, Bool],
+) -> Array[ReplSymbolsRow] {
+  let out : Array[ReplSymbolsRow] = []
+  let seen : Map[String, Bool] = {}
+  let type_env = rt.type_env()
+  for name, _ in type_env.bindings {
+    if seen.contains(name) ||
+      local_names.contains(name) ||
+      name.has_prefix("__") {
+      continue
+    }
+    seen[name] = true
+    let signature = match type_env.get(name) {
+      Some(ty) => ty.to_string()
+      None => "_"
+    }
+    let address = match rt.get_addr(name) {
+      Some(addr) => addr
+      None => ""
+    }
+    out.push({ scope: "builtin", kind: "value", name, signature, address })
+  }
+  for name in repl_shell_builtin_function_names() {
+    if seen.contains(name) || local_names.contains(name) {
+      continue
+    }
+    seen[name] = true
+    let signature = match type_env.get(name) {
+      Some(ty) => ty.to_string()
+      None => "_"
+    }
+    let address = match rt.get_addr(name) {
+      Some(addr) => addr
+      None => ""
+    }
+    out.push({ scope: "builtin", kind: "builtin", name, signature, address })
+  }
+  out
+}
+
+///|
+fn repl_collect_shell_symbols_rows() -> Array[ReplSymbolsRow] {
+  let out : Array[ReplSymbolsRow] = []
+  let seen : Map[String, Bool] = {}
+  fn push_row(
+    out : Array[ReplSymbolsRow],
+    seen : Map[String, Bool],
+    kind : String,
+    name : String,
+    signature : String,
+  ) -> Unit {
+    if seen.contains(name) {
+      return
+    }
+    seen[name] = true
+    out.push({ scope: "shell", kind, name, signature, address: "" })
+  }
+  push_row(out, seen, "meta", ":q", "quit shell")
+  push_row(out, seen, "meta", ":quit", "quit shell")
+  push_row(out, seen, "meta", ":exit", "quit shell")
+  push_row(out, seen, "meta", ":view", "view <symbol>")
+  push_row(out, seen, "meta", ":outline", "outline [target]")
+  push_row(out, seen, "meta", ":peek", "peek <symbol>")
+  push_row(out, seen, "meta", ":type", "type <symbol>")
+  push_row(out, seen, "vibe", "vibe", "vibe <subcommand>")
+  for subcommand in repl_vibe_shell_subcommand_names() {
+    push_row(out, seen, "vibe", subcommand, "vibe " + subcommand)
+  }
+  for command in repl_collect_path_shell_commands() {
+    push_row(out, seen, "command", command, "-")
+  }
+  out
+}
+
+///|
+fn repl_symbols_row_to_json(row : ReplSymbolsRow) -> Json {
+  let obj : Map[String, Json] = {}
+  obj["scope"] = Json::string(row.scope)
+  obj["kind"] = Json::string(row.kind)
+  obj["name"] = Json::string(row.name)
+  obj["signature"] = Json::string(row.signature)
+  obj["address"] = Json::string(row.address)
+  obj["short_address"] = Json::string(
+    if row.address.length() == 0 {
+      ""
+    } else {
+      short_hash(row.address)
+    },
+  )
+  Json::object(obj)
 }
 
 ///|
@@ -364,39 +693,65 @@ fn repl_parse_vibe_shell_invocation(line : String) -> VibeShellInvocation? {
   if tokens.length() == 0 {
     return None
   }
-  if tokens[0] != "vibe" {
-    return None
+  let (subcommand, args_start) = if tokens[0] == "vibe" {
+    if tokens.length() == 1 {
+      return Some({ subcommand: "help", args: [], pipeline_tail })
+    }
+    (tokens[1], 2)
+  } else {
+    if not(repl_is_vibe_shell_subcommand(tokens[0])) {
+      return None
+    }
+    (tokens[0], 1)
   }
-  if tokens.length() == 1 {
-    return Some({ subcommand: "help", args: [], pipeline_tail })
-  }
-  Some({ subcommand: tokens[1], args: args_tail(tokens, 2), pipeline_tail })
+  Some({ subcommand, args: args_tail(tokens, args_start), pipeline_tail })
 }
 
 ///|
 fn repl_vibe_symbols_json(
+  rt : @runtime.Runtime,
+  args : Array[String],
   scratch_db_path : String,
   scratch_source : String,
 ) -> Json {
-  let current = repl_collect_current_symbol_matches(
-    scratch_db_path,
-    scratch_source,
-    None,
-  )
-  let scope = if current.length() > 0 { "current" } else { "workspace" }
-  let items = if current.length() > 0 {
-    current
+  let opts = match repl_parse_symbols_options(args) {
+    Ok(v) => v
+    Err(err) => return repl_vibe_error_json("symbols", err)
+  }
+  let selected_scopes = repl_symbols_selected_scopes(opts)
+  let rows : Array[ReplSymbolsRow] = []
+  let local_rows = if opts.include_local {
+    repl_collect_local_symbols_rows(rt, scratch_db_path, scratch_source)
   } else {
-    match repl_load_workspace_symbol_matches(None) {
-      Ok(matches) => matches
-      Err(_) => []
+    []
+  }
+  for row in local_rows {
+    rows.push(row)
+  }
+  let local_names = repl_symbols_local_name_set(local_rows)
+  if opts.include_builtin {
+    for row in repl_collect_builtin_symbols_rows(rt, local_names) {
+      rows.push(row)
     }
+  }
+  if opts.include_shell {
+    for row in repl_collect_shell_symbols_rows() {
+      rows.push(row)
+    }
+  }
+  let items : Array[Json] = []
+  for row in rows {
+    items.push(repl_symbols_row_to_json(row))
+  }
+  let scopes_json : Array[Json] = []
+  for scope in selected_scopes {
+    scopes_json.push(Json::string(scope))
   }
   let obj : Map[String, Json] = {}
   obj["ok"] = Json::boolean(true)
   obj["command"] = Json::string("symbols")
-  obj["scope"] = Json::string(scope)
-  obj["items"] = repl_symbol_matches_to_json(items)
+  obj["scopes"] = Json::array(scopes_json)
+  obj["items"] = Json::array(items)
   Json::object(obj)
 }
 
@@ -517,35 +872,113 @@ fn repl_vibe_peek_json(
 }
 
 ///|
+fn repl_vibe_type_json(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+) -> Json {
+  if args.length() != 1 {
+    return repl_vibe_error_json("type", "usage: vibe type <symbol>")
+  }
+  let symbol = args[0]
+  let matches = repl_resolve_symbol_matches(
+    symbol, scratch_db_path, scratch_source,
+  )
+  if matches.length() == 0 {
+    return repl_vibe_error_json("type", "symbol not found: " + symbol)
+  }
+  let obj : Map[String, Json] = {}
+  obj["command"] = Json::string("type")
+  obj["query"] = Json::string(symbol)
+  if matches.length() > 1 {
+    obj["ok"] = Json::boolean(false)
+    obj["error"] = Json::string("multiple matches")
+    obj["candidates"] = repl_symbol_matches_to_json(matches)
+  } else {
+    let entry = matches[0].entry
+    obj["ok"] = Json::boolean(true)
+    obj["signature"] = Json::string(entry.signature)
+    obj["item"] = repl_symbol_match_to_json(matches[0])
+  }
+  Json::object(obj)
+}
+
+///|
 fn repl_vibe_normalize_json(
   args : Array[String],
   scratch_source : String,
 ) -> Json {
-  if args.length() > 1 {
-    return repl_vibe_error_json("normalize", "usage: vibe normalize [file]")
-  }
-  let (target, source) = if args.length() == 0 {
-    ("scratch", scratch_source)
-  } else {
-    let path = @loader.resolve_entry_path(args[0])
-    let content = @os_fs.read_file_to_string(path) catch {
-      e =>
-        return repl_vibe_error_json(
-          "normalize",
-          "read failed: " + e.to_string(),
-        )
+  let mut target = "scratch"
+  let mut source = scratch_source
+  let entry_names : Array[String] = []
+  if args.length() > 0 {
+    let first_arg = args[0]
+    let first_path = @loader.resolve_entry_path(first_arg)
+    let first_exists = @os_fs.path_exists(first_path) catch { _ => false }
+    let first_is_file_like = first_arg == "." ||
+      first_arg.has_prefix("./") ||
+      first_arg.has_prefix("../") ||
+      first_arg.has_prefix("/") ||
+      first_arg.has_suffix(".vibe") ||
+      first_arg.has_suffix(".mbt")
+    let first_as_file = first_exists || first_is_file_like
+    if first_as_file {
+      target = first_path
+      source = @os_fs.read_file_to_string(first_path) catch {
+        e =>
+          return repl_vibe_error_json(
+            "normalize",
+            "read failed: " + e.to_string(),
+          )
+      }
+      for i in 1..<args.length() {
+        entry_names.push(args[i])
+      }
+    } else {
+      for arg in args {
+        entry_names.push(arg)
+      }
     }
-    (path, content)
+  }
+  let selected_entries : Array[String] = []
+  let seen_entries : Map[String, Bool] = {}
+  for name in entry_names {
+    let trimmed = name.trim().to_string()
+    if trimmed.length() == 0 || seen_entries.contains(trimmed) {
+      continue
+    }
+    seen_entries[trimmed] = true
+    selected_entries.push(trimmed)
+  }
+  if args.length() > 0 && selected_entries.length() == 0 && target == "scratch" {
+    return repl_vibe_error_json(
+      "normalize", "usage: vibe normalize [file] [entry ...] or normalize [entry ...]",
+    )
+  }
+  if target != "scratch" &&
+    args.length() == 1 &&
+    source.trim().to_string().length() == 0 {
+    return repl_vibe_error_json("normalize", "source is empty")
   }
   if source.trim().to_string().length() == 0 {
     return repl_vibe_error_json("normalize", "source is empty")
   }
-  match normalize_source_text(source) {
+  let normalized_result = if selected_entries.length() == 0 {
+    normalize_source_text(source)
+  } else {
+    normalize_source_text_with_entry_names(source, selected_entries)
+  }
+  match normalized_result {
     Ok(normalized) => {
       let obj : Map[String, Json] = {}
       obj["ok"] = Json::boolean(true)
       obj["command"] = Json::string("normalize")
       obj["target"] = Json::string(target)
+      let entries : Array[Json] = []
+      for name in selected_entries {
+        entries.push(Json::string(name))
+      }
+      obj["entries"] = Json::array(entries)
       obj["normalized"] = Json::string(normalized)
       Json::object(obj)
     }
@@ -556,11 +989,28 @@ fn repl_vibe_normalize_json(
 ///|
 fn repl_vibe_help_json() -> Json {
   let commands : Array[Json] = []
+  commands.push(
+    Json::string(
+      "symbols [--local|--builtin|--shell|--all|--scope <local,builtin,shell,all>]",
+    ),
+  )
+  commands.push(Json::string("outline [target]"))
+  commands.push(Json::string("view <symbol>"))
+  commands.push(Json::string("peek <symbol>"))
+  commands.push(Json::string("type <symbol>"))
+  commands.push(
+    Json::string("normalize [file] [entry ...] | normalize [entry ...]"),
+  )
   commands.push(Json::string("vibe symbols"))
   commands.push(Json::string("vibe outline [target]"))
   commands.push(Json::string("vibe view <symbol>"))
   commands.push(Json::string("vibe peek <symbol>"))
-  commands.push(Json::string("vibe normalize [file]"))
+  commands.push(Json::string("vibe type <symbol>"))
+  commands.push(
+    Json::string(
+      "vibe normalize [file] [entry ...] | vibe normalize [entry ...]",
+    ),
+  )
   let obj : Map[String, Json] = {}
   obj["ok"] = Json::boolean(true)
   obj["command"] = Json::string("help")
@@ -570,21 +1020,347 @@ fn repl_vibe_help_json() -> Json {
 
 ///|
 fn repl_vibe_subcommand_json(
+  rt : @runtime.Runtime,
   invocation : VibeShellInvocation,
   scratch_db_path : String,
   scratch_source : String,
 ) -> Json {
   match invocation.subcommand {
     "help" => repl_vibe_help_json()
-    "symbols" => repl_vibe_symbols_json(scratch_db_path, scratch_source)
+    "symbols" =>
+      repl_vibe_symbols_json(
+        rt,
+        invocation.args,
+        scratch_db_path,
+        scratch_source,
+      )
     "outline" =>
       repl_vibe_outline_json(invocation.args, scratch_db_path, scratch_source)
     "view" =>
       repl_vibe_view_json(invocation.args, scratch_db_path, scratch_source)
     "peek" =>
       repl_vibe_peek_json(invocation.args, scratch_db_path, scratch_source)
+    "type" =>
+      repl_vibe_type_json(invocation.args, scratch_db_path, scratch_source)
     "normalize" => repl_vibe_normalize_json(invocation.args, scratch_source)
     other => repl_vibe_error_json("vibe", "unknown subcommand: " + other)
+  }
+}
+
+///|
+fn repl_strip_vibe_json_flag(args : Array[String]) -> (Array[String], Bool) {
+  let out : Array[String] = []
+  let mut output_json = false
+  for arg in args {
+    if arg == "--json" {
+      output_json = true
+    } else {
+      out.push(arg)
+    }
+  }
+  (out, output_json)
+}
+
+///|
+fn repl_json_string_or(
+  obj : Map[String, Json],
+  key : String,
+  fallback : String,
+) -> String {
+  match obj.get(key) {
+    Some(Json::String(value)) => value
+    _ => fallback
+  }
+}
+
+///|
+fn repl_json_bool_or(
+  obj : Map[String, Json],
+  key : String,
+  fallback : Bool,
+) -> Bool {
+  match obj.get(key) {
+    Some(Json::True) => true
+    Some(Json::False) => false
+    _ => fallback
+  }
+}
+
+///|
+fn repl_json_array_or_empty(
+  obj : Map[String, Json],
+  key : String,
+) -> Array[Json] {
+  match obj.get(key) {
+    Some(Json::Array(items)) => items
+    _ => []
+  }
+}
+
+///|
+fn repl_json_string_array_or_empty(
+  obj : Map[String, Json],
+  key : String,
+) -> Array[String] {
+  let out : Array[String] = []
+  for item in repl_json_array_or_empty(obj, key) {
+    match item {
+      Json::String(value) => out.push(value)
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn repl_markdown_table_cell(value : String) -> String {
+  let buf = StringBuilder::new()
+  for ch in value {
+    match ch {
+      '\n' => buf.write_string("\\n")
+      '\r' => ()
+      '|' => buf.write_string("\\|")
+      _ => buf.write_char(ch)
+    }
+  }
+  let out = buf.to_string()
+  if out.length() == 0 {
+    "-"
+  } else {
+    out
+  }
+}
+
+///|
+fn repl_symbols_scope_title(scope : String) -> String {
+  match scope {
+    "local" => "local scope"
+    "builtin" => "builtin scope"
+    "shell" => "shell commands"
+    _ => scope + " scope"
+  }
+}
+
+///|
+fn repl_symbols_items_for_scope(
+  items : Array[Json],
+  scope : String,
+) -> Array[Json] {
+  let out : Array[Json] = []
+  for item in items {
+    match item {
+      Json::Object(obj) => {
+        let row_scope = repl_json_string_or(obj, "scope", "")
+        if row_scope == scope {
+          out.push(item)
+        }
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn repl_symbol_address_cell(obj : Map[String, Json]) -> String {
+  let short_addr = repl_json_string_or(obj, "short_address", "")
+  if short_addr.length() > 0 {
+    return short_addr
+  }
+  let addr = repl_json_string_or(obj, "address", "")
+  if addr.length() == 0 {
+    "-"
+  } else {
+    short_hash(addr)
+  }
+}
+
+///|
+fn repl_print_symbols_scope_table(
+  scope : String,
+  items : Array[Json],
+  print_line : (String) -> Unit,
+) -> Unit {
+  print_line(
+    repl_symbols_scope_title(scope) + " (" + items.length().to_string() + ")",
+  )
+  print_line("| kind | name | signature | address |")
+  print_line("| --- | --- | --- | --- |")
+  if items.length() == 0 {
+    print_line("| - | - | - | - |")
+    return
+  }
+  for item in items {
+    match item {
+      Json::Object(obj) => {
+        let kind = repl_markdown_table_cell(
+          repl_json_string_or(obj, "kind", "?"),
+        )
+        let name = repl_markdown_table_cell(
+          repl_json_string_or(obj, "name", "?"),
+        )
+        let signature = repl_markdown_table_cell(
+          repl_json_string_or(obj, "signature", "_"),
+        )
+        let address = repl_markdown_table_cell(repl_symbol_address_cell(obj))
+        print_line(
+          "| " +
+          kind +
+          " | " +
+          name +
+          " | " +
+          signature +
+          " | " +
+          address +
+          " |",
+        )
+      }
+      _ => ()
+    }
+  }
+}
+
+///|
+fn repl_print_multiline_text(
+  text : String,
+  print_line : (String) -> Unit,
+) -> Unit {
+  for part in text.split("\n") {
+    print_line(part.to_string())
+  }
+}
+
+///|
+fn repl_print_symbol_item_json(
+  item : Json,
+  print_line : (String) -> Unit,
+  include_snippet? : Bool = false,
+) -> Unit {
+  match item {
+    Json::Object(obj) => {
+      let kind = repl_json_string_or(obj, "kind", "?")
+      let name = repl_json_string_or(obj, "name", "?")
+      let signature = repl_json_string_or(obj, "signature", "_")
+      let location = repl_json_string_or(obj, "location", "?")
+      print_line(kind + "\t" + name + "\t" + signature + "\t" + location)
+      if include_snippet {
+        let snippet = repl_json_string_or(obj, "snippet", "")
+        if snippet.length() > 0 {
+          print_line("  " + snippet)
+        }
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
+fn repl_print_vibe_payload_human(
+  payload : Json,
+  print_line : (String) -> Unit,
+) -> Unit {
+  match payload {
+    Json::Object(obj) => {
+      let command = repl_json_string_or(obj, "command", "vibe")
+      let ok = repl_json_bool_or(obj, "ok", true)
+      if not(ok) {
+        let err = repl_json_string_or(obj, "error", "unknown error")
+        if err == "multiple matches" {
+          let query = repl_json_string_or(obj, "query", "?")
+          let candidates = repl_json_array_or_empty(obj, "candidates")
+          print_line("multiple matches for " + query + ":")
+          for candidate in candidates {
+            repl_print_symbol_item_json(
+              candidate,
+              print_line,
+              include_snippet=command == "peek",
+            )
+          }
+          return
+        }
+        print_line("error: " + err)
+        return
+      }
+      match command {
+        "help" => {
+          print_line("vibe commands:")
+          for item in repl_json_array_or_empty(obj, "commands") {
+            match item {
+              Json::String(line) => print_line("  " + line)
+              _ => ()
+            }
+          }
+        }
+        "symbols" => {
+          let scopes = repl_json_string_array_or_empty(obj, "scopes")
+          let items = repl_json_array_or_empty(obj, "items")
+          if scopes.length() == 0 {
+            print_line("symbols: (no scopes selected)")
+            return
+          }
+          let mut printed = false
+          for scope in scopes {
+            if printed {
+              print_line("")
+            }
+            printed = true
+            let scoped_items = repl_symbols_items_for_scope(items, scope)
+            repl_print_symbols_scope_table(scope, scoped_items, print_line)
+          }
+        }
+        "outline" => {
+          let scope = repl_json_string_or(obj, "scope", "")
+          let target = repl_json_string_or(obj, "target", "")
+          let items = repl_json_array_or_empty(obj, "items")
+          if target.length() > 0 {
+            print_line(
+              "outline: " + target + " (" + items.length().to_string() + ")",
+            )
+          } else if scope.length() > 0 {
+            print_line(
+              "outline: " + scope + " (" + items.length().to_string() + ")",
+            )
+          } else {
+            print_line("outline: " + items.length().to_string())
+          }
+          if items.length() == 0 {
+            print_line("(no symbols)")
+            return
+          }
+          for item in items {
+            repl_print_symbol_item_json(item, print_line)
+          }
+        }
+        "view" =>
+          match obj.get("item") {
+            Some(item) => repl_print_symbol_item_json(item, print_line)
+            None => print_line("error: missing symbol item")
+          }
+        "peek" =>
+          match obj.get("item") {
+            Some(item) =>
+              repl_print_symbol_item_json(
+                item,
+                print_line,
+                include_snippet=true,
+              )
+            None => print_line("error: missing symbol item")
+          }
+        "type" => {
+          let query = repl_json_string_or(obj, "query", "?")
+          let signature = repl_json_string_or(obj, "signature", "_")
+          print_line(query + " : " + signature)
+        }
+        "normalize" => {
+          let target = repl_json_string_or(obj, "target", "scratch")
+          print_line("normalize: " + target)
+          let normalized = repl_json_string_or(obj, "normalized", "")
+          repl_print_multiline_text(normalized, print_line)
+        }
+        _ => print_line(payload.stringify())
+      }
+    }
+    _ => print_line(payload.stringify())
   }
 }
 
@@ -642,17 +1418,29 @@ fn handle_repl_vibe_shell_command(
   scratch_source : String,
   print_line : (String) -> Unit,
 ) -> ReplMetaCommandResult {
-  let invocation = match repl_parse_vibe_shell_invocation(line) {
+  let parsed_invocation = match repl_parse_vibe_shell_invocation(line) {
     Some(v) => v
     None => return ReplMetaCommandResult::NotMeta
   }
+  let (subcommand_args, output_json) = repl_strip_vibe_json_flag(
+    parsed_invocation.args,
+  )
+  let invocation : VibeShellInvocation = {
+    subcommand: parsed_invocation.subcommand,
+    args: subcommand_args,
+    pipeline_tail: parsed_invocation.pipeline_tail,
+  }
   let payload = repl_vibe_subcommand_json(
-    invocation, scratch_db_path, scratch_source,
+    rt, invocation, scratch_db_path, scratch_source,
   )
   let payload_text = payload.stringify()
   match invocation.pipeline_tail {
     None => {
-      print_line(payload_text)
+      if output_json {
+        print_line(payload_text)
+      } else {
+        repl_print_vibe_payload_human(payload, print_line)
+      }
       ReplMetaCommandResult::HandledContinue
     }
     Some(pipe_tail) => {
@@ -670,6 +1458,38 @@ fn handle_repl_vibe_shell_command(
       ReplMetaCommandResult::HandledContinue
     }
   }
+}
+
+///|
+fn repl_restore_scratch_source(
+  rt : @runtime.Runtime,
+  syntax_mode : @runtime.ParserMode,
+  scratch_db_path : String,
+  source : String,
+  print_line : (String) -> Unit,
+) -> String {
+  if source.trim().to_string().length() == 0 {
+    return source
+  }
+  try rt.eval_script_with_mode(source, syntax_mode) |> ignore catch {
+    e => {
+      let err = e.to_string()
+      print_line("warn: failed to restore db: " + err)
+      if err.contains("DuplicateDecl") {
+        match write_eval_db_source(scratch_db_path, "") {
+          Ok(_) =>
+            print_line(
+              "warn: duplicate declarations detected; reset namespace db: " +
+              scratch_db_path,
+            )
+          Err(write_err) =>
+            print_line("warn: failed to reset namespace db: " + write_err)
+        }
+        return ""
+      }
+    }
+  }
+  source
 }
 
 ///|
@@ -698,6 +1518,34 @@ fn repl_handle_view_meta_command(
   let item = matches[0]
   print_line(item.entry.name + " : " + item.entry.signature)
   print_line("at " + repl_symbol_match_location(item))
+  ReplMetaCommandResult::HandledContinue
+}
+
+///|
+fn repl_handle_type_meta_command(
+  args : Array[String],
+  scratch_db_path : String,
+  scratch_source : String,
+  print_line : (String) -> Unit,
+) -> ReplMetaCommandResult {
+  if args.length() != 1 {
+    print_line("usage: :type <symbol>")
+    return ReplMetaCommandResult::HandledContinue
+  }
+  let symbol = args[0]
+  let matches = repl_resolve_symbol_matches(
+    symbol, scratch_db_path, scratch_source,
+  )
+  if matches.length() == 0 {
+    print_line("symbol not found: " + symbol)
+    return ReplMetaCommandResult::HandledContinue
+  }
+  if matches.length() > 1 {
+    repl_print_multiple_matches(symbol, matches, print_line)
+    return ReplMetaCommandResult::HandledContinue
+  }
+  let item = matches[0]
+  print_line(item.entry.name + " : " + item.entry.signature)
   ReplMetaCommandResult::HandledContinue
 }
 
@@ -839,6 +1687,10 @@ fn handle_repl_meta_command(
       repl_handle_outline_meta_command(
         cmd_args, scratch_db_path, scratch_source, print_line,
       )
+    ":type" =>
+      repl_handle_type_meta_command(
+        cmd_args, scratch_db_path, scratch_source, print_line,
+      )
     ":peek" =>
       repl_handle_peek_meta_command(
         cmd_args, scratch_db_path, scratch_source, print_line,
@@ -865,12 +1717,14 @@ fn repl_tui_cmd(
     Ok(v) => v
     Err(err) => abort("shell: " + err)
   }
-  let mut restore_error : String = ""
-  if restored_source.trim().length() > 0 {
-    try rt.eval_script_with_mode(restored_source, syntax_mode) |> ignore catch {
-      e => restore_error = e.to_string()
-    }
-  }
+  let restore_logs : Array[String] = []
+  let restored_source = repl_restore_scratch_source(
+    rt,
+    syntax_mode,
+    scratch_db_path,
+    restored_source,
+    fn(s) { restore_logs.push(s) },
+  )
   let (initial_cols, initial_rows) = @tui.get_terminal_size()
   let (app, cleanup) = @tui.init_vnode_terminal(
     initial_cols, initial_rows, @tui.print_raw,
@@ -1577,8 +2431,8 @@ fn repl_tui_cmd(
 
   do_render()
   push_output_line("namespace: " + namespace_name + " db=" + scratch_db_path)
-  if restore_error.length() > 0 {
-    push_output_line("warn: failed to restore db: " + restore_error)
+  for line in restore_logs {
+    push_output_line(line)
   }
   do_render()
   @tui.start_keypress_listener(handle_key)
@@ -1656,13 +2510,13 @@ fn run_eval_line_repl_with_prompt(
         return
       }
     }
-    if scratch_source.trim().length() > 0 {
-      try
-        rt.eval_script_with_mode(scratch_source, syntax_mode) |> ignore
-      catch {
-        e => println("warn: failed to restore db: " + e.to_string())
-      }
-    }
+    scratch_source = repl_restore_scratch_source(
+      rt,
+      syntax_mode,
+      scratch_db_path,
+      scratch_source,
+      fn(s) { println(s) },
+    )
     let input = @stdio.stdin
     print_line_repl_tty_mode(options.io_mode)
     println("namespace: " + namespace_name + " db=" + scratch_db_path)
@@ -1910,13 +2764,13 @@ fn repl_ai_cmd(
         return
       }
     }
-    if scratch_source.trim().length() > 0 {
-      try
-        rt.eval_script_with_mode(scratch_source, syntax_mode) |> ignore
-      catch {
-        e => println("warn: failed to restore db: " + e.to_string())
-      }
-    }
+    scratch_source = repl_restore_scratch_source(
+      rt,
+      syntax_mode,
+      scratch_db_path,
+      scratch_source,
+      fn(s) { println(s) },
+    )
     // header
     println("cwd: " + @io.current_dir_or_root())
     println("namespace: " + namespace_name + " db=" + scratch_db_path)
@@ -2033,11 +2887,13 @@ fn repl_interactive_cmd(
     Ok(v) => v
     Err(err) => abort("shell: " + err)
   }
-  if scratch_source.trim().length() > 0 {
-    try rt.eval_script_with_mode(scratch_source, syntax_mode) |> ignore catch {
-      e => println("warn: failed to restore db: " + e.to_string())
-    }
-  }
+  let scratch_source = repl_restore_scratch_source(
+    rt,
+    syntax_mode,
+    scratch_db_path,
+    scratch_source,
+    fn(s) { println(s) },
+  )
   // header
   println("cwd: " + @io.current_dir_or_root())
   println("namespace: " + namespace_name + " db=" + scratch_db_path)

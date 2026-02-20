@@ -498,6 +498,7 @@ fn param_to_sexp(param : @core.FuncParam) -> String {
 fn label_to_sexp(label : @core.ParamLabel) -> String {
   match label {
     @core.ParamLabel::Positional => "pos"
+    @core.ParamLabel::Variadic => "var"
     @core.ParamLabel::Required => "req"
     @core.ParamLabel::Optional => "opt"
   }

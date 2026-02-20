@@ -69,6 +69,8 @@ fn render_effect_atom(atom : @core.EffectAtom) -> String {
 fn render_param_type(param : @core.FuncParam) -> String {
   let head = match param.label {
     @core.ParamLabel::Positional => param.name + ": " + render_type(param.ty)
+    @core.ParamLabel::Variadic =>
+      "..." + param.name + ": " + render_type(param.ty)
     @core.ParamLabel::Required => param.name + "~: " + render_type(param.ty)
     @core.ParamLabel::Optional => param.name + "?: " + render_type(param.ty)
   }

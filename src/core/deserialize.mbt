@@ -607,6 +607,7 @@ fn parse_param_label(json : Json) -> ParamLabel raise DeserializeError {
     Json::String(s) =>
       match s {
         "Positional" => return ParamLabel::Positional
+        "Variadic" => return ParamLabel::Variadic
         "Required" => return ParamLabel::Required
         "Optional" => return ParamLabel::Optional
         _ => raise DeserializeError("Invalid param label: " + s)

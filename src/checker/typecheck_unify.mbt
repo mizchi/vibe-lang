@@ -330,7 +330,7 @@ pub fn is_type_subtype(
             ok = false
             break
           }
-          if sub_param.label != @core.ParamLabel::Positional &&
+          if not(@core.ParamLabel::is_positional(sub_param.label)) &&
             sub_param.name != sup_param.name {
             ok = false
             break
@@ -536,7 +536,7 @@ fn param_unify(
   if a.label != b.label {
     return false
   }
-  if a.label != @core.ParamLabel::Positional && a.name != b.name {
+  if not(@core.ParamLabel::is_positional(a.label)) && a.name != b.name {
     return false
   }
   if not(

@@ -475,6 +475,7 @@ fn serialize_loop_params_to(
 fn serialize_param_label_to(label : ParamLabel, buf : StringBuilder) -> Unit {
   match label {
     ParamLabel::Positional => buf.write_string("\"Positional\"")
+    ParamLabel::Variadic => buf.write_string("\"Variadic\"")
     ParamLabel::Required => buf.write_string("\"Required\"")
     ParamLabel::Optional => buf.write_string("\"Optional\"")
   }

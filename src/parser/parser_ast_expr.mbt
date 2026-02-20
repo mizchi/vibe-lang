@@ -1139,6 +1139,7 @@ fn AstParser::parse_param_list(
     }
   }
   let _ = self.expect(rparen(), ")")
+  validate_variadic_param_order(out, self.token_span())
   out
 }
 
@@ -1170,6 +1171,7 @@ fn AstParser::parse_fn_type_param_list(
     }
   }
   let _ = self.expect(rparen(), ")")
+  validate_variadic_param_order(out, self.token_span())
   out
 }
 
@@ -1222,16 +1224,49 @@ fn AstParser::parse_param(
   self : AstParser,
   params : Map[String, Bool],
 ) -> @core.FuncParam raise ParseError {
+  let variadic = self.eat_variadic_prefix()
   let name_start = self.pos
   let name_tok = self.expect(name(), "param")
   let name_span = self.span_from(name_start)
-  let (base, label) = split_param_label(name_tok.text(), name_span)
+  let (base, parsed_label) = split_param_label(name_tok.text(), name_span)
+  let label = if variadic {
+    if parsed_label != @core.ParamLabel::Positional {
+      raise ParseError::UnexpectedToken(
+        expected="variadic parameter label",
+        got=name_tok.text(),
+        span=name_span,
+      )
+    }
+    @core.ParamLabel::Variadic
+  } else {
+    parsed_label
+  }
   self.skip_trivia()
   // Type annotation is optional - use Unit as placeholder for inference
   let ty = if self.peek_kind() == colon() {
     let _ = self.bump()
-    self.parse_type_with_params(params)
+    let parsed_ty = self.parse_type_with_params(params)
+    if label == @core.ParamLabel::Variadic {
+      match parsed_ty {
+        @core.Type::Array(_) => parsed_ty
+        _ =>
+          raise ParseError::UnexpectedToken(
+            expected="variadic param type `T[]`",
+            got=name_tok.text(),
+            span=name_span,
+          )
+      }
+    } else {
+      parsed_ty
+    }
   } else {
+    if label == @core.ParamLabel::Variadic {
+      raise ParseError::UnexpectedToken(
+        expected="variadic param type annotation",
+        got=name_tok.text(),
+        span=name_span,
+      )
+    }
     @core.Type::Unit // Placeholder for type inference
   }
   self.skip_trivia()
@@ -1243,6 +1278,57 @@ fn AstParser::parse_param(
     []
   }
   @core.FuncParam::{ name: base, label, ty, bounds }
+}
+
+///|
+fn AstParser::eat_variadic_prefix(self : AstParser) -> Bool {
+  self.skip_trivia()
+  let saved = self.pos
+  if self.peek_kind() != dot() {
+    return false
+  }
+  let _ = self.bump()
+  if self.peek_kind() != dot() {
+    self.pos = saved
+    return false
+  }
+  let _ = self.bump()
+  if self.peek_kind() != dot() {
+    self.pos = saved
+    return false
+  }
+  let _ = self.bump()
+  true
+}
+
+///|
+fn validate_variadic_param_order(
+  params : Array[@core.FuncParam],
+  span : @core.Span,
+) -> Unit raise ParseError {
+  let mut seen_variadic = false
+  for param in params {
+    match param.label {
+      @core.ParamLabel::Variadic =>
+        if seen_variadic {
+          raise ParseError::UnexpectedToken(
+            expected="single variadic parameter",
+            got=param.name,
+            span~,
+          )
+        } else {
+          seen_variadic = true
+        }
+      _ =>
+        if seen_variadic && @core.ParamLabel::is_positional(param.label) {
+          raise ParseError::UnexpectedToken(
+            expected="variadic parameter must be the last positional parameter",
+            got=param.name,
+            span~,
+          )
+        }
+    }
+  }
 }
 
 ///|

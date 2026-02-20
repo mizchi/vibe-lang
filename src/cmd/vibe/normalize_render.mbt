@@ -1,10 +1,37 @@
 ///|
-fn normalize_select_stmts(ast : @vibe_core.Module) -> Array[@vibe_core.Stmt] {
-  let export_names = normalize_collect_export_names(ast)
-  if export_names.length() == 0 {
+fn normalize_collect_normalize_entry_names(
+  ast : @vibe_core.Module,
+  extra_entry_names : Array[String],
+) -> Array[String] {
+  let names : Map[String, Bool] = {}
+  for name in normalize_collect_export_names(ast) {
+    names[name] = true
+  }
+  for name in extra_entry_names {
+    if name.trim().to_string().length() > 0 {
+      names[name] = true
+    }
+  }
+  let out : Array[String] = []
+  for name, _ in names {
+    out.push(name)
+  }
+  out.sort()
+  out
+}
+
+///|
+fn normalize_select_stmts(
+  ast : @vibe_core.Module,
+  extra_entry_names : Array[String],
+) -> Array[@vibe_core.Stmt] {
+  let entry_names = normalize_collect_normalize_entry_names(
+    ast, extra_entry_names,
+  )
+  if entry_names.length() == 0 {
     return ast.stmts
   }
-  let dced = @runtime.dce_module_with_entry_names(ast, export_names)
+  let dced = @runtime.dce_module_with_entry_names(ast, entry_names)
   dced.stmts
 }
 
@@ -50,6 +77,53 @@ fn normalize_render_name_list(names : Array[String]) -> String {
 }
 
 ///|
+fn normalize_has_exact_export_stmt(
+  stmts : Array[@vibe_core.Stmt],
+  names : Array[String],
+) -> Bool {
+  for stmt in stmts {
+    match stmt {
+      @vibe_core.Stmt::Export(names=export_names, ..) =>
+        if export_names.length() != names.length() {
+          ()
+        } else {
+          let mut all_match = true
+          for i, name in names {
+            if export_names[i] != name {
+              all_match = false
+              break
+            }
+          }
+          if all_match {
+            return true
+          }
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+fn normalize_append_entry_export_stmt(
+  stmts : Array[@vibe_core.Stmt],
+  entry_names : Array[String],
+) -> Array[@vibe_core.Stmt] {
+  if entry_names.length() == 0 ||
+    normalize_has_exact_export_stmt(stmts, entry_names) {
+    return stmts
+  }
+  let out : Array[@vibe_core.Stmt] = []
+  for stmt in stmts {
+    out.push(stmt)
+  }
+  out.push(
+    @vibe_core.Stmt::Export(names=entry_names, span=@vibe_core.Span::new(0, 0)),
+  )
+  out
+}
+
+///|
 fn normalize_render_module_ref(source : @vibe_core.ModuleRef) -> String {
   match source {
     @vibe_core.ModuleRef::Path(path~) => path
@@ -83,13 +157,17 @@ fn normalize_render_stmt(
   rewritten_exprs : Map[String, @vibe_core.Expr],
   inferred_annotations : Map[String, String],
   export_decl_annotations : Map[String, String],
+  env : @checker.TypeEnv,
 ) -> String? {
   let key = normalize_stmt_key(stmt)
   let rewritten_expr = rewritten_exprs.get(key)
   let annotation = inferred_annotations.get(key)
   match stmt {
     @vibe_core.Stmt::Let(rec~, name~, expr~, span~) => {
-      if rewritten_expr is None && annotation is None {
+      let should_preserve_raw = rewritten_expr is None &&
+        annotation is None &&
+        not(normalize_let_stmt_prefers_rendered_expr(expr, env.get(name)))
+      if should_preserve_raw {
         let snippet = normalize_source_slice_by_span(
             source,
             span.start,
@@ -102,7 +180,7 @@ fn normalize_render_stmt(
         }
       }
       normalize_render_let_stmt(
-        source, false, rec, name, expr, rewritten_expr, annotation,
+        source, false, rec, name, expr, rewritten_expr, annotation, env,
       )
     }
     @vibe_core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
@@ -116,7 +194,12 @@ fn normalize_render_stmt(
         Some((_, inner)) => inner
         None => expr
       }
-      if rewritten_expr is None && annotation is None {
+      let should_preserve_raw = rewritten_expr is None &&
+        annotation is None &&
+        not(
+          normalize_let_stmt_prefers_rendered_expr(render_expr, env.get(name)),
+        )
+      if should_preserve_raw {
         let snippet = normalize_source_slice_by_span(
             source,
             span.start,
@@ -130,7 +213,7 @@ fn normalize_render_stmt(
         }
       }
       normalize_render_let_stmt(
-        source, true, rec, name, render_expr, rewritten_expr, annotation,
+        source, true, rec, name, render_expr, rewritten_expr, annotation, env,
       )
     }
     _ => normalize_render_stmt_fallback(stmt)
@@ -144,6 +227,219 @@ fn normalize_render_stmt_accept_raw_snippet(snippet : String) -> Bool {
   }
   let parsed = @parser.parse_ast(snippet) catch { _ => return false }
   parsed.stmts.length() == 1
+}
+
+///|
+fn normalize_let_stmt_prefers_rendered_expr(
+  expr : @vibe_core.Expr,
+  inferred_ty : @vibe_core.Type?,
+) -> Bool {
+  match expr {
+    @vibe_core.Expr::Fn(type_params~, type_bounds~, ret~, ..) =>
+      if type_params.length() > 0 || type_bounds.length() > 0 || ret is Some(_) {
+        false
+      } else {
+        match inferred_ty {
+          Some(@vibe_core.Type::Func(..)) => true
+          _ => false
+        }
+      }
+    _ => false
+  }
+}
+
+///|
+fn normalize_render_fn_param_name(param : @vibe_core.FuncParam) -> String {
+  match param.label {
+    @vibe_core.ParamLabel::Positional => param.name
+    @vibe_core.ParamLabel::Required => param.name + "~"
+    @vibe_core.ParamLabel::Optional => param.name + "?"
+    @vibe_core.ParamLabel::Variadic => "..." + param.name
+  }
+}
+
+///|
+fn normalize_render_fn_param(param : @vibe_core.FuncParam) -> String? {
+  let ty_text = normalize_render_type_annotation(param.ty)
+  if ty_text.length() == 0 {
+    return None
+  }
+  let out = StringBuilder::new()
+  out.write_string(normalize_render_fn_param_name(param))
+  out.write_string(": ")
+  out.write_string(ty_text)
+  if param.bounds.length() > 0 {
+    out.write_string(": ")
+    for i, bound in param.bounds {
+      if i > 0 {
+        out.write_string(" + ")
+      }
+      out.write_string(bound)
+    }
+  }
+  Some(out.to_string())
+}
+
+///|
+fn normalize_render_fn_effects(
+  effects : Array[@vibe_core.EffectAtom],
+) -> String {
+  if effects.length() == 0 {
+    return ""
+  }
+  let out = StringBuilder::new()
+  out.write_string(" with {")
+  for i, effect in effects {
+    if i > 0 {
+      out.write_string(", ")
+    }
+    match effect {
+      @vibe_core.EffectAtom::Const(name) => out.write_string(name)
+      @vibe_core.EffectAtom::Var(name) => out.write_string(name)
+    }
+  }
+  out.write_char('}')
+  out.to_string()
+}
+
+///|
+fn normalize_find_fn_body_start(snippet : String) -> Int? {
+  let mut depth_paren = 0
+  let mut depth_bracket = 0
+  let mut in_string = false
+  let mut escaped = false
+  for i, c in snippet {
+    if in_string {
+      if escaped {
+        escaped = false
+      } else if c == '\\' {
+        escaped = true
+      } else if c == '"' {
+        in_string = false
+      }
+      continue
+    }
+    match c {
+      '"' => in_string = true
+      '(' => depth_paren += 1
+      ')' => if depth_paren > 0 { depth_paren -= 1 }
+      '[' => depth_bracket += 1
+      ']' => if depth_bracket > 0 { depth_bracket -= 1 }
+      '{' => if depth_paren == 0 && depth_bracket == 0 { return Some(i) }
+      _ => ()
+    }
+  }
+  None
+}
+
+///|
+fn normalize_render_fn_expr_with_inferred_type(
+  source : String,
+  expr : @vibe_core.Expr,
+  inferred_ty : @vibe_core.Type?,
+) -> String? {
+  let (type_params, type_bounds, params, ret, effects, span) = match expr {
+    @vibe_core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body=_,
+      span~
+    ) => (type_params, type_bounds, params, ret, effects, span)
+    _ => return None
+  }
+  if type_params.length() > 0 || type_bounds.length() > 0 {
+    return None
+  }
+  let inferred_func = match inferred_ty {
+    Some(
+      @vibe_core.Type::Func(
+        params=func_params,
+        ret=func_ret,
+        effects=func_effects
+      )
+    ) => Some((func_params, func_ret, func_effects))
+    _ => None
+  }
+  let (resolved_params, resolved_ret, resolved_effects) = match inferred_func {
+    Some((func_params, func_ret, func_effects)) =>
+      if func_params.length() != params.length() {
+        return None
+      } else {
+        let next_params : Array[@vibe_core.FuncParam] = []
+        for i, param in params {
+          let inferred_param = func_params[i]
+          if inferred_param.label != param.label {
+            return None
+          }
+          let next_ty = if param.ty == @vibe_core.Type::Unit {
+            inferred_param.ty
+          } else {
+            param.ty
+          }
+          next_params.push(@vibe_core.FuncParam::{
+            name: param.name,
+            label: param.label,
+            ty: next_ty,
+            bounds: param.bounds,
+          })
+        }
+        let next_ret = match ret {
+          Some(r) => r
+          None => func_ret
+        }
+        let next_effects = if effects.length() > 0 {
+          effects
+        } else {
+          func_effects
+        }
+        (next_params, Some(next_ret), next_effects)
+      }
+    None => (params, ret, effects)
+  }
+  let snippet = normalize_source_slice_by_span(source, span.start, span.end)
+    .trim()
+    .to_string()
+  if snippet.length() == 0 {
+    return None
+  }
+  let body_start = match normalize_find_fn_body_start(snippet) {
+    Some(v) => v
+    None => return None
+  }
+  let body_text = snippet.unsafe_substring(
+    start=body_start,
+    end=snippet.length(),
+  )
+  let out = StringBuilder::new()
+  out.write_char('(')
+  for i, param in resolved_params {
+    if i > 0 {
+      out.write_string(", ")
+    }
+    let rendered = match normalize_render_fn_param(param) {
+      Some(v) => v
+      None => return None
+    }
+    out.write_string(rendered)
+  }
+  out.write_char(')')
+  match resolved_ret {
+    Some(ret_ty) => {
+      let ret_text = normalize_render_type_annotation(ret_ty)
+      if ret_text.length() > 0 {
+        out.write_string(" -> ")
+        out.write_string(ret_text)
+      }
+    }
+    None => ()
+  }
+  out.write_string(normalize_render_fn_effects(resolved_effects))
+  out.write_char(' ')
+  out.write_string(body_text)
+  Some(out.to_string())
 }
 
 ///|
@@ -187,11 +483,25 @@ fn normalize_render_let_stmt(
   original_expr : @vibe_core.Expr,
   rewritten_expr : @vibe_core.Expr?,
   annotation : String?,
+  env : @checker.TypeEnv,
 ) -> String? {
+  let target_expr = match rewritten_expr {
+    Some(expr) => expr
+    None => original_expr
+  }
   let expr_text = match
-    normalize_render_stmt_expr_text(source, original_expr, rewritten_expr) {
+    normalize_render_fn_expr_with_inferred_type(
+      source,
+      target_expr,
+      env.get(name),
+    ) {
     Some(v) => v
-    None => return None
+    None =>
+      match
+        normalize_render_stmt_expr_text(source, original_expr, rewritten_expr) {
+        Some(v) => v
+        None => return None
+      }
   }
   let out = StringBuilder::new()
   if exported {
@@ -664,6 +974,7 @@ fn normalize_render_source(
     match
       normalize_render_stmt(
         source, stmt, rewritten_exprs, inferred_annotations, export_decl_annotations,
+        env,
       ) {
       Some(rendered_line) => push_rendered(group, rendered_line)
       None => {

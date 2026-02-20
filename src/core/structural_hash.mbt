@@ -555,8 +555,9 @@ fn FuncParam::structural_hash(self : FuncParam) -> Int {
 fn ParamLabel::structural_hash(self : ParamLabel) -> Int {
   match self {
     ParamLabel::Positional => 0
-    ParamLabel::Required => 1
-    ParamLabel::Optional => 2
+    ParamLabel::Variadic => 1
+    ParamLabel::Required => 2
+    ParamLabel::Optional => 3
   }
 }
 

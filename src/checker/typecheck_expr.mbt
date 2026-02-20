@@ -1939,6 +1939,14 @@ fn is_active_polymorphic_recursive_call(
 }
 
 ///|
+fn variadic_param_element_type(param : @core.FuncParam) -> @core.Type {
+  match param.ty {
+    @core.Type::Array(inner) => inner
+    _ => param.ty
+  }
+}
+
+///|
 fn check_call_args(
   env : TypeEnv,
   callee_name : String,
@@ -1949,13 +1957,45 @@ fn check_call_args(
   allow_effect : Bool,
   call_span : @core.Span,
 ) -> Unit raise TypeError {
-  // Build positional params list first for bidirectional inference
+  // Build positional prefix + variadic tail first for bidirectional inference.
   let positional : Array[@core.FuncParam] = []
+  let mut variadic_param : @core.FuncParam? = None
   for param in params {
-    if param.label == @core.ParamLabel::Positional {
-      positional.push(param)
+    if not(@core.ParamLabel::is_positional(param.label)) {
+      continue
+    }
+    match param.label {
+      @core.ParamLabel::Variadic =>
+        match variadic_param {
+          Some(_) =>
+            raise TypeError::BadCall(
+              message="duplicate variadic params",
+              span=call_span,
+            )
+          None =>
+            match param.ty {
+              @core.Type::Array(_) => variadic_param = Some(param)
+              _ =>
+                raise TypeError::BadCall(
+                  message="variadic param must be array type",
+                  span=call_span,
+                )
+            }
+        }
+      _ =>
+        if variadic_param is Some(_) {
+          raise TypeError::BadCall(
+            message="positional param after variadic is unsupported",
+            span=call_span,
+          )
+        } else {
+          positional.push(param)
+        }
     }
   }
+  let variadic_expected_ty = variadic_param.map(fn(param) {
+    variadic_param_element_type(param)
+  })
   // Type arguments with contextual information for lambdas
   let arg_types : Array[ArgType] = []
   let mut pos_idx = 0
@@ -1964,11 +2004,12 @@ fn check_call_args(
       None => {
         // Positional argument - check if it's a lambda needing inference
         let expected_ty : @core.Type? = if pos_idx < positional.length() {
-          Some(positional[pos_idx].ty)
+          let expected = positional[pos_idx].ty
+          pos_idx += 1
+          Some(expected)
         } else {
-          None
+          variadic_expected_ty
         }
-        pos_idx += 1
         type_arg_with_context(
           env,
           arg.expr,
@@ -1982,7 +2023,8 @@ fn check_call_args(
         // Labeled argument - find expected type
         let mut expected_ty : @core.Type? = None
         for param in params {
-          if param.label != @core.ParamLabel::Positional && param.name == label {
+          if not(@core.ParamLabel::is_positional(param.label)) &&
+            param.name == label {
             expected_ty = Some(param.ty)
             break
           }
@@ -2005,27 +2047,34 @@ fn check_call_args(
   for arg in arg_types {
     match arg.label {
       None => {
-        if pos_index >= positional.length() {
-          raise TypeError::BadCall(
-            message="too many positional args",
-            span=arg.span,
-          )
+        let expected_ty = if pos_index < positional.length() {
+          let param = positional[pos_index]
+          pos_index += 1
+          Some(param.ty)
+        } else {
+          variadic_expected_ty
         }
-        let param = positional[pos_index]
-        pos_index += 1
-        if not(type_equal(env, param.ty, arg.ty)) {
-          if is_active_polymorphic_recursive_call(env, callee_name) {
-            raise TypeError::BadRec(
-              message="polymorphic recursion is unsupported",
+        match expected_ty {
+          Some(param_ty) =>
+            if not(type_equal(env, param_ty, arg.ty)) {
+              if is_active_polymorphic_recursive_call(env, callee_name) {
+                raise TypeError::BadRec(
+                  message="polymorphic recursion is unsupported",
+                  span=arg.span,
+                )
+              }
+              raise TypeError::Mismatch(
+                expected=argument_mismatch_expected_type(env, param_ty, arg.ty),
+                actual=resolve_type(env, arg.ty),
+                span=arg.span,
+                context=Some("argument"),
+              )
+            }
+          None =>
+            raise TypeError::BadCall(
+              message="too many positional args",
               span=arg.span,
             )
-          }
-          raise TypeError::Mismatch(
-            expected=argument_mismatch_expected_type(env, param.ty, arg.ty),
-            actual=resolve_type(env, arg.ty),
-            span=arg.span,
-            context=Some("argument"),
-          )
         }
       }
       Some(label) => {
@@ -2037,7 +2086,8 @@ fn check_call_args(
         }
         let mut found : @core.FuncParam? = None
         for param in params {
-          if param.label != @core.ParamLabel::Positional && param.name == label {
+          if not(@core.ParamLabel::is_positional(param.label)) &&
+            param.name == label {
             found = Some(param)
             break
           }

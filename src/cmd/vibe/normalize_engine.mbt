@@ -105,9 +105,23 @@ fn NormalizeEngine::normalize(
 
 ///|
 fn normalize_source_text(source : String) -> Result[String, String] {
+  normalize_source_text_with_entry_names(source, [])
+}
+
+///|
+fn normalize_source_text_with_entry_names(
+  source : String,
+  entry_names : Array[String],
+) -> Result[String, String] {
   let engine = NormalizeEngine::new()
   engine.set_source("__source__", source)
-  engine.normalize("__source__")
+  let normalized = engine.normalize("__source__")
+  match normalized {
+    Ok(_) =>
+      // Entry-based normalize has custom selection and cannot be served by cache output.
+      normalize_source_text_flat_with_entry_names(source, entry_names)
+    Err(err) => Err(err)
+  }
 }
 
 ///|
@@ -142,7 +156,7 @@ fn normalize_source_text_with_modules(
   out.write_string(
     normalize_source_slice_by_span(source, cursor, source.length()),
   )
-  Ok(@parser.format_script(out.to_string()))
+  normalize_source_text_flat_with_entry_names(out.to_string(), [])
 }
 
 ///|
@@ -348,14 +362,71 @@ fn normalize_node_contains_kind(
 }
 
 ///|
+fn normalize_filter_pure_top_level_expr_stmts(
+  stmts : Array[@vibe_core.Stmt],
+  env : @checker.TypeEnv,
+) -> Array[@vibe_core.Stmt] {
+  let out : Array[@vibe_core.Stmt] = []
+  for stmt in stmts {
+    match stmt {
+      @vibe_core.Stmt::Expr(expr~, ..) =>
+        if not(@checker.purity_expr(env, expr)) {
+          out.push(stmt)
+        }
+      _ => out.push(stmt)
+    }
+  }
+  out
+}
+
+///|
 fn normalize_source_text_flat(source : String) -> Result[String, String] {
+  normalize_source_text_flat_with_entry_names(source, [])
+}
+
+///|
+fn normalize_source_text_flat_with_entry_names(
+  source : String,
+  entry_names : Array[String],
+) -> Result[String, String] {
   let quickfixed_source = normalize_apply_grammar_quickfixes(source)
   let ast = @parser.parse_ast(quickfixed_source) catch {
     e => return Err("normalize: parse failed: " + e.to_string())
   }
   let optimized = normalize_optimize_module(ast)
-  let selected = normalize_select_stmts(optimized.normalized_module)
-  let sorted = normalize_sort_stmts(selected)
+  let selected = normalize_select_stmts(
+    optimized.normalized_module,
+    entry_names,
+  )
+  let entry_roots = normalize_collect_normalize_entry_names(
+    optimized.normalized_module,
+    entry_names,
+  )
+  let selected_with_export = normalize_append_entry_export_stmt(
+    selected, entry_roots,
+  )
+  let initial_sorted = normalize_sort_stmts(selected_with_export)
+  if initial_sorted.length() == 0 {
+    return Ok("")
+  }
+  let initial_module = @vibe_core.Module::{ stmts: initial_sorted }
+  let initial_env = @checker.type_check(initial_module) catch {
+    _ => @checker.TypeEnv::new()
+  }
+  let filtered = normalize_filter_pure_top_level_expr_stmts(
+    initial_sorted, initial_env,
+  )
+  let sorted = if filtered.length() == initial_sorted.length() {
+    initial_sorted
+  } else {
+    let filtered_module = @vibe_core.Module::{ stmts: filtered }
+    let reselection = normalize_select_stmts(filtered_module, entry_names)
+    let reselection_with_export = normalize_append_entry_export_stmt(
+      reselection,
+      normalize_collect_normalize_entry_names(filtered_module, entry_names),
+    )
+    normalize_sort_stmts(reselection_with_export)
+  }
   if sorted.length() == 0 {
     return Ok("")
   }
@@ -393,11 +464,88 @@ fn normalize_source_text_flat(source : String) -> Result[String, String] {
   let expected_canonical = normalize_strip_decl_assign_fn_param_types(
     expected_stripped, expected_decl_assign_names,
   )
-  if @vibe_core.normalize_module(reparsed_canonical) !=
-    @vibe_core.normalize_module(expected_canonical) {
+  let reparsed_semantic = normalize_strip_fn_return_annotations_module(
+    reparsed_canonical,
+  )
+  let expected_semantic = normalize_strip_fn_return_annotations_module(
+    expected_canonical,
+  )
+  if @vibe_core.normalize_module(reparsed_semantic) !=
+    @vibe_core.normalize_module(expected_semantic) {
     return Err("normalize: rendered source changed semantics")
   }
   Ok(rendered)
+}
+
+///|
+fn normalize_strip_fn_return_annotations_module(
+  m : @vibe_core.Module,
+) -> @vibe_core.Module {
+  let next : Array[@vibe_core.Stmt] = []
+  for stmt in m.stmts {
+    next.push(normalize_strip_fn_return_annotations_stmt(stmt))
+  }
+  @vibe_core.Module::{ stmts: next }
+}
+
+///|
+fn normalize_strip_fn_return_annotations_stmt(
+  stmt : @vibe_core.Stmt,
+) -> @vibe_core.Stmt {
+  match stmt {
+    @vibe_core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @vibe_core.Stmt::Let(
+        rec~,
+        name~,
+        expr=normalize_strip_fn_return_annotations_expr(expr),
+        span~,
+      )
+    @vibe_core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @vibe_core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=normalize_strip_fn_return_annotations_expr(expr),
+        span~,
+      )
+    @vibe_core.Stmt::LetMut(name~, expr~, span~) =>
+      @vibe_core.Stmt::LetMut(
+        name~,
+        expr=normalize_strip_fn_return_annotations_expr(expr),
+        span~,
+      )
+    _ => stmt
+  }
+}
+
+///|
+fn normalize_strip_fn_return_annotations_expr(
+  expr : @vibe_core.Expr,
+) -> @vibe_core.Expr {
+  match expr {
+    @vibe_core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret=_,
+      effects~,
+      body~,
+      span~
+    ) =>
+      if type_params.length() > 0 || type_bounds.length() > 0 {
+        expr
+      } else {
+        @vibe_core.Expr::Fn(
+          type_params~,
+          type_bounds~,
+          params~,
+          ret=None,
+          effects~,
+          body~,
+          span~,
+        )
+      }
+    _ => expr
+  }
 }
 
 ///|

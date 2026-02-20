@@ -573,6 +573,12 @@ test "roundtrip: type variants (func, named, tuple, record, variant)" {
         ty: Type::String,
         bounds: ["Show"],
       },
+      FuncParam::{
+        name: "rest",
+        label: ParamLabel::Variadic,
+        ty: Type::Array(Type::Int),
+        bounds: [],
+      },
     ],
     ret=Type::Bool,
     effects=[EffectAtom::Var("E")],

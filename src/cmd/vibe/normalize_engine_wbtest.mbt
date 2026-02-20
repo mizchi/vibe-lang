@@ -143,6 +143,41 @@ test "normalize_engine: inferred annotation on non-fn let" {
 }
 
 ///|
+test "normalize_engine: infers fn return annotation in fn expression" {
+  let source =
+    #|let f = (v: Int) { v * 2 }
+    #|let y = f(3)
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      assert_true(normalized.contains("let f = (v: Int) -> Int { v * 2 }"))
+      assert_true(normalized.contains("let y: Int = f(3)"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: entry normalize drops pure top-level expr and exports entries" {
+  let source =
+    #|let f = (v: Int) { v * 2 }
+    #|f(3)
+    #|let x = 3
+    #|let y = f(x)
+  let result = normalize_source_text_with_entry_names(source, ["x", "y"])
+  match result {
+    Ok(normalized) => {
+      assert_false(normalized.contains("f(3)"))
+      assert_true(normalized.contains("let f = (v: Int) -> Int { v * 2 }"))
+      assert_true(normalized.contains("let x: Int = 3"))
+      assert_true(normalized.contains("let y: Int = f(x)"))
+      assert_true(normalized.contains("export { x, y }"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
 test "normalize_engine: NormalizeEngine incremental caching" {
   let engine = NormalizeEngine::new()
   engine.set_source("key1", "let x = 1")

@@ -517,7 +517,17 @@ fn append_eval_db_source(base_source : String, expr : String) -> String {
   if not(trimmed.has_suffix("\n")) {
     out.write_char('\n')
   }
-  out.to_string()
+  let next_source = out.to_string()
+  let parsed_ok = @parser.parse_ast(next_source) catch {
+    _ => return next_source
+  }
+  let _ = parsed_ok
+  let formatted = @parser.format_script(next_source)
+  if formatted.has_suffix("\n") {
+    formatted
+  } else {
+    formatted + "\n"
+  }
 }
 
 ///|
