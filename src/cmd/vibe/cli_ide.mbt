@@ -834,6 +834,570 @@ fn bundle_collect_lock_hashes(lock_obj : Map[String, Json]) -> Array[String] {
 }
 
 ///|
+struct BundleSyncCmdOptions {
+  target_path : String
+  base_path : String?
+  lib_root : String?
+  scope : String?
+  bundle_version : String?
+} derive(Show, Eq)
+
+///|
+struct BundleSyncPlan {
+  total_objects : Int
+  skipped_base_objects : Int
+  entries : Array[(String, String)]
+} derive(Show, Eq)
+
+///|
+fn bundle_sync_parse_semver_digits(text : String) -> Int? {
+  if text.length() == 0 {
+    return None
+  }
+  let mut value = 0
+  for _, c in text {
+    if c < '0' || c > '9' {
+      return None
+    }
+    value = value * 10 + c.to_int() - '0'.to_int()
+  }
+  Some(value)
+}
+
+///|
+fn bundle_sync_parse_semver(text : String) -> (Int, Int, Int)? {
+  let parts : Array[String] = []
+  for part in text.split(".") {
+    parts.push(part.to_string())
+  }
+  if parts.length() != 3 {
+    return None
+  }
+  let major = match bundle_sync_parse_semver_digits(parts[0]) {
+    Some(v) => v
+    None => return None
+  }
+  let minor = match bundle_sync_parse_semver_digits(parts[1]) {
+    Some(v) => v
+    None => return None
+  }
+  let patch = match bundle_sync_parse_semver_digits(parts[2]) {
+    Some(v) => v
+    None => return None
+  }
+  Some((major, minor, patch))
+}
+
+///|
+fn bundle_sync_compare_semver(a : (Int, Int, Int), b : (Int, Int, Int)) -> Int {
+  let (a_major, a_minor, a_patch) = a
+  let (b_major, b_minor, b_patch) = b
+  if a_major < b_major {
+    -1
+  } else if a_major > b_major {
+    1
+  } else if a_minor < b_minor {
+    -1
+  } else if a_minor > b_minor {
+    1
+  } else if a_patch < b_patch {
+    -1
+  } else if a_patch > b_patch {
+    1
+  } else {
+    0
+  }
+}
+
+///|
+fn bundle_scope_parent_and_name(scope : String) -> (String, String) {
+  let mut last_slash : Int? = None
+  for i, c in scope {
+    if c == '/' {
+      last_slash = Some(i)
+    }
+  }
+  match last_slash {
+    Some(i) =>
+      (
+        scope.unsafe_substring(start=0, end=i),
+        scope.unsafe_substring(start=i + 1, end=scope.length()),
+      )
+    None => ("", scope)
+  }
+}
+
+///|
+fn bundle_sync_find_previous_alias_path(
+  lib_root : String,
+  scope : String,
+  target_version : String,
+) -> String? {
+  let target_semver = match bundle_sync_parse_semver(target_version) {
+    Some(v) => v
+    None => return None
+  }
+  let (parent, leaf) = bundle_scope_parent_and_name(scope)
+  if leaf.length() == 0 {
+    return None
+  }
+  let dir = if parent.length() == 0 {
+    @vibe_fs.normalize_path(lib_root)
+  } else {
+    @vibe_fs.normalize_path(lib_root + "/" + parent)
+  }
+  let entries = @os_fs.read_dir(dir) catch { _ => return None }
+  let prefix = leaf + "@"
+  let suffix = ".vbundle"
+  let mut best_name : String? = None
+  let mut best_semver : (Int, Int, Int)? = None
+  for entry in entries {
+    if not(entry.has_prefix(prefix)) || not(entry.has_suffix(suffix)) {
+      continue
+    }
+    let ver_start = prefix.length()
+    let ver_end = entry.length() - suffix.length()
+    if ver_end <= ver_start {
+      continue
+    }
+    let version = entry.unsafe_substring(start=ver_start, end=ver_end)
+    match bundle_sync_parse_semver(version) {
+      Some(semver) =>
+        if bundle_sync_compare_semver(semver, target_semver) < 0 {
+          match best_semver {
+            Some(prev) =>
+              if bundle_sync_compare_semver(semver, prev) > 0 {
+                best_semver = Some(semver)
+                best_name = Some(entry)
+              }
+            None => {
+              best_semver = Some(semver)
+              best_name = Some(entry)
+            }
+          }
+        }
+      None => ()
+    }
+  }
+  match best_name {
+    Some(name) => Some(@vibe_fs.normalize_path(dir + "/" + name))
+    None => None
+  }
+}
+
+///|
+fn bundle_sync_resolve_input_path(input : String, lib_root : String) -> String {
+  if input.has_prefix("/") {
+    return @vibe_fs.normalize_path(input)
+  }
+  let cwd = @io.current_dir_or_root()
+  let direct = @vibe_fs.normalize_path(cwd + "/" + input)
+  if @os_fs.path_exists(direct) {
+    return direct
+  }
+  @vibe_fs.normalize_path(lib_root + "/" + input)
+}
+
+///|
+fn bundle_sync_load_source(
+  path : String,
+  lib_root : String,
+) -> Result[(String, String?), String] {
+  if not(@os_fs.path_exists(path)) {
+    return Err("bundle sync: bundle not found: " + path)
+  }
+  let is_file = @os_fs.is_file(path) catch { _ => false }
+  if not(is_file) {
+    return Err("bundle sync: bundle path is not a file: " + path)
+  }
+  let source = @os_fs.read_file_to_string(path) catch {
+    e =>
+      return Err(
+        "bundle sync: read failed: " + path + " (" + e.to_string() + ")",
+      )
+  }
+  match parse_include_hash_alias(source) {
+    Some(hash) => {
+      let roots : Array[String] = []
+      let include_parent = @vibe_fs.parent_path(path)
+      if path_last_segment(include_parent) == "vibe" {
+        roots.push(@vibe_fs.parent_path(include_parent))
+      }
+      if roots.length() == 0 || roots[0] != lib_root {
+        roots.push(lib_root)
+      }
+      for root in roots {
+        match try_load_hash_source_from_root(root, hash) {
+          Some(content) => return Ok((content, Some(hash)))
+          None => ()
+        }
+      }
+      Err(
+        "bundle sync: hash alias unresolved: " +
+        path +
+        " -> " +
+        hash +
+        " (not found in local stores)",
+      )
+    }
+    None => Ok((source, None))
+  }
+}
+
+///|
+fn bundle_sync_parse_root(
+  source : String,
+  context : String,
+) -> Result[Map[String, Json], String] {
+  let parsed : Json = @json.parse(source) catch {
+    e => return Err(context + ": invalid JSON: " + e.to_string())
+  }
+  match parsed {
+    Json::Object(obj) => Ok(obj)
+    _ => Err(context + ": top-level JSON must be an object")
+  }
+}
+
+///|
+fn bundle_sync_extract_objects(
+  root : Map[String, Json],
+  context : String,
+) -> Result[Map[String, Json], String] {
+  match root.get("objects") {
+    Some(Json::Object(obj)) => Ok(obj)
+    _ => Err(context + ": missing `objects` object")
+  }
+}
+
+///|
+fn bundle_sync_extract_meta_value(
+  root : Map[String, Json],
+  key : String,
+) -> String? {
+  match root.get("meta") {
+    Some(Json::Object(meta)) =>
+      match meta.get(key) {
+        Some(Json::String(value)) => {
+          let trimmed = value.trim().to_string()
+          if trimmed.length() == 0 {
+            None
+          } else {
+            Some(trimmed)
+          }
+        }
+        _ => None
+      }
+    _ => None
+  }
+}
+
+///|
+fn bundle_hash_set_from_objects_obj(
+  objects : Map[String, Json],
+) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for raw_hash, _ in objects {
+    let normalized = bundle_normalize_hash(raw_hash)
+    if normalized.length() > 0 {
+      out[normalized] = true
+    }
+  }
+  out
+}
+
+///|
+fn bundle_sync_collect_plan(
+  target_objects : Map[String, Json],
+  base_hashes : Map[String, Bool],
+) -> Result[BundleSyncPlan, String] {
+  let entries : Array[(String, String)] = []
+  let mut total_objects = 0
+  let mut skipped_base_objects = 0
+  for raw_hash, value in target_objects {
+    total_objects += 1
+    let normalized = bundle_normalize_hash(raw_hash)
+    if normalized.length() == 0 {
+      continue
+    }
+    if base_hashes.contains(normalized) {
+      skipped_base_objects += 1
+      continue
+    }
+    match value {
+      Json::String(content) => entries.push((normalized, content))
+      _ =>
+        return Err(
+          "bundle sync: object payload must be string for hash " + normalized,
+        )
+    }
+  }
+  Ok({ total_objects, skipped_base_objects, entries })
+}
+
+///|
+fn parse_bundle_sync_cmd_options(
+  args : Array[String],
+) -> Result[BundleSyncCmdOptions, String] {
+  let mut base_path : String? = None
+  let mut lib_root : String? = None
+  let mut scope : String? = None
+  let mut bundle_version : String? = None
+  let positional : Array[String] = []
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    match arg {
+      "--base" => {
+        i += 1
+        if i >= args.length() {
+          return Err("bundle sync: missing value after --base")
+        }
+        base_path = Some(args[i])
+      }
+      "--lib-root" => {
+        i += 1
+        if i >= args.length() {
+          return Err("bundle sync: missing value after --lib-root")
+        }
+        lib_root = Some(args[i])
+      }
+      "--scope" => {
+        i += 1
+        if i >= args.length() {
+          return Err("bundle sync: missing value after --scope")
+        }
+        scope = Some(args[i])
+      }
+      "--version" => {
+        i += 1
+        if i >= args.length() {
+          return Err("bundle sync: missing value after --version")
+        }
+        bundle_version = Some(args[i])
+      }
+      _ => {
+        if arg.has_prefix("--") {
+          return Err("bundle sync: unknown arg " + arg)
+        }
+        positional.push(arg)
+      }
+    }
+    i += 1
+  }
+  if positional.length() != 1 {
+    return Err(
+      "bundle sync: expected [--base <old.vbundle>] [--lib-root <dir>] [--scope <scope>] [--version <version>] <new.vbundle>",
+    )
+  }
+  Ok({ target_path: positional[0], base_path, lib_root, scope, bundle_version })
+}
+
+///|
+fn bundle_sync_cmd(args : Array[String]) -> Unit {
+  let opts = match parse_bundle_sync_cmd_options(args) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let cwd = @io.current_dir_or_root()
+  let lib_root = match opts.lib_root {
+    Some(path) =>
+      if path.has_prefix("/") {
+        @vibe_fs.normalize_path(path)
+      } else {
+        @vibe_fs.normalize_path(cwd + "/" + path)
+      }
+    None => resolve_vibe_lib_dir(cwd)
+  }
+  match ensure_dir_recursive_for_eval(lib_root) {
+    Ok(_) => ()
+    Err(err) => abort("bundle sync: " + err)
+  }
+  let target_path = bundle_sync_resolve_input_path(opts.target_path, lib_root)
+  let (target_source, target_alias_hash) = match
+    bundle_sync_load_source(target_path, lib_root) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let target_root = match
+    bundle_sync_parse_root(
+      target_source,
+      "bundle sync: target `" + target_path + "`",
+    ) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  match target_root.get("format") {
+    Some(Json::String(format)) =>
+      if format != "vbundle-1" {
+        abort("bundle sync: target is not vbundle-1: " + target_path)
+      }
+    _ => abort("bundle sync: target missing `format`")
+  }
+  let target_objects = match
+    bundle_sync_extract_objects(
+      target_root,
+      "bundle sync: target `" + target_path + "`",
+    ) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let target_scope = match opts.scope {
+    Some(v) => Some(v)
+    None => bundle_sync_extract_meta_value(target_root, "scope")
+  }
+  let target_version = match opts.bundle_version {
+    Some(v) => Some(v)
+    None => bundle_sync_extract_meta_value(target_root, "version")
+  }
+  let base_path = match opts.base_path {
+    Some(path) => Some(bundle_sync_resolve_input_path(path, lib_root))
+    None =>
+      match (target_scope, target_version) {
+        (Some(scope), Some(version)) =>
+          bundle_sync_find_previous_alias_path(lib_root, scope, version)
+        _ => None
+      }
+  }
+  let mut base_hashes : Map[String, Bool] = {}
+  let mut base_label : String? = None
+  match base_path {
+    Some(path) =>
+      if path != target_path {
+        let (base_source, _) = match bundle_sync_load_source(path, lib_root) {
+          Ok(v) => v
+          Err(err) => abort(err)
+        }
+        let base_root = match
+          bundle_sync_parse_root(
+            base_source,
+            "bundle sync: base `" + path + "`",
+          ) {
+          Ok(v) => v
+          Err(err) => abort(err)
+        }
+        let base_objects = match
+          bundle_sync_extract_objects(
+            base_root,
+            "bundle sync: base `" + path + "`",
+          ) {
+          Ok(v) => v
+          Err(err) => abort(err)
+        }
+        base_hashes = bundle_hash_set_from_objects_obj(base_objects)
+        base_label = Some(path)
+      }
+    None => ()
+  }
+  let cache_codebase = @codebase.Codebase::new(lib_root)
+  let cached_base_hashes : Map[String, Bool] = {}
+  for hash, _ in base_hashes {
+    if @io.path_exists(cache_codebase.object_path(hash)) {
+      cached_base_hashes[hash] = true
+    }
+  }
+  let plan = match
+    bundle_sync_collect_plan(target_objects, cached_base_hashes) {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  let mut wrote_objects = 0
+  let mut skipped_existing = 0
+  for entry in plan.entries {
+    let (hash, content) = entry
+    let object_path = cache_codebase.object_path(hash)
+    if @io.path_exists(object_path) {
+      skipped_existing += 1
+      continue
+    }
+    let actual = @vibe_core.git_blob_hash_string(content)
+    if actual != hash {
+      abort(
+        "bundle sync: object hash mismatch: expected " +
+        hash +
+        ", got " +
+        actual,
+      )
+    }
+    let _ = cache_codebase.write_object(hash, content) catch {
+      e => abort("bundle sync: write object failed: " + e.to_string())
+    }
+    wrote_objects += 1
+  }
+  let computed_hash = @vibe_core.git_blob_hash_string(target_source)
+  let bundle_hash = match target_alias_hash {
+    Some(hash) => {
+      let normalized = bundle_normalize_hash(hash)
+      if normalized != computed_hash {
+        abort(
+          "bundle sync: alias hash mismatch: expected " +
+          normalized +
+          ", got " +
+          computed_hash,
+        )
+      }
+      normalized
+    }
+    None => computed_hash
+  }
+  let bundle_object_path = cache_codebase.object_path(bundle_hash)
+  let mut wrote_bundle_object = false
+  if not(@io.path_exists(bundle_object_path)) {
+    let _ = cache_codebase.write_object(bundle_hash, target_source) catch {
+      e => abort("bundle sync: write bundle object failed: " + e.to_string())
+    }
+    wrote_bundle_object = true
+  }
+  let mut alias_path : String? = None
+  match (target_scope, target_version) {
+    (Some(scope), Some(version)) =>
+      if scope.length() > 0 && version.length() > 0 {
+        let path = @vibe_fs.normalize_path(
+          lib_root + "/" + scope + "@" + version + ".vbundle",
+        )
+        match ensure_parent_dir_for_file(path, "bundle sync") {
+          Ok(_) => ()
+          Err(err) => abort("bundle sync: " + err)
+        }
+        @os_fs.write_string_to_file(path, "hash:" + bundle_hash + "\n") catch {
+          e => abort("bundle sync: write alias failed: " + e.to_string())
+        }
+        alias_path = Some(path)
+      }
+    _ => ()
+  }
+  let base_info = match base_label {
+    Some(path) => path
+    None => "<none>"
+  }
+  let alias_info = match alias_path {
+    Some(path) => path
+    None => "<none>"
+  }
+  println(
+    "bundle sync: target=" +
+    target_path +
+    " base=" +
+    base_info +
+    " objects=" +
+    plan.total_objects.to_string() +
+    " delta=" +
+    plan.entries.length().to_string() +
+    " wrote=" +
+    wrote_objects.to_string() +
+    " skipped_base=" +
+    plan.skipped_base_objects.to_string() +
+    " skipped_existing=" +
+    skipped_existing.to_string() +
+    " bundle_cache=" +
+    bundle_hash +
+    " bundle_cache_write=" +
+    wrote_bundle_object.to_string() +
+    " alias=" +
+    alias_info,
+  )
+}
+
+///|
 fn bundle_pack_cmd(args : Array[String]) -> Unit {
   let mut scope : String? = None
   let mut version : String? = None
@@ -1241,7 +1805,7 @@ fn bundle_migrate_cmd(args : Array[String]) -> Unit {
 ///|
 fn bundle_cmd(args : Array[String]) -> Unit {
   if args.length() == 0 {
-    abort("bundle: expected subcommand (pack|verify|inspect|cat|migrate)")
+    abort("bundle: expected subcommand (pack|verify|inspect|cat|migrate|sync)")
   }
   let sub = args[0]
   let sub_args = args_tail(args, 1)
@@ -1251,6 +1815,7 @@ fn bundle_cmd(args : Array[String]) -> Unit {
     "inspect" => bundle_inspect_cmd(sub_args)
     "cat" => bundle_cat_cmd(sub_args)
     "migrate" => bundle_migrate_cmd(sub_args)
+    "sync" => bundle_sync_cmd(sub_args)
     _ => abort("bundle: unknown subcommand: " + sub)
   }
 }

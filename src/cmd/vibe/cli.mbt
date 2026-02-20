@@ -160,7 +160,7 @@ fn print_usage() -> Unit {
     "    ref: push|pull|push-delta|pull-delta <scope> <file>  git/bit distributed refs",
   )
   println(
-    "  bundle <pack|verify|inspect|cat|migrate> ...  vbundle distribution utilities",
+    "  bundle <pack|verify|inspect|cat|migrate|sync> ...  vbundle distribution utilities",
   )
   println("  lsp                         start LSP server (stdin/stdout)")
   println("  parser commands: --syntax vibe|posix (default: vibe)")

@@ -485,6 +485,114 @@ test "cli bundle pack verify and cat workflow" {
 }
 
 ///|
+test "cli bundle sync options parse target and base" {
+  let parsed = parse_bundle_sync_cmd_options([
+    "--base", "demo/pkg@0.1.0.vbundle", "--scope", "demo/pkg", "--version", "0.2.0",
+    "demo/pkg@0.2.0.vbundle",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.target_path, "demo/pkg@0.2.0.vbundle")
+      assert_eq(opts.base_path, Some("demo/pkg@0.1.0.vbundle"))
+      assert_eq(opts.scope, Some("demo/pkg"))
+      assert_eq(opts.bundle_version, Some("0.2.0"))
+      assert_eq(opts.lib_root, None)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli bundle sync options reject unknown arg" {
+  let parsed = parse_bundle_sync_cmd_options(["--wat", "demo/pkg@0.2.0.vbundle"])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_eq(msg, "bundle sync: unknown arg --wat")
+  }
+}
+
+///|
+test "cli bundle sync collect plan skips base object hashes" {
+  let hash_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let hash_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  let hash_c = "cccccccccccccccccccccccccccccccccccccccc"
+  let target : Map[String, Json] = {}
+  target[hash_a] = Json::string("A")
+  target[hash_b] = Json::string("B")
+  target[hash_c] = Json::string("C")
+  let base : Map[String, Json] = {}
+  base["#" + hash_a] = Json::string("A")
+  base[hash_b] = Json::string("B")
+  let base_hashes = bundle_hash_set_from_objects_obj(base)
+  let plan = match bundle_sync_collect_plan(target, base_hashes) {
+    Ok(v) => v
+    Err(err) => fail("unexpected plan error: " + err)
+  }
+  assert_eq(plan.total_objects, 3)
+  assert_eq(plan.skipped_base_objects, 2)
+  assert_eq(plan.entries.length(), 1)
+  let (hash, content) = plan.entries[0]
+  assert_eq(hash, hash_c)
+  assert_eq(content, "C")
+}
+
+///|
+test "cli bundle sync with explicit base keeps missing shared objects" {
+  let root = wbtest_make_temp_dir("bundle_sync_base_missing")
+  let lib_root = root + "/lib-root"
+  let legacy_lib = root + "/legacy-lib"
+  let v1_path = root + "/pkg@0.1.0.vbundle"
+  let v2_path = root + "/pkg@0.2.0.vbundle"
+  let common_source = "let shared = 1\nexport { shared }\n"
+  let v1_source = "let old_value = 2\nexport { old_value }\n"
+  let v2_source = "let new_value = 3\nexport { new_value }\n"
+  let common_hash = @vibe_core.git_blob_hash_string(common_source)
+  let v1_hash = @vibe_core.git_blob_hash_string(v1_source)
+  let v2_hash = @vibe_core.git_blob_hash_string(v2_source)
+  let objects_v1 : Map[String, Json] = {}
+  objects_v1[common_hash] = Json::string(common_source)
+  objects_v1[v1_hash] = Json::string(v1_source)
+  let meta_v1 : Map[String, Json] = {}
+  meta_v1["scope"] = Json::string("demo/pkg")
+  meta_v1["version"] = Json::string("0.1.0")
+  meta_v1["entry_hash"] = Json::string(common_hash)
+  let root_v1 : Map[String, Json] = {}
+  root_v1["format"] = Json::string("vbundle-1")
+  root_v1["meta"] = Json::object(meta_v1)
+  root_v1["refs"] = Json::object({})
+  root_v1["objects"] = Json::object(objects_v1)
+  @os_fs.write_string_to_file(v1_path, Json::object(root_v1).stringify() + "\n") catch {
+    e => fail("write v1 bundle failed: " + e.to_string())
+  }
+  let objects_v2 : Map[String, Json] = {}
+  objects_v2[common_hash] = Json::string(common_source)
+  objects_v2[v2_hash] = Json::string(v2_source)
+  let meta_v2 : Map[String, Json] = {}
+  meta_v2["scope"] = Json::string("demo/pkg")
+  meta_v2["version"] = Json::string("0.2.0")
+  meta_v2["entry_hash"] = Json::string(common_hash)
+  let root_v2 : Map[String, Json] = {}
+  root_v2["format"] = Json::string("vbundle-1")
+  root_v2["meta"] = Json::object(meta_v2)
+  root_v2["refs"] = Json::object({})
+  root_v2["objects"] = Json::object(objects_v2)
+  @os_fs.write_string_to_file(v2_path, Json::object(root_v2).stringify() + "\n") catch {
+    e => fail("write v2 bundle failed: " + e.to_string())
+  }
+  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
+  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
+  @sys.set_env_var("VIBE_LIB_ROOT", lib_root)
+  @sys.set_env_var("VIBE_LIB_DIR", legacy_lib)
+  bundle_cmd(["sync", "--base", v1_path, v2_path])
+  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
+  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
+  let codebase = @codebase.Codebase::new(lib_root)
+  assert_true(@os_fs.path_exists(codebase.object_path(common_hash)))
+  assert_true(@os_fs.path_exists(codebase.object_path(v2_hash)))
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli bundle pack writes alias and object cache under VIBE_LIB_ROOT" {
   let root = wbtest_make_temp_dir("bundle_pack_cache_root")
   let lib_root = root + "/lib-root"
@@ -704,6 +812,85 @@ test "cli bundle migrate copies legacy vdb to vbundle" {
     e => fail("read migrated vbundle failed: " + e.to_string())
   }
   assert_true(migrated.contains("graph_head"))
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli bundle sync auto-resolves previous version and syncs object delta" {
+  let root = wbtest_make_temp_dir("bundle_sync_delta")
+  let lib_root = root + "/lib-root"
+  let legacy_lib = root + "/legacy-lib"
+  let v1_path = root + "/pkg@0.1.0.vbundle"
+  let v2_path = root + "/pkg@0.2.0.vbundle"
+  let common_source = "let shared = 1\nexport { shared }\n"
+  let v1_source = "let old_value = 2\nexport { old_value }\n"
+  let v2_source = "let new_value = 3\nexport { new_value }\n"
+  let common_hash = @vibe_core.git_blob_hash_string(common_source)
+  let v1_hash = @vibe_core.git_blob_hash_string(v1_source)
+  let v2_hash = @vibe_core.git_blob_hash_string(v2_source)
+  let objects_v1 : Map[String, Json] = {}
+  objects_v1[common_hash] = Json::string(common_source)
+  objects_v1[v1_hash] = Json::string(v1_source)
+  let meta_v1 : Map[String, Json] = {}
+  meta_v1["scope"] = Json::string("demo/pkg")
+  meta_v1["version"] = Json::string("0.1.0")
+  meta_v1["entry_hash"] = Json::string(common_hash)
+  let root_v1 : Map[String, Json] = {}
+  root_v1["format"] = Json::string("vbundle-1")
+  root_v1["meta"] = Json::object(meta_v1)
+  root_v1["refs"] = Json::object({})
+  root_v1["objects"] = Json::object(objects_v1)
+  let bundle_v1_source = Json::object(root_v1).stringify() + "\n"
+  @os_fs.write_string_to_file(v1_path, bundle_v1_source) catch {
+    e => fail("write v1 bundle failed: " + e.to_string())
+  }
+  let objects_v2 : Map[String, Json] = {}
+  objects_v2[common_hash] = Json::string(common_source)
+  objects_v2[v1_hash] = Json::string(v1_source)
+  objects_v2[v2_hash] = Json::string(v2_source)
+  let meta_v2 : Map[String, Json] = {}
+  meta_v2["scope"] = Json::string("demo/pkg")
+  meta_v2["version"] = Json::string("0.2.0")
+  meta_v2["entry_hash"] = Json::string(common_hash)
+  let root_v2 : Map[String, Json] = {}
+  root_v2["format"] = Json::string("vbundle-1")
+  root_v2["meta"] = Json::object(meta_v2)
+  root_v2["refs"] = Json::object({})
+  root_v2["objects"] = Json::object(objects_v2)
+  let bundle_v2_source = Json::object(root_v2).stringify() + "\n"
+  @os_fs.write_string_to_file(v2_path, bundle_v2_source) catch {
+    e => fail("write v2 bundle failed: " + e.to_string())
+  }
+  let prev_root = @sys.get_env_var("VIBE_LIB_ROOT")
+  let prev_dir = @sys.get_env_var("VIBE_LIB_DIR")
+  @sys.set_env_var("VIBE_LIB_ROOT", lib_root)
+  @sys.set_env_var("VIBE_LIB_DIR", legacy_lib)
+  bundle_cmd(["sync", v1_path])
+  let codebase = @codebase.Codebase::new(lib_root)
+  assert_true(@os_fs.path_exists(codebase.object_path(common_hash)))
+  assert_true(@os_fs.path_exists(codebase.object_path(v1_hash)))
+  let v1_bundle_hash = @vibe_core.git_blob_hash_string(bundle_v1_source)
+  assert_true(@os_fs.path_exists(codebase.object_path(v1_bundle_hash)))
+  let alias_v1_path = lib_root + "/demo/pkg@0.1.0.vbundle"
+  assert_true(@os_fs.path_exists(alias_v1_path))
+  let alias_v1_source = @os_fs.read_file_to_string(alias_v1_path) catch {
+    e => fail("read alias v1 failed: " + e.to_string())
+  }
+  assert_eq(alias_v1_source.trim().to_string(), "hash:" + v1_bundle_hash)
+  bundle_cmd(["sync", v2_path])
+  wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
+  wbtest_restore_env_var("VIBE_LIB_DIR", prev_dir)
+  assert_true(@os_fs.path_exists(codebase.object_path(common_hash)))
+  assert_true(@os_fs.path_exists(codebase.object_path(v1_hash)))
+  assert_true(@os_fs.path_exists(codebase.object_path(v2_hash)))
+  let v2_bundle_hash = @vibe_core.git_blob_hash_string(bundle_v2_source)
+  assert_true(@os_fs.path_exists(codebase.object_path(v2_bundle_hash)))
+  let alias_v2_path = lib_root + "/demo/pkg@0.2.0.vbundle"
+  assert_true(@os_fs.path_exists(alias_v2_path))
+  let alias_v2_source = @os_fs.read_file_to_string(alias_v2_path) catch {
+    e => fail("read alias v2 failed: " + e.to_string())
+  }
+  assert_eq(alias_v2_source.trim().to_string(), "hash:" + v2_bundle_hash)
   wbtest_remove_if_exists(root)
 }
 
