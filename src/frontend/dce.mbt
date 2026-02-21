@@ -462,41 +462,8 @@ fn add_ref_name(
   }
   // Note: enum constructors (is_ctor_name) ARE added as refs
   // so that DCE keeps the enum definition when a constructor is used
-  if dce_is_builtin_name(name) || dce_has_qualified_name(name) {
+  if @core.is_builtin_name(name) || @core.has_qualified_name(name) {
     return
   }
   refs[name] = true
-}
-
-///|
-fn dce_has_qualified_name(name : String) -> Bool {
-  for c in name {
-    if c == '.' {
-      return true
-    }
-  }
-  false
-}
-
-///|
-fn dce_is_builtin_name(name : String) -> Bool {
-  name == "path" ||
-  name == "addr" ||
-  name == "sh" ||
-  name == "add" ||
-  name == "sub" ||
-  name == "mul" ||
-  name == "div" ||
-  name == "eq" ||
-  name == "lt" ||
-  name == "stdout_write_char" ||
-  name == "stdout_write_stream" ||
-  name == "stdin_read_char" ||
-  name == "stdin_read_stream" ||
-  name == "array_builder" ||
-  name == "array_builder_push" ||
-  name == "array_builder_freeze" ||
-  name == "map_builder" ||
-  name == "map_builder_set" ||
-  name == "map_builder_freeze"
 }

@@ -263,6 +263,50 @@ pub fn walk_block_refs(
 }
 
 ///|
+/// Check if a name is a runtime builtin (not a user-defined symbol).
+/// Union of builtins used by DCE and test runner.
+pub fn is_builtin_name(name : String) -> Bool {
+  name == "path" ||
+  name == "addr" ||
+  name == "sh" ||
+  name == "add" ||
+  name == "sub" ||
+  name == "mul" ||
+  name == "div" ||
+  name == "eq" ||
+  name == "lt" ||
+  name == "stdout_write_char" ||
+  name == "stdout_write_stream" ||
+  name == "stdin_read_char" ||
+  name == "stdin_read_stream" ||
+  name == "array_builder" ||
+  name == "array_builder_push" ||
+  name == "array_builder_freeze" ||
+  name == "map_builder" ||
+  name == "map_builder_set" ||
+  name == "map_builder_freeze"
+}
+
+///|
+/// Check if a name is a logic builtin (not, and, or).
+/// These are only excluded by the test runner, not by DCE,
+/// because users can shadow them with custom definitions.
+pub fn is_logic_builtin_name(name : String) -> Bool {
+  name == "not" || name == "and" || name == "or"
+}
+
+///|
+/// Check if a name contains a dot (i.e. is a qualified/namespaced name).
+pub fn has_qualified_name(name : String) -> Bool {
+  for c in name {
+    if c == '.' {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// Walk a single statement, mutating `scope` to add bound names and collecting
 /// free variable references via `on_name`.
 pub fn walk_stmt_refs(

@@ -187,229 +187,27 @@ fn normalize_count_candidate_refs_module(
   candidates : Map[String, NormalizeInlineCandidate],
 ) -> Map[String, Int] {
   let counts : Map[String, Int] = {}
+  let candidate_names : Map[String, Bool] = {}
+  for name, _ in candidates {
+    candidate_names[name] = true
+  }
   for stmt in mod.stmts {
-    let bound = @vibe_core.WalkerScope::new()
-    normalize_count_candidate_refs_stmt(stmt, bound, candidates, counts)
+    @vibe_core.walk_stmt_refs(
+      stmt,
+      @vibe_core.WalkerScope::new(),
+      candidate_names,
+      fn(name, bound, cands) {
+        if bound.contains(name) || not(cands.contains(name)) {
+          return
+        }
+        match counts.get(name) {
+          Some(v) => counts[name] = v + 1
+          None => counts[name] = 1
+        }
+      },
+    )
   }
   counts
-}
-
-///|
-fn normalize_count_candidate_refs_stmt(
-  stmt : @vibe_core.Stmt,
-  bound : @vibe_core.WalkerScope,
-  candidates : Map[String, NormalizeInlineCandidate],
-  counts : Map[String, Int],
-) -> Unit {
-  match stmt {
-    @vibe_core.Stmt::Let(rec~, name~, expr~, ..)
-    | @vibe_core.Stmt::ExportLet(rec~, name~, expr~, ..) => {
-      if rec {
-        bound.bindings[name] = true
-      }
-      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
-      if not(rec) {
-        bound.bindings[name] = true
-      }
-    }
-    @vibe_core.Stmt::LetMut(name~, expr~, ..) => {
-      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
-      bound.bindings[name] = true
-    }
-    @vibe_core.Stmt::Assign(name~, expr~, ..) => {
-      normalize_count_candidate_ref_name(name, bound, candidates, counts)
-      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
-    }
-    @vibe_core.Stmt::IndexAssign(target~, index~, value~, ..) => {
-      normalize_count_candidate_refs_expr(target, bound, candidates, counts)
-      normalize_count_candidate_refs_expr(index, bound, candidates, counts)
-      normalize_count_candidate_refs_expr(value, bound, candidates, counts)
-    }
-    @vibe_core.Stmt::LetPat(pat~, expr~, ..) => {
-      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
-      @vibe_core.bind_pattern_names_scope(bound, pat)
-    }
-    @vibe_core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
-      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
-      normalize_count_candidate_refs_block(else_body, bound, candidates, counts)
-      @vibe_core.bind_pattern_names_scope(bound, pat)
-    }
-    @vibe_core.Stmt::Expr(expr~, ..) =>
-      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
-    @vibe_core.Stmt::Test(body~, ..) | @vibe_core.Stmt::Bench(body~, ..) =>
-      normalize_count_candidate_refs_block(body, bound, candidates, counts)
-    @vibe_core.Stmt::Import(..)
-    | @vibe_core.Stmt::EnumDef(..)
-    | @vibe_core.Stmt::ExportEnumDef(..)
-    | @vibe_core.Stmt::TypeAlias(..)
-    | @vibe_core.Stmt::ExportTypeAlias(..)
-    | @vibe_core.Stmt::TraitDef(..)
-    | @vibe_core.Stmt::TraitImpl(..)
-    | @vibe_core.Stmt::Export(..)
-    | @vibe_core.Stmt::ReExport(..)
-    | @vibe_core.Stmt::StructDef(..)
-    | @vibe_core.Stmt::ExportStructDef(..) => ()
-  }
-}
-
-///|
-fn normalize_count_candidate_refs_block(
-  body : @vibe_core.Module,
-  bound : @vibe_core.WalkerScope,
-  candidates : Map[String, NormalizeInlineCandidate],
-  counts : Map[String, Int],
-) -> Unit {
-  let scope = bound.child()
-  for stmt in body.stmts {
-    normalize_count_candidate_refs_stmt(stmt, scope, candidates, counts)
-  }
-}
-
-///|
-fn normalize_count_candidate_refs_expr(
-  expr : @vibe_core.Expr,
-  bound : @vibe_core.WalkerScope,
-  candidates : Map[String, NormalizeInlineCandidate],
-  counts : Map[String, Int],
-) -> Unit {
-  match expr {
-    @vibe_core.Expr::Int(..)
-    | @vibe_core.Expr::Float(..)
-    | @vibe_core.Expr::Double(..)
-    | @vibe_core.Expr::Bool(..)
-    | @vibe_core.Expr::Char(..)
-    | @vibe_core.Expr::String(..)
-    | @vibe_core.Expr::Placeholder(..)
-    | @vibe_core.Expr::Break(..)
-    | @vibe_core.Expr::Continue(..) => ()
-    @vibe_core.Expr::Ident(name~, ..) =>
-      normalize_count_candidate_ref_name(name, bound, candidates, counts)
-    @vibe_core.Expr::Call(name~, args~, ..) => {
-      normalize_count_candidate_ref_name(name, bound, candidates, counts)
-      for arg in args {
-        normalize_count_candidate_refs_expr(arg.expr, bound, candidates, counts)
-      }
-    }
-    @vibe_core.Expr::Tuple(items~, ..) =>
-      for item in items {
-        normalize_count_candidate_refs_expr(item, bound, candidates, counts)
-      }
-    @vibe_core.Expr::TupleIndex(expr~, ..)
-    | @vibe_core.Expr::Yield(expr~, ..) =>
-      normalize_count_candidate_refs_expr(expr, bound, candidates, counts)
-    @vibe_core.Expr::Record(fields~, ..)
-    | @vibe_core.Expr::StructLit(fields~, ..) =>
-      for field in fields {
-        normalize_count_candidate_refs_expr(
-          field.expr,
-          bound,
-          candidates,
-          counts,
-        )
-      }
-    @vibe_core.Expr::Array(items~, ..) =>
-      for item in items {
-        normalize_count_candidate_refs_expr(item, bound, candidates, counts)
-      }
-    @vibe_core.Expr::Map(fields~, ..) =>
-      for field in fields {
-        normalize_count_candidate_refs_expr(
-          field.expr,
-          bound,
-          candidates,
-          counts,
-        )
-      }
-    @vibe_core.Expr::If(cond~, then_body~, else_body~, ..) => {
-      normalize_count_candidate_refs_expr(cond, bound, candidates, counts)
-      normalize_count_candidate_refs_block(then_body, bound, candidates, counts)
-      normalize_count_candidate_refs_block(else_body, bound, candidates, counts)
-    }
-    @vibe_core.Expr::Block(body~, ..) | @vibe_core.Expr::Do(body~, ..) =>
-      normalize_count_candidate_refs_block(body, bound, candidates, counts)
-    @vibe_core.Expr::Handle(body~, arms~, ..) => {
-      normalize_count_candidate_refs_block(body, bound, candidates, counts)
-      for arm in arms {
-        let arm_bound = bound.child()
-        @vibe_core.bind_pattern_names_scope(arm_bound, arm.pat)
-        match arm.cond {
-          Some(cond) =>
-            normalize_count_candidate_refs_expr(
-              cond, arm_bound, candidates, counts,
-            )
-          None => ()
-        }
-        normalize_count_candidate_refs_expr(
-          arm.expr,
-          arm_bound,
-          candidates,
-          counts,
-        )
-      }
-    }
-    @vibe_core.Expr::Match(scrutinee~, arms~, ..) => {
-      normalize_count_candidate_refs_expr(scrutinee, bound, candidates, counts)
-      for arm in arms {
-        let arm_bound = bound.child()
-        @vibe_core.bind_pattern_names_scope(arm_bound, arm.pat)
-        match arm.cond {
-          Some(cond) =>
-            normalize_count_candidate_refs_expr(
-              cond, arm_bound, candidates, counts,
-            )
-          None => ()
-        }
-        normalize_count_candidate_refs_expr(
-          arm.expr,
-          arm_bound,
-          candidates,
-          counts,
-        )
-      }
-    }
-    @vibe_core.Expr::Fn(params~, body~, ..) => {
-      let fn_bound = bound.child()
-      for param in params {
-        fn_bound.bindings[param.name] = true
-      }
-      normalize_count_candidate_refs_block(body, fn_bound, candidates, counts)
-    }
-    @vibe_core.Expr::While(cond~, body~, ..) => {
-      normalize_count_candidate_refs_expr(cond, bound, candidates, counts)
-      normalize_count_candidate_refs_block(body, bound, candidates, counts)
-    }
-    @vibe_core.Expr::Loop(params~, body~, ..) => {
-      let loop_bound = bound.child()
-      for param in params {
-        normalize_count_candidate_refs_expr(
-          param.init,
-          bound,
-          candidates,
-          counts,
-        )
-        loop_bound.bindings[param.name] = true
-      }
-      normalize_count_candidate_refs_block(body, loop_bound, candidates, counts)
-    }
-    @vibe_core.Expr::Raise(value~, ..) =>
-      normalize_count_candidate_refs_expr(value, bound, candidates, counts)
-  }
-}
-
-///|
-fn normalize_count_candidate_ref_name(
-  name : String,
-  bound : @vibe_core.WalkerScope,
-  candidates : Map[String, NormalizeInlineCandidate],
-  counts : Map[String, Int],
-) -> Unit {
-  if bound.contains(name) || not(candidates.contains(name)) {
-    return
-  }
-  match counts.get(name) {
-    Some(v) => counts[name] = v + 1
-    None => counts[name] = 1
-  }
 }
 
 ///|

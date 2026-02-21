@@ -202,47 +202,11 @@ fn add_dep_name(
   if bound.contains(name) {
     return
   }
-  if is_builtin_name(name) ||
+  if @core.is_builtin_name(name) ||
+    @core.is_logic_builtin_name(name) ||
     @core.is_ctor_name(name) ||
-    has_qualified_name(name) {
+    @core.has_qualified_name(name) {
     return
   }
   out[name] = true
-}
-
-///|
-fn has_qualified_name(name : String) -> Bool {
-  let chars = name.to_array()
-  for c in chars {
-    if c == '.' {
-      return true
-    }
-  }
-  false
-}
-
-///|
-fn is_builtin_name(name : String) -> Bool {
-  name == "path" ||
-  name == "addr" ||
-  name == "sh" ||
-  name == "add" ||
-  name == "sub" ||
-  name == "mul" ||
-  name == "div" ||
-  name == "eq" ||
-  name == "lt" ||
-  name == "not" ||
-  name == "and" ||
-  name == "or" ||
-  name == "stdout_write_char" ||
-  name == "stdout_write_stream" ||
-  name == "stdin_read_char" ||
-  name == "stdin_read_stream" ||
-  name == "array_builder" ||
-  name == "array_builder_push" ||
-  name == "array_builder_freeze" ||
-  name == "map_builder" ||
-  name == "map_builder_set" ||
-  name == "map_builder_freeze"
 }

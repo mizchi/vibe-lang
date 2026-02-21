@@ -13,12 +13,12 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `src/frontend/monoify.mbt`
 - [x] `TypeEnv` の namespace 解決ロジックを分離する
   - 対象: `src/checker/typecheck_env_namespace.mbt`, `src/checker/typecheck_call.mbt`
-- [ ] `compile_expr` をノード別ハンドラに分割する
+- [x] `compile_expr` をノード別ハンドラに分割する
   - 対象: `src/codegen/wasm_codegen_expr.mbt`
 - [ ] Type member 解決ロジックを checker/runtime で共通化する
   - 対象: `src/checker/typecheck_expr.mbt`, `src/runtime/eval.mbt`
-- [ ] AST 参照収集 walker を共通化して重複実装を削減する
-  - 対象: `src/frontend/dce.mbt`, `src/runtime/test_runner.mbt`, `src/cmd/vibe/normalize_engine.mbt`
+- [x] AST 参照収集 walker を共通化して重複実装を削減する
+  - 対象: `src/core/ast_walker.mbt`, `src/frontend/dce.mbt`, `src/runtime/test_runner.mbt`, `src/cmd/vibe/normalize_optimize.mbt`
 - [ ] checker のグローバル mutable state (`global_next_type_var`, `cached_prelude_env`) をセッション化する
   - 対象: `src/checker/typecheck_env.mbt`, `src/checker/typecheck_stmts.mbt`
 
@@ -94,7 +94,9 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `src/runtime/db.mbt`
 - [ ] runtime package の責務を整理し、frontend 再公開 API を縮小する
   - 対象: `src/runtime/frontend_bridge.mbt`, `src/runtime/pkg.generated.mbti`
-- [ ] `resume` の one-shot 実装で `perform` 前副作用が二重実行される問題を解消する
+- [x] `resume` の one-shot 実装で `perform` 前副作用が二重実行される問題を解消する
+  - `has_prior_effect` ガードで prior effects がある場合は resume を拒否（runtime error）
+  - 根本解決（continuation capture）は将来課題として残置
   - 対象: `src/runtime/eval.mbt`, `src/runtime/store.mbt`
 - [ ] `resume` 引数型を継続先型と接続し、実行時型崩壊を型検査で防ぐ
   - 対象: `src/checker/typecheck_expr.mbt`, `src/checker/typecheck_env*.mbt`
