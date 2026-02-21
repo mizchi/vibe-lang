@@ -1391,26 +1391,17 @@ fn resolve_type_member_call_name_rt(
   if name.contains("::") || name.contains(".") {
     return None
   }
-  let mut recv_expr : @core.Expr? = None
-  for arg in args {
-    match arg.label {
-      Some(_) => ()
-      None => if recv_expr is None { recv_expr = Some(arg.expr) }
-    }
-  }
-  match recv_expr {
+  match @core.first_positional_expr(args) {
     None => None
     Some(expr) =>
       match rt.type_env.get_expr_type(expr.span()) {
         Some(recv_ty) =>
-          match rt.type_env.namespace_root(recv_ty) {
-            Some(root) => {
-              let candidate = root + "::" + name
+          match rt.type_env.build_type_member_candidate(recv_ty, name) {
+            Some(candidate) =>
               match rt.get(candidate) {
                 Some(_) => Some(candidate)
                 None => None
               }
-            }
             None => None
           }
         None => None

@@ -50,6 +50,18 @@ pub fn TypeEnv::namespace_root(self : TypeEnv, ty : @core.Type) -> String? {
 }
 
 ///|
+pub fn TypeEnv::build_type_member_candidate(
+  self : TypeEnv,
+  recv_ty : @core.Type,
+  name : String,
+) -> String? {
+  match self.namespace_root(recv_ty) {
+    Some(root) => Some(root + "::" + name)
+    None => None
+  }
+}
+
+///|
 fn namespace_root_from_type(env : TypeEnv, ty : @core.Type) -> String? {
   env.namespace_root(resolve_type(env, ty))
 }

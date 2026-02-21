@@ -12,25 +12,19 @@ fn resolve_type_member_call_name(
     return None
   }
   let _ = call_span
-  let mut recv_expr : @core.Expr? = None
-  for arg in args {
-    match arg.label {
-      Some(_) => ()
-      None => if recv_expr is None { recv_expr = Some(arg.expr) }
-    }
-  }
-  match recv_expr {
-    None => return None
+  match @core.first_positional_expr(args) {
+    None => None
     Some(expr) => {
-      let recv_ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
-      match namespace_root_from_type(env, recv_ty) {
-        Some(root) => {
-          let candidate = root + "::" + name
+      let recv_ty = resolve_type(
+        env,
+        type_expr_eff(env, expr, aliases, effects, allow_effect),
+      )
+      match env.build_type_member_candidate(recv_ty, name) {
+        Some(candidate) =>
           match env.get(candidate) {
             Some(_) => Some(candidate)
             None => None
           }
-        }
         None => None
       }
     }

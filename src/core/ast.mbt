@@ -246,6 +246,17 @@ pub(all) struct CallArg {
 } derive(Show, Eq)
 
 ///|
+pub fn first_positional_expr(args : Array[CallArg]) -> Expr? {
+  for arg in args {
+    match arg.label {
+      Some(_) => ()
+      None => return Some(arg.expr)
+    }
+  }
+  None
+}
+
+///|
 pub fn Expr::span(self : Expr) -> Span {
   match self {
     Expr::Int(span~, ..)
