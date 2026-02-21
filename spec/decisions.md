@@ -71,8 +71,8 @@ Status: accepted and moved from `TODO.md`.
 - Parser dispatch policy is fixed in spec and CLI behavior:
   parser-consuming commands use explicit `--syntax vibe|posix` switch
   (default `vibe`) with no automatic fallback.
-  `posix` is preview-enabled only for runtime-eval commands
-  (`run`/`eval`/`repl`/`repl-stdin`/`repl-wasi`/`bench`) and rejected on
+  `posix` is preview-enabled only for shell commands
+  (`shell`/`shell-stdin`/`shell-wasi`) and rejected on
   static/compile-oriented commands.
 - PosixMode runtime preview semantics are fixed:
   `Runtime::eval_script_with_mode(..., PosixMode)` desugars unresolved
@@ -84,6 +84,14 @@ Status: accepted and moved from `TODO.md`.
   effect-set requirement and `do` boundary requirement are independent checks;
   `do` does not grant missing effects, while declared function effects can allow
   direct effectful calls under current implementation rules.
+- Local mutation semantics are fixed for deterministic hashing:
+  `let mut` is treated as lexical-scope local state (not externally observable
+  side effects), `Ref[T]` is introduced with no-escape constraints
+  (no return/export/persistent store, no crossing `await`/`spawn`,
+  no function-parameter declaration in Phase 1),
+  user-facing local mutation defaults to `let mut` in Phase 1,
+  and lightweight effect tiering (`pure` / `state_local` / `impure`) is adopted
+  as the policy direction without requiring Rust-grade ownership types.
 - Hashing and IR documentation is fixed to current implementation:
   module content hash is Git blob `sha1` over canonical S-expression output, and
   IR schema/examples are aligned to `module_to_sexp` serializer output.

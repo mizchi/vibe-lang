@@ -4,12 +4,42 @@ pub fn type_check(ast : @core.Module) -> TypeEnv raise TypeError {
 }
 
 ///|
+pub fn type_check_with_profile(
+  ast : @core.Module,
+) -> (TypeEnv, ScopedRefProfile) raise TypeError {
+  type_check_with_aliases_profile(ast, {})
+}
+
+///|
+pub fn type_check_with_aliases_profile(
+  ast : @core.Module,
+  aliases : Map[String, @core.Ref],
+) -> (TypeEnv, ScopedRefProfile) raise TypeError {
+  let env = get_cached_prelude_env_for_module()
+  env.set_scoped_ref_profile_enabled(true)
+  env.set_scoped_ref_checks_enabled(module_may_use_scoped_ref(ast))
+  let exported_names = collect_exported_names(ast.stmts)
+  let typed = type_check_stmts(
+    env,
+    ast.stmts,
+    aliases,
+    effect_scope_all(),
+    false,
+    exported_names,
+  ) catch {
+    e => raise e.resolve_vars(env)
+  }
+  (typed, typed.get_scoped_ref_profile())
+}
+
+///|
 /// @core.Type check with import aliases (qualified names treated as external).
 pub fn type_check_with_aliases(
   ast : @core.Module,
   aliases : Map[String, @core.Ref],
 ) -> TypeEnv raise TypeError {
   let env = get_cached_prelude_env_for_module()
+  env.set_scoped_ref_checks_enabled(module_may_use_scoped_ref(ast))
   let exported_names = collect_exported_names(ast.stmts)
   type_check_stmts(
     env,
@@ -77,6 +107,7 @@ pub fn type_check_with_env(
 ) -> TypeEnv raise TypeError {
   ensure_prelude_option(env)
   ensure_prelude_functions(env, aliases)
+  env.set_scoped_ref_checks_enabled(module_may_use_scoped_ref(ast))
   let exported_names = collect_exported_names(ast.stmts)
   type_check_stmts(
     env,
@@ -88,6 +119,190 @@ pub fn type_check_with_env(
   ) catch {
     e => raise e.resolve_vars(env)
   }
+}
+
+///|
+fn module_may_use_scoped_ref(ast : @core.Module) -> Bool {
+  for stmt in ast.stmts {
+    if stmt_may_use_scoped_ref(stmt) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn stmt_may_use_scoped_ref(stmt : @core.Stmt) -> Bool {
+  match stmt {
+    @core.Stmt::Let(expr~, ..)
+    | @core.Stmt::Expr(expr~, ..)
+    | @core.Stmt::ExportLet(expr~, ..) => expr_may_use_scoped_ref(expr)
+    @core.Stmt::LetMut(..)
+    | @core.Stmt::Assign(..)
+    | @core.Stmt::IndexAssign(..) => true
+    @core.Stmt::LetPat(expr~, ..) => expr_may_use_scoped_ref(expr)
+    @core.Stmt::LetPatElse(expr~, else_body~, ..) =>
+      expr_may_use_scoped_ref(expr) || module_may_use_scoped_ref(else_body)
+    @core.Stmt::EnumDef(ctors~, ..) | @core.Stmt::ExportEnumDef(ctors~, ..) => {
+      for ctor in ctors {
+        for arg_ty in ctor.args {
+          if type_may_contain_scoped_ref_hint(arg_ty) {
+            return true
+          }
+        }
+      }
+      false
+    }
+    @core.Stmt::TypeAlias(target~, ..)
+    | @core.Stmt::ExportTypeAlias(target~, ..) =>
+      type_may_contain_scoped_ref_hint(target)
+    @core.Stmt::TraitImpl(target~, ..) =>
+      type_may_contain_scoped_ref_hint(target)
+    @core.Stmt::StructDef(fields~, ..)
+    | @core.Stmt::ExportStructDef(fields~, ..) => {
+      for field in fields {
+        if type_may_contain_scoped_ref_hint(field.ty) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+      module_may_use_scoped_ref(body)
+    @core.Stmt::TraitDef(..)
+    | @core.Stmt::Import(..)
+    | @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..) => false
+  }
+}
+
+///|
+fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
+  match expr {
+    @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::Ident(..)
+    | @core.Expr::Placeholder(..) => false
+    @core.Expr::Call(type_args~, args~, ..) => {
+      for ty in type_args {
+        if type_may_contain_scoped_ref_hint(ty) {
+          return true
+        }
+      }
+      for arg in args {
+        if expr_may_use_scoped_ref(arg.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) => {
+      for item in items {
+        if expr_may_use_scoped_ref(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Continue(args~, ..) => {
+      for item in args {
+        if expr_may_use_scoped_ref(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::TupleIndex(expr~, ..) | @core.Expr::Yield(expr~, ..) =>
+      expr_may_use_scoped_ref(expr)
+    @core.Expr::Record(fields~, ..) => {
+      for field in fields {
+        if expr_may_use_scoped_ref(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::Map(fields~, ..) => {
+      for field in fields {
+        if expr_may_use_scoped_ref(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) =>
+      expr_may_use_scoped_ref(cond) ||
+      module_may_use_scoped_ref(then_body) ||
+      module_may_use_scoped_ref(else_body)
+    @core.Expr::Block(body~, ..) | @core.Expr::Do(body~, ..) =>
+      module_may_use_scoped_ref(body)
+    @core.Expr::Match(scrutinee~, arms~, ..) =>
+      expr_may_use_scoped_ref(scrutinee) || match_arms_may_use_scoped_ref(arms)
+    @core.Expr::Fn(params~, ret~, body~, ..) => {
+      for param in params {
+        if type_may_contain_scoped_ref_hint(param.ty) {
+          return true
+        }
+      }
+      match ret {
+        Some(ret_ty) =>
+          if type_may_contain_scoped_ref_hint(ret_ty) {
+            return true
+          }
+        None => ()
+      }
+      module_may_use_scoped_ref(body)
+    }
+    @core.Expr::While(cond~, body~, ..) =>
+      expr_may_use_scoped_ref(cond) || module_may_use_scoped_ref(body)
+    @core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        if expr_may_use_scoped_ref(param.init) {
+          return true
+        }
+      }
+      module_may_use_scoped_ref(body)
+    }
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(v) => expr_may_use_scoped_ref(v)
+        None => false
+      }
+    @core.Expr::Raise(value~, ..) => expr_may_use_scoped_ref(value)
+    @core.Expr::Handle(body~, arms~, ..) =>
+      module_may_use_scoped_ref(body) || match_arms_may_use_scoped_ref(arms)
+    @core.Expr::StructLit(type_args~, fields~, ..) => {
+      for ty in type_args {
+        if type_may_contain_scoped_ref_hint(ty) {
+          return true
+        }
+      }
+      for field in fields {
+        if expr_may_use_scoped_ref(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
+///|
+fn match_arms_may_use_scoped_ref(arms : Array[@core.MatchArm]) -> Bool {
+  for arm in arms {
+    match arm.cond {
+      Some(cond) => if expr_may_use_scoped_ref(cond) { return true }
+      None => ()
+    }
+    if expr_may_use_scoped_ref(arm.expr) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -164,7 +379,7 @@ fn type_check_stmts(
               match result {
                 Ok(scheme) => {
                   env.set_scheme(name, scheme)
-                  env.set_purity(name, true)
+                  env.set_purity_tier(name, TopLevelPurityTier::Pure)
                   forward_fns[name] = true
                 }
                 Err(_) => ()
@@ -195,6 +410,7 @@ fn type_check_stmts(
           env, effective_rec, name, expr, span, aliases, effects, allow_effect,
         )
         ensure_type_member_decl_receiver_contract(env, name, scheme.ty, span)
+        ensure_no_toplevel_scoped_ref_escape(env, scheme.ty, span)
         if name != "_" {
           if has_exports && exported_names.contains(name) {
             if forward_fns.contains(name) {
@@ -205,7 +421,7 @@ fn type_check_stmts(
             env.set_scheme(name, scheme)
           }
           let info = purity_for_let(env, effective_rec, name, expr)
-          env.set_purity(name, info.value)
+          env.set_purity_tier(name, info.value_tier)
           record_value_binding(name)
         }
       }
@@ -237,6 +453,7 @@ fn type_check_stmts(
           env, effective_rec, name, expr, span, aliases, effects, allow_effect,
         )
         ensure_type_member_decl_receiver_contract(env, name, scheme.ty, span)
+        ensure_no_toplevel_scoped_ref_escape(env, scheme.ty, span)
         if name != "_" {
           // If this is a forward function, remove the provisional pre-scan
           // binding so set_exported_scheme sees it as a fresh registration
@@ -246,7 +463,7 @@ fn type_check_stmts(
           }
           env.set_exported_scheme(name, scheme)
           let info = purity_for_let(env, effective_rec, name, expr)
-          env.set_purity(name, info.value)
+          env.set_purity_tier(name, info.value_tier)
           record_value_binding(name)
         }
       }
@@ -282,6 +499,7 @@ fn type_check_stmts(
       @core.Stmt::LetMut(name~, expr~, span~) => {
         ensure_fresh_value_binding(name, span)
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        ensure_no_toplevel_scoped_ref_escape(env, ty, span)
         if name != "_" {
           let scheme = TypeScheme::{
             vars: [],
@@ -295,16 +513,18 @@ fn type_check_stmts(
           } else {
             env.set_scheme(name, scheme)
           }
-          env.set_purity(name, false)
+          env.set_purity_tier(name, TopLevelPurityTier::StateLocal)
           record_value_binding(name)
         }
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        ensure_no_toplevel_scoped_ref_escape(env, ty, span)
         let bindings = collect_pattern_bindings(env, pat, ty)
         for name, bound_ty in bindings {
           ensure_fresh_value_binding(name, span)
+          ensure_no_toplevel_scoped_ref_escape(env, bound_ty, span)
           let scheme = TypeScheme::{
             vars: [],
             num_vars: [],
@@ -317,16 +537,18 @@ fn type_check_stmts(
           } else {
             env.set_scheme(name, scheme)
           }
-          env.set_purity(name, true)
+          env.set_purity_tier(name, TopLevelPurityTier::Pure)
           record_value_binding(name)
         }
       }
       @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
         let _ = span
         let ty = type_expr_eff(env, expr, aliases, effects, allow_effect)
+        ensure_no_toplevel_scoped_ref_escape(env, ty, span)
         let bindings = collect_pattern_bindings(env, pat, ty)
         for name, bound_ty in bindings {
           ensure_fresh_value_binding(name, span)
+          ensure_no_toplevel_scoped_ref_escape(env, bound_ty, span)
           let scheme = TypeScheme::{
             vars: [],
             num_vars: [],
@@ -1242,6 +1464,7 @@ fn build_forward_fn_scheme(
     }
     let param_ty = substitute_type_params(param_ty_with_num, type_param_vars)
     let resolved = normalize_type(env, param_ty)
+    ensure_no_scoped_ref_param_decl(env, resolved, fn_span)
     // Note: bounds are NOT checked here; the main loop's type_let_expr(rec=true)
     // will perform full bound checking when the function body is type-checked.
     resolved_params.push(@core.FuncParam::{

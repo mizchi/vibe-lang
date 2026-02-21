@@ -40,6 +40,76 @@ fn bind_handle_arm_pat(
 }
 
 ///|
+fn ensure_no_scoped_ref_capture_in_fn(
+  env : TypeEnv,
+  params : Array[@core.FuncParam],
+  body : @core.Module,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if not(env.scoped_ref_checks_enabled) {
+    return
+  }
+  let profile_start = if env.scoped_ref_profile_enabled {
+    env.scoped_ref_capture_checks += 1
+    Some(@bench.monotonic_clock_start())
+  } else {
+    None
+  }
+  let finish = fn() {
+    match profile_start {
+      Some(ts) =>
+        env.scoped_ref_capture_time_us += @bench.monotonic_clock_end(ts)
+      None => ()
+    }
+  }
+  if not(env.has_scoped_ref_binding_for_capture()) {
+    finish()
+    return
+  }
+  let bound = @core.WalkerScope::new()
+  for param in params {
+    bound.bindings[param.name] = true
+  }
+  let refs : Map[String, Bool] = {}
+  @core.walk_block_refs(body, bound, refs, fn(name, scope, out) {
+    if scope.contains(name) {
+      return
+    }
+    if @core.is_builtin_name(name) ||
+      @core.is_logic_builtin_name(name) ||
+      @core.has_qualified_name(name) {
+      return
+    }
+    out[name] = true
+  })
+  for name, _ in refs {
+    match env.get_scheme(name) {
+      Some(scheme) =>
+        if type_contains_scoped_ref(env, scheme.ty) {
+          finish()
+          raise TypeError::ScopedRefEscape(context="closure capture", span~)
+        }
+      None => ()
+    }
+  }
+  finish()
+}
+
+///|
+fn ensure_no_scoped_ref_param_decl(
+  env : TypeEnv,
+  param_ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if not(env.scoped_ref_checks_enabled) {
+    return
+  }
+  if type_contains_scoped_ref(env, param_ty) {
+    raise TypeError::ScopedRefEscape(context="function parameter", span~)
+  }
+}
+
+///|
 fn type_struct_lit(
   env : TypeEnv,
   name : String,
@@ -807,6 +877,7 @@ fn type_expr_eff(
       body~,
       span~
     ) => {
+      ensure_no_scoped_ref_capture_in_fn(env, params, body, span)
       // Create fresh type variables for each type parameter
       let type_param_vars : Map[String, @core.Type] = {}
       for tp in type_params {
@@ -862,6 +933,7 @@ fn type_expr_eff(
           param_ty_with_num, type_param_vars,
         )
         let resolved = normalize_type(env, param_ty)
+        ensure_no_scoped_ref_param_decl(env, resolved, span)
         let _ = ensure_type_satisfies_bounds(
           env,
           resolved,
@@ -913,6 +985,7 @@ fn type_expr_eff(
         }
         None => body_ty
       }
+      ensure_no_scoped_ref_return_escape(env, final_ret, span)
       @core.Type::Func(
         params=resolved_params,
         ret=final_ret,
@@ -960,7 +1033,7 @@ fn type_expr_eff(
           ty: param_ty,
         }
         env.set_scheme(param.name, scheme)
-        env.set_purity(param.name, false)
+        env.set_purity_tier(param.name, TopLevelPurityTier::StateLocal)
       }
       env.loop_depth += 1
       let body_ty_result : Result[@core.Type, TypeError] = try? type_block(
@@ -1123,7 +1196,7 @@ fn type_block(
           ty,
         }
         scope_env.set_scheme(name, scheme)
-        scope_env.set_purity(name, false)
+        scope_env.set_purity_tier(name, TopLevelPurityTier::StateLocal)
         last = @core.Type::Unit
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
@@ -1139,7 +1212,7 @@ fn type_block(
             ty: bound_ty,
           }
           scope_env.set_scheme(name, scheme)
-          scope_env.set_purity(name, true)
+          scope_env.set_purity_tier(name, TopLevelPurityTier::Pure)
         }
         last = ty
       }
@@ -1156,7 +1229,7 @@ fn type_block(
             ty: bound_ty,
           }
           scope_env.set_scheme(name, scheme)
-          scope_env.set_purity(name, false)
+          scope_env.set_purity_tier(name, TopLevelPurityTier::Impure)
         }
         type_block(scope_env, else_body, aliases, effects, allow_effect)
         |> ignore
@@ -1175,6 +1248,7 @@ fn type_block(
                 context=Some("assignment"),
               )
             }
+            scope_env.set_purity_tier(name, TopLevelPurityTier::StateLocal)
           }
           None =>
             raise TypeError::UnknownName(
@@ -1615,6 +1689,7 @@ fn type_let_expr(
         match ret {
           None => raise TypeError::BadRec(message="missing return type", span~)
           Some(r) => {
+            ensure_no_scoped_ref_capture_in_fn(env, params, body, fn_span)
             let type_param_vars : Map[String, @core.Type] = {}
             for tp in type_params {
               type_param_vars[tp] = fresh_type_var(env)
@@ -1664,6 +1739,7 @@ fn type_let_expr(
                 param_ty_with_num, type_param_vars,
               )
               let resolved = normalize_type(env, param_ty)
+              ensure_no_scoped_ref_param_decl(env, resolved, span)
               let _ = ensure_type_satisfies_bounds(
                 env,
                 resolved,
@@ -1692,6 +1768,7 @@ fn type_let_expr(
               ret_ty_with_num, type_param_vars,
             )
             let resolved_ret = normalize_type(env, ret_ty)
+            ensure_no_scoped_ref_return_escape(env, resolved_ret, fn_span)
             let normalized_effects = normalize_effects(fn_effects, fn_span)
             let provisional_fn_ty = @core.Type::Func(
               params=resolved_params,
@@ -1852,6 +1929,7 @@ fn type_lambda_with_context(
               span,
               "lambda param " + param.name,
             )
+            ensure_no_scoped_ref_param_decl(env, param_ty, span)
             let binding_ty = if param.label == @core.ParamLabel::Optional {
               @core.Type::Named(name="Option", args=[param_ty])
             } else {
@@ -1947,6 +2025,35 @@ fn variadic_param_element_type(param : @core.FuncParam) -> @core.Type {
 }
 
 ///|
+fn ensure_no_scoped_ref_call_argument(
+  env : TypeEnv,
+  arg_ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if not(env.scoped_ref_checks_enabled) {
+    return
+  }
+  let profile_start = if env.scoped_ref_profile_enabled {
+    env.scoped_ref_call_arg_checks += 1
+    Some(@bench.monotonic_clock_start())
+  } else {
+    None
+  }
+  let finish = fn() {
+    match profile_start {
+      Some(ts) =>
+        env.scoped_ref_call_arg_time_us += @bench.monotonic_clock_end(ts)
+      None => ()
+    }
+  }
+  if type_contains_scoped_ref(env, arg_ty) {
+    finish()
+    raise TypeError::ScopedRefEscape(context="function argument", span~)
+  }
+  finish()
+}
+
+///|
 fn check_call_args(
   env : TypeEnv,
   callee_name : String,
@@ -2039,6 +2146,7 @@ fn check_call_args(
         )
       }
     }
+    ensure_no_scoped_ref_call_argument(env, ty, arg.span)
     arg_types.push(ArgType::{ label: arg.label, ty, span: arg.span })
   }
   // Now check types match

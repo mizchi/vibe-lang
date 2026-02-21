@@ -27,8 +27,8 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 Parser dispatch is explicit:
 - parser-consuming CLI commands accept `--syntax vibe|posix`.
 - default is `--syntax vibe`.
-- `--syntax posix` is a preview mode for runtime-eval commands
-  (`run`, `repl`, `repl-stdin`, `repl-wasi`, `bench`).
+- `--syntax posix` is a preview mode for shell commands
+  (`shell`, `shell-stdin`, `shell-wasi`).
 - static/compile-oriented commands (`check`, `test`, `compile`, `hash`, `save`,
   `fetch`, `update-lock`, `bench-file`, `wasm-repl-stdin`) remain vibe-only.
 - Runtime API preview:
@@ -171,16 +171,48 @@ let apply_safe = [T](f: (x: T) -> T with {Error}, x: T) -> T {
 }
 ```
 
-## let mut and async boundaries
+## Local mutation (`let mut`) and scoped `Ref[T]`
 
-`let mut` is allowed only for local, block-scoped re-assignment.
+Design policy (ADR-0017):
+- `let mut` is local deterministic state, not an externally observable side
+  effect.
+- local mutation is hash-safe when it is confined to lexical scope and cannot
+  escape async boundaries.
+- `let mut` is the primary user-facing model for local mutable state.
+- `Ref[T]` is a constrained capability model and is not the default
+  user-facing mutation API in Phase 1.
 
 Constraints:
+- `let mut` variables are block-scoped and cannot remain live across
+  `await`/`spawn`.
 - `let mut` variables cannot be captured by async closures.
-- `let mut` variables cannot remain live across `await`/`spawn`.
 - Snapshotting is required to pass data into async closures.
 
-This is equivalent to "borrow across await" being forbidden.
+`Ref[T]` (scoped capability model):
+- `Ref[T]` values must not escape their defining scope.
+- returning/exporting/storing `Ref[T]` outside its scope is rejected.
+- passing `Ref[T]` requires synchronous same-scope completion guarantees.
+- crossing `await`/`spawn` with live `Ref[T]` is rejected.
+- In Phase 1, `Ref[T]` should be treated as advanced/limited-use capability.
+
+Current checker coverage:
+- `Ref[T]` is a reserved builtin type (`Ref` arity = 1).
+- function parameter declarations containing `Ref[T]` are rejected.
+- returning `Ref[T]` from functions is rejected.
+- top-level binding/export positions that expose `Ref[T]` are rejected.
+- closure literals that capture outer `Ref[T]` values are rejected.
+- passing `Ref[T]` as a function call argument is conservatively rejected.
+- full no-escape flow analysis (for all nested store/callback/async paths) is
+  policy-targeted but not yet fully enforced.
+
+Lightweight effect tiers (policy direction):
+- `pure`: no external effects, no local mutable state.
+- `state_local`: local mutable state only (`let mut`/no-escape `Ref[T]`).
+- `impure`: external effects (I/O, shell, time, randomness, etc.).
+
+Current effect-set/do checks continue to gate `impure` operations.
+Top-level purity diagnostics preserve `state_local` tier through local call
+chains (`let mut`-using helper functions).
 
 Discard binding (`let _ = ...`):
 - `_` is a wildcard discard binding and is not stored in value/type namespaces.
@@ -757,7 +789,7 @@ CLI:
 - `moon run --target wasm src/cmd/vibe_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
   - `vibe_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
 - Parser-consuming commands support `--syntax vibe|posix` (default `vibe`);
-  `posix` is preview-enabled for `run/eval/repl/repl-stdin/repl-wasi/bench` and is
+  `posix` is preview-enabled for `shell/shell-stdin/shell-wasi` and is
   rejected on static/compile-oriented commands.
 - `moon run --target native src/cmd/vibe -- repl` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/cmd/vibe -- repl-stdin [--no-prompt]` reads lines from stdin and evaluates them.
