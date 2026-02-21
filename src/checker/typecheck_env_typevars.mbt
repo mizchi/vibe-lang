@@ -1,7 +1,7 @@
 ///|
 fn fresh_type_var(env : TypeEnv) -> @core.Type {
-  let id = default_typecheck_session.next_type_var.val
-  default_typecheck_session.next_type_var.val += 1
+  let id = env.session_state.type_var_counter
+  env.session_state.type_var_counter += 1
   if env.next_var <= id {
     env.next_var = id + 1
   }

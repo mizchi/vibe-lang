@@ -1,7 +1,4 @@
 ///|
-let builtin_lenient_mode : Ref[Bool] = @ref.new(false)
-
-///|
 pub fn type_check(ast : @core.Module) -> TypeEnv raise TypeError {
   type_check_with_aliases(ast, {})
 }
@@ -27,14 +24,14 @@ pub fn type_check_with_aliases(
 }
 
 ///|
-fn ensure_prelude_seed() -> TypeEnv raise TypeError {
-  match default_typecheck_session.cached_prelude_env.val {
+fn ensure_prelude_seed(session : TypecheckSession) -> TypeEnv raise TypeError {
+  match session.cached_prelude_env.val {
     Some(seed) => seed
     None => {
-      let seed = TypeEnv::new()
+      let seed = session.new_env()
       ensure_prelude_option(seed)
       ensure_prelude_functions(seed, {})
-      default_typecheck_session.cached_prelude_env.val = Some(seed)
+      session.cached_prelude_env.val = Some(seed)
       seed
     }
   }
@@ -42,13 +39,20 @@ fn ensure_prelude_seed() -> TypeEnv raise TypeError {
 
 ///|
 pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
-  match default_typecheck_session.cached_builtins_env.val {
+  get_cached_prelude_env_for_module_with_session(default_typecheck_session)
+}
+
+///|
+fn get_cached_prelude_env_for_module_with_session(
+  session : TypecheckSession,
+) -> TypeEnv raise TypeError {
+  match session.cached_builtins_env.val {
     Some(seed) => seed.clone_for_module()
     None => {
-      let prelude_seed = ensure_prelude_seed()
+      let prelude_seed = ensure_prelude_seed(session)
       let builtins_seed = prelude_seed.clone_for_module()
       ensure_builtin_modules(builtins_seed, {})
-      default_typecheck_session.cached_builtins_env.val = Some(builtins_seed)
+      session.cached_builtins_env.val = Some(builtins_seed)
       builtins_seed.clone_for_module()
     }
   }
@@ -56,7 +60,7 @@ pub fn get_cached_prelude_env_for_module() -> TypeEnv raise TypeError {
 
 ///|
 pub fn get_prelude_only_env_for_module() -> TypeEnv raise TypeError {
-  let seed = ensure_prelude_seed()
+  let seed = ensure_prelude_seed(default_typecheck_session)
   seed.clone_for_module()
 }
 
@@ -119,7 +123,7 @@ fn type_check_stmts(
   // Pre-scan type vars are only used inside generalized schemes (replaced on
   // instantiation), so reusing the same IDs in the main loop is safe.
   let forward_fns : Map[String, Bool] = {}
-  let saved_next_type_var = default_typecheck_session.next_type_var.val
+  let saved_next_type_var = env.session_state.type_var_counter
   let saved_env_next_var = env.next_var
   for stmt in stmts {
     let fn_info : (String, @core.Expr)? = match stmt {
@@ -174,13 +178,13 @@ fn type_check_stmts(
   }
   // Clean up pre-scan artifacts from env (trait_bounds, num_vars) for
   // IDs that will be re-allocated by the main loop.
-  let pre_scan_end = default_typecheck_session.next_type_var.val
+  let pre_scan_end = env.session_state.type_var_counter
   for id = saved_next_type_var; id < pre_scan_end; id = id + 1 {
     env.var_trait_bounds.remove(id)
     env.num_vars.remove(id)
   }
   // Restore counters so the main loop starts from the same IDs as before.
-  default_typecheck_session.next_type_var.val = saved_next_type_var
+  env.session_state.type_var_counter = saved_next_type_var
   env.next_var = saved_env_next_var
   for stmt in stmts {
     match stmt {
@@ -542,7 +546,7 @@ fn register_trait_def(
     )
   }
   if env.has_trait(name) {
-    if builtin_lenient_mode.val {
+    if env.session_state.lenient_mode {
       return
     }
     raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
@@ -882,7 +886,7 @@ fn register_trait_impl(
   }
   for impl_def in env.trait_impls_for(trait_name) {
     if trait_impls_overlap(env, impl_def, incoming) {
-      if builtin_lenient_mode.val {
+      if env.session_state.lenient_mode {
         return
       }
       raise TypeError::TraitImplOverlap(trait_name~, span~)

@@ -442,6 +442,7 @@ test "shell vibe normalize accepts entry symbols and drops pure expr stmt" {
   )
   let source = "let f = (v: Int) { v * 2 }\n" +
     "f(3)\n" +
+    "print(\"side\")\n" +
     "let x = 3\n" +
     "let y = f(x)\n"
   let result = handle_repl_vibe_shell_command(
@@ -458,7 +459,31 @@ test "shell vibe normalize accepts entry symbols and drops pure expr stmt" {
   assert_true(text.contains("let f = (v: Int) -> Int { v * 2 }"))
   assert_true(text.contains("let y: Int = f(x)"))
   assert_false(text.contains("f(3)"))
+  assert_false(text.contains("print(\"side\")"))
   assert_true(text.contains("export { x, y }"))
+}
+
+///|
+test "shell vibe normalize dedups duplicate lets with last wins" {
+  let lines : Array[String] = []
+  let rt = new_cli_runtime(
+    @runtime.RuntimeFeatureFlags::stable(),
+    enable_llm=false,
+  )
+  let source = "let x = 3\n" + "let x = 111\n" + "export { x }\n"
+  let result = handle_repl_vibe_shell_command(
+    rt,
+    @runtime.ParserMode::XshMode,
+    "normalize x",
+    "/tmp/repl_vibe_normalize_dedup_last_wins.db",
+    source,
+    fn(s) { lines.push(s) },
+  )
+  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  let text = wbtest_join_lines(lines)
+  assert_false(text.contains("let x: Int = 3"))
+  assert_true(text.contains("let x: Int = 111"))
+  assert_true(text.contains("export { x }"))
 }
 
 ///|

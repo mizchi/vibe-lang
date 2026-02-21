@@ -1,6 +1,12 @@
 ///|
+pub struct SessionState {
+  mut type_var_counter : Int
+  mut lenient_mode : Bool
+} derive(Show, Eq)
+
+///|
 pub struct TypecheckSession {
-  next_type_var : Ref[Int]
+  state : SessionState
   cached_prelude_env : Ref[TypeEnv?]
   cached_builtins_env : Ref[TypeEnv?]
 }
@@ -8,7 +14,7 @@ pub struct TypecheckSession {
 ///|
 pub fn TypecheckSession::new() -> TypecheckSession {
   {
-    next_type_var: @ref.new(0),
+    state: SessionState::{ type_var_counter: 0, lenient_mode: false },
     cached_prelude_env: @ref.new(None),
     cached_builtins_env: @ref.new(None),
   }
@@ -16,7 +22,8 @@ pub fn TypecheckSession::new() -> TypecheckSession {
 
 ///|
 pub fn TypecheckSession::reset(self : TypecheckSession) -> Unit {
-  self.next_type_var.val = 0
+  self.state.type_var_counter = 0
+  self.state.lenient_mode = false
   self.cached_prelude_env.val = None
   self.cached_builtins_env.val = None
 }
@@ -51,6 +58,7 @@ pub struct TypeEnv {
   mut active_rec_fn_has_type_params : Bool
   subs : Map[Int, @core.Type]
   effect_subs : Map[String, Array[@core.EffectAtom]]
+  session_state : SessionState
 } derive(Show, Eq)
 
 ///|
@@ -81,5 +89,38 @@ pub fn TypeEnv::new() -> TypeEnv {
     active_rec_fn_has_type_params: false,
     subs: {},
     effect_subs: {},
+    session_state: SessionState::{ type_var_counter: 0, lenient_mode: false },
+  }
+}
+
+///|
+pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
+  {
+    bindings: ScopedMap::new(),
+    addr_types: {},
+    enum_defs: {},
+    struct_defs: {},
+    type_aliases: {},
+    ctor_index: {},
+    traits: {},
+    trait_impls: {},
+    fn_versions: {},
+    purities: ScopedMap::new(),
+    expr_types: {},
+    num_vars: {},
+    var_trait_bounds: {},
+    next_var: 0,
+    next_effect_var: 0,
+    loop_depth: 0,
+    handle_arm_depth: 0,
+    handle_resume_types: {},
+    handle_resume_types_active: false,
+    handle_arm_effect_name: None,
+    handle_arm_resume_expected: None,
+    active_rec_fn: None,
+    active_rec_fn_has_type_params: false,
+    subs: {},
+    effect_subs: {},
+    session_state: self.state,
   }
 }

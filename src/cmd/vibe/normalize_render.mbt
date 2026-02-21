@@ -796,7 +796,19 @@ fn normalize_render_expr(expr : @vibe_core.Expr) -> String? {
   match expr {
     @vibe_core.Expr::Int(value~, ..) => Some(value.to_string())
     @vibe_core.Expr::Float(value~, ..) => Some(value.to_string() + "f")
-    @vibe_core.Expr::Double(value~, ..) => Some(value.to_string())
+    @vibe_core.Expr::Double(value~, ..) => {
+      let s = value.to_string()
+      // Ensure double literal contains '.' so it's not parsed as an integer
+      if s.contains(".") ||
+        s.contains("e") ||
+        s.contains("E") ||
+        s.contains("inf") ||
+        s.contains("nan") {
+        Some(s)
+      } else {
+        Some(s + ".0")
+      }
+    }
     @vibe_core.Expr::Bool(value~, ..) =>
       Some(if value { "true" } else { "false" })
     @vibe_core.Expr::String(value~, ..) => Some(normalize_quote_string(value))

@@ -113,13 +113,24 @@ fn normalize_source_text_with_entry_names(
   source : String,
   entry_names : Array[String],
 ) -> Result[String, String] {
+  normalize_source_text_with_entry_names_internal(source, entry_names, false)
+}
+
+///|
+fn normalize_source_text_with_entry_names_internal(
+  source : String,
+  entry_names : Array[String],
+  drop_effectful_expr_stmts : Bool,
+) -> Result[String, String] {
   let engine = NormalizeEngine::new()
   engine.set_source("__source__", source)
   let normalized = engine.normalize("__source__")
   match normalized {
     Ok(_) =>
       // Entry-based normalize has custom selection and cannot be served by cache output.
-      normalize_source_text_flat_with_entry_names(source, entry_names)
+      normalize_source_text_flat_with_entry_names_internal(
+        source, entry_names, drop_effectful_expr_stmts,
+      )
     Err(err) => Err(err)
   }
 }
@@ -362,15 +373,18 @@ fn normalize_node_contains_kind(
 }
 
 ///|
-fn normalize_filter_pure_top_level_expr_stmts(
+fn normalize_filter_top_level_expr_stmts(
   stmts : Array[@vibe_core.Stmt],
   env : @checker.TypeEnv,
+  drop_effectful_expr_stmts : Bool,
 ) -> Array[@vibe_core.Stmt] {
   let out : Array[@vibe_core.Stmt] = []
   for stmt in stmts {
     match stmt {
       @vibe_core.Stmt::Expr(expr~, ..) =>
-        if not(@checker.purity_expr(env, expr)) {
+        if @checker.purity_expr(env, expr) {
+          ()
+        } else if not(drop_effectful_expr_stmts) {
           out.push(stmt)
         }
       _ => out.push(stmt)
@@ -381,7 +395,7 @@ fn normalize_filter_pure_top_level_expr_stmts(
 
 ///|
 fn normalize_source_text_flat(source : String) -> Result[String, String] {
-  normalize_source_text_flat_with_entry_names(source, [])
+  normalize_source_text_flat_with_entry_names_internal(source, [], false)
 }
 
 ///|
@@ -389,70 +403,85 @@ fn normalize_source_text_flat_with_entry_names(
   source : String,
   entry_names : Array[String],
 ) -> Result[String, String] {
-  let quickfixed_source = normalize_apply_grammar_quickfixes(source)
-  let ast = @parser.parse_ast(quickfixed_source) catch {
+  normalize_source_text_flat_with_entry_names_internal(
+    source, entry_names, false,
+  )
+}
+
+///|
+fn pass_parse(source : String) -> Result[@vibe_core.Module, String] {
+  let ast = @parser.parse_ast(source) catch {
     e => return Err("normalize: parse failed: " + e.to_string())
   }
-  let optimized = normalize_optimize_module(ast)
-  let selected = normalize_select_stmts(
-    optimized.normalized_module,
-    entry_names,
-  )
-  let entry_roots = normalize_collect_normalize_entry_names(
-    optimized.normalized_module,
-    entry_names,
-  )
+  Ok(ast)
+}
+
+///|
+fn pass_select_and_dedup(
+  mod_ : @vibe_core.Module,
+  entry_names : Array[String],
+) -> Array[@vibe_core.Stmt] {
+  let selected = normalize_select_stmts(mod_, entry_names)
+  let entry_roots = normalize_collect_normalize_entry_names(mod_, entry_names)
   let selected_with_export = normalize_append_entry_export_stmt(
     selected, entry_roots,
   )
-  let initial_sorted = normalize_sort_stmts(selected_with_export)
-  if initial_sorted.length() == 0 {
-    return Ok("")
-  }
-  let initial_module = @vibe_core.Module::{ stmts: initial_sorted }
-  let initial_env = @checker.type_check(initial_module) catch {
-    _ => @checker.TypeEnv::new()
-  }
-  let filtered = normalize_filter_pure_top_level_expr_stmts(
-    initial_sorted, initial_env,
+  merge_dedup_stmts(selected_with_export)
+}
+
+///|
+fn pass_typecheck_and_filter(
+  sorted : Array[@vibe_core.Stmt],
+  entry_names : Array[String],
+  drop_effectful_expr_stmts : Bool,
+) -> Array[@vibe_core.Stmt] {
+  let mod_ = @vibe_core.Module::{ stmts: sorted }
+  let env = @checker.type_check(mod_) catch { _ => @checker.TypeEnv::new() }
+  let filtered = normalize_filter_top_level_expr_stmts(
+    sorted, env, drop_effectful_expr_stmts,
   )
-  let sorted = if filtered.length() == initial_sorted.length() {
-    initial_sorted
+  if filtered.length() == sorted.length() {
+    sorted
   } else {
     let filtered_module = @vibe_core.Module::{ stmts: filtered }
-    let reselection = normalize_select_stmts(filtered_module, entry_names)
-    let reselection_with_export = normalize_append_entry_export_stmt(
-      reselection,
-      normalize_collect_normalize_entry_names(filtered_module, entry_names),
-    )
-    normalize_sort_stmts(reselection_with_export)
+    let reselected = pass_select_and_dedup(filtered_module, entry_names)
+    normalize_sort_stmts(reselected)
   }
-  if sorted.length() == 0 {
-    return Ok("")
-  }
-  let sorted_module = @vibe_core.Module::{ stmts: sorted }
-  let env = @checker.type_check(sorted_module) catch {
-    _ => @checker.TypeEnv::new()
-  }
-  let inferred_annotations = normalize_collect_inferred_annotations(
-    sorted_module, env,
+}
+
+///|
+fn pass_annotate(
+  stmts : Array[@vibe_core.Stmt],
+) -> (@checker.TypeEnv, Map[String, String]) {
+  let mod_ = @vibe_core.Module::{ stmts, }
+  let env = @checker.type_check(mod_) catch { _ => @checker.TypeEnv::new() }
+  let annotations = normalize_collect_inferred_annotations(mod_, env)
+  (env, annotations)
+}
+
+///|
+fn pass_render(
+  quickfixed_source : String,
+  sorted : Array[@vibe_core.Stmt],
+  rewritten_exprs : Map[String, @vibe_core.Expr],
+  inferred_annotations : Map[String, String],
+  env : @checker.TypeEnv,
+) -> Result[String, String] {
+  normalize_render_source(
+    quickfixed_source, sorted, rewritten_exprs, inferred_annotations, env,
   )
-  let rendered = match
-    normalize_render_source(
-      quickfixed_source,
-      sorted,
-      optimized.rewritten_exprs,
-      inferred_annotations,
-      env,
-    ) {
-    Ok(v) => v
-    Err(err) => return Err(err)
-  }
+}
+
+///|
+fn pass_validate(
+  rendered : String,
+  expected_stmts : Array[@vibe_core.Stmt],
+) -> Result[Unit, String] {
   let formatted = @parser.format_script(rendered)
   let reparsed = @parser.parse_ast(formatted) catch {
     e => return Err("normalize: rendered parse failed: " + e.to_string())
   }
-  let expected = @vibe_core.Module::{ stmts: sorted }
+  let expected = @vibe_core.Module::{ stmts: expected_stmts }
   let expected_decl_assign_names = normalize_collect_decl_assign_stmt_names(
     expected,
   )
@@ -473,6 +502,57 @@ fn normalize_source_text_flat_with_entry_names(
   if @vibe_core.normalize_module(reparsed_semantic) !=
     @vibe_core.normalize_module(expected_semantic) {
     return Err("normalize: rendered source changed semantics")
+  }
+  Ok(())
+}
+
+///|
+fn normalize_source_text_flat_with_entry_names_internal(
+  source : String,
+  entry_names : Array[String],
+  drop_effectful_expr_stmts : Bool,
+) -> Result[String, String] {
+  // Pass 1: Grammar quickfix
+  let quickfixed = normalize_apply_grammar_quickfixes(source)
+  // Pass 2: Parse
+  let ast = match pass_parse(quickfixed) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  // Pass 3: Optimize
+  let optimized = normalize_optimize_module(ast)
+  // Pass 4: Select + dedup
+  let selected = pass_select_and_dedup(optimized.normalized_module, entry_names)
+  // Pass 5: Sort
+  let sorted = normalize_sort_stmts(selected)
+  if sorted.length() == 0 {
+    return Ok("")
+  }
+  // Pass 6: Typecheck + filter + re-sort
+  let final_sorted = pass_typecheck_and_filter(
+    sorted, entry_names, drop_effectful_expr_stmts,
+  )
+  if final_sorted.length() == 0 {
+    return Ok("")
+  }
+  // Pass 7: Annotate
+  let (env, annotations) = pass_annotate(final_sorted)
+  // Pass 8: Render
+  let rendered = match
+    pass_render(
+      quickfixed,
+      final_sorted,
+      optimized.rewritten_exprs,
+      annotations,
+      env,
+    ) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  // Pass 9: Validate
+  match pass_validate(rendered, final_sorted) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
   }
   Ok(rendered)
 }

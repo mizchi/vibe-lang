@@ -186,7 +186,7 @@ pub fn ensure_builtin_modules(
           None => ()
         }
       }
-      builtin_lenient_mode.val = true
+      env.session_state.lenient_mode = true
       for pair in builtin_module_sources {
         let (_, source) = pair
         let parsed = try? @parser.parse_ast(source)
@@ -205,7 +205,7 @@ pub fn ensure_builtin_modules(
           Err(_) => continue
         }
       }
-      builtin_lenient_mode.val = false
+      env.session_state.lenient_mode = false
       // Restore prelude bindings that were overwritten
       for name, scheme in preserved {
         env.set_scheme(name, scheme)

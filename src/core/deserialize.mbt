@@ -69,6 +69,13 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let expr = parse_expr(get_field(inner, "expr"))
         return Stmt::Assign(name~, expr~, span=zero)
       }
+      "IndexAssign" => {
+        let inner = expect_object(value)
+        let target = parse_expr(get_field(inner, "target"))
+        let index = parse_expr(get_field(inner, "index"))
+        let val = parse_expr(get_field(inner, "value"))
+        return Stmt::IndexAssign(target~, index~, value=val, span=zero)
+      }
       "Expr" => {
         let expr = parse_expr(value)
         return Stmt::Expr(expr~, span=zero)
@@ -184,6 +191,20 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let source = parse_module_ref(get_field(inner, "source"))
         return Stmt::ReExport(names~, source~, span=zero)
       }
+      "StructDef" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let fields = parse_struct_fields(get_field(inner, "fields"))
+        return Stmt::StructDef(name~, params~, fields~, span=zero)
+      }
+      "ExportStructDef" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let fields = parse_struct_fields(get_field(inner, "fields"))
+        return Stmt::ExportStructDef(name~, params~, fields~, span=zero)
+      }
       _ => raise DeserializeError("Unknown stmt type: " + key)
     }
   }
@@ -224,6 +245,10 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
       "Ident" => {
         let name = expect_string(value)
         return Expr::Ident(name~, span=zero)
+      }
+      "Placeholder" => {
+        let index = expect_int(value)
+        return Expr::Placeholder(index~, span=zero)
       }
       "Call" => {
         let inner = expect_object(value)
@@ -321,6 +346,13 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
         let expr = parse_expr(value)
         return Expr::Yield(expr~, span=zero)
       }
+      "StructLit" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let type_args = parse_type_args(inner.get("type_args"))
+        let fields = parse_record_fields(get_field(inner, "fields"))
+        return Expr::StructLit(name~, type_args~, fields~, span=zero)
+      }
       _ => raise DeserializeError("Unknown expr type: " + key)
     }
   }
@@ -380,6 +412,12 @@ fn parse_pat(json : Json) -> Pat raise DeserializeError {
       "Or" => {
         let pats = parse_pats(value)
         return Pat::Or(pats~, span=zero)
+      }
+      "Struct" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let fields = parse_record_field_pats(get_field(inner, "fields"))
+        return Pat::Struct(name~, fields~, span=zero)
       }
       _ => raise DeserializeError("Unknown pat type: " + key)
     }
@@ -707,6 +745,21 @@ fn parse_map_fields(json : Json) -> Array[MapFieldExpr] raise DeserializeError {
     let key = get_string(obj, "key")
     let expr = parse_expr(get_field(obj, "expr"))
     out.push(MapFieldExpr::{ key, expr, span: deser_zero_span })
+  }
+  out
+}
+
+///|
+fn parse_struct_fields(
+  json : Json,
+) -> Array[StructField] raise DeserializeError {
+  let arr = expect_array(json)
+  let out : Array[StructField] = []
+  for item in arr {
+    let obj = expect_object(item)
+    let name = get_string(obj, "name")
+    let ty = parse_type(get_field(obj, "ty"))
+    out.push(StructField::{ name, ty, span: deser_zero_span })
   }
   out
 }

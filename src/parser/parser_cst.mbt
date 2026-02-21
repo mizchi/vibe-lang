@@ -602,11 +602,23 @@ fn Parser::parse_export_stmt(self : Parser) -> Unit {
     // export use <module-ref> { items }
     self.parse_import_stmt()
   } else if self.at(lbrace()) {
-    // export { name1, name2, ... }
+    // export { name1, name2, Type::method, ... }
     self.bump()
     while not(self.at(rbrace())) && not(self.at(eof())) {
       self.skip_trivia()
       if self.at(name()) {
+        self.bump()
+        // Handle qualified names like Type::method
+        self.skip_trivia()
+        if self.at(double_colon()) {
+          self.bump()
+          self.skip_trivia()
+          if self.at(name()) {
+            self.bump()
+          }
+        }
+      } else {
+        // Skip unknown token to avoid infinite loop
         self.bump()
       }
       self.skip_trivia()

@@ -104,7 +104,7 @@ for dir in "${DIRS[@]}"; do
   FILES=()
   while IFS= read -r f; do
     FILES+=("$f")
-  done < <(find "$dir" -maxdepth 1 -name '*.vibe' -type f | sort)
+  done < <(find "$dir" -maxdepth 1 -name '*.vibe' -not -name 'index.vibe' -type f | sort)
   [ ${#FILES[@]} -eq 0 ] && continue
 
   if [ "$USE_CACHE" = "1" ]; then

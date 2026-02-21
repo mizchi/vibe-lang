@@ -26,6 +26,7 @@ pub fn TypeEnv::clone(self : TypeEnv) -> TypeEnv {
     active_rec_fn_has_type_params: self.active_rec_fn_has_type_params,
     subs: self.subs.copy(),
     effect_subs: self.effect_subs.copy(),
+    session_state: self.session_state,
   }
 }
 
@@ -57,6 +58,7 @@ pub fn TypeEnv::fork_for_check(self : TypeEnv) -> TypeEnv {
     active_rec_fn_has_type_params: self.active_rec_fn_has_type_params,
     subs: self.subs.copy(),
     effect_subs: self.effect_subs.copy(),
+    session_state: self.session_state,
   }
 }
 
@@ -90,6 +92,7 @@ pub fn TypeEnv::clone_for_module(self : TypeEnv) -> TypeEnv {
     active_rec_fn_has_type_params: false,
     subs: {},
     effect_subs: {},
+    session_state: self.session_state,
   }
 }
 
@@ -122,5 +125,6 @@ pub fn TypeEnv::compact_for_eval(self : TypeEnv) -> TypeEnv {
     handle_arm_resume_expected: None,
     active_rec_fn: self.active_rec_fn,
     active_rec_fn_has_type_params: self.active_rec_fn_has_type_params,
+    session_state: self.session_state,
   }
 }

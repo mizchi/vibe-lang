@@ -15,19 +15,19 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `src/checker/typecheck_env_namespace.mbt`, `src/checker/typecheck_call.mbt`
 - [x] `compile_expr` をノード別ハンドラに分割する
   - 対象: `src/codegen/wasm_codegen_expr.mbt`
-- [ ] Type member 解決ロジックを checker/runtime で共通化する
-  - 対象: `src/checker/typecheck_expr.mbt`, `src/runtime/eval.mbt`
+- [x] Type member 解決ロジックを checker/runtime で共通化する
+  - 対象: `src/core/ast.mbt`, `src/checker/typecheck_env_namespace.mbt`, `src/checker/typecheck_call.mbt`, `src/runtime/eval.mbt`
 - [x] AST 参照収集 walker を共通化して重複実装を削減する
   - 対象: `src/core/ast_walker.mbt`, `src/frontend/dce.mbt`, `src/runtime/test_runner.mbt`, `src/cmd/vibe/normalize_optimize.mbt`
-- [ ] checker のグローバル mutable state (`global_next_type_var`, `cached_prelude_env`) をセッション化する
+- [x] checker のグローバル mutable state (`global_next_type_var`, `cached_prelude_env`) をセッション化する
   - 対象: `src/checker/typecheck_env.mbt`, `src/checker/typecheck_stmts.mbt`
 
 ## CLI / Normalize
 
-- [ ] `normalize_engine` を pass 単位へ分解する (quickfix / optimize / render / sort)
+- [x] `normalize_engine` を pass 単位へ分解する (quickfix / optimize / render / sort)
   - 対象: `src/cmd/vibe/normalize_engine.mbt`
-- [ ] `normalize_engine` の専用テストファイルを追加し、pass 単位の snapshot 回帰を守る
-  - 対象: `src/cmd/vibe/*test*.mbt`
+- [x] `normalize_engine` の専用テストファイルを追加し、pass 単位の snapshot 回帰を守る
+  - 対象: `src/cmd/vibe/normalize_engine_pass_wbtest.mbt`
 - [ ] `cmd/vibe` の package 依存をサブコマンド単位に整理して未使用 import を解消する
   - 対象: `src/cmd/vibe/moon.pkg`
 - [x] `normalize` オプション解析を厳格化する（未知オプションをファイル扱いしない）

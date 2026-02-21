@@ -1,4 +1,30 @@
 ///|
+fn ne_substring_index(haystack : String, needle : String) -> Int {
+  let h_len = haystack.length()
+  let n_len = needle.length()
+  if n_len == 0 {
+    return 0
+  }
+  if n_len > h_len {
+    return -1
+  }
+  let mut i = 0
+  let limit = h_len - n_len
+  while i <= limit {
+    let slice = try haystack[i:i + n_len] catch {
+      _ => ""
+    } noraise {
+      value => value.to_string()
+    }
+    if slice == needle {
+      return i
+    }
+    i += 1
+  }
+  -1
+}
+
+///|
 test "normalize_engine: format basic let binding" {
   let source = "let   x  =  1"
   let result = normalize_source_text(source)
@@ -65,9 +91,9 @@ test "normalize_engine: topological sort orders deps before dependents" {
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => {
-      let idx_a = wbtest_substring_index(normalized, "let a =")
-      let idx_b = wbtest_substring_index(normalized, "let b =")
-      let idx_z = wbtest_substring_index(normalized, "let z =")
+      let idx_a = ne_substring_index(normalized, "let a =")
+      let idx_b = ne_substring_index(normalized, "let b =")
+      let idx_z = ne_substring_index(normalized, "let z =")
       assert_true(idx_a >= 0)
       assert_true(idx_b >= 0)
       assert_true(idx_z >= 0)
@@ -87,8 +113,8 @@ test "normalize_engine: sort groups imports before types before functions" {
   let result = normalize_source_text(source)
   match result {
     Ok(normalized) => {
-      let idx_types = wbtest_substring_index(normalized, "//# Types")
-      let idx_functions = wbtest_substring_index(normalized, "//# Functions")
+      let idx_types = ne_substring_index(normalized, "//# Types")
+      let idx_functions = ne_substring_index(normalized, "//# Functions")
       assert_true(idx_types >= 0)
       assert_true(idx_functions >= 0)
       assert_true(idx_types < idx_functions)
@@ -178,6 +204,42 @@ test "normalize_engine: entry normalize drops pure top-level expr and exports en
 }
 
 ///|
+test "normalize_engine: entry normalize keeps unresolved top-level effect call" {
+  let source =
+    #|let f = (v: Int) { v * 2 }
+    #|f(3)
+    #|print("side")
+    #|let x = 3
+    #|let y = f(x)
+  let result = normalize_source_text_with_entry_names(source, ["x", "y"])
+  match result {
+    Ok(normalized) => {
+      assert_true(normalized.contains("print(\"side\")"))
+      assert_true(normalized.contains("let y"))
+      assert_true(normalized.contains("export { x, y }"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: entry normalize dedups duplicate lets with last wins" {
+  let source =
+    #|let x = 3
+    #|let x = 111
+    #|export { x }
+  let result = normalize_source_text_with_entry_names(source, ["x"])
+  match result {
+    Ok(normalized) => {
+      assert_false(normalized.contains("let x: Int = 3"))
+      assert_true(normalized.contains("let x: Int = 111"))
+      assert_true(normalized.contains("export { x }"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
 test "normalize_engine: NormalizeEngine incremental caching" {
   let engine = NormalizeEngine::new()
   engine.set_source("key1", "let x = 1")
@@ -208,8 +270,8 @@ test "normalize_engine: pure and effectful functions separated" {
   match result {
     Ok(normalized) => {
       // Pure fn should appear before effectful fn
-      let idx_pure = wbtest_substring_index(normalized, "pure_fn =")
-      let idx_effect = wbtest_substring_index(
+      let idx_pure = ne_substring_index(normalized, "pure_fn =")
+      let idx_effect = ne_substring_index(
         normalized, "effect_fn = () -> Int with {",
       )
       assert_true(idx_pure >= 0)
@@ -325,8 +387,8 @@ test "normalize_engine: many definitions topo sort correctness" {
   match result {
     Ok(normalized) => {
       // Verify f0 appears before f19
-      let idx_f0 = wbtest_substring_index(normalized, "let f0 =")
-      let idx_f19 = wbtest_substring_index(normalized, "let f19 =")
+      let idx_f0 = ne_substring_index(normalized, "let f0 =")
+      let idx_f19 = ne_substring_index(normalized, "let f19 =")
       assert_true(idx_f0 >= 0)
       assert_true(idx_f19 >= 0)
       assert_true(idx_f0 < idx_f19)

@@ -999,3 +999,142 @@ test "roundtrip: empty module" {
   let result = roundtrip_module(m)
   assert_eq(result, m)
 }
+
+///|
+test "roundtrip: index assign" {
+  let m = Module::{
+    stmts: [
+      Stmt::IndexAssign(
+        target=Expr::Ident(name="arr", span=zero_span()),
+        index=Expr::Int(value=0L, span=zero_span()),
+        value=Expr::Int(value=42L, span=zero_span()),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: struct def" {
+  let m = Module::{
+    stmts: [
+      Stmt::StructDef(
+        name="Point",
+        params=["T"],
+        fields=[
+          StructField::{ name: "x", ty: Type::Param("T"), span: zero_span() },
+          StructField::{ name: "y", ty: Type::Param("T"), span: zero_span() },
+        ],
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: export struct def" {
+  let m = Module::{
+    stmts: [
+      Stmt::ExportStructDef(
+        name="Color",
+        params=[],
+        fields=[
+          StructField::{ name: "r", ty: Type::Int, span: zero_span() },
+          StructField::{ name: "g", ty: Type::Int, span: zero_span() },
+          StructField::{ name: "b", ty: Type::Int, span: zero_span() },
+        ],
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: placeholder expr" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::Placeholder(index=0, span=zero_span()),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: struct lit expr" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::StructLit(
+          name="Point",
+          type_args=[Type::Int],
+          fields=[
+            RecordFieldExpr::{
+              name: "x",
+              expr: Expr::Int(value=1L, span=zero_span()),
+              span: zero_span(),
+            },
+            RecordFieldExpr::{
+              name: "y",
+              expr: Expr::Int(value=2L, span=zero_span()),
+              span: zero_span(),
+            },
+          ],
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: struct pattern" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::Match(
+          scrutinee=Expr::Ident(name="p", span=zero_span()),
+          arms=[
+            MatchArm::{
+              pat: Pat::Struct(
+                name="Point",
+                fields=[
+                  RecordFieldPat::{
+                    name: "x",
+                    pat: Pat::Bind(name="a", span=zero_span()),
+                    span: zero_span(),
+                  },
+                  RecordFieldPat::{
+                    name: "y",
+                    pat: Pat::Bind(name="b", span=zero_span()),
+                    span: zero_span(),
+                  },
+                ],
+                span=zero_span(),
+              ),
+              cond: None,
+              expr: Expr::Ident(name="a", span=zero_span()),
+              span: zero_span(),
+            },
+          ],
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}

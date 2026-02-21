@@ -964,9 +964,9 @@ fn repl_vibe_normalize_json(
     return repl_vibe_error_json("normalize", "source is empty")
   }
   let normalized_result = if selected_entries.length() == 0 {
-    normalize_source_text(source)
+    normalize_source_text_for_shell(source)
   } else {
-    normalize_source_text_with_entry_names(source, selected_entries)
+    normalize_source_text_with_entry_names_for_shell(source, selected_entries)
   }
   match normalized_result {
     Ok(normalized) => {
