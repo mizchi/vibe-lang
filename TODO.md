@@ -79,7 +79,8 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`, `vibe/shell/pipeline.vibe`
 - [ ] HTTP/Socket の高レベル API（request/response struct, header map, status helpers）を追加する
   - 対象: `vibe/http/http.vibe`, `vibe/socket/socket.vibe`, `vibe/http/*_test.vibe`, `vibe/socket/*_test.vibe`
-- [ ] 文字列 `raise` 中心の失敗通知を `Result` ベース API に置き換える指針を作る
+- [x] 文字列 `raise` 中心の失敗通知を `Result` ベース API に置き換える指針を作る
+  - ADR-0018 で移行方針を定義（`Result[T, String]` 基本、段階的移行、互換 alias）
   - 対象: `vibe/encoding/json.vibe`, `vibe/encoding/jsonrpc.vibe`, `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`
 - [x] `path` facade と `path/ref` の型公開境界を整理し、利用者向け import ルールを一本化する
   - [x] `vibe/builtin/README.md` に facade / split import の推奨ルールを明文化
@@ -116,11 +117,12 @@ Completed items are archived in `docs/DONE.md`.
 - [x] 旧 `import { ... } from ...` 記法の parse error を migration ヒント付きで固定する
   - 事象: `.vibe` の旧記法が混入すると parser で停止し、bundle-size case の mode が変わる
   - 回帰テスト: `scripts/test_codegen_unsupported.sh` (`use <module-ref> { ... }` を期待)
-- [ ] bundle-size の `unsupported` baseline case と「現行構文のサイズ評価 case」を分離する
-  - 目的: syntax migration と pure size regression を別軸で管理する
+- [x] bundle-size の `unsupported` baseline case と「現行構文のサイズ評価 case」を分離する
+  - `consumer_double_*.vibe` を `import` → `use` 構文に移行し、unsupported を解消
+  - README に syntax migration vs size regression の分離ポリシーを明文化
   - 対象: `bench/bundle_size/cases.txt`, `bench/golden/bundle_size_budget.tsv`, `bench/bundle_size/README.md`
-- [ ] `examples/*.vibe` のサイズ予算運用ルール（テスト追加/関数追加の扱い）を明文化する
-  - 目的: サンプル拡張で budget が偶発的に揺れる問題を防ぐ
+- [x] `examples/*.vibe` のサイズ予算運用ルール（テスト追加/関数追加の扱い）を明文化する
+  - README に Examples Budget Rules セクション追加（変更種別ごとの対応表、3原則）
   - 対象: `bench/bundle_size/README.md`, `docs/vibe.md`
 
 ## Prelude API Consistency (2026-02)

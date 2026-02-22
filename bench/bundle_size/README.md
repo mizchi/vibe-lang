@@ -12,7 +12,38 @@ Only files listed there are measured for `bench/importers`.
 
 - Budget source: `bench/golden/bundle_size_budget.tsv` (product monitor)
 - Rule: mode/bytes for each active case must not regress
-- `unsupported` is an explicit baseline (mode change is treated as a budget change)
+- Mode change (e.g. `wasm` → `wasm-no-dce`) is treated as a budget change
+
+## Syntax Migration vs Size Regression
+
+Budget tracks two orthogonal axes:
+
+| Axis | Trigger | Action |
+|------|---------|--------|
+| **Syntax migration** | Case moves from `unsupported` to a compilable mode | Update budget with actual bytes; commit as migration |
+| **Size regression** | Compiled bytes increase beyond budget | Investigate cause; update budget only if justified |
+
+When migrating a case from old syntax (e.g. `import` → `use`), commit the
+syntax fix and budget update together as a migration, not as a size change.
+
+## Examples Budget Rules
+
+`examples/*.vibe` files are measured in `wasm-no-dce` mode (fallback chain).
+
+| Change | Budget impact | Required action |
+|--------|---------------|-----------------|
+| New example file | New budget entry | Run `just bench-bundle-size-product-update` |
+| Add test block to existing example | Size may grow | Accept if pedagogically motivated |
+| Add function to existing example | Size grows | Accept if demonstrates new feature |
+| Refactor without feature change | Size should not grow | Investigate if regression |
+| Remove code from example | Size shrinks | Update budget to lock in improvement |
+
+Principles:
+
+1. **Examples are pedagogical, not minimal** — size growth is acceptable when it
+   demonstrates a language feature or improves documentation value
+2. **Budget is a ratchet** — size decreases should be locked in; increases need justification
+3. **No silent drift** — every budget change must be an explicit commit
 
 ## Update Flow
 
