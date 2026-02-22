@@ -13,20 +13,20 @@
 
 ## 中優先度（中級ユーザ向け）
 
-- [ ] M1: docs - derive() 構文の記載 — REPL で動作しない、skip
-- [ ] M2: docs - open trait の記載 — REPL で動作しない、skip
+- [x] M1: docs - derive() 構文 — パーサー未実装、close
+- [x] M2: docs - open trait — `export open trait` のみ（モジュール文脈）、M5 で言及
 - [x] M3: docs - エフェクト行変数 with { e } の記載
-- [ ] M4: docs - suberror のユースケース例を追加 — REPL で throw 型エラー、skip
-- [ ] M5: docs - モジュールシステム (use/export) の説明
+- [x] M4: docs - suberror のユースケース例を追加 + eval テスト
+- [x] M5: docs - モジュールシステム (use/export) の説明 + eval テスト
 - [x] M6: eval - trait bounds 付きジェネリクスのテストを追加
 - [x] M7: docs/eval - map_get_or (安全なMapアクセス) を記載 + テスト追加
 
 ## 低優先度（実験的/高度な機能）
 
-- [ ] L1: docs - perform/resume 継続セマンティクス
-- [ ] L2: docs - Async/yield (--unstable-async)
-- [ ] L3: docs - Threads API (--unstable-threads)
-- [ ] L4: docs - Ref[T] スコープ安全性
+- [x] L1: docs - perform/resume 継続セマンティクス + eval テスト
+- [x] L2: docs - Async/yield (--unstable-async 必要) — 記載
+- [x] L3: docs - Threads API — examples なし、実験的、close
+- [x] L4: docs - Ref[T] — パーサー未実装、close
 
 ## 整合性の問題
 

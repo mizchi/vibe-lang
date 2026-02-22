@@ -342,16 +342,75 @@ apply((x: Int) -> Int { x + 1 }, 41)  // => 42
 
 ### suberror
 
+Define typed error subtypes for structured error handling.
+
 ```vibe
 suberror AppError {
-  Io(String);
-  Parse(Int);
+  NotFound(String);
+  InvalidInput(Int)
 }
 
-let fail = () -> Unit with { Error } {
-  throw(Io("io"))
+let risky = () -> Int with { Error } {
+  throw(NotFound("missing"))
+}
+
+let result = handle { risky() } { Error(_) => -1 }
+// => -1
+```
+
+### perform / resume (algebraic effects)
+
+User-defined effects via enum + `perform`/`resume`.
+
+```vibe
+enum Eff {
+  Ask(Int)
+}
+
+let ask_once = () -> Int with { Ask } {
+  perform(Ask(41))
+}
+
+let result = handle {
+  add(1, ask_once())
+} {
+  Ask(v) => resume(add(v, 1))
+}
+// => 43
+```
+
+### async (experimental)
+
+Requires `--unstable-async` flag.
+
+```vibe
+let delayed = () -> Int with { Async } {
+  yield
+  42
 }
 ```
+
+## Module System
+
+### export
+
+```vibe
+// math.vibe
+export let double = (x: Int) -> Int { x * 2 }
+```
+
+### use
+
+```vibe
+// main.vibe
+use ./math.vibe { double }
+
+test "import" {
+  assert(eq(double(5), 10))
+}
+```
+
+Selective imports: `use ./file.vibe { name1, name2 }`.
 
 ## Tests
 
