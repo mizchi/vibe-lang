@@ -479,6 +479,339 @@ expect_wasmtime_result "or operation" \
 echo ""
 
 # ============================================
+# Or Patterns
+# ============================================
+log_info "Testing or patterns..."
+
+expect_wasmtime_result "or pattern (match)" \
+'match 2 { 1 | 2 | 3 => 100, _ => 0 }' \
+"100"
+
+expect_wasmtime_result "or pattern (no match)" \
+'match 5 { 1 | 2 | 3 => 100, _ => 0 }' \
+"0"
+
+echo ""
+
+# ============================================
+# Record Patterns
+# ============================================
+log_info "Testing record patterns..."
+
+expect_wasmtime_result "record let destructuring" \
+'let record { x: a, y: b } = record { x: 10, y: 20 }
+a + b' \
+"30"
+
+expect_wasmtime_result "record match" \
+'match record { a: 1, b: 2 } {
+  record { a: x, b: y } => x + y
+  _ => 0
+}' \
+"3"
+
+expect_wasmtime_result "record wildcard field" \
+'let record { x: a, y: _ } = record { x: 10, y: 20 }
+a' \
+"10"
+
+echo ""
+
+# ============================================
+# Nested / Complex Patterns
+# ============================================
+log_info "Testing nested and complex patterns..."
+
+expect_wasmtime_result "nested Option-tuple: Some((a, b))" \
+'match Some((1, 2)) {
+  Some((a, b)) => a + b
+  _ => 0
+}' \
+"3"
+
+expect_wasmtime_result "tuple of Options: (Some(a), None)" \
+'match (Some(10), None) {
+  (Some(a), None) => a
+  _ => 0
+}' \
+"10"
+
+expect_wasmtime_result "let Some destructuring" \
+'let Some(x) = Some(100)
+x' \
+"100"
+
+expect_wasmtime_result "wildcard in tuple" \
+'let (a, _, c) = (1, 2, 3)
+a + c' \
+"4"
+
+expect_wasmtime_result "deeply nested tuple" \
+'let (a, (b, (c, d))) = (1, (2, (3, 4)))
+a + b + c + d' \
+"10"
+
+expect_wasmtime_result "match with computation in arms" \
+'let x = 3
+match x {
+  1 => { let a = 10; a * 2 }
+  2 => { let a = 20; a * 2 }
+  3 => { let a = 30; a * 2 }
+  _ => 0
+}' \
+"60"
+
+echo ""
+
+# ============================================
+# Higher-Order Functions
+# ============================================
+log_info "Testing higher-order functions..."
+
+expect_wasmtime_result "function as argument" \
+'let apply = (f: (Int) -> Int, x: Int) -> Int { f(x) }
+let double = (x: Int) -> Int { x * 2 }
+apply(double, 21)' \
+"42"
+
+# NOTE: currying (fn returning fn with captured arg) hits "unsupported: mul arity"
+# NOTE: compose (call_indirect on captured closures) hits i32/i64 type mismatch
+
+expect_wasmtime_result "apply twice" \
+'let apply_twice = (f: (Int) -> Int, x: Int) -> Int { f(f(x)) }
+let inc = (x: Int) -> Int { x + 1 }
+apply_twice(inc, 10)' \
+"12"
+
+expect_wasmtime_result "function selecting function" \
+'let dbl = (x: Int) -> Int { x * 2 }
+let sqr = (x: Int) -> Int { x * x }
+let pick = (use_dbl: Bool) -> (Int) -> Int {
+  if use_dbl { dbl } else { sqr }
+}
+let f = pick(false)
+f(5)' \
+"25"
+
+echo ""
+
+# ============================================
+# Complex Recursion
+# ============================================
+log_info "Testing complex recursion..."
+
+expect_wasmtime_result "recursive GCD" \
+'let rec gcd = (a: Int, b: Int) -> Int {
+  if b == 0 { a } else { gcd(b, a % b) }
+}
+gcd(48, 18)' \
+"6"
+
+expect_wasmtime_result "recursive power" \
+'let rec pow = (base: Int, exp: Int) -> Int {
+  if exp == 0 { 1 } else { base * pow(base, exp - 1) }
+}
+pow(2, 10)' \
+"1024"
+
+expect_wasmtime_result "recursive sum of digits" \
+'let rec sum_digits = (n: Int) -> Int {
+  if n < 10 { n } else { n % 10 + sum_digits(n / 10) }
+}
+sum_digits(12345)' \
+"15"
+
+echo ""
+
+# ============================================
+# Complex Closures
+# ============================================
+log_info "Testing complex closures..."
+
+expect_wasmtime_result "closure over loop result" \
+'let mut total = 0
+let mut i = 1
+while i <= 10 {
+  total = total + i
+  i = i + 1
+}
+let get_total = () -> Int { total }
+get_total()' \
+"55"
+
+expect_wasmtime_result "multiple closures sharing scope" \
+'let base = 100
+let add_base = (x: Int) -> Int { x + base }
+let sub_base = (x: Int) -> Int { x - base }
+add_base(50) + sub_base(200)' \
+"250"
+
+expect_wasmtime_result "closure chain (3 levels)" \
+'let a = 1
+let f = () -> Int {
+  let b = 2
+  let g = () -> Int {
+    let c = 3
+    a + b + c
+  }
+  g()
+}
+f()' \
+"6"
+
+echo ""
+
+# ============================================
+# Nested Loops & Complex Control Flow
+# ============================================
+log_info "Testing nested loops and complex control flow..."
+
+expect_wasmtime_result "nested while loops (multiplication table sum)" \
+'let mut sum = 0
+let mut i = 1
+while i <= 3 {
+  let mut j = 1
+  while j <= 3 {
+    sum = sum + i * j
+    j = j + 1
+  }
+  i = i + 1
+}
+sum' \
+"36"
+
+expect_wasmtime_result "loop with conditional accumulation" \
+'let mut i = 0
+let mut even_sum = 0
+let mut odd_sum = 0
+while i < 10 {
+  if i % 2 == 0 {
+    even_sum = even_sum + i
+  } else {
+    odd_sum = odd_sum + i
+  }
+  i = i + 1
+}
+even_sum * odd_sum' \
+"500"
+
+expect_wasmtime_result "iterative fibonacci" \
+'let mut a = 0
+let mut b = 1
+let mut i = 0
+while i < 10 {
+  let tmp = a + b
+  a = b
+  b = tmp
+  i = i + 1
+}
+a' \
+"55"
+
+echo ""
+
+# ============================================
+# Match with Multiple Complex Arms
+# ============================================
+log_info "Testing complex match patterns..."
+
+expect_wasmtime_result "match calling functions in arms" \
+'let square = (x: Int) -> Int { x * x }
+let cube = (x: Int) -> Int { x * x * x }
+let op = 2
+match op {
+  1 => square(5)
+  2 => cube(3)
+  _ => 0
+}' \
+"27"
+
+expect_wasmtime_result "match result used in computation" \
+'let x = 5
+let y = match x {
+  1 => 10
+  5 => 50
+  _ => 0
+}
+y * 2 + 1' \
+"101"
+
+expect_wasmtime_result "nested match" \
+'let x = Some(3)
+match x {
+  Some(n) => match n {
+    1 => 10
+    2 => 20
+    3 => 30
+    _ => 0
+  }
+  _ => 0
+}' \
+"30"
+
+expect_wasmtime_result "match with tuple construction" \
+'let classify = (n: Int) -> Int {
+  match (n > 0, n % 2 == 0) {
+    (true, true) => 1
+    (true, false) => 2
+    _ => 0
+  }
+}
+classify(7) * 10 + classify(4)' \
+"21"
+
+echo ""
+
+# ============================================
+# Complex Combinations
+# ============================================
+log_info "Testing complex combinations..."
+
+expect_wasmtime_result "recursive with closure" \
+'let multiplier = 3
+let rec apply_n = (f: (Int) -> Int, n: Int, x: Int) -> Int {
+  if n == 0 { x } else { apply_n(f, n - 1, f(x)) }
+}
+let add_mul = (x: Int) -> Int { x + multiplier }
+apply_n(add_mul, 4, 0)' \
+"12"
+
+expect_wasmtime_result "loop building result used in match" \
+'let mut sum = 0
+let mut i = 1
+while i <= 5 {
+  sum = sum + i
+  i = i + 1
+}
+match sum {
+  10 => 0
+  15 => 1
+  _ => 2
+}' \
+"1"
+
+expect_wasmtime_result "functions with pattern destructuring" \
+'let sum_pair = (p: (Int, Int)) -> Int {
+  let (a, b) = p
+  a + b
+}
+let x = (10, 20)
+let y = (30, 40)
+sum_pair(x) + sum_pair(y)' \
+"100"
+
+expect_wasmtime_result "collatz steps" \
+'let rec collatz = (n: Int, steps: Int) -> Int {
+  if n == 1 { steps }
+  else if n % 2 == 0 { collatz(n / 2, steps + 1) }
+  else { collatz(3 * n + 1, steps + 1) }
+}
+collatz(27, 0)' \
+"111"
+
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo "========================================"
