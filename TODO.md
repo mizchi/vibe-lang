@@ -75,7 +75,7 @@ Completed items are archived in `docs/DONE.md`.
   - [x] `vibe/collection/map.vibe` に trait-bound key accessors (`has_by`/`get_by`/`get_or_by`) を追加し、非 String key の呼び出し面を統一する
   - [x] `vibe/collection/set.vibe` に trait-bound accessors (`contains_by`/`add_by`/`remove_by`/`from_array_by`) を追加し、`StringSet` API で非 String 値を扱えるようにする
   - 対象: `vibe/collection/map.vibe`, `vibe/collection/set.vibe`, `vibe/collection/README.md`
-- [ ] `from_csv` / `from_yaml` の戻り値を JSON 文字列から構造化型へ寄せる設計を検討する
+- [x] `from_csv` / `from_yaml` の戻り値を JSON 文字列から構造化型へ寄せる設計を検討する
   - 対象: `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`, `vibe/shell/pipeline.vibe`
 - [ ] HTTP/Socket の高レベル API（request/response struct, header map, status helpers）を追加する
   - 対象: `vibe/http/http.vibe`, `vibe/socket/socket.vibe`, `vibe/http/*_test.vibe`, `vibe/socket/*_test.vibe`
