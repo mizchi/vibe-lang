@@ -105,7 +105,7 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Testing
 
-- [ ] `serialize` / `deserialize` の手書き対称実装に対して round-trip property test を追加する
+- [x] `serialize` / `deserialize` の手書き対称実装に対して round-trip property test を追加する
   - 対象: `src/core/serialize.mbt`, `src/core/deserialize.mbt`
 
 ## Compiler / Language Incident Follow-up (2026-02)
