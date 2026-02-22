@@ -22,7 +22,14 @@ fn compile_expr_ident(
     )
   }
   match ctx.locals.get(name) {
-    Some(idx) => emit_local_get(buf, idx)
+    Some(idx) =>
+      if ctx.mut_captured_vars.contains(name) {
+        // Ref cell: dereference pointer to read value
+        emit_local_get(buf, idx) // i32 pointer
+        emit_i64_load(buf, 0) // deref → i64 value
+      } else {
+        emit_local_get(buf, idx)
+      }
     None =>
       match ctx.fn_indices.get(name) {
         Some(idx) => {

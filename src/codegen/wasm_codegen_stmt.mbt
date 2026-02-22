@@ -324,32 +324,64 @@ fn compile_stmt(
       }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = span
-      // LetMut is similar to Let, but the variable can be reassigned
-      let kind = infer_expr_kind(ctx, expr)
-      let idx = ctx.local_count
-      ctx.local_count += 1
-      ctx.local_types.push(kind)
-      ctx.locals[name] = idx
-      ctx.local_kinds[name] = kind
-      compile_expr(ctx, buf, expr)
-      if is_last {
-        emit_local_tee(buf, idx)
+      if ctx.mut_captured_vars.contains(name) {
+        // Ref cell: allocate 8 bytes on heap, store pointer as i32 local
+        require_heap(ctx)
+        let ptr_local = ctx.local_count
+        ctx.local_count += 1
+        ctx.local_types.push(ValueKind::I32)
+        ctx.locals[name] = ptr_local
+        ctx.local_kinds[name] = ValueKind::I32
+        emit_heap_alloc(ctx, buf, 8, ptr_local)
+        // Store initial value into ref cell
+        emit_local_get(buf, ptr_local) // i32 addr
+        compile_expr(ctx, buf, expr) // i64 value
+        emit_i64_store(buf, 0) // mem[addr] = value
+        if is_last {
+          // Leave the value on the stack
+          emit_local_get(buf, ptr_local)
+          emit_i64_load(buf, 0)
+        }
       } else {
-        emit_local_set(buf, idx)
+        // Standard path: regular local
+        let kind = infer_expr_kind(ctx, expr)
+        let idx = ctx.local_count
+        ctx.local_count += 1
+        ctx.local_types.push(kind)
+        ctx.locals[name] = idx
+        ctx.local_kinds[name] = kind
+        compile_expr(ctx, buf, expr)
+        if is_last {
+          emit_local_tee(buf, idx)
+        } else {
+          emit_local_set(buf, idx)
+        }
       }
     }
     @core.Stmt::Assign(name~, expr~, span~) => {
       let _ = span
       // Assign updates an existing mutable variable
       match ctx.locals.get(name) {
-        Some(idx) => {
-          compile_expr(ctx, buf, expr)
-          if is_last {
-            emit_local_tee(buf, idx)
+        Some(idx) =>
+          if ctx.mut_captured_vars.contains(name) {
+            // Ref cell: write through pointer
+            compile_expr(ctx, buf, expr) // i64 value
+            let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+            emit_local_set(buf, tmp)
+            emit_local_get(buf, idx) // i32 addr
+            emit_local_get(buf, tmp) // i64 value
+            emit_i64_store(buf, 0) // mem[addr] = value
+            if is_last {
+              emit_local_get(buf, tmp)
+            }
           } else {
-            emit_local_set(buf, idx)
+            compile_expr(ctx, buf, expr)
+            if is_last {
+              emit_local_tee(buf, idx)
+            } else {
+              emit_local_set(buf, idx)
+            }
           }
-        }
         None => raise UnknownName(name)
       }
     }

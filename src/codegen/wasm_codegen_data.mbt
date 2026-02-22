@@ -999,6 +999,7 @@ fn compile_function(
   captures : Array[String],
   capture_kinds : Array[ValueKind],
   with_env : Bool,
+  capture_is_ref_cell? : Array[Bool] = [],
 ) -> WasmFunc raise WasmGenError {
   let saved_locals = ctx.locals
   let saved_kinds = ctx.local_kinds
@@ -1008,6 +1009,7 @@ fn compile_function(
   let saved_heap_local = ctx.heap_local
   let saved_current_env_idx = ctx.current_env_idx
   let saved_fn_locals = ctx.fn_local_sigs
+  let saved_mut_captured = ctx.mut_captured_vars
   ctx.locals = {}
   ctx.local_kinds = {}
   ctx.local_types = []
@@ -1076,10 +1078,18 @@ fn compile_function(
       }
     None => ()
   }
+  // Compute mut_captured_vars for this function's body
+  ctx.mut_captured_vars = compute_mut_captured_for_block(
+    body.stmts,
+    ctx.fn_closure_captures,
+  )
   if with_env && captures.length() > 0 {
     for i in 0..<captures.length() {
       let name = captures[i]
-      let kind = if i < capture_kinds.length() {
+      let is_ref = i < capture_is_ref_cell.length() && capture_is_ref_cell[i]
+      let kind = if is_ref {
+        ValueKind::I32
+      } else if i < capture_kinds.length() {
         capture_kinds[i]
       } else {
         ValueKind::I64
@@ -1104,7 +1114,18 @@ fn compile_function(
             None => ()
           }
       }
-      if ctx.use_js_strings && kind == ValueKind::ExternRef {
+      if is_ref {
+        // Ref cell capture: load pointer from env, store as i32 local
+        ctx.local_types.push(ValueKind::I32)
+        ctx.locals[name] = idx
+        ctx.local_kinds[name] = ValueKind::I32
+        emit_local_get(prelude, env_idx)
+        emit_i64_load(prelude, 8 + i * 8) // load pointer as i64
+        emit_i32_wrap_i64(prelude) // → i32
+        emit_local_set(prelude, idx)
+        // Propagate ref cell status so nested closures work
+        ctx.mut_captured_vars[name] = true
+      } else if ctx.use_js_strings && kind == ValueKind::ExternRef {
         // ExternRef capture: load table slot index from env, then table.get
         ctx.local_types.push(ValueKind::ExternRef)
         ctx.locals[name] = idx
@@ -1170,6 +1191,7 @@ fn compile_function(
   ctx.heap_local = saved_heap_local
   ctx.current_env_idx = saved_current_env_idx
   ctx.fn_local_sigs = saved_fn_locals
+  ctx.mut_captured_vars = saved_mut_captured
   func
 }
 

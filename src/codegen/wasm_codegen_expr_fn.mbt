@@ -30,14 +30,32 @@ fn compile_expr_fn(
     emit_i32_const_raw(buf, slot)
     emit_i32_store(buf, 4)
     let capture_kinds : Array[ValueKind] = []
+    let capture_is_ref_cell : Array[Bool] = []
     for i in 0..<len {
       let name = captures[i]
-      let cap_kind = match ctx.local_kinds.get(name) {
-        Some(kind) => kind
-        None => ValueKind::I64
+      let is_ref_cell = ctx.mut_captured_vars.contains(name)
+      capture_is_ref_cell.push(is_ref_cell)
+      let cap_kind = if is_ref_cell {
+        ValueKind::I32 // pointer
+      } else {
+        match ctx.local_kinds.get(name) {
+          Some(kind) => kind
+          None => ValueKind::I64
+        }
       }
       capture_kinds.push(cap_kind)
-      if ctx.use_js_strings && cap_kind == ValueKind::ExternRef {
+      if is_ref_cell {
+        // Ref cell capture: store i32 pointer as i64 in env slot
+        emit_local_get(buf, obj_local)
+        match ctx.locals.get(name) {
+          Some(idx) => {
+            emit_local_get(buf, idx) // i32 pointer
+            emit_i64_extend_i32_u(buf) // → i64
+          }
+          None => raise WasmGenError::UnknownName(name)
+        }
+        emit_i64_store(buf, 8 + i * 8)
+      } else if ctx.use_js_strings && cap_kind == ValueKind::ExternRef {
         // Store externref in extern table, put slot index in closure env
         ctx.need_extern_table = true
         let slot = ctx.extern_table_next_slot
@@ -78,6 +96,7 @@ fn compile_expr_fn(
       }
     }
     ctx.fn_closure_capture_kinds[key] = capture_kinds
+    ctx.fn_closure_capture_is_ref_cell[key] = capture_is_ref_cell
     emit_local_get(buf, obj_local)
     emit_i64_extend_i32_u(buf)
     emit_i64_const_raw(buf, tag_obj.to_int64())

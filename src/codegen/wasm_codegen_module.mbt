@@ -1186,7 +1186,27 @@ fn emit_module_with_coverage(
     }
     func_needs_heap.push(need)
   }
-  let run_need_heap = needs_heap_block(ctx, run_ast)
+  // Check if any function body has ref cell variables requiring heap
+  for i in 0..<funcs.length() {
+    let mcv = compute_mut_captured_for_block(
+      funcs[i].body.stmts,
+      ctx.fn_closure_captures,
+    )
+    if mcv.length() > 0 {
+      func_needs_heap[i] = true
+      any_user_heap = true
+    }
+  }
+  let mut run_need_heap = needs_heap_block(ctx, run_ast)
+  // Check if top-level scope has ref cell variables
+  let top_mut_captured = compute_mut_captured_for_block(
+    run_ast.stmts,
+    ctx.fn_closure_captures,
+  )
+  if top_mut_captured.length() > 0 {
+    run_need_heap = true
+    any_user_heap = true
+  }
   if any_user_heap ||
     ctx.need_stdin_read_char ||
     ctx.need_fs ||
@@ -1239,6 +1259,9 @@ fn emit_module_with_coverage(
   // Pre-compute extern_table_index for externref captures.
   // Table 0 is reserved for funcref table when extern table exists.
   ctx.extern_table_index = 1
+  // Pre-compute ref cell capture flags for ALL functions before compile loop.
+  // This is needed because compile_function runs before compile_expr_fn.
+  precompute_ref_cell_captures_block(ctx, ast.stmts, top_mut_captured)
   let compiled_funcs : Array[WasmFunc] = []
   for i in 0..<funcs.length() {
     let f = funcs[i]
@@ -1262,6 +1285,11 @@ fn emit_module_with_coverage(
       Some(kinds) => kinds
       None => []
     }
+    let cap_ref_cells = match
+      ctx.fn_closure_capture_is_ref_cell.get(f.span_key) {
+      Some(flags) => flags
+      None => []
+    }
     compiled_funcs.push(
       compile_function(
         ctx,
@@ -1274,6 +1302,7 @@ fn emit_module_with_coverage(
         f.captures,
         cap_kinds,
         true,
+        capture_is_ref_cell=cap_ref_cells,
       ),
     )
   }
@@ -1285,6 +1314,8 @@ fn emit_module_with_coverage(
     let _ = ensure_sig_index(ctx, cabi_realloc_sig)
     compiled_funcs.push(compile_cabi_realloc_function(ctx))
   }
+  // Set mut_captured_vars for the top-level run function
+  ctx.mut_captured_vars = top_mut_captured
   compiled_funcs.push(
     compile_function(
       ctx,

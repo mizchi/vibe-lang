@@ -850,6 +850,45 @@ collatz(27, 0)' \
 echo ""
 
 # ============================================
+# Mutable Capture (Ref Cell)
+# ============================================
+log_info "Testing mutable capture (ref cell)..."
+
+expect_wasmtime_result "mutable capture: counter closure" \
+'let mut total = 0
+let f = () -> Int { total = total + 1; total }
+f()
+f()' \
+"2"
+
+expect_wasmtime_result "mutable capture: shared mutation" \
+'let mut x = 10
+let inc = () -> Int { x = x + 5; x }
+inc()
+inc()
+x' \
+"20"
+
+expect_wasmtime_result "mutable capture: closure reads after outer mutation" \
+'let mut total = 0
+let mut i = 1
+while i <= 10 { total = total + i; i = i + 1 }
+let get_total = () -> Int { total }
+get_total()' \
+"55"
+
+expect_wasmtime_result "mutable capture: accumulator pattern" \
+'let mut sum = 0
+let add = (x: Int) -> Int { sum = sum + x; sum }
+add(10)
+add(20)
+add(30)
+sum' \
+"60"
+
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo "========================================"

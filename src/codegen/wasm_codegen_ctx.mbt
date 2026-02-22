@@ -84,6 +84,10 @@ priv struct CodegenCtx {
   // Forward-declared function tracking for mutual recursion back-patch
   // Maps function name -> span_key for forward-declarable functions
   forward_fn_keys : Map[String, String]
+  // Mutable variables captured by closures (need ref cell on heap)
+  mut mut_captured_vars : Map[String, Bool]
+  // Per-function: which capture slots are ref cell pointers
+  fn_closure_capture_is_ref_cell : Map[String, Array[Bool]]
 }
 
 ///|
@@ -185,6 +189,9 @@ fn CodegenCtx::new(
     loop_param_locals: [],
     // Forward function tracking
     forward_fn_keys: {},
+    // Mutable capture ref cell tracking
+    mut_captured_vars: {},
+    fn_closure_capture_is_ref_cell: {},
   }
 }
 
@@ -865,4 +872,343 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
   let bound : Map[String, Bool] = {}
   collect_nested_funcs_block(ast, bound, funcs, true)
   funcs
+}
+
+///|
+/// Compute which `let mut` variables in a block are captured by closures
+/// and thus need ref cell (heap pointer) treatment.
+fn compute_mut_captured_for_block(
+  stmts : Array[@core.Stmt],
+  fn_closure_captures : Map[String, Array[String]],
+) -> Map[String, Bool] {
+  // Step 1: Collect LetMut names defined directly in this block
+  // Track shadowing: later Let/LetMut overrides earlier
+  let is_mut : Map[String, Bool] = {}
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::LetMut(name~, ..) => is_mut[name] = true
+      @core.Stmt::Let(name~, ..) => is_mut[name] = false
+      @core.Stmt::ExportLet(name~, ..) => is_mut[name] = false
+      @core.Stmt::LetPat(pat~, ..) => {
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(pat, bindings)
+        for b in bindings {
+          is_mut[b] = false
+        }
+      }
+      @core.Stmt::LetPatElse(pat~, ..) => {
+        let bindings : Array[String] = []
+        collect_pat_bindings_codegen(pat, bindings)
+        for b in bindings {
+          is_mut[b] = false
+        }
+      }
+      _ => ()
+    }
+  }
+  // Quick exit if no mutable variables
+  let mut has_any_mut = false
+  for _, v in is_mut {
+    if v {
+      has_any_mut = true
+      break
+    }
+  }
+  if not(has_any_mut) {
+    return {}
+  }
+  // Step 2: Collect all Fn span_keys defined in this scope
+  // (recurse into control flow but NOT into Fn bodies)
+  let fn_keys : Array[String] = []
+  for stmt in stmts {
+    collect_fn_span_keys_stmt(stmt, fn_keys)
+  }
+  // Step 3: Cross-reference captures with LetMut names
+  let result : Map[String, Bool] = {}
+  for key in fn_keys {
+    match fn_closure_captures.get(key) {
+      Some(caps) =>
+        for cap in caps {
+          match is_mut.get(cap) {
+            Some(true) => result[cap] = true
+            _ => ()
+          }
+        }
+      None => ()
+    }
+  }
+  result
+}
+
+///|
+fn collect_fn_span_keys_stmt(stmt : @core.Stmt, out : Array[String]) -> Unit {
+  match stmt {
+    @core.Stmt::Let(expr=@core.Expr::Fn(span~, ..), ..)
+    | @core.Stmt::ExportLet(expr=@core.Expr::Fn(span~, ..), ..) =>
+      out.push(span_key(span))
+    // Don't recurse into Fn body — that's a different scope
+    @core.Stmt::Let(expr~, ..) | @core.Stmt::ExportLet(expr~, ..) =>
+      collect_fn_span_keys_expr(expr, out)
+    @core.Stmt::Expr(expr~, ..) => collect_fn_span_keys_expr(expr, out)
+    @core.Stmt::LetMut(expr~, ..) => collect_fn_span_keys_expr(expr, out)
+    @core.Stmt::Assign(expr~, ..) => collect_fn_span_keys_expr(expr, out)
+    @core.Stmt::LetPat(expr~, ..) => collect_fn_span_keys_expr(expr, out)
+    @core.Stmt::LetPatElse(expr~, else_body~, ..) => {
+      collect_fn_span_keys_expr(expr, out)
+      for s in else_body.stmts {
+        collect_fn_span_keys_stmt(s, out)
+      }
+    }
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      collect_fn_span_keys_expr(target, out)
+      collect_fn_span_keys_expr(index, out)
+      collect_fn_span_keys_expr(value, out)
+    }
+    _ => ()
+  }
+}
+
+///|
+fn collect_fn_span_keys_expr(expr : @core.Expr, out : Array[String]) -> Unit {
+  match expr {
+    @core.Expr::Fn(span~, ..) => out.push(span_key(span))
+    // Don't recurse into Fn body
+    @core.Expr::Call(args~, ..) =>
+      for arg in args {
+        collect_fn_span_keys_expr(arg.expr, out)
+      }
+    @core.Expr::Tuple(items~, ..) =>
+      for item in items {
+        collect_fn_span_keys_expr(item, out)
+      }
+    @core.Expr::TupleIndex(expr~, ..) => collect_fn_span_keys_expr(expr, out)
+    @core.Expr::Record(fields~, ..) =>
+      for f in fields {
+        collect_fn_span_keys_expr(f.expr, out)
+      }
+    @core.Expr::Array(items~, ..) =>
+      for item in items {
+        collect_fn_span_keys_expr(item, out)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for f in fields {
+        collect_fn_span_keys_expr(f.expr, out)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_fn_span_keys_expr(cond, out)
+      for s in then_body.stmts {
+        collect_fn_span_keys_stmt(s, out)
+      }
+      for s in else_body.stmts {
+        collect_fn_span_keys_stmt(s, out)
+      }
+    }
+    @core.Expr::Block(body~, ..) =>
+      for s in body.stmts {
+        collect_fn_span_keys_stmt(s, out)
+      }
+    @core.Expr::Do(body~, ..) =>
+      for s in body.stmts {
+        collect_fn_span_keys_stmt(s, out)
+      }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      collect_fn_span_keys_expr(scrutinee, out)
+      for arm in arms {
+        collect_fn_span_keys_expr(arm.expr, out)
+        match arm.cond {
+          Some(c) => collect_fn_span_keys_expr(c, out)
+          None => ()
+        }
+      }
+    }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      for s in body.stmts {
+        collect_fn_span_keys_stmt(s, out)
+      }
+      for arm in arms {
+        collect_fn_span_keys_expr(arm.expr, out)
+        match arm.cond {
+          Some(c) => collect_fn_span_keys_expr(c, out)
+          None => ()
+        }
+      }
+    }
+    @core.Expr::Raise(value~, ..) => collect_fn_span_keys_expr(value, out)
+    @core.Expr::While(cond~, body~, ..) => {
+      collect_fn_span_keys_expr(cond, out)
+      for s in body.stmts {
+        collect_fn_span_keys_stmt(s, out)
+      }
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      for p in params {
+        collect_fn_span_keys_expr(p.init, out)
+      }
+      for s in body.stmts {
+        collect_fn_span_keys_stmt(s, out)
+      }
+    }
+    @core.Expr::StructLit(fields~, ..) =>
+      for f in fields {
+        collect_fn_span_keys_expr(f.expr, out)
+      }
+    _ => ()
+  }
+}
+
+///|
+/// Pre-compute fn_closure_capture_is_ref_cell for ALL functions before the
+/// compile loop. scope_mcv is the set of variable names that are ref cells
+/// in the current scope.
+fn precompute_ref_cell_captures_block(
+  ctx : CodegenCtx,
+  stmts : Array[@core.Stmt],
+  scope_mcv : Map[String, Bool],
+) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      @core.Stmt::Let(expr=@core.Expr::Fn(body~, span~, ..), ..)
+      | @core.Stmt::ExportLet(expr=@core.Expr::Fn(body~, span~, ..), ..) =>
+        precompute_ref_cell_for_fn(ctx, span, body, scope_mcv)
+      @core.Stmt::Let(expr~, ..) | @core.Stmt::ExportLet(expr~, ..) =>
+        precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
+      @core.Stmt::Expr(expr~, ..) =>
+        precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
+      @core.Stmt::LetMut(expr~, ..) =>
+        precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
+      @core.Stmt::Assign(expr~, ..) =>
+        precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
+      @core.Stmt::LetPat(expr~, ..) =>
+        precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
+      @core.Stmt::LetPatElse(expr~, else_body~, ..) => {
+        precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
+        precompute_ref_cell_captures_block(ctx, else_body.stmts, scope_mcv)
+      }
+      @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+        precompute_ref_cell_captures_expr(ctx, target, scope_mcv)
+        precompute_ref_cell_captures_expr(ctx, index, scope_mcv)
+        precompute_ref_cell_captures_expr(ctx, value, scope_mcv)
+      }
+      _ => ()
+    }
+  }
+}
+
+///|
+fn precompute_ref_cell_captures_expr(
+  ctx : CodegenCtx,
+  expr : @core.Expr,
+  scope_mcv : Map[String, Bool],
+) -> Unit {
+  match expr {
+    @core.Expr::Fn(body~, span~, ..) =>
+      precompute_ref_cell_for_fn(ctx, span, body, scope_mcv)
+    @core.Expr::Call(args~, ..) =>
+      for arg in args {
+        precompute_ref_cell_captures_expr(ctx, arg.expr, scope_mcv)
+      }
+    @core.Expr::Tuple(items~, ..) =>
+      for item in items {
+        precompute_ref_cell_captures_expr(ctx, item, scope_mcv)
+      }
+    @core.Expr::TupleIndex(expr~, ..) =>
+      precompute_ref_cell_captures_expr(ctx, expr, scope_mcv)
+    @core.Expr::Record(fields~, ..) =>
+      for f in fields {
+        precompute_ref_cell_captures_expr(ctx, f.expr, scope_mcv)
+      }
+    @core.Expr::Array(items~, ..) =>
+      for item in items {
+        precompute_ref_cell_captures_expr(ctx, item, scope_mcv)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for f in fields {
+        precompute_ref_cell_captures_expr(ctx, f.expr, scope_mcv)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      precompute_ref_cell_captures_expr(ctx, cond, scope_mcv)
+      precompute_ref_cell_captures_block(ctx, then_body.stmts, scope_mcv)
+      precompute_ref_cell_captures_block(ctx, else_body.stmts, scope_mcv)
+    }
+    @core.Expr::Block(body~, ..) =>
+      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+    @core.Expr::Do(body~, ..) =>
+      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      precompute_ref_cell_captures_expr(ctx, scrutinee, scope_mcv)
+      for arm in arms {
+        precompute_ref_cell_captures_expr(ctx, arm.expr, scope_mcv)
+        match arm.cond {
+          Some(c) => precompute_ref_cell_captures_expr(ctx, c, scope_mcv)
+          None => ()
+        }
+      }
+    }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+      for arm in arms {
+        precompute_ref_cell_captures_expr(ctx, arm.expr, scope_mcv)
+        match arm.cond {
+          Some(c) => precompute_ref_cell_captures_expr(ctx, c, scope_mcv)
+          None => ()
+        }
+      }
+    }
+    @core.Expr::Raise(value~, ..) =>
+      precompute_ref_cell_captures_expr(ctx, value, scope_mcv)
+    @core.Expr::While(cond~, body~, ..) => {
+      precompute_ref_cell_captures_expr(ctx, cond, scope_mcv)
+      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      for p in params {
+        precompute_ref_cell_captures_expr(ctx, p.init, scope_mcv)
+      }
+      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
+    }
+    @core.Expr::StructLit(fields~, ..) =>
+      for f in fields {
+        precompute_ref_cell_captures_expr(ctx, f.expr, scope_mcv)
+      }
+    _ => ()
+  }
+}
+
+///|
+fn precompute_ref_cell_for_fn(
+  ctx : CodegenCtx,
+  span : @core.Span,
+  body : @core.Module,
+  scope_mcv : Map[String, Bool],
+) -> Unit {
+  let key = span_key(span)
+  match ctx.fn_closure_captures.get(key) {
+    Some(caps) => {
+      let flags : Array[Bool] = []
+      for cap in caps {
+        flags.push(scope_mcv.contains(cap))
+      }
+      ctx.fn_closure_capture_is_ref_cell[key] = flags
+      // Compute the body's own mut captured vars
+      let body_mcv = compute_mut_captured_for_block(
+        body.stmts,
+        ctx.fn_closure_captures,
+      )
+      // Propagate: captures that are ref cells remain ref cells in the body
+      for i in 0..<caps.length() {
+        if flags[i] {
+          body_mcv[caps[i]] = true
+        }
+      }
+      precompute_ref_cell_captures_block(ctx, body.stmts, body_mcv)
+    }
+    // No captures, but still recurse for nested functions
+    None => {
+      let body_mcv = compute_mut_captured_for_block(
+        body.stmts,
+        ctx.fn_closure_captures,
+      )
+      precompute_ref_cell_captures_block(ctx, body.stmts, body_mcv)
+    }
+  }
 }
