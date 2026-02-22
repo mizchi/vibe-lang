@@ -612,7 +612,7 @@ test "vibe let rec underscore is rejected" {
 test "vibe threads probe builtin requires unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "threads_probe_wat()",
+    "do { threads_probe_wat() }",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -627,7 +627,7 @@ test "vibe threads probe builtin works when unstable threads is enabled" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "threads_probe_wat()",
+    "do { threads_probe_wat() }",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -644,7 +644,7 @@ test "vibe threads probe builtin works when unstable threads is enabled" {
 test "vibe threads runtime hints requires unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "threads_runtime_hints()",
+    "do { threads_runtime_hints() }",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -659,7 +659,7 @@ test "vibe threads runtime hints returns recommended flags" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "threads_runtime_hints()",
+    "do { threads_runtime_hints() }",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -685,7 +685,7 @@ test "vibe threads runtime hints returns recommended flags" {
 test "vibe threads runtime queue builtins require unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let ch = threads_channel_new(1)\n" + "threads_send(ch, \"hello\")",
+    "do {\n  let ch = threads_channel_new(1)\n  threads_send(ch, \"hello\")\n}",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -700,12 +700,14 @@ test "vibe threads runtime queue builtins work when unstable threads is enabled"
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let ch = threads_channel_new(2)\n" +
-    "let task = threads_spawn(\"worker\", ch)\n" +
-    "let ok = threads_send(ch, \"hello\")\n" +
-    "let msg = threads_recv(ch)\n" +
-    "let status = threads_wait(task)\n" +
-    "ok && msg == \"hello\" && status == 0",
+    "do {\n" +
+    "  let ch = threads_channel_new(2)\n" +
+    "  let task = threads_spawn(\"worker\", ch)\n" +
+    "  let ok = threads_send(ch, \"hello\")\n" +
+    "  let msg = threads_recv(ch)\n" +
+    "  let status = threads_wait(task)\n" +
+    "  ok && msg == \"hello\" && status == 0\n" +
+    "}",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -724,11 +726,13 @@ test "vibe threads send returns false when channel is full" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, XshError] = try? rt.eval_script(
-    "let ch = threads_channel_new(1)\n" +
-    "let first = threads_send(ch, \"a\")\n" +
-    "let second = threads_send(ch, \"b\")\n" +
-    "let got = threads_recv(ch)\n" +
-    "first && not(second) && got == \"a\"",
+    "do {\n" +
+    "  let ch = threads_channel_new(1)\n" +
+    "  let first = threads_send(ch, \"a\")\n" +
+    "  let second = threads_send(ch, \"b\")\n" +
+    "  let got = threads_recv(ch)\n" +
+    "  first && not(second) && got == \"a\"\n" +
+    "}",
   )
   match result {
     Err(err) => fail(err.to_string())
