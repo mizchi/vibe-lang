@@ -32,14 +32,14 @@ let rec fact = (n: Int) -> Int {
 }
 
 // Lambda — use explicit types for reliable type inference
-array_map((x: Int) -> Int { x * 2 }, [1, 2, 3])
-array_fold((acc: Int, x: Int) -> Int { acc + x }, 0, [1, 2, 3])
+array_map([1, 2, 3], (x: Int) -> Int { x * 2 })
+array_fold([1, 2, 3], 0, (acc: Int, x: Int) -> Int { acc + x })
 
 // Short lambda / placeholder — MAY FAIL in REPL with type inference errors.
 // Always prefer explicit types:
-//   array_map(x -> x * 2, arr)     -- may fail
-//   array_map(_ * 2, arr)          -- may fail
-//   array_map((x: Int) -> Int { x * 2 }, arr)  -- reliable
+//   array_map(arr, x -> x * 2)     -- may fail
+//   array_map(arr, _ * 2)          -- may fail
+//   array_map(arr, (x: Int) -> Int { x * 2 })  -- reliable
 
 // Generics
 let identity = [T](x: T) -> T { x }
@@ -52,14 +52,13 @@ let identity = [T](x: T) -> T { x }
 // Note: struct.field (e.g. p.x) is field access, NOT method call
 ```
 
-> **Note on `|>` and HOFs**: The pipe operator inserts the left value as the
-> first argument. Since `array_map(fn, arr)` / `array_filter(fn, arr)` /
-> `array_fold(fn, init, arr)` take the function as the first argument,
-> you cannot pipe an array directly into them. Use `let` bindings instead:
+> **Pipe `|>` with HOFs**: The pipe operator inserts the left value as the
+> first argument. All collection HOFs take the array as the first argument,
+> so piping works naturally:
 > ```vibe
-> let nums = [1, 2, 3, 4, 5]
-> let evens = array_filter((x: Int) -> Bool { x % 2 == 0 }, nums)
-> let sum = array_fold((acc: Int, x: Int) -> Int { acc + x }, 0, evens)
+> [1, 2, 3, 4, 5]
+>   |> array_filter((x: Int) -> Bool { x % 2 == 0 })
+>   |> array_fold(0, (acc: Int, x: Int) -> Int { acc + x })
 > ```
 
 ## Types
@@ -120,9 +119,9 @@ impl Eq for Int                              // impl (declaration only)
 let arr = [1, 2, 3]
 arr[0]                    // index
 array_length(arr)         // 3
-array_map((x: Int) -> Int { x * 2 }, arr)
-array_filter((x: Int) -> Bool { x > 1 }, arr)
-array_fold((acc: Int, x: Int) -> Int { acc + x }, 0, arr)
+array_map(arr, (x: Int) -> Int { x * 2 })
+array_filter(arr, (x: Int) -> Bool { x > 1 })
+array_fold(arr, 0, (acc: Int, x: Int) -> Int { acc + x })
 array_concat([1, 2], [3, 4])
 
 // Map (string-keyed, all values must be same type)
@@ -272,9 +271,9 @@ test "example" {
 }
 ```
 
-> **Note**: Use `assert(eq(a, b))` not `assert_eq(a, b)` — `assert_eq` may
-> not be available in all contexts. Effects like `sh`/`sh_lines` work
-> implicitly in test blocks (no `do { }` needed).
+> **Note**: Both `assert_eq(a, b)` and `assert(eq(a, b))` work for
+> numeric comparisons. For strings, use `assert(string_equals(a, b))`.
+> Effects like `sh`/`sh_lines` work implicitly in test blocks (no `do { }` needed).
 
 ## Key Builtins
 
@@ -289,23 +288,23 @@ string_to_upper("hello")                         // => "HELLO"
 string_to_lower("HELLO")                         // => "hello"
 ```
 
-**Array**: `array_length`, `array_get`, `array_slice`, `array_concat`, `array_reverse`, `array_map`, `array_filter`, `array_fold`, `array_any`, `array_all`, `array_find`
+**Array**: `array_length`, `array_get`, `array_slice`, `array_concat`, `array_reverse`, `array_map`, `array_filter`, `array_fold`, `array_any`, `array_all`, `array_find` (returns `Option[T]`), `array_contains`
 
 ```vibe
-// array_any/all: predicate fn is FIRST arg
-array_any((x: Int) -> Bool { x > 3 }, [1, 2, 3, 4])   // => true
-array_all((x: Int) -> Bool { x > 0 }, [1, 2, 3])       // => true
-// array_find: returns the first matching ELEMENT (not index)
-// Returns -1 if no match found
-array_find((x: Int) -> Bool { x > 3 }, [1, 2, 3, 4, 5]) // => 4
+// array_any/all: collection is FIRST arg, predicate is LAST
+array_any([1, 2, 3, 4], (x: Int) -> Bool { x > 3 })   // => true
+array_all([1, 2, 3], (x: Int) -> Bool { x > 0 })       // => true
+// array_find: returns Option[T] — Some(value) or None
+array_find([1, 2, 3, 4, 5], (x: Int) -> Bool { x > 3 }) // => Some(4)
 ```
 
-**Map**: `map_get`, `map_has_key`, `map_keys`, `map_values`
+**Map**: `map_get`, `map_get_or`, `map_has_key`, `map_keys`, `map_values`
 
-> **`map_get` throws on missing key.** Always check with `map_has_key` first.
+> **`map_get` throws on missing key.** Use `map_get_or` for safe access with a default.
 
 ```vibe
-map_has_key(map { a: 1, b: 2 }, "a")  // => true
+map_get_or(map { a: 1, b: 2 }, "c", 0)  // => 0 (default)
+map_has_key(map { a: 1, b: 2 }, "a")    // => true
 ```
 
 **Map Builder** (imperative map construction, requires `do { }` context):
@@ -339,9 +338,7 @@ from_lines("a\nb\nc")              // => ["a", "b", "c"]
 to_lines(["a", "b", "c"])          // => "a\nb\nc"
 ```
 
-**Assert**: `assert(Bool)`, `eq(a, b) -> Bool`
-
-> Use `assert(eq(a, b))` — `assert_eq` may not work in all contexts.
+**Assert**: `assert(Bool)`, `assert_eq(a, b)`, `eq(a, b) -> Bool`
 
 **Prelude**: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`
 

@@ -47,18 +47,18 @@ let rec fact = (n: Int) -> Int {
 }
 
 // Lambda (single param, arrow)
-array_map(x -> x * 2, [1, 2, 3])
+array_map([1, 2, 3], x -> x * 2)
 
 // Lambda (multi param)
-array_fold((acc, x) -> acc + x, 0, [1, 2, 3])
+array_fold([1, 2, 3], 0, (acc, x) -> acc + x)
 
 // Lambda (block body)
-array_map((x) { x + 1 }, [1, 2, 3])
+array_map([1, 2, 3], (x) { x + 1 })
 
 // Placeholder shorthand
-array_map(_ * 2, [1, 2, 3])
-array_fold(_ + _, 0, [1, 2, 3])
-array_map(add(_, 10), [1, 2, 3])
+array_map([1, 2, 3], _ * 2)
+array_fold([1, 2, 3], 0, _ + _)
+array_map([1, 2, 3], add(_, 10))
 ```
 
 ## Generics

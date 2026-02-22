@@ -123,6 +123,58 @@ Completed items are archived in `docs/DONE.md`.
   - 目的: サンプル拡張で budget が偶発的に揺れる問題を防ぐ
   - 対象: `bench/bundle_size/README.md`, `docs/vibe.md`
 
+## Prelude API Consistency (2026-02)
+
+prelude（REPL/スクリプトのデフォルト環境）と `vibe/builtin/` ライブラリ間の API 不整合を解消する。
+`vibe/builtin/array.vibe` は既に正しい設計（ジェネリック、collection-first、Option 返し）だが、
+prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
+
+### High: 構造的不整合
+
+- [x] **H1: prelude HOF の引数順を collection-first に統一する**
+  - `array_map(arr, fn)`, `array_filter(arr, fn)`, `array_fold(arr, init, fn)` (collection-first)
+  - 対象: `src/checker/prelude.mbt`, `examples/*.vibe`, `docs/language-tour/*.md`, `eval-tasks.json`
+
+- [x] **H2: `array_find` の -1 sentinel を廃止する**
+  - `Option[Num]` を返す設計に変更（`Some(v)` / `None`）
+  - 対象: `src/checker/prelude.mbt`, `examples/syntax.vibe`, docs, eval-tasks
+
+- [x] **H3: `where` と `array_filter` の引数順不整合を解消する**
+  - H1 で `array_filter(arr, pred)` に統一済み。`where` も同じ collection-first 順
+
+### Medium: API ギャップ
+
+- [x] **M1: `map_get_or` を prelude に追加する**
+  - prelude 関数として `map_get_or(m, key, default)` を追加
+  - 対象: `src/checker/prelude.mbt`
+
+- [x] **M2: `assert_eq` を prelude に追加する**
+  - `assert_eq(a, b)` を prelude 関数として追加（`__assert(eq(a, b))` のラッパー）
+  - 対象: `src/checker/prelude.mbt`
+
+- [x] **M3: `array_contains` を追加する**
+  - prelude 関数として追加（直接ループ実装、クロージャキャプチャ問題を回避）
+  - 対象: `src/checker/prelude.mbt`
+
+- [ ] **M4: `array_sort` を追加する**
+  - スクリプト言語としてソートは基本機能
+  - 対象: `src/runtime/eval_builtins.mbt`
+
+- [ ] **M5: Map HOF を追加する（`map_map`, `map_filter`）**
+  - 現状: Map には `map_get`/`map_keys`/`map_values` のみ、HOF なし
+  - JSON/config 操作で Map 変換が頻出
+
+### Low: 命名・細部
+
+- [ ] **L1: `string_join` の命名を検討する**
+  - `string_join(Array[String], String)` — 第1引数が Array なのに `string_*` 命名
+  - `array_join` alias を検討
+
+- [ ] **L2: prelude の Num 型を generics に移行する**
+  - 現状: HOF が `Num` 固定で非数値型配列に使えない
+  - `vibe/builtin/array.vibe` は既にジェネリック
+  - prelude を直接ジェネリック化 or ライブラリへ委譲
+
 ## Language Features
 
 - [ ] Multi-language frontend adapters:

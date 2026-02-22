@@ -94,12 +94,13 @@ The vibe `|>` pipe operator can chain shell results with vibe functions:
 let result = sh_lines("ls /tmp")
   |> array_filter((s: String) -> Bool { string_contains(s, ".txt") })
   |> array_length
+// Works because |> inserts value as first arg, matching collection-first order
 ```
 
 ## where (filter)
 
 ```vibe
-// Filter array with predicate (prelude function)
-let evens = where((x: Int) -> Bool { x % 2 == 0 }, [1, 2, 3, 4, 5])
+// Filter array with predicate (prelude function, collection-first)
+let evens = where([1, 2, 3, 4, 5], (x: Int) -> Bool { x % 2 == 0 })
 // => [2, 4]
 ```

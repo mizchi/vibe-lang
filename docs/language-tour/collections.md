@@ -15,13 +15,13 @@ array_length(arr) // => 3
 // Iteration (returns collected array)
 for x in arr { x * 2 }   // => [2, 4, 6]
 
-// Higher-order functions (prelude)
-array_map(x -> x * 2, arr)            // => [2, 4, 6]
-array_filter((x: Int) -> Bool { x > 1 }, arr)  // => [2, 3]
-array_fold(_ + _, 0, arr)             // => 6
-array_any((x: Int) -> Bool { x > 2 }, arr)  // => true
-array_all((x: Int) -> Bool { x > 0 }, arr)  // => true
-array_find((x: Int) -> Bool { x > 1 }, arr) // => 2 (-1 if not found)
+// Higher-order functions (prelude) — collection-first, fn-last
+array_map(arr, x -> x * 2)            // => [2, 4, 6]
+array_filter(arr, (x: Int) -> Bool { x > 1 })  // => [2, 3]
+array_fold(arr, 0, _ + _)             // => 6
+array_any(arr, (x: Int) -> Bool { x > 2 })  // => true
+array_all(arr, (x: Int) -> Bool { x > 0 })  // => true
+array_find(arr, (x: Int) -> Bool { x > 1 }) // => Some(2) (None if not found)
 
 // Concat, reverse, slice
 array_concat([1, 2], [3, 4])     // => [1, 2, 3, 4]
@@ -50,7 +50,8 @@ String-keyed dictionary.
 let m = map { a: 1, "b": 2 }
 
 // Access
-map_get(m, "a")     // => 1
+map_get(m, "a")     // => 1 (throws if key missing)
+map_get_or(m, "c", 0) // => 0 (safe, returns default)
 m["a"]              // => 1 (index syntax)
 
 // Query

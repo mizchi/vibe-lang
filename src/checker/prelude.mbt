@@ -10,6 +10,7 @@ let prelude_source : String =
   #|let and = (x: Bool, y: Bool) -> Bool { if x { y } else { false } }
   #|let or = (x: Bool, y: Bool) -> Bool { if x { true } else { y } }
   #|let assert = (cond: Bool) -> Unit { __assert(cond) }
+  #|let assert_eq = (a: Num, b: Num) -> Unit { __assert(eq(a, b)) }
   #|trait Show
   #|trait Iterable
   #|impl Show for Int
@@ -23,7 +24,7 @@ let prelude_source : String =
   #|let iter_require = [C: Iterable](xs: C) -> C { xs }
   #|let iter_length = [T](xs: Array[T]) -> Int { array_length(xs) }
   #|let iter_get = [T](xs: Array[T], index: Int) -> T { array_get(xs, index) }
-  #|let array_map = (f: (x: Num) -> Num, xs: Array[Num]) -> Array[Num] {
+  #|let array_map = (xs: Array[Num], f: (x: Num) -> Num) -> Array[Num] {
   #|  do {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
@@ -36,7 +37,7 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
-  #|let array_fold = (f: (acc: Num, x: Num) -> Num, init: Num, xs: Array[Num]) -> Num {
+  #|let array_fold = (xs: Array[Num], init: Num, f: (acc: Num, x: Num) -> Num) -> Num {
   #|  let rec loop = (i: Int, acc: Num) -> Num {
   #|    if i < array_length(xs) {
   #|      loop(i + 1, f(acc, array_get(xs, i)))
@@ -46,7 +47,7 @@ let prelude_source : String =
   #|  }
   #|  loop(0, init)
   #|}
-  #|let array_filter = (pred: (x: Num) -> Bool, xs: Array[Num]) -> Array[Num] {
+  #|let array_filter = (xs: Array[Num], pred: (x: Num) -> Bool) -> Array[Num] {
   #|  do {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
@@ -62,7 +63,7 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
-  #|let array_foreach = (f: (x: Num) -> Unit, xs: Array[Num]) -> Unit {
+  #|let array_foreach = (xs: Array[Num], f: (x: Num) -> Unit) -> Unit {
   #|  let rec loop = (i: Int) -> Unit {
   #|    if i < array_length(xs) {
   #|      f(array_get(xs, i))
@@ -91,7 +92,7 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
-  #|let array_any = (pred: (x: Num) -> Bool, xs: Array[Num]) -> Bool {
+  #|let array_any = (xs: Array[Num], pred: (x: Num) -> Bool) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
   #|    if i < array_length(xs) {
   #|      if pred(array_get(xs, i)) { true } else { loop(i + 1) }
@@ -99,7 +100,7 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
-  #|let array_all = (pred: (x: Num) -> Bool, xs: Array[Num]) -> Bool {
+  #|let array_all = (xs: Array[Num], pred: (x: Num) -> Bool) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
   #|    if i < array_length(xs) {
   #|      if pred(array_get(xs, i)) { loop(i + 1) } else { false }
@@ -107,12 +108,12 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
-  #|let array_find = (pred: (x: Num) -> Bool, xs: Array[Num]) -> Num {
-  #|  let rec loop = (i: Int) -> Num {
+  #|let array_find = (xs: Array[Num], pred: (x: Num) -> Bool) -> Option[Num] {
+  #|  let rec loop = (i: Int) -> Option[Num] {
   #|    if i < array_length(xs) {
   #|      let v = array_get(xs, i)
-  #|      if pred(v) { v } else { loop(i + 1) }
-  #|    } else { -1 }
+  #|      if pred(v) { Some(v) } else { loop(i + 1) }
+  #|    } else { None }
   #|  }
   #|  loop(0)
   #|}
@@ -129,6 +130,17 @@ let prelude_source : String =
   #|    loop(len - 1)
   #|    array_builder_freeze(b)
   #|  }
+  #|}
+  #|let array_contains = (xs: Array[Num], value: Num) -> Bool {
+  #|  let rec loop = (i: Int) -> Bool {
+  #|    if i < array_length(xs) {
+  #|      if eq(array_get(xs, i), value) { true } else { loop(i + 1) }
+  #|    } else { false }
+  #|  }
+  #|  loop(0)
+  #|}
+  #|let map_get_or = (m: Map[Num], key: String, default: Num) -> Num {
+  #|  if map_has_key(m, key) { map_get(m, key) } else { default }
   #|}
   #|let where = (xs: Array[Num], pred: (x: Num) -> Bool) -> Array[Num] {
   #|  do {
@@ -158,6 +170,6 @@ pub fn prelude_names() -> Array[String] {
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "to_string",
     "iter_require", "iter_length", "iter_get", "array_map", "array_fold", "array_filter",
     "array_foreach", "array_concat", "array_reverse", "array_any", "array_all", "array_find",
-    "where",
+    "assert_eq", "array_contains", "map_get_or", "where",
   ]
 }
