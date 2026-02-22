@@ -357,7 +357,7 @@ fn bench_cmd(
         abort(
           "bench: --syntax posix is supported only with --expr/--case/--cases",
         )
-      @runtime.ParserMode::XshMode => ()
+      @runtime.ParserMode::VibeMode => ()
     }
     bench_blocks_cmd(args, features, backend)
   }

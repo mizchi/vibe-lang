@@ -4,7 +4,7 @@ fn parse_cli_syntax_mode(
   cmd_name : String,
 ) -> Result[@runtime.ParserMode, String] {
   match value {
-    "vibe" => Ok(@runtime.ParserMode::XshMode)
+    "vibe" => Ok(@runtime.ParserMode::VibeMode)
     "posix" => Ok(@runtime.ParserMode::PosixMode)
     _ =>
       Err(
@@ -37,7 +37,7 @@ pub fn parse_cli_syntax_args(
   args : Array[String],
   cmd_name : String,
 ) -> Result[(@runtime.ParserMode, Array[String]), String] {
-  let mut mode = @runtime.ParserMode::XshMode
+  let mut mode = @runtime.ParserMode::VibeMode
   let rest : Array[String] = []
   let mut i = 0
   while i < args.length() {
@@ -156,7 +156,7 @@ pub fn ensure_cli_parser_mode_supported(
   cmd_name : String,
 ) -> Result[Unit, String] {
   match mode {
-    @runtime.ParserMode::XshMode => Ok(())
+    @runtime.ParserMode::VibeMode => Ok(())
     @runtime.ParserMode::PosixMode =>
       match cmd_name {
         "shell" | "shell-stdin" | "shell-wasi" => Ok(())

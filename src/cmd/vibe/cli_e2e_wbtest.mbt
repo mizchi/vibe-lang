@@ -252,7 +252,7 @@ test "shell vibe command prints readable help by default" {
   )
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "vibe",
     "/tmp/repl_vibe_help.db",
     "",
@@ -273,7 +273,7 @@ test "shell vibe command supports --json for help output" {
   )
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "vibe help --json",
     "/tmp/repl_vibe_help_json.db",
     "",
@@ -294,7 +294,7 @@ test "shell vibe bare command prints symbols in readable format" {
   )
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "symbols",
     "/tmp/repl_symbols_help.db",
     "let x = 1\n",
@@ -317,7 +317,7 @@ test "shell vibe symbols supports scope flags for builtin and shell" {
   )
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "symbols --builtin --shell",
     "/tmp/repl_symbols_scope.db",
     "let x = 1\n",
@@ -340,7 +340,7 @@ test "shell vibe symbols supports --json output" {
   )
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "symbols --json",
     "/tmp/repl_symbols_json.db",
     "let x = 1\n",
@@ -364,7 +364,7 @@ test "shell vibe command supports pipeline transform over json payload" {
   let source = "let inc = (x: Int) -> Int { x + 1 }\n"
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "vibe view inc |> json_get(\"ok\")",
     "/tmp/repl_vibe_pipeline.db",
     source,
@@ -400,7 +400,7 @@ test "shell vibe type prints readable signature by default" {
   let source = "let inc = (x: Int) -> Int { x + 1 }\n"
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "type inc",
     "/tmp/repl_vibe_type.db",
     source,
@@ -421,7 +421,7 @@ test "shell vibe type supports --json output" {
   let source = "let inc = (x: Int) -> Int { x + 1 }\n"
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "type inc --json",
     "/tmp/repl_vibe_type_json.db",
     source,
@@ -447,7 +447,7 @@ test "shell vibe normalize accepts entry symbols and drops pure expr stmt" {
     "let y = f(x)\n"
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "normalize x y",
     "/tmp/repl_vibe_normalize_symbols.db",
     source,
@@ -473,7 +473,7 @@ test "shell vibe normalize dedups duplicate lets with last wins" {
   let source = "let x = 3\n" + "let x = 111\n" + "export { x }\n"
   let result = handle_repl_vibe_shell_command(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     "normalize x",
     "/tmp/repl_vibe_normalize_dedup_last_wins.db",
     source,
@@ -497,7 +497,7 @@ test "shell warns when binding reserved vibe subcommand name" {
   )
   let _ = run_interactive_line(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     scratch_db_path,
     "",
     "let view = 1",
@@ -525,7 +525,7 @@ test "shell restore resets duplicate scratch source" {
   let source = "let x = 1\nlet x = 2\n"
   let restored = repl_restore_scratch_source(
     rt,
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     scratch_db_path,
     source,
     fn(s) { lines.push(s) },
@@ -1174,7 +1174,7 @@ test "cli bundle and eval named alias workflow covers root priority and dir fall
       "+",
       "1",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -1186,7 +1186,7 @@ test "cli bundle and eval named alias workflow covers root priority and dir fall
       "answer",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -1195,7 +1195,7 @@ test "cli bundle and eval named alias workflow covers root priority and dir fall
       "--include=" + include_spec,
       "--export=" + out_root_priority,
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported_root_priority = @os_fs.read_file_to_string(out_root_priority) catch {
@@ -1217,7 +1217,7 @@ test "cli bundle and eval named alias workflow covers root priority and dir fall
       "+",
       "3",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -1229,7 +1229,7 @@ test "cli bundle and eval named alias workflow covers root priority and dir fall
       "answer",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -1238,7 +1238,7 @@ test "cli bundle and eval named alias workflow covers root priority and dir fall
       "--include=" + include_spec,
       "--export=" + out_dir_fallback,
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported_dir_fallback = @os_fs.read_file_to_string(out_dir_fallback) catch {
@@ -1502,13 +1502,13 @@ test "cli eval without db uses scratch namespace db" {
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
   let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(["let", "seed", "=", "10"], @runtime.ParserMode::XshMode, features)
+  eval_cmd(["let", "seed", "=", "10"], @runtime.ParserMode::VibeMode, features)
   eval_cmd(
     ["let", "answer", "=", "seed", "+", "32"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
-  eval_cmd(["--export=" + out_path], @runtime.ParserMode::XshMode, features)
+  eval_cmd(["--export=" + out_path], @runtime.ParserMode::VibeMode, features)
   match prev {
     Some(value) => @sys.set_env_var("VIBE_SCRATCH_DB_PATH", value)
     None => @sys.unset_env_var("VIBE_SCRATCH_DB_PATH")
@@ -1536,7 +1536,7 @@ test "cli history reset clears scratch namespace db" {
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
   let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(["let", "v", "=", "1"], @runtime.ParserMode::XshMode, features)
+  eval_cmd(["let", "v", "=", "1"], @runtime.ParserMode::VibeMode, features)
   assert_true(@os_fs.path_exists(scratch_db))
   history_cmd(["reset"])
   match prev {
@@ -1595,7 +1595,7 @@ test "cli symbols marks shadowed when scratch overrides index symbol" {
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
   let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(["let", "foo", "=", "1"], @runtime.ParserMode::XshMode, features)
+  eval_cmd(["let", "foo", "=", "1"], @runtime.ParserMode::VibeMode, features)
   let rows = match collect_symbols_rows(entry) {
     Ok(v) => v
     Err(err) => fail("collect symbols failed: " + err)
@@ -1633,7 +1633,7 @@ test "cli write_file selector name prefers scratch namespace symbol" {
   let prev = @sys.get_env_var("VIBE_SCRATCH_DB_PATH")
   @sys.set_env_var("VIBE_SCRATCH_DB_PATH", scratch_db)
   let features = @runtime.RuntimeFeatureFlags::stable()
-  eval_cmd(["let", "foo", "=", "1"], @runtime.ParserMode::XshMode, features)
+  eval_cmd(["let", "foo", "=", "1"], @runtime.ParserMode::VibeMode, features)
   write_file_cmd(["--entry=" + entry, "foo", out_path])
   match prev {
     Some(value) => @sys.set_env_var("VIBE_SCRATCH_DB_PATH", value)
@@ -1726,22 +1726,22 @@ test "cli eval db workflow persists namespace and exports module" {
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "40"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "let", "answer", "=", "base", "+", "2"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "export", "{", "answer", "}"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported = @os_fs.read_file_to_string(out_path) catch {
@@ -1788,7 +1788,7 @@ test "cli eval db workflow supports include scripts" {
       "+",
       "2",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -1800,12 +1800,12 @@ test "cli eval db workflow supports include scripts" {
       "answer",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "--include=" + include_path, "--export=" + out_path],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported = @os_fs.read_file_to_string(out_path) catch {
@@ -1855,7 +1855,7 @@ test "cli eval include supports hash alias from vbundle file" {
       "+",
       "1",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -1867,12 +1867,12 @@ test "cli eval include supports hash alias from vbundle file" {
       "answer",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "--include=" + include_path, "--export=" + out_path],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported = @os_fs.read_file_to_string(out_path) catch {
@@ -1937,7 +1937,7 @@ test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
       "+",
       "2",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -1949,7 +1949,7 @@ test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
       "answer",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -1958,7 +1958,7 @@ test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
       "--include=vibe/builtin@0.1.0.vbundle",
       "--export=" + out_path,
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
@@ -2016,7 +2016,7 @@ test "cli eval include resolves latest named alias when version omitted" {
       "+",
       "3",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2028,7 +2028,7 @@ test "cli eval include resolves latest named alias when version omitted" {
       "answer",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2037,7 +2037,7 @@ test "cli eval include resolves latest named alias when version omitted" {
       "--include=vibe/builtin.vbundle",
       "--export=" + out_path,
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   wbtest_restore_env_var("VIBE_LIB_ROOT", prev_root)
@@ -2080,7 +2080,7 @@ test "cli eval include supports packed vbundle entry source" {
       "+",
       "2",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2092,12 +2092,12 @@ test "cli eval include supports packed vbundle entry source" {
       "answer",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "--include=" + include_bundle, "--export=" + out_path],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported = @os_fs.read_file_to_string(out_path) catch {
@@ -2120,7 +2120,7 @@ test "cli eval db workflow validates scope symbols and types per step" {
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "40"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope1 = scope_symbol_signatures_from_db(db_path)
@@ -2142,7 +2142,7 @@ test "cli eval db workflow validates scope symbols and types per step" {
       "base",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope2 = scope_symbol_signatures_from_db(db_path)
@@ -2151,7 +2151,7 @@ test "cli eval db workflow validates scope symbols and types per step" {
   assert_scope_symbol_signature(scope2, "inc", "(x: Int) -> Int")
   eval_cmd(
     ["--db=" + db_path, "let", "answer", "=", "inc", "(", "2", ")"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope3 = scope_symbol_signatures_from_db(db_path)
@@ -2161,7 +2161,7 @@ test "cli eval db workflow validates scope symbols and types per step" {
   assert_scope_symbol_signature(scope3, "answer", "Int")
   eval_cmd(
     ["--db=" + db_path, "export", "{", "answer", "}"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope4 = scope_symbol_signatures_from_db(db_path)
@@ -2169,7 +2169,7 @@ test "cli eval db workflow validates scope symbols and types per step" {
   assert_scope_symbol_signature(scope4, "answer", "Int")
   eval_cmd(
     ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported = @os_fs.read_file_to_string(out_path) catch {
@@ -2194,7 +2194,7 @@ test "cli eval db complex workflow validates chained function scope types" {
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "10"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope1 = scope_symbol_signatures_from_db(db_path)
@@ -2216,7 +2216,7 @@ test "cli eval db complex workflow validates chained function scope types" {
       "base",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope2 = scope_symbol_signatures_from_db(db_path)
@@ -2242,7 +2242,7 @@ test "cli eval db complex workflow validates chained function scope types" {
       ")",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope3 = scope_symbol_signatures_from_db(db_path)
@@ -2250,7 +2250,7 @@ test "cli eval db complex workflow validates chained function scope types" {
   assert_scope_symbol_signature(scope3, "add_twice", "(x: Int) -> Int")
   eval_cmd(
     ["--db=" + db_path, "let", "result", "=", "add_twice", "(", "5", ")"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope4 = scope_symbol_signatures_from_db(db_path)
@@ -2268,7 +2268,7 @@ test "cli eval db complex workflow validates chained function scope types" {
       "result",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope5 = scope_symbol_signatures_from_db(db_path)
@@ -2278,7 +2278,7 @@ test "cli eval db complex workflow validates chained function scope types" {
   assert_scope_symbol_signature(scope5, "result", "Int")
   eval_cmd(
     ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported = @os_fs.read_file_to_string(out_path) catch {
@@ -2306,7 +2306,7 @@ test "cli write_file handles complex eval exported module" {
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "10"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2325,7 +2325,7 @@ test "cli write_file handles complex eval exported module" {
       "base",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2348,12 +2348,12 @@ test "cli write_file handles complex eval exported module" {
       ")",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "let", "result", "=", "add_twice", "(", "5", ")"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2368,12 +2368,12 @@ test "cli write_file handles complex eval exported module" {
       "result",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   apply_cmd([out_path])
@@ -2409,7 +2409,7 @@ test "cli eval inspect scope and assertions on persisted namespace" {
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "10"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2428,7 +2428,7 @@ test "cli eval inspect scope and assertions on persisted namespace" {
       "base",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2440,7 +2440,7 @@ test "cli eval inspect scope and assertions on persisted namespace" {
       "--assert",
       "inc:(x: Int) -> Int",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let scope = scope_symbol_signatures_from_db(db_path)
@@ -2459,7 +2459,7 @@ test "cli eval test-for stores tests outside dag and accumulates by function" {
   let features = @runtime.RuntimeFeatureFlags::stable()
   eval_cmd(
     ["--db=" + db_path, "let", "base", "=", "10"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2478,7 +2478,7 @@ test "cli eval test-for stores tests outside dag and accumulates by function" {
       "base",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2488,7 +2488,7 @@ test "cli eval test-for stores tests outside dag and accumulates by function" {
       "add_base",
       "test \"add_base/one\" { assert(add_base(1) == 11) }",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2497,7 +2497,7 @@ test "cli eval test-for stores tests outside dag and accumulates by function" {
       "--test-for=add_base",
       "test \"add_base/two\" { assert(add_base(2) == 12) }",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let test_path = eval_test_file_path(db_path, "add_base")
@@ -2515,7 +2515,7 @@ test "cli eval test-for stores tests outside dag and accumulates by function" {
   assert_false(db_source.contains("test \"add_base/two\""))
   eval_cmd(
     ["--db=" + db_path, "--export=" + out_path],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let exported = @os_fs.read_file_to_string(out_path) catch {
@@ -2551,7 +2551,7 @@ test "cli eval test-for run uses def-level cache key" {
       "1",
       "}",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
@@ -2562,7 +2562,7 @@ test "cli eval test-for run uses def-level cache key" {
       "--run",
       "test \"add_one/basic\" { assert(add_one(1) >= 2) }",
     ],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let cache_path = eval_test_cache_file_path(db_path, "add_one")
@@ -2575,7 +2575,7 @@ test "cli eval test-for run uses def-level cache key" {
   // No new test expression: should use existing sidecar and keep cache key.
   eval_cmd(
     ["--db=" + db_path, "--test-for", "add_one", "--run"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let second_hash = @os_fs.read_file_to_string(cache_path) catch {
@@ -2586,12 +2586,12 @@ test "cli eval test-for run uses def-level cache key" {
   // Unrelated DB edits should not invalidate def-level cache key.
   eval_cmd(
     ["--db=" + db_path, "let", "unrelated", "=", "42"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   eval_cmd(
     ["--db=" + db_path, "--test-for", "add_one", "--run"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let third_hash = @os_fs.read_file_to_string(cache_path) catch {
@@ -2607,7 +2607,7 @@ test "cli eval test-for run uses def-level cache key" {
   }
   eval_cmd(
     ["--db=" + db_path, "--test-for", "add_one", "--run"],
-    @runtime.ParserMode::XshMode,
+    @runtime.ParserMode::VibeMode,
     features,
   )
   let fourth_hash = @os_fs.read_file_to_string(cache_path) catch {

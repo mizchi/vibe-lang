@@ -1,23 +1,23 @@
 ///|
 /// vibe public API
-suberror XshError {
+suberror VibeError {
   Parse(@parser.ParseError)
   Type(@checker.TypeError)
   Eval(EvalError)
 } derive(Show, Eq)
 
 ///|
-pub fn XshError::format_for_repl(self : XshError, source : String) -> String {
+pub fn VibeError::format_for_repl(self : VibeError, source : String) -> String {
   match self {
-    XshError::Type(type_err) => type_err.diagnostic().render("<repl>", source)
-    XshError::Parse(parse_err) =>
+    VibeError::Type(type_err) => type_err.diagnostic().render("<repl>", source)
+    VibeError::Parse(parse_err) =>
       parse_err.diagnostic().render("<repl>", source)
-    XshError::Eval(eval_err) => "error: " + eval_err.to_string()
+    VibeError::Eval(eval_err) => "error: " + eval_err.to_string()
   }
 }
 
 ///|
-/// Format any Error for REPL display. Tries XshError diagnostic, falls back to string.
+/// Format any Error for REPL display. Tries VibeError diagnostic, falls back to string.
 /// `unwrap_prefix` is the prefix added by wrapping (e.g. "do { "), used to adjust span offsets.
 pub fn format_error_for_repl(
   e : Error,
@@ -26,7 +26,7 @@ pub fn format_error_for_repl(
 ) -> String {
   let offset = unwrap_prefix.length()
   match e {
-    XshError::Type(type_err) => {
+    VibeError::Type(type_err) => {
       let diag = type_err.diagnostic()
       if offset > 0 {
         // Shift span back by prefix length and render against original source
@@ -49,16 +49,16 @@ pub fn format_error_for_repl(
         diag.render("<repl>", source)
       }
     }
-    XshError::Parse(parse_err) =>
+    VibeError::Parse(parse_err) =>
       parse_err.diagnostic().render("<repl>", source)
-    XshError::Eval(eval_err) => "error: " + eval_err.to_string()
+    VibeError::Eval(eval_err) => "error: " + eval_err.to_string()
     _ => "error: " + e.to_string()
   }
 }
 
 ///|
 pub(all) enum ParserMode {
-  XshMode
+  VibeMode
   PosixMode
 } derive(Show, Eq)
 
@@ -86,14 +86,14 @@ pub fn is_vibe_script(script : String) -> Bool {
 fn parse_script_with_mode(
   script : String,
   mode : ParserMode,
-) -> (@core.Module, Array[String]) raise XshError {
+) -> (@core.Module, Array[String]) raise VibeError {
   match mode {
-    ParserMode::XshMode =>
-      (@parser.parse_ast(script) catch { e => raise XshError::Parse(e) }, [])
+    ParserMode::VibeMode =>
+      (@parser.parse_ast(script) catch { e => raise VibeError::Parse(e) }, [])
     ParserMode::PosixMode => {
       let preprocessed = preprocess_posix_source(script)
       let parsed = @parser.parse_ast(preprocessed) catch {
-        e => raise XshError::Parse(e)
+        e => raise VibeError::Parse(e)
       }
       let (desugared, notes) = desugar_vibe_commands_with_notes(parsed)
       let out_notes : Array[String] = []
@@ -111,7 +111,7 @@ pub fn Runtime::eval_script_with_mode(
   self : Runtime,
   script : String,
   mode : ParserMode,
-) -> EvalResult raise XshError {
+) -> EvalResult raise VibeError {
   let (raw_ast, mode_notes) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = if script.contains(".") {
@@ -127,9 +127,9 @@ pub fn Runtime::eval_script_with_mode(
     )
     self.type_env = next_env.compact_for_eval()
   } catch {
-    e => raise XshError::Type(e)
+    e => raise VibeError::Type(e)
   }
-  let result = self.eval_module(ast) catch { e => raise XshError::Eval(e) }
+  let result = self.eval_module(ast) catch { e => raise VibeError::Eval(e) }
   if mode_notes.length() == 0 {
     result
   } else {
@@ -149,8 +149,8 @@ pub fn Runtime::eval_script_with_mode(
 pub fn Runtime::eval_script(
   self : Runtime,
   script : String,
-) -> EvalResult raise XshError {
-  self.eval_script_with_mode(script, ParserMode::XshMode)
+) -> EvalResult raise VibeError {
+  self.eval_script_with_mode(script, ParserMode::VibeMode)
 }
 
 ///|
@@ -159,7 +159,7 @@ pub fn Runtime::run_script_tests_with_mode(
   self : Runtime,
   script : String,
   mode : ParserMode,
-) -> TestReport raise XshError {
+) -> TestReport raise VibeError {
   let (raw_ast, _) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = desugar_method_calls(raw_ast, aliases)
@@ -171,10 +171,10 @@ pub fn Runtime::run_script_tests_with_mode(
     )
     self.type_env = next_env.compact_for_eval()
   } catch {
-    e => raise XshError::Type(e)
+    e => raise VibeError::Type(e)
   }
   self.run_tests(ast) catch {
-    e => raise XshError::Eval(e)
+    e => raise VibeError::Eval(e)
   }
 }
 
@@ -186,7 +186,7 @@ pub fn Runtime::run_script_benches_with_mode(
   count : Int,
   warmup : Int,
   mode : ParserMode,
-) -> BenchReport raise XshError {
+) -> BenchReport raise VibeError {
   let (raw_ast, _) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = desugar_method_calls(raw_ast, aliases)
@@ -198,10 +198,10 @@ pub fn Runtime::run_script_benches_with_mode(
     )
     self.type_env = next_env.compact_for_eval()
   } catch {
-    e => raise XshError::Type(e)
+    e => raise VibeError::Type(e)
   }
   self.run_benches(ast, count, warmup) catch {
-    e => raise XshError::Eval(e)
+    e => raise VibeError::Eval(e)
   }
 }
 
@@ -211,14 +211,14 @@ pub fn Runtime::collect_script_test_dep_snapshot_with_mode(
   self : Runtime,
   script : String,
   mode : ParserMode,
-) -> Map[String, String]? raise XshError {
+) -> Map[String, String]? raise VibeError {
   let (raw_ast, _) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = desugar_method_calls(raw_ast, aliases)
   try {
     let _ = @checker.type_check_with_env(self.type_env.clone(), ast, aliases)
   } catch {
-    e => raise XshError::Type(e)
+    e => raise VibeError::Type(e)
   }
   self.collect_test_dep_snapshot(ast)
 }
@@ -228,8 +228,8 @@ pub fn Runtime::collect_script_test_dep_snapshot_with_mode(
 pub fn Runtime::collect_script_test_dep_snapshot(
   self : Runtime,
   script : String,
-) -> Map[String, String]? raise XshError {
-  self.collect_script_test_dep_snapshot_with_mode(script, ParserMode::XshMode)
+) -> Map[String, String]? raise VibeError {
+  self.collect_script_test_dep_snapshot_with_mode(script, ParserMode::VibeMode)
 }
 
 ///|
@@ -237,8 +237,8 @@ pub fn Runtime::collect_script_test_dep_snapshot(
 pub fn Runtime::run_script_tests(
   self : Runtime,
   script : String,
-) -> TestReport raise XshError {
-  self.run_script_tests_with_mode(script, ParserMode::XshMode)
+) -> TestReport raise VibeError {
+  self.run_script_tests_with_mode(script, ParserMode::VibeMode)
 }
 
 ///|
@@ -248,6 +248,6 @@ pub fn Runtime::run_script_benches(
   script : String,
   count : Int,
   warmup : Int,
-) -> BenchReport raise XshError {
-  self.run_script_benches_with_mode(script, count, warmup, ParserMode::XshMode)
+) -> BenchReport raise VibeError {
+  self.run_script_benches_with_mode(script, count, warmup, ParserMode::VibeMode)
 }

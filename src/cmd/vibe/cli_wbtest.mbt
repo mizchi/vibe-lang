@@ -3,12 +3,12 @@ test "completion context for let" {
   let line = "let add2 = (x: Int, y: Int) { add(x, y) }"
   let ctx = detect_completion_context(line, line.length())
   match ctx {
-    CompletionContext::XshLetExpr => ()
+    CompletionContext::VibeLetExpr => ()
     _ => fail("expected let expr context")
   }
   let ctx2 = detect_completion_context("let ", 4)
   match ctx2 {
-    CompletionContext::XshLetName => ()
+    CompletionContext::VibeLetName => ()
     _ => fail("expected let name context")
   }
 }
@@ -563,7 +563,7 @@ test "cli syntax mode parse default" {
   let parsed = parse_cli_syntax_args(["main.vibe"], "run")
   match parsed {
     Ok((mode, rest)) => {
-      assert_eq(mode, @runtime.ParserMode::XshMode)
+      assert_eq(mode, @runtime.ParserMode::VibeMode)
       assert_eq(rest, ["main.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
@@ -587,7 +587,7 @@ test "cli runtime flags parse default" {
   let parsed = parse_cli_runtime_args(["main.vibe"], "run")
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.syntax_mode, @runtime.ParserMode::XshMode)
+      assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
       assert_eq(opts.cmd_args, ["main.vibe"])
       assert_false(opts.unstable_async)
       assert_false(opts.unstable_threads)
@@ -621,7 +621,7 @@ test "cli dispatch args parse leading unstable flags" {
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "run")
-      assert_eq(v.syntax_mode, @runtime.ParserMode::XshMode)
+      assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
       assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
       assert_true(v.unstable_threads)

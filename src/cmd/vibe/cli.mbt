@@ -680,7 +680,7 @@ fn run_cmd(
   }
   let entry_path = args[0]
   match syntax_mode {
-    @runtime.ParserMode::XshMode =>
+    @runtime.ParserMode::VibeMode =>
       match @loader.load_db(entry_path) {
         Err(err) => abort("run: " + err)
         Ok((db, entry)) => {

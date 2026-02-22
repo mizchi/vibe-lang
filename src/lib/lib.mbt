@@ -1307,7 +1307,7 @@ fn value_type_name(value : @core.Value) -> String {
 }
 
 ///|
-fn error_stage_from_xsh(err : @runtime.XshError) -> String {
+fn error_stage_from_vibe(err : @runtime.VibeError) -> String {
   let s = err.to_string()
   if s.has_prefix("Parse(") {
     "parse"
@@ -1336,7 +1336,7 @@ fn eval_report_json(request : String) -> String {
       root["ok"] = Json::boolean(false)
       root["diagnostics"] = Json::array([
         diagnostic_to_json(@core.Diagnostic::{
-          stage: error_stage_from_xsh(err),
+          stage: error_stage_from_vibe(err),
           message: err.to_string(),
           span: None,
           hint: None,

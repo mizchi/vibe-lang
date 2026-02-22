@@ -1,5 +1,5 @@
 #!/usr/bin/env -S deno run --allow-read
-import { createXshService } from "./index.js";
+import { createVibeService } from "./index.js";
 
 function getArgs() {
   if (typeof Deno !== "undefined" && Array.isArray(Deno.args)) {
@@ -256,7 +256,7 @@ async function main() {
   }
   const command = args[0];
   const subArgs = args.slice(1);
-  const service = await createXshService();
+  const service = await createVibeService();
   if (command === "ide") {
     return await runIde(service, subArgs);
   }

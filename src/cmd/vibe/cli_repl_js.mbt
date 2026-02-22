@@ -183,7 +183,7 @@ fn repl_deno_cmd(args : Array[String]) -> Unit {
       _ => abort("shell: unknown arg " + args[i])
     }
   }
-  let syntax_mode = @runtime.ParserMode::XshMode
+  let syntax_mode = @runtime.ParserMode::VibeMode
   let features = @runtime.RuntimeFeatureFlags::new(false, false)
   let caps = if enable_llm {
     @capability.CapabilitySet::developer()

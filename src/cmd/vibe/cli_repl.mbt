@@ -25,8 +25,8 @@ fn repl_cmd(
       }
     }
   }
-  // Default shell uses XshMode; POSIX commands via posix_fallback in TTY mode
-  let syntax_mode = @runtime.ParserMode::XshMode
+  // Default shell uses VibeMode; POSIX commands via posix_fallback in TTY mode
+  let syntax_mode = @runtime.ParserMode::VibeMode
   if ai_mode {
     repl_ai_cmd(sub_args, syntax_mode, features, enable_llm~)
     return
@@ -2123,7 +2123,7 @@ fn repl_tui_cmd(
     }
     let result = rt.eval_script_with_mode(trimmed, syntax_mode) catch {
       e => {
-        // Fallback: if XshMode fails with name resolution, retry with PosixMode desugar
+        // Fallback: if VibeMode fails with name resolution, retry with PosixMode desugar
         let err_str = e.to_string()
         if err_str.contains("UnknownName") || err_str.contains("BadCall") {
           let wrapped = "do {\n" + trimmed + "\n}"
@@ -2281,13 +2281,13 @@ fn repl_tui_cmd(
           }
         }
       }
-      CompletionContext::XshLetName =>
+      CompletionContext::VibeLetName =>
         for name in vibe_names {
           if name.has_prefix(prefix) {
             push_unique(items, name)
           }
         }
-      CompletionContext::XshLetExpr | CompletionContext::XshExpr => {
+      CompletionContext::VibeLetExpr | CompletionContext::VibeExpr => {
         if not(method_like) {
           for item in vibe_keywords {
             if item.has_prefix(prefix) {
@@ -2637,7 +2637,7 @@ fn run_eval_line_repl_with_prompt(
       }
       let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
         e => {
-          // Fallback: if XshMode fails with name resolution, retry with PosixMode
+          // Fallback: if VibeMode fails with name resolution, retry with PosixMode
           let err_str = e.to_string()
           if err_str.contains("UnknownName") || err_str.contains("BadCall") {
             let wrapped = "do {\n" + line_str + "\n}"
@@ -3060,7 +3060,7 @@ fn run_interactive_line(
 
   let result = rt.eval_script_with_mode(line_str, syntax_mode) catch {
     e => {
-      // Fallback: if XshMode fails with name resolution, retry with PosixMode desugar
+      // Fallback: if VibeMode fails with name resolution, retry with PosixMode desugar
       if posix_fallback {
         let err_str = e.to_string()
         if err_str.contains("UnknownName") || err_str.contains("BadCall") {

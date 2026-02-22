@@ -1708,7 +1708,9 @@ fn eval_builtin_call(
             if cmd_value is None {
               cmd_value = Some(arg.value)
             } else {
-              raise EvalError::BadCall("sh_lines")
+              raise EvalError::BadCall(
+                "sh_lines: expected 1 positional argument (command string), got multiple",
+              )
             }
           Some(label) =>
             match arg.value {
@@ -1719,7 +1721,13 @@ fn eval_builtin_call(
                   long_flags.push(label)
                 }
               @core.Value::Bool(false) => () // false flags are omitted
-              _ => raise EvalError::BadCall("sh_lines")
+              _ =>
+                raise EvalError::BadCall(
+                  "sh_lines: flag '" +
+                  label +
+                  "' must be Bool, got " +
+                  arg.value.to_string(),
+                )
             }
         }
       }
@@ -1746,16 +1754,17 @@ fn eval_builtin_call(
           }
           let effects = out.effects
           effects.push(Effect::ShellExec(full_cmd))
-          let lines = execute_shell_lines(full_cmd) catch {
-            _ => raise EvalError::BadCall("sh_lines")
-          }
+          let lines = execute_shell_lines(full_cmd) catch { e => raise e }
           let values : Array[@core.Value] = []
           for line in lines {
             values.push(@core.Value::String(line))
           }
           { value: @core.Value::Array(values), effects }
         }
-        _ => raise EvalError::BadCall("sh_lines")
+        _ =>
+          raise EvalError::BadCall(
+            "sh_lines: expected String argument, got " + cmd_value.to_string(),
+          )
       }
     }
     "stdout_write_char" => {

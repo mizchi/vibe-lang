@@ -1,9 +1,9 @@
 ///|
 enum CompletionContext {
   Shell
-  XshLetName
-  XshLetExpr
-  XshExpr
+  VibeLetName
+  VibeLetExpr
+  VibeExpr
 } derive(Show, Eq)
 
 ///|
@@ -66,11 +66,11 @@ fn detect_let_context(
   let mut i = if let_end < 0 { 0 } else { let_end }
   while i < limit {
     if chars[i] == '=' {
-      return CompletionContext::XshLetExpr
+      return CompletionContext::VibeLetExpr
     }
     i += 1
   }
-  CompletionContext::XshLetName
+  CompletionContext::VibeLetName
 }
 
 ///|
@@ -92,7 +92,7 @@ fn detect_completion_context(line : String, col : Int) -> CompletionContext {
     if vibe_token.text == "let" {
       return detect_let_context(line, col, vibe_token.end)
     }
-    return CompletionContext::XshExpr
+    return CompletionContext::VibeExpr
   }
   CompletionContext::Shell
 }
