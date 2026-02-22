@@ -28,6 +28,13 @@ array_concat([1, 2], [3, 4])     // => [1, 2, 3, 4]
 array_reverse([1, 2, 3])         // => [3, 2, 1]
 array_sort([3, 1, 2])            // => [1, 2, 3]
 array_slice([10, 20, 30, 40], 1, 3) // => [20, 30]
+
+// Join (alias for string_join)
+array_join(["a", "b", "c"], ", ")  // => "a, b, c"
+
+// Generic — works with any type, not just numbers
+array_map(["hi", "there"], (s: String) -> String { string_to_upper(s) })
+// => ["HI", "THERE"]
 ```
 
 ### Array Builder

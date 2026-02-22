@@ -166,14 +166,16 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ### Low: 命名・細部
 
-- [ ] **L1: `string_join` の命名を検討する**
-  - `string_join(Array[String], String)` — 第1引数が Array なのに `string_*` 命名
-  - `array_join` alias を検討
+- [x] **L1: `array_join` alias を追加する**
+  - `array_join(xs, sep)` = `string_join(xs, sep)` として prelude に追加
+  - 対象: `src/checker/prelude.mbt`
 
-- [ ] **L2: prelude の Num 型を generics に移行する**
-  - 現状: HOF が `Num` 固定で非数値型配列に使えない
-  - `vibe/builtin/array.vibe` は既にジェネリック
-  - prelude を直接ジェネリック化 or ライブラリへ委譲
+- [x] **L2: prelude HOF を generics に移行する**
+  - `Num` → `[T]` に変更: array_map, array_fold, array_filter, array_foreach,
+    array_concat, array_any, array_all, array_find, array_reverse, where
+  - `Num` → `[V]` に変更: map_get_or, map_map, map_filter
+  - `Num` のまま（`eq`/`lt` 依存）: array_sort, array_contains, assert_eq
+  - 対象: `src/checker/prelude.mbt`
 
 ## Language Features
 

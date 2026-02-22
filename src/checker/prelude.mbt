@@ -24,7 +24,7 @@ let prelude_source : String =
   #|let iter_require = [C: Iterable](xs: C) -> C { xs }
   #|let iter_length = [T](xs: Array[T]) -> Int { array_length(xs) }
   #|let iter_get = [T](xs: Array[T], index: Int) -> T { array_get(xs, index) }
-  #|let array_map = (xs: Array[Num], f: (x: Num) -> Num) -> Array[Num] {
+  #|let array_map = [T](xs: Array[T], f: (x: T) -> T) -> Array[T] {
   #|  do {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
@@ -37,8 +37,8 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
-  #|let array_fold = (xs: Array[Num], init: Num, f: (acc: Num, x: Num) -> Num) -> Num {
-  #|  let rec loop = (i: Int, acc: Num) -> Num {
+  #|let array_fold = [T](xs: Array[T], init: T, f: (acc: T, x: T) -> T) -> T {
+  #|  let rec loop = (i: Int, acc: T) -> T {
   #|    if i < array_length(xs) {
   #|      loop(i + 1, f(acc, array_get(xs, i)))
   #|    } else {
@@ -47,7 +47,7 @@ let prelude_source : String =
   #|  }
   #|  loop(0, init)
   #|}
-  #|let array_filter = (xs: Array[Num], pred: (x: Num) -> Bool) -> Array[Num] {
+  #|let array_filter = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
   #|  do {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
@@ -63,7 +63,7 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
-  #|let array_foreach = (xs: Array[Num], f: (x: Num) -> Unit) -> Unit {
+  #|let array_foreach = [T](xs: Array[T], f: (x: T) -> Unit) -> Unit {
   #|  let rec loop = (i: Int) -> Unit {
   #|    if i < array_length(xs) {
   #|      f(array_get(xs, i))
@@ -72,7 +72,7 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
-  #|let array_concat = (xs: Array[Num], ys: Array[Num]) -> Array[Num] {
+  #|let array_concat = [T](xs: Array[T], ys: Array[T]) -> Array[T] {
   #|  do {
   #|    let b = array_builder()
   #|    let rec loop1 = (i: Int) -> Unit {
@@ -92,7 +92,7 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
-  #|let array_any = (xs: Array[Num], pred: (x: Num) -> Bool) -> Bool {
+  #|let array_any = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
   #|    if i < array_length(xs) {
   #|      if pred(array_get(xs, i)) { true } else { loop(i + 1) }
@@ -100,7 +100,7 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
-  #|let array_all = (xs: Array[Num], pred: (x: Num) -> Bool) -> Bool {
+  #|let array_all = [T](xs: Array[T], pred: (x: T) -> Bool) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
   #|    if i < array_length(xs) {
   #|      if pred(array_get(xs, i)) { loop(i + 1) } else { false }
@@ -108,8 +108,8 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
-  #|let array_find = (xs: Array[Num], pred: (x: Num) -> Bool) -> Option[Num] {
-  #|  let rec loop = (i: Int) -> Option[Num] {
+  #|let array_find = [T](xs: Array[T], pred: (x: T) -> Bool) -> Option[T] {
+  #|  let rec loop = (i: Int) -> Option[T] {
   #|    if i < array_length(xs) {
   #|      let v = array_get(xs, i)
   #|      if pred(v) { Some(v) } else { loop(i + 1) }
@@ -117,7 +117,7 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
-  #|let array_reverse = (xs: Array[Num]) -> Array[Num] {
+  #|let array_reverse = [T](xs: Array[T]) -> Array[T] {
   #|  do {
   #|    let b = array_builder()
   #|    let len = array_length(xs)
@@ -175,10 +175,11 @@ let prelude_source : String =
   #|  }
   #|  loop(0)
   #|}
-  #|let map_get_or = (m: Map[Num], key: String, default: Num) -> Num {
+  #|let array_join = [T](xs: Array[T], sep: String) -> String { string_join(xs, sep) }
+  #|let map_get_or = [V](m: Map[V], key: String, default: V) -> V {
   #|  if map_has_key(m, key) { map_get(m, key) } else { default }
   #|}
-  #|let map_map = (m: Map[Num], f: (v: Num) -> Num) -> Map[Num] {
+  #|let map_map = [V](m: Map[V], f: (v: V) -> V) -> Map[V] {
   #|  do {
   #|    let b = map_builder()
   #|    let keys = map_keys(m)
@@ -194,7 +195,7 @@ let prelude_source : String =
   #|    map_builder_freeze(b)
   #|  }
   #|}
-  #|let map_filter = (m: Map[Num], pred: (v: Num) -> Bool) -> Map[Num] {
+  #|let map_filter = [V](m: Map[V], pred: (v: V) -> Bool) -> Map[V] {
   #|  do {
   #|    let b = map_builder()
   #|    let keys = map_keys(m)
@@ -213,7 +214,7 @@ let prelude_source : String =
   #|    map_builder_freeze(b)
   #|  }
   #|}
-  #|let where = (xs: Array[Num], pred: (x: Num) -> Bool) -> Array[Num] {
+  #|let where = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
   #|  do {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
@@ -241,7 +242,7 @@ pub fn prelude_names() -> Array[String] {
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "to_string",
     "iter_require", "iter_length", "iter_get", "array_map", "array_fold", "array_filter",
     "array_foreach", "array_concat", "array_reverse", "array_any", "array_all", "array_find",
-    "assert_eq", "array_sort", "array_contains", "map_get_or", "map_map",
+    "assert_eq", "array_sort", "array_contains", "array_join", "map_get_or", "map_map",
     "map_filter", "where",
   ]
 }

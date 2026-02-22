@@ -288,7 +288,10 @@ string_to_upper("hello")                         // => "HELLO"
 string_to_lower("HELLO")                         // => "hello"
 ```
 
-**Array**: `array_length`, `array_get`, `array_slice`, `array_concat`, `array_reverse`, `array_sort`, `array_map`, `array_filter`, `array_fold`, `array_any`, `array_all`, `array_find` (returns `Option[T]`), `array_contains`
+**Array**: `array_length`, `array_get`, `array_slice`, `array_concat`, `array_reverse`, `array_sort`, `array_map`, `array_filter`, `array_fold`, `array_any`, `array_all`, `array_find` (returns `Option[T]`), `array_contains`, `array_join`
+
+> Most array HOFs are **generic** — they work with any element type (String, Bool, etc.),
+> not just numbers. `array_sort` and `array_contains` require numeric types (`eq`/`lt`).
 
 ```vibe
 // array_any/all: collection is FIRST arg, predicate is LAST
