@@ -574,8 +574,27 @@ let double = (x: Int) -> Int { x * 2 }
 apply(double, 21)' \
 "42"
 
-# NOTE: currying (fn returning fn with captured arg) hits "unsupported: mul arity"
-# NOTE: compose (call_indirect on captured closures) hits i32/i64 type mismatch
+# NOTE: currying with prelude names (mul, add, sub, etc.) fails because
+# the checker drops `let mul = ...` when the name shadows a prelude function.
+# Use non-prelude names (e.g., make_multiplier) to work around this.
+
+expect_wasmtime_result "currying (non-prelude name)" \
+'let make_multiplier = (a: Int) -> (Int) -> Int {
+  (b: Int) -> Int { a * b }
+}
+let triple = make_multiplier(3)
+triple(7)' \
+"21"
+
+expect_wasmtime_result "compose closures" \
+'let inc = (x: Int) -> Int { x + 1 }
+let dbl = (x: Int) -> Int { x + x }
+let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int {
+  (x: Int) -> Int { f(g(x)) }
+}
+let dbl_inc = compose(dbl, inc)
+dbl_inc(5)' \
+"12"
 
 expect_wasmtime_result "apply twice" \
 'let apply_twice = (f: (Int) -> Int, x: Int) -> Int { f(f(x)) }

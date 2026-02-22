@@ -48,12 +48,12 @@ fn compile_expr_call(
         let arg_kind = if ctx.use_js_strings {
           infer_expr_kind(ctx, arg)
         } else {
-          ValueKind::I32
+          ValueKind::I64
         }
         if ctx.use_js_strings && arg_kind == ValueKind::ExternRef {
           guessed_params.push(ValueKind::ExternRef)
         } else {
-          guessed_params.push(ValueKind::I32)
+          guessed_params.push(ValueKind::I64)
         }
       }
       let guessed_result = if ctx.use_js_strings {
@@ -61,10 +61,10 @@ fn compile_expr_call(
         if kind == ValueKind::ExternRef {
           ValueKind::ExternRef
         } else {
-          ValueKind::I32
+          ValueKind::I64
         }
       } else {
-        ValueKind::I32
+        ValueKind::I64
       }
       ctx.fn_local_sigs[name] = func_sig_with_env(
         guessed_params, guessed_result,

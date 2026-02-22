@@ -528,7 +528,18 @@ fn compile_call_by_name(
   name : String,
   args : Array[@core.CallArg],
 ) -> Unit raise WasmGenError {
-  let is_user_fn = ctx.fn_indices.contains(name)
+  // Check if name is a user function AND the call arity matches.
+  // Without the arity check, a user variable named e.g. "mul" (1-param)
+  // would shadow the builtin multiply operator "mul" (2-param) when the
+  // core IR desugars `a * b` into `Call(name="mul", args=[a, b])`.
+  let is_user_fn = if ctx.fn_indices.contains(name) {
+    match ctx.fn_params.get(name) {
+      Some(params) => args.length() == params.length()
+      None => true
+    }
+  } else {
+    false
+  }
   if compile_call_builtin_pre_user(ctx, buf, name, args, is_user_fn) {
     return ()
   }
