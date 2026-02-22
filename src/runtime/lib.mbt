@@ -91,7 +91,8 @@ fn parse_script_with_mode(
     ParserMode::XshMode =>
       (@parser.parse_ast(script) catch { e => raise XshError::Parse(e) }, [])
     ParserMode::PosixMode => {
-      let parsed = @parser.parse_ast(script) catch {
+      let preprocessed = preprocess_posix_source(script)
+      let parsed = @parser.parse_ast(preprocessed) catch {
         e => raise XshError::Parse(e)
       }
       let (desugared, notes) = desugar_vibe_commands_with_notes(parsed)

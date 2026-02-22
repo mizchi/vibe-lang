@@ -1926,3 +1926,98 @@ test "vibe select projects array of records" {
     _ => fail("expected array")
   }
 }
+
+///|
+test "vibe posix mode preserves dots in command arguments" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let run = () -> Array[String] with {Stdout} {\n" +
+    "  do {\n" +
+    "    echo file.txt\n" +
+    "  }\n" +
+    "}\n" +
+    "let out = run()",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => {
+      let mut found_shell = false
+      for effect in eval_result.effects {
+        match effect {
+          Effect::ShellExec(cmd) => {
+            assert_eq(cmd, "echo file.txt")
+            found_shell = true
+          }
+          _ => ()
+        }
+      }
+      assert_true(found_shell)
+    }
+  }
+}
+
+///|
+test "vibe posix mode brace interpolation" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let name = \"world\"\n" +
+    "let run = () -> Array[String] with {Stdout} {\n" +
+    "  do {\n" +
+    "    echo hello {{ name }}\n" +
+    "  }\n" +
+    "}\n" +
+    "let out = run()",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => {
+      let mut found_shell = false
+      for effect in eval_result.effects {
+        match effect {
+          Effect::ShellExec(cmd) => {
+            assert_eq(cmd, "echo hello world")
+            found_shell = true
+          }
+          _ => ()
+        }
+      }
+      assert_true(found_shell)
+    }
+  }
+}
+
+///|
+test "vibe posix mode keyword lines unchanged in preprocessing" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let x = 1\nlet y = x + 1",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => assert_eq(eval_result.effects.length(), 0)
+  }
+  match rt.get("y") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("expected Int")
+  }
+}
+
+///|
+test "vibe posix mode function call unchanged in preprocessing" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, XshError] = try? rt.eval_script_with_mode(
+    "let x = string_concat(\"hello\", \" world\")",
+    ParserMode::PosixMode,
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(eval_result) => assert_eq(eval_result.effects.length(), 0)
+  }
+  match rt.get("x") {
+    Some(@core.Value::String(v)) => assert_eq(v, "hello world")
+    _ => fail("expected String")
+  }
+}

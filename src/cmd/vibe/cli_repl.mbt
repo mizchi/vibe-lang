@@ -2126,14 +2126,14 @@ fn repl_tui_cmd(
         // Fallback: if XshMode fails with name resolution, retry with PosixMode desugar
         let err_str = e.to_string()
         if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-          let wrapped = "do { " + trimmed + " }"
+          let wrapped = "do {\n" + trimmed + "\n}"
           let retry = rt.eval_script_with_mode(
             wrapped,
             @runtime.ParserMode::PosixMode,
           ) catch {
             retry_err => {
               push_output_line(
-                format_repl_error(retry_err, wrapped, unwrap_prefix="do { "),
+                format_repl_error(retry_err, wrapped, unwrap_prefix="do {\n"),
               )
               return true
             }
@@ -2640,14 +2640,14 @@ fn run_eval_line_repl_with_prompt(
           // Fallback: if XshMode fails with name resolution, retry with PosixMode
           let err_str = e.to_string()
           if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-            let wrapped = "do { " + line_str + " }"
+            let wrapped = "do {\n" + line_str + "\n}"
             let retry = rt.eval_script_with_mode(
               wrapped,
               @runtime.ParserMode::PosixMode,
             ) catch {
               retry_err => {
                 println(
-                  format_repl_error(retry_err, wrapped, unwrap_prefix="do { "),
+                  format_repl_error(retry_err, wrapped, unwrap_prefix="do {\n"),
                 )
                 if options.prompt_enabled {
                   @stdio.stdout.write(options.prompt)
@@ -3064,7 +3064,7 @@ fn run_interactive_line(
       if posix_fallback {
         let err_str = e.to_string()
         if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-          let wrapped = "do { " + line_str + " }"
+          let wrapped = "do {\n" + line_str + "\n}"
           let retry = rt.eval_script_with_mode(
             wrapped,
             @runtime.ParserMode::PosixMode,
@@ -3072,7 +3072,7 @@ fn run_interactive_line(
             retry_err => {
               // Show PosixMode error (more informative after desugar)
               print_line(
-                format_repl_error(retry_err, wrapped, unwrap_prefix="do { "),
+                format_repl_error(retry_err, wrapped, unwrap_prefix="do {\n"),
               )
               return scratch_source
             }

@@ -1529,7 +1529,10 @@ fn execute_shell_lines(cmd : String) -> Array[String] raise EvalError {
   // Try host-backed execution first (native target)
   match @backend.exec_command_lines(cmd) {
     Ok(lines) => return lines
-    Err(_) => () // fall through to deterministic fallback
+    Err(msg) =>
+      if not(msg.contains("not available")) {
+        raise EvalError::BadCall("sh_lines: " + msg)
+      }
   }
   // Deterministic fallback for non-native targets
   let parts = split_shell_args(cmd)
