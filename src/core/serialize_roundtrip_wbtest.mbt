@@ -1138,3 +1138,425 @@ test "roundtrip: struct pattern" {
   let result = roundtrip_module(m)
   assert_eq(result, m)
 }
+
+///|
+test "roundtrip: handle expression" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::Handle(
+          body=Module::{
+            stmts: [
+              Stmt::Expr(
+                expr=Expr::Call(
+                  name="read_line",
+                  type_args=[],
+                  args=[],
+                  span=zero_span(),
+                ),
+                span=zero_span(),
+              ),
+            ],
+          },
+          arms=[
+            MatchArm::{
+              pat: Pat::Ctor(
+                name="Err",
+                args=[Pat::Bind(name="e", span=zero_span())],
+                span=zero_span(),
+              ),
+              cond: None,
+              expr: Expr::String(value="error", span=zero_span()),
+              span: zero_span(),
+            },
+          ],
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: raise expression standalone" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::Raise(
+          value=Expr::String(value="fail", span=zero_span()),
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: pattern literals (float, double, char)" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::Match(
+          scrutinee=Expr::Ident(name="v", span=zero_span()),
+          arms=[
+            MatchArm::{
+              pat: Pat::Float(value=Float::from_double(1.5), span=zero_span()),
+              cond: None,
+              expr: Expr::String(value="float", span=zero_span()),
+              span: zero_span(),
+            },
+            MatchArm::{
+              pat: Pat::Double(value=2.5, span=zero_span()),
+              cond: None,
+              expr: Expr::String(value="double", span=zero_span()),
+              span: zero_span(),
+            },
+            MatchArm::{
+              pat: Pat::Char(value='Z', span=zero_span()),
+              cond: None,
+              expr: Expr::String(value="char", span=zero_span()),
+              span: zero_span(),
+            },
+            MatchArm::{
+              pat: Pat::Wildcard(span=zero_span()),
+              cond: None,
+              expr: Expr::String(value="other", span=zero_span()),
+              span: zero_span(),
+            },
+          ],
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: type variants (never, path, prompttext, unit, var)" {
+  let m = Module::{
+    stmts: [
+      Stmt::TypeAlias(name="A", params=[], target=Type::Never, span=zero_span()),
+      Stmt::TypeAlias(name="B", params=[], target=Type::Path, span=zero_span()),
+      Stmt::TypeAlias(
+        name="C",
+        params=[],
+        target=Type::PromptText,
+        span=zero_span(),
+      ),
+      Stmt::TypeAlias(name="D", params=[], target=Type::Unit, span=zero_span()),
+      Stmt::TypeAlias(
+        name="E",
+        params=[],
+        target=Type::Var(42),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: type variants (arraybuilder, mapbuilder, stringbuilder, variant)" {
+  let m = Module::{
+    stmts: [
+      Stmt::TypeAlias(
+        name="AB",
+        params=[],
+        target=Type::ArrayBuilder(Type::Int),
+        span=zero_span(),
+      ),
+      Stmt::TypeAlias(
+        name="MB",
+        params=[],
+        target=Type::MapBuilder(Type::String),
+        span=zero_span(),
+      ),
+      Stmt::TypeAlias(
+        name="SB",
+        params=[],
+        target=Type::StringBuilder,
+        span=zero_span(),
+      ),
+      Stmt::TypeAlias(
+        name="V",
+        params=[],
+        target=Type::Variant({ "Ok": Type::Int, "Err": Type::String }),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: type map" {
+  let m = Module::{
+    stmts: [
+      Stmt::TypeAlias(
+        name="M",
+        params=[],
+        target=Type::Map(Type::Int),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: int boundary values" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(expr=Expr::Int(value=0L, span=zero_span()), span=zero_span()),
+      Stmt::Expr(expr=Expr::Int(value=-1L, span=zero_span()), span=zero_span()),
+      Stmt::Expr(
+        expr=Expr::Int(value=1000000L, span=zero_span()),
+        span=zero_span(),
+      ),
+      Stmt::Expr(
+        expr=Expr::Int(value=-1000000L, span=zero_span()),
+        span=zero_span(),
+      ),
+      Stmt::Expr(
+        expr=Expr::Int(value=4294967296L, span=zero_span()),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: empty collections" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(expr=Expr::Array(items=[], span=zero_span()), span=zero_span()),
+      Stmt::Expr(expr=Expr::Map(fields=[], span=zero_span()), span=zero_span()),
+      Stmt::Expr(
+        expr=Expr::Record(fields=[], span=zero_span()),
+        span=zero_span(),
+      ),
+      Stmt::Expr(expr=Expr::Tuple(items=[], span=zero_span()), span=zero_span()),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: unicode strings" {
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::String(value="こんにちは世界", span=zero_span()),
+        span=zero_span(),
+      ),
+      Stmt::Expr(
+        expr=Expr::String(value="mixed: abc日本語def", span=zero_span()),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: call type_args are erased" {
+  // type_args are intentionally dropped during serialization (monomorphized)
+  let m = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::Call(
+          name="identity",
+          type_args=[Type::Int, Type::String],
+          args=[
+            CallArg::{
+              label: None,
+              expr: Expr::Int(value=1L, span=zero_span()),
+              span: zero_span(),
+            },
+          ],
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  let expected = Module::{
+    stmts: [
+      Stmt::Expr(
+        expr=Expr::Call(
+          name="identity",
+          type_args=[],
+          args=[
+            CallArg::{
+              label: None,
+              expr: Expr::Int(value=1L, span=zero_span()),
+              span: zero_span(),
+            },
+          ],
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  assert_eq(result, expected)
+}
+
+///|
+test "roundtrip: fn with no return type" {
+  let m = Module::{
+    stmts: [
+      Stmt::Let(
+        rec=false,
+        name="f",
+        expr=Expr::Fn(
+          type_params=[],
+          type_bounds={},
+          params=[],
+          ret=None,
+          effects=[],
+          body=Module::{
+            stmts: [
+              Stmt::Expr(
+                expr=Expr::Int(value=0L, span=zero_span()),
+                span=zero_span(),
+              ),
+            ],
+          },
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: fn with multiple effects" {
+  let m = Module::{
+    stmts: [
+      Stmt::Let(
+        rec=false,
+        name="g",
+        expr=Expr::Fn(
+          type_params=["E"],
+          type_bounds={},
+          params=[],
+          ret=Some(Type::Unit),
+          effects=[
+            EffectAtom::Const("IO"),
+            EffectAtom::Const("Fs"),
+            EffectAtom::Var("E"),
+          ],
+          body=Module::{ stmts: [] },
+          span=zero_span(),
+        ),
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: trait def with exported=true" {
+  let m = Module::{
+    stmts: [
+      Stmt::TraitDef(
+        name="Serializable",
+        supertraits=[],
+        open_impl=false,
+        exported=true,
+        span=zero_span(),
+      ),
+    ],
+  }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}
+
+///|
+test "roundtrip: deep nesting" {
+  let inner = Expr::Int(value=1L, span=zero_span())
+  let nested = Expr::If(
+    cond=Expr::Bool(value=true, span=zero_span()),
+    then_body=Module::{
+      stmts: [
+        Stmt::Expr(
+          expr=Expr::Block(
+            body=Module::{
+              stmts: [
+                Stmt::Expr(
+                  expr=Expr::Do(
+                    body=Module::{
+                      stmts: [
+                        Stmt::Expr(
+                          expr=Expr::Match(
+                            scrutinee=inner,
+                            arms=[
+                              MatchArm::{
+                                pat: Pat::Wildcard(span=zero_span()),
+                                cond: None,
+                                expr: Expr::Array(
+                                  items=[
+                                    Expr::Tuple(
+                                      items=[
+                                        Expr::String(
+                                          value="deep",
+                                          span=zero_span(),
+                                        ),
+                                        Expr::Int(value=42L, span=zero_span()),
+                                      ],
+                                      span=zero_span(),
+                                    ),
+                                  ],
+                                  span=zero_span(),
+                                ),
+                                span: zero_span(),
+                              },
+                            ],
+                            span=zero_span(),
+                          ),
+                          span=zero_span(),
+                        ),
+                      ],
+                    },
+                    span=zero_span(),
+                  ),
+                  span=zero_span(),
+                ),
+              ],
+            },
+            span=zero_span(),
+          ),
+          span=zero_span(),
+        ),
+      ],
+    },
+    else_body=Module::{ stmts: [] },
+    span=zero_span(),
+  )
+  let m = Module::{ stmts: [Stmt::Expr(expr=nested, span=zero_span())] }
+  let result = roundtrip_module(m)
+  assert_eq(result, m)
+}

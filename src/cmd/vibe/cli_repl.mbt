@@ -1719,11 +1719,7 @@ fn load_history(target : Array[String]) -> Unit {
   if not(@os_fs.path_exists(path)) {
     return
   }
-  let content = try {
-    @os_fs.read_file_to_string(path)
-  } catch {
-    _ => return
-  }
+  let content = @os_fs.read_file_to_string(path) catch { _ => return }
   if content.length() == 0 {
     return
   }
@@ -1740,11 +1736,7 @@ fn load_history(target : Array[String]) -> Unit {
 fn append_history(line : String) -> Unit {
   let path = get_history_file_path()
   // Read existing, append, trim to max
-  let existing = try {
-    @os_fs.read_file_to_string(path)
-  } catch {
-    _ => ""
-  }
+  let existing = @os_fs.read_file_to_string(path) catch { _ => "" }
   let lines : Array[String] = []
   if existing.length() > 0 {
     for part in existing.split("\n") {
@@ -1773,9 +1765,7 @@ fn append_history(line : String) -> Unit {
     buf.write_string(deduped[i])
     buf.write_char('\n')
   }
-  try {
-    @os_fs.write_string_to_file(path, buf.to_string())
-  } catch {
+  @os_fs.write_string_to_file(path, buf.to_string()) catch {
     _ => ()
   }
 }
