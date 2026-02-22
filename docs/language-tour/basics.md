@@ -14,6 +14,27 @@
 
 WASM aliases: `i32` = `Int`, `f32` = `Float`, `f64` = `Double`.
 
+### Float / Double
+
+```vibe
+// Float (f32): suffix f
+let x: Float = 1.5f
+let y = 2.5f
+x + y  // => 4.0f
+
+// Double (f64): default decimal literal
+let d = 3.14
+double_floor(d)  // => 3.0
+double_ceil(d)   // => 4.0
+double_abs(-2.5) // => 2.5
+
+// Conversion
+int_to_double(3)     // => 3.0
+double_to_int(3.14)  // => 3
+int_to_float(5)      // => 5.0f
+float_to_double(1.5f) // => 1.5
+```
+
 ## Variables
 
 ```vibe
@@ -72,12 +93,20 @@ let swap = [A, B](p: (A, B)) -> (B, A) { (p.1, p.0) }
 ## Labeled Arguments
 
 ```vibe
-let labeled = (x: Int, y~: String, z?: Bool) { y }
-let result = labeled(1, y = "ok")
-```
+// y~ : required labeled argument (caller must use y = ...)
+// z? : optional argument (receives Option[T])
+let f = (x: Int, y~: String, z?: Int) -> String {
+  let suffix = match z { Some(v) => to_string(v), None => "none" }
+  "\(y)-\(suffix)"
+}
+f(1, y = "ok")          // => "ok-none"
+f(1, y = "ok", z = 10)  // => "ok-10"
 
-- `x~` -- required labeled argument
-- `z?` -- optional (with or without default)
+// Default value for optional
+let g = (x: Int, y?: Int = 0) -> Int { x + y }
+g(1)         // => 1
+g(1, y = 5)  // => 6
+```
 
 ## Control Flow
 
@@ -257,6 +286,29 @@ let g = [T: Eq + Show](x: T) -> T { x }
 let h = [T](x: T: Eq) -> T { x }
 ```
 
+## Option[T]
+
+Built-in enum for optional values. Returned by `array_find`, optional labeled arguments, etc.
+
+```vibe
+// Construction
+let x = Some(42)
+let y = None
+
+// Pattern match
+let value = match x {
+  Some(v) => v,
+  None => 0,
+}
+// => 42
+
+// Common usage: array_find
+match array_find([1, 2, 3], (x: Int) -> Bool { x > 1 }) {
+  Some(v) => v,    // => 2
+  None => -1,
+}
+```
+
 ## Effects
 
 Functions declare required effects with `with { ... }`.
@@ -277,6 +329,15 @@ let safe_div = (a: Int, b: Int) -> Int with { Error } {
 // Catch errors with handle
 let result = handle { safe_div(8, 0) } { Error(_) => -1 }
 // => -1
+```
+
+### Effect row variable
+
+Effect-polymorphic functions propagate callee effects via `{ e }`.
+
+```vibe
+let apply = [T, U](f: (T) -> U with { e }, x: T) -> U with { e } { f(x) }
+apply((x: Int) -> Int { x + 1 }, 41)  // => 42
 ```
 
 ### suberror

@@ -63,14 +63,14 @@ Prelude wrappers: `add(a, b)`, `sub(a, b)`, `mul(a, b)`, `div(a, b)`, `eq(a, b)`
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `array_map` | `(fn, Array[T]) -> Array[U]` | Map function over array |
-| `array_filter` | `(fn, Array[T]) -> Array[T]` | Filter by predicate |
-| `array_fold` | `(fn, init, Array[T]) -> U` | Fold/reduce |
-| `array_foreach` | `(fn, Array[T]) -> Unit` | Iterate with side effects |
-| `array_any` | `(fn, Array[T]) -> Bool` | Any element matches |
-| `array_all` | `(fn, Array[T]) -> Bool` | All elements match |
-| `array_find` | `(fn, Array[T]) -> T` | Find first match (-1 if none) |
-| `where` | `(fn, Array[T]) -> Array[T]` | Filter (alias) |
+| `array_map` | `(Array[T], (T) -> U) -> Array[U]` | Map function over array |
+| `array_filter` | `(Array[T], (T) -> Bool) -> Array[T]` | Filter by predicate |
+| `array_fold` | `(Array[T], U, (U, T) -> U) -> U` | Fold/reduce |
+| `array_foreach` | `(Array[T], (T) -> Unit) -> Unit` | Iterate with side effects |
+| `array_any` | `(Array[T], (T) -> Bool) -> Bool` | Any element matches |
+| `array_all` | `(Array[T], (T) -> Bool) -> Bool` | All elements match |
+| `array_find` | `(Array[T], (T) -> Bool) -> Option[T]` | Find first match (Some/None) |
+| `where` | `(Array[T], (T) -> Bool) -> Array[T]` | Filter (alias) |
 
 ## Array Builder
 
@@ -86,7 +86,8 @@ Builders require `do { ... }` context.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `map_get` | `(Map[T], String) -> T` | Get value by key |
+| `map_get` | `(Map[T], String) -> T` | Get value by key (throws if missing) |
+| `map_get_or` | `(Map[T], String, T) -> T` | Get value or default |
 | `map_has_key` | `(Map[T], String) -> Bool` | Check key existence |
 | `map_keys` | `(Map[T]) -> Array[String]` | All keys |
 | `map_values` | `(Map[T]) -> Array[T]` | All values |
