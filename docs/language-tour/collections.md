@@ -59,6 +59,10 @@ m["a"]              // => 1 (index syntax)
 map_has_key(m, "a") // => true
 map_keys(m)         // => ["a", "b"]
 map_values(m)       // => [1, 2]
+
+// HOFs
+map_map(m, (v: Int) -> Int { v * 10 })       // => map { a: 10, b: 20 }
+map_filter(m, (v: Int) -> Bool { v > 1 })    // => map { b: 2 }
 ```
 
 ### Map Builder

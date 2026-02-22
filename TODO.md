@@ -160,9 +160,9 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
   - prelude 関数として merge sort を実装（`array_slice` + `array_builder` ベース）
   - 対象: `src/checker/prelude.mbt`
 
-- [ ] **M5: Map HOF を追加する（`map_map`, `map_filter`）**
-  - 現状: Map には `map_get`/`map_keys`/`map_values` のみ、HOF なし
-  - JSON/config 操作で Map 変換が頻出
+- [x] **M5: Map HOF を追加する（`map_map`, `map_filter`）**
+  - prelude 関数として `map_map(m, f)`, `map_filter(m, pred)` を追加
+  - 対象: `src/checker/prelude.mbt`
 
 ### Low: 命名・細部
 

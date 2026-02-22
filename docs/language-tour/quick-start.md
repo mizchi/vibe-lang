@@ -298,7 +298,7 @@ array_all([1, 2, 3], (x: Int) -> Bool { x > 0 })       // => true
 array_find([1, 2, 3, 4, 5], (x: Int) -> Bool { x > 3 }) // => Some(4)
 ```
 
-**Map**: `map_get`, `map_get_or`, `map_has_key`, `map_keys`, `map_values`
+**Map**: `map_get`, `map_get_or`, `map_has_key`, `map_keys`, `map_values`, `map_map`, `map_filter`
 
 > **`map_get` throws on missing key.** Use `map_get_or` for safe access with a default.
 

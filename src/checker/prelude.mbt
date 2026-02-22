@@ -178,6 +178,41 @@ let prelude_source : String =
   #|let map_get_or = (m: Map[Num], key: String, default: Num) -> Num {
   #|  if map_has_key(m, key) { map_get(m, key) } else { default }
   #|}
+  #|let map_map = (m: Map[Num], f: (v: Num) -> Num) -> Map[Num] {
+  #|  do {
+  #|    let b = map_builder()
+  #|    let keys = map_keys(m)
+  #|    let len = array_length(keys)
+  #|    let rec loop = (i: Int) -> Unit {
+  #|      if i < len {
+  #|        let k = array_get(keys, i)
+  #|        map_builder_set(b, k, f(map_get(m, k)))
+  #|        loop(i + 1)
+  #|      } else { }
+  #|    }
+  #|    loop(0)
+  #|    map_builder_freeze(b)
+  #|  }
+  #|}
+  #|let map_filter = (m: Map[Num], pred: (v: Num) -> Bool) -> Map[Num] {
+  #|  do {
+  #|    let b = map_builder()
+  #|    let keys = map_keys(m)
+  #|    let len = array_length(keys)
+  #|    let rec loop = (i: Int) -> Unit {
+  #|      if i < len {
+  #|        let k = array_get(keys, i)
+  #|        let v = map_get(m, k)
+  #|        if pred(v) {
+  #|          map_builder_set(b, k, v)
+  #|        } else { }
+  #|        loop(i + 1)
+  #|      } else { }
+  #|    }
+  #|    loop(0)
+  #|    map_builder_freeze(b)
+  #|  }
+  #|}
   #|let where = (xs: Array[Num], pred: (x: Num) -> Bool) -> Array[Num] {
   #|  do {
   #|    let b = array_builder()
@@ -206,6 +241,7 @@ pub fn prelude_names() -> Array[String] {
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "to_string",
     "iter_require", "iter_length", "iter_get", "array_map", "array_fold", "array_filter",
     "array_foreach", "array_concat", "array_reverse", "array_any", "array_all", "array_find",
-    "assert_eq", "array_sort", "array_contains", "map_get_or", "where",
+    "assert_eq", "array_sort", "array_contains", "map_get_or", "map_map",
+    "map_filter", "where",
   ]
 }
