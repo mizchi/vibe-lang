@@ -403,7 +403,7 @@ fn compile_ctor_args_cont(
       cont,
     )
   } else {
-    let tmp = alloc_temp_local(ctx)
+    let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
     emit_load_ctor_arg_raw(buf, raw_ptr, index)
     emit_local_set(buf, tmp)
     let cont = PatCont::Ctor(raw_ptr, args, index + 1, ctor_name, next)
@@ -442,7 +442,7 @@ fn compile_tuple_items_cont(
     )
     return
   }
-  let tmp = alloc_temp_local(ctx)
+  let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
   emit_load_tuple_elem_raw(buf, raw_ptr, index)
   emit_local_set(buf, tmp)
   let cont = PatCont::Tuple(raw_ptr, items, index + 1, next)
@@ -487,7 +487,7 @@ fn compile_record_fields_cont(
   emit_i32_eq(buf)
   buf.push((4).to_byte())
   buf.push((126).to_byte())
-  let tmp = alloc_temp_local(ctx)
+  let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
   emit_load_record_value_raw(buf, raw_ptr, index)
   emit_local_set(buf, tmp)
   let cont = PatCont::Record(raw_ptr, fields, index + 1, next)

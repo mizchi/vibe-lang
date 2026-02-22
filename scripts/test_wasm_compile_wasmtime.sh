@@ -344,7 +344,19 @@ expect_wasmtime_result "match bool false" \
 }' \
 "0"
 
-# NOTE: Option match (Some/None) skipped — known codegen i32/i64 type mismatch
+expect_wasmtime_result "match Option Some" \
+'match Some(42) {
+  Some(x) => x
+  _ => 0
+}' \
+"42"
+
+expect_wasmtime_result "match Option None" \
+'match None {
+  Some(x) => x
+  _ => 99
+}' \
+"99"
 
 echo ""
 
@@ -363,7 +375,12 @@ expect_wasmtime_result "nested tuple destructuring" \
 a + b + c' \
 "6"
 
-# NOTE: tuple match skipped — known codegen i32/i64 type mismatch
+expect_wasmtime_result "tuple in match" \
+'match (1, 2) {
+  (a, b) => a * b
+  _ => 0
+}' \
+"2"
 
 echo ""
 
