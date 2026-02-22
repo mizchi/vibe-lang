@@ -267,6 +267,36 @@ match p {
 }
 ```
 
+### derive
+
+```vibe
+// Auto-derive Eq for enum
+enum Color {
+  Red;
+  Green;
+  Blue
+} derive(Eq)
+
+eq(Red, Red)     // => true
+eq(Red, Blue)    // => false
+
+// Works with payload variants
+enum Shape {
+  Circle(Int);
+  Rect(Int, Int)
+} derive(Eq)
+
+eq(Circle(5), Circle(5))  // => true
+eq(Circle(5), Rect(1, 2)) // => false
+
+// Also works for structs
+struct Point {
+  x: Int; y: Int
+} derive(Eq)
+
+eq(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 2 })  // => true
+```
+
 ### trait / impl
 
 ```vibe

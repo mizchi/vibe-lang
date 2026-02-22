@@ -548,7 +548,7 @@ fn eval_pure_builtin(
           @core.Value::Bool(a.to_int().to_int64() == b)
         (@core.Value::String(a), @core.Value::String(b)) =>
           @core.Value::Bool(a == b)
-        _ => raise EvalError::BadCall("__eq")
+        (a, b) => @core.Value::Bool(a == b)
       }
     }
     "__lt" => {
