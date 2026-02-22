@@ -377,6 +377,7 @@ function buildDefaultImports() {
   return {
     __moonbit_sys_unstable: createMoonbitSysImportModule(),
     __moonbit_fs_unstable: createMoonbitFsImportModule(state),
+    __moonbit_time_unstable: buildImportModule({}, () => 0),
     spectest: createSpectestImportModule(),
   };
 }

@@ -512,3 +512,11 @@ release-check: fmt info check test vibe-normalize bench-bundle-size-monitor
 
 # Alias for teams used to `check-release`
 check-release: release-check
+
+# Start playground dev server (builds wasm first)
+playground-dev: build-integration-deno-wasm
+    cd playground && pnpm dev
+
+# Build playground for GitHub Pages
+playground-build: build-integration-deno-wasm
+    cd playground && VITE_BASE=/vibe-lang/ pnpm build
