@@ -76,3 +76,45 @@ test "typecheck keeps exported schemes with array_builder local recursion" {
     None => fail("expected exported scheme: build")
   }
 }
+
+///|
+test "typecheck keeps exported schemes for threads runtime wrappers" {
+  let script =
+    #|export let recv = (channel: Int) -> String with { Threads } {
+    #|  threads_recv(channel)
+    #|}
+    #|export let send = (channel: Int, message: String) -> Bool with { Threads } {
+    #|  threads_send(channel, message)
+    #|}
+    #|export let wait = (task: Int) -> Int with { Threads } {
+    #|  threads_wait(task)
+    #|}
+    #|export let spawn = (name: String, mailbox: Int) -> Int with { Threads } {
+    #|  do {
+    #|    threads_spawn(name, mailbox)
+    #|  }
+    #|}
+    #|export let probe_wat = () -> String with { Threads } {
+    #|  threads_probe_wat()
+    #|}
+    #|export let channel_new = (capacity: Int) -> Int with { Threads } {
+    #|  threads_channel_new(capacity)
+    #|}
+    #|export let runtime_hints = () -> Unit with { Threads } {
+    #|  let _ = threads_runtime_hints()
+    #|  if true {
+    #|  } else {
+    #|  }
+    #|}
+  let ast = @parser.parse_ast(script)
+  let env = type_check(ast)
+  let names = [
+    "recv", "send", "wait", "spawn", "probe_wat", "channel_new", "runtime_hints",
+  ]
+  for name in names {
+    match env.get_scheme(name) {
+      Some(_) => ()
+      None => fail("expected exported scheme: " + name)
+    }
+  }
+}

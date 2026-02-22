@@ -411,3 +411,121 @@ test "loader load_db_with_paths refreshes stale index.lock path hashes" {
   }
   remove_if_exists(root)
 }
+
+///|
+test "loader load_db_with_paths keeps re-exported Process function callable" {
+  let root = make_temp_dir("process_reexport")
+  let pkg_dir = root + "/pkg"
+  let proc_dir = pkg_dir + "/process"
+  @os_fs.create_dir(pkg_dir) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(proc_dir) catch {
+    e => fail(e.to_string())
+  }
+  write_file(pkg_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
+  write_file(
+    proc_dir + "/index.vibe",
+    "export let version = \"0.1.0\"\n" +
+    "export use ./process.vibe { run_lines }\n" +
+    "export { run_lines }\n",
+  )
+  write_file(
+    proc_dir + "/process.vibe",
+    "export let run_lines = (cmd: String) -> Array[String] with { Process } {\n" +
+    "  [cmd]\n" +
+    "}\n" +
+    "export { run_lines }\n",
+  )
+  let entry = proc_dir + "/index_import_test.vibe"
+  write_file(
+    entry,
+    "use ./index.vibe { run_lines }\n" +
+    "let lines = run_lines(\"ok\")\n" +
+    "assert(eq(array_length(lines), 1))\n",
+  )
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, _) = loaded
+  let env = db.types(resolved)
+  let diags = db.diagnostics(resolved)
+  let has_type_diag = diags.any(fn(diag) { diag.stage == "type" })
+  if has_type_diag {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("run_lines") {
+    Some(scheme) =>
+      match scheme.ty {
+        @vibe_core.Type::Func(..) => ()
+        _ => fail("expected function scheme: run_lines")
+      }
+    None => fail("expected imported scheme: run_lines")
+  }
+  remove_if_exists(root)
+}
+
+///|
+test "loader load_db_with_paths: repo process index_import_test has callable run_lines" {
+  let cwd = @io.current_dir_or_root()
+  let entry = @vibe_fs.normalize_path(
+    cwd + "/vibe/process/index_import_test.vibe",
+  )
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, _) = loaded
+  let env = db.types(resolved)
+  let diags = db.diagnostics(resolved)
+  let type_diags = diags.filter(fn(diag) { diag.stage == "type" })
+  if not(type_diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in type_diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected type diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("run_lines") {
+    Some(scheme) =>
+      match scheme.ty {
+        @vibe_core.Type::Func(..) => ()
+        _ => fail("expected function scheme: run_lines")
+      }
+    None => fail("expected imported scheme: run_lines")
+  }
+}
+
+///|
+test "loader load_db_with_paths: repo threads_runtime_test imports runtime_hints" {
+  let cwd = @io.current_dir_or_root()
+  let entry = @vibe_fs.normalize_path(
+    cwd + "/vibe/builtin/threads_runtime_test.vibe",
+  )
+  let loaded = match load_db_with_paths(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, _) = loaded
+  let env = db.types(resolved)
+  let diags = db.diagnostics(resolved)
+  match env.get_scheme("runtime_hints") {
+    Some(scheme) =>
+      match scheme.ty {
+        @vibe_core.Type::Func(..) => ()
+        _ => fail("expected function scheme: runtime_hints")
+      }
+    None => {
+      let lines : Array[String] = []
+      for diag in diags {
+        lines.push(diag.stage + ":" + diag.message)
+      }
+      fail("expected imported scheme: runtime_hints; diags=" + lines.join(","))
+    }
+  }
+}
