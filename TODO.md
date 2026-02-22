@@ -156,9 +156,9 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
   - prelude 関数として追加（直接ループ実装、クロージャキャプチャ問題を回避）
   - 対象: `src/checker/prelude.mbt`
 
-- [ ] **M4: `array_sort` を追加する**
-  - スクリプト言語としてソートは基本機能
-  - 対象: `src/runtime/eval_builtins.mbt`
+- [x] **M4: `array_sort` を追加する**
+  - prelude 関数として merge sort を実装（`array_slice` + `array_builder` ベース）
+  - 対象: `src/checker/prelude.mbt`
 
 - [ ] **M5: Map HOF を追加する（`map_map`, `map_filter`）**
   - 現状: Map には `map_get`/`map_keys`/`map_values` のみ、HOF なし

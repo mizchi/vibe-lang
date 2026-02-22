@@ -23,9 +23,10 @@ array_any(arr, (x: Int) -> Bool { x > 2 })  // => true
 array_all(arr, (x: Int) -> Bool { x > 0 })  // => true
 array_find(arr, (x: Int) -> Bool { x > 1 }) // => Some(2) (None if not found)
 
-// Concat, reverse, slice
+// Concat, reverse, sort, slice
 array_concat([1, 2], [3, 4])     // => [1, 2, 3, 4]
 array_reverse([1, 2, 3])         // => [3, 2, 1]
+array_sort([3, 1, 2])            // => [1, 2, 3]
 array_slice([10, 20, 30, 40], 1, 3) // => [20, 30]
 ```
 

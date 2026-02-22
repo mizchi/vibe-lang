@@ -131,6 +131,42 @@ let prelude_source : String =
   #|    array_builder_freeze(b)
   #|  }
   #|}
+  #|let rec array_sort = (xs: Array[Num]) -> Array[Num] {
+  #|  let len = array_length(xs)
+  #|  if len < 2 { xs } else {
+  #|    let mid = div(len, 2)
+  #|    let left = array_sort(array_slice(xs, 0, mid))
+  #|    let right = array_sort(array_slice(xs, mid, len))
+  #|    do {
+  #|      let b = array_builder()
+  #|      let ll = array_length(left)
+  #|      let rl = array_length(right)
+  #|      let rec merge = (li: Int, ri: Int) -> Unit {
+  #|        if li < ll {
+  #|          if ri < rl {
+  #|            if lt(array_get(left, li), array_get(right, ri)) {
+  #|              array_builder_push(b, array_get(left, li))
+  #|              merge(li + 1, ri)
+  #|            } else {
+  #|              array_builder_push(b, array_get(right, ri))
+  #|              merge(li, ri + 1)
+  #|            }
+  #|          } else {
+  #|            array_builder_push(b, array_get(left, li))
+  #|            merge(li + 1, ri)
+  #|          }
+  #|        } else {
+  #|          if ri < rl {
+  #|            array_builder_push(b, array_get(right, ri))
+  #|            merge(li, ri + 1)
+  #|          } else { }
+  #|        }
+  #|      }
+  #|      merge(0, 0)
+  #|      array_builder_freeze(b)
+  #|    }
+  #|  }
+  #|}
   #|let array_contains = (xs: Array[Num], value: Num) -> Bool {
   #|  let rec loop = (i: Int) -> Bool {
   #|    if i < array_length(xs) {
@@ -170,6 +206,6 @@ pub fn prelude_names() -> Array[String] {
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "assert", "to_string",
     "iter_require", "iter_length", "iter_get", "array_map", "array_fold", "array_filter",
     "array_foreach", "array_concat", "array_reverse", "array_any", "array_all", "array_find",
-    "assert_eq", "array_contains", "map_get_or", "where",
+    "assert_eq", "array_sort", "array_contains", "map_get_or", "where",
   ]
 }
