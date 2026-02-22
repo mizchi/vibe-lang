@@ -393,6 +393,10 @@ test-golden-wat-update:
 test-interpreter-wasm:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/test_interpreter_wasm_match.sh
 
+# E2E: compile .vibe → .wasm and run with wasmtime (general language features)
+test-wasm-compile-wasmtime:
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/test_wasm_compile_wasmtime.sh
+
 # Show resolved wasmtime binary for current env selection
 show-wasmtime-bin:
     VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/wasmtime_bin.sh
