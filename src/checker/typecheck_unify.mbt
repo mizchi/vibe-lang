@@ -34,6 +34,15 @@ fn normalize_type_inner(
       for arg in args {
         normalized_args.push(normalize_type_inner(env, arg, visiting))
       }
+      if name == "Ref" {
+        if normalized_args.length() != 1 {
+          raise TypeError::BadTypeDef(
+            message="type arity: Ref",
+            span=unknown_span(),
+          )
+        }
+        return @core.Type::Named(name~, args=normalized_args)
+      }
       // Json is a builtin opaque type - preserve as-is (unless user defines their own Json)
       if name == "Json" &&
         normalized_args.length() == 0 &&
@@ -171,6 +180,368 @@ fn normalize_type_inner(
     }
     _ => ty
   }
+}
+
+///|
+fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Named(name~, args~) => {
+      if name == "Ref" {
+        return true
+      }
+      for arg in args {
+        if type_may_contain_scoped_ref_hint(arg) {
+          return true
+        }
+      }
+      // User-defined named types/aliases may hide `Ref`.
+      true
+    }
+    @core.Type::Tuple(items) => {
+      for item in items {
+        if type_may_contain_scoped_ref_hint(item) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Record(fields) => {
+      for _, value in fields {
+        if type_may_contain_scoped_ref_hint(value) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Array(inner)
+    | @core.Type::Map(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::MapBuilder(inner) => type_may_contain_scoped_ref_hint(inner)
+    @core.Type::Variant(ctors) => {
+      for _, payload_ty in ctors {
+        if type_may_contain_scoped_ref_hint(payload_ty) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Func(params~, ret~, ..) => {
+      if type_may_contain_scoped_ref_hint(ret) {
+        return true
+      }
+      for param in params {
+        if type_may_contain_scoped_ref_hint(param.ty) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Int
+    | @core.Type::Float
+    | @core.Type::Double
+    | @core.Type::Bool
+    | @core.Type::Char
+    | @core.Type::String
+    | @core.Type::Path
+    | @core.Type::PromptText
+    | @core.Type::Unit
+    | @core.Type::StringBuilder
+    | @core.Type::Param(_)
+    | @core.Type::Var(_)
+    | @core.Type::Never => false
+  }
+}
+
+///|
+fn scoped_ref_cache_key(env : TypeEnv, ty : @core.Type) -> String {
+  env.scoped_ref_contains_cache_version.to_string() +
+  "#" +
+  ty.structural_hash().to_string()
+}
+
+///|
+fn scoped_ref_cache_lookup(env : TypeEnv, ty : @core.Type) -> Bool? {
+  let key = scoped_ref_cache_key(env, ty)
+  match env.scoped_ref_contains_cache.get(key) {
+    Some(entries) => {
+      for entry in entries {
+        if entry.ty == ty {
+          return Some(entry.has_scoped_ref)
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+///|
+fn scoped_ref_cache_store(env : TypeEnv, ty : @core.Type, value : Bool) -> Unit {
+  let key = scoped_ref_cache_key(env, ty)
+  let next = ScopedRefContainsCacheEntry::{ ty, has_scoped_ref: value }
+  match env.scoped_ref_contains_cache.get(key) {
+    Some(entries) => entries.push(next)
+    None => env.scoped_ref_contains_cache[key] = [next]
+  }
+}
+
+///|
+fn type_contains_scoped_ref(
+  env : TypeEnv,
+  ty : @core.Type,
+) -> Bool raise TypeError {
+  if not(env.scoped_ref_checks_enabled) {
+    return false
+  }
+  let profile_start = if env.scoped_ref_profile_enabled {
+    env.scoped_ref_contains_calls += 1
+    Some(@bench.monotonic_clock_start())
+  } else {
+    None
+  }
+  let finish = fn(result : Bool) -> Bool {
+    match profile_start {
+      Some(ts) =>
+        env.scoped_ref_contains_time_us += @bench.monotonic_clock_end(ts)
+      None => ()
+    }
+    result
+  }
+  let resolved = resolve_type(env, ty)
+  if not(type_may_contain_scoped_ref_hint(resolved)) {
+    return finish(false)
+  }
+  match scoped_ref_cache_lookup(env, resolved) {
+    Some(hit) => {
+      if env.scoped_ref_profile_enabled {
+        env.scoped_ref_contains_cache_hits += 1
+      }
+      return finish(hit)
+    }
+    None =>
+      if env.scoped_ref_profile_enabled {
+        env.scoped_ref_contains_cache_misses += 1
+      }
+  }
+  let visiting : Map[String, Bool] = {}
+  let result = type_contains_scoped_ref_inner(env, resolved, visiting)
+  scoped_ref_cache_store(env, resolved, result)
+  finish(result)
+}
+
+///|
+fn type_contains_scoped_ref_inner(
+  env : TypeEnv,
+  ty : @core.Type,
+  visiting : Map[String, Bool],
+) -> Bool raise TypeError {
+  match resolve_type(env, ty) {
+    @core.Type::Named(name~, args~) => {
+      if name == "Ref" {
+        return true
+      }
+      for arg in args {
+        if type_contains_scoped_ref_inner(env, arg, visiting) {
+          return true
+        }
+      }
+      if visiting.contains(name) {
+        return false
+      }
+      visiting[name] = true
+      let found = match env.get_type_alias(name) {
+        Some(type_alias) =>
+          if type_alias.params.length() != args.length() {
+            false
+          } else {
+            let mapping : Map[String, @core.Type] = {}
+            for i in 0..<type_alias.params.length() {
+              mapping[type_alias.params[i]] = args[i]
+            }
+            type_contains_scoped_ref_inner(
+              env,
+              substitute_type(type_alias.target, mapping),
+              visiting,
+            )
+          }
+        None =>
+          match env.get_struct(name) {
+            Some(struct_def) =>
+              if struct_def.params.length() != args.length() {
+                false
+              } else {
+                let mapping : Map[String, @core.Type] = {}
+                for i in 0..<struct_def.params.length() {
+                  mapping[struct_def.params[i]] = args[i]
+                }
+                let mut hit = false
+                for field in struct_def.fields {
+                  let field_ty = substitute_type(field.ty, mapping)
+                  if type_contains_scoped_ref_inner(env, field_ty, visiting) {
+                    hit = true
+                    break
+                  }
+                }
+                hit
+              }
+            None =>
+              match env.get_enum_def(name) {
+                Some(enum_def) =>
+                  if enum_def.params.length() != args.length() {
+                    false
+                  } else {
+                    let mapping : Map[String, @core.Type] = {}
+                    for i in 0..<enum_def.params.length() {
+                      mapping[enum_def.params[i]] = args[i]
+                    }
+                    let mut hit = false
+                    for ctor in enum_def.ctors {
+                      for arg_ty in ctor.args {
+                        let payload_ty = substitute_type(arg_ty, mapping)
+                        if type_contains_scoped_ref_inner(
+                            env, payload_ty, visiting,
+                          ) {
+                          hit = true
+                          break
+                        }
+                      }
+                      if hit {
+                        break
+                      }
+                    }
+                    hit
+                  }
+                None => false
+              }
+          }
+      }
+      visiting.remove(name)
+      found
+    }
+    @core.Type::Tuple(items) => {
+      for item in items {
+        if type_contains_scoped_ref_inner(env, item, visiting) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Record(fields) => {
+      for _, value in fields {
+        if type_contains_scoped_ref_inner(env, value, visiting) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Array(inner)
+    | @core.Type::Map(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::MapBuilder(inner) =>
+      type_contains_scoped_ref_inner(env, inner, visiting)
+    @core.Type::Variant(ctors) => {
+      for _, payload_ty in ctors {
+        if type_contains_scoped_ref_inner(env, payload_ty, visiting) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Func(params~, ret~, ..) => {
+      if type_contains_scoped_ref_inner(env, ret, visiting) {
+        return true
+      }
+      for param in params {
+        if type_contains_scoped_ref_inner(env, param.ty, visiting) {
+          return true
+        }
+      }
+      false
+    }
+    @core.Type::Int
+    | @core.Type::Float
+    | @core.Type::Double
+    | @core.Type::Bool
+    | @core.Type::Char
+    | @core.Type::String
+    | @core.Type::Path
+    | @core.Type::PromptText
+    | @core.Type::Unit
+    | @core.Type::StringBuilder
+    | @core.Type::Param(_)
+    | @core.Type::Var(_)
+    | @core.Type::Never => false
+  }
+}
+
+///|
+fn ensure_no_scoped_ref_return_escape(
+  env : TypeEnv,
+  ret_ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if not(env.scoped_ref_checks_enabled) {
+    return
+  }
+  let profile_start = if env.scoped_ref_profile_enabled {
+    env.scoped_ref_return_checks += 1
+    Some(@bench.monotonic_clock_start())
+  } else {
+    None
+  }
+  let finish = fn() {
+    match profile_start {
+      Some(ts) =>
+        env.scoped_ref_return_time_us += @bench.monotonic_clock_end(ts)
+      None => ()
+    }
+  }
+  if type_contains_scoped_ref(env, ret_ty) {
+    finish()
+    raise TypeError::ScopedRefEscape(context="function return", span~)
+  }
+  finish()
+}
+
+///|
+fn ensure_no_toplevel_scoped_ref_escape(
+  env : TypeEnv,
+  ty : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if not(env.scoped_ref_checks_enabled) {
+    return
+  }
+  let profile_start = if env.scoped_ref_profile_enabled {
+    env.scoped_ref_toplevel_checks += 1
+    Some(@bench.monotonic_clock_start())
+  } else {
+    None
+  }
+  let finish = fn() {
+    match profile_start {
+      Some(ts) =>
+        env.scoped_ref_toplevel_time_us += @bench.monotonic_clock_end(ts)
+      None => ()
+    }
+  }
+  let resolved = resolve_type(env, ty)
+  match resolved {
+    @core.Type::Func(ret~, ..) =>
+      if type_contains_scoped_ref(env, ret) {
+        finish()
+        raise TypeError::ScopedRefEscape(
+          context="top-level function return",
+          span~,
+        )
+      }
+    _ =>
+      if type_contains_scoped_ref(env, resolved) {
+        finish()
+        raise TypeError::ScopedRefEscape(context="top-level binding", span~)
+      }
+  }
+  finish()
 }
 
 ///|

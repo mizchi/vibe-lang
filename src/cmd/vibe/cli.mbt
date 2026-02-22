@@ -163,7 +163,9 @@ fn print_usage() -> Unit {
     "  bundle <pack|verify|inspect|cat|migrate|sync> ...  vbundle distribution utilities",
   )
   println("  lsp                         start LSP server (stdin/stdout)")
-  println("  parser commands: --syntax vibe|posix (default: vibe)")
+  println(
+    "  parser commands: --syntax vibe|posix (default: vibe; posix: shell/shell-stdin/shell-wasi only)",
+  )
   println("  runtime flags: --unstable-async --unstable-threads")
   println(
     "  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)",

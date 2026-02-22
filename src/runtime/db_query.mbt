@@ -562,9 +562,13 @@ pub fn VibeDb::new() -> VibeDb {
                             if can_bind_import_value(name, span) {
                               env.set_scheme(name, scheme)
                               env.set_exported_scheme(name, scheme)
-                              match imported_env.get_purity(name) {
-                                Some(pure) => env.set_purity(name, pure)
-                                None => ()
+                              match imported_env.get_purity_tier(name) {
+                                Some(tier) => env.set_purity_tier(name, tier)
+                                None =>
+                                  match imported_env.get_purity(name) {
+                                    Some(pure) => env.set_purity(name, pure)
+                                    None => ()
+                                  }
                               }
                             }
                           }
@@ -599,10 +603,16 @@ pub fn VibeDb::new() -> VibeDb {
                                 if can_bind_import_value(ctor.name, span) {
                                   env.set_scheme(ctor.name, scheme)
                                   env.set_exported_scheme(ctor.name, scheme)
-                                  match imported_env.get_purity(ctor.name) {
-                                    Some(pure) =>
-                                      env.set_purity(ctor.name, pure)
-                                    None => ()
+                                  match
+                                    imported_env.get_purity_tier(ctor.name) {
+                                    Some(tier) =>
+                                      env.set_purity_tier(ctor.name, tier)
+                                    None =>
+                                      match imported_env.get_purity(ctor.name) {
+                                        Some(pure) =>
+                                          env.set_purity(ctor.name, pure)
+                                        None => ()
+                                      }
                                   }
                                 }
                               None => ()
@@ -652,9 +662,15 @@ pub fn VibeDb::new() -> VibeDb {
                           )
                           if can_bind_import_value(target_name, span) {
                             env.set_scheme(target_name, scheme)
-                            match imported_env.get_purity(source_name) {
-                              Some(pure) => env.set_purity(target_name, pure)
-                              None => ()
+                            match imported_env.get_purity_tier(source_name) {
+                              Some(tier) =>
+                                env.set_purity_tier(target_name, tier)
+                              None =>
+                                match imported_env.get_purity(source_name) {
+                                  Some(pure) =>
+                                    env.set_purity(target_name, pure)
+                                  None => ()
+                                }
                             }
                           }
                           return true
@@ -690,9 +706,15 @@ pub fn VibeDb::new() -> VibeDb {
                           )
                           if can_bind_import_value(target_name, span) {
                             env.set_scheme(target_name, scheme)
-                            match imported_env.get_purity(source_name) {
-                              Some(pure) => env.set_purity(target_name, pure)
-                              None => ()
+                            match imported_env.get_purity_tier(source_name) {
+                              Some(tier) =>
+                                env.set_purity_tier(target_name, tier)
+                              None =>
+                                match imported_env.get_purity(source_name) {
+                                  Some(pure) =>
+                                    env.set_purity(target_name, pure)
+                                  None => ()
+                                }
                             }
                           }
                           imported_any = true
@@ -744,10 +766,16 @@ pub fn VibeDb::new() -> VibeDb {
                                     env, imported_env, scheme, trait_aliases, exported_names,
                                   )
                                   env.set_scheme(ctor.name, scheme)
-                                  match imported_env.get_purity(ctor.name) {
-                                    Some(pure) =>
-                                      env.set_purity(ctor.name, pure)
-                                    None => ()
+                                  match
+                                    imported_env.get_purity_tier(ctor.name) {
+                                    Some(tier) =>
+                                      env.set_purity_tier(ctor.name, tier)
+                                    None =>
+                                      match imported_env.get_purity(ctor.name) {
+                                        Some(pure) =>
+                                          env.set_purity(ctor.name, pure)
+                                        None => ()
+                                      }
                                   }
                                 }
                               None => ()
@@ -839,10 +867,17 @@ pub fn VibeDb::new() -> VibeDb {
                                 )
                                 if can_bind_import_value(target_name, span) {
                                   env.set_scheme(target_name, scheme)
-                                  match imported_env.get_purity(exported_name) {
-                                    Some(pure) =>
-                                      env.set_purity(target_name, pure)
-                                    None => ()
+                                  match
+                                    imported_env.get_purity_tier(exported_name) {
+                                    Some(tier) =>
+                                      env.set_purity_tier(target_name, tier)
+                                    None =>
+                                      match
+                                        imported_env.get_purity(exported_name) {
+                                        Some(pure) =>
+                                          env.set_purity(target_name, pure)
+                                        None => ()
+                                      }
                                   }
                                   imported_any = true
                                 }

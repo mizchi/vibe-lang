@@ -268,9 +268,17 @@ fn type_call_builtin_handler_core_io(
         call_span,
         [],
         @core.Type::String,
-        false,
+        true,
       )
     "threads_runtime_hints" => {
+      require_effect_guard(
+        env,
+        effects,
+        allow_effect,
+        "threads_runtime_hints",
+        builtin_effects("threads_runtime_hints"),
+        call_span,
+      )
       let pos_args = extract_positional_args(
         args, "threads_runtime_hints", call_span,
       )
@@ -298,7 +306,7 @@ fn type_call_builtin_handler_core_io(
         call_span,
         [@core.Type::Int],
         @core.Type::Int,
-        false,
+        true,
       )
     "threads_send" =>
       check_builtin_simple(
@@ -311,7 +319,7 @@ fn type_call_builtin_handler_core_io(
         call_span,
         [@core.Type::Int, @core.Type::String],
         @core.Type::Bool,
-        false,
+        true,
       )
     "threads_recv" =>
       check_builtin_simple(
@@ -324,9 +332,17 @@ fn type_call_builtin_handler_core_io(
         call_span,
         [@core.Type::Int],
         @core.Type::String,
-        false,
+        true,
       )
     "threads_spawn" => {
+      require_effect_guard(
+        env,
+        effects,
+        allow_effect,
+        "threads_spawn",
+        builtin_effects("threads_spawn"),
+        call_span,
+      )
       let pos_args = extract_positional_args(args, "threads_spawn", call_span)
       if pos_args.length() != 2 {
         raise TypeError::BadCall(message="threads_spawn", span=call_span)
@@ -374,7 +390,7 @@ fn type_call_builtin_handler_core_io(
         call_span,
         [@core.Type::Int],
         @core.Type::Int,
-        false,
+        true,
       )
     "stdout_write_char" =>
       check_builtin_simple(

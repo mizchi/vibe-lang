@@ -6,7 +6,7 @@ import {
 }
 
 // Values
-pub fn bind_pattern_names(Map[String, Bool], @core.Pat) -> Unit
+pub fn bind_pattern_names(Map[String, TopLevelPurityTier], @core.Pat) -> Unit
 
 pub let builtin_module_sources : Array[(String, String)]
 
@@ -54,7 +54,11 @@ pub fn type_check(@core.Module) -> TypeEnv raise TypeError
 
 pub fn type_check_with_aliases(@core.Module, Map[String, @core.Ref]) -> TypeEnv raise TypeError
 
+pub fn type_check_with_aliases_profile(@core.Module, Map[String, @core.Ref]) -> (TypeEnv, ScopedRefProfile) raise TypeError
+
 pub fn type_check_with_env(TypeEnv, @core.Module, Map[String, @core.Ref]) -> TypeEnv raise TypeError
+
+pub fn type_check_with_profile(@core.Module) -> (TypeEnv, ScopedRefProfile) raise TypeError
 
 pub fn update_typecheck_fixtures(String) -> Result[Int, String]
 
@@ -106,6 +110,8 @@ pub impl Show for EnumDef
 pub struct PurityInfo {
   expr : Bool
   value : Bool
+  expr_tier : TopLevelPurityTier
+  value_tier : TopLevelPurityTier
 }
 pub impl Eq for PurityInfo
 pub impl Show for PurityInfo
@@ -126,6 +132,30 @@ pub fn[V] ScopedMap::op_set(Self[V], String, V) -> Unit
 pub fn[V] ScopedMap::remove(Self[V], String) -> Unit
 pub impl[V : Eq] Eq for ScopedMap[V]
 pub impl[V : Show] Show for ScopedMap[V]
+
+pub(all) struct ScopedRefContainsCacheEntry {
+  ty : @core.Type
+  has_scoped_ref : Bool
+}
+pub impl Eq for ScopedRefContainsCacheEntry
+pub impl Show for ScopedRefContainsCacheEntry
+
+pub struct ScopedRefProfile {
+  contains_calls : Int
+  contains_cache_hits : Int
+  contains_cache_misses : Int
+  contains_time_us : Double
+  capture_checks : Int
+  capture_time_us : Double
+  call_arg_checks : Int
+  call_arg_time_us : Double
+  return_checks : Int
+  return_time_us : Double
+  toplevel_checks : Int
+  toplevel_time_us : Double
+}
+pub impl Eq for ScopedRefProfile
+pub impl Show for ScopedRefProfile
 
 pub struct SessionState {
   mut type_var_counter : Int
@@ -149,6 +179,14 @@ pub struct StructFieldDef {
 }
 pub impl Eq for StructFieldDef
 pub impl Show for StructFieldDef
+
+pub enum TopLevelPurityTier {
+  Pure
+  StateLocal
+  Impure
+}
+pub impl Eq for TopLevelPurityTier
+pub impl Show for TopLevelPurityTier
 
 pub struct TraitDefInfo {
   supertraits : Array[String]
@@ -185,9 +223,28 @@ pub struct TypeEnv {
   trait_impls : Map[String, Array[TraitImplDef]]
   fn_versions : Map[String, ApiSemver]
   purities : ScopedMap[Bool]
+  purity_tiers : ScopedMap[TopLevelPurityTier]
   expr_types : Map[Int64, @core.Type]
   num_vars : Map[Int, Bool]
   var_trait_bounds : Map[Int, Array[String]]
+  mut scoped_ref_contains_cache : Map[String, Array[ScopedRefContainsCacheEntry]]
+  mut scoped_ref_contains_cache_version : Int
+  mut scoped_ref_checks_enabled : Bool
+  mut has_scoped_ref_binding : Bool
+  mut scoped_ref_binding_scan_stale : Bool
+  mut scoped_ref_profile_enabled : Bool
+  mut scoped_ref_contains_calls : Int
+  mut scoped_ref_contains_cache_hits : Int
+  mut scoped_ref_contains_cache_misses : Int
+  mut scoped_ref_contains_time_us : Double
+  mut scoped_ref_capture_checks : Int
+  mut scoped_ref_capture_time_us : Double
+  mut scoped_ref_call_arg_checks : Int
+  mut scoped_ref_call_arg_time_us : Double
+  mut scoped_ref_return_checks : Int
+  mut scoped_ref_return_time_us : Double
+  mut scoped_ref_toplevel_checks : Int
+  mut scoped_ref_toplevel_time_us : Double
   mut next_var : Int
   mut next_effect_var : Int
   mut loop_depth : Int
@@ -216,21 +273,30 @@ pub fn TypeEnv::get_enum_def(Self, String) -> EnumDef?
 pub fn TypeEnv::get_expr_type(Self, @core.Span) -> @core.Type?
 pub fn TypeEnv::get_fn_version(Self, String) -> ApiSemver?
 pub fn TypeEnv::get_purity(Self, String) -> Bool?
+pub fn TypeEnv::get_purity_tier(Self, String) -> TopLevelPurityTier?
 pub fn TypeEnv::get_scheme(Self, String) -> TypeScheme?
+pub fn TypeEnv::get_scoped_ref_profile(Self) -> ScopedRefProfile
 pub fn TypeEnv::get_struct(Self, String) -> StructDef?
 pub fn TypeEnv::get_trait_info(Self, String) -> TraitDefInfo?
 pub fn TypeEnv::get_type_alias(Self, String) -> TypeAlias?
+pub fn TypeEnv::has_scoped_ref_binding_for_capture(Self) -> Bool
 pub fn TypeEnv::has_trait(Self, String) -> Bool
 pub fn TypeEnv::import_trait(Self, String, Bool, Array[String]) -> Unit
+pub fn TypeEnv::invalidate_scoped_ref_contains_cache(Self) -> Unit
+pub fn TypeEnv::is_scoped_ref_checks_enabled(Self) -> Bool
 pub fn TypeEnv::namespace_root(Self, @core.Type) -> String?
 pub fn TypeEnv::new() -> Self
+pub fn TypeEnv::reset_scoped_ref_profile(Self) -> Unit
 pub fn TypeEnv::set(Self, String, @core.Type) -> Unit
 pub fn TypeEnv::set_addr_type(Self, String, @core.Type) -> Unit
 pub fn TypeEnv::set_ctor(Self, String, CtorInfo) -> Unit
 pub fn TypeEnv::set_enum_def(Self, String, EnumDef) -> Unit
 pub fn TypeEnv::set_exported_scheme(Self, String, TypeScheme) -> Unit
 pub fn TypeEnv::set_purity(Self, String, Bool) -> Unit
+pub fn TypeEnv::set_purity_tier(Self, String, TopLevelPurityTier) -> Unit
 pub fn TypeEnv::set_scheme(Self, String, TypeScheme) -> Unit
+pub fn TypeEnv::set_scoped_ref_checks_enabled(Self, Bool) -> Unit
+pub fn TypeEnv::set_scoped_ref_profile_enabled(Self, Bool) -> Unit
 pub fn TypeEnv::set_struct(Self, String, StructDef) -> Unit
 pub fn TypeEnv::set_trait(Self, String) -> Unit
 pub fn TypeEnv::set_trait_info(Self, String, TraitDefInfo) -> Unit

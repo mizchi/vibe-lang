@@ -1,5 +1,12 @@
 ///|
 /// @core.Type checking for vibe
+pub enum TopLevelPurityTier {
+  Pure
+  StateLocal
+  Impure
+} derive(Show, Eq)
+
+///|
 suberror TypeError {
   UnknownName(name~ : String, span~ : @core.Span, suggestion~ : String?)
   UnknownType(name~ : String, span~ : @core.Span, suggestion~ : String?)
@@ -30,7 +37,8 @@ suberror TypeError {
     missing_do_boundary~ : Bool,
     span~ : @core.Span
   )
-  TopLevelImpure(name~ : String, span~ : @core.Span)
+  ScopedRefEscape(context~ : String, span~ : @core.Span)
+  TopLevelImpure(name~ : String, tier~ : TopLevelPurityTier, span~ : @core.Span)
 } derive(Show, Eq)
 
 ///|
@@ -47,6 +55,13 @@ fn is_do_boundary_operation(name : String) -> Bool {
     "sh"
     | "sh_lines"
     | "sleep"
+    | "threads_probe_wat"
+    | "threads_runtime_hints"
+    | "threads_channel_new"
+    | "threads_send"
+    | "threads_recv"
+    | "threads_spawn"
+    | "threads_wait"
     | "stdout_write_char"
     | "stdin_read_char"
     | "stdout_write_stream"
@@ -134,6 +149,37 @@ fn effect_guard_note(
   } else {
     Some(note)
   }
+}
+
+///|
+fn top_level_purity_tier_name(tier : TopLevelPurityTier) -> String {
+  match tier {
+    TopLevelPurityTier::Pure => "pure"
+    TopLevelPurityTier::StateLocal => "state_local"
+    TopLevelPurityTier::Impure => "impure"
+  }
+}
+
+///|
+fn top_level_impure_hint(tier : TopLevelPurityTier) -> String {
+  match tier {
+    TopLevelPurityTier::StateLocal =>
+      "move local mutation into a function body (`let f = () -> { let mut ... }`) and keep top-level bindings pure values"
+    TopLevelPurityTier::Impure =>
+      "move side effects into `let main = () -> { ... }`"
+    TopLevelPurityTier::Pure =>
+      "move side effects into `let main = () -> { ... }`"
+  }
+}
+
+///|
+fn scoped_ref_escape_hint(_context : String) -> String {
+  "keep `Ref[T]` inside local scope and return a pure value instead"
+}
+
+///|
+fn scoped_ref_escape_note(context : String) -> String {
+  "disallowed escape position: " + context
 }
 
 ///|
@@ -288,13 +334,21 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         hint: effect_guard_hint(operation, missing_effect, missing_do_boundary),
         note: effect_guard_note(operation, missing_effect, missing_do_boundary),
       }
-    TypeError::TopLevelImpure(name~, span~) =>
+    TypeError::ScopedRefEscape(context~, span~) =>
+      @core.Diagnostic::{
+        stage: "type",
+        message: "scoped Ref[T] cannot escape: " + context,
+        span: Some(span),
+        hint: Some(scoped_ref_escape_hint(context)),
+        note: Some(scoped_ref_escape_note(context)),
+      }
+    TypeError::TopLevelImpure(name~, tier~, span~) =>
       @core.Diagnostic::{
         stage: "type",
         message: "top-level binding must be pure: " + name,
         span: Some(span),
-        hint: Some("move side effects into `let main = () -> { ... }`"),
-        note: None,
+        hint: Some(top_level_impure_hint(tier)),
+        note: Some("detected purity tier: " + top_level_purity_tier_name(tier)),
       }
   }
 }

@@ -3,12 +3,55 @@
 pub struct PurityInfo {
   expr : Bool
   value : Bool
+  expr_tier : TopLevelPurityTier
+  value_tier : TopLevelPurityTier
 } derive(Show, Eq)
 
 ///|
 priv struct PurityScope {
-  bindings : Map[String, Bool]
+  bindings : Map[String, TopLevelPurityTier]
   parent : PurityScope?
+}
+
+///|
+priv struct PurityAnalysis {
+  has_state_local : Bool
+  has_impure : Bool
+}
+
+///|
+fn purity_analysis_pure() -> PurityAnalysis {
+  { has_state_local: false, has_impure: false }
+}
+
+///|
+fn purity_analysis_state_local() -> PurityAnalysis {
+  { has_state_local: true, has_impure: false }
+}
+
+///|
+fn purity_analysis_impure() -> PurityAnalysis {
+  { has_state_local: false, has_impure: true }
+}
+
+///|
+fn purity_analysis_merge(
+  lhs : PurityAnalysis,
+  rhs : PurityAnalysis,
+) -> PurityAnalysis {
+  {
+    has_state_local: lhs.has_state_local || rhs.has_state_local,
+    has_impure: lhs.has_impure || rhs.has_impure,
+  }
+}
+
+///|
+fn purity_analysis_from_tier(tier : TopLevelPurityTier) -> PurityAnalysis {
+  match tier {
+    TopLevelPurityTier::Pure => purity_analysis_pure()
+    TopLevelPurityTier::StateLocal => purity_analysis_state_local()
+    TopLevelPurityTier::Impure => purity_analysis_impure()
+  }
 }
 
 ///|
@@ -22,7 +65,7 @@ fn PurityScope::child(self : PurityScope) -> PurityScope {
 }
 
 ///|
-fn PurityScope::get(self : PurityScope, name : String) -> Bool? {
+fn PurityScope::get(self : PurityScope, name : String) -> TopLevelPurityTier? {
   match self.bindings.get(name) {
     Some(v) => Some(v)
     None =>
@@ -30,6 +73,43 @@ fn PurityScope::get(self : PurityScope, name : String) -> Bool? {
         Some(p) => p.get(name)
         None => None
       }
+  }
+}
+
+///|
+fn purity_tier_from_bool(pure : Bool) -> TopLevelPurityTier {
+  if pure {
+    TopLevelPurityTier::Pure
+  } else {
+    TopLevelPurityTier::Impure
+  }
+}
+
+///|
+fn env_purity_tier(env : TypeEnv, name : String) -> TopLevelPurityTier? {
+  match env.get_purity_tier(name) {
+    Some(tier) => Some(tier)
+    None =>
+      match env.get_purity(name) {
+        Some(pure) => Some(purity_tier_from_bool(pure))
+        None => None
+      }
+  }
+}
+
+///|
+fn PurityAnalysis::is_pure(self : PurityAnalysis) -> Bool {
+  not(self.has_state_local) && not(self.has_impure)
+}
+
+///|
+fn PurityAnalysis::tier(self : PurityAnalysis) -> TopLevelPurityTier {
+  if self.has_impure {
+    TopLevelPurityTier::Impure
+  } else if self.has_state_local {
+    TopLevelPurityTier::StateLocal
+  } else {
+    TopLevelPurityTier::Pure
   }
 }
 
@@ -42,7 +122,7 @@ pub fn purity_for_let(
 ) -> PurityInfo {
   let locals = PurityScope::new()
   if rec {
-    locals.bindings[name] = true
+    locals.bindings[name] = TopLevelPurityTier::Pure
   }
   match expr {
     @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
@@ -50,217 +130,229 @@ pub fn purity_for_let(
       let _ = ret
       let fn_locals = locals.child()
       for param in params {
-        fn_locals.bindings[param.name] = true
+        fn_locals.bindings[param.name] = TopLevelPurityTier::Pure
       }
-      let body_pure = purity_block_inner(env, body, fn_locals)
-      PurityInfo::{ expr: true, value: body_pure }
+      let expr_info = purity_analysis_pure()
+      let value_info = purity_block_analysis_inner(env, body, fn_locals)
+      PurityInfo::{
+        expr: expr_info.is_pure(),
+        value: value_info.is_pure(),
+        expr_tier: expr_info.tier(),
+        value_tier: value_info.tier(),
+      }
     }
     _ => {
-      let expr_pure = purity_expr_inner(env, expr, locals)
-      PurityInfo::{ expr: expr_pure, value: expr_pure }
+      let expr_info = purity_expr_analysis_inner(env, expr, locals)
+      PurityInfo::{
+        expr: expr_info.is_pure(),
+        value: expr_info.is_pure(),
+        expr_tier: expr_info.tier(),
+        value_tier: expr_info.tier(),
+      }
     }
   }
 }
 
 ///|
 pub fn purity_expr(env : TypeEnv, expr : @core.Expr) -> Bool {
-  purity_expr_inner(env, expr, PurityScope::new())
+  let info = purity_expr_analysis_inner(env, expr, PurityScope::new())
+  info.is_pure()
 }
 
 ///|
 pub fn purity_block(env : TypeEnv, body : @core.Module) -> Bool {
-  purity_block_inner(env, body, PurityScope::new())
+  let info = purity_block_analysis_inner(env, body, PurityScope::new())
+  info.is_pure()
 }
 
 ///|
-fn purity_expr_inner(
+fn purity_expr_analysis_inner(
   env : TypeEnv,
   expr : @core.Expr,
   locals : PurityScope,
-) -> Bool {
+) -> PurityAnalysis {
   match expr {
     @core.Expr::Int(value~, span~) => {
       let _ = value
       let _ = span
-      true
+      purity_analysis_pure()
     }
     @core.Expr::Float(value~, span~) => {
       let _ = value
       let _ = span
-      true
+      purity_analysis_pure()
     }
     @core.Expr::Double(value~, span~) => {
       let _ = value
       let _ = span
-      true
+      purity_analysis_pure()
     }
     @core.Expr::Bool(value~, span~) => {
       let _ = value
       let _ = span
-      true
+      purity_analysis_pure()
     }
     @core.Expr::Char(value~, span~) => {
       let _ = value
       let _ = span
-      true
+      purity_analysis_pure()
     }
     @core.Expr::String(value~, span~) => {
       let _ = value
       let _ = span
-      true
+      purity_analysis_pure()
     }
     @core.Expr::Ident(name~, span~) => {
       let _ = span
-      match locals.get(name) {
-        Some(pure) => pure
+      let tier = match locals.get(name) {
+        Some(local_tier) => local_tier
         None =>
-          match env.get_purity(name) {
-            Some(pure) => pure
-            None => is_pure_builtin_name(name)
+          match env_purity_tier(env, name) {
+            Some(env_tier) => env_tier
+            None =>
+              if is_pure_builtin_name(name) {
+                TopLevelPurityTier::Pure
+              } else {
+                TopLevelPurityTier::Impure
+              }
           }
       }
+      purity_analysis_from_tier(tier)
     }
     @core.Expr::Placeholder(..) =>
       // Placeholder should be desugared; treat as pure
-      true
+      purity_analysis_pure()
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
+      let mut args_info = purity_analysis_pure()
+      for arg in args {
+        args_info = purity_analysis_merge(
+          args_info,
+          purity_expr_analysis_inner(env, arg.expr, locals),
+        )
+      }
       if is_effectful_call_name(name) {
-        false
+        purity_analysis_merge(args_info, purity_analysis_impure())
       } else {
-        let callee_pure = if is_pure_builtin_name(name) ||
+        let callee_tier = if is_pure_builtin_name(name) ||
           @core.is_ctor_name(name) {
-          true
+          TopLevelPurityTier::Pure
         } else {
           match locals.get(name) {
-            Some(pure) => pure
+            Some(local_tier) => local_tier
             None =>
-              match env.get_purity(name) {
-                Some(pure) => pure
-                None => false
+              match env_purity_tier(env, name) {
+                Some(env_tier) => env_tier
+                None => TopLevelPurityTier::Impure
               }
           }
         }
-        if not(callee_pure) {
-          false
-        } else {
-          let mut ok = true
-          for arg in args {
-            if not(purity_expr_inner(env, arg.expr, locals)) {
-              ok = false
-              break
-            }
-          }
-          ok
-        }
+        purity_analysis_merge(args_info, purity_analysis_from_tier(callee_tier))
       }
     }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
-      purity_all(env, items, locals)
+      purity_all_analysis(env, items, locals)
     }
-    @core.Expr::TupleIndex(expr~, ..) => purity_expr_inner(env, expr, locals)
+    @core.Expr::TupleIndex(expr~, ..) =>
+      purity_expr_analysis_inner(env, expr, locals)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
-      let mut ok = true
+      let mut out = purity_analysis_pure()
       for field in fields {
-        if not(purity_expr_inner(env, field.expr, locals)) {
-          ok = false
-          break
-        }
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, field.expr, locals),
+        )
       }
-      ok
+      out
     }
     @core.Expr::StructLit(fields~, span~, ..) => {
       let _ = span
-      let mut ok = true
+      let mut out = purity_analysis_pure()
       for field in fields {
-        if not(purity_expr_inner(env, field.expr, locals)) {
-          ok = false
-          break
-        }
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, field.expr, locals),
+        )
       }
-      ok
+      out
     }
     @core.Expr::Array(items~, span~) => {
       let _ = span
-      purity_all(env, items, locals)
+      purity_all_analysis(env, items, locals)
     }
     @core.Expr::Map(fields~, span~) => {
       let _ = span
-      let mut ok = true
+      let mut out = purity_analysis_pure()
       for field in fields {
-        if not(purity_expr_inner(env, field.expr, locals)) {
-          ok = false
-          break
-        }
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, field.expr, locals),
+        )
       }
-      ok
+      out
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
       let _ = span
-      purity_expr_inner(env, cond, locals) &&
-      purity_block_inner(env, then_body, locals) &&
-      purity_block_inner(env, else_body, locals)
+      let cond_info = purity_expr_analysis_inner(env, cond, locals)
+      let then_info = purity_block_analysis_inner(env, then_body, locals)
+      let else_info = purity_block_analysis_inner(env, else_body, locals)
+      purity_analysis_merge(
+        cond_info,
+        purity_analysis_merge(then_info, else_info),
+      )
     }
     @core.Expr::Block(body~, span~) => {
       let _ = span
-      purity_block_inner(env, body, locals)
+      purity_block_analysis_inner(env, body, locals)
     }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      if not(purity_block_inner(env, body, locals)) {
-        false
-      } else {
-        let mut ok = true
-        for arm in arms {
-          let arm_locals = locals.child()
-          bind_pattern_names(arm_locals.bindings, arm.pat)
-          match arm.cond {
-            Some(cond) =>
-              if not(purity_expr_inner(env, cond, arm_locals)) {
-                ok = false
-                break
-              }
-            None => ()
-          }
-          if not(purity_expr_inner(env, arm.expr, arm_locals)) {
-            ok = false
-            break
-          }
+      let mut out = purity_block_analysis_inner(env, body, locals)
+      for arm in arms {
+        let arm_locals = locals.child()
+        bind_pattern_names(arm_locals.bindings, arm.pat)
+        match arm.cond {
+          Some(cond) =>
+            out = purity_analysis_merge(
+              out,
+              purity_expr_analysis_inner(env, cond, arm_locals),
+            )
+          None => ()
         }
-        ok
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, arm.expr, arm_locals),
+        )
       }
+      out
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
-      if not(purity_expr_inner(env, scrutinee, locals)) {
-        false
-      } else {
-        let mut ok = true
-        for arm in arms {
-          let arm_locals = locals.child()
-          bind_pattern_names(arm_locals.bindings, arm.pat)
-          match arm.cond {
-            Some(cond) =>
-              if not(purity_expr_inner(env, cond, arm_locals)) {
-                ok = false
-                break
-              }
-            None => ()
-          }
-          if not(purity_expr_inner(env, arm.expr, arm_locals)) {
-            ok = false
-            break
-          }
+      let mut out = purity_expr_analysis_inner(env, scrutinee, locals)
+      for arm in arms {
+        let arm_locals = locals.child()
+        bind_pattern_names(arm_locals.bindings, arm.pat)
+        match arm.cond {
+          Some(cond) =>
+            out = purity_analysis_merge(
+              out,
+              purity_expr_analysis_inner(env, cond, arm_locals),
+            )
+          None => ()
         }
-        ok
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, arm.expr, arm_locals),
+        )
       }
+      out
     }
     @core.Expr::Do(body~, span~) => {
       let _ = body
       let _ = span
-      false
+      purity_analysis_impure()
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
@@ -268,43 +360,43 @@ fn purity_expr_inner(
       let _ = effects
       let _ = body
       let _ = span
-      true
+      purity_analysis_pure()
     }
-    @core.Expr::While(..) | @core.Expr::Loop(..) => false
-    @core.Expr::Break(..) | @core.Expr::Continue(..) => false
+    @core.Expr::While(..) | @core.Expr::Loop(..) => purity_analysis_impure()
+    @core.Expr::Break(..) | @core.Expr::Continue(..) => purity_analysis_impure()
     @core.Expr::Raise(value~, span~) => {
       let _ = span
-      purity_expr_inner(env, value, locals)
+      purity_expr_analysis_inner(env, value, locals)
     }
-    @core.Expr::Yield(..) => false
+    @core.Expr::Yield(..) => purity_analysis_impure()
   }
 }
 
 ///|
-fn purity_block_inner(
+fn purity_block_analysis_inner(
   env : TypeEnv,
   body : @core.Module,
   locals : PurityScope,
-) -> Bool {
+) -> PurityAnalysis {
   let scope = locals.child()
-  let mut ok = true
+  let mut out = purity_analysis_pure()
   for stmt in body.stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) => {
         let _ = span
         let info = purity_for_let_in_scope(env, rec, name, expr, scope)
-        if not(info.expr) {
-          ok = false
-          break
-        }
-        scope.bindings[name] = info.value
+        out = purity_analysis_merge(
+          out,
+          purity_analysis_from_tier(info.expr_tier),
+        )
+        scope.bindings[name] = info.value_tier
       }
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
-        if not(purity_expr_inner(env, expr, scope)) {
-          ok = false
-          break
-        }
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, expr, scope),
+        )
       }
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
@@ -318,32 +410,48 @@ fn purity_block_inner(
       }
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = span
-        if not(purity_expr_inner(env, expr, scope)) {
-          ok = false
-          break
-        }
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, expr, scope),
+        )
         bind_pattern_names(scope.bindings, pat)
       }
       @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
         let _ = span
-        if not(purity_expr_inner(env, expr, scope)) {
-          ok = false
-          break
-        }
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, expr, scope),
+        )
         bind_pattern_names(scope.bindings, pat)
-        if not(purity_block_inner(env, else_body, scope)) {
-          ok = false
-          break
-        }
+        out = purity_analysis_merge(
+          out,
+          purity_block_analysis_inner(env, else_body, scope),
+        )
       }
-      @core.Stmt::LetMut(..) | @core.Stmt::Assign(..) => {
-        ok = false
-        break
+      @core.Stmt::LetMut(name~, expr~, span~) => {
+        let _ = span
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, expr, scope),
+        )
+        out = purity_analysis_merge(out, purity_analysis_state_local())
+        scope.bindings[name] = TopLevelPurityTier::StateLocal
+      }
+      @core.Stmt::Assign(name~, expr~, span~) => {
+        let _ = span
+        out = purity_analysis_merge(
+          out,
+          purity_expr_analysis_inner(env, expr, scope),
+        )
+        out = purity_analysis_merge(out, purity_analysis_state_local())
+        if scope.bindings.contains(name) {
+          scope.bindings[name] = TopLevelPurityTier::StateLocal
+        }
       }
       _ => ()
     }
   }
-  ok
+  out
 }
 
 ///|
@@ -356,7 +464,7 @@ fn purity_for_let_in_scope(
 ) -> PurityInfo {
   let scope = locals.child()
   if rec {
-    scope.bindings[name] = true
+    scope.bindings[name] = TopLevelPurityTier::Pure
   }
   match expr {
     @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
@@ -364,43 +472,57 @@ fn purity_for_let_in_scope(
       let _ = ret
       let fn_locals = scope.child()
       for param in params {
-        fn_locals.bindings[param.name] = true
+        fn_locals.bindings[param.name] = TopLevelPurityTier::Pure
       }
-      let body_pure = purity_block_inner(env, body, fn_locals)
-      PurityInfo::{ expr: true, value: body_pure }
+      let expr_info = purity_analysis_pure()
+      let value_info = purity_block_analysis_inner(env, body, fn_locals)
+      PurityInfo::{
+        expr: expr_info.is_pure(),
+        value: value_info.is_pure(),
+        expr_tier: expr_info.tier(),
+        value_tier: value_info.tier(),
+      }
     }
     _ => {
-      let expr_pure = purity_expr_inner(env, expr, scope)
-      PurityInfo::{ expr: expr_pure, value: expr_pure }
+      let expr_info = purity_expr_analysis_inner(env, expr, scope)
+      PurityInfo::{
+        expr: expr_info.is_pure(),
+        value: expr_info.is_pure(),
+        expr_tier: expr_info.tier(),
+        value_tier: expr_info.tier(),
+      }
     }
   }
 }
 
 ///|
-fn purity_all(
+fn purity_all_analysis(
   env : TypeEnv,
   items : Array[@core.Expr],
   locals : PurityScope,
-) -> Bool {
-  let mut ok = true
+) -> PurityAnalysis {
+  let mut out = purity_analysis_pure()
   for item in items {
-    if not(purity_expr_inner(env, item, locals)) {
-      ok = false
-      break
-    }
+    out = purity_analysis_merge(
+      out,
+      purity_expr_analysis_inner(env, item, locals),
+    )
   }
-  ok
+  out
 }
 
 ///|
-pub fn bind_pattern_names(bound : Map[String, Bool], pat : @core.Pat) -> Unit {
+pub fn bind_pattern_names(
+  bound : Map[String, TopLevelPurityTier],
+  pat : @core.Pat,
+) -> Unit {
   match pat {
     @core.Pat::Wildcard(span~) => {
       let _ = span
     }
     @core.Pat::Bind(name~, span~) => {
       let _ = span
-      bound[name] = true
+      bound[name] = TopLevelPurityTier::Pure
     }
     @core.Pat::Ctor(name~, args~, span~) => {
       let _ = name
@@ -595,23 +717,33 @@ pub fn check_toplevel_purity(
       @core.Stmt::Let(rec~, name~, expr~, span~) => {
         let info = purity_for_let(env, rec, name, expr)
         if not(info.expr) {
-          raise TypeError::TopLevelImpure(name~, span~)
+          raise TypeError::TopLevelImpure(name~, tier=info.expr_tier, span~)
         }
       }
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
         let info = purity_for_let(env, rec, name, expr)
         if not(info.expr) {
-          raise TypeError::TopLevelImpure(name~, span~)
+          raise TypeError::TopLevelImpure(name~, tier=info.expr_tier, span~)
         }
       }
       @core.Stmt::LetMut(name~, span~, ..) =>
-        raise TypeError::TopLevelImpure(name~, span~)
+        raise TypeError::TopLevelImpure(
+          name~,
+          tier=TopLevelPurityTier::StateLocal,
+          span~,
+        )
       @core.Stmt::Assign(name~, span~, ..) =>
-        raise TypeError::TopLevelImpure(name~, span~)
-      @core.Stmt::Expr(expr~, span~) =>
-        if not(purity_expr(env, expr)) {
-          raise TypeError::TopLevelImpure(name="_", span~)
+        raise TypeError::TopLevelImpure(
+          name~,
+          tier=TopLevelPurityTier::StateLocal,
+          span~,
+        )
+      @core.Stmt::Expr(expr~, span~) => {
+        let info = purity_expr_analysis_inner(env, expr, PurityScope::new())
+        if not(info.is_pure()) {
+          raise TypeError::TopLevelImpure(name="_", tier=info.tier(), span~)
         }
+      }
       _ => ()
     }
   }

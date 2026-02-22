@@ -32,6 +32,28 @@ pub fn TypecheckSession::reset(self : TypecheckSession) -> Unit {
 let default_typecheck_session : TypecheckSession = TypecheckSession::new()
 
 ///|
+pub(all) struct ScopedRefContainsCacheEntry {
+  ty : @core.Type
+  has_scoped_ref : Bool
+} derive(Show, Eq)
+
+///|
+pub struct ScopedRefProfile {
+  contains_calls : Int
+  contains_cache_hits : Int
+  contains_cache_misses : Int
+  contains_time_us : Double
+  capture_checks : Int
+  capture_time_us : Double
+  call_arg_checks : Int
+  call_arg_time_us : Double
+  return_checks : Int
+  return_time_us : Double
+  toplevel_checks : Int
+  toplevel_time_us : Double
+} derive(Show, Eq)
+
+///|
 pub struct TypeEnv {
   bindings : ScopedMap[TypeScheme]
   addr_types : Map[String, @core.Type]
@@ -43,9 +65,31 @@ pub struct TypeEnv {
   trait_impls : Map[String, Array[TraitImplDef]]
   fn_versions : Map[String, ApiSemver]
   purities : ScopedMap[Bool]
+  purity_tiers : ScopedMap[TopLevelPurityTier]
   expr_types : Map[Int64, @core.Type]
   num_vars : Map[Int, Bool]
   var_trait_bounds : Map[Int, Array[String]]
+  mut scoped_ref_contains_cache : Map[
+    String,
+    Array[ScopedRefContainsCacheEntry],
+  ]
+  mut scoped_ref_contains_cache_version : Int
+  mut scoped_ref_checks_enabled : Bool
+  mut has_scoped_ref_binding : Bool
+  mut scoped_ref_binding_scan_stale : Bool
+  mut scoped_ref_profile_enabled : Bool
+  mut scoped_ref_contains_calls : Int
+  mut scoped_ref_contains_cache_hits : Int
+  mut scoped_ref_contains_cache_misses : Int
+  mut scoped_ref_contains_time_us : Double
+  mut scoped_ref_capture_checks : Int
+  mut scoped_ref_capture_time_us : Double
+  mut scoped_ref_call_arg_checks : Int
+  mut scoped_ref_call_arg_time_us : Double
+  mut scoped_ref_return_checks : Int
+  mut scoped_ref_return_time_us : Double
+  mut scoped_ref_toplevel_checks : Int
+  mut scoped_ref_toplevel_time_us : Double
   mut next_var : Int
   mut next_effect_var : Int
   mut loop_depth : Int
@@ -74,9 +118,28 @@ pub fn TypeEnv::new() -> TypeEnv {
     trait_impls: {},
     fn_versions: {},
     purities: ScopedMap::new(),
+    purity_tiers: ScopedMap::new(),
     expr_types: {},
     num_vars: {},
     var_trait_bounds: {},
+    scoped_ref_contains_cache: {},
+    scoped_ref_contains_cache_version: 0,
+    scoped_ref_checks_enabled: true,
+    has_scoped_ref_binding: false,
+    scoped_ref_binding_scan_stale: false,
+    scoped_ref_profile_enabled: false,
+    scoped_ref_contains_calls: 0,
+    scoped_ref_contains_cache_hits: 0,
+    scoped_ref_contains_cache_misses: 0,
+    scoped_ref_contains_time_us: 0.0,
+    scoped_ref_capture_checks: 0,
+    scoped_ref_capture_time_us: 0.0,
+    scoped_ref_call_arg_checks: 0,
+    scoped_ref_call_arg_time_us: 0.0,
+    scoped_ref_return_checks: 0,
+    scoped_ref_return_time_us: 0.0,
+    scoped_ref_toplevel_checks: 0,
+    scoped_ref_toplevel_time_us: 0.0,
     next_var: 0,
     next_effect_var: 0,
     loop_depth: 0,
@@ -106,9 +169,28 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     trait_impls: {},
     fn_versions: {},
     purities: ScopedMap::new(),
+    purity_tiers: ScopedMap::new(),
     expr_types: {},
     num_vars: {},
     var_trait_bounds: {},
+    scoped_ref_contains_cache: {},
+    scoped_ref_contains_cache_version: 0,
+    scoped_ref_checks_enabled: true,
+    has_scoped_ref_binding: false,
+    scoped_ref_binding_scan_stale: false,
+    scoped_ref_profile_enabled: false,
+    scoped_ref_contains_calls: 0,
+    scoped_ref_contains_cache_hits: 0,
+    scoped_ref_contains_cache_misses: 0,
+    scoped_ref_contains_time_us: 0.0,
+    scoped_ref_capture_checks: 0,
+    scoped_ref_capture_time_us: 0.0,
+    scoped_ref_call_arg_checks: 0,
+    scoped_ref_call_arg_time_us: 0.0,
+    scoped_ref_return_checks: 0,
+    scoped_ref_return_time_us: 0.0,
+    scoped_ref_toplevel_checks: 0,
+    scoped_ref_toplevel_time_us: 0.0,
     next_var: 0,
     next_effect_var: 0,
     loop_depth: 0,

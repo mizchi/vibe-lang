@@ -884,18 +884,48 @@ test "cli syntax mode parse rejects missing value" {
 test "cli syntax mode support matrix" {
   match
     ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "run") {
-    Ok(_) => ()
-    Err(msg) => fail("unexpected run error: " + msg)
+    Ok(_) => fail("expected run rejection")
+    Err(msg) => {
+      assert_true(msg.contains("run"))
+      assert_true(msg.contains("supported only"))
+    }
   }
   match
     ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "eval") {
-    Ok(_) => ()
-    Err(msg) => fail("unexpected eval error: " + msg)
+    Ok(_) => fail("expected eval rejection")
+    Err(msg) => {
+      assert_true(msg.contains("eval"))
+      assert_true(msg.contains("supported only"))
+    }
   }
   match
     ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "shell") {
     Ok(_) => ()
     Err(msg) => fail("unexpected shell error: " + msg)
+  }
+  match
+    ensure_cli_parser_mode_supported(
+      @runtime.ParserMode::PosixMode,
+      "shell-stdin",
+    ) {
+    Ok(_) => ()
+    Err(msg) => fail("unexpected shell-stdin error: " + msg)
+  }
+  match
+    ensure_cli_parser_mode_supported(
+      @runtime.ParserMode::PosixMode,
+      "shell-wasi",
+    ) {
+    Ok(_) => ()
+    Err(msg) => fail("unexpected shell-wasi error: " + msg)
+  }
+  match
+    ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "bench") {
+    Ok(_) => fail("expected bench rejection")
+    Err(msg) => {
+      assert_true(msg.contains("bench"))
+      assert_true(msg.contains("supported only"))
+    }
   }
   match
     ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "compile") {

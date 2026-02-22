@@ -159,12 +159,11 @@ pub fn ensure_cli_parser_mode_supported(
     @runtime.ParserMode::XshMode => Ok(())
     @runtime.ParserMode::PosixMode =>
       match cmd_name {
-        "run" | "eval" | "shell" | "shell-stdin" | "shell-wasi" | "bench" =>
-          Ok(())
+        "shell" | "shell-stdin" | "shell-wasi" => Ok(())
         _ =>
           Err(
             cmd_name +
-            ": --syntax posix is supported only for run/eval/shell/shell-stdin/shell-wasi/bench",
+            ": --syntax posix is supported only for shell/shell-stdin/shell-wasi",
           )
       }
   }

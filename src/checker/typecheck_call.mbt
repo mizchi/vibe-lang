@@ -95,8 +95,13 @@ fn summarize_type_error_for_candidate(err : TypeError) -> String {
       }
       detail
     }
-    TypeError::TopLevelImpure(name~, ..) =>
-      "top-level binding must be pure: " + name
+    TypeError::ScopedRefEscape(context~, ..) =>
+      "scoped Ref[T] cannot escape: " + context
+    TypeError::TopLevelImpure(name~, tier~, ..) =>
+      "top-level binding must be pure [" +
+      top_level_purity_tier_name(tier) +
+      "]: " +
+      name
   }
 }
 

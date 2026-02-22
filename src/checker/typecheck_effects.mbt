@@ -127,13 +127,20 @@ fn require_effect_guard(
 ///|
 fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
   match name {
-    "sh" => [@core.EffectAtom::Const("Stdout")]
-    "sh_lines" => [@core.EffectAtom::Const("Stdout")]
+    "sh" => [@core.EffectAtom::Const("Process")]
+    "sh_lines" => [@core.EffectAtom::Const("Process")]
     "stdout_write_char" => [@core.EffectAtom::Const("Stdout")]
     "stdout_write_stream" => [@core.EffectAtom::Const("Stdout")]
     "stdin_read_char" => [@core.EffectAtom::Const("Stdin")]
     "stdin_read_stream" => [@core.EffectAtom::Const("Stdin")]
     "sleep" => [@core.EffectAtom::Const("Async")]
+    "threads_probe_wat"
+    | "threads_runtime_hints"
+    | "threads_channel_new"
+    | "threads_send"
+    | "threads_recv"
+    | "threads_spawn"
+    | "threads_wait" => [@core.EffectAtom::Const("Threads")]
     "dynamic_path_resolve" => [@core.EffectAtom::Const("Env")]
     "fs_read_file"
     | "fs_write_file"
@@ -168,6 +175,34 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     | "http_respond" => [@core.EffectAtom::Const("Net")]
     "llm_complete" | "rlm_run" => [@core.EffectAtom::Const("Llm")]
     _ => []
+  }
+}
+
+///|
+fn compatible_effect_aliases(required_effect : String) -> Array[String] {
+  match required_effect {
+    // Temporary compatibility for legacy scripts: Process replaced Stdout for sh/sh_lines.
+    "Process" => ["Stdout"]
+    _ => []
+  }
+}
+
+///|
+fn effect_const_satisfied(
+  scope_consts : Map[String, Bool],
+  required_effect : String,
+) -> Bool {
+  if scope_consts.contains(required_effect) {
+    true
+  } else {
+    let compatible = compatible_effect_aliases(required_effect)
+    let mut ok = false
+    for legacy_name in compatible {
+      if scope_consts.contains(legacy_name) {
+        ok = true
+      }
+    }
+    ok
   }
 }
 
@@ -437,7 +472,7 @@ fn ensure_effects_allowed(
   )
   let scope_var = scope_set.rest
   for name, _ in resolved_req.consts {
-    if resolved_scope.consts.contains(name) {
+    if effect_const_satisfied(resolved_scope.consts, name) {
       ()
     } else {
       match scope_var {

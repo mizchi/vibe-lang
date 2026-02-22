@@ -37,3 +37,33 @@ test "placeholder bad-call diagnostic carries usage hint" {
     None => fail("expected placeholder usage hint")
   }
 }
+
+///|
+test "top-level purity diagnostic shows state_local tier" {
+  let diag = TypeError::TopLevelImpure(
+    name="x",
+    tier=TopLevelPurityTier::StateLocal,
+    span=test_span_typecheck_errors(),
+  ).diagnostic()
+  match diag.note {
+    Some(note) => assert_true(note.contains("state_local"))
+    None => fail("expected state_local note")
+  }
+}
+
+///|
+test "scoped ref escape diagnostic carries guidance" {
+  let diag = TypeError::ScopedRefEscape(
+    context="function return",
+    span=test_span_typecheck_errors(),
+  ).diagnostic()
+  assert_true(diag.message.contains("scoped Ref[T] cannot escape"))
+  match diag.hint {
+    Some(hint) => assert_true(hint.contains("return a pure value"))
+    None => fail("expected scoped ref escape hint")
+  }
+  match diag.note {
+    Some(note) => assert_true(note.contains("function return"))
+    None => fail("expected scoped ref escape note")
+  }
+}

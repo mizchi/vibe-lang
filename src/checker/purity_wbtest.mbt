@@ -43,7 +43,10 @@ test "check_toplevel_purity: let mut rejected" {
   )
   match result {
     Ok(_) => fail("should have failed")
-    Err(TypeError::TopLevelImpure(name~, ..)) => assert_eq(name, "x")
+    Err(TypeError::TopLevelImpure(name~, tier~, ..)) => {
+      assert_eq(name, "x")
+      assert_eq(tier, TopLevelPurityTier::StateLocal)
+    }
     Err(other) => fail("wrong error: \{other.to_string()}")
   }
 }
@@ -88,5 +91,32 @@ test "check_toplevel_purity: enum def passes" {
   }
   check_toplevel_purity(env, ast.stmts) catch {
     err => fail("should pass: \{err.to_string()}")
+  }
+}
+
+///|
+test "check_toplevel_purity: call chain keeps state_local tier" {
+  let script =
+    #|let next = () -> Int {
+    #|  let mut x = 0
+    #|  x = x + 1
+    #|  x
+    #|}
+    #|let y = next()
+  let ast = parse_for_purity(script)
+  let env = type_check(ast) catch {
+    err => fail("type error: \{err.to_string()}")
+  }
+  let result : Result[Unit, TypeError] = try? check_toplevel_purity(
+    env,
+    ast.stmts,
+  )
+  match result {
+    Ok(_) => fail("should have failed")
+    Err(TypeError::TopLevelImpure(name~, tier~, ..)) => {
+      assert_eq(name, "y")
+      assert_eq(tier, TopLevelPurityTier::StateLocal)
+    }
+    Err(other) => fail("wrong error: \{other.to_string()}")
   }
 }
