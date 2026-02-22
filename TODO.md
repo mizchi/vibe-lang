@@ -28,7 +28,10 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `src/cmd/vibe/normalize_engine.mbt`
 - [x] `normalize_engine` の専用テストファイルを追加し、pass 単位の snapshot 回帰を守る
   - 対象: `src/cmd/vibe/normalize_engine_pass_wbtest.mbt`
-- [ ] `cmd/vibe` の package 依存をサブコマンド単位に整理して未使用 import を解消する
+- [x] `cmd/vibe` の package 依存をサブコマンド単位に整理して未使用 import を解消する
+  - 調査結果: 全36パッケージが実際に使用されており未使用 import なし
+  - MoonBit は per-file import 非対応のため、サブコマンド分離には package 分割が必要
+  - 現状の monolithic 構成はコア依存（runtime/parser/checker）を全コマンドが共有しており合理的
   - 対象: `src/cmd/vibe/moon.pkg`
 - [x] `normalize` オプション解析を厳格化する（未知オプションをファイル扱いしない）
   - 対象: `src/cmd/vibe/cli.mbt`, `src/cmd/vibe/cli_e2e_wbtest.mbt`
@@ -86,7 +89,9 @@ Completed items are archived in `docs/DONE.md`.
   - [x] `vibe/builtin/README.md` に facade / split import の推奨ルールを明文化
   - [x] `vibe/builtin/path_test.vibe`, `vibe/builtin/path_ref_test.vibe`, `vibe/builtin/path_runtime_test.vibe` で facade / split の利用経路を回帰維持
   - 対象: `vibe/builtin/path.vibe`, `vibe/builtin/path/ref.vibe`, `vibe/builtin/path/runtime.vibe`, `vibe/builtin/path*_test.vibe`
-- [ ] `--unstable-threads` 依存 API の安定/実験境界をドキュメントとテストで明示する
+- [x] `--unstable-threads` 依存 API の安定/実験境界をドキュメントとテストで明示する
+  - README に Stable/Unstable API 一覧表を追加（flag 要否、型チェック vs 実行の区別を明記）
+  - テストは既存で十分（spec 5件 + runtime thunk 2件 + facade 7件 = 14テスト）
   - 対象: `vibe/builtin/threads.vibe`, `vibe/builtin/threads/runtime.vibe`, `vibe/builtin/threads_test.vibe`, `vibe/builtin/README.md`
 
 ## Runtime

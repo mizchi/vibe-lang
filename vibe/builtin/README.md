@@ -124,6 +124,50 @@ let ok = Some(1).is_some()
 let v = None.unwrap_or(0)
 ```
 
+## Unstable Feature: `--unstable-threads`
+
+Threads API は安定層と実験層に分離されている（ADR-0008 参照）。
+
+### Stable (flag 不要)
+
+Pure spec 関数。`vibe test` で通常実行可能。
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `task_spec` | `(name: String, entry_symbol: String) -> Record` | タスク定義 |
+| `channel_spec` | `(name: String, capacity: Int) -> Record` | チャネル定義 |
+| `actor_spec` | `(name: String, mailbox: String, handler: String) -> Record` | アクター定義 |
+| `deployment_plan` | `(task, channel, actor) -> Record` | デプロイメントプラン |
+| `recommended_wasi_env` | `() -> String` | `"threads=y"` |
+| `recommended_wasm_env` | `() -> String` | `"threads=y shared-memory=y"` |
+| `recommended_wasi_flags` | `() -> Array[String]` | `["threads=y"]` |
+| `recommended_wasm_flags` | `() -> Array[String]` | `["threads=y", "shared-memory=y"]` |
+
+### Unstable (requires `--unstable-threads`)
+
+Runtime bridge 関数。実行時に flag チェックされ、未指定時は `FeatureDisabled` エラー。
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `channel_new` | `(capacity: Int) -> Int` | チャネル割り当て |
+| `spawn` | `(name: String, mailbox: Int) -> Int` | スレッドタスク生成 |
+| `send` | `(channel: Int, message: String) -> Bool` | メッセージ送信 |
+| `recv` | `(channel: Int) -> String` | メッセージ受信 |
+| `wait` | `(task: Int) -> Int` | タスク完了待ち |
+| `probe_wat` | `() -> String` | WASM-WASI インポート診断 |
+| `runtime_hints` | `() -> Unit` | ランタイム初期化ヒント |
+
+**型チェックは flag なしで通る**（テストでの thunk 参照は可能）。
+実際の *実行* のみ flag が必要。
+
+```bash
+# Stable spec — flag 不要
+vibe test vibe/builtin/threads_spec_test.vibe
+
+# Unstable runtime — flag 必要
+vibe --unstable-threads run my_threaded_app.vibe
+```
+
 ## Current Language Gaps Found During Porting
 
 ### 1. Trait import/export across modules
