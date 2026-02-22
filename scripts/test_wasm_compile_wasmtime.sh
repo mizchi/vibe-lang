@@ -574,9 +574,13 @@ let double = (x: Int) -> Int { x * 2 }
 apply(double, 21)' \
 "42"
 
-# NOTE: currying with prelude names (mul, add, sub, etc.) fails because
-# the checker drops `let mul = ...` when the name shadows a prelude function.
-# Use non-prelude names (e.g., make_multiplier) to work around this.
+expect_wasmtime_result "currying (prelude name shadow)" \
+'let mul = (a: Int) -> (Int) -> Int {
+  (b: Int) -> Int { a * b }
+}
+let triple = mul(3)
+triple(7)' \
+"21"
 
 expect_wasmtime_result "currying (non-prelude name)" \
 'let make_multiplier = (a: Int) -> (Int) -> Int {
@@ -611,6 +615,21 @@ let pick = (use_dbl: Bool) -> (Int) -> Int {
 let f = pick(false)
 f(5)' \
 "25"
+
+expect_wasmtime_result "prelude name shadow: add as unary" \
+'let add = (x: Int) -> Int { x + 10 }
+add(3)' \
+"13"
+
+expect_wasmtime_result "prelude name shadow: sub as unary" \
+'let sub = (x: Int) -> Int { x - 1 }
+sub(7)' \
+"6"
+
+expect_wasmtime_result "prelude name shadow: div as unary" \
+'let div = (x: Int) -> Int { x / 2 }
+div(20)' \
+"10"
 
 echo ""
 

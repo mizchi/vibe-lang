@@ -29,8 +29,37 @@ fn dce_module_with_entry_names_impl(
   extra_entries : Array[String],
   include_tests~ : Bool,
 ) -> @core.Module {
-  let graph = build_dep_graph(mod.stmts)
-  let entries = collect_entry_points(mod.stmts, include_tests~)
+  // Collect user-defined names so we can detect when they shadow builtins.
+  // Builtin names that are redefined by the user must NOT be filtered
+  // during reference collection, otherwise DCE incorrectly removes them.
+  let user_defs : Map[String, Bool] = {}
+  for stmt in mod.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::LetMut(name~, ..) => user_defs[name] = true
+      _ => ()
+    }
+  }
+  let on_name = fn(
+    name : String,
+    bound : @core.WalkerScope,
+    refs : Map[String, Bool],
+  ) {
+    if bound.contains(name) {
+      return
+    }
+    if @core.has_qualified_name(name) {
+      return
+    }
+    // Only filter builtin names that are NOT shadowed by user definitions
+    if @core.is_builtin_name(name) && not(user_defs.contains(name)) {
+      return
+    }
+    refs[name] = true
+  }
+  let graph = build_dep_graph(mod.stmts, on_name)
+  let entries = collect_entry_points(mod.stmts, include_tests~, on_name)
   for name in extra_entries {
     entries[name] = true
   }
@@ -41,10 +70,13 @@ fn dce_module_with_entry_names_impl(
 
 ///|
 /// Build dependency graph: definition name -> set of referenced names
-fn build_dep_graph(stmts : Array[@core.Stmt]) -> Map[String, Map[String, Bool]] {
+fn build_dep_graph(
+  stmts : Array[@core.Stmt],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+) -> Map[String, Map[String, Bool]] {
   let graph : Map[String, Map[String, Bool]] = {}
   for stmt in stmts {
-    let (name, refs) = collect_stmt_info(stmt)
+    let (name, refs) = collect_stmt_info(stmt, on_name)
     match name {
       Some(n) =>
         match graph.get(n) {
@@ -65,7 +97,10 @@ fn build_dep_graph(stmts : Array[@core.Stmt]) -> Map[String, Map[String, Bool]] 
 
 ///|
 /// Extract definition name and its references from a statement
-fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
+fn collect_stmt_info(
+  stmt : @core.Stmt,
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+) -> (String?, Map[String, Bool]) {
   let refs : Map[String, Bool] = {}
   let bound = @core.WalkerScope::new()
   match stmt {
@@ -74,7 +109,7 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
       if rec {
         bound.bindings[name] = true
       }
-      collect_refs_expr(expr, bound, refs)
+      collect_refs_expr(expr, bound, refs, on_name)
       (Some(name), refs)
     }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
@@ -82,7 +117,7 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
       if rec {
         bound.bindings[name] = true
       }
-      collect_refs_expr(expr, bound, refs)
+      collect_refs_expr(expr, bound, refs, on_name)
       (Some(name), refs)
     }
     @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
@@ -120,7 +155,7 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
     }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       let _ = span
-      collect_refs_expr(expr, bound, refs)
+      collect_refs_expr(expr, bound, refs, on_name)
       (Some(name), refs)
     }
     @core.Stmt::StructDef(name~, params~, fields~, span~) => {
@@ -162,6 +197,7 @@ fn collect_stmt_info(stmt : @core.Stmt) -> (String?, Map[String, Bool]) {
 fn collect_entry_points(
   stmts : Array[@core.Stmt],
   include_tests~ : Bool,
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
 ) -> Map[String, Bool] {
   let entries : Map[String, Bool] = {}
   let empty_bound = @core.WalkerScope::new()
@@ -177,31 +213,31 @@ fn collect_entry_points(
       // Collect ALL references - they will be resolved via dependency graph
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
-        collect_refs_expr(expr, empty_bound, entries)
+        collect_refs_expr(expr, empty_bound, entries, on_name)
       }
       // Assignments are entry points (side effects)
       @core.Stmt::Assign(name~, expr~, span~) => {
         let _ = span
         entries[name] = true
-        collect_refs_expr(expr, empty_bound, entries)
+        collect_refs_expr(expr, empty_bound, entries, on_name)
       }
       @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
         let _ = span
-        collect_refs_expr(target, empty_bound, entries)
-        collect_refs_expr(index, empty_bound, entries)
-        collect_refs_expr(value, empty_bound, entries)
+        collect_refs_expr(target, empty_bound, entries, on_name)
+        collect_refs_expr(index, empty_bound, entries, on_name)
+        collect_refs_expr(value, empty_bound, entries, on_name)
       }
       // Let patterns with side effects - collect refs from expr
       @core.Stmt::LetPat(pat~, expr~, span~) => {
         let _ = pat
         let _ = span
-        collect_refs_expr(expr, empty_bound, entries)
+        collect_refs_expr(expr, empty_bound, entries, on_name)
       }
       @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
         let _ = pat
         let _ = span
-        collect_refs_expr(expr, empty_bound, entries)
-        collect_refs_block(else_body, empty_bound, entries)
+        collect_refs_expr(expr, empty_bound, entries, on_name)
+        collect_refs_block(else_body, empty_bound, entries, on_name)
       }
       // Last let binding is an entry point (its value is returned by 'run')
       @core.Stmt::Let(name~, ..) => if is_last { entries[name] = true }
@@ -210,14 +246,14 @@ fn collect_entry_points(
         let _ = name
         let _ = span
         if include_tests {
-          collect_refs_block(body, empty_bound, entries)
+          collect_refs_block(body, empty_bound, entries, on_name)
         }
       }
       @core.Stmt::Bench(name~, body~, span~) => {
         let _ = name
         let _ = span
         if include_tests {
-          collect_refs_block(body, empty_bound, entries)
+          collect_refs_block(body, empty_bound, entries, on_name)
         }
       }
       @core.Stmt::EnumDef(..)
@@ -365,8 +401,9 @@ fn collect_refs_expr(
   expr : @core.Expr,
   bound : @core.WalkerScope,
   refs : Map[String, Bool],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
 ) -> Unit {
-  @core.walk_expr_refs(expr, bound, refs, add_ref_name)
+  @core.walk_expr_refs(expr, bound, refs, on_name)
 }
 
 ///|
@@ -377,8 +414,9 @@ fn collect_refs_block(
   body : @core.Module,
   bound : @core.WalkerScope,
   refs : Map[String, Bool],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
 ) -> Unit {
-  @core.walk_block_refs(body, bound, refs, add_ref_name)
+  @core.walk_block_refs(body, bound, refs, on_name)
   // DCE also needs type-level refs from type definitions in blocks
   for stmt in body.stmts {
     match stmt {
@@ -450,20 +488,3 @@ fn collect_refs_type(ty : @core.Type, refs : Map[String, Bool]) -> Unit {
   }
 }
 
-///|
-/// Add a reference if not bound locally and not a builtin
-fn add_ref_name(
-  name : String,
-  bound : @core.WalkerScope,
-  refs : Map[String, Bool],
-) -> Unit {
-  if bound.contains(name) {
-    return
-  }
-  // Note: enum constructors (is_ctor_name) ARE added as refs
-  // so that DCE keeps the enum definition when a constructor is used
-  if @core.is_builtin_name(name) || @core.has_qualified_name(name) {
-    return
-  }
-  refs[name] = true
-}

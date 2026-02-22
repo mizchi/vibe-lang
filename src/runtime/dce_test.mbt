@@ -380,6 +380,70 @@ test "dce: merges dependencies for duplicate definition names" {
 }
 
 ///|
+test "dce: keeps user-defined builtin names (mul shadow)" {
+  // let mul = (x) -> x * 2; mul(5)
+  // "mul" is in is_builtin_name, but user redefines it — DCE must keep it.
+  let mul_body = @core.Module::{
+    stmts: [
+      @core.Stmt::Expr(
+        expr=@core.Expr::Ident(name="x", span=@core.Span::empty(0)),
+        span=@core.Span::empty(0),
+      ),
+    ],
+  }
+  let stmts : Array[@core.Stmt] = [
+    @core.Stmt::Let(
+      rec=false,
+      name="mul",
+      expr=@core.Expr::Fn(
+        type_params=[],
+        type_bounds={},
+        params=[
+          @core.FuncParam::{
+            name: "x",
+            label: @core.ParamLabel::Positional,
+            ty: @core.Type::Int,
+            bounds: [],
+          },
+        ],
+        ret=Some(@core.Type::Int),
+        effects=[],
+        body=mul_body,
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+    @core.Stmt::Expr(
+      expr=@core.Expr::Call(
+        name="mul",
+        type_args=[],
+        args=[
+          @core.CallArg::{
+            label: None,
+            expr: @core.Expr::Int(value=5L, span=@core.Span::empty(0)),
+            span: @core.Span::empty(0),
+          },
+        ],
+        span=@core.Span::empty(0),
+      ),
+      span=@core.Span::empty(0),
+    ),
+  ]
+  let input = @core.Module::{ stmts, }
+  let result = dce_module(input)
+  let mut has_mul = false
+  for stmt in result.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..) => if name == "mul" { has_mul = true }
+      _ => ()
+    }
+  }
+  // Must keep user-defined "mul" even though it shadows a builtin
+  inspect(has_mul, content="true")
+  inspect(result.stmts.length(), content="2")
+}
+
+///|
 test "dce: keeps user-defined and/or names" {
   let and_body = @core.Module::{
     stmts: [
