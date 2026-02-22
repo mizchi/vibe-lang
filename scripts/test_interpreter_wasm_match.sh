@@ -67,10 +67,9 @@ for expr in "${test_cases[@]}"; do
   # Create test file
   echo "$expr" > "$TEMP_DIR/test.vibe"
 
-  # Run interpreter and extract numeric value
-  interp_output=$(moon run "$PROJECT_DIR/src/cmd/vibe/main.mbt" --target native -- run "$TEMP_DIR/test.vibe" 2>/dev/null | tail -1)
-  # Extract value from "last: X" format
-  interp_result=$(echo "$interp_output" | sed 's/last: //')
+  # Run interpreter via eval and extract numeric value
+  interp_output=$(moon run "$PROJECT_DIR/src/cmd/vibe/main.mbt" --target native -- eval "$expr" 2>/dev/null | grep "^last: " | sed 's/last: //')
+  interp_result="$interp_output"
 
   # Compile and run WASM
   if moon run "$PROJECT_DIR/src/cmd/vibe/main.mbt" --target native -- compile --wasm "$TEMP_DIR/test.vibe" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
