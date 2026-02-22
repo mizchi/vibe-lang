@@ -31,7 +31,7 @@ echo ""
 echo "--- Test 3: WASM execution (wasmtime) ---"
 # The test file's run function exercises try/catch around HTTP builtins.
 # On WASM, http_request throws an exception caught by handle → returns -1.
-OUTPUT=$("$WASMTIME" run --wasm exceptions "$WASM_OUT" 2>&1) && {
+OUTPUT=$("$WASMTIME" run --wasm exceptions -W unknown-imports-default=y "$WASM_OUT" 2>&1) && {
   echo "  execution: OK"
 } || {
   # If wasmtime exits non-zero, check if it's an uncaught exception vs. trap

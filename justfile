@@ -9,7 +9,7 @@ cli_bin := "target/native/release/build/cmd/vibe/vibe.exe"
 # 0: prefer system wasmtime, 1: force deps/wasmtime build
 vibe_use_wasmtime_submodule := env_var_or_default("VIBE_USE_WASMTIME_SUBMODULE", "0")
 # space-separated flags, each token is passed as `-W <token>`
-vibe_wasmtime_wasm_flags := env_var_or_default("VIBE_WASMTIME_WASM_FLAGS", "")
+vibe_wasmtime_wasm_flags := env_var_or_default("VIBE_WASMTIME_WASM_FLAGS", "unknown-imports-default=y")
 # space-separated flags, each token is passed as `-S <token>`
 vibe_wasmtime_wasi_flags := env_var_or_default("VIBE_WASMTIME_WASI_FLAGS", "")
 # suppress noisy import-liveness warnings while keeping other warnings active
@@ -475,7 +475,7 @@ run-wasm-async file: build-async-host
 precompile:
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
     mkdir -p dist/std dist/std/path dist/std/threads dist/std/wasm dist/fs dist/socket dist/http dist/collection dist/encoding dist/x dist/x/args
-    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/builtin vibe/builtin/path vibe/builtin/threads vibe/builtin/wasm vibe/fs vibe/socket vibe/http vibe/collection vibe/encoding vibe/x vibe/x/args --out-dir dist --wasm
+    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/builtin vibe/builtin/path vibe/builtin/threads vibe/builtin/wasm vibe/fs vibe/socket vibe/http vibe/collection vibe/encoding vibe/x vibe/x/args --out-dir "$(pwd)/dist" --wasm
 
 # Create a new ADR (usage: just adr "タイトル slug")
 adr title:

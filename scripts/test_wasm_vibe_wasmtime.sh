@@ -17,6 +17,7 @@ OUT="$(
   wasmtime run \
     -W gc=y \
     -W function-references=y \
+    -W unknown-imports-default=y \
     --invoke vibe_check \
     "$WASM_PATH" \
     1024 0 4096 4096
