@@ -1703,6 +1703,84 @@ fn handle_repl_meta_command(
 }
 
 ///|
+let history_max_lines : Int = 10000
+
+///|
+fn get_history_file_path() -> String {
+  match @sys.get_env_var("HOME") {
+    Some(home) => home + "/.vibe_history"
+    None => ".vibe_history"
+  }
+}
+
+///|
+fn load_history(target : Array[String]) -> Unit {
+  let path = get_history_file_path()
+  if not(@os_fs.path_exists(path)) {
+    return
+  }
+  let content = try {
+    @os_fs.read_file_to_string(path)
+  } catch {
+    _ => return
+  }
+  if content.length() == 0 {
+    return
+  }
+  let lines = content.split("\n")
+  for line in lines {
+    let trimmed = line.to_string()
+    if trimmed.length() > 0 {
+      target.push(trimmed)
+    }
+  }
+}
+
+///|
+fn append_history(line : String) -> Unit {
+  let path = get_history_file_path()
+  // Read existing, append, trim to max
+  let existing = try {
+    @os_fs.read_file_to_string(path)
+  } catch {
+    _ => ""
+  }
+  let lines : Array[String] = []
+  if existing.length() > 0 {
+    for part in existing.split("\n") {
+      let s = part.to_string()
+      if s.length() > 0 {
+        lines.push(s)
+      }
+    }
+  }
+  // Dedup: remove previous occurrence of same line
+  let deduped : Array[String] = []
+  for item in lines {
+    if item != line {
+      deduped.push(item)
+    }
+  }
+  deduped.push(line)
+  // Trim to max
+  let start = if deduped.length() > history_max_lines {
+    deduped.length() - history_max_lines
+  } else {
+    0
+  }
+  let buf = StringBuilder::new()
+  for i in start..<deduped.length() {
+    buf.write_string(deduped[i])
+    buf.write_char('\n')
+  }
+  try {
+    @os_fs.write_string_to_file(path, buf.to_string())
+  } catch {
+    _ => ()
+  }
+}
+
+///|
 fn repl_tui_cmd(
   syntax_mode : @runtime.ParserMode,
   features : @runtime.RuntimeFeatureFlags,
@@ -1733,6 +1811,7 @@ fn repl_tui_cmd(
   let height = Ref::new(initial_rows)
   let outputs : Array[String] = []
   let history : Array[String] = []
+  load_history(history)
   let vibe_names : Array[String] = @checker.prelude_names()
   let history_idx = Ref::new(-1)
   let history_draft = Ref::new("")
@@ -2399,6 +2478,7 @@ fn repl_tui_cmd(
             let input_value = input_editor.get_text().trim().to_string()
             if input_value.length() > 0 {
               history.push(input_value)
+              append_history(input_value)
             }
             set_input_text("")
             history_idx.val = -1
@@ -3053,6 +3133,7 @@ fn repl_interactive_raw_loop(
   let line_buf = StringBuilder::new()
   let cursor_pos = Ref::new(0)
   let history : Array[String] = []
+  load_history(history)
   let history_idx = Ref::new(-1)
   let history_draft = Ref::new("")
   fn get_prompt() -> String {
@@ -3262,6 +3343,7 @@ fn repl_interactive_raw_loop(
     }
     if history.length() == 0 || history[history.length() - 1] != text {
       history.push(text)
+      append_history(text)
     }
     if not(handle_cd_builtin(rt, text, raw_println)) {
       scratch_source_ref.val = run_interactive_line(
