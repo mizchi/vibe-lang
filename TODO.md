@@ -107,7 +107,12 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] `resume` 引数型を継続先型と接続し、実行時型崩壊を型検査で防ぐ
   - 対象: `src/checker/typecheck_expr.mbt`, `src/checker/typecheck_env*.mbt`
 - [ ] `perform` サイト識別キー（`start:end`）の衝突/リーク耐性を強化する
-  - 対象: `src/runtime/eval.mbt`, `src/runtime/store.mbt`
+  - 調査済み:
+    - 呼び出しカウンター方式 → resume が body を再評価するため deterministic key が必須。不可
+    - `fork_for_test` で overrides クリア → fork は eval_block/eval_expr_with_bindings/import 解決にも使われ、スコープチェーン経由の override 伝播が壊れる。不可
+    - `perform_site_key` にドキュメントコメント追加済み（known limitation: 異ファイル同一 span の衝突可能性）
+  - 残課題: テストランナー専用の fork 後 cleanup（`test_runner.mbt` の fork 直後で overrides.clear()）
+  - 対象: `src/runtime/eval.mbt`, `src/runtime/store.mbt`, `src/runtime/test_runner.mbt`
 
 ## Testing
 

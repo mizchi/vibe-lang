@@ -113,6 +113,11 @@ fn normalize_performed_value(value : @core.Value) -> @core.Value {
 }
 
 ///|
+/// Generate a site identification key for perform/resume matching.
+/// The key must be deterministic for the same source location because
+/// resume re-evaluates the body and needs to find the stored value.
+/// Known limitation: same span across different source files could collide
+/// if modules share position ranges.
 fn perform_site_key(span : @core.Span) -> String {
   span.start.to_string() + ":" + span.end.to_string()
 }
