@@ -332,7 +332,7 @@ fn compile_stmt(
         ctx.local_types.push(ValueKind::I32)
         ctx.locals[name] = ptr_local
         ctx.local_kinds[name] = ValueKind::I32
-        emit_heap_alloc(ctx, buf, 8, ptr_local)
+        emit_heap_alloc_unchecked(ctx, buf, 8, ptr_local)
         // Store initial value into ref cell
         emit_local_get(buf, ptr_local) // i32 addr
         compile_expr(ctx, buf, expr) // i64 value
@@ -365,14 +365,13 @@ fn compile_stmt(
         Some(idx) =>
           if ctx.mut_captured_vars.contains(name) {
             // Ref cell: write through pointer
-            compile_expr(ctx, buf, expr) // i64 value
-            let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
-            emit_local_set(buf, tmp)
+            // Put addr on stack first, then value — avoids temp local
             emit_local_get(buf, idx) // i32 addr
-            emit_local_get(buf, tmp) // i64 value
+            compile_expr(ctx, buf, expr) // i64 value
             emit_i64_store(buf, 0) // mem[addr] = value
             if is_last {
-              emit_local_get(buf, tmp)
+              emit_local_get(buf, idx) // re-read
+              emit_i64_load(buf, 0)
             }
           } else {
             compile_expr(ctx, buf, expr)

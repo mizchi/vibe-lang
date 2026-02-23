@@ -88,6 +88,8 @@ priv struct CodegenCtx {
   mut mut_captured_vars : Map[String, Bool]
   // Per-function: which capture slots are ref cell pointers
   fn_closure_capture_is_ref_cell : Map[String, Array[Bool]]
+  // Cache: scrutinee local → untagged raw pointer local (within match chains)
+  mut cached_untag_ptrs : Map[Int, Int]
 }
 
 ///|
@@ -192,6 +194,8 @@ fn CodegenCtx::new(
     // Mutable capture ref cell tracking
     mut_captured_vars: {},
     fn_closure_capture_is_ref_cell: {},
+    // Untag pointer cache
+    cached_untag_ptrs: {},
   }
 }
 

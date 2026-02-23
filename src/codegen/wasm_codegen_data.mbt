@@ -693,6 +693,26 @@ fn emit_heap_alloc(
 }
 
 ///|
+/// Bump-only heap allocation without bounds checking.
+/// Safe for small, fixed-size allocations (e.g. 8-byte ref cells) where
+/// the initial memory page (64KB) provides sufficient headroom and
+/// subsequent checked allocations will trigger memory.grow if needed.
+fn emit_heap_alloc_unchecked(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size : Int,
+  obj_local : Int,
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  emit_local_get(buf, ctx.heap_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, ctx.heap_local)
+  emit_i32_const_raw(buf, size)
+  emit_i32_add(buf)
+  emit_local_set(buf, ctx.heap_local)
+}
+
+///|
 fn emit_heap_reserve_local(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -1010,7 +1030,9 @@ fn compile_function(
   let saved_current_env_idx = ctx.current_env_idx
   let saved_fn_locals = ctx.fn_local_sigs
   let saved_mut_captured = ctx.mut_captured_vars
+  let saved_cached_untag_ptrs = ctx.cached_untag_ptrs
   ctx.locals = {}
+  ctx.cached_untag_ptrs = {}
   ctx.local_kinds = {}
   ctx.local_types = []
   ctx.local_count = 0
@@ -1192,6 +1214,7 @@ fn compile_function(
   ctx.current_env_idx = saved_current_env_idx
   ctx.fn_local_sigs = saved_fn_locals
   ctx.mut_captured_vars = saved_mut_captured
+  ctx.cached_untag_ptrs = saved_cached_untag_ptrs
   func
 }
 

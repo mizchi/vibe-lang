@@ -710,16 +710,24 @@ fn emit_untag_ptr(buf : ByteBuf, scrut_idx : Int) -> Unit {
 }
 
 ///|
-/// Compute untagged pointer and store in a new temp local, returning the local index
+/// Compute untagged pointer and store in a temp local, returning the local index.
+/// Caches the result so repeated calls with the same scrut_idx (across match arms)
+/// reuse the existing local instead of allocating a new one.
 fn emit_untag_ptr_cached(
   ctx : CodegenCtx,
   buf : ByteBuf,
   scrut_idx : Int,
 ) -> Int {
-  let raw_ptr = alloc_temp_local(ctx)
-  emit_untag_ptr(buf, scrut_idx)
-  emit_local_set(buf, raw_ptr)
-  raw_ptr
+  match ctx.cached_untag_ptrs.get(scrut_idx) {
+    Some(existing) => existing
+    None => {
+      let raw_ptr = alloc_temp_local(ctx)
+      emit_untag_ptr(buf, scrut_idx)
+      emit_local_set(buf, raw_ptr)
+      ctx.cached_untag_ptrs[scrut_idx] = raw_ptr
+      raw_ptr
+    }
+  }
 }
 
 ///|
