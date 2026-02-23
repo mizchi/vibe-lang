@@ -2804,12 +2804,24 @@ fn eval_builtin_call(
           @core.Value::Record(record_fields) =>
             match record_fields.get(name) {
               Some(v) => { value: v, effects: field_args_out.effects }
-              None => raise EvalError::BadCall(name)
+              None =>
+                raise EvalError::BadCall(
+                  "no field '" + name + "' on Record",
+                )
             }
-          _ => raise EvalError::BadCall(name)
+          val =>
+            raise EvalError::BadCall(
+              "no field '" +
+              name +
+              "' on " +
+              value_type_name(val) +
+              " (field access requires a Record)",
+            )
         }
       } else {
-        raise EvalError::BadCall(name)
+        raise EvalError::BadCall(
+          "unknown function '" + name + "'",
+        )
       }
     }
   }

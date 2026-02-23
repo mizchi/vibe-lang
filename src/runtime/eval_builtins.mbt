@@ -281,12 +281,22 @@ fn eval_pure_builtin(
     }
     "string_concat" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("string_concat")
+        raise EvalError::BadCall(
+          "string_concat: expected 2 arguments, got " +
+          args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::String(a), @core.Value::String(b)) =>
           @core.Value::String(String::add(a, b))
-        _ => raise EvalError::BadCall("string_concat")
+        _ =>
+          raise EvalError::BadCall(
+            "string_concat: expected (String, String), got (" +
+            value_type_name(args[0]) +
+            ", " +
+            value_type_name(args[1]) +
+            ")",
+          )
       }
     }
     "string_equals" => {
@@ -589,7 +599,9 @@ fn eval_pure_builtin(
     }
     "__set_index" => {
       if args.length() != 3 {
-        raise EvalError::BadCall("__set_index")
+        raise EvalError::BadCall(
+          "[]=: expected 3 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1], args[2]) {
         (@core.Value::Array(arr), @core.Value::Int(i), value) =>
@@ -597,7 +609,13 @@ fn eval_pure_builtin(
             arr[i.to_int()] = value
             value
           } else {
-            raise EvalError::BadCall("__set_index: out of bounds")
+            raise EvalError::BadCall(
+              "[]=: index " +
+              i.to_string() +
+              " out of bounds (length " +
+              arr.length().to_string() +
+              ")",
+            )
           }
         (@core.Value::Record(map), @core.Value::String(key), value) => {
           map[key] = value
@@ -611,12 +629,17 @@ fn eval_pure_builtin(
           map[key] = value
           value
         }
-        _ => raise EvalError::BadCall("__set_index")
+        _ =>
+          raise EvalError::BadCall(
+            "[]=: cannot assign index on " + value_type_name(args[0]),
+          )
       }
     }
     "__eq" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__eq")
+        raise EvalError::BadCall(
+          "==: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Bool(a == b)
@@ -639,7 +662,10 @@ fn eval_pure_builtin(
     }
     "__lt" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__lt")
+        raise EvalError::BadCall(
+          "comparison: expected 2 arguments, got " +
+          args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Bool(a < b)
@@ -654,79 +680,135 @@ fn eval_pure_builtin(
           @core.Value::Bool(a.to_int().to_int64() < b)
         (@core.Value::String(a), @core.Value::String(b)) =>
           @core.Value::Bool(String::compare(a, b) < 0)
-        _ => raise EvalError::BadCall("__lt")
+        _ =>
+          raise EvalError::BadCall(
+            "comparison: type mismatch, cannot compare " +
+            value_type_name(args[0]) +
+            " with " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__neg" => {
       if args.length() != 1 {
-        raise EvalError::BadCall("__neg")
+        raise EvalError::BadCall(
+          "unary -: expected 1 argument, got " + args.length().to_string(),
+        )
       }
       match args[0] {
         @core.Value::Int(a) => @core.Value::Int(-a)
         @core.Value::Float(a) => @core.Value::Float(-a)
         @core.Value::Double(a) => @core.Value::Double(-a)
-        _ => raise EvalError::BadCall("__neg")
+        _ =>
+          raise EvalError::BadCall(
+            "unary -: expected number, got " + value_type_name(args[0]),
+          )
       }
     }
     "__lshift" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__lshift")
+        raise EvalError::BadCall(
+          "<<: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) =>
           @core.Value::Int(a << b.to_int())
-        _ => raise EvalError::BadCall("__lshift")
+        _ =>
+          raise EvalError::BadCall(
+            "<<: type mismatch, got " +
+            value_type_name(args[0]) +
+            " << " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__rshift" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__rshift")
+        raise EvalError::BadCall(
+          ">>: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) =>
           @core.Value::Int(a >> b.to_int())
-        _ => raise EvalError::BadCall("__rshift")
+        _ =>
+          raise EvalError::BadCall(
+            ">>: type mismatch, got " +
+            value_type_name(args[0]) +
+            " >> " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__bit_and" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__bit_and")
+        raise EvalError::BadCall(
+          "&: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a & b)
-        _ => raise EvalError::BadCall("__bit_and")
+        _ =>
+          raise EvalError::BadCall(
+            "&: type mismatch, got " +
+            value_type_name(args[0]) +
+            " & " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__bit_or" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__bit_or")
+        raise EvalError::BadCall(
+          "|: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a | b)
-        _ => raise EvalError::BadCall("__bit_or")
+        _ =>
+          raise EvalError::BadCall(
+            "|: type mismatch, got " +
+            value_type_name(args[0]) +
+            " | " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__bit_xor" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__bit_xor")
+        raise EvalError::BadCall(
+          "^: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a ^ b)
-        _ => raise EvalError::BadCall("__bit_xor")
+        _ =>
+          raise EvalError::BadCall(
+            "^: type mismatch, got " +
+            value_type_name(args[0]) +
+            " ^ " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__assert" => {
       if args.length() != 1 {
-        raise EvalError::BadCall("__assert")
+        raise EvalError::BadCall(
+          "assert: expected 1 argument, got " + args.length().to_string(),
+        )
       }
       match args[0] {
         @core.Value::Bool(b) =>
           if b {
             @core.Value::Unit
           } else {
-            raise EvalError::BadCall("assert")
+            raise EvalError::BadCall("assertion failed")
           }
-        _ => raise EvalError::BadCall("__assert")
+        _ =>
+          raise EvalError::BadCall(
+            "assert: expected Bool, got " + value_type_name(args[0]),
+          )
       }
     }
     "record_set" => {
@@ -881,7 +963,9 @@ fn eval_pure_builtin(
     }
     "__to_string" => {
       if args.length() != 1 {
-        raise EvalError::BadCall("__to_string")
+        raise EvalError::BadCall(
+          "to_string: expected 1 argument, got " + args.length().to_string(),
+        )
       }
       match args[0] {
         @core.Value::String(s) => @core.Value::String(s)
@@ -892,7 +976,10 @@ fn eval_pure_builtin(
           @core.Value::String(if b { "true" } else { "false" })
         @core.Value::Char(c) => @core.Value::String(c.to_string())
         @core.Value::Unit => @core.Value::String("()")
-        _ => raise EvalError::BadCall("__to_string")
+        _ =>
+          raise EvalError::BadCall(
+            "to_string: cannot convert " + value_type_name(args[0]),
+          )
       }
     }
     "string_join" => {
