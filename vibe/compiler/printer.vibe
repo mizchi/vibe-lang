@@ -1,0 +1,354 @@
+use ./parser.vibe { Expr, Pat, TypeExpr, Stmt }
+
+let join = (arr: Array[String], sep: String) -> String {
+  let len = array_length(arr)
+  let rec go = (i: Int, acc: String) -> String {
+    if i >= len {
+      acc
+    } else {
+      let s = if i > 0 {
+        string_concat(string_concat(acc, sep), array_get(arr, i))
+      } else {
+        array_get(arr, i)
+      }
+      go(i + 1, s)
+    }
+  }
+  go(0, "")
+}
+
+let map_to_strings = (exprs: Array[Expr], f: (Expr) -> String) -> Array[String] {
+  do {
+    let b = array_builder()
+    let len = array_length(exprs)
+    let mut i = 0
+    while i < len {
+      array_builder_push(b, f(array_get(exprs, i)))
+      i += 1
+    }
+    array_builder_freeze(b)
+  }
+}
+
+export let rec print_pat = (p: Pat) -> String {
+  match p {
+    PWild => "_",
+    PBind(name) => name,
+    PInt(n) => __to_string(n),
+    PString(s) => string_concat("\"", string_concat(s, "\"")),
+    PBool(b) => if b { "true" } else { "false" },
+    PCtor(name, args) => {
+      if array_length(args) == 0 {
+        name
+      } else {
+        do {
+          let b = array_builder()
+          let len = array_length(args)
+          let mut i = 0
+          while i < len {
+            array_builder_push(b, print_pat(array_get(args, i)))
+            i += 1
+          }
+          let parts = array_builder_freeze(b)
+          string_concat(name, string_concat("(", string_concat(join(parts, ", "), ")")))
+        }
+      }
+    },
+    PTuple(elems) => {
+      do {
+        let b = array_builder()
+        let len = array_length(elems)
+        let mut i = 0
+        while i < len {
+          array_builder_push(b, print_pat(array_get(elems, i)))
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat("(", string_concat(join(parts, ", "), ")"))
+      }
+    },
+    POr(left, right) => {
+      string_concat(print_pat(left), string_concat(" | ", print_pat(right)))
+    }
+  }
+}
+
+export let rec print_expr = (e: Expr) -> String {
+  match e {
+    EInt(n) => __to_string(n),
+    EFloat(n) => __to_string(n),
+    EString(s) => string_concat("\"", string_concat(s, "\"")),
+    EBool(b) => if b { "true" } else { "false" },
+    EIdent(name) => name,
+    EUnit => "()",
+    ETuple(elems) => {
+      string_concat("(", string_concat(join(map_to_strings(elems, print_expr), ", "), ")"))
+    },
+    EArray(elems) => {
+      string_concat("[", string_concat(join(map_to_strings(elems, print_expr), ", "), "]"))
+    },
+    ERecord(fields) => {
+      do {
+        let b = array_builder()
+        let len = array_length(fields)
+        let mut i = 0
+        while i < len {
+          let (name, val) = array_get(fields, i)
+          array_builder_push(b, string_concat(name, string_concat(": ", print_expr(val))))
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat("{ ", string_concat(join(parts, ", "), " }"))
+      }
+    },
+    EIf(cond, then_e, else_e) => {
+      string_concat("if ", string_concat(print_expr(cond),
+        string_concat(" { ", string_concat(print_expr(then_e),
+          string_concat(" } else { ", string_concat(print_expr(else_e), " }"))))))
+    },
+    ELet(name, val, body) => {
+      string_concat("let ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", print_expr(body))))))
+    },
+    ELetRec(name, val, body) => {
+      string_concat("let rec ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", print_expr(body))))))
+    },
+    ELetMut(name, val, body) => {
+      string_concat("let mut ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", print_expr(body))))))
+    },
+    EAssign(name, val, body) => {
+      string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", print_expr(body)))))
+    },
+    EAssignOp(name, op, val, body) => {
+      string_concat(name, string_concat(" ", string_concat(op, string_concat("= ", string_concat(print_expr(val), string_concat("; ", print_expr(body)))))))
+    },
+    ESeq(a, b) => {
+      string_concat(print_expr(a), string_concat("; ", print_expr(b)))
+    },
+    EMatch(scrutinee, arms) => {
+      do {
+        let b = array_builder()
+        let len = array_length(arms)
+        let mut i = 0
+        while i < len {
+          let (pat, expr) = array_get(arms, i)
+          array_builder_push(b, string_concat(print_pat(pat), string_concat(" => ", print_expr(expr))))
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat("match ", string_concat(print_expr(scrutinee),
+          string_concat(" { ", string_concat(join(parts, ", "), " }"))))
+      }
+    },
+    ECall(callee, args) => {
+      string_concat(print_expr(callee), string_concat("(", string_concat(join(map_to_strings(args, print_expr), ", "), ")")))
+    },
+    EBinOp(op, left, right) => {
+      string_concat("(", string_concat(print_expr(left),
+        string_concat(" ", string_concat(op,
+          string_concat(" ", string_concat(print_expr(right), ")"))))))
+    },
+    EUnaryOp(op, expr) => {
+      string_concat("(", string_concat(op, string_concat(print_expr(expr), ")")))
+    },
+    EFn(params, ret_ann, body) => {
+      do {
+        let b = array_builder()
+        let len = array_length(params)
+        let mut i = 0
+        while i < len {
+          let (name, ty_opt) = array_get(params, i)
+          let s = match ty_opt {
+            Some(ty) => string_concat(name, string_concat(": ", ty)),
+            None => name
+          }
+          array_builder_push(b, s)
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        let ret_str = match ret_ann {
+          Some(rt) => string_concat(") -> ", string_concat(rt, string_concat(" { ", string_concat(print_expr(body), " }")))),
+          None => string_concat(") -> ", print_expr(body))
+        }
+        string_concat("(", string_concat(join(parts, ", "), ret_str))
+      }
+    },
+    EDot(expr, field) => {
+      string_concat(print_expr(expr), string_concat(".", field))
+    },
+    EPipe(left, right) => {
+      string_concat("(", string_concat(print_expr(left),
+        string_concat(" |> ", string_concat(print_expr(right), ")"))))
+    },
+    ELabeledArg(name, modifier, val) => {
+      string_concat(name, string_concat("=", print_expr(val)))
+    }
+  }
+}
+
+export let rec print_type_expr = (ty: TypeExpr) -> String {
+  match ty {
+    TyName(name) => name,
+    TyUnit => "()",
+    TyApp(name, args) => {
+      do {
+        let b = array_builder()
+        let len = array_length(args)
+        let mut i = 0
+        while i < len {
+          array_builder_push(b, print_type_expr(array_get(args, i)))
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat(name, string_concat("[", string_concat(join(parts, ", "), "]")))
+      }
+    },
+    TyFn(params, ret) => {
+      do {
+        let b = array_builder()
+        let len = array_length(params)
+        let mut i = 0
+        while i < len {
+          array_builder_push(b, print_type_expr(array_get(params, i)))
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat("(", string_concat(join(parts, ", "), string_concat(") -> ", print_type_expr(ret))))
+      }
+    },
+    TyTuple(elems) => {
+      do {
+        let b = array_builder()
+        let len = array_length(elems)
+        let mut i = 0
+        while i < len {
+          array_builder_push(b, print_type_expr(array_get(elems, i)))
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat("(", string_concat(join(parts, ", "), ")"))
+      }
+    }
+  }
+}
+
+export let rec print_stmt = (s: Stmt) -> String {
+  let prefix = (exported: Bool) -> String {
+    if exported { "export " } else { "" }
+  }
+  match s {
+    SLet(exported, is_rec, name, ty_opt, val) => {
+      let p = prefix(exported)
+      let r = if is_rec { "let rec " } else { "let " }
+      let t = match ty_opt { Some(ty) => string_concat(": ", print_type_expr(ty)), None => "" }
+      string_concat(p, string_concat(r, string_concat(name, string_concat(t, string_concat(" = ", print_expr(val))))))
+    },
+    SLetMut(name, ty_opt, val) => {
+      let t = match ty_opt { Some(ty) => string_concat(": ", print_type_expr(ty)), None => "" }
+      string_concat("let mut ", string_concat(name, string_concat(t, string_concat(" = ", print_expr(val)))))
+    },
+    SEnum(exported, name, ctors) => {
+      do {
+        let b = array_builder()
+        let len = array_length(ctors)
+        let mut i = 0
+        while i < len {
+          let (cn, args) = array_get(ctors, i)
+          let s = if eq(array_length(args), 0) { cn }
+          else {
+            let tb = array_builder()
+            let tlen = array_length(args)
+            let mut j = 0
+            while j < tlen {
+              array_builder_push(tb, print_type_expr(array_get(args, j)))
+              j += 1
+            }
+            let tparts = array_builder_freeze(tb)
+            string_concat(cn, string_concat("(", string_concat(join(tparts, ", "), ")")))
+          }
+          array_builder_push(b, s)
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat(prefix(exported), string_concat("enum ", string_concat(name, string_concat(" { ", string_concat(join(parts, "; "), " }")))))
+      }
+    },
+    SStruct(exported, name, fields) => {
+      do {
+        let b = array_builder()
+        let len = array_length(fields)
+        let mut i = 0
+        while i < len {
+          let (fn1, ty) = array_get(fields, i)
+          array_builder_push(b, string_concat(fn1, string_concat(": ", print_type_expr(ty))))
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat(prefix(exported), string_concat("struct ", string_concat(name, string_concat(" { ", string_concat(join(parts, "; "), " }")))))
+      }
+    },
+    STypeAlias(exported, name, ty) => {
+      string_concat(prefix(exported), string_concat("type ", string_concat(name, string_concat(" = ", print_type_expr(ty)))))
+    },
+    STrait(exported, name) => {
+      string_concat(prefix(exported), string_concat("trait ", name))
+    },
+    SImpl(trait_name, type_name) => {
+      string_concat("impl ", string_concat(trait_name, string_concat(" for ", type_name)))
+    },
+    SImport(path, items) => {
+      do {
+        let b = array_builder()
+        let len = array_length(items)
+        let mut i = 0
+        while i < len {
+          let (name, alias) = array_get(items, i)
+          let s = match alias { Some(a) => string_concat(name, string_concat(" as ", a)), None => name }
+          array_builder_push(b, s)
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        string_concat("use ", string_concat(path, string_concat(" { ", string_concat(join(parts, ", "), " }"))))
+      }
+    },
+    STest(name, body) => {
+      string_concat("test \"", string_concat(name, string_concat("\" { ", string_concat(print_expr(body), " }"))))
+    },
+    SBench(name, body) => {
+      string_concat("bench \"", string_concat(name, string_concat("\" { ", string_concat(print_expr(body), " }"))))
+    },
+    SExpr(e) => print_expr(e),
+    SExport(names) => {
+      string_concat("export { ", string_concat(join(names, ", "), " }"))
+    },
+    SModule(exported, name, stmts) => {
+      do {
+        let b = array_builder()
+        let len = array_length(stmts)
+        let mut i = 0
+        while i < len {
+          array_builder_push(b, print_stmt(array_get(stmts, i)))
+          i += 1
+        }
+        let parts = array_builder_freeze(b)
+        let p = if exported { "export " } else { "" }
+        string_concat(p, string_concat("module ", string_concat(name, string_concat(" { ", string_concat(join(parts, "\n"), " }")))))
+      }
+    }
+  }
+}
+
+export let print_program = (stmts: Array[Stmt]) -> String {
+  do {
+    let b = array_builder()
+    let len = array_length(stmts)
+    let mut i = 0
+    while i < len {
+      array_builder_push(b, print_stmt(array_get(stmts, i)))
+      i += 1
+    }
+    let parts = array_builder_freeze(b)
+    join(parts, "\n")
+  }
+}
+
+export { print_expr, print_pat, print_type_expr, print_stmt, print_program }

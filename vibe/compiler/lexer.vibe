@@ -1,0 +1,395 @@
+use ./token.vibe { Token }
+
+let is_ws = (c: Int) -> Bool {
+  c == ' ' || c == '\n' || c == '\t' || c == '\r'
+}
+
+let is_digit = (c: Int) -> Bool {
+  c >= '0' && c <= '9'
+}
+
+let is_hex_digit = (c: Int) -> Bool {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+let is_alpha = (c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+let is_alnum = (c: Int) -> Bool {
+  is_alpha(c) || is_digit(c)
+}
+
+let rec skip_until_newline = (s: String, len: Int, i: Int) -> Int {
+  if i < len {
+    if string_char_code_at(s, i) == '\n' {
+      i + 1
+    } else {
+      skip_until_newline(s, len, i + 1)
+    }
+  } else {
+    i
+  }
+}
+
+let rec skip_ws = (s: String, len: Int, i: Int) -> Int {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if is_ws(c) {
+      skip_ws(s, len, i + 1)
+    } else if c == '/' && i + 1 < len && string_char_code_at(s, i + 1) == '/' {
+      let after_comment = skip_until_newline(s, len, i + 2)
+      skip_ws(s, len, after_comment)
+    } else {
+      i
+    }
+  } else {
+    i
+  }
+}
+
+let keyword_lookup = (word: String) -> Option[Token] {
+  if string_equals(word, "let") { Some(TLet) }
+  else if string_equals(word, "rec") { Some(TRec) }
+  else if string_equals(word, "mut") { Some(TMut) }
+  else if string_equals(word, "fn") { Some(TIdent("fn")) }
+  else if string_equals(word, "if") { Some(TIf) }
+  else if string_equals(word, "else") { Some(TElse) }
+  else if string_equals(word, "match") { Some(TMatch) }
+  else if string_equals(word, "do") { Some(TDo) }
+  else if string_equals(word, "true") { Some(TIdent("true")) }
+  else if string_equals(word, "false") { Some(TIdent("false")) }
+  else if string_equals(word, "enum") { Some(TEnum) }
+  else if string_equals(word, "struct") { Some(TStruct) }
+  else if string_equals(word, "type") { Some(TType) }
+  else if string_equals(word, "trait") { Some(TTrait) }
+  else if string_equals(word, "impl") { Some(TImpl) }
+  else if string_equals(word, "export") { Some(TExport) }
+  else if string_equals(word, "use") { Some(TUse) }
+  else if string_equals(word, "test") { Some(TTest) }
+  else if string_equals(word, "while") { Some(TWhile) }
+  else if string_equals(word, "for") { Some(TFor) }
+  else if string_equals(word, "in") { Some(TIn) }
+  else if string_equals(word, "loop") { Some(TLoop) }
+  else if string_equals(word, "break") { Some(TBreak) }
+  else if string_equals(word, "continue") { Some(TContinue) }
+  else if string_equals(word, "return") { Some(TReturn) }
+  else if string_equals(word, "with") { Some(TWith) }
+  else if string_equals(word, "handle") { Some(THandle) }
+  else if string_equals(word, "raise") { Some(TRaise) }
+  else if string_equals(word, "yield") { Some(TYield) }
+  else if string_equals(word, "bench") { Some(TBench) }
+  else if string_equals(word, "declare") { Some(TDeclare) }
+  else if string_equals(word, "as") { Some(TAs) }
+  else if string_equals(word, "module") { Some(TModule) }
+  else if string_equals(word, "suberror") { Some(TSuberror) }
+  else if string_equals(word, "derive") { Some(TDerive) }
+  else if string_equals(word, "open") { Some(TOpen) }
+  else if string_equals(word, "import") { Some(TImport) }
+  else { None }
+}
+
+let rec scan_ident_end = (s: String, len: Int, i: Int) -> Int {
+  if i < len && is_alnum(string_char_code_at(s, i)) {
+    scan_ident_end(s, len, i + 1)
+  } else {
+    i
+  }
+}
+
+let lex_ident = (s: String, len: Int, i: Int) -> (Token, Int) {
+  let end = scan_ident_end(s, len, i)
+  let word = string_substring(s, i, end)
+  match keyword_lookup(word) {
+    Some(tok) => {
+      // true/false are identifiers that we handle specially
+      if string_equals(word, "true") || string_equals(word, "false") {
+        (TIdent(word), end)
+      } else {
+        (tok, end)
+      }
+    },
+    None => (TIdent(word), end)
+  }
+}
+
+let rec scan_digits_end = (s: String, len: Int, i: Int) -> Int {
+  if i < len && is_digit(string_char_code_at(s, i)) {
+    scan_digits_end(s, len, i + 1)
+  } else {
+    i
+  }
+}
+
+let rec scan_hex_digits_end = (s: String, len: Int, i: Int) -> Int {
+  if i < len && is_hex_digit(string_char_code_at(s, i)) {
+    scan_hex_digits_end(s, len, i + 1)
+  } else {
+    i
+  }
+}
+
+let parse_int_from_string = (s: String) -> Int {
+  let len = string_length(s)
+  let rec go = (i: Int, acc: Int) -> Int {
+    if i < len {
+      let c = string_char_code_at(s, i)
+      go(i + 1, acc * 10 + (c - 48))
+    } else {
+      acc
+    }
+  }
+  go(0, 0)
+}
+
+let parse_hex_from_string = (s: String) -> Int {
+  let len = string_length(s)
+  let rec go = (i: Int, acc: Int) -> Int {
+    if i < len {
+      let c = string_char_code_at(s, i)
+      let digit = if c >= '0' && c <= '9' {
+        c - 48
+      } else if c >= 'a' && c <= 'f' {
+        c - 87
+      } else {
+        c - 55
+      }
+      go(i + 1, acc * 16 + digit)
+    } else {
+      acc
+    }
+  }
+  go(0, 0)
+}
+
+let lex_number = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
+  // hex literal: 0x or 0X
+  if i + 1 < len && string_char_code_at(s, i) == '0' {
+    let next_c = string_char_code_at(s, i + 1)
+    if next_c == 'x' || next_c == 'X' {
+      let hex_start = i + 2
+      let hex_end = scan_hex_digits_end(s, len, hex_start)
+      if hex_end == hex_start {
+        throw("expected hex digit after 0x")
+      }
+      let hex_str = string_substring(s, hex_start, hex_end)
+      (TInt(parse_hex_from_string(hex_str)), hex_end)
+    } else {
+      lex_decimal(s, len, i)
+    }
+  } else {
+    lex_decimal(s, len, i)
+  }
+}
+
+let rec parse_frac_digits = (s: String, len: Int, i: Int, acc: Double, scale: Double) -> (Double, Int) {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if is_digit(c) {
+      parse_frac_digits(s, len, i + 1, acc + int_to_double(c - 48) / scale, scale * 10.0)
+    } else {
+      (acc, i)
+    }
+  } else {
+    (acc, i)
+  }
+}
+
+let lex_decimal = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
+  let int_end = scan_digits_end(s, len, i)
+  if int_end == i {
+    throw("expected digit")
+  }
+  // check for dot (float)
+  if int_end < len && string_char_code_at(s, int_end) == '.' {
+    // check next char is a digit (not a method call like 1.foo)
+    if int_end + 1 < len && is_digit(string_char_code_at(s, int_end + 1)) {
+      let int_str = string_substring(s, i, int_end)
+      let int_val = int_to_double(parse_int_from_string(int_str))
+      let (frac_val, frac_end) = parse_frac_digits(s, len, int_end + 1, 0.0, 10.0)
+      (TFloat(int_val + frac_val), frac_end)
+    } else {
+      let int_str = string_substring(s, i, int_end)
+      (TInt(parse_int_from_string(int_str)), int_end)
+    }
+  } else {
+    let int_str = string_substring(s, i, int_end)
+    (TInt(parse_int_from_string(int_str)), int_end)
+  }
+}
+
+let lex_string = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
+  // i points at opening quote
+  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int) with { Error } {
+    if idx >= len {
+      throw("unterminated string")
+    }
+    let c = string_char_code_at(s, idx)
+    if c == '"' {
+      let chunk = string_substring(s, start, idx)
+      (string_concat(acc, chunk), idx + 1)
+    } else if c == '\\' {
+      let chunk = string_substring(s, start, idx)
+      let next = idx + 1
+      if next >= len {
+        throw("unterminated string escape")
+      }
+      let esc = string_char_code_at(s, next)
+      let escaped = if esc == '"' { "\"" }
+        else if esc == '\\' { "\\" }
+        else if esc == 'n' { "\n" }
+        else if esc == 't' { "\t" }
+        else if esc == 'r' { string_from_char_code(13) }
+        else if esc == '0' { string_from_char_code(0) }
+        else { throw("invalid escape sequence") }
+      scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))
+    } else {
+      scan(idx + 1, start, acc)
+    }
+  }
+  let (value, end) = scan(i + 1, i + 1, "")
+  (TString(value), end)
+}
+
+export let lex = (source: String) -> Array[Token] with { Error } {
+  let len = string_length(source)
+  do {
+    let b = array_builder()
+    let mut pos = skip_ws(source, len, 0)
+    while pos < len {
+      let c = string_char_code_at(source, pos)
+      let (tok, next) = if is_alpha(c) {
+        lex_ident(source, len, pos)
+      } else if is_digit(c) {
+        lex_number(source, len, pos)
+      } else if c == '"' {
+        lex_string(source, len, pos)
+      } else if c == '+' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TPlusEq, pos + 2)
+        } else {
+          (TPlus, pos + 1)
+        }
+      } else if c == '-' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '>' {
+          (TThinArrow, pos + 2)
+        } else if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TMinusEq, pos + 2)
+        } else {
+          (TMinus, pos + 1)
+        }
+      } else if c == '*' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TStarEq, pos + 2)
+        } else {
+          (TStar, pos + 1)
+        }
+      } else if c == '/' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TSlashEq, pos + 2)
+        } else {
+          (TSlash, pos + 1)
+        }
+      } else if c == '%' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TPercentEq, pos + 2)
+        } else {
+          (TPercent, pos + 1)
+        }
+      } else if c == '=' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TEqEq, pos + 2)
+        } else if pos + 1 < len && string_char_code_at(source, pos + 1) == '>' {
+          (TArrow, pos + 2)
+        } else {
+          (TEq, pos + 1)
+        }
+      } else if c == '!' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TNeq, pos + 2)
+        } else {
+          (TNot, pos + 1)
+        }
+      } else if c == '<' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TLte, pos + 2)
+        } else if pos + 1 < len && string_char_code_at(source, pos + 1) == '<' {
+          (TLShift, pos + 2)
+        } else {
+          (TLt, pos + 1)
+        }
+      } else if c == '>' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '=' {
+          (TGte, pos + 2)
+        } else if pos + 1 < len && string_char_code_at(source, pos + 1) == '>' {
+          (TRShift, pos + 2)
+        } else {
+          (TGt, pos + 1)
+        }
+      } else if c == '&' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '&' {
+          (TAnd, pos + 2)
+        } else {
+          (TBitAnd, pos + 1)
+        }
+      } else if c == '|' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == '|' {
+          (TOr, pos + 2)
+        } else if pos + 1 < len && string_char_code_at(source, pos + 1) == '>' {
+          (TPipeGt, pos + 2)
+        } else {
+          (TBitOr, pos + 1)
+        }
+      } else if c == '^' {
+        (TBitXor, pos + 1)
+      } else if c == '(' {
+        (TLParen, pos + 1)
+      } else if c == ')' {
+        (TRParen, pos + 1)
+      } else if c == '{' {
+        (TLBrace, pos + 1)
+      } else if c == '}' {
+        (TRBrace, pos + 1)
+      } else if c == '[' {
+        (TLBracket, pos + 1)
+      } else if c == ']' {
+        (TRBracket, pos + 1)
+      } else if c == ',' {
+        (TComma, pos + 1)
+      } else if c == ';' {
+        (TSemicolon, pos + 1)
+      } else if c == '.' {
+        (TDot, pos + 1)
+      } else if c == ':' {
+        if pos + 1 < len && string_char_code_at(source, pos + 1) == ':' {
+          (TDoubleColon, pos + 2)
+        } else {
+          (TColon, pos + 1)
+        }
+      } else if c == '#' {
+        (THash, pos + 1)
+      } else if c == '~' {
+        (TTilde, pos + 1)
+      } else if c == '?' {
+        (TQuestion, pos + 1)
+      } else {
+        throw(string_concat("unexpected character: ", string_from_char_code(c)))
+      }
+      array_builder_push(b, tok)
+      pos = skip_ws(source, len, next)
+    }
+    array_builder_push(b, TEof)
+    array_builder_freeze(b)
+  }
+}
+
+export let lex_ok = (source: String) -> Bool {
+  handle {
+    let _ = lex(source)
+    true
+  } {
+    Error(_) => false
+  }
+}
+
+export { lex, lex_ok }

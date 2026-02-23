@@ -1,0 +1,135 @@
+use ./token.vibe { Token, token_to_string }
+use ./lexer.vibe { lex, lex_ok }
+
+let tokens_match = (actual: Array[Token], expected: Array[Token]) -> Bool {
+  if array_length(actual) != array_length(expected) {
+    false
+  } else {
+    let len = array_length(actual)
+    let rec go = (i: Int) -> Bool {
+      if i >= len {
+        true
+      } else {
+        let a = token_to_string(array_get(actual, i))
+        let b = token_to_string(array_get(expected, i))
+        if string_equals(a, b) {
+          go(i + 1)
+        } else {
+          false
+        }
+      }
+    }
+    go(0)
+  }
+}
+
+test "lex_simple_arithmetic" {
+  let tokens = lex("1 + 2 * 3")
+  assert(eq(array_length(tokens), 6))
+  assert(tokens_match(tokens, [TInt(1), TPlus, TInt(2), TStar, TInt(3), TEof]))
+}
+
+test "lex_identifiers_and_keywords" {
+  let tokens = lex("let x = fn y")
+  assert(tokens_match(tokens, [TLet, TIdent("x"), TEq, TIdent("fn"), TIdent("y"), TEof]))
+}
+
+test "lex_comparison_operators" {
+  let tokens = lex("a == b != c < d <= e > f >= g")
+  assert(eq(array_length(tokens), 14))
+}
+
+test "lex_logical_operators" {
+  let tokens = lex("a && b || !c")
+  assert(tokens_match(tokens, [TIdent("a"), TAnd, TIdent("b"), TOr, TNot, TIdent("c"), TEof]))
+}
+
+test "lex_bitwise_operators" {
+  let tokens = lex("a & b | c ^ d << e >> f")
+  assert(tokens_match(tokens, [
+    TIdent("a"), TBitAnd, TIdent("b"), TBitOr, TIdent("c"),
+    TBitXor, TIdent("d"), TLShift, TIdent("e"), TRShift, TIdent("f"), TEof
+  ]))
+}
+
+test "lex_arrows_and_pipe" {
+  let tokens = lex("x -> y => z |> w")
+  assert(tokens_match(tokens, [
+    TIdent("x"), TThinArrow, TIdent("y"), TArrow, TIdent("z"),
+    TPipeGt, TIdent("w"), TEof
+  ]))
+}
+
+test "lex_delimiters" {
+  let tokens = lex("( ) { } [ ] , ; . : ::")
+  assert(tokens_match(tokens, [
+    TLParen, TRParen, TLBrace, TRBrace, TLBracket, TRBracket,
+    TComma, TSemicolon, TDot, TColon, TDoubleColon, TEof
+  ]))
+}
+
+test "lex_string_literal" {
+  let tokens = lex("\"hello world\"")
+  assert(tokens_match(tokens, [TString("hello world"), TEof]))
+}
+
+test "lex_string_escape" {
+  let tokens = lex("\"a\\nb\\tc\"")
+  assert(tokens_match(tokens, [TString("a\nb\tc"), TEof]))
+}
+
+test "lex_integer" {
+  let tokens = lex("42")
+  assert(tokens_match(tokens, [TInt(42), TEof]))
+}
+
+test "lex_hex_integer" {
+  let tokens = lex("0xFF")
+  assert(tokens_match(tokens, [TInt(255), TEof]))
+}
+
+test "lex_float" {
+  let tokens = lex("3.14")
+  assert(eq(array_length(tokens), 2))
+}
+
+test "lex_comment_skip" {
+  let tokens = lex("a // comment\nb")
+  assert(tokens_match(tokens, [TIdent("a"), TIdent("b"), TEof]))
+}
+
+test "lex_empty" {
+  let tokens = lex("")
+  assert(tokens_match(tokens, [TEof]))
+}
+
+test "lex_whitespace_only" {
+  let tokens = lex("   \n\t  ")
+  assert(tokens_match(tokens, [TEof]))
+}
+
+test "lex_compound_assignment" {
+  let tokens = lex("x += 1")
+  assert(tokens_match(tokens, [TIdent("x"), TPlusEq, TInt(1), TEof]))
+}
+
+test "lex_keywords_all" {
+  assert(lex_ok("let rec mut fn if else match do"))
+  assert(lex_ok("enum struct type trait impl export use test"))
+  assert(lex_ok("while for in loop break continue return"))
+  assert(lex_ok("with handle raise yield"))
+}
+
+test "lex_if_expression" {
+  let tokens = lex("if x > 0 { x } else { 0 }")
+  assert(eq(array_length(tokens), 12))
+}
+
+test "lex_match_expression" {
+  assert(lex_ok("match x { 1 => a, _ => b }"))
+}
+
+test "lex_true_false_as_ident" {
+  let tokens = lex("true false")
+  assert(tokens_match(tokens, [TIdent("true"), TIdent("false"), TEof]))
+}
