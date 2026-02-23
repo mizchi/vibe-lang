@@ -530,9 +530,7 @@ test "vibe format keeps declaration braces and return type blocks" {
     #|let p = Point::{
     #|  x: 1, y: 1
     #|}
-    #|let eff = () -> Int with {
-    #|  Error
-    #|} {
+    #|let eff = () -> Int with { Error } {
     #|  0
     #|}
   inspect(format_script(input), content=expected)

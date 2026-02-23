@@ -119,6 +119,34 @@ test "check_toplevel_purity: escape-free builder in fn should be pure" {
 }
 
 ///|
+test "check_toplevel_purity: for-in at top-level is pure" {
+  let script =
+    #|let xs = for x in [1, 2, 3] { x + 1 }
+  let ast = parse_for_purity(script)
+  let env = type_check(ast) catch {
+    err => fail("type error: \{err.to_string()}")
+  }
+  check_toplevel_purity(env, ast.stmts) catch {
+    err => fail("should pass: \{err.to_string()}")
+  }
+}
+
+///|
+test "check_toplevel_purity: chained pure call propagation" {
+  let script =
+    #|let f = () -> Int { 1 }
+    #|let g = () -> Int { f() }
+    #|let x = g()
+  let ast = parse_for_purity(script)
+  let env = type_check(ast) catch {
+    err => fail("type error: \{err.to_string()}")
+  }
+  check_toplevel_purity(env, ast.stmts) catch {
+    err => fail("should pass: \{err.to_string()}")
+  }
+}
+
+///|
 test "check_toplevel_purity: call chain keeps state_local tier" {
   let script =
     #|let next = () -> Int {

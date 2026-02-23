@@ -293,20 +293,18 @@ Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
   - [x] Green + Refactor: CLI `check` で依存先の診断を entry 前に表示（root cause 優先順）
     - `Diagnostic` struct 変更なし（52箇所の churn 回避）。CLI 側で `db.imports()` を辿り依存先診断を先行表示
 
-- [ ] `StateLocal`/`do {}` ノイズを削減する（局所変異なのに top-level 不純扱いされる問題）
+- [x] `StateLocal`/`do {}` ノイズを削減する（局所変異なのに top-level 不純扱いされる問題）
   - 対象: `src/checker/purity.mbt`, `src/checker/typecheck_errors.mbt`, `docs/language-tour/*.md`
-  - [ ] Red: escape しない builder 使用を含む binding が `TopLevelImpure(StateLocal)` で落ちるケースを固定
+  - [x] Red: escape しない builder 使用を含む binding が `TopLevelImpure(StateLocal)` で落ちるケースを固定
     - `src/checker/purity_wbtest.mbt`
-  - [ ] Green: escape-free な `array_builder/map_builder/string_builder` パターンを purity 解析で `Pure` 扱いに昇格
+  - [x] Green: `check_toplevel_purity` で binding 間の purity tier を `PurityScope` 経由で伝播。`purity_for_let_in_scope` の effects 宣言チェック欠落を修正
   - [ ] Green: 診断 hint を実装仕様に合わせて更新（許容される局所変異パターンを案内）
   - [ ] Refactor: docs の `do` 必須説明を条件付き（必要なケースのみ）へ再整理
 
-- [ ] self-host compiler 向けの反復ボイラープレート削減 syntax を検討する
-  - 候補: array comprehension (`[for x in xs => f(x)]`) または builder sugar
-  - 対象: `src/parser/parser_ast_expr.mbt`, `src/checker/typecheck_expr.mbt`, `src/frontend/*`, `docs/language-tour/syntax-reference.md`
-  - [ ] Red: `while + array_builder` 由来の可読性劣化ケースを fixture 化
-  - [ ] Green: parser/desugar/typecheck の最小実装
-  - [ ] Refactor: `vibe/compiler/*.vibe` の該当箇所を新syntaxへ移行し差分評価
+- [x] self-host compiler 向けの反復ボイラープレート削減
+  - 既存の `for-in` 構文で十分対応可能（新 syntax 不要）
+  - [x] Refactor: `vibe/compiler/printer.vibe` の `while + array_builder` パターン（~14箇所）を `for-in` へ移行
+  - parser.vibe は全て recursive descent parsing パターンのため for-in 不適格
 
 ## Documentation
 

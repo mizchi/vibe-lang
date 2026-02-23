@@ -8,6 +8,7 @@ enum ContainerKind {
   BraceMap
   BraceMatch
   BraceEnum
+  BraceEffects
   BracketArray
   BracketTypeArgs
   BracketIndex
@@ -101,7 +102,13 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
           (prev == impl_kw() || prev == eq()) && next == lbracket()
         _ => false
       }
-      if paren_depth > 0 || bracket_depth > 0 || collapse_generic_break {
+      let in_effects_brace = container_stack.length() > 0 &&
+        container_stack[container_stack.length() - 1] ==
+        ContainerKind::BraceEffects
+      if paren_depth > 0 ||
+        bracket_depth > 0 ||
+        collapse_generic_break ||
+        in_effects_brace {
         i += 1
         continue
       }
@@ -192,9 +199,16 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
     let insert_struct_double_colon = should_insert_struct_double_colon(
       prev_prev_kind, prev_kind, prev_text, kind, in_type_context,
     )
+    let effects_rbrace = kind == rbrace() &&
+      container_stack.length() > 0 &&
+      container_stack[container_stack.length() - 1] ==
+      ContainerKind::BraceEffects
     if line_has_content &&
       not(insert_struct_double_colon) &&
-      needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe) {
+      (
+        effects_rbrace ||
+        needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe)
+      ) {
       buf.write_char(' ')
     }
     if insert_struct_double_colon {
@@ -229,8 +243,14 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
     }
     if kind == lbrace() || kind == lbracket() {
       if kind == lbrace() {
+        let is_effects_brace = match prev_text {
+          Some(t) => t == "with"
+          None => false
+        }
         let container = if type_decl_header == TypeDeclMode::DeclEnum {
           ContainerKind::BraceEnum
+        } else if is_effects_brace {
+          ContainerKind::BraceEffects
         } else if is_match_brace(
             pending_match, paren_depth, brace_depth, bracket_depth, prev_kind,
           ) {
@@ -597,6 +617,7 @@ fn container_indents(kind : ContainerKind) -> Bool {
     ContainerKind::BraceMap => true
     ContainerKind::BraceMatch => true
     ContainerKind::BraceEnum => true
+    ContainerKind::BraceEffects => false
     ContainerKind::BracketArray => true
     ContainerKind::BracketTypeArgs => false
     ContainerKind::BracketIndex => false

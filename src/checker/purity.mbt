@@ -478,7 +478,7 @@ fn purity_for_let_in_scope(
     scope.bindings[name] = TopLevelPurityTier::Pure
   }
   match expr {
-    @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
+    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~, ..) => {
       let _ = span
       let _ = ret
       let fn_locals = scope.child()
@@ -486,7 +486,12 @@ fn purity_for_let_in_scope(
         fn_locals.bindings[param.name] = TopLevelPurityTier::Pure
       }
       let expr_info = purity_analysis_pure()
-      let value_info = purity_block_analysis_inner(env, body, fn_locals)
+      let has_effects = fn_effects.length() > 0
+      let value_info = if has_effects {
+        purity_analysis_impure()
+      } else {
+        purity_block_analysis_inner(env, body, fn_locals)
+      }
       PurityInfo::{
         expr: expr_info.is_pure(),
         value: value_info.is_pure(),
@@ -723,19 +728,22 @@ pub fn check_toplevel_purity(
   env : TypeEnv,
   stmts : Array[@core.Stmt],
 ) -> Unit raise TypeError {
+  let scope = PurityScope::new()
   for stmt in stmts {
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~) => {
-        let info = purity_for_let(env, rec, name, expr)
+        let info = purity_for_let_in_scope(env, rec, name, expr, scope)
         if not(info.expr) {
           raise TypeError::TopLevelImpure(name~, tier=info.expr_tier, span~)
         }
+        scope.bindings[name] = info.value_tier
       }
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
-        let info = purity_for_let(env, rec, name, expr)
+        let info = purity_for_let_in_scope(env, rec, name, expr, scope)
         if not(info.expr) {
           raise TypeError::TopLevelImpure(name~, tier=info.expr_tier, span~)
         }
+        scope.bindings[name] = info.value_tier
       }
       @core.Stmt::LetMut(name~, span~, ..) =>
         raise TypeError::TopLevelImpure(
@@ -750,7 +758,7 @@ pub fn check_toplevel_purity(
           span~,
         )
       @core.Stmt::Expr(expr~, span~) => {
-        let info = purity_expr_analysis_inner(env, expr, PurityScope::new())
+        let info = purity_expr_analysis_inner(env, expr, scope)
         if not(info.is_pure()) {
           raise TypeError::TopLevelImpure(name="_", tier=info.tier(), span~)
         }
