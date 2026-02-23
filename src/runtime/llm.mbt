@@ -83,28 +83,32 @@ fn extract_openai_content(body : String) -> String raise EvalError {
   let fields = match parsed {
     @core.Value::Map(f) => f
     @core.Value::Record(f) => f
-    _ => raise EvalError::BadCall("llm_complete: invalid response JSON format")
+    _ =>
+      raise EvalError::BadCall(E("llm_complete: invalid response JSON format"))
   }
   let choices = match fields.get("choices") {
     Some(@core.Value::Array(arr)) => arr
-    _ => raise EvalError::BadCall("llm_complete: missing choices in response")
+    _ =>
+      raise EvalError::BadCall(E("llm_complete: missing choices in response"))
   }
   if choices.length() == 0 {
-    raise EvalError::BadCall("llm_complete: empty choices array")
+    raise EvalError::BadCall(E("llm_complete: empty choices array"))
   }
   let choice = match choices[0] {
     @core.Value::Map(f) => f
     @core.Value::Record(f) => f
-    _ => raise EvalError::BadCall("llm_complete: invalid choice format")
+    _ => raise EvalError::BadCall(E("llm_complete: invalid choice format"))
   }
   let msg = match choice.get("message") {
     Some(@core.Value::Map(f)) => f
     Some(@core.Value::Record(f)) => f
-    _ => raise EvalError::BadCall("llm_complete: missing message in response")
+    _ =>
+      raise EvalError::BadCall(E("llm_complete: missing message in response"))
   }
   match msg.get("content") {
     Some(@core.Value::String(content)) => content
-    _ => raise EvalError::BadCall("llm_complete: missing content in response")
+    _ =>
+      raise EvalError::BadCall(E("llm_complete: missing content in response"))
   }
 }
 
@@ -115,23 +119,27 @@ fn extract_anthropic_content(body : String) -> String raise EvalError {
   let fields = match parsed {
     @core.Value::Map(f) => f
     @core.Value::Record(f) => f
-    _ => raise EvalError::BadCall("llm_complete: invalid response JSON format")
+    _ =>
+      raise EvalError::BadCall(E("llm_complete: invalid response JSON format"))
   }
   let content_blocks = match fields.get("content") {
     Some(@core.Value::Array(arr)) => arr
-    _ => raise EvalError::BadCall("llm_complete: missing content in response")
+    _ =>
+      raise EvalError::BadCall(E("llm_complete: missing content in response"))
   }
   if content_blocks.length() == 0 {
-    raise EvalError::BadCall("llm_complete: empty content array")
+    raise EvalError::BadCall(E("llm_complete: empty content array"))
   }
   let block = match content_blocks[0] {
     @core.Value::Map(f) => f
     @core.Value::Record(f) => f
-    _ => raise EvalError::BadCall("llm_complete: invalid content block format")
+    _ =>
+      raise EvalError::BadCall(E("llm_complete: invalid content block format"))
   }
   match block.get("text") {
     Some(@core.Value::String(text)) => text
-    _ => raise EvalError::BadCall("llm_complete: missing text in content block")
+    _ =>
+      raise EvalError::BadCall(E("llm_complete: missing text in content block"))
   }
 }
 
@@ -156,25 +164,32 @@ fn llm_complete_openai(
             }
             let _ = @backend.http_close(handle)
             raise EvalError::BadCall(
-              "llm_complete: HTTP " + status.to_string() + ": " + err_body,
+              E("llm_complete: HTTP " + status.to_string() + ": " + err_body),
             )
           }
         Err(e) => {
           let _ = @backend.http_close(handle)
-          raise EvalError::BadCall("llm_complete: status error: " + e)
+          raise EvalError::BadCall(
+            Llm(op="llm_complete", detail="status error: " + e),
+          )
         }
       }
       let resp_body = match @backend.http_response_body(handle) {
         Ok(b) => b
         Err(e) => {
           let _ = @backend.http_close(handle)
-          raise EvalError::BadCall("llm_complete: body error: " + e)
+          raise EvalError::BadCall(
+            Llm(op="llm_complete", detail="body error: " + e),
+          )
         }
       }
       let _ = @backend.http_close(handle)
       extract_openai_content(resp_body)
     }
-    Err(e) => raise EvalError::BadCall("llm_complete: request error: " + e)
+    Err(e) =>
+      raise EvalError::BadCall(
+        Llm(op="llm_complete", detail="request error: " + e),
+      )
   }
 }
 
@@ -200,25 +215,32 @@ fn llm_complete_anthropic(
             }
             let _ = @backend.http_close(handle)
             raise EvalError::BadCall(
-              "llm_complete: HTTP " + status.to_string() + ": " + err_body,
+              E("llm_complete: HTTP " + status.to_string() + ": " + err_body),
             )
           }
         Err(e) => {
           let _ = @backend.http_close(handle)
-          raise EvalError::BadCall("llm_complete: status error: " + e)
+          raise EvalError::BadCall(
+            Llm(op="llm_complete", detail="status error: " + e),
+          )
         }
       }
       let resp_body = match @backend.http_response_body(handle) {
         Ok(b) => b
         Err(e) => {
           let _ = @backend.http_close(handle)
-          raise EvalError::BadCall("llm_complete: body error: " + e)
+          raise EvalError::BadCall(
+            Llm(op="llm_complete", detail="body error: " + e),
+          )
         }
       }
       let _ = @backend.http_close(handle)
       extract_anthropic_content(resp_body)
     }
-    Err(e) => raise EvalError::BadCall("llm_complete: request error: " + e)
+    Err(e) =>
+      raise EvalError::BadCall(
+        Llm(op="llm_complete", detail="request error: " + e),
+      )
   }
 }
 

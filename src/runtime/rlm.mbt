@@ -303,7 +303,7 @@ pub fn rlm_run_loop(
   let config = match LlmConfig::from_env() {
     Some(c) => c
     None =>
-      raise EvalError::BadCall("rlm_run: VIBE_LLM_PROVIDER env var not set")
+      raise EvalError::BadCall(E("rlm_run: VIBE_LLM_PROVIDER env var not set"))
   }
 
   // Check parent capability
@@ -334,7 +334,7 @@ pub fn rlm_run_loop(
   while true {
     // Budget check
     match budget.check() {
-      Some(err) => raise EvalError::BadCall("rlm_run: " + err)
+      Some(err) => raise EvalError::BadCall(Io(op="rlm_run", detail=err))
       None => ()
     }
 
@@ -389,7 +389,7 @@ pub fn rlm_run_loop(
             Some(v) => return v.to_string()
             None =>
               raise EvalError::BadCall(
-                "rlm_run: rlm_finalize returned no value",
+                E("rlm_run: rlm_finalize returned no value"),
               )
           }
         Err(e) => {
@@ -412,5 +412,5 @@ pub fn rlm_run_loop(
       }
     }
   }
-  raise EvalError::BadCall("rlm_run: unexpected loop exit")
+  raise EvalError::BadCall(E("rlm_run: unexpected loop exit"))
 }

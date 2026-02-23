@@ -53,10 +53,10 @@ pub fn Runtime::run_benches(
   warmup : Int,
 ) -> BenchReport raise EvalError {
   if count <= 0 {
-    raise EvalError::BadCall("bench: count must be > 0")
+    raise EvalError::BadCall(E("bench: count must be > 0"))
   }
   if warmup < 0 {
-    raise EvalError::BadCall("bench: warmup must be >= 0")
+    raise EvalError::BadCall(E("bench: warmup must be >= 0"))
   }
   let _ = self.eval_module(ast)
   let cases = collect_benches(ast)
