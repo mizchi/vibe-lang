@@ -80,7 +80,7 @@ Prelude wrappers: `add(a, b)`, `sub(a, b)`, `mul(a, b)`, `div(a, b)`, `eq(a, b)`
 | `array_builder_push` | `(ArrayBuilder[T], T) -> Unit` | Add element |
 | `array_builder_freeze` | `(ArrayBuilder[T]) -> Array[T]` | Convert to array |
 
-Builders require `do { ... }` context.
+Builders require `do { ... }` or `for-in` context.
 
 ## Map
 

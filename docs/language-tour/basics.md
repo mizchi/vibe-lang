@@ -191,7 +191,8 @@ match "ok" {
 
 ### do block
 
-`do { ... }` creates an effect-allowed context for mutable builders and IO.
+`do { ... }` creates a pure boundary for mutable builders. `for-in` loops
+also work as a pure alternative:
 
 ```vibe
 let built = do {
@@ -200,6 +201,9 @@ let built = do {
   array_builder_push(b, 2)
   array_builder_freeze(b)
 }
+
+// equivalent using for-in
+let built2 = for x in [1, 2] { x }
 ```
 
 ## String Interpolation

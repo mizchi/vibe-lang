@@ -113,13 +113,11 @@ let safe = [T](f: (T) -> T with { Error }, x: T) -> T {
 
 ## do blocks
 
-Direct effectful builtins (`sh`, stdio) and mutable builder APIs require a `do` block or a function with declared effects.
+Mutable builder APIs (`array_builder`, `map_builder`, `string_builder`) and direct
+I/O builtins are effectful. At top level, wrap them in `do { ... }` or use `for-in`:
 
 ```vibe
-// OK: declared effect allows direct builtin call
-let run = () -> Unit with { Stdout } { sh("ls") }
-
-// OK: do block enables builder APIs
+// do block
 let items = do {
   let b = array_builder()
   array_builder_push(b, 1)
@@ -127,6 +125,20 @@ let items = do {
   array_builder_freeze(b)
 }
 
+// for-in (desugars to do internally — also pure)
+let doubled = for x in [1, 2, 3] { x * 2 }
+
+// function with do — callers inherit pure tier
+let make = () -> Array[Int] {
+  do { let b = array_builder(); array_builder_push(b, 1); array_builder_freeze(b) }
+}
+let xs = make()  // pure: make's value tier is Pure
+```
+
+Functions with declared effects (`with { Stdout }` etc.) are always impure — `do` cannot
+override a missing effect declaration:
+
+```vibe
 // Error: do alone does not add missing effect declaration
 let bad = () -> Unit { do { sh("ls") } }
 ```

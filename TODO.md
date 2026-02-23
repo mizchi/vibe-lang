@@ -256,6 +256,14 @@ Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
 - [ ] `for ... in` loop
 - [ ] `break` / `continue` / `return`
 
+### Self-host quality baseline (方針メモ)
+
+- Self-host compiler が生成するコードの品質がベースラインを満たすようにする
+  - normalize / format 後のコードが host compiler と同等の出力になること
+  - 既存テスト suite (631+) が回帰なしで通ること
+- 既存ライブラリを WIT (WASI Component Model) で compose して再利用する選択肢あり
+  - lexer/parser を component として切り出し、host runtime と組み合わせ可能にする
+
 ### Phase 5: Type Checker (not started)
 
 - [ ] Type inference (Hindley-Milner with unification)
@@ -298,8 +306,8 @@ Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
   - [x] Red: escape しない builder 使用を含む binding が `TopLevelImpure(StateLocal)` で落ちるケースを固定
     - `src/checker/purity_wbtest.mbt`
   - [x] Green: `check_toplevel_purity` で binding 間の purity tier を `PurityScope` 経由で伝播。`purity_for_let_in_scope` の effects 宣言チェック欠落を修正
-  - [ ] Green: 診断 hint を実装仕様に合わせて更新（許容される局所変異パターンを案内）
-  - [ ] Refactor: docs の `do` 必須説明を条件付き（必要なケースのみ）へ再整理
+  - [x] Green: 診断 hint を実装仕様に合わせて更新（許容される局所変異パターンを案内）
+  - [x] Refactor: docs の `do` 必須説明を条件付き（必要なケースのみ）へ再整理
 
 - [x] self-host compiler 向けの反復ボイラープレート削減
   - 既存の `for-in` 構文で十分対応可能（新 syntax 不要）

@@ -164,7 +164,7 @@ fn top_level_purity_tier_name(tier : TopLevelPurityTier) -> String {
 fn top_level_impure_hint(tier : TopLevelPurityTier) -> String {
   match tier {
     TopLevelPurityTier::StateLocal =>
-      "move local mutation into a function body (`let f = () -> { let mut ... }`) and keep top-level bindings pure values"
+      "wrap local mutation in `do { ... }` or use `for x in arr { ... }` — both are pure at top level"
     TopLevelPurityTier::Impure =>
       "move side effects into `let main = () -> { ... }`"
     TopLevelPurityTier::Pure =>
