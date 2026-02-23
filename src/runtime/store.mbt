@@ -242,8 +242,12 @@ pub fn Runtime::new_with_features(
     cwd: @io.current_dir_or_root(),
     loop_fuel: match @io.get_env_var("VIBE_LOOP_FUEL") {
       Some(s) => {
-        let n = try { @strconv.parse_int(s) } catch { _ => 100_000 }
-        if n > 0 { n } else { 100_000 }
+        let n = @strconv.parse_int(s) catch { _ => 100_000 }
+        if n > 0 {
+          n
+        } else {
+          100_000
+        }
       }
       None => 100_000
     },

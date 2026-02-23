@@ -152,12 +152,148 @@ test "type query keeps exported schemes for thread runtime-style wrappers" {
 }
 
 ///|
+test "cross-directory import to non-index.vibe emits warning" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/lib/helper.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
+  )
+  db.set_source(
+    "/project/src/main.vibe", "use ../lib/helper.vibe { add }\nlet x = add(1, 2)\n",
+  )
+  let _imports = db.imports("/project/src/main.vibe")
+  let diags = db.import_diagnostics("/project/src/main.vibe")
+  let has_cross_module_warning = diags
+    .iter()
+    .any(fn(d) {
+      d.message.contains("cross-module import should use index.vibe")
+    })
+  assert_true(has_cross_module_warning)
+}
+
+///|
+test "cross-directory import to index.vibe does not emit warning" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/lib/helper.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
+  )
+  db.set_source(
+    "/project/lib/index.vibe", "export use ./helper.vibe { add }\nexport { add }\n",
+  )
+  db.set_source(
+    "/project/src/main.vibe", "use ../lib/index.vibe { add }\nlet x = add(1, 2)\n",
+  )
+  let _imports = db.imports("/project/src/main.vibe")
+  let diags = db.import_diagnostics("/project/src/main.vibe")
+  let has_cross_module_warning = diags
+    .iter()
+    .any(fn(d) {
+      d.message.contains("cross-module import should use index.vibe")
+    })
+  if has_cross_module_warning {
+    fail("should not warn when importing index.vibe")
+  }
+}
+
+///|
+test "same-directory import does not emit cross-module warning" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/src/helper.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
+  )
+  db.set_source(
+    "/project/src/main.vibe", "use ./helper.vibe { add }\nlet x = add(1, 2)\n",
+  )
+  let _imports = db.imports("/project/src/main.vibe")
+  let diags = db.import_diagnostics("/project/src/main.vibe")
+  let has_cross_module_warning = diags
+    .iter()
+    .any(fn(d) {
+      d.message.contains("cross-module import should use index.vibe")
+    })
+  if has_cross_module_warning {
+    fail("should not warn for same-directory import")
+  }
+}
+
+///|
+test "module-level cycle detection: A -> B -> A directories" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/a/index.vibe", "export use ../b/index.vibe { greet }\nexport let hello = () -> String { greet() }\nexport { hello }\n",
+  )
+  db.set_source(
+    "/project/b/index.vibe", "export use ../a/index.vibe { hello }\nexport let greet = () -> String { hello() }\nexport { greet }\n",
+  )
+  let _imports = db.imports("/project/a/index.vibe")
+  let diags = db.import_diagnostics("/project/a/index.vibe")
+  let has_module_cycle = diags
+    .iter()
+    .any(fn(d) {
+      d.message.contains("module cycle") || d.message.contains("import cycle")
+    })
+  assert_true(has_module_cycle)
+}
+
+///|
+test "index.vibe cross-directory imports shared with same-dir files" {
+  let db = VibeDb::new()
+  // External module in /project/lib/
+  db.set_source(
+    "/project/lib/math.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\nexport { add }\n",
+  )
+  // index.vibe in /project/src/ imports from external module
+  db.set_source(
+    "/project/src/index.vibe", "export use ../lib/math.vibe { add }\n",
+  )
+  // sibling.vibe in /project/src/ should have access to `add` without importing
+  db.set_source("/project/src/sibling.vibe", "let x = add(1, 2)\nx\n")
+  let env = db.types("/project/src/sibling.vibe")
+  let diags = db.diagnostics("/project/src/sibling.vibe")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("x") {
+    Some(_) => ()
+    None => fail("expected scheme for x (add result)")
+  }
+}
+
+///|
+test "index.vibe sharing does not apply to index.vibe itself" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/lib/math.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\nexport { add }\n",
+  )
+  // index.vibe cannot use its own exports without explicit import
+  db.set_source(
+    "/project/src/index.vibe", "export use ../lib/math.vibe { add }\nlet y = add(1, 2)\ny\n",
+  )
+  let env = db.types("/project/src/index.vibe")
+  let diags = db.diagnostics("/project/src/index.vibe")
+  // This should work because index.vibe has its own imports
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("y") {
+    Some(_) => ()
+    None => fail("expected scheme for y")
+  }
+}
+
+///|
 test "cascading diagnostics: upstream type error produces root cause diagnostic" {
   let db = VibeDb::new()
   // lib.vibe has a type error: calls undefined function `undefined_fn`
   db.set_source(
-    "./lib.vibe",
-    "export let helper = () -> Int { undefined_fn(1) }\nexport { helper }\n",
+    "./lib.vibe", "export let helper = () -> Int { undefined_fn(1) }\nexport { helper }\n",
   )
   // main imports helper from lib.vibe
   db.set_source("main", "use ./lib.vibe { helper }\nlet x = helper()\n")
@@ -169,8 +305,10 @@ test "cascading diagnostics: upstream type error produces root cause diagnostic"
   //
   // Expected: at least one diagnostic mentioning the upstream dependency error,
   // e.g. "dependency export unavailable due to upstream errors in ./lib.vibe"
-  let has_upstream_hint = diags.iter().any(fn(d) {
-    d.message.contains("upstream") || d.message.contains("./lib.vibe")
-  })
-  assert_true!(has_upstream_hint)
+  let has_upstream_hint = diags
+    .iter()
+    .any(fn(d) {
+      d.message.contains("upstream") || d.message.contains("./lib.vibe")
+    })
+  assert_true(has_upstream_hint)
 }

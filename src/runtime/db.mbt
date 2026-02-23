@@ -275,6 +275,15 @@ pub fn VibeDb::diagnostics(
 }
 
 ///|
+/// Collect diagnostics from import stage only (does not trigger type_query).
+pub fn VibeDb::import_diagnostics(
+  self : VibeDb,
+  path : String,
+) -> Array[@core.Diagnostic] {
+  self.diags.get_for_query(self.import_query, path)
+}
+
+///|
 /// Collect non-fatal diagnostics such as warnings.
 pub fn VibeDb::warnings(
   self : VibeDb,

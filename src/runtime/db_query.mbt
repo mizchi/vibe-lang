@@ -100,6 +100,39 @@ pub fn VibeDb::new() -> VibeDb {
                 }
               }
               let resolved_path_obj = normalize_path_obj(base_dir, final_path)
+              // Cross-directory import boundary check:
+              // imports from a different directory must target index.vibe
+              // index.vibe itself is exempt (it's the module facade)
+              let importer_basename = @path.Path(file_path)
+                .basename()
+                .to_string()
+              if importer_basename != "index.vibe" &&
+                importer_basename != "index.xm" {
+                let importer_dir = @path.Path(file_path).dirname().to_string()
+                let imported_dir = @path.Path(resolved_path_obj.normalized)
+                  .dirname()
+                  .to_string()
+                if importer_dir != imported_dir {
+                  let imported_basename = @path.Path(
+                      resolved_path_obj.normalized,
+                    )
+                    .basename()
+                    .to_string()
+                  if imported_basename != "index.vibe" &&
+                    imported_basename != "index.xm" {
+                    diags.push(rt, @core.Diagnostic::{
+                      stage: "lint",
+                      message: "cross-module import should use index.vibe: " +
+                      resolved_path_obj.normalized,
+                      span: Some(span),
+                      hint: Some(
+                        "use the module's index.vibe to import across directories",
+                      ),
+                      note: None,
+                    })
+                  }
+                }
+              }
               let lock_expected = if path_lock_required(rt, sources) {
                 Some(
                   sources.get(rt, path_ref_key(resolved_path_obj.normalized)),
@@ -372,6 +405,19 @@ pub fn VibeDb::new() -> VibeDb {
           })
         None => ()
       }
+      match detect_module_cycle(rt, sources, ast_query, file_path) {
+        Some(cycle) =>
+          diags.push(rt, @core.Diagnostic::{
+            stage: "import",
+            message: "module cycle: " + render_import_cycle(cycle),
+            span: None,
+            hint: Some(
+              "break the module cycle by restructuring directory dependencies",
+            ),
+            note: None,
+          })
+        None => ()
+      }
     }
     out
   })
@@ -469,15 +515,28 @@ pub fn VibeDb::new() -> VibeDb {
     rt,
     file_path,
   ) {
+    // Resolve the index.vibe path for same-directory sharing
+    let file_basename = @path.Path(file_path).basename().to_string()
+    let file_dir = @path.Path(file_path).dirname().to_string()
+    let index_path = if file_dir == "." {
+      "index.vibe"
+    } else {
+      file_dir + "/index.vibe"
+    }
+    let has_dir_index = file_basename != "index.vibe" &&
+      file_basename != "index.xm" &&
+      sources.get(rt, index_path) is Some(_)
     match sources.get(rt, file_path) {
       Some(content) =>
-        if not(content.contains("import")) && not(content.contains("use")) {
+        if not(content.contains("import")) &&
+          not(content.contains("use")) &&
+          not(has_dir_index) {
           return simple_type_query.fetch(rt, file_path)
         }
       None => ()
     }
     let imports = import_query.fetch(rt, file_path)
-    if imports.length() == 0 {
+    if imports.length() == 0 && not(has_dir_index) {
       return simple_type_query.fetch(rt, file_path)
     }
     let ast = ast_query.fetch(rt, file_path).unwrap()
@@ -485,6 +544,163 @@ pub fn VibeDb::new() -> VibeDb {
     let desugared = desugar_method_calls(ast, aliases)
     let base_dir = @path.Path(file_path).dirname().to_string()
     let env = try! @checker.get_prelude_only_env_for_module()
+    // Merge cross-directory imports from directory's index.vibe
+    if has_dir_index {
+      let index_imports = import_query.fetch(rt, index_path)
+      let index_dir = @path.Path(index_path).dirname().to_string()
+      for imp in index_imports {
+        // Only share imports from different directories
+        let imp_dir = match imp.path_obj {
+          Some(obj) => @path.Path(obj.normalized).dirname().to_string()
+          None => continue
+        }
+        if imp_dir == index_dir {
+          continue
+        }
+        // Fetch the type env of the cross-directory import
+        match sources.get(rt, imp.path) {
+          Some(_) => {
+            let imported_env = match type_query_ref.val {
+              Some(q) => q.fetch(rt, imp.path)
+              None => simple_type_query.fetch(rt, imp.path)
+            }
+            let imported_ast = ast_query.fetch(rt, imp.path).unwrap()
+            let exported_names = collect_exported_names(imported_ast)
+            // Find what index.vibe re-exports from this import
+            let index_ast = ast_query.fetch(rt, index_path).unwrap()
+            for stmt in index_ast.stmts {
+              match stmt {
+                @core.Stmt::ReExport(names~, source~, ..) =>
+                  if import_stmt_matches_spec(index_dir, source, imp) {
+                    for name in names {
+                      if exported_names.contains(name) {
+                        // Import value
+                        match imported_env.get_scheme(name) {
+                          Some(scheme) => env.set_scheme(name, scheme)
+                          None => ()
+                        }
+                        // Import struct
+                        match imported_env.get_struct(name) {
+                          Some(struct_def) => env.set_struct(name, struct_def)
+                          None => ()
+                        }
+                        // Import enum
+                        match imported_env.get_enum_def(name) {
+                          Some(enum_def) => {
+                            env.set_enum_def(name, enum_def)
+                            for ctor in enum_def.ctors {
+                              match imported_env.get_ctor(ctor.name) {
+                                Some(ctor_info) =>
+                                  env.set_ctor(ctor.name, ctor_info)
+                                None => ()
+                              }
+                              match imported_env.get_scheme(ctor.name) {
+                                Some(scheme) =>
+                                  env.set_scheme(ctor.name, scheme)
+                                None => ()
+                              }
+                            }
+                          }
+                          None => ()
+                        }
+                        // Import type alias
+                        match imported_env.get_type_alias(name) {
+                          Some(type_alias) =>
+                            env.set_type_alias(name, type_alias)
+                          None => ()
+                        }
+                        // Import trait
+                        if imported_env.has_trait(name) {
+                          let local_supertraits = imported_env.trait_supertraits(
+                            name,
+                          )
+                          env.import_trait(
+                            name,
+                            imported_env.trait_is_open(name),
+                            local_supertraits,
+                          )
+                          let impls = imported_env.trait_impls_for(name)
+                          for impl_def in impls {
+                            env.add_trait_impl(name, impl_def)
+                          }
+                        }
+                      }
+                    }
+                  }
+                @core.Stmt::Import(spec~, source~, ..) =>
+                  if import_stmt_matches_spec(index_dir, source, imp) {
+                    for item in spec.items {
+                      let name = item.name
+                      let local_name = match item.rename {
+                        Some(n) => n
+                        None => name
+                      }
+                      if exported_names.contains(name) || name.contains("::") {
+                        // Import value
+                        if import_item_accepts_value(item, name) {
+                          match imported_env.get_scheme(name) {
+                            Some(scheme) => env.set_scheme(local_name, scheme)
+                            None => ()
+                          }
+                        }
+                        // Import type (struct)
+                        if import_item_accepts_type(item) {
+                          match imported_env.get_struct(name) {
+                            Some(struct_def) =>
+                              env.set_struct(local_name, struct_def)
+                            None => ()
+                          }
+                          match imported_env.get_type_alias(name) {
+                            Some(type_alias) =>
+                              env.set_type_alias(local_name, type_alias)
+                            None => ()
+                          }
+                          match imported_env.get_enum_def(name) {
+                            Some(enum_def) => {
+                              env.set_enum_def(local_name, enum_def)
+                              for ctor in enum_def.ctors {
+                                match imported_env.get_ctor(ctor.name) {
+                                  Some(ctor_info) =>
+                                    env.set_ctor(ctor.name, ctor_info)
+                                  None => ()
+                                }
+                                match imported_env.get_scheme(ctor.name) {
+                                  Some(scheme) =>
+                                    env.set_scheme(ctor.name, scheme)
+                                  None => ()
+                                }
+                              }
+                            }
+                            None => ()
+                          }
+                        }
+                        // Import trait
+                        if import_item_accepts_trait(item) &&
+                          imported_env.has_trait(name) {
+                          let local_supertraits = imported_env.trait_supertraits(
+                            name,
+                          )
+                          env.import_trait(
+                            local_name,
+                            imported_env.trait_is_open(name),
+                            local_supertraits,
+                          )
+                          let impls = imported_env.trait_impls_for(name)
+                          for impl_def in impls {
+                            env.add_trait_impl(local_name, impl_def)
+                          }
+                        }
+                      }
+                    }
+                  }
+                _ => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
+    }
     let local_value_decl_spans = collect_local_value_decl_spans(ast)
     let imported_value_decl_spans : Map[String, @core.Span] = {}
     let report_duplicate_import_value = fn(name : String, span : @core.Span) {
@@ -948,9 +1164,7 @@ pub fn VibeDb::new() -> VibeDb {
                             message: "dependency export unavailable due to upstream errors in " +
                             imp.path,
                             span: Some(span),
-                            hint: Some(
-                              "fix errors in " + imp.path + " first",
-                            ),
+                            hint: Some("fix errors in " + imp.path + " first"),
                             note: Some(
                               "exported symbol '" +
                               name +
