@@ -23,6 +23,11 @@ pub fn newline() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn comment() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(4)
+}
+
+///|
 pub fn name() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(10)
 }
@@ -608,5 +613,5 @@ pub fn is_token(kind : @cst.SyntaxKind) -> Bool {
 ///|
 /// Check if a SyntaxKind is trivia (whitespace/newline)
 pub fn is_trivia(kind : @cst.SyntaxKind) -> Bool {
-  kind == whitespace() || kind == newline()
+  kind == whitespace() || kind == newline() || kind == comment()
 }

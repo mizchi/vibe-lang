@@ -94,6 +94,31 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
       i += 1
       continue
     }
+    if kind == comment() {
+      if pending_newlines == 0 && line_has_content {
+        pending_newlines = 1
+      }
+      if pending_newlines > 0 {
+        if kind == rbrace() || kind == rbracket() {
+          ()
+        }
+        for _ in 0..<pending_newlines {
+          buf.write_char('\n')
+        }
+        pending_newlines = 0
+        format_write_indent(buf, indent, indent_size)
+        line_has_content = false
+      }
+      buf.write_string(trim_ascii_whitespace(tok.text()))
+      line_has_content = true
+      prev_prev_kind = None
+      prev_kind = None
+      prev_text = None
+      prev_prefix = false
+      prev_pipe = false
+      i += 1
+      continue
+    }
     if kind == newline() {
       saw_newline = true
       let next_kind = next_non_trivia_kind(tokens, i)
@@ -112,7 +137,8 @@ fn format_tokens(tokens : Array[@cst.SyntaxToken], indent_size : Int) -> String 
         i += 1
         continue
       }
-      if pending_newlines == 0 {
+      let max_nl = if brace_depth == 0 { 2 } else { 1 }
+      if pending_newlines < max_nl {
         pending_newlines += 1
       }
       i += 1
@@ -367,7 +393,10 @@ fn bracket_tokens_look_like_type_params(
   let mut i = start_idx + 1
   while i < close_idx {
     let kind = tokens[i].kind()
-    if kind == whitespace() || kind == newline() || kind == eof() {
+    if kind == whitespace() ||
+      kind == newline() ||
+      kind == comment() ||
+      kind == eof() {
       i += 1
       continue
     }
@@ -816,7 +845,7 @@ fn next_non_trivia_kind(
   let mut i = start + 1
   while i < tokens.length() {
     let kind = tokens[i].kind()
-    if kind == whitespace() || kind == newline() {
+    if kind == whitespace() || kind == newline() || kind == comment() {
       i += 1
       continue
     }

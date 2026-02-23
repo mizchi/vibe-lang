@@ -28,9 +28,12 @@ fn ne_substring_index(haystack : String, needle : String) -> Int {
 test "normalize_engine: format basic let binding" {
   let source = "let   x  =  1"
   let result = normalize_source_text(source)
-  let expected =
-    #|Ok("//# Functions\n\nlet x: Int = 1\n")
-  inspect(result, content=expected)
+  inspect(
+    result,
+    content=(
+      #|Ok("//# Functions\n\n// x: Int\nlet x: Int = 1\n")
+    ),
+  )
 }
 
 ///|
@@ -39,9 +42,12 @@ test "normalize_engine: format multiple let bindings with spacing" {
     #|let a  = 1
     #|let b  = 2
   let result = normalize_source_text(source)
-  let expected =
-    #|Ok("//# Functions\n\nlet a: Int = 1\n\nlet b: Int = 2\n")
-  inspect(result, content=expected)
+  inspect(
+    result,
+    content=(
+      #|Ok("//# Functions\n\n// a: Int\nlet a: Int = 1\n\n// b: Int\nlet b: Int = 2\n")
+    ),
+  )
 }
 
 ///|
@@ -49,9 +55,12 @@ test "normalize_engine: constant folding for addition" {
   let source =
     #|let value = 1 + 2
   let result = normalize_source_text(source)
-  let expected =
-    #|Ok("//# Functions\n\nlet value: Int = 3\n")
-  inspect(result, content=expected)
+  inspect(
+    result,
+    content=(
+      #|Ok("//# Functions\n\n// value: Int\nlet value: Int = 3\n")
+    ),
+  )
 }
 
 ///|
@@ -59,9 +68,12 @@ test "normalize_engine: constant folding for multiplication" {
   let source =
     #|let value = 3 * 4
   let result = normalize_source_text(source)
-  let expected =
-    #|Ok("//# Functions\n\nlet value: Int = 12\n")
-  inspect(result, content=expected)
+  inspect(
+    result,
+    content=(
+      #|Ok("//# Functions\n\n// value: Int\nlet value: Int = 12\n")
+    ),
+  )
 }
 
 ///|
@@ -163,9 +175,12 @@ test "normalize_engine: inferred annotation on non-fn let" {
   let source =
     #|let answer = 40 + 2
   let result = normalize_source_text(source)
-  let expected =
-    #|Ok("//# Functions\n\nlet answer: Int = 42\n")
-  inspect(result, content=expected)
+  inspect(
+    result,
+    content=(
+      #|Ok("//# Functions\n\n// answer: Int\nlet answer: Int = 42\n")
+    ),
+  )
 }
 
 ///|
@@ -296,9 +311,12 @@ test "normalize_engine: constant folding subtraction" {
   let source =
     #|let value = 10 - 3
   let result = normalize_source_text(source)
-  let expected =
-    #|Ok("//# Functions\n\nlet value: Int = 7\n")
-  inspect(result, content=expected)
+  inspect(
+    result,
+    content=(
+      #|Ok("//# Functions\n\n// value: Int\nlet value: Int = 7\n")
+    ),
+  )
 }
 
 ///|
@@ -487,10 +505,13 @@ test "normalize_engine: pipeline normalization for nested calls" {
         content=(
           #|//# Functions
           #|
+          #|// dbl: (Int) -> Int
           #|let dbl = (x: Int) -> Int { x * 2 }
           #|
+          #|// inc: (Int) -> Int
           #|let inc = (x: Int) -> Int { x + 1 }
           #|
+          #|// result: Int
           #|let result: Int = 3 |> dbl |> inc
           #|
         ),
@@ -513,10 +534,13 @@ test "normalize_engine: pipeline with extra args" {
         content=(
           #|//# Functions
           #|
+          #|// add: (Int, Int) -> Int
           #|let add = (x: Int, y: Int) -> Int { x + y }
           #|
+          #|// mul: (Int, Int) -> Int
           #|let mul = (x: Int, y: Int) -> Int { x * y }
           #|
+          #|// result: Int
           #|let result: Int = 3 |> mul(2) |> add(10)
           #|
         ),

@@ -461,7 +461,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
                 let _ = self.advance()
               }
               let text = (try! self.input[start:self.pos]).to_string()
-              Token::new(whitespace(), text)
+              Token::new(comment(), text)
             }
             _ => Token::new(slash(), "/")
           }

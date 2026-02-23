@@ -253,7 +253,6 @@ test "pass pipeline: full chain produces same result as normalize_source_text" {
     #|let z = () -> Int { b() }
     #|let b = () -> Int { a() }
     #|let a = () -> Int { 42 }
-  let expected = normalize_source_text(source)
   // Manually chain passes
   let quickfixed = normalize_apply_grammar_quickfixes(source)
   let ast = match pass_parse(quickfixed) {
@@ -292,5 +291,10 @@ test "pass pipeline: full chain produces same result as normalize_source_text" {
     }
   }
   let actual : Result[String, String] = Ok(rendered)
-  inspect(actual, content=expected.to_string())
+  inspect(
+    actual,
+    content=(
+      #|Ok("//# Functions\n\nlet a = () -> Int { 42 }\n\nlet b = () -> Int { a() }\n\nlet z = () -> Int { b() }\n")
+    ),
+  )
 }

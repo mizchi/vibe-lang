@@ -554,7 +554,9 @@ fn normalize_source_text_flat_with_entry_names_internal(
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  Ok(rendered)
+  // Pass 10: Signature comments
+  let with_comments = normalize_inject_signature_comments(rendered, env)
+  Ok(with_comments)
 }
 
 ///|

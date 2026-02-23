@@ -168,13 +168,11 @@ fn normalize_render_stmt(
         annotation is None &&
         not(normalize_let_stmt_prefers_rendered_expr(expr, env.get(name)))
       if should_preserve_raw {
-        let snippet = normalize_source_slice_by_span(
-            source,
-            span.start,
-            span.end,
-          )
+        let snippet = normalize_strip_trailing_comments(
+          normalize_source_slice_by_span(source, span.start, span.end)
           .trim()
-          .to_string()
+          .to_string(),
+        )
         if normalize_render_stmt_accept_raw_snippet(snippet) {
           return Some(snippet)
         }
@@ -200,13 +198,11 @@ fn normalize_render_stmt(
           normalize_let_stmt_prefers_rendered_expr(render_expr, env.get(name)),
         )
       if should_preserve_raw {
-        let snippet = normalize_source_slice_by_span(
-            source,
-            span.start,
-            span.end,
-          )
+        let snippet = normalize_strip_trailing_comments(
+          normalize_source_slice_by_span(source, span.start, span.end)
           .trim()
-          .to_string()
+          .to_string(),
+        )
         if snippet.has_prefix("export ") &&
           normalize_render_stmt_accept_raw_snippet(snippet) {
           return Some(snippet)
@@ -985,6 +981,34 @@ fn normalize_stmt_group_section_name(group : NormalizeStmtGroup) -> String {
 }
 
 ///|
+fn normalize_strip_trailing_comments(text : String) -> String {
+  let lines : Array[String] = []
+  for part in text.split("\n") {
+    lines.push(part.to_string())
+  }
+  let mut end = lines.length()
+  while end > 0 {
+    let line = lines[end - 1].trim().to_string()
+    if line.length() == 0 || line.has_prefix("//") {
+      end -= 1
+    } else {
+      break
+    }
+  }
+  if end <= 0 {
+    return ""
+  }
+  let buf = StringBuilder::new()
+  for i = 0; i < end; i = i + 1 {
+    if i > 0 {
+      buf.write_char('\n')
+    }
+    buf.write_string(lines[i])
+  }
+  buf.to_string()
+}
+
+///|
 fn normalize_trim_rendered_block(text : String) -> String {
   let mut end = text.length()
   while end > 0 {
@@ -999,6 +1023,117 @@ fn normalize_trim_rendered_block(text : String) -> String {
     ""
   } else {
     text.unsafe_substring(start=0, end~)
+  }
+}
+
+///|
+fn normalize_render_signature_comment(
+  name : String,
+  env : @checker.TypeEnv,
+) -> String? {
+  match env.get(name) {
+    Some(ty) => {
+      let ty_text = normalize_render_type_annotation(ty)
+      if ty_text.length() == 0 {
+        None
+      } else {
+        Some("// " + name + ": " + ty_text)
+      }
+    }
+    None => None
+  }
+}
+
+///|
+fn normalize_inject_signature_comments(
+  rendered : String,
+  env : @checker.TypeEnv,
+) -> String {
+  let lines : Array[String] = []
+  for part in rendered.split("\n") {
+    lines.push(part.to_string())
+  }
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < lines.length() {
+    let line = lines[i]
+    let trimmed = line.trim().to_string()
+    let name : String? = if trimmed.has_prefix("export let ") {
+      normalize_extract_let_name(trimmed, 11)
+    } else if trimmed.has_prefix("let rec ") {
+      normalize_extract_let_name(trimmed, 8)
+    } else if trimmed.has_prefix("let ") {
+      normalize_extract_let_name(trimmed, 4)
+    } else {
+      None
+    }
+    match name {
+      Some(n) => {
+        let comment = normalize_render_signature_comment(n, env)
+        match comment {
+          Some(c) => {
+            let prev_is_sig = {
+              let mut k = i - 1
+              let mut found = false
+              while k >= 0 {
+                let prev = lines[k].trim().to_string()
+                if prev.length() == 0 {
+                  k -= 1
+                  continue
+                }
+                if prev.has_prefix("// " + n + ": ") {
+                  found = true
+                }
+                break
+              }
+              found
+            }
+            if not(prev_is_sig) {
+              out.write_string(c)
+              out.write_char('\n')
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    out.write_string(line)
+    if i < lines.length() - 1 {
+      out.write_char('\n')
+    }
+    i += 1
+  }
+  out.to_string()
+}
+
+///|
+fn normalize_extract_let_name(line : String, start : Int) -> String? {
+  if start >= line.length() {
+    return None
+  }
+  let rest = line.unsafe_substring(start~, end=line.length())
+  let trimmed = rest.trim().to_string()
+  if trimmed.length() == 0 {
+    return None
+  }
+  // Skip "rec " if present
+  let name_start = if trimmed.has_prefix("rec ") { 4 } else { 0 }
+  let buf = StringBuilder::new()
+  let mut j = name_start
+  while j < trimmed.length() {
+    let c = trimmed[j].to_int().unsafe_to_char()
+    if c == ' ' || c == ':' || c == '=' || c == '(' || c == '\t' {
+      break
+    }
+    buf.write_char(c)
+    j += 1
+  }
+  let name = buf.to_string()
+  if name.length() > 0 {
+    Some(name)
+  } else {
+    None
   }
 }
 
@@ -1058,10 +1193,8 @@ fn normalize_render_source(
       Some(rendered_line) => push_rendered(group, rendered_line)
       None => {
         let span = stmt.span()
-        let snippet = normalize_source_slice_by_span(
-          source,
-          span.start,
-          span.end,
+        let snippet = normalize_strip_trailing_comments(
+          normalize_source_slice_by_span(source, span.start, span.end),
         )
         push_rendered(group, snippet)
       }
