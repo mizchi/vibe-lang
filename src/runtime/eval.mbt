@@ -99,6 +99,26 @@ suberror EvalError {
 } derive(Show, Eq)
 
 ///|
+pub fn EvalError::user_message(self : EvalError) -> String {
+  match self {
+    EvalError::BadCall(msg) => msg
+    EvalError::UnknownName(name) => "undefined: " + name
+    EvalError::PermissionDenied(msg) => "permission denied: " + msg
+    EvalError::ImportError(msg) => "import error: " + msg
+    EvalError::FeatureDisabled(feature~, operation~, flag~) =>
+      operation +
+      " requires feature '" +
+      feature +
+      "' (enable with " +
+      flag +
+      ")"
+    EvalError::LoopFuelExhausted =>
+      "loop fuel exhausted (possible infinite loop)"
+    _ => self.to_string()
+  }
+}
+
+///|
 fn wrap_error_effect(payload : @core.Value) -> @core.Value {
   let fields : Map[String, @core.Value] = {}
   fields["Error"] = payload

@@ -7,12 +7,21 @@ suberror VibeError {
 } derive(Show, Eq)
 
 ///|
+pub fn VibeError::user_message(self : VibeError) -> String {
+  match self {
+    VibeError::Parse(parse_err) => parse_err.diagnostic().message
+    VibeError::Type(type_err) => type_err.diagnostic().message
+    VibeError::Eval(eval_err) => eval_err.user_message()
+  }
+}
+
+///|
 pub fn VibeError::format_for_repl(self : VibeError, source : String) -> String {
   match self {
     VibeError::Type(type_err) => type_err.diagnostic().render("<repl>", source)
     VibeError::Parse(parse_err) =>
       parse_err.diagnostic().render("<repl>", source)
-    VibeError::Eval(eval_err) => "error: " + eval_err.to_string()
+    VibeError::Eval(eval_err) => "error: " + eval_err.user_message()
   }
 }
 
@@ -51,7 +60,7 @@ pub fn format_error_for_repl(
     }
     VibeError::Parse(parse_err) =>
       parse_err.diagnostic().render("<repl>", source)
-    VibeError::Eval(eval_err) => "error: " + eval_err.to_string()
+    VibeError::Eval(eval_err) => "error: " + eval_err.user_message()
     _ => "error: " + e.to_string()
   }
 }

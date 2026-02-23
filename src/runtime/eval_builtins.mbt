@@ -138,7 +138,9 @@ fn eval_pure_builtin(
         @core.Value::Array(items) => @core.Value::Int(items.length().to_int64())
         _ =>
           raise EvalError::BadCall(
-            "array_length: expected Array, got " + value_type_name(args[0]),
+            "expected Array, got " +
+            value_type_name(args[0]) +
+            " (for-in requires an iterable)",
           )
       }
     }
