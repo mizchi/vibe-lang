@@ -403,10 +403,9 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
       }
       out.to_string()
     }
-    @vibe_core.Type::Record(_)
-    | @vibe_core.Type::Variant(_)
-    | @vibe_core.Type::Param(_)
-    | @vibe_core.Type::Var(_) => ""
+    @vibe_core.Type::Param(name) => name
+    @vibe_core.Type::Var(_) => "_"
+    @vibe_core.Type::Record(_) | @vibe_core.Type::Variant(_) => ""
   }
 }
 

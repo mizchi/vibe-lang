@@ -105,12 +105,42 @@ fn normalize_has_exact_export_stmt(
 }
 
 ///|
+fn normalize_all_names_already_exported(
+  stmts : Array[@vibe_core.Stmt],
+  entry_names : Array[String],
+) -> Bool {
+  let exported : Map[String, Bool] = {}
+  for stmt in stmts {
+    match stmt {
+      @vibe_core.Stmt::ExportLet(name~, ..)
+      | @vibe_core.Stmt::ExportEnumDef(name~, ..)
+      | @vibe_core.Stmt::ExportStructDef(name~, ..)
+      | @vibe_core.Stmt::ExportTypeAlias(name~, ..) => exported[name] = true
+      @vibe_core.Stmt::TraitDef(name~, exported=is_exported, ..) =>
+        if is_exported {
+          exported[name] = true
+        }
+      _ => ()
+    }
+  }
+  for name in entry_names {
+    if not(exported.contains(name)) {
+      return false
+    }
+  }
+  true
+}
+
+///|
 fn normalize_append_entry_export_stmt(
   stmts : Array[@vibe_core.Stmt],
   entry_names : Array[String],
 ) -> Array[@vibe_core.Stmt] {
   if entry_names.length() == 0 ||
     normalize_has_exact_export_stmt(stmts, entry_names) {
+    return stmts
+  }
+  if normalize_all_names_already_exported(stmts, entry_names) {
     return stmts
   }
   let out : Array[@vibe_core.Stmt] = []
@@ -1027,12 +1057,23 @@ fn normalize_trim_rendered_block(text : String) -> String {
 }
 
 ///|
+fn normalize_type_has_effects(ty : @vibe_core.Type) -> Bool {
+  match ty {
+    @vibe_core.Type::Func(effects~, ..) => effects.length() > 0
+    _ => false
+  }
+}
+
+///|
 fn normalize_render_signature_comment(
   name : String,
   env : @checker.TypeEnv,
 ) -> String? {
   match env.get(name) {
     Some(ty) => {
+      if not(normalize_type_has_effects(ty)) {
+        return None
+      }
       let ty_text = normalize_render_type_annotation(ty)
       if ty_text.length() == 0 {
         None
@@ -1174,6 +1215,14 @@ fn normalize_render_source(
   }
   let mut inserted_declare_lines = false
   for stmt in stmts {
+    // Skip redundant Export stmts when all names are already individually exported
+    match stmt {
+      @vibe_core.Stmt::Export(names~, ..) =>
+        if normalize_all_names_already_exported(stmts, names) {
+          continue
+        }
+      _ => ()
+    }
     let group = normalize_stmt_group(stmt)
     if not(inserted_declare_lines) && declare_lines.length() > 0 {
       if group != NormalizeStmtGroup::Use &&

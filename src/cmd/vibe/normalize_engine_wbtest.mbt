@@ -31,7 +31,7 @@ test "normalize_engine: format basic let binding" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\n// x: Int\nlet x: Int = 1\n")
+      #|Ok("//# Functions\n\nlet x: Int = 1\n")
     ),
   )
 }
@@ -45,7 +45,7 @@ test "normalize_engine: format multiple let bindings with spacing" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\n// a: Int\nlet a: Int = 1\n\n// b: Int\nlet b: Int = 2\n")
+      #|Ok("//# Functions\n\nlet a: Int = 1\n\nlet b: Int = 2\n")
     ),
   )
 }
@@ -58,7 +58,7 @@ test "normalize_engine: constant folding for addition" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\n// value: Int\nlet value: Int = 3\n")
+      #|Ok("//# Functions\n\nlet value: Int = 3\n")
     ),
   )
 }
@@ -71,7 +71,7 @@ test "normalize_engine: constant folding for multiplication" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\n// value: Int\nlet value: Int = 12\n")
+      #|Ok("//# Functions\n\nlet value: Int = 12\n")
     ),
   )
 }
@@ -178,7 +178,7 @@ test "normalize_engine: inferred annotation on non-fn let" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\n// answer: Int\nlet answer: Int = 42\n")
+      #|Ok("//# Functions\n\nlet answer: Int = 42\n")
     ),
   )
 }
@@ -314,7 +314,7 @@ test "normalize_engine: constant folding subtraction" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\n// value: Int\nlet value: Int = 7\n")
+      #|Ok("//# Functions\n\nlet value: Int = 7\n")
     ),
   )
 }
@@ -505,13 +505,10 @@ test "normalize_engine: pipeline normalization for nested calls" {
         content=(
           #|//# Functions
           #|
-          #|// dbl: (Int) -> Int
           #|let dbl = (x: Int) -> Int { x * 2 }
           #|
-          #|// inc: (Int) -> Int
           #|let inc = (x: Int) -> Int { x + 1 }
           #|
-          #|// result: Int
           #|let result: Int = 3 |> dbl |> inc
           #|
         ),
@@ -534,13 +531,10 @@ test "normalize_engine: pipeline with extra args" {
         content=(
           #|//# Functions
           #|
-          #|// add: (Int, Int) -> Int
           #|let add = (x: Int, y: Int) -> Int { x + y }
           #|
-          #|// mul: (Int, Int) -> Int
           #|let mul = (x: Int, y: Int) -> Int { x * y }
           #|
-          #|// result: Int
           #|let result: Int = 3 |> mul(2) |> add(10)
           #|
         ),
