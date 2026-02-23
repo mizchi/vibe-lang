@@ -150,3 +150,27 @@ test "type query keeps exported schemes for thread runtime-style wrappers" {
     }
   }
 }
+
+///|
+test "cascading diagnostics: upstream type error produces root cause diagnostic" {
+  let db = VibeDb::new()
+  // lib.vibe has a type error: calls undefined function `undefined_fn`
+  db.set_source(
+    "./lib.vibe",
+    "export let helper = () -> Int { undefined_fn(1) }\nexport { helper }\n",
+  )
+  // main imports helper from lib.vibe
+  db.set_source("main", "use ./lib.vibe { helper }\nlet x = helper()\n")
+  let _env = db.types("main")
+  let diags = db.diagnostics("main")
+  // Current behavior: no useful diagnostic for main — helper silently becomes
+  // unavailable, and main gets "unknown function: helper" instead of the root
+  // cause ("undefined_fn" error in lib.vibe).
+  //
+  // Expected: at least one diagnostic mentioning the upstream dependency error,
+  // e.g. "dependency export unavailable due to upstream errors in ./lib.vibe"
+  let has_upstream_hint = diags.iter().any(fn(d) {
+    d.message.contains("upstream") || d.message.contains("./lib.vibe")
+  })
+  assert_true!(has_upstream_hint)
+}

@@ -210,6 +210,7 @@ pub struct Runtime {
   perform_resume_overrides : Map[String, @core.Value]
   mut prelude_loaded : Bool
   mut cwd : String
+  mut loop_fuel : Int
 }
 
 ///|
@@ -239,6 +240,13 @@ pub fn Runtime::new_with_features(
     perform_resume_overrides: {},
     prelude_loaded: false,
     cwd: @io.current_dir_or_root(),
+    loop_fuel: match @io.get_env_var("VIBE_LOOP_FUEL") {
+      Some(s) => {
+        let n = try { @strconv.parse_int(s) } catch { _ => 100_000 }
+        if n > 0 { n } else { 100_000 }
+      }
+      None => 100_000
+    },
   }
   let env = @checker.TypeEnv::new()
   let _ = try! @checker.ensure_prelude_option(env)
@@ -429,6 +437,7 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     perform_resume_overrides: self.perform_resume_overrides.copy(),
     prelude_loaded: self.prelude_loaded,
     cwd: self.cwd,
+    loop_fuel: 100_000,
   }
 }
 
@@ -456,6 +465,7 @@ fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime 
     perform_resume_overrides: self.perform_resume_overrides.copy(),
     prelude_loaded: self.prelude_loaded,
     cwd: self.cwd,
+    loop_fuel: self.loop_fuel,
   }
 }
 

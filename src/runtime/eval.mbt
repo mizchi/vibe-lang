@@ -95,6 +95,7 @@ suberror EvalError {
   Resume(@core.Value)
   LoopBreak(@core.Value?)
   LoopContinue(Array[@core.Value])
+  LoopFuelExhausted
 } derive(Show, Eq)
 
 ///|
@@ -1008,6 +1009,10 @@ fn eval_while_expr(
             _ => raise EvalError::BadCall("while cond")
           }
         }) {
+    rt.loop_fuel -= 1
+    if rt.loop_fuel <= 0 {
+      raise EvalError::LoopFuelExhausted
+    }
     let body_result : Result[EvalResult, EvalError] = try? rt.eval_module(body)
     match body_result {
       Ok(body_res) => extend_effects(effects, body_res.effects)
@@ -1041,6 +1046,10 @@ fn eval_loop_expr(
   // Loop
   let mut result : @core.Value = @core.Value::Unit
   while true {
+    rt.loop_fuel -= 1
+    if rt.loop_fuel <= 0 {
+      raise EvalError::LoopFuelExhausted
+    }
     let body_result : Result[EvalResult, EvalError] = try? rt.eval_module(body)
     match body_result {
       Ok(body_res) => {

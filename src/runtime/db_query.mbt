@@ -939,7 +939,27 @@ pub fn VibeDb::new() -> VibeDb {
                     }
                     if exported_names.contains(name) {
                       if not(import_symbol(item, name, local_name)) {
-                        report_kind_mismatch(item, name)
+                        // Name is declared as exported in the dependency AST
+                        // but absent from its type env — the dependency has
+                        // type errors that made the export unavailable.
+                        if item.kind == @core.ImportKind::Value {
+                          diags.push(rt, @core.Diagnostic::{
+                            stage: "import",
+                            message: "dependency export unavailable due to upstream errors in " +
+                            imp.path,
+                            span: Some(span),
+                            hint: Some(
+                              "fix errors in " + imp.path + " first",
+                            ),
+                            note: Some(
+                              "exported symbol '" +
+                              name +
+                              "' could not be resolved because the dependency has type errors",
+                            ),
+                          })
+                        } else {
+                          report_kind_mismatch(item, name)
+                        }
                       }
                       // Also bring namespace members (`Type::...`) when using
                       // the namespace root itself (e.g. `use <ref> { Option }`).

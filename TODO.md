@@ -96,6 +96,18 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Runtime
 
+### Execution strategy: Interpreter vs WASM
+
+| | インタプリタ (eval) | WASM コンパイル |
+|---|---|---|
+| 用途 | REPL、テスト、簡易スクリプト | ベンチマーク、本番実行、重い計算 |
+| 速度 | 遅い（AST walk、~100K iter/数秒） | ネイティブ近い速度 |
+| 安全弁 | `loop_fuel` で反復上限（デフォルト 100K、`VIBE_LOOP_FUEL` で調整可） | OS レベルの制限 |
+| コマンド | `vibe test`, `vibe shell` | `vibe bench`（デフォルト WASM）, `vibe compile` |
+
+- `vibe bench` は WASM がデフォルト（`BenchBackend::Wasm`）、unsupported 時のみインタプリタ fallback
+- インタプリタの `loop_fuel` は無限ループ防止の安全弁（CPU 300% 暴走を防ぐ）
+
 - [ ] `VibeDb` を import/query/graph/diagnostic 単位に分割する
   - 対象: `src/runtime/db.mbt`
 - [ ] runtime package の責務を整理し、frontend 再公開 API を縮小する
@@ -188,6 +200,119 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
   - `Num` → `[V]` に変更: map_get_or, map_map, map_filter
   - `Num` のまま（`eq`/`lt` 依存）: array_sort, array_contains, assert_eq
   - 対象: `src/checker/prelude.mbt`
+
+## Playground
+
+- [x] ブラウザ上で vibe コードを eval する最小プレイグラウンドを作成する
+  - Vite + TypeScript、`createVibeService()` 経由で WASM eval
+  - 対象: `playground/`
+- [x] GitHub Pages へ自動デプロイする CI を構築する
+  - `main` push + `workflow_dispatch` で `https://mizchi.github.io/vibe-lang/` にデプロイ
+  - 対象: `.github/workflows/playground.yml`
+- [ ] CodeMirror 等のエディタ統合（シンタックスハイライト、補完）
+- [ ] 複数スニペットのプリセット / URL 共有
+- [ ] `service.check()` によるリアルタイム diagnostics 表示
+
+## Self-host Compiler (`vibe/compiler/`)
+
+Total: 126 tests (lexer: 20, parser: 27, printer: 21, stmt: 46, fixture: 12)
+
+### Phase 1: Lexer + AST + Expression Parser (completed)
+
+- [x] `token.vibe` — Token enum (~50 variants) + `token_to_string`
+- [x] `ast.vibe` — Pat, Expr enum definitions
+- [x] `lexer.vibe` + `lexer_test.vibe` — String → Array[Token] (20 tests)
+- [x] `parser.vibe` + `parser_test.vibe` — Array[Token] → Expr (27 tests)
+- [x] `printer.vibe` + `printer_test.vibe` — Expr → String (21 tests, roundtrip)
+- [x] `index.vibe` — Public API re-export
+
+### Phase 2: Statement Parser + Type Annotations (completed)
+
+- [x] `TypeExpr` enum + `parse_type` — type annotation parsing
+- [x] `Stmt` enum + statement parsers — 13 variants (SLet, SLetMut, SEnum, SStruct, STypeAlias, STrait, SImpl, SImport, STest, SBench, SExpr, SExport, SModule)
+- [x] `parse_stmt` + `parse_program` — top-level statement dispatch
+- [x] `print_type_expr` + `print_stmt` + `print_program` — printer extensions
+- [x] `stmt_test.vibe` — 46 tests
+
+### Phase 3: Fixture Compatibility (completed)
+
+- [x] Comma separator in enum/struct fields (normalized to `;` on output)
+- [x] Effect annotation `() -> Int with {Error} { body }` in lambda expressions
+- [x] `export module name { stmts }` block parsing (SModule with Array[Stmt])
+- [x] Labeled params `x~: Int` and labeled args `x~=1`, `x?=2`, `x=1` (ELabeledArg)
+- [x] EFn extended with `Option[String]` return type annotation
+- [x] `fixture_test.vibe` — 6 fixtures × parse + roundtrip = 12 tests
+- [ ] `suberror` declaration parsing
+- [ ] `declare` (extern) parsing
+
+### Phase 4: Parse own source (not started)
+
+Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
+
+- [ ] `while` loop expression
+- [ ] `do { ... }` block expression
+- [ ] `handle { ... } { Error(msg) => ... }` effect handler
+- [ ] `throw(msg)` expression
+- [ ] `for ... in` loop
+- [ ] `break` / `continue` / `return`
+
+### Phase 5: Type Checker (not started)
+
+- [ ] Type inference (Hindley-Milner with unification)
+- [ ] Effect checking (`with { Error }` propagation)
+- [ ] Import resolution (`use ./foo.vibe { ... }` file loading)
+- [ ] Trait constraint resolution
+
+### Phase 6: Interpreter / Codegen (not started)
+
+- [ ] Builtin functions (~30: string_concat, array_get, etc.)
+- [ ] AST evaluator (eval)
+- [ ] Self-hosting: vibe/compiler parses + evaluates vibe/compiler itself
+
+### Language pain points discovered during self-hosting
+
+#### Reality check (2026-02)
+
+- [x] Forward reference / mutual recursion は本体 checker で実装済み
+  - `typecheck_stmts` の pre-scan provisional scheme で解決（`src/checker/typecheck_stmts.mbt`）
+- [x] 文字列補間は実装済み（`"\(expr)"`）
+  - parser desugar あり（`src/parser/parser_ast_expr.mbt`）
+- [x] 複数行文字列は実装済み（`#| ...`）
+  - lexer 実装あり（`src/parser/lexer.mbt`）
+- [x] 反復 helper（`array_map/filter/fold`）は prelude で提供済み
+  - language tour / quick-start 側も反映済み
+
+#### Remaining language UX debts
+
+- [x] Cascading diagnostics を根治する（import 先エラーが `unknown function/type` に潰れる問題）
+  - 対象: `src/runtime/db_query.mbt`, `src/runtime/db.mbt`, `src/core/diagnostic.mbt`, `src/cmd/vibe/cli.mbt`
+  - [x] Red: 依存モジュール failure 時に importer 側へ根本原因が見えない回帰テストを追加
+    - `src/runtime/db_wbtest.mbt`
+  - [x] Green: import 解決で `exported_names` に存在するが `get_scheme/get_type_alias/...` が欠落した場合、
+    明示的な import diagnostic（「dependency export unavailable due to upstream errors」）を出す
+  - [x] Green + Refactor: CLI `check` で依存先の診断を entry 前に表示（root cause 優先順）
+    - `Diagnostic` struct 変更なし（52箇所の churn 回避）。CLI 側で `db.imports()` を辿り依存先診断を先行表示
+
+- [ ] `StateLocal`/`do {}` ノイズを削減する（局所変異なのに top-level 不純扱いされる問題）
+  - 対象: `src/checker/purity.mbt`, `src/checker/typecheck_errors.mbt`, `docs/language-tour/*.md`
+  - [ ] Red: escape しない builder 使用を含む binding が `TopLevelImpure(StateLocal)` で落ちるケースを固定
+    - `src/checker/purity_wbtest.mbt`
+  - [ ] Green: escape-free な `array_builder/map_builder/string_builder` パターンを purity 解析で `Pure` 扱いに昇格
+  - [ ] Green: 診断 hint を実装仕様に合わせて更新（許容される局所変異パターンを案内）
+  - [ ] Refactor: docs の `do` 必須説明を条件付き（必要なケースのみ）へ再整理
+
+- [ ] self-host compiler 向けの反復ボイラープレート削減 syntax を検討する
+  - 候補: array comprehension (`[for x in xs => f(x)]`) または builder sugar
+  - 対象: `src/parser/parser_ast_expr.mbt`, `src/checker/typecheck_expr.mbt`, `src/frontend/*`, `docs/language-tour/syntax-reference.md`
+  - [ ] Red: `while + array_builder` 由来の可読性劣化ケースを fixture 化
+  - [ ] Green: parser/desugar/typecheck の最小実装
+  - [ ] Refactor: `vibe/compiler/*.vibe` の該当箇所を新syntaxへ移行し差分評価
+
+## Documentation
+
+- [x] `docs/language-tour/syntax-reference.md` — Complete syntax reference
+- [x] `docs/language-tour/effects.md` — Detailed effects guide (perform/resume, suberror, algebraic effects)
+- [x] `docs/language-tour/modules.md` — Module system guide (use, export, module blocks, declare)
 
 ## Language Features
 

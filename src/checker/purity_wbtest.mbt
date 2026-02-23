@@ -95,6 +95,30 @@ test "check_toplevel_purity: enum def passes" {
 }
 
 ///|
+test "check_toplevel_purity: escape-free builder in fn should be pure" {
+  // A function that uses array_builder internally but freezes the result
+  // should be considered pure — the builder doesn't escape.
+  let script =
+    #|let make_arr = () -> Array[Int] {
+    #|  do {
+    #|    let b = array_builder()
+    #|    array_builder_push(b, 1)
+    #|    array_builder_push(b, 2)
+    #|    array_builder_freeze(b)
+    #|  }
+    #|}
+    #|let xs = make_arr()
+  let ast = parse_for_purity(script)
+  let env = type_check(ast) catch {
+    err => fail("type error: \{err.to_string()}")
+  }
+  // Currently fails with TopLevelImpure — we want this to pass
+  check_toplevel_purity(env, ast.stmts) catch {
+    err => fail("should pass for escape-free builder: \{err.to_string()}")
+  }
+}
+
+///|
 test "check_toplevel_purity: call chain keeps state_local tier" {
   let script =
     #|let next = () -> Int {

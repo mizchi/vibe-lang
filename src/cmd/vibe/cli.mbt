@@ -805,6 +805,20 @@ fn check_cmd(args : Array[String]) -> Unit {
             }
         }
         let _ = db.types(entry)
+        // Show dependency diagnostics first (root cause priority)
+        let dep_imports = db.imports(entry)
+        for imp in dep_imports {
+          let dep_diags = db.diagnostics(imp.path)
+          if dep_diags.length() > 0 {
+            let dep_source = match db.get_source(imp.path) {
+              Some(v) => v
+              None => ""
+            }
+            for dep_diag in dep_diags {
+              println(dep_diag.render(imp.path, dep_source))
+            }
+          }
+        }
         let diags = db.diagnostics(entry)
         for diag in diags {
           println(diag.render(entry_path, source))

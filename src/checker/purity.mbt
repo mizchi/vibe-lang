@@ -125,7 +125,7 @@ pub fn purity_for_let(
     locals.bindings[name] = TopLevelPurityTier::Pure
   }
   match expr {
-    @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
+    @core.Expr::Fn(params~, ret~, effects=fn_effects, body~, span~, ..) => {
       let _ = span
       let _ = ret
       let fn_locals = locals.child()
@@ -133,7 +133,14 @@ pub fn purity_for_let(
         fn_locals.bindings[param.name] = TopLevelPurityTier::Pure
       }
       let expr_info = purity_analysis_pure()
-      let value_info = purity_block_analysis_inner(env, body, fn_locals)
+      // Functions with declared effects (e.g. `with { Fs }`) are impure
+      // regardless of body analysis — they perform side effects.
+      let has_effects = fn_effects.length() > 0
+      let value_info = if has_effects {
+        purity_analysis_impure()
+      } else {
+        purity_block_analysis_inner(env, body, fn_locals)
+      }
       PurityInfo::{
         expr: expr_info.is_pure(),
         value: value_info.is_pure(),
@@ -350,9 +357,13 @@ fn purity_expr_analysis_inner(
       out
     }
     @core.Expr::Do(body~, span~) => {
+      // `do { }` is an explicit impurity boundary: mutation inside is
+      // encapsulated and the result is considered pure. This enables
+      // escape-free builder patterns (array_builder → push → freeze)
+      // without polluting the enclosing scope's purity tier.
       let _ = body
       let _ = span
-      purity_analysis_impure()
+      purity_analysis_pure()
     }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
