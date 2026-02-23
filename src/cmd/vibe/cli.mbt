@@ -682,10 +682,10 @@ fn run_cmd(
   match syntax_mode {
     @runtime.ParserMode::VibeMode =>
       match @loader.load_db(entry_path) {
-        Err(err) => abort("run: " + err)
+        Err(err) => abort("error: " + err)
         Ok((db, entry)) => {
           let compiled = @runtime_compile.compile_module(db, entry) catch {
-            e => abort("run: " + e.to_string())
+            e => abort("error: " + e.to_string())
           }
           let rt = new_cli_runtime(features, enable_llm~)
           rt.set_type_env(compiled.type_env)
@@ -728,15 +728,15 @@ fn run_cmd(
           }
           // Check top-level purity
           @checker.check_toplevel_purity(compiled.type_env, converted_ast.stmts) catch {
-            e => abort("run: " + e.diagnostic().message)
+            e => abort("error: " + e.diagnostic().message)
           }
           // Load top-level definitions into runtime
           let _ = rt.eval_module(converted_ast) catch {
-            e => abort("run: " + e.to_string())
+            e => abort("error: " + e.to_string())
           }
           // Execute main entry point
           let main_result = rt.call_main() catch {
-            e => abort("run: " + e.to_string())
+            e => abort("error: " + e.to_string())
           }
           print_eval_result(main_result)
         }
@@ -744,11 +744,11 @@ fn run_cmd(
     @runtime.ParserMode::PosixMode => {
       let resolved = @loader.resolve_entry_path(entry_path)
       let source = @os_fs.read_file_to_string(resolved) catch {
-        e => abort("run: " + e.to_string())
+        e => abort("error: " + e.to_string())
       }
       let rt = new_cli_runtime(features, enable_llm~)
       let result = rt.eval_script_with_mode(source, syntax_mode) catch {
-        e => abort("run: " + e.to_string())
+        e => abort("error: " + e.to_string())
       }
       print_eval_result(result)
     }

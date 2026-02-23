@@ -832,7 +832,10 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
           extend_effects(effects, branch_out.effects)
           { value: branch_out.value, effects }
         }
-        _ => raise EvalError::BadCall("if")
+        _ as v =>
+          raise EvalError::BadCall(
+            "if condition must be Bool, got " + value_type_name(v),
+          )
       }
     }
     @core.Expr::Block(body~, ..) => eval_block(rt, body)
@@ -850,7 +853,10 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
                 extend_effects(effects, g_out.effects)
                 match g_out.value {
                   @core.Value::Bool(b) => b
-                  _ => raise EvalError::BadCall("guard")
+                  _ as v =>
+                    raise EvalError::BadCall(
+                      "guard condition must be Bool, got " + value_type_name(v),
+                    )
                 }
               }
               None => true
@@ -1006,7 +1012,10 @@ fn eval_while_expr(
           extend_effects(effects, cond_out.effects)
           match cond_out.value {
             @core.Value::Bool(b) => b
-            _ => raise EvalError::BadCall("while cond")
+            _ as v =>
+              raise EvalError::BadCall(
+                "while condition must be Bool, got " + value_type_name(v),
+              )
           }
         }) {
     rt.loop_fuel -= 1
@@ -1439,7 +1448,7 @@ fn eval_call(
   } else {
     match rt.get(name) {
       Some(@core.Value::Fn(fn_val)) => eval_user_call(rt, fn_val, args)
-      Some(_) => {
+      Some(val) => {
         // Name exists but isn't a function - try field access first
         let field_args_out = eval_args(rt, args)
         let field_pos = extract_positional_values(field_args_out.args, name)
@@ -1448,12 +1457,32 @@ fn eval_call(
             @core.Value::Record(record_fields) =>
               match record_fields.get(name) {
                 Some(v) => { value: v, effects: field_args_out.effects }
-                None => raise EvalError::BadCall(name)
+                None =>
+                  raise EvalError::BadCall(
+                    "'" +
+                    name +
+                    "' is not a function (has type " +
+                    value_type_name(val) +
+                    ")",
+                  )
               }
-            _ => raise EvalError::BadCall(name)
+            _ =>
+              raise EvalError::BadCall(
+                "'" +
+                name +
+                "' is not a function (has type " +
+                value_type_name(val) +
+                ")",
+              )
           }
         } else {
-          raise EvalError::BadCall(name)
+          raise EvalError::BadCall(
+            "'" +
+            name +
+            "' is not a function (has type " +
+            value_type_name(val) +
+            ")",
+          )
         }
       }
       None =>
@@ -2925,7 +2954,12 @@ fn bind_call_values(
         } else {
           match variadic_param {
             Some(_) => variadic_values.push(arg.value)
-            None => raise EvalError::BadCall("too many positional args")
+            None =>
+              raise EvalError::BadCall(
+                "too many positional arguments: expected " +
+                positional.length().to_string() +
+                ", got more",
+              )
           }
         }
       Some(label) => {
@@ -2951,7 +2985,12 @@ fn bind_call_values(
     }
   }
   if pos_index != positional.length() {
-    raise EvalError::BadCall("missing positional args")
+    raise EvalError::BadCall(
+      "missing positional arguments: expected " +
+      positional.length().to_string() +
+      ", got " +
+      pos_index.to_string(),
+    )
   }
   match variadic_param {
     Some(param) => bound[param.name] = @core.Value::Array(variadic_values)
@@ -2981,4 +3020,27 @@ fn values_from_eval_args(args : Array[EvalArgValue]) -> Array[@core.Value] {
     out.push(arg.value)
   }
   out
+}
+
+///|
+fn value_type_name(value : @core.Value) -> String {
+  match value {
+    @core.Value::Int(_) => "Int"
+    @core.Value::Float(_) => "Float"
+    @core.Value::Double(_) => "Double"
+    @core.Value::Bool(_) => "Bool"
+    @core.Value::Char(_) => "Char"
+    @core.Value::String(_) => "String"
+    @core.Value::Path(_) => "Path"
+    @core.Value::Unit => "Unit"
+    @core.Value::Tuple(_) => "Tuple"
+    @core.Value::Record(_) => "Record"
+    @core.Value::Array(_) => "Array"
+    @core.Value::Map(_) => "Map"
+    @core.Value::Fn(_) => "Fn"
+    @core.Value::ArrayBuilder(_) => "ArrayBuilder"
+    @core.Value::MapBuilder(_) => "MapBuilder"
+    @core.Value::StringBuilder(_) => "StringBuilder"
+    @core.Value::PromptText(_) => "PromptText"
+  }
 }

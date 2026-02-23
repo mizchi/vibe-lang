@@ -130,38 +130,68 @@ fn eval_pure_builtin(
     }
     "array_length" => {
       if args.length() != 1 {
-        raise EvalError::BadCall("array_length")
+        raise EvalError::BadCall(
+          "array_length: expected 1 argument, got " + args.length().to_string(),
+        )
       }
       match args[0] {
         @core.Value::Array(items) => @core.Value::Int(items.length().to_int64())
-        _ => raise EvalError::BadCall("array_length")
+        _ =>
+          raise EvalError::BadCall(
+            "array_length: expected Array, got " + value_type_name(args[0]),
+          )
       }
     }
     "array_get" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("array_get")
+        raise EvalError::BadCall(
+          "array_get: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Array(items), @core.Value::Int(index)) => {
           if index < 0L || index >= items.length().to_int64() {
-            raise EvalError::BadCall("array_get")
+            raise EvalError::BadCall(
+              "array_get: index " +
+              index.to_string() +
+              " out of bounds (length " +
+              items.length().to_string() +
+              ")",
+            )
           }
           items[index.to_int()]
         }
-        _ => raise EvalError::BadCall("array_get")
+        _ =>
+          raise EvalError::BadCall(
+            "array_get: expected (Array, Int), got (" +
+            value_type_name(args[0]) +
+            ", " +
+            value_type_name(args[1]) +
+            ")",
+          )
       }
     }
     "map_get" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("map_get")
+        raise EvalError::BadCall(
+          "map_get: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Map(items), @core.Value::String(key)) =>
           match items.get(key) {
             Some(value) => value
-            None => raise EvalError::BadCall("map_get")
+            None =>
+              raise EvalError::BadCall("map_get: key '" + key + "' not found")
           }
-        _ => raise EvalError::BadCall("map_get")
+        _ =>
+          raise EvalError::BadCall(
+            "map_get: expected (Map, String), got (" +
+            value_type_name(args[0]) +
+            ", " +
+            value_type_name(args[1]) +
+            ")",
+          )
       }
     }
     "string_length" => {
@@ -359,7 +389,9 @@ fn eval_pure_builtin(
     }
     "__add" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__add")
+        raise EvalError::BadCall(
+          "+: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a + b)
@@ -371,12 +403,20 @@ fn eval_pure_builtin(
           @core.Value::Float(a + b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(a + b)
-        _ => raise EvalError::BadCall("__add")
+        _ =>
+          raise EvalError::BadCall(
+            "+: type mismatch, got " +
+            value_type_name(args[0]) +
+            " + " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__sub" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__sub")
+        raise EvalError::BadCall(
+          "-: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a - b)
@@ -388,12 +428,20 @@ fn eval_pure_builtin(
           @core.Value::Float(a - b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(a - b)
-        _ => raise EvalError::BadCall("__sub")
+        _ =>
+          raise EvalError::BadCall(
+            "-: type mismatch, got " +
+            value_type_name(args[0]) +
+            " - " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__mul" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__mul")
+        raise EvalError::BadCall(
+          "*: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) => @core.Value::Int(a * b)
@@ -405,31 +453,39 @@ fn eval_pure_builtin(
           @core.Value::Float(a * b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(a * b)
-        _ => raise EvalError::BadCall("__mul")
+        _ =>
+          raise EvalError::BadCall(
+            "*: type mismatch, got " +
+            value_type_name(args[0]) +
+            " * " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__div" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__div")
+        raise EvalError::BadCall(
+          "/: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) =>
           if b == 0 {
-            raise EvalError::BadCall("__div")
+            raise EvalError::BadCall("/: division by zero")
           } else {
             @core.Value::Int(a / b)
           }
         (@core.Value::Int(a), @core.Value::Char(b)) => {
           let bv = b.to_int().to_int64()
           if bv == 0 {
-            raise EvalError::BadCall("__div")
+            raise EvalError::BadCall("/: division by zero")
           } else {
             @core.Value::Int(a / bv)
           }
         }
         (@core.Value::Char(a), @core.Value::Int(b)) =>
           if b == 0 {
-            raise EvalError::BadCall("__div")
+            raise EvalError::BadCall("/: division by zero")
           } else {
             @core.Value::Int(a.to_int().to_int64() / b)
           }
@@ -437,31 +493,39 @@ fn eval_pure_builtin(
           @core.Value::Float(a / b)
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(a / b)
-        _ => raise EvalError::BadCall("__div")
+        _ =>
+          raise EvalError::BadCall(
+            "/: type mismatch, got " +
+            value_type_name(args[0]) +
+            " / " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__mod" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__mod")
+        raise EvalError::BadCall(
+          "%: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Int(a), @core.Value::Int(b)) =>
           if b == 0 {
-            raise EvalError::BadCall("__mod")
+            raise EvalError::BadCall("%: division by zero")
           } else {
             @core.Value::Int(a % b)
           }
         (@core.Value::Int(a), @core.Value::Char(b)) => {
           let bv = b.to_int().to_int64()
           if bv == 0 {
-            raise EvalError::BadCall("__mod")
+            raise EvalError::BadCall("%: division by zero")
           } else {
             @core.Value::Int(a % bv)
           }
         }
         (@core.Value::Char(a), @core.Value::Int(b)) =>
           if b == 0 {
-            raise EvalError::BadCall("__mod")
+            raise EvalError::BadCall("%: division by zero")
           } else {
             @core.Value::Int(a.to_int().to_int64() % b)
           }
@@ -469,36 +533,56 @@ fn eval_pure_builtin(
           @core.Value::Float(Float::mod(a, b))
         (@core.Value::Double(a), @core.Value::Double(b)) =>
           @core.Value::Double(Double::mod(a, b))
-        _ => raise EvalError::BadCall("__mod")
+        _ =>
+          raise EvalError::BadCall(
+            "%: type mismatch, got " +
+            value_type_name(args[0]) +
+            " % " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__index" => {
       if args.length() != 2 {
-        raise EvalError::BadCall("__index")
+        raise EvalError::BadCall(
+          "[]: expected 2 arguments, got " + args.length().to_string(),
+        )
       }
       match (args[0], args[1]) {
         (@core.Value::Array(arr), @core.Value::Int(i)) =>
           if i >= 0L && i < arr.length().to_int64() {
             arr[i.to_int()]
           } else {
-            raise EvalError::BadCall("__index: out of bounds")
+            raise EvalError::BadCall(
+              "[]: index " +
+              i.to_string() +
+              " out of bounds (length " +
+              arr.length().to_string() +
+              ")",
+            )
           }
         (@core.Value::Record(map), @core.Value::String(key)) =>
           match map.get(key) {
             Some(v) => v
-            None => raise EvalError::BadCall("__index: missing key")
+            None => raise EvalError::BadCall("[]: missing key '" + key + "'")
           }
         (@core.Value::Map(map), @core.Value::String(key)) =>
           match map.get(key) {
             Some(v) => v
-            None => raise EvalError::BadCall("__index: missing key")
+            None => raise EvalError::BadCall("[]: missing key '" + key + "'")
           }
         (@core.Value::MapBuilder(map), @core.Value::String(key)) =>
           match map.get(key) {
             Some(v) => v
-            None => raise EvalError::BadCall("__index: missing key")
+            None => raise EvalError::BadCall("[]: missing key '" + key + "'")
           }
-        _ => raise EvalError::BadCall("__index")
+        _ =>
+          raise EvalError::BadCall(
+            "[]: cannot index " +
+            value_type_name(args[0]) +
+            " with " +
+            value_type_name(args[1]),
+          )
       }
     }
     "__set_index" => {
