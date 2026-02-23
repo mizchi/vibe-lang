@@ -472,3 +472,66 @@ test "merge: export preservation" {
     Err(msg) => fail("merge failed: " + msg)
   }
 }
+
+///|
+test "normalize_engine: pipeline normalization for nested calls" {
+  let source =
+    #|let inc = (x: Int) -> Int { x + 1 }
+    #|let dbl = (x: Int) -> Int { x * 2 }
+    #|let result = inc(dbl(3))
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      inspect(normalized, content=(
+        #|//# Functions
+        #|
+        #|let dbl = (x: Int) -> Int { x * 2 }
+        #|
+        #|let inc = (x: Int) -> Int { x + 1 }
+        #|
+        #|let result: Int = 3 |> dbl |> inc
+        #|
+      ))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: pipeline with extra args" {
+  let source =
+    #|let add = (x: Int, y: Int) -> Int { x + y }
+    #|let mul = (x: Int, y: Int) -> Int { x * y }
+    #|let result = add(mul(3, 2), 10)
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      inspect(normalized, content=(
+        #|//# Functions
+        #|
+        #|let add = (x: Int, y: Int) -> Int { x + y }
+        #|
+        #|let mul = (x: Int, y: Int) -> Int { x * y }
+        #|
+        #|let result: Int = 3 |> mul(2) |> add(10)
+        #|
+      ))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: no pipeline for depth 1" {
+  let source =
+    #|let inc = (x: Int) -> Int { x + 1 }
+    #|let result = inc(3)
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      // depth 1: should NOT be pipelined
+      assert_true(normalized.contains("let result: Int = inc(3)"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}

@@ -792,6 +792,69 @@ fn normalize_render_expr_for_stmt(
 }
 
 ///|
+fn normalize_render_pipeline(expr : @vibe_core.Expr) -> String? {
+  // Build chain of (name, extra_args) from outer to inner
+  let chain : Array[(String, Array[@vibe_core.CallArg])] = []
+  let mut current : @vibe_core.Expr = expr
+  while true {
+    match current {
+      @vibe_core.Expr::Call(name~, type_args~, args~, ..) => {
+        if type_args.length() > 0 || args.length() == 0 {
+          break
+        }
+        if args[0].label is Some(_) {
+          break
+        }
+        let extra : Array[@vibe_core.CallArg] = []
+        for i = 1; i < args.length(); i = i + 1 {
+          extra.push(args[i])
+        }
+        chain.push((name, extra))
+        current = args[0].expr
+      }
+      _ => break
+    }
+  }
+  if chain.length() < 2 {
+    return None
+  }
+  let out = StringBuilder::new()
+  // Render base expression (innermost)
+  match normalize_render_expr(current) {
+    Some(rendered) => out.write_string(rendered)
+    None => return None
+  }
+  // Render pipeline stages inner→outer (reverse iteration)
+  for i = chain.length() - 1; i >= 0; i = i - 1 {
+    let step = chain[i]
+    let name = step.0
+    let extra_args = step.1
+    out.write_string(" |> ")
+    out.write_string(name)
+    if extra_args.length() > 0 {
+      out.write_char('(')
+      for j = 0; j < extra_args.length(); j = j + 1 {
+        let arg = extra_args[j]
+        if arg.label is Some(_) {
+          return None
+        }
+        match normalize_render_expr(arg.expr) {
+          Some(rendered) => {
+            if j > 0 {
+              out.write_string(", ")
+            }
+            out.write_string(rendered)
+          }
+          None => return None
+        }
+      }
+      out.write_char(')')
+    }
+  }
+  Some(out.to_string())
+}
+
+///|
 fn normalize_render_expr(expr : @vibe_core.Expr) -> String? {
   match expr {
     @vibe_core.Expr::Int(value~, ..) => Some(value.to_string())
@@ -813,30 +876,34 @@ fn normalize_render_expr(expr : @vibe_core.Expr) -> String? {
       Some(if value { "true" } else { "false" })
     @vibe_core.Expr::String(value~, ..) => Some(normalize_quote_string(value))
     @vibe_core.Expr::Ident(name~, ..) => Some(name)
-    @vibe_core.Expr::Call(name~, type_args~, args~, ..) => {
-      if type_args.length() > 0 {
-        return None
-      }
-      let out = StringBuilder::new()
-      out.write_string(name)
-      out.write_char('(')
-      for i, arg in args {
-        if arg.label is Some(_) {
-          return None
-        }
-        match normalize_render_expr(arg.expr) {
-          Some(rendered) => {
-            if i > 0 {
-              out.write_string(", ")
-            }
-            out.write_string(rendered)
+    @vibe_core.Expr::Call(name~, type_args~, args~, ..) =>
+      match normalize_render_pipeline(expr) {
+        Some(piped) => Some(piped)
+        None => {
+          if type_args.length() > 0 {
+            return None
           }
-          None => return None
+          let out = StringBuilder::new()
+          out.write_string(name)
+          out.write_char('(')
+          for i, arg in args {
+            if arg.label is Some(_) {
+              return None
+            }
+            match normalize_render_expr(arg.expr) {
+              Some(rendered) => {
+                if i > 0 {
+                  out.write_string(", ")
+                }
+                out.write_string(rendered)
+              }
+              None => return None
+            }
+          }
+          out.write_char(')')
+          Some(out.to_string())
         }
       }
-      out.write_char(')')
-      Some(out.to_string())
-    }
     @vibe_core.Expr::Tuple(items~, ..) => {
       let out = StringBuilder::new()
       out.write_char('(')

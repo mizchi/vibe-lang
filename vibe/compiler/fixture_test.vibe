@@ -1,8 +1,13 @@
-use ./lexer.vibe { lex }
-use ./parser.vibe { Pat, Expr, TypeExpr, Stmt, parse_program }
-use ./printer.vibe { print_program }
 
-// Helper: lex + parse_program + print_program
+use ./lexer.vibe {
+  lex
+}
+use ./parser.vibe {
+  Pat, Expr, TypeExpr, Stmt, parse_program
+}
+use ./printer.vibe {
+  print_program
+}
 let pp = (src: String) -> String {
   handle {
     let tokens = lex(src)
@@ -12,8 +17,14 @@ let pp = (src: String) -> String {
     Error(msg) => string_concat("ERROR: ", msg)
   }
 }
-
-// Helper: check roundtrip stability (parse→print→parse→print is idempotent)
+let parse_ok = (src: String) -> Bool {
+  let output = pp(src)
+  if string_length(output) > 6 && string_equals(string_substring(output, 0, 6), "ERROR:") {
+    false
+  } else {
+    true
+  }
+}
 let roundtrip_ok = (src: String) -> Bool {
   let output1 = pp(src)
   if string_length(output1) > 6 && string_equals(string_substring(output1, 0, 6), "ERROR:") {
@@ -23,78 +34,50 @@ let roundtrip_ok = (src: String) -> Bool {
     string_equals(output1, output2)
   }
 }
-
-// Helper: check parse succeeds (no ERROR prefix)
-let parse_ok = (src: String) -> Bool {
-  let output = pp(src)
-  if string_length(output) > 6 && string_equals(string_substring(output, 0, 6), "ERROR:") {
-    false
-  } else {
-    true
-  }
-}
-
-// ---- Fixture 01: order_dce ----
 test "fixture_01_parse" {
   let src = "let dead = () -> Int { 0 }\nuse ./dep.vibe { dep }\ntrait Eq\nimpl Eq for Int\ntype Alias = Int\nlet helper = () -> Int { 1 }\nexport let run = () -> Int { helper() }\nexport let run_io = () -> Int with {Error} { run() }\nexport { run, run_io }"
   assert(parse_ok(src))
 }
-
 test "fixture_01_roundtrip" {
   let src = "let dead = () -> Int { 0 }\nuse ./dep.vibe { dep }\ntrait Eq\nimpl Eq for Int\ntype Alias = Int\nlet helper = () -> Int { 1 }\nexport let run = () -> Int { helper() }\nexport let run_io = () -> Int with {Error} { run() }\nexport { run, run_io }"
   assert(roundtrip_ok(src))
 }
-
-// ---- Fixture 02: inline_fold ----
 test "fixture_02_parse" {
   let src = "let helper = () -> Int { 1 + 2 }\nlet value = helper()\nexport let run = () -> Int { value }\nexport { run }"
   assert(parse_ok(src))
 }
-
 test "fixture_02_roundtrip" {
   let src = "let helper = () -> Int { 1 + 2 }\nlet value = helper()\nexport let run = () -> Int { value }\nexport { run }"
   assert(roundtrip_ok(src))
 }
-
-// ---- Fixture 03: module_sort ----
 test "fixture_03_parse" {
   let src = "export module math {\nlet dead = () -> Int { 0 }\nlet helper = () -> Int { 1 }\ntype Alias = Int\nexport let run = () -> Int { helper() }\nexport let run_io = () -> Int with {Error} { run() }\n}"
   assert(parse_ok(src))
 }
-
 test "fixture_03_roundtrip" {
   let src = "export module math {\nlet dead = () -> Int { 0 }\nlet helper = () -> Int { 1 }\ntype Alias = Int\nexport let run = () -> Int { helper() }\nexport let run_io = () -> Int with {Error} { run() }\n}"
   assert(roundtrip_ok(src))
 }
-
-// ---- Fixture 04: inferred_annotation ----
 test "fixture_04_parse" {
   let src = "let answer = 40 + 2\nlet id = (x: Int) -> Int { x }\nexport let run = () -> Int { answer }\nexport let keep = () -> Int { id(1) }\nexport { run, keep }"
   assert(parse_ok(src))
 }
-
 test "fixture_04_roundtrip" {
   let src = "let answer = 40 + 2\nlet id = (x: Int) -> Int { x }\nexport let run = () -> Int { answer }\nexport let keep = () -> Int { id(1) }\nexport { run, keep }"
   assert(roundtrip_ok(src))
 }
-
-// ---- Fixture 05: quickfix_decl_separator ----
 test "fixture_05_parse" {
   let src = "export struct Pair {\nleft: Int,\nright: Int\n}\nexport enum Choice {\nA,\nB(Int)\n}\nexport { Pair, Choice }"
   assert(parse_ok(src))
 }
-
 test "fixture_05_roundtrip" {
   let src = "export struct Pair {\nleft: Int,\nright: Int\n}\nexport enum Choice {\nA,\nB(Int)\n}\nexport { Pair, Choice }"
   assert(roundtrip_ok(src))
 }
-
-// ---- Fixture 06: quickfix_labeled_args ----
 test "fixture_06_parse" {
   let src = "let sum = (x~: Int, y~: Int) -> Int { x + y }\nexport let run = () -> Int { sum(x~=1, y?=2) }\nexport { run }"
   assert(parse_ok(src))
 }
-
 test "fixture_06_roundtrip" {
   let src = "let sum = (x~: Int, y~: Int) -> Int { x + y }\nexport let run = () -> Int { sum(x~=1, y?=2) }\nexport { run }"
   assert(roundtrip_ok(src))

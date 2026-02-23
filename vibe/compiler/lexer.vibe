@@ -1,25 +1,227 @@
-use ./token.vibe { Token }
 
+use ./token.vibe {
+  Token
+}
 let is_ws = (c: Int) -> Bool {
   c == ' ' || c == '\n' || c == '\t' || c == '\r'
 }
-
-let is_digit = (c: Int) -> Bool {
-  c >= '0' && c <= '9'
-}
-
-let is_hex_digit = (c: Int) -> Bool {
-  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-}
-
 let is_alpha = (c: Int) -> Bool {
   (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
 }
-
+let is_digit = (c: Int) -> Bool {
+  c >= '0' && c <= '9'
+}
 let is_alnum = (c: Int) -> Bool {
   is_alpha(c) || is_digit(c)
 }
-
+let lex_string = (s: String, len: Int, i: Int) -> (Token, Int)with {
+  Error
+} {
+  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int)with {
+    Error
+  } {
+    if idx >= len {
+      throw("unterminated string")
+    }
+    let c = string_char_code_at(s, idx)
+    if c == '"' {
+      let chunk = string_substring(s, start, idx)
+      (string_concat(acc, chunk), idx + 1)
+    } else if c == '\\' {
+      let chunk = string_substring(s, start, idx)
+      let next = idx + 1
+      if next >= len {
+        throw("unterminated string escape")
+      }
+      let esc = string_char_code_at(s, next)
+      let escaped = if esc == '"' {
+        "\""
+      }
+      else if esc == '\\' {
+        "\\"
+      }
+      else if esc == 'n' {
+        "\n"
+      }
+      else if esc == 't' {
+        "\t"
+      }
+      else if esc == 'r' {
+        string_from_char_code(13)
+      }
+      else if esc == '0' {
+        string_from_char_code(0)
+      }
+      else {
+        throw("invalid escape sequence")
+      }
+      scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))
+    } else {
+      scan(idx + 1, start, acc)
+    }
+  }
+  let (value, end) = scan(i + 1, i + 1, "")
+  (TString(value), end)
+}
+let is_hex_digit = (c: Int) -> Bool {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+let keyword_lookup = (word: String) -> Option[Token] {
+  if string_equals(word, "let") {
+    Some(TLet)
+  }
+  else if string_equals(word, "rec") {
+    Some(TRec)
+  }
+  else if string_equals(word, "mut") {
+    Some(TMut)
+  }
+  else if string_equals(word, "fn") {
+    Some(TIdent("fn"))
+  }
+  else if string_equals(word, "if") {
+    Some(TIf)
+  }
+  else if string_equals(word, "else") {
+    Some(TElse)
+  }
+  else if string_equals(word, "match") {
+    Some(TMatch)
+  }
+  else if string_equals(word, "do") {
+    Some(TDo)
+  }
+  else if string_equals(word, "true") {
+    Some(TIdent("true"))
+  }
+  else if string_equals(word, "false") {
+    Some(TIdent("false"))
+  }
+  else if string_equals(word, "enum") {
+    Some(TEnum)
+  }
+  else if string_equals(word, "struct") {
+    Some(TStruct)
+  }
+  else if string_equals(word, "type") {
+    Some(TType)
+  }
+  else if string_equals(word, "trait") {
+    Some(TTrait)
+  }
+  else if string_equals(word, "impl") {
+    Some(TImpl)
+  }
+  else if string_equals(word, "export") {
+    Some(TExport)
+  }
+  else if string_equals(word, "use") {
+    Some(TUse)
+  }
+  else if string_equals(word, "test") {
+    Some(TTest)
+  }
+  else if string_equals(word, "while") {
+    Some(TWhile)
+  }
+  else if string_equals(word, "for") {
+    Some(TFor)
+  }
+  else if string_equals(word, "in") {
+    Some(TIn)
+  }
+  else if string_equals(word, "loop") {
+    Some(TLoop)
+  }
+  else if string_equals(word, "break") {
+    Some(TBreak)
+  }
+  else if string_equals(word, "continue") {
+    Some(TContinue)
+  }
+  else if string_equals(word, "return") {
+    Some(TReturn)
+  }
+  else if string_equals(word, "with") {
+    Some(TWith)
+  }
+  else if string_equals(word, "handle") {
+    Some(THandle)
+  }
+  else if string_equals(word, "raise") {
+    Some(TRaise)
+  }
+  else if string_equals(word, "yield") {
+    Some(TYield)
+  }
+  else if string_equals(word, "bench") {
+    Some(TBench)
+  }
+  else if string_equals(word, "declare") {
+    Some(TDeclare)
+  }
+  else if string_equals(word, "as") {
+    Some(TAs)
+  }
+  else if string_equals(word, "module") {
+    Some(TModule)
+  }
+  else if string_equals(word, "suberror") {
+    Some(TSuberror)
+  }
+  else if string_equals(word, "derive") {
+    Some(TDerive)
+  }
+  else if string_equals(word, "open") {
+    Some(TOpen)
+  }
+  else if string_equals(word, "import") {
+    Some(TImport)
+  }
+  else {
+    None
+  }
+}
+let rec scan_ident_end = (s: String, len: Int, i: Int) -> Int {
+  if i < len && is_alnum(string_char_code_at(s, i)) {
+    scan_ident_end(s, len, i + 1)
+  } else {
+    i
+  }
+}
+let lex_ident = (s: String, len: Int, i: Int) -> (Token, Int) {
+  let end = scan_ident_end(s, len, i)
+  let word = string_substring(s, i, end)
+  match keyword_lookup(word) {
+    Some(tok) => {
+      if string_equals(word, "true") || string_equals(word, "false") {
+        (TIdent(word), end)
+      } else {
+        (tok, end)
+      }
+    },
+    None => (TIdent(word), end)
+  }
+}
+let rec scan_digits_end = (s: String, len: Int, i: Int) -> Int {
+  if i < len && is_digit(string_char_code_at(s, i)) {
+    scan_digits_end(s, len, i + 1)
+  } else {
+    i
+  }
+}
+let rec parse_frac_digits = (s: String, len: Int, i: Int, acc: Double, scale: Double) -> (Double, Int) {
+  if i < len {
+    let c = string_char_code_at(s, i)
+    if is_digit(c) {
+      parse_frac_digits(s, len, i + 1, acc + int_to_double(c - 48) / scale, scale * 10.0)
+    } else {
+      (acc, i)
+    }
+  } else {
+    (acc, i)
+  }
+}
 let rec skip_until_newline = (s: String, len: Int, i: Int) -> Int {
   if i < len {
     if string_char_code_at(s, i) == '\n' {
@@ -31,7 +233,6 @@ let rec skip_until_newline = (s: String, len: Int, i: Int) -> Int {
     i
   }
 }
-
 let rec skip_ws = (s: String, len: Int, i: Int) -> Int {
   if i < len {
     let c = string_char_code_at(s, i)
@@ -47,80 +248,6 @@ let rec skip_ws = (s: String, len: Int, i: Int) -> Int {
     i
   }
 }
-
-let keyword_lookup = (word: String) -> Option[Token] {
-  if string_equals(word, "let") { Some(TLet) }
-  else if string_equals(word, "rec") { Some(TRec) }
-  else if string_equals(word, "mut") { Some(TMut) }
-  else if string_equals(word, "fn") { Some(TIdent("fn")) }
-  else if string_equals(word, "if") { Some(TIf) }
-  else if string_equals(word, "else") { Some(TElse) }
-  else if string_equals(word, "match") { Some(TMatch) }
-  else if string_equals(word, "do") { Some(TDo) }
-  else if string_equals(word, "true") { Some(TIdent("true")) }
-  else if string_equals(word, "false") { Some(TIdent("false")) }
-  else if string_equals(word, "enum") { Some(TEnum) }
-  else if string_equals(word, "struct") { Some(TStruct) }
-  else if string_equals(word, "type") { Some(TType) }
-  else if string_equals(word, "trait") { Some(TTrait) }
-  else if string_equals(word, "impl") { Some(TImpl) }
-  else if string_equals(word, "export") { Some(TExport) }
-  else if string_equals(word, "use") { Some(TUse) }
-  else if string_equals(word, "test") { Some(TTest) }
-  else if string_equals(word, "while") { Some(TWhile) }
-  else if string_equals(word, "for") { Some(TFor) }
-  else if string_equals(word, "in") { Some(TIn) }
-  else if string_equals(word, "loop") { Some(TLoop) }
-  else if string_equals(word, "break") { Some(TBreak) }
-  else if string_equals(word, "continue") { Some(TContinue) }
-  else if string_equals(word, "return") { Some(TReturn) }
-  else if string_equals(word, "with") { Some(TWith) }
-  else if string_equals(word, "handle") { Some(THandle) }
-  else if string_equals(word, "raise") { Some(TRaise) }
-  else if string_equals(word, "yield") { Some(TYield) }
-  else if string_equals(word, "bench") { Some(TBench) }
-  else if string_equals(word, "declare") { Some(TDeclare) }
-  else if string_equals(word, "as") { Some(TAs) }
-  else if string_equals(word, "module") { Some(TModule) }
-  else if string_equals(word, "suberror") { Some(TSuberror) }
-  else if string_equals(word, "derive") { Some(TDerive) }
-  else if string_equals(word, "open") { Some(TOpen) }
-  else if string_equals(word, "import") { Some(TImport) }
-  else { None }
-}
-
-let rec scan_ident_end = (s: String, len: Int, i: Int) -> Int {
-  if i < len && is_alnum(string_char_code_at(s, i)) {
-    scan_ident_end(s, len, i + 1)
-  } else {
-    i
-  }
-}
-
-let lex_ident = (s: String, len: Int, i: Int) -> (Token, Int) {
-  let end = scan_ident_end(s, len, i)
-  let word = string_substring(s, i, end)
-  match keyword_lookup(word) {
-    Some(tok) => {
-      // true/false are identifiers that we handle specially
-      if string_equals(word, "true") || string_equals(word, "false") {
-        (TIdent(word), end)
-      } else {
-        (tok, end)
-      }
-    },
-    None => (TIdent(word), end)
-  }
-}
-
-let rec scan_digits_end = (s: String, len: Int, i: Int) -> Int {
-  if i < len && is_digit(string_char_code_at(s, i)) {
-    scan_digits_end(s, len, i + 1)
-  } else {
-    i
-  }
-}
-
 let rec scan_hex_digits_end = (s: String, len: Int, i: Int) -> Int {
   if i < len && is_hex_digit(string_char_code_at(s, i)) {
     scan_hex_digits_end(s, len, i + 1)
@@ -128,20 +255,6 @@ let rec scan_hex_digits_end = (s: String, len: Int, i: Int) -> Int {
     i
   }
 }
-
-let parse_int_from_string = (s: String) -> Int {
-  let len = string_length(s)
-  let rec go = (i: Int, acc: Int) -> Int {
-    if i < len {
-      let c = string_char_code_at(s, i)
-      go(i + 1, acc * 10 + (c - 48))
-    } else {
-      acc
-    }
-  }
-  go(0, 0)
-}
-
 let parse_hex_from_string = (s: String) -> Int {
   let len = string_length(s)
   let rec go = (i: Int, acc: Int) -> Int {
@@ -161,9 +274,43 @@ let parse_hex_from_string = (s: String) -> Int {
   }
   go(0, 0)
 }
-
-let lex_number = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
-  // hex literal: 0x or 0X
+let parse_int_from_string = (s: String) -> Int {
+  let len = string_length(s)
+  let rec go = (i: Int, acc: Int) -> Int {
+    if i < len {
+      let c = string_char_code_at(s, i)
+      go(i + 1, acc * 10 + (c - 48))
+    } else {
+      acc
+    }
+  }
+  go(0, 0)
+}
+let lex_decimal = (s: String, len: Int, i: Int) -> (Token, Int)with {
+  Error
+} {
+  let int_end = scan_digits_end(s, len, i)
+  if int_end == i {
+    throw("expected digit")
+  }
+  if int_end < len && string_char_code_at(s, int_end) == '.' {
+    if int_end + 1 < len && is_digit(string_char_code_at(s, int_end + 1)) {
+      let int_str = string_substring(s, i, int_end)
+      let int_val = int_to_double(parse_int_from_string(int_str))
+      let (frac_val, frac_end) = parse_frac_digits(s, len, int_end + 1, 0.0, 10.0)
+      (TFloat(int_val + frac_val), frac_end)
+    } else {
+      let int_str = string_substring(s, i, int_end)
+      (TInt(parse_int_from_string(int_str)), int_end)
+    }
+  } else {
+    let int_str = string_substring(s, i, int_end)
+    (TInt(parse_int_from_string(int_str)), int_end)
+  }
+}
+let lex_number = (s: String, len: Int, i: Int) -> (Token, Int)with {
+  Error
+} {
   if i + 1 < len && string_char_code_at(s, i) == '0' {
     let next_c = string_char_code_at(s, i + 1)
     if next_c == 'x' || next_c == 'X' {
@@ -181,77 +328,9 @@ let lex_number = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
     lex_decimal(s, len, i)
   }
 }
-
-let rec parse_frac_digits = (s: String, len: Int, i: Int, acc: Double, scale: Double) -> (Double, Int) {
-  if i < len {
-    let c = string_char_code_at(s, i)
-    if is_digit(c) {
-      parse_frac_digits(s, len, i + 1, acc + int_to_double(c - 48) / scale, scale * 10.0)
-    } else {
-      (acc, i)
-    }
-  } else {
-    (acc, i)
-  }
-}
-
-let lex_decimal = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
-  let int_end = scan_digits_end(s, len, i)
-  if int_end == i {
-    throw("expected digit")
-  }
-  // check for dot (float)
-  if int_end < len && string_char_code_at(s, int_end) == '.' {
-    // check next char is a digit (not a method call like 1.foo)
-    if int_end + 1 < len && is_digit(string_char_code_at(s, int_end + 1)) {
-      let int_str = string_substring(s, i, int_end)
-      let int_val = int_to_double(parse_int_from_string(int_str))
-      let (frac_val, frac_end) = parse_frac_digits(s, len, int_end + 1, 0.0, 10.0)
-      (TFloat(int_val + frac_val), frac_end)
-    } else {
-      let int_str = string_substring(s, i, int_end)
-      (TInt(parse_int_from_string(int_str)), int_end)
-    }
-  } else {
-    let int_str = string_substring(s, i, int_end)
-    (TInt(parse_int_from_string(int_str)), int_end)
-  }
-}
-
-let lex_string = (s: String, len: Int, i: Int) -> (Token, Int) with { Error } {
-  // i points at opening quote
-  let rec scan = (idx: Int, start: Int, acc: String) -> (String, Int) with { Error } {
-    if idx >= len {
-      throw("unterminated string")
-    }
-    let c = string_char_code_at(s, idx)
-    if c == '"' {
-      let chunk = string_substring(s, start, idx)
-      (string_concat(acc, chunk), idx + 1)
-    } else if c == '\\' {
-      let chunk = string_substring(s, start, idx)
-      let next = idx + 1
-      if next >= len {
-        throw("unterminated string escape")
-      }
-      let esc = string_char_code_at(s, next)
-      let escaped = if esc == '"' { "\"" }
-        else if esc == '\\' { "\\" }
-        else if esc == 'n' { "\n" }
-        else if esc == 't' { "\t" }
-        else if esc == 'r' { string_from_char_code(13) }
-        else if esc == '0' { string_from_char_code(0) }
-        else { throw("invalid escape sequence") }
-      scan(next + 1, next + 1, string_concat(string_concat(acc, chunk), escaped))
-    } else {
-      scan(idx + 1, start, acc)
-    }
-  }
-  let (value, end) = scan(i + 1, i + 1, "")
-  (TString(value), end)
-}
-
-export let lex = (source: String) -> Array[Token] with { Error } {
+export let lex = (source: String) -> Array[Token] with {
+  Error
+} {
   let len = string_length(source)
   do {
     let b = array_builder()
@@ -382,7 +461,6 @@ export let lex = (source: String) -> Array[Token] with { Error } {
     array_builder_freeze(b)
   }
 }
-
 export let lex_ok = (source: String) -> Bool {
   handle {
     let _ = lex(source)
@@ -391,5 +469,6 @@ export let lex_ok = (source: String) -> Bool {
     Error(_) => false
   }
 }
-
-export { lex, lex_ok }
+export {
+  lex, lex_ok
+}
