@@ -487,4 +487,3 @@ fn collect_refs_type(ty : @core.Type, refs : Map[String, Bool]) -> Unit {
     }
   }
 }
-
