@@ -374,7 +374,7 @@ fn import_insert_line(source : String) -> Int {
   let mut line_index = 0
   for line_view in source.split("\n") {
     let line = line_view.to_string().trim().to_string()
-    if line.has_prefix("use ") {
+    if line.has_prefix("import ") {
       has_import = true
       insert_line = line_index + 1
       line_index += 1
@@ -402,9 +402,10 @@ fn make_trait_import_action(
   insert_line : Int,
 ) -> Json {
   let import_stmt = if source_trait == local_trait {
-    "use " + module_path + " { " + source_trait + " }\n"
+    "import " + module_path + " { " + source_trait + " }\n"
   } else {
-    "use " + module_path + " { " + source_trait + " as " + local_trait + " }\n"
+    "import " + module_path + " { " + source_trait + " as " + local_trait +
+    " }\n"
   }
   let title = if source_trait == local_trait {
     "Import " + source_trait + " from " + module_path

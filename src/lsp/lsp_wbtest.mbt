@@ -184,12 +184,36 @@ test "LspServer/handle_message/codeAction trait import quickfix" {
         Some(Json::Array(actions)) => {
           assert_true(actions.length() > 0)
           match actions[0] {
-            Json::Object(obj) =>
+            Json::Object(obj) => {
               match obj.get("title") {
                 Some(Json::String(title)) =>
                   assert_true(title.contains("Import Eq as LocalEq"))
                 _ => fail("missing title")
               }
+              match obj.get("edit") {
+                Some(Json::Object(edit_obj)) =>
+                  match edit_obj.get("changes") {
+                    Some(Json::Object(changes_obj)) =>
+                      match changes_obj.get(uri) {
+                        Some(Json::Array(file_edits)) => {
+                          assert_true(file_edits.length() > 0)
+                          match file_edits[0] {
+                            Json::Object(first_edit) =>
+                              match first_edit.get("newText") {
+                                Some(Json::String(new_text)) =>
+                                  assert_true(new_text.has_prefix("import "))
+                                _ => fail("missing newText")
+                              }
+                            _ => fail("edit entry must be object")
+                          }
+                        }
+                        _ => fail("missing uri edits")
+                      }
+                    _ => fail("missing changes object")
+                  }
+                _ => fail("missing edit object")
+              }
+            }
             _ => fail("code action must be object")
           }
         }
@@ -334,6 +358,55 @@ test "trait_import_code_actions skips already imported trait" {
   let actions = trait_import_code_actions("file://test.vibe", source)
   match actions {
     Json::Array(items) => assert_eq(items.length(), 0)
+    _ => fail("expected array")
+  }
+}
+
+///|
+test "trait_import_code_actions inserts after existing import block" {
+  let uri = "file://test.vibe"
+  let source =
+    #|import ./vibe/builtin/string.vibe { split }
+    #|
+    #|let same = [T: LocalEq](x: T, y: T) -> Bool { x == y }
+  let actions = trait_import_code_actions(uri, source)
+  match actions {
+    Json::Array(items) => {
+      assert_true(items.length() > 0)
+      match items[0] {
+        Json::Object(action_obj) =>
+          match action_obj.get("edit") {
+            Some(Json::Object(edit_obj)) =>
+              match edit_obj.get("changes") {
+                Some(Json::Object(changes_obj)) =>
+                  match changes_obj.get(uri) {
+                    Some(Json::Array(file_edits)) =>
+                      match file_edits[0] {
+                        Json::Object(first_edit) =>
+                          match first_edit.get("range") {
+                            Some(Json::Object(range_obj)) =>
+                              match range_obj.get("start") {
+                                Some(Json::Object(start_obj)) =>
+                                  match start_obj.get("line") {
+                                    Some(Json::Number(line, ..)) =>
+                                      assert_eq(line, 2.0)
+                                    _ => fail("missing start line")
+                                  }
+                                _ => fail("missing range start")
+                              }
+                            _ => fail("missing range object")
+                          }
+                        _ => fail("edit entry must be object")
+                      }
+                    _ => fail("missing uri edits")
+                  }
+                _ => fail("missing changes object")
+              }
+            _ => fail("missing edit object")
+          }
+        _ => fail("code action must be object")
+      }
+    }
     _ => fail("expected array")
   }
 }
