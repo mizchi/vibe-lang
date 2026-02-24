@@ -113,8 +113,10 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `vibe/collection/map.vibe`, `vibe/collection/set.vibe`, `vibe/collection/README.md`
 - [x] `from_csv` / `from_yaml` の戻り値を JSON 文字列から構造化型へ寄せる設計を検討する
   - 対象: `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`, `vibe/shell/pipeline.vibe`
-- [ ] HTTP/Socket の高レベル API（request/response struct, header map, status helpers）を追加する
-  - 対象: `vibe/http/http.vibe`, `vibe/socket/socket.vibe`, `vibe/http/*_test.vibe`, `vibe/socket/*_test.vibe`
+- [x] HTTP/Socket の高レベル API（request/response struct, header map, status helpers）を追加する
+  - `vibe/http/high_level.vibe` に request/response struct + header map + status helper を追加
+  - `vibe/socket/socket.vibe` に endpoint/connection wrapper を追加
+  - テスト: `vibe/http/high_level_test.vibe`, `vibe/socket/socket_test.vibe`
 - [x] 文字列 `raise` 中心の失敗通知を `Result` ベース API に置き換える指針を作る
   - ADR-0018 で移行方針を定義（`Result[T, String]` 基本、段階的移行、互換 alias）
   - 対象: `vibe/encoding/json.vibe`, `vibe/encoding/jsonrpc.vibe`, `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`

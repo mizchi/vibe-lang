@@ -1,0 +1,70 @@
+//# Imports
+
+import ./index.vibe {
+  type HttpRequest,
+  type HttpResponse,
+  headers_empty,
+  headers_get,
+  headers_get_or,
+  headers_set,
+  headers_to_wire,
+  make_request,
+  make_response,
+  status_ok,
+  status_created,
+  status_not_found,
+  status_internal_server_error,
+  status_is_success,
+  status_is_client_error,
+  status_is_server_error
+}
+
+//# Misc
+
+test "http high-level headers helper works with normalized names" {
+  let headers = headers_set(headers_empty(), "Content-Type", "application/json")
+  match headers_get(headers, "content-type") {
+    Some(v) => assert(v == "application/json"),
+    _ => assert(false)
+  }
+  assert(headers_get_or(headers, "x-missing", "fallback") == "fallback")
+  assert(headers_to_wire(headers) == "content-type: application/json")
+}
+
+test "http high-level status helpers classify codes" {
+  assert(status_ok() == 200)
+  assert(status_created() == 201)
+  assert(status_not_found() == 404)
+  assert(status_internal_server_error() == 500)
+  assert(status_is_success(200))
+  assert(not(status_is_success(404)))
+  assert(status_is_client_error(404))
+  assert(not(status_is_client_error(500)))
+  assert(status_is_server_error(500))
+}
+
+test "http high-level request/response helpers keep fields" {
+  let request_headers = headers_set(headers_empty(), "X-Trace-Id", "trace-1")
+  let req: HttpRequest = make_request(
+    "POST",
+    "http://example.test/echo",
+    request_headers,
+    "hello"
+  )
+  assert(req.method == "POST")
+  assert(req.url == "http://example.test/echo")
+  assert(req.body == "hello")
+  match headers_get(req.headers, "x-trace-id") {
+    Some(v) => assert(v == "trace-1"),
+    _ => assert(false)
+  }
+
+  let res_headers = headers_set(headers_empty(), "Content-Type", "text/plain")
+  let res: HttpResponse = make_response(201, res_headers, "created")
+  assert(res.status == 201)
+  assert(res.body == "created")
+  match headers_get(res.headers, "content-type") {
+    Some(v) => assert(v == "text/plain"),
+    _ => assert(false)
+  }
+}
