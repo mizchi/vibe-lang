@@ -686,7 +686,7 @@ fn merge_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
         @vibe_core.ModuleRef::Version(name~) => "version@" + name
         @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name
       }
-      Some("export { " + names.join(", ") + " } from " + src)
+      Some("export " + src + " { " + names.join(", ") + " }")
     }
     _ => None
   }

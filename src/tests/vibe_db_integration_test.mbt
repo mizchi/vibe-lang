@@ -43,7 +43,7 @@ test "vibe warning reports unnecessary mut binding" {
 test "vibe warning reports unused import local name" {
   let db = VibeDb::new()
   db.set_source("./lib.vibe", "export let foo = 1")
-  db.set_source("main", "use ./lib.vibe { foo as local_foo }\nlet x = 1\nx")
+  db.set_source("main", "import ./lib.vibe { foo as local_foo }\nlet x = 1\nx")
   let _ = db.types("main")
   let warnings = db.warnings("main")
   assert_eq(warnings.length(), 1)
@@ -54,7 +54,7 @@ test "vibe warning reports unused import local name" {
 test "vibe import parsing" {
   // Test that import syntax parses correctly
   let db = VibeDb::new()
-  db.set_source("main", "use ./foo.vibe { y }\nlet x = 1")
+  db.set_source("main", "import ./foo.vibe { y }\nlet x = 1")
   db.set_source("./foo.vibe", "export let y = 2")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
@@ -74,7 +74,7 @@ test "vibe hash import resolves by content hash" {
   let lib_source = "export let y = 2"
   let lib_hash = @core.git_blob_hash_string(lib_source)
   db.set_source("./foo.vibe", lib_source)
-  db.set_source("main", "use #\{lib_hash} { y }\nlet x = y")
+  db.set_source("main", "import #\{lib_hash} { y }\nlet x = y")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -93,9 +93,9 @@ test "vibe hash import resolves by content hash" {
 ///|
 test "vibe import cycle reports diagnostic" {
   let db = VibeDb::new()
-  db.set_source("main", "use ./a.vibe { a }\nlet x = a")
-  db.set_source("./a.vibe", "use ./b.vibe { b }\nexport let a = b")
-  db.set_source("./b.vibe", "use ./a.vibe { a }\nexport let b = a")
+  db.set_source("main", "import ./a.vibe { a }\nlet x = a")
+  db.set_source("./a.vibe", "import ./b.vibe { b }\nexport let a = b")
+  db.set_source("./b.vibe", "import ./a.vibe { a }\nexport let b = a")
   let _ = db.imports("main")
   let diags = db.diagnostics("main")
   let mut found = false
@@ -111,7 +111,7 @@ test "vibe import cycle reports diagnostic" {
 test "vibe import keeps normalized path object" {
   let db = VibeDb::new()
   db.set_source("/project/lib/util.vibe", "export let y = 2")
-  db.set_source("/project/main.vibe", "use ./lib/./util.vibe { y }\nlet x = y")
+  db.set_source("/project/main.vibe", "import ./lib/./util.vibe { y }\nlet x = y")
   let imports = db.imports("/project/main.vibe")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -130,7 +130,7 @@ test "vibe import keeps normalized path object" {
 test "vibe path import lock missing reports diagnostic when required" {
   let db = VibeDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "use ./foo.vibe { y }\nlet x = y")
+  db.set_source("main", "import ./foo.vibe { y }\nlet x = y")
   db.set_source("./foo.vibe", "export let y = 2")
   let _ = db.imports("main")
   let diags = db.diagnostics("main")
@@ -147,7 +147,7 @@ test "vibe path import lock missing reports diagnostic when required" {
 test "vibe path import lock mismatch reports diagnostic when required" {
   let db = VibeDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "use ./foo.vibe { y }\nlet x = y")
+  db.set_source("main", "import ./foo.vibe { y }\nlet x = y")
   let lib_source = "export let y = 2"
   db.set_source("./foo.vibe", lib_source)
   db.set_path_ref("./foo.vibe", "0000000000000000000000000000000000000000")
@@ -166,7 +166,7 @@ test "vibe path import lock mismatch reports diagnostic when required" {
 test "vibe path import lock accepts matching hash" {
   let db = VibeDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "use ./foo.vibe { y }\nlet x = y")
+  db.set_source("main", "import ./foo.vibe { y }\nlet x = y")
   let lib_source = "export let y = 2"
   db.set_source("./foo.vibe", lib_source)
   let lib_hash = @core.git_blob_hash_string(lib_source)
@@ -183,7 +183,7 @@ test "vibe path import lock accepts matching hash" {
 test "vibe compile fails on import diagnostics" {
   let db = VibeDb::new()
   db.require_path_lock(true)
-  db.set_source("main", "use ./foo.vibe { y }\nlet x = y")
+  db.set_source("main", "import ./foo.vibe { y }\nlet x = y")
   db.set_source("./foo.vibe", "export let y = 2")
   let result : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
@@ -215,7 +215,7 @@ test "vibe hash import keeps immutable snapshot after source update" {
   let hash_v1 = @core.git_blob_hash_string(lib_v1)
   db.set_source("./foo.vibe", lib_v1)
   db.set_source("./foo.vibe", lib_v2)
-  db.set_source("main", "use #\{hash_v1} { y }\nlet x = y")
+  db.set_source("main", "import #\{hash_v1} { y }\nlet x = y")
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -237,7 +237,7 @@ test "vibe version import resolves through lock ref" {
   let lib_hash = @core.git_blob_hash_string(lib_source)
   db.set_source("./foo.vibe", lib_source)
   db.set_version_ref("main", lib_hash)
-  db.set_source("entry", "use version@main { y }\nlet x = y")
+  db.set_source("entry", "import version@main { y }\nlet x = y")
   let imports = db.imports("entry")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -255,7 +255,7 @@ test "vibe symbol import resolves through lock ref" {
   let lib_hash = @core.git_blob_hash_string(lib_source)
   db.set_source("./foo.vibe", lib_source)
   db.set_symbol_ref("std/math", lib_hash)
-  db.set_source("entry", "use symbol@std/math { y }\nlet x = y")
+  db.set_source("entry", "import symbol@std/math { y }\nlet x = y")
   let imports = db.imports("entry")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
@@ -280,7 +280,7 @@ test "vibe wasm import resolves binary module and type checks call" {
   let db = VibeDb::new()
   db.set_binary_source("./zlib.wasm", wasm)
   db.set_source(
-    "main", "use ./zlib.wasm { inflate }\nlet x = inflate(1, 2, 0)\nx",
+    "main", "import ./zlib.wasm { inflate }\nlet x = inflate(1, 2, 0)\nx",
   )
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
@@ -303,7 +303,7 @@ test "vibe wasm import reports missing exported function" {
   }
   let db = VibeDb::new()
   db.set_binary_source("./zlib.wasm", wasm)
-  db.set_source("main", "use ./zlib.wasm { deflate }\nlet x = deflate(1)\nx")
+  db.set_source("main", "import ./zlib.wasm { deflate }\nlet x = deflate(1)\nx")
   let _ = db.types("main")
   let diags = db.diagnostics("main")
   let mut found = false
@@ -327,7 +327,7 @@ test "vibe wasm import reports type mismatch on call" {
   let db = VibeDb::new()
   db.set_binary_source("./zlib.wasm", wasm)
   db.set_source(
-    "main", "use ./zlib.wasm { inflate }\nlet x = inflate(\"bad\")\nx",
+    "main", "import ./zlib.wasm { inflate }\nlet x = inflate(\"bad\")\nx",
   )
   let result : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",

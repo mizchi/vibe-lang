@@ -50,6 +50,12 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let expr = parse_expr(get_field(inner, "expr"))
         return Stmt::LetMut(name~, expr~, span=zero)
       }
+      "ExternLet" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let ty = parse_type(get_field(inner, "ty"))
+        return Stmt::ExternLet(name~, ty~, span=zero)
+      }
       "LetPat" => {
         let inner = expect_object(value)
         let pat = parse_pat(get_field(inner, "pat"))

@@ -526,15 +526,6 @@ pub fn VibeDb::new() -> VibeDb {
     let has_dir_index = file_basename != "index.vibe" &&
       file_basename != "index.xm" &&
       sources.get(rt, index_path) is Some(_)
-    match sources.get(rt, file_path) {
-      Some(content) =>
-        if not(content.contains("import")) &&
-          not(content.contains("use")) &&
-          not(has_dir_index) {
-          return simple_type_query.fetch(rt, file_path)
-        }
-      None => ()
-    }
     let imports = import_query.fetch(rt, file_path)
     if imports.length() == 0 && not(has_dir_index) {
       return simple_type_query.fetch(rt, file_path)

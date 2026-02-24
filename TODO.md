@@ -26,6 +26,15 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] tests: parser/runtime/CLI の旧構文ケースを新構文へ移行し、index 強制規約の回帰テストを追加する
 - [ ] vibe/ 配下ライブラリを新構文へ一括変換する
 
+### Progress (2026-02-24)
+
+- [x] parser: `use` / `declare` を parse error 化し、`import <ref> { ... }` / `export <ref> { ... }` / `extern let %name: Ty` を受理
+- [x] parser-cst/formatter: `export <ref> { ... }` と `import ./foo` spacing を新構文に追従
+- [x] core/checker/frontend/runtime/codegen: `Stmt::ExternLet` の match 網羅と最低限の型/IR 伝播を実装
+- [x] fixtures: checker/runtime/cmd の主要 fixture を `use` -> `import` / `export use` -> `export` へ更新
+- [ ] `internal export` を AST レベルで独立可視性として表現し、checker/runtime の公開境界に反映する
+- [ ] `normalize_render` の旧 `declare export let` 互換ロジックを完全撤去し、`extern`/新 export 規約へ寄せる
+
 ## Compiler Refactoring
 
 - [x] `type_call` builtin チェックをカテゴリハンドラへ分割する

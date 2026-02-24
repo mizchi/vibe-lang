@@ -29,7 +29,7 @@ fn register_import_modules(
 test "vibe integration import parsing" {
   let db = VibeDb::new()
   let lib_source = "export let value = 7"
-  let main_source = "use ./lib.vibe { value }\nlet x = 1"
+  let main_source = "import ./lib.vibe { value }\nlet x = 1"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
@@ -45,7 +45,7 @@ test "vibe integration hash import parsing" {
   let db = VibeDb::new()
   let lib_source = "export let value = 7"
   let import_hash = @core.git_blob_hash_string(lib_source)
-  let main_source = "use #\{import_hash} { value }\nlet x = value"
+  let main_source = "import #\{import_hash} { value }\nlet x = value"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
@@ -61,7 +61,7 @@ test "vibe integration version import parsing" {
   let import_hash = @core.git_blob_hash_string(lib_source)
   db.set_source("./lib.vibe", lib_source)
   db.set_version_ref("main", import_hash)
-  db.set_source("main", "use version@main { value }\nlet x = value")
+  db.set_source("main", "import version@main { value }\nlet x = value")
   let compiled = compile_module(db, "main")
   let import_ref = @core.module_ref_from_hash(import_hash)
   assert_eq(compiled.imports.length(), 1)
@@ -83,7 +83,7 @@ test "vibe integration symbol import parsing" {
   let import_hash = @core.git_blob_hash_string(lib_source)
   db.set_source("./lib.vibe", lib_source)
   db.set_symbol_ref("std/math", import_hash)
-  db.set_source("main", "use symbol@std/math { value }\nlet x = value")
+  db.set_source("main", "import symbol@std/math { value }\nlet x = value")
   let compiled = compile_module(db, "main")
   let import_ref = @core.module_ref_from_hash(import_hash)
   assert_eq(compiled.imports.length(), 1)
@@ -108,7 +108,7 @@ test "vibe integration import alias forwards generic helper" {
     #|export let unwrap_or = [T](opt: Option[T], fallback: T) -> T {
     #|  option_unwrap_or(opt, fallback)
     #|}
-  let main_source = "use ./lib.vibe { unwrap_or }\nunwrap_or(Some(5), 0)"
+  let main_source = "import ./lib.vibe { unwrap_or }\nunwrap_or(Some(5), 0)"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
@@ -141,10 +141,10 @@ test "vibe integration type namespace import auto-forwards receiver-first functi
     #|    _ => false
     #|  }
     #|}
-  let main_source = "use ./lib.vibe { Maybe }\nYep(1).is_yep()"
+  let main_source = "import ./lib.vibe { Maybe }\nYep(1).is_yep()"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
-  db.set_source("probe", "use ./lib.vibe { Maybe }\nlet x = 1")
+  db.set_source("probe", "import ./lib.vibe { Maybe }\nlet x = 1")
   let imported_env = db.types("./lib.vibe")
   assert_true(imported_env.get_scheme("is_yep") is Some(_))
   let probe_env = db.types("probe")
@@ -245,7 +245,7 @@ test "vibe integration imports module using array_builder helper" {
     #|    loop(0, array_builder())
     #|  }
     #|}
-  let main_source = "use ./lib.vibe { build }\narray_length(build(3))"
+  let main_source = "import ./lib.vibe { build }\narray_length(build(3))"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let imported_env = db.types("./lib.vibe")
@@ -278,7 +278,7 @@ test "vibe integration cross-module trait-bound eq" {
     #|export trait LocalEq
     #|impl LocalEq for String
     #|export let cmp_eq = [T: LocalEq](a: T, b: T) -> Bool { true }
-  let main_source = "use ./lib.vibe { LocalEq, cmp_eq }\ncmp_eq(\"a\", \"a\")"
+  let main_source = "import ./lib.vibe { LocalEq, cmp_eq }\ncmp_eq(\"a\", \"a\")"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
@@ -313,7 +313,7 @@ test "vibe integration cross-module option_equals" {
     #|    _ => false
     #|  }
     #|}
-  let main_source = "use ./lib.vibe { LocalEq, option_equals }\noption_equals(Some(1), Some(1))"
+  let main_source = "import ./lib.vibe { LocalEq, option_equals }\noption_equals(Some(1), Some(1))"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
@@ -338,7 +338,7 @@ test "vibe integration cross-module option_equals" {
 test "vibe integration sealed exported trait rejects external impl" {
   let db = VibeDb::new()
   let lib_source = "export trait LocalEq"
-  let main_source = "use ./lib.vibe { LocalEq }\nimpl LocalEq for String"
+  let main_source = "import ./lib.vibe { LocalEq }\nimpl LocalEq for String"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
@@ -354,7 +354,7 @@ test "vibe integration sealed exported trait rejects external impl" {
 test "vibe integration non-exported trait rejects external impl" {
   let db = VibeDb::new()
   let lib_source = "trait LocalEq"
-  let main_source = "use ./lib.vibe { LocalEq }\nimpl LocalEq for String"
+  let main_source = "import ./lib.vibe { LocalEq }\nimpl LocalEq for String"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
@@ -371,7 +371,7 @@ test "vibe integration export open trait allows external impl" {
   let db = VibeDb::new()
   let lib_source = "export open trait LocalEq"
   let main_source =
-    #|use ./lib.vibe { LocalEq }
+    #|import ./lib.vibe { LocalEq }
     #|impl LocalEq for String
     #|let same = [T: LocalEq](a: T, b: T) -> Bool { true }
     #|same("a", "a")
@@ -402,7 +402,7 @@ test "vibe integration trait bound works without explicit trait import" {
     #|export open trait LocalEq
     #|impl LocalEq for String
     #|export let cmp_eq = [T: LocalEq](a: T, b: T) -> Bool { true }
-  let main_source = "use ./lib.vibe { cmp_eq }\ncmp_eq(\"a\", \"a\")"
+  let main_source = "import ./lib.vibe { cmp_eq }\ncmp_eq(\"a\", \"a\")"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
@@ -430,7 +430,7 @@ test "vibe integration explicit trait import enables trait-bounded call" {
     #|export open trait LocalEq
     #|impl LocalEq for String
     #|export let cmp_eq = [T: LocalEq](a: T, b: T) -> Bool { true }
-  let main_source = "use ./lib.vibe { LocalEq, cmp_eq }\ncmp_eq(\"a\", \"a\")"
+  let main_source = "import ./lib.vibe { LocalEq, cmp_eq }\ncmp_eq(\"a\", \"a\")"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   let compiled = compile_module(db, "main")
@@ -459,7 +459,7 @@ test "vibe integration imported subtrait keeps supertrait relation" {
     #|export open trait LocalOrd: LocalEq
     #|impl LocalOrd for Int
   let main_source =
-    #|use ./lib.vibe { LocalOrd }
+    #|import ./lib.vibe { LocalOrd }
     #|let same = [T: LocalOrd](a: T, b: T) -> Bool { true }
     #|same(1, 1)
   db.set_source("./lib.vibe", lib_source)
@@ -490,7 +490,7 @@ test "vibe integration trait alias import satisfies imported bound" {
     #|impl LocalEq for String
     #|export let cmp_eq = [T: LocalEq](a: T, b: T) -> Bool { true }
   let main_source =
-    #|use ./lib.vibe { LocalEq as Equality, cmp_eq }
+    #|import ./lib.vibe { LocalEq as Equality, cmp_eq }
     #|cmp_eq("a", "a")
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
@@ -521,7 +521,7 @@ test "vibe integration trait alias keeps supertrait chain" {
     #|impl LocalOrd for Int
     #|export let same_ord = [T: LocalOrd](a: T, b: T) -> Bool { true }
   let main_source =
-    #|use ./lib.vibe { LocalEq as Equality, LocalOrd, same_ord }
+    #|import ./lib.vibe { LocalEq as Equality, LocalOrd, same_ord }
     #|let same = [T: LocalOrd](a: T, b: T) -> Bool { true }
     #|same(1, 1) && same_ord(1, 1)
   db.set_source("./lib.vibe", lib_source)
@@ -572,7 +572,7 @@ test "vibe integration for-in uses imported Iterable impl and type members" {
     #|  }
     #|}
   let main_source =
-    #|use ./lib.vibe { List, of3 }
+    #|import ./lib.vibe { List, of3 }
     #|let values = for x in of3(1, 2, 3) {
     #|  x + 1
     #|}
@@ -588,7 +588,7 @@ test "vibe integration imported suberror can be thrown as Error" {
   let db = VibeDb::new()
   let lib_source = "export suberror AppError(String);"
   let main_source =
-    #|use ./lib.vibe { AppError }
+    #|import ./lib.vibe { AppError }
     #|let fail = () -> Unit with {Error} {
     #|  throw(AppError("boom"))
     #|}
@@ -624,7 +624,7 @@ test "vibe integration module-qualified import namespace" {
     #|  export let inc = (x: Int) -> Int { add(x, 1) }
     #|}
   let main_source =
-    #|use ./lib.xm { module math }
+    #|import ./lib.xm { module math }
     #|math::inc(41)
   db.set_source("./lib.xm", lib_source)
   db.set_source("main", main_source)
@@ -652,7 +652,7 @@ test "vibe integration module-qualified import accepts alias" {
   db.set_source(
     "./lib.xm", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
   )
-  db.set_source("main", "use ./lib.xm { module math as m }\nm::inc(41)")
+  db.set_source("main", "import ./lib.xm { module math as m }\nm::inc(41)")
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let visited : Map[String, Bool] = {}
@@ -677,7 +677,7 @@ test "vibe integration module-qualified import rejects .vibe source" {
   db.set_source(
     "./lib.vibe", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
   )
-  db.set_source("main", "use ./lib.vibe { module math }\nmath::inc(1)")
+  db.set_source("main", "import ./lib.vibe { module math }\nmath::inc(1)")
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
   )
@@ -698,14 +698,18 @@ test "vibe integration module-qualified import rejects member path" {
   db.set_source(
     "./lib.vibe", "export module math { export let inc = (x: Int) -> Int { add(x, 1) } }",
   )
-  db.set_source("main", "use ./lib.vibe { module math::inc }\nmath::inc(1)")
+  db.set_source("main", "import ./lib.vibe { module math::inc }\nmath::inc(1)")
   let compiled : Result[CompiledModule, CompileError] = try? compile_module(
     db, "main",
   )
   match compiled {
     Ok(_) => fail("expected parse error for module member import")
     Err(err) =>
-      assert_true(err.to_string().contains("`use <module-ref> { module foo }`"))
+      assert_true(
+        err
+        .to_string()
+        .contains("`import <module-ref> { module foo }` (module namespace only)"),
+      )
   }
 }
 

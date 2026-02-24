@@ -174,6 +174,11 @@ fn collect_stmt_info(
       }
       (Some(name), refs)
     }
+    @core.Stmt::ExternLet(name~, ty~, span~) => {
+      let _ = span
+      collect_refs_type(ty, refs)
+      (Some(name), refs)
+    }
     // Non-definition statements
     @core.Stmt::Expr(..)
     | @core.Stmt::Import(..)
@@ -259,6 +264,7 @@ fn collect_entry_points(
       @core.Stmt::EnumDef(..)
       | @core.Stmt::TypeAlias(..)
       | @core.Stmt::StructDef(..)
+      | @core.Stmt::ExternLet(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::TraitDef(..)
       | @core.Stmt::TraitImpl(..)
@@ -374,6 +380,10 @@ fn filter_reachable_stmts(
           out.push(stmt)
         }
       @core.Stmt::ExportStructDef(name~, ..) =>
+        if reachable.contains(name) {
+          out.push(stmt)
+        }
+      @core.Stmt::ExternLet(name~, ..) =>
         if reachable.contains(name) {
           out.push(stmt)
         }

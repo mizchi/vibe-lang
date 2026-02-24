@@ -4,7 +4,7 @@
 ///|
 test "vibe format roundtrip regression: trait impl import test and literals" {
   let input =
-    #|use ./mod.vibe { type Option, trait Eq, eq }
+    #|import ./mod.vibe { type Option, trait Eq, eq }
     #|trait Eq
     #|impl Eq for Int
     #|test "quoted case" {
@@ -32,9 +32,9 @@ test "vibe format roundtrip regression: trait impl import test and literals" {
   if not(formatted.contains("test \"quoted case\"")) {
     fail("[test quoted name] missing quoted test name\n---\n\{formatted}")
   }
-  if not(formatted.contains("use ./mod.vibe")) {
+  if not(formatted.contains("import ./mod.vibe")) {
     fail(
-      "[use source spacing] missing use source clause spacing\n---\n\{formatted}",
+      "[import source spacing] missing import source clause spacing\n---\n\{formatted}",
     )
   }
   if not(formatted.contains("\"hello world\"")) {
@@ -49,8 +49,8 @@ test "vibe format roundtrip regression: trait impl import test and literals" {
   if formatted.contains("implEq") {
     fail("[impl join regression] found implEq\n---\n\{formatted}")
   }
-  if formatted.contains("}use") {
-    fail("[use join regression] found }use\n---\n\{formatted}")
+  if formatted.contains("}import") {
+    fail("[import join regression] found }import\n---\n\{formatted}")
   }
 }
 
@@ -75,8 +75,8 @@ test "vibe format roundtrip regression: effect signatures stay parse-equivalent"
 ///|
 test "vibe format keeps import list forms parse-equivalent" {
   let input =
-    #|use ./mod.vibe { type Option, trait Eq, value as value_alias }
-    #|use ./mod.vibe { value_alias }
+    #|import ./mod.vibe { type Option, trait Eq, value as value_alias }
+    #|import ./mod.vibe { value_alias }
   let formatted = format_script(input)
   let before = parse_ast(input) catch {
     e => fail("[before-format] parse failed: \{e.to_string()}\n---\n\{input}")
@@ -89,15 +89,15 @@ test "vibe format keeps import list forms parse-equivalent" {
   if not(formatted.contains("trait Eq")) {
     fail("[import trait item spacing] missing trait Eq\n---\n\{formatted}")
   }
-  if formatted.contains("}use") {
-    fail("[use spacing] found }use\n---\n\{formatted}")
+  if formatted.contains("}import") {
+    fail("[import spacing] found }import\n---\n\{formatted}")
   }
 }
 
 ///|
 test "vibe parse/format import list allows trailing comma" {
   let input =
-    #|use ./mod.vibe { type Option, trait Eq, value as value_alias, }
+    #|import ./mod.vibe { type Option, trait Eq, value as value_alias, }
   let ast = parse_ast(input) catch {
     e => fail("[parse] import trailing comma failed: \{e.to_string()}")
   }
@@ -117,7 +117,7 @@ test "vibe parse/format import list supports module qualifier" {
     #|export module math {
     #|  export let inc = (x: Int) -> Int { add(x, 1) }
     #|}
-    #|use ./math.xm { module math }
+    #|import ./math.xm { module math }
     #|math::inc(1)
   let ast = parse_ast(input) catch {
     e => fail("[parse] module import qualifier failed: \{e.to_string()}")
@@ -133,8 +133,8 @@ test "vibe parse/format import list supports module qualifier" {
   if not(formatted.contains("module math")) {
     fail("[format] missing module qualifier\n---\n\{formatted}")
   }
-  if not(formatted.contains("use ./math.xm")) {
-    fail("[format] missing use source\n---\n\{formatted}")
+  if not(formatted.contains("import ./math.xm")) {
+    fail("[format] missing import source\n---\n\{formatted}")
   }
 }
 
@@ -144,7 +144,7 @@ test "vibe parse/format import list supports module qualifier alias" {
     #|export module math {
     #|  export let inc = (x: Int) -> Int { add(x, 1) }
     #|}
-    #|use ./math.xm { module math as m }
+    #|import ./math.xm { module math as m }
     #|m::inc(1)
   let ast = parse_ast(input) catch {
     e => fail("[parse] module import qualifier alias failed: \{e.to_string()}")
@@ -165,8 +165,7 @@ test "vibe parse/format import list supports module qualifier alias" {
 ///|
 test "vibe parse/format import keyword is parser-equivalent" {
   let input =
-    #|import ./math.vibe
-    #|use ./math.vibe { add }
+    #|import ./math.vibe { add }
     #|add(1, 2)
   let ast = parse_ast(input) catch {
     e => fail("[parse] import keyword failed: \{e.to_string()}")
@@ -182,11 +181,11 @@ test "vibe parse/format import keyword is parser-equivalent" {
 }
 
 ///|
-test "vibe parse rejects quoted use source" {
-  let input = "use \"./mod.vibe\" { value }\nvalue"
+test "vibe parse rejects quoted import source" {
+  let input = "import \"./mod.vibe\" { value }\nvalue"
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
   match parsed {
-    Ok(_) => fail("[parse] expected quoted use source to be rejected")
+    Ok(_) => fail("[parse] expected quoted import source to be rejected")
     Err(err) =>
       assert_true(
         err
@@ -218,59 +217,40 @@ test "vibe parse/format local let annotation is parser-equivalent" {
 }
 
 ///|
-test "vibe parse/format declare export let signature is parser-equivalent" {
+test "vibe parse/format extern let signature is parser-equivalent" {
   let input =
-    #|declare export let run: () -> Int
+    #|extern let %run: () -> Int
     #|let helper = () -> Int { 1 }
-    #|run = () -> Int { helper() }
-    #|export { run }
   let ast = parse_ast(input) catch {
-    e => fail("[parse] declare export let failed: \{e.to_string()}")
+    e => fail("[parse] extern let failed: \{e.to_string()}")
   }
   let formatted = format_script(input)
   let reparsed = parse_ast(formatted) catch {
     e =>
       fail(
-        "[reparse] declare export let format result failed: \{e.to_string()}\n---\n\{formatted}",
+        "[reparse] extern let format result failed: \{e.to_string()}\n---\n\{formatted}",
       )
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
 }
 
 ///|
-test "vibe parse rejects unresolved declare export let" {
-  let input = "declare export let run: () -> Int\nexport { run }"
+test "vibe parse rejects extern let without percent prefix" {
+  let input = "extern let run: () -> Int"
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
   match parsed {
-    Ok(_) =>
-      fail("[parse] expected unresolved declare export let to be rejected")
-    Err(err) =>
-      assert_true(
-        err
-        .to_string()
-        .contains("definition `run = ...` for declared export let"),
-      )
+    Ok(_) => fail("[parse] expected extern let without `%` to be rejected")
+    Err(err) => assert_true(err.to_string().contains("%"))
   }
 }
 
 ///|
-test "vibe parse rejects duplicate declare export let definition" {
-  let input =
-    #|declare export let run: () -> Int
-    #|run = () -> Int { 1 }
-    #|run = () -> Int { 2 }
+test "vibe parse rejects legacy declare export let" {
+  let input = "declare export let run: () -> Int"
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
   match parsed {
-    Ok(_) =>
-      fail(
-        "[parse] expected duplicate declare export let definition to be rejected",
-      )
-    Err(err) =>
-      assert_true(
-        err
-        .to_string()
-        .contains("single definition for declared export let `run`"),
-      )
+    Ok(_) => fail("[parse] expected legacy declare export let to be rejected")
+    Err(err) => assert_true(err.to_string().contains("declare"))
   }
 }
 

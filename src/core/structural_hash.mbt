@@ -29,6 +29,12 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, expr.structural_hash())
       h
     }
+    Stmt::ExternLet(name~, ty~, ..) => {
+      let mut h = 0x4578744c // "ExtL"
+      h = combine_hash(h, name.hash())
+      h = combine_hash(h, ty.structural_hash())
+      h
+    }
     Stmt::LetPat(pat~, expr~, ..) => {
       let mut h = 0x4c657450 // "LetP"
       h = combine_hash(h, pat.structural_hash())

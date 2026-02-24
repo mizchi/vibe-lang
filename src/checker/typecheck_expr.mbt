@@ -1158,6 +1158,19 @@ fn type_block(
         let _ = span
         last = @core.Type::Unit
       }
+      @core.Stmt::ExternLet(name~, ty~, span~) => {
+        let _ = span
+        let scheme = TypeScheme::{
+          vars: [],
+          num_vars: [],
+          effect_vars: [],
+          trait_bounds: {},
+          ty,
+        }
+        scope_env.set_scheme(name, scheme)
+        scope_env.set_purity_tier(name, TopLevelPurityTier::Pure)
+        last = @core.Type::Unit
+      }
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
         let scheme = type_let_expr(
           scope_env, rec, name, expr, span, aliases, effects, allow_effect,

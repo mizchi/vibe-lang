@@ -136,7 +136,7 @@ let lib_chain : String =
 
 ///|
 let main_chain : String =
-  #|use ./lib.vibe { level4 }
+  #|import ./lib.vibe { level4 }
   #|level4(1)
 
 ///|
@@ -160,7 +160,7 @@ let lib_all_used : String =
 
 ///|
 let main_all_used : String =
-  #|use ./lib.vibe { fn1, fn2 }
+  #|import ./lib.vibe { fn1, fn2 }
   #|fn1(1) + fn2(2)
 
 ///|

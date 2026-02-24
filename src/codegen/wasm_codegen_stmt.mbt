@@ -289,6 +289,15 @@ fn compile_stmt(
       let _ = span
       raise WasmGenError::Unsupported("import")
     }
+    @core.Stmt::ExternLet(name~, ty~, span~) => {
+      let _ = name
+      let _ = ty
+      let _ = span
+      // extern declarations are host-linked symbols; no runtime statement.
+      if is_last {
+        emit_i64_const_tagged(buf, 0L)
+      }
+    }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       // ExportLet is compiled like Let - the export is handled at module level
       compile_stmt(

@@ -3,7 +3,7 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
   let root = wbtest_make_temp_dir("save_fetch_expand")
   let entry = root + "/main.vibe"
   let lib = root + "/lib.vibe"
-  let entry_source = "use ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n"
+  let entry_source = "import ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n"
   let lib_source = "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n"
   @os_fs.write_string_to_file(entry, entry_source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -698,7 +698,7 @@ test "cli normalize directory resolves latest import version in index" {
   }
   @os_fs.write_string_to_file(
     root + "/index.vibe",
-    "import demo/pkg\nlet root_value = 1\nexport { root_value }\n",
+    "import demo/pkg { root_value }\nlet root_value = 1\nexport { root_value }\n",
   ) catch {
     e => fail("write index.vibe failed: " + e.to_string())
   }
@@ -743,7 +743,7 @@ test "cli normalize directory hoists non-index import into index" {
   }
   @os_fs.write_string_to_file(
     root + "/a.vibe",
-    "import demo/pkg\nlet a_value = 1\nexport { a_value }\n",
+    "import demo/pkg { a_value }\nlet a_value = 1\nexport { a_value }\n",
   ) catch {
     e => fail("write a.vibe failed: " + e.to_string())
   }
@@ -1357,7 +1357,7 @@ test "cli check resolves lock and graph artifacts" {
   let root = wbtest_make_temp_dir("check_resolve_artifacts")
   let entry = root + "/main.vibe"
   let lib = root + "/lib.vibe"
-  let entry_source = "use ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n"
+  let entry_source = "import ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n"
   let lib_source = "let inc = (x: Int) -> Int { x + 1 }\nexport { inc }\n"
   @os_fs.write_string_to_file(entry, entry_source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -1554,7 +1554,7 @@ test "cli symbols prints status for managed symbols" {
   let entry = root + "/main.vibe"
   let lib = root + "/lib.vibe"
   @os_fs.write_string_to_file(
-    entry, "use ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n",
+    entry, "import ./lib.vibe {  inc  }\nlet main = inc(1)\nexport { main }\n",
   ) catch {
     e => fail("write entry failed: " + e.to_string())
   }
@@ -2730,7 +2730,7 @@ test "cli finalize library mode keeps re-export stmt parseable" {
   let db_path = root + "/tmp1.db"
   let source = "let local = 1\n" +
     "local\n" +
-    "export { helper } from ./mod.vibe\n"
+    "export ./mod.vibe { helper }\n"
   match write_eval_db_source(db_path, source) {
     Ok(_) => ()
     Err(err) => fail("write seed db failed: " + err)
@@ -2739,7 +2739,7 @@ test "cli finalize library mode keeps re-export stmt parseable" {
   let finalized = @os_fs.read_file_to_string(db_path) catch {
     e => fail("read finalized db failed: " + e.to_string())
   }
-  assert_true(finalized.contains("export { helper } from ./mod.vibe"))
+  assert_true(finalized.contains("export ./mod.vibe { helper }"))
   assert_false(finalized.contains("let local = 1"))
   let ast = @parser.parse_ast(finalized) catch {
     e => fail("finalized parse failed: " + e.to_string())

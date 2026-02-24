@@ -515,7 +515,7 @@ test "vibe wasm enum import and match" {
     #|  }
     #|}
   let main_src =
-    #|use ./lib.vibe { Json, is_null }
+    #|import ./lib.vibe { Json, is_null }
     #|let x = JNull
     #|is_null(x)
   db.set_source("./lib.vibe", lib_src)

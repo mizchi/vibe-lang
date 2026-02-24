@@ -156,6 +156,7 @@ fn stmt_may_use_scoped_ref(stmt : @core.Stmt) -> Bool {
     @core.Stmt::TypeAlias(target~, ..)
     | @core.Stmt::ExportTypeAlias(target~, ..) =>
       type_may_contain_scoped_ref_hint(target)
+    @core.Stmt::ExternLet(ty~, ..) => type_may_contain_scoped_ref_hint(ty)
     @core.Stmt::TraitImpl(target~, ..) =>
       type_may_contain_scoped_ref_hint(target)
     @core.Stmt::StructDef(fields~, ..)
@@ -447,6 +448,26 @@ fn type_check_stmts(
         let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
       }
       @core.Stmt::Import(..) => ()
+      @core.Stmt::ExternLet(name~, ty~, span~) => {
+        ensure_fresh_value_binding(name, span)
+        ensure_no_toplevel_scoped_ref_escape(env, ty, span)
+        if name != "_" {
+          let scheme = TypeScheme::{
+            vars: [],
+            num_vars: [],
+            effect_vars: [],
+            trait_bounds: {},
+            ty,
+          }
+          if has_exports && exported_names.contains(name) {
+            env.set_exported_scheme(name, scheme)
+          } else {
+            env.set_scheme(name, scheme)
+          }
+          env.set_purity_tier(name, TopLevelPurityTier::Pure)
+          record_value_binding(name)
+        }
+      }
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
         ensure_fresh_value_binding(name, span)
         let effective_rec = rec || forward_fns.contains(name)

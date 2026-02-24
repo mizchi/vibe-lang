@@ -380,6 +380,12 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         let _ = span
         buf.write_string(" (import)")
       }
+      @core.Stmt::ExternLet(name~, ty~, span~) => {
+        let _ = name
+        let _ = ty
+        let _ = span
+        buf.write_string(" (extern)")
+      }
       @core.Stmt::ExportLet(..)
       | @core.Stmt::ExportEnumDef(..)
       | @core.Stmt::ExportTypeAlias(..)

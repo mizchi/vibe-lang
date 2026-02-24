@@ -326,6 +326,16 @@ fn walk_stmt(
           warning_scope_mark_use(scopes, local_name)
         }
       }
+    @core.Stmt::ExternLet(name~, ty~, span~) => {
+      let _ = ty
+      warning_scope_declare(
+        scopes,
+        name,
+        span,
+        false,
+        WarningBindingKind::Import,
+      )
+    }
     @core.Stmt::Export(names~, ..) =>
       for name in names {
         warning_scope_mark_use(scopes, name)

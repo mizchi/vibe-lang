@@ -313,46 +313,153 @@ fn Parser::parse_stmt(self : Parser) -> Unit {
   self.skip_trivia()
   match self.peek_kind() {
     k if k == let_kw() => self.parse_let_stmt()
-    k if k == declare_kw() => self.parse_declare_stmt()
     k if k == enum_kw() => self.parse_enum_stmt()
-    k if k == name() &&
-      self.peek().text() == "module" &&
-      self.peek_non_trivia_ahead(1) == name() &&
-      self.peek_non_trivia_ahead(2) == lbrace() => self.parse_module_stmt()
-    k if k == name() && self.peek().text() == "suberror" =>
-      self.parse_suberror_stmt()
     k if k == struct_kw() => self.parse_struct_stmt()
     k if k == type_kw() => self.parse_type_alias_stmt()
-    k if k == use_kw() => self.parse_import_stmt()
     k if k == import_kw() => self.parse_import_stmt()
     k if k == export_kw() => self.parse_export_stmt()
     k if k == test_kw() => self.parse_test_block()
     k if k == bench_kw() => self.parse_bench_block()
+    k if k == name() => {
+      let text = self.peek().text()
+      if text == "module" &&
+        self.peek_non_trivia_ahead(1) == name() &&
+        self.peek_non_trivia_ahead(2) == lbrace() {
+        self.parse_module_stmt()
+      } else if text == "suberror" {
+        self.parse_suberror_stmt()
+      } else if text == "internal" &&
+        self.peek_non_trivia_ahead(1) == export_kw() {
+        self.parse_internal_export_stmt()
+      } else if text == "extern" && self.peek_non_trivia_ahead(1) == let_kw() {
+        self.parse_extern_let_stmt()
+      } else {
+        self.parse_expr_stmt()
+      }
+    }
     _ => self.parse_expr_stmt()
   }
 }
 
 ///|
-fn Parser::parse_declare_stmt(self : Parser) -> Unit {
-  self.builder.start_node(let_stmt())
-  self.bump() // declare
+fn Parser::parse_module_ref_tokens(self : Parser) -> Unit {
+  while not(self.at(eof())) &&
+        not(self.at(semicolon())) &&
+        not(self.at(newline())) &&
+        not(self.at(lbrace())) {
+    self.bump()
+  }
+}
+
+///|
+fn Parser::parse_export_tail(self : Parser) -> Unit {
+  if self.at(enum_kw()) {
+    // export enum Name { ... }
+    self.parse_enum_stmt()
+  } else if self.at(name()) && self.peek().text() == "suberror" {
+    // export suberror Name(...)
+    self.parse_suberror_stmt()
+  } else if self.at(struct_kw()) {
+    // export struct Name { ... }
+    self.parse_struct_stmt()
+  } else if self.at(type_kw()) {
+    // export type Name = ...
+    self.parse_type_alias_stmt()
+  } else if self.at(let_kw()) {
+    // export let name = ...
+    self.parse_let_stmt()
+  } else if self.at(name()) &&
+    self.peek().text() == "module" &&
+    self.peek_non_trivia_ahead(1) == name() &&
+    self.peek_non_trivia_ahead(2) == lbrace() {
+    // export module foo { ... }
+    self.parse_module_stmt()
+  } else if self.at(trait_kw()) {
+    // export trait Name
+    self.parse_stmt()
+  } else if self.at(name()) && self.peek().text() == "open" {
+    // export open trait Name
+    self.bump() // open
+    self.skip_trivia()
+    if self.at(trait_kw()) {
+      self.parse_stmt()
+    } else {
+      self.builder.token(error_kind(), "")
+    }
+  } else if self.at(lbrace()) {
+    // export { name1, name2, Type::method, ... }
+    self.bump()
+    while not(self.at(rbrace())) && not(self.at(eof())) {
+      self.skip_trivia()
+      if self.at(name()) {
+        self.bump()
+        // Handle qualified names like Type::method
+        self.skip_trivia()
+        if self.at(double_colon()) {
+          self.bump()
+          self.skip_trivia()
+          if self.at(name()) {
+            self.bump()
+          }
+        }
+      } else {
+        // Skip unknown token to avoid infinite loop
+        self.bump()
+      }
+      self.skip_trivia()
+      if self.at(comma()) {
+        self.bump()
+      }
+    }
+    if self.at(rbrace()) {
+      self.bump()
+    }
+  } else {
+    // export <module-ref> { ... }
+    self.parse_module_ref_tokens()
+    self.skip_trivia()
+    if self.at(lbrace()) {
+      self.parse_brace_block_tokens()
+    }
+  }
+}
+
+///|
+fn Parser::parse_internal_export_stmt(self : Parser) -> Unit {
+  self.builder.start_node(export_stmt())
+  self.bump() // internal
   self.skip_trivia()
   self.expect(export_kw())
   self.skip_trivia()
+  self.parse_export_tail()
+  self.skip_trivia()
+  if self.at(semicolon()) {
+    self.bump()
+  }
+  self.builder.finish_node()
+}
+
+///|
+fn Parser::parse_extern_let_stmt(self : Parser) -> Unit {
+  self.builder.start_node(let_stmt())
+  self.bump() // extern
+  self.skip_trivia()
   self.expect(let_kw())
   self.skip_trivia()
-  self.expect(name())
-  self.skip_trivia()
-  if self.at(double_colon()) {
-    self.bump()
-    self.skip_trivia()
-    self.expect(name())
+  while not(self.at(eof())) &&
+        not(self.at(semicolon())) &&
+        not(self.at(newline())) {
+    if self.at(lbrace()) {
+      self.skip_balanced_braces()
+    } else if self.at(lparen()) {
+      self.skip_balanced_parens()
+    } else if self.at(lbracket()) {
+      self.skip_balanced_brackets()
+    } else {
+      self.bump()
+    }
     self.skip_trivia()
   }
-  self.expect(colon())
-  self.skip_trivia()
-  self.parse_binding_type_until_stmt_end()
-  self.skip_trivia()
   if self.at(semicolon()) {
     self.bump()
   }
@@ -539,15 +646,10 @@ fn Parser::parse_bench_block(self : Parser) -> Unit {
 ///|
 fn Parser::parse_import_stmt(self : Parser) -> Unit {
   self.builder.start_node(import_stmt())
-  self.bump() // import | use
+  self.bump() // import
   self.skip_trivia()
-  // import <source> [as alias] / use <source> { ... } / use <source>
-  while not(self.at(eof())) &&
-        not(self.at(semicolon())) &&
-        not(self.at(newline())) &&
-        not(self.at(lbrace())) {
-    self.bump()
-  }
+  // import <source> { ... }
+  self.parse_module_ref_tokens()
   self.skip_trivia()
   if self.at(lbrace()) {
     self.parse_brace_block_tokens()
@@ -564,72 +666,7 @@ fn Parser::parse_export_stmt(self : Parser) -> Unit {
   self.builder.start_node(export_stmt())
   self.bump() // export
   self.skip_trivia()
-  // Check what follows export
-  if self.at(enum_kw()) {
-    // export enum Name { ... }
-    self.parse_enum_stmt()
-  } else if self.at(name()) && self.peek().text() == "suberror" {
-    // export suberror Name(...)
-    self.parse_suberror_stmt()
-  } else if self.at(struct_kw()) {
-    // export struct Name { ... }
-    self.parse_struct_stmt()
-  } else if self.at(type_kw()) {
-    // export type Name = ...
-    self.parse_type_alias_stmt()
-  } else if self.at(let_kw()) {
-    // export let name = ...
-    self.parse_let_stmt()
-  } else if self.at(name()) &&
-    self.peek().text() == "module" &&
-    self.peek_non_trivia_ahead(1) == name() &&
-    self.peek_non_trivia_ahead(2) == lbrace() {
-    // export module foo { ... }
-    self.parse_module_stmt()
-  } else if self.at(trait_kw()) {
-    // export trait Name
-    self.parse_stmt()
-  } else if self.at(name()) && self.peek().text() == "open" {
-    // export open trait Name
-    self.bump() // open
-    self.skip_trivia()
-    if self.at(trait_kw()) {
-      self.parse_stmt()
-    } else {
-      self.builder.token(error_kind(), "")
-    }
-  } else if self.at(use_kw()) {
-    // export use <module-ref> { items }
-    self.parse_import_stmt()
-  } else if self.at(lbrace()) {
-    // export { name1, name2, Type::method, ... }
-    self.bump()
-    while not(self.at(rbrace())) && not(self.at(eof())) {
-      self.skip_trivia()
-      if self.at(name()) {
-        self.bump()
-        // Handle qualified names like Type::method
-        self.skip_trivia()
-        if self.at(double_colon()) {
-          self.bump()
-          self.skip_trivia()
-          if self.at(name()) {
-            self.bump()
-          }
-        }
-      } else {
-        // Skip unknown token to avoid infinite loop
-        self.bump()
-      }
-      self.skip_trivia()
-      if self.at(comma()) {
-        self.bump()
-      }
-    }
-    if self.at(rbrace()) {
-      self.bump()
-    }
-  }
+  self.parse_export_tail()
   self.skip_trivia()
   if self.at(semicolon()) {
     self.bump()
@@ -1098,57 +1135,6 @@ fn Parser::parse_binding_type_until_eq(self : Parser) -> Unit {
   }
 }
 
-///|
-fn Parser::parse_binding_type_until_stmt_end(self : Parser) -> Unit {
-  let mut paren_depth = 0
-  let mut bracket_depth = 0
-  let mut brace_depth = 0
-  while not(self.at(eof())) {
-    let kind = self.peek_kind()
-    if paren_depth == 0 &&
-      bracket_depth == 0 &&
-      brace_depth == 0 &&
-      (kind == semicolon() || kind == newline()) {
-      break
-    }
-    match kind {
-      k if k == lparen() => {
-        paren_depth += 1
-        self.bump()
-      }
-      k if k == rparen() => {
-        if paren_depth > 0 {
-          paren_depth -= 1
-        }
-        self.bump()
-      }
-      k if k == lbracket() => {
-        bracket_depth += 1
-        self.bump()
-      }
-      k if k == rbracket() => {
-        if bracket_depth > 0 {
-          bracket_depth -= 1
-        }
-        self.bump()
-      }
-      k if k == lbrace() => {
-        brace_depth += 1
-        self.bump()
-      }
-      k if k == rbrace() =>
-        if brace_depth > 0 {
-          brace_depth -= 1
-          self.bump()
-        } else {
-          break
-        }
-      _ => self.bump()
-    }
-  }
-}
-
-///|
 fn Parser::parse_call_or_primary(self : Parser) -> Unit {
   self.skip_trivia()
   let checkpoint = self.builder.checkpoint()

@@ -60,7 +60,7 @@ fn canonical_group(stmt : Stmt) -> CanonicalGroup {
     | Stmt::StructDef(..)
     | Stmt::ExportStructDef(..) => CanonicalGroup::TypeDecl
     Stmt::TraitDef(..) | Stmt::TraitImpl(..) => CanonicalGroup::TraitDecl
-    Stmt::Let(..) | Stmt::ExportLet(..) | Stmt::LetMut(..) =>
+    Stmt::Let(..) | Stmt::ExportLet(..) | Stmt::LetMut(..) | Stmt::ExternLet(..) =>
       CanonicalGroup::FnDef
     Stmt::Assign(..)
     | Stmt::IndexAssign(..)
@@ -76,7 +76,8 @@ fn canonical_def_name(stmt : Stmt) -> String? {
   match stmt {
     Stmt::Let(name~, ..)
     | Stmt::ExportLet(name~, ..)
-    | Stmt::LetMut(name~, ..) => Some(name)
+    | Stmt::LetMut(name~, ..)
+    | Stmt::ExternLet(name~, ..) => Some(name)
     _ => None
   }
 }
@@ -95,6 +96,7 @@ fn canonical_collect_refs(stmt : Stmt) -> Map[String, Bool] {
     }
     Stmt::LetMut(expr~, ..) =>
       walk_expr_refs(expr, bound, refs, canonical_add_ref)
+    Stmt::ExternLet(..) => ()
     _ => ()
   }
   refs

@@ -923,10 +923,11 @@ fn finalize_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
       Some("export { " + finalize_render_name_list(names) + " }")
     @vibe_core.Stmt::ReExport(names~, source~, ..) =>
       Some(
-        "export { " +
+        "export " +
+        finalize_render_module_ref(source) +
+        " { " +
         finalize_render_name_list(names) +
-        " } from " +
-        finalize_render_module_ref(source),
+        " }",
       )
     _ => None
   }
@@ -1707,6 +1708,23 @@ fn normalize_split_ws_tokens(text : String) -> Array[String] {
 }
 
 ///|
+fn normalize_is_unversioned_scope_import_target(scope : String) -> Bool {
+  if scope.contains("@") ||
+    scope.has_prefix("./") ||
+    scope.has_prefix("../") ||
+    scope.has_prefix("/") ||
+    scope.has_suffix(".vibe") ||
+    scope.has_suffix(".xm") ||
+    scope.has_suffix(".wasm") ||
+    scope.has_suffix(".vbundle") ||
+    not(scope.contains("/")) {
+    false
+  } else {
+    true
+  }
+}
+
+///|
 fn normalize_resolve_index_import_line(
   line : String,
   lib_root : String,
@@ -1725,10 +1743,54 @@ fn normalize_resolve_index_import_line(
     return Ok(line)
   }
   let rest = line.unsafe_substring(start=import_head_end, end=line.length())
-  // Resolve only bare `import/use <scope>` declarations.
-  if rest.contains("{") {
-    return Ok(line)
+  let prefix = if leading_ws == 0 {
+    ""
+  } else {
+    line.unsafe_substring(start=0, end=leading_ws)
   }
+  // Resolve `import/use <scope> { ... }` declarations.
+  match rest.find("{") {
+    Some(brace_pos) => {
+      let scope_head = rest
+        .unsafe_substring(start=0, end=brace_pos)
+        .trim()
+        .to_string()
+      let scope_tokens = normalize_split_ws_tokens(scope_head)
+      let scope_buf = StringBuilder::new()
+      for token in scope_tokens {
+        scope_buf.write_string(token)
+      }
+      let scope = scope_buf.to_string()
+      if scope.length() == 0 || not(normalize_is_unversioned_scope_import_target(scope)) {
+        return Ok(line)
+      }
+      let version = match normalize_resolve_latest_scope_version(lib_root, scope) {
+        Some(v) => v
+        None =>
+          return Err(
+            "normalize: import `" +
+            scope +
+            "` missing version; no local alias found under " +
+            lib_root,
+          )
+      }
+      let suffix = rest
+        .unsafe_substring(start=brace_pos, end=rest.length())
+        .trim()
+        .to_string()
+      let out = StringBuilder::new()
+      out.write_string(prefix)
+      out.write_string(head)
+      out.write_string(scope)
+      out.write_char('@')
+      out.write_string(version)
+      out.write_char(' ')
+      out.write_string(suffix)
+      return Ok(out.to_string())
+    }
+    None => ()
+  }
+  // Resolve legacy bare `import/use <scope>` declarations.
   let mut rest_trimmed = rest.trim().to_string()
   let has_semicolon = rest_trimmed.has_suffix(";")
   if has_semicolon && rest_trimmed.length() > 0 {
@@ -1759,15 +1821,7 @@ fn normalize_resolve_index_import_line(
   if scope.length() == 0 {
     return Ok(line)
   }
-  if scope.contains("@") ||
-    scope.has_prefix("./") ||
-    scope.has_prefix("../") ||
-    scope.has_prefix("/") ||
-    scope.has_suffix(".vibe") ||
-    scope.has_suffix(".xm") ||
-    scope.has_suffix(".wasm") ||
-    scope.has_suffix(".vbundle") ||
-    not(scope.contains("/")) {
+  if not(normalize_is_unversioned_scope_import_target(scope)) {
     return Ok(line)
   }
   let version = match normalize_resolve_latest_scope_version(lib_root, scope) {
@@ -1779,11 +1833,6 @@ fn normalize_resolve_index_import_line(
         "` missing version; no local alias found under " +
         lib_root,
       )
-  }
-  let prefix = if leading_ws == 0 {
-    ""
-  } else {
-    line.unsafe_substring(start=0, end=leading_ws)
   }
   let out = StringBuilder::new()
   out.write_string(prefix)

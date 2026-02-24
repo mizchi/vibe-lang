@@ -74,6 +74,14 @@ fn stmts_to_sexp(
         let _ = source
         let _ = span
       }
+      @core.Stmt::ExternLet(name~, ty~, span~) => {
+        let _ = span
+        buf.write_string(" (extern-let ")
+        buf.write_string(escape_atom(name))
+        buf.write_char(' ')
+        buf.write_string(type_to_sexp(ty))
+        buf.write_char(')')
+      }
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
         let _ = span
         if rec {

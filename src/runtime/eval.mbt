@@ -498,7 +498,7 @@ pub fn Runtime::eval_module(
                 }
                 None =>
                   if item.rename is None {
-                    // Namespace import: `use <ref> { Int }` brings `Int::...`.
+                    // Namespace import: `import <ref> { Int }` brings `Int::...`.
                     let imported_any = bind_namespace_members(
                       item, import_name, import_name,
                     )
@@ -516,6 +516,11 @@ pub fn Runtime::eval_module(
             }
           }
         }
+        last = Some(@core.Value::Unit)
+      }
+      @core.Stmt::ExternLet(name~, ty~, ..) => {
+        let _ = name
+        let _ = ty
         last = Some(@core.Value::Unit)
       }
       @core.Stmt::ExportLet(rec~, name~, expr~, ..) =>

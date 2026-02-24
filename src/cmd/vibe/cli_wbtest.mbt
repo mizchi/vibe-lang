@@ -711,10 +711,10 @@ test "explain import report resolves lock-backed refs" {
   let version_hash = @vibe_core.content_address_hash_string(version_source)
   let symbol_hash = @vibe_core.content_address_hash_string(symbol_source)
   let direct_hash = @vibe_core.content_address_hash_string(direct_source)
-  let main_source = "use ./dep.vibe { value }\n" +
-    "use version@main { value }\n" +
-    "use symbol@main/sym { value }\n" +
-    "use #\{direct_hash} { value }\n" +
+  let main_source = "import ./dep.vibe { value }\n" +
+    "import version@main { value }\n" +
+    "import symbol@main/sym { value }\n" +
+    "import #\{direct_hash} { value }\n" +
     "let x = value\n"
   @os_fs.write_string_to_file(entry, main_source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -791,10 +791,10 @@ test "explain import report shows miss mismatch and resolution errors" {
     e => fail("write dep failed: " + e.to_string())
   }
   let missing_hash = "1111111111111111111111111111111111111111"
-  let main_source = "use ./dep.vibe { value }\n" +
-    "use version@missing { value }\n" +
-    "use symbol@missing/sym { value }\n" +
-    "use #\{missing_hash} { value }\n" +
+  let main_source = "import ./dep.vibe { value }\n" +
+    "import version@missing { value }\n" +
+    "import symbol@missing/sym { value }\n" +
+    "import #\{missing_hash} { value }\n" +
     "use unknown_ns/lib.vibe { value }\n" +
     "let x = value\n"
   @os_fs.write_string_to_file(entry, main_source) catch {
@@ -1257,7 +1257,7 @@ test "resolve bench entry paths includes top-level _bench.vibe files" {
 test "normalize source sorts declarations and prunes unreachable defs" {
   let source =
     #|let dead = () -> Int { 0 }
-    #|use ./dep.vibe { dep }
+    #|import ./dep.vibe { dep }
     #|trait Eq
     #|impl Eq for Int
     #|type Alias = Int
@@ -1274,7 +1274,7 @@ test "normalize source sorts declarations and prunes unreachable defs" {
   // Fn expressions should NOT produce declare+assign
   assert_false(normalized.contains("declare export let run"))
   assert_false(normalized.contains("declare export let run_io"))
-  let idx_use = wbtest_substring_index(normalized, "use ./dep.vibe {")
+  let idx_use = wbtest_substring_index(normalized, "import ./dep.vibe {")
   let idx_trait = wbtest_substring_index(normalized, "trait Eq")
   let idx_helper = wbtest_substring_index(normalized, "let helper =")
   let idx_run = wbtest_substring_index(normalized, "export let run =")
@@ -1564,7 +1564,7 @@ test "std layer classification covers primary modules" {
 ///|
 test "std layering rejects effect to backend import" {
   let source =
-    #|use ./wasm/types.vibe { i32 }
+    #|import ./wasm/types.vibe { i32 }
   let violations = std_layering_violations_for_source(
     "/tmp/repo/vibe/builtin/io.vibe", source,
   )
@@ -1576,14 +1576,14 @@ test "std layering rejects effect to backend import" {
 ///|
 test "std layering allows effect to primitive import and ignores std tests" {
   let allowed_source =
-    #|use ./string.vibe { String }
+    #|import ./string.vibe { String }
   let allowed = std_layering_violations_for_source(
     "/tmp/repo/vibe/builtin/io.vibe", allowed_source,
   )
   assert_eq(allowed.length(), 0)
 
   let test_source =
-    #|use ./wasm/types.vibe { i32 }
+    #|import ./wasm/types.vibe { i32 }
   let test_file = std_layering_violations_for_source(
     "/tmp/repo/vibe/builtin/io_test.vibe", test_source,
   )

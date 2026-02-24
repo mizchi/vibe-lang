@@ -1,10 +1,4 @@
 ///|
-priv struct DeclaredExportLetInfo {
-  ty : @core.Type
-  declare_span : @core.Span
-}
-
-///|
 /// AST parser state
 pub struct AstParser {
   tokens : Array[Token]
@@ -144,14 +138,11 @@ fn AstParser::expect(
 ///|
 pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
   let stmts : Array[@core.Stmt] = []
-  let declared_export_let_types : Map[String, DeclaredExportLetInfo] = {}
-  let declared_export_let_assigned : Map[String, Bool] = {}
   while ({
           self.skip_trivia()
           self.peek_kind() != eof()
         }) {
-    match
-      self.parse_stmt(declared_export_let_types, declared_export_let_assigned) {
+    match self.parse_stmt() {
       Some(stmt) => stmts.push(stmt)
       None => ()
     }
@@ -160,8 +151,5 @@ pub fn AstParser::parse(self : AstParser) -> @core.Module raise ParseError {
     }
     self.pending_stmts = []
   }
-  self.ensure_declared_export_let_defs(
-    declared_export_let_types, declared_export_let_assigned,
-  )
   @core.Module::{ stmts, }
 }

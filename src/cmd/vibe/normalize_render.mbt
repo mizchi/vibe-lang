@@ -170,7 +170,7 @@ fn normalize_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
       Some("export { " + normalize_render_name_list(names) + " }")
     @vibe_core.Stmt::ReExport(names~, source~, ..) =>
       Some(
-        "export use " +
+        "export " +
         normalize_render_module_ref(source) +
         " { " +
         normalize_render_name_list(names) +
@@ -618,14 +618,7 @@ fn normalize_render_decl_assign_fn_without_param_annotations(
       if stripped == snippet {
         return None
       }
-      let probe = "declare export let " +
-        name +
-        ": " +
-        decl_ty_text +
-        "\n" +
-        name +
-        " = " +
-        stripped
+      let probe = "let " + name + ": " + decl_ty_text + " = " + stripped
       let probe_ast = @parser.parse_ast(probe) catch { _ => return None }
       let _ = @checker.type_check(probe_ast) catch { _ => return None }
       Some(stripped)
@@ -1186,11 +1179,12 @@ fn normalize_render_source(
   inferred_annotations : Map[String, String],
   env : @checker.TypeEnv,
 ) -> Result[String, String] {
-  let export_decl_annotations = normalize_collect_export_decl_annotations(
+  let _ = normalize_collect_export_decl_annotations(
     @vibe_core.Module::{ stmts, },
     inferred_annotations,
     env,
   )
+  let export_decl_annotations : Map[String, String] = {}
   let rendered : Array[NormalizeRenderedBlock] = []
   let declare_lines : Array[String] = []
   for stmt in stmts {

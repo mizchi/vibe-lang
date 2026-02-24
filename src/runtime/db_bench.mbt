@@ -183,7 +183,7 @@ test "bench: VibeDb multi-file import" (b : @bench.T) {
   db.set_source("/lib.vibe", lib_source)
   // main.vibe imports from lib
   let main_source =
-    #|use /lib.vibe {  double  }
+    #|import /lib.vibe {  double  }
     #|double(21)
   db.set_source("/main.vibe", main_source)
   // Warm up
@@ -206,7 +206,7 @@ test "bench: VibeDb multi-file import change" (b : @bench.T) {
     #|export let double = (x: Int) -> Int { x + x }
   db.set_source("/lib.vibe", lib_source1)
   let main_source =
-    #|use /lib.vibe {  double  }
+    #|import /lib.vibe {  double  }
     #|double(21)
   db.set_source("/main.vibe", main_source)
   // Warm up

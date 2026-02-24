@@ -42,7 +42,7 @@ test "type query keeps no-import dependency exports for alias call" {
   )
   db.set_source(
     "main",
-    "use ./option.vibe { unwrap_or }\n" +
+    "import ./option.vibe { unwrap_or }\n" +
     "let option_unwrap_or = unwrap_or\n" +
     "let x = option_unwrap_or(Some(1), 0)\n" +
     "x\n",
@@ -74,11 +74,11 @@ test "type query imports re-exported Process functions through index" {
   )
   db.set_source(
     "./index.vibe",
-    "export use ./process.vibe { run_lines }\n" + "export { run_lines }\n",
+    "export ./process.vibe { run_lines }\n" + "export { run_lines }\n",
   )
   db.set_source(
     "main",
-    "use ./index.vibe { run_lines }\n" +
+    "import ./index.vibe { run_lines }\n" +
     "let lines = run_lines(\"ok\")\n" +
     "assert(eq(array_length(lines), 1))\n",
   )
@@ -158,7 +158,7 @@ test "cross-directory import to non-index.vibe emits warning" {
     "/project/lib/helper.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
   )
   db.set_source(
-    "/project/src/main.vibe", "use ../lib/helper.vibe { add }\nlet x = add(1, 2)\n",
+    "/project/src/main.vibe", "import ../lib/helper.vibe { add }\nlet x = add(1, 2)\n",
   )
   let _imports = db.imports("/project/src/main.vibe")
   let diags = db.import_diagnostics("/project/src/main.vibe")
@@ -177,10 +177,10 @@ test "cross-directory import to index.vibe does not emit warning" {
     "/project/lib/helper.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
   )
   db.set_source(
-    "/project/lib/index.vibe", "export use ./helper.vibe { add }\nexport { add }\n",
+    "/project/lib/index.vibe", "export ./helper.vibe { add }\nexport { add }\n",
   )
   db.set_source(
-    "/project/src/main.vibe", "use ../lib/index.vibe { add }\nlet x = add(1, 2)\n",
+    "/project/src/main.vibe", "import ../lib/index.vibe { add }\nlet x = add(1, 2)\n",
   )
   let _imports = db.imports("/project/src/main.vibe")
   let diags = db.import_diagnostics("/project/src/main.vibe")
@@ -201,7 +201,7 @@ test "same-directory import does not emit cross-module warning" {
     "/project/src/helper.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
   )
   db.set_source(
-    "/project/src/main.vibe", "use ./helper.vibe { add }\nlet x = add(1, 2)\n",
+    "/project/src/main.vibe", "import ./helper.vibe { add }\nlet x = add(1, 2)\n",
   )
   let _imports = db.imports("/project/src/main.vibe")
   let diags = db.import_diagnostics("/project/src/main.vibe")
@@ -219,10 +219,10 @@ test "same-directory import does not emit cross-module warning" {
 test "module-level cycle detection: A -> B -> A directories" {
   let db = VibeDb::new()
   db.set_source(
-    "/project/a/index.vibe", "export use ../b/index.vibe { greet }\nexport let hello = () -> String { greet() }\nexport { hello }\n",
+    "/project/a/index.vibe", "export ../b/index.vibe { greet }\nexport let hello = () -> String { greet() }\nexport { hello }\n",
   )
   db.set_source(
-    "/project/b/index.vibe", "export use ../a/index.vibe { hello }\nexport let greet = () -> String { hello() }\nexport { greet }\n",
+    "/project/b/index.vibe", "export ../a/index.vibe { hello }\nexport let greet = () -> String { hello() }\nexport { greet }\n",
   )
   let _imports = db.imports("/project/a/index.vibe")
   let diags = db.import_diagnostics("/project/a/index.vibe")
@@ -243,7 +243,7 @@ test "index.vibe cross-directory imports shared with same-dir files" {
   )
   // index.vibe in /project/src/ imports from external module
   db.set_source(
-    "/project/src/index.vibe", "export use ../lib/math.vibe { add }\n",
+    "/project/src/index.vibe", "export ../lib/math.vibe { add }\n",
   )
   // sibling.vibe in /project/src/ should have access to `add` without importing
   db.set_source("/project/src/sibling.vibe", "let x = add(1, 2)\nx\n")
@@ -270,7 +270,7 @@ test "index.vibe sharing does not apply to index.vibe itself" {
   )
   // index.vibe cannot use its own exports without explicit import
   db.set_source(
-    "/project/src/index.vibe", "export use ../lib/math.vibe { add }\nlet y = add(1, 2)\ny\n",
+    "/project/src/index.vibe", "export ../lib/math.vibe { add }\nlet y = add(1, 2)\ny\n",
   )
   let env = db.types("/project/src/index.vibe")
   let diags = db.diagnostics("/project/src/index.vibe")
@@ -296,7 +296,7 @@ test "cascading diagnostics: upstream type error produces root cause diagnostic"
     "./lib.vibe", "export let helper = () -> Int { undefined_fn(1) }\nexport { helper }\n",
   )
   // main imports helper from lib.vibe
-  db.set_source("main", "use ./lib.vibe { helper }\nlet x = helper()\n")
+  db.set_source("main", "import ./lib.vibe { helper }\nlet x = helper()\n")
   let _env = db.types("main")
   let diags = db.diagnostics("main")
   // Current behavior: no useful diagnostic for main — helper silently becomes

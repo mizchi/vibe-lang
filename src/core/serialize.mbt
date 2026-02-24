@@ -43,6 +43,13 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_string_to(name, buf)
       buf.write_string("}}")
     }
+    Stmt::ExternLet(name~, ty~, ..) => {
+      buf.write_string("{\"ExternLet\":{\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"ty\":")
+      serialize_type_to(ty, buf)
+      buf.write_string("}}")
+    }
     Stmt::LetPat(pat~, expr~, ..) => {
       buf.write_string("{\"LetPat\":{\"expr\":")
       serialize_expr_to(expr, buf)

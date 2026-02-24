@@ -209,6 +209,14 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       let norm_name = scope.bind(name)
       Stmt::LetMut(name=norm_name, expr=norm_expr, span=zero_span)
     }
+    Stmt::ExternLet(name~, ty~, ..) => {
+      let norm_name = if scope.bindings.contains(name) {
+        scope.lookup(name)
+      } else {
+        scope.bind(name)
+      }
+      Stmt::ExternLet(name=norm_name, ty~, span=zero_span)
+    }
     Stmt::LetPat(pat~, expr~, ..) => {
       let norm_expr = normalize_expr(expr, scope)
       let norm_pat = normalize_pat(pat, scope)

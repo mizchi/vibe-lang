@@ -2352,7 +2352,8 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
     | @core.Stmt::ExportTypeAlias(..)
     | @core.Stmt::ReExport(..)
     | @core.Stmt::StructDef(..)
-    | @core.Stmt::ExportStructDef(..) => stmt
+    | @core.Stmt::ExportStructDef(..)
+    | @core.Stmt::ExternLet(..) => stmt
   }
 }
 

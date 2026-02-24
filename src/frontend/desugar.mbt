@@ -606,6 +606,11 @@ fn desugar_block(
         let _ = span
         scope_map.bindings[name] = true
       }
+      @core.Stmt::ExternLet(name~, ty~, span~) => {
+        let _ = ty
+        let _ = span
+        scope_map.bindings[name] = true
+      }
       _ => ()
     }
   }
@@ -637,6 +642,7 @@ fn desugar_stmt(
     @core.Stmt::TraitDef(..) => stmt
     @core.Stmt::TraitImpl(..) => stmt
     @core.Stmt::Import(..) => stmt
+    @core.Stmt::ExternLet(..) => stmt
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::ExportLet(
         rec~,

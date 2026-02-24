@@ -339,6 +339,11 @@ pub fn walk_stmt_refs(
       walk_expr_refs(expr, scope, refs, on_name)
       scope.bindings[name] = true
     }
+    Stmt::ExternLet(name~, ty~, span~) => {
+      let _ = ty
+      let _ = span
+      scope.bindings[name] = true
+    }
     Stmt::Assign(name~, expr~, span~) => {
       let _ = span
       on_name(name, scope, refs)

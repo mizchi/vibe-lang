@@ -115,8 +115,8 @@ test "codebase update_lock_path_refs gathers transitive local imports" {
   let main_path = root + "/main.vibe"
   let lib_path = root + "/lib.vibe"
   let util_path = nested + "/util.vibe"
-  let main_source = "use ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n"
-  let lib_source = "use ./nested/util.vibe {  utilv  }\nlet libv = utilv\nexport { libv }\n"
+  let main_source = "import ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n"
+  let lib_source = "import ./nested/util.vibe {  utilv  }\nlet libv = utilv\nexport { libv }\n"
   let util_source = "let utilv = 1\nexport { utilv }\n"
   write_file(main_path, main_source)
   write_file(lib_path, lib_source)
@@ -151,7 +151,7 @@ test "codebase update_lock_path_refs prunes stale path/module refs and keeps non
   let lib = root + "/lib.vibe"
   let old = root + "/old.vibe"
   write_file(
-    entry, "use ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n",
+    entry, "import ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n",
   )
   write_file(lib, "let libv = 1\nexport { libv }\n")
   let lock_path = lock_file_path(entry)
@@ -198,8 +198,8 @@ test "codebase update_lock_path_refs reports collect_path_refs errors" {
   let root = make_temp_dir("update_lock_cycle")
   let a_path = root + "/a.vibe"
   let b_path = root + "/b.vibe"
-  write_file(a_path, "use ./b.vibe {  b  }\nlet a = b\nexport { a }\n")
-  write_file(b_path, "use ./a.vibe {  a  }\nlet b = a\nexport { b }\n")
+  write_file(a_path, "import ./b.vibe {  b  }\nlet a = b\nexport { a }\n")
+  write_file(b_path, "import ./a.vibe {  a  }\nlet b = a\nexport { b }\n")
   match update_lock_path_refs(a_path) {
     Ok(_) => fail("expected update_lock_path_refs to fail")
     Err(err) => assert_true(err.contains("import cycle detected"))
@@ -521,7 +521,7 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
     entry,
-    "use ../" +
+    "import ../" +
     outside_name +
     "/lib.vibe { libv }\nlet main = libv\nexport { main }\n",
   )
@@ -551,7 +551,7 @@ test "codebase update_lock_path_refs requires index version export" {
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
+    entry, "import std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
   )
   match update_lock_path_refs(entry) {
     Ok(_) => fail("expected missing version error")
@@ -579,7 +579,7 @@ test "codebase update_lock_path_refs validates index version format" {
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
+    entry, "import std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
   )
   match update_lock_path_refs(entry) {
     Ok(_) => fail("expected invalid semver error")
@@ -589,7 +589,7 @@ test "codebase update_lock_path_refs validates index version format" {
 }
 
 ///|
-test "codebase update_lock_path_refs accepts declared export version" {
+test "codebase update_lock_path_refs accepts export version" {
   let root = make_temp_dir("registry_declared_version")
   let std_dir = root + "/vibe/builtin"
   @os_fs.create_dir(root + "/vibe") catch {
@@ -602,11 +602,11 @@ test "codebase update_lock_path_refs accepts declared export version" {
   let std_mod = std_dir + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "declare export let version: String\nversion = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.vibe { value }\nlet main = value\nexport { main }\n",
+    entry, "import std/math.vibe { value }\nlet main = value\nexport { main }\n",
   )
   let updated = match update_lock_path_refs(entry) {
     Ok(v) => v
@@ -654,7 +654,7 @@ test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
-    entry, "use std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
+    entry, "import std/math.vibe {  value  }\nlet main = value\nexport { main }\n",
   )
   let updated = match update_lock_path_refs(entry) {
     Ok(v) => v

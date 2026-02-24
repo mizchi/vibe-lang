@@ -517,6 +517,15 @@ pub fn build_symbol_index_for_module(
       }
       @core.Stmt::LetMut(name~, span~, ..) =>
         push_symbol(entries, name, SymbolKind::ValueSym, "mut", path, span)
+      @core.Stmt::ExternLet(name~, ty~, span~) =>
+        push_symbol(
+          entries,
+          name,
+          SymbolKind::ValueSym,
+          "extern " + name + ": " + render_type(ty),
+          path,
+          span,
+        )
       @core.Stmt::TypeAlias(name~, params~, target~, span~)
       | @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
         push_symbol(
