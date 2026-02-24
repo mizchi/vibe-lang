@@ -104,23 +104,21 @@ fn find_missing_effect(
 fn require_effect_guard(
   env : TypeEnv,
   scope : EffectScope,
-  allow_effect : Bool,
+  _allow_effect : Bool,
   operation : String,
   required_effects : Array[@core.EffectAtom],
   span : @core.Span,
 ) -> Unit raise TypeError {
   let missing_effect = find_missing_effect(env, scope, required_effects)
-  let missing_do_boundary = is_do_boundary_operation(operation) &&
-    not(allow_effect)
-  if missing_effect == None && not(missing_do_boundary) {
-    ()
-  } else {
-    raise TypeError::EffectGuardNotSatisfied(
-      operation~,
-      missing_effect~,
-      missing_do_boundary~,
-      span~,
-    )
+  match missing_effect {
+    Some(_) =>
+      raise TypeError::EffectGuardNotSatisfied(
+        operation~,
+        missing_effect~,
+        missing_do_boundary=false,
+        span~,
+      )
+    None => ()
   }
 }
 

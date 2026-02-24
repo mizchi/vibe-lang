@@ -357,10 +357,8 @@ fn purity_expr_analysis_inner(
       out
     }
     @core.Expr::Do(body~, span~) => {
-      // `do { }` is an explicit impurity boundary: mutation inside is
-      // encapsulated and the result is considered pure. This enables
-      // escape-free builder patterns (array_builder → push → freeze)
-      // without polluting the enclosing scope's purity tier.
+      // `do { }` encapsulates local mutation: the result is considered pure.
+      // This is used internally by for-in desugaring.
       let _ = body
       let _ = span
       purity_analysis_pure()
@@ -606,15 +604,6 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "stdout_write_stream" ||
   name == "stdin_read_char" ||
   name == "stdin_read_stream" ||
-  name == "array_builder" ||
-  name == "array_builder_push" ||
-  name == "array_builder_freeze" ||
-  name == "map_builder" ||
-  name == "map_builder_set" ||
-  name == "map_builder_freeze" ||
-  name == "string_builder" ||
-  name == "string_builder_push" ||
-  name == "string_builder_freeze" ||
   name == "fs_read_file" ||
   name == "fs_write_file" ||
   name == "fs_exists" ||

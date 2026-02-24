@@ -4,7 +4,7 @@ vibe uses an explicit effect system. Functions declare required effects with `wi
 
 ## Pure by default
 
-Functions without `with { ... }` are pure -- they cannot perform I/O, throw errors, or use mutable builders.
+Functions without `with { ... }` are pure -- they cannot perform I/O or throw errors.
 
 ```vibe
 let add = (a: Int, b: Int) -> Int { a + b }  // pure
@@ -111,34 +111,32 @@ let safe = [T](f: (T) -> T with { Error }, x: T) -> T {
 | `Stdin` | `stdin_read_char()`, `stdin_read_stream(...)` |
 | `Async` | `yield`, `sleep(...)` (requires `--unstable-async`) |
 
-## do blocks
+## Builders and `for-in`
 
-Mutable builder APIs (`array_builder`, `map_builder`, `string_builder`) and direct
-I/O builtins are effectful. At top level, wrap them in `do { ... }` or use `for-in`:
+Mutable builder APIs (`array_builder`, `map_builder`, `string_builder`) can be used
+inside any function. `for-in` comprehensions desugar to builder operations internally:
 
 ```vibe
-// do block
+// for-in comprehension
+let doubled = for x in [1, 2, 3] { x * 2 }
+
+// Builder pattern (typically inside do for runtime shared-mut semantics)
 let items = do {
   let b = array_builder()
   array_builder_push(b, 1)
   array_builder_push(b, 2)
   array_builder_freeze(b)
 }
-
-// for-in (desugars to do internally — also pure)
-let doubled = for x in [1, 2, 3] { x * 2 }
-
-// function with do — callers inherit pure tier
-let make = () -> Array[Int] {
-  do { let b = array_builder(); array_builder_push(b, 1); array_builder_freeze(b) }
-}
-let xs = make()  // pure: make's value tier is Pure
 ```
 
-Functions with declared effects (`with { Stdout }` etc.) are always impure — `do` cannot
-override a missing effect declaration:
+I/O builtins require the appropriate `with { Effect }` declaration:
 
 ```vibe
-// Error: do alone does not add missing effect declaration
-let bad = () -> Unit { do { sh("ls") } }
+// OK: effect declared
+let greet = (name: String) -> Unit with { Stdout } {
+  stdout_write_stream(name)
+}
+
+// Error: missing effect declaration
+let bad = () -> Unit { sh("ls") }
 ```

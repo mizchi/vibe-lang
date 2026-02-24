@@ -1492,24 +1492,53 @@ test "vibe match guard" {
 }
 
 ///|
-test "vibe effect requires do" {
+test "vibe effect requires with declaration in function" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let result : Result[EvalResult, VibeError] = try? rt.eval_script("sh(\"ls\")")
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let f = () -> String { sh(\"ls\") }",
+  )
   match result {
     Err(_) => ()
-    Ok(_) => fail("expected type error")
+    Ok(_) => fail("expected type error for sh without with {Process}")
   }
 }
 
 ///|
-test "vibe builder requires do" {
+test "vibe builder works without do" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let b = array_builder()",
+    "let xs = do { let b = array_builder()\narray_builder_push(b, 42)\narray_builder_freeze(b) }",
   )
   match result {
-    Err(_) => ()
-    Ok(_) => fail("expected type error")
+    Ok(_) => ()
+    Err(err) => fail("unexpected error: \{err.to_string()}")
+  }
+}
+
+///|
+test "vibe builder type-checks without do boundary" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  // Builder operations should type-check without requiring do wrapping in the checker.
+  // Note: do is still useful at runtime for shared-mut semantics (eval_block_shared_mut).
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let build = () -> [Int] {\n  let b = array_builder()\n  array_builder_push(b, 1)\n  array_builder_freeze(b)\n}\nlet xs = build()",
+  )
+  match result {
+    Ok(_) => () // type-checking passes without do boundary
+    Err(err) => fail("unexpected error: \{err.to_string()}")
+  }
+}
+
+///|
+test "vibe io builtin with effect declaration only" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  // stdout_write_stream should type-check without do when with {Stdout} is declared
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let greet = (name: String) -> Unit with {Stdout} {\n  stdout_write_stream(name)\n}",
+  )
+  match result {
+    Ok(_) => ()
+    Err(err) => fail("unexpected error: \{err.to_string()}")
   }
 }
 

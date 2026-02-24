@@ -60,8 +60,8 @@ test "top-level purity diagnostic hint for state_local" {
   ).diagnostic()
   match diag.hint {
     Some(hint) => {
-      assert_true(hint.contains("do {"))
       assert_true(hint.contains("for"))
+      assert_true(hint.contains("mutation"))
     }
     None => fail("expected hint")
   }

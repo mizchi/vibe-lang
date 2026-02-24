@@ -244,7 +244,7 @@ test "type_call_builtin: threads_spawn requires Threads effect" {
 }
 
 ///|
-test "type_call_builtin: threads_spawn requires do boundary" {
+test "type_call_builtin: threads_spawn succeeds with Threads effect scope" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let args = [builtin_test_string_arg("worker"), builtin_test_ident_arg("ch")]
@@ -260,19 +260,7 @@ test "type_call_builtin: threads_spawn requires do boundary" {
     span,
   )
   match result {
-    Ok(_) => fail("expected do-boundary error")
-    Err(
-      TypeError::EffectGuardNotSatisfied(
-        operation~,
-        missing_effect~,
-        missing_do_boundary~,
-        ..
-      )
-    ) => {
-      assert_eq(operation, "threads_spawn")
-      assert_eq(missing_effect, None)
-      assert_true(missing_do_boundary)
-    }
-    Err(other) => fail("unexpected error: \{other.to_string()}")
+    Ok(_) => () // do boundary is no longer required
+    Err(err) => fail("unexpected error: \{err.to_string()}")
   }
 }

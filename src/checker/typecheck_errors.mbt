@@ -50,40 +50,8 @@ fn suggestion_hint(suggestion : String?) -> String? {
 }
 
 ///|
-fn is_do_boundary_operation(name : String) -> Bool {
-  match name {
-    "sh"
-    | "sh_lines"
-    | "sleep"
-    | "threads_probe_wat"
-    | "threads_runtime_hints"
-    | "threads_channel_new"
-    | "threads_send"
-    | "threads_recv"
-    | "threads_spawn"
-    | "threads_wait"
-    | "stdout_write_char"
-    | "stdin_read_char"
-    | "stdout_write_stream"
-    | "stdin_read_stream"
-    | "array_builder"
-    | "array_builder_push"
-    | "array_builder_freeze"
-    | "map_builder"
-    | "map_builder_set"
-    | "map_builder_freeze"
-    | "string_builder"
-    | "string_builder_push"
-    | "string_builder_freeze" => true
-    _ => false
-  }
-}
-
-///|
 fn effect_not_allowed_hint(name : String) -> String? {
-  if is_do_boundary_operation(name) {
-    Some("wrap in `do { ... }` to allow side effects")
-  } else if name == "Error" {
+  if name == "Error" {
     Some("declare `with {Error}` or handle with `handle { ... } { ... }`")
   } else if name == "effect" {
     Some("declare a compatible `with { ... }` effect set on this function")
@@ -98,56 +66,26 @@ fn effect_not_allowed_hint(name : String) -> String? {
 
 ///|
 fn effect_guard_hint(
-  operation : String,
+  _operation : String,
   missing_effect : String?,
-  missing_do_boundary : Bool,
+  _missing_do_boundary : Bool,
 ) -> String? {
   match missing_effect {
-    Some(effect_name) =>
-      if missing_do_boundary {
-        Some(
-          "declare `with {" +
-          effect_name +
-          "}` (or a compatible effect row) and wrap in `do { ... }`",
-        )
-      } else {
-        effect_not_allowed_hint(effect_name)
-      }
-    None =>
-      if missing_do_boundary {
-        effect_not_allowed_hint(operation)
-      } else {
-        None
-      }
+    Some(effect_name) => effect_not_allowed_hint(effect_name)
+    None => None
   }
 }
 
 ///|
 fn effect_guard_note(
-  operation : String,
+  _operation : String,
   missing_effect : String?,
-  missing_do_boundary : Bool,
+  _missing_do_boundary : Bool,
 ) -> String? {
-  let mut note = ""
   match missing_effect {
     Some(effect_name) =>
-      note = "missing effect declaration: `" + effect_name + "`"
-    None => ()
-  }
-  if missing_do_boundary {
-    let do_note = "missing effect boundary: wrap `" +
-      operation +
-      "(...)` in `do { ... }`"
-    if note == "" {
-      note = do_note
-    } else {
-      note = note + "\n" + do_note
-    }
-  }
-  if note == "" {
-    None
-  } else {
-    Some(note)
+      Some("missing effect declaration: `" + effect_name + "`")
+    None => None
   }
 }
 
@@ -164,7 +102,7 @@ fn top_level_purity_tier_name(tier : TopLevelPurityTier) -> String {
 fn top_level_impure_hint(tier : TopLevelPurityTier) -> String {
   match tier {
     TopLevelPurityTier::StateLocal =>
-      "wrap local mutation in `do { ... }` or use `for x in arr { ... }` — both are pure at top level"
+      "use `for x in arr { ... }` or move mutation into a function"
     TopLevelPurityTier::Impure =>
       "move side effects into `let main = () -> { ... }`"
     TopLevelPurityTier::Pure =>
