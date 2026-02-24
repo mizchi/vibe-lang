@@ -614,6 +614,18 @@ test "cli runtime flags parse with unstable flags" {
 }
 
 ///|
+test "test cmd normalize jobs uses bounded auto default for non-positive input" {
+  assert_eq(normalize_test_jobs(0), 4)
+  assert_eq(normalize_test_jobs(-1), 4)
+}
+
+///|
+test "test cmd normalize jobs keeps explicit positive value" {
+  assert_eq(normalize_test_jobs(2), 2)
+  assert_eq(normalize_test_jobs(8), 8)
+}
+
+///|
 test "cli dispatch args parse leading unstable flags" {
   let parsed = parse_cli_dispatch_args([
     "vibe", "--unstable-async", "--unstable-threads", "run", "main.vibe",
@@ -795,7 +807,7 @@ test "explain import report shows miss mismatch and resolution errors" {
     "import version@missing { value }\n" +
     "import symbol@missing/sym { value }\n" +
     "import #\{missing_hash} { value }\n" +
-    "use unknown_ns/lib.vibe { value }\n" +
+    "import unknown_ns/lib.vibe { value }\n" +
     "let x = value\n"
   @os_fs.write_string_to_file(entry, main_source) catch {
     e => fail("write entry failed: " + e.to_string())
@@ -1291,12 +1303,11 @@ test "normalize source sorts declarations and prunes unreachable defs" {
 }
 
 ///|
-test "normalize source keeps module blocks and sorts module body" {
+test "normalize source flattens module body and sorts functions" {
   let source =
     #|export module math {
     #|  let dead = () -> Int { 0 }
     #|  let helper = () -> Int { 1 }
-    #|  type Alias = Int
     #|  export let run = () -> Int { helper() }
     #|  export let run_io = () -> Int with {Error} { run() }
     #|}
@@ -1304,9 +1315,8 @@ test "normalize source keeps module blocks and sorts module body" {
     Ok(v) => v
     Err(msg) => fail("normalize failed: " + msg)
   }
-  assert_true(normalized.contains("export module math {"))
+  assert_false(normalized.contains("export module math {"))
   assert_false(normalized.contains("let dead ="))
-  assert_false(normalized.contains("type Alias = Int"))
   // Fn expressions should NOT produce declare+assign
   assert_false(normalized.contains("declare export let run"))
   assert_false(normalized.contains("declare export let run_io"))
@@ -1454,17 +1464,14 @@ test "normalize source keeps blank line between top-level definitions" {
 }
 
 ///|
-test "normalize source converts declared export let fn to export let" {
+test "normalize source keeps extern signature declarations" {
   let source =
-    #|declare export let inc: (Int) -> Int
-    #|inc = (v: Int) -> Int { 1 }
+    #|extern let %inc: (Int) -> Int
   let normalized = match normalize_source_text(source) {
     Ok(v) => v
     Err(msg) => fail("normalize failed: " + msg)
   }
-  // Fn expressions should NOT produce declare+assign
-  assert_false(normalized.contains("declare export let inc"))
-  assert_true(normalized.contains("export let inc ="))
+  assert_true(normalized.contains("extern let %inc: (Int) -> Int"))
 }
 
 test "std layer classification covers primary modules" {

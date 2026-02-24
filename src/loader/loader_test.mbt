@@ -466,6 +466,33 @@ test "loader load_db_with_paths refreshes stale index.lock path hashes" {
 }
 
 ///|
+test "loader load_db_for_test keeps stale index.lock untouched" {
+  let root = make_temp_dir("lock_refresh_for_test")
+  let entry = root + "/main.vibe"
+  let lib = root + "/lib.vibe"
+  let entry_source = "import ./lib.vibe {  libv  }\nlet main = libv\nexport { main }\n"
+  let lib_source = "let libv = 1\nexport { libv }\n"
+  write_file(entry, entry_source)
+  write_file(lib, lib_source)
+  let lock_path = @codebase.lock_file_path(entry)
+  let stale_lock =
+    "{\"path\":{\"./main.vibe\":\"stale_main\",\"./lib.vibe\":\"stale_lib\"},\"version\":{},\"symbol\":{}}"
+  write_file(lock_path, stale_lock)
+  let before = @os_fs.read_file_to_string(lock_path) catch {
+    e => fail("read stale lock failed: " + e.to_string())
+  }
+  match load_db_for_test(entry) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let after = @os_fs.read_file_to_string(lock_path) catch {
+    e => fail("read lock after load_db_for_test failed: " + e.to_string())
+  }
+  assert_eq(after, before)
+  remove_if_exists(root)
+}
+
+///|
 test "loader load_db_with_paths keeps re-exported Process function callable" {
   let root = make_temp_dir("process_reexport")
   let pkg_dir = root + "/pkg"

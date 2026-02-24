@@ -1080,7 +1080,7 @@ fn test_cmd(
     abort("test: expected <file|dir...>")
   }
   // Parse --jobs and --report-json flags
-  let mut jobs = 0 // 0 = auto (unlimited concurrency)
+  let mut jobs = 0
   let mut report_json = false
   let path_args : Array[String] = []
   let mut i = 0
@@ -1102,15 +1102,31 @@ fn test_cmd(
   if entry_paths.length() == 0 {
     abort("test: no test files found")
   }
+  let normalized_jobs = normalize_test_jobs(jobs)
   if report_json {
     test_cmd_report_json(entry_paths, features)
     return
   }
-  if entry_paths.length() > 1 && jobs != 1 {
-    test_cmd_parallel(entry_paths, features, jobs)
+  if entry_paths.length() > 1 && normalized_jobs != 1 {
+    test_cmd_parallel(entry_paths, features, normalized_jobs)
     return
   }
   test_cmd_sequential(entry_paths, features)
+}
+
+///|
+fn normalize_test_jobs(jobs : Int) -> Int {
+  if jobs <= 0 {
+    default_test_jobs()
+  } else {
+    jobs
+  }
+}
+
+///|
+fn default_test_jobs() -> Int {
+  // Keep default bounded to avoid process explosion from unbounded fan-out.
+  4
 }
 
 ///|
@@ -1124,7 +1140,7 @@ fn test_cmd_sequential(
   let mut failed_count = 0
   let file_count = entry_paths.length()
   for entry_path in entry_paths {
-    match @loader.load_db(entry_path) {
+    match @loader.load_db_for_test(entry_path) {
       Err(err) => {
         println("[\{entry_path}] load error: \{err}")
         failed = true
@@ -1240,7 +1256,7 @@ fn test_cmd_report_json(
 ) -> Unit {
   let mut any_failed = false
   for entry_path in entry_paths {
-    match @loader.load_db(entry_path) {
+    match @loader.load_db_for_test(entry_path) {
       Err(err) => {
         println(make_error_report_json(entry_path, "load", err).stringify())
         any_failed = true

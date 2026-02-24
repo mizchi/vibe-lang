@@ -1579,15 +1579,10 @@ pub fn write_lock_data(
 }
 
 ///|
-pub fn update_lock_path_refs_with_fs(
-  entry : String,
+fn build_refreshed_lock_data_with_fs(
+  normalized_entry : String,
   fs : &@io.FileSystemAdapter,
-) -> Result[LockData, String] {
-  let normalized_entry = if entry.has_prefix("/") {
-    @vibe_fs.normalize_path(entry)
-  } else {
-    @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
-  }
+) -> Result[(String, LockData), String] {
   let root = resolve_index_root_with_fs(normalized_entry, fs)
   let registry_modules = match load_registry_modules_with_fs(root, fs) {
     Ok(v) => v
@@ -1610,6 +1605,45 @@ pub fn update_lock_path_refs_with_fs(
     module_refs,
     annotations,
   )
+  Ok((lock_path, next_lock))
+}
+
+///|
+pub fn refresh_lock_path_refs_with_fs(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[LockData, String] {
+  let normalized_entry = if entry.has_prefix("/") {
+    @vibe_fs.normalize_path(entry)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
+  }
+  match build_refreshed_lock_data_with_fs(normalized_entry, fs) {
+    Ok((_, next_lock)) => Ok(next_lock)
+    Err(err) => Err(err)
+  }
+}
+
+///|
+pub fn refresh_lock_path_refs(entry : String) -> Result[LockData, String] {
+  refresh_lock_path_refs_with_fs(entry, @io.default_fs_adapter())
+}
+
+///|
+pub fn update_lock_path_refs_with_fs(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[LockData, String] {
+  let normalized_entry = if entry.has_prefix("/") {
+    @vibe_fs.normalize_path(entry)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
+  }
+  let (lock_path, next_lock) = match
+    build_refreshed_lock_data_with_fs(normalized_entry, fs) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
   match write_lock_data_with_fs(lock_path, next_lock, fs) {
     Ok(_) => Ok(next_lock)
     Err(err) => Err(err)

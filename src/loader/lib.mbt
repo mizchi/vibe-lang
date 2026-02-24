@@ -3,6 +3,7 @@ fn apply_lock_to_db_with_fs(
   db : @runtime.VibeDb,
   entry : String,
   fs : &@io.FileSystemAdapter,
+  persist_lock_updates : Bool,
 ) -> Result[Unit, String] {
   db.require_path_lock(true)
   let lock_path = @codebase.lock_file_path_with_fs(entry, fs)
@@ -12,15 +13,23 @@ fn apply_lock_to_db_with_fs(
   let has_lock_source = @io.path_exists_with(fs, lock_path) ||
     @io.path_exists_with(fs, legacy_lock_path) ||
     @io.path_exists_with(fs, index_vbundle_path)
-  if has_lock_source {
-    match @codebase.update_lock_path_refs_with_fs(entry, fs) {
-      Ok(_) => ()
+  let lock = if has_lock_source {
+    if persist_lock_updates {
+      match @codebase.update_lock_path_refs_with_fs(entry, fs) {
+        Ok(updated) => updated
+        Err(err) => return Err(err)
+      }
+    } else {
+      match @codebase.refresh_lock_path_refs_with_fs(entry, fs) {
+        Ok(updated) => updated
+        Err(err) => return Err(err)
+      }
+    }
+  } else {
+    match @codebase.load_lock_data_with_fs(lock_path, fs) {
+      Ok(data) => data
       Err(err) => return Err(err)
     }
-  }
-  let lock = match @codebase.load_lock_data_with_fs(lock_path, fs) {
-    Ok(data) => data
-    Err(err) => return Err(err)
   }
   for path, hash in lock.path_refs {
     db.set_path_ref(path, hash)
@@ -262,7 +271,7 @@ pub fn load_db_with_fs(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[(@runtime.VibeDb, String), String] {
-  match load_db_with_paths_with_fs(entry_path, fs) {
+  match load_db_with_paths_with_fs_impl(entry_path, fs, true) {
     Ok((db, entry, _)) => Ok((db, entry))
     Err(err) => Err(err)
   }
@@ -272,13 +281,22 @@ pub fn load_db_with_fs(
 pub fn load_db_with_paths(
   entry_path : String,
 ) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
-  load_db_with_paths_with_fs(entry_path, @io.default_fs_adapter())
+  load_db_with_paths_with_fs_impl(entry_path, @io.default_fs_adapter(), true)
 }
 
 ///|
 pub fn load_db_with_paths_with_fs(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
+) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
+  load_db_with_paths_with_fs_impl(entry_path, fs, true)
+}
+
+///|
+fn load_db_with_paths_with_fs_impl(
+  entry_path : String,
+  fs : &@io.FileSystemAdapter,
+  persist_lock_updates : Bool,
 ) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
   let db = @runtime.VibeDb::new()
   let entry = resolve_entry_path_with_fs(entry_path, fs)
@@ -288,7 +306,7 @@ pub fn load_db_with_paths_with_fs(
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  match apply_lock_to_db_with_fs(db, entry, fs) {
+  match apply_lock_to_db_with_fs(db, entry, fs, persist_lock_updates) {
     Ok(_) => ()
     Err(err) => return Err(err)
   }
@@ -302,6 +320,21 @@ pub fn load_db_with_paths_with_fs(
       paths.sort()
       Ok((db, entry, paths))
     }
+    Err(err) => Err(err)
+  }
+}
+
+///|
+pub fn load_db_for_test(
+  entry_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  match
+    load_db_with_paths_with_fs_impl(
+      entry_path,
+      @io.default_fs_adapter(),
+      false,
+    ) {
+    Ok((db, entry, _)) => Ok((db, entry))
     Err(err) => Err(err)
   }
 }
