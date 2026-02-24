@@ -332,39 +332,86 @@ pub fn resolve_lock_root(entry : String) -> String {
 }
 
 ///|
+fn unwrap_local_type_assert_expr(expr : @core.Expr) -> @core.Expr {
+  match expr {
+    @core.Expr::Block(body~, ..) => {
+      if body.stmts.length() != 2 {
+        return expr
+      }
+      let helper_name = match body.stmts[0] {
+        @core.Stmt::Let(
+          rec~,
+          name~,
+          expr=@core.Expr::Fn(params~, ret~, body=helper_body, ..),
+          ..
+        ) =>
+          if rec ||
+            not(name.has_prefix("__vibe_local_type_assert_")) ||
+            params.length() != 1 ||
+            helper_body.stmts.length() != 1 {
+            return expr
+          } else {
+            let ret_ty = match ret {
+              Some(v) => v
+              None => return expr
+            }
+            if params[0].ty != ret_ty {
+              return expr
+            }
+            match helper_body.stmts[0] {
+              @core.Stmt::Expr(
+                expr=@core.Expr::Ident(name=returned_name, ..),
+                ..
+              ) =>
+                if returned_name != params[0].name {
+                  return expr
+                }
+              _ => return expr
+            }
+            name
+          }
+        _ => return expr
+      }
+      match body.stmts[1] {
+        @core.Stmt::Expr(expr=@core.Expr::Call(name~, args~, ..), ..) =>
+          if name == helper_name && args.length() == 1 {
+            unwrap_local_type_assert_expr(args[0].expr)
+          } else {
+            expr
+          }
+        _ => expr
+      }
+    }
+    _ => expr
+  }
+}
+
+///|
+fn extract_record_string_map(expr : @core.Expr) -> Map[String, String]? {
+  match unwrap_local_type_assert_expr(expr) {
+    @core.Expr::Record(fields~, ..) => {
+      let out : Map[String, String] = {}
+      for field in fields {
+        match field.expr {
+          @core.Expr::String(value~, ..) => out[field.name] = value
+          _ => ()
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+///|
 fn extract_registry_map(ast : @core.Module) -> Map[String, String]? {
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Let(name~, expr~, ..) =>
+      @core.Stmt::Let(name~, expr~, ..) | @core.Stmt::ExportLet(name~, expr~, ..) =>
         if name == "module" || name == "registry" {
-          match expr {
-            @core.Expr::Record(fields~, ..) => {
-              let out : Map[String, String] = {}
-              for field in fields {
-                match field.expr {
-                  @core.Expr::String(value~, ..) => out[field.name] = value
-                  _ => ()
-                }
-              }
-              return Some(out)
-            }
-            _ => ()
-          }
-        }
-      @core.Stmt::ExportLet(name~, expr~, ..) =>
-        if name == "module" || name == "registry" {
-          match expr {
-            @core.Expr::Record(fields~, ..) => {
-              let out : Map[String, String] = {}
-              for field in fields {
-                match field.expr {
-                  @core.Expr::String(value~, ..) => out[field.name] = value
-                  _ => ()
-                }
-              }
-              return Some(out)
-            }
-            _ => ()
+          match extract_record_string_map(expr) {
+            Some(out) => return Some(out)
+            None => ()
           }
         }
       _ => ()
@@ -409,7 +456,7 @@ fn require_index_version(ast : @core.Module) -> Result[String, String] {
     match stmt {
       @core.Stmt::ExportLet(name~, expr~, ..) =>
         if name == "version" {
-          match expr {
+          match unwrap_local_type_assert_expr(expr) {
             @core.Expr::String(value~, ..) =>
               if is_simple_semver(value) {
                 return Ok(value)

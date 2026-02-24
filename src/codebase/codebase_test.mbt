@@ -589,6 +589,37 @@ test "codebase update_lock_path_refs validates index version format" {
 }
 
 ///|
+test "codebase update_lock_path_refs accepts declared export version" {
+  let root = make_temp_dir("registry_declared_version")
+  let std_dir = root + "/vibe/builtin"
+  @os_fs.create_dir(root + "/vibe") catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(std_dir) catch {
+    e => fail(e.to_string())
+  }
+  let entry = root + "/main.vibe"
+  let std_mod = std_dir + "/math.vibe"
+  write_file(
+    root + "/index.vibe",
+    "declare export let version: String\nversion = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
+  )
+  write_file(std_mod, "let value = 1\nexport { value }\n")
+  write_file(
+    entry, "use std/math.vibe { value }\nlet main = value\nexport { main }\n",
+  )
+  let updated = match update_lock_path_refs(entry) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let std_norm = @vibe_fs.normalize_path(std_mod)
+  assert_true(updated.path_refs.contains(entry_norm))
+  assert_true(updated.path_refs.contains(std_norm))
+  remove_if_exists(root)
+}
+
+///|
 test "codebase load_registry_modules falls back to std encoding and collection" {
   let root = make_temp_dir("registry_default_namespaces")
   let modules = match load_registry_modules(root) {
