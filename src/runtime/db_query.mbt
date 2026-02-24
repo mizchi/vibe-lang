@@ -1071,7 +1071,7 @@ pub fn VibeDb::new() -> VibeDb {
                       }
                     }
                     // Auto-forward receiver-first exported functions as
-                    // namespace members so `use { Type }` can activate
+                    // namespace members so `import { Type }` can activate
                     // method-style calls without manual `Type::...` wrappers.
                     for exported_name, _ in visible_names {
                       if exported_name.contains("::") {
@@ -1131,7 +1131,7 @@ pub fn VibeDb::new() -> VibeDb {
                           imp.path,
                           span: Some(span),
                           hint: Some(
-                            "use `.xm` for multi-module files, or import explicit exported symbols from `.vibe`",
+                            "import from `.xm` for multi-module files, or import explicit exported symbols from `.vibe`",
                           ),
                           note: None,
                         })
@@ -1191,10 +1191,10 @@ pub fn VibeDb::new() -> VibeDb {
                         }
                       }
                       // Also bring namespace members (`Type::...`) when using
-                      // the namespace root itself (e.g. `use <ref> { Option }`).
+                      // the namespace root itself (e.g. `import <ref> { Option }`).
                       let _ = import_namespace_members(item, name, local_name)
                     } else if item.rename is None {
-                      // Namespace import: `use <ref> { Int }` or `use <ref> { type Int }`
+                      // Namespace import: `import <ref> { Int }` or `import <ref> { type Int }`
                       // brings all `Int::...` exports.
                       let imported_any = import_namespace_members(
                         item, name, name,

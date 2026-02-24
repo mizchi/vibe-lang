@@ -29,6 +29,6 @@ test "greeting" {
 - [collections.md](collections.md) -- Array, Map, Record, Tuple, JSON
 - [shell.md](shell.md) -- sh/sh_lines, PosixMode, pipes
 - [effects.md](effects.md) -- Error handling, algebraic effects, effect polymorphism
-- [modules.md](modules.md) -- export, use, module blocks, declare
+- [modules.md](modules.md) -- export, import, module blocks, extern
 - [builtins.md](builtins.md) -- Built-in function reference
 - [syntax-reference.md](syntax-reference.md) -- Complete syntax reference (operators, patterns, effects, modules)

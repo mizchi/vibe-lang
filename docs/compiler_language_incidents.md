@@ -26,7 +26,7 @@
 - 分類: `.vibe` 記法運用側
 - 症状:
   - parser が `UnexpectedToken(... got=\"import\")` で停止
-  - エラーメッセージは `use <module-ref> { ... }` 形式への移行を示す
+  - エラーメッセージは `import <module-ref> { ... }` 形式への移行を示す
 - 対応:
   - `docs/module-system.md` に移行例を明記
   - `scripts/test_codegen_unsupported.sh` に旧記法 parse error の回帰テストを追加

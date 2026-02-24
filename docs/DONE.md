@@ -23,7 +23,7 @@ Completed items archived from `TODO.md`.
 - `loop` expression with explicit tail-call optimization (WASM block/loop/br).
 - Pattern-match ergonomics: `let Pat = expr else { body }`.
 - Int model: 62-bit tagged range, hex literal support (0xFF).
-- Import/re-export simplification: `export use`-style re-export.
+- Import/re-export simplification: source-qualified re-export (`export <module-ref> { ... }`).
 - Removed `.vibe` fallback-to-cwd on root mkdir failure.
 - Bundle size: fixed importer namespace import resolution, 7 codegen bugs for
   Double/closure/62-bit tagged values. Importer totals: 14226 bytes (4/4 compiling).

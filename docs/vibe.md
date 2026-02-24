@@ -390,15 +390,15 @@ Separate internal hash:
 
 ### Surface syntax (current)
 
-Imports are source-first `use` only:
+Imports are source-first `import` only:
 
 ```vibe
-use ./path/to/mod.vibe { foo, bar as b }
-use ./path/to/mod.vibe { type IntPair, trait Show, foo, bar }
-use ./path/to/mod.vibe { foo }
-use #abc12345 { foo }
-use version@main { foo }
-use symbol@std/math { foo }
+import ./path/to/mod.vibe { foo, bar as b }
+import ./path/to/mod.vibe { type IntPair, trait Show, foo, bar }
+import ./path/to/mod.vibe { foo }
+import #abc12345 { foo }
+import version@main { foo }
+import symbol@std/math { foo }
 ```
 
 Per-item import kind:
@@ -407,7 +407,7 @@ Per-item import kind:
 - `trait Eq`: trait import
 - `type Int` can be used as namespace activation for `Int::...` exports.
 - If a non-default qualifier (`type` / `trait`) does not match the exported
-  symbol category, compiler emits a `use` diagnostic.
+  symbol category, compiler emits an `import` diagnostic.
 - Importing a non-exported trait emits `[TROP002] non-exported trait: <Name>`.
 
 Parser compatibility:
@@ -426,9 +426,8 @@ export { foo } from "./other.vibe"
 Rules:
 - No implicit "export all".
 - Non-exported top-level names are module-private.
-- `use foo.vibe` (bare namespace import shorthand is `use foo.vibe`) and
-  default-import forms are not part of the
-  current spec.
+- Bare namespace shorthand (`import foo.vibe`) and default-import forms are not
+  part of the current spec.
 
 ### Type-member imports (proposal)
 
@@ -438,21 +437,21 @@ functions.
 Current forms:
 
 ```vibe
-use ./vibe/builtin/int.vibe { type Int }             // also imports Int::*
-use ./vibe/builtin/int.vibe { Int }                  // namespace activation
-use ./vibe/builtin/int.vibe { Int::to_string }       // single member
-use ./vibe/builtin/int.vibe { Int::to_string as int_to_string }
+import ./vibe/builtin/int.vibe { type Int }             // also imports Int::*
+import ./vibe/builtin/int.vibe { Int }                  // namespace activation
+import ./vibe/builtin/int.vibe { Int::to_string }       // single member
+import ./vibe/builtin/int.vibe { Int::to_string as int_to_string }
 ```
 
 Rules:
-- `use <module-ref> { Int }` activates namespace binding `Int:: ->
+- `import <module-ref> { Int }` activates namespace binding `Int:: ->
   <module-ref>` in the current module scope.
 - Activated `Int::` resolves `Int::*` only from the bound `<module-ref>`.
   Example: if target is `std/int`, only exported `Int::...` symbols in
   `std/int` become resolution candidates.
-- `use <module-ref> { Int::name }` imports only that member from that
+- `import <module-ref> { Int::name }` imports only that member from that
   `<module-ref>`.
-- Namespace activation (`use <module-ref> { Int }`) also auto-forwards
+- Namespace activation (`import <module-ref> { Int }`) also auto-forwards
   receiver-first exported functions as `Int::name` when the first argument type
   root resolves to `Int` (including enum-variant-shaped receiver types).
 - Overwrite is forbidden:
@@ -462,15 +461,15 @@ Rules:
 
 ### Module refs and normalization
 
-`use <module-ref> { ... }` accepts:
+`import <module-ref> { ... }` accepts:
 - `PathRef`: local/module path literal.
 - `HashRef`: content hash literal (`#...`).
 - `VersionRef`: namespace pointer.
 - `SymbolRef`: symbol pointer.
 
 Notes:
-- `PathRef` is unquoted (`use ./vibe/builtin/string.vibe { ... }`).
-- `use` source is semantically `ModuleRef`; non-module assets should be split to a future `AssetRef` lane.
+- `PathRef` is unquoted (`import ./vibe/builtin/string.vibe { ... }`).
+- `import` source is semantically `ModuleRef`; non-module assets should be split to a future `AssetRef` lane.
 
 Dependency resolution is Nix-like: path inputs are handled as typed path objects
 instead of raw strings.
@@ -577,7 +576,7 @@ Rules:
 - Supertrait satisfaction is transitive (`impl Ord for T` also satisfies `Eq`
   when `trait Ord: Eq`).
 - Trait imports are explicit when directly referring to trait names
-  (`use ... { Eq }`, `trait Eq`, `impl Eq ...`), and only exported traits can be
+  (`import ... { Eq }`, `trait Eq`, `impl Eq ...`), and only exported traits can be
   imported across modules.
 - For imported value symbols with trait-bounded schemes, required exported traits
   are auto-imported for bound resolution.
@@ -709,7 +708,7 @@ Import/export behavior (proposal):
 
 ```vibe
 export { Int::to_string, String::to_string }
-use ./std/stringify.vibe { Int::to_string as int_to_string }
+import ./std/stringify.vibe { Int::to_string as int_to_string }
 ```
 
 ### Prelude and `--nostd` (proposal)

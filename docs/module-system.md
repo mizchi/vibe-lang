@@ -20,31 +20,31 @@ export module math {
 }
 ```
 
-### モジュール import / use
+### モジュール import
 ```vibe
-use ./lib.xm { module math }
+import ./lib.xm { module math }
 math::inc(41)
 ```
 
 ```vibe
-use ./lib.xm { module math as m }
+import ./lib.xm { module math as m }
 m::inc(41)
 ```
 
 ```vibe
-use /vibe/builtin/string
-builtin/string::from_char_code(65)
+import /vibe/builtin/string { from_char_code }
+from_char_code(65)
 ```
 
 ## 意味論
 - `module foo { ... }` は内部的に `foo::name` 形式へ lower される。
 - `export module foo { ... }` は `foo::...` を export する。
-- `use <path> { ... }` は Rust 風に source 先行で import できる。
-- `use <path>` は namespace import の省略形。
+- `import <path> { ... }` は source 先行で import する。
 - `/vibe/...` の場合は `/vibe/` を落とした名前空間を使う（例: `/vibe/builtin/string` -> `builtin/string::...`）。
 - `import { ... } from ...` は廃止され、parse error になる。
 - `module` import は `.xm` ソースのみ対応し、`foo::...` 形式 export を取り込む。
 - アクセス子は `::` を正規とする。
+- ディレクトリ import は `index.vibe` エンドポイントへ正規化される。
 
 ### 旧 import 記法の移行
 
@@ -54,18 +54,18 @@ builtin/string::from_char_code(65)
   ```
 - 新記法:
   ```vibe
-  use ./lib.vibe { add }
+  import ./lib.vibe { add }
   ```
-- 現行 parser は旧記法に対して `use <module-ref> { ... }` を期待する parse error を返す。
+- 現行 parser は旧記法に対して `import <module-ref> { ... }` 形式の migration error を返す。
 
 ## import kind
-- `use <path> { x }`: `value`
-- `use <path> { type T }`: `type`
-- `use <path> { trait Eq }`: `trait`
-- `use <path> { module foo }`: `module` (namespace import)
+- `import <path> { x }`: `value`
+- `import <path> { type T }`: `type`
+- `import <path> { trait Eq }`: `trait`
+- `import <path> { module foo }`: `module` (namespace import)
 
 ## 制約 (現行)
-- `use <path> { module foo::bar }` は未対応 (parse error)。
+- `import <path> { module foo::bar }` は未対応 (parse error)。
 - `module` 本体は現状、以下の文のみを想定:
   - `let` / `export let` / `let mut`
   - 代入、式文、`import`
@@ -80,7 +80,7 @@ export module math {
 }
 
 // main.vibe
-use ./lib.xm { module math }
+import ./lib.xm { module math }
 let v = math::inc(1)
 ```
 

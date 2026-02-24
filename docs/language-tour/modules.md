@@ -1,6 +1,6 @@
 # Modules
 
-vibe uses file-based modules with explicit `export` / `use`.
+vibe uses file-based modules with explicit `export` / `import`.
 
 ## export
 
@@ -22,13 +22,13 @@ export open trait Show
 
 Non-exported bindings are private to the file.
 
-## use (import)
+## import
 
-Import bindings from another file with `use`.
+Import bindings from another file with `import`.
 
 ```vibe
 // main.vibe
-use ./math.vibe { double, triple }
+import ./math.vibe { double, triple }
 
 test "import" {
   assert(eq(double(5), 10))
@@ -38,15 +38,15 @@ test "import" {
 ### Renaming imports
 
 ```vibe
-use ./math.vibe { double as dbl }
+import ./math.vibe { double as dbl }
 ```
 
 ### Import kinds
 
 ```vibe
-use ./types.vibe { type MyType }     // type import
-use ./traits.vibe { trait Show }     // trait import
-use ./lib.xm { module math }        // module namespace import
+import ./types.vibe { type MyType }     // type import
+import ./traits.vibe { trait Show }     // trait import
+import ./lib.xm { module math }         // module namespace import
 ```
 
 ## module blocks
@@ -72,34 +72,30 @@ export module math {
 
 ```vibe
 // main.vibe
-use ./lib.xm { module math }
+import ./lib.xm { module math }
 math::inc(41)  // => 42
 ```
 
 ### Module with alias
 
 ```vibe
-use ./lib.xm { module math as m }
+import ./lib.xm { module math as m }
 m::inc(41)
 ```
 
-## declare (FFI)
+## extern (FFI)
 
 Declare external function signatures without implementation.
 
 ```vibe
-declare export let parse_json: (String) -> Json with { Error }
+extern let %parse_json: (String) -> Json with { Error }
 ```
 
-`declare` and implementation must match effect annotations:
-
-```vibe
-declare export let f: (String) -> Int with { Error }
-f = (s: String) -> Int with { Error } { string_length(s) }
-```
+`extern` symbols use `%`-prefixed reserved names to avoid collisions.
 
 ## File conventions
 
 - `.vibe` -- standard source files
 - `.xm` -- module-oriented files (for `module` exports)
-- Each directory can have an `index.vibe` with `export let version = "..."` for package identity
+- Each directory uses `index.vibe` as the public endpoint
+- `index.vibe` should include `export let version = "..."` for package identity

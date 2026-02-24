@@ -433,18 +433,18 @@ let delayed = () -> Int with { Async } {
 export let double = (x: Int) -> Int { x * 2 }
 ```
 
-### use
+### import
 
 ```vibe
 // main.vibe
-use ./math.vibe { double }
+import ./math.vibe { double }
 
 test "import" {
   assert(eq(double(5), 10))
 }
 ```
 
-Selective imports: `use ./file.vibe { name1, name2 }`.
+Selective imports: `import ./file.vibe { name1, name2 }`.
 
 ## Tests
 

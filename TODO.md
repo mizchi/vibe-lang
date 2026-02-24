@@ -7,24 +7,24 @@ Completed items are archived in `docs/DONE.md`.
 
 ### Spec lock (confirmed)
 
-- [ ] `use` を廃止し、`import <module-ref> { ... }` に一本化する
-- [ ] `declare` を廃止する
-- [ ] `export <module-ref> { ... }` を再 export 構文として導入する
-- [ ] `/index.vibe` は module ref 正規化で常に省略可能にする
-- [ ] 外部 import は `index.vibe` エンドポイント経由に統一する
-- [ ] `internal export` を導入する（`let` / `type` / `enum` / `trait`）
-- [ ] `extern let %name: Ty` を導入する（`%` 始まり識別子は予約）
-- [ ] `import` / `export` の item で `as` を許可し、衝突がない場合は normalize で簡約可能にする
+- [x] `use` を廃止し、`import <module-ref> { ... }` に一本化する
+- [x] `declare` を廃止する
+- [x] `export <module-ref> { ... }` を再 export 構文として導入する
+- [x] `/index.vibe` は module ref 正規化で常に省略可能にする
+- [x] 外部 import は `index.vibe` エンドポイント経由に統一する
+- [x] `internal export` を導入する（`let` / `type` / `enum` / `trait`）
+- [x] `extern let %name: Ty` を導入する（`%` 始まり識別子は予約）
+- [x] `import` / `export` の item で `as` を許可し、衝突がない場合は normalize で簡約可能にする
 
 ### Implementation plan
 
-- [ ] parser/CST: `use` / `declare` 分岐を削除し、新構文（`import {}` / `export <ref> {}` / `internal export` / `extern let %`）を parse 可能にする
-- [ ] core AST: `internal export` と `extern` の表現を追加し、serialize/deserialize/hash/normalize/ast_walker を追従させる
-- [ ] checker/runtime: 新しい公開境界と import 規約（index endpoint 経由）で名前解決と可視性判定を更新する
-- [ ] normalize: 非 `index.vibe` の外部 import を index 経由形へ再配置する規約変換を追加し、`export <module-ref> { ... }` を先頭へ整列する
-- [ ] diagnostics: 旧構文 (`use` / `declare`) の migration error を明示する
-- [ ] tests: parser/runtime/CLI の旧構文ケースを新構文へ移行し、index 強制規約の回帰テストを追加する
-- [ ] vibe/ 配下ライブラリを新構文へ一括変換する
+- [x] parser/CST: `use` / `declare` 分岐を削除し、新構文（`import {}` / `export <ref> {}` / `internal export` / `extern let %`）を parse 可能にする
+- [x] core AST: `internal export` と `extern` の表現を追加し、serialize/deserialize/hash/normalize/ast_walker を追従させる
+- [x] checker/runtime: 新しい公開境界と import 規約（index endpoint 経由）で名前解決と可視性判定を更新する
+- [x] normalize: 非 `index.vibe` の外部 import を index 経由形へ再配置する規約変換を追加し、`export <module-ref> { ... }` を先頭へ整列する
+- [x] diagnostics: 旧構文 (`use` / `declare`) の migration error を明示する
+- [x] tests: parser/runtime/CLI の旧構文ケースを新構文へ移行し、index 強制規約の回帰テストを追加する
+- [x] vibe/ 配下ライブラリを新構文へ一括変換する
 
 ### Progress (2026-02-24)
 
@@ -171,9 +171,9 @@ Completed items are archived in `docs/DONE.md`.
   - 回帰テスト: `src/lib/lib_wbtest.mbt` (`eval_report_json` の `PromptText` 型名確認)
 - [x] 旧 `import { ... } from ...` 記法の parse error を migration ヒント付きで固定する
   - 事象: `.vibe` の旧記法が混入すると parser で停止し、bundle-size case の mode が変わる
-  - 回帰テスト: `scripts/test_codegen_unsupported.sh` (`use <module-ref> { ... }` を期待)
+  - 回帰テスト: `scripts/test_codegen_unsupported.sh` (`import <module-ref> { ... }` を期待)
 - [x] bundle-size の `unsupported` baseline case と「現行構文のサイズ評価 case」を分離する
-  - `consumer_double_*.vibe` を `import` → `use` 構文に移行し、unsupported を解消
+  - `consumer_double_*.vibe` を `use` → `import` 構文に移行し、unsupported を解消
   - README に syntax migration vs size regression の分離ポリシーを明文化
   - 対象: `bench/bundle_size/cases.txt`, `bench/golden/bundle_size_budget.tsv`, `bench/bundle_size/README.md`
 - [x] `examples/*.vibe` のサイズ予算運用ルール（テスト追加/関数追加の扱い）を明文化する
@@ -276,7 +276,7 @@ Total: 126 tests (lexer: 20, parser: 27, printer: 21, stmt: 46, fixture: 12)
 - [x] EFn extended with `Option[String]` return type annotation
 - [x] `fixture_test.vibe` — 6 fixtures × parse + roundtrip = 12 tests
 - [ ] `suberror` declaration parsing
-- [ ] `declare` (extern) parsing
+- [ ] `extern let %name: Type` parsing
 
 ### Phase 4: Parse own source (not started)
 
@@ -301,7 +301,7 @@ Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
 
 - [ ] Type inference (Hindley-Milner with unification)
 - [ ] Effect checking (`with { Error }` propagation)
-- [ ] Import resolution (`use ./foo.vibe { ... }` file loading)
+- [ ] Import resolution (`import ./foo.vibe { ... }` file loading)
 - [ ] Trait constraint resolution
 
 ### Phase 6: Interpreter / Codegen (not started)
@@ -351,7 +351,7 @@ Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
 
 - [x] `docs/language-tour/syntax-reference.md` — Complete syntax reference
 - [x] `docs/language-tour/effects.md` — Detailed effects guide (perform/resume, suberror, algebraic effects)
-- [x] `docs/language-tour/modules.md` — Module system guide (use, export, module blocks, declare)
+- [x] `docs/language-tour/modules.md` — Module system guide (import, export, module blocks, extern)
 
 ## Language Features
 

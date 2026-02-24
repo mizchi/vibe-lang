@@ -335,12 +335,12 @@ export enum Color { Red; Green; Blue }
 export { name1, name2 }
 ```
 
-### use (import)
+### import
 
 ```vibe
-use ./lib.vibe { func1, func2 }
-use ./lib.vibe { func1 as renamed }
-use ./lib.vibe { type MyType, trait Show }
+import ./lib.vibe { func1, func2 }
+import ./lib.vibe { func1 as renamed }
+import ./lib.vibe { type MyType, trait Show }
 ```
 
 ### module
@@ -371,6 +371,6 @@ bench "name" {
 
 `let`, `rec`, `mut`, `if`, `else`, `match`, `do`, `while`, `loop`, `for`, `in`,
 `break`, `continue`, `yield`, `throw`, `perform`, `resume`, `handle`,
-`test`, `bench`, `enum`, `struct`, `trait`, `impl`, `type`, `use`, `import`,
-`export`, `declare`, `module`, `fn`, `as`, `true`, `false`, `record`, `map`,
+`test`, `bench`, `enum`, `struct`, `trait`, `impl`, `type`, `import`,
+`export`, `internal`, `extern`, `module`, `fn`, `as`, `true`, `false`, `record`, `map`,
 `suberror`, `derive`

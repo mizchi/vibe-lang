@@ -680,6 +680,44 @@ test "cli normalize directory rejects duplicate top-level definitions" {
 }
 
 ///|
+test "cli normalize directory reports migration error for legacy use syntax" {
+  let root = wbtest_make_temp_dir("normalize_dir_legacy_use_syntax")
+  @os_fs.write_string_to_file(
+    root + "/main.vibe",
+    "use ./dep.vibe { value }\nlet run = value\n",
+  ) catch {
+    e => fail("write main.vibe failed: " + e.to_string())
+  }
+  match normalize_directory_to_index_source(root, false) {
+    Ok(_) => fail("expected migration error for legacy use syntax")
+    Err(err) => {
+      assert_true(err.contains("`import <module-ref> { ... }`"))
+      assert_true(err.contains("`use` is removed"))
+    }
+  }
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "cli normalize directory reports migration error for legacy declare syntax" {
+  let root = wbtest_make_temp_dir("normalize_dir_legacy_declare_syntax")
+  @os_fs.write_string_to_file(
+    root + "/main.vibe",
+    "declare export let run: () -> Int\n",
+  ) catch {
+    e => fail("write main.vibe failed: " + e.to_string())
+  }
+  match normalize_directory_to_index_source(root, false) {
+    Ok(_) => fail("expected migration error for legacy declare syntax")
+    Err(err) => {
+      assert_true(err.contains("`extern let %name: Type`"))
+      assert_true(err.contains("`declare` is removed"))
+    }
+  }
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli normalize directory resolves latest import version in index" {
   let root = wbtest_make_temp_dir("normalize_dir_import_latest")
   let lib_root = root + "/lib"
