@@ -223,12 +223,28 @@ pub fn resolve_entry_path(path : String) -> String {
 }
 
 ///|
+fn resolve_import_module_entry(path : String) -> String {
+  let normalized = @vibe_fs.normalize_path(path)
+  if normalized.has_suffix(".vibe") ||
+    normalized.has_suffix(".xm") ||
+    normalized.has_suffix(".wasm") ||
+    normalized.has_suffix(".db") ||
+    normalized.has_suffix(".lock") ||
+    normalized.has_suffix(".vbundle") {
+    normalized
+  } else {
+    @vibe_fs.normalize_path(normalized + "/index.vibe")
+  }
+}
+
+///|
 pub fn resolve_import_path(base : String, import_path : String) -> String {
-  if import_path.has_prefix("/") {
+  let resolved = if import_path.has_prefix("/") {
     @vibe_fs.normalize_path(import_path)
   } else {
     @vibe_fs.normalize_path(base + "/" + import_path)
   }
+  resolve_import_module_entry(resolved)
 }
 
 ///|

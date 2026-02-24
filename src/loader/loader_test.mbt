@@ -190,6 +190,20 @@ test "loader resolve_entry_path_with_fs uses index.vibe for directory" {
 }
 
 ///|
+test "loader resolve_import_path maps extensionless path to index.vibe endpoint" {
+  let base = "/workspace/pkg"
+  let resolved = resolve_import_path(base, "./dep")
+  assert_eq(resolved, @vibe_fs.normalize_path("/workspace/pkg/dep/index.vibe"))
+}
+
+///|
+test "loader resolve_import_path keeps explicit file extension" {
+  let base = "/workspace/pkg"
+  let resolved = resolve_import_path(base, "./dep.vibe")
+  assert_eq(resolved, @vibe_fs.normalize_path("/workspace/pkg/dep.vibe"))
+}
+
+///|
 test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
   let root = "/workspace"
   let entry = root + "/main.vibe"
