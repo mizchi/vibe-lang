@@ -999,7 +999,7 @@ fn finalize_select_stmts(
 ) -> Array[@vibe_core.Stmt] {
   let extra_entries = finalize_collect_export_names(ast)
   let prefiltered = finalize_prefilter_stmts(ast.stmts, library_mode)
-  let dced = @runtime.dce_module_with_entry_names(
+  let dced = @frontend.dce_module_with_entry_names(
     @vibe_core.Module::{ stmts: prefiltered },
     extra_entries,
   )

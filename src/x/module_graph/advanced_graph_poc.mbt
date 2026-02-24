@@ -178,7 +178,7 @@ fn module_hash_for_path(db : @runtime.VibeDb, path : String) -> String {
 }
 
 ///|
-fn def_id_from_entry(entry : @runtime.SymbolEntry) -> String {
+fn def_id_from_entry(entry : @frontend.SymbolEntry) -> String {
   let key = entry.path +
     "|" +
     entry.span.start.to_string() +
@@ -187,7 +187,7 @@ fn def_id_from_entry(entry : @runtime.SymbolEntry) -> String {
     "|" +
     entry.name +
     "|" +
-    @runtime.symbol_kind_name(entry.kind) +
+    @frontend.symbol_kind_name(entry.kind) +
     "|" +
     entry.signature
   @core.git_blob_hash_string(key)
@@ -209,7 +209,7 @@ pub fn advanced_graph_semantic_id(def : AdvancedGraphDef) -> String {
 ///|
 fn graph_def_from_entry(
   db : @runtime.VibeDb,
-  entry : @runtime.SymbolEntry,
+  entry : @frontend.SymbolEntry,
 ) -> AdvancedGraphDef {
   let module_hash = module_hash_for_path(db, entry.path)
   let def_id = def_id_from_entry(entry)
@@ -217,7 +217,7 @@ fn graph_def_from_entry(
     language_id: "vibe",
     def_id,
     name: entry.name,
-    kind: @runtime.symbol_kind_name(entry.kind),
+    kind: @frontend.symbol_kind_name(entry.kind),
     signature: entry.signature,
     path: entry.path,
     start: entry.span.start,

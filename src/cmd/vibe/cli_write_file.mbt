@@ -145,7 +145,7 @@ fn parse_write_file_cmd_args(
 }
 
 ///|
-fn write_file_def_id_from_symbol_entry(entry : @runtime.SymbolEntry) -> String {
+fn write_file_def_id_from_symbol_entry(entry : @frontend.SymbolEntry) -> String {
   let key = entry.path +
     "|" +
     entry.span.start.to_string() +
@@ -154,7 +154,7 @@ fn write_file_def_id_from_symbol_entry(entry : @runtime.SymbolEntry) -> String {
     "|" +
     entry.name +
     "|" +
-    @runtime.symbol_kind_name(entry.kind) +
+    @frontend.symbol_kind_name(entry.kind) +
     "|" +
     entry.signature
   @vibe_core.git_blob_hash_string(key)
@@ -163,12 +163,12 @@ fn write_file_def_id_from_symbol_entry(entry : @runtime.SymbolEntry) -> String {
 ///|
 fn write_file_graph_def_from_symbol_entry(
   db : @runtime.VibeDb,
-  entry : @runtime.SymbolEntry,
+  entry : @frontend.SymbolEntry,
 ) -> WriteFileDef {
   {
     def_id: write_file_def_id_from_symbol_entry(entry),
     name: entry.name,
-    kind: @runtime.symbol_kind_name(entry.kind),
+    kind: @frontend.symbol_kind_name(entry.kind),
     signature: entry.signature,
     path: entry.path,
     start: entry.span.start,

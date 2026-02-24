@@ -51,7 +51,7 @@ enum ReplMetaCommandResult {
 
 ///|
 struct ReplSymbolMatch {
-  entry : @runtime.SymbolEntry
+  entry : @frontend.SymbolEntry
   source : String
 }
 
@@ -375,7 +375,7 @@ fn repl_collect_local_symbols_rows(
     }
     out.push({
       scope: "local",
-      kind: @runtime.symbol_kind_name(entry.kind),
+      kind: @frontend.symbol_kind_name(entry.kind),
       name: entry.name,
       signature: entry.signature,
       address,
@@ -480,7 +480,7 @@ fn repl_symbols_row_to_json(row : ReplSymbolsRow) -> Json {
 }
 
 ///|
-fn repl_symbol_key(entry : @runtime.SymbolEntry) -> String {
+fn repl_symbol_key(entry : @frontend.SymbolEntry) -> String {
   entry.path +
   "|" +
   entry.name +
@@ -495,7 +495,7 @@ fn repl_symbol_key(entry : @runtime.SymbolEntry) -> String {
 ///|
 fn repl_collect_symbol_matches_from_entries(
   db : @runtime.VibeDb,
-  entries : Array[@runtime.SymbolEntry],
+  entries : Array[@frontend.SymbolEntry],
 ) -> Array[ReplSymbolMatch] {
   let out : Array[ReplSymbolMatch] = []
   let seen : Map[String, Bool] = {}
@@ -525,7 +525,7 @@ fn repl_collect_current_symbol_matches(
   let db = @runtime.VibeDb::new()
   db.set_source(scratch_db_path, scratch_source)
   let index = @runtime.build_symbol_index(db, [scratch_db_path])
-  let entries : Array[@runtime.SymbolEntry] = []
+  let entries : Array[@frontend.SymbolEntry] = []
   for entry in index.entries {
     if entry.path != scratch_db_path {
       continue
@@ -554,7 +554,7 @@ fn repl_load_workspace_symbol_matches(
   match @loader.load_db_with_paths(workspace_entry) {
     Ok((db, _, paths)) => {
       let index = @runtime.build_symbol_index(db, paths)
-      let entries : Array[@runtime.SymbolEntry] = []
+      let entries : Array[@frontend.SymbolEntry] = []
       match symbol {
         Some(name) =>
           for entry in index.find_exact(name) {
@@ -588,7 +588,7 @@ fn repl_print_multiple_matches(
     let entry = item.entry
     print_line(
       "  " +
-      @runtime.symbol_kind_name(entry.kind) +
+      @frontend.symbol_kind_name(entry.kind) +
       " " +
       entry.name +
       " : " +
@@ -627,7 +627,7 @@ fn repl_print_outline_entries(
   for item in entries {
     let entry = item.entry
     print_line(
-      @runtime.symbol_kind_name(entry.kind) +
+      @frontend.symbol_kind_name(entry.kind) +
       "\t" +
       entry.name +
       "\t" +
@@ -647,7 +647,7 @@ fn repl_symbol_match_to_json(
   let (line, column) = symbol_line_col(item.source, entry.span)
   let obj : Map[String, Json] = {}
   obj["name"] = Json::string(entry.name)
-  obj["kind"] = Json::string(@runtime.symbol_kind_name(entry.kind))
+  obj["kind"] = Json::string(@frontend.symbol_kind_name(entry.kind))
   obj["signature"] = Json::string(entry.signature)
   obj["path"] = Json::string(entry.path)
   obj["line"] = Json::number(line.to_double())
@@ -1575,7 +1575,7 @@ fn repl_handle_peek_meta_command(
   let item = matches[0]
   let entry = item.entry
   print_line(
-    @runtime.symbol_kind_name(entry.kind) +
+    @frontend.symbol_kind_name(entry.kind) +
     " " +
     entry.name +
     " : " +

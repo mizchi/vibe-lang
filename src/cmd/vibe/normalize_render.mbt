@@ -31,7 +31,7 @@ fn normalize_select_stmts(
   if entry_names.length() == 0 {
     return ast.stmts
   }
-  let dced = @runtime.dce_module_with_entry_names(ast, entry_names)
+  let dced = @frontend.dce_module_with_entry_names(ast, entry_names)
   dced.stmts
 }
 

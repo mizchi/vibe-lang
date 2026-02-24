@@ -71,9 +71,9 @@ fn bundle_for_wasm_impl(
   let bundled = @core.Module::{ stmts: bundled_stmts }
   if apply_dce {
     if include_test_entries {
-      dce_module_for_tests(bundled)
+      @pipeline.dce_module_for_tests(bundled)
     } else {
-      dce_module(bundled)
+      @pipeline.dce_module(bundled)
     }
   } else {
     bundled

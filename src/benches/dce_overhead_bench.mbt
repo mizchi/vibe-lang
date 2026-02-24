@@ -98,7 +98,7 @@ test "bench: dce.overhead.analysis.small" (b : @bench.T) {
   match compiled {
     Ok(c) => {
       let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
-      b.bench(fn() { b.keep(@runtime.dce_module(bundled)) })
+      b.bench(fn() { b.keep(@frontend.dce_module(bundled)) })
     }
     Err(_) => ()
   }
@@ -113,7 +113,7 @@ test "bench: dce.overhead.analysis.medium" (b : @bench.T) {
   match compiled {
     Ok(c) => {
       let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
-      b.bench(fn() { b.keep(@runtime.dce_module(bundled)) })
+      b.bench(fn() { b.keep(@frontend.dce_module(bundled)) })
     }
     Err(_) => ()
   }
@@ -128,7 +128,7 @@ test "bench: dce.overhead.analysis.large" (b : @bench.T) {
   match compiled {
     Ok(c) => {
       let bundled = @runtime.bundle_for_wasm_no_dce(db, "main", c.ast)
-      b.bench(fn() { b.keep(@runtime.dce_module(bundled)) })
+      b.bench(fn() { b.keep(@frontend.dce_module(bundled)) })
     }
     Err(_) => ()
   }

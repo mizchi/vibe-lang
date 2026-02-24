@@ -1,22 +1,22 @@
 ///|
-fn parse_index_source(path : String, source : String) -> SymbolIndex {
+fn parse_index_source(path : String, source : String) -> @pipeline.SymbolIndex {
   let ast = @parser.parse_ast(source) catch {
     e => abort("parse failed: " + e.to_string())
   }
   let env = @checker.type_check(ast) catch {
     e => abort("typecheck failed: " + e.to_string())
   }
-  build_symbol_index_for_module(path, ast, env)
+  @pipeline.build_symbol_index_for_module(path, ast, env)
 }
 
 ///|
 fn has_symbol(
-  entries : Array[SymbolEntry],
+  entries : Array[@pipeline.SymbolEntry],
   name : String,
   kind_name : String,
 ) -> Bool {
   for entry in entries {
-    if entry.name == name && symbol_kind_name(entry.kind) == kind_name {
+    if entry.name == name && @pipeline.symbol_kind_name(entry.kind) == kind_name {
       return true
     }
   }
@@ -81,7 +81,7 @@ test "symbol index lsif output includes metadata and documents" {
   let source =
     #|let id = (x: Int) -> Int { x }
   let index = parse_index_source(path, source)
-  let lines = symbol_index_to_lsif_lines(index, fn(p) {
+  let lines = @pipeline.symbol_index_to_lsif_lines(index, fn(p) {
     if p == path {
       Some(source)
     } else {

@@ -143,7 +143,7 @@ Completed items are archived in `docs/DONE.md`.
 
 - [x] `VibeDb` を import/query/graph/diagnostic 単位に分割する
   - 対象: `src/runtime/db.mbt`
-- [ ] runtime package の責務を整理し、frontend 再公開 API を縮小する
+- [x] runtime package の責務を整理し、frontend 再公開 API を縮小する
   - 対象: `src/runtime/frontend_bridge.mbt`, `src/runtime/pkg.generated.mbti`
 - [x] `resume` の one-shot 実装で `perform` 前副作用が二重実行される問題を解消する
   - `has_prior_effect` ガードで prior effects がある場合は resume を拒否（runtime error）

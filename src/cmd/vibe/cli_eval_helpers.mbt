@@ -37,7 +37,7 @@ struct EvalScopeSymbol {
 } derive(Show, Eq)
 
 ///|
-fn eval_scope_symbol_id_from_entry(entry : @runtime.SymbolEntry) -> String {
+fn eval_scope_symbol_id_from_entry(entry : @frontend.SymbolEntry) -> String {
   let key = entry.path +
     "|" +
     entry.span.start.to_string() +
@@ -46,7 +46,7 @@ fn eval_scope_symbol_id_from_entry(entry : @runtime.SymbolEntry) -> String {
     "|" +
     entry.name +
     "|" +
-    @runtime.symbol_kind_name(entry.kind) +
+    @frontend.symbol_kind_name(entry.kind) +
     "|" +
     entry.signature
   @vibe_core.git_blob_hash_string(key)
@@ -70,7 +70,7 @@ fn collect_eval_scope_symbols(
     }
     out.push({
       name: entry.name,
-      kind: @runtime.symbol_kind_name(entry.kind),
+      kind: @frontend.symbol_kind_name(entry.kind),
       signature: entry.signature,
       path: entry.path,
       def_id: eval_scope_symbol_id_from_entry(entry),

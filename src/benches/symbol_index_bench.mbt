@@ -99,7 +99,7 @@ test "bench: symbol_index.build_module_index" (b : @bench.T) {
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
   b.bench(fn() {
-    let index = @runtime.build_symbol_index_for_module(
+    let index = @frontend.build_symbol_index_for_module(
       bench_symbol_path, ast, env,
     )
     b.keep(index.entries.length())
@@ -143,11 +143,11 @@ test "bench: symbol_index.emit_lsif" (b : @bench.T) {
   let source = gen_symbol_index_source(1000)
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
-  let index = @runtime.build_symbol_index_for_module(
+  let index = @frontend.build_symbol_index_for_module(
     bench_symbol_path, ast, env,
   )
   b.bench(fn() {
-    let lines = @runtime.symbol_index_to_lsif_lines(index, fn(path) {
+    let lines = @frontend.symbol_index_to_lsif_lines(index, fn(path) {
       if path == bench_symbol_path {
         Some(source)
       } else {
@@ -163,7 +163,7 @@ test "bench: symbol_index.query_vibe_constructor_exact" (b : @bench.T) {
   let source = gen_symbol_index_vibe_query_source(600)
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
-  let index = @runtime.build_symbol_index_for_module(
+  let index = @frontend.build_symbol_index_for_module(
     bench_symbol_path, ast, env,
   )
   b.bench(fn() {
@@ -177,7 +177,7 @@ test "bench: symbol_index.query_vibe_trait_bound_signature" (b : @bench.T) {
   let source = gen_symbol_index_vibe_query_source(600)
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
-  let index = @runtime.build_symbol_index_for_module(
+  let index = @frontend.build_symbol_index_for_module(
     bench_symbol_path, ast, env,
   )
   b.bench(fn() {
@@ -191,7 +191,7 @@ test "bench: symbol_index.query_vibe_effect_signature" (b : @bench.T) {
   let source = gen_symbol_index_vibe_query_source(600)
   let ast = bench_parse(source)
   let env = bench_type_check(ast)
-  let index = @runtime.build_symbol_index_for_module(
+  let index = @frontend.build_symbol_index_for_module(
     bench_symbol_path, ast, env,
   )
   b.bench(fn() {

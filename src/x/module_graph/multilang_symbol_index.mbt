@@ -579,7 +579,7 @@ pub fn extract_vibe_graph_ir_rows(
   let types = @checker.type_check(ast) catch {
     e => return Err("typecheck failed: " + e.to_string())
   }
-  let symbol_index = @runtime.build_symbol_index_for_module(path, ast, types)
+  let symbol_index = @frontend.build_symbol_index_for_module(path, ast, types)
   let module_hash = @core.content_address_hash_string(source)
   let rows : Array[GraphIrRow] = []
   for entry in symbol_index.entries {
@@ -587,7 +587,7 @@ pub fn extract_vibe_graph_ir_rows(
       language_id: "vibe",
       path: entry.path,
       name: entry.name,
-      kind: @runtime.symbol_kind_name(entry.kind),
+      kind: @frontend.symbol_kind_name(entry.kind),
       signature: entry.signature,
       start: entry.span.start,
       end: entry.span.end,

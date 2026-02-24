@@ -14,7 +14,7 @@ test "dce: keeps used definitions" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   // Both statements should be kept: x is used
   inspect(result.stmts.length(), content="2")
 }
@@ -40,7 +40,7 @@ test "dce: removes unused definitions" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   // Only 'used' definition and expression should remain
   inspect(result.stmts.length(), content="2")
   match result.stmts[0] {
@@ -71,7 +71,7 @@ test "dce: keeps transitive dependencies" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   // All statements should be kept: a -> b -> expr
   inspect(result.stmts.length(), content="3")
 }
@@ -88,7 +88,7 @@ test "dce: keeps last let statement" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   // Should keep the let statement since it's the last one
   inspect(result.stmts.length(), content="1")
 }
@@ -110,7 +110,7 @@ test "dce: keeps exports" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   // Only exported should remain
   inspect(result.stmts.length(), content="1")
   match result.stmts[0] {
@@ -148,7 +148,7 @@ test "dce: removes multiple unused" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   // Only exported 'used' should remain
   inspect(result.stmts.length(), content="1")
 }
@@ -243,7 +243,7 @@ test "dce: keeps function dependencies" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   // All 3 should be kept: helper <- main <- expr
   inspect(result.stmts.length(), content="3")
 }
@@ -368,7 +368,7 @@ test "dce: merges dependencies for duplicate definition names" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   let mut has_inner = false
   for stmt in result.stmts {
     match stmt {
@@ -430,7 +430,7 @@ test "dce: keeps user-defined builtin names (mul shadow)" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   let mut has_mul = false
   for stmt in result.stmts {
     match stmt {
@@ -543,7 +543,7 @@ test "dce: keeps user-defined and/or names" {
     ),
   ]
   let input = @core.Module::{ stmts, }
-  let result = dce_module(input)
+  let result = @pipeline.dce_module(input)
   let mut has_and = false
   for stmt in result.stmts {
     match stmt {

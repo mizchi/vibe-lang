@@ -30,7 +30,7 @@ fn symbol_line_text(source : String, span : @vibe_core.Span) -> String {
 
 ///|
 fn print_ide_outline_entry(
-  entry : @runtime.SymbolEntry,
+  entry : @frontend.SymbolEntry,
   source : String,
 ) -> Unit {
   let (line, _) = symbol_line_col(source, entry.span)
@@ -38,7 +38,7 @@ fn print_ide_outline_entry(
     "L" +
     zero_pad_number(line, 3) +
     " | " +
-    @runtime.symbol_kind_name(entry.kind) +
+    @frontend.symbol_kind_name(entry.kind) +
     " " +
     entry.name +
     " : " +
@@ -101,7 +101,7 @@ fn ide_outline_cmd(args : Array[String]) -> Unit {
 
 ///|
 fn print_ide_search_entry(
-  entry : @runtime.SymbolEntry,
+  entry : @frontend.SymbolEntry,
   source : String,
 ) -> Unit {
   let (line, column) = symbol_line_col(source, entry.span)
@@ -112,7 +112,7 @@ fn print_ide_search_entry(
     ":" +
     column.to_string() +
     "  " +
-    @runtime.symbol_kind_name(entry.kind) +
+    @frontend.symbol_kind_name(entry.kind) +
     " " +
     entry.name +
     " : " +
@@ -148,7 +148,7 @@ fn ide_peek_def_cmd(args : Array[String]) -> Unit {
             let (line, column) = symbol_line_col(source, entry.span)
             println("")
             println(
-              @runtime.symbol_kind_name(entry.kind) +
+              @frontend.symbol_kind_name(entry.kind) +
               " " +
               entry.name +
               " at " +
@@ -256,7 +256,7 @@ fn lsif_cmd(args : Array[String]) -> Unit {
   match @loader.load_db_with_paths(entries[0]) {
     Ok((db, _, paths)) => {
       let index = @runtime.build_symbol_index(db, paths)
-      let lines = @runtime.symbol_index_to_lsif_lines(index, fn(path) {
+      let lines = @frontend.symbol_index_to_lsif_lines(index, fn(path) {
         db.get_source(path)
       })
       match out_path {

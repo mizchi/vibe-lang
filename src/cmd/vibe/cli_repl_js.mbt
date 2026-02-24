@@ -150,7 +150,7 @@ fn deno_print_ai_symbols(path : String, source : String) -> Unit {
       }
       println(
         "  " +
-        @runtime.symbol_kind_name(entry.kind) +
+        @frontend.symbol_kind_name(entry.kind) +
         "\t" +
         entry.name +
         "\t" +

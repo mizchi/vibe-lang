@@ -104,7 +104,7 @@ fn parse_script_with_mode(
       let parsed = @parser.parse_ast(preprocessed) catch {
         e => raise VibeError::Parse(e)
       }
-      let (desugared, notes) = desugar_vibe_commands_with_notes(parsed)
+      let (desugared, notes) = @pipeline.desugar_vibe_commands_with_notes(parsed)
       let out_notes : Array[String] = []
       for note in notes {
         out_notes.push("posix-mode command-head desugar: " + note)
@@ -124,7 +124,7 @@ pub fn Runtime::eval_script_with_mode(
   let (raw_ast, mode_notes) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
   let ast = if script.contains(".") {
-    desugar_method_calls(raw_ast, aliases)
+    @pipeline.desugar_method_calls(raw_ast, aliases)
   } else {
     raw_ast
   }
@@ -171,7 +171,7 @@ pub fn Runtime::run_script_tests_with_mode(
 ) -> TestReport raise VibeError {
   let (raw_ast, _) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
-  let ast = desugar_method_calls(raw_ast, aliases)
+  let ast = @pipeline.desugar_method_calls(raw_ast, aliases)
   try {
     let next_env = @checker.type_check_with_env(
       self.type_env.fork_for_check(),
@@ -198,7 +198,7 @@ pub fn Runtime::run_script_benches_with_mode(
 ) -> BenchReport raise VibeError {
   let (raw_ast, _) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
-  let ast = desugar_method_calls(raw_ast, aliases)
+  let ast = @pipeline.desugar_method_calls(raw_ast, aliases)
   try {
     let next_env = @checker.type_check_with_env(
       self.type_env.fork_for_check(),
@@ -223,7 +223,7 @@ pub fn Runtime::collect_script_test_dep_snapshot_with_mode(
 ) -> Map[String, String]? raise VibeError {
   let (raw_ast, _) = parse_script_with_mode(script, mode)
   let aliases = self.aliases
-  let ast = desugar_method_calls(raw_ast, aliases)
+  let ast = @pipeline.desugar_method_calls(raw_ast, aliases)
   try {
     let _ = @checker.type_check_with_env(self.type_env.clone(), ast, aliases)
   } catch {
