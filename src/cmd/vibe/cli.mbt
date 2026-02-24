@@ -1732,8 +1732,6 @@ fn normalize_resolve_index_import_line(
   let trimmed = line.trim().to_string()
   let head = if trimmed.has_prefix("import ") {
     "import "
-  } else if trimmed.has_prefix("use ") {
-    "use "
   } else {
     return Ok(line)
   }
@@ -1748,7 +1746,7 @@ fn normalize_resolve_index_import_line(
   } else {
     line.unsafe_substring(start=0, end=leading_ws)
   }
-  // Resolve `import/use <scope> { ... }` declarations.
+  // Resolve `import <scope> { ... }` declarations.
   match rest.find("{") {
     Some(brace_pos) => {
       let scope_head = rest
@@ -1792,7 +1790,7 @@ fn normalize_resolve_index_import_line(
     }
     None => ()
   }
-  // Resolve legacy bare `import/use <scope>` declarations.
+  // Resolve legacy bare `import <scope>` declarations.
   let mut rest_trimmed = rest.trim().to_string()
   let has_semicolon = rest_trimmed.has_suffix(";")
   if has_semicolon && rest_trimmed.length() > 0 {

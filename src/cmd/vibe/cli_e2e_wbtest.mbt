@@ -725,6 +725,32 @@ test "cli normalize directory resolves latest import version in index" {
 }
 
 ///|
+test "cli normalize import resolver ignores removed use syntax" {
+  let root = wbtest_make_temp_dir("normalize_dir_removed_use_syntax")
+  let lib_root = root + "/lib"
+  let lib_demo = lib_root + "/demo"
+  @os_fs.create_dir(lib_root) catch {
+    e => fail("create lib root failed: " + e.to_string())
+  }
+  @os_fs.create_dir(lib_demo) catch {
+    e => fail("create demo lib dir failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(lib_demo + "/pkg@0.1.0.vbundle", "hash:a\n") catch {
+    e => fail("write pkg@0.1.0 alias failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(lib_demo + "/pkg@0.2.0.vbundle", "hash:b\n") catch {
+    e => fail("write pkg@0.2.0 alias failed: " + e.to_string())
+  }
+  let line = "use demo/pkg { value }"
+  let resolved = match normalize_resolve_index_import_line(line, lib_root) {
+    Ok(v) => v
+    Err(err) => fail("unexpected normalize error: " + err)
+  }
+  assert_eq(resolved, line)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "cli normalize directory hoists non-index import into index" {
   let root = wbtest_make_temp_dir("normalize_dir_hoist_import")
   let lib_root = root + "/lib"
