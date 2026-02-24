@@ -145,6 +145,35 @@ test "codebase update_lock_path_refs gathers transitive local imports" {
 }
 
 ///|
+test "codebase update_lock_path_refs resolves directory index import without explicit /index.vibe" {
+  let root = make_temp_dir("collect_refs_index_dir")
+  let main_path = root + "/main.vibe"
+  let lib_dir = root + "/lib"
+  let lib_index = lib_dir + "/index.vibe"
+  @os_fs.create_dir(lib_dir) catch {
+    e => fail(e.to_string())
+  }
+  let main_source = "import ./lib {  libv  }\nlet main = libv\nexport { main }\n"
+  let lib_source = "let libv = 1\nexport { libv }\n"
+  write_file(main_path, main_source)
+  write_file(lib_index, lib_source)
+  let refs = match update_lock_path_refs(main_path) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  assert_eq(refs.path_refs.length(), 2)
+  let main_norm = @vibe_fs.normalize_path(main_path)
+  let lib_norm = @vibe_fs.normalize_path(lib_index)
+  assert_true(refs.path_refs.contains(main_norm))
+  assert_true(refs.path_refs.contains(lib_norm))
+  match refs.path_refs.get(lib_norm) {
+    Some(hash) => assert_eq(hash, @core.git_blob_hash_string(lib_source))
+    None => fail("expected lib index source hash")
+  }
+  remove_if_exists(root)
+}
+
+///|
 test "codebase update_lock_path_refs prunes stale path/module refs and keeps non-path refs" {
   let root = make_temp_dir("update_lock")
   let entry = root + "/main.vibe"

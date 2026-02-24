@@ -156,7 +156,16 @@ fn normalize_append_entry_export_stmt(
 ///|
 fn normalize_render_module_ref(source : @vibe_core.ModuleRef) -> String {
   match source {
-    @vibe_core.ModuleRef::Path(path~) => path
+    @vibe_core.ModuleRef::Path(path~) =>
+      if path.has_suffix("/index.vibe") {
+        let head = path.unsafe_substring(
+          start=0,
+          end=path.length() - "/index.vibe".length(),
+        )
+        if head.length() > 0 { head } else { path }
+      } else {
+        path
+      }
     @vibe_core.ModuleRef::Hash(hash~) => "#" + hash
     @vibe_core.ModuleRef::Version(name~) => "version@" + name
     @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name
@@ -164,8 +173,46 @@ fn normalize_render_module_ref(source : @vibe_core.ModuleRef) -> String {
 }
 
 ///|
+fn normalize_render_import_item(item : @vibe_core.ImportItem) -> String {
+  let out = StringBuilder::new()
+  match item.kind {
+    @vibe_core.ImportKind::Value => ()
+    @vibe_core.ImportKind::Type => out.write_string("type ")
+    @vibe_core.ImportKind::Trait => out.write_string("trait ")
+    @vibe_core.ImportKind::Module => out.write_string("module ")
+  }
+  out.write_string(item.name)
+  match item.rename {
+    Some(rename_name) =>
+      if rename_name != item.name {
+        out.write_string(" as ")
+        out.write_string(rename_name)
+      }
+    None => ()
+  }
+  out.to_string()
+}
+
+///|
+fn normalize_render_import_spec(spec : @vibe_core.ImportSpec) -> String {
+  let rendered_items : Array[String] = []
+  for item in spec.items {
+    rendered_items.push(normalize_render_import_item(item))
+  }
+  rendered_items.join(", ")
+}
+
+///|
 fn normalize_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
   match stmt {
+    @vibe_core.Stmt::Import(spec~, source~, ..) =>
+      Some(
+        "import " +
+        normalize_render_module_ref(source) +
+        " { " +
+        normalize_render_import_spec(spec) +
+        " }",
+      )
     @vibe_core.Stmt::Export(names~, ..) =>
       Some("export { " + normalize_render_name_list(names) + " }")
     @vibe_core.Stmt::ReExport(names~, source~, ..) =>

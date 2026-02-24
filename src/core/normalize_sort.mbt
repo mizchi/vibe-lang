@@ -29,9 +29,20 @@ pub fn canonical_sort_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
       CanonicalGroup::Other => other_stmts.push(stmt)
     }
   }
+  let use_exports : Array[Stmt] = []
+  let use_imports : Array[Stmt] = []
+  for stmt in use_stmts {
+    match stmt {
+      Stmt::ReExport(..) => use_exports.push(stmt)
+      _ => use_imports.push(stmt)
+    }
+  }
   let fn_sorted = canonical_sort_fns_topo_alpha(fn_stmts)
   let out : Array[Stmt] = []
-  for stmt in use_stmts {
+  for stmt in use_exports {
+    out.push(stmt)
+  }
+  for stmt in use_imports {
     out.push(stmt)
   }
   for stmt in type_stmts {

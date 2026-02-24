@@ -499,8 +499,14 @@ fn pass_validate(
   let expected_semantic = normalize_strip_fn_return_annotations_module(
     expected_canonical,
   )
-  if @vibe_core.normalize_module(reparsed_semantic) !=
-    @vibe_core.normalize_module(expected_semantic) {
+  let reparsed_import_canonical = normalize_canonicalize_import_surface_module(
+    reparsed_semantic,
+  )
+  let expected_import_canonical = normalize_canonicalize_import_surface_module(
+    expected_semantic,
+  )
+  if @vibe_core.normalize_module(reparsed_import_canonical) !=
+    @vibe_core.normalize_module(expected_import_canonical) {
     return Err("normalize: rendered source changed semantics")
   }
   Ok(())
@@ -627,6 +633,93 @@ fn normalize_strip_fn_return_annotations_expr(
         )
       }
     _ => expr
+  }
+}
+
+///|
+fn normalize_canonicalize_import_surface_module(
+  m : @vibe_core.Module,
+) -> @vibe_core.Module {
+  let next : Array[@vibe_core.Stmt] = []
+  for stmt in m.stmts {
+    next.push(normalize_canonicalize_import_surface_stmt(stmt))
+  }
+  @vibe_core.Module::{ stmts: next }
+}
+
+///|
+fn normalize_canonicalize_import_surface_stmt(
+  stmt : @vibe_core.Stmt,
+) -> @vibe_core.Stmt {
+  match stmt {
+    @vibe_core.Stmt::Import(spec~, source~, span~) =>
+      @vibe_core.Stmt::Import(
+        spec=normalize_canonicalize_import_spec(spec),
+        source=normalize_canonicalize_module_ref(source),
+        span~,
+      )
+    @vibe_core.Stmt::ReExport(names~, source~, span~) =>
+      @vibe_core.Stmt::ReExport(
+        names~,
+        source=normalize_canonicalize_module_ref(source),
+        span~,
+      )
+    @vibe_core.Stmt::Test(name~, body~, span~) =>
+      @vibe_core.Stmt::Test(
+        name~,
+        body=normalize_canonicalize_import_surface_module(body),
+        span~,
+      )
+    @vibe_core.Stmt::Bench(name~, body~, span~) =>
+      @vibe_core.Stmt::Bench(
+        name~,
+        body=normalize_canonicalize_import_surface_module(body),
+        span~,
+      )
+    _ => stmt
+  }
+}
+
+///|
+fn normalize_canonicalize_import_spec(
+  spec : @vibe_core.ImportSpec,
+) -> @vibe_core.ImportSpec {
+  let items : Array[@vibe_core.ImportItem] = []
+  for item in spec.items {
+    let rename = match item.rename {
+      Some(v) =>
+        if v == item.name {
+          None
+        } else {
+          Some(v)
+        }
+      None => None
+    }
+    items.push(@vibe_core.ImportItem::{ kind: item.kind, name: item.name, rename })
+  }
+  @vibe_core.ImportSpec::{ items }
+}
+
+///|
+fn normalize_canonicalize_module_ref(
+  source : @vibe_core.ModuleRef,
+) -> @vibe_core.ModuleRef {
+  match source {
+    @vibe_core.ModuleRef::Path(path~) =>
+      if path.has_suffix("/index.vibe") {
+        let head = path.unsafe_substring(
+          start=0,
+          end=path.length() - "/index.vibe".length(),
+        )
+        if head.length() > 0 {
+          @vibe_core.ModuleRef::Path(path=head)
+        } else {
+          source
+        }
+      } else {
+        source
+      }
+    _ => source
   }
 }
 

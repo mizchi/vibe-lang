@@ -230,6 +230,45 @@ test "loader load_db_with_paths_with_fs loads transitive modules via adapter" {
 }
 
 ///|
+test "loader load_db_with_paths_with_fs resolves directory index import without explicit /index.vibe" {
+  let root = "/workspace"
+  let entry = root + "/main.vibe"
+  let lib_dir = root + "/lib"
+  let lib_index = lib_dir + "/index.vibe"
+  let fs = MemIoAdapter::new(root)
+  match fs.create_dir(lib_dir) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    fs.write_string(
+      entry, "import ./lib {  libv  }\nlet main = libv\nexport { main }\n",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let lib_source = "let libv = 1\nexport { libv }\n"
+  match fs.write_string(lib_index, lib_source) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  let loaded = match load_db_with_paths_with_fs(entry, fs) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  let (db, resolved, paths) = loaded
+  let entry_norm = @vibe_fs.normalize_path(entry)
+  let lib_norm = @vibe_fs.normalize_path(lib_index)
+  assert_eq(resolved, entry_norm)
+  assert_true(contains_path(paths, entry_norm))
+  assert_true(contains_path(paths, lib_norm))
+  match db.get_source(lib_norm) {
+    Some(source) => assert_eq(source, lib_source)
+    None => fail("expected imported index source")
+  }
+}
+
+///|
 test "loader load_db_with_paths resolves directory to index.vibe" {
   let root = make_temp_dir("dir_index_entry")
   write_file(

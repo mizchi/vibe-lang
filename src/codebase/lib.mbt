@@ -133,6 +133,21 @@ fn resolve_import_path(base : String, import_path : String) -> String {
 }
 
 ///|
+fn resolve_import_module_entry(path : String) -> String {
+  let normalized = @vibe_fs.normalize_path(path)
+  if normalized.has_suffix(".vibe") ||
+    normalized.has_suffix(".xm") ||
+    normalized.has_suffix(".wasm") ||
+    normalized.has_suffix(".db") ||
+    normalized.has_suffix(".lock") ||
+    normalized.has_suffix(".vbundle") {
+    normalized
+  } else {
+    @vibe_fs.normalize_path(normalized + "/index.vibe")
+  }
+}
+
+///|
 fn is_within_root(root : String, path : String) -> Bool {
   let root_norm = @vibe_fs.normalize_path(root)
   let path_norm = @vibe_fs.normalize_path(path)
@@ -539,7 +554,7 @@ pub fn resolve_import_path_with_registry(
   root : String,
   registry_modules : Map[String, String],
 ) -> Result[String, String] {
-  let resolved = if import_path.has_prefix("/") {
+  let resolved_raw = if import_path.has_prefix("/") {
     @vibe_fs.normalize_path(import_path)
   } else if import_path.has_prefix("./") || import_path.has_prefix("../") {
     @vibe_fs.normalize_path(base + "/" + import_path)
@@ -556,10 +571,11 @@ pub fn resolve_import_path_with_registry(
               import_path +
               "). use ./ or ../ for local paths",
             )
-        }
+      }
       None => resolve_import_path(base, import_path)
     }
   }
+  let resolved = resolve_import_module_entry(resolved_raw)
   if not(is_within_root(root, resolved)) {
     return Err(
       "import path outside root: " + resolved + " (root: " + root + ")",

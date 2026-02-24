@@ -370,6 +370,28 @@ test "normalize_engine: use-only source" {
 }
 
 ///|
+test "normalize_engine: imports render canonical module ref and re-export comes first" {
+  let source =
+    #|import ./dep/index.vibe { value as value }
+    #|export ./dep/index.vibe { value }
+    #|export let run = value
+    #|export { run }
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      let idx_export = ne_substring_index(normalized, "export ./dep { value }")
+      let idx_import = ne_substring_index(normalized, "import ./dep { value }")
+      assert_true(idx_export >= 0)
+      assert_true(idx_import >= 0)
+      assert_true(idx_export < idx_import)
+      assert_false(normalized.contains("/index.vibe"))
+      assert_false(normalized.contains(" as value"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
 test "normalize_engine: type-only source" {
   let source =
     #|type Meters = Int
