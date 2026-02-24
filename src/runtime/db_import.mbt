@@ -40,6 +40,20 @@ fn strip_module_ext(path : String) -> String {
 }
 
 ///|
+fn normalize_module_entry_path(path : String) -> String {
+  if path.has_suffix(".vibe") ||
+    path.has_suffix(".xm") ||
+    path.has_suffix(".wasm") ||
+    path.has_suffix(".db") ||
+    path.has_suffix(".lock") ||
+    path.has_suffix(".vbundle") {
+    path
+  } else {
+    @path.Path(path).join(@path.Path("index.vibe")).normalize().to_string()
+  }
+}
+
+///|
 fn path_lock_required(
   rt : @ripple.Runtime,
   sources : @ripple.Input[String, String],
@@ -184,7 +198,7 @@ fn resolve_default_registry_path(
 
 ///|
 fn normalize_path_obj(base_dir : String, raw_path : String) -> PathObj {
-  let normalized = if raw_path.has_prefix("/") {
+  let normalized_raw = if raw_path.has_prefix("/") {
     @path.Path(raw_path).normalize().to_string()
   } else if raw_path.has_prefix("./") || raw_path.has_prefix("../") {
     @path.Path(base_dir).join(@path.Path(raw_path)).normalize().to_string()
@@ -195,6 +209,7 @@ fn normalize_path_obj(base_dir : String, raw_path : String) -> PathObj {
         @path.Path(base_dir).join(@path.Path(raw_path)).normalize().to_string()
     }
   }
+  let normalized = normalize_module_entry_path(normalized_raw)
   PathObj::{ raw: raw_path, base: base_dir, normalized }
 }
 

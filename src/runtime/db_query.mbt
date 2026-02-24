@@ -72,6 +72,15 @@ pub fn VibeDb::new() -> VibeDb {
                 push_candidate(path_obj.normalized + ".xm")
               }
               push_candidate(path)
+              if not(path.has_suffix(".vibe")) &&
+                not(path.has_suffix(".xm")) &&
+                not(path.has_suffix(".wasm")) &&
+                not(path.has_suffix(".db")) &&
+                not(path.has_suffix(".lock")) &&
+                not(path.has_suffix(".vbundle")) &&
+                not(path.has_suffix("/index.vibe")) {
+                push_candidate(path + "/index.vibe")
+              }
               if not(path.has_suffix(".vibe")) {
                 push_candidate(path + ".vibe")
               }

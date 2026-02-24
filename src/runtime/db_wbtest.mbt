@@ -26,6 +26,34 @@ test "normalize path object resolves std namespace under index root" {
 }
 
 ///|
+test "type query resolves extensionless directory import to index.vibe" {
+  let db = VibeDb::new()
+  db.set_source(
+    "./dep/index.vibe",
+    "export let value = 1\n",
+  )
+  db.set_source(
+    "main",
+    "import ./dep { value }\n" +
+    "let x = value\n" +
+    "x\n",
+  )
+  let env = db.types("main")
+  let diags = db.diagnostics("main")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("x") {
+    Some(_) => ()
+    None => fail("expected imported symbol type for x")
+  }
+}
+
+///|
 test "type query keeps no-import dependency exports for alias call" {
   let db = VibeDb::new()
   db.set_source(
