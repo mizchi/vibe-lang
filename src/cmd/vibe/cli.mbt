@@ -1349,16 +1349,41 @@ fn parse_report_json_string(json : Json, key : String) -> String {
 }
 
 ///|
-fn find_last_json_line(text : String) -> String {
+fn find_json_lines(text : String) -> Array[String] {
   let lines = text.split("\n")
-  let mut last = ""
+  let out : Array[String] = []
   for line in lines {
     let trimmed = line.to_string().trim().to_string()
     if trimmed.length() > 0 && trimmed.has_prefix("{") {
-      last = trimmed
+      out.push(trimmed)
     }
   }
-  last
+  out
+}
+
+///|
+fn split_test_entry_path_batches(
+  entry_paths : Array[String],
+  jobs : Int,
+) -> Array[Array[String]] {
+  let mut worker_count = jobs
+  if worker_count <= 0 {
+    worker_count = 1
+  }
+  if worker_count > entry_paths.length() {
+    worker_count = entry_paths.length()
+  }
+  let batches : Array[Array[String]] = []
+  for _ in 0..<worker_count {
+    batches.push([])
+  }
+  let mut i = 0
+  for path in entry_paths {
+    let batch_index = i % worker_count
+    batches[batch_index].push(path)
+    i += 1
+  }
+  batches
 }
 
 ///|
@@ -1368,16 +1393,20 @@ fn test_cmd_parallel(
   jobs : Int,
 ) -> Unit {
   let exe = @env.args()[0]
-  let tasks : Array[async () -> (String, Int, String, String)] = []
-  for path in entry_paths {
-    let sub_args : Array[String] = ["test", path, "--report-json"]
+  let batches = split_test_entry_path_batches(entry_paths, jobs)
+  let tasks : Array[async () -> (Array[String], Int, String, String)] = []
+  for batch in batches {
+    let sub_args : Array[String] = ["test", "--report-json", "--jobs", "1"]
+    for path in batch {
+      sub_args.push(path)
+    }
     if features.is_unstable_async_enabled() {
       sub_args.push("--unstable-async")
     }
     if features.is_unstable_threads_enabled() {
       sub_args.push("--unstable-threads")
     }
-    let captured_path = path
+    let captured_batch = batch
     let captured_args = sub_args
     tasks.push(async fn() {
       let (code, stdout_data, stderr_data) = @async_process.collect_output(
@@ -1386,69 +1415,113 @@ fn test_cmd_parallel(
       )
       let out = stdout_data.text() catch { _ => "" }
       let err = stderr_data.text() catch { _ => "" }
-      (captured_path, code, out, err)
+      (captured_batch, code, out, err)
     })
   }
   @async.run_async_main(async fn() {
-    let results = if jobs > 0 {
-      @async.all(tasks[:], max_concurrent=jobs)
-    } else {
-      @async.all(tasks[:])
-    }
+    let results = @async.all(tasks[:], max_concurrent=batches.length())
     let mut total = 0
     let mut passed = 0
     let mut failed_count = 0
     let mut any_failed = false
     let file_count = entry_paths.length()
     for result in results {
-      let (path, code, stdout_text, stderr_text) = result
-      if code != 0 && stdout_text.trim().to_string().length() == 0 {
-        println("\{path}: fail (process exited with code \{code})")
-        if stderr_text.trim().to_string().length() > 0 {
-          println("  stderr: \{stderr_text.trim().to_string()}")
+      let (batch_paths, code, stdout_text, stderr_text) = result
+      let report_lines = find_json_lines(stdout_text)
+      let report_by_path : Map[String, Json] = {}
+      let mut report_count = 0
+      for line in report_lines {
+        let json : Json = @json.parse(line) catch { _ => continue }
+        let report_path = parse_report_json_string(json, "file")
+        if report_path.length() == 0 {
+          continue
         }
-        any_failed = true
-        failed_count += 1
-        total += 1
-        continue
+        report_by_path[report_path] = json
+        report_count += 1
       }
-      let json_line = find_last_json_line(stdout_text)
-      let json : Json = @json.parse(json_line) catch {
-        _ => {
+      if report_count == 0 {
+        for path in batch_paths {
           println("\{path}: fail (invalid JSON report)")
+          if code != 0 {
+            println("  process exited with code \{code}")
+          }
           if stdout_text.trim().to_string().length() > 0 {
             println("  stdout: \{stdout_text.trim().to_string()}")
+          }
+          if stderr_text.trim().to_string().length() > 0 {
+            println("  stderr: \{stderr_text.trim().to_string()}")
           }
           any_failed = true
           failed_count += 1
           total += 1
-          continue
+        }
+        continue
+      }
+      for path in batch_paths {
+        match report_by_path.get(path) {
+          Some(json) => {
+            let file_total = parse_report_json_int(json, "total")
+            let file_passed = parse_report_json_int(json, "passed")
+            let file_failed = parse_report_json_int(json, "failed")
+            total += file_total
+            passed += file_passed
+            failed_count += file_failed
+            let status = if file_failed == 0 { "ok" } else { "fail" }
+            println("\{path}: \{status} (\{file_passed}/\{file_total})")
+            if file_failed > 0 {
+              any_failed = true
+              match json {
+                Json::Object(obj) =>
+                  match obj.get("failures") {
+                    Some(Json::Array(failures)) => {
+                      println("  failures:")
+                      for f in failures {
+                        let name = parse_report_json_string(f, "name")
+                        let error = parse_report_json_string(f, "error")
+                        println("  - \{name}: \{error}")
+                      }
+                    }
+                    _ => ()
+                  }
+                _ => ()
+              }
+            }
+          }
+          None => {
+            println("\{path}: fail (missing JSON report)")
+            if code != 0 {
+              println("  process exited with code \{code}")
+              if stderr_text.trim().to_string().length() > 0 {
+                println("  stderr: \{stderr_text.trim().to_string()}")
+              }
+            }
+            any_failed = true
+            failed_count += 1
+            total += 1
+          }
         }
       }
-      let file_total = parse_report_json_int(json, "total")
-      let file_passed = parse_report_json_int(json, "passed")
-      let file_failed = parse_report_json_int(json, "failed")
-      total += file_total
-      passed += file_passed
-      failed_count += file_failed
-      let status = if file_failed == 0 { "ok" } else { "fail" }
-      println("\{path}: \{status} (\{file_passed}/\{file_total})")
-      if file_failed > 0 {
-        any_failed = true
-        match json {
-          Json::Object(obj) =>
-            match obj.get("failures") {
-              Some(Json::Array(failures)) => {
-                println("  failures:")
-                for f in failures {
-                  let name = parse_report_json_string(f, "name")
-                  let error = parse_report_json_string(f, "error")
-                  println("  - \{name}: \{error}")
-                }
+      if code != 0 {
+        let mut has_failure_in_batch = false
+        for path in batch_paths {
+          match report_by_path.get(path) {
+            Some(json) =>
+              if parse_report_json_int(json, "failed") > 0 {
+                has_failure_in_batch = true
               }
-              _ => ()
-            }
-          _ => ()
+            None => has_failure_in_batch = true
+          }
+        }
+        if not(has_failure_in_batch) {
+          for path in batch_paths {
+            println("\{path}: fail (process exited with code \{code})")
+          }
+          if stderr_text.trim().to_string().length() > 0 {
+            println("  stderr: \{stderr_text.trim().to_string()}")
+          }
+          any_failed = true
+          failed_count += batch_paths.length()
+          total += batch_paths.length()
         }
       }
     }

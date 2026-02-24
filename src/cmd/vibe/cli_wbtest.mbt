@@ -1474,6 +1474,7 @@ test "normalize source keeps extern signature declarations" {
   assert_true(normalized.contains("extern let %inc: (Int) -> Int"))
 }
 
+///|
 test "std layer classification covers primary modules" {
   let trait_layer = match
     std_layer_for_path("/tmp/repo/vibe/builtin/builtin_traits.vibe") {
@@ -1767,6 +1768,38 @@ test "ensure_parent_dir_for_file errors when parent path is file" {
     }
   }
   wbtest_remove_if_exists(root)
+}
+
+///|
+test "split test entry path batches caps workers and balances paths" {
+  let capped = split_test_entry_path_batches(["a.vibe", "b.vibe", "c.vibe"], 10)
+  assert_eq(capped.length(), 3)
+  assert_eq(capped[0], ["a.vibe"])
+  assert_eq(capped[1], ["b.vibe"])
+  assert_eq(capped[2], ["c.vibe"])
+
+  let balanced = split_test_entry_path_batches(
+    ["a.vibe", "b.vibe", "c.vibe", "d.vibe", "e.vibe"],
+    2,
+  )
+  assert_eq(balanced.length(), 2)
+  assert_eq(balanced[0], ["a.vibe", "c.vibe", "e.vibe"])
+  assert_eq(balanced[1], ["b.vibe", "d.vibe"])
+}
+
+///|
+test "find json lines extracts all object-looking lines" {
+  let output =
+    #|log: start
+    #|{"file":"a.vibe","total":1}
+    #|
+    #|warn: skip
+    #|{"file":"b.vibe","total":2}
+    #|done
+  let lines = find_json_lines(output)
+  assert_eq(lines.length(), 2)
+  assert_eq(lines[0], "{\"file\":\"a.vibe\",\"total\":1}")
+  assert_eq(lines[1], "{\"file\":\"b.vibe\",\"total\":2}")
 }
 
 ///|
