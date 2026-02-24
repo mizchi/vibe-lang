@@ -356,13 +356,9 @@ fn purity_expr_analysis_inner(
       }
       out
     }
-    @core.Expr::Do(body~, span~) => {
-      // `do { }` encapsulates local mutation: the result is considered pure.
-      // This is used internally by for-in desugaring.
-      let _ = body
-      let _ = span
+    @core.Expr::ForIn(..) =>
+      // for-in is a language construct that encapsulates local mutation: pure.
       purity_analysis_pure()
-    }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
       let _ = ret

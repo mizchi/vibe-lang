@@ -314,9 +314,24 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
         let fields = parse_map_fields(value)
         return Expr::Map(fields~, span=zero)
       }
+      "ForIn" => {
+        let inner = expect_object(value)
+        let value_name = get_string(inner, "value_name")
+        let index_name = get_string_opt(inner, "index_name")
+        let iterable = parse_expr(get_field(inner, "iterable"))
+        let body = parse_module(get_field(inner, "body"))
+        return Expr::ForIn(
+          value_name~,
+          index_name~,
+          iterable~,
+          body~,
+          span=zero,
+        )
+      }
       "Do" => {
+        // Legacy fallback: Do was removed, deserialize as Block
         let body = parse_module(value)
-        return Expr::Do(body~, span=zero)
+        return Expr::Block(body~, span=zero)
       }
       "While" => {
         let inner = expect_object(value)

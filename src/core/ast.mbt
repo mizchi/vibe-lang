@@ -199,7 +199,13 @@ pub(all) enum Expr {
   If(cond~ : Expr, then_body~ : Module, else_body~ : Module, span~ : Span)
   Block(body~ : Module, span~ : Span)
   Match(scrutinee~ : Expr, arms~ : Array[MatchArm], span~ : Span)
-  Do(body~ : Module, span~ : Span)
+  ForIn(
+    value_name~ : String,
+    index_name~ : String?,
+    iterable~ : Expr,
+    body~ : Module,
+    span~ : Span
+  )
   Fn(
     type_params~ : Array[String],
     type_bounds~ : Map[String, Array[String]],
@@ -276,7 +282,7 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::If(span~, ..)
     | Expr::Block(span~, ..)
     | Expr::Match(span~, ..)
-    | Expr::Do(span~, ..)
+    | Expr::ForIn(span~, ..)
     | Expr::Fn(span~, ..)
     | Expr::While(span~, ..)
     | Expr::Loop(span~, ..)

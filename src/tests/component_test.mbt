@@ -83,7 +83,7 @@ test "component wit includes wasi stdio imports when used" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Stdout, Stdin} {
-    #|  do {
+    #|  {
     #|    stdout_write_char(65)
     #|    stdin_read_char()
     #|  }
@@ -111,7 +111,7 @@ test "component wit includes wasi stdio imports for stream builtins" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Stdout, Stdin} {
-    #|  do {
+    #|  {
     #|    stdout_write_stream("hello")
     #|    stdin_read_stream(16)
     #|    1

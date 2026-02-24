@@ -26,7 +26,7 @@ test "vibe posix mode command pipeline with where" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let run = () -> Array[String] with {Stdout} {\n" +
-    "  do {\n" +
+    "  {\n" +
     "    ls |> where((line: String) -> Bool { string_contains(line, \"x\") })\n" +
     "  }\n" +
     "}\n" +
@@ -97,7 +97,7 @@ test "vibe where prelude filters strings" {
 test "vibe sh_lines returns command output lines" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Array[String] with {Stdout} { do { sh_lines(\"echo hello\") } }\n" +
+    "let run = () -> Array[String] with {Stdout} { { sh_lines(\"echo hello\") } }\n" +
     "let lines = run()\n" +
     "let line0 = array_get(lines, 0)\n" +
     "let n = array_length(lines)",
@@ -414,7 +414,7 @@ test "vibe do does not grant missing function effect declaration" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let f = (x: Int) -> Int with {Error} { x }\n" +
-    "let g = (y: Int) -> Int { do { f(y) } }",
+    "let g = (y: Int) -> Int { { f(y) } }",
   )
   match result {
     Err(_) => ()
@@ -500,7 +500,7 @@ test "vibe fn variadic positional args" {
 test "vibe stdout permission requires effect" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Unit { do { sh(\"ls\") } }",
+    "let run = () -> Unit { { sh(\"ls\") } }",
   )
   match result {
     Err(_) => ()
@@ -515,7 +515,7 @@ test "vibe sleep requires runtime capability" {
     RuntimeFeatureFlags::unstable_async_only(),
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Unit with {Async} { do { sleep(1) } }\n" + "run()",
+    "let run = () -> Unit with {Async} { { sleep(1) } }\n" + "run()",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("clock_read"))
@@ -530,7 +530,7 @@ test "vibe sleep succeeds with developer capability" {
     RuntimeFeatureFlags::unstable_async_only(),
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Unit with {Async} { do { sleep(1) } }\n" + "run()",
+    "let run = () -> Unit with {Async} { { sleep(1) } }\n" + "run()",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -542,7 +542,7 @@ test "vibe sleep succeeds with developer capability" {
 test "vibe sleep requires unstable async flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Unit with {Async} { do { sleep(1) } }\n" + "run()",
+    "let run = () -> Unit with {Async} { { sleep(1) } }\n" + "run()",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-async"))
@@ -612,7 +612,7 @@ test "vibe let rec underscore is rejected" {
 test "vibe threads probe builtin requires unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do { threads_probe_wat() }",
+    "{ threads_probe_wat() }",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -627,7 +627,7 @@ test "vibe threads probe builtin works when unstable threads is enabled" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do { threads_probe_wat() }",
+    "{ threads_probe_wat() }",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -644,7 +644,7 @@ test "vibe threads probe builtin works when unstable threads is enabled" {
 test "vibe threads runtime hints requires unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do { threads_runtime_hints() }",
+    "{ threads_runtime_hints() }",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -659,7 +659,7 @@ test "vibe threads runtime hints returns recommended flags" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do { threads_runtime_hints() }",
+    "{ threads_runtime_hints() }",
   )
   match result {
     Err(err) => fail(err.to_string())
@@ -685,7 +685,7 @@ test "vibe threads runtime hints returns recommended flags" {
 test "vibe threads runtime queue builtins require unstable threads flag" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do {\n  let ch = threads_channel_new(1)\n  threads_send(ch, \"hello\")\n}",
+    "{\n  let ch = threads_channel_new(1)\n  threads_send(ch, \"hello\")\n}",
   )
   match result {
     Err(err) => assert_true(err.to_string().contains("--unstable-threads"))
@@ -700,7 +700,7 @@ test "vibe threads runtime queue builtins work when unstable threads is enabled"
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do {\n" +
+    "{\n" +
     "  let ch = threads_channel_new(2)\n" +
     "  let task = threads_spawn(\"worker\", ch)\n" +
     "  let ok = threads_send(ch, \"hello\")\n" +
@@ -726,7 +726,7 @@ test "vibe threads send returns false when channel is full" {
     RuntimeFeatureFlags::unstable_threads_only(),
   )
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do {\n" +
+    "{\n" +
     "  let ch = threads_channel_new(1)\n" +
     "  let first = threads_send(ch, \"a\")\n" +
     "  let second = threads_send(ch, \"b\")\n" +
@@ -748,14 +748,14 @@ test "vibe threads send returns false when channel is full" {
 test "vibe stdio builtins require effects" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result_stdout : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Unit { do { stdout_write_char(65) } }",
+    "let run = () -> Unit { { stdout_write_char(65) } }",
   )
   match result_stdout {
     Err(_) => ()
     Ok(_) => fail("expected stdout_write_char effect error")
   }
   let result_stdin : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Int { do { stdin_read_char() } }",
+    "let run = () -> Int { { stdin_read_char() } }",
   )
   match result_stdin {
     Err(_) => ()
@@ -767,14 +767,14 @@ test "vibe stdio builtins require effects" {
 test "vibe stdio stream builtins require effects" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result_stdout : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> Unit { do { stdout_write_stream(\"hi\") } }",
+    "let run = () -> Unit { { stdout_write_stream(\"hi\") } }",
   )
   match result_stdout {
     Err(_) => ()
     Ok(_) => fail("expected stdout_write_stream effect error")
   }
   let result_stdin : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let run = () -> String { do { stdin_read_stream(8) } }",
+    "let run = () -> String { { stdin_read_stream(8) } }",
   )
   match result_stdin {
     Err(_) => ()
@@ -787,8 +787,8 @@ test "vibe string_from_char_code and stdio eval" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let a = string_from_char_code(65)\n" +
-    "let readc = () -> Int with {Stdin} { do { stdin_read_char() } }\n" +
-    "let writec = (x: Int) -> Unit with {Stdout} { do { stdout_write_char(x) } }\n" +
+    "let readc = () -> Int with {Stdin} { { stdin_read_char() } }\n" +
+    "let writec = (x: Int) -> Unit with {Stdout} { { stdout_write_char(x) } }\n" +
     "let b = readc()\n" +
     "let c = writec(66)\n" +
     "let d = string_concat(a, string_from_char_code(66))\n" +
@@ -847,8 +847,8 @@ test "vibe char literal and char conversion builtins eval" {
 test "vibe stdio stream builtins eval" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let read_chunk = () -> String with {Stdin} { do { stdin_read_stream(8) } }\n" +
-    "let write_chunk = (s: String) -> Unit with {Stdout} { do { stdout_write_stream(s) } }\n" +
+    "let read_chunk = () -> String with {Stdin} { { stdin_read_stream(8) } }\n" +
+    "let write_chunk = (s: String) -> Unit with {Stdout} { { stdout_write_stream(s) } }\n" +
     "let r = read_chunk()\n" +
     "let u = write_chunk(\"hi\")\n" +
     "r",
@@ -879,7 +879,7 @@ test "vibe none is polymorphic" {
 test "vibe do value restriction allows values" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do { let x = None\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
+    "{ let x = None\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
   )
   match result {
     Err(_) => fail("expected value generalization in do")
@@ -894,7 +894,7 @@ test "vibe block generalizes expansive expressions" {
   // are fully generalized, allowing polymorphic use.
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "do { let x = if true { None } else { None }\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
+    "{ let x = if true { None } else { None }\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
   )
   match result {
     Err(_) => fail("expected generalization without value restriction")
@@ -1510,7 +1510,7 @@ test "vibe effect requires with declaration in function" {
 test "vibe builder works without do" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
-    "let xs = do { let b = array_builder()\narray_builder_push(b, 42)\narray_builder_freeze(b) }",
+    "let xs = { let b = array_builder()\narray_builder_push(b, 42)\narray_builder_freeze(b) }",
   )
   match result {
     Ok(_) => ()
@@ -1549,7 +1549,7 @@ test "vibe io builtin with effect declaration only" {
 test "vibe array builder freeze snapshot" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let a = do { let b = array_builder()\narray_builder_push(b, 1)\nlet x = array_builder_freeze(b)\narray_builder_push(b, 2)\nlet y = array_builder_freeze(b)\n(x, y) }",
+    "let a = { let b = array_builder()\narray_builder_push(b, 1)\nlet x = array_builder_freeze(b)\narray_builder_push(b, 2)\nlet y = array_builder_freeze(b)\n(x, y) }",
   )
   match rt.get("a") {
     Some(@core.Value::Tuple(items)) =>
@@ -1580,7 +1580,7 @@ test "vibe array builder freeze snapshot" {
 test "vibe map builder freeze snapshot" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let _ = rt.eval_script(
-    "let m = do { let b = map_builder()\nmap_builder_set(b, \"a\", 1)\nlet x = map_builder_freeze(b)\nmap_builder_set(b, \"b\", 2)\nlet y = map_builder_freeze(b)\n(x, y) }",
+    "let m = { let b = map_builder()\nmap_builder_set(b, \"a\", 1)\nlet x = map_builder_freeze(b)\nmap_builder_set(b, \"b\", 2)\nlet y = map_builder_freeze(b)\n(x, y) }",
   )
   match rt.get("m") {
     Some(@core.Value::Tuple(items)) =>
@@ -1681,7 +1681,7 @@ test "vibe test cache invalidates on update" {
 ///|
 test "vibe test runner failure" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let report = rt.run_script_tests("test { do { sh(\"ls\") } }")
+  let report = rt.run_script_tests("test { { sh(\"ls\") } }")
   assert_eq(report.total, 1)
   assert_eq(report.passed, 0)
   assert_eq(report.failed, 1)
@@ -1704,7 +1704,7 @@ test "vibe bench runner report" {
 ///|
 test "vibe bench runner failure" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  let report = rt.run_script_benches("bench { do { sh(\"ls\") } }", 1, 0)
+  let report = rt.run_script_benches("bench { { sh(\"ls\") } }", 1, 0)
   assert_eq(report.total, 1)
   assert_eq(report.passed, 0)
   assert_eq(report.failed, 1)
@@ -1716,7 +1716,7 @@ test "vibe posix mode bare command desugar" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let run = () -> Array[String] with {Stdout} {\n" +
-    "  do { echo }\n" +
+    "  { echo }\n" +
     "}\n" +
     "let out = run()",
     ParserMode::PosixMode,
@@ -1749,7 +1749,7 @@ test "vibe posix mode echo pipeline" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let run = () -> Array[String] with {Stdout} {\n" +
-    "  do {\n" +
+    "  {\n" +
     "    echo |> where((line: String) -> Bool { string_contains(line, \"\") })\n" +
     "  }\n" +
     "}\n" +
@@ -1822,7 +1822,7 @@ test "vibe posix mode unknown command error" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let run = () -> Array[String] with {Stdout} {\n" +
-    "  do { zzz }\n" +
+    "  { zzz }\n" +
     "}\n" +
     "let out = run()",
     ParserMode::PosixMode,
@@ -1838,7 +1838,7 @@ test "vibe posix mode multiple desugars in block" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let run = () -> Array[String] with {Stdout} {\n" +
-    "  do {\n" +
+    "  {\n" +
     "    let a = ls\n" +
     "    let b = echo\n" +
     "    a\n" +
@@ -1964,7 +1964,7 @@ test "vibe posix mode preserves dots in command arguments" {
   let rt = Runtime::new(@capability.CapabilitySet::developer())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let run = () -> Array[String] with {Stdout} {\n" +
-    "  do {\n" +
+    "  {\n" +
     "    echo file.txt\n" +
     "  }\n" +
     "}\n" +
@@ -1995,7 +1995,7 @@ test "vibe posix mode brace interpolation" {
   let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
     "let name = \"world\"\n" +
     "let run = () -> Array[String] with {Stdout} {\n" +
-    "  do {\n" +
+    "  {\n" +
     "    echo hello {{ name }}\n" +
     "  }\n" +
     "}\n" +

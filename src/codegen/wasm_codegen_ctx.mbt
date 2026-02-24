@@ -434,10 +434,6 @@ fn collect_captures_expr(
         collect_captures_expr(arm.expr, arm_bound, outer_bound, captures, seen)
       }
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      collect_captures_block(body, bound, outer_bound, captures, seen)
-    }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
       collect_captures_block(body, bound, outer_bound, captures, seen)
@@ -734,10 +730,6 @@ fn collect_nested_funcs_expr(
         collect_nested_funcs_expr(arm.expr, arm_bound, funcs)
       }
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      collect_nested_funcs_block(body, bound, funcs, false)
-    }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
       collect_nested_funcs_block(body, bound, funcs, false)
@@ -1011,10 +1003,6 @@ fn collect_fn_span_keys_expr(expr : @core.Expr, out : Array[String]) -> Unit {
       for s in body.stmts {
         collect_fn_span_keys_stmt(s, out)
       }
-    @core.Expr::Do(body~, ..) =>
-      for s in body.stmts {
-        collect_fn_span_keys_stmt(s, out)
-      }
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       collect_fn_span_keys_expr(scrutinee, out)
       for arm in arms {
@@ -1135,8 +1123,6 @@ fn precompute_ref_cell_captures_expr(
       precompute_ref_cell_captures_block(ctx, else_body.stmts, scope_mcv)
     }
     @core.Expr::Block(body~, ..) =>
-      precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
-    @core.Expr::Do(body~, ..) =>
       precompute_ref_cell_captures_block(ctx, body.stmts, scope_mcv)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       precompute_ref_cell_captures_expr(ctx, scrutinee, scope_mcv)

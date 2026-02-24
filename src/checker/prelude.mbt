@@ -25,7 +25,7 @@ let prelude_source : String =
   #|let iter_length = [T](xs: Array[T]) -> Int { array_length(xs) }
   #|let iter_get = [T](xs: Array[T], index: Int) -> T { array_get(xs, index) }
   #|let array_map = [T](xs: Array[T], f: (x: T) -> T) -> Array[T] {
-  #|  do {
+  #|  {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
   #|      if i < array_length(xs) {
@@ -48,7 +48,7 @@ let prelude_source : String =
   #|  loop(0, init)
   #|}
   #|let array_filter = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
-  #|  do {
+  #|  {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
   #|      if i < array_length(xs) {
@@ -73,7 +73,7 @@ let prelude_source : String =
   #|  loop(0)
   #|}
   #|let array_concat = [T](xs: Array[T], ys: Array[T]) -> Array[T] {
-  #|  do {
+  #|  {
   #|    let b = array_builder()
   #|    let rec loop1 = (i: Int) -> Unit {
   #|      if i < array_length(xs) {
@@ -118,7 +118,7 @@ let prelude_source : String =
   #|  loop(0)
   #|}
   #|let array_reverse = [T](xs: Array[T]) -> Array[T] {
-  #|  do {
+  #|  {
   #|    let b = array_builder()
   #|    let len = array_length(xs)
   #|    let rec loop = (i: Int) -> Unit {
@@ -137,7 +137,7 @@ let prelude_source : String =
   #|    let mid = div(len, 2)
   #|    let left = array_sort(array_slice(xs, 0, mid))
   #|    let right = array_sort(array_slice(xs, mid, len))
-  #|    do {
+  #|    {
   #|      let b = array_builder()
   #|      let ll = array_length(left)
   #|      let rl = array_length(right)
@@ -180,7 +180,7 @@ let prelude_source : String =
   #|  if map_has_key(m, key) { map_get(m, key) } else { default }
   #|}
   #|let map_map = [V](m: Map[V], f: (v: V) -> V) -> Map[V] {
-  #|  do {
+  #|  {
   #|    let b = map_builder()
   #|    let keys = map_keys(m)
   #|    let len = array_length(keys)
@@ -196,7 +196,7 @@ let prelude_source : String =
   #|  }
   #|}
   #|let map_filter = [V](m: Map[V], pred: (v: V) -> Bool) -> Map[V] {
-  #|  do {
+  #|  {
   #|    let b = map_builder()
   #|    let keys = map_keys(m)
   #|    let len = array_length(keys)
@@ -215,7 +215,7 @@ let prelude_source : String =
   #|  }
   #|}
   #|let where = [T](xs: Array[T], pred: (x: T) -> Bool) -> Array[T] {
-  #|  do {
+  #|  {
   #|    let b = array_builder()
   #|    let rec loop = (i: Int) -> Unit {
   #|      if i < array_length(xs) {

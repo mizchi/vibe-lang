@@ -223,7 +223,7 @@ test "llm_complete/rlm_run/rlm_finalize type check" {
   let rt = Runtime::new(@capability.CapabilitySet::unrestricted())
   // llm_complete needs Llm effect guard in the type system
   let result = try? rt.eval_script(
-    "let f = () -> String with { Llm } { do { llm_complete(\"sys\", \"usr\") } }",
+    "let f = () -> String with { Llm } { { llm_complete(\"sys\", \"usr\") } }",
   )
   match result {
     Ok(_) => ()
@@ -235,7 +235,7 @@ test "llm_complete/rlm_run/rlm_finalize type check" {
 test "rlm_run type check" {
   let rt = Runtime::new(@capability.CapabilitySet::unrestricted())
   let result = try? rt.eval_script(
-    "let f = () -> String with { Llm } { do { rlm_run(\"task\", \"prompt\") } }",
+    "let f = () -> String with { Llm } { { rlm_run(\"task\", \"prompt\") } }",
   )
   match result {
     Ok(_) => ()

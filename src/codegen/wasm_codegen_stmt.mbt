@@ -780,10 +780,6 @@ fn compile_expr_multivalue(
       let _ = span
       compile_block_multivalue(ctx, buf, body, kinds)
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      compile_block_multivalue(ctx, buf, body, kinds)
-    }
     @core.Expr::Handle(body~, arms~, span~) => {
       // Phase 1: compile Handle like Try multivalue, using first arm's expr as catch_body
       let catch_body_mod : @core.Module = match arms[0].expr {

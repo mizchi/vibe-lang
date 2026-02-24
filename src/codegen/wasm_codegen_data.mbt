@@ -257,10 +257,6 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         }
       }
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      scan_needs_block(ctx, body)
-    }
     @core.Expr::Fn(params~, ret~, effects=_, body~, span~, ..) => {
       let _ = span
       let _ = params
@@ -542,10 +538,6 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           None => ()
         }
       }
-    }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      scan_strings(ctx, body)
     }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span

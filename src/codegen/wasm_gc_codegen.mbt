@@ -845,7 +845,6 @@ fn infer_expr_kind_gc(
       then_kind
     }
     @core.Expr::Block(body~, ..) => infer_block_kind_gc(ctx, fctx, body)
-    @core.Expr::Do(body~, ..) => infer_block_kind_gc(ctx, fctx, body)
     @core.Expr::Tuple(items~, ..) => infer_tuple_kind_gc(ctx, fctx, items)
     @core.Expr::Record(fields~, ..) => infer_record_kind_gc(ctx, fctx, fields)
     @core.Expr::StructLit(fields~, ..) =>
@@ -1884,10 +1883,6 @@ fn compile_expr_gc(
       )
     }
     @core.Expr::Block(body~, span~) => {
-      let _ = span
-      compile_block_expr_gc(ctx, fctx, buf, body)
-    }
-    @core.Expr::Do(body~, span~) => {
       let _ = span
       compile_block_expr_gc(ctx, fctx, buf, body)
     }

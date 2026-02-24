@@ -176,7 +176,9 @@ pub fn normalize_format_source_text(source : String) -> Result[String, String] {
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  Ok(@parser.format_script(normalized))
+  let formatted = @parser.format_script(normalized)
+  let stripped = strip_redundant_blocks_source(formatted)
+  Ok(@parser.format_script(stripped))
 }
 
 ///|
@@ -327,4 +329,196 @@ fn normalize_apply_grammar_quickfixes(source : String) -> String {
     cursor = end
   }
   out.to_string()
+}
+
+///|
+struct RedundantBlockSpan {
+  block_start : Int
+  block_end : Int
+  inner_start : Int
+  inner_end : Int
+}
+
+///|
+fn collect_rb_module(
+  m : @vibe_core.Module,
+  out : Array[RedundantBlockSpan],
+  skip_top_block : Bool,
+) -> Unit {
+  for stmt in m.stmts {
+    collect_rb_stmt(stmt, out, skip_top_block)
+  }
+}
+
+///|
+fn collect_rb_stmt(
+  stmt : @vibe_core.Stmt,
+  out : Array[RedundantBlockSpan],
+  skip_top_block : Bool,
+) -> Unit {
+  match stmt {
+    @vibe_core.Stmt::Expr(expr~, ..) =>
+      if skip_top_block {
+        // The parser wraps if/else/fn/etc. body content in Expr::Block.
+        // Skip the syntactic top-level block but recurse into its contents.
+        match expr {
+          @vibe_core.Expr::Block(body~, ..) =>
+            collect_rb_module(body, out, false)
+          _ => collect_rb_expr(expr, out)
+        }
+      } else {
+        collect_rb_expr(expr, out)
+      }
+    @vibe_core.Stmt::Let(expr~, ..)
+    | @vibe_core.Stmt::ExportLet(expr~, ..)
+    | @vibe_core.Stmt::LetMut(expr~, ..)
+    | @vibe_core.Stmt::Assign(expr~, ..)
+    | @vibe_core.Stmt::LetPat(expr~, ..) => collect_rb_expr(expr, out)
+    @vibe_core.Stmt::LetPatElse(expr~, else_body~, ..) => {
+      collect_rb_expr(expr, out)
+      collect_rb_module(else_body, out, true)
+    }
+    @vibe_core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      collect_rb_expr(target, out)
+      collect_rb_expr(index, out)
+      collect_rb_expr(value, out)
+    }
+    @vibe_core.Stmt::Test(body~, ..) | @vibe_core.Stmt::Bench(body~, ..) =>
+      collect_rb_module(body, out, true)
+    _ => ()
+  }
+}
+
+///|
+fn collect_rb_expr(
+  expr : @vibe_core.Expr,
+  out : Array[RedundantBlockSpan],
+) -> Unit {
+  match expr {
+    @vibe_core.Expr::Block(body~, span~) => {
+      collect_rb_module(body, out, false)
+      match body.stmts {
+        [@vibe_core.Stmt::Expr(span=stmt_span, ..)] =>
+          out.push({
+            block_start: span.start,
+            block_end: span.end,
+            inner_start: stmt_span.start,
+            inner_end: stmt_span.end,
+          })
+        _ => ()
+      }
+    }
+    @vibe_core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_rb_expr(cond, out)
+      collect_rb_module(then_body, out, true)
+      collect_rb_module(else_body, out, true)
+    }
+    @vibe_core.Expr::Match(scrutinee~, arms~, ..) => {
+      collect_rb_expr(scrutinee, out)
+      for arm in arms {
+        match arm.cond {
+          Some(c) => collect_rb_expr(c, out)
+          None => ()
+        }
+        collect_rb_expr(arm.expr, out)
+      }
+    }
+    @vibe_core.Expr::Handle(body~, arms~, ..) => {
+      collect_rb_module(body, out, true)
+      for arm in arms {
+        match arm.cond {
+          Some(c) => collect_rb_expr(c, out)
+          None => ()
+        }
+        collect_rb_expr(arm.expr, out)
+      }
+    }
+    @vibe_core.Expr::Call(args~, ..) =>
+      for arg in args {
+        collect_rb_expr(arg.expr, out)
+      }
+    @vibe_core.Expr::Fn(body~, ..) => collect_rb_module(body, out, true)
+    @vibe_core.Expr::ForIn(iterable~, body~, ..) => {
+      collect_rb_expr(iterable, out)
+      collect_rb_module(body, out, true)
+    }
+    @vibe_core.Expr::While(cond~, body~, ..) => {
+      collect_rb_expr(cond, out)
+      collect_rb_module(body, out, true)
+    }
+    @vibe_core.Expr::Loop(params~, body~, ..) => {
+      for p in params {
+        collect_rb_expr(p.init, out)
+      }
+      collect_rb_module(body, out, true)
+    }
+    @vibe_core.Expr::Tuple(items~, ..) | @vibe_core.Expr::Array(items~, ..) =>
+      for item in items {
+        collect_rb_expr(item, out)
+      }
+    @vibe_core.Expr::TupleIndex(expr=inner, ..)
+    | @vibe_core.Expr::Yield(expr=inner, ..) => collect_rb_expr(inner, out)
+    @vibe_core.Expr::Raise(value=inner, ..) => collect_rb_expr(inner, out)
+    @vibe_core.Expr::Break(value~, ..) =>
+      match value {
+        Some(v) => collect_rb_expr(v, out)
+        None => ()
+      }
+    @vibe_core.Expr::Continue(args~, ..) =>
+      for a in args {
+        collect_rb_expr(a, out)
+      }
+    @vibe_core.Expr::Record(fields~, ..)
+    | @vibe_core.Expr::StructLit(fields~, ..) =>
+      for f in fields {
+        collect_rb_expr(f.expr, out)
+      }
+    @vibe_core.Expr::Map(fields~, ..) =>
+      for f in fields {
+        collect_rb_expr(f.expr, out)
+      }
+    _ => ()
+  }
+}
+
+///|
+fn strip_redundant_blocks_once(source : String) -> String {
+  let ast = @parser.parse_ast(source) catch { _ => return source }
+  let blocks : Array[RedundantBlockSpan] = []
+  collect_rb_module(ast, blocks, false)
+  if blocks.is_empty() {
+    return source
+  }
+  blocks.sort_by(fn(a, b) { a.block_start - b.block_start })
+  let out = StringBuilder::new()
+  let mut cursor = 0
+  for b in blocks {
+    if b.block_start < cursor {
+      continue
+    }
+    out.write_string(source.unsafe_substring(start=cursor, end=b.block_start))
+    out.write_string(
+      source.unsafe_substring(start=b.inner_start, end=b.inner_end),
+    )
+    cursor = b.block_end
+  }
+  if cursor < source.length() {
+    out.write_string(source.unsafe_substring(start=cursor, end=source.length()))
+  }
+  out.to_string()
+}
+
+///|
+fn strip_redundant_blocks_source(source : String) -> String {
+  let mut current = source
+  let mut i = 0
+  while i < 10 {
+    let next = strip_redundant_blocks_once(current)
+    if next == current {
+      break
+    }
+    current = next
+    i += 1
+  }
+  current
 }

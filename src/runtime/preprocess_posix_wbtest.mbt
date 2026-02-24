@@ -24,7 +24,7 @@ test "preprocess_posix_source: command substitution" {
   let input = "echo $(date)"
   let result = preprocess_posix_source(input)
   assert_eq(
-    result, "sh_lines(\"echo \\(do { match sh_lines(\"date\") { r if array_length(r) > 0 => array_get(r, 0), _ => \"\" } })\")",
+    result, "sh_lines(\"echo \\({ match sh_lines(\"date\") { r if array_length(r) > 0 => array_get(r, 0), _ => \"\" } })\")",
   )
 }
 
@@ -35,7 +35,6 @@ test "preprocess_posix_source: keyword lines unchanged" {
   assert_eq(preprocess_posix_source("while true { }"), "while true { }")
   assert_eq(preprocess_posix_source("match x { _ => 0 }"), "match x { _ => 0 }")
   assert_eq(preprocess_posix_source("for x in xs { }"), "for x in xs { }")
-  assert_eq(preprocess_posix_source("do { 1 }"), "do { 1 }")
   assert_eq(
     preprocess_posix_source("test { assert(true) }"),
     "test { assert(true) }",

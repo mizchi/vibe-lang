@@ -509,7 +509,15 @@ fn walk_expr(
         warning_scope_pop(scopes, out)
       }
     }
-    @core.Expr::Block(body~, ..) | @core.Expr::Do(body~, ..) => {
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let desugared = @core.desugar_for_in(
+        value_name, index_name, iterable, body, span,
+      )
+      scopes.push(warning_scope_new())
+      walk_module(desugared, scopes, out)
+      warning_scope_pop(scopes, out)
+    }
+    @core.Expr::Block(body~, ..) => {
       scopes.push(warning_scope_new())
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)

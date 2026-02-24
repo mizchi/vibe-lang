@@ -169,9 +169,16 @@ pub fn walk_expr_refs(
       let _ = span
       walk_block_refs(body, bound, refs, on_name)
     }
-    Expr::Do(body~, span~) => {
+    Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let _ = span
-      walk_block_refs(body, bound, refs, on_name)
+      walk_expr_refs(iterable, bound, refs, on_name)
+      let for_bound = bound.child()
+      for_bound.bindings[value_name] = true
+      match index_name {
+        Some(idx) => for_bound.bindings[idx] = true
+        None => ()
+      }
+      walk_block_refs(body, for_bound, refs, on_name)
     }
     Expr::Handle(body~, arms~, span~) => {
       let _ = span

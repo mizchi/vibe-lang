@@ -323,10 +323,19 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
       serialize_map_fields_to(fields, buf)
       buf.write_char('}')
     }
-    Expr::Do(body~, ..) => {
-      buf.write_string("{\"Do\":")
+    Expr::ForIn(value_name~, index_name~, iterable~, body~, ..) => {
+      buf.write_string("{\"ForIn\":{\"body\":")
       serialize_module_to(body, buf)
-      buf.write_char('}')
+      buf.write_string(",\"index_name\":")
+      match index_name {
+        Some(n) => serialize_string_to(n, buf)
+        None => buf.write_string("null")
+      }
+      buf.write_string(",\"iterable\":")
+      serialize_expr_to(iterable, buf)
+      buf.write_string(",\"value_name\":")
+      serialize_string_to(value_name, buf)
+      buf.write_string("}}")
     }
     Expr::While(cond~, body~, ..) => {
       buf.write_string("{\"While\":{\"body\":")

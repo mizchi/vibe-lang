@@ -833,7 +833,7 @@ test "roundtrip: do expression" {
   let m = Module::{
     stmts: [
       Stmt::Expr(
-        expr=Expr::Do(
+        expr=Expr::Block(
           body=Module::{
             stmts: [
               Stmt::Expr(
@@ -1507,7 +1507,7 @@ test "roundtrip: deep nesting" {
             body=Module::{
               stmts: [
                 Stmt::Expr(
-                  expr=Expr::Do(
+                  expr=Expr::Block(
                     body=Module::{
                       stmts: [
                         Stmt::Expr(

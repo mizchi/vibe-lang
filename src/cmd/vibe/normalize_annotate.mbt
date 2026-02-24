@@ -584,11 +584,6 @@ fn normalize_strip_local_type_assert_expr(
             span~,
           )
         }
-        @vibe_core.Expr::Do(body~, span~) =>
-          @vibe_core.Expr::Do(
-            body=normalize_strip_local_type_assert_module(body),
-            span~,
-          )
         @vibe_core.Expr::Handle(body~, arms~, span~) => {
           let new_arms : Array[@vibe_core.MatchArm] = []
           for arm in arms {

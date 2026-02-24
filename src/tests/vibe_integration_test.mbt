@@ -231,17 +231,17 @@ test "vibe integration imports module using array_builder helper" {
     #|export let build = (n: Int) -> Array[Int] {
     #|  let rec loop = (i: Int, b: ArrayBuilder[Int]) -> Array[Int] {
     #|    if i >= n {
-    #|      do {
+    #|      {
     #|        array_builder_freeze(b)
     #|      }
     #|    } else {
-    #|      do {
+    #|      {
     #|        array_builder_push(b, i)
     #|        loop(i + 1, b)
     #|      }
     #|    }
     #|  }
-    #|  do {
+    #|  {
     #|    loop(0, array_builder())
     #|  }
     #|}
@@ -895,7 +895,7 @@ test "vibe integration resume rejects prior effects before perform" {
     #|  Ask(Int)
     #|}
     #|let run = () -> Int with {Ask, Stdout} {
-    #|  do { stdout_write_char(65) }
+    #|  { stdout_write_char(65) }
     #|  add(1, perform(Ask(41)))
     #|}
     #|let main = () -> Int with {Stdout} {

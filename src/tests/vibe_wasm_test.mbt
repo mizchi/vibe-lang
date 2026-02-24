@@ -168,7 +168,7 @@ test "vibe wasm coverage run-tests keeps test-referenced branches" {
 ///|
 test "vibe wasm import sh" {
   let db = VibeDb::new()
-  db.set_source("main", "do { sh(\"ls\") }")
+  db.set_source("main", "{ sh(\"ls\") }")
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -472,7 +472,7 @@ test "vibe wasm keeps throw string literal when debug errors enabled" {
 ///|
 test "vibe wasm import sleep" {
   let db = VibeDb::new()
-  db.set_source("main", "do { sleep(100) }")
+  db.set_source("main", "{ sleep(100) }")
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
@@ -789,7 +789,7 @@ test "vibe wasm compiles Int method-style to_double call" {
 test "vibe wasm imports stdio char builtins" {
   let db = VibeDb::new()
   let src =
-    #|do {
+    #|{
     #|  stdout_write_char(65)
     #|  stdin_read_char()
     #|}
@@ -815,7 +815,7 @@ test "vibe wasm imports stdio char builtins" {
 test "vibe wasm imports stdio stream builtins" {
   let db = VibeDb::new()
   let src =
-    #|do {
+    #|{
     #|  stdout_write_stream("hello")
     #|  stdin_read_stream(8)
     #|}
@@ -842,7 +842,7 @@ test "vibe wasm compiles while with stdio char builtins" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Stdin, Stdout} {
-    #|  do {
+    #|  {
     #|    let mut i = 0
     #|    while i < 1 {
     #|      let c = stdin_read_char()
@@ -962,7 +962,7 @@ test "vibe wasm compiles wasm primitive memory and conversion builtins" {
   let db = VibeDb::new()
   let src =
     #|let base = 128
-    #|do {
+    #|{
     #|  i32_store(base, 0, 42)
     #|  i32_store8(base, 1, 255)
     #|  f32_store(base, 8, f32_convert_i32_s(3))

@@ -160,10 +160,6 @@ fn collect_instantiations_expr(
       let _ = span
       collect_instantiations_module(body, ctx, scope, true)
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      collect_instantiations_module(body, ctx, scope, true)
-    }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
       collect_instantiations_module(body, ctx, scope, true)
@@ -412,8 +408,6 @@ fn monoify_expr(
         body=monoify_block(body, ctx, scope, current_spec),
         span~,
       )
-    @core.Expr::Do(body~, span~) =>
-      @core.Expr::Do(body=monoify_block(body, ctx, scope, current_spec), span~)
     @core.Expr::Handle(body~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       for arm in arms {

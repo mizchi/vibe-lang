@@ -105,9 +105,11 @@ fn compile_expr(
       let _ = span
       compile_expr_match(ctx, buf, scrutinee, arms)
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      compile_block_expr(ctx, buf, body)
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let desugared = @core.desugar_for_in(
+        value_name, index_name, iterable, body, span,
+      )
+      compile_block_expr(ctx, buf, desugared)
     }
     @core.Expr::Handle(body~, arms~, span~) =>
       compile_expr_handle(ctx, buf, body, arms, span)

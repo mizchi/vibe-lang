@@ -390,11 +390,13 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
         arms=normalize_arms(arms, scope),
         span=zero_span,
       )
-    Expr::Block(body~, ..) =>
-      Expr::Block(
-        body=normalize_block(body, scope.child_block()),
-        span=zero_span,
-      )
+    Expr::Block(body~, ..) => {
+      let nb = normalize_block(body, scope.child_block())
+      match nb.stmts {
+        [Stmt::Expr(expr~, ..)] => expr
+        _ => Expr::Block(body=nb, span=zero_span)
+      }
+    }
     Expr::Tuple(items~, ..) =>
       Expr::Tuple(items=normalize_exprs(items, scope), span=zero_span)
     Expr::TupleIndex(expr~, index~, ..) =>
@@ -408,8 +410,22 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
       )
     Expr::Map(fields~, ..) =>
       Expr::Map(fields=normalize_map_fields(fields, scope), span=zero_span)
-    Expr::Do(body~, ..) =>
-      Expr::Do(body=normalize_block(body, scope.child_block()), span=zero_span)
+    Expr::ForIn(value_name~, index_name~, iterable~, body~, ..) => {
+      let child = scope.child_block()
+      let norm_iterable = normalize_expr(iterable, scope)
+      let norm_value = child.bind(value_name)
+      let norm_index = match index_name {
+        Some(idx) => Some(child.bind(idx))
+        None => None
+      }
+      Expr::ForIn(
+        value_name=norm_value,
+        index_name=norm_index,
+        iterable=norm_iterable,
+        body=normalize_block(body, child),
+        span=zero_span,
+      )
+    }
     Expr::While(cond~, body~, ..) =>
       Expr::While(
         cond=normalize_expr(cond, scope),

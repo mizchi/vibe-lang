@@ -1062,11 +1062,20 @@ fn rewrite_module_expr(
         span~,
       )
     }
-    @core.Expr::Do(body~, span~) =>
-      @core.Expr::Do(
-        body=rewrite_module_block(module_name, body, locals),
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let for_locals = module_locals_without(locals, [value_name])
+      let for_locals = match index_name {
+        Some(idx) => module_locals_without(for_locals, [idx])
+        None => for_locals
+      }
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=rewrite_module_expr(module_name, iterable, locals),
+        body=rewrite_module_block(module_name, body, for_locals),
         span~,
       )
+    }
     @core.Expr::Handle(body~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       for arm in arms {

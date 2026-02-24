@@ -667,8 +667,6 @@ fn Parser::parse_expr(self : Parser) -> Unit {
     self.parse_loop_expr()
   } else if self.at(match_kw()) {
     self.parse_match_expr()
-  } else if self.at(do_kw()) {
-    self.parse_do_expr()
   } else if self.at(break_kw()) {
     self.parse_break_expr()
   } else if self.at(continue_kw()) {
@@ -894,15 +892,6 @@ fn Parser::parse_unary_expr(self : Parser) -> Unit {
     }
     _ => self.parse_call_or_primary()
   }
-}
-
-///|
-fn Parser::parse_do_expr(self : Parser) -> Unit {
-  self.builder.start_node(do_expr())
-  self.bump() // do
-  self.skip_trivia()
-  self.parse_brace_block_tokens()
-  self.builder.finish_node()
 }
 
 ///|

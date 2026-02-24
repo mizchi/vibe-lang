@@ -411,11 +411,6 @@ fn desugar_vibe_expr(
         body=desugar_vibe_block(body, scope.child(), known_non_cmd, notes),
         span~,
       )
-    @core.Expr::Do(body~, span~) =>
-      @core.Expr::Do(
-        body=desugar_vibe_block(body, scope.child(), known_non_cmd, notes),
-        span~,
-      )
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       let next_scrut = desugar_vibe_expr(scrutinee, scope, known_non_cmd, notes)
@@ -746,8 +741,6 @@ fn desugar_expr(
       )
     @core.Expr::Block(body~, span~) =>
       @core.Expr::Block(body=desugar_block(body, scope, aliases), span~)
-    @core.Expr::Do(body~, span~) =>
-      @core.Expr::Do(body=desugar_block(body, scope, aliases), span~)
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       let scrut = desugar_expr(scrutinee, scope, aliases)

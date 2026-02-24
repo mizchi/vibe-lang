@@ -73,9 +73,7 @@ export enum Stmt {
 let peek = (tokens: Array[Token], pos: Int) -> Token {
   if pos < array_length(tokens) {
     array_get(tokens, pos)
-  } else {
-    TEof
-  }
+  } else TEof
 }
 
 let tk_name = (tok: Token) -> String {
@@ -173,9 +171,7 @@ let expect_tk = (tokens: Array[Token], pos: Int, expected: String) -> Int with {
   if is_tk(peek(tokens, pos), expected) {
     pos + 1
   }
-  else {
-    throw(string_concat("expected ", string_concat(expected, string_concat(" but got ", tk_name(peek(tokens, pos))))))
-  }
+  else throw(string_concat("expected ", string_concat(expected, string_concat(" but got ", tk_name(peek(tokens, pos))))))
 }
 
 let skip_semi = (tokens: Array[Token], pos: Int) -> Int {
@@ -255,9 +251,7 @@ let try_binop = (tok: Token, level: Int) -> Option[String] {
       _ => None
     }
   }
-  else {
-    None
-  }
+  else None
 }
 
 let empty_arms = () -> Array[(Pat, Expr)] {
@@ -330,46 +324,40 @@ let rec parse_pattern = (tokens: Array[Token], pos: Int) -> (Pat, Int)with { Err
   let (pat, next) = match peek(tokens, pos) {
     TInt(n) => (PInt(n), pos + 1),
     TString(s) => (PString(s), pos + 1),
-    TIdent(name) => {
-      if string_equals(name, "true") {
-        (PBool(true), pos + 1)
-      }
-      else if string_equals(name, "false") {
-        (PBool(false), pos + 1)
-      }
-      else if string_equals(name, "_") {
-        (PWild, pos + 1)
-      }
-      else {
-        let fc = string_char_code_at(name, 0)
-        if fc >= 65 && fc <= 90 {
-          match peek(tokens, pos + 1) {
-            TLParen => {
-              let (args, end) = parse_pats_until_rparen(tokens, pos + 2)
-              (PCtor(name, args), end)
-            },
-            _ => (PCtor(name, empty_pats()), pos + 1)
-          }
-        } else {
-          (PBind(name), pos + 1)
+    TIdent(name) => if string_equals(name, "true") {
+      (PBool(true), pos + 1)
+    }
+    else if string_equals(name, "false") {
+      (PBool(false), pos + 1)
+    }
+    else if string_equals(name, "_") {
+      (PWild, pos + 1)
+    }
+    else {
+      let fc = string_char_code_at(name, 0)
+      if fc >= 65 && fc <= 90 {
+        match peek(tokens, pos + 1) {
+          TLParen => {
+            let (args, end) = parse_pats_until_rparen(tokens, pos + 2)
+            (PCtor(name, args), end)
+          },
+          _ => (PCtor(name, empty_pats()), pos + 1)
         }
-      }
+      } else (PBind(name), pos + 1)
     },
-    TLParen => {
-      match peek(tokens, pos + 1) {
-        TRParen => (PTuple(empty_pats()), pos + 2),
-        _ => {
-          let (f, n1) = parse_pattern(tokens, pos + 1)
-          match peek(tokens, n1) {
-            TRParen => (f, n1 + 1),
-            TComma => {
-              let b = array_builder()
-              array_builder_push(b, f)
-              let (rest, end) = parse_pat_cont(tokens, n1, b)
-              (PTuple(rest), end)
-            },
-            _ => throw("expected ')' or ',' in pattern")
-          }
+    TLParen => match peek(tokens, pos + 1) {
+      TRParen => (PTuple(empty_pats()), pos + 2),
+      _ => {
+        let (f, n1) = parse_pattern(tokens, pos + 1)
+        match peek(tokens, n1) {
+          TRParen => (f, n1 + 1),
+          TComma => {
+            let b = array_builder()
+            array_builder_push(b, f)
+            let (rest, end) = parse_pat_cont(tokens, n1, b)
+            (PTuple(rest), end)
+          },
+          _ => throw("expected ')' or ',' in pattern")
         }
       }
     },
@@ -399,28 +387,22 @@ let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Erro
 
 let parse_one_param = (tokens: Array[Token], pos: Int) -> ((String, Option[String]), Int)with { Error } {
   match peek(tokens, pos) {
-    TIdent(name) => {
-      match peek(tokens, pos + 1) {
-        TTilde => {
-          let labeled_name = string_concat(name, "~")
-          match peek(tokens, pos + 2) {
-            TColon => {
-              match peek(tokens, pos + 3) {
-                TIdent(ty) => ((labeled_name, Some(ty)), pos + 4),
-                _ => throw("expected type after ':'")
-              }
-            },
-            _ => ((labeled_name, None), pos + 2)
-          }
-        },
-        TColon => {
-          match peek(tokens, pos + 2) {
-            TIdent(ty) => ((name, Some(ty)), pos + 3),
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TTilde => {
+        let labeled_name = string_concat(name, "~")
+        match peek(tokens, pos + 2) {
+          TColon => match peek(tokens, pos + 3) {
+            TIdent(ty) => ((labeled_name, Some(ty)), pos + 4),
             _ => throw("expected type after ':'")
-          }
-        },
-        _ => ((name, None), pos + 1)
-      }
+          },
+          _ => ((labeled_name, None), pos + 2)
+        }
+      },
+      TColon => match peek(tokens, pos + 2) {
+        TIdent(ty) => ((name, Some(ty)), pos + 3),
+        _ => throw("expected type after ':'")
+      },
+      _ => ((name, None), pos + 1)
     },
     _ => throw("expected parameter name")
   }
@@ -459,50 +441,44 @@ let rec parse_type_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (TypeEx
       },
       _ => (atom_ty, atom_next)
     }
-  } else {
-    match peek(tokens, pos) {
-      TLParen => {
-        match peek(tokens, pos + 1) {
-          TRParen => (TyUnit, pos + 2),
-          _ => {
-            let (first, n1) = parse_type_impl(tokens, pos + 1, 0)
-            match peek(tokens, n1) {
-              TRParen => (first, n1 + 1),
-              TComma => {
-                let b = array_builder()
-                array_builder_push(b, first)
-                let (rest, end) = type_list_rest(tokens, n1, b)
-                let en = expect_tk(tokens, end, ")")
-                (TyTuple(rest), en)
-              },
-              _ => throw("expected ')' or ',' in type")
-            }
-          }
-        }
-      },
-      TIdent(name) => {
-        match peek(tokens, pos + 1) {
-          TLBracket => {
-            let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
-            match peek(tokens, n1) {
-              TRBracket => (TyApp(name, [
-                first
-              ]), n1 + 1),
-              TComma => {
-                let b = array_builder()
-                array_builder_push(b, first)
-                let (rest, end) = type_list_rest(tokens, n1, b)
-                let en = expect_tk(tokens, end, "]")
-                (TyApp(name, rest), en)
-              },
-              _ => throw("expected ']' or ',' in type application")
-            }
+  } else match peek(tokens, pos) {
+    TLParen => match peek(tokens, pos + 1) {
+      TRParen => (TyUnit, pos + 2),
+      _ => {
+        let (first, n1) = parse_type_impl(tokens, pos + 1, 0)
+        match peek(tokens, n1) {
+          TRParen => (first, n1 + 1),
+          TComma => {
+            let b = array_builder()
+            array_builder_push(b, first)
+            let (rest, end) = type_list_rest(tokens, n1, b)
+            let en = expect_tk(tokens, end, ")")
+            (TyTuple(rest), en)
           },
-          _ => (TyName(name), pos + 1)
+          _ => throw("expected ')' or ',' in type")
+        }
+      }
+    },
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TLBracket => {
+        let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
+        match peek(tokens, n1) {
+          TRBracket => (TyApp(name, [
+            first
+          ]), n1 + 1),
+          TComma => {
+            let b = array_builder()
+            array_builder_push(b, first)
+            let (rest, end) = type_list_rest(tokens, n1, b)
+            let en = expect_tk(tokens, end, "]")
+            (TyApp(name, rest), en)
+          },
+          _ => throw("expected ']' or ',' in type application")
         }
       },
-      _ => throw(string_concat("expected type but got ", tk_name(peek(tokens, pos))))
-    }
+      _ => (TyName(name), pos + 1)
+    },
+    _ => throw(string_concat("expected type but got ", tk_name(peek(tokens, pos))))
   }
 }
 
@@ -543,16 +519,12 @@ let parse_trait_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt
 
 let parse_import_item = (tokens: Array[Token], pos: Int) -> ((String, Option[String]), Int)with { Error } {
   match peek(tokens, pos) {
-    TIdent(name) => {
-      match peek(tokens, pos + 1) {
-        TAs => {
-          match peek(tokens, pos + 2) {
-            TIdent(alias) => ((name, Some(alias)), pos + 3),
-            _ => throw("expected alias name after 'as'")
-          }
-        },
-        _ => ((name, None), pos + 1)
-      }
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TAs => match peek(tokens, pos + 2) {
+        TIdent(alias) => ((name, Some(alias)), pos + 3),
+        _ => throw("expected alias name after 'as'")
+      },
+      _ => ((name, None), pos + 1)
     },
     _ => throw("expected import item name")
   }
@@ -592,9 +564,7 @@ let rec collect_effect_names = (tokens: Array[Token], pos: Int, acc: String) -> 
     TIdent(name) => {
       let new_acc = if string_length(acc) == 0 {
         name
-      } else {
-        string_concat(acc, string_concat(", ", name))
-      }
+      } else string_concat(acc, string_concat(", ", name))
       match peek(tokens, pos + 1) {
         TComma => collect_effect_names(tokens, pos + 2, new_acc),
         TRBrace => (new_acc, pos + 2),
@@ -607,24 +577,16 @@ let rec collect_effect_names = (tokens: Array[Token], pos: Int, acc: String) -> 
 
 let rec is_lambda_start_impl = (tokens: Array[Token], pos: Int, depth: Int, has_colon: Bool) -> Bool {
   match peek(tokens, pos) {
-    TColon => {
-      if depth == 0 {
-        is_lambda_start_impl(tokens, pos + 1, depth, true)
-      } else {
-        is_lambda_start_impl(tokens, pos + 1, depth, has_colon)
+    TColon => if depth == 0 {
+      is_lambda_start_impl(tokens, pos + 1, depth, true)
+    } else is_lambda_start_impl(tokens, pos + 1, depth, has_colon),
+    TRParen => if depth == 0 {
+      match peek(tokens, pos + 1) {
+        TThinArrow => true,
+        TLBrace => has_colon,
+        _ => false
       }
-    },
-    TRParen => {
-      if depth == 0 {
-        match peek(tokens, pos + 1) {
-          TThinArrow => true,
-          TLBrace => has_colon,
-          _ => false
-        }
-      } else {
-        is_lambda_start_impl(tokens, pos + 1, depth - 1, has_colon)
-      }
-    },
+    } else is_lambda_start_impl(tokens, pos + 1, depth - 1, has_colon),
     TLParen => is_lambda_start_impl(tokens, pos + 1, depth + 1, has_colon),
     TEof => false,
     _ => is_lambda_start_impl(tokens, pos + 1, depth, has_colon)
@@ -660,88 +622,78 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       TInt(n) => (EInt(n), pos + 1),
       TFloat(n) => (EFloat(n), pos + 1),
       TString(s) => (EString(s), pos + 1),
-      TIdent(name) => {
-        if string_equals(name, "true") {
-          (EBool(true), pos + 1)
-        }
-        else if string_equals(name, "false") {
-          (EBool(false), pos + 1)
-        }
-        else {
-          (EIdent(name), pos + 1)
-        }
-      },
-      TLParen => {
-        if is_lambda_start(tokens, pos + 1) {
-          let (params, ap) = parse_param_list(tokens, pos + 1)
-          match peek(tokens, ap) {
-            TThinArrow => {
-              let after_arrow = ap + 1
-              match peek(tokens, after_arrow) {
-                TIdent(ret_name) => {
-                  let after_ret = after_arrow + 1
-                  match peek(tokens, after_ret) {
-                    TLBrace => {
-                      let (body, end) = parse_impl(tokens, after_ret + 1, 20)
-                      (EFn(params, Some(ret_name), body), end)
-                    },
-                    TWith => {
-                      let wb = expect_tk(tokens, after_ret + 1, "{")
-                      let (effects_str, eb) = collect_effect_names(tokens, wb, "")
-                      let ret_with = string_concat(ret_name, string_concat(" with {", string_concat(effects_str, "}")))
-                      let bb = expect_tk(tokens, eb, "{")
-                      let (body, end) = parse_impl(tokens, bb, 20)
-                      (EFn(params, Some(ret_with), body), end)
-                    },
-                    _ => {
-                      let (body, end) = parse_impl(tokens, after_arrow, 0)
-                      (EFn(params, None, body), end)
-                    }
+      TIdent(name) => if string_equals(name, "true") {
+        (EBool(true), pos + 1)
+      }
+      else if string_equals(name, "false") {
+        (EBool(false), pos + 1)
+      }
+      else (EIdent(name), pos + 1),
+      TLParen => if is_lambda_start(tokens, pos + 1) {
+        let (params, ap) = parse_param_list(tokens, pos + 1)
+        match peek(tokens, ap) {
+          TThinArrow => {
+            let after_arrow = ap + 1
+            match peek(tokens, after_arrow) {
+              TIdent(ret_name) => {
+                let after_ret = after_arrow + 1
+                match peek(tokens, after_ret) {
+                  TLBrace => {
+                    let (body, end) = parse_impl(tokens, after_ret + 1, 20)
+                    (EFn(params, Some(ret_name), body), end)
+                  },
+                  TWith => {
+                    let wb = expect_tk(tokens, after_ret + 1, "{")
+                    let (effects_str, eb) = collect_effect_names(tokens, wb, "")
+                    let ret_with = string_concat(ret_name, string_concat(" with {", string_concat(effects_str, "}")))
+                    let bb = expect_tk(tokens, eb, "{")
+                    let (body, end) = parse_impl(tokens, bb, 20)
+                    (EFn(params, Some(ret_with), body), end)
+                  },
+                  _ => {
+                    let (body, end) = parse_impl(tokens, after_arrow, 0)
+                    (EFn(params, None, body), end)
                   }
-                },
-                _ => {
-                  let (body, end) = parse_impl(tokens, after_arrow, 0)
-                  (EFn(params, None, body), end)
                 }
-              }
-            },
-            TLBrace => {
-              let (body, end) = parse_impl(tokens, ap + 1, 20)
-              (EFn(params, None, body), end)
-            },
-            _ => throw("expected '->' or '{' after fn params")
-          }
-        } else {
-          match peek(tokens, pos + 1) {
-            TRParen => (EUnit, pos + 2),
-            _ => {
-              let (f, n1) = parse_impl(tokens, pos + 1, 0)
-              match peek(tokens, n1) {
-                TRParen => (f, n1 + 1),
-                TComma => {
-                  let b = array_builder()
-                  array_builder_push(b, f)
-                  let (tup, end) = parse_comma_exprs_rest(tokens, n1, b)
-                  let en = expect_tk(tokens, end, ")")
-                  (ETuple(tup), en)
-                },
-                _ => throw("expected ')' or ','")
+              },
+              _ => {
+                let (body, end) = parse_impl(tokens, after_arrow, 0)
+                (EFn(params, None, body), end)
               }
             }
+          },
+          TLBrace => {
+            let (body, end) = parse_impl(tokens, ap + 1, 20)
+            (EFn(params, None, body), end)
+          },
+          _ => throw("expected '->' or '{' after fn params")
+        }
+      } else match peek(tokens, pos + 1) {
+        TRParen => (EUnit, pos + 2),
+        _ => {
+          let (f, n1) = parse_impl(tokens, pos + 1, 0)
+          match peek(tokens, n1) {
+            TRParen => (f, n1 + 1),
+            TComma => {
+              let b = array_builder()
+              array_builder_push(b, f)
+              let (tup, end) = parse_comma_exprs_rest(tokens, n1, b)
+              let en = expect_tk(tokens, end, ")")
+              (ETuple(tup), en)
+            },
+            _ => throw("expected ')' or ','")
           }
         }
       },
-      TLBracket => {
-        match peek(tokens, pos + 1) {
-          TRBracket => (EArray(empty_exprs()), pos + 2),
-          _ => {
-            let b = array_builder()
-            let (f, n1) = parse_impl(tokens, pos + 1, 0)
-            array_builder_push(b, f)
-            let (arr, end) = parse_comma_exprs_rest(tokens, n1, b)
-            let en = expect_tk(tokens, end, "]")
-            (EArray(arr), en)
-          }
+      TLBracket => match peek(tokens, pos + 1) {
+        TRBracket => (EArray(empty_exprs()), pos + 2),
+        _ => {
+          let b = array_builder()
+          let (f, n1) = parse_impl(tokens, pos + 1, 0)
+          array_builder_push(b, f)
+          let (arr, end) = parse_comma_exprs_rest(tokens, n1, b)
+          let en = expect_tk(tokens, end, "]")
+          (EArray(arr), en)
         }
       },
       TLBrace => parse_impl(tokens, pos + 1, 20),
@@ -752,32 +704,26 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
   }
   let parse_call_arg = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Error } {
     match peek(tokens, pos) {
-      TIdent(name) => {
-        match peek(tokens, pos + 1) {
-          TTilde => {
-            match peek(tokens, pos + 2) {
-              TEq => {
-                let (val, end) = parse_impl(tokens, pos + 3, 0)
-                (ELabeledArg(name, "~", val), end)
-              },
-              _ => parse_impl(tokens, pos, 0)
-            }
-          },
-          TQuestion => {
-            match peek(tokens, pos + 2) {
-              TEq => {
-                let (val, end) = parse_impl(tokens, pos + 3, 0)
-                (ELabeledArg(name, "?", val), end)
-              },
-              _ => parse_impl(tokens, pos, 0)
-            }
-          },
+      TIdent(name) => match peek(tokens, pos + 1) {
+        TTilde => match peek(tokens, pos + 2) {
           TEq => {
-            let (val, end) = parse_impl(tokens, pos + 2, 0)
+            let (val, end) = parse_impl(tokens, pos + 3, 0)
             (ELabeledArg(name, "~", val), end)
           },
           _ => parse_impl(tokens, pos, 0)
-        }
+        },
+        TQuestion => match peek(tokens, pos + 2) {
+          TEq => {
+            let (val, end) = parse_impl(tokens, pos + 3, 0)
+            (ELabeledArg(name, "?", val), end)
+          },
+          _ => parse_impl(tokens, pos, 0)
+        },
+        TEq => {
+          let (val, end) = parse_impl(tokens, pos + 2, 0)
+          (ELabeledArg(name, "~", val), end)
+        },
+        _ => parse_impl(tokens, pos, 0)
       },
       _ => parse_impl(tokens, pos, 0)
     }
@@ -794,57 +740,49 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
   }
   let rec parse_postfix = (tokens: Array[Token], pos: Int, expr: Expr) -> (Expr, Int)with { Error } {
     match peek(tokens, pos) {
-      TLParen => {
-        match peek(tokens, pos + 1) {
-          TRParen => parse_postfix(tokens, pos + 2, ECall(expr, empty_exprs())),
-          _ => {
-            let b = array_builder()
-            let (f, n1) = parse_call_arg(tokens, pos + 1)
-            array_builder_push(b, f)
-            let (args, end) = parse_call_args_rest(tokens, n1, b)
-            let en = expect_tk(tokens, end, ")")
-            parse_postfix(tokens, en, ECall(expr, args))
-          }
+      TLParen => match peek(tokens, pos + 1) {
+        TRParen => parse_postfix(tokens, pos + 2, ECall(expr, empty_exprs())),
+        _ => {
+          let b = array_builder()
+          let (f, n1) = parse_call_arg(tokens, pos + 1)
+          array_builder_push(b, f)
+          let (args, end) = parse_call_args_rest(tokens, n1, b)
+          let en = expect_tk(tokens, end, ")")
+          parse_postfix(tokens, en, ECall(expr, args))
         }
       },
-      TDot => {
-        match peek(tokens, pos + 1) {
-          TIdent(field) => parse_postfix(tokens, pos + 2, EDot(expr, field)),
-          _ => (expr, pos)
-        }
+      TDot => match peek(tokens, pos + 1) {
+        TIdent(field) => parse_postfix(tokens, pos + 2, EDot(expr, field)),
+        _ => (expr, pos)
       },
       _ => (expr, pos)
     }
   }
   let rec parse_binop_rest = (tokens: Array[Token], pos: Int, left: Expr, level: Int) -> (Expr, Int)with { Error } {
     match try_binop(peek(tokens, pos), level) {
-      Some(op) => {
-        if string_equals(op, "|>") {
-          let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
-          parse_binop_rest(tokens, rn, EPipe(left, right), level)
-        } else if level == 3 {
-          let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
-          (EBinOp(op, left, right), rn)
-        } else {
-          let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
-          parse_binop_rest(tokens, rn, EBinOp(op, left, right), level)
-        }
+      Some(op) => if string_equals(op, "|>") {
+        let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
+        parse_binop_rest(tokens, rn, EPipe(left, right), level)
+      } else if level == 3 {
+        let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
+        (EBinOp(op, left, right), rn)
+      } else {
+        let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
+        parse_binop_rest(tokens, rn, EBinOp(op, left, right), level)
       },
       None => (left, pos)
     }
   }
   let rec parse_match_rest = (tokens: Array[Token], pos: Int, scrutinee: Expr, b: ArrayBuilder[(Pat, Expr)]) -> (Expr, Int)with { Error } {
     match peek(tokens, pos) {
-      TComma => {
-        match peek(tokens, pos + 1) {
-          TRBrace => (EMatch(scrutinee, array_builder_freeze(b)), pos + 2),
-          _ => {
-            let (pa, paa) = parse_pattern(tokens, pos + 1)
-            let a2 = expect_tk(tokens, paa, "=>")
-            let (ea, en) = parse_impl(tokens, a2, 0)
-            array_builder_push(b, (pa, ea))
-            parse_match_rest(tokens, en, scrutinee, b)
-          }
+      TComma => match peek(tokens, pos + 1) {
+        TRBrace => (EMatch(scrutinee, array_builder_freeze(b)), pos + 2),
+        _ => {
+          let (pa, paa) = parse_pattern(tokens, pos + 1)
+          let a2 = expect_tk(tokens, paa, "=>")
+          let (ea, en) = parse_impl(tokens, a2, 0)
+          array_builder_push(b, (pa, ea))
+          parse_match_rest(tokens, en, scrutinee, b)
         }
       },
       TRBrace => (EMatch(scrutinee, array_builder_freeze(b)), pos + 1),
@@ -858,71 +796,59 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         let (rest, end) = parse_impl(tokens, pos + 1, 20)
         (ESeq(e, rest), end)
       },
-      TEq => {
-        match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, pos + 1, 0)
-            let a = skip_semi(tokens, vn)
-            let (rest, end) = parse_impl(tokens, a, 20)
-            (EAssign(name, val, rest), end)
-          },
-          _ => throw("invalid assignment target")
-        }
+      TEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, 20)
+          (EAssign(name, val, rest), end)
+        },
+        _ => throw("invalid assignment target")
       },
-      TPlusEq => {
-        match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, pos + 1, 0)
-            let a = skip_semi(tokens, vn)
-            let (rest, end) = parse_impl(tokens, a, 20)
-            (EAssignOp(name, "+", val, rest), end)
-          },
-          _ => throw("invalid assignment target")
-        }
+      TPlusEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, 20)
+          (EAssignOp(name, "+", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
       },
-      TMinusEq => {
-        match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, pos + 1, 0)
-            let a = skip_semi(tokens, vn)
-            let (rest, end) = parse_impl(tokens, a, 20)
-            (EAssignOp(name, "-", val, rest), end)
-          },
-          _ => throw("invalid assignment target")
-        }
+      TMinusEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, 20)
+          (EAssignOp(name, "-", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
       },
-      TStarEq => {
-        match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, pos + 1, 0)
-            let a = skip_semi(tokens, vn)
-            let (rest, end) = parse_impl(tokens, a, 20)
-            (EAssignOp(name, "*", val, rest), end)
-          },
-          _ => throw("invalid assignment target")
-        }
+      TStarEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, 20)
+          (EAssignOp(name, "*", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
       },
-      TSlashEq => {
-        match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, pos + 1, 0)
-            let a = skip_semi(tokens, vn)
-            let (rest, end) = parse_impl(tokens, a, 20)
-            (EAssignOp(name, "/", val, rest), end)
-          },
-          _ => throw("invalid assignment target")
-        }
+      TSlashEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, 20)
+          (EAssignOp(name, "/", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
       },
-      TPercentEq => {
-        match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, pos + 1, 0)
-            let a = skip_semi(tokens, vn)
-            let (rest, end) = parse_impl(tokens, a, 20)
-            (EAssignOp(name, "%", val, rest), end)
-          },
-          _ => throw("invalid assignment target")
-        }
+      TPercentEq => match e {
+        EIdent(name) => {
+          let (val, vn) = parse_impl(tokens, pos + 1, 0)
+          let a = skip_semi(tokens, vn)
+          let (rest, end) = parse_impl(tokens, a, 20)
+          (EAssignOp(name, "%", val, rest), end)
+        },
+        _ => throw("invalid assignment target")
       },
       _ => throw(string_concat("expected '}' or ';' but got ", tk_name(peek(tokens, pos))))
     }
@@ -946,18 +872,16 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
     let br = expect_tk(tokens, cn, "{")
     let (then_e, tn) = parse_impl(tokens, br, 20)
     match peek(tokens, tn) {
-      TElse => {
-        match peek(tokens, tn + 1) {
-          TIf => {
-            let (else_e, end) = parse_impl(tokens, tn + 2, 21)
-            (EIf(cond, then_e, else_e), end)
-          },
-          TLBrace => {
-            let (else_e, end) = parse_impl(tokens, tn + 2, 20)
-            (EIf(cond, then_e, else_e), end)
-          },
-          _ => throw("expected '{' or 'if' after 'else'")
-        }
+      TElse => match peek(tokens, tn + 1) {
+        TIf => {
+          let (else_e, end) = parse_impl(tokens, tn + 2, 21)
+          (EIf(cond, then_e, else_e), end)
+        },
+        TLBrace => {
+          let (else_e, end) = parse_impl(tokens, tn + 2, 20)
+          (EIf(cond, then_e, else_e), end)
+        },
+        _ => throw("expected '{' or 'if' after 'else'")
       },
       _ => throw("expected 'else' after if block")
     }
@@ -967,29 +891,25 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       TLet => {
         let next = pos + 1
         match peek(tokens, next) {
-          TRec => {
-            match peek(tokens, next + 1) {
-              TIdent(name) => {
-                let eq = expect_tk(tokens, next + 2, "=")
-                let (val, vn) = parse_impl(tokens, eq, 0)
-                let a = skip_semi(tokens, vn)
-                let (body, end) = parse_impl(tokens, a, 20)
-                (ELetRec(name, val, body), end)
-              },
-              _ => throw("expected identifier after 'let rec'")
-            }
+          TRec => match peek(tokens, next + 1) {
+            TIdent(name) => {
+              let eq = expect_tk(tokens, next + 2, "=")
+              let (val, vn) = parse_impl(tokens, eq, 0)
+              let a = skip_semi(tokens, vn)
+              let (body, end) = parse_impl(tokens, a, 20)
+              (ELetRec(name, val, body), end)
+            },
+            _ => throw("expected identifier after 'let rec'")
           },
-          TMut => {
-            match peek(tokens, next + 1) {
-              TIdent(name) => {
-                let eq = expect_tk(tokens, next + 2, "=")
-                let (val, vn) = parse_impl(tokens, eq, 0)
-                let a = skip_semi(tokens, vn)
-                let (body, end) = parse_impl(tokens, a, 20)
-                (ELetMut(name, val, body), end)
-              },
-              _ => throw("expected identifier after 'let mut'")
-            }
+          TMut => match peek(tokens, next + 1) {
+            TIdent(name) => {
+              let eq = expect_tk(tokens, next + 2, "=")
+              let (val, vn) = parse_impl(tokens, eq, 0)
+              let a = skip_semi(tokens, vn)
+              let (body, end) = parse_impl(tokens, a, 20)
+              (ELetMut(name, val, body), end)
+            },
+            _ => throw("expected identifier after 'let mut'")
           },
           TIdent(name) => {
             let eq = expect_tk(tokens, next + 1, "=")
@@ -1050,39 +970,35 @@ export let parse_expr = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Er
 
 let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
   match peek(tokens, pos) {
-    TRec => {
-      match peek(tokens, pos + 1) {
-        TIdent(name) => {
-          let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
-            TColon => {
-              let (ty, tp) = parse_type_impl(tokens, pos + 3, 0)
-              (Some(ty), tp)
-            },
-            _ => (None, pos + 2)
-          }
-          let ep = expect_tk(tokens, eq_pos, "=")
-          let (val, vn) = parse_impl(tokens, ep, 0)
-          (SLet(exported, true, name, ty_opt, val), vn)
-        },
-        _ => throw("expected name after 'let rec'")
-      }
+    TRec => match peek(tokens, pos + 1) {
+      TIdent(name) => {
+        let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
+          TColon => {
+            let (ty, tp) = parse_type_impl(tokens, pos + 3, 0)
+            (Some(ty), tp)
+          },
+          _ => (None, pos + 2)
+        }
+        let ep = expect_tk(tokens, eq_pos, "=")
+        let (val, vn) = parse_impl(tokens, ep, 0)
+        (SLet(exported, true, name, ty_opt, val), vn)
+      },
+      _ => throw("expected name after 'let rec'")
     },
-    TMut => {
-      match peek(tokens, pos + 1) {
-        TIdent(name) => {
-          let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
-            TColon => {
-              let (ty, tp) = parse_type_impl(tokens, pos + 3, 0)
-              (Some(ty), tp)
-            },
-            _ => (None, pos + 2)
-          }
-          let ep = expect_tk(tokens, eq_pos, "=")
-          let (val, vn) = parse_impl(tokens, ep, 0)
-          (SLetMut(name, ty_opt, val), vn)
-        },
-        _ => throw("expected name after 'let mut'")
-      }
+    TMut => match peek(tokens, pos + 1) {
+      TIdent(name) => {
+        let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
+          TColon => {
+            let (ty, tp) = parse_type_impl(tokens, pos + 3, 0)
+            (Some(ty), tp)
+          },
+          _ => (None, pos + 2)
+        }
+        let ep = expect_tk(tokens, eq_pos, "=")
+        let (val, vn) = parse_impl(tokens, ep, 0)
+        (SLetMut(name, ty_opt, val), vn)
+      },
+      _ => throw("expected name after 'let mut'")
     },
     TIdent(name) => {
       let (ty_opt, eq_pos) = match peek(tokens, pos + 1) {
@@ -1136,22 +1052,18 @@ let rec parse_ctor_types_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder
 
 let parse_enum_ctor = (tokens: Array[Token], pos: Int) -> ((String, Array[TypeExpr]), Int)with { Error } {
   match peek(tokens, pos) {
-    TIdent(name) => {
-      match peek(tokens, pos + 1) {
-        TLParen => {
-          match peek(tokens, pos + 2) {
-            TRParen => ((name, empty_type_exprs()), pos + 3),
-            _ => {
-              let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
-              let b = array_builder()
-              array_builder_push(b, first)
-              let (types, end) = parse_ctor_types_rest(tokens, n1, b)
-              ((name, types), end)
-            }
-          }
-        },
-        _ => ((name, empty_type_exprs()), pos + 1)
-      }
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TLParen => match peek(tokens, pos + 2) {
+        TRParen => ((name, empty_type_exprs()), pos + 3),
+        _ => {
+          let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
+          let b = array_builder()
+          array_builder_push(b, first)
+          let (types, end) = parse_ctor_types_rest(tokens, n1, b)
+          ((name, types), end)
+        }
+      },
+      _ => ((name, empty_type_exprs()), pos + 1)
     },
     _ => throw("expected constructor name")
   }
@@ -1159,24 +1071,20 @@ let parse_enum_ctor = (tokens: Array[Token], pos: Int) -> ((String, Array[TypeEx
 
 let rec parse_enum_ctors_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Array[TypeExpr])]) -> (Array[(String, Array[TypeExpr])], Int)with { Error } {
   match peek(tokens, pos) {
-    TSemicolon => {
-      match peek(tokens, pos + 1) {
-        TRBrace => (array_builder_freeze(b), pos + 2),
-        _ => {
-          let (ctor, next) = parse_enum_ctor(tokens, pos + 1)
-          array_builder_push(b, ctor)
-          parse_enum_ctors_rest(tokens, next, b)
-        }
+    TSemicolon => match peek(tokens, pos + 1) {
+      TRBrace => (array_builder_freeze(b), pos + 2),
+      _ => {
+        let (ctor, next) = parse_enum_ctor(tokens, pos + 1)
+        array_builder_push(b, ctor)
+        parse_enum_ctors_rest(tokens, next, b)
       }
     },
-    TComma => {
-      match peek(tokens, pos + 1) {
-        TRBrace => (array_builder_freeze(b), pos + 2),
-        _ => {
-          let (ctor, next) = parse_enum_ctor(tokens, pos + 1)
-          array_builder_push(b, ctor)
-          parse_enum_ctors_rest(tokens, next, b)
-        }
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (array_builder_freeze(b), pos + 2),
+      _ => {
+        let (ctor, next) = parse_enum_ctor(tokens, pos + 1)
+        array_builder_push(b, ctor)
+        parse_enum_ctors_rest(tokens, next, b)
       }
     },
     TRBrace => (array_builder_freeze(b), pos + 1),
@@ -1220,14 +1128,12 @@ let parse_type_alias_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> 
 
 let rec parse_export_names_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[String]) -> (Array[String], Int)with { Error } {
   match peek(tokens, pos) {
-    TComma => {
-      match peek(tokens, pos + 1) {
-        TIdent(name) => {
-          array_builder_push(b, name)
-          parse_export_names_rest(tokens, pos + 2, b)
-        },
-        _ => throw("expected name in export list")
-      }
+    TComma => match peek(tokens, pos + 1) {
+      TIdent(name) => {
+        array_builder_push(b, name)
+        parse_export_names_rest(tokens, pos + 2, b)
+      },
+      _ => throw("expected name in export list")
     },
     TRBrace => (array_builder_freeze(b), pos + 1),
     _ => throw("expected ',' or '}' in export list")
@@ -1267,24 +1173,20 @@ let parse_import_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Er
 
 let rec parse_struct_fields_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, TypeExpr)]) -> (Array[(String, TypeExpr)], Int)with { Error } {
   match peek(tokens, pos) {
-    TSemicolon => {
-      match peek(tokens, pos + 1) {
-        TRBrace => (array_builder_freeze(b), pos + 2),
-        _ => {
-          let (field, next) = parse_struct_field(tokens, pos + 1)
-          array_builder_push(b, field)
-          parse_struct_fields_rest(tokens, next, b)
-        }
+    TSemicolon => match peek(tokens, pos + 1) {
+      TRBrace => (array_builder_freeze(b), pos + 2),
+      _ => {
+        let (field, next) = parse_struct_field(tokens, pos + 1)
+        array_builder_push(b, field)
+        parse_struct_fields_rest(tokens, next, b)
       }
     },
-    TComma => {
-      match peek(tokens, pos + 1) {
-        TRBrace => (array_builder_freeze(b), pos + 2),
-        _ => {
-          let (field, next) = parse_struct_field(tokens, pos + 1)
-          array_builder_push(b, field)
-          parse_struct_fields_rest(tokens, next, b)
-        }
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (array_builder_freeze(b), pos + 2),
+      _ => {
+        let (field, next) = parse_struct_field(tokens, pos + 1)
+        array_builder_push(b, field)
+        parse_struct_fields_rest(tokens, next, b)
       }
     },
     TRBrace => (array_builder_freeze(b), pos + 1),
@@ -1322,23 +1224,19 @@ let parse_export_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Er
     TStruct => parse_struct_stmt(tokens, pos + 1, true),
     TType => parse_type_alias_stmt(tokens, pos + 1, true),
     TTrait => parse_trait_stmt(tokens, pos + 1, true),
-    TOpen => {
-      match peek(tokens, pos + 1) {
-        TTrait => parse_trait_stmt(tokens, pos + 2, true),
-        _ => throw("expected 'trait' after 'open'")
-      }
+    TOpen => match peek(tokens, pos + 1) {
+      TTrait => parse_trait_stmt(tokens, pos + 2, true),
+      _ => throw("expected 'trait' after 'open'")
     },
-    TLBrace => {
-      match peek(tokens, pos + 1) {
-        TRBrace => (SExport(empty_names()), pos + 2),
-        TIdent(name) => {
-          let b = array_builder()
-          array_builder_push(b, name)
-          let (names, end) = parse_export_names_rest(tokens, pos + 2, b)
-          (SExport(names), end)
-        },
-        _ => throw("expected name in export list")
-      }
+    TLBrace => match peek(tokens, pos + 1) {
+      TRBrace => (SExport(empty_names()), pos + 2),
+      TIdent(name) => {
+        let b = array_builder()
+        array_builder_push(b, name)
+        let (names, end) = parse_export_names_rest(tokens, pos + 2, b)
+        (SExport(names), end)
+      },
+      _ => throw("expected name in export list")
     },
     _ => throw(string_concat("unexpected after 'export': ", tk_name(peek(tokens, pos))))
   }
@@ -1357,34 +1255,28 @@ export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with 
   }
   match peek(tokens, pos) {
     TLet => parse_let_stmt(tokens, pos + 1, false),
-    TExport => {
-      match peek(tokens, pos + 1) {
-        TModule => {
-          match peek(tokens, pos + 2) {
-            TIdent(name) => {
-              let br = expect_tk(tokens, pos + 3, "{")
-              do {
-                let (stmts, end) = parse_module_body(tokens, br, array_builder())
-                (SModule(true, name, stmts), end)
-              }
-            },
-            _ => throw("expected module name")
-          }
-        },
-        _ => parse_export_stmt(tokens, pos + 1)
-      }
-    },
-    TModule => {
-      match peek(tokens, pos + 1) {
+    TExport => match peek(tokens, pos + 1) {
+      TModule => match peek(tokens, pos + 2) {
         TIdent(name) => {
-          let br = expect_tk(tokens, pos + 2, "{")
-          do {
+          let br = expect_tk(tokens, pos + 3, "{")
+          {
             let (stmts, end) = parse_module_body(tokens, br, array_builder())
-            (SModule(false, name, stmts), end)
+            (SModule(true, name, stmts), end)
           }
         },
         _ => throw("expected module name")
-      }
+      },
+      _ => parse_export_stmt(tokens, pos + 1)
+    },
+    TModule => match peek(tokens, pos + 1) {
+      TIdent(name) => {
+        let br = expect_tk(tokens, pos + 2, "{")
+        {
+          let (stmts, end) = parse_module_body(tokens, br, array_builder())
+          (SModule(false, name, stmts), end)
+        }
+      },
+      _ => throw("expected module name")
     },
     TEnum => parse_enum_stmt(tokens, pos + 1, false),
     TStruct => parse_struct_stmt(tokens, pos + 1, false),
@@ -1412,7 +1304,5 @@ export let parse_program = (tokens: Array[Token]) -> Array[Stmt] with { Error } 
       go(next, b)
     }
   }
-  do {
-    go(0, array_builder())
-  }
+  go(0, array_builder())
 }

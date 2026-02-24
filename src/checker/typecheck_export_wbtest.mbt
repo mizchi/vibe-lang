@@ -29,7 +29,7 @@ test "typecheck keeps exported schemes for path wrapper module" {
     #|  DynamicPath::{ raw: raw }
     #|}
     #|export let resolve = (path: DynamicPath) -> PathRef with {Env} {
-    #|  do {
+    #|  {
     #|    PathRef::{ raw: path_to_string(dynamic_path_resolve(path.raw)) }
     #|  }
     #|}
@@ -55,17 +55,17 @@ test "typecheck keeps exported schemes with array_builder local recursion" {
     #|export let build = (n: Int) -> Array[Int] {
     #|  let rec loop = (i: Int, b: ArrayBuilder[Int]) -> Array[Int] {
     #|    if i >= n {
-    #|      do {
+    #|      {
     #|        array_builder_freeze(b)
     #|      }
     #|    } else {
-    #|      do {
+    #|      {
     #|        array_builder_push(b, i)
     #|        loop(i + 1, b)
     #|      }
     #|    }
     #|  }
-    #|  do {
+    #|  {
     #|    loop(0, array_builder())
     #|  }
     #|}
@@ -90,7 +90,7 @@ test "typecheck keeps exported schemes for threads runtime wrappers" {
     #|  threads_wait(task)
     #|}
     #|export let spawn = (name: String, mailbox: Int) -> Int with { Threads } {
-    #|  do {
+    #|  {
     #|    threads_spawn(name, mailbox)
     #|  }
     #|}

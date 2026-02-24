@@ -864,9 +864,11 @@ fn type_expr_eff(
         None => @core.Type::Unit
       }
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      type_block(env, body, aliases, effects, true)
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let desugared = @core.desugar_for_in(
+        value_name, index_name, iterable, body, span,
+      )
+      type_block(env, desugared, aliases, effects, true)
     }
     @core.Expr::Fn(
       type_params~,

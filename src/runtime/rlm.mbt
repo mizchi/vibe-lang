@@ -374,7 +374,7 @@ pub fn rlm_run_loop(
 
     // Wrap effectful code in effect guard if needed
     let eval_code = if code.contains("llm_complete") || code.contains("rlm_run") {
-      "do { " + code + " }"
+      "{ " + code + " }"
     } else {
       code
     }

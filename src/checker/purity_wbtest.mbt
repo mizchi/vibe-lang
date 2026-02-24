@@ -96,8 +96,8 @@ test "check_toplevel_purity: enum def passes" {
 
 ///|
 test "check_toplevel_purity: builder in fn via for-in is pure" {
-  // Raw builder operations are impure (mutation), but for-in desugars
-  // to Expr::Do internally which provides a purity boundary.
+  // Raw builder operations are impure (mutation), but for-in
+  // is treated as pure since it encapsulates local mutation.
   // Users should use for-in instead of raw builders for pure functions.
   let script =
     #|let make_arr = () -> Array[Int] {

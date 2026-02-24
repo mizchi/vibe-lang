@@ -102,7 +102,7 @@ fn preprocess_posix_line(line : String) -> String {
 fn is_posix_keyword(word : String) -> Bool {
   let keywords : Array[String] = [
     "let", "if", "else", "while", "for", "match", "test", "bench", "type", "enum",
-    "export", "use", "fn", "do", "return", "break", "continue", "rec", "mut", "handle",
+    "export", "use", "fn", "return", "break", "continue", "rec", "mut", "handle",
     "raise", "yield", "impl", "trait", "struct", "declare", "import", "from", "as",
     "loop", "true", "false",
   ]
@@ -168,7 +168,7 @@ fn scan_cmd_subst(chars : Array[Char], i : Int, len : Int) -> (String, Int)? {
   }
   let cmd = chars_slice(chars, start, j).trim().to_string()
   let escaped = escape_posix_for_vibe_string(cmd)
-  let s = "\\(do { match sh_lines(\"" +
+  let s = "\\({ match sh_lines(\"" +
     escaped +
     "\") { r if array_length(r) > 0 => array_get(r, 0), _ => \"\" } })"
   Some((s, j + 1))

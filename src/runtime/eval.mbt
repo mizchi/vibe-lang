@@ -921,7 +921,12 @@ fn eval_expr(rt : Runtime, expr : @core.Expr) -> EvalOutput raise EvalError {
         None => { value: @core.Value::Unit, effects }
       }
     }
-    @core.Expr::Do(body~, ..) => eval_block_shared_mut(rt, body)
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let desugared = @core.desugar_for_in(
+        value_name, index_name, iterable, body, span,
+      )
+      eval_block_shared_mut(rt, desugared)
+    }
     @core.Expr::Fn(
       type_params=_,
       type_bounds=_,

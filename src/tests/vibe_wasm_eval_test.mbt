@@ -1238,7 +1238,7 @@ test "vibe wasm eval if expression" {
 ///|
 test "vibe wasm eval if branches effects" {
   let res = try
-    eval_run("do { if false { sh(\"a\") } else { sh(\"b\") } }")
+    eval_run("{ if false { sh(\"a\") } else { sh(\"b\") } }")
   catch {
     e => fail(e.to_string())
   } noraise {
@@ -1424,7 +1424,7 @@ test "vibe wasm eval bool ops" {
 
 ///|
 test "vibe wasm eval captures sh output" {
-  let res = try eval_run("do { sh(\"hello\") }") catch {
+  let res = try eval_run("{ sh(\"hello\") }") catch {
     e => fail(e.to_string())
   } noraise {
     r => r
@@ -1469,7 +1469,7 @@ test "vibe wasm eval matches interpreter for collection outputs" {
 ///|
 test "vibe wasm eval matches interpreter for shell effects" {
   assert_eval_backends_same_with_shell_effects(
-    "do { sh(\"echo hello\") }\ndo { sh(\"echo world\") }\n42",
+    "{ sh(\"echo hello\") }\n{ sh(\"echo world\") }\n42",
   )
 }
 

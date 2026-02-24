@@ -278,8 +278,11 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
       }
       h
     }
-    Expr::Do(body~, ..) => {
-      let mut h = 0x446f0000 // "Do\0\0"
+    Expr::ForIn(value_name~, index_name~, iterable~, body~, ..) => {
+      let mut h = 0x466f7249 // "ForI"
+      h = combine_hash(h, value_name.hash())
+      h = combine_hash(h, index_name.map(fn(n) { n.hash() }).unwrap_or(0))
+      h = combine_hash(h, iterable.structural_hash())
       h = combine_hash(h, body.structural_hash())
       h
     }

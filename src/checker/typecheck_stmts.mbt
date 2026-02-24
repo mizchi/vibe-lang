@@ -238,8 +238,9 @@ fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
       expr_may_use_scoped_ref(cond) ||
       module_may_use_scoped_ref(then_body) ||
       module_may_use_scoped_ref(else_body)
-    @core.Expr::Block(body~, ..) | @core.Expr::Do(body~, ..) =>
-      module_may_use_scoped_ref(body)
+    @core.Expr::ForIn(iterable~, body~, ..) =>
+      expr_may_use_scoped_ref(iterable) || module_may_use_scoped_ref(body)
+    @core.Expr::Block(body~, ..) => module_may_use_scoped_ref(body)
     @core.Expr::Match(scrutinee~, arms~, ..) =>
       expr_may_use_scoped_ref(scrutinee) || match_arms_may_use_scoped_ref(arms)
     @core.Expr::Fn(params~, ret~, body~, ..) => {

@@ -116,7 +116,7 @@ test "type query keeps exported schemes for thread runtime-style wrappers" {
     "  threads_wait(task)\n" +
     "}\n" +
     "export let spawn = (name: String, mailbox: Int) -> Int with { Threads } {\n" +
-    "  do { threads_spawn(name, mailbox) }\n" +
+    "  { threads_spawn(name, mailbox) }\n" +
     "}\n" +
     "export let probe_wat = () -> String with { Threads } {\n" +
     "  threads_probe_wat()\n" +

@@ -302,9 +302,11 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       buf.write_string("))")
       buf.to_string()
     }
-    @core.Expr::Do(body~, span~) => {
-      let _ = span
-      "(do " + block_to_sexp(body, aliases) + ")"
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let desugared = @core.desugar_for_in(
+        value_name, index_name, iterable, body, span,
+      )
+      "(do " + block_to_sexp(desugared, aliases) + ")"
     }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span

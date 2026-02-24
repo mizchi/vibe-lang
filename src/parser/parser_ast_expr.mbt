@@ -15,8 +15,6 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_loop_expr()
   } else if self.peek_kind() == match_kw() {
     self.parse_match_expr()
-  } else if self.peek_kind() == do_kw() {
-    self.parse_do_expr()
   } else if self.peek_kind() == handle_kw() {
     self.parse_handle_expr()
   } else if self.peek_kind() == break_kw() {
@@ -464,24 +462,7 @@ fn AstParser::parse_while_expr(self : AstParser) -> @core.Expr raise ParseError 
 
 ///|
 /// Parse `for x in expr { body }` or `for i, x in expr { body }`
-/// Desugars to a Do block that collects last expr into an Array.
-///
-/// for x in iterable { expr } →
-/// do {
-///   let __for_arr = iterable
-///   let __for_iter = iter_require(__for_arr)
-///   let __for_len = iter_length(__for_iter)
-///   let __for_b = array_builder()
-///   let mut __for_i = 0
-///   while __for_i < __for_len {
-///     let x = iter_get(__for_iter, __for_i)
-///     [let i = __for_i]
-///     <body init stmts>
-///     array_builder_push(__for_b, <last_expr>)
-///     __for_i = __for_i + 1
-///   }
-///   array_builder_freeze(__for_b)
-/// }
+/// Returns Expr::ForIn AST node; desugaring happens in eval/codegen layers.
 fn AstParser::parse_for_in_expr(
   self : AstParser,
 ) -> @core.Expr raise ParseError {
@@ -511,175 +492,7 @@ fn AstParser::parse_for_in_expr(
   let iterable = self.parse_expr()
   let body = self.parse_block()
   let span = self.span_from(start)
-  let synth_span = fn(offset : Int) -> @core.Span {
-    @core.Span::new(span.start + offset, span.start + offset + 1)
-  }
-  // Use token position as suffix for unique variable names (avoids collision in nested for-in)
-  let suffix = start.to_string()
-  let arr_span = synth_span(1)
-  let iter_span = synth_span(2)
-  let len_span = synth_span(3)
-  let i_span = synth_span(4)
-  let b_span = synth_span(5)
-  let arr_ident = @core.Expr::Ident(name="__for_arr" + suffix, span=arr_span)
-  let iter_ident = @core.Expr::Ident(name="__for_iter" + suffix, span=iter_span)
-  let len_ident = @core.Expr::Ident(name="__for_len" + suffix, span=len_span)
-  let i_ident = @core.Expr::Ident(name="__for_i" + suffix, span=i_span)
-  let b_ident = @core.Expr::Ident(name="__for_b" + suffix, span=b_span)
-  let zero = @core.Expr::Int(value=0L, span=i_span)
-  let one = @core.Expr::Int(value=1L, span=i_span)
-  // let __for_arrN = iterable
-  let let_arr = @core.Stmt::Let(
-    rec=false,
-    name="__for_arr" + suffix,
-    expr=iterable,
-    span~,
-  )
-  // let __for_iterN = iter_require(__for_arrN)
-  let let_iter = @core.Stmt::Let(
-    rec=false,
-    name="__for_iter" + suffix,
-    expr=@core.Expr::Call(
-      name="iter_require",
-      type_args=[],
-      args=[@core.CallArg::{ label: None, expr: arr_ident, span: arr_span }],
-      span~,
-    ),
-    span~,
-  )
-  // let __for_lenN = iter_length(__for_iterN)
-  let let_len = @core.Stmt::Let(
-    rec=false,
-    name="__for_len" + suffix,
-    expr=@core.Expr::Call(
-      name="iter_length",
-      type_args=[],
-      args=[@core.CallArg::{ label: None, expr: iter_ident, span: iter_span }],
-      span~,
-    ),
-    span~,
-  )
-  // let __for_bN = array_builder()
-  let let_b = @core.Stmt::Let(
-    rec=false,
-    name="__for_b" + suffix,
-    expr=@core.Expr::Call(name="array_builder", type_args=[], args=[], span~),
-    span~,
-  )
-  // let mut __for_iN = 0
-  let let_i = @core.Stmt::LetMut(name="__for_i" + suffix, expr=zero, span~)
-  // while __for_i < __for_len
-  let cond = call2("__lt", i_ident, len_ident)
-  // Split body: init stmts + last expr to collect
-  let (init_stmts, collect_expr) = split_body_last_expr(body, span)
-  // Build while body stmts
-  let while_stmts : Array[@core.Stmt] = []
-  // let x = iter_get(__for_iter, __for_i)
-  while_stmts.push(
-    @core.Stmt::Let(
-      rec=false,
-      name=value_name,
-      expr=@core.Expr::Call(
-        name="iter_get",
-        type_args=[],
-        args=[
-          @core.CallArg::{ label: None, expr: iter_ident, span: iter_span },
-          @core.CallArg::{ label: None, expr: i_ident, span: i_span },
-        ],
-        span~,
-      ),
-      span~,
-    ),
-  )
-  // Optional: let i = __for_i
-  match index_name {
-    Some(idx_name) =>
-      while_stmts.push(
-        @core.Stmt::Let(rec=false, name=idx_name, expr=i_ident, span~),
-      )
-    None => ()
-  }
-  // __for_iN = __for_iN + 1  (BEFORE body to prevent infinite loop on continue)
-  while_stmts.push(
-    @core.Stmt::Assign(
-      name="__for_i" + suffix,
-      expr=call2("__add", i_ident, one),
-      span~,
-    ),
-  )
-  // Add body init stmts (everything except the last expr)
-  for stmt in init_stmts {
-    while_stmts.push(stmt)
-  }
-  // array_builder_push(__for_b, <last_expr>)
-  while_stmts.push(
-    @core.Stmt::Expr(
-      expr=@core.Expr::Call(
-        name="array_builder_push",
-        type_args=[],
-        args=[
-          @core.CallArg::{ label: None, expr: b_ident, span: b_span },
-          @core.CallArg::{
-            label: None,
-            expr: collect_expr,
-            span: collect_expr.span(),
-          },
-        ],
-        span~,
-      ),
-      span~,
-    ),
-  )
-  let while_body = @core.Module::{ stmts: while_stmts }
-  let while_expr = @core.Expr::While(cond~, body=while_body, span~)
-  // Wrap in do block, return frozen array
-  let freeze_expr = @core.Expr::Call(
-    name="array_builder_freeze",
-    type_args=[],
-    args=[@core.CallArg::{ label: None, expr: b_ident, span: b_span }],
-    span~,
-  )
-  let do_stmts : Array[@core.Stmt] = [
-    let_arr,
-    let_iter,
-    let_len,
-    let_b,
-    let_i,
-    @core.Stmt::Expr(expr=while_expr, span~),
-    @core.Stmt::Expr(expr=freeze_expr, span~),
-  ]
-  let do_body = @core.Module::{ stmts: do_stmts }
-  @core.Expr::Do(body=do_body, span~)
-}
-
-///|
-/// Split a module body into init statements and the last expression to collect.
-/// If the last statement is Expr, extract it. Otherwise return Unit.
-fn split_body_last_expr(
-  body : @core.Module,
-  span : @core.Span,
-) -> (Array[@core.Stmt], @core.Expr) {
-  let stmts = body.stmts
-  if stmts.length() == 0 {
-    return ([], @core.Expr::Tuple(items=[], span~))
-  }
-  let last = stmts[stmts.length() - 1]
-  match last {
-    @core.Stmt::Expr(expr~, ..) => {
-      let init : Array[@core.Stmt] = []
-      for i in 0..<(stmts.length() - 1) {
-        init.push(stmts[i])
-      }
-      (init, expr)
-    }
-    _ => {
-      let init : Array[@core.Stmt] = []
-      for stmt in stmts {
-        init.push(stmt)
-      }
-      (init, @core.Expr::Tuple(items=[], span~))
-    }
-  }
+  @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~)
 }
 
 ///|
@@ -807,16 +620,6 @@ fn AstParser::parse_match_expr(self : AstParser) -> @core.Expr raise ParseError 
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
   @core.Expr::Match(scrutinee~, arms~, span~)
-}
-
-///|
-fn AstParser::parse_do_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let start = self.pos
-  let _ = self.expect(do_kw(), "do")
-  let body = self.parse_block()
-  let span = self.span_from(start)
-  // `do { }` is now desugared to a plain block at parse time.
-  @core.Expr::Block(body~, span~)
 }
 
 ///|
@@ -2305,7 +2108,7 @@ fn contains_placeholder(expr : @core.Expr) -> Bool {
     @core.Expr::If(cond~, ..) => contains_placeholder(cond)
     @core.Expr::Block(..)
     | @core.Expr::Match(..)
-    | @core.Expr::Do(..)
+    | @core.Expr::ForIn(..)
     | @core.Expr::Handle(..)
     | @core.Expr::Fn(..)
     | @core.Expr::While(..) => false // Don't look inside blocks/lambdas
@@ -2636,8 +2439,14 @@ fn desugar_expr_deep(expr : @core.Expr) -> @core.Expr {
         span~,
       )
     }
-    @core.Expr::Do(body~, span~) =>
-      @core.Expr::Do(body=desugar_module(body), span~)
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) =>
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=desugar_expr_deep(iterable),
+        body=desugar_module(body),
+        span~,
+      )
     @core.Expr::Handle(body~, arms~, span~) => {
       let new_arms : Array[@core.MatchArm] = []
       for arm in arms {

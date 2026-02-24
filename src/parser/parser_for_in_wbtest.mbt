@@ -1,78 +1,39 @@
 ///|
-fn for_in_len_call_name(stmt : @core.Stmt) -> String? {
-  match stmt {
-    @core.Stmt::Expr(expr=@core.Expr::Do(body~, ..), ..) =>
-      if body.stmts.length() < 6 {
-        None
-      } else {
-        match body.stmts[2] {
-          @core.Stmt::Let(expr=@core.Expr::Call(name~, ..), ..) => Some(name)
-          _ => None
-        }
-      }
-    _ => None
-  }
-}
-
-///|
-fn for_in_require_call_name(stmt : @core.Stmt) -> String? {
-  match stmt {
-    @core.Stmt::Expr(expr=@core.Expr::Do(body~, ..), ..) =>
-      if body.stmts.length() < 6 {
-        None
-      } else {
-        match body.stmts[1] {
-          @core.Stmt::Let(expr=@core.Expr::Call(name~, ..), ..) => Some(name)
-          _ => None
-        }
-      }
-    _ => None
-  }
-}
-
-///|
-fn for_in_item_call_name(stmt : @core.Stmt) -> String? {
-  match stmt {
-    @core.Stmt::Expr(expr=@core.Expr::Do(body~, ..), ..) =>
-      if body.stmts.length() < 6 {
-        None
-      } else {
-        match body.stmts[5] {
-          @core.Stmt::Expr(expr=@core.Expr::While(body=while_body, ..), ..) =>
-            if while_body.stmts.length() == 0 {
-              None
-            } else {
-              match while_body.stmts[0] {
-                @core.Stmt::Let(expr=@core.Expr::Call(name~, ..), ..) =>
-                  Some(name)
-                _ => None
-              }
-            }
-          _ => None
-        }
-      }
-    _ => None
-  }
-}
-
-///|
-test "for-in desugar uses iter_length and iter_get helpers" {
+test "for-in parses to ForIn AST node" {
   let ast = parse_ast("for x in [1, 2, 3] { x * 2 }") catch {
     err => abort("parse failed: " + err.diagnostic().message)
   }
   assert_eq(ast.stmts.length(), 1)
-  assert_eq(for_in_require_call_name(ast.stmts[0]), Some("iter_require"))
-  assert_eq(for_in_len_call_name(ast.stmts[0]), Some("iter_length"))
-  assert_eq(for_in_item_call_name(ast.stmts[0]), Some("iter_get"))
+  match ast.stmts[0] {
+    @core.Stmt::Expr(
+      expr=@core.Expr::ForIn(value_name~, index_name~, iterable~, body~, ..),
+      ..
+    ) => {
+      assert_eq(value_name, "x")
+      assert_eq(index_name, None)
+      // iterable is [1, 2, 3]
+      match iterable {
+        @core.Expr::Array(items~, ..) => assert_eq(items.length(), 3)
+        _ => abort("expected Array iterable")
+      }
+      // body has one expr stmt: x * 2
+      assert_eq(body.stmts.length(), 1)
+    }
+    _ => abort("expected ForIn expression")
+  }
 }
 
 ///|
-test "for-in with index binding also uses iter_get helper" {
+test "for-in with index binding parses correctly" {
   let ast = parse_ast("for i, x in [10, 20, 30] { i + x }") catch {
     err => abort("parse failed: " + err.diagnostic().message)
   }
   assert_eq(ast.stmts.length(), 1)
-  assert_eq(for_in_require_call_name(ast.stmts[0]), Some("iter_require"))
-  assert_eq(for_in_len_call_name(ast.stmts[0]), Some("iter_length"))
-  assert_eq(for_in_item_call_name(ast.stmts[0]), Some("iter_get"))
+  match ast.stmts[0] {
+    @core.Stmt::Expr(expr=@core.Expr::ForIn(value_name~, index_name~, ..), ..) => {
+      assert_eq(value_name, "x")
+      assert_eq(index_name, Some("i"))
+    }
+    _ => abort("expected ForIn expression with index")
+  }
 }
