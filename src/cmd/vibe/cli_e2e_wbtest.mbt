@@ -2728,9 +2728,7 @@ test "cli finalize export workflow supports fetch and apply" {
 test "cli finalize library mode keeps re-export stmt parseable" {
   let root = wbtest_make_temp_dir("finalize_library_mode_reexport")
   let db_path = root + "/tmp1.db"
-  let source = "let local = 1\n" +
-    "local\n" +
-    "export ./mod.vibe { helper }\n"
+  let source = "let local = 1\n" + "local\n" + "export ./mod.vibe { helper }\n"
   match write_eval_db_source(db_path, source) {
     Ok(_) => ()
     Err(err) => fail("write seed db failed: " + err)

@@ -362,10 +362,7 @@ fn unwrap_local_type_assert_expr(expr : @core.Expr) -> @core.Expr {
               @core.Stmt::Expr(
                 expr=@core.Expr::Ident(name=returned_name, ..),
                 ..
-              ) =>
-                if returned_name != params[0].name {
-                  return expr
-                }
+              ) => if returned_name != params[0].name { return expr }
               _ => return expr
             }
             name
@@ -407,7 +404,8 @@ fn extract_record_string_map(expr : @core.Expr) -> Map[String, String]? {
 fn extract_registry_map(ast : @core.Module) -> Map[String, String]? {
   for stmt in ast.stmts {
     match stmt {
-      @core.Stmt::Let(name~, expr~, ..) | @core.Stmt::ExportLet(name~, expr~, ..) =>
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..) =>
         if name == "module" || name == "registry" {
           match extract_record_string_map(expr) {
             Some(out) => return Some(out)

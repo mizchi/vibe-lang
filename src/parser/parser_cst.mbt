@@ -1135,6 +1135,7 @@ fn Parser::parse_binding_type_until_eq(self : Parser) -> Unit {
   }
 }
 
+///|
 fn Parser::parse_call_or_primary(self : Parser) -> Unit {
   self.skip_trivia()
   let checkpoint = self.builder.checkpoint()

@@ -1761,10 +1761,12 @@ fn normalize_resolve_index_import_line(
         scope_buf.write_string(token)
       }
       let scope = scope_buf.to_string()
-      if scope.length() == 0 || not(normalize_is_unversioned_scope_import_target(scope)) {
+      if scope.length() == 0 ||
+        not(normalize_is_unversioned_scope_import_target(scope)) {
         return Ok(line)
       }
-      let version = match normalize_resolve_latest_scope_version(lib_root, scope) {
+      let version = match
+        normalize_resolve_latest_scope_version(lib_root, scope) {
         Some(v) => v
         None =>
           return Err(

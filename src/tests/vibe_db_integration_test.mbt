@@ -111,7 +111,9 @@ test "vibe import cycle reports diagnostic" {
 test "vibe import keeps normalized path object" {
   let db = VibeDb::new()
   db.set_source("/project/lib/util.vibe", "export let y = 2")
-  db.set_source("/project/main.vibe", "import ./lib/./util.vibe { y }\nlet x = y")
+  db.set_source(
+    "/project/main.vibe", "import ./lib/./util.vibe { y }\nlet x = y",
+  )
   let imports = db.imports("/project/main.vibe")
   assert_eq(imports.length(), 1)
   let imp = imports[0]

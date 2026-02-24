@@ -708,7 +708,9 @@ test "vibe integration module-qualified import rejects member path" {
       assert_true(
         err
         .to_string()
-        .contains("`import <module-ref> { module foo }` (module namespace only)"),
+        .contains(
+          "`import <module-ref> { module foo }` (module namespace only)",
+        ),
       )
   }
 }
