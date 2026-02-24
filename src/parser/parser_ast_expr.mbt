@@ -815,7 +815,8 @@ fn AstParser::parse_do_expr(self : AstParser) -> @core.Expr raise ParseError {
   let _ = self.expect(do_kw(), "do")
   let body = self.parse_block()
   let span = self.span_from(start)
-  @core.Expr::Do(body~, span~)
+  // `do { }` is now desugared to a plain block at parse time.
+  @core.Expr::Block(body~, span~)
 }
 
 ///|

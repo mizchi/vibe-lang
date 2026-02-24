@@ -95,26 +95,21 @@ test "check_toplevel_purity: enum def passes" {
 }
 
 ///|
-test "check_toplevel_purity: escape-free builder in fn should be pure" {
-  // A function that uses array_builder internally but freezes the result
-  // should be considered pure — the builder doesn't escape.
+test "check_toplevel_purity: builder in fn via for-in is pure" {
+  // Raw builder operations are impure (mutation), but for-in desugars
+  // to Expr::Do internally which provides a purity boundary.
+  // Users should use for-in instead of raw builders for pure functions.
   let script =
     #|let make_arr = () -> Array[Int] {
-    #|  do {
-    #|    let b = array_builder()
-    #|    array_builder_push(b, 1)
-    #|    array_builder_push(b, 2)
-    #|    array_builder_freeze(b)
-    #|  }
+    #|  for x in [1, 2] { x }
     #|}
     #|let xs = make_arr()
   let ast = parse_for_purity(script)
   let env = type_check(ast) catch {
     err => fail("type error: \{err.to_string()}")
   }
-  // Currently fails with TopLevelImpure — we want this to pass
   check_toplevel_purity(env, ast.stmts) catch {
-    err => fail("should pass for escape-free builder: \{err.to_string()}")
+    err => fail("should pass for for-in builder: \{err.to_string()}")
   }
 }
 

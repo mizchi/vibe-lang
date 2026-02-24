@@ -888,14 +888,17 @@ test "vibe do value restriction allows values" {
 }
 
 ///|
-test "vibe do value restriction blocks expansive" {
+test "vibe block generalizes expansive expressions" {
+  // With do {} deprecated (parsed as Block), value restriction no longer
+  // applies. Expansive expressions like `if true { None } else { None }`
+  // are fully generalized, allowing polymorphic use.
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "do { let x = if true { None } else { None }\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
   )
   match result {
-    Err(_) => ()
-    Ok(_) => fail("expected monomorphic let in do")
+    Err(_) => fail("expected generalization without value restriction")
+    Ok(_) => ()
   }
 }
 
