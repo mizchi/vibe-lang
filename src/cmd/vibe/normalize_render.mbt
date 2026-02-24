@@ -186,7 +186,6 @@ fn normalize_render_stmt(
   stmt : @vibe_core.Stmt,
   rewritten_exprs : Map[String, @vibe_core.Expr],
   inferred_annotations : Map[String, String],
-  export_decl_annotations : Map[String, String],
   env : @checker.TypeEnv,
 ) -> String? {
   let key = normalize_stmt_key(stmt)
@@ -212,11 +211,6 @@ fn normalize_render_stmt(
       )
     }
     @vibe_core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
-      if export_decl_annotations.contains(key) {
-        return normalize_render_decl_assign_stmt(
-          source, name, expr, rewritten_expr,
-        )
-      }
       // Unwrap local type assert wrapper from declare+assign to get inner expr
       let render_expr = match normalize_unwrap_local_type_assert(expr) {
         Some((_, inner)) => inner
@@ -548,245 +542,6 @@ fn normalize_render_let_stmt(
   out.write_string(" = ")
   out.write_string(expr_text)
   Some(out.to_string())
-}
-
-///|
-fn normalize_render_decl_assign_stmt(
-  source : String,
-  name : String,
-  original_expr : @vibe_core.Expr,
-  rewritten_expr : @vibe_core.Expr?,
-) -> String? {
-  let (declared_ty, source_expr) = match
-    normalize_unwrap_local_type_assert(original_expr) {
-    Some((ann_ty, inner_expr)) => (Some(ann_ty), inner_expr)
-    None => (None, original_expr)
-  }
-  if rewritten_expr is None {
-    match
-      normalize_render_decl_assign_fn_without_param_annotations(
-        source, name, declared_ty, source_expr,
-      ) {
-      Some(rendered) => return Some(name + " = " + rendered)
-      None => ()
-    }
-  }
-  let expr_text = match
-    normalize_render_stmt_expr_text(source, source_expr, rewritten_expr) {
-    Some(v) => v
-    None => return None
-  }
-  Some(name + " = " + expr_text)
-}
-
-///|
-fn normalize_render_decl_assign_fn_without_param_annotations(
-  source : String,
-  name : String,
-  declared_ty : @vibe_core.Type?,
-  expr : @vibe_core.Expr,
-) -> String? {
-  let decl_ty = match declared_ty {
-    Some(v) => v
-    None => return None
-  }
-  let decl_ty_text = match normalize_render_decl_annotation_type(decl_ty) {
-    Some(v) => v
-    None => return None
-  }
-  match expr {
-    @vibe_core.Expr::Fn(type_params~, params~, ..) => {
-      if type_params.length() > 0 {
-        return None
-      }
-      for param in params {
-        if param.bounds.length() > 0 {
-          return None
-        }
-      }
-      let span = expr.span()
-      let snippet = normalize_source_slice_by_span(source, span.start, span.end)
-        .trim()
-        .to_string()
-      if snippet.length() == 0 {
-        return None
-      }
-      let stripped = match normalize_strip_fn_param_annotations(snippet) {
-        Some(v) => v
-        None => return None
-      }
-      if stripped == snippet {
-        return None
-      }
-      let probe = "let " + name + ": " + decl_ty_text + " = " + stripped
-      let probe_ast = @parser.parse_ast(probe) catch { _ => return None }
-      let _ = @checker.type_check(probe_ast) catch { _ => return None }
-      Some(stripped)
-    }
-    _ => None
-  }
-}
-
-///|
-fn normalize_strip_fn_param_annotations(snippet : String) -> String? {
-  let mut open_index = -1
-  for i, c in snippet {
-    if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-      continue
-    }
-    if c != '(' {
-      return None
-    }
-    open_index = i
-    break
-  }
-  if open_index < 0 {
-    return None
-  }
-  let close_index = match normalize_find_matching_paren(snippet, open_index) {
-    Some(v) => v
-    None => return None
-  }
-  let inner = normalize_source_slice_by_span(
-    snippet,
-    open_index + 1,
-    close_index,
-  )
-  let stripped_inner = match normalize_strip_param_annotation_list(inner) {
-    Some(v) => v
-    None => return None
-  }
-  let prefix = normalize_source_slice_by_span(snippet, 0, open_index)
-  let suffix = normalize_source_slice_by_span(
-    snippet,
-    close_index + 1,
-    snippet.length(),
-  )
-  Some(prefix + "(" + stripped_inner + ")" + suffix)
-}
-
-///|
-fn normalize_find_matching_paren(source : String, open_index : Int) -> Int? {
-  let mut depth = 0
-  for i, c in source {
-    if i < open_index {
-      continue
-    }
-    if c == '(' {
-      depth += 1
-      continue
-    }
-    if c == ')' {
-      depth -= 1
-      if depth == 0 {
-        return Some(i)
-      }
-    }
-  }
-  None
-}
-
-///|
-fn normalize_strip_param_annotation_list(params_text : String) -> String? {
-  if params_text.trim().to_string().length() == 0 {
-    return Some("")
-  }
-  let parts : Array[String] = []
-  let mut start = 0
-  let mut paren_depth = 0
-  let mut bracket_depth = 0
-  let mut brace_depth = 0
-  for i, c in params_text {
-    if c == '(' {
-      paren_depth += 1
-      continue
-    }
-    if c == ')' {
-      paren_depth -= 1
-      continue
-    }
-    if c == '[' {
-      bracket_depth += 1
-      continue
-    }
-    if c == ']' {
-      bracket_depth -= 1
-      continue
-    }
-    if c == '{' {
-      brace_depth += 1
-      continue
-    }
-    if c == '}' {
-      brace_depth -= 1
-      continue
-    }
-    if c == ',' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
-      let part = normalize_source_slice_by_span(params_text, start, i)
-      match normalize_strip_single_param_annotation(part) {
-        Some(v) => parts.push(v)
-        None => return None
-      }
-      start = i + 1
-    }
-  }
-  let tail = normalize_source_slice_by_span(
-    params_text,
-    start,
-    params_text.length(),
-  )
-  match normalize_strip_single_param_annotation(tail) {
-    Some(v) => parts.push(v)
-    None => return None
-  }
-  Some(parts.join(", "))
-}
-
-///|
-fn normalize_strip_single_param_annotation(param_text : String) -> String? {
-  let trimmed = param_text.trim().to_string()
-  if trimmed.length() == 0 {
-    return Some(trimmed)
-  }
-  let mut paren_depth = 0
-  let mut bracket_depth = 0
-  let mut brace_depth = 0
-  for i, c in trimmed {
-    if c == '(' {
-      paren_depth += 1
-      continue
-    }
-    if c == ')' {
-      paren_depth -= 1
-      continue
-    }
-    if c == '[' {
-      bracket_depth += 1
-      continue
-    }
-    if c == ']' {
-      bracket_depth -= 1
-      continue
-    }
-    if c == '{' {
-      brace_depth += 1
-      continue
-    }
-    if c == '}' {
-      brace_depth -= 1
-      continue
-    }
-    if c == ':' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
-      let name_text = normalize_source_slice_by_span(trimmed, 0, i)
-        .trim()
-        .to_string()
-      if name_text.length() == 0 {
-        return None
-      }
-      return Some(name_text)
-    }
-  }
-  Some(trimmed)
 }
 
 ///|
@@ -1179,27 +934,7 @@ fn normalize_render_source(
   inferred_annotations : Map[String, String],
   env : @checker.TypeEnv,
 ) -> Result[String, String] {
-  let _ = normalize_collect_export_decl_annotations(
-    @vibe_core.Module::{ stmts, },
-    inferred_annotations,
-    env,
-  )
-  let export_decl_annotations : Map[String, String] = {}
   let rendered : Array[NormalizeRenderedBlock] = []
-  let declare_lines : Array[String] = []
-  for stmt in stmts {
-    match stmt {
-      @vibe_core.Stmt::ExportLet(name~, ..) => {
-        let key = normalize_stmt_key(stmt)
-        match export_decl_annotations.get(key) {
-          Some(ty_text) =>
-            declare_lines.push("declare export let " + name + ": " + ty_text)
-          None => ()
-        }
-      }
-      _ => ()
-    }
-  }
   let push_rendered = fn(group : NormalizeStmtGroup, raw_text : String) {
     let text = normalize_trim_rendered_block(raw_text)
     if text.trim().to_string().length() == 0 {
@@ -1207,7 +942,6 @@ fn normalize_render_source(
     }
     rendered.push({ group, text })
   }
-  let mut inserted_declare_lines = false
   for stmt in stmts {
     // Skip redundant Export stmts when all names are already individually exported
     match stmt {
@@ -1218,20 +952,9 @@ fn normalize_render_source(
       _ => ()
     }
     let group = normalize_stmt_group(stmt)
-    if not(inserted_declare_lines) && declare_lines.length() > 0 {
-      if group != NormalizeStmtGroup::Use &&
-        group != NormalizeStmtGroup::TypeDecl &&
-        group != NormalizeStmtGroup::TraitDecl {
-        for line in declare_lines {
-          push_rendered(NormalizeStmtGroup::FnDef, line)
-        }
-        inserted_declare_lines = true
-      }
-    }
     match
       normalize_render_stmt(
-        source, stmt, rewritten_exprs, inferred_annotations, export_decl_annotations,
-        env,
+        source, stmt, rewritten_exprs, inferred_annotations, env,
       ) {
       Some(rendered_line) => push_rendered(group, rendered_line)
       None => {
@@ -1241,11 +964,6 @@ fn normalize_render_source(
         )
         push_rendered(group, snippet)
       }
-    }
-  }
-  if not(inserted_declare_lines) {
-    for line in declare_lines {
-      push_rendered(NormalizeStmtGroup::FnDef, line)
     }
   }
   if rendered.length() == 0 {

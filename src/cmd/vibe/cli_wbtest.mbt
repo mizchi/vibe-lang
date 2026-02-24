@@ -1467,26 +1467,6 @@ test "normalize source converts declared export let fn to export let" {
   assert_true(normalized.contains("export let inc ="))
 }
 
-///|
-test "normalize source keeps rhs param annotation when type params exist" {
-  let source = "export let id = [T](v: T) -> T { v }"
-  let ast = @parser.parse_ast(source) catch {
-    e => fail("parse failed: " + e.to_string())
-  }
-  let expr = match ast.stmts[0] {
-    @vibe_core.Stmt::ExportLet(expr~, ..) => expr
-    _ => fail("expected export let")
-  }
-  let stripped = normalize_render_decl_assign_fn_without_param_annotations(
-    source,
-    "id",
-    None,
-    expr,
-  )
-  assert_eq(stripped, None)
-}
-
-///|
 test "std layer classification covers primary modules" {
   let trait_layer = match
     std_layer_for_path("/tmp/repo/vibe/builtin/builtin_traits.vibe") {
