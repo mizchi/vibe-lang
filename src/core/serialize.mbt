@@ -163,8 +163,26 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       buf.write_string(rec.to_string())
       buf.write_string("}}")
     }
+    Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
+      buf.write_string("{\"InternalExportLet\":{\"expr\":")
+      serialize_expr_to(expr, buf)
+      buf.write_string(",\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"rec\":")
+      buf.write_string(rec.to_string())
+      buf.write_string("}}")
+    }
     Stmt::ExportEnumDef(name~, params~, ctors~, ..) => {
       buf.write_string("{\"ExportEnumDef\":{\"ctors\":")
+      serialize_ctors_to(ctors, buf)
+      buf.write_string(",\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"params\":")
+      serialize_strings_to(params, buf)
+      buf.write_string("}}")
+    }
+    Stmt::InternalExportEnumDef(name~, params~, ctors~, ..) => {
+      buf.write_string("{\"InternalExportEnumDef\":{\"ctors\":")
       serialize_ctors_to(ctors, buf)
       buf.write_string(",\"name\":")
       serialize_string_to(name, buf)
@@ -179,6 +197,24 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_strings_to(params, buf)
       buf.write_string(",\"target\":")
       serialize_type_to(target, buf)
+      buf.write_string("}}")
+    }
+    Stmt::InternalExportTypeAlias(name~, params~, target~, ..) => {
+      buf.write_string("{\"InternalExportTypeAlias\":{\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"params\":")
+      serialize_strings_to(params, buf)
+      buf.write_string(",\"target\":")
+      serialize_type_to(target, buf)
+      buf.write_string("}}")
+    }
+    Stmt::InternalTraitDef(name~, supertraits~, open_impl~, ..) => {
+      buf.write_string("{\"InternalTraitDef\":{\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"supertraits\":")
+      serialize_strings_to(supertraits, buf)
+      buf.write_string(",\"open_impl\":")
+      buf.write_string(open_impl.to_string())
       buf.write_string("}}")
     }
     Stmt::Export(names~, ..) => {
@@ -204,6 +240,15 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
     }
     Stmt::ExportStructDef(name~, params~, fields~, ..) => {
       buf.write_string("{\"ExportStructDef\":{\"fields\":")
+      serialize_struct_fields_to(fields, buf)
+      buf.write_string(",\"name\":")
+      serialize_string_to(name, buf)
+      buf.write_string(",\"params\":")
+      serialize_strings_to(params, buf)
+      buf.write_string("}}")
+    }
+    Stmt::InternalExportStructDef(name~, params~, fields~, ..) => {
+      buf.write_string("{\"InternalExportStructDef\":{\"fields\":")
       serialize_struct_fields_to(fields, buf)
       buf.write_string(",\"name\":")
       serialize_string_to(name, buf)

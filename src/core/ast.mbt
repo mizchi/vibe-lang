@@ -141,7 +141,14 @@ pub(all) enum Stmt {
   LetPatElse(pat~ : Pat, expr~ : Expr, else_body~ : Module, span~ : Span)
   // Export statements
   ExportLet(rec~ : Bool, name~ : String, expr~ : Expr, span~ : Span)
+  InternalExportLet(rec~ : Bool, name~ : String, expr~ : Expr, span~ : Span)
   ExportEnumDef(
+    name~ : String,
+    params~ : Array[String],
+    ctors~ : Array[TypeCtor],
+    span~ : Span
+  )
+  InternalExportEnumDef(
     name~ : String,
     params~ : Array[String],
     ctors~ : Array[TypeCtor],
@@ -153,6 +160,18 @@ pub(all) enum Stmt {
     target~ : Type,
     span~ : Span
   )
+  InternalExportTypeAlias(
+    name~ : String,
+    params~ : Array[String],
+    target~ : Type,
+    span~ : Span
+  )
+  InternalTraitDef(
+    name~ : String,
+    supertraits~ : Array[String],
+    open_impl~ : Bool,
+    span~ : Span
+  )
   Export(names~ : Array[String], span~ : Span)
   ReExport(names~ : Array[String], source~ : ModuleRef, span~ : Span)
   StructDef(
@@ -162,6 +181,12 @@ pub(all) enum Stmt {
     span~ : Span
   )
   ExportStructDef(
+    name~ : String,
+    params~ : Array[String],
+    fields~ : Array[StructField],
+    span~ : Span
+  )
+  InternalExportStructDef(
     name~ : String,
     params~ : Array[String],
     fields~ : Array[StructField],
@@ -334,11 +359,16 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::LetPat(span~, ..)
     | Stmt::LetPatElse(span~, ..)
     | Stmt::ExportLet(span~, ..)
+    | Stmt::InternalExportLet(span~, ..)
     | Stmt::ExportEnumDef(span~, ..)
+    | Stmt::InternalExportEnumDef(span~, ..)
     | Stmt::ExportTypeAlias(span~, ..)
+    | Stmt::InternalExportTypeAlias(span~, ..)
+    | Stmt::InternalTraitDef(span~, ..)
     | Stmt::Export(span~, ..)
     | Stmt::ReExport(span~, ..)
     | Stmt::StructDef(span~, ..)
-    | Stmt::ExportStructDef(span~, ..) => span
+    | Stmt::ExportStructDef(span~, ..)
+    | Stmt::InternalExportStructDef(span~, ..) => span
   }
 }

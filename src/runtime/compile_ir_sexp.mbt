@@ -62,6 +62,7 @@ fn stmts_to_sexp(
         buf.write_char(')')
       }
       @core.Stmt::TraitDef(..) => ()
+      @core.Stmt::InternalTraitDef(..) => ()
       @core.Stmt::TraitImpl(..) => ()
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
@@ -94,6 +95,18 @@ fn stmts_to_sexp(
         buf.write_string(expr_to_sexp(expr, aliases))
         buf.write_char(')')
       }
+      @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+        let _ = span
+        if rec {
+          buf.write_string(" (internal-export-let-rec ")
+        } else {
+          buf.write_string(" (internal-export-let ")
+        }
+        buf.write_string(escape_atom(name))
+        buf.write_char(' ')
+        buf.write_string(expr_to_sexp(expr, aliases))
+        buf.write_char(')')
+      }
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
         let _ = span
         buf.write_string(" (export-enum ")
@@ -114,9 +127,42 @@ fn stmts_to_sexp(
         }
         buf.write_string("))")
       }
+      @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~) => {
+        let _ = span
+        buf.write_string(" (internal-export-enum ")
+        buf.write_string(escape_atom(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(escape_atom(param))
+        }
+        buf.write_string(") (ctors")
+        let sorted = sort_type_ctors(ctors)
+        for ctor in sorted {
+          buf.write_string(" (ctor ")
+          buf.write_string(escape_atom(ctor.name))
+          buf.write_char(' ')
+          buf.write_string(type_to_sexp(type_ctor_payload(ctor)))
+          buf.write_char(')')
+        }
+        buf.write_string("))")
+      }
       @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) => {
         let _ = span
         buf.write_string(" (export-type-alias ")
+        buf.write_string(escape_atom(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(escape_atom(param))
+        }
+        buf.write_string(") ")
+        buf.write_string(type_to_sexp(target))
+        buf.write_char(')')
+      }
+      @core.Stmt::InternalExportTypeAlias(name~, params~, target~, span~) => {
+        let _ = span
+        buf.write_string(" (internal-export-type-alias ")
         buf.write_string(escape_atom(name))
         buf.write_string(" (params")
         for param in params {
@@ -204,6 +250,25 @@ fn stmts_to_sexp(
       @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
         let _ = span
         buf.write_string(" (export-struct ")
+        buf.write_string(escape_atom(name))
+        buf.write_string(" (params")
+        for param in params {
+          buf.write_char(' ')
+          buf.write_string(escape_atom(param))
+        }
+        buf.write_string(") (fields")
+        for field in fields {
+          buf.write_string(" (field ")
+          buf.write_string(escape_atom(field.name))
+          buf.write_char(' ')
+          buf.write_string(type_to_sexp(field.ty))
+          buf.write_char(')')
+        }
+        buf.write_string("))")
+      }
+      @core.Stmt::InternalExportStructDef(name~, params~, fields~, span~) => {
+        let _ = span
+        buf.write_string(" (internal-export-struct ")
         buf.write_string(escape_atom(name))
         buf.write_string(" (params")
         for param in params {

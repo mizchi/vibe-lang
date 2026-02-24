@@ -501,7 +501,8 @@ pub fn build_symbol_index_for_module(
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(name~, expr~, span~, ..)
-      | @core.Stmt::ExportLet(name~, expr~, span~, ..) => {
+      | @core.Stmt::ExportLet(name~, expr~, span~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, span~, ..) => {
         let kind = match expr {
           @core.Expr::Fn(..) => SymbolKind::FnSym
           _ => SymbolKind::ValueSym
@@ -527,7 +528,8 @@ pub fn build_symbol_index_for_module(
           span,
         )
       @core.Stmt::TypeAlias(name~, params~, target~, span~)
-      | @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+      | @core.Stmt::ExportTypeAlias(name~, params~, target~, span~)
+      | @core.Stmt::InternalExportTypeAlias(name~, params~, target~, span~) =>
         push_symbol(
           entries,
           name,
@@ -541,7 +543,8 @@ pub fn build_symbol_index_for_module(
           span,
         )
       @core.Stmt::EnumDef(name~, params~, ctors~, span~)
-      | @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
+      | @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~)
+      | @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~) => {
         push_symbol(
           entries,
           name,
@@ -562,7 +565,8 @@ pub fn build_symbol_index_for_module(
         }
       }
       @core.Stmt::StructDef(name~, params~, fields~, span~)
-      | @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
+      | @core.Stmt::ExportStructDef(name~, params~, fields~, span~)
+      | @core.Stmt::InternalExportStructDef(name~, params~, fields~, span~) => {
         let field_parts : Array[String] = []
         for field in fields {
           field_parts.push(field.name + ": " + render_type(field.ty))
@@ -582,6 +586,22 @@ pub fn build_symbol_index_for_module(
         )
       }
       @core.Stmt::TraitDef(name~, supertraits~, span~, ..) => {
+        let suffix = if supertraits.length() == 0 {
+          ""
+        } else {
+          ": " + join_with(supertraits, " + ")
+        }
+        push_symbol(
+          entries,
+          name,
+          SymbolKind::TraitSym,
+          "trait " + name + suffix,
+          path,
+          span,
+        )
+      }
+      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~) => {
+        let _ = open_impl
         let suffix = if supertraits.length() == 0 {
           ""
         } else {

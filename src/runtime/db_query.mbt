@@ -731,6 +731,21 @@ pub fn VibeDb::new() -> VibeDb {
           // Get the AST of the imported module to find exports
           let imported_ast = ast_query.fetch(rt, imp.path).unwrap()
           let exported_names = collect_exported_names(imported_ast)
+          let internal_exported_names = collect_internal_exported_names(
+            imported_ast,
+          )
+          let importer_dir = @path.Path(file_path).dirname().to_string()
+          let imported_dir = @path.Path(imp.path).dirname().to_string()
+          let allow_internal_import = importer_dir == imported_dir
+          let visible_names = if allow_internal_import {
+            let merged = exported_names.copy()
+            for internal_name, _ in internal_exported_names {
+              merged[internal_name] = true
+            }
+            merged
+          } else {
+            exported_names
+          }
           // Now look up the import items in the main AST's Import or ReExport statement
           for stmt in ast.stmts {
             match stmt {
@@ -764,7 +779,7 @@ pub fn VibeDb::new() -> VibeDb {
                         match imported_env.get_scheme(name) {
                           Some(scheme) => {
                             import_scheme_trait_dependencies(
-                              env, imported_env, scheme, trait_aliases, exported_names,
+                              env, imported_env, scheme, trait_aliases, visible_names,
                             )
                             if can_bind_import_value(name, span) {
                               env.set_scheme(name, scheme)
@@ -865,7 +880,7 @@ pub fn VibeDb::new() -> VibeDb {
                       match imported_env.get_scheme(source_name) {
                         Some(scheme) => {
                           import_scheme_trait_dependencies(
-                            env, imported_env, scheme, trait_aliases, exported_names,
+                            env, imported_env, scheme, trait_aliases, visible_names,
                           )
                           if can_bind_import_value(target_name, span) {
                             env.set_scheme(target_name, scheme)
@@ -909,7 +924,7 @@ pub fn VibeDb::new() -> VibeDb {
                       match imported_env.get_scheme(source_name) {
                         Some(scheme) => {
                           import_scheme_trait_dependencies(
-                            env, imported_env, scheme, trait_aliases, exported_names,
+                            env, imported_env, scheme, trait_aliases, visible_names,
                           )
                           if can_bind_import_value(target_name, span) {
                             env.set_scheme(target_name, scheme)
@@ -970,7 +985,7 @@ pub fn VibeDb::new() -> VibeDb {
                               Some(scheme) =>
                                 if can_bind_import_value(ctor.name, span) {
                                   import_scheme_trait_dependencies(
-                                    env, imported_env, scheme, trait_aliases, exported_names,
+                                    env, imported_env, scheme, trait_aliases, visible_names,
                                   )
                                   env.set_scheme(ctor.name, scheme)
                                   match
@@ -1033,7 +1048,7 @@ pub fn VibeDb::new() -> VibeDb {
                     let source_prefix = source_root + "::"
                     let target_prefix = target_root + "::"
                     let mut imported_any = false
-                    for exported_name, _ in exported_names {
+                    for exported_name, _ in visible_names {
                       if exported_name.has_prefix(source_prefix) {
                         let suffix = exported_name.unsafe_substring(
                           start=source_prefix.length(),
@@ -1049,7 +1064,7 @@ pub fn VibeDb::new() -> VibeDb {
                     // Auto-forward receiver-first exported functions as
                     // namespace members so `use { Type }` can activate
                     // method-style calls without manual `Type::...` wrappers.
-                    for exported_name, _ in exported_names {
+                    for exported_name, _ in visible_names {
                       if exported_name.contains("::") {
                         continue
                       }
@@ -1070,7 +1085,7 @@ pub fn VibeDb::new() -> VibeDb {
                             Some(recv_root) =>
                               if recv_root == source_root {
                                 import_scheme_trait_dependencies(
-                                  env, imported_env, scheme, trait_aliases, exported_names,
+                                  env, imported_env, scheme, trait_aliases, visible_names,
                                 )
                                 if can_bind_import_value(target_name, span) {
                                   env.set_scheme(target_name, scheme)
@@ -1120,7 +1135,7 @@ pub fn VibeDb::new() -> VibeDb {
                       }
                       let target_prefix = local_ns + "::"
                       let mut imported_any = false
-                      for exported_name, _ in exported_names {
+                      for exported_name, _ in visible_names {
                         if exported_name.has_prefix(source_prefix) {
                           let suffix = exported_name.unsafe_substring(
                             start=source_prefix.length(),
@@ -1144,7 +1159,7 @@ pub fn VibeDb::new() -> VibeDb {
                       Some(n) => n
                       None => name
                     }
-                    if exported_names.contains(name) {
+                    if visible_names.contains(name) {
                       if not(import_symbol(item, name, local_name)) {
                         // Name is declared as exported in the dependency AST
                         // but absent from its type env — the dependency has

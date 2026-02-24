@@ -324,7 +324,8 @@ pub fn walk_stmt_refs(
 ) -> Unit {
   match stmt {
     Stmt::Let(rec~, name~, expr~, span~)
-    | Stmt::ExportLet(rec~, name~, expr~, span~) => {
+    | Stmt::ExportLet(rec~, name~, expr~, span~)
+    | Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
       let _ = span
       if rec {
         scope.bindings[name] = true
@@ -374,12 +375,16 @@ pub fn walk_stmt_refs(
       walk_block_refs(body, scope, refs, on_name)
     Stmt::EnumDef(name~, ..)
     | Stmt::ExportEnumDef(name~, ..)
+    | Stmt::InternalExportEnumDef(name~, ..)
     | Stmt::TypeAlias(name~, ..)
     | Stmt::ExportTypeAlias(name~, ..)
+    | Stmt::InternalExportTypeAlias(name~, ..)
     | Stmt::StructDef(name~, ..)
-    | Stmt::ExportStructDef(name~, ..) => scope.bindings[name] = true
+    | Stmt::ExportStructDef(name~, ..)
+    | Stmt::InternalExportStructDef(name~, ..) => scope.bindings[name] = true
     Stmt::Import(..)
     | Stmt::TraitDef(..)
+    | Stmt::InternalTraitDef(..)
     | Stmt::TraitImpl(..)
     | Stmt::Export(..)
     | Stmt::ReExport(..) => ()

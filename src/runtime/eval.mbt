@@ -221,7 +221,8 @@ pub fn Runtime::eval_module(
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Let(rec=false, name~, expr~, ..)
-      | @core.Stmt::ExportLet(rec=false, name~, expr~, ..) =>
+      | @core.Stmt::ExportLet(rec=false, name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(rec=false, name~, expr~, ..) =>
         if name != "_" {
           match expr {
             @core.Expr::Fn(ret=Some(_), ..) => {
@@ -292,6 +293,7 @@ pub fn Runtime::eval_module(
       @core.Stmt::EnumDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::TypeAlias(..) => last = Some(@core.Value::Unit)
       @core.Stmt::TraitDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::InternalTraitDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::TraitImpl(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Expr(expr~, ..) => {
         let out = eval_expr(self, expr)
@@ -391,7 +393,9 @@ pub fn Runtime::eval_module(
                     Some(value) => self.bind(target_name, value) |> ignore
                     None =>
                       match stmt {
-                        @core.Stmt::ExportLet(..) | @core.Stmt::Let(..) =>
+                        @core.Stmt::ExportLet(..)
+                        | @core.Stmt::InternalExportLet(..)
+                        | @core.Stmt::Let(..) =>
                           raise EvalError::ImportError(
                             "Exported value not found: " + source_name,
                           )
@@ -523,7 +527,8 @@ pub fn Runtime::eval_module(
         let _ = ty
         last = Some(@core.Value::Unit)
       }
-      @core.Stmt::ExportLet(rec~, name~, expr~, ..) =>
+      @core.Stmt::ExportLet(rec~, name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) =>
         if name == "_" {
           let out = eval_expr(self, expr)
           extend_effects(effects, out.effects)
@@ -572,7 +577,9 @@ pub fn Runtime::eval_module(
           last = Some(value)
         }
       @core.Stmt::ExportEnumDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::InternalExportEnumDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::ExportTypeAlias(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::InternalExportTypeAlias(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Export(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Test(..) => last = Some(@core.Value::Unit)
       @core.Stmt::Bench(..) => last = Some(@core.Value::Unit)
@@ -635,6 +642,7 @@ pub fn Runtime::eval_module(
       }
       @core.Stmt::StructDef(..) => last = Some(@core.Value::Unit)
       @core.Stmt::ExportStructDef(..) => last = Some(@core.Value::Unit)
+      @core.Stmt::InternalExportStructDef(..) => last = Some(@core.Value::Unit)
     })
     match stmt_result {
       Ok(_) => ()

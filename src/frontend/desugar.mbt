@@ -600,7 +600,8 @@ fn desugar_block(
     out.push(next)
     match stmt {
       @core.Stmt::Let(rec~, name~, expr~, span~)
-      | @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      | @core.Stmt::ExportLet(rec~, name~, expr~, span~)
+      | @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
         let _ = rec
         let _ = expr
         let _ = span
@@ -640,6 +641,7 @@ fn desugar_stmt(
     @core.Stmt::EnumDef(..) => stmt
     @core.Stmt::TypeAlias(..) => stmt
     @core.Stmt::TraitDef(..) => stmt
+    @core.Stmt::InternalTraitDef(..) => stmt
     @core.Stmt::TraitImpl(..) => stmt
     @core.Stmt::Import(..) => stmt
     @core.Stmt::ExternLet(..) => stmt
@@ -650,10 +652,20 @@ fn desugar_stmt(
         expr=desugar_expr(expr, scope, aliases),
         span~,
       )
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::InternalExportLet(
+        rec~,
+        name~,
+        expr=desugar_expr(expr, scope, aliases),
+        span~,
+      )
     @core.Stmt::ExportEnumDef(..)
+    | @core.Stmt::InternalExportEnumDef(..)
     | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::InternalExportTypeAlias(..)
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..)
+    | @core.Stmt::InternalExportStructDef(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..) => stmt
     @core.Stmt::LetMut(name~, expr~, span~) =>

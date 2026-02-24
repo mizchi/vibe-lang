@@ -120,6 +120,14 @@ fn collect_stmt_info(
       collect_refs_expr(expr, bound, refs, on_name)
       (Some(name), refs)
     }
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+      let _ = span
+      if rec {
+        bound.bindings[name] = true
+      }
+      collect_refs_expr(expr, bound, refs, on_name)
+      (Some(name), refs)
+    }
     @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
       let _ = params
       let _ = span
@@ -141,6 +149,16 @@ fn collect_stmt_info(
       }
       (Some(name), refs)
     }
+    @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~) => {
+      let _ = params
+      let _ = span
+      for ctor in ctors {
+        for arg in ctor.args {
+          collect_refs_type(arg, refs)
+        }
+      }
+      (Some(name), refs)
+    }
     @core.Stmt::TypeAlias(name~, params~, target~, span~) => {
       let _ = params
       let _ = span
@@ -148,6 +166,12 @@ fn collect_stmt_info(
       (Some(name), refs)
     }
     @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) => {
+      let _ = params
+      let _ = span
+      collect_refs_type(target, refs)
+      (Some(name), refs)
+    }
+    @core.Stmt::InternalExportTypeAlias(name~, params~, target~, span~) => {
       let _ = params
       let _ = span
       collect_refs_type(target, refs)
@@ -174,6 +198,14 @@ fn collect_stmt_info(
       }
       (Some(name), refs)
     }
+    @core.Stmt::InternalExportStructDef(name~, params~, fields~, span~) => {
+      let _ = params
+      let _ = span
+      for field in fields {
+        collect_refs_type(field.ty, refs)
+      }
+      (Some(name), refs)
+    }
     @core.Stmt::ExternLet(name~, ty~, span~) => {
       let _ = span
       collect_refs_type(ty, refs)
@@ -185,6 +217,7 @@ fn collect_stmt_info(
     | @core.Stmt::Test(..)
     | @core.Stmt::Bench(..)
     | @core.Stmt::TraitDef(..)
+    | @core.Stmt::InternalTraitDef(..)
     | @core.Stmt::TraitImpl(..)
     | @core.Stmt::Assign(..)
     | @core.Stmt::IndexAssign(..)
@@ -262,12 +295,17 @@ fn collect_entry_points(
         }
       }
       @core.Stmt::EnumDef(..)
+      | @core.Stmt::InternalExportEnumDef(..)
       | @core.Stmt::TypeAlias(..)
+      | @core.Stmt::InternalExportTypeAlias(..)
       | @core.Stmt::StructDef(..)
+      | @core.Stmt::InternalExportStructDef(..)
       | @core.Stmt::ExternLet(..)
       | @core.Stmt::Import(..)
       | @core.Stmt::TraitDef(..)
+      | @core.Stmt::InternalTraitDef(..)
       | @core.Stmt::TraitImpl(..)
+      | @core.Stmt::InternalExportLet(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..) => ()
       @core.Stmt::ExportStructDef(name~, ..) => entries[name] = true
@@ -329,6 +367,10 @@ fn filter_reachable_stmts(
         if reachable.contains(name) {
           out.push(stmt)
         }
+      @core.Stmt::InternalExportLet(name~, ..) =>
+        if reachable.contains(name) {
+          out.push(stmt)
+        }
       @core.Stmt::EnumDef(name~, params~, ctors~, span~) => {
         let _ = params
         let _ = span
@@ -363,11 +405,31 @@ fn filter_reachable_stmts(
           out.push(stmt)
         }
       }
+      @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~) => {
+        let _ = params
+        let _ = span
+        let mut keep = reachable.contains(name)
+        if not(keep) {
+          for ctor in ctors {
+            if reachable.contains(ctor.name) {
+              keep = true
+              break
+            }
+          }
+        }
+        if keep {
+          out.push(stmt)
+        }
+      }
       @core.Stmt::TypeAlias(name~, ..) =>
         if reachable.contains(name) {
           out.push(stmt)
         }
       @core.Stmt::ExportTypeAlias(name~, ..) =>
+        if reachable.contains(name) {
+          out.push(stmt)
+        }
+      @core.Stmt::InternalExportTypeAlias(name~, ..) =>
         if reachable.contains(name) {
           out.push(stmt)
         }
@@ -383,6 +445,10 @@ fn filter_reachable_stmts(
         if reachable.contains(name) {
           out.push(stmt)
         }
+      @core.Stmt::InternalExportStructDef(name~, ..) =>
+        if reachable.contains(name) {
+          out.push(stmt)
+        }
       @core.Stmt::ExternLet(name~, ..) =>
         if reachable.contains(name) {
           out.push(stmt)
@@ -393,6 +459,7 @@ fn filter_reachable_stmts(
       | @core.Stmt::Test(..)
       | @core.Stmt::Bench(..)
       | @core.Stmt::TraitDef(..)
+      | @core.Stmt::InternalTraitDef(..)
       | @core.Stmt::TraitImpl(..)
       | @core.Stmt::Assign(..)
       | @core.Stmt::IndexAssign(..)
@@ -430,17 +497,21 @@ fn collect_refs_block(
   // DCE also needs type-level refs from type definitions in blocks
   for stmt in body.stmts {
     match stmt {
-      @core.Stmt::EnumDef(ctors~, ..) | @core.Stmt::ExportEnumDef(ctors~, ..) =>
+      @core.Stmt::EnumDef(ctors~, ..)
+      | @core.Stmt::ExportEnumDef(ctors~, ..)
+      | @core.Stmt::InternalExportEnumDef(ctors~, ..) =>
         for ctor in ctors {
           for arg in ctor.args {
             collect_refs_type(arg, refs)
           }
         }
       @core.Stmt::TypeAlias(target~, ..)
-      | @core.Stmt::ExportTypeAlias(target~, ..) =>
+      | @core.Stmt::ExportTypeAlias(target~, ..)
+      | @core.Stmt::InternalExportTypeAlias(target~, ..) =>
         collect_refs_type(target, refs)
       @core.Stmt::StructDef(fields~, ..)
-      | @core.Stmt::ExportStructDef(fields~, ..) =>
+      | @core.Stmt::ExportStructDef(fields~, ..)
+      | @core.Stmt::InternalExportStructDef(fields~, ..) =>
         for field in fields {
           collect_refs_type(field.ty, refs)
         }

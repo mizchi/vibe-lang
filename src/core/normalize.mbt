@@ -64,8 +64,13 @@ pub fn normalize_module(m : Module) -> Module {
   for stmt in canonical_stmts {
     match stmt {
       Stmt::Let(rec=false, name~, expr=Expr::Fn(ret=Some(_), ..), ..)
-      | Stmt::ExportLet(rec=false, name~, expr=Expr::Fn(ret=Some(_), ..), ..) =>
-        scope.bind(name) |> ignore
+      | Stmt::ExportLet(rec=false, name~, expr=Expr::Fn(ret=Some(_), ..), ..)
+      | Stmt::InternalExportLet(
+        rec=false,
+        name~,
+        expr=Expr::Fn(ret=Some(_), ..),
+        ..
+      ) => scope.bind(name) |> ignore
       _ => ()
     }
   }
@@ -270,6 +275,8 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       Stmt::TypeAlias(name~, params~, target~, span=zero_span)
     Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, ..) =>
       Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span=zero_span)
+    Stmt::InternalTraitDef(name~, supertraits~, open_impl~, ..) =>
+      Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span=zero_span)
     Stmt::TraitImpl(type_params~, type_bounds~, trait_name~, target~, ..) =>
       Stmt::TraitImpl(
         type_params~,
@@ -296,6 +303,37 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
         Stmt::ExportLet(rec~, name=final_name, expr=norm_expr, span=zero_span)
       }
     }
+    Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
+      let already_bound = scope.bindings.contains(name)
+      if already_bound {
+        let norm_name = scope.lookup(name)
+        let norm_expr = normalize_expr(expr, scope)
+        Stmt::InternalExportLet(
+          rec~,
+          name=norm_name,
+          expr=norm_expr,
+          span=zero_span,
+        )
+      } else if rec {
+        let norm_name = scope.bind(name)
+        let norm_expr = normalize_expr(expr, scope)
+        Stmt::InternalExportLet(
+          rec~,
+          name=norm_name,
+          expr=norm_expr,
+          span=zero_span,
+        )
+      } else {
+        let norm_expr = normalize_expr(expr, scope)
+        let final_name = scope.bind(name)
+        Stmt::InternalExportLet(
+          rec~,
+          name=final_name,
+          expr=norm_expr,
+          span=zero_span,
+        )
+      }
+    }
     Stmt::ExportEnumDef(name~, params~, ctors~, ..) =>
       Stmt::ExportEnumDef(
         name~,
@@ -303,8 +341,17 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
         ctors=normalize_ctors(ctors),
         span=zero_span,
       )
+    Stmt::InternalExportEnumDef(name~, params~, ctors~, ..) =>
+      Stmt::InternalExportEnumDef(
+        name~,
+        params~,
+        ctors=normalize_ctors(ctors),
+        span=zero_span,
+      )
     Stmt::ExportTypeAlias(name~, params~, target~, ..) =>
       Stmt::ExportTypeAlias(name~, params~, target~, span=zero_span)
+    Stmt::InternalExportTypeAlias(name~, params~, target~, ..) =>
+      Stmt::InternalExportTypeAlias(name~, params~, target~, span=zero_span)
     Stmt::Export(names~, ..) => Stmt::Export(names~, span=zero_span)
     Stmt::ReExport(names~, source~, ..) =>
       Stmt::ReExport(names~, source~, span=zero_span)
@@ -317,6 +364,13 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
       )
     Stmt::ExportStructDef(name~, params~, fields~, ..) =>
       Stmt::ExportStructDef(
+        name~,
+        params~,
+        fields=normalize_struct_fields(fields),
+        span=zero_span,
+      )
+    Stmt::InternalExportStructDef(name~, params~, fields~, ..) =>
+      Stmt::InternalExportStructDef(
         name~,
         params~,
         fields=normalize_struct_fields(fields),

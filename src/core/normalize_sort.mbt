@@ -55,13 +55,20 @@ fn canonical_group(stmt : Stmt) -> CanonicalGroup {
     Stmt::Import(..) | Stmt::ReExport(..) => CanonicalGroup::Use
     Stmt::TypeAlias(..)
     | Stmt::ExportTypeAlias(..)
+    | Stmt::InternalExportTypeAlias(..)
     | Stmt::EnumDef(..)
     | Stmt::ExportEnumDef(..)
+    | Stmt::InternalExportEnumDef(..)
     | Stmt::StructDef(..)
-    | Stmt::ExportStructDef(..) => CanonicalGroup::TypeDecl
-    Stmt::TraitDef(..) | Stmt::TraitImpl(..) => CanonicalGroup::TraitDecl
-    Stmt::Let(..) | Stmt::ExportLet(..) | Stmt::LetMut(..) | Stmt::ExternLet(..) =>
-      CanonicalGroup::FnDef
+    | Stmt::ExportStructDef(..)
+    | Stmt::InternalExportStructDef(..) => CanonicalGroup::TypeDecl
+    Stmt::TraitDef(..) | Stmt::InternalTraitDef(..) | Stmt::TraitImpl(..) =>
+      CanonicalGroup::TraitDecl
+    Stmt::Let(..)
+    | Stmt::ExportLet(..)
+    | Stmt::InternalExportLet(..)
+    | Stmt::LetMut(..)
+    | Stmt::ExternLet(..) => CanonicalGroup::FnDef
     Stmt::Assign(..)
     | Stmt::IndexAssign(..)
     | Stmt::LetPat(..)
@@ -76,6 +83,7 @@ fn canonical_def_name(stmt : Stmt) -> String? {
   match stmt {
     Stmt::Let(name~, ..)
     | Stmt::ExportLet(name~, ..)
+    | Stmt::InternalExportLet(name~, ..)
     | Stmt::LetMut(name~, ..)
     | Stmt::ExternLet(name~, ..) => Some(name)
     _ => None
@@ -88,7 +96,8 @@ fn canonical_collect_refs(stmt : Stmt) -> Map[String, Bool] {
   let bound = WalkerScope::new()
   match stmt {
     Stmt::Let(rec~, name~, expr~, ..)
-    | Stmt::ExportLet(rec~, name~, expr~, ..) => {
+    | Stmt::ExportLet(rec~, name~, expr~, ..)
+    | Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
       if rec {
         bound.bindings[name] = true
       }

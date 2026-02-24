@@ -277,6 +277,27 @@ fn walk_stmt(
         )
       }
     }
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+      if rec {
+        warning_scope_declare(
+          scopes,
+          name,
+          span,
+          true,
+          WarningBindingKind::Variable,
+        )
+      }
+      walk_expr(expr, scopes, out)
+      if !rec {
+        warning_scope_declare(
+          scopes,
+          name,
+          span,
+          true,
+          WarningBindingKind::Variable,
+        )
+      }
+    }
     @core.Stmt::LetMut(name~, expr~, span~) => {
       walk_expr(expr, scopes, out)
       warning_scope_declare(
@@ -353,12 +374,16 @@ fn walk_stmt(
     @core.Stmt::EnumDef(..)
     | @core.Stmt::TypeAlias(..)
     | @core.Stmt::TraitDef(..)
+    | @core.Stmt::InternalTraitDef(..)
     | @core.Stmt::TraitImpl(..)
     | @core.Stmt::ExportEnumDef(..)
+    | @core.Stmt::InternalExportEnumDef(..)
     | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::InternalExportTypeAlias(..)
     | @core.Stmt::ReExport(..)
     | @core.Stmt::StructDef(..)
-    | @core.Stmt::ExportStructDef(..) => ()
+    | @core.Stmt::ExportStructDef(..)
+    | @core.Stmt::InternalExportStructDef(..) => ()
   }
 }
 

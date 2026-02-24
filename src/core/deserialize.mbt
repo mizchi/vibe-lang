@@ -173,6 +173,13 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let expr = parse_expr(get_field(inner, "expr"))
         return Stmt::ExportLet(rec~, name~, expr~, span=zero)
       }
+      "InternalExportLet" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let rec = get_bool(inner, "rec")
+        let expr = parse_expr(get_field(inner, "expr"))
+        return Stmt::InternalExportLet(rec~, name~, expr~, span=zero)
+      }
       "ExportEnumDef" => {
         let inner = expect_object(value)
         let name = get_string(inner, "name")
@@ -180,12 +187,41 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let ctors = parse_ctors(get_field(inner, "ctors"))
         return Stmt::ExportEnumDef(name~, params~, ctors~, span=zero)
       }
+      "InternalExportEnumDef" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let ctors = parse_ctors(get_field(inner, "ctors"))
+        return Stmt::InternalExportEnumDef(name~, params~, ctors~, span=zero)
+      }
       "ExportTypeAlias" => {
         let inner = expect_object(value)
         let name = get_string(inner, "name")
         let params = get_strings(inner, "params")
         let target = parse_type(get_field(inner, "target"))
         return Stmt::ExportTypeAlias(name~, params~, target~, span=zero)
+      }
+      "InternalExportTypeAlias" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let target = parse_type(get_field(inner, "target"))
+        return Stmt::InternalExportTypeAlias(name~, params~, target~, span=zero)
+      }
+      "InternalTraitDef" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let supertraits = get_strings(inner, "supertraits")
+        let open_impl = match inner.get("open_impl") {
+          Some(v) => expect_bool(v)
+          None => false
+        }
+        return Stmt::InternalTraitDef(
+          name~,
+          supertraits~,
+          open_impl~,
+          span=zero,
+        )
       }
       "Export" => {
         let names = parse_strings(value)
@@ -210,6 +246,13 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
         let params = get_strings(inner, "params")
         let fields = parse_struct_fields(get_field(inner, "fields"))
         return Stmt::ExportStructDef(name~, params~, fields~, span=zero)
+      }
+      "InternalExportStructDef" => {
+        let inner = expect_object(value)
+        let name = get_string(inner, "name")
+        let params = get_strings(inner, "params")
+        let fields = parse_struct_fields(get_field(inner, "fields"))
+        return Stmt::InternalExportStructDef(name~, params~, fields~, span=zero)
       }
       _ => raise DeserializeError("Unknown stmt type: " + key)
     }

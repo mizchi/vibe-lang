@@ -1,7 +1,5 @@
 ///|
-fn AstParser::parse_stmt(
-  self : AstParser,
-) -> @core.Stmt? raise ParseError {
+fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt? raise ParseError {
   self.skip_trivia()
   match self.peek_kind() {
     k if k == let_kw() => Some(self.parse_let_stmt())
@@ -771,6 +769,7 @@ fn AstParser::parse_bench_stmt(self : AstParser) -> @core.Stmt raise ParseError 
 fn AstParser::parse_internal_export_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let internal_tok = self.expect(name(), "internal")
   if internal_tok.text() != "internal" {
     raise ParseError::UnexpectedToken(
@@ -787,7 +786,126 @@ fn AstParser::parse_internal_export_stmt(
       span=self.token_span(),
     )
   }
-  self.parse_export_stmt()
+  let _ = self.expect(export_kw(), "export")
+  self.skip_trivia()
+  if self.peek_kind() == enum_kw() {
+    let enum_stmt = self.parse_enum_stmt()
+    match enum_stmt {
+      @core.Stmt::EnumDef(name~, params~, ctors~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="enum definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == name() && self.peek().text() == "suberror" {
+    let suberror_stmt = self.parse_suberror_stmt()
+    match suberror_stmt {
+      @core.Stmt::EnumDef(name~, params~, ctors~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="suberror definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == struct_kw() {
+    let struct_stmt = self.parse_struct_stmt()
+    match struct_stmt {
+      @core.Stmt::StructDef(name~, params~, fields~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::InternalExportStructDef(name~, params~, fields~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="struct definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == type_kw() {
+    let type_stmt = self.parse_type_alias_stmt()
+    match type_stmt {
+      @core.Stmt::TypeAlias(name~, params~, target~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::InternalExportTypeAlias(name~, params~, target~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="type alias",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == let_kw() {
+    let let_stmt = self.parse_let_stmt()
+    match let_stmt {
+      @core.Stmt::Let(rec~, name~, expr~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::InternalExportLet(rec~, name~, expr~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="let statement",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else if self.peek_kind() == trait_kw() ||
+    (self.peek_kind() == name() && self.peek().text() == "open") {
+    let mut open_impl = false
+    if self.peek_kind() == name() && self.peek().text() == "open" {
+      let _ = self.bump()
+      self.skip_trivia()
+      open_impl = true
+    }
+    if self.peek_kind() != trait_kw() {
+      let span = self.span_from(start)
+      raise ParseError::UnexpectedToken(
+        expected="trait definition",
+        got=self.peek().text(),
+        span~,
+      )
+    }
+    let trait_stmt = self.parse_trait_stmt()
+    match trait_stmt {
+      @core.Stmt::TraitDef(name~, supertraits~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~)
+      }
+      _ => {
+        let span = self.span_from(start)
+        raise ParseError::UnexpectedToken(
+          expected="trait definition",
+          got="other statement",
+          span~,
+        )
+      }
+    }
+  } else {
+    raise ParseError::UnexpectedToken(
+      expected="`internal export let/type/enum/struct/trait ...`",
+      got=self.peek().text(),
+      span=self.token_span(),
+    )
+  }
 }
 
 ///|
@@ -843,6 +961,7 @@ fn collect_module_decl_names(stmts : Array[@core.Stmt]) -> Map[String, String] {
     match stmt {
       @core.Stmt::Let(name~, ..)
       | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::InternalExportLet(name~, ..)
       | @core.Stmt::LetMut(name~, ..) =>
         if not(name.contains("::")) {
           out[name] = name
@@ -1138,6 +1257,16 @@ fn rewrite_module_stmt(
         @core.Stmt::Let(rec~, name=qualified_name, expr=next_expr, span~)
       }
     }
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+      let next_expr = rewrite_module_expr(module_name, expr, locals)
+      let qualified_name = module_qualified_name(module_name, name)
+      @core.Stmt::InternalExportLet(
+        rec~,
+        name=qualified_name,
+        expr=next_expr,
+        span~,
+      )
+    }
     @core.Stmt::LetMut(name~, expr~, span~) =>
       @core.Stmt::LetMut(
         name=module_qualified_name(module_name, name),
@@ -1187,7 +1316,7 @@ fn rewrite_module_stmt(
       )
     _ =>
       raise ParseError::UnexpectedToken(
-        expected="module body statement (let/export let/let mut/assign/expr/import/test/bench)",
+        expected="module body statement (let/export let/internal export let/let mut/assign/expr/import/test/bench)",
         got="unsupported statement",
         span=stmt.span(),
       )
@@ -1327,6 +1456,7 @@ fn AstParser::parse_import_stmt(
   @core.Stmt::Import(spec~, source~, span~)
 }
 
+///|
 fn AstParser::parse_module_item_name(
   self : AstParser,
   label : String,

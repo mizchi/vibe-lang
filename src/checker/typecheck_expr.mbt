@@ -1136,6 +1136,10 @@ fn type_block(
         )
         last = @core.Type::Unit
       }
+      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~) => {
+        register_trait_def(scope_env, name, supertraits, open_impl, false, span)
+        last = @core.Type::Unit
+      }
       @core.Stmt::TraitImpl(
         type_params~,
         type_bounds~,
@@ -1178,11 +1182,26 @@ fn type_block(
         scope_env.set_scheme(name, scheme)
         last = scheme.ty
       }
+      @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+        let scheme = type_let_expr(
+          scope_env, rec, name, expr, span, aliases, effects, allow_effect,
+        )
+        scope_env.set_scheme(name, scheme)
+        last = scheme.ty
+      }
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) => {
         register_enum_def(scope_env, name, params, ctors, span)
         last = @core.Type::Unit
       }
+      @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~) => {
+        register_enum_def(scope_env, name, params, ctors, span)
+        last = @core.Type::Unit
+      }
       @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) => {
+        register_type_alias(scope_env, name, params, target, span)
+        last = @core.Type::Unit
+      }
+      @core.Stmt::InternalExportTypeAlias(name~, params~, target~, span~) => {
         register_type_alias(scope_env, name, params, target, span)
         last = @core.Type::Unit
       }
@@ -1287,6 +1306,10 @@ fn type_block(
         last = @core.Type::Unit
       }
       @core.Stmt::ExportStructDef(name~, params~, fields~, span~) => {
+        register_struct_def(scope_env, name, params, fields, span)
+        last = @core.Type::Unit
+      }
+      @core.Stmt::InternalExportStructDef(name~, params~, fields~, span~) => {
         register_struct_def(scope_env, name, params, fields, span)
         last = @core.Type::Unit
       }

@@ -142,8 +142,26 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       h = combine_hash(h, expr.structural_hash())
       h
     }
+    Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
+      let mut h = 0x496e4c65 // "InLe"
+      h = combine_hash(h, if rec { 1 } else { 0 })
+      h = combine_hash(h, name.hash())
+      h = combine_hash(h, expr.structural_hash())
+      h
+    }
     Stmt::ExportEnumDef(name~, params~, ctors~, ..) => {
       let mut h = 0x45784564 // "ExEd"
+      h = combine_hash(h, name.hash())
+      for p in params {
+        h = combine_hash(h, p.hash())
+      }
+      for c in ctors {
+        h = combine_hash(h, c.structural_hash())
+      }
+      h
+    }
+    Stmt::InternalExportEnumDef(name~, params~, ctors~, ..) => {
+      let mut h = 0x496e4564 // "InEd"
       h = combine_hash(h, name.hash())
       for p in params {
         h = combine_hash(h, p.hash())
@@ -160,6 +178,24 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
         h = combine_hash(h, p.hash())
       }
       h = combine_hash(h, target.structural_hash())
+      h
+    }
+    Stmt::InternalExportTypeAlias(name~, params~, target~, ..) => {
+      let mut h = 0x496e5479 // "InTy"
+      h = combine_hash(h, name.hash())
+      for p in params {
+        h = combine_hash(h, p.hash())
+      }
+      h = combine_hash(h, target.structural_hash())
+      h
+    }
+    Stmt::InternalTraitDef(name~, supertraits~, open_impl~, ..) => {
+      let mut h = 0x496e5472 // "InTr"
+      h = combine_hash(h, name.hash())
+      for supertrait in supertraits {
+        h = combine_hash(h, supertrait.hash())
+      }
+      h = combine_hash(h, open_impl.hash())
       h
     }
     Stmt::Export(names~, ..) => {
@@ -190,6 +226,17 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
     }
     Stmt::ExportStructDef(name~, params~, fields~, ..) => {
       let mut h = 0x45785374 // "ExSt"
+      h = combine_hash(h, name.hash())
+      for p in params {
+        h = combine_hash(h, p.hash())
+      }
+      for f in fields {
+        h = combine_hash(h, f.structural_hash())
+      }
+      h
+    }
+    Stmt::InternalExportStructDef(name~, params~, fields~, ..) => {
+      let mut h = 0x496e5374 // "InSt"
       h = combine_hash(h, name.hash())
       for p in params {
         h = combine_hash(h, p.hash())

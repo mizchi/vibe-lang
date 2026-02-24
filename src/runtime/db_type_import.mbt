@@ -246,3 +246,26 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
   }
   exports
 }
+
+///|
+fn collect_internal_exported_names(ast : @core.Module) -> Map[String, Bool] {
+  let internal_exports : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::InternalExportLet(name~, ..) => internal_exports[name] = true
+      @core.Stmt::InternalExportEnumDef(name~, ctors~, ..) => {
+        internal_exports[name] = true
+        for ctor in ctors {
+          internal_exports[ctor.name] = true
+        }
+      }
+      @core.Stmt::InternalExportTypeAlias(name~, ..) =>
+        internal_exports[name] = true
+      @core.Stmt::InternalExportStructDef(name~, ..) =>
+        internal_exports[name] = true
+      @core.Stmt::InternalTraitDef(name~, ..) => internal_exports[name] = true
+      _ => ()
+    }
+  }
+  internal_exports
+}

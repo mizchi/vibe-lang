@@ -136,14 +136,17 @@ fn stmt_may_use_scoped_ref(stmt : @core.Stmt) -> Bool {
   match stmt {
     @core.Stmt::Let(expr~, ..)
     | @core.Stmt::Expr(expr~, ..)
-    | @core.Stmt::ExportLet(expr~, ..) => expr_may_use_scoped_ref(expr)
+    | @core.Stmt::ExportLet(expr~, ..)
+    | @core.Stmt::InternalExportLet(expr~, ..) => expr_may_use_scoped_ref(expr)
     @core.Stmt::LetMut(..)
     | @core.Stmt::Assign(..)
     | @core.Stmt::IndexAssign(..) => true
     @core.Stmt::LetPat(expr~, ..) => expr_may_use_scoped_ref(expr)
     @core.Stmt::LetPatElse(expr~, else_body~, ..) =>
       expr_may_use_scoped_ref(expr) || module_may_use_scoped_ref(else_body)
-    @core.Stmt::EnumDef(ctors~, ..) | @core.Stmt::ExportEnumDef(ctors~, ..) => {
+    @core.Stmt::EnumDef(ctors~, ..)
+    | @core.Stmt::ExportEnumDef(ctors~, ..)
+    | @core.Stmt::InternalExportEnumDef(ctors~, ..) => {
       for ctor in ctors {
         for arg_ty in ctor.args {
           if type_may_contain_scoped_ref_hint(arg_ty) {
@@ -154,13 +157,15 @@ fn stmt_may_use_scoped_ref(stmt : @core.Stmt) -> Bool {
       false
     }
     @core.Stmt::TypeAlias(target~, ..)
-    | @core.Stmt::ExportTypeAlias(target~, ..) =>
+    | @core.Stmt::ExportTypeAlias(target~, ..)
+    | @core.Stmt::InternalExportTypeAlias(target~, ..) =>
       type_may_contain_scoped_ref_hint(target)
     @core.Stmt::ExternLet(ty~, ..) => type_may_contain_scoped_ref_hint(ty)
     @core.Stmt::TraitImpl(target~, ..) =>
       type_may_contain_scoped_ref_hint(target)
     @core.Stmt::StructDef(fields~, ..)
-    | @core.Stmt::ExportStructDef(fields~, ..) => {
+    | @core.Stmt::ExportStructDef(fields~, ..)
+    | @core.Stmt::InternalExportStructDef(fields~, ..) => {
       for field in fields {
         if type_may_contain_scoped_ref_hint(field.ty) {
           return true
@@ -171,6 +176,7 @@ fn stmt_may_use_scoped_ref(stmt : @core.Stmt) -> Bool {
     @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
       module_may_use_scoped_ref(body)
     @core.Stmt::TraitDef(..)
+    | @core.Stmt::InternalTraitDef(..)
     | @core.Stmt::Import(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..) => false
@@ -356,6 +362,12 @@ fn type_check_stmts(
         } else {
           None
         }
+      @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) =>
+        if not(rec) && name != "_" {
+          Some((name, expr))
+        } else {
+          None
+        }
       _ => None
     }
     match fn_info {
@@ -433,6 +445,8 @@ fn type_check_stmts(
         register_type_alias(env, name, params, target, span)
       @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) =>
         register_trait_def(env, name, supertraits, open_impl, exported, span)
+      @core.Stmt::InternalTraitDef(name~, supertraits~, open_impl~, span~) =>
+        register_trait_def(env, name, supertraits, open_impl, false, span)
       @core.Stmt::TraitImpl(
         type_params~,
         type_bounds~,
@@ -489,9 +503,35 @@ fn type_check_stmts(
           record_value_binding(name)
         }
       }
+      @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+        ensure_fresh_value_binding(name, span)
+        let effective_rec = rec || forward_fns.contains(name)
+        let scheme = type_let_expr(
+          env, effective_rec, name, expr, span, aliases, effects, allow_effect,
+        )
+        ensure_type_member_decl_receiver_contract(env, name, scheme.ty, span)
+        ensure_no_toplevel_scoped_ref_escape(env, scheme.ty, span)
+        if name != "_" {
+          if has_exports && exported_names.contains(name) {
+            if forward_fns.contains(name) {
+              env.bindings.remove(name)
+            }
+            env.set_exported_scheme(name, scheme)
+          } else {
+            env.set_scheme(name, scheme)
+          }
+          let info = purity_for_let(env, effective_rec, name, expr)
+          env.set_purity_tier(name, info.value_tier)
+          record_value_binding(name)
+        }
+      }
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
         register_enum_def(env, name, params, ctors, span)
+      @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~) =>
+        register_enum_def(env, name, params, ctors, span)
       @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+        register_type_alias(env, name, params, target, span)
+      @core.Stmt::InternalExportTypeAlias(name~, params~, target~, span~) =>
         register_type_alias(env, name, params, target, span)
       @core.Stmt::Export(..) | @core.Stmt::ReExport(..) => ()
       @core.Stmt::Test(name~, body~, span~) => {
@@ -622,6 +662,8 @@ fn type_check_stmts(
       @core.Stmt::StructDef(name~, params~, fields~, span~) =>
         register_struct_def(env, name, params, fields, span)
       @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
+        register_struct_def(env, name, params, fields, span)
+      @core.Stmt::InternalExportStructDef(name~, params~, fields~, span~) =>
         register_struct_def(env, name, params, fields, span)
     }
   }

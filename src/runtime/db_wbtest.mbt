@@ -216,6 +216,48 @@ test "same-directory import does not emit cross-module warning" {
 }
 
 ///|
+test "internal export is importable from same directory" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/lib/helper.vibe", "internal export let hidden = () -> Int { 1 }\n",
+  )
+  db.set_source(
+    "/project/lib/main.vibe", "import ./helper.vibe { hidden }\nlet x = hidden()\n",
+  )
+  let env = db.types("/project/lib/main.vibe")
+  let diags = db.diagnostics("/project/lib/main.vibe")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("hidden") {
+    Some(_) => ()
+    None => fail("expected same-directory internal export import: hidden")
+  }
+}
+
+///|
+test "internal export is not importable across directories" {
+  let db = VibeDb::new()
+  db.set_source(
+    "/project/lib/helper.vibe", "internal export let hidden = () -> Int { 1 }\n",
+  )
+  db.set_source(
+    "/project/src/main.vibe", "import ../lib/helper.vibe { hidden }\nlet x = hidden()\n",
+  )
+  let env = db.types("/project/src/main.vibe")
+  let diags = db.diagnostics("/project/src/main.vibe")
+  match env.get_scheme("hidden") {
+    Some(_) => fail("internal export must not be importable across directories")
+    None => ()
+  }
+  assert_true(diags.length() > 0)
+}
+
+///|
 test "module-level cycle detection: A -> B -> A directories" {
   let db = VibeDb::new()
   db.set_source(
@@ -242,9 +284,7 @@ test "index.vibe cross-directory imports shared with same-dir files" {
     "/project/lib/math.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\nexport { add }\n",
   )
   // index.vibe in /project/src/ imports from external module
-  db.set_source(
-    "/project/src/index.vibe", "export ../lib/math.vibe { add }\n",
-  )
+  db.set_source("/project/src/index.vibe", "export ../lib/math.vibe { add }\n")
   // sibling.vibe in /project/src/ should have access to `add` without importing
   db.set_source("/project/src/sibling.vibe", "let x = add(1, 2)\nx\n")
   let env = db.types("/project/src/sibling.vibe")

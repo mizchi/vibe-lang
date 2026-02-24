@@ -306,8 +306,23 @@ fn compile_stmt(
         @core.Stmt::Let(rec~, name~, expr~, span~),
         is_last,
       )
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      // InternalExportLet is compiled like Let - visibility is handled in runtime import resolution.
+      compile_stmt(
+        ctx,
+        buf,
+        @core.Stmt::Let(rec~, name~, expr~, span~),
+        is_last,
+      )
     @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
       // ExportEnumDef is compiled like EnumDef for constructor metadata.
+      compile_stmt(
+        ctx,
+        buf,
+        @core.Stmt::EnumDef(name~, params~, ctors~, span~),
+        is_last,
+      )
+    @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~) =>
       compile_stmt(
         ctx,
         buf,
@@ -320,12 +335,18 @@ fn compile_stmt(
       if is_last {
         emit_i64_const_tagged(buf, 0L)
       }
+    @core.Stmt::InternalExportTypeAlias(..) =>
+      if is_last {
+        emit_i64_const_tagged(buf, 0L)
+      }
     @core.Stmt::Export(..)
     | @core.Stmt::ReExport(..)
     | @core.Stmt::TraitDef(..)
+    | @core.Stmt::InternalTraitDef(..)
     | @core.Stmt::TraitImpl(..)
     | @core.Stmt::StructDef(..)
-    | @core.Stmt::ExportStructDef(..) =>
+    | @core.Stmt::ExportStructDef(..)
+    | @core.Stmt::InternalExportStructDef(..) =>
       // export { ... } statements and struct definitions are handled during bundling/typechecking
       // At codegen time, they are no-ops
       if is_last {

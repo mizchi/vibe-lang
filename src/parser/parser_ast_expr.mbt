@@ -2315,6 +2315,13 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
       @core.Stmt::Let(rec~, name~, expr=desugar_expr_deep(expr), span~)
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
       @core.Stmt::ExportLet(rec~, name~, expr=desugar_expr_deep(expr), span~)
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::InternalExportLet(
+        rec~,
+        name~,
+        expr=desugar_expr_deep(expr),
+        span~,
+      )
     @core.Stmt::Test(name~, body~, span~) =>
       @core.Stmt::Test(name~, body=desugar_module(body), span~)
     @core.Stmt::Bench(name~, body~, span~) =>
@@ -2345,14 +2352,18 @@ fn desugar_stmt(stmt : @core.Stmt) -> @core.Stmt {
     @core.Stmt::EnumDef(..)
     | @core.Stmt::TypeAlias(..)
     | @core.Stmt::TraitDef(..)
+    | @core.Stmt::InternalTraitDef(..)
     | @core.Stmt::TraitImpl(..)
     | @core.Stmt::Import(..)
     | @core.Stmt::Export(..)
     | @core.Stmt::ExportEnumDef(..)
+    | @core.Stmt::InternalExportEnumDef(..)
     | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::InternalExportTypeAlias(..)
     | @core.Stmt::ReExport(..)
     | @core.Stmt::StructDef(..)
     | @core.Stmt::ExportStructDef(..)
+    | @core.Stmt::InternalExportStructDef(..)
     | @core.Stmt::ExternLet(..) => stmt
   }
 }

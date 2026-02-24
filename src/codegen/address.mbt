@@ -387,14 +387,19 @@ fn block_to_addr_sexp(ctx : AddrCtx, body : @core.Module) -> String {
         buf.write_string(" (extern)")
       }
       @core.Stmt::ExportLet(..)
+      | @core.Stmt::InternalExportLet(..)
       | @core.Stmt::ExportEnumDef(..)
+      | @core.Stmt::InternalExportEnumDef(..)
       | @core.Stmt::ExportTypeAlias(..)
+      | @core.Stmt::InternalExportTypeAlias(..)
       | @core.Stmt::Export(..)
       | @core.Stmt::ReExport(..)
       | @core.Stmt::TraitDef(..)
+      | @core.Stmt::InternalTraitDef(..)
       | @core.Stmt::TraitImpl(..)
       | @core.Stmt::StructDef(..)
-      | @core.Stmt::ExportStructDef(..) => buf.write_string(" (export)")
+      | @core.Stmt::ExportStructDef(..)
+      | @core.Stmt::InternalExportStructDef(..) => buf.write_string(" (export)")
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
         let _ = span

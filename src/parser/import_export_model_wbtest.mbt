@@ -16,7 +16,9 @@ test "import list syntax parses and formats" {
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
   if not(formatted.contains("import ./math")) {
-    fail("formatted import script did not contain canonical source form:\n\{formatted}")
+    fail(
+      "formatted import script did not contain canonical source form:\n\{formatted}",
+    )
   }
 }
 
@@ -37,7 +39,9 @@ test "export source list syntax parses and formats" {
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
   if not(formatted.contains("export ./math")) {
-    fail("formatted export script did not contain canonical source form:\n\{formatted}")
+    fail(
+      "formatted export script did not contain canonical source form:\n\{formatted}",
+    )
   }
 }
 
@@ -78,6 +82,56 @@ test "internal export for value parses" {
       )
   }
   assert_eq(@core.normalize_module(reparsed), @core.normalize_module(ast))
+}
+
+///|
+test "internal export let is not treated as public export let" {
+  let ast = parse_ast("internal export let helper = () -> Int { 1 }") catch {
+    e => fail("[parse] internal export let failed: \{e.to_string()}")
+  }
+  match ast.stmts[0] {
+    @core.Stmt::ExportLet(..) =>
+      fail("internal export let must not be lowered to ExportLet")
+    _ => ()
+  }
+}
+
+///|
+test "internal export type is not treated as public export type" {
+  let ast = parse_ast("internal export type Id = Int") catch {
+    e => fail("[parse] internal export type failed: \{e.to_string()}")
+  }
+  match ast.stmts[0] {
+    @core.Stmt::ExportTypeAlias(..) =>
+      fail("internal export type must not be lowered to ExportTypeAlias")
+    _ => ()
+  }
+}
+
+///|
+test "internal export enum is not treated as public export enum" {
+  let ast = parse_ast("internal export enum State { A }") catch {
+    e => fail("[parse] internal export enum failed: \{e.to_string()}")
+  }
+  match ast.stmts[0] {
+    @core.Stmt::ExportEnumDef(..) =>
+      fail("internal export enum must not be lowered to ExportEnumDef")
+    _ => ()
+  }
+}
+
+///|
+test "internal export trait is not treated as public export trait" {
+  let ast = parse_ast("internal export trait Eq") catch {
+    e => fail("[parse] internal export trait failed: \{e.to_string()}")
+  }
+  match ast.stmts[0] {
+    @core.Stmt::TraitDef(exported~, ..) =>
+      if exported {
+        fail("internal export trait must not be exported=true")
+      }
+    _ => ()
+  }
 }
 
 ///|
