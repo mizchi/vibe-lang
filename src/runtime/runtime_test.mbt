@@ -1,5 +1,27 @@
 ///|
 /// Tests for vibe prototype
+fn first_test_perform_site_key(script : String) -> String raise {
+  let ast = @parser.parse_ast(script)
+  match ast.stmts {
+    [@core.Stmt::Test(body~, ..)] =>
+      match body.stmts {
+        [@core.Stmt::Expr(expr~, ..)] =>
+          match expr {
+            @core.Expr::Call(name~, span~, ..) => {
+              if name != "__perform" {
+                fail("expected __perform call in test body")
+              }
+              span.start.to_string() + ":" + span.end.to_string()
+            }
+            _ => fail("expected perform call expression")
+          }
+        _ => fail("expected test body with a single perform expression")
+      }
+    _ => fail("expected single test statement")
+  }
+}
+
+///|
 test "vibe detection" {
   assert_true(is_vibe_script("let x = 1"))
   assert_false(is_vibe_script("flake { }"))
@@ -1627,6 +1649,20 @@ test "vibe test runner report" {
   assert_eq(report.total, 1)
   assert_eq(report.passed, 1)
   assert_eq(report.failed, 0)
+}
+
+///|
+test "vibe test runner clears stale perform resume override in fork" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let script = "test { perform(\"boom\") }"
+  let site_key = first_test_perform_site_key(script) catch {
+    err => fail("parse error: " + err.to_string())
+  }
+  rt.perform_resume_overrides[site_key] = @core.Value::Int(1)
+  let report = rt.run_script_tests(script)
+  assert_eq(report.total, 1)
+  assert_eq(report.passed, 0)
+  assert_eq(report.failed, 1)
 }
 
 ///|

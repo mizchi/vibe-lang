@@ -20,16 +20,31 @@ pub struct ImportSpec {
 } derive(Show, Eq)
 
 ///|
-pub struct VibeDb {
-  db : @ripple.Database
-  rt : @ripple.Runtime
+pub struct VibeDbInputs {
   sources : @ripple.Input[String, String]
   binary_sources : @ripple.Input[String, Bytes]
+}
+
+///|
+pub struct VibeDbQueries {
   cst_query : @ripple.Query[String, @cst.SyntaxNode]
   ast_query : @ripple.Query[String, HashedModule] // Uses structural hash for Eq
   type_query : @ripple.Query[String, @checker.TypeEnv]
   import_query : @ripple.Query[String, Array[ImportSpec]]
+}
+
+///|
+pub struct VibeDbDiagnosticStore {
   diags : @ripple.Accumulator[@core.Diagnostic]
+}
+
+///|
+pub struct VibeDb {
+  db : @ripple.Database
+  rt : @ripple.Runtime
+  inputs : VibeDbInputs
+  queries : VibeDbQueries
+  diagnostics : VibeDbDiagnosticStore
 }
 
 ///|
@@ -156,9 +171,9 @@ pub fn VibeDb::set_source(
   path : String,
   content : String,
 ) -> Unit {
-  let _ = self.sources.set(self.rt, path, content)
+  let _ = self.inputs.sources.set(self.rt, path, content)
   let hash = @core.content_address_hash_string(content)
-  let _ = self.sources.set(self.rt, hash_source_key(hash), content)
+  let _ = self.inputs.sources.set(self.rt, hash_source_key(hash), content)
 }
 
 ///|
@@ -167,9 +182,9 @@ pub fn VibeDb::set_binary_source(
   path : String,
   content : Bytes,
 ) -> Unit {
-  let _ = self.binary_sources.set(self.rt, path, content)
+  let _ = self.inputs.binary_sources.set(self.rt, path, content)
   let hash = @core.git_blob_hash_bytes(content)
-  let _ = self.binary_sources.set(self.rt, hash_source_key(hash), content)
+  let _ = self.inputs.binary_sources.set(self.rt, hash_source_key(hash), content)
 }
 
 ///|
@@ -178,7 +193,11 @@ pub fn VibeDb::set_version_ref(
   name : String,
   hash : String,
 ) -> Unit {
-  let _ = self.sources.set(self.rt, version_ref_key(name), normalize_hash(hash))
+  let _ = self.inputs.sources.set(
+    self.rt,
+    version_ref_key(name),
+    normalize_hash(hash),
+  )
 }
 
 ///|
@@ -188,7 +207,7 @@ pub fn VibeDb::set_path_ref(
   hash : String,
 ) -> Unit {
   let normalized = normalize_lock_path(path)
-  let _ = self.sources.set(
+  let _ = self.inputs.sources.set(
     self.rt,
     path_ref_key(normalized),
     normalize_hash(hash),
@@ -198,7 +217,7 @@ pub fn VibeDb::set_path_ref(
 ///|
 pub fn VibeDb::require_path_lock(self : VibeDb, required : Bool) -> Unit {
   let value = if required { "1" } else { "0" }
-  let _ = self.sources.set(self.rt, require_path_lock_config_key(), value)
+  let _ = self.inputs.sources.set(self.rt, require_path_lock_config_key(), value)
 }
 
 ///|
@@ -207,17 +226,17 @@ pub fn VibeDb::set_symbol_ref(
   name : String,
   hash : String,
 ) -> Unit {
-  let _ = self.sources.set(self.rt, symbol_ref_key(name), normalize_hash(hash))
+  let _ = self.inputs.sources.set(self.rt, symbol_ref_key(name), normalize_hash(hash))
 }
 
 ///|
 fn VibeDb::cst(self : VibeDb, path : String) -> @cst.SyntaxNode {
-  self.cst_query.fetch(self.rt, path)
+  self.queries.cst_query.fetch(self.rt, path)
 }
 
 ///|
 pub fn VibeDb::ast(self : VibeDb, path : String) -> @core.Module {
-  self.ast_query.fetch(self.rt, path).unwrap()
+  self.queries.ast_query.fetch(self.rt, path).unwrap()
 }
 
 ///|
@@ -225,7 +244,10 @@ pub fn VibeDb::ast_with_hash_imports(
   self : VibeDb,
   path : String,
 ) -> @core.Module {
-  rewrite_import_sources(self.ast(path), self.import_query.fetch(self.rt, path))
+  rewrite_import_sources(
+    self.ast(path),
+    self.queries.import_query.fetch(self.rt, path),
+  )
 }
 
 ///|
@@ -234,22 +256,22 @@ pub fn VibeDb::rewrite_imports_to_hash(
   path : String,
   ast : @core.Module,
 ) -> @core.Module {
-  rewrite_import_sources(ast, self.import_query.fetch(self.rt, path))
+  rewrite_import_sources(ast, self.queries.import_query.fetch(self.rt, path))
 }
 
 ///|
 pub fn VibeDb::types(self : VibeDb, path : String) -> @checker.TypeEnv {
-  self.type_query.fetch(self.rt, path)
+  self.queries.type_query.fetch(self.rt, path)
 }
 
 ///|
 pub fn VibeDb::imports(self : VibeDb, path : String) -> Array[ImportSpec] {
-  self.import_query.fetch(self.rt, path)
+  self.queries.import_query.fetch(self.rt, path)
 }
 
 ///|
 pub fn VibeDb::get_source(self : VibeDb, path : String) -> String? {
-  self.sources.get(self.rt, path)
+  self.inputs.sources.get(self.rt, path)
 }
 
 ///|
@@ -258,9 +280,18 @@ pub fn VibeDb::diagnostics(
   self : VibeDb,
   path : String,
 ) -> Array[@core.Diagnostic] {
-  let parse_diags = self.diags.get_for_query(self.ast_query, path)
-  let type_diags = self.diags.get_for_query(self.type_query, path)
-  let import_diags = self.diags.get_for_query(self.import_query, path)
+  let parse_diags = self.diagnostics.diags.get_for_query(
+    self.queries.ast_query,
+    path,
+  )
+  let type_diags = self.diagnostics.diags.get_for_query(
+    self.queries.type_query,
+    path,
+  )
+  let import_diags = self.diagnostics.diags.get_for_query(
+    self.queries.import_query,
+    path,
+  )
   let out : Array[@core.Diagnostic] = []
   for d in parse_diags {
     out.push(d)
@@ -280,7 +311,7 @@ pub fn VibeDb::import_diagnostics(
   self : VibeDb,
   path : String,
 ) -> Array[@core.Diagnostic] {
-  self.diags.get_for_query(self.import_query, path)
+  self.diagnostics.diags.get_for_query(self.queries.import_query, path)
 }
 
 ///|
@@ -289,6 +320,6 @@ pub fn VibeDb::warnings(
   self : VibeDb,
   path : String,
 ) -> Array[@core.Diagnostic] {
-  let ast = self.ast_query.fetch(self.rt, path).unwrap()
+  let ast = self.queries.ast_query.fetch(self.rt, path).unwrap()
   @checker.collect_warnings(ast)
 }

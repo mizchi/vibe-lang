@@ -344,17 +344,6 @@ fn infer_handle_arm_effect_name(pat : @core.Pat) -> String? {
 }
 
 ///|
-fn infer_handle_arm_resume_expected(
-  env : TypeEnv,
-  pat : @core.Pat,
-) -> @core.Type? {
-  match infer_handle_arm_effect_name(pat) {
-    Some(effect_name) => env.handle_resume_types.get(effect_name)
-    _ => None
-  }
-}
-
-///|
 fn type_perform_expr(
   env : TypeEnv,
   args : Array[@core.CallArg],
@@ -722,11 +711,12 @@ fn type_expr_eff(
         arm_env.handle_arm_depth += 1
         arm_env.handle_resume_types = inferred_resume_types.copy()
         arm_env.handle_resume_types_active = true
-        arm_env.handle_arm_effect_name = infer_handle_arm_effect_name(arm.pat)
-        arm_env.handle_arm_resume_expected = infer_handle_arm_resume_expected(
-          body_env,
-          arm.pat,
-        )
+        let arm_effect_name = infer_handle_arm_effect_name(arm.pat)
+        arm_env.handle_arm_effect_name = arm_effect_name
+        arm_env.handle_arm_resume_expected = match arm_effect_name {
+          Some(effect_name) => inferred_resume_types.get(effect_name)
+          None => None
+        }
         bind_handle_arm_pat(arm_env, body_env, arm.pat)
         let arm_ty_result : Result[@core.Type, TypeError] = try? type_handle_arm_expr(
           arm_env, arm, aliases, effects, allow_effect,
@@ -1314,6 +1304,14 @@ fn type_block(
         last = @core.Type::Unit
       }
     }
+  }
+  if env.handle_resume_types_active {
+    let inferred_resume_types : Map[String, @core.Type] = {}
+    for effect_name, resume_ty in scope_env.handle_resume_types {
+      inferred_resume_types[effect_name] = normalize_type(scope_env, resume_ty)
+    }
+    env.handle_resume_types = inferred_resume_types
+    env.next_var = scope_env.next_var
   }
   last
 }

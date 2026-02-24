@@ -137,10 +137,14 @@ fn normalize_performed_value(value : @core.Value) -> @core.Value {
 /// Generate a site identification key for perform/resume matching.
 /// The key must be deterministic for the same source location because
 /// resume re-evaluates the body and needs to find the stored value.
-/// Known limitation: same span across different source files could collide
-/// if modules share position ranges.
-fn perform_site_key(span : @core.Span) -> String {
-  span.start.to_string() + ":" + span.end.to_string()
+/// It is namespaced by active handle scope hash to reduce cross-module
+/// collisions for same-span calls.
+fn perform_site_key(rt : Runtime, span : @core.Span) -> String {
+  let local_key = span.start.to_string() + ":" + span.end.to_string()
+  match rt.active_handle_scope {
+    Some(scope_hash) => scope_hash + ":" + local_key
+    None => "global:" + local_key
+  }
 }
 
 ///|
@@ -149,61 +153,85 @@ fn eval_handle_expr(
   body : @core.Module,
   arms : Array[@core.MatchArm],
 ) -> EvalOutput raise EvalError {
-  eval_block(rt, body) catch {
-    e =>
-      match e {
-        EvalError::Performed(performed_value, site_key, has_prior_effect) => {
-          for arm in arms {
-            match match_pattern(arm.pat, performed_value) {
-              Some(bindings) => {
-                let guard_ok = match arm.cond {
-                  Some(c) =>
-                    match eval_expr_with_bindings(rt, c, bindings).value {
-                      @core.Value::Bool(b) => b
-                      _ =>
-                        raise EvalError::BadCall(
-                          CondNotBool(ctx="handle guard", got="unknown"),
-                        )
-                    }
-                  None => true
-                }
-                if guard_ok {
-                  return eval_expr_with_bindings(rt, arm.expr, bindings) catch {
-                    e =>
-                      match e {
-                        EvalError::Resume(resume_value) => {
-                          if has_prior_effect {
-                            raise EvalError::BadCall(
-                              E("resume cannot continue after prior effects"),
-                            )
-                          }
-                          rt.perform_resume_overrides[site_key] = resume_value
-                          let resumed : Result[EvalOutput, EvalError] = try? eval_handle_expr(
-                            rt, body, arms,
+  let prev_scope = rt.active_handle_scope
+  rt.active_handle_scope = Some(@core.hash_module(body))
+  let handled_result : Result[EvalOutput, EvalError] = try? {
+    eval_block(rt, body) catch {
+      e =>
+        match e {
+          EvalError::Performed(performed_value, site_key, has_prior_effect) => {
+            let mut matched_out : EvalOutput? = None
+            for arm in arms {
+              if matched_out is Some(_) {
+                continue
+              }
+              match match_pattern(arm.pat, performed_value) {
+                Some(bindings) => {
+                  let guard_ok = match arm.cond {
+                    Some(c) =>
+                      match eval_expr_with_bindings(rt, c, bindings).value {
+                        @core.Value::Bool(b) => b
+                        _ =>
+                          raise EvalError::BadCall(
+                            CondNotBool(ctx="handle guard", got="unknown"),
                           )
-                          match resumed {
-                            Ok(out) => out
-                            Err(EvalError::BadCall(_)) =>
-                              raise EvalError::BadCall(
-                                E("resume value type mismatch"),
-                              )
-                            Err(err) => raise err
-                          }
-                        }
-                        _ => raise e
                       }
+                    None => true
+                  }
+                  if guard_ok {
+                    let arm_result : Result[EvalOutput, EvalError] = try? eval_expr_with_bindings(
+                      rt,
+                      arm.expr,
+                      bindings,
+                    )
+                    match arm_result {
+                      Ok(out) => matched_out = Some(out)
+                      Err(EvalError::Resume(resume_value)) => {
+                        if has_prior_effect {
+                          raise EvalError::BadCall(
+                            E("resume cannot continue after prior effects"),
+                          )
+                        }
+                        rt.perform_resume_overrides[site_key] = resume_value
+                        let resumed : Result[EvalOutput, EvalError] = try? eval_handle_expr(
+                          rt,
+                          body,
+                          arms,
+                        )
+                        match resumed {
+                          Ok(out) => matched_out = Some(out)
+                          Err(EvalError::BadCall(_)) =>
+                            raise EvalError::BadCall(
+                              E("resume value type mismatch"),
+                            )
+                          Err(err) => raise err
+                        }
+                      }
+                      Err(err) => raise err
+                    }
                   }
                 }
+                None => ()
               }
-              None => ()
+            }
+            match matched_out {
+              Some(out) => out
+              None =>
+                raise EvalError::Performed(
+                  performed_value,
+                  site_key,
+                  has_prior_effect,
+                )
             }
           }
-          raise EvalError::Performed(
-            performed_value, site_key, has_prior_effect,
-          )
+          _ => raise e
         }
-        _ => raise e
-      }
+    }
+  }
+  rt.active_handle_scope = prev_scope
+  match handled_result {
+    Ok(out) => out
+    Err(err) => raise err
   }
 }
 
@@ -1547,7 +1575,7 @@ fn eval_builtin_call(
 ) -> EvalOutput raise EvalError {
   match name {
     "__perform" => {
-      let site_key = perform_site_key(call_span)
+      let site_key = perform_site_key(rt, call_span)
       match rt.perform_resume_overrides.get(site_key) {
         Some(v) => {
           rt.perform_resume_overrides.remove(site_key)

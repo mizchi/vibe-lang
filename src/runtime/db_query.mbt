@@ -1313,12 +1313,8 @@ pub fn VibeDb::new() -> VibeDb {
   {
     db,
     rt,
-    sources,
-    binary_sources,
-    cst_query,
-    ast_query,
-    type_query,
-    import_query,
-    diags,
+    inputs: { sources, binary_sources },
+    queries: { cst_query, ast_query, type_query, import_query },
+    diagnostics: { diags: diags },
   }
 }

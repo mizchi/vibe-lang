@@ -208,6 +208,7 @@ pub struct Runtime {
   // Module cache for import resolution: hash -> Module
   module_cache : Map[String, @core.Module]
   perform_resume_overrides : Map[String, @core.Value]
+  mut active_handle_scope : String?
   mut prelude_loaded : Bool
   mut cwd : String
   mut loop_fuel : Int
@@ -238,6 +239,7 @@ pub fn Runtime::new_with_features(
     thread_runtime: ThreadRuntime::new(),
     module_cache: {},
     perform_resume_overrides: {},
+    active_handle_scope: None,
     prelude_loaded: false,
     cwd: @io.current_dir_or_root(),
     loop_fuel: match @io.get_env_var("VIBE_LOOP_FUEL") {
@@ -439,10 +441,23 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
     perform_resume_overrides: self.perform_resume_overrides.copy(),
+    active_handle_scope: self.active_handle_scope,
     prelude_loaded: self.prelude_loaded,
     cwd: self.cwd,
     loop_fuel: 100_000,
   }
+}
+
+///|
+fn Runtime::clear_perform_resume_overrides(self : Runtime) -> Unit {
+  let keys : Array[String] = []
+  for key, _ in self.perform_resume_overrides {
+    keys.push(key)
+  }
+  for key in keys {
+    self.perform_resume_overrides.remove(key)
+  }
+  self.active_handle_scope = None
 }
 
 ///|
@@ -467,6 +482,7 @@ fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime 
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
     perform_resume_overrides: self.perform_resume_overrides.copy(),
+    active_handle_scope: self.active_handle_scope,
     prelude_loaded: self.prelude_loaded,
     cwd: self.cwd,
     loop_fuel: self.loop_fuel,

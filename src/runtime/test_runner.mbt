@@ -74,6 +74,8 @@ pub fn Runtime::run_tests(
         }
       None => {
         let test_rt = self.fork_for_test()
+        // Test executions must not inherit stale resume overrides from parent runtime.
+        test_rt.clear_perform_resume_overrides()
         try {
           let res = test_rt.eval_module(case.body)
           passed += 1
