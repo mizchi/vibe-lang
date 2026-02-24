@@ -648,8 +648,8 @@ let builtin_bool_source : String =
 ///|
 let builtin_int_source : String =
   #|
-  #|declare export let max_value: Int
-  #|declare export let min_value: Int
+  #|export let max_value = 2305843009213693951
+  #|export let min_value = 0 - 2305843009213693951 - 1
   #|let int_max = (a: Int, b: Int) -> Int {
   #|  if a > b {
   #|    a
@@ -866,22 +866,10 @@ let builtin_int_source : String =
 ///|
 let builtin_float_source : String =
   #|
-  #|declare export let eq: (Float, Float) -> Bool
-  #|declare export let abs: (Float) -> Float
-  #|declare export let max: (Float, Float) -> Float
-  #|declare export let min: (Float, Float) -> Float
-  #|declare export let lerp: (Float, Float, Float) -> Float
-  #|declare export let clamp: (Float, Float, Float) -> Float
-  #|declare export let is_nan: (Float) -> Bool
-  #|declare export let signum: (Float) -> Float
-  #|declare export let square: (Float) -> Float
-  #|declare export let is_zero: (Float) -> Bool
-  #|declare export let is_negative: (Float) -> Bool
-  #|declare export let is_positive: (Float) -> Bool
   #|let float_eq = (a: Float, b: Float) -> Bool {
   #|  a == b
   #|}
-  #|eq = float_eq
+  #|export let eq = float_eq
   #|let float_abs = (x: Float) -> Float {
   #|  if x < 0.0f {
   #|    0.0f - x
@@ -889,7 +877,7 @@ let builtin_float_source : String =
   #|    x
   #|  }
   #|}
-  #|abs = float_abs
+  #|export let abs = float_abs
   #|let float_max = (a: Float, b: Float) -> Float {
   #|  if a > b {
   #|    a
@@ -897,7 +885,7 @@ let builtin_float_source : String =
   #|    b
   #|  }
   #|}
-  #|max = float_max
+  #|export let max = float_max
   #|let float_min = (a: Float, b: Float) -> Float {
   #|  if a < b {
   #|    a
@@ -905,11 +893,11 @@ let builtin_float_source : String =
   #|    b
   #|  }
   #|}
-  #|min = float_min
+  #|export let min = float_min
   #|let float_lerp = (a: Float, b: Float, t: Float) -> Float {
   #|  a + (b - a) * t
   #|}
-  #|lerp = float_lerp
+  #|export let lerp = float_lerp
   #|let float_clamp = (x: Float, min_val: Float, max_val: Float) -> Float {
   #|  if x < min_val {
   #|    min_val
@@ -921,11 +909,11 @@ let builtin_float_source : String =
   #|    x
   #|  }
   #|}
-  #|clamp = float_clamp
+  #|export let clamp = float_clamp
   #|let float_is_nan = (x: Float) -> Bool {
   #|  not(x == x)
   #|}
-  #|is_nan = float_is_nan
+  #|export let is_nan = float_is_nan
   #|let float_signum = (x: Float) -> Float {
   #|  if x < 0.0f {
   #|    0.0f - 1.0f
@@ -937,23 +925,23 @@ let builtin_float_source : String =
   #|    0.0f
   #|  }
   #|}
-  #|signum = float_signum
+  #|export let signum = float_signum
   #|let float_square = (x: Float) -> Float {
   #|  x * x
   #|}
-  #|square = float_square
+  #|export let square = float_square
   #|let float_is_zero = (x: Float) -> Bool {
   #|  x == 0.0f
   #|}
-  #|is_zero = float_is_zero
+  #|export let is_zero = float_is_zero
   #|let float_is_negative = (x: Float) -> Bool {
   #|  x < 0.0f
   #|}
-  #|is_negative = float_is_negative
+  #|export let is_negative = float_is_negative
   #|let float_is_positive = (x: Float) -> Bool {
   #|  x > 0.0f
   #|}
-  #|is_positive = float_is_positive
+  #|export let is_positive = float_is_positive
   #|export let Float::eq = (a: Float, b: Float) -> Bool {
   #|  float_eq(a, b)
   #|}
@@ -994,21 +982,6 @@ let builtin_float_source : String =
 ///|
 let builtin_double_source : String =
   #|
-  #|declare export let abs: (Double) -> Double
-  #|declare export let max: (Double, Double) -> Double
-  #|declare export let min: (Double, Double) -> Double
-  #|declare export let cube: (Double) -> Double
-  #|declare export let lerp: (Double, Double, Double) -> Double
-  #|declare export let clamp: (Double, Double, Double) -> Double
-  #|declare export let is_nan: (Double) -> Bool
-  #|declare export let signum: (Double) -> Double
-  #|declare export let square: (Double) -> Double
-  #|declare export let approx_eq: (Double, Double, Double) -> Bool
-  #|declare export let ceil: (Double) -> Double
-  #|declare export let floor: (Double) -> Double
-  #|declare export let round: (Double) -> Double
-  #|declare export let trunc: (Double) -> Double
-  #|declare export let fract: (Double) -> Double
   #|let double_abs = (x: Double) -> Double {
   #|  if x < 0.0 {
   #|    0.0 - x
@@ -1016,7 +989,7 @@ let builtin_double_source : String =
   #|    x
   #|  }
   #|}
-  #|abs = double_abs
+  #|export let abs = double_abs
   #|let double_max = (a: Double, b: Double) -> Double {
   #|  if a > b {
   #|    a
@@ -1024,7 +997,7 @@ let builtin_double_source : String =
   #|    b
   #|  }
   #|}
-  #|max = double_max
+  #|export let max = double_max
   #|let double_min = (a: Double, b: Double) -> Double {
   #|  if a < b {
   #|    a
@@ -1032,15 +1005,15 @@ let builtin_double_source : String =
   #|    b
   #|  }
   #|}
-  #|min = double_min
+  #|export let min = double_min
   #|let double_cube = (x: Double) -> Double {
   #|  x * x * x
   #|}
-  #|cube = double_cube
+  #|export let cube = double_cube
   #|let double_lerp = (a: Double, b: Double, t: Double) -> Double {
   #|  a + (b - a) * t
   #|}
-  #|lerp = double_lerp
+  #|export let lerp = double_lerp
   #|let double_clamp = (x: Double, min_val: Double, max_val: Double) -> Double {
   #|  if x < min_val {
   #|    min_val
@@ -1052,11 +1025,11 @@ let builtin_double_source : String =
   #|    x
   #|  }
   #|}
-  #|clamp = double_clamp
+  #|export let clamp = double_clamp
   #|let double_is_nan = (x: Double) -> Bool {
   #|  not(x == x)
   #|}
-  #|is_nan = double_is_nan
+  #|export let is_nan = double_is_nan
   #|let double_signum = (x: Double) -> Double {
   #|  if x < 0.0 {
   #|    -1.0
@@ -1068,17 +1041,17 @@ let builtin_double_source : String =
   #|    0.0
   #|  }
   #|}
-  #|signum = double_signum
+  #|export let signum = double_signum
   #|let double_square = (x: Double) -> Double {
   #|  x * x
   #|}
-  #|square = double_square
+  #|export let square = double_square
   #|let double_int_max: Int = 2305843009213693951
   #|let double_int_min: Int = 0 - 2305843009213693951 - 1
   #|let double_approx_eq = (a: Double, b: Double, eps: Double) -> Bool {
   #|  double_abs(a - b) <= eps
   #|}
-  #|approx_eq = double_approx_eq
+  #|export let approx_eq = double_approx_eq
   #|let double_int_max_value: Double = int_to_double(double_int_max)
   #|let double_int_min_value: Double = int_to_double(double_int_min)
   #|let double_to_int_saturating = (x: Double) -> Int {
@@ -1105,7 +1078,7 @@ let builtin_double_source : String =
   #|    }
   #|  }
   #|}
-  #|ceil = double_ceil
+  #|export let ceil = double_ceil
   #|let double_floor = (x: Double) -> Double {
   #|  if x <= double_int_min_value {
   #|    double_int_min_value
@@ -1119,7 +1092,7 @@ let builtin_double_source : String =
   #|    }
   #|  }
   #|}
-  #|floor = double_floor
+  #|export let floor = double_floor
   #|let double_round = (x: Double) -> Double {
   #|  if x >= 0.0 {
   #|    double_floor(x + 0.5)
@@ -1127,15 +1100,15 @@ let builtin_double_source : String =
   #|    double_ceil(x - 0.5)
   #|  }
   #|}
-  #|round = double_round
+  #|export let round = double_round
   #|let double_trunc = (x: Double) -> Double {
   #|  int_to_double(double_to_int_saturating(x))
   #|}
-  #|trunc = double_trunc
+  #|export let trunc = double_trunc
   #|let double_fract = (x: Double) -> Double {
   #|  x - double_trunc(x)
   #|}
-  #|fract = double_fract
+  #|export let fract = double_fract
   #|export let Double::abs = (x: Double) -> Double {
   #|  double_abs(x)
   #|}

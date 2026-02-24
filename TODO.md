@@ -34,6 +34,7 @@ Completed items are archived in `docs/DONE.md`.
 - [x] fixtures: checker/runtime/cmd の主要 fixture を `use` -> `import` / `export use` -> `export` へ更新
 - [x] `internal export` を AST レベルで独立可視性として表現し、checker/runtime の公開境界に反映する
 - [x] `normalize_render` の旧 `declare export let` 互換ロジックを完全撤去し、`extern`/新 export 規約へ寄せる
+- [x] checker builtin module source の旧 `declare export` を現行構文へ移行し、`builtin/int|float|double` の parse 回帰を追加する
 
 ## Compiler Refactoring
 
