@@ -3,6 +3,29 @@
 Spec-locked decisions are tracked in `spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
+## Import/Export Model Refactor (2026-02-24)
+
+### Spec lock (confirmed)
+
+- [ ] `use` を廃止し、`import <module-ref> { ... }` に一本化する
+- [ ] `declare` を廃止する
+- [ ] `export <module-ref> { ... }` を再 export 構文として導入する
+- [ ] `/index.vibe` は module ref 正規化で常に省略可能にする
+- [ ] 外部 import は `index.vibe` エンドポイント経由に統一する
+- [ ] `internal export` を導入する（`let` / `type` / `enum` / `trait`）
+- [ ] `extern let %name: Ty` を導入する（`%` 始まり識別子は予約）
+- [ ] `import` / `export` の item で `as` を許可し、衝突がない場合は normalize で簡約可能にする
+
+### Implementation plan
+
+- [ ] parser/CST: `use` / `declare` 分岐を削除し、新構文（`import {}` / `export <ref> {}` / `internal export` / `extern let %`）を parse 可能にする
+- [ ] core AST: `internal export` と `extern` の表現を追加し、serialize/deserialize/hash/normalize/ast_walker を追従させる
+- [ ] checker/runtime: 新しい公開境界と import 規約（index endpoint 経由）で名前解決と可視性判定を更新する
+- [ ] normalize: 非 `index.vibe` の外部 import を index 経由形へ再配置する規約変換を追加し、`export <module-ref> { ... }` を先頭へ整列する
+- [ ] diagnostics: 旧構文 (`use` / `declare`) の migration error を明示する
+- [ ] tests: parser/runtime/CLI の旧構文ケースを新構文へ移行し、index 強制規約の回帰テストを追加する
+- [ ] vibe/ 配下ライブラリを新構文へ一括変換する
+
 ## Compiler Refactoring
 
 - [x] `type_call` builtin チェックをカテゴリハンドラへ分割する
