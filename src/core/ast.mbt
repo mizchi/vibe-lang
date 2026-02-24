@@ -86,7 +86,7 @@ pub(all) struct ImportItem {
 
 ///|
 /// Import specification: only named imports allowed
-/// use ./path.vibe { foo, bar as b }
+/// import ./path.vibe { foo, bar as b }
 pub(all) struct ImportSpec {
   items : Array[ImportItem]
 } derive(Show, Eq)

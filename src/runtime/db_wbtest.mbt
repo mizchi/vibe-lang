@@ -193,7 +193,7 @@ test "cross-directory import to non-index.vibe emits warning" {
   let has_cross_module_warning = diags
     .iter()
     .any(fn(d) {
-      d.message.contains("cross-module import should use index.vibe")
+      d.message.contains("cross-module import should target index.vibe")
     })
   assert_true(has_cross_module_warning)
 }
@@ -215,7 +215,7 @@ test "cross-directory import to index.vibe does not emit warning" {
   let has_cross_module_warning = diags
     .iter()
     .any(fn(d) {
-      d.message.contains("cross-module import should use index.vibe")
+      d.message.contains("cross-module import should target index.vibe")
     })
   if has_cross_module_warning {
     fail("should not warn when importing index.vibe")
@@ -236,7 +236,7 @@ test "same-directory import does not emit cross-module warning" {
   let has_cross_module_warning = diags
     .iter()
     .any(fn(d) {
-      d.message.contains("cross-module import should use index.vibe")
+      d.message.contains("cross-module import should target index.vibe")
     })
   if has_cross_module_warning {
     fail("should not warn for same-directory import")

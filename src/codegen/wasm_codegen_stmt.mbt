@@ -201,9 +201,9 @@ fn compile_stmt(
             _ => ()
           }
           compile_expr(ctx, buf, expr)
-          // After compiling Block expressions (e.g. from declare export let with
-          // type assertion wrapper), propagate fn_return_sigs from inner Call
-          // to fn_local_sigs so the bound name is correctly typed when called.
+          // After compiling Block expressions (e.g. from annotation wrappers),
+          // propagate fn_return_sigs from inner Call to fn_local_sigs so the
+          // bound name is correctly typed when called.
           match expr {
             @core.Expr::Block(body=block_body, ..) => {
               let block_stmts = block_body.stmts

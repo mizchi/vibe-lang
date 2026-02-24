@@ -131,11 +131,11 @@ pub fn VibeDb::new() -> VibeDb {
                     imported_basename != "index.xm" {
                     diags.push(rt, @core.Diagnostic::{
                       stage: "lint",
-                      message: "cross-module import should use index.vibe: " +
+                      message: "cross-module import should target index.vibe: " +
                       resolved_path_obj.normalized,
                       span: Some(span),
                       hint: Some(
-                        "use the module's index.vibe to import across directories",
+                        "import the module's index.vibe for cross-directory imports",
                       ),
                       note: None,
                     })

@@ -569,7 +569,7 @@ pub fn resolve_import_path_with_registry(
               ns +
               " (import: " +
               import_path +
-              "). use ./ or ../ for local paths",
+              "). local imports must start with ./ or ../",
             )
       }
       None => resolve_import_path(base, import_path)
