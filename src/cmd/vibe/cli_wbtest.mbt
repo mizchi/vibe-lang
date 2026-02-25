@@ -618,8 +618,8 @@ test "test cmd normalize jobs uses bounded auto default for non-positive input" 
   let prev = @sys.get_env_var("VIBE_TEST_JOBS")
   @sys.unset_env_var("VIBE_TEST_JOBS")
   defer wbtest_restore_env_var("VIBE_TEST_JOBS", prev)
-  assert_eq(normalize_test_jobs(0), 2)
-  assert_eq(normalize_test_jobs(-1), 2)
+  assert_eq(normalize_test_jobs(0), 1)
+  assert_eq(normalize_test_jobs(-1), 1)
 }
 
 ///|
@@ -1810,7 +1810,7 @@ test "default test jobs uses safe fallback when env is unset" {
   let prev = @sys.get_env_var("VIBE_TEST_JOBS")
   @sys.unset_env_var("VIBE_TEST_JOBS")
   defer wbtest_restore_env_var("VIBE_TEST_JOBS", prev)
-  assert_eq(default_test_jobs(), 2)
+  assert_eq(default_test_jobs(), 1)
 }
 
 ///|
@@ -1822,7 +1822,7 @@ test "default test jobs accepts env override and rejects invalid values" {
   assert_eq(default_test_jobs(), 3)
 
   @sys.set_env_var("VIBE_TEST_JOBS", "invalid")
-  assert_eq(default_test_jobs(), 2)
+  assert_eq(default_test_jobs(), 1)
 }
 
 ///|
@@ -1831,7 +1831,7 @@ test "normalize test jobs clamps extreme values" {
   @sys.unset_env_var("VIBE_TEST_JOBS")
   defer wbtest_restore_env_var("VIBE_TEST_JOBS", prev)
 
-  assert_eq(normalize_test_jobs(-1), 2)
+  assert_eq(normalize_test_jobs(-1), 1)
   assert_eq(normalize_test_jobs(1), 1)
   assert_eq(normalize_test_jobs(64), 16)
 }

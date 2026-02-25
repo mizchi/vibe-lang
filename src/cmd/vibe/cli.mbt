@@ -76,7 +76,7 @@ fn print_usage() -> Unit {
     "  eval [--db file] [--include file] [--inspect-scope] [--assert name:sig]... [--test-for name] [--run] [--export file] <expr...>  evaluate expression/script",
   )
   println(
-    "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 2, max 16)",
+    "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
   )
   println("  check <file...>            parse/type check scripts")
   println(
@@ -1137,9 +1137,9 @@ fn default_test_jobs() -> Int {
   match @sys.get_env_var("VIBE_TEST_JOBS") {
     Some(raw) => {
       let parsed = @strconv.parse_int(raw) catch { _ => 0 }
-      if parsed > 0 { parsed } else { 2 }
+      if parsed > 0 { parsed } else { 1 }
     }
-    None => 2
+    None => 1
   }
 }
 
