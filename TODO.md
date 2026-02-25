@@ -15,6 +15,44 @@ Completed items are archived in `docs/DONE.md`.
 - [x] `shell-stdin --help` を受け付け、unknown arg ではなく usage を返す
   - 対象: `src/cmd/vibe/repl_line.mbt`, `src/cmd/vibe/cli_repl.mbt`
 
+## Pipe-first Namespace & Symbol Migration (ADR-0020)
+
+`|>` ファースト呼び出し、`.` の責務限定、`Type::symbol` 正規化を実装へ落とす。
+仕様確定は `docs/adr/0020-pipe-first-namespace-and-symbol-resolution.md` を正とする。
+
+### Spec lock (done)
+
+- [x] ADR-0020 を accepted として追加
+- [x] `spec/decisions.md` に lock 項目を追加
+- [x] `docs/vibe.md` を `recv.method(...)` 非採用前提へ更新
+
+### Implementation plan
+
+- [ ] parser: `recv.method(...)` を受理しない構文へ切り替え、`(obj.method)(...)` のみ許可する
+  - 対象: `src/parser/*`, `src/parser/*_wbtest.mbt`
+  - Red: `recv.method(...)` が parse error になるテストを追加
+  - Green: 既存 postfix ルールから method-call sugar 分岐を削除
+- [ ] parser: `|>` と他の二項演算子混在の曖昧式を parse error 化する
+  - 対象: `src/parser/parser_ast_expr.mbt`, `src/parser/*_wbtest.mbt`, fixtures
+  - Red: `1 + 1 |> double` / `a |> b + c` を失敗ケースとして固定
+  - Green: 括弧付き (`(1 + 1) |> double`) を許可
+- [ ] diagnostics: `|>` 曖昧式エラーで括弧追加の修正ヒントを提示する
+  - 対象: `src/parser/*`, `src/core/diagnostic.mbt`, CLI 表示
+- [ ] checker: `.` は member/index アクセス専用に固定し、関数呼び出しへの fallback を撤去する
+  - 対象: `src/checker/typecheck_call*.mbt`, `src/checker/typecheck_expr*.mbt`
+  - Red: `obj.prop()` 暗黙 desugar 依存ケースを失敗として固定
+  - Green: data member access + tuple index + `(obj.method)(...)` を通す
+- [ ] checker/runtime: 名前解決優先順位を `local > lexical > explicit import > prelude` に固定する
+  - 対象: `src/checker/typecheck_env_namespace.mbt`, `src/runtime/db_import.mbt`, 関連テスト
+- [ ] normalize/edit: namespace symbol の正規形を `/pkg@version/module/Type::symbol` に統一し、内部参照を `<canonical>#<addr-hash>` 形式で保持する
+  - 対象: `src/cmd/vibe/normalize_*`, `src/runtime/db*.mbt`, `src/core/*`
+  - Red: 同名衝突時に安定した disambiguation を行う snapshot を追加
+  - Green: 再展開時に決定的 import 生成（最短 import + 衝突時 alias）
+- [ ] library migration: 既存ライブラリ/fixture の `recv.method(...)` 記法を `|>` または完全修飾関数呼び出しへ一括移行する
+  - 対象: `vibe/**/*`, `examples/**/*`, `fixtures/**/*`, `docs/language-tour/*`
+- [ ] railway-oriented error path: Result 合成チェーンの推奨パターンを lint/guide で固定し、例外境界 (`handle`/`throw`/`unwrap`) を可視化する
+  - 対象: `docs/language-tour/effects.md`, `docs/vibe.md`, `src/cmd/vibe/normalize_format.mbt`（表示規約）
+
 ## Prelude Namespace Migration (2026-02-25)
 
 `vibe/prelude` を常時解決可能 namespace として固定し、`vibe/builtin` 依存を段階的に縮小する。
@@ -135,10 +173,6 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `vibe/prelude/README.md`, `docs/adr/0005-std-layered-boundaries.md`, `src/cmd/vibe/normalize_engine.mbt`
 - [x] effect 付きシグネチャの設計方針を明文化し、I/O API 追加時に逸脱を防ぐ
   - 対象: `vibe/prelude/README.md`, `vibe/fs/fs.vibe`, `vibe/http/http.vibe`, `vibe/socket/socket.vibe`
-- [x] 関数スタイル/メソッドスタイル併用の回帰テストを追加して API 体験を維持する
-  - [x] `vibe/prelude/array_test.vibe` で関数スタイル/メソッドスタイル parity を追加
-  - [x] `vibe/collection/map_test.vibe` で関数スタイル/メソッドスタイル parity を追加
-  - 対象: `vibe/prelude/*_test.vibe`, `vibe/collection/*_test.vibe`
 
 ### Improve Usability
 
