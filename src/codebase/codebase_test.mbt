@@ -665,7 +665,7 @@ test "codebase update_lock_path_refs accepts export version" {
 }
 
 ///|
-test "codebase load_registry_modules falls back to prelude std json base64 sha1 and collection" {
+test "codebase load_registry_modules falls back to prelude std json base64 sha1 path and collection" {
   let root = make_temp_dir("registry_default_namespaces")
   let modules = match load_registry_modules(root) {
     Ok(v) => v
@@ -675,12 +675,14 @@ test "codebase load_registry_modules falls back to prelude std json base64 sha1 
   let json_path = @vibe_fs.normalize_path(root + "/vibe/json")
   let base64_path = @vibe_fs.normalize_path(root + "/vibe/base64")
   let sha1_path = @vibe_fs.normalize_path(root + "/vibe/sha1")
+  let path_path = @vibe_fs.normalize_path(root + "/vibe/path")
   let collection_path = @vibe_fs.normalize_path(root + "/vibe/collection")
   assert_eq(modules["prelude"], prelude_path)
   assert_eq(modules["std"], prelude_path)
   assert_eq(modules["json"], json_path)
   assert_eq(modules["base64"], base64_path)
   assert_eq(modules["sha1"], sha1_path)
+  assert_eq(modules["path"], path_path)
   assert_eq(modules["collection"], collection_path)
   remove_if_exists(root)
 }

@@ -19,9 +19,6 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 | `bytes.vibe` | 5 | Byte array helpers (`is_byte`, `clamp_byte`, `from_ascii`, `to_ascii`, `to_hex`, `from_hex`) |
 | `string.vibe` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
 | `io.vibe` | 6 | High-level stdio + ANSI/TUI helpers (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`, `ansi_escape`) |
-| `path/ref.vibe` | 2 | PathRef/DynamicPath pure model (`from_literal`, `dynamic`) + member APIs (`as_string`, `is_absolute`) |
-| `path/runtime.vibe` | 2 | Path runtime bridge (`resolve`, `DynamicPath::resolve`) |
-| `path.vibe` | 3 | Compatibility facade for legacy path API shape |
 | `threads/spec.vibe` | 4 | Pure thread deployment specs (`task/channel/actor/deployment_plan`, recommended flags/env) |
 | `threads/runtime.vibe` | 2 | Runtime bridge (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`) |
 | `threads.vibe` | 7 | Compatibility facade for legacy threads API shape |
@@ -37,21 +34,17 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 - `trait-contract`: contracts (`builtin_traits.vibe`)
 - `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)
 - `pure-data`: pure ADT/data operations (`array/option/result/bytes`)
-- `ref-model`: path and module reference model (`path/ref` + `path` facade)
-- `effect-boundary`: runtime side-effect bridge (`io/path/runtime/threads/runtime`)
+- `effect-boundary`: runtime side-effect bridge (`io/threads/runtime`)
 
 Compatibility facades:
 
-- `path.vibe` delegates conceptually to `path/ref.vibe` + `path/runtime.vibe`.
 - `threads.vibe` delegates conceptually to `threads/spec.vibe` + `threads/runtime.vibe`.
 
-Path import rule (recommended):
-
-- quick usage: `use ./vibe/prelude/path.vibe { ... }`
-- contract/runtime splitを明示したい場合:
-  - pure model: `use ./vibe/prelude/path/ref.vibe { ... }`
-  - effect bridge: `use ./vibe/prelude/path/runtime.vibe { ... }`
-- facade / split import の両方は `path_test.vibe`, `path_ref_test.vibe`, `path_runtime_test.vibe` で継続回帰する。
+Path モジュールは `vibe/path` へ移動済み。
+- quick usage: `use ./vibe/path/index.vibe { ... }`
+- split import:
+  - pure model: `use ./vibe/path/ref.vibe { ... }`
+  - effect bridge: `use ./vibe/path/runtime.vibe { ... }`
 
 Boundary enforcement is active in:
 
@@ -62,7 +55,7 @@ Boundary enforcement is active in:
 
 `vibe/prelude` は pure 層と effect 境界を意図的に分離し、関数シグネチャで副作用を可視化する。
 
-- pure modules (`pure-primitive`, `pure-data`, `ref-model`) は `with {...}` を持たない。
+- pure modules (`pure-primitive`, `pure-data`) は `with {...}` を持たない。
 - runtime bridge (`effect-boundary`) は host builtin への薄い委譲に限定し、effect を明示する。
 - effect の種類は責務に合わせる:
   - file/path: `with {Fs}` / `with {Env}`

@@ -193,6 +193,7 @@ fn default_registry_modules(root : String) -> Map[String, String] {
   out["json"] = @vibe_fs.normalize_path(root + "/vibe/json")
   out["base64"] = @vibe_fs.normalize_path(root + "/vibe/base64")
   out["sha1"] = @vibe_fs.normalize_path(root + "/vibe/sha1")
+  out["path"] = @vibe_fs.normalize_path(root + "/vibe/path")
   out["collection"] = @vibe_fs.normalize_path(root + "/vibe/collection")
   out["rlm"] = @vibe_fs.normalize_path(root + "/vibe/x/rlm")
   out

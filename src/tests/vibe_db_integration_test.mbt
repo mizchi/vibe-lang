@@ -343,10 +343,18 @@ test "vibe wasm import reports type mismatch on call" {
 ///|
 test "vibe db path std module has no type diagnostics" {
   let db = VibeDb::new()
-  let source = @os_fs.read_file_to_string("vibe/prelude/path.vibe") catch {
-    e => fail("failed to read vibe/prelude/path.vibe: " + e.to_string())
+  let source = @os_fs.read_file_to_string("vibe/path/index.vibe") catch {
+    e => fail("failed to read vibe/path/index.vibe: " + e.to_string())
+  }
+  let ref_source = @os_fs.read_file_to_string("vibe/path/ref.vibe") catch {
+    e => fail("failed to read vibe/path/ref.vibe: " + e.to_string())
+  }
+  let runtime_source = @os_fs.read_file_to_string("vibe/path/runtime.vibe") catch {
+    e => fail("failed to read vibe/path/runtime.vibe: " + e.to_string())
   }
   db.set_source("path", source)
+  db.set_source("ref.vibe", ref_source)
+  db.set_source("runtime.vibe", runtime_source)
   let env = db.types("path")
   let diags = db.diagnostics("path")
   if not(diags.is_empty()) {
@@ -356,18 +364,6 @@ test "vibe db path std module has no type diagnostics" {
     }
     fail("unexpected diagnostics: " + lines.join(","))
   }
-  let ast = db.ast("path")
-  let mut has_export_from_literal = false
-  for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::ExportLet(name~, ..) =>
-        if name == "from_literal" {
-          has_export_from_literal = true
-        }
-      _ => ()
-    }
-  }
-  assert_true(has_export_from_literal)
   match env.get_scheme("add") {
     Some(_) => ()
     None => fail("expected prelude scheme: add")

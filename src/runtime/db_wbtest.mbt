@@ -11,9 +11,10 @@ fn wbtest_ensure_dir(path : String) -> Unit {
 }
 
 ///|
-test "normalize path object resolves std and prelude namespaces under index root" {
+test "normalize path object resolves std prelude and path namespaces under index root" {
   let root = "/tmp/runtime_std_ns_wbtest"
   wbtest_ensure_dir(root + "/vibe/prelude")
+  wbtest_ensure_dir(root + "/vibe/path")
   match
     @io.write_string(root + "/index.vibe", "export let version = \"0.1.0\"\n") {
     Ok(_) => ()
@@ -25,6 +26,8 @@ test "normalize path object resolves std and prelude namespaces under index root
   assert_eq(from_std.normalized, root + "/vibe/prelude/int.vibe")
   let from_prelude = normalize_path_obj(root, "prelude/int.vibe")
   assert_eq(from_prelude.normalized, root + "/vibe/prelude/int.vibe")
+  let from_path = normalize_path_obj(root, "path/index.vibe")
+  assert_eq(from_path.normalized, root + "/vibe/path/index.vibe")
 }
 
 ///|

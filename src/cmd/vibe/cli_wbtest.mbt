@@ -1691,7 +1691,7 @@ test "std layer classification covers primary modules" {
   assert_eq(data_layer_result, "pure-data")
 
   let ref_layer = match
-    std_layer_for_path("/tmp/repo/vibe/prelude/path/ref.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/path/ref.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }

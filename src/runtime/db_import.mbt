@@ -186,7 +186,8 @@ fn resolve_default_registry_path(
         ns == "std" ||
         ns == "json" ||
         ns == "base64" ||
-        ns == "sha1" {
+        ns == "sha1" ||
+        ns == "path" {
         let root = resolve_import_root_dir(base_dir)
         let dir = if ns == "std" { "prelude" } else { ns }
         let resolved = "vibe/" + dir + "/" + rest

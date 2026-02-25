@@ -12,7 +12,8 @@ fn std_layer_name(layer : StdModuleLayer) -> String {
 ///|
 fn std_layer_for_path(path : String) -> StdModuleLayer? {
   let normalized = @vibe_fs.normalize_path(path)
-  if not(normalized.contains("/vibe/prelude/")) ||
+  if (not(normalized.contains("/vibe/prelude/")) &&
+    not(normalized.contains("/vibe/path/"))) ||
     not(normalized.has_suffix(".vibe")) ||
     normalized.has_suffix("_test.vibe") ||
     normalized.has_suffix("_type_import_test.vibe") ||
@@ -38,12 +39,12 @@ fn std_layer_for_path(path : String) -> StdModuleLayer? {
     normalized.has_suffix("/vibe/prelude/threads/spec.vibe") {
     return Some(StdModuleLayer::PureData)
   }
-  if normalized.has_suffix("/vibe/prelude/path/ref.vibe") ||
-    normalized.has_suffix("/vibe/prelude/path.vibe") {
+  if normalized.has_suffix("/vibe/path/ref.vibe") {
     return Some(StdModuleLayer::RefModel)
   }
   if normalized.has_suffix("/vibe/prelude/io.vibe") ||
-    normalized.has_suffix("/vibe/prelude/path/runtime.vibe") ||
+    normalized.has_suffix("/vibe/path/runtime.vibe") ||
+    normalized.has_suffix("/vibe/path/index.vibe") ||
     normalized.has_suffix("/vibe/prelude/threads/runtime.vibe") ||
     normalized.has_suffix("/vibe/prelude/threads.vibe") {
     return Some(StdModuleLayer::EffectBoundary)

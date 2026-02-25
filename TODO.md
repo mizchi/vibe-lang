@@ -176,8 +176,8 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `vibe/json/json.vibe`, `vibe/json/jsonrpc.vibe`, `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`
 - [x] `path` facade と `path/ref` の型公開境界を整理し、利用者向け import ルールを一本化する
   - [x] `vibe/prelude/README.md` に facade / split import の推奨ルールを明文化
-  - [x] `vibe/prelude/path_test.vibe`, `vibe/prelude/path_ref_test.vibe`, `vibe/prelude/path_runtime_test.vibe` で facade / split の利用経路を回帰維持
-  - 対象: `vibe/prelude/path.vibe`, `vibe/prelude/path/ref.vibe`, `vibe/prelude/path/runtime.vibe`, `vibe/prelude/path*_test.vibe`
+  - [x] `vibe/path/index_test.vibe`, `vibe/path/ref_test.vibe`, `vibe/path/runtime_test.vibe` で facade / split の利用経路を回帰維持
+  - 対象: `vibe/path/index.vibe`, `vibe/path/ref.vibe`, `vibe/path/runtime.vibe`, `vibe/path/*_test.vibe`
 - [x] `--unstable-threads` 依存 API の安定/実験境界をドキュメントとテストで明示する
   - README に Stable/Unstable API 一覧表を追加（flag 要否、型チェック vs 実行の区別を明記）
   - テストは既存で十分（spec 5件 + runtime thunk 2件 + facade 7件 = 14テスト）
@@ -188,7 +188,7 @@ Completed items are archived in `docs/DONE.md`.
 ### High (P1): 公開エンドポイントの一貫性
 
 - [x] `index.vibe` が `version` のみのモジュールで、公開 API を index に集約する
-  - 対象: `vibe/x/rlm/index.vibe`, `vibe/x/index.vibe`, `vibe/x/args/index.vibe`, `vibe/prelude/path/index.vibe`, `vibe/prelude/threads/index.vibe`
+  - 対象: `vibe/x/rlm/index.vibe`, `vibe/x/index.vibe`, `vibe/x/args/index.vibe`, `vibe/path/index.vibe`, `vibe/prelude/threads/index.vibe`
   - 方針: 実体 API を `export ./foo.vibe { ... }` で明示し、利用側 import を index 経由へ寄せる
 
 ### Medium (P2): API 層と契約の明確化
