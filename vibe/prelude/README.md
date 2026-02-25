@@ -41,10 +41,10 @@ Compatibility facades:
 - `threads.vibe` delegates conceptually to `threads/spec.vibe` + `threads/runtime.vibe`.
 
 Path モジュールは `vibe/path` へ移動済み。
-- quick usage: `use ./vibe/path/index.vibe { ... }`
+- quick usage: `import /vibe/path { ... }`
 - split import:
-  - pure model: `use ./vibe/path/ref.vibe { ... }`
-  - effect bridge: `use ./vibe/path/runtime.vibe { ... }`
+  - pure model: `import /vibe/path/ref.vibe { ... }`
+  - effect bridge: `import /vibe/path/runtime.vibe { ... }`
 
 Boundary enforcement is active in:
 
@@ -105,12 +105,12 @@ Boundary enforcement is active in:
 3. 期間後は `*_compat` 相当の互換面へ隔離し、既定 import からは外す。
 4. 削除前には `vibe normalize` の自動変換候補へ追加し、移行コストを固定化する。
 
-Recommended usage (collision-safe, method-style):
+Recommended usage (collision-safe, pipe-first):
 
 ```vibe
-use ./vibe/prelude/option.vibe { is_some, unwrap_or }
-let ok = Some(1).is_some()
-let v = None.unwrap_or(0)
+import /vibe/prelude/option.vibe { is_some, unwrap_or }
+let ok = Some(1) |> is_some
+let v = None |> unwrap_or(0)
 ```
 
 ## Unstable Feature: `--unstable-threads`

@@ -57,8 +57,10 @@ Completed items are archived in `docs/DONE.md`.
     - 対象: `src/core/normalize_sort.mbt`, `src/cmd/vibe/normalize_render.mbt`, `src/cmd/vibe/normalize_engine_wbtest.mbt`
   - [x] Green(2/2): 衝突時 alias を自動生成して再展開する（同一 import spec 内）
     - 対象: `src/cmd/vibe/normalize_engine.mbt`, `src/cmd/vibe/normalize_engine_wbtest.mbt`
-- [ ] library migration: 既存ライブラリ/fixture の `recv.method(...)` 記法を `|>` または完全修飾関数呼び出しへ一括移行する
+- [x] library migration: 既存ライブラリ/fixture の `recv.method(...)` 記法を `|>` または完全修飾関数呼び出しへ一括移行する
   - 対象: `vibe/**/*`, `examples/**/*`, `fixtures/**/*`, `docs/language-tour/*`
+  - [x] `vibe/**/*`, `examples/**/*`, `docs/language-tour/*` の method-call sugar を `|>` / `Type::symbol` 呼び出しへ移行
+    - 対象: `vibe/base64/*`, `vibe/sha1/*`, `vibe/prelude/*_test.vibe`, `vibe/path/*_test.vibe`, `vibe/collection/*_test.vibe`, `vibe/json/json.vibe`, `examples/*.vibe`, `docs/language-tour/*`
   - [x] `fixtures/**/*` の method-call sugar を `|>` / `Type::symbol` 呼び出しへ移行
     - 対象: `fixtures/std_alias_*`, `fixtures/type_member_*`, `fixtures/prelude_to_string_parenthesized_literal_method.vibe`, `src/tests/vibe_wasm_test.mbt`
 - [ ] railway-oriented error path: Result 合成チェーンの推奨パターンを lint/guide で固定し、例外境界 (`handle`/`throw`/`unwrap`) を可視化する

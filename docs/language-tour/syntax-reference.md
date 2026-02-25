@@ -215,14 +215,13 @@ x |> f(a)       // f(x, a)
 x |> f |> g     // g(f(x))
 ```
 
-### Method syntax
+### Pipe-first call style
 
 ```vibe
-// value.method(args) => method(value, args)
-arr.array_length()
-s.string_substring(0, 5)
+arr |> array_length
+s |> string_substring(0, 5)
 
-// value.field => field(value)
+// value.field is field access only
 point.x
 ```
 

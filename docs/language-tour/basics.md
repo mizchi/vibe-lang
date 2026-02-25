@@ -221,13 +221,12 @@ let result = 1 |> add(2) |> mul(3)   // => 9
 let len = "hello" |> string_length   // => 5
 ```
 
-## Method Syntax
+## Pipe-First Call Style
 
 ```vibe
-// value.method(args) desugars to method(value, args)
 let s = "hello world"
-let sub = s.string_substring(0, 5)
-sub.string_length()  // => 5
+let sub = s |> string_substring(0, 5)
+sub |> string_length  // => 5
 ```
 
 ## Type Definitions

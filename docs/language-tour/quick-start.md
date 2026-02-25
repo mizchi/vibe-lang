@@ -47,9 +47,9 @@ let identity = [T](x: T) -> T { x }
 // Pipe — passes value as FIRST argument
 1 |> add(2) |> mul(3)  // => 9   (add(1,2) => mul(3,3))
 
-// Method syntax: value.method(args) => method(value, args)
-"hello".string_length()  // => 5
-// Note: struct.field (e.g. p.x) is field access, NOT method call
+// Pipe-first call style
+"hello" |> string_length  // => 5
+// Note: struct.field (e.g. p.x) is field access only
 ```
 
 > **Pipe `|>` with HOFs**: The pipe operator inserts the left value as the
