@@ -2348,6 +2348,10 @@ fn normalize_directory_to_index_source(
       }
       return Err("normalize: std layering violation(s) found")
     }
+    let railway_notes = railway_boundary_notes_for_source(source)
+    for note in railway_notes {
+      println("normalize: \{path}: \{note}")
+    }
     match normalize_collect_top_level_decls(seen, path, source) {
       Ok(_) => ()
       Err(err) => return Err(err)
@@ -2458,6 +2462,10 @@ fn normalize_cmd(args : Array[String]) -> Unit {
         println("normalize: \{path}: \{violation}")
       }
       abort("normalize: std layering violation(s) found")
+    }
+    let railway_notes = railway_boundary_notes_for_source(source)
+    for note in railway_notes {
+      println("normalize: \{path}: \{note}")
     }
     let normalized = match normalize_format_file_source(resolved) {
       Ok(v) => v

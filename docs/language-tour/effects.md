@@ -33,6 +33,36 @@ let safe = (x: Int) -> Int {
 }
 ```
 
+### Railway-oriented Result pipeline (recommended)
+
+Use `Result` composition in the pipeline core, and isolate error boundaries at edges.
+
+```vibe
+let parse_id = (raw: String) -> Result[Int, String] { ... }
+let validate_id = (id: Int) -> Result[Int, String] { ... }
+let load_user = (id: Int) -> Result[String, String] { ... }
+
+let fetch_user = (raw: String) -> Result[String, String] {
+  raw
+  |> parse_id
+  |> Result::and_then(validate_id)
+  |> Result::and_then(load_user)
+}
+
+let fetch_user_or_guest = (raw: String) -> String {
+  match fetch_user(raw) {
+    Ok(user) => user,
+    Err(_) => "guest"
+  }
+}
+```
+
+Rule of thumb:
+
+- Keep pipeline core in `Result` (`and_then`, `map_ok`, `map_err`).
+- Place terminal boundaries (`handle`, `throw`, project-local `unwrap`) in adapter edges (CLI/HTTP/FFI/test helpers).
+- Keep each boundary explicit and localized to one place per flow.
+
 ### suberror
 
 Define typed error subtypes for structured error handling.

@@ -143,6 +143,173 @@ pub fn std_layering_violations_for_source(
 }
 
 ///|
+fn railway_is_unwrap_call(name : String) -> Bool {
+  name == "unwrap" || name.has_suffix("::unwrap")
+}
+
+///|
+fn railway_collect_module_boundaries(
+  m : @vibe_core.Module,
+  stats : Array[Int],
+) -> Unit {
+  for stmt in m.stmts {
+    railway_collect_stmt_boundaries(stmt, stats)
+  }
+}
+
+///|
+fn railway_collect_stmt_boundaries(
+  stmt : @vibe_core.Stmt,
+  stats : Array[Int],
+) -> Unit {
+  match stmt {
+    @vibe_core.Stmt::Expr(expr~, ..) => railway_collect_expr_boundaries(expr, stats)
+    @vibe_core.Stmt::Let(expr~, ..)
+    | @vibe_core.Stmt::ExportLet(expr~, ..)
+    | @vibe_core.Stmt::InternalExportLet(expr~, ..)
+    | @vibe_core.Stmt::LetMut(expr~, ..)
+    | @vibe_core.Stmt::Assign(expr~, ..)
+    | @vibe_core.Stmt::LetPat(expr~, ..) =>
+      railway_collect_expr_boundaries(expr, stats)
+    @vibe_core.Stmt::LetPatElse(expr~, else_body~, ..) => {
+      railway_collect_expr_boundaries(expr, stats)
+      railway_collect_module_boundaries(else_body, stats)
+    }
+    @vibe_core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      railway_collect_expr_boundaries(target, stats)
+      railway_collect_expr_boundaries(index, stats)
+      railway_collect_expr_boundaries(value, stats)
+    }
+    @vibe_core.Stmt::Test(body~, ..) | @vibe_core.Stmt::Bench(body~, ..) =>
+      railway_collect_module_boundaries(body, stats)
+    _ => ()
+  }
+}
+
+///|
+fn railway_collect_expr_boundaries(
+  expr : @vibe_core.Expr,
+  stats : Array[Int],
+) -> Unit {
+  match expr {
+    @vibe_core.Expr::Handle(body~, arms~, ..) => {
+      stats[0] = stats[0] + 1
+      railway_collect_module_boundaries(body, stats)
+      for arm in arms {
+        match arm.cond {
+          Some(c) => railway_collect_expr_boundaries(c, stats)
+          None => ()
+        }
+        railway_collect_expr_boundaries(arm.expr, stats)
+      }
+    }
+    @vibe_core.Expr::Raise(value=inner, ..) => {
+      stats[1] = stats[1] + 1
+      railway_collect_expr_boundaries(inner, stats)
+    }
+    @vibe_core.Expr::Call(name~, args~, ..) => {
+      if railway_is_unwrap_call(name) {
+        stats[2] = stats[2] + 1
+      }
+      for arg in args {
+        railway_collect_expr_boundaries(arg.expr, stats)
+      }
+    }
+    @vibe_core.Expr::Fn(body~, ..) => railway_collect_module_boundaries(body, stats)
+    @vibe_core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      railway_collect_expr_boundaries(cond, stats)
+      railway_collect_module_boundaries(then_body, stats)
+      railway_collect_module_boundaries(else_body, stats)
+    }
+    @vibe_core.Expr::Match(scrutinee~, arms~, ..) => {
+      railway_collect_expr_boundaries(scrutinee, stats)
+      for arm in arms {
+        match arm.cond {
+          Some(c) => railway_collect_expr_boundaries(c, stats)
+          None => ()
+        }
+        railway_collect_expr_boundaries(arm.expr, stats)
+      }
+    }
+    @vibe_core.Expr::ForIn(iterable~, body~, ..) => {
+      railway_collect_expr_boundaries(iterable, stats)
+      railway_collect_module_boundaries(body, stats)
+    }
+    @vibe_core.Expr::While(cond~, body~, ..) => {
+      railway_collect_expr_boundaries(cond, stats)
+      railway_collect_module_boundaries(body, stats)
+    }
+    @vibe_core.Expr::Loop(params~, body~, ..) => {
+      for p in params {
+        railway_collect_expr_boundaries(p.init, stats)
+      }
+      railway_collect_module_boundaries(body, stats)
+    }
+    @vibe_core.Expr::Tuple(items~, ..) | @vibe_core.Expr::Array(items~, ..) =>
+      for item in items {
+        railway_collect_expr_boundaries(item, stats)
+      }
+    @vibe_core.Expr::TupleIndex(expr=inner, ..)
+    | @vibe_core.Expr::Yield(expr=inner, ..) =>
+      railway_collect_expr_boundaries(inner, stats)
+    @vibe_core.Expr::Break(value~, ..) =>
+      match value {
+        Some(v) => railway_collect_expr_boundaries(v, stats)
+        None => ()
+      }
+    @vibe_core.Expr::Continue(args~, ..) =>
+      for a in args {
+        railway_collect_expr_boundaries(a, stats)
+      }
+    @vibe_core.Expr::Record(fields~, ..)
+    | @vibe_core.Expr::StructLit(fields~, ..) =>
+      for f in fields {
+        railway_collect_expr_boundaries(f.expr, stats)
+      }
+    @vibe_core.Expr::Map(fields~, ..) =>
+      for f in fields {
+        railway_collect_expr_boundaries(f.expr, stats)
+      }
+    @vibe_core.Expr::Block(body~, ..) =>
+      railway_collect_module_boundaries(body, stats)
+    _ => ()
+  }
+}
+
+///|
+pub fn railway_boundary_notes_for_source(source : String) -> Array[String] {
+  let ast = @parser.parse_ast(source) catch { _ => return [] }
+  let stats : Array[Int] = [0, 0, 0]
+  railway_collect_module_boundaries(ast, stats)
+  let handle_count = stats[0]
+  let throw_count = stats[1]
+  let unwrap_count = stats[2]
+  let notes : Array[String] = []
+  if handle_count == 0 && throw_count == 0 && unwrap_count == 0 {
+    return notes
+  }
+  notes.push(
+    "railway boundaries: handle=" +
+    handle_count.to_string() +
+    " throw=" +
+    throw_count.to_string() +
+    " unwrap=" +
+    unwrap_count.to_string(),
+  )
+  if unwrap_count > 0 {
+    notes.push(
+      "railway warning: unwrap is a terminal boundary; keep pipeline core in Result composition and isolate unwrap at edges",
+    )
+  }
+  if throw_count > 0 && handle_count == 0 {
+    notes.push(
+      "railway warning: throw appears without local handle; make boundary explicit at caller with handle",
+    )
+  }
+  notes
+}
+
+///|
 pub fn normalize_format_file_source(path : String) -> Result[String, String] {
   let src = @os_fs.read_file_to_string(path) catch {
     e => return Err("normalize: " + e.to_string())

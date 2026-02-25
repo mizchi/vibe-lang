@@ -63,8 +63,10 @@ Completed items are archived in `docs/DONE.md`.
     - 対象: `vibe/base64/*`, `vibe/sha1/*`, `vibe/prelude/*_test.vibe`, `vibe/path/*_test.vibe`, `vibe/collection/*_test.vibe`, `vibe/json/json.vibe`, `examples/*.vibe`, `docs/language-tour/*`
   - [x] `fixtures/**/*` の method-call sugar を `|>` / `Type::symbol` 呼び出しへ移行
     - 対象: `fixtures/std_alias_*`, `fixtures/type_member_*`, `fixtures/prelude_to_string_parenthesized_literal_method.vibe`, `src/tests/vibe_wasm_test.mbt`
-- [ ] railway-oriented error path: Result 合成チェーンの推奨パターンを lint/guide で固定し、例外境界 (`handle`/`throw`/`unwrap`) を可視化する
+- [x] railway-oriented error path: Result 合成チェーンの推奨パターンを lint/guide で固定し、例外境界 (`handle`/`throw`/`unwrap`) を可視化する
   - 対象: `docs/language-tour/effects.md`, `docs/vibe.md`, `src/cmd/vibe/normalize_format.mbt`（表示規約）
+  - [x] guide: language-tour / spec docs に pipe-first + Result 合成の推奨パターンを追加
+  - [x] lint: `normalize` 実行時に boundary summary（handle/throw/unwrap）と注意喚起を表示
 
 ## Prelude Namespace Migration (2026-02-25)
 

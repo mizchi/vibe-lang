@@ -145,6 +145,30 @@ let fail = () -> Unit with {Error} {
 }
 ```
 
+Railway-oriented guideline (pipe-first error flow):
+- pipeline core should stay in `Result` composition (`Result::and_then`,
+  `Result::map_ok`, `Result::map_err`).
+- terminal boundaries (`handle`, `throw`, project-local `unwrap`) should be
+  isolated at adapter edges (CLI/HTTP/FFI/tests).
+- avoid scattering multiple implicit boundaries across one flow; make the
+  boundary location explicit in code.
+
+```vibe
+let run_core = (raw: String) -> Result[Int, String] {
+  raw
+  |> parse_id
+  |> Result::and_then(validate_id)
+  |> Result::and_then(load_user_id)
+}
+
+let run_cli = (raw: String) -> Int {
+  match run_core(raw) {
+    Ok(v) => v,
+    Err(_) => -1
+  }
+}
+```
+
 ### Generics with effects (current)
 
 Effect polymorphism and type polymorphism are checked together.
