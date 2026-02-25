@@ -348,7 +348,8 @@ pub fn VibeDb::new() -> VibeDb {
               if is_reexport {
                 diags.push(rt, @core.Diagnostic::{
                   stage: "import",
-                  message: "cross-package re-export is forbidden: version@" + name,
+                  message: "cross-package re-export is forbidden: version@" +
+                  name,
                   span: Some(span),
                   hint: Some(
                     "re-export from hash/version/symbol refs is not allowed",
@@ -402,7 +403,8 @@ pub fn VibeDb::new() -> VibeDb {
               if is_reexport {
                 diags.push(rt, @core.Diagnostic::{
                   stage: "import",
-                  message: "cross-package re-export is forbidden: symbol@" + name,
+                  message: "cross-package re-export is forbidden: symbol@" +
+                  name,
                   span: Some(span),
                   hint: Some(
                     "re-export from hash/version/symbol refs is not allowed",
@@ -819,8 +821,7 @@ pub fn VibeDb::new() -> VibeDb {
               @core.Stmt::ReExport(spec~, source~, span~) =>
                 if import_stmt_matches_spec(base_dir, source, imp) {
                   let trait_aliases = collect_import_trait_aliases(
-                    spec,
-                    imported_env,
+                    spec, imported_env,
                   )
                   for item in spec.items {
                     let source_name = item.name
@@ -857,10 +858,7 @@ pub fn VibeDb::new() -> VibeDb {
                           Some(struct_def) => {
                             env.set_struct(target_name, struct_def)
                             import_trait_impls_for_type(
-                              env,
-                              imported_env,
-                              source_name,
-                              trait_aliases,
+                              env, imported_env, source_name, trait_aliases,
                             )
                           }
                           None => ()
@@ -870,10 +868,7 @@ pub fn VibeDb::new() -> VibeDb {
                           Some(enum_def) => {
                             env.set_enum_def(target_name, enum_def)
                             import_trait_impls_for_type(
-                              env,
-                              imported_env,
-                              source_name,
-                              trait_aliases,
+                              env, imported_env, source_name, trait_aliases,
                             )
                             for ctor in enum_def.ctors {
                               match imported_env.get_ctor(ctor.name) {
@@ -891,7 +886,8 @@ pub fn VibeDb::new() -> VibeDb {
                                       Some(tier) =>
                                         env.set_purity_tier(ctor.name, tier)
                                       None =>
-                                        match imported_env.get_purity(ctor.name) {
+                                        match
+                                          imported_env.get_purity(ctor.name) {
                                           Some(pure) =>
                                             env.set_purity(ctor.name, pure)
                                           None => ()
@@ -1370,6 +1366,6 @@ pub fn VibeDb::new() -> VibeDb {
     rt,
     inputs: { sources, binary_sources },
     queries: { cst_query, ast_query, type_query, import_query },
-    diagnostics: { diags: diags },
+    diagnostics: { diags, },
   }
 }

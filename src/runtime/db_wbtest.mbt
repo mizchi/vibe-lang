@@ -28,16 +28,8 @@ test "normalize path object resolves std namespace under index root" {
 ///|
 test "type query resolves extensionless directory import to index.vibe" {
   let db = VibeDb::new()
-  db.set_source(
-    "./dep/index.vibe",
-    "export let value = 1\n",
-  )
-  db.set_source(
-    "main",
-    "import ./dep { value }\n" +
-    "let x = value\n" +
-    "x\n",
-  )
+  db.set_source("./dep/index.vibe", "export let value = 1\n")
+  db.set_source("main", "import ./dep { value }\n" + "let x = value\n" + "x\n")
   let env = db.types("main")
   let diags = db.diagnostics("main")
   if not(diags.is_empty()) {
@@ -312,7 +304,9 @@ test "cross-package re-export is rejected and not shared with siblings" {
     "/project/lib/math.vibe", "export let plus2 = (a: Int, b: Int) -> Int { a + b }\nexport { plus2 }\n",
   )
   // index.vibe in /project/src/ re-exports from external package (forbidden)
-  db.set_source("/project/src/index.vibe", "export ../lib/math.vibe { plus2 }\n")
+  db.set_source(
+    "/project/src/index.vibe", "export ../lib/math.vibe { plus2 }\n",
+  )
   let _index_imports = db.imports("/project/src/index.vibe")
   let index_import_diags = db.import_diagnostics("/project/src/index.vibe")
   let has_forbidden_reexport_diag = index_import_diags

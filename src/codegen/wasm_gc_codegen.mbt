@@ -934,12 +934,7 @@ fn infer_expr_kind_gc(
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let _ = span
       let (_, _, body_kind) = infer_for_in_parts_gc(
-        ctx,
-        fctx,
-        value_name,
-        index_name,
-        iterable,
-        body,
+        ctx, fctx, value_name, index_name, iterable, body,
       )
       let type_idx = ensure_array_type(
         ctx.types,
@@ -2024,22 +2019,14 @@ fn compile_expr_gc(
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let _ = span
       let (iterable_type_idx, iterable_elem_kind, body_kind) = infer_for_in_parts_gc(
-        ctx,
-        fctx,
-        value_name,
-        index_name,
-        iterable,
-        body,
+        ctx, fctx, value_name, index_name, iterable, body,
       )
       let result_type_idx = ensure_array_type(
         ctx.types,
         ctx.array_type_index,
         body_kind,
       )
-      let iterable_idx = alloc_local_gc(
-        fctx,
-        GcValKind::Ref(iterable_type_idx),
-      )
+      let iterable_idx = alloc_local_gc(fctx, GcValKind::Ref(iterable_type_idx))
       let len_idx = alloc_local_gc(fctx, GcValKind::I32)
       let result_idx = alloc_local_gc(fctx, GcValKind::Ref(result_type_idx))
       let i_idx = alloc_local_gc(fctx, GcValKind::I32)

@@ -184,7 +184,11 @@ pub fn VibeDb::set_binary_source(
 ) -> Unit {
   let _ = self.inputs.binary_sources.set(self.rt, path, content)
   let hash = @core.git_blob_hash_bytes(content)
-  let _ = self.inputs.binary_sources.set(self.rt, hash_source_key(hash), content)
+  let _ = self.inputs.binary_sources.set(
+    self.rt,
+    hash_source_key(hash),
+    content,
+  )
 }
 
 ///|
@@ -217,7 +221,11 @@ pub fn VibeDb::set_path_ref(
 ///|
 pub fn VibeDb::require_path_lock(self : VibeDb, required : Bool) -> Unit {
   let value = if required { "1" } else { "0" }
-  let _ = self.inputs.sources.set(self.rt, require_path_lock_config_key(), value)
+  let _ = self.inputs.sources.set(
+    self.rt,
+    require_path_lock_config_key(),
+    value,
+  )
 }
 
 ///|
@@ -226,7 +234,11 @@ pub fn VibeDb::set_symbol_ref(
   name : String,
   hash : String,
 ) -> Unit {
-  let _ = self.inputs.sources.set(self.rt, symbol_ref_key(name), normalize_hash(hash))
+  let _ = self.inputs.sources.set(
+    self.rt,
+    symbol_ref_key(name),
+    normalize_hash(hash),
+  )
 }
 
 ///|

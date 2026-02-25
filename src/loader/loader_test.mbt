@@ -475,8 +475,7 @@ test "loader load_db_for_test keeps stale index.lock untouched" {
   write_file(entry, entry_source)
   write_file(lib, lib_source)
   let lock_path = @codebase.lock_file_path(entry)
-  let stale_lock =
-    "{\"path\":{\"./main.vibe\":\"stale_main\",\"./lib.vibe\":\"stale_lib\"},\"version\":{},\"symbol\":{}}"
+  let stale_lock = "{\"path\":{\"./main.vibe\":\"stale_main\",\"./lib.vibe\":\"stale_lib\"},\"version\":{},\"symbol\":{}}"
   write_file(lock_path, stale_lock)
   let before = @os_fs.read_file_to_string(lock_path) catch {
     e => fail("read stale lock failed: " + e.to_string())

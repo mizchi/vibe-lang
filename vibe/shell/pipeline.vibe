@@ -168,7 +168,7 @@ export let cut = (xs: Array[String], delim: String, field: Int) -> Array[String]
     let mut i = 0
     while i < array_length(xs) {
       let parts = string_split(array_get(xs, i), delim)
-      if field < array_length(parts) {
+      if field >= 0 && field < array_length(parts) {
         array_builder_push(result, array_get(parts, field))
       } else array_builder_push(result, "")
       i = i + 1
@@ -249,19 +249,6 @@ export let lines = (text: String) -> Array[String] {
 
 export let lower = (text: String) -> String {
   string_to_lower(text)
-}
-
-export let names = (entries: Array[FileEntry]) -> Array[String] {
-  {
-    let result = array_builder()
-    let mut i = 0
-    while i < array_length(entries) {
-      let entry = array_get(entries, i)
-      array_builder_push(result, entry.name)
-      i = i + 1
-    }
-    array_builder_freeze(result)
-  }
 }
 
 export let paste = (xs: Array[String], ys: Array[String], sep: String) -> Array[String] {
@@ -360,18 +347,6 @@ export let grep_re = (xs: Array[String], pattern: String) -> Array[String] with 
   } else sh_lines(string_concat(string_concat(string_concat("printf '%s' '", string_replace_all(text, "'", "'\\''")), "' | grep -E '"), string_concat(string_replace_all(pattern, "'", "'\\''"), "'")))
 }
 
-export let map_str = (xs: Array[String], f: (String) -> String) -> Array[String] {
-  {
-    let result = array_builder()
-    let mut i = 0
-    while i < array_length(xs) {
-      array_builder_push(result, f(array_get(xs, i)))
-      i = i + 1
-    }
-    array_builder_freeze(result)
-  }
-}
-
 export let replace = (text: String, pattern: String, replacement: String) -> String {
   string_replace_all(text, pattern, replacement)
 }
@@ -410,56 +385,12 @@ export let extname = (path: String) -> String {
   } else string_substring(base, idx, string_length(base))
 }
 
-export let drop_str = (xs: Array[String], n: Int) -> Array[String] {
-  {
-    let result = array_builder()
-    let len = array_length(xs)
-    let start = if n < len {
-      n
-    } else len
-    let mut i = start
-    while i < len {
-      array_builder_push(result, array_get(xs, i))
-      i = i + 1
-    }
-    array_builder_freeze(result)
-  }
-}
-
 export let index_of = (text: String, sub: String) -> Int {
   string_index_of(text, sub)
 }
 
 export let join_str = (xs: Array[String], sep: String) -> String {
   string_join(xs, sep)
-}
-
-export let pad_left = (text: String, width: Int, pad: String) -> String {
-  let text_len = string_length(text)
-  if text_len >= width {
-    text
-  } else {
-    let pad_len = string_length(pad)
-    let sb = string_builder()
-    let mut filled = 0
-    let needed = width - text_len
-    while filled < needed {
-      if pad_len > 0 {
-        let remaining = needed - filled
-        if remaining >= pad_len {
-          string_builder_push(sb, pad)
-          filled = filled + pad_len
-        } else {
-          string_builder_push(sb, string_substring(pad, 0, remaining))
-          filled = filled + remaining
-        }
-      } else {
-        filled = needed
-      }
-    }
-    string_builder_push(sb, text)
-    string_builder_freeze(sb)
-  }
 }
 
 export let seq_step = (first: Int, incr: Int, last: Int) -> Array[String] {
@@ -500,12 +431,58 @@ export let sort_str = (xs: Array[String]) -> Array[String] {
   arr
 }
 
+let array_map = [A, B](xs: Array[A], f: (A) -> B) -> Array[B] {
+  {
+    let result = array_builder()
+    let len = array_length(xs)
+    let mut i = 0
+    while i < len {
+      array_builder_push(result, f(array_get(xs, i)))
+      i = i + 1
+    }
+    array_builder_freeze(result)
+  }
+}
+
+export let names = (entries: Array[FileEntry]) -> Array[String] {
+  array_map(entries, (entry: FileEntry) -> String {
+    entry.name
+  })
+}
+
+export let map_str = (xs: Array[String], f: (String) -> String) -> Array[String] {
+  array_map(xs, f)
+}
+
+let clamp_int = (value: Int, lower: Int, upper: Int) -> Int {
+  if value < lower {
+    lower
+  } else if value > upper {
+    upper
+  } else value
+}
+
+export let drop_str = (xs: Array[String], n: Int) -> Array[String] {
+  {
+    let result = array_builder()
+    let len = array_length(xs)
+    let start = clamp_int(n, 0, len)
+    let mut i = start
+    while i < len {
+      array_builder_push(result, array_get(xs, i))
+      i = i + 1
+    }
+    array_builder_freeze(result)
+  }
+}
+
 export let tail_str = (xs: Array[String], n: Int) -> Array[String] {
   {
     let result = array_builder()
     let len = array_length(xs)
-    let start = if len > n {
-      len - n
+    let keep = clamp_int(n, 0, len)
+    let start = if len > keep {
+      len - keep
     } else 0
     let mut i = start
     while i < len {
@@ -516,13 +493,19 @@ export let tail_str = (xs: Array[String], n: Int) -> Array[String] {
   }
 }
 
-export let take_str = (xs: Array[String], n: Int) -> Array[String] {
+export let count_str = (xs: Array[String]) -> Int {
+  array_length(xs)
+}
+
+export let ends_with = (text: String, suffix: String) -> Bool {
+  string_ends_with(text, suffix)
+}
+
+let array_take = [T](xs: Array[T], n: Int) -> Array[T] {
   {
     let result = array_builder()
     let len = array_length(xs)
-    let limit = if n < len {
-      n
-    } else len
+    let limit = clamp_int(n, 0, len)
     let mut i = 0
     while i < limit {
       array_builder_push(result, array_get(xs, i))
@@ -532,59 +515,12 @@ export let take_str = (xs: Array[String], n: Int) -> Array[String] {
   }
 }
 
+export let take_str = (xs: Array[String], n: Int) -> Array[String] {
+  array_take(xs, n)
+}
+
 export let head_str = (xs: Array[String], n: Int) -> Array[String] {
   take_str(xs, n)
-}
-
-export let count_str = (xs: Array[String]) -> Int {
-  array_length(xs)
-}
-
-export let ends_with = (text: String, suffix: String) -> Bool {
-  string_ends_with(text, suffix)
-}
-
-export let pad_right = (text: String, width: Int, pad: String) -> String {
-  let text_len = string_length(text)
-  if text_len >= width {
-    text
-  } else {
-    let pad_len = string_length(pad)
-    let sb = string_builder()
-    string_builder_push(sb, text)
-    let mut filled = 0
-    let needed = width - text_len
-    while filled < needed {
-      if pad_len > 0 {
-        let remaining = needed - filled
-        if remaining >= pad_len {
-          string_builder_push(sb, pad)
-          filled = filled + pad_len
-        } else {
-          string_builder_push(sb, string_substring(pad, 0, remaining))
-          filled = filled + remaining
-        }
-      } else {
-        filled = needed
-      }
-    }
-    string_builder_freeze(sb)
-  }
-}
-
-export let filter_str = (xs: Array[String], f: (String) -> Bool) -> Array[String] {
-  {
-    let result = array_builder()
-    let mut i = 0
-    while i < array_length(xs) {
-      let item = array_get(xs, i)
-      if f(item) {
-        array_builder_push(result, item)
-      }
-      i = i + 1
-    }
-    array_builder_freeze(result)
-  }
 }
 
 export let repeat_str = (text: String, n: Int) -> String {
@@ -603,14 +539,15 @@ export let starts_with = (text: String, prefix: String) -> Bool {
   string_starts_with(text, prefix)
 }
 
-export let where_entry = (entries: Array[FileEntry], pred: (FileEntry) -> Bool) -> Array[FileEntry] {
+let array_filter = [T](xs: Array[T], pred: (T) -> Bool) -> Array[T] {
   {
     let result = array_builder()
+    let len = array_length(xs)
     let mut i = 0
-    while i < array_length(entries) {
-      let entry = array_get(entries, i)
-      if pred(entry) {
-        array_builder_push(result, entry)
+    while i < len {
+      let item = array_get(xs, i)
+      if pred(item) {
+        array_builder_push(result, item)
       }
       i = i + 1
     }
@@ -618,24 +555,20 @@ export let where_entry = (entries: Array[FileEntry], pred: (FileEntry) -> Bool) 
   }
 }
 
+export let filter_str = (xs: Array[String], f: (String) -> Bool) -> Array[String] {
+  array_filter(xs, f)
+}
+
+export let where_entry = (entries: Array[FileEntry], pred: (FileEntry) -> Bool) -> Array[FileEntry] {
+  array_filter(entries, pred)
+}
+
 export let contains_str = (text: String, sub: String) -> Bool {
   string_contains(text, sub)
 }
 
 export let take_entries = (xs: Array[FileEntry], n: Int) -> Array[FileEntry] {
-  {
-    let result = array_builder()
-    let len = array_length(xs)
-    let limit = if n < len {
-      n
-    } else len
-    let mut i = 0
-    while i < limit {
-      array_builder_push(result, array_get(xs, i))
-      i = i + 1
-    }
-    array_builder_freeze(result)
-  }
+  array_take(xs, n)
 }
 
 export let count_entries = (xs: Array[FileEntry]) -> Int {
@@ -644,4 +577,46 @@ export let count_entries = (xs: Array[FileEntry]) -> Int {
 
 export let last_index_of = (text: String, sub: String) -> Int {
   string_last_index_of(text, sub)
+}
+
+let build_pad_prefix = (needed: Int, pad: String) -> String {
+  if needed <= 0 {
+    ""
+  } else {
+    let pad_len = string_length(pad)
+    if pad_len <= 0 {
+      ""
+    } else {
+      let sb = string_builder()
+      let mut remaining = needed
+      while remaining >= pad_len {
+        string_builder_push(sb, pad)
+        remaining = remaining - pad_len
+      }
+      if remaining > 0 {
+        string_builder_push(sb, string_substring(pad, 0, remaining))
+      }
+      string_builder_freeze(sb)
+    }
+  }
+}
+
+export let pad_left = (text: String, width: Int, pad: String) -> String {
+  let text_len = string_length(text)
+  if text_len >= width {
+    text
+  } else {
+    let needed = width - text_len
+    string_concat(build_pad_prefix(needed, pad), text)
+  }
+}
+
+export let pad_right = (text: String, width: Int, pad: String) -> String {
+  let text_len = string_length(text)
+  if text_len >= width {
+    text
+  } else {
+    let needed = width - text_len
+    string_concat(text, build_pad_prefix(needed, pad))
+  }
 }

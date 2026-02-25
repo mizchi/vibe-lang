@@ -235,15 +235,13 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
             let names = get_strings(inner, "names")
             let items : Array[ImportItem] = []
             for name in names {
-              items.push(
-                ImportItem::{
-                  kind: ImportKind::Value,
-                  name,
-                  rename: None,
-                },
-              )
+              items.push(ImportItem::{
+                kind: ImportKind::Value,
+                name,
+                rename: None,
+              })
             }
-            ImportSpec::{ items }
+            ImportSpec::{ items, }
           }
         }
         let source = parse_module_ref(get_field(inner, "source"))

@@ -165,7 +165,11 @@ fn normalize_render_module_ref(source : @vibe_core.ModuleRef) -> String {
           start=0,
           end=path.length() - "/index.vibe".length(),
         )
-        if head.length() > 0 { head } else { path }
+        if head.length() > 0 {
+          head
+        } else {
+          path
+        }
       } else {
         path
       }

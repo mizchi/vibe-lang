@@ -404,7 +404,12 @@ fn make_trait_import_action(
   let import_stmt = if source_trait == local_trait {
     "import " + module_path + " { " + source_trait + " }\n"
   } else {
-    "import " + module_path + " { " + source_trait + " as " + local_trait +
+    "import " +
+    module_path +
+    " { " +
+    source_trait +
+    " as " +
+    local_trait +
     " }\n"
   }
   let title = if source_trait == local_trait {

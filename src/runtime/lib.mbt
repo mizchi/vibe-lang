@@ -104,7 +104,9 @@ fn parse_script_with_mode(
       let parsed = @parser.parse_ast(preprocessed) catch {
         e => raise VibeError::Parse(e)
       }
-      let (desugared, notes) = @pipeline.desugar_vibe_commands_with_notes(parsed)
+      let (desugared, notes) = @pipeline.desugar_vibe_commands_with_notes(
+        parsed,
+      )
       let out_notes : Array[String] = []
       for note in notes {
         out_notes.push("posix-mode command-head desugar: " + note)

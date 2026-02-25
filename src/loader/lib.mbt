@@ -329,11 +329,7 @@ pub fn load_db_for_test(
   entry_path : String,
 ) -> Result[(@runtime.VibeDb, String), String] {
   match
-    load_db_with_paths_with_fs_impl(
-      entry_path,
-      @io.default_fs_adapter(),
-      false,
-    ) {
+    load_db_with_paths_with_fs_impl(entry_path, @io.default_fs_adapter(), false) {
     Ok((db, entry, _)) => Ok((db, entry))
     Err(err) => Err(err)
   }

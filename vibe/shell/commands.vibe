@@ -14,24 +14,6 @@ export let cp = (src: String, dst: String) -> Unit with { Fs } {
   fs_copy(src, dst)
 }
 
-export let ls = (dir: String) -> Array[FileEntry] with { Fs } {
-  let names = fs_readdir(dir)
-  let result = array_builder()
-  let mut i = 0
-  while i < array_length(names) {
-    let name = array_get(names, i)
-    if not(string_starts_with(name, ".")) {
-      let entry_path = string_concat(string_concat(dir, "/"), name)
-      let is_directory = fs_is_dir(entry_path)
-      array_builder_push(result, FileEntry::{
-        name: name, path: entry_path, is_dir: is_directory
-      })
-    }
-    i = i + 1
-  }
-  array_builder_freeze(result)
-}
-
 export let mv = (src: String, dst: String) -> Unit with { Fs } {
   fs_rename(src, dst)
 }
@@ -63,50 +45,6 @@ export let echo = (text: String) -> String {
 
 export let exec = (cmd: String) -> Unit with { Stdout } {
   sh(cmd)
-}
-
-export let find = (dir: String) -> Array[FileEntry] with { Fs } {
-  let result = array_builder()
-  let queue_paths = array_builder()
-  let initial_names = fs_readdir(dir)
-  let mut k = 0
-  while k < array_length(initial_names) {
-    let name = array_get(initial_names, k)
-    let full = string_concat(string_concat(dir, "/"), name)
-    array_builder_push(queue_paths, full)
-    k = k + 1
-  }
-  let mut paths = array_builder_freeze(queue_paths)
-  while array_length(paths) > 0 {
-    let next_paths = array_builder()
-    let mut i = 0
-    while i < array_length(paths) {
-      let p = array_get(paths, i)
-      let n = {
-        let idx = string_last_index_of(p, "/")
-        if idx < 0 {
-          p
-        } else string_substring(p, idx + 1, string_length(p))
-      }
-      let is_directory = fs_is_dir(p)
-      array_builder_push(result, FileEntry::{
-        name: n, path: p, is_dir: is_directory
-      })
-      if is_directory {
-        let child_names = fs_readdir(p)
-        let mut j = 0
-        while j < array_length(child_names) {
-          let cname = array_get(child_names, j)
-          let cpath = string_concat(string_concat(p, "/"), cname)
-          array_builder_push(next_paths, cpath)
-          j = j + 1
-        }
-      }
-      i = i + 1
-    }
-    paths = array_builder_freeze(next_paths)
-  }
-  array_builder_freeze(result)
 }
 
 export let mkdir = (path: String) -> Unit with { Fs } {
@@ -142,22 +80,6 @@ export let is_dir = (path: String) -> Bool with { Fs } {
   fs_is_dir(path)
 }
 
-export let ls_all = (dir: String) -> Array[FileEntry] with { Fs } {
-  let names = fs_readdir(dir)
-  let result = array_builder()
-  let mut i = 0
-  while i < array_length(names) {
-    let name = array_get(names, i)
-    let entry_path = string_concat(string_concat(dir, "/"), name)
-    let is_directory = fs_is_dir(entry_path)
-    array_builder_push(result, FileEntry::{
-      name: name, path: entry_path, is_dir: is_directory
-    })
-    i = i + 1
-  }
-  array_builder_freeze(result)
-}
-
 export let is_file = (path: String) -> Bool with { Fs } {
   fs_is_file(path)
 }
@@ -189,4 +111,111 @@ export let exec_lines = (cmd: String) -> Array[String] with { Stdout } {
 
 export let write_file = (path: String, content: String) -> Unit with { Fs } {
   fs_write_file(path, content)
+}
+
+let to_file_entry = (name: String, path: String) -> FileEntry with { Fs } {
+  FileEntry::{
+    name: name,
+    path: path,
+    is_dir: fs_is_dir(path)
+  }
+}
+
+let is_navigation_entry = (name: String) -> Bool {
+  if string_equals(name, ".") {
+    true
+  } else string_equals(name, "..")
+}
+
+let strip_trailing_slashes = (path: String) -> String {
+  let path_len = string_length(path)
+  if path_len <= 1 {
+    path
+  } else if string_ends_with(path, "/") {
+    string_substring(path, 0, path_len - 1)
+  } else path
+}
+
+let join_path = (dir: String, name: String) -> String {
+  let normalized_dir = strip_trailing_slashes(dir)
+  if string_equals(normalized_dir, "/") {
+    string_concat("/", name)
+  } else {
+    string_concat(string_concat(normalized_dir, "/"), name)
+  }
+}
+
+let list_entries = (dir: String, include_hidden: Bool) -> Array[FileEntry] with { Fs } {
+  let names = fs_readdir(dir)
+  let result = array_builder()
+  let mut i = 0
+  while i < array_length(names) {
+    let name = array_get(names, i)
+    let visible = if include_hidden {
+      true
+    } else not(string_starts_with(name, "."))
+    if visible {
+      let entry_path = join_path(dir, name)
+      array_builder_push(result, to_file_entry(name, entry_path))
+    }
+    i = i + 1
+  }
+  array_builder_freeze(result)
+}
+
+export let ls = (dir: String) -> Array[FileEntry] with { Fs } {
+  list_entries(dir, false)
+}
+
+export let ls_all = (dir: String) -> Array[FileEntry] with { Fs } {
+  list_entries(dir, true)
+}
+
+let path_basename = (path: String) -> String {
+  let normalized_path = strip_trailing_slashes(path)
+  let idx = string_last_index_of(normalized_path, "/")
+  if idx < 0 {
+    normalized_path
+  } else string_substring(normalized_path, idx + 1, string_length(normalized_path))
+}
+
+export let find = (dir: String) -> Array[FileEntry] with { Fs } {
+  let root_dir = strip_trailing_slashes(dir)
+  let result = array_builder()
+  let queue_paths = array_builder()
+  let initial_names = fs_readdir(root_dir)
+  let mut k = 0
+  while k < array_length(initial_names) {
+    let name = array_get(initial_names, k)
+    if not(is_navigation_entry(name)) {
+      array_builder_push(queue_paths, join_path(root_dir, name))
+    }
+    k = k + 1
+  }
+  let mut paths = array_builder_freeze(queue_paths)
+  while array_length(paths) > 0 {
+    let next_paths = array_builder()
+    let mut i = 0
+    while i < array_length(paths) {
+      let p = array_get(paths, i)
+      let is_directory = fs_is_dir(p)
+      array_builder_push(result, FileEntry::{
+        name: path_basename(p), path: p, is_dir: is_directory
+      })
+      if is_directory {
+        let child_names = fs_readdir(p)
+        let mut j = 0
+        while j < array_length(child_names) {
+          let cname = array_get(child_names, j)
+          if not(is_navigation_entry(cname)) {
+            array_builder_push(next_paths, join_path(p, cname))
+          }
+          j = j + 1
+        }
+      }
+      i = i + 1
+    }
+    paths = array_builder_freeze(next_paths)
+  }
+  array_builder_freeze(result)
 }
