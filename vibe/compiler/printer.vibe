@@ -1,7 +1,7 @@
 //# Imports
 
-import ./parser.vibe {
-  Expr, Pat, TypeExpr, Stmt
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
 }
 
 //# Functions
@@ -135,6 +135,26 @@ export let rec print_type_expr = (ty: TypeExpr) -> String {
   }
 }
 
+let print_ctor = (ctor: (String, Array[TypeExpr])) -> String {
+  let (name, args) = ctor
+  if eq(array_length(args), 0) {
+    name
+  }
+  else {
+    let parts = for arg in args {
+      print_type_expr(arg)
+    }
+    string_concat(name, string_concat("(", string_concat(join(parts, ", "), ")")))
+  }
+}
+
+let print_ctor_list = (ctors: Array[(String, Array[TypeExpr])]) -> String {
+  let parts = for ctor in ctors {
+    print_ctor(ctor)
+  }
+  join(parts, "; ")
+}
+
 export let rec print_stmt = (s: Stmt) -> String {
   let prefix = (exported: Bool) -> String {
     if exported {
@@ -160,20 +180,23 @@ export let rec print_stmt = (s: Stmt) -> String {
       }
       string_concat("let mut ", string_concat(name, string_concat(t, string_concat(" = ", print_expr(val)))))
     },
-    SEnum(exported, name, ctors) => {
-      let parts = for ctor in ctors {
-        let (cn, args) = ctor
-        if eq(array_length(args), 0) {
-          cn
-        }
-        else {
-          let tparts = for arg in args {
+    SEnum(exported, name, ctors) => string_concat(prefix(exported), string_concat("enum ", string_concat(name, string_concat(" { ", string_concat(print_ctor_list(ctors), " }"))))),
+    SSuberror(exported, name, ctors) => {
+      let p = prefix(exported)
+      if eq(array_length(ctors), 1) {
+        let (ctor_name, ctor_args) = array_get(ctors, 0)
+        if string_equals(ctor_name, name) {
+          let parts = for arg in ctor_args {
             print_type_expr(arg)
           }
-          string_concat(cn, string_concat("(", string_concat(join(tparts, ", "), ")")))
+          string_concat(p, string_concat("suberror ", string_concat(name, string_concat("(", string_concat(join(parts, ", "), ")")))))
         }
+        else {
+          string_concat(p, string_concat("suberror ", string_concat(name, string_concat(" { ", string_concat(print_ctor_list(ctors), " }")))))
+        }
+      } else {
+        string_concat(p, string_concat("suberror ", string_concat(name, string_concat(" { ", string_concat(print_ctor_list(ctors), " }")))))
       }
-      string_concat(prefix(exported), string_concat("enum ", string_concat(name, string_concat(" { ", string_concat(join(parts, "; "), " }")))))
     },
     SStruct(exported, name, fields) => {
       let parts = for field in fields {
@@ -185,6 +208,7 @@ export let rec print_stmt = (s: Stmt) -> String {
     STypeAlias(exported, name, ty) => string_concat(prefix(exported), string_concat("type ", string_concat(name, string_concat(" = ", print_type_expr(ty))))),
     STrait(exported, name) => string_concat(prefix(exported), string_concat("trait ", name)),
     SImpl(trait_name, type_name) => string_concat("impl ", string_concat(trait_name, string_concat(" for ", type_name))),
+    SExternLet(name, ty) => string_concat("extern let ", string_concat(name, string_concat(": ", print_type_expr(ty)))),
     SImport(path, items) => {
       let parts = for item in items {
         let (name, alias) = item

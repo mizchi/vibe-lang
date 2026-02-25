@@ -1,71 +1,15 @@
 //# Imports
 
+export ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
 import ./token.vibe {
   Token
-}
-
-//# Types
-
-export enum Pat {
-  PWild;
-  PBind(String);
-  PInt(Int);
-  PString(String);
-  PBool(Bool);
-  PCtor(String, Array[Pat]);
-  PTuple(Array[Pat]);
-  POr(Pat, Pat)
-}
-
-export enum Expr {
-  EInt(Int);
-  EFloat(Double);
-  EString(String);
-  EBool(Bool);
-  EIdent(String);
-  ETuple(Array[Expr]);
-  EArray(Array[Expr]);
-  ERecord(Array[(String, Expr)]);
-  EIf(Expr, Expr, Expr);
-  ELet(String, Expr, Expr);
-  ELetRec(String, Expr, Expr);
-  ELetMut(String, Expr, Expr);
-  EAssign(String, Expr, Expr);
-  EAssignOp(String, String, Expr, Expr);
-  ESeq(Expr, Expr);
-  EMatch(Expr, Array[(Pat, Expr)]);
-  ECall(Expr, Array[Expr]);
-  EBinOp(String, Expr, Expr);
-  EUnaryOp(String, Expr);
-  EFn(Array[(String, Option[String])], Option[String], Expr);
-  EDot(Expr, String);
-  EPipe(Expr, Expr);
-  ELabeledArg(String, String, Expr);
-  EUnit
-}
-
-export enum TypeExpr {
-  TyName(String);
-  TyApp(String, Array[TypeExpr]);
-  TyFn(Array[TypeExpr], TypeExpr);
-  TyTuple(Array[TypeExpr]);
-  TyUnit
-}
-
-export enum Stmt {
-  SLet(Bool, Bool, String, Option[TypeExpr], Expr);
-  SLetMut(String, Option[TypeExpr], Expr);
-  SEnum(Bool, String, Array[(String, Array[TypeExpr])]);
-  SStruct(Bool, String, Array[(String, TypeExpr)]);
-  STypeAlias(Bool, String, TypeExpr);
-  STrait(Bool, String);
-  SImpl(String, String);
-  SImport(String, Array[(String, Option[String])]);
-  STest(String, Expr);
-  SBench(String, Expr);
-  SExpr(Expr);
-  SExport(Array[String]);
-  SModule(Bool, String, Array[Stmt])
 }
 
 //# Functions
@@ -1115,6 +1059,35 @@ let parse_enum_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt,
   }
 }
 
+let parse_suberror_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TLParen => match peek(tokens, pos + 2) {
+        TRParen => {
+          let b = array_builder()
+          array_builder_push(b, (name, empty_type_exprs()))
+          (SSuberror(exported, name, array_builder_freeze(b)), pos + 3)
+        },
+        _ => {
+          let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
+          let args_b = array_builder()
+          array_builder_push(args_b, first)
+          let (args, end) = parse_ctor_types_rest(tokens, n1, args_b)
+          let ctors_b = array_builder()
+          array_builder_push(ctors_b, (name, args))
+          (SSuberror(exported, name, array_builder_freeze(ctors_b)), end)
+        }
+      },
+      TLBrace => {
+        let (ctors, end) = parse_enum_ctors(tokens, pos + 2)
+        (SSuberror(exported, name, ctors), end)
+      },
+      _ => throw("expected '(' or '{' after suberror name")
+    },
+    _ => throw("expected suberror name")
+  }
+}
+
 let parse_type_alias_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
   match peek(tokens, pos) {
     TIdent(name) => {
@@ -1221,6 +1194,7 @@ let parse_export_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Er
   match peek(tokens, pos) {
     TLet => parse_let_stmt(tokens, pos + 1, true),
     TEnum => parse_enum_stmt(tokens, pos + 1, true),
+    TSuberror => parse_suberror_stmt(tokens, pos + 1, true),
     TStruct => parse_struct_stmt(tokens, pos + 1, true),
     TType => parse_type_alias_stmt(tokens, pos + 1, true),
     TTrait => parse_trait_stmt(tokens, pos + 1, true),
@@ -1240,6 +1214,22 @@ let parse_export_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Er
     },
     _ => throw(string_concat("unexpected after 'export': ", tk_name(peek(tokens, pos))))
   }
+}
+
+let parse_percent_symbol_name = (tokens: Array[Token], pos: Int, label: String) -> (String, Int)with { Error } {
+  let pp = expect_tk(tokens, pos, "%")
+  match peek(tokens, pp) {
+    TIdent(name) => (string_concat("%", name), pp + 1),
+    _ => throw(string_concat("expected ", string_concat(label, " after '%'")))
+  }
+}
+
+let parse_extern_let_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  let lp = expect_tk(tokens, pos, "let")
+  let (name, np) = parse_percent_symbol_name(tokens, lp, "extern symbol name")
+  let cp = expect_tk(tokens, np, ":")
+  let (ty, end) = parse_type_impl(tokens, cp, 0)
+  (SExternLet(name, ty), end)
 }
 
 export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
@@ -1279,6 +1269,7 @@ export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with 
       _ => throw("expected module name")
     },
     TEnum => parse_enum_stmt(tokens, pos + 1, false),
+    TSuberror => parse_suberror_stmt(tokens, pos + 1, false),
     TStruct => parse_struct_stmt(tokens, pos + 1, false),
     TType => parse_type_alias_stmt(tokens, pos + 1, false),
     TTrait => parse_trait_stmt(tokens, pos + 1, false),
@@ -1287,6 +1278,12 @@ export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with 
     TTest => parse_test_stmt(tokens, pos + 1),
     TBench => parse_bench_stmt(tokens, pos + 1),
     TImport => throw("'import' syntax is deprecated, use 'use <path> { ... }' instead"),
+    TIdent(name) => if string_equals(name, "extern") {
+      parse_extern_let_stmt(tokens, pos + 1)
+    } else {
+      let (e, next) = parse_impl(tokens, pos, 0)
+      (SExpr(e), next)
+    },
     _ => {
       let (e, next) = parse_impl(tokens, pos, 0)
       (SExpr(e), next)
@@ -1305,4 +1302,10 @@ export let parse_program = (tokens: Array[Token]) -> Array[Stmt] with { Error } 
     }
   }
   go(0, array_builder())
+}
+
+//# Misc
+
+export {
+  Pat, Expr, Stmt, parse, TypeExpr, parse_ok, parse_expr, parse_impl, parse_stmt, parse_type, parse_program
 }

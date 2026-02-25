@@ -249,9 +249,14 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `vibe/socket/index.vibe`, `vibe/socket/socket.vibe`
   - 方針: low-level は別エンドポイントへ分離するか、公開名を意図がわかる形に整理する
 
-- [ ] `vibe/compiler` の AST 定義を単一ソース化し、`ast.vibe` と `parser.vibe` の型二重管理を解消する
+- [x] `vibe/compiler` の AST 定義を単一ソース化し、`ast.vibe` と `parser.vibe` の型二重管理を解消する
   - 対象: `vibe/compiler/ast.vibe`, `vibe/compiler/parser.vibe`, `vibe/compiler/index.vibe`
   - 方針: `Pat`/`Expr`/`Stmt` の定義元を 1 箇所に統一し、差分 (`ELabeledArg` など) を吸収する
+  - メモ: `vibe/compiler/parser.vibe` から型定義を撤去し、`ast.vibe` を import/export する構成へ移行済み
+
+- [ ] `vibe/compiler` テストの実行時間が重い原因を特定し、回帰しない形で改善する
+  - 対象: `vibe/compiler/*_test.vibe`, `src/runtime/test_runner.mbt`, `src/cmd/vibe/cli_test*.mbt`
+  - 完了条件: ボトルネック要因を特定して修正し、`vibe test vibe/compiler` の実行時間を実用水準まで短縮する
 
 ### Low (P3): 公開面のノイズ削減
 
@@ -414,8 +419,8 @@ Total: 126 tests (lexer: 20, parser: 27, printer: 21, stmt: 46, fixture: 12)
 - [x] Labeled params `x~: Int` and labeled args `x~=1`, `x?=2`, `x=1` (ELabeledArg)
 - [x] EFn extended with `Option[String]` return type annotation
 - [x] `fixture_test.vibe` — 6 fixtures × parse + roundtrip = 12 tests
-- [ ] `suberror` declaration parsing
-- [ ] `extern let %name: Type` parsing
+- [x] `suberror` declaration parsing
+- [x] `extern let %name: Type` parsing
 
 ### Phase 4: Parse own source (not started)
 
