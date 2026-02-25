@@ -157,22 +157,54 @@ fn normalize_append_entry_export_stmt(
 }
 
 ///|
+fn normalize_render_canonicalize_import_path(path : String) -> String {
+  let is_abs = path.has_prefix("/")
+  let had_dot_prefix = path.has_prefix("./")
+  let parts : Array[String] = []
+  for part_view in path.split("/") {
+    let part = part_view.to_string()
+    if part == "" || part == "." {
+      continue
+    }
+    if part == ".." {
+      if parts.length() > 0 && parts[parts.length() - 1] != ".." {
+        let _ = parts.pop()
+      } else if not(is_abs) {
+        parts.push(part)
+      }
+    } else {
+      parts.push(part)
+    }
+  }
+  let joined = parts.join("/")
+  let normalized = if is_abs {
+    "/" + joined
+  } else {
+    joined
+  }
+  let without_index = if normalized.has_suffix("/index.vibe") {
+    normalized.unsafe_substring(
+      start=0,
+      end=normalized.length() - "/index.vibe".length(),
+    )
+  } else {
+    normalized
+  }
+  if had_dot_prefix &&
+    not(without_index.has_prefix("./")) &&
+    not(without_index.has_prefix("../")) &&
+    not(without_index.has_prefix("/")) {
+    "./" + without_index
+  } else {
+    without_index
+  }
+}
+
+///|
 fn normalize_render_module_ref(source : @vibe_core.ModuleRef) -> String {
   match source {
     @vibe_core.ModuleRef::Path(path~) =>
-      if path.has_suffix("/index.vibe") {
-        let head = path.unsafe_substring(
-          start=0,
-          end=path.length() - "/index.vibe".length(),
-        )
-        if head.length() > 0 {
-          head
-        } else {
-          path
-        }
-      } else {
-        path
-      }
+      normalize_render_canonicalize_import_path(path)
     @vibe_core.ModuleRef::Hash(hash~) => "#" + hash
     @vibe_core.ModuleRef::Version(name~) => "version@" + name
     @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name

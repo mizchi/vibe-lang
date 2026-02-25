@@ -420,6 +420,26 @@ test "normalize_engine: imports are rendered in deterministic order with canonic
 }
 
 ///|
+test "normalize_engine: imports canonicalize relative dot segments to shortest path" {
+  let source =
+    #|import ./dep/./nested/../index.vibe { value }
+    #|export ./dep/./nested/../index.vibe { value }
+    #|let run = value
+    #|export { run }
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      assert_true(normalized.contains("export ./dep { value }"))
+      assert_true(normalized.contains("import ./dep { value }"))
+      assert_false(normalized.contains("/./"))
+      assert_false(normalized.contains("/../"))
+      assert_false(normalized.contains("/index.vibe"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
 test "normalize_engine: import local name collision gets deterministic alias" {
   let source =
     #|import ./dep/index.vibe { other as value, value }

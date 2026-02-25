@@ -50,7 +50,9 @@ Completed items are archived in `docs/DONE.md`.
     - 対象: `src/codebase/lib.mbt`, `src/cmd/vibe/cli.mbt`
     - メモ: canonical symbol は `lock_module_ref_canonical_symbol(path, name)` で一元化
   - [ ] canonical symbol の `/pkg@version/module/Type::symbol` 生成を normalize/edit で統一する
-  - [ ] 再展開時の import 生成（最短 import + 衝突時 alias）を deterministic にする
+    - [x] `symbols` 管理判定の lock lookup を context canonical（`/pkg@version/...`）へ一本化し、legacy/path-only fallback を撤去
+  - [x] 再展開時の import 生成（最短 import + 衝突時 alias）を deterministic にする
+    - メモ: `./dep/./nested/../index.vibe` のような相対 path も `./dep` へ正規化し、dot segment を除去して再展開
   - [x] Red: 同名衝突時に安定した disambiguation を行う snapshot を追加
     - 対象: `src/cmd/vibe/cli_write_file_wbtest.mbt`
   - [x] Green(1/2): 再展開時の import / re-export / import item の順序を deterministic 化

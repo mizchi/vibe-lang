@@ -2965,20 +2965,6 @@ fn symbols_lock_has_managed_ref(
   registry_modules : Map[String, String],
   root_version : String,
 ) -> Bool {
-  let legacy_key = path + "#" + name
-  if module_refs.contains(legacy_key) {
-    return true
-  }
-  let canonical_symbol = @codebase.lock_module_ref_canonical_symbol(path, name)
-  if module_refs.contains(canonical_symbol) {
-    return true
-  }
-  let prefix = canonical_symbol + "#"
-  for key, _ in module_refs {
-    if key.has_prefix(prefix) {
-      return true
-    }
-  }
   let canonical_symbol_with_context = @codebase.lock_module_ref_canonical_symbol_with_context(
     path,
     name,

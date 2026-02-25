@@ -803,24 +803,56 @@ fn normalize_disambiguate_import_items(
 }
 
 ///|
+fn normalize_canonicalize_import_path(path : String) -> String {
+  let is_abs = path.has_prefix("/")
+  let had_dot_prefix = path.has_prefix("./")
+  let parts : Array[String] = []
+  for part_view in path.split("/") {
+    let part = part_view.to_string()
+    if part == "" || part == "." {
+      continue
+    }
+    if part == ".." {
+      if parts.length() > 0 && parts[parts.length() - 1] != ".." {
+        let _ = parts.pop()
+      } else if not(is_abs) {
+        parts.push(part)
+      }
+    } else {
+      parts.push(part)
+    }
+  }
+  let joined = parts.join("/")
+  let normalized = if is_abs {
+    "/" + joined
+  } else {
+    joined
+  }
+  let without_index = if normalized.has_suffix("/index.vibe") {
+    normalized.unsafe_substring(
+      start=0,
+      end=normalized.length() - "/index.vibe".length(),
+    )
+  } else {
+    normalized
+  }
+  if had_dot_prefix &&
+    not(without_index.has_prefix("./")) &&
+    not(without_index.has_prefix("../")) &&
+    not(without_index.has_prefix("/")) {
+    "./" + without_index
+  } else {
+    without_index
+  }
+}
+
+///|
 fn normalize_canonicalize_module_ref(
   source : @vibe_core.ModuleRef,
 ) -> @vibe_core.ModuleRef {
   match source {
     @vibe_core.ModuleRef::Path(path~) =>
-      if path.has_suffix("/index.vibe") {
-        let head = path.unsafe_substring(
-          start=0,
-          end=path.length() - "/index.vibe".length(),
-        )
-        if head.length() > 0 {
-          @vibe_core.ModuleRef::Path(path=head)
-        } else {
-          source
-        }
-      } else {
-        source
-      }
+      @vibe_core.ModuleRef::Path(path=normalize_canonicalize_import_path(path))
     _ => source
   }
 }
