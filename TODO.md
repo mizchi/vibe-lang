@@ -44,13 +44,14 @@ Completed items are archived in `docs/DONE.md`.
   - [x] Green: data member access（`obj.prop`）+ tuple index を維持しつつ fallback を撤去
 - [x] checker/runtime: 名前解決優先順位を `local > lexical > explicit import > prelude` に固定する
   - 対象: `src/runtime/db_query.mbt`, `src/runtime/eval.mbt`, `src/tests/vibe_*integration_test.mbt`
-- [ ] normalize/edit: namespace symbol の正規形を `/pkg@version/module/Type::symbol` に統一し、内部参照を `<canonical>#<addr-hash>` 形式で保持する
+- [x] normalize/edit: namespace symbol の正規形を `/pkg@version/module/Type::symbol` に統一し、内部参照を `<canonical>#<addr-hash>` 形式で保持する
   - 対象: `src/cmd/vibe/normalize_*`, `src/runtime/db*.mbt`, `src/core/*`
   - [x] lock `module_refs` の key を `<canonical-symbol>#<addr-hash>` 形式に寄せる
     - 対象: `src/codebase/lib.mbt`, `src/cmd/vibe/cli.mbt`
     - メモ: canonical symbol は `lock_module_ref_canonical_symbol(path, name)` で一元化
-  - [ ] canonical symbol の `/pkg@version/module/Type::symbol` 生成を normalize/edit で統一する
+  - [x] canonical symbol の `/pkg@version/module/Type::symbol` 生成を normalize/edit で統一する
     - [x] `symbols` 管理判定の lock lookup を context canonical（`/pkg@version/...`）へ一本化し、legacy/path-only fallback を撤去
+    - [x] lock 収集時の module ref key は `lock_module_ref_key_with_context` を経由し、`/ns@version/...#hash` で生成する
   - [x] 再展開時の import 生成（最短 import + 衝突時 alias）を deterministic にする
     - メモ: `./dep/./nested/../index.vibe` のような相対 path も `./dep` へ正規化し、dot segment を除去して再展開
   - [x] Red: 同名衝突時に安定した disambiguation を行う snapshot を追加
