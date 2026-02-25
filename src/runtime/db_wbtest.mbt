@@ -286,13 +286,13 @@ test "internal export is not importable across directories" {
 }
 
 ///|
-test "module-level cycle detection: A -> B -> A directories" {
+test "module-level cycle detection: A -> B -> A directories via import" {
   let db = VibeDb::new()
   db.set_source(
-    "/project/a/index.vibe", "export ../b/index.vibe { greet }\nexport let hello = () -> String { greet() }\nexport { hello }\n",
+    "/project/a/index.vibe", "import ../b/index.vibe { greet }\nexport let hello = () -> String { greet() }\nexport { hello }\n",
   )
   db.set_source(
-    "/project/b/index.vibe", "export ../a/index.vibe { hello }\nexport let greet = () -> String { hello() }\nexport { greet }\n",
+    "/project/b/index.vibe", "import ../a/index.vibe { hello }\nexport let greet = () -> String { hello() }\nexport { greet }\n",
   )
   let _imports = db.imports("/project/a/index.vibe")
   let diags = db.import_diagnostics("/project/a/index.vibe")
@@ -305,54 +305,50 @@ test "module-level cycle detection: A -> B -> A directories" {
 }
 
 ///|
-test "index.vibe cross-directory imports shared with same-dir files" {
+test "cross-package re-export is rejected and not shared with siblings" {
   let db = VibeDb::new()
   // External module in /project/lib/
   db.set_source(
-    "/project/lib/math.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\nexport { add }\n",
+    "/project/lib/math.vibe", "export let plus2 = (a: Int, b: Int) -> Int { a + b }\nexport { plus2 }\n",
   )
-  // index.vibe in /project/src/ imports from external module
-  db.set_source("/project/src/index.vibe", "export ../lib/math.vibe { add }\n")
-  // sibling.vibe in /project/src/ should have access to `add` without importing
-  db.set_source("/project/src/sibling.vibe", "let x = add(1, 2)\nx\n")
+  // index.vibe in /project/src/ re-exports from external package (forbidden)
+  db.set_source("/project/src/index.vibe", "export ../lib/math.vibe { plus2 }\n")
+  let _index_imports = db.imports("/project/src/index.vibe")
+  let index_import_diags = db.import_diagnostics("/project/src/index.vibe")
+  let has_forbidden_reexport_diag = index_import_diags
+    .iter()
+    .any(fn(d) { d.message.contains("cross-package re-export is forbidden") })
+  assert_true(has_forbidden_reexport_diag)
+  // sibling.vibe in /project/src/ must not see `plus2` from forbidden re-export
+  db.set_source("/project/src/sibling.vibe", "let x = plus2(1, 2)\nx\n")
   let env = db.types("/project/src/sibling.vibe")
   let diags = db.diagnostics("/project/src/sibling.vibe")
-  if not(diags.is_empty()) {
-    let lines : Array[String] = []
-    for diag in diags {
-      lines.push(diag.stage + ":" + diag.message)
-    }
-    fail("unexpected diagnostics: " + lines.join(","))
-  }
-  match env.get_scheme("x") {
-    Some(_) => ()
-    None => fail("expected scheme for x (add result)")
+  assert_true(diags.length() > 0)
+  match env.get_scheme("plus2") {
+    Some(_) => fail("forbidden cross-package re-export must not leak plus2")
+    None => ()
   }
 }
 
 ///|
-test "index.vibe sharing does not apply to index.vibe itself" {
+test "cross-package re-export is rejected in index.vibe itself" {
   let db = VibeDb::new()
   db.set_source(
-    "/project/lib/math.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\nexport { add }\n",
+    "/project/lib/math.vibe", "export let plus2 = (a: Int, b: Int) -> Int { a + b }\nexport { plus2 }\n",
   )
-  // index.vibe cannot use its own exports without explicit import
+  // index.vibe cannot use forbidden cross-package re-exported symbols
   db.set_source(
-    "/project/src/index.vibe", "export ../lib/math.vibe { add }\nlet y = add(1, 2)\ny\n",
+    "/project/src/index.vibe", "export ../lib/math.vibe { plus2 }\nlet y = plus2(1, 2)\ny\n",
   )
   let env = db.types("/project/src/index.vibe")
   let diags = db.diagnostics("/project/src/index.vibe")
-  // This should work because index.vibe has its own imports
-  if not(diags.is_empty()) {
-    let lines : Array[String] = []
-    for diag in diags {
-      lines.push(diag.stage + ":" + diag.message)
-    }
-    fail("unexpected diagnostics: " + lines.join(","))
-  }
+  let has_forbidden_reexport_diag = diags
+    .iter()
+    .any(fn(d) { d.message.contains("cross-package re-export is forbidden") })
+  assert_true(has_forbidden_reexport_diag)
   match env.get_scheme("y") {
-    Some(_) => ()
-    None => fail("expected scheme for y")
+    Some(_) => fail("forbidden cross-package re-export should break y")
+    None => ()
   }
 }
 

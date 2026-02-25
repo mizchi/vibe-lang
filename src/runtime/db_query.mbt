@@ -53,6 +53,10 @@ pub fn VibeDb::new() -> VibeDb {
               }
             _ => ()
           }
+          let is_reexport = match stmt {
+            @core.Stmt::ReExport(..) => true
+            _ => false
+          }
           has_imports = true
           match source {
             @core.ModuleRef::Path(path~) => {
@@ -109,6 +113,21 @@ pub fn VibeDb::new() -> VibeDb {
                 }
               }
               let resolved_path_obj = normalize_path_obj(base_dir, final_path)
+              if is_reexport {
+                if not(path.has_prefix("./")) {
+                  diags.push(rt, @core.Diagnostic::{
+                    stage: "import",
+                    message: "cross-package re-export is forbidden: " +
+                    resolved_path_obj.normalized,
+                    span: Some(span),
+                    hint: Some(
+                      "use `./...` paths for same-package re-export only",
+                    ),
+                    note: None,
+                  })
+                  continue
+                }
+              }
               // Cross-directory import boundary check:
               // imports from a different directory must target index.vibe
               // index.vibe itself is exempt (it's the module facade)
@@ -295,6 +314,18 @@ pub fn VibeDb::new() -> VibeDb {
               }
             }
             @core.ModuleRef::Hash(hash~) => {
+              if is_reexport {
+                diags.push(rt, @core.Diagnostic::{
+                  stage: "import",
+                  message: "cross-package re-export is forbidden: #" + hash,
+                  span: Some(span),
+                  hint: Some(
+                    "re-export from hash/version/symbol refs is not allowed",
+                  ),
+                  note: None,
+                })
+                continue
+              }
               let alias_name = hash_alias_name(hash)
               let (snapshot_key, resolved_hash) = resolve_hash_import(
                 rt, sources, binary_sources, diags, hash, span,
@@ -314,6 +345,18 @@ pub fn VibeDb::new() -> VibeDb {
               })
             }
             @core.ModuleRef::Version(name~) => {
+              if is_reexport {
+                diags.push(rt, @core.Diagnostic::{
+                  stage: "import",
+                  message: "cross-package re-export is forbidden: version@" + name,
+                  span: Some(span),
+                  hint: Some(
+                    "re-export from hash/version/symbol refs is not allowed",
+                  ),
+                  note: None,
+                })
+                continue
+              }
               let alias_name = version_alias_name(name)
               match sources.get(rt, version_ref_key(name)) {
                 Some(hash_text) => {
@@ -356,6 +399,18 @@ pub fn VibeDb::new() -> VibeDb {
               }
             }
             @core.ModuleRef::Symbol(name~) => {
+              if is_reexport {
+                diags.push(rt, @core.Diagnostic::{
+                  stage: "import",
+                  message: "cross-package re-export is forbidden: symbol@" + name,
+                  span: Some(span),
+                  hint: Some(
+                    "re-export from hash/version/symbol refs is not allowed",
+                  ),
+                  note: None,
+                })
+                continue
+              }
               let alias_name = symbol_alias_name(name)
               match sources.get(rt, symbol_ref_key(name)) {
                 Some(hash_text) => {
