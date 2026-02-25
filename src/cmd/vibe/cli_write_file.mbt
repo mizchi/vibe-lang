@@ -241,11 +241,16 @@ fn write_file_ambiguous_error(
   prefix : String,
   matches : Array[WriteFileCandidate],
 ) -> String {
+  let labels : Array[String] = []
+  for candidate in matches {
+    labels.push(write_file_candidate_label(candidate))
+  }
+  labels.sort()
   let buf = StringBuilder::new()
   buf.write_string(prefix)
   buf.write_string("\nUse `name#hash` or `#hash` selector.")
-  for candidate in matches {
-    buf.write_string("\n  - " + write_file_candidate_label(candidate))
+  for label in labels {
+    buf.write_string("\n  - " + label)
   }
   buf.to_string()
 }
