@@ -1,15 +1,53 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 
-const opcodesPath = 'vibe/builtin/wasm/opcodes.vibe';
 const outPath = 'src/core/wasm_intrinsics.mbt';
 
-const opcodesSrc = readFileSync(opcodesPath, 'utf8');
-const exportRe = /^export let\s+([a-z0-9_]+)\s*=\s*\(/gm;
-const legacyNames = new Set();
-for (let m = exportRe.exec(opcodesSrc); m; m = exportRe.exec(opcodesSrc)) {
-  legacyNames.add(m[1]);
-}
+const legacyNames = new Set([
+  'f32_add',
+  'f32_convert_i32_s',
+  'f32_demote_f64',
+  'f32_div',
+  'f32_eq',
+  'f32_ge',
+  'f32_gt',
+  'f32_le',
+  'f32_lt',
+  'f32_mul',
+  'f32_ne',
+  'f32_sub',
+  'f64_add',
+  'f64_convert_i32_s',
+  'f64_div',
+  'f64_eq',
+  'f64_ge',
+  'f64_gt',
+  'f64_le',
+  'f64_lt',
+  'f64_mul',
+  'f64_ne',
+  'f64_promote_f32',
+  'f64_sub',
+  'i32_add',
+  'i32_and',
+  'i32_div_s',
+  'i32_eq',
+  'i32_eqz',
+  'i32_ge_s',
+  'i32_gt_s',
+  'i32_le_s',
+  'i32_lt_s',
+  'i32_mul',
+  'i32_ne',
+  'i32_or',
+  'i32_rem_s',
+  'i32_shl',
+  'i32_shr_s',
+  'i32_sub',
+  'i32_trunc_f32_s',
+  'i32_trunc_f64_s',
+  'i32_xor',
+]);
 
 const extraLegacyNames = [
   'i32_shr_u',

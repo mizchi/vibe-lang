@@ -6,7 +6,6 @@ fn std_layer_name(layer : StdModuleLayer) -> String {
     StdModuleLayer::PureData => "pure-data"
     StdModuleLayer::RefModel => "ref-model"
     StdModuleLayer::EffectBoundary => "effect-boundary"
-    StdModuleLayer::BackendSpecific => "backend-specific"
   }
 }
 
@@ -49,9 +48,6 @@ fn std_layer_for_path(path : String) -> StdModuleLayer? {
     normalized.has_suffix("/vibe/builtin/threads.vibe") {
     return Some(StdModuleLayer::EffectBoundary)
   }
-  if normalized.contains("/vibe/builtin/wasm/") {
-    return Some(StdModuleLayer::BackendSpecific)
-  }
   None
 }
 
@@ -86,24 +82,7 @@ fn std_layer_allows_import(
         | StdModuleLayer::RefModel => true
         _ => false
       }
-    StdModuleLayer::EffectBoundary =>
-      match imported_layer {
-        StdModuleLayer::TraitContract
-        | StdModuleLayer::PurePrimitive
-        | StdModuleLayer::PureData
-        | StdModuleLayer::RefModel
-        | StdModuleLayer::EffectBoundary => true
-        _ => false
-      }
-    StdModuleLayer::BackendSpecific =>
-      match imported_layer {
-        StdModuleLayer::TraitContract
-        | StdModuleLayer::PurePrimitive
-        | StdModuleLayer::PureData
-        | StdModuleLayer::RefModel
-        | StdModuleLayer::BackendSpecific => true
-        _ => false
-      }
+    StdModuleLayer::EffectBoundary => true
   }
 }
 

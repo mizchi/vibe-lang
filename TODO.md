@@ -154,7 +154,7 @@ Completed items are archived in `docs/DONE.md`.
   - テスト: `vibe/http/high_level_test.vibe`, `vibe/socket/socket_test.vibe`
 - [x] 文字列 `raise` 中心の失敗通知を `Result` ベース API に置き換える指針を作る
   - ADR-0018 で移行方針を定義（`Result[T, String]` 基本、段階的移行、互換 alias）
-  - 対象: `vibe/encoding/json.vibe`, `vibe/encoding/jsonrpc.vibe`, `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`
+  - 対象: `vibe/json/json.vibe`, `vibe/json/jsonrpc.vibe`, `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`
 - [x] `path` facade と `path/ref` の型公開境界を整理し、利用者向け import ルールを一本化する
   - [x] `vibe/builtin/README.md` に facade / split import の推奨ルールを明文化
   - [x] `vibe/builtin/path_test.vibe`, `vibe/builtin/path_ref_test.vibe`, `vibe/builtin/path_runtime_test.vibe` で facade / split の利用経路を回帰維持
@@ -169,7 +169,7 @@ Completed items are archived in `docs/DONE.md`.
 ### High (P1): 公開エンドポイントの一貫性
 
 - [ ] `index.vibe` が `version` のみのモジュールで、公開 API を index に集約する
-  - 対象: `vibe/rlm/index.vibe`, `vibe/x/index.vibe`, `vibe/x/args/index.vibe`, `vibe/builtin/path/index.vibe`, `vibe/builtin/threads/index.vibe`, `vibe/builtin/wasm/index.vibe`
+  - 対象: `vibe/x/rlm/index.vibe`, `vibe/x/index.vibe`, `vibe/x/args/index.vibe`, `vibe/builtin/path/index.vibe`, `vibe/builtin/threads/index.vibe`
   - 方針: 実体 API を `export ./foo.vibe { ... }` で明示し、利用側 import を index 経由へ寄せる
 
 ### Medium (P2): API 層と契約の明確化

@@ -25,9 +25,7 @@ just run test examples/syntax.vibe
 ## Core Library
 
 - `vibe/builtin/`: vibe core library (self-hosted builtin modules)
-- `vibe/builtin/wasm/types.vibe`: wasm-facing type aliases (`I32`/`F32`/`F64`)
-- `vibe/builtin/wasm/opcodes.vibe`: wasm opcode-style APIs (`i32_add`, `f64_promote_f32`, ...)
-- `vibe/builtin/wasm/io_stream.vibe`: component-friendly stream I/O helpers
+- `vibe/builtin/io.vibe`: stream I/O + ANSI/TUI helpers for terminal-oriented examples
 
 ## WASM / Component Demos
 

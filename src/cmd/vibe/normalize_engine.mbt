@@ -46,7 +46,6 @@ enum StdModuleLayer {
   PureData
   RefModel
   EffectBoundary
-  BackendSpecific
 }
 
 ///|
@@ -687,17 +686,16 @@ fn normalize_canonicalize_import_spec(
   let items : Array[@vibe_core.ImportItem] = []
   for item in spec.items {
     let rename = match item.rename {
-      Some(v) =>
-        if v == item.name {
-          None
-        } else {
-          Some(v)
-        }
+      Some(v) => if v == item.name { None } else { Some(v) }
       None => None
     }
-    items.push(@vibe_core.ImportItem::{ kind: item.kind, name: item.name, rename })
+    items.push(@vibe_core.ImportItem::{
+      kind: item.kind,
+      name: item.name,
+      rename,
+    })
   }
-  @vibe_core.ImportSpec::{ items }
+  @vibe_core.ImportSpec::{ items, }
 }
 
 ///|

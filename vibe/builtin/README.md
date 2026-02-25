@@ -18,16 +18,13 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 | `char.vibe` | 3 | ASCII classification/conversion helpers (`is_ascii_*`, `to_ascii_*`, `to_string`, `from_string`) |
 | `bytes.vibe` | 5 | Byte array helpers (`is_byte`, `clamp_byte`, `from_ascii`, `to_ascii`, `to_hex`, `from_hex`) |
 | `string.vibe` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
-| `io.vibe` | 4 | High-level stdio (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`) |
+| `io.vibe` | 6 | High-level stdio + ANSI/TUI helpers (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`, `ansi_escape`) |
 | `path/ref.vibe` | 2 | PathRef/DynamicPath pure model (`from_literal`, `dynamic`) + member APIs (`as_string`, `is_absolute`) |
 | `path/runtime.vibe` | 2 | Path runtime bridge (`resolve`, `DynamicPath::resolve`) |
 | `path.vibe` | 3 | Compatibility facade for legacy path API shape |
 | `threads/spec.vibe` | 4 | Pure thread deployment specs (`task/channel/actor/deployment_plan`, recommended flags/env) |
 | `threads/runtime.vibe` | 2 | Runtime bridge (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`) |
 | `threads.vibe` | 7 | Compatibility facade for legacy threads API shape |
-| `wasm/types.vibe` | 6 | WASM type alias entrypoint (`i32`/`f32`/`f64`, `I32`/`F32`/`F64`) |
-| `wasm/opcodes.vibe` | 5 | Opcode-style API (`i32_add`, `i32_div_s`, `f64_promote_f32`, etc.) |
-| `wasm/io_stream.vibe` | 3 | WASM stream I/O and ANSI/TUI helpers (`stdin_read`, `stdout_write`, `ansi_escape`) |
 
 `list.vibe` / `map.vibe` / `set.vibe` moved to `vibe/collection`.
 
@@ -42,7 +39,6 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 - `pure-data`: pure ADT/data operations (`array/option/result/bytes`)
 - `ref-model`: path and module reference model (`path/ref` + `path` facade)
 - `effect-boundary`: runtime side-effect bridge (`io/path/runtime/threads/runtime`)
-- `backend-specific`: backend-specific experimental APIs (`wasm/*`)
 
 Compatibility facades:
 
@@ -234,10 +230,7 @@ just run test \
   vibe/builtin/result_test.vibe \
   vibe/builtin/string_test.vibe \
   vibe/builtin/io_test.vibe \
-  vibe/builtin/threads_test.vibe \
-  vibe/builtin/wasm/types_test.vibe \
-  vibe/builtin/wasm/opcodes_test.vibe \
-  vibe/builtin/wasm/io_stream_test.vibe
+  vibe/builtin/threads_test.vibe
 
 # Validate WASM compilation (import/export usage)
 just run compile --wasm vibe/builtin/test_import.vibe -o /tmp/test.wasm
@@ -252,4 +245,3 @@ wasmtime run --invoke run /tmp/test.wasm  # -> 484 (untagged: 121)
   (`probe_wat` / `runtime_hints` / `channel_new` / `spawn` / `send` / `recv` / `wait`)
   の実行に `--unstable-threads` が必要。
   `task_spec` / `channel_spec` / `actor_spec` / `deployment_plan` / `recommended_*` は通常テストで実行可能。
-- `vibe/builtin/wasm/io_stream.vibe` is a stream I/O / TUI helper API for Core WASM components.

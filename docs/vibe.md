@@ -308,10 +308,9 @@ Rules:
 - `i32`/`f32`/`f64` are reserved type names and cannot be redefined with `type`, `enum`, or `struct`.
 - Canonical type names (`Int`/`Float`/`Double`) remain the public spec baseline.
 
-Core std module:
-- `vibe/builtin/wasm/types.vibe` provides an official wasm-facing entrypoint (`I32`/`F32`/`F64` aliases and helpers).
-- `vibe/builtin/wasm/opcodes.vibe` provides opcode-style low-level APIs (`i32_add`, `i32_div_s`, `f64_promote_f32`, ...).
-  - Naming rule: wasm `i32.add` is exposed as vibe `i32_add` (dot replaced with `_`).
+WASM intrinsic names:
+- wasm `i32.add` style operations can be referenced as `vibe/wasm/i32::add`.
+- Legacy underscore names (for example `i32_add`) are normalized to the canonical intrinsic name.
 
 ## Names, hashes, versions, and symbols (Unison-style)
 

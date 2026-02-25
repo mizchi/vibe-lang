@@ -3258,6 +3258,12 @@ fn scaffold_project_root_with_seed(
           ) {
           created.push("vibe/encoding/")
         }
+        if copy_seed_tree_if_missing(
+            seed_norm + "/json",
+            root + "/vibe/json",
+          ) {
+          created.push("vibe/json/")
+        }
       }
     }
     None => ()

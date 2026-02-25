@@ -191,8 +191,9 @@ fn default_registry_modules(root : String) -> Map[String, String] {
   out["builtin"] = @vibe_fs.normalize_path(root + "/vibe/builtin")
   out["std"] = @vibe_fs.normalize_path(root + "/vibe/builtin")
   out["encoding"] = @vibe_fs.normalize_path(root + "/vibe/encoding")
+  out["json"] = @vibe_fs.normalize_path(root + "/vibe/json")
   out["collection"] = @vibe_fs.normalize_path(root + "/vibe/collection")
-  out["rlm"] = @vibe_fs.normalize_path(root + "/vibe/rlm")
+  out["rlm"] = @vibe_fs.normalize_path(root + "/vibe/x/rlm")
   out
 }
 
@@ -571,7 +572,7 @@ pub fn resolve_import_path_with_registry(
               import_path +
               "). local imports must start with ./ or ../",
             )
-      }
+        }
       None => resolve_import_path(base, import_path)
     }
   }

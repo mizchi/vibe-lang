@@ -5,7 +5,7 @@
 
 ## Context
 
-`vibe/encoding/json.vibe`, `vibe/encoding/jsonrpc.vibe` 等のライブラリ関数は
+`vibe/json/json.vibe`, `vibe/json/jsonrpc.vibe` 等のライブラリ関数は
 エラー報告に文字列 `throw` を使っている（例: `throw("key not found: ...")`）。
 
 問題点:
@@ -48,8 +48,8 @@ let json_get = (obj: Json, key: String) -> Result[Json, String] { ... }
 
 | 優先度 | モジュール | 現状 | 移行先 |
 |--------|-----------|------|--------|
-| High | `vibe/encoding/json.vibe` | `throw(String)` × 15+ 箇所 | `Result[Json, String]` |
-| High | `vibe/encoding/jsonrpc.vibe` | `throw(String)` × 8 箇所 | `Result[Json, String]` |
+| High | `vibe/json/json.vibe` | `throw(String)` × 15+ 箇所 | `Result[Json, String]` |
+| High | `vibe/json/jsonrpc.vibe` | `throw(String)` × 8 箇所 | `Result[Json, String]` |
 | Medium | `vibe/shell/from_csv.vibe` | サイレント失敗 | `Result[Json, String]` |
 | Medium | `vibe/shell/from_yaml.vibe` | サイレント失敗 | `Result[Json, String]` |
 

@@ -1703,25 +1703,18 @@ test "std layer classification covers primary modules" {
     None => "none"
   }
   assert_eq(effect_layer, "effect-boundary")
-
-  let backend_layer = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/wasm/types.vibe") {
-    Some(v) => std_layer_name(v)
-    None => "none"
-  }
-  assert_eq(backend_layer, "backend-specific")
 }
 
 ///|
-test "std layering rejects effect to backend import" {
+test "std layering rejects pure-data to effect import" {
   let source =
-    #|import ./wasm/types.vibe { i32 }
+    #|import ./io.vibe { stdout_write }
   let violations = std_layering_violations_for_source(
-    "/tmp/repo/vibe/builtin/io.vibe", source,
+    "/tmp/repo/vibe/builtin/array.vibe", source,
   )
   assert_eq(violations.length(), 1)
+  assert_true(violations[0].contains("pure-data"))
   assert_true(violations[0].contains("effect-boundary"))
-  assert_true(violations[0].contains("backend-specific"))
 }
 
 ///|
@@ -1734,7 +1727,7 @@ test "std layering allows effect to primitive import and ignores std tests" {
   assert_eq(allowed.length(), 0)
 
   let test_source =
-    #|import ./wasm/types.vibe { i32 }
+    #|import ./io.vibe { stdout_write }
   let test_file = std_layering_violations_for_source(
     "/tmp/repo/vibe/builtin/io_test.vibe", test_source,
   )

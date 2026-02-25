@@ -639,14 +639,17 @@ test "vibe wasm-gc compiles for-in expressions" {
 }
 
 ///|
-test "vibe wasm compiles std wasm opcode module" {
-  let src = try
-    @os_fs.read_file_to_string("vibe/builtin/wasm/opcodes.vibe")
-  catch {
-    e => fail("read error: " + e.to_string())
-  } noraise {
-    s => s
-  }
+test "vibe wasm compiles opcode-style helper module source" {
+  let src =
+    #|let i32_add = (a: i32, b: i32) -> i32 { a + b }
+    #|let i32_eqz = (x: i32) -> i32 { if x == 0 { 1 } else 0 }
+    #|let f64_promote_f32 = (x: f32) -> f64 { float_to_double(x) }
+    #|let run = () -> i32 {
+    #|  let n = i32_add(40, 2)
+    #|  let z = i32_eqz(0)
+    #|  n + z + double_to_int(f64_promote_f32(1.0f))
+    #|}
+    #|run()
   let db = VibeDb::new()
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
