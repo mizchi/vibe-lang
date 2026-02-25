@@ -76,7 +76,7 @@ fn print_usage() -> Unit {
     "  eval [--db file] [--include file] [--inspect-scope] [--assert name:sig]... [--test-for name] [--run] [--export file] <expr...>  evaluate expression/script",
   )
   println(
-    "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs)",
+    "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 2, max 16)",
   )
   println("  check <file...>            parse/type check scripts")
   println(
