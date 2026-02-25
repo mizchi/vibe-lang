@@ -187,13 +187,13 @@ Completed items are archived in `docs/DONE.md`.
 
 ### High (P1): 公開エンドポイントの一貫性
 
-- [ ] `index.vibe` が `version` のみのモジュールで、公開 API を index に集約する
+- [x] `index.vibe` が `version` のみのモジュールで、公開 API を index に集約する
   - 対象: `vibe/x/rlm/index.vibe`, `vibe/x/index.vibe`, `vibe/x/args/index.vibe`, `vibe/prelude/path/index.vibe`, `vibe/prelude/threads/index.vibe`
   - 方針: 実体 API を `export ./foo.vibe { ... }` で明示し、利用側 import を index 経由へ寄せる
 
 ### Medium (P2): API 層と契約の明確化
 
-- [ ] `vibe/socket` の high-level (`TcpConnection`) と low-level (`tcp_*`) を分離し、推奨経路を固定する
+- [x] `vibe/socket` の high-level (`TcpConnection`) と low-level (`tcp_*`) を分離し、推奨経路を固定する
   - 対象: `vibe/socket/index.vibe`, `vibe/socket/socket.vibe`
   - 方針: low-level は別エンドポイントへ分離するか、公開名を意図がわかる形に整理する
 
