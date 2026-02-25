@@ -47,16 +47,101 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
 
 ///|
 fn AstParser::parse_pipe_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let left_start = self.pos
   let mut left = self.parse_bit_or_expr()
+  let mut left_has_top_level_infix = self.has_top_level_non_pipe_infix(
+    left_start,
+    self.pos,
+  )
   while ({
           self.skip_trivia()
           self.peek_kind() == pipe_gt()
         }) {
-    let _ = self.bump()
+    let pipe_span = self.token_span()
+    let pipe_tok = self.bump()
+    if left_has_top_level_infix {
+      raise ParseError::UnexpectedToken(
+        expected="parenthesize infix expression when mixing with `|>`",
+        got=pipe_tok.text(),
+        span=pipe_span,
+      )
+    }
+    let right_start = self.pos
     let right = self.parse_bit_or_expr()
+    if self.has_top_level_non_pipe_infix(right_start, self.pos) {
+      raise ParseError::UnexpectedToken(
+        expected="parenthesize infix expression when mixing with `|>`",
+        got=pipe_tok.text(),
+        span=pipe_span,
+      )
+    }
     left = pipe_apply(left, right)
+    left_has_top_level_infix = false
   }
   left
+}
+
+///|
+fn is_non_pipe_infix_token(kind : @cst.SyntaxKind) -> Bool {
+  kind == plus() ||
+  kind == minus() ||
+  kind == star() ||
+  kind == slash() ||
+  kind == percent() ||
+  kind == lshift() ||
+  kind == rshift() ||
+  kind == lt() ||
+  kind == lte() ||
+  kind == gt() ||
+  kind == gte() ||
+  kind == eqeq() ||
+  kind == neq() ||
+  kind == bit_and() ||
+  kind == bit_or() ||
+  kind == bit_xor() ||
+  kind == and_and() ||
+  kind == or_or()
+}
+
+///|
+fn AstParser::has_top_level_non_pipe_infix(
+  self : AstParser,
+  start_pos : Int,
+  end_pos : Int,
+) -> Bool {
+  let mut paren_depth = 0
+  let mut bracket_depth = 0
+  let mut brace_depth = 0
+  let mut i = start_pos
+  while i < end_pos && i < self.tokens.length() {
+    let kind = self.tokens[i].kind()
+    if kind == lparen() {
+      paren_depth += 1
+    } else if kind == rparen() {
+      if paren_depth > 0 {
+        paren_depth -= 1
+      }
+    } else if kind == lbracket() {
+      bracket_depth += 1
+    } else if kind == rbracket() {
+      if bracket_depth > 0 {
+        bracket_depth -= 1
+      }
+    } else if kind == lbrace() {
+      brace_depth += 1
+    } else if kind == rbrace() {
+      if brace_depth > 0 {
+        brace_depth -= 1
+      }
+    } else if paren_depth == 0 &&
+      bracket_depth == 0 &&
+      brace_depth == 0 &&
+      is_non_pipe_infix_token(kind) {
+      return true
+    }
+    i += 1
+  }
+  false
 }
 
 ///|
@@ -1725,21 +1810,11 @@ fn AstParser::parse_call_or_primary(
       let method_tok = self.expect(name(), "method name")
       self.skip_trivia()
       if self.peek_kind() == lparen() {
-        let _ = self.bump()
-        let args = self.parse_args()
-        let _ = self.expect(rparen(), ")")
         let span = self.span_from(start)
-        // desugar: expr.method(a, b) → method(expr, a, b)
-        let merged : Array[@core.CallArg] = []
-        let expr_span = expr.span()
-        merged.push(@core.CallArg::{ label: None, expr, span: expr_span })
-        for arg in args {
-          merged.push(arg)
-        }
-        expr = @core.Expr::Call(
-          name=method_tok.text(),
-          type_args=[],
-          args=merged,
+        raise ParseError::UnexpectedToken(
+          expected=
+            "member access (`expr.field`), method-call sugar is removed; use `(expr.field)(...)`",
+          got=method_tok.text() + "(...)",
           span~,
         )
       } else {

@@ -74,6 +74,11 @@ fn parse_error_unexpected_token_hint(
       None => ()
     }
   }
+  if expected.contains("parenthesize infix expression when mixing with `|>`") {
+    return Some(
+      "wrap infix sides in parentheses (for example `(1 + 1) |> double` or `x |> (f + g)`)",
+    )
+  }
   None
 }
 

@@ -28,15 +28,15 @@ Completed items are archived in `docs/DONE.md`.
 
 ### Implementation plan
 
-- [ ] parser: `recv.method(...)` を受理しない構文へ切り替え、`(obj.method)(...)` のみ許可する
+- [x] parser: `recv.method(...)` を受理しない構文へ切り替え、`(obj.method)(...)` のみ許可する
   - 対象: `src/parser/*`, `src/parser/*_wbtest.mbt`
-  - Red: `recv.method(...)` が parse error になるテストを追加
-  - Green: 既存 postfix ルールから method-call sugar 分岐を削除
-- [ ] parser: `|>` と他の二項演算子混在の曖昧式を parse error 化する
+  - [x] Red: `recv.method(...)` が parse error になるテストを追加
+  - [x] Green: 既存 postfix ルールから method-call sugar 分岐を削除
+- [x] parser: `|>` と他の二項演算子混在の曖昧式を parse error 化する
   - 対象: `src/parser/parser_ast_expr.mbt`, `src/parser/*_wbtest.mbt`, fixtures
-  - Red: `1 + 1 |> double` / `a |> b + c` を失敗ケースとして固定
-  - Green: 括弧付き (`(1 + 1) |> double`) を許可
-- [ ] diagnostics: `|>` 曖昧式エラーで括弧追加の修正ヒントを提示する
+  - [x] Red: `1 + 1 |> double` / `a |> b + c` を失敗ケースとして固定
+  - [x] Green: 括弧付き (`(1 + 1) |> double`) を許可
+- [x] diagnostics: `|>` 曖昧式エラーで括弧追加の修正ヒントを提示する
   - 対象: `src/parser/*`, `src/core/diagnostic.mbt`, CLI 表示
 - [ ] checker: `.` は member/index アクセス専用に固定し、関数呼び出しへの fallback を撤去する
   - 対象: `src/checker/typecheck_call*.mbt`, `src/checker/typecheck_expr*.mbt`
