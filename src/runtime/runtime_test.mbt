@@ -283,12 +283,12 @@ test "vibe float and double ops" {
 }
 
 ///|
-test "vibe method call and pipe" {
+test "vibe pipe call and argument shifting" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|let inc = (a: Int) -> Int { add(a, 1) }
     #|let x = 2
-    #|let y = x.inc()
+    #|let y = x |> inc
     #|let z = x |> inc
     #|let w = x |> add(5)
     #|let r = w |> inc |> inc
@@ -312,13 +312,13 @@ test "vibe method call and pipe" {
 }
 
 ///|
-test "vibe prelude to_string works with parenthesized literal method call" {
+test "vibe prelude to_string works with parenthesized literal pipe call" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let script =
     #|let a = to_string(3.14)
-    #|let b = 3.14.to_string()
-    #|let c = (3.14).to_string()
-    #|let d = true.to_string()
+    #|let b = 3.14 |> to_string
+    #|let c = (3.14) |> to_string
+    #|let d = true |> to_string
   let _ = rt.eval_script(script)
   match rt.get("a") {
     Some(@core.Value::String(v)) => assert_eq(v, "3.14")
