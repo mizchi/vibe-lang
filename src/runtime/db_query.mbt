@@ -777,7 +777,6 @@ pub fn VibeDb::new() -> VibeDb {
         return true
       }
       if local_value_decl_spans.contains(name) {
-        report_duplicate_import_value(name, span)
         return false
       }
       if imported_value_decl_spans.contains(name) {

@@ -51,6 +51,32 @@ test "vibe warning reports unused import local name" {
 }
 
 ///|
+test "vibe import value collision prefers local declaration" {
+  let db = VibeDb::new()
+  db.set_source("./lib.vibe", "export let abs = (x: Int) -> Int { sub(0, x) }")
+  db.set_source(
+    "main",
+    "import ./lib.vibe { abs }\nlet abs = (x: String) -> String { x }\nlet x = abs(\"ok\")\nx",
+  )
+  let env = db.types("main")
+  let diags = db.diagnostics("main")
+  assert_true(diags.is_empty())
+  let _ = compile_module(db, "main")
+  match env.get_scheme("abs") {
+    Some(scheme) =>
+      match scheme.ty {
+        @core.Type::Func(params~, ret~, ..) => {
+          assert_eq(params.length(), 1)
+          assert_eq(params[0].ty, @core.Type::String)
+          assert_eq(ret, @core.Type::String)
+        }
+        _ => fail("expected function scheme for abs")
+      }
+    None => fail("expected local abs scheme")
+  }
+}
+
+///|
 test "vibe import parsing" {
   // Test that import syntax parses correctly
   let db = VibeDb::new()

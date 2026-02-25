@@ -131,6 +131,33 @@ test "vibe integration import alias forwards generic helper" {
 }
 
 ///|
+test "vibe integration local declaration wins over explicit import" {
+  let db = VibeDb::new()
+  db.set_source("./lib.vibe", "export let abs = (x: Int) -> Int { sub(0, x) }")
+  db.set_source(
+    "main",
+    "let abs = (x: Int) -> Int { add(x, 100) }\nimport ./lib.vibe { abs }\nabs(1)",
+  )
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 101)
+    _ => fail("expected Int(101)")
+  }
+}
+
+///|
 test "vibe integration re-export alias forwards value" {
   let db = VibeDb::new()
   db.set_source("./lib.vibe", "export let value = 7\nexport { value }\n")
@@ -166,7 +193,7 @@ test "vibe integration type namespace import auto-forwards receiver-first functi
     #|    _ => false
     #|  }
     #|}
-  let main_source = "import ./lib.vibe { Maybe }\nYep(1).is_yep()"
+  let main_source = "import ./lib.vibe { Maybe }\nYep(1) |> is_yep"
   db.set_source("./lib.vibe", lib_source)
   db.set_source("main", main_source)
   db.set_source("probe", "import ./lib.vibe { Maybe }\nlet x = 1")

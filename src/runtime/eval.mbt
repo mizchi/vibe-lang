@@ -238,6 +238,19 @@ pub fn Runtime::eval_module(
 ) -> EvalResult raise EvalError {
   let effects : Array[Effect] = []
   let mut last : @core.Value? = None
+  let local_value_decl_names : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::InternalExportLet(name~, ..)
+      | @core.Stmt::ExternLet(name~, ..) =>
+        if name != "_" {
+          local_value_decl_names[name] = true
+        }
+      _ => ()
+    }
+  }
   // Pre-scan: identify forward-declarable functions and compute stable
   // addresses. All forward function addresses are computed here so that
   // closures capture a consistent addr_env for mutual references.
@@ -411,6 +424,10 @@ pub fn Runtime::eval_module(
               source_name : String,
               target_name : String,
             ) raise EvalError {
+              if target_name != "_" &&
+                local_value_decl_names.contains(target_name) {
+                return
+              }
               match exports.get(source_name) {
                 None =>
                   raise EvalError::ImportError(
