@@ -78,9 +78,7 @@ extern "C" fn vibe_parallel_cleanup_register_child_pid(pid : Int) = "vibe_parall
 extern "C" fn vibe_parallel_cleanup_unregister_child_pid(pid : Int) = "vibe_parallel_cleanup_unregister_child_pid"
 
 ///|
-extern "C" fn vibe_worker_parent_watchdog_start(
-  parent_pid : Int,
-) = "vibe_worker_parent_watchdog_start"
+extern "C" fn vibe_worker_parent_watchdog_start(parent_pid : Int) = "vibe_worker_parent_watchdog_start"
 
 ///|
 extern "C" fn vibe_worker_parent_watchdog_stop() = "vibe_worker_parent_watchdog_stop"
@@ -95,6 +93,10 @@ fn print_usage() -> Unit {
   println(
     "  eval [--db file] [--include file] [--inspect-scope] [--assert name:sig]... [--test-for name] [--run] [--export file] <expr...>  evaluate expression/script",
   )
+  println(
+    "       include resolution: relative paths use cwd first, then --db parent",
+  )
+  println("       --run without --test-for prints detected target candidates")
   println(
     "  test [--jobs N] <file|dir...>  run test blocks (parallel for dirs; default jobs=VIBE_TEST_JOBS or 1, max 16)",
   )
@@ -1084,9 +1086,13 @@ fn finalize_cmd(args : Array[String]) -> Unit {
     e => abort("finalize: parse failed: " + e.to_string())
   }
   let kept_stmts = finalize_select_stmts(ast, options.library_mode)
-  let finalized_source = match finalize_render_source(source, kept_stmts) {
+  let rendered_source = match finalize_render_source(source, kept_stmts) {
     Ok(v) => v
     Err(err) => abort(err)
+  }
+  let finalized_source = match normalize_format_source_text(rendered_source) {
+    Ok(v) => v
+    Err(err) => abort("finalize: normalize failed: " + err)
   }
   if options.print_source {
     println(finalized_source)
@@ -1169,11 +1175,7 @@ fn test_cmd(
 
 ///|
 fn normalize_test_jobs(jobs : Int) -> Int {
-  let normalized = if jobs <= 0 {
-    default_test_jobs()
-  } else {
-    jobs
-  }
+  let normalized = if jobs <= 0 { default_test_jobs() } else { jobs }
   if normalized <= 0 {
     1
   } else if normalized > 16 {
@@ -1190,7 +1192,11 @@ fn default_test_jobs() -> Int {
   match @sys.get_env_var("VIBE_TEST_JOBS") {
     Some(raw) => {
       let parsed = @strconv.parse_int(raw) catch { _ => 0 }
-      if parsed > 0 { parsed } else { 1 }
+      if parsed > 0 {
+        parsed
+      } else {
+        1
+      }
     }
     None => 1
   }
@@ -1417,7 +1423,11 @@ fn test_worker_parent_pid() -> Int? {
   match @sys.get_env_var("VIBE_INTERNAL_TEST_PARENT_PID") {
     Some(raw) => {
       let pid = @strconv.parse_int(raw) catch { _ => 0 }
-      if pid > 1 { Some(pid) } else { None }
+      if pid > 1 {
+        Some(pid)
+      } else {
+        None
+      }
     }
     None => None
   }
@@ -1522,7 +1532,10 @@ fn sort_test_entry_paths_for_batching(paths : Array[String]) -> Unit {
 }
 
 ///|
-fn compare_test_entry_batch_unit(a : TestEntryBatchUnit, b : TestEntryBatchUnit) -> Int {
+fn compare_test_entry_batch_unit(
+  a : TestEntryBatchUnit,
+  b : TestEntryBatchUnit,
+) -> Int {
   let a_len = a.paths.length()
   let b_len = b.paths.length()
   if a_len > b_len {
@@ -1598,7 +1611,8 @@ fn split_test_entry_path_batches(
   }
   sort_strings_for_batching(parent_keys)
 
-  let target_chunk_size = (entry_paths.length() + worker_count - 1) / worker_count
+  let target_chunk_size = (entry_paths.length() + worker_count - 1) /
+    worker_count
   let units : Array[TestEntryBatchUnit] = []
   for parent in parent_keys {
     let parent_paths = match grouped.get(parent) {

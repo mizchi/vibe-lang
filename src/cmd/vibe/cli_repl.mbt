@@ -1450,7 +1450,9 @@ fn handle_repl_vibe_shell_command(
         pipe_tail
       let result = rt.eval_script_with_mode(expression, syntax_mode) catch {
         e => {
-          print_line(format_repl_error(e, expression))
+          print_line(
+            format_repl_error_with_mode(e, expression, syntax_mode, "shell"),
+          )
           return ReplMetaCommandResult::HandledContinue
         }
       }
@@ -1474,8 +1476,17 @@ fn repl_restore_scratch_source(
   try rt.eval_script_with_mode(source, syntax_mode) |> ignore catch {
     e => {
       let err = e.to_string()
-      print_line("warn: failed to restore db: " + err)
-      if err.contains("DuplicateDecl") {
+      let diagnosis = eval_restore_diagnose(err)
+      let message = eval_restore_message(scratch_db_path, err, diagnosis)
+      match diagnosis.severity {
+        EvalRestoreSeverity::Fatal => {
+          print_line("error: " + message)
+          print_line("warn: continuing with empty in-memory scratch scope")
+          return ""
+        }
+        EvalRestoreSeverity::NonFatal => print_line("warn: " + message)
+      }
+      if diagnosis.category == "duplicate_decl" {
         match write_eval_db_source(scratch_db_path, "") {
           Ok(_) =>
             print_line(
@@ -2133,7 +2144,13 @@ fn repl_tui_cmd(
           ) catch {
             retry_err => {
               push_output_line(
-                format_repl_error(retry_err, wrapped, unwrap_prefix="do {\n"),
+                format_repl_error_with_mode(
+                  retry_err,
+                  wrapped,
+                  @runtime.ParserMode::PosixMode,
+                  "shell",
+                  unwrap_prefix="do {\n",
+                ),
               )
               return true
             }
@@ -2158,7 +2175,9 @@ fn repl_tui_cmd(
           }
           return true
         }
-        push_output_line(format_repl_error(e, trimmed))
+        push_output_line(
+          format_repl_error_with_mode(e, trimmed, syntax_mode, "shell"),
+        )
         return true
       }
     }
@@ -2565,7 +2584,13 @@ fn run_eval_line_repl_with_prompt(
 ) -> Unit {
   let options = match parse_line_repl_options(args, cmd_name, prompt) {
     Ok(opts) => opts
-    Err(msg) => abort(msg)
+    Err(msg) =>
+      if msg.has_prefix("usage: ") {
+        println(msg)
+        return
+      } else {
+        abort(msg)
+      }
   }
   let (namespace_name, scratch_db_path) = match resolve_scratch_db_path() {
     Ok(v) => v
@@ -2647,7 +2672,13 @@ fn run_eval_line_repl_with_prompt(
             ) catch {
               retry_err => {
                 println(
-                  format_repl_error(retry_err, wrapped, unwrap_prefix="do {\n"),
+                  format_repl_error_with_mode(
+                    retry_err,
+                    wrapped,
+                    @runtime.ParserMode::PosixMode,
+                    cmd_name,
+                    unwrap_prefix="do {\n",
+                  ),
                 )
                 if options.prompt_enabled {
                   @stdio.stdout.write(options.prompt)
@@ -2661,7 +2692,9 @@ fn run_eval_line_repl_with_prompt(
             }
             continue
           }
-          println(format_repl_error(e, line_str))
+          println(
+            format_repl_error_with_mode(e, line_str, syntax_mode, cmd_name),
+          )
           if options.prompt_enabled {
             @stdio.stdout.write(options.prompt)
           }
@@ -3072,7 +3105,13 @@ fn run_interactive_line(
             retry_err => {
               // Show PosixMode error (more informative after desugar)
               print_line(
-                format_repl_error(retry_err, wrapped, unwrap_prefix="do {\n"),
+                format_repl_error_with_mode(
+                  retry_err,
+                  wrapped,
+                  @runtime.ParserMode::PosixMode,
+                  "shell",
+                  unwrap_prefix="do {\n",
+                ),
               )
               return scratch_source
             }
@@ -3081,7 +3120,7 @@ fn run_interactive_line(
           return scratch_source
         }
       }
-      print_line(format_repl_error(e, line_str))
+      print_line(format_repl_error_with_mode(e, line_str, syntax_mode, "shell"))
       return scratch_source
     }
   }
@@ -3525,6 +3564,54 @@ fn format_repl_error(
   unwrap_prefix? : String = "",
 ) -> String {
   @runtime.format_error_for_repl(e, source, unwrap_prefix~)
+}
+
+///|
+fn repl_parser_mode_hint_for_error(
+  err_text : String,
+  source : String,
+  syntax_mode : @runtime.ParserMode,
+  cmd_name : String,
+) -> String? {
+  if syntax_mode != @runtime.ParserMode::PosixMode {
+    return None
+  }
+  let trimmed = source.trim().to_string()
+  if not(trimmed.has_prefix("do")) {
+    return None
+  }
+  let parse_related = err_text.contains("Parse(") ||
+    err_text.contains("expected expr") ||
+    err_text.contains("got do")
+  if not(parse_related) {
+    return None
+  }
+  Some(
+    "hint: `do { ... }` is vibe syntax; run " +
+    cmd_name +
+    " with `--syntax vibe` (or omit `--syntax posix`)",
+  )
+}
+
+///|
+fn format_repl_error_with_mode(
+  e : Error,
+  source : String,
+  syntax_mode : @runtime.ParserMode,
+  cmd_name : String,
+  unwrap_prefix? : String = "",
+) -> String {
+  let base = format_repl_error(e, source, unwrap_prefix~)
+  match
+    repl_parser_mode_hint_for_error(
+      e.to_string(),
+      source,
+      syntax_mode,
+      cmd_name,
+    ) {
+    Some(hint) => base + "\n" + hint
+    None => base
+  }
 }
 
 ///|

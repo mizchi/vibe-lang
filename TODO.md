@@ -3,6 +3,41 @@
 Spec-locked decisions are tracked in `spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
+## Workflow UX Audit (2026-02-25)
+
+対象ワークフロー: 「POSIX 互換 shell に `|>` を拡張して動的評価し、`normalize` で整形し、commit/patch へ繋ぐ」
+
+### Immediate fixes (done)
+
+- [x] `eval --export` / `finalize --export` / `write_file` の相対パス解決を cwd 基準へ統一する
+  - 対象: `src/cmd/vibe/eval_cmd.mbt`
+  - 効果: `tmp_probe/...` が `/tmp_probe/...` へ誤解決される問題を解消
+- [x] `shell-stdin --help` を受け付け、unknown arg ではなく usage を返す
+  - 対象: `src/cmd/vibe/repl_line.mbt`, `src/cmd/vibe/cli_repl.mbt`
+
+### Improvement plan
+
+- [x] `finalize` 出力を常に normalize 済みに保つ（`safe`/`library` 両モード）
+  - 対象: `src/cmd/vibe/cli.mbt`, `src/cmd/vibe/normalize_engine*.mbt`
+  - 完了条件: `finalize` 直後に `normalize --check` が通る
+  - メモ: `safe` モードでも pure な top-level expr statement は normalize で除去される
+- [x] `eval --run` の UX 改善（`--test-for` 指定漏れ時の自動候補提示）
+  - 対象: `src/cmd/vibe/cli_eval_helpers.mbt`
+  - 完了条件: scope 内の test target 候補を表示し、次アクションを明確化
+- [x] `eval --include` の相対パス基準を明確化し、`--db` 併用時の混乱を減らす
+  - 対象: `src/cmd/vibe/cli_eval_helpers.mbt`, `src/cmd/vibe/eval_cmd.mbt`
+  - 完了条件: cwd 基準 / db 親基準の仕様を固定し、CLI help + wbtest/e2e で回帰を防ぐ
+- [x] scratch DB restore 警告の分離（致命エラーと非致命警告を区別）
+  - 対象: `src/cmd/vibe/cli_eval_helpers.mbt`, `src/runtime/eval*.mbt`
+  - 完了条件: 失敗理由ごとに actionable なメッセージへ統一
+  - メモ: parse/unresolved/duplicate は non-fatal warning、その他は fatal 扱い
+- [x] `shell-stdin` の `do { ... }` 入力時に parser mode 前提を明示する診断を追加
+  - 対象: `src/cmd/vibe/cli_repl.mbt`, `src/parser/*`
+  - 完了条件: 現状非対応構文での「次にどう書けばよいか」を提示
+- [x] 上記ワークフローの E2E 回帰を追加（`eval -> finalize -> normalize -> apply`）
+  - 対象: `src/cmd/vibe/cli_e2e_wbtest.mbt`
+  - 完了条件: 相対パス・help・整形の回帰が CI で検出される
+
 ## Import/Export Model Refactor (2026-02-24)
 
 ### Spec lock (confirmed)
@@ -149,14 +184,14 @@ Completed items are archived in `docs/DONE.md`.
 
 ### Low (P3): 公開面のノイズ削減
 
-- [ ] `vibe/shell/from_yaml.vibe` の `_yaml_*` ヘルパー公開を縮小し、公開 API を `from_yaml` 中心に整理する
+- [x] `vibe/shell/from_yaml.vibe` の `_yaml_*` ヘルパー公開を縮小し、公開 API を `from_yaml` 中心に整理する
   - 対象: `vibe/shell/from_yaml.vibe`, `vibe/shell/index.vibe`
 
-- [ ] `vibe/collection/r#map.vibe` の利用者向け import 体験を改善する
+- [x] `vibe/collection/r#map.vibe` の利用者向け import 体験を改善する
   - 対象: `vibe/collection/index.vibe`, `vibe/collection/map.vibe`
   - 方針: `map` facade（別名モジュール）を用意し、`r#` 表記を公開面から隠す
 
-- [ ] endpoint 横断の同名シンボル衝突（`read`/`parse`/`run` など）に対する命名規約を定義する
+- [x] endpoint 横断の同名シンボル衝突（`read`/`parse`/`run` など）に対する命名規約を定義する
   - 対象: `vibe/io`, `vibe/socket`, `vibe/http`, `vibe/process`, `vibe/compiler`, `vibe/encoding`, `vibe/shell`, `vibe/fs`, `vibe/collection`, `vibe/builtin`
   - 方針: `as` 依存を前提にせず、衝突しやすい名前には module prefix 付きの canonical 名を用意する
 

@@ -160,6 +160,61 @@ test "line shell options reject unknown arg" {
 }
 
 ///|
+test "line shell options show help" {
+  let parsed = parse_line_repl_options(["--help"], "shell-stdin", "vibe> ")
+  match parsed {
+    Ok(_) => fail("expected help text")
+    Err(msg) =>
+      assert_eq(msg, "usage: shell-stdin [--no-prompt] [--tty|--no-tty]")
+  }
+}
+
+///|
+test "repl parser mode hint suggests vibe for do block in posix mode" {
+  let hint = repl_parser_mode_hint_for_error(
+    "Parse((start=0,end=2), expected expr, got do)",
+    "do { echo(\"x\") }",
+    @runtime.ParserMode::PosixMode,
+    "shell-stdin",
+  )
+  match hint {
+    Some(text) => {
+      assert_true(text.contains("--syntax vibe"))
+      assert_true(text.contains("shell-stdin"))
+    }
+    None => fail("expected parser mode hint")
+  }
+}
+
+///|
+test "repl parser mode hint not shown for non-do input" {
+  let hint = repl_parser_mode_hint_for_error(
+    "Parse((start=0,end=2), expected expr, got do)",
+    "echo(\"x\")",
+    @runtime.ParserMode::PosixMode,
+    "shell-stdin",
+  )
+  match hint {
+    Some(_) => fail("unexpected parser mode hint")
+    None => ()
+  }
+}
+
+///|
+test "repl parser mode hint not shown in vibe mode" {
+  let hint = repl_parser_mode_hint_for_error(
+    "Parse((start=0,end=2), expected expr, got do)",
+    "do { echo(\"x\") }",
+    @runtime.ParserMode::VibeMode,
+    "shell-stdin",
+  )
+  match hint {
+    Some(_) => fail("unexpected parser mode hint")
+    None => ()
+  }
+}
+
+///|
 test "eval cmd options parse db and expression" {
   let parsed = parse_eval_cmd_options(
     ["--db=tmp1.db", "--include=index.vbundle", "let", "value", "=", "1"],
@@ -342,11 +397,17 @@ test "eval cmd options reject malformed assert" {
 }
 
 ///|
-test "eval cmd options reject run without test target" {
+test "eval cmd options allow run without test target for runtime suggestion" {
   let parsed = parse_eval_cmd_options(["--db=tmp1.db", "--run"], "eval")
   match parsed {
-    Ok(_) => fail("expected error")
-    Err(msg) => assert_eq(msg, "eval: --run requires --test-for")
+    Ok(opts) => {
+      assert_true(opts.test_run)
+      match opts.test_target {
+        Some(_) => fail("unexpected test target")
+        None => ()
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
   }
 }
 
@@ -406,6 +467,105 @@ test "eval include path resolves latest named vbundle alias when version omitted
   )
   assert_eq(resolved, root + "/vibe/builtin@1.2.0.vbundle")
   wbtest_remove_if_exists(root)
+}
+
+///|
+test "eval include path resolves relative base dir from current directory" {
+  let cwd = @io.current_dir_or_root()
+  let resolved = resolve_eval_include_path(
+    ".", "tmp_probe/eval/include-test.vibe", "/home/test/.vibe/lib",
+  )
+  assert_eq(
+    resolved,
+    @vibe_fs.normalize_path(cwd + "/tmp_probe/eval/include-test.vibe"),
+  )
+}
+
+///|
+test "load eval include source prefers cwd before db parent for relative include" {
+  let cwd = @io.current_dir_or_root()
+  let rel_root = "tmp_probe/wbtest_eval_include_cwd_priority"
+  let include_rel = rel_root + "/shared.vibe"
+  let cwd_dir = @vibe_fs.normalize_path(cwd + "/" + rel_root)
+  let cwd_include = @vibe_fs.normalize_path(cwd + "/" + include_rel)
+  let base_root = wbtest_make_temp_dir("eval_include_base_priority")
+  let base_dir = @vibe_fs.normalize_path(base_root + "/workspace")
+  let base_include = @vibe_fs.normalize_path(base_dir + "/" + include_rel)
+  wbtest_remove_if_exists(cwd_dir)
+  wbtest_remove_if_exists(base_root)
+  match @io.create_dir(cwd_dir) {
+    Ok(_) => ()
+    Err(err) => fail("create cwd include dir failed: " + err)
+  }
+  match ensure_parent_dir_for_file(base_include, "eval") {
+    Ok(_) => ()
+    Err(err) => fail("create base include dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(cwd_include, "let seed = 1\n") catch {
+    e => fail("write cwd include failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(base_include, "let seed = 2\n") catch {
+    e => fail("write base include failed: " + e.to_string())
+  }
+  let loaded = match
+    load_eval_include_source(include_rel, base_dir, "/tmp/vibe_lib_unused") {
+    Ok(v) => v
+    Err(err) => fail("load include failed: " + err)
+  }
+  assert_true(loaded.contains("let seed = 1"))
+  assert_false(loaded.contains("let seed = 2"))
+  wbtest_remove_if_exists(cwd_dir)
+  wbtest_remove_if_exists(base_root)
+}
+
+///|
+test "load eval include source falls back to db parent when cwd missing" {
+  let cwd = @io.current_dir_or_root()
+  let rel_root = "tmp_probe/wbtest_eval_include_db_fallback"
+  let include_rel = rel_root + "/shared.vibe"
+  let cwd_dir = @vibe_fs.normalize_path(cwd + "/" + rel_root)
+  let base_root = wbtest_make_temp_dir("eval_include_base_fallback")
+  let base_dir = @vibe_fs.normalize_path(base_root + "/workspace")
+  let base_include = @vibe_fs.normalize_path(base_dir + "/" + include_rel)
+  wbtest_remove_if_exists(cwd_dir)
+  wbtest_remove_if_exists(base_root)
+  match ensure_parent_dir_for_file(base_include, "eval") {
+    Ok(_) => ()
+    Err(err) => fail("create base include dir failed: " + err)
+  }
+  @os_fs.write_string_to_file(base_include, "let seed = 2\n") catch {
+    e => fail("write base include failed: " + e.to_string())
+  }
+  let loaded = match
+    load_eval_include_source(include_rel, base_dir, "/tmp/vibe_lib_unused") {
+    Ok(v) => v
+    Err(err) => fail("load include failed: " + err)
+  }
+  assert_true(loaded.contains("let seed = 2"))
+  wbtest_remove_if_exists(cwd_dir)
+  wbtest_remove_if_exists(base_root)
+}
+
+///|
+test "load eval include source missing message shows tried candidates" {
+  let cwd = @io.current_dir_or_root()
+  let rel_root = "tmp_probe/wbtest_eval_include_missing"
+  let include_rel = rel_root + "/missing.vibe"
+  let cwd_dir = @vibe_fs.normalize_path(cwd + "/" + rel_root)
+  let base_root = wbtest_make_temp_dir("eval_include_missing_message")
+  let base_dir = @vibe_fs.normalize_path(base_root + "/workspace")
+  wbtest_remove_if_exists(cwd_dir)
+  match
+    load_eval_include_source(include_rel, base_dir, "/tmp/vibe_lib_unused") {
+    Ok(_) => fail("expected include missing error")
+    Err(err) => {
+      assert_true(err.contains("include not found"))
+      assert_true(err.contains("tried:"))
+      assert_true(err.contains(include_rel))
+    }
+  }
+  wbtest_remove_if_exists(cwd_dir)
+  wbtest_remove_if_exists(base_root)
 }
 
 ///|
@@ -1756,6 +1916,23 @@ test "ensure_parent_dir_for_file creates nested directories" {
 }
 
 ///|
+test "ensure_parent_dir_for_file resolves relative target from current directory" {
+  let cwd = @io.current_dir_or_root()
+  let rel_root = "tmp_probe/wbtest_relative_parent_dir"
+  let rel_target = rel_root + "/nested/export.vibe"
+  let expected_parent = @vibe_fs.normalize_path(
+    cwd + "/" + rel_root + "/nested",
+  )
+  wbtest_remove_if_exists(@vibe_fs.normalize_path(cwd + "/" + rel_root))
+  match ensure_parent_dir_for_file(rel_target, "eval") {
+    Ok(_) => ()
+    Err(err) => fail("expected relative mkdir success: " + err)
+  }
+  assert_true(@os_fs.path_exists(expected_parent))
+  wbtest_remove_if_exists(@vibe_fs.normalize_path(cwd + "/" + rel_root))
+}
+
+///|
 test "ensure_parent_dir_for_file errors when parent path is file" {
   let root = wbtest_make_temp_dir("ensure_parent_parent_file")
   let parent_file = root + "/nested"
@@ -1771,6 +1948,64 @@ test "ensure_parent_dir_for_file errors when parent path is file" {
     }
   }
   wbtest_remove_if_exists(root)
+}
+
+///|
+test "eval run missing target message includes function and sidecar candidates" {
+  let root = wbtest_make_temp_dir("eval_run_missing_target_candidates")
+  let db_path = root + "/tmp1.db"
+  let source = "let base = 1\nlet add_one = (x: Int) -> Int { x + base }\n"
+  match
+    write_eval_test_source(
+      db_path, "saved_target", "test \"saved\" { assert(true) }",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail("write sidecar failed: " + err)
+  }
+  let msg = eval_run_missing_test_target_message(db_path, source)
+  assert_true(msg.contains("eval: --run requires --test-for"))
+  assert_true(msg.contains("add_one"))
+  assert_true(msg.contains("saved_target"))
+  assert_false(msg.contains("base"))
+  wbtest_remove_if_exists(eval_tests_dir_path(db_path))
+  wbtest_remove_if_exists(db_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "eval run missing target message reports no candidates when empty" {
+  let root = wbtest_make_temp_dir("eval_run_missing_target_empty")
+  let db_path = root + "/tmp1.db"
+  let msg = eval_run_missing_test_target_message(db_path, "")
+  assert_true(msg.contains("eval: --run requires --test-for"))
+  assert_true(msg.contains("no test targets found"))
+  wbtest_remove_if_exists(eval_tests_dir_path(db_path))
+  wbtest_remove_if_exists(db_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "eval restore diagnosis classifies parse as non-fatal" {
+  let diagnosis = eval_restore_diagnose("Parse((start=1,end=2), expected expr)")
+  assert_eq(diagnosis.severity, EvalRestoreSeverity::NonFatal)
+  assert_eq(diagnosis.category, "parse")
+  assert_true(diagnosis.hint.contains("history reset"))
+}
+
+///|
+test "eval restore diagnosis classifies unknown name as non-fatal" {
+  let diagnosis = eval_restore_diagnose("UnknownName(\"echo\")")
+  assert_eq(diagnosis.severity, EvalRestoreSeverity::NonFatal)
+  assert_eq(diagnosis.category, "unresolved_name")
+  assert_true(diagnosis.hint.contains("--include"))
+}
+
+///|
+test "eval restore diagnosis classifies unknown runtime error as fatal" {
+  let diagnosis = eval_restore_diagnose("Trap(Unreachable)")
+  assert_eq(diagnosis.severity, EvalRestoreSeverity::Fatal)
+  assert_eq(diagnosis.category, "runtime")
+  assert_true(diagnosis.hint.contains("history reset"))
 }
 
 ///|
@@ -1792,12 +2027,13 @@ test "split test entry path batches caps workers and balances paths" {
 
 ///|
 test "split test entry path batches keeps sibling files in same worker chunk" {
-  let grouped = split_test_entry_path_batches([
-    "vibe/builtin/a_test.vibe",
-    "vibe/fs/a_test.vibe",
-    "vibe/builtin/b_test.vibe",
-    "vibe/fs/b_test.vibe",
-  ], 2)
+  let grouped = split_test_entry_path_batches(
+    [
+      "vibe/builtin/a_test.vibe", "vibe/fs/a_test.vibe", "vibe/builtin/b_test.vibe",
+      "vibe/fs/b_test.vibe",
+    ],
+    2,
+  )
   assert_eq(grouped.length(), 2)
   let builtin_group = ["vibe/builtin/a_test.vibe", "vibe/builtin/b_test.vibe"]
   let fs_group = ["vibe/fs/a_test.vibe", "vibe/fs/b_test.vibe"]

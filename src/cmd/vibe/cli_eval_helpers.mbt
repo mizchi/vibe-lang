@@ -37,6 +37,67 @@ struct EvalScopeSymbol {
 } derive(Show, Eq)
 
 ///|
+enum EvalRestoreSeverity {
+  Fatal
+  NonFatal
+} derive(Show, Eq)
+
+///|
+struct EvalRestoreDiagnosis {
+  severity : EvalRestoreSeverity
+  category : String
+  hint : String
+} derive(Show, Eq)
+
+///|
+fn eval_restore_diagnose(err_text : String) -> EvalRestoreDiagnosis {
+  if err_text.contains("DuplicateDecl") {
+    return {
+      severity: EvalRestoreSeverity::NonFatal,
+      category: "duplicate_decl",
+      hint: "run `vibe history reset` to clear duplicate declarations in scratch db",
+    }
+  }
+  if err_text.contains("Parse(") || err_text.contains("ParseError") {
+    return {
+      severity: EvalRestoreSeverity::NonFatal,
+      category: "parse",
+      hint: "db source may be stale or syntax mode changed; run `vibe history reset` and re-evaluate needed defs",
+    }
+  }
+  if err_text.contains("UnknownName(") ||
+    err_text.contains("UnknownType(") ||
+    err_text.contains("UnknownModule(") {
+    return {
+      severity: EvalRestoreSeverity::NonFatal,
+      category: "unresolved_name",
+      hint: "required defs/imports are missing; re-run with `--include` or reset scratch db",
+    }
+  }
+  {
+    severity: EvalRestoreSeverity::Fatal,
+    category: "runtime",
+    hint: "inspect db source and runtime error; if needed run `vibe history reset` to recover",
+  }
+}
+
+///|
+fn eval_restore_message(
+  db_path : String,
+  err_text : String,
+  diagnosis : EvalRestoreDiagnosis,
+) -> String {
+  "failed to restore db `" +
+  db_path +
+  "` (" +
+  diagnosis.category +
+  "): " +
+  err_text +
+  " hint: " +
+  diagnosis.hint
+}
+
+///|
 fn eval_scope_symbol_id_from_entry(entry : @frontend.SymbolEntry) -> String {
   let key = entry.path +
     "|" +
@@ -301,6 +362,34 @@ fn eval_include_base_dir(options : EvalCmdOptions) -> String {
 }
 
 ///|
+fn eval_include_candidate_paths(
+  include_spec : String,
+  base_dir : String,
+  include_lib_dir : String,
+) -> Array[String] {
+  let cwd_path = resolve_eval_include_path(".", include_spec, include_lib_dir)
+  let base_path = resolve_eval_include_path(
+    base_dir, include_spec, include_lib_dir,
+  )
+  if base_path == cwd_path {
+    [cwd_path]
+  } else {
+    [cwd_path, base_path]
+  }
+}
+
+///|
+fn render_eval_include_candidates(paths : Array[String]) -> String {
+  if paths.length() == 0 {
+    ""
+  } else if paths.length() == 1 {
+    paths[0]
+  } else {
+    "tried: " + paths.join(", ")
+  }
+}
+
+///|
 fn path_last_segment(path : String) -> String {
   let parts : Array[String] = []
   for part in path.split("/") {
@@ -445,21 +534,40 @@ fn load_eval_include_source(
   base_dir : String,
   include_lib_dir : String,
 ) -> Result[String, String] {
-  let path = resolve_eval_include_path(base_dir, include_spec, include_lib_dir)
-  if not(@os_fs.path_exists(path)) {
-    return Err("include not found: " + include_spec + " -> " + path)
+  let candidates = eval_include_candidate_paths(
+    include_spec, base_dir, include_lib_dir,
+  )
+  let mut path : String? = None
+  for candidate in candidates {
+    if not(@os_fs.path_exists(candidate)) {
+      continue
+    }
+    let is_file = @os_fs.is_file(candidate) catch { _ => false }
+    if not(is_file) {
+      return Err(
+        "include path is not a file: " + include_spec + " -> " + candidate,
+      )
+    }
+    path = Some(candidate)
+    break
   }
-  let is_file = @os_fs.is_file(path) catch { _ => false }
-  if not(is_file) {
-    return Err("include path is not a file: " + include_spec + " -> " + path)
+  let resolved_path = match path {
+    Some(v) => v
+    None =>
+      return Err(
+        "include not found: " +
+        include_spec +
+        " -> " +
+        render_eval_include_candidates(candidates),
+      )
   }
-  let source = @os_fs.read_file_to_string(path) catch {
+  let source = @os_fs.read_file_to_string(resolved_path) catch {
     e =>
       return Err(
         "failed to read include `" +
         include_spec +
         "` (" +
-        path +
+        resolved_path +
         "): " +
         e.to_string(),
       )
@@ -467,7 +575,7 @@ fn load_eval_include_source(
   match parse_include_hash_alias(source) {
     Some(hash) => {
       let roots : Array[String] = []
-      let include_parent = @vibe_fs.parent_path(path)
+      let include_parent = @vibe_fs.parent_path(resolved_path)
       if path_last_segment(include_parent) == "vibe" {
         roots.push(@vibe_fs.parent_path(include_parent))
       }
@@ -497,6 +605,70 @@ fn load_eval_include_source(
         Some(entry_source) => Ok(entry_source)
         None => Ok(source)
       }
+  }
+}
+
+///|
+fn eval_test_target_from_sidecar_entry(entry : String) -> String? {
+  let file_name = path_last_segment(entry)
+  if not(file_name.has_suffix("_test.vibe")) || file_name.length() <= 10 {
+    return None
+  }
+  let target = file_name.unsafe_substring(start=0, end=file_name.length() - 10)
+  if target.length() == 0 {
+    None
+  } else {
+    Some(target)
+  }
+}
+
+///|
+fn eval_collect_run_target_candidates(
+  db_path : String,
+  source : String,
+) -> Array[String] {
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = {}
+  let scope = collect_eval_scope_symbols(db_path, source)
+  for symbol in scope {
+    if not(symbol.signature.contains("->")) {
+      continue
+    }
+    if seen.get(symbol.name) is None {
+      seen[symbol.name] = true
+      out.push(symbol.name)
+    }
+  }
+  let tests_dir = eval_tests_dir_path(db_path)
+  if @os_fs.path_exists(tests_dir) {
+    let entries = @os_fs.read_dir(tests_dir) catch { _ => [] }
+    for entry in entries {
+      match eval_test_target_from_sidecar_entry(entry) {
+        Some(target) =>
+          if seen.get(target) is None {
+            seen[target] = true
+            out.push(target)
+          }
+        None => ()
+      }
+    }
+  }
+  out.sort_by((a, b) => String::compare(a, b))
+  out
+}
+
+///|
+fn eval_run_missing_test_target_message(
+  db_path : String,
+  source : String,
+) -> String {
+  let candidates = eval_collect_run_target_candidates(db_path, source)
+  if candidates.length() == 0 {
+    "eval: --run requires --test-for (no test targets found; add tests with --test-for <name> <test ...>)"
+  } else {
+    "eval: --run requires --test-for (candidates: " +
+    candidates.join(", ") +
+    ")"
   }
 }
 
@@ -812,10 +984,15 @@ fn eval_cmd(
   next_source = source
   if source.trim().length() > 0 {
     try rt.eval_script_with_mode(source, syntax_mode) |> ignore catch {
-      e =>
-        println(
-          "warn: failed to restore db `" + db_path + "`: " + e.to_string(),
-        )
+      e => {
+        let err = e.to_string()
+        let diagnosis = eval_restore_diagnose(err)
+        let message = eval_restore_message(db_path, err, diagnosis)
+        match diagnosis.severity {
+          EvalRestoreSeverity::Fatal => abort("eval: " + message)
+          EvalRestoreSeverity::NonFatal => println("warn: " + message)
+        }
+      }
     }
   }
   match options.expr {
@@ -862,7 +1039,7 @@ fn eval_cmd(
   if options.test_run {
     let target = match options.test_target {
       Some(v) => v
-      None => abort("eval: --run requires --test-for")
+      None => abort(eval_run_missing_test_target_message(db_path, next_source))
     }
     let test_path = match eval_test_sidecar_path {
       Some(path) => path

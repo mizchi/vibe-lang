@@ -14,6 +14,11 @@ pub struct LineReplOptions {
 }
 
 ///|
+fn line_repl_usage(cmd_name : String) -> String {
+  "usage: " + cmd_name + " [--no-prompt] [--tty|--no-tty]"
+}
+
+///|
 pub fn parse_line_repl_options(
   args : Array[String],
   cmd_name : String,
@@ -25,6 +30,7 @@ pub fn parse_line_repl_options(
   while i < args.length() {
     let arg = args[i]
     match arg {
+      "--help" | "-h" => return Err(line_repl_usage(cmd_name))
       "--no-prompt" => {
         prompt_enabled = false
         i += 1

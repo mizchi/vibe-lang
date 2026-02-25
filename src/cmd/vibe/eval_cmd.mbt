@@ -88,6 +88,15 @@ fn compare_simple_semver(a : (Int, Int, Int), b : (Int, Int, Int)) -> Int {
 }
 
 ///|
+fn resolve_eval_path(path : String) -> String {
+  if path.has_prefix("/") {
+    @vibe_fs.normalize_path(path)
+  } else {
+    @vibe_fs.normalize_path(@io.current_dir_or_root() + "/" + path)
+  }
+}
+
+///|
 fn scope_parent_and_name(scope : String) -> (String, String) {
   let mut last_slash : Int? = None
   for i, c in scope {
@@ -241,6 +250,7 @@ pub fn resolve_eval_include_path(
   include_spec : String,
   include_lib_dir : String,
 ) -> String {
+  let resolved_base_dir = resolve_eval_path(base_dir)
   let spec = if include_spec.has_prefix("bit:") {
     include_spec.unsafe_substring(start=4, end=include_spec.length())
   } else {
@@ -258,7 +268,7 @@ pub fn resolve_eval_include_path(
   } else if spec.has_prefix("/") {
     @vibe_fs.normalize_path(spec)
   } else {
-    @vibe_fs.normalize_path(base_dir + "/" + spec)
+    @vibe_fs.normalize_path(resolved_base_dir + "/" + spec)
   }
 }
 
@@ -303,7 +313,8 @@ pub fn ensure_parent_dir_for_file(
   path : String,
   context : String,
 ) -> Result[Unit, String] {
-  let parent = @vibe_fs.parent_path(path)
+  let resolved_path = resolve_eval_path(path)
+  let parent = @vibe_fs.parent_path(resolved_path)
   if parent == "." || parent.length() == 0 {
     return Ok(())
   }
@@ -444,9 +455,6 @@ pub fn parse_eval_cmd_options(
     None
   } else {
     Some(join_eval_expr_tokens(expr_tokens))
-  }
-  if test_run && test_target is None {
-    return Err(cmd_name + ": --run requires --test-for")
   }
   match (test_target, expr, test_run) {
     (Some(_), None, false) =>
