@@ -206,7 +206,15 @@ test "codebase update_lock_path_refs prunes stale path/module refs and keeps non
   }
   assert_false(updated.module_refs.contains("legacy#x"))
   assert_false(updated.annotations.contains("legacy#x"))
-  let entry_symbol = lock_module_ref_canonical_symbol(entry_norm, "main")
+  let root_norm = @vibe_fs.normalize_path(root)
+  let registry_modules : Map[String, String] = {}
+  let entry_symbol = lock_module_ref_canonical_symbol_with_context(
+    entry_norm,
+    "main",
+    root_norm,
+    registry_modules,
+    "0.0.0",
+  )
   let mut found_entry_ref = false
   for key, hash in updated.module_refs {
     if key.has_prefix(entry_symbol + "#") {
@@ -215,7 +223,13 @@ test "codebase update_lock_path_refs prunes stale path/module refs and keeps non
     }
   }
   assert_true(found_entry_ref)
-  let lib_symbol = lock_module_ref_canonical_symbol(lib_norm, "libv")
+  let lib_symbol = lock_module_ref_canonical_symbol_with_context(
+    lib_norm,
+    "libv",
+    root_norm,
+    registry_modules,
+    "0.0.0",
+  )
   let mut found_lib_ref = false
   for key, hash in updated.module_refs {
     if key.has_prefix(lib_symbol + "#") {
@@ -239,6 +253,47 @@ test "codebase lock module ref key uses canonical-symbol#hash format" {
   assert_eq(canonical, "/tmp/proj/vibe/prelude/result/Result::and_then")
   let key = lock_module_ref_key(path, "Result::and_then", "abc123")
   assert_eq(key, canonical + "#abc123")
+}
+
+///|
+test "codebase lock module ref canonical symbol with context uses local namespace" {
+  let root = "/tmp/proj"
+  let path = root + "/pkg/math.vibe"
+  let modules : Map[String, String] = {}
+  let canonical = lock_module_ref_canonical_symbol_with_context(
+    path,
+    "sum",
+    root,
+    modules,
+    "0.1.0",
+  )
+  assert_eq(canonical, "/local@0.1.0/pkg/math/sum")
+  let key = lock_module_ref_key_with_context(
+    path,
+    "sum",
+    "abc123",
+    root,
+    modules,
+    "0.1.0",
+  )
+  assert_eq(key, canonical + "#abc123")
+}
+
+///|
+test "codebase lock module ref canonical symbol with context resolves namespace deterministically" {
+  let root = "/tmp/proj"
+  let path = root + "/vibe/prelude/result/index.vibe"
+  let modules : Map[String, String] = {}
+  modules["std"] = root + "/vibe/prelude"
+  modules["prelude"] = root + "/vibe/prelude"
+  let canonical = lock_module_ref_canonical_symbol_with_context(
+    path,
+    "Result::and_then",
+    root,
+    modules,
+    "0.1.0",
+  )
+  assert_eq(canonical, "/std@0.1.0/result/Result::and_then")
 }
 
 ///|

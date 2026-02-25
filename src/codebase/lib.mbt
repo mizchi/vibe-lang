@@ -554,6 +554,31 @@ pub fn load_registry_modules(
 }
 
 ///|
+pub fn load_registry_root_version_with_fs(
+  root : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[String, String] {
+  let root_norm = @vibe_fs.normalize_path(root)
+  let index_path = @vibe_fs.normalize_path(root_norm + "/index.vibe")
+  if not(@io.path_exists_with(fs, index_path)) {
+    return Ok("0.0.0")
+  }
+  let content = match @io.read_string_with(fs, index_path) {
+    Ok(v) => v
+    Err(err) => return Err("failed to read index.vibe: " + err)
+  }
+  let ast = @parser.parse_ast(content) catch {
+    e => return Err("index.vibe parse: " + e.to_string())
+  }
+  require_index_version(ast)
+}
+
+///|
+pub fn load_registry_root_version(root : String) -> Result[String, String] {
+  load_registry_root_version_with_fs(root, @io.default_fs_adapter())
+}
+
+///|
 pub fn resolve_import_path_with_registry(
   base : String,
   import_path : String,
@@ -627,6 +652,85 @@ pub fn lock_module_ref_canonical_symbol(path : String, name : String) -> String 
 }
 
 ///|
+fn module_ref_relative_path(base : String, target : String) -> String? {
+  let base_norm = @vibe_fs.normalize_path(base)
+  let target_norm = @vibe_fs.normalize_path(target)
+  if target_norm == base_norm {
+    return Some("")
+  }
+  let prefix = base_norm + "/"
+  if target_norm.has_prefix(prefix) {
+    return Some(
+      target_norm.unsafe_substring(start=prefix.length(), end=target_norm.length()),
+    )
+  }
+  None
+}
+
+///|
+fn module_ref_root_version(version : String) -> String {
+  let normalized = version.trim().to_string()
+  if normalized.length() == 0 { "0.0.0" } else { normalized }
+}
+
+///|
+pub fn lock_module_ref_canonical_symbol_with_context(
+  path : String,
+  name : String,
+  root : String,
+  registry_modules : Map[String, String],
+  root_version : String,
+) -> String {
+  let module_path = module_ref_symbol_path(path)
+  let normalized_version = module_ref_root_version(root_version)
+  let mut matched_ns = ""
+  let mut has_match = false
+  let mut matched_root = ""
+  let mut matched_rel = ""
+  for ns, ns_root in registry_modules {
+    let ns_root_path = module_ref_symbol_path(ns_root)
+    match module_ref_relative_path(ns_root_path, module_path) {
+      Some(rel) =>
+        if
+          not(has_match) ||
+          ns_root_path.length() > matched_root.length() ||
+          (
+            ns_root_path.length() == matched_root.length() &&
+            ns.compare(matched_ns) < 0
+          ) {
+          has_match = true
+          matched_ns = ns
+          matched_root = ns_root_path
+          matched_rel = rel
+        }
+      None => ()
+    }
+  }
+  if has_match {
+    let module_rel = if matched_rel.length() == 0 { "index" } else { matched_rel }
+    "/" + matched_ns + "@" + normalized_version + "/" + module_rel + "/" + name
+  } else {
+    let local_rel = match module_ref_relative_path(root, module_path) {
+      Some(rel) =>
+        if rel.length() == 0 {
+          "index"
+        } else {
+          rel
+        }
+      None => {
+        let symbol_path = module_ref_symbol_path(path)
+        if symbol_path.has_prefix("/") {
+          symbol_path.unsafe_substring(start=1, end=symbol_path.length())
+        } else {
+          symbol_path
+        }
+      }
+    }
+    "/local@" + normalized_version + "/" + local_rel + "/" + name
+  }
+}
+
+///|
 pub fn lock_module_ref_key(
   path : String,
   name : String,
@@ -641,10 +745,34 @@ pub fn lock_module_ref_key(
 }
 
 ///|
+pub fn lock_module_ref_key_with_context(
+  path : String,
+  name : String,
+  addr_hash : String,
+  root : String,
+  registry_modules : Map[String, String],
+  root_version : String,
+) -> String {
+  let normalized_hash = if addr_hash.has_prefix("#") && addr_hash.length() > 1 {
+    addr_hash.unsafe_substring(start=1, end=addr_hash.length())
+  } else {
+    addr_hash
+  }
+  lock_module_ref_canonical_symbol_with_context(
+    path, name, root, registry_modules, root_version,
+  ) +
+  "#" +
+  normalized_hash
+}
+
+///|
 fn collect_module_export_refs(
   path : String,
   ast : @core.Module,
   module_refs : Map[String, String],
+  root : String,
+  registry_modules : Map[String, String],
+  root_version : String,
 ) -> Unit {
   let exports = @core.extract_exports(ast)
   let zero = @core.Span::empty(0)
@@ -654,7 +782,14 @@ fn collect_module_export_refs(
     }
     let normalized = @core.normalize_module(export_module)
     let export_hash = @core.hash_module(normalized)
-    let key = lock_module_ref_key(path, name, export_hash)
+    let key = lock_module_ref_key_with_context(
+      path,
+      name,
+      export_hash,
+      root,
+      registry_modules,
+      root_version,
+    )
     module_refs[key] = export_hash
   }
 }
@@ -978,6 +1113,7 @@ fn collect_path_refs_impl(
   stack : Array[String],
   root : String,
   registry_modules : Map[String, String],
+  root_version : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   let norm = @vibe_fs.normalize_path(path)
@@ -1014,7 +1150,9 @@ fn collect_path_refs_impl(
       return Err("parse: " + e.to_string())
     }
   }
-  collect_module_export_refs(norm, ast, module_refs)
+  collect_module_export_refs(
+    norm, ast, module_refs, root, registry_modules, root_version,
+  )
   collect_module_export_annotations(norm, source, ast, annotations)
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
@@ -1037,7 +1175,15 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
+                resolved,
+                out,
+                module_refs,
+                annotations,
+                visited,
+                stack,
+                root,
+                registry_modules,
+                root_version,
                 fs,
               ) {
               Ok(_) => ()
@@ -1067,7 +1213,15 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
+                resolved,
+                out,
+                module_refs,
+                annotations,
+                visited,
+                stack,
+                root,
+                registry_modules,
+                root_version,
                 fs,
               ) {
               Ok(_) => ()
@@ -1093,6 +1247,7 @@ fn collect_path_refs(
   entry : String,
   root : String,
   registry_modules : Map[String, String],
+  root_version : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[
   (Map[String, String], Map[String, String], Map[String, String]),
@@ -1105,7 +1260,15 @@ fn collect_path_refs(
   let stack : Array[String] = []
   match
     collect_path_refs_impl(
-      entry, out, module_refs, annotations, visited, stack, root, registry_modules,
+      entry,
+      out,
+      module_refs,
+      annotations,
+      visited,
+      stack,
+      root,
+      registry_modules,
+      root_version,
       fs,
     ) {
     Ok(_) => Ok((out, module_refs, annotations))
@@ -1650,8 +1813,18 @@ fn build_refreshed_lock_data_with_fs(
     Ok(lock) => lock
     Err(err) => return Err(err)
   }
+  let root_version = match load_registry_root_version_with_fs(root, fs) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
   let (path_refs, module_refs, annotations) = match
-    collect_path_refs(normalized_entry, root, registry_modules, fs) {
+    collect_path_refs(
+      normalized_entry,
+      root,
+      registry_modules,
+      root_version,
+      fs,
+    ) {
     Ok(v) => v
     Err(err) => return Err(err)
   }

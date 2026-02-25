@@ -2953,6 +2953,9 @@ fn symbols_lock_has_managed_ref(
   module_refs : Map[String, String],
   path : String,
   name : String,
+  index_root : String,
+  registry_modules : Map[String, String],
+  root_version : String,
 ) -> Bool {
   let legacy_key = path + "#" + name
   if module_refs.contains(legacy_key) {
@@ -2965,6 +2968,22 @@ fn symbols_lock_has_managed_ref(
   let prefix = canonical_symbol + "#"
   for key, _ in module_refs {
     if key.has_prefix(prefix) {
+      return true
+    }
+  }
+  let canonical_symbol_with_context = @codebase.lock_module_ref_canonical_symbol_with_context(
+    path,
+    name,
+    index_root,
+    registry_modules,
+    root_version,
+  )
+  if module_refs.contains(canonical_symbol_with_context) {
+    return true
+  }
+  let context_prefix = canonical_symbol_with_context + "#"
+  for key, _ in module_refs {
+    if key.has_prefix(context_prefix) {
       return true
     }
   }
@@ -2982,6 +3001,14 @@ fn collect_symbols_rows(
     Err(err) => return Err(err)
   }
   let index_root = @codebase.resolve_index_root(resolved)
+  let registry_modules = match @codebase.load_registry_modules(index_root) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let root_version = match @codebase.load_registry_root_version(index_root) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
   let scratch_candidates = match
     load_scratch_write_file_candidates(index_root) {
     Ok(v) => v
@@ -3002,7 +3029,12 @@ fn collect_symbols_rows(
   let rows : Array[SymbolsRow] = []
   for def in index_defs {
     let managed = symbols_lock_has_managed_ref(
-      lock.module_refs, def.path, def.name,
+      lock.module_refs,
+      def.path,
+      def.name,
+      index_root,
+      registry_modules,
+      root_version,
     )
     let mut has_conflicting_scratch = false
     if scratch_names.contains(def.name) {
