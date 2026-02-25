@@ -1,8 +1,7 @@
 //# Imports
 
 import ./http.vibe {
-  request,
-  respond
+  request, respond
 }
 
 //# Types
@@ -22,8 +21,17 @@ export struct HttpResponse {
 
 //# Functions
 
-let normalize_header_name = (name: String) -> String {
-  string_to_lower(name)
+export let status_ok = () -> Int {
+  200
+}
+
+export let make_request = (method: String, url: String, headers: Map[String], body: String) -> HttpRequest {
+  HttpRequest::{
+    method: method,
+    url: url,
+    headers: headers,
+    body: body
+  }
 }
 
 export let headers_empty = () -> Map[String] {
@@ -31,18 +39,61 @@ export let headers_empty = () -> Map[String] {
   headers
 }
 
+export let make_response = (status: Int, headers: Map[String], body: String) -> HttpResponse {
+  HttpResponse::{
+    status: status,
+    headers: headers,
+    body: body
+  }
+}
+
+export let status_created = () -> Int {
+  201
+}
+
+export let headers_to_wire = (headers: Map[String]) -> String {
+  let keys = map_keys(headers)
+  let len = array_length(keys)
+  let sb = string_builder()
+  let mut i = 0
+  while i < len {
+    if i > 0 {
+      string_builder_push(sb, "\n")
+    }
+    let key = array_get(keys, i)
+    string_builder_push(sb, key)
+    string_builder_push(sb, ": ")
+    string_builder_push(sb, map_get(headers, key))
+    i = i + 1
+  }
+  string_builder_freeze(sb)
+}
+
+export let request_with = (request_data: HttpRequest) -> Int with { Net } {
+  request(request_data.method, request_data.url, headers_to_wire(request_data.headers), request_data.body)
+}
+
+export let respond_with = (req_fd: Int, response_data: HttpResponse) -> Unit with { Net } {
+  respond(req_fd, response_data.status, headers_to_wire(response_data.headers), response_data.body)
+}
+
+export let status_not_found = () -> Int {
+  404
+}
+
+export let status_is_success = (status: Int) -> Bool {
+  status >= 200 && status < 300
+}
+
+let normalize_header_name = (name: String) -> String {
+  string_to_lower(name)
+}
+
 export let headers_get = (headers: Map[String], name: String) -> Option[String] {
   let key = normalize_header_name(name)
   if map_has_key(headers, key) {
     Some(map_get(headers, key))
   } else None
-}
-
-export let headers_get_or = (headers: Map[String], name: String, default: String) -> String {
-  match headers_get(headers, name) {
-    Some(value) => value,
-    _ => default
-  }
 }
 
 export let headers_set = (headers: Map[String], name: String, value: String) -> Map[String] {
@@ -68,68 +119,11 @@ export let headers_set = (headers: Map[String], name: String, value: String) -> 
   map_builder_freeze(builder)
 }
 
-export let headers_to_wire = (headers: Map[String]) -> String {
-  let keys = map_keys(headers)
-  let len = array_length(keys)
-  let sb = string_builder()
-  let mut i = 0
-  while i < len {
-    if i > 0 {
-      string_builder_push(sb, "\n")
-    }
-    let key = array_get(keys, i)
-    string_builder_push(sb, key)
-    string_builder_push(sb, ": ")
-    string_builder_push(sb, map_get(headers, key))
-    i = i + 1
+export let headers_get_or = (headers: Map[String], name: String, default: String) -> String {
+  match headers_get(headers, name) {
+    Some(value) => value,
+    _ => default
   }
-  string_builder_freeze(sb)
-}
-
-export let make_request = (
-  method: String,
-  url: String,
-  headers: Map[String],
-  body: String
-) -> HttpRequest {
-  HttpRequest::{
-    method: method,
-    url: url,
-    headers: headers,
-    body: body
-  }
-}
-
-export let make_response = (
-  status: Int,
-  headers: Map[String],
-  body: String
-) -> HttpResponse {
-  HttpResponse::{
-    status: status,
-    headers: headers,
-    body: body
-  }
-}
-
-export let status_ok = () -> Int {
-  200
-}
-
-export let status_created = () -> Int {
-  201
-}
-
-export let status_not_found = () -> Int {
-  404
-}
-
-export let status_internal_server_error = () -> Int {
-  500
-}
-
-export let status_is_success = (status: Int) -> Bool {
-  status >= 200 && status < 300
 }
 
 export let status_is_client_error = (status: Int) -> Bool {
@@ -140,23 +134,6 @@ export let status_is_server_error = (status: Int) -> Bool {
   status >= 500 && status < 600
 }
 
-export let request_with = (request_data: HttpRequest) -> Int with { Net } {
-  request(
-    request_data.method,
-    request_data.url,
-    headers_to_wire(request_data.headers),
-    request_data.body
-  )
-}
-
-export let respond_with = (
-  req_fd: Int,
-  response_data: HttpResponse
-) -> Unit with { Net } {
-  respond(
-    req_fd,
-    response_data.status,
-    headers_to_wire(response_data.headers),
-    response_data.body
-  )
+export let status_internal_server_error = () -> Int {
+  500
 }
