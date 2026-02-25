@@ -426,11 +426,11 @@ Total: 126 tests (lexer: 20, parser: 27, printer: 21, stmt: 46, fixture: 12)
 
 Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
 
-- [ ] `while` loop expression
-- [ ] `do { ... }` block expression
-- [ ] `handle { ... } { Error(msg) => ... }` effect handler
+- [x] `while` loop expression
+- [ ] `do { ... }` block expression（互換構文。self-host 目標には必須ではないため後回し）
+- [x] `handle { ... } { Error(msg) => ... }` effect handler
 - [ ] `throw(msg)` expression
-- [ ] `for ... in` loop
+- [x] `for ... in` loop
 - [ ] `break` / `continue` / `return`
 
 ### Self-host quality baseline (方針メモ)

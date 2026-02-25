@@ -643,6 +643,9 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       TLBrace => parse_impl(tokens, pos + 1, 20),
       TIf => parse_impl(tokens, pos + 1, 21),
       TMatch => parse_impl(tokens, pos + 1, 22),
+      THandle => parse_impl(tokens, pos + 1, 24),
+      TWhile => parse_impl(tokens, pos + 1, 23),
+      TFor => parse_impl(tokens, pos + 1, 25),
       _ => throw(string_concat("unexpected token: ", tk_name(peek(tokens, pos))))
     }
   }
@@ -731,6 +734,22 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       },
       TRBrace => (EMatch(scrutinee, array_builder_freeze(b)), pos + 1),
       _ => throw("expected ',' or '}' in match")
+    }
+  }
+  let rec parse_handle_rest = (tokens: Array[Token], pos: Int, body: Expr, b: ArrayBuilder[(Pat, Expr)]) -> (Expr, Int)with { Error } {
+    match peek(tokens, pos) {
+      TComma => match peek(tokens, pos + 1) {
+        TRBrace => (EHandle(body, array_builder_freeze(b)), pos + 2),
+        _ => {
+          let (pa, paa) = parse_pattern(tokens, pos + 1)
+          let a2 = expect_tk(tokens, paa, "=>")
+          let (ea, en) = parse_impl(tokens, a2, 0)
+          array_builder_push(b, (pa, ea))
+          parse_handle_rest(tokens, en, body, b)
+        }
+      },
+      TRBrace => (EHandle(body, array_builder_freeze(b)), pos + 1),
+      _ => throw("expected ',' or '}' in handle")
     }
   }
   let parse_block_after_expr = (tokens: Array[Token], pos: Int, e: Expr) -> (Expr, Int)with { Error } {
@@ -828,6 +847,37 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         _ => throw("expected '{' or 'if' after 'else'")
       },
       _ => throw("expected 'else' after if block")
+    }
+  } else if mode == 23 {
+    let (cond, cn) = parse_impl(tokens, pos, 0)
+    let br = expect_tk(tokens, cn, "{")
+    let (body, end) = parse_impl(tokens, br, 20)
+    (EWhile(cond, body), end)
+  } else if mode == 24 {
+    let br = expect_tk(tokens, pos, "{")
+    let (body, bn) = parse_impl(tokens, br, 20)
+    let hb = expect_tk(tokens, bn, "{")
+    match peek(tokens, hb) {
+      TRBrace => (EHandle(body, empty_arms()), hb + 1),
+      _ => {
+        let b = array_builder()
+        let (fp, fa) = parse_pattern(tokens, hb)
+        let aa = expect_tk(tokens, fa, "=>")
+        let (fe, fn1) = parse_impl(tokens, aa, 0)
+        array_builder_push(b, (fp, fe))
+        parse_handle_rest(tokens, fn1, body, b)
+      }
+    }
+  } else if mode == 25 {
+    match peek(tokens, pos) {
+      TIdent(name) => {
+        let ip = expect_tk(tokens, pos + 1, "in")
+        let (iterable, inext) = parse_impl(tokens, ip, 0)
+        let bb = expect_tk(tokens, inext, "{")
+        let (body, end) = parse_impl(tokens, bb, 20)
+        (EForIn(name, iterable, body), end)
+      },
+      _ => throw("expected identifier after 'for'")
     }
   } else if mode == 20 {
     match peek(tokens, pos) {
