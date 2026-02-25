@@ -53,7 +53,10 @@ Completed items are archived in `docs/DONE.md`.
   - [ ] 再展開時の import 生成（最短 import + 衝突時 alias）を deterministic にする
   - [x] Red: 同名衝突時に安定した disambiguation を行う snapshot を追加
     - 対象: `src/cmd/vibe/cli_write_file_wbtest.mbt`
-  - Green: 再展開時に決定的 import 生成（最短 import + 衝突時 alias）
+  - [x] Green(1/2): 再展開時の import / re-export / import item の順序を deterministic 化
+    - 対象: `src/core/normalize_sort.mbt`, `src/cmd/vibe/normalize_render.mbt`, `src/cmd/vibe/normalize_engine_wbtest.mbt`
+  - [x] Green(2/2): 衝突時 alias を自動生成して再展開する（同一 import spec 内）
+    - 対象: `src/cmd/vibe/normalize_engine.mbt`, `src/cmd/vibe/normalize_engine_wbtest.mbt`
 - [ ] library migration: 既存ライブラリ/fixture の `recv.method(...)` 記法を `|>` または完全修飾関数呼び出しへ一括移行する
   - 対象: `vibe/**/*`, `examples/**/*`, `fixtures/**/*`, `docs/language-tour/*`
 - [ ] railway-oriented error path: Result 合成チェーンの推奨パターンを lint/guide で固定し、例外境界 (`handle`/`throw`/`unwrap`) を可視化する

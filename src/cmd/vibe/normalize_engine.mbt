@@ -695,7 +695,111 @@ fn normalize_canonicalize_import_spec(
       rename,
     })
   }
-  @vibe_core.ImportSpec::{ items, }
+  items.sort_by(fn(a, b) {
+    normalize_import_item_compare(a, b)
+  })
+  @vibe_core.ImportSpec::{
+    items: normalize_disambiguate_import_items(items),
+  }
+}
+
+///|
+fn normalize_string_compare(a : String, b : String) -> Int {
+  let min_len = if a.length() < b.length() { a.length() } else { b.length() }
+  for i = 0; i < min_len; i = i + 1 {
+    let ac = a[i].to_int()
+    let bc = b[i].to_int()
+    if ac != bc {
+      return ac - bc
+    }
+  }
+  a.length() - b.length()
+}
+
+///|
+fn normalize_import_kind_rank(kind : @vibe_core.ImportKind) -> Int {
+  match kind {
+    @vibe_core.ImportKind::Value => 0
+    @vibe_core.ImportKind::Type => 1
+    @vibe_core.ImportKind::Trait => 2
+    @vibe_core.ImportKind::Module => 3
+  }
+}
+
+///|
+fn normalize_import_item_compare(
+  left : @vibe_core.ImportItem,
+  right : @vibe_core.ImportItem,
+) -> Int {
+  let kind_cmp = normalize_import_kind_rank(left.kind) -
+    normalize_import_kind_rank(right.kind)
+  if kind_cmp != 0 {
+    return kind_cmp
+  }
+  let name_cmp = normalize_string_compare(left.name, right.name)
+  if name_cmp != 0 {
+    return name_cmp
+  }
+  let left_local = match left.rename {
+    Some(name) => name
+    None => left.name
+  }
+  let right_local = match right.rename {
+    Some(name) => name
+    None => right.name
+  }
+  normalize_string_compare(left_local, right_local)
+}
+
+///|
+fn normalize_import_item_local_name(item : @vibe_core.ImportItem) -> String {
+  match item.rename {
+    Some(name) => name
+    None => item.name
+  }
+}
+
+///|
+fn normalize_import_item_accepts_value(item : @vibe_core.ImportItem) -> Bool {
+  item.kind == @vibe_core.ImportKind::Value ||
+  (item.kind == @vibe_core.ImportKind::Type && item.name.contains("::"))
+}
+
+///|
+fn normalize_disambiguate_import_items(
+  items : Array[@vibe_core.ImportItem],
+) -> Array[@vibe_core.ImportItem] {
+  let used : Map[String, Int] = {}
+  let out : Array[@vibe_core.ImportItem] = []
+  for item in items {
+    if not(normalize_import_item_accepts_value(item)) {
+      out.push(item)
+      continue
+    }
+    let local_name = normalize_import_item_local_name(item)
+    match used.get(local_name) {
+      None => {
+        used[local_name] = 1
+        out.push(item)
+      }
+      Some(existing_count) => {
+        let mut next_index = existing_count + 1
+        let mut next_alias = local_name + "_" + next_index.to_string()
+        while used.contains(next_alias) {
+          next_index += 1
+          next_alias = local_name + "_" + next_index.to_string()
+        }
+        used[local_name] = next_index
+        used[next_alias] = 1
+        out.push(@vibe_core.ImportItem::{
+          kind: item.kind,
+          name: item.name,
+          rename: Some(next_alias),
+        })
+      }
+    }
+  }
+  out
 }
 
 ///|
@@ -771,6 +875,7 @@ fn merge_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
     @vibe_core.Stmt::Export(names~, ..) =>
       Some("export { " + names.join(", ") + " }")
     @vibe_core.Stmt::ReExport(spec~, source~, ..) => {
+      let canonical_spec = normalize_canonicalize_import_spec(spec)
       let src = match source {
         @vibe_core.ModuleRef::Path(path~) => path
         @vibe_core.ModuleRef::Hash(hash~) => "#" + hash
@@ -778,7 +883,7 @@ fn merge_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
         @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name
       }
       let rendered_items : Array[String] = []
-      for item in spec.items {
+      for item in canonical_spec.items {
         let rendered = StringBuilder::new()
         match item.kind {
           @vibe_core.ImportKind::Value => ()

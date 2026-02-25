@@ -37,6 +37,12 @@ pub fn canonical_sort_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
       _ => use_imports.push(stmt)
     }
   }
+  use_exports.sort_by(fn(a, b) {
+    canonical_string_compare(canonical_use_stmt_key(a), canonical_use_stmt_key(b))
+  })
+  use_imports.sort_by(fn(a, b) {
+    canonical_string_compare(canonical_use_stmt_key(a), canonical_use_stmt_key(b))
+  })
   let fn_sorted = canonical_sort_fns_topo_alpha(fn_stmts)
   let out : Array[Stmt] = []
   for stmt in use_exports {
@@ -58,6 +64,65 @@ pub fn canonical_sort_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
     out.push(stmt)
   }
   out
+}
+
+///|
+fn canonical_string_compare(a : String, b : String) -> Int {
+  let min_len = if a.length() < b.length() { a.length() } else { b.length() }
+  for i = 0; i < min_len; i = i + 1 {
+    let ac = a[i].to_int()
+    let bc = b[i].to_int()
+    if ac != bc {
+      return ac - bc
+    }
+  }
+  a.length() - b.length()
+}
+
+///|
+fn canonical_module_ref_key(source : ModuleRef) -> String {
+  match source {
+    ModuleRef::Path(path~) => "path:" + path
+    ModuleRef::Hash(hash~) => "hash:" + hash
+    ModuleRef::Version(name~) => "version:" + name
+    ModuleRef::Symbol(name~) => "symbol:" + name
+  }
+}
+
+///|
+fn canonical_import_item_key(item : ImportItem) -> String {
+  let kind = match item.kind {
+    ImportKind::Value => "0"
+    ImportKind::Type => "1"
+    ImportKind::Trait => "2"
+    ImportKind::Module => "3"
+  }
+  let local_name = match item.rename {
+    Some(name) => name
+    None => item.name
+  }
+  kind + ":" + item.name + ":" + local_name
+}
+
+///|
+fn canonical_import_spec_key(spec : ImportSpec) -> String {
+  let keys : Array[String] = []
+  for item in spec.items {
+    keys.push(canonical_import_item_key(item))
+  }
+  keys.sort()
+  keys.join(",")
+}
+
+///|
+fn canonical_use_stmt_key(stmt : Stmt) -> String {
+  match stmt {
+    Stmt::Import(spec~, source~, ..) =>
+      "import:" + canonical_module_ref_key(source) + ":" + canonical_import_spec_key(spec)
+    Stmt::ReExport(spec~, source~, ..) =>
+      "export:" + canonical_module_ref_key(source) + ":" + canonical_import_spec_key(spec)
+    _ => ""
+  }
 }
 
 ///|

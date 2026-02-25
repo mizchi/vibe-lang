@@ -392,6 +392,52 @@ test "normalize_engine: imports render canonical module ref and re-export comes 
 }
 
 ///|
+test "normalize_engine: imports are rendered in deterministic order with canonical item order" {
+  let source =
+    #|import ./z/index.vibe { b, a }
+    #|import ./a/index.vibe { value }
+    #|export ./z/index.vibe { b, a }
+    #|export ./a/index.vibe { value }
+    #|let run = value
+    #|export { run }
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      let idx_export_a = ne_substring_index(normalized, "export ./a { value }")
+      let idx_export_z = ne_substring_index(normalized, "export ./z { a, b }")
+      let idx_import_a = ne_substring_index(normalized, "import ./a { value }")
+      let idx_import_z = ne_substring_index(normalized, "import ./z { a, b }")
+      assert_true(idx_export_a >= 0)
+      assert_true(idx_export_z >= 0)
+      assert_true(idx_import_a >= 0)
+      assert_true(idx_import_z >= 0)
+      assert_true(idx_export_a < idx_export_z)
+      assert_true(idx_export_z < idx_import_a)
+      assert_true(idx_import_a < idx_import_z)
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: import local name collision gets deterministic alias" {
+  let source =
+    #|import ./dep/index.vibe { other as value, value }
+    #|let run = value
+    #|export { run }
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) =>
+      assert_true(
+        normalized.contains(
+          "import ./dep { other as value, value as value_2 }",
+        ),
+      )
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
 test "normalize_engine: type-only source" {
   let source =
     #|type Meters = Int

@@ -202,8 +202,9 @@ fn normalize_render_import_item(item : @vibe_core.ImportItem) -> String {
 
 ///|
 fn normalize_render_import_spec(spec : @vibe_core.ImportSpec) -> String {
+  let canonical_spec = normalize_canonicalize_import_spec(spec)
   let rendered_items : Array[String] = []
-  for item in spec.items {
+  for item in canonical_spec.items {
     rendered_items.push(normalize_render_import_item(item))
   }
   rendered_items.join(", ")
