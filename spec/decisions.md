@@ -97,7 +97,8 @@ Status: accepted and moved from `TODO.md`.
   IR schema/examples are aligned to `module_to_sexp` serializer output.
 - Missing language chapters for implemented features are fixed in spec:
   `docs/vibe.md` now documents trait/impl rules, struct/enum details,
-  placeholder lambda shorthand, `while`/`yield`, and method-call desugaring.
+  placeholder lambda shorthand, `while`/`yield`, and member/index/pipe call
+  forms.
 - Generated builtin contract table is published:
   `docs/builtin_contract_table.generated.md` is generated from checker/eval/wasm
   sources by `scripts/gen_builtin_contract_table.mjs` (also exposed as
@@ -129,6 +130,29 @@ Status: accepted and moved from `TODO.md`.
   `|` is text-lane only, `|>` is object-lane only, and text/object boundary
   crossing must be explicit conversion calls.
   Design memo is tracked in `spec/vibe-shell.md`.
+- Pipe-first call desugaring policy is fixed (ADR-0020):
+  `x |> f` is shorthand of `x |> f()`, and `x |> f(a, b)` desugars to
+  `f(x, a, b)`.
+- Pipeline ambiguity policy is fixed (ADR-0020):
+  expressions that mix `|>` with other infix operators without explicit
+  parentheses are parse errors
+  (for example `1 + 1 |> double`).
+- Dot access policy is fixed (ADR-0020):
+  `.` is limited to data member access (struct/record/tuple index), method-call
+  sugar (`recv.method(...)`) is removed, and function-value field calls must use
+  `(obj.method)(...)`.
+- Namespace symbol identity policy is fixed (ADR-0020):
+  canonical names use `Type::symbol`,
+  fully qualified symbols use `/pkg@version/module/Type::symbol`,
+  and internal address refs use `<canonical-symbol>#<addr-hash>`.
+- Name resolution priority is fixed (ADR-0020):
+  `local > lexical > explicit import > prelude`.
+- Namespace member declaration policy is fixed (ADR-0020):
+  namespace functions are declared by `let Type::symbol = ...` (or equivalent),
+  while `impl` is reserved for `impl Trait for Type`.
+- Railway-style error boundary policy is fixed (ADR-0020):
+  application pipelines prefer Result composition, and exception/handle
+  boundaries must be explicit in the pipeline.
 - Symbol/type/signature indexing backend is implemented and shared:
   `vibe ide` (`outline`/`peek-def`/`search`) and `vibe lsif` consume the same
   module-level symbol index (`src/frontend/symbol_index.mbt`).

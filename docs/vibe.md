@@ -635,35 +635,38 @@ Rules:
 - A placeholder that survives desugaring is a type error
   (`placeholder _ can only be used in function arguments`).
 
-## Method-call and index desugaring (current)
+## Member access, indexing, and pipe calls (current)
 
 ```vibe
-value.method(a, b) // => method(value, a, b)
-value.prop         // => prop(value)
-t.0                // tuple index
-arr[i]             // => __index(arr, i)
+obj.field             // data member access
+t.0                   // tuple index
+arr[i]                // => __index(arr, i)
+(obj.method)(arg)     // function-value field call
+x |> f                // shorthand of x |> f()
+x |> f(a, b)          // => f(x, a, b)
 ```
 
 Rules:
 - Postfix chains are parsed left-to-right.
-- `expr.method(...)` inserts `expr` as the first positional argument.
-- `expr.prop` desugars to a one-argument call (`prop(expr)`).
-- `.0`, `.1`, ... are parsed as tuple index expressions.
+- `.` is limited to data member access (`struct`/`record`) and tuple index
+  access (`.0`, `.1`, ...).
+- `recv.method(...)` method-call sugar is not part of current syntax.
+- Function-value field calls must be written as `(obj.method)(...)`.
 - `expr[index]` desugars to `__index(expr, index)`.
-- Type checking resolves calls first as normal functions/ctors/builtins.
-  Field-access typing (`prop(expr)`) is fallback behavior.
-- Field-access fallback currently supports record and struct fields, requiring
-  exactly one positional argument.
-- For postfix/property shape calls, when function-call checking fails but a
-  field-access candidate exists, checker emits an ambiguity diagnostic with
-  both candidates and a disambiguation hint.
+- `|>` is object-lane call desugaring:
+  - `x |> f` is shorthand of `x |> f()`
+  - `x |> f(a, b)` desugars to `f(x, a, b)`
+  - chained pipe is left-associative
+- Expressions that mix `|>` with other infix operators without explicit
+  parentheses are parse errors.
+  - example error: `1 + 1 |> double`
+  - allowed: `(1 + 1) |> double`
 
-### Type-qualified method symbols (proposal)
+### Type-qualified namespace symbols (current)
 
-To avoid global-name collisions such as multiple `to_string` definitions, vibe
-plans to add type-qualified method symbols.
+`Type::symbol` is the canonical human-facing namespace form.
 
-Proposed declaration syntax:
+Declaration examples:
 
 ```vibe
 let Int::to_string = (x: Int) -> String { "int" }
@@ -676,46 +679,38 @@ export let Option::unwrap_or = [T](opt: Option[T], fallback: T) -> T {
 }
 ```
 
-Design notes:
-- Canonical separator is `::` (`Type::method`).
-- `Type/method` is not adopted because `/` is already used by module-qualified
-  symbol paths and hash/module refs.
-- `Type::method` is treated as one function symbol key; this is not trait
-  syntax.
-- Receiver genericity is represented by root type name (for example
-  `Option::unwrap_or`), while type parameters remain in function signature.
+Rules:
+- Canonical separator is `::` (`Type::symbol`).
+- Namespace symbols are normal function symbols (not trait syntax).
+- Namespace functions are declared with `let Type::symbol = ...`
+  (or equivalent declaration form).
+- `impl` is reserved for trait implementations (`impl Trait for Type`).
+- Name resolution priority is:
+  `local > lexical > explicit import > prelude`.
+- `Type::symbol` participates in normal named import/export.
 
-Evaluation policy:
-- Simple global desugar (`recv.method(...) -> method(recv, ...)`) is not used
-  for extension methods.
-- `Type::method(recv, ...)` is the canonical call form.
-- `recv.method(...)` is allowed as sugar only when it resolves to an imported
-  `Type::method` member.
-
-Proposed resolution order for `recv.method(args...)`:
-1. Infer receiver type `T`.
-2. Find active namespace binding `T:: -> <module-ref>`.
-3. Resolve `T::method` from that `<module-ref>` exports.
-4. If exactly one match exists, lower to `T::method(recv, ...)`.
-5. If zero matches, emit `method not found`.
-6. If multiple matches exist, emit ambiguity error.
-7. Do not fall back to global `method(recv, ...)`.
-
-Import/export behavior (proposal):
-- `Type::method` participates in normal named import/export as a symbol.
-- Example:
+Import/export example:
 
 ```vibe
 export { Int::to_string, String::to_string }
 import ./std/stringify.vibe { Int::to_string as int_to_string }
 ```
 
-### Prelude and `--nostd` (proposal)
+Normalization and internal identity:
+- fully-qualified canonical symbol:
+  `/pkg@version/module/Type::symbol`
+- internal address ref:
+  `<canonical-symbol>#<addr-hash>`
 
-- Default mode preloads std namespaces/members through prelude imports.
-  This includes type-member namespaces used by method sugar.
+Example:
+- `/vibe/builtin@0.0.1/result/Result::and_then`
+- `/vibe/builtin@0.0.1/result/Result::and_then#9b1f...`
+
+### Prelude and `--nostd` (current)
+
+- Default mode preloads prelude symbols, including namespace members.
 - `--nostd` disables all implicit prelude imports.
-- In `--nostd`, all type/member namespaces must be imported explicitly.
+- In `--nostd`, namespace members must be imported explicitly.
 
 ## vibe shell command pipeline (PosixMode preview)
 
