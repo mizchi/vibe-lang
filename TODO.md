@@ -46,6 +46,11 @@ Completed items are archived in `docs/DONE.md`.
   - 対象: `src/runtime/db_query.mbt`, `src/runtime/eval.mbt`, `src/tests/vibe_*integration_test.mbt`
 - [ ] normalize/edit: namespace symbol の正規形を `/pkg@version/module/Type::symbol` に統一し、内部参照を `<canonical>#<addr-hash>` 形式で保持する
   - 対象: `src/cmd/vibe/normalize_*`, `src/runtime/db*.mbt`, `src/core/*`
+  - [x] lock `module_refs` の key を `<canonical-symbol>#<addr-hash>` 形式に寄せる
+    - 対象: `src/codebase/lib.mbt`, `src/cmd/vibe/cli.mbt`
+    - メモ: canonical symbol は `lock_module_ref_canonical_symbol(path, name)` で一元化
+  - [ ] canonical symbol の `/pkg@version/module/Type::symbol` 生成を normalize/edit で統一する
+  - [ ] 再展開時の import 生成（最短 import + 衝突時 alias）を deterministic にする
   - Red: 同名衝突時に安定した disambiguation を行う snapshot を追加
   - Green: 再展開時に決定的 import 生成（最短 import + 衝突時 alias）
 - [ ] library migration: 既存ライブラリ/fixture の `recv.method(...)` 記法を `|>` または完全修飾関数呼び出しへ一括移行する

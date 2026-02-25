@@ -2949,6 +2949,29 @@ fn symbols_rows_to_lines(rows : Array[SymbolsRow]) -> Array[String] {
 }
 
 ///|
+fn symbols_lock_has_managed_ref(
+  module_refs : Map[String, String],
+  path : String,
+  name : String,
+) -> Bool {
+  let legacy_key = path + "#" + name
+  if module_refs.contains(legacy_key) {
+    return true
+  }
+  let canonical_symbol = @codebase.lock_module_ref_canonical_symbol(path, name)
+  if module_refs.contains(canonical_symbol) {
+    return true
+  }
+  let prefix = canonical_symbol + "#"
+  for key, _ in module_refs {
+    if key.has_prefix(prefix) {
+      return true
+    }
+  }
+  false
+}
+
+///|
 fn collect_symbols_rows(
   entry_path : String,
 ) -> Result[Array[SymbolsRow], String] {
@@ -2978,8 +3001,9 @@ fn collect_symbols_rows(
   }
   let rows : Array[SymbolsRow] = []
   for def in index_defs {
-    let key = def.path + "#" + def.name
-    let managed = lock.module_refs.contains(key)
+    let managed = symbols_lock_has_managed_ref(
+      lock.module_refs, def.path, def.name,
+    )
     let mut has_conflicting_scratch = false
     if scratch_names.contains(def.name) {
       for candidate in scratch_candidates {

@@ -591,6 +591,56 @@ pub fn resolve_import_path_with_registry(
 }
 
 ///|
+fn module_ref_symbol_path(path : String) -> String {
+  let normalized = @vibe_fs.normalize_path(path)
+  let without_entry = if normalized.has_suffix("/index.vibe") {
+    normalized.unsafe_substring(
+      start=0,
+      end=normalized.length() - "/index.vibe".length(),
+    )
+  } else {
+    normalized
+  }
+  if without_entry.has_suffix(".vibe") {
+    without_entry.unsafe_substring(
+      start=0,
+      end=without_entry.length() - ".vibe".length(),
+    )
+  } else if without_entry.has_suffix(".xm") {
+    without_entry.unsafe_substring(
+      start=0,
+      end=without_entry.length() - ".xm".length(),
+    )
+  } else {
+    without_entry
+  }
+}
+
+///|
+pub fn lock_module_ref_canonical_symbol(path : String, name : String) -> String {
+  let symbol_path = module_ref_symbol_path(path)
+  if symbol_path.has_prefix("/") {
+    symbol_path + "/" + name
+  } else {
+    "/" + symbol_path + "/" + name
+  }
+}
+
+///|
+pub fn lock_module_ref_key(
+  path : String,
+  name : String,
+  addr_hash : String,
+) -> String {
+  let normalized_hash = if addr_hash.has_prefix("#") && addr_hash.length() > 1 {
+    addr_hash.unsafe_substring(start=1, end=addr_hash.length())
+  } else {
+    addr_hash
+  }
+  lock_module_ref_canonical_symbol(path, name) + "#" + normalized_hash
+}
+
+///|
 fn collect_module_export_refs(
   path : String,
   ast : @core.Module,
@@ -604,7 +654,8 @@ fn collect_module_export_refs(
     }
     let normalized = @core.normalize_module(export_module)
     let export_hash = @core.hash_module(normalized)
-    module_refs[path + "#" + name] = export_hash
+    let key = lock_module_ref_key(path, name, export_hash)
+    module_refs[key] = export_hash
   }
 }
 

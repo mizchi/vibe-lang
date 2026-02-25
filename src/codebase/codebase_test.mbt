@@ -206,20 +206,39 @@ test "codebase update_lock_path_refs prunes stale path/module refs and keeps non
   }
   assert_false(updated.module_refs.contains("legacy#x"))
   assert_false(updated.annotations.contains("legacy#x"))
-  match updated.module_refs.get(entry_norm + "#main") {
-    Some(hash) => assert_true(hash.length() > 0)
-    None => fail("expected entry export module ref")
+  let entry_symbol = lock_module_ref_canonical_symbol(entry_norm, "main")
+  let mut found_entry_ref = false
+  for key, hash in updated.module_refs {
+    if key.has_prefix(entry_symbol + "#") {
+      assert_true(hash.length() > 0)
+      found_entry_ref = true
+    }
   }
-  match updated.module_refs.get(lib_norm + "#libv") {
-    Some(hash) => assert_true(hash.length() > 0)
-    None => fail("expected lib export module ref")
+  assert_true(found_entry_ref)
+  let lib_symbol = lock_module_ref_canonical_symbol(lib_norm, "libv")
+  let mut found_lib_ref = false
+  for key, hash in updated.module_refs {
+    if key.has_prefix(lib_symbol + "#") {
+      assert_true(hash.length() > 0)
+      found_lib_ref = true
+    }
   }
+  assert_true(found_lib_ref)
   let loaded = match load_lock_data(lock_path) {
     Ok(v) => v
     Err(err) => fail(err)
   }
   assert_eq(loaded, updated)
   remove_if_exists(root)
+}
+
+///|
+test "codebase lock module ref key uses canonical-symbol#hash format" {
+  let path = "/tmp/proj/vibe/prelude/result/index.vibe"
+  let canonical = lock_module_ref_canonical_symbol(path, "Result::and_then")
+  assert_eq(canonical, "/tmp/proj/vibe/prelude/result/Result::and_then")
+  let key = lock_module_ref_key(path, "Result::and_then", "abc123")
+  assert_eq(key, canonical + "#abc123")
 }
 
 ///|
