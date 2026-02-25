@@ -615,8 +615,11 @@ test "cli runtime flags parse with unstable flags" {
 
 ///|
 test "test cmd normalize jobs uses bounded auto default for non-positive input" {
-  assert_eq(normalize_test_jobs(0), 4)
-  assert_eq(normalize_test_jobs(-1), 4)
+  let prev = @sys.get_env_var("VIBE_TEST_JOBS")
+  @sys.unset_env_var("VIBE_TEST_JOBS")
+  defer wbtest_restore_env_var("VIBE_TEST_JOBS", prev)
+  assert_eq(normalize_test_jobs(0), 2)
+  assert_eq(normalize_test_jobs(-1), 2)
 }
 
 ///|
@@ -1800,6 +1803,37 @@ test "find json lines extracts all object-looking lines" {
   assert_eq(lines.length(), 2)
   assert_eq(lines[0], "{\"file\":\"a.vibe\",\"total\":1}")
   assert_eq(lines[1], "{\"file\":\"b.vibe\",\"total\":2}")
+}
+
+///|
+test "default test jobs uses safe fallback when env is unset" {
+  let prev = @sys.get_env_var("VIBE_TEST_JOBS")
+  @sys.unset_env_var("VIBE_TEST_JOBS")
+  defer wbtest_restore_env_var("VIBE_TEST_JOBS", prev)
+  assert_eq(default_test_jobs(), 2)
+}
+
+///|
+test "default test jobs accepts env override and rejects invalid values" {
+  let prev = @sys.get_env_var("VIBE_TEST_JOBS")
+  defer wbtest_restore_env_var("VIBE_TEST_JOBS", prev)
+
+  @sys.set_env_var("VIBE_TEST_JOBS", "3")
+  assert_eq(default_test_jobs(), 3)
+
+  @sys.set_env_var("VIBE_TEST_JOBS", "invalid")
+  assert_eq(default_test_jobs(), 2)
+}
+
+///|
+test "normalize test jobs clamps extreme values" {
+  let prev = @sys.get_env_var("VIBE_TEST_JOBS")
+  @sys.unset_env_var("VIBE_TEST_JOBS")
+  defer wbtest_restore_env_var("VIBE_TEST_JOBS", prev)
+
+  assert_eq(normalize_test_jobs(-1), 2)
+  assert_eq(normalize_test_jobs(1), 1)
+  assert_eq(normalize_test_jobs(64), 16)
 }
 
 ///|

@@ -1116,17 +1116,31 @@ fn test_cmd(
 
 ///|
 fn normalize_test_jobs(jobs : Int) -> Int {
-  if jobs <= 0 {
+  let normalized = if jobs <= 0 {
     default_test_jobs()
   } else {
     jobs
+  }
+  if normalized <= 0 {
+    1
+  } else if normalized > 16 {
+    // Hard cap: avoid accidental process fan-out from huge --jobs.
+    16
+  } else {
+    normalized
   }
 }
 
 ///|
 fn default_test_jobs() -> Int {
-  // Keep default bounded to avoid process explosion from unbounded fan-out.
-  4
+  // Safe default with env override for local tuning.
+  match @sys.get_env_var("VIBE_TEST_JOBS") {
+    Some(raw) => {
+      let parsed = @strconv.parse_int(raw) catch { _ => 0 }
+      if parsed > 0 { parsed } else { 2 }
+    }
+    None => 2
+  }
 }
 
 ///|
