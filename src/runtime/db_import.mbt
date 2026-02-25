@@ -182,9 +182,13 @@ fn resolve_default_registry_path(
   }
   match split_registry_like_path(raw_path) {
     Some((ns, rest)) =>
-      if ns == "builtin" || ns == "std" || ns == "encoding" {
+      if ns == "prelude" ||
+        ns == "std" ||
+        ns == "json" ||
+        ns == "base64" ||
+        ns == "sha1" {
         let root = resolve_import_root_dir(base_dir)
-        let dir = if ns == "std" { "builtin" } else { ns }
+        let dir = if ns == "std" { "prelude" } else { ns }
         let resolved = "vibe/" + dir + "/" + rest
         Some(
           @path.Path(root).join(@path.Path(resolved)).normalize().to_string(),

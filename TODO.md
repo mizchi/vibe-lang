@@ -15,6 +15,25 @@ Completed items are archived in `docs/DONE.md`.
 - [x] `shell-stdin --help` を受け付け、unknown arg ではなく usage を返す
   - 対象: `src/cmd/vibe/repl_line.mbt`, `src/cmd/vibe/cli_repl.mbt`
 
+## Prelude Namespace Migration (2026-02-25)
+
+`vibe/prelude` を常時解決可能 namespace として固定し、`vibe/builtin` 依存を段階的に縮小する。
+
+- [x] 既定 registry に `prelude` を追加し、`std` を `vibe/prelude` へ解決する
+  - 対象: `src/codebase/lib.mbt`, `src/codebase/codebase_test.mbt`
+- [x] runtime の default namespace fallback に `prelude` を追加する
+  - 対象: `src/runtime/db_import.mbt`, `src/runtime/db_wbtest.mbt`
+- [x] `vibe new` seed を `vibe/prelude` 基準へ切り替える
+  - 対象: `src/cmd/vibe/cli.mbt`, `src/cmd/vibe/cli_wbtest.mbt`
+- [x] `vibe/prelude` パッケージを追加し、既存 `vibe/builtin` 相当 API を配置する
+  - 対象: `vibe/prelude/**/*`
+- [x] formatter/lsp/parser/loader/vibe_db の参照パスを `vibe/prelude` に寄せる
+  - 対象: `src/cmd/vibe/normalize_format.mbt`, `src/lsp/*`, `src/parser/*`, `src/loader/loader_test.mbt`, `src/tests/vibe_db_integration_test.mbt`
+- [x] `src/checker/builtin_modules*.mbt` の埋め込み namespace（`builtin/*`）を `prelude/*` に再設計する
+  - 対象: `src/checker/builtin_modules.mbt`, `scripts/gen_builtin_embed.sh`, `src/checker/builtin_modules_wbtest.mbt`
+- [x] `vibe/builtin` の重複コードを削除し、`vibe/prelude` へ一本化する
+  - 対象: `vibe/builtin/**/*`, fixtures / docs / scripts / bench の `vibe/prelude` 参照
+
 ### Improvement plan
 
 - [x] `finalize` 出力を常に normalize 済みに保つ（`safe`/`library` 両モード）
@@ -113,35 +132,35 @@ Completed items are archived in `docs/DONE.md`.
 ### Keep Strengths
 
 - [x] std 層境界のドキュメント参照先を実在パスに更新し、`check/normalize` 境界検証を維持する
-  - 対象: `vibe/builtin/README.md`, `docs/adr/0005-std-layered-boundaries.md`, `src/cmd/vibe/normalize_engine.mbt`
+  - 対象: `vibe/prelude/README.md`, `docs/adr/0005-std-layered-boundaries.md`, `src/cmd/vibe/normalize_engine.mbt`
 - [x] effect 付きシグネチャの設計方針を明文化し、I/O API 追加時に逸脱を防ぐ
-  - 対象: `vibe/builtin/README.md`, `vibe/fs/fs.vibe`, `vibe/http/http.vibe`, `vibe/socket/socket.vibe`
+  - 対象: `vibe/prelude/README.md`, `vibe/fs/fs.vibe`, `vibe/http/http.vibe`, `vibe/socket/socket.vibe`
 - [x] 関数スタイル/メソッドスタイル併用の回帰テストを追加して API 体験を維持する
-  - [x] `vibe/builtin/array_test.vibe` で関数スタイル/メソッドスタイル parity を追加
+  - [x] `vibe/prelude/array_test.vibe` で関数スタイル/メソッドスタイル parity を追加
   - [x] `vibe/collection/map_test.vibe` で関数スタイル/メソッドスタイル parity を追加
-  - 対象: `vibe/builtin/*_test.vibe`, `vibe/collection/*_test.vibe`
+  - 対象: `vibe/prelude/*_test.vibe`, `vibe/collection/*_test.vibe`
 
 ### Improve Usability
 
 - [x] 予約語回避由来の命名ゆらぎ（`map_opt`/`map_ok`/`array_map`）を整理し、推奨 API を一本化する
-  - [x] `vibe/builtin/README.md` に canonical naming を明記し、`Option`/`Result`/`Array` の推奨名を固定
-  - 対象: `vibe/builtin/option.vibe`, `vibe/builtin/result.vibe`, `vibe/builtin/array.vibe`, `vibe/builtin/README.md`
+  - [x] `vibe/prelude/README.md` に canonical naming を明記し、`Option`/`Result`/`Array` の推奨名を固定
+  - 対象: `vibe/prelude/option.vibe`, `vibe/prelude/result.vibe`, `vibe/prelude/array.vibe`, `vibe/prelude/README.md`
 - [x] 同等 API の別名を段階的に縮小する方針（互換期間・deprecate ルール）を定義する
-  - [x] `vibe/builtin/README.md` / `vibe/collection/README.md` に alias lifecycle ルールを追加
-  - 対象: `vibe/builtin/option.vibe`, `vibe/builtin/result.vibe`, `vibe/collection/list.vibe`
+  - [x] `vibe/prelude/README.md` / `vibe/collection/README.md` に alias lifecycle ルールを追加
+  - 対象: `vibe/prelude/option.vibe`, `vibe/prelude/result.vibe`, `vibe/collection/list.vibe`
 - [x] `array_map` を `A -> B` 変換可能な汎用 map に拡張する
-  - 対象: `vibe/builtin/array.vibe`, `vibe/builtin/array_test.vibe`
+  - 対象: `vibe/prelude/array.vibe`, `vibe/prelude/array_test.vibe`
 - [x] `for-in` の反復呼び出しを `iter_length` / `iter_get` 経由へ移行し、Array 直結 desugar を解消する
   - 対象: `src/parser/parser_ast_expr.mbt`, `src/checker/prelude.mbt`, `src/parser/parser_for_in_wbtest.mbt`
 - [x] 反復プロトコルの上で `iter/zip/flatmap` を追加し、将来の trait 化（第2段階）へ繋ぐ
-  - [x] `vibe/builtin/array.vibe` に `iter/zip/flatmap` を追加し、`vibe/builtin/array_test.vibe` で回帰を固定する
+  - [x] `vibe/prelude/array.vibe` に `iter/zip/flatmap` を追加し、`vibe/prelude/array_test.vibe` で回帰を固定する
   - [x] `vibe/collection/list.vibe` へ同等 API を追加し、`vibe/collection/list_test.vibe` で回帰を固定する
-  - 対象: `vibe/builtin/array.vibe`, `vibe/collection/list.vibe`, `vibe/builtin/README.md`
+  - 対象: `vibe/prelude/array.vibe`, `vibe/collection/list.vibe`, `vibe/prelude/README.md`
 - [x] `Iterable` trait を導入し、`for-in` desugar と collection API を trait 契約に寄せる（第2段階）
   - [x] prelude に `Iterable` trait / `iter_require` を導入し、`for-in` desugar で trait gate を通す
   - [x] cross-module trait 制約（既知ギャップ）を解消し、`List` など利用側モジュールの impl を有効化する
   - [x] `run_script_tests` / `run_script_benches` の type env 同期と `for-in` 生成 span の衝突を解消し、runtime dispatch を安定化する
-  - 対象: `src/checker/prelude.mbt`, `src/parser/parser_ast_expr.mbt`, `vibe/builtin/array.vibe`, `vibe/collection/list.vibe`
+  - 対象: `src/checker/prelude.mbt`, `src/parser/parser_ast_expr.mbt`, `vibe/prelude/array.vibe`, `vibe/collection/list.vibe`
 - [x] collection の型汎用性を拡張する（`Map` key 制約、`Set` の `StringSet` 専用性）
   - [x] `vibe/collection/map.vibe` に trait-bound key accessors (`has_by`/`get_by`/`get_or_by`) を追加し、非 String key の呼び出し面を統一する
   - [x] `vibe/collection/set.vibe` に trait-bound accessors (`contains_by`/`add_by`/`remove_by`/`from_array_by`) を追加し、`StringSet` API で非 String 値を扱えるようにする
@@ -156,20 +175,20 @@ Completed items are archived in `docs/DONE.md`.
   - ADR-0018 で移行方針を定義（`Result[T, String]` 基本、段階的移行、互換 alias）
   - 対象: `vibe/json/json.vibe`, `vibe/json/jsonrpc.vibe`, `vibe/shell/from_csv.vibe`, `vibe/shell/from_yaml.vibe`
 - [x] `path` facade と `path/ref` の型公開境界を整理し、利用者向け import ルールを一本化する
-  - [x] `vibe/builtin/README.md` に facade / split import の推奨ルールを明文化
-  - [x] `vibe/builtin/path_test.vibe`, `vibe/builtin/path_ref_test.vibe`, `vibe/builtin/path_runtime_test.vibe` で facade / split の利用経路を回帰維持
-  - 対象: `vibe/builtin/path.vibe`, `vibe/builtin/path/ref.vibe`, `vibe/builtin/path/runtime.vibe`, `vibe/builtin/path*_test.vibe`
+  - [x] `vibe/prelude/README.md` に facade / split import の推奨ルールを明文化
+  - [x] `vibe/prelude/path_test.vibe`, `vibe/prelude/path_ref_test.vibe`, `vibe/prelude/path_runtime_test.vibe` で facade / split の利用経路を回帰維持
+  - 対象: `vibe/prelude/path.vibe`, `vibe/prelude/path/ref.vibe`, `vibe/prelude/path/runtime.vibe`, `vibe/prelude/path*_test.vibe`
 - [x] `--unstable-threads` 依存 API の安定/実験境界をドキュメントとテストで明示する
   - README に Stable/Unstable API 一覧表を追加（flag 要否、型チェック vs 実行の区別を明記）
   - テストは既存で十分（spec 5件 + runtime thunk 2件 + facade 7件 = 14テスト）
-  - 対象: `vibe/builtin/threads.vibe`, `vibe/builtin/threads/runtime.vibe`, `vibe/builtin/threads_test.vibe`, `vibe/builtin/README.md`
+  - 対象: `vibe/prelude/threads.vibe`, `vibe/prelude/threads/runtime.vibe`, `vibe/prelude/threads_test.vibe`, `vibe/prelude/README.md`
 
 ## vibe/ API Ambiguity Audit (2026-02-25)
 
 ### High (P1): 公開エンドポイントの一貫性
 
 - [ ] `index.vibe` が `version` のみのモジュールで、公開 API を index に集約する
-  - 対象: `vibe/x/rlm/index.vibe`, `vibe/x/index.vibe`, `vibe/x/args/index.vibe`, `vibe/builtin/path/index.vibe`, `vibe/builtin/threads/index.vibe`
+  - 対象: `vibe/x/rlm/index.vibe`, `vibe/x/index.vibe`, `vibe/x/args/index.vibe`, `vibe/prelude/path/index.vibe`, `vibe/prelude/threads/index.vibe`
   - 方針: 実体 API を `export ./foo.vibe { ... }` で明示し、利用側 import を index 経由へ寄せる
 
 ### Medium (P2): API 層と契約の明確化
@@ -192,7 +211,7 @@ Completed items are archived in `docs/DONE.md`.
   - 方針: `map` facade（別名モジュール）を用意し、`r#` 表記を公開面から隠す
 
 - [x] endpoint 横断の同名シンボル衝突（`read`/`parse`/`run` など）に対する命名規約を定義する
-  - 対象: `vibe/io`, `vibe/socket`, `vibe/http`, `vibe/process`, `vibe/compiler`, `vibe/encoding`, `vibe/shell`, `vibe/fs`, `vibe/collection`, `vibe/builtin`
+  - 対象: `vibe/io`, `vibe/socket`, `vibe/http`, `vibe/process`, `vibe/compiler`, `vibe/json`, `vibe/base64`, `vibe/sha1`, `vibe/shell`, `vibe/fs`, `vibe/collection`, `vibe/prelude`
   - 方針: `as` 依存を前提にせず、衝突しやすい名前には module prefix 付きの canonical 名を用意する
 
 ## Runtime
@@ -250,8 +269,8 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Prelude API Consistency (2026-02)
 
-prelude（REPL/スクリプトのデフォルト環境）と `vibe/builtin/` ライブラリ間の API 不整合を解消する。
-`vibe/builtin/array.vibe` は既に正しい設計（ジェネリック、collection-first、Option 返し）だが、
+prelude（REPL/スクリプトのデフォルト環境）と `vibe/prelude/` ライブラリ間の API 不整合を解消する。
+`vibe/prelude/array.vibe` は既に正しい設計（ジェネリック、collection-first、Option 返し）だが、
 prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ### High: 構造的不整合

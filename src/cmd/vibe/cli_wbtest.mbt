@@ -444,9 +444,9 @@ test "eval cmd options reject missing include value" {
 ///|
 test "eval include path resolves named vbundle alias from lib dir" {
   let resolved = resolve_eval_include_path(
-    "/work/project", "vibe/builtin@0.1.0.vbundle", "/home/test/.vibe/lib",
+    "/work/project", "vibe/prelude@0.1.0.vbundle", "/home/test/.vibe/lib",
   )
-  assert_eq(resolved, "/home/test/.vibe/lib/vibe/builtin@0.1.0.vbundle")
+  assert_eq(resolved, "/home/test/.vibe/lib/vibe/prelude@0.1.0.vbundle")
 }
 
 ///|
@@ -456,16 +456,16 @@ test "eval include path resolves latest named vbundle alias when version omitted
   @os_fs.create_dir(vibe_dir) catch {
     e => fail("create vibe dir failed: " + e.to_string())
   }
-  @os_fs.write_string_to_file(vibe_dir + "/builtin@0.1.0.vbundle", "hash:a\n") catch {
-    e => fail("write builtin@0.1.0 alias failed: " + e.to_string())
+  @os_fs.write_string_to_file(vibe_dir + "/prelude@0.1.0.vbundle", "hash:a\n") catch {
+    e => fail("write prelude@0.1.0 alias failed: " + e.to_string())
   }
-  @os_fs.write_string_to_file(vibe_dir + "/builtin@1.2.0.vbundle", "hash:b\n") catch {
-    e => fail("write builtin@1.2.0 alias failed: " + e.to_string())
+  @os_fs.write_string_to_file(vibe_dir + "/prelude@1.2.0.vbundle", "hash:b\n") catch {
+    e => fail("write prelude@1.2.0 alias failed: " + e.to_string())
   }
   let resolved = resolve_eval_include_path(
-    "/work/project", "vibe/builtin.vbundle", root,
+    "/work/project", "vibe/prelude.vbundle", root,
   )
-  assert_eq(resolved, root + "/vibe/builtin@1.2.0.vbundle")
+  assert_eq(resolved, root + "/vibe/prelude@1.2.0.vbundle")
   wbtest_remove_if_exists(root)
 }
 
@@ -1640,65 +1640,65 @@ test "normalize source keeps extern signature declarations" {
 ///|
 test "std layer classification covers primary modules" {
   let trait_layer = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/builtin_traits.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/builtin_traits.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(trait_layer, "trait-contract")
 
   let primitive_layer = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/string.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/string.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(primitive_layer, "pure-primitive")
   let primitive_layer_cmp = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/cmp.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/cmp.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(primitive_layer_cmp, "pure-primitive")
   let primitive_layer_char = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/char.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/char.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(primitive_layer_char, "pure-primitive")
 
   let data_layer = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/array.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/array.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer, "pure-data")
   let list_layer = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/list.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/list.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(list_layer, "none")
   let data_layer_bytes = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/bytes.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/bytes.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer_bytes, "pure-data")
   let data_layer_result = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/result.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/result.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(data_layer_result, "pure-data")
 
   let ref_layer = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/path/ref.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/path/ref.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
   assert_eq(ref_layer, "ref-model")
 
   let effect_layer = match
-    std_layer_for_path("/tmp/repo/vibe/builtin/threads/runtime.vibe") {
+    std_layer_for_path("/tmp/repo/vibe/prelude/threads/runtime.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
@@ -1710,7 +1710,7 @@ test "std layering rejects pure-data to effect import" {
   let source =
     #|import ./io.vibe { stdout_write }
   let violations = std_layering_violations_for_source(
-    "/tmp/repo/vibe/builtin/array.vibe", source,
+    "/tmp/repo/vibe/prelude/array.vibe", source,
   )
   assert_eq(violations.length(), 1)
   assert_true(violations[0].contains("pure-data"))
@@ -1722,23 +1722,23 @@ test "std layering allows effect to primitive import and ignores std tests" {
   let allowed_source =
     #|import ./string.vibe { String }
   let allowed = std_layering_violations_for_source(
-    "/tmp/repo/vibe/builtin/io.vibe", allowed_source,
+    "/tmp/repo/vibe/prelude/io.vibe", allowed_source,
   )
   assert_eq(allowed.length(), 0)
 
   let test_source =
     #|import ./io.vibe { stdout_write }
   let test_file = std_layering_violations_for_source(
-    "/tmp/repo/vibe/builtin/io_test.vibe", test_source,
+    "/tmp/repo/vibe/prelude/io_test.vibe", test_source,
   )
   assert_eq(test_file.length(), 0)
 }
 
 ///|
 test "normalize source succeeds for vibe std files" {
-  let files = wbtest_collect_vibe_files_recursive("vibe/builtin")
+  let files = wbtest_collect_vibe_files_recursive("vibe/prelude")
   if files.length() == 0 {
-    fail("[vibe/builtin] no .vibe files found")
+    fail("[vibe/prelude] no .vibe files found")
   }
   for path in files {
     if path.has_suffix("_test.vibe") {
@@ -2022,13 +2022,13 @@ test "split test entry path batches caps workers and balances paths" {
 test "split test entry path batches keeps sibling files in same worker chunk" {
   let grouped = split_test_entry_path_batches(
     [
-      "vibe/builtin/a_test.vibe", "vibe/fs/a_test.vibe", "vibe/builtin/b_test.vibe",
+      "vibe/prelude/a_test.vibe", "vibe/fs/a_test.vibe", "vibe/prelude/b_test.vibe",
       "vibe/fs/b_test.vibe",
     ],
     2,
   )
   assert_eq(grouped.length(), 2)
-  let builtin_group = ["vibe/builtin/a_test.vibe", "vibe/builtin/b_test.vibe"]
+  let builtin_group = ["vibe/prelude/a_test.vibe", "vibe/prelude/b_test.vibe"]
   let fs_group = ["vibe/fs/a_test.vibe", "vibe/fs/b_test.vibe"]
   let first_is_builtin = grouped[0] == builtin_group
   let second_is_builtin = grouped[1] == builtin_group

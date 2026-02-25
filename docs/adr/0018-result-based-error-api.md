@@ -17,7 +17,7 @@
 3. **暗黙の effect 伝播**: `with { Error }` が呼び出し元に伝播し、
    pure 関数として扱えない
 
-一方、`vibe/builtin/result.vibe` には成熟した `Result[T, E]` 型と
+一方、`vibe/prelude/result.vibe` には成熟した `Result[T, E]` 型と
 `map_ok` / `bind` / `unwrap_or` 等の API が既に存在する。
 
 ## Decision
@@ -57,7 +57,7 @@ let json_get = (obj: Json, key: String) -> Result[Json, String] { ... }
 
 - 旧 API（`throw` 版）は移行期間中 alias として残す
 - alias には `// deprecated: use xxx instead` コメントを付与
-- alias lifecycle は `vibe/builtin/README.md` の規定に従う
+- alias lifecycle は `vibe/prelude/README.md` の規定に従う
 
 ### 5. テストパターン
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate src/checker/builtin_modules.mbt from vibe/builtin/*.vibe
+# Generate src/checker/builtin_modules.mbt from vibe/prelude/*.vibe
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -29,7 +29,7 @@ MODULES=(
 
   for mod in "${MODULES[@]}"; do
     varname="builtin_${mod}_source"
-    file="vibe/builtin/${mod}.vibe"
+    file="vibe/prelude/${mod}.vibe"
     if [ ! -f "$file" ]; then
       echo "WARN: $file not found, skipping" >&2
       continue
@@ -46,10 +46,10 @@ MODULES=(
   echo "///|"
   echo "pub let builtin_module_sources : Array[(String, String)] = ["
   for mod in "${MODULES[@]}"; do
-    file="vibe/builtin/${mod}.vibe"
+    file="vibe/prelude/${mod}.vibe"
     if [ ! -f "$file" ]; then continue; fi
     varname="builtin_${mod}_source"
-    echo "  (\"builtin/${mod}\", ${varname}),"
+    echo "  (\"prelude/${mod}\", ${varname}),"
   done
   echo "]"
 

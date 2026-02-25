@@ -339,7 +339,7 @@ test "loader load_db_with_paths rejects import outside index root" {
   let outside_lib = outside + "/lib.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/prelude\" }\n",
   )
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
@@ -359,7 +359,7 @@ test "loader load_db_with_paths rejects import outside index root" {
 ///|
 test "loader load_db_with_paths resolves std namespace from index registry" {
   let root = make_temp_dir("registry_std")
-  let std_root = root + "/vibe/builtin"
+  let std_root = root + "/vibe/prelude"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -370,7 +370,7 @@ test "loader load_db_with_paths resolves std namespace from index registry" {
   let std_mod = std_root + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/prelude\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -406,7 +406,7 @@ test "loader load_db_with_paths reports unknown namespace import" {
 ///|
 test "loader load_db_with_paths requires index version export" {
   let root = make_temp_dir("registry_version_required")
-  let std_root = root + "/vibe/builtin"
+  let std_root = root + "/vibe/prelude"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -417,7 +417,7 @@ test "loader load_db_with_paths requires index version export" {
   let std_mod = std_root + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let module = record { std: \"./vibe/builtin\" }\n",
+    "export let module = record { std: \"./vibe/prelude\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -584,7 +584,7 @@ test "loader load_db_with_paths: repo process index_import_test has callable run
 test "loader load_db_with_paths: repo threads_runtime_test imports runtime_hints" {
   let cwd = @io.current_dir_or_root()
   let entry = @vibe_fs.normalize_path(
-    cwd + "/vibe/builtin/threads_runtime_test.vibe",
+    cwd + "/vibe/prelude/threads_runtime_test.vibe",
   )
   let loaded = match load_db_with_paths(entry) {
     Ok(v) => v

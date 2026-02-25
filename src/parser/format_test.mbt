@@ -191,7 +191,7 @@ test "vibe parse rejects quoted import source" {
         err
         .to_string()
         .contains(
-          "module path without quotes (e.g. ./vibe/builtin/string.vibe)",
+          "module path without quotes (e.g. ./vibe/prelude/string.vibe)",
         ),
       )
   }

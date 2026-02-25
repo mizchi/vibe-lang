@@ -285,7 +285,7 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `threads_recv(channel_id: Int)` -> `String` (`""` when empty)
 - `threads_spawn(name: String, channel_id: Int)` -> `Int` (task id)
 - `threads_wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
-- `vibe/builtin/threads.vibe` は test-safe な pure contract 層を分離:
+- `vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
   - これらは通常 `vibe test` で実行可能
   - runtime 呼び出し
@@ -436,10 +436,10 @@ functions.
 Current forms:
 
 ```vibe
-import ./vibe/builtin/int.vibe { type Int }             // also imports Int::*
-import ./vibe/builtin/int.vibe { Int }                  // namespace activation
-import ./vibe/builtin/int.vibe { Int::to_string }       // single member
-import ./vibe/builtin/int.vibe { Int::to_string as int_to_string }
+import ./vibe/prelude/int.vibe { type Int }             // also imports Int::*
+import ./vibe/prelude/int.vibe { Int }                  // namespace activation
+import ./vibe/prelude/int.vibe { Int::to_string }       // single member
+import ./vibe/prelude/int.vibe { Int::to_string as int_to_string }
 ```
 
 Rules:
@@ -467,7 +467,7 @@ Rules:
 - `SymbolRef`: symbol pointer.
 
 Notes:
-- `PathRef` is unquoted (`import ./vibe/builtin/string.vibe { ... }`).
+- `PathRef` is unquoted (`import ./vibe/prelude/string.vibe { ... }`).
 - `import` source is semantically `ModuleRef`; non-module assets should be split to a future `AssetRef` lane.
 
 Dependency resolution is Nix-like: path inputs are handled as typed path objects
@@ -530,7 +530,7 @@ Current lock file:
   - Path imports are rejected when resolved path escapes index root.
   - `index.vibe` may define `export let module = record { <ns>: "<dir>" }` to map
     namespace imports (for example `std/...`) under root.
-  - Default namespace mapping includes `builtin -> ./vibe/builtin`.
+  - Default namespace mapping includes `builtin -> ./vibe/prelude`.
 - CLI:
   - `vibe apply <entry>` resolves recursive path imports, updates `index.lock`,
     injects prelude refs, and updates `index.vdb.graph_head`.
@@ -780,7 +780,7 @@ CLI:
 - `moon run --target native src/cmd/vibe -- eval [--db tmp1.db] [--include index.vbundle] <expr...>` evaluates one expression/script; with `--db`, appends evaluated source for incremental sessions, and `--export <file>` writes accumulated source.
   - `--include` accepts path forms and alias forms:
     - `--include=bit:<path>`: explicit alias to path-backed source.
-    - `--include=vibe/builtin@0.1.0.vbundle`: named alias resolved from `VIBE_LIB_ROOT` (fallback: `VIBE_LIB_DIR`, then `$HOME/.vibe/lib`).
+    - `--include=vibe/prelude@0.1.0.vbundle`: named alias resolved from `VIBE_LIB_ROOT` (fallback: `VIBE_LIB_DIR`, then `$HOME/.vibe/lib`).
   - alias file may store `hash:<sha1>` (or JSON `{ "hash": "<sha1>" }`); `eval` resolves the module source from local object stores.
 - `moon run --target native src/cmd/vibe -- test <file...>` runs test blocks and prints a report.
 - `moon run --target native src/cmd/vibe -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.

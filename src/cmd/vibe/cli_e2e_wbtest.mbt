@@ -71,13 +71,13 @@ test "cli save fetch expand workflow keeps codebase artifacts" {
 ///|
 test "cli index ref args parse push" {
   let parsed = parse_index_ref_args([
-    "push", "vibe/builtin@0.1.0", "/tmp/advanced-graph-index.json",
+    "push", "vibe/prelude@0.1.0", "/tmp/advanced-graph-index.json",
   ])
   match parsed {
     Ok(action) =>
       match action {
         IndexRefAction::PushIndex(scope, path) => {
-          assert_eq(scope, "vibe/builtin@0.1.0")
+          assert_eq(scope, "vibe/prelude@0.1.0")
           assert_eq(path, "/tmp/advanced-graph-index.json")
         }
         _ => fail("expected push action")
@@ -1948,14 +1948,7 @@ test "cli eval finalize normalize apply workflow with relative paths" {
     features,
   )
   eval_cmd(
-    [
-      "--db=" + db_rel,
-      "--include=" + include_rel,
-      "export",
-      "{",
-      "answer",
-      "}",
-    ],
+    ["--db=" + db_rel, "--include=" + include_rel, "export", "{", "answer", "}"],
     @runtime.ParserMode::VibeMode,
     features,
   )
@@ -2064,8 +2057,8 @@ test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
   let legacy_lib = root + "/legacy-lib"
   let db_path = root + "/tmp1.db"
   let out_path = root + "/main.vibe"
-  let alias_path = lib_root + "/vibe/builtin@0.1.0.vbundle"
-  let legacy_alias_path = legacy_lib + "/vibe/builtin@0.1.0.vbundle"
+  let alias_path = lib_root + "/vibe/prelude@0.1.0.vbundle"
+  let legacy_alias_path = legacy_lib + "/vibe/prelude@0.1.0.vbundle"
   let seed_source = "let seed = 50\n"
   let seed_hash = @vibe_core.git_blob_hash_string(seed_source)
   let codebase = @codebase.Codebase::new(lib_root)
@@ -2097,7 +2090,7 @@ test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
   eval_cmd(
     [
       "--db=" + db_path,
-      "--include=vibe/builtin@0.1.0.vbundle",
+      "--include=vibe/prelude@0.1.0.vbundle",
       "let",
       "answer",
       "=",
@@ -2111,7 +2104,7 @@ test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
   eval_cmd(
     [
       "--db=" + db_path,
-      "--include=vibe/builtin@0.1.0.vbundle",
+      "--include=vibe/prelude@0.1.0.vbundle",
       "export",
       "{",
       "answer",
@@ -2123,7 +2116,7 @@ test "cli eval include resolves named alias from VIBE_LIB_ROOT first" {
   eval_cmd(
     [
       "--db=" + db_path,
-      "--include=vibe/builtin@0.1.0.vbundle",
+      "--include=vibe/prelude@0.1.0.vbundle",
       "--export=" + out_path,
     ],
     @runtime.ParserMode::VibeMode,
@@ -2148,8 +2141,8 @@ test "cli eval include resolves latest named alias when version omitted" {
   let lib_root = root + "/lib-root"
   let db_path = root + "/tmp1.db"
   let out_path = root + "/main.vibe"
-  let alias_v1 = lib_root + "/vibe/builtin@0.1.0.vbundle"
-  let alias_v2 = lib_root + "/vibe/builtin@0.2.0.vbundle"
+  let alias_v1 = lib_root + "/vibe/prelude@0.1.0.vbundle"
+  let alias_v2 = lib_root + "/vibe/prelude@0.2.0.vbundle"
   let seed_source = "let seed = 60\n"
   let seed_hash = @vibe_core.git_blob_hash_string(seed_source)
   let codebase = @codebase.Codebase::new(lib_root)
@@ -2176,7 +2169,7 @@ test "cli eval include resolves latest named alias when version omitted" {
   eval_cmd(
     [
       "--db=" + db_path,
-      "--include=vibe/builtin.vbundle",
+      "--include=vibe/prelude.vbundle",
       "let",
       "answer",
       "=",
@@ -2190,7 +2183,7 @@ test "cli eval include resolves latest named alias when version omitted" {
   eval_cmd(
     [
       "--db=" + db_path,
-      "--include=vibe/builtin.vbundle",
+      "--include=vibe/prelude.vbundle",
       "export",
       "{",
       "answer",
@@ -2202,7 +2195,7 @@ test "cli eval include resolves latest named alias when version omitted" {
   eval_cmd(
     [
       "--db=" + db_path,
-      "--include=vibe/builtin.vbundle",
+      "--include=vibe/prelude.vbundle",
       "--export=" + out_path,
     ],
     @runtime.ParserMode::VibeMode,

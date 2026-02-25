@@ -188,9 +188,8 @@ fn split_registry_import_path(path : String) -> (String, String)? {
 ///|
 fn default_registry_modules(root : String) -> Map[String, String] {
   let out : Map[String, String] = {}
-  out["builtin"] = @vibe_fs.normalize_path(root + "/vibe/builtin")
-  out["std"] = @vibe_fs.normalize_path(root + "/vibe/builtin")
-  out["encoding"] = @vibe_fs.normalize_path(root + "/vibe/encoding")
+  out["prelude"] = @vibe_fs.normalize_path(root + "/vibe/prelude")
+  out["std"] = @vibe_fs.normalize_path(root + "/vibe/prelude")
   out["json"] = @vibe_fs.normalize_path(root + "/vibe/json")
   out["base64"] = @vibe_fs.normalize_path(root + "/vibe/base64")
   out["sha1"] = @vibe_fs.normalize_path(root + "/vibe/sha1")
@@ -284,11 +283,14 @@ fn find_named_ancestor_dir(start_dir : String, name : String) -> String? {
 
 ///|
 fn is_repo_vibe_root_with_fs(dir : String, fs : &@io.FileSystemAdapter) -> Bool {
-  let builtin_lock = @vibe_fs.normalize_path(dir + "/builtin/index.lock")
-  let std_lock = @vibe_fs.normalize_path(dir + "/std/index.lock")
-  let encoding_lock = @vibe_fs.normalize_path(dir + "/encoding/index.lock")
-  (@io.path_exists_with(fs, builtin_lock) || @io.path_exists_with(fs, std_lock)) &&
-  @io.path_exists_with(fs, encoding_lock)
+  let prelude_lock = @vibe_fs.normalize_path(dir + "/prelude/index.lock")
+  let json_lock = @vibe_fs.normalize_path(dir + "/json/index.lock")
+  let base64_lock = @vibe_fs.normalize_path(dir + "/base64/index.lock")
+  let sha1_lock = @vibe_fs.normalize_path(dir + "/sha1/index.lock")
+  @io.path_exists_with(fs, prelude_lock) &&
+  @io.path_exists_with(fs, json_lock) &&
+  @io.path_exists_with(fs, base64_lock) &&
+  @io.path_exists_with(fs, sha1_lock)
 }
 
 ///|

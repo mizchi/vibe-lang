@@ -6,13 +6,13 @@
 ## Context
 
 `vibe/io`, `vibe/socket`, `vibe/http`, `vibe/process`, `vibe/compiler`,
-`vibe/encoding`, `vibe/shell`, `vibe/fs` を同時 import すると、以下のような
+`vibe/json`, `vibe/base64`, `vibe/sha1`, `vibe/shell`, `vibe/fs` を同時 import すると、以下のような
 同名シンボル衝突が発生しやすい。
 
 - `read` (`io.read` / `socket.read`)
 - `close` (`socket.close` / `http.close`)
 - `run` (`process.run` / parser runtime helpers)
-- `parse` (`compiler.parse` / `encoding.parse`)
+- `parse` (`compiler.parse` / `json.parse`)
 - `print` / `println` (`io` / `shell`)
 - `exists` (`fs` / `shell`)
 
@@ -45,7 +45,9 @@ endpoint 直下の `index.vibe` は、衝突しやすい名前に対して prefi
 | `vibe/http` | `http_close`, `http_accept`, `http_listen`, `http_request`, `http_respond`, `http_request_*`, `http_response_*`, `http_request_with`, `http_respond_with` |
 | `vibe/process` | `process_run`, `process_run_lines`, `process_run_line`, `process_run_text` |
 | `vibe/compiler` | `compiler_lex`, `compiler_parse*`, `compiler_print_*` |
-| `vibe/encoding` | `base64_encode`, `base64_decode`, `json_parse`, `json_parse_ok`, `json_parse_err`, `json_stringify`, `sha1_hash` |
+| `vibe/json` | `json_parse`, `json_parse_ok`, `json_parse_err`, `json_stringify` |
+| `vibe/base64` | `base64_encode`, `base64_decode` |
+| `vibe/sha1` | `sha1_hash` |
 | `vibe/fs` | `fs_exists`, `fs_read_file`, `fs_write_file` |
 | `vibe/shell` | `shell_print`, `shell_println`, `shell_read_line`, `shell_exists`, `shell_is_dir`, `shell_is_file`, `shell_write_file` |
 

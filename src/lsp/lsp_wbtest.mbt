@@ -353,7 +353,7 @@ test "LspServer/handle_message/hover includes hash" {
 ///|
 test "trait_import_code_actions skips already imported trait" {
   let source =
-    #|import ./vibe/builtin/builtin_traits.vibe {  Eq  }
+    #|import ./vibe/prelude/builtin_traits.vibe {  Eq  }
     #|let same = [T: Eq](x: T, y: T) -> Bool { x == y }
   let actions = trait_import_code_actions("file://test.vibe", source)
   match actions {
@@ -366,7 +366,7 @@ test "trait_import_code_actions skips already imported trait" {
 test "trait_import_code_actions inserts after existing import block" {
   let uri = "file://test.vibe"
   let source =
-    #|import ./vibe/builtin/string.vibe { split }
+    #|import ./vibe/prelude/string.vibe { split }
     #|
     #|let same = [T: LocalEq](x: T, y: T) -> Bool { x == y }
   let actions = trait_import_code_actions(uri, source)

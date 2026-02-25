@@ -1560,7 +1560,7 @@ fn AstParser::parse_module_ref(
   if self.peek_kind() == string_lit() {
     let tok = self.peek()
     raise ParseError::UnexpectedToken(
-      expected="module path without quotes (e.g. ./vibe/builtin/string.vibe)",
+      expected="module path without quotes (e.g. ./vibe/prelude/string.vibe)",
       got=tok.text(),
       span=self.token_span(),
     )

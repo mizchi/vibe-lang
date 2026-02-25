@@ -24,8 +24,8 @@ just run test examples/syntax.vibe
 
 ## Core Library
 
-- `vibe/builtin/`: vibe core library (self-hosted builtin modules)
-- `vibe/builtin/io.vibe`: stream I/O + ANSI/TUI helpers for terminal-oriented examples
+- `vibe/prelude/`: vibe core library (self-hosted builtin modules)
+- `vibe/prelude/io.vibe`: stream I/O + ANSI/TUI helpers for terminal-oriented examples
 
 ## WASM / Component Demos
 

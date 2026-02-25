@@ -352,27 +352,43 @@ test "codebase resolve_lock_root prefers ancestor index.lock even without .vibe"
 test "codebase vibe_dir_path prefers shared vibe/.vibe for vibe subtree" {
   let root = make_temp_dir("vibe_shared_vibe_dir")
   let vibe_root = root + "/vibe"
-  let std_dir = vibe_root + "/std"
-  let encoding_dir = vibe_root + "/encoding"
+  let prelude_dir = vibe_root + "/prelude"
+  let json_dir = vibe_root + "/json"
+  let base64_dir = vibe_root + "/base64"
+  let sha1_dir = vibe_root + "/sha1"
   @os_fs.create_dir(vibe_root) catch {
     e => fail(e.to_string())
   }
-  @os_fs.create_dir(std_dir) catch {
+  @os_fs.create_dir(prelude_dir) catch {
     e => fail(e.to_string())
   }
-  @os_fs.create_dir(encoding_dir) catch {
+  @os_fs.create_dir(json_dir) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(base64_dir) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(sha1_dir) catch {
     e => fail(e.to_string())
   }
   write_file(
-    std_dir + "/index.lock",
+    prelude_dir + "/index.lock",
     "{\"path\":{},\"version\":{},\"symbol\":{}}",
   )
   write_file(
-    encoding_dir + "/index.lock",
+    json_dir + "/index.lock",
     "{\"path\":{},\"version\":{},\"symbol\":{}}",
   )
-  let entry = std_dir + "/main.vibe"
-  assert_eq(lock_file_path(entry), std_dir + "/index.lock")
+  write_file(
+    base64_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(
+    sha1_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  let entry = prelude_dir + "/main.vibe"
+  assert_eq(lock_file_path(entry), prelude_dir + "/index.lock")
   assert_eq(vibe_dir_path(entry), vibe_root + "/.vibe")
   remove_if_exists(root)
 }
@@ -545,7 +561,7 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
   let outside_lib = outside + "/lib.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/prelude\" }\n",
   )
   write_file(outside_lib, "let libv = 1\nexport { libv }\n")
   write_file(
@@ -565,7 +581,7 @@ test "codebase update_lock_path_refs rejects imports outside index root" {
 ///|
 test "codebase update_lock_path_refs requires index version export" {
   let root = make_temp_dir("registry_version_required")
-  let std_dir = root + "/vibe/builtin"
+  let std_dir = root + "/vibe/prelude"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -576,7 +592,7 @@ test "codebase update_lock_path_refs requires index version export" {
   let std_mod = std_dir + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let module = record { std: \"./vibe/builtin\" }\n",
+    "export let module = record { std: \"./vibe/prelude\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -593,7 +609,7 @@ test "codebase update_lock_path_refs requires index version export" {
 ///|
 test "codebase update_lock_path_refs validates index version format" {
   let root = make_temp_dir("registry_version_format")
-  let std_dir = root + "/vibe/builtin"
+  let std_dir = root + "/vibe/prelude"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -604,7 +620,7 @@ test "codebase update_lock_path_refs validates index version format" {
   let std_mod = std_dir + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"v1\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
+    "export let version = \"v1\"\nexport let module = record { std: \"./vibe/prelude\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -620,7 +636,7 @@ test "codebase update_lock_path_refs validates index version format" {
 ///|
 test "codebase update_lock_path_refs accepts export version" {
   let root = make_temp_dir("registry_declared_version")
-  let std_dir = root + "/vibe/builtin"
+  let std_dir = root + "/vibe/prelude"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -631,7 +647,7 @@ test "codebase update_lock_path_refs accepts export version" {
   let std_mod = std_dir + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/prelude\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(
@@ -649,21 +665,19 @@ test "codebase update_lock_path_refs accepts export version" {
 }
 
 ///|
-test "codebase load_registry_modules falls back to std encoding json base64 sha1 and collection" {
+test "codebase load_registry_modules falls back to prelude std json base64 sha1 and collection" {
   let root = make_temp_dir("registry_default_namespaces")
   let modules = match load_registry_modules(root) {
     Ok(v) => v
     Err(err) => fail(err)
   }
-  let builtin_path = @vibe_fs.normalize_path(root + "/vibe/builtin")
-  let encoding_path = @vibe_fs.normalize_path(root + "/vibe/encoding")
+  let prelude_path = @vibe_fs.normalize_path(root + "/vibe/prelude")
   let json_path = @vibe_fs.normalize_path(root + "/vibe/json")
   let base64_path = @vibe_fs.normalize_path(root + "/vibe/base64")
   let sha1_path = @vibe_fs.normalize_path(root + "/vibe/sha1")
   let collection_path = @vibe_fs.normalize_path(root + "/vibe/collection")
-  assert_eq(modules["builtin"], builtin_path)
-  assert_eq(modules["std"], builtin_path)
-  assert_eq(modules["encoding"], encoding_path)
+  assert_eq(modules["prelude"], prelude_path)
+  assert_eq(modules["std"], prelude_path)
   assert_eq(modules["json"], json_path)
   assert_eq(modules["base64"], base64_path)
   assert_eq(modules["sha1"], sha1_path)
@@ -674,7 +688,7 @@ test "codebase load_registry_modules falls back to std encoding json base64 sha1
 ///|
 test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
   let root = make_temp_dir("registry_std")
-  let std_dir = root + "/vibe/builtin"
+  let std_dir = root + "/vibe/prelude"
   @os_fs.create_dir(root + "/vibe") catch {
     e => fail(e.to_string())
   }
@@ -685,7 +699,7 @@ test "codebase update_lock_path_refs resolves std namespace via index.vibe" {
   let std_mod = std_dir + "/math.vibe"
   write_file(
     root + "/index.vibe",
-    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/builtin\" }\n",
+    "export let version = \"0.1.0\"\nexport let module = record { std: \"./vibe/prelude\" }\n",
   )
   write_file(std_mod, "let value = 1\nexport { value }\n")
   write_file(

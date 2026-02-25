@@ -3089,28 +3089,32 @@ fn resolve_project_root_path(path : String) -> String {
 
 ///|
 fn is_scaffold_seed_vibe_root(vibe_root : String) -> Bool {
-  let builtin_dir = @vibe_fs.normalize_path(vibe_root + "/builtin")
-  let std_dir = @vibe_fs.normalize_path(vibe_root + "/std")
-  let encoding_dir = @vibe_fs.normalize_path(vibe_root + "/encoding")
-  let has_builtin = @os_fs.path_exists(builtin_dir) ||
-    @os_fs.path_exists(std_dir)
-  let string_mod = @vibe_fs.normalize_path(builtin_dir + "/string.vibe")
-  let string_mod_legacy = @vibe_fs.normalize_path(std_dir + "/string.vibe")
-  let base64 = @vibe_fs.normalize_path(encoding_dir + "/base64.vibe")
-  if not(has_builtin) || not(@os_fs.path_exists(encoding_dir)) {
+  let prelude_dir = @vibe_fs.normalize_path(vibe_root + "/prelude")
+  let json_dir = @vibe_fs.normalize_path(vibe_root + "/json")
+  let base64_dir = @vibe_fs.normalize_path(vibe_root + "/base64")
+  let sha1_dir = @vibe_fs.normalize_path(vibe_root + "/sha1")
+  let has_prelude = @os_fs.path_exists(prelude_dir)
+  let string_mod = @vibe_fs.normalize_path(prelude_dir + "/string.vibe")
+  let json_mod = @vibe_fs.normalize_path(json_dir + "/json.vibe")
+  let base64_mod = @vibe_fs.normalize_path(base64_dir + "/base64.vibe")
+  let sha1_mod = @vibe_fs.normalize_path(sha1_dir + "/sha1.vibe")
+  if not(has_prelude) {
     return false
   }
-  let builtin_is_dir = (@os_fs.is_dir(builtin_dir) catch { _ => false }) ||
-    (@os_fs.is_dir(std_dir) catch { _ => false })
-  if not(builtin_is_dir) {
+  let prelude_is_dir = @os_fs.is_dir(prelude_dir) catch { _ => false }
+  if not(prelude_is_dir) {
     return false
   }
-  let encoding_is_dir = @os_fs.is_dir(encoding_dir) catch { _ => false }
-  if not(encoding_is_dir) {
+  let json_is_dir = @os_fs.is_dir(json_dir) catch { _ => false }
+  let base64_is_dir = @os_fs.is_dir(base64_dir) catch { _ => false }
+  let sha1_is_dir = @os_fs.is_dir(sha1_dir) catch { _ => false }
+  if not(json_is_dir) || not(base64_is_dir) || not(sha1_is_dir) {
     return false
   }
-  (@os_fs.path_exists(string_mod) || @os_fs.path_exists(string_mod_legacy)) &&
-  @os_fs.path_exists(base64)
+  @os_fs.path_exists(string_mod) &&
+  @os_fs.path_exists(json_mod) &&
+  @os_fs.path_exists(base64_mod) &&
+  @os_fs.path_exists(sha1_mod)
 }
 
 ///|
@@ -3247,21 +3251,12 @@ fn scaffold_project_root_with_seed(
       let seed_norm = @vibe_fs.normalize_path(seed_root)
       if is_scaffold_seed_vibe_root(seed_norm) {
         if copy_seed_tree_if_missing(
-            seed_norm + "/builtin",
-            root + "/vibe/builtin",
+            seed_norm + "/prelude",
+            root + "/vibe/prelude",
           ) {
-          created.push("vibe/builtin/")
+          created.push("vibe/prelude/")
         }
-        if copy_seed_tree_if_missing(
-            seed_norm + "/encoding",
-            root + "/vibe/encoding",
-          ) {
-          created.push("vibe/encoding/")
-        }
-        if copy_seed_tree_if_missing(
-            seed_norm + "/json",
-            root + "/vibe/json",
-          ) {
+        if copy_seed_tree_if_missing(seed_norm + "/json", root + "/vibe/json") {
           created.push("vibe/json/")
         }
         if copy_seed_tree_if_missing(
@@ -3270,10 +3265,7 @@ fn scaffold_project_root_with_seed(
           ) {
           created.push("vibe/base64/")
         }
-        if copy_seed_tree_if_missing(
-            seed_norm + "/sha1",
-            root + "/vibe/sha1",
-          ) {
+        if copy_seed_tree_if_missing(seed_norm + "/sha1", root + "/vibe/sha1") {
           created.push("vibe/sha1/")
         }
       }

@@ -46,7 +46,7 @@ just coverage     # moonbit + wasm(deno) coverage
 just coverage-moon  # moonbit source coverage (summary/cobertura/html)
 just coverage-deno  # wasm integration coverage (summary/lcov/html)
 just coverage-wasm-source examples/pattern_coverage.vibe  # vibe source span + wasm counter coverage
-just coverage-wasm-std  # vibe/builtin *_test.vibe coverage aggregation (wasm source)
+just coverage-wasm-std  # vibe/prelude *_test.vibe coverage aggregation (wasm source)
 just release-check  # full check before release
 ```
 
@@ -70,7 +70,7 @@ WASM 向けは 3 層で測る:
 - MoonBit 本体ロジック: `just coverage-moon`（必要なら `VIBE_MOON_COVERAGE_TARGET=wasm-gc`）
 - `WebAssembly.instantiate` 経由の統合導線: `just coverage-deno`
 - vibe ソース span ベースの line/branch: `just coverage-wasm-source <entry.vibe>`
-- vibe/builtin の集計: `just coverage-wasm-std`（`summary` の `cases(total/success)` と `failures.txt` を確認）
+- vibe/prelude の集計: `just coverage-wasm-std`（`summary` の `cases(total/success)` と `failures.txt` を確認）
 - 詳細: `docs/coverage.md`
 
 `js/vibe/` には wasm 成果物 (`src/lib`) を呼ぶ JS バインディングを置く:
@@ -170,7 +170,7 @@ just run-compiler-wasi-wasm-gc /tmp/gc_demo.vibe -o /tmp/out.wasm
 just run-compiler-wasi-wasm-mvp examples/basics.vibe -o /tmp/out.mvp.wasm
 
 # Build component + run with wasmtime (explicit invoke for non-command component)
-just component-run vibe/builtin/test_import.vibe
+just component-run vibe/prelude/test_import.vibe
 # stdin 経由の実行も可能:
 printf 'A' | just component-run your_stdio_script.vibe
 # stream TUI デモ:
@@ -179,7 +179,7 @@ printf 'hello\nworld\n' | just component-run examples/wasm/tui_stream_demo.vibe
 just demo-tui-stream
 
 # moonix で実行（moonix の CLI 差分はランチャで吸収）
-just component-run-moonix vibe/builtin/test_import.vibe
+just component-run-moonix vibe/prelude/test_import.vibe
 # moonix バイナリが無い場合の手動 bootstrap
 just bootstrap-moonix
 
@@ -293,7 +293,7 @@ examples/
 └── wasm/           # WASM-only examples (require host)
 
 vibe/
-└── builtin/        # vibe core library (self-hosted builtin modules)
+└── prelude/        # vibe core library (self-hosted prelude modules)
 
 examples/async_host/  # Rust/wasmtime host runtime
 ```
@@ -340,7 +340,7 @@ legacy の式ベンチ (`--expr/--case/--cases`) は `interpreter` backend の�
 KPI しきい値は `VIBE_BENCH_KPI_MAX_PER_US` / `VIBE_BENCH_KPI_MAX_WASM_BYTES` / `VIBE_BENCH_KPI_MAX_SCORE` で設定可能。
 引数なしの `just bench-kpi` は `bench/kpi_bench.vibe`（数値パイプライン/状態更新の4ケース）を対象にする。
 `VIBE_BENCH_KPI_N` / `VIBE_BENCH_KPI_WARMUP` 未指定時は `wasm=20000/1000`, `interpreter=2000/200` を使う。
-`just bench-std-baseline-update` は `vibe/builtin` を含む bundle-size budget
+`just bench-std-baseline-update` は `vibe/prelude` を含む bundle-size budget
 (`bench/golden/bundle_size_budget.tsv`) と KPI snapshot
 (`bench/golden/kpi_wasm.tsv`, `bench/golden/kpi_interpreter.tsv`) を更新する。
 

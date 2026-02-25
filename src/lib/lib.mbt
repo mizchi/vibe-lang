@@ -236,7 +236,7 @@ fn prelude_only_env_or_empty() -> @checker.TypeEnv {
 
 ///|
 fn is_builtin_module_path(path : String) -> Bool {
-  path.contains("/vibe/builtin/") && not(path.has_suffix("_test.vibe"))
+  path.contains("/vibe/prelude/") && not(path.has_suffix("_test.vibe"))
 }
 
 ///|

@@ -440,7 +440,7 @@ fn make_trait_import_action(
 
 ///|
 pub fn trait_import_code_actions(uri : String, source : String) -> Json {
-  let module_path = "./vibe/builtin/builtin_traits.vibe"
+  let module_path = "./vibe/prelude/builtin_traits.vibe"
   let (diagnostics, _) = check_document(uri, source)
   let insert_line = import_insert_line(source)
   let seen : Map[String, Bool] = {}

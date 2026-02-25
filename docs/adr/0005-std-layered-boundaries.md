@@ -19,7 +19,9 @@
 
 標準ライブラリ外のパッケージ:
 - `vibe/collection` — リスト・マップ・セット
-- `vibe/encoding` — base64, sha1
+- `vibe/json` — JSON parser / JSON-RPC
+- `vibe/base64` — Base64 encode/decode
+- `vibe/sha1` — SHA-1 hash
 - `vibe/fs` — ファイルシステム（WASI）
 - `vibe/socket` — TCP ソケット（WASI P2）
 - `vibe/http` — HTTP クライアント/サーバー

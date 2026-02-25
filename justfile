@@ -36,7 +36,7 @@ check-lock-clean:
 test-lock-clean:
     scripts/check_lock_clean_test.sh
 
-# Run tests (includes examples, std, io, fs, shell, socket, http, rlm, collection, encoding, x)
+# Run tests (includes examples, std, io, fs, shell, socket, http, rlm, collection, json/base64/sha1, x)
 test:
     scripts/check_lock_clean.sh
     scripts/check_lock_clean_test.sh
@@ -46,7 +46,7 @@ test:
     moon test -p mizchi/vibe/cmd/vibe_check_wasi --target wasm --warn-list '{{moon_warn_list}}'
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
     bash scripts/test_parallel_cleanup_e2e.sh _build/native/debug/build/cmd/vibe/vibe.exe
-    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/builtin vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/encoding vibe/json vibe/base64 vibe/sha1 vibe/x vibe/x/args
+    ulimit -n {{vibe_test_ulimit_n}} && _build/native/debug/build/cmd/vibe/vibe.exe test --unstable-async --jobs {{vibe_test_jobs}} examples vibe/prelude vibe/io vibe/fs vibe/time vibe/random vibe/process vibe/shell vibe/x/rlm vibe/socket/socket_test.vibe vibe/http/http_test.vibe vibe/http/high_level_test.vibe vibe/collection vibe/json vibe/base64 vibe/sha1 vibe/x vibe/x/args
 
 # Build wasm artifact used by Deno integration tests
 build-integration-deno-wasm:
@@ -85,7 +85,7 @@ coverage-wasm-source entry="examples/pattern_coverage.vibe":
 coverage-eval-sidecar db target:
     scripts/coverage_eval_sidecar.sh {{db}} {{target}}
 
-# Run vibe/builtin coverage from *_test.vibe via wasm source coverage
+# Run vibe/prelude coverage from *_test.vibe via wasm source coverage
 # env: VIBE_WASM_STD_COVERAGE_MODES, VIBE_WASM_STD_COVERAGE_MODE, VIBE_WASM_STD_COVERAGE_NO_DCE, VIBE_WASM_STD_COVERAGE_STRICT, VIBE_WASM_STD_COVERAGE_ALLOW_TRAP, VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE, VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE, VIBE_WASM_STD_COVERAGE_FILTER, VIBE_WASM_STD_COVERAGE_EXCLUDE, VIBE_WASM_STD_COVERAGE_MATRIX, VIBE_WASM_STD_COVERAGE_DIR
 coverage-wasm-std:
     scripts/coverage_wasm_std.sh
@@ -305,7 +305,7 @@ bench-typechecker:
 # This captures product-facing size drift, including source edits.
 # Default importer mode is runtime-first (`--wasm`/`--wasm-js-string`).
 # Set `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1` to add no-dce diagnostics.
-# Set `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include vibe/builtin module surfaces.
+# Set `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1` to include vibe/prelude module surfaces.
 bench-bundle-size:
     scripts/bench_bundle_size.sh
 
@@ -479,8 +479,8 @@ run-wasm-async file: build-async-host
 # Precompile all vibe modules to dist/**/*.wasm
 precompile:
     moon build --target native src/cmd/vibe --warn-list '{{moon_warn_list}}'
-    mkdir -p dist/std dist/std/path dist/std/threads dist/fs dist/socket dist/http dist/collection dist/encoding dist/json dist/base64 dist/sha1 dist/x dist/x/args
-    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/builtin vibe/builtin/path vibe/builtin/threads vibe/fs vibe/socket vibe/http vibe/collection vibe/encoding vibe/json vibe/base64 vibe/sha1 vibe/x vibe/x/args --out-dir "$(pwd)/dist" --wasm
+    mkdir -p dist/std dist/std/path dist/std/threads dist/fs dist/socket dist/http dist/collection dist/json dist/base64 dist/sha1 dist/x dist/x/args
+    _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/prelude vibe/prelude/path vibe/prelude/threads vibe/fs vibe/socket vibe/http vibe/collection vibe/json vibe/base64 vibe/sha1 vibe/x vibe/x/args --out-dir "$(pwd)/dist" --wasm
 
 # Create a new ADR (usage: just adr "タイトル slug")
 adr title:

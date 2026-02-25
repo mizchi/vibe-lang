@@ -11,7 +11,7 @@ Source: TODO.md "Show trait migration plan (prelude 常駐化)"
 
 - checker prelude に `trait Show` と `Int/Float/Double/Bool/String` の impl を注入
 - `to_string` を `[T: Show](x: T) -> String` として prelude 前提で提供
-- `vibe/builtin/builtin_traits.vibe` および fixture 群から冗長な `trait Show` / primitive `impl Show` 宣言を削除
+- `vibe/prelude/builtin_traits.vibe` および fixture 群から冗長な `trait Show` / primitive `impl Show` 宣言を削除
 - unknown-bound 用 fixture は `MissingShow` エラーに切り替え
 
 ## 背景・理由
@@ -21,7 +21,7 @@ Source: TODO.md "Show trait migration plan (prelude 常駐化)"
 ## 実装
 
 - `src/checker/typecheck_prelude.mbt` - prelude trait injection
-- `vibe/builtin/builtin_traits.vibe` - `to_string = [T: Show](x: T) -> String { __to_string(x) }`
+- `vibe/prelude/builtin_traits.vibe` - `to_string = [T: Show](x: T) -> String { __to_string(x) }`
 
 ## テスト
 

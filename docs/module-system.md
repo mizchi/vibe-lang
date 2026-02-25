@@ -32,7 +32,7 @@ m::inc(41)
 ```
 
 ```vibe
-import /vibe/builtin/string { from_char_code }
+import /vibe/prelude/string { from_char_code }
 from_char_code(65)
 ```
 
@@ -40,7 +40,7 @@ from_char_code(65)
 - `module foo { ... }` は内部的に `foo::name` 形式へ lower される。
 - `export module foo { ... }` は `foo::...` を export する。
 - `import <path> { ... }` は source 先行で import する。
-- `/vibe/...` の場合は `/vibe/` を落とした名前空間を使う（例: `/vibe/builtin/string` -> `builtin/string::...`）。
+- `/vibe/...` の場合は `/vibe/` を落とした名前空間を使う（例: `/vibe/prelude/string` -> `prelude/string::...`）。
 - `import { ... } from ...` は廃止され、parse error になる。
 - `module` import は `.xm` ソースのみ対応し、`foo::...` 形式 export を取り込む。
 - アクセス子は `::` を正規とする。
