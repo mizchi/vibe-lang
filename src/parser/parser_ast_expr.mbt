@@ -1818,13 +1818,20 @@ fn AstParser::parse_call_or_primary(
           span~,
         )
       } else {
-        // expr.prop → prop(expr) — zero-arg method call
+        // expr.prop → __index(expr, "prop") — member access only
         let span = self.span_from(start)
         let expr_span = expr.span()
         expr = @core.Expr::Call(
-          name=method_tok.text(),
+          name="__index",
           type_args=[],
-          args=[@core.CallArg::{ label: None, expr, span: expr_span }],
+          args=[
+            @core.CallArg::{ label: None, expr, span: expr_span },
+            @core.CallArg::{
+              label: None,
+              expr: @core.Expr::String(value=method_tok.text(), span~),
+              span: span,
+            },
+          ],
           span~,
         )
       }

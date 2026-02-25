@@ -38,10 +38,10 @@ Completed items are archived in `docs/DONE.md`.
   - [x] Green: 括弧付き (`(1 + 1) |> double`) を許可
 - [x] diagnostics: `|>` 曖昧式エラーで括弧追加の修正ヒントを提示する
   - 対象: `src/parser/*`, `src/core/diagnostic.mbt`, CLI 表示
-- [ ] checker: `.` は member/index アクセス専用に固定し、関数呼び出しへの fallback を撤去する
+- [x] checker: `.` は member/index アクセス専用に固定し、関数呼び出しへの fallback を撤去する
   - 対象: `src/checker/typecheck_call*.mbt`, `src/checker/typecheck_expr*.mbt`
-  - Red: `obj.prop()` 暗黙 desugar 依存ケースを失敗として固定
-  - Green: data member access + tuple index + `(obj.method)(...)` を通す
+  - [x] Red: call-style fallback (`prop(obj)`) 依存ケースを失敗として固定
+  - [x] Green: data member access（`obj.prop`）+ tuple index を維持しつつ fallback を撤去
 - [ ] checker/runtime: 名前解決優先順位を `local > lexical > explicit import > prelude` に固定する
   - 対象: `src/checker/typecheck_env_namespace.mbt`, `src/runtime/db_import.mbt`, 関連テスト
 - [ ] normalize/edit: namespace symbol の正規形を `/pkg@version/module/Type::symbol` に統一し、内部参照を `<canonical>#<addr-hash>` 形式で保持する

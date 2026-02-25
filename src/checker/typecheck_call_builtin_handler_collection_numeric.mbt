@@ -686,7 +686,8 @@ fn type_call_builtin_handler_collection_numeric(
         allow_effect,
       )
       let elem_ty = fresh_type_var(env)
-      match container_ty {
+      let resolved_container = resolve_type(env, container_ty)
+      match resolved_container {
         @core.Type::Array(_) => {
           if not(type_equal(env, index_ty, @core.Type::Int)) {
             raise TypeError::Mismatch(
@@ -696,10 +697,10 @@ fn type_call_builtin_handler_collection_numeric(
               context=Some("index"),
             )
           }
-          if not(type_equal(env, container_ty, @core.Type::Array(elem_ty))) {
+          if not(type_equal(env, resolved_container, @core.Type::Array(elem_ty))) {
             raise TypeError::Mismatch(
               expected=@core.Type::Array(elem_ty),
-              actual=container_ty,
+              actual=resolved_container,
               span=pos_args[0].span(),
               context=Some("argument"),
             )
@@ -715,16 +716,81 @@ fn type_call_builtin_handler_collection_numeric(
               context=Some("index"),
             )
           }
-          if not(type_equal(env, container_ty, @core.Type::Map(elem_ty))) {
+          if not(type_equal(env, resolved_container, @core.Type::Map(elem_ty))) {
             raise TypeError::Mismatch(
               expected=@core.Type::Map(elem_ty),
-              actual=container_ty,
+              actual=resolved_container,
               span=pos_args[0].span(),
               context=Some("argument"),
             )
           }
           elem_ty
         }
+        @core.Type::Record(fields) => {
+          if not(type_equal(env, index_ty, @core.Type::String)) {
+            raise TypeError::Mismatch(
+              expected=@core.Type::String,
+              actual=index_ty,
+              span=pos_args[1].span(),
+              context=Some("index"),
+            )
+          }
+          match pos_args[1] {
+            @core.Expr::String(value=key, ..) =>
+              match fields.get(key) {
+                Some(field_ty) => field_ty
+                None =>
+                  raise TypeError::BadCall(
+                    message="__index: unknown record field: " + key,
+                    span=call_span,
+                  )
+              }
+            _ =>
+              raise TypeError::BadCall(
+                message="__index: record field index must be string literal",
+                span=call_span,
+              )
+          }
+        }
+        @core.Type::Named(name~, args=type_args) =>
+          match env.get_struct(name) {
+            Some(struct_def) => {
+              if not(type_equal(env, index_ty, @core.Type::String)) {
+                raise TypeError::Mismatch(
+                  expected=@core.Type::String,
+                  actual=index_ty,
+                  span=pos_args[1].span(),
+                  context=Some("index"),
+                )
+              }
+              match pos_args[1] {
+                @core.Expr::String(value=key, ..) =>
+                  match struct_def.get_field(key) {
+                    Some(field_def) => {
+                      let type_map : Map[String, @core.Type] = {}
+                      for i, param in struct_def.params {
+                        if i < type_args.length() {
+                          type_map[param] = resolve_type(env, type_args[i])
+                        }
+                      }
+                      substitute_type_params_by_name(field_def.ty, type_map)
+                    }
+                    None =>
+                      raise TypeError::BadCall(
+                        message="__index: unknown struct field: " + key,
+                        span=call_span,
+                      )
+                  }
+                _ =>
+                  raise TypeError::BadCall(
+                    message="__index: struct field index must be string literal",
+                    span=call_span,
+                  )
+              }
+            }
+            None =>
+              raise TypeError::BadCall(message="__index: not indexable", span=call_span)
+          }
         _ => {
           let _ = index_ty
           let _ = elem_ty

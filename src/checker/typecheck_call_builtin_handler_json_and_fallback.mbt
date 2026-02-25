@@ -199,15 +199,6 @@ fn type_call_builtin_handler_json_and_fallback(
         @core.Type::Array(@core.Type::String),
         false,
       )
-    _ =>
-      // Try to interpret as field access: x(p) where p is a record/struct
-      // and x is a field name
-      match
-        try_field_access(
-          env, name, args, aliases, effects, allow_effect, call_span,
-        ) {
-        Some(ty) => ty
-        None => raise TypeError::BadCall(message=name, span=call_span)
-      }
+    _ => raise TypeError::BadCall(message=name, span=call_span)
   }
 }
