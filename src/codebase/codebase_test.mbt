@@ -649,7 +649,7 @@ test "codebase update_lock_path_refs accepts export version" {
 }
 
 ///|
-test "codebase load_registry_modules falls back to std encoding json and collection" {
+test "codebase load_registry_modules falls back to std encoding json base64 sha1 and collection" {
   let root = make_temp_dir("registry_default_namespaces")
   let modules = match load_registry_modules(root) {
     Ok(v) => v
@@ -658,11 +658,15 @@ test "codebase load_registry_modules falls back to std encoding json and collect
   let builtin_path = @vibe_fs.normalize_path(root + "/vibe/builtin")
   let encoding_path = @vibe_fs.normalize_path(root + "/vibe/encoding")
   let json_path = @vibe_fs.normalize_path(root + "/vibe/json")
+  let base64_path = @vibe_fs.normalize_path(root + "/vibe/base64")
+  let sha1_path = @vibe_fs.normalize_path(root + "/vibe/sha1")
   let collection_path = @vibe_fs.normalize_path(root + "/vibe/collection")
   assert_eq(modules["builtin"], builtin_path)
   assert_eq(modules["std"], builtin_path)
   assert_eq(modules["encoding"], encoding_path)
   assert_eq(modules["json"], json_path)
+  assert_eq(modules["base64"], base64_path)
+  assert_eq(modules["sha1"], sha1_path)
   assert_eq(modules["collection"], collection_path)
   remove_if_exists(root)
 }

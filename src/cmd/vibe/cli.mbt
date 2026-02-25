@@ -3264,6 +3264,18 @@ fn scaffold_project_root_with_seed(
           ) {
           created.push("vibe/json/")
         }
+        if copy_seed_tree_if_missing(
+            seed_norm + "/base64",
+            root + "/vibe/base64",
+          ) {
+          created.push("vibe/base64/")
+        }
+        if copy_seed_tree_if_missing(
+            seed_norm + "/sha1",
+            root + "/vibe/sha1",
+          ) {
+          created.push("vibe/sha1/")
+        }
       }
     }
     None => ()
