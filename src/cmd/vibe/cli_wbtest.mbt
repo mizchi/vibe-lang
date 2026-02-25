@@ -1786,8 +1786,27 @@ test "split test entry path batches caps workers and balances paths" {
     2,
   )
   assert_eq(balanced.length(), 2)
-  assert_eq(balanced[0], ["a.vibe", "c.vibe", "e.vibe"])
-  assert_eq(balanced[1], ["b.vibe", "d.vibe"])
+  assert_eq(balanced[0], ["a.vibe", "b.vibe", "c.vibe"])
+  assert_eq(balanced[1], ["d.vibe", "e.vibe"])
+}
+
+///|
+test "split test entry path batches keeps sibling files in same worker chunk" {
+  let grouped = split_test_entry_path_batches([
+    "vibe/builtin/a_test.vibe",
+    "vibe/fs/a_test.vibe",
+    "vibe/builtin/b_test.vibe",
+    "vibe/fs/b_test.vibe",
+  ], 2)
+  assert_eq(grouped.length(), 2)
+  let builtin_group = ["vibe/builtin/a_test.vibe", "vibe/builtin/b_test.vibe"]
+  let fs_group = ["vibe/fs/a_test.vibe", "vibe/fs/b_test.vibe"]
+  let first_is_builtin = grouped[0] == builtin_group
+  let second_is_builtin = grouped[1] == builtin_group
+  assert_true(first_is_builtin || second_is_builtin)
+  let first_is_fs = grouped[0] == fs_group
+  let second_is_fs = grouped[1] == fs_group
+  assert_true(first_is_fs || second_is_fs)
 }
 
 ///|

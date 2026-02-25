@@ -1411,6 +1411,118 @@ fn find_json_lines(text : String) -> Array[String] {
 }
 
 ///|
+fn test_entry_batch_parent(path : String) -> String {
+  @vibe_fs.parent_path(path)
+}
+
+///|
+struct TestEntryBatchUnit {
+  parent : String
+  paths : Array[String]
+}
+
+///|
+fn sort_strings_for_batching(values : Array[String]) -> Unit {
+  let n = values.length()
+  if n < 2 {
+    return
+  }
+  for i in 0..<(n - 1) {
+    let mut min_index = i
+    for j in (i + 1)..<n {
+      if values[j].compare(values[min_index]) < 0 {
+        min_index = j
+      }
+    }
+    if min_index != i {
+      let tmp = values[i]
+      values[i] = values[min_index]
+      values[min_index] = tmp
+    }
+  }
+}
+
+///|
+fn compare_test_entry_batch_path(a : String, b : String) -> Int {
+  let a_parent = test_entry_batch_parent(a)
+  let b_parent = test_entry_batch_parent(b)
+  let parent_cmp = a_parent.compare(b_parent)
+  if parent_cmp != 0 {
+    parent_cmp
+  } else {
+    a.compare(b)
+  }
+}
+
+///|
+fn sort_test_entry_paths_for_batching(paths : Array[String]) -> Unit {
+  let n = paths.length()
+  if n < 2 {
+    return
+  }
+  for i in 0..<(n - 1) {
+    let mut min_index = i
+    for j in (i + 1)..<n {
+      if compare_test_entry_batch_path(paths[j], paths[min_index]) < 0 {
+        min_index = j
+      }
+    }
+    if min_index != i {
+      let tmp = paths[i]
+      paths[i] = paths[min_index]
+      paths[min_index] = tmp
+    }
+  }
+}
+
+///|
+fn compare_test_entry_batch_unit(a : TestEntryBatchUnit, b : TestEntryBatchUnit) -> Int {
+  let a_len = a.paths.length()
+  let b_len = b.paths.length()
+  if a_len > b_len {
+    -1
+  } else if a_len < b_len {
+    1
+  } else {
+    a.parent.compare(b.parent)
+  }
+}
+
+///|
+fn sort_test_entry_batch_units(units : Array[TestEntryBatchUnit]) -> Unit {
+  let n = units.length()
+  if n < 2 {
+    return
+  }
+  for i in 0..<(n - 1) {
+    let mut min_index = i
+    for j in (i + 1)..<n {
+      if compare_test_entry_batch_unit(units[j], units[min_index]) < 0 {
+        min_index = j
+      }
+    }
+    if min_index != i {
+      let tmp = units[i]
+      units[i] = units[min_index]
+      units[min_index] = tmp
+    }
+  }
+}
+
+///|
+fn test_entry_batch_min_load_index(loads : Array[Int]) -> Int {
+  let mut min_index = 0
+  let mut min_value = loads[0]
+  for i in 1..<loads.length() {
+    if loads[i] < min_value {
+      min_value = loads[i]
+      min_index = i
+    }
+  }
+  min_index
+}
+
+///|
 fn split_test_entry_path_batches(
   entry_paths : Array[String],
   jobs : Int,
@@ -1426,11 +1538,52 @@ fn split_test_entry_path_batches(
   for _ in 0..<worker_count {
     batches.push([])
   }
-  let mut i = 0
+  let grouped : Map[String, Array[String]] = {}
   for path in entry_paths {
-    let batch_index = i % worker_count
-    batches[batch_index].push(path)
-    i += 1
+    let parent = test_entry_batch_parent(path)
+    match grouped.get(parent) {
+      Some(paths) => paths.push(path)
+      None => grouped[parent] = [path]
+    }
+  }
+  let parent_keys : Array[String] = []
+  for key, _ in grouped {
+    parent_keys.push(key)
+  }
+  sort_strings_for_batching(parent_keys)
+
+  let target_chunk_size = (entry_paths.length() + worker_count - 1) / worker_count
+  let units : Array[TestEntryBatchUnit] = []
+  for parent in parent_keys {
+    let parent_paths = match grouped.get(parent) {
+      Some(paths) => paths
+      None => continue
+    }
+    sort_test_entry_paths_for_batching(parent_paths)
+    let mut offset = 0
+    while offset < parent_paths.length() {
+      let chunk : Array[String] = []
+      let mut chunk_count = 0
+      while offset < parent_paths.length() && chunk_count < target_chunk_size {
+        chunk.push(parent_paths[offset])
+        offset += 1
+        chunk_count += 1
+      }
+      units.push(TestEntryBatchUnit::{ parent, paths: chunk })
+    }
+  }
+  sort_test_entry_batch_units(units)
+
+  let loads : Array[Int] = []
+  for _ in 0..<worker_count {
+    loads.push(0)
+  }
+  for unit in units {
+    let batch_index = test_entry_batch_min_load_index(loads)
+    for path in unit.paths {
+      batches[batch_index].push(path)
+      loads[batch_index] += 1
+    }
   }
   batches
 }
