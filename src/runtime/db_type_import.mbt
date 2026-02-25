@@ -236,10 +236,10 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
             exports[name] = true
           }
         }
-      // Re-export: mark names as exported (actual definitions come from source module)
-      @core.Stmt::ReExport(names~, ..) =>
-        for name in names {
-          exports[name] = true
+      // Re-export: mark exported aliases (or original names) as exported.
+      @core.Stmt::ReExport(spec~, ..) =>
+        for item in spec.items {
+          exports[@core.import_item_local_name(item)] = true
         }
       _ => ()
     }

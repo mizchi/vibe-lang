@@ -60,10 +60,10 @@ fn bundle_for_wasm_impl(
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::Import(..) => () // Skip imports
-      @core.Stmt::ReExport(names~, source~, span=_) =>
+      @core.Stmt::ReExport(spec~, source~, span=_) =>
         // Expand re-exports in main module
         collect_reexport_defs(
-          db, base_dir, names, source, bundled_stmts, visited,
+          db, base_dir, spec, source, bundled_stmts, visited,
         )
       _ => bundled_stmts.push(stmt)
     }
@@ -116,8 +116,8 @@ fn collect_dependency_defs(
         | @core.Stmt::EnumDef(..)
         | @core.Stmt::TypeAlias(..) => out.push(stmt)
         // Handle re-exports: fetch definitions from source module
-        @core.Stmt::ReExport(names~, source~, span=_) =>
-          collect_reexport_defs(db, base_dir, names, source, out, visited)
+        @core.Stmt::ReExport(spec~, source~, span=_) =>
+          collect_reexport_defs(db, base_dir, spec, source, out, visited)
         // Skip imports and exports in dependencies
         @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
@@ -134,7 +134,7 @@ fn collect_dependency_defs(
 fn collect_reexport_defs(
   db : VibeDb,
   base_dir : String,
-  names : Array[String],
+  spec : @core.ImportSpec,
   source : @core.ModuleRef,
   out : Array[@core.Stmt],
   visited : Map[String, Bool],
@@ -170,48 +170,71 @@ fn collect_reexport_defs(
   collect_dependency_defs(db, source_path, out, visited)
   // Get the source module AST
   let source_ast = db.ast_with_hash_imports(source_path)
-  // Build a set of requested names for quick lookup
-  let requested : Map[String, Bool] = {}
-  for name in names {
-    requested[name] = true
+  let requested_items : Map[String, Array[@core.ImportItem]] = {}
+  for item in spec.items {
+    match requested_items.get(item.name) {
+      Some(items) => items.push(item)
+      None => requested_items[item.name] = [item]
+    }
+  }
+  let append_value_aliases = fn(source_name : String, span : @core.Span) {
+    match requested_items.get(source_name) {
+      Some(items) =>
+        for item in items {
+          let export_name = @core.import_item_local_name(item)
+          if item.kind == @core.ImportKind::Value && export_name != source_name {
+            out.push(
+              @core.Stmt::Let(
+                rec=false,
+                name=export_name,
+                expr=@core.Expr::Ident(name=source_name, span~),
+                span~,
+              ),
+            )
+          }
+        }
+      None => ()
+    }
   }
   // Extract matching definitions from source module
   for stmt in source_ast.stmts {
     match stmt {
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(@core.Stmt::Let(rec~, name~, expr~, span~))
+          append_value_aliases(name, span)
         }
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
         }
       @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
         }
       @core.Stmt::Let(rec~, name~, expr~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(@core.Stmt::Let(rec~, name~, expr~, span~))
+          append_value_aliases(name, span)
         }
       @core.Stmt::EnumDef(name~, params~, ctors~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
         }
       @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
         }
       @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
         }
       @core.Stmt::StructDef(name~, params~, fields~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
         }
       @core.Stmt::TraitDef(name~, supertraits~, open_impl~, exported~, span~) =>
-        if requested.contains(name) {
+        if requested_items.contains(name) {
           out.push(
             @core.Stmt::TraitDef(
               name~,

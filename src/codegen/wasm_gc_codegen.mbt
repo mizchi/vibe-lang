@@ -125,6 +125,7 @@ priv struct GcWasmFunc {
 priv struct GcCodegenCtx {
   types : Array[GcTypeDef]
   struct_type_index : Map[String, Int]
+  array_type_index : Map[String, Int]
   func_indices : Map[String, Int]
   func_param_counts : Map[String, Int]
   func_returns : Map[String, GcValKind]
@@ -225,6 +226,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
   {
     types,
     struct_type_index,
+    array_type_index,
     func_indices: {},
     func_param_counts: {},
     func_returns: {},
@@ -609,6 +611,12 @@ fn emit_array_set_gc(buf : GcByteBuf, type_idx : Int) -> Unit {
 }
 
 ///|
+fn emit_array_len_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xfb)
+  buf.push(0x0f)
+}
+
+///|
 fn gc_val_kind_from_type(
   ctx : GcCodegenCtx,
   ty : @core.Type,
@@ -724,6 +732,23 @@ fn infer_block_kind_gc(
           return kind
         }
       }
+      @core.Stmt::LetMut(name~, expr~, ..) => {
+        let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+        temp_ctx.locals[name] = { idx: 0, kind }
+        if is_last {
+          return kind
+        }
+      }
+      @core.Stmt::Assign(name~, expr~, ..) => {
+        let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+        match temp_ctx.locals.get(name) {
+          Some(_) => temp_ctx.locals[name] = { idx: 0, kind }
+          None => raise WasmGenError::UnknownName(name)
+        }
+        if is_last {
+          return kind
+        }
+      }
       @core.Stmt::Expr(expr~, ..) =>
         if is_last {
           return infer_expr_kind_gc(ctx, temp_ctx, expr)
@@ -764,6 +789,57 @@ fn infer_tuple_kind_gc(
 }
 
 ///|
+fn infer_array_kind_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  items : Array[@core.Expr],
+) -> GcValKind raise WasmGenError {
+  let elem_kind = if items.length() == 0 {
+    GcValKind::I64
+  } else {
+    let first = infer_expr_kind_gc(ctx, fctx, items[0])
+    for i in 1..<items.length() {
+      let item_kind = infer_expr_kind_gc(ctx, fctx, items[i])
+      if item_kind != first {
+        raise WasmGenError::Unsupported("array elem kind mismatch")
+      }
+    }
+    first
+  }
+  let type_idx = ensure_array_type(ctx.types, ctx.array_type_index, elem_kind)
+  GcValKind::Ref(type_idx)
+}
+
+///|
+fn infer_for_in_parts_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  value_name : String,
+  index_name : String?,
+  iterable : @core.Expr,
+  body : @core.Module,
+) -> (Int, GcValKind, GcValKind) raise WasmGenError {
+  let iterable_kind = infer_expr_kind_gc(ctx, fctx, iterable)
+  let iterable_type_idx = match iterable_kind {
+    GcValKind::Ref(idx) => idx
+    _ => raise WasmGenError::Unsupported("for-in iterable kind")
+  }
+  let iterable_elem_kind = match ctx.types[iterable_type_idx] {
+    GcTypeDef::Array(elem~) => elem
+    _ => raise WasmGenError::Unsupported("for-in iterable type")
+  }
+  let saved_locals = clone_locals_gc(fctx.locals)
+  fctx.locals[value_name] = { idx: 0, kind: iterable_elem_kind }
+  match index_name {
+    Some(name) => fctx.locals[name] = { idx: 0, kind: GcValKind::I64 }
+    None => ()
+  }
+  let body_kind = infer_block_kind_gc(ctx, fctx, body)
+  restore_locals_gc(fctx, saved_locals)
+  (iterable_type_idx, iterable_elem_kind, body_kind)
+}
+
+///|
 fn infer_expr_kind_gc(
   ctx : GcCodegenCtx,
   fctx : GcFuncCtx,
@@ -774,6 +850,7 @@ fn infer_expr_kind_gc(
     @core.Expr::Float(..) => GcValKind::F32
     @core.Expr::Double(..) => GcValKind::F64
     @core.Expr::Bool(..) => GcValKind::I32
+    @core.Expr::Char(..) => GcValKind::I64
     @core.Expr::String(..) => GcValKind::Ref(ctx.string_type)
     @core.Expr::Ident(name~, ..) =>
       match fctx.locals.get(name) {
@@ -845,6 +922,32 @@ fn infer_expr_kind_gc(
       then_kind
     }
     @core.Expr::Block(body~, ..) => infer_block_kind_gc(ctx, fctx, body)
+    @core.Expr::Array(items~, ..) => infer_array_kind_gc(ctx, fctx, items)
+    @core.Expr::While(cond~, body~, ..) => {
+      let cond_kind = infer_expr_kind_gc(ctx, fctx, cond)
+      if cond_kind != GcValKind::I32 {
+        raise WasmGenError::Unsupported("while cond kind")
+      }
+      let _ = infer_block_kind_gc(ctx, fctx, body)
+      GcValKind::I32
+    }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let _ = span
+      let (_, _, body_kind) = infer_for_in_parts_gc(
+        ctx,
+        fctx,
+        value_name,
+        index_name,
+        iterable,
+        body,
+      )
+      let type_idx = ensure_array_type(
+        ctx.types,
+        ctx.array_type_index,
+        body_kind,
+      )
+      GcValKind::Ref(type_idx)
+    }
     @core.Expr::Tuple(items~, ..) => infer_tuple_kind_gc(ctx, fctx, items)
     @core.Expr::Record(fields~, ..) => infer_record_kind_gc(ctx, fctx, fields)
     @core.Expr::StructLit(fields~, ..) =>
@@ -1469,6 +1572,10 @@ fn compile_expr_gc(
       let _ = span
       emit_i32_const_gc(buf, if b { 1 } else { 0 })
     }
+    @core.Expr::Char(value=c, span~) => {
+      let _ = span
+      emit_i64_const_gc(buf, c.to_int().to_int64())
+    }
     @core.Expr::String(value=s, span~) => {
       let _ = span
       emit_string_literal(ctx, buf, s)
@@ -1479,6 +1586,18 @@ fn compile_expr_gc(
         Some(info) => emit_local_get_gc(buf, info.idx)
         None => raise WasmGenError::UnknownName(name)
       }
+    }
+    @core.Expr::Array(items~, span~) => {
+      let _ = span
+      let kind = infer_array_kind_gc(ctx, fctx, items)
+      let type_idx = match kind {
+        GcValKind::Ref(idx) => idx
+        _ => raise WasmGenError::Unsupported("array kind")
+      }
+      for item in items {
+        compile_expr_gc(ctx, fctx, buf, item)
+      }
+      emit_array_new_fixed_gc(buf, type_idx, items.length())
     }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
@@ -1886,6 +2005,92 @@ fn compile_expr_gc(
       let _ = span
       compile_block_expr_gc(ctx, fctx, buf, body)
     }
+    @core.Expr::While(cond~, body~, span~) => {
+      let _ = span
+      emit_block_gc(buf, None)
+      emit_loop_gc(buf, None)
+      compile_expr_gc(ctx, fctx, buf, cond)
+      emit_i32_const_gc(buf, 0)
+      emit_i32_eq_gc(buf)
+      emit_br_if_gc(buf, 1)
+      for i in 0..<body.stmts.length() {
+        compile_stmt_gc(ctx, fctx, buf, body.stmts[i], false)
+      }
+      emit_br_gc(buf, 0)
+      emit_end_gc(buf)
+      emit_end_gc(buf)
+      emit_i32_const_gc(buf, 0)
+    }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let _ = span
+      let (iterable_type_idx, iterable_elem_kind, body_kind) = infer_for_in_parts_gc(
+        ctx,
+        fctx,
+        value_name,
+        index_name,
+        iterable,
+        body,
+      )
+      let result_type_idx = ensure_array_type(
+        ctx.types,
+        ctx.array_type_index,
+        body_kind,
+      )
+      let iterable_idx = alloc_local_gc(
+        fctx,
+        GcValKind::Ref(iterable_type_idx),
+      )
+      let len_idx = alloc_local_gc(fctx, GcValKind::I32)
+      let result_idx = alloc_local_gc(fctx, GcValKind::Ref(result_type_idx))
+      let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+      compile_expr_gc(ctx, fctx, buf, iterable)
+      emit_local_set_gc(buf, iterable_idx)
+      emit_local_get_gc(buf, iterable_idx)
+      emit_array_len_gc(buf)
+      emit_local_set_gc(buf, len_idx)
+      emit_local_get_gc(buf, len_idx)
+      emit_array_new_default_gc(buf, result_type_idx)
+      emit_local_set_gc(buf, result_idx)
+      emit_i32_const_gc(buf, 0)
+      emit_local_set_gc(buf, i_idx)
+      let saved_locals = clone_locals_gc(fctx.locals)
+      let value_idx = bind_local_gc(fctx, value_name, iterable_elem_kind)
+      let index_idx : Int? = match index_name {
+        Some(name) => Some(bind_local_gc(fctx, name, GcValKind::I64))
+        None => None
+      }
+      emit_block_gc(buf, None)
+      emit_loop_gc(buf, None)
+      emit_local_get_gc(buf, i_idx)
+      emit_local_get_gc(buf, len_idx)
+      emit_i32_ge_s_gc(buf)
+      emit_br_if_gc(buf, 1)
+      emit_local_get_gc(buf, iterable_idx)
+      emit_local_get_gc(buf, i_idx)
+      emit_array_get_gc(buf, iterable_type_idx)
+      emit_local_set_gc(buf, value_idx)
+      match index_idx {
+        Some(idx) => {
+          emit_local_get_gc(buf, i_idx)
+          emit_i64_extend_i32_s_gc(buf)
+          emit_local_set_gc(buf, idx)
+        }
+        None => ()
+      }
+      emit_local_get_gc(buf, result_idx)
+      emit_local_get_gc(buf, i_idx)
+      compile_block_expr_gc(ctx, fctx, buf, body)
+      emit_array_set_gc(buf, result_type_idx)
+      emit_local_get_gc(buf, i_idx)
+      emit_i32_const_gc(buf, 1)
+      emit_i32_add_gc(buf)
+      emit_local_set_gc(buf, i_idx)
+      emit_br_gc(buf, 0)
+      emit_end_gc(buf)
+      emit_end_gc(buf)
+      restore_locals_gc(fctx, saved_locals)
+      emit_local_get_gc(buf, result_idx)
+    }
     _ => raise WasmGenError::Unsupported("expr")
   }
 }
@@ -1910,6 +2115,28 @@ fn compile_stmt_gc(
         emit_local_set_gc(buf, idx)
       }
     }
+    @core.Stmt::LetMut(name~, expr~, ..) => {
+      let kind = infer_expr_kind_gc(ctx, fctx, expr)
+      let idx = bind_local_gc(fctx, name, kind)
+      compile_expr_gc(ctx, fctx, buf, expr)
+      if is_last {
+        emit_local_tee_gc(buf, idx)
+      } else {
+        emit_local_set_gc(buf, idx)
+      }
+    }
+    @core.Stmt::Assign(name~, expr~, ..) =>
+      match fctx.locals.get(name) {
+        Some(info) => {
+          compile_expr_gc(ctx, fctx, buf, expr)
+          if is_last {
+            emit_local_tee_gc(buf, info.idx)
+          } else {
+            emit_local_set_gc(buf, info.idx)
+          }
+        }
+        None => raise WasmGenError::UnknownName(name)
+      }
     @core.Stmt::Expr(expr~, ..) => {
       compile_expr_gc(ctx, fctx, buf, expr)
       if not(is_last) {

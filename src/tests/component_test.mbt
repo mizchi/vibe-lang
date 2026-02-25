@@ -132,3 +132,28 @@ test "component wit includes wasi stdio imports for stream builtins" {
   assert_true(String::contains(wit, "import wasi:io/streams@0.2.0;"))
   assert_true(String::contains(wit, "export run: func() -> s32;"))
 }
+
+///|
+test "component wit scans for-in bodies for host imports" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Sleep} {
+    #|  let _ = for x in [1, 2] {
+    #|    sleep(x)
+    #|    x
+    #|  }
+    #|  0
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wit = try
+    generate_module_component_wit(db, "main", "local:main", "main")
+  catch {
+    e => fail("wit error: " + e.to_string())
+  } noraise {
+    w => w
+  }
+  assert_true(String::contains(wit, "world main"))
+  assert_true(String::contains(wit, "sleep: func(ms: s32);"))
+  assert_true(String::contains(wit, "export run: func() -> s32;"))
+}

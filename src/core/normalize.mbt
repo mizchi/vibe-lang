@@ -353,8 +353,8 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
     Stmt::InternalExportTypeAlias(name~, params~, target~, ..) =>
       Stmt::InternalExportTypeAlias(name~, params~, target~, span=zero_span)
     Stmt::Export(names~, ..) => Stmt::Export(names~, span=zero_span)
-    Stmt::ReExport(names~, source~, ..) =>
-      Stmt::ReExport(names~, source~, span=zero_span)
+    Stmt::ReExport(spec~, source~, ..) =>
+      Stmt::ReExport(spec~, source~, span=zero_span)
     Stmt::StructDef(name~, params~, fields~, ..) =>
       Stmt::StructDef(
         name~,

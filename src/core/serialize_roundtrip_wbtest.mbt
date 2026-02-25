@@ -643,7 +643,16 @@ test "roundtrip: export statements" {
       ),
       Stmt::Export(names=["foo", "bar"], span=zero_span()),
       Stmt::ReExport(
-        names=["baz"],
+        spec=ImportSpec::{
+          items: [
+            ImportItem::{ kind: ImportKind::Value, name: "baz", rename: None },
+            ImportItem::{
+              kind: ImportKind::Value,
+              name: "qux",
+              rename: Some("quux"),
+            },
+          ],
+        },
         source=ModuleRef::Hash(hash="abc123"),
         span=zero_span(),
       ),

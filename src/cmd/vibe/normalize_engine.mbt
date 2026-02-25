@@ -658,9 +658,9 @@ fn normalize_canonicalize_import_surface_stmt(
         source=normalize_canonicalize_module_ref(source),
         span~,
       )
-    @vibe_core.Stmt::ReExport(names~, source~, span~) =>
+    @vibe_core.Stmt::ReExport(spec~, source~, span~) =>
       @vibe_core.Stmt::ReExport(
-        names~,
+        spec=normalize_canonicalize_import_spec(spec),
         source=normalize_canonicalize_module_ref(source),
         span~,
       )
@@ -772,14 +772,34 @@ fn merge_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
   match stmt {
     @vibe_core.Stmt::Export(names~, ..) =>
       Some("export { " + names.join(", ") + " }")
-    @vibe_core.Stmt::ReExport(names~, source~, ..) => {
+    @vibe_core.Stmt::ReExport(spec~, source~, ..) => {
       let src = match source {
         @vibe_core.ModuleRef::Path(path~) => path
         @vibe_core.ModuleRef::Hash(hash~) => "#" + hash
         @vibe_core.ModuleRef::Version(name~) => "version@" + name
         @vibe_core.ModuleRef::Symbol(name~) => "symbol@" + name
       }
-      Some("export " + src + " { " + names.join(", ") + " }")
+      let rendered_items : Array[String] = []
+      for item in spec.items {
+        let rendered = StringBuilder::new()
+        match item.kind {
+          @vibe_core.ImportKind::Value => ()
+          @vibe_core.ImportKind::Type => rendered.write_string("type ")
+          @vibe_core.ImportKind::Trait => rendered.write_string("trait ")
+          @vibe_core.ImportKind::Module => rendered.write_string("module ")
+        }
+        rendered.write_string(item.name)
+        match item.rename {
+          Some(rename_name) =>
+            if rename_name != item.name {
+              rendered.write_string(" as ")
+              rendered.write_string(rename_name)
+            }
+          None => ()
+        }
+        rendered_items.push(rendered.to_string())
+      }
+      Some("export " + src + " { " + rendered_items.join(", ") + " }")
     }
     _ => None
   }

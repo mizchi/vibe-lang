@@ -2809,8 +2809,10 @@ test "cli finalize library mode keeps re-export stmt parseable" {
   let mut has_reexport = false
   for stmt in ast.stmts {
     match stmt {
-      @vibe_core.Stmt::ReExport(names~, source~, ..) =>
-        if names == ["helper"] {
+      @vibe_core.Stmt::ReExport(spec~, source~, ..) =>
+        if spec.items.length() == 1 &&
+          spec.items[0].name == "helper" &&
+          spec.items[0].rename is None {
           match source {
             @vibe_core.ModuleRef::Path(path~) =>
               if path == "./mod.vibe" {

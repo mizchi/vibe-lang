@@ -328,7 +328,7 @@ pub fn Runtime::eval_module(
         extend_effects(effects, out.effects)
         last = Some(out.value)
       }
-      @core.Stmt::ReExport(names~, source~, ..) => {
+      @core.Stmt::ReExport(spec~, source~, ..) => {
         let hash = match source {
           @core.ModuleRef::Hash(hash~) => hash
           @core.ModuleRef::Path(path~) =>
@@ -356,13 +356,17 @@ pub fn Runtime::eval_module(
                 )
             }
             let exports = @core.extract_exports(imported_module)
-            for name in names {
-              match exports.get(name) {
+            for item in spec.items {
+              let source_name = item.name
+              let export_name = @core.import_item_local_name(item)
+              match exports.get(source_name) {
                 None =>
-                  raise EvalError::ImportError("Symbol not exported: " + name)
+                  raise EvalError::ImportError(
+                    "Symbol not exported: " + source_name,
+                  )
                 Some(_) =>
-                  match imported_rt.get(name) {
-                    Some(value) => self.bind(name, value) |> ignore
+                  match imported_rt.get(source_name) {
+                    Some(value) => self.bind(export_name, value) |> ignore
                     None => () // type/enum only, no runtime value
                   }
               }

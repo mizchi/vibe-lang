@@ -349,7 +349,7 @@ fn rewrite_import_sources(
         }
         stmts.push(next_stmt)
       }
-      @core.Stmt::ReExport(names~, source~, span~) => {
+      @core.Stmt::ReExport(spec~, source~, span~) => {
         let _ = source
         let next_stmt = if import_idx < imports.length() {
           let resolved = imports[import_idx]
@@ -357,7 +357,7 @@ fn rewrite_import_sources(
           match resolved.hash {
             Some(hash) =>
               @core.Stmt::ReExport(
-                names~,
+                spec~,
                 source=@core.ModuleRef::Hash(hash~),
                 span~,
               )

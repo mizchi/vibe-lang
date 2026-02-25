@@ -495,8 +495,9 @@ fn write_file_source_exports_name(source : String, name : String) -> Bool {
             return true
           }
         }
-      @vibe_core.Stmt::ReExport(names~, ..) =>
-        for export_name in names {
+      @vibe_core.Stmt::ReExport(spec~, ..) =>
+        for item in spec.items {
+          let export_name = @vibe_core.import_item_local_name(item)
           if export_name == name {
             return true
           }

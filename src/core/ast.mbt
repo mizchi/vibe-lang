@@ -173,7 +173,7 @@ pub(all) enum Stmt {
     span~ : Span
   )
   Export(names~ : Array[String], span~ : Span)
-  ReExport(names~ : Array[String], source~ : ModuleRef, span~ : Span)
+  ReExport(spec~ : ImportSpec, source~ : ModuleRef, span~ : Span)
   StructDef(
     name~ : String,
     params~ : Array[String],
@@ -370,5 +370,13 @@ pub fn Stmt::span(self : Stmt) -> Span {
     | Stmt::StructDef(span~, ..)
     | Stmt::ExportStructDef(span~, ..)
     | Stmt::InternalExportStructDef(span~, ..) => span
+  }
+}
+
+///|
+pub fn import_item_local_name(item : ImportItem) -> String {
+  match item.rename {
+    Some(rename_name) => rename_name
+    None => item.name
   }
 }

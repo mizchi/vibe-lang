@@ -229,9 +229,25 @@ fn parse_stmt(json : Json) -> Stmt raise DeserializeError {
       }
       "ReExport" => {
         let inner = expect_object(value)
-        let names = get_strings(inner, "names")
+        let spec = match inner.get("spec") {
+          Some(spec_json) => parse_import_spec(spec_json)
+          None => {
+            let names = get_strings(inner, "names")
+            let items : Array[ImportItem] = []
+            for name in names {
+              items.push(
+                ImportItem::{
+                  kind: ImportKind::Value,
+                  name,
+                  rename: None,
+                },
+              )
+            }
+            ImportSpec::{ items }
+          }
+        }
         let source = parse_module_ref(get_field(inner, "source"))
-        return Stmt::ReExport(names~, source~, span=zero)
+        return Stmt::ReExport(spec~, source~, span=zero)
       }
       "StructDef" => {
         let inner = expect_object(value)

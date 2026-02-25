@@ -731,9 +731,9 @@ fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
             exports[name] = true
           }
         }
-      @core.Stmt::ReExport(names~, ..) =>
-        for name in names {
-          exports[name] = true
+      @core.Stmt::ReExport(spec~, ..) =>
+        for item in spec.items {
+          exports[@core.import_item_local_name(item)] = true
         }
       _ => ()
     }

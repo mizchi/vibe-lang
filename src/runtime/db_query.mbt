@@ -570,24 +570,27 @@ pub fn VibeDb::new() -> VibeDb {
             let index_ast = ast_query.fetch(rt, index_path).unwrap()
             for stmt in index_ast.stmts {
               match stmt {
-                @core.Stmt::ReExport(names~, source~, ..) =>
+                @core.Stmt::ReExport(spec~, source~, ..) =>
                   if import_stmt_matches_spec(index_dir, source, imp) {
-                    for name in names {
-                      if exported_names.contains(name) {
+                    for item in spec.items {
+                      let source_name = item.name
+                      let target_name = @core.import_item_local_name(item)
+                      if exported_names.contains(source_name) {
                         // Import value
-                        match imported_env.get_scheme(name) {
-                          Some(scheme) => env.set_scheme(name, scheme)
+                        match imported_env.get_scheme(source_name) {
+                          Some(scheme) => env.set_scheme(target_name, scheme)
                           None => ()
                         }
                         // Import struct
-                        match imported_env.get_struct(name) {
-                          Some(struct_def) => env.set_struct(name, struct_def)
+                        match imported_env.get_struct(source_name) {
+                          Some(struct_def) =>
+                            env.set_struct(target_name, struct_def)
                           None => ()
                         }
                         // Import enum
-                        match imported_env.get_enum_def(name) {
+                        match imported_env.get_enum_def(source_name) {
                           Some(enum_def) => {
-                            env.set_enum_def(name, enum_def)
+                            env.set_enum_def(target_name, enum_def)
                             for ctor in enum_def.ctors {
                               match imported_env.get_ctor(ctor.name) {
                                 Some(ctor_info) =>
@@ -604,24 +607,24 @@ pub fn VibeDb::new() -> VibeDb {
                           None => ()
                         }
                         // Import type alias
-                        match imported_env.get_type_alias(name) {
+                        match imported_env.get_type_alias(source_name) {
                           Some(type_alias) =>
-                            env.set_type_alias(name, type_alias)
+                            env.set_type_alias(target_name, type_alias)
                           None => ()
                         }
                         // Import trait
-                        if imported_env.has_trait(name) {
+                        if imported_env.has_trait(source_name) {
                           let local_supertraits = imported_env.trait_supertraits(
-                            name,
+                            source_name,
                           )
                           env.import_trait(
-                            name,
-                            imported_env.trait_is_open(name),
+                            target_name,
+                            imported_env.trait_is_open(source_name),
                             local_supertraits,
                           )
-                          let impls = imported_env.trait_impls_for(name)
+                          let impls = imported_env.trait_impls_for(source_name)
                           for impl_def in impls {
-                            env.add_trait_impl(name, impl_def)
+                            env.add_trait_impl(target_name, impl_def)
                           }
                         }
                       }
@@ -758,46 +761,33 @@ pub fn VibeDb::new() -> VibeDb {
           // Now look up the import items in the main AST's Import or ReExport statement
           for stmt in ast.stmts {
             match stmt {
-              @core.Stmt::ReExport(names~, source~, span~) =>
+              @core.Stmt::ReExport(spec~, source~, span~) =>
                 if import_stmt_matches_spec(base_dir, source, imp) {
-                  // Build import items from re-export names and import them
-                  let reexport_items : Array[@core.ImportItem] = names.map(fn(
-                    name,
-                  ) {
-                    @core.ImportItem::{
-                      kind: @core.ImportKind::Value,
-                      name,
-                      rename: None,
-                    }
-                  })
-                  let reexport_spec = @core.ImportSpec::{
-                    items: reexport_items,
-                  }
                   let trait_aliases = collect_import_trait_aliases(
-                    reexport_spec, imported_env,
+                    spec,
+                    imported_env,
                   )
-                  for name in names {
-                    if exported_names.contains(name) {
-                      let item = @core.ImportItem::{
-                        kind: @core.ImportKind::Value,
-                        name,
-                        rename: None,
-                      }
+                  for item in spec.items {
+                    let source_name = item.name
+                    let target_name = @core.import_item_local_name(item)
+                    if exported_names.contains(source_name) {
                       // Import value
-                      if import_item_accepts_value(item, name) {
-                        match imported_env.get_scheme(name) {
+                      if import_item_accepts_value(item, source_name) {
+                        match imported_env.get_scheme(source_name) {
                           Some(scheme) => {
                             import_scheme_trait_dependencies(
                               env, imported_env, scheme, trait_aliases, visible_names,
                             )
-                            if can_bind_import_value(name, span) {
-                              env.set_scheme(name, scheme)
-                              env.set_exported_scheme(name, scheme)
-                              match imported_env.get_purity_tier(name) {
-                                Some(tier) => env.set_purity_tier(name, tier)
+                            if can_bind_import_value(target_name, span) {
+                              env.set_scheme(target_name, scheme)
+                              env.set_exported_scheme(target_name, scheme)
+                              match imported_env.get_purity_tier(source_name) {
+                                Some(tier) =>
+                                  env.set_purity_tier(target_name, tier)
                                 None =>
-                                  match imported_env.get_purity(name) {
-                                    Some(pure) => env.set_purity(name, pure)
+                                  match imported_env.get_purity(source_name) {
+                                    Some(pure) =>
+                                      env.set_purity(target_name, pure)
                                     None => ()
                                   }
                               }
@@ -807,69 +797,79 @@ pub fn VibeDb::new() -> VibeDb {
                         }
                       }
                       // Import type (struct)
-                      match imported_env.get_struct(name) {
-                        Some(struct_def) => {
-                          env.set_struct(name, struct_def)
-                          import_trait_impls_for_type(
-                            env, imported_env, name, trait_aliases,
-                          )
+                      if import_item_accepts_type(item) {
+                        match imported_env.get_struct(source_name) {
+                          Some(struct_def) => {
+                            env.set_struct(target_name, struct_def)
+                            import_trait_impls_for_type(
+                              env,
+                              imported_env,
+                              source_name,
+                              trait_aliases,
+                            )
+                          }
+                          None => ()
                         }
-                        None => ()
-                      }
-                      // Import type (enum)
-                      match imported_env.get_enum_def(name) {
-                        Some(enum_def) => {
-                          env.set_enum_def(name, enum_def)
-                          import_trait_impls_for_type(
-                            env, imported_env, name, trait_aliases,
-                          )
-                          for ctor in enum_def.ctors {
-                            match imported_env.get_ctor(ctor.name) {
-                              Some(ctor_info) =>
-                                env.set_ctor(ctor.name, ctor_info)
-                              None => ()
-                            }
-                            match imported_env.get_scheme(ctor.name) {
-                              Some(scheme) =>
-                                if can_bind_import_value(ctor.name, span) {
-                                  env.set_scheme(ctor.name, scheme)
-                                  env.set_exported_scheme(ctor.name, scheme)
-                                  match
-                                    imported_env.get_purity_tier(ctor.name) {
-                                    Some(tier) =>
-                                      env.set_purity_tier(ctor.name, tier)
-                                    None =>
-                                      match imported_env.get_purity(ctor.name) {
-                                        Some(pure) =>
-                                          env.set_purity(ctor.name, pure)
-                                        None => ()
-                                      }
+                        // Import type (enum)
+                        match imported_env.get_enum_def(source_name) {
+                          Some(enum_def) => {
+                            env.set_enum_def(target_name, enum_def)
+                            import_trait_impls_for_type(
+                              env,
+                              imported_env,
+                              source_name,
+                              trait_aliases,
+                            )
+                            for ctor in enum_def.ctors {
+                              match imported_env.get_ctor(ctor.name) {
+                                Some(ctor_info) =>
+                                  env.set_ctor(ctor.name, ctor_info)
+                                None => ()
+                              }
+                              match imported_env.get_scheme(ctor.name) {
+                                Some(scheme) =>
+                                  if can_bind_import_value(ctor.name, span) {
+                                    env.set_scheme(ctor.name, scheme)
+                                    env.set_exported_scheme(ctor.name, scheme)
+                                    match
+                                      imported_env.get_purity_tier(ctor.name) {
+                                      Some(tier) =>
+                                        env.set_purity_tier(ctor.name, tier)
+                                      None =>
+                                        match imported_env.get_purity(ctor.name) {
+                                          Some(pure) =>
+                                            env.set_purity(ctor.name, pure)
+                                          None => ()
+                                        }
+                                    }
                                   }
-                                }
-                              None => ()
+                                None => ()
+                              }
                             }
                           }
+                          None => ()
                         }
-                        None => ()
-                      }
-                      // Import type alias
-                      match imported_env.get_type_alias(name) {
-                        Some(type_alias) => env.set_type_alias(name, type_alias)
-                        None => ()
+                        // Import type alias
+                        match imported_env.get_type_alias(source_name) {
+                          Some(type_alias) =>
+                            env.set_type_alias(target_name, type_alias)
+                          None => ()
+                        }
                       }
                       // Import trait
-                      if imported_env.has_trait(name) {
+                      if import_item_accepts_trait(item) &&
+                        imported_env.has_trait(source_name) {
                         let local_supertraits = imported_env.trait_supertraits(
-                          name,
+                          source_name,
                         )
                         env.import_trait(
-                          name,
-                          imported_env.trait_is_open(name),
+                          target_name,
+                          imported_env.trait_is_open(source_name),
                           local_supertraits,
                         )
-                        let impls = imported_env.trait_impls_for(name)
+                        let impls = imported_env.trait_impls_for(source_name)
                         for impl_def in impls {
-                          env.add_trait_impl(name, impl_def)
+                          env.add_trait_impl(target_name, impl_def)
                         }
                       }
                     }

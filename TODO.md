@@ -129,6 +129,37 @@ Completed items are archived in `docs/DONE.md`.
   - テストは既存で十分（spec 5件 + runtime thunk 2件 + facade 7件 = 14テスト）
   - 対象: `vibe/builtin/threads.vibe`, `vibe/builtin/threads/runtime.vibe`, `vibe/builtin/threads_test.vibe`, `vibe/builtin/README.md`
 
+## vibe/ API Ambiguity Audit (2026-02-25)
+
+### High (P1): 公開エンドポイントの一貫性
+
+- [ ] `index.vibe` が `version` のみのモジュールで、公開 API を index に集約する
+  - 対象: `vibe/rlm/index.vibe`, `vibe/x/index.vibe`, `vibe/x/args/index.vibe`, `vibe/builtin/path/index.vibe`, `vibe/builtin/threads/index.vibe`, `vibe/builtin/wasm/index.vibe`
+  - 方針: 実体 API を `export ./foo.vibe { ... }` で明示し、利用側 import を index 経由へ寄せる
+
+### Medium (P2): API 層と契約の明確化
+
+- [ ] `vibe/socket` の high-level (`TcpConnection`) と low-level (`tcp_*`) を分離し、推奨経路を固定する
+  - 対象: `vibe/socket/index.vibe`, `vibe/socket/socket.vibe`
+  - 方針: low-level は別エンドポイントへ分離するか、公開名を意図がわかる形に整理する
+
+- [ ] `vibe/compiler` の AST 定義を単一ソース化し、`ast.vibe` と `parser.vibe` の型二重管理を解消する
+  - 対象: `vibe/compiler/ast.vibe`, `vibe/compiler/parser.vibe`, `vibe/compiler/index.vibe`
+  - 方針: `Pat`/`Expr`/`Stmt` の定義元を 1 箇所に統一し、差分 (`ELabeledArg` など) を吸収する
+
+### Low (P3): 公開面のノイズ削減
+
+- [ ] `vibe/shell/from_yaml.vibe` の `_yaml_*` ヘルパー公開を縮小し、公開 API を `from_yaml` 中心に整理する
+  - 対象: `vibe/shell/from_yaml.vibe`, `vibe/shell/index.vibe`
+
+- [ ] `vibe/collection/r#map.vibe` の利用者向け import 体験を改善する
+  - 対象: `vibe/collection/index.vibe`, `vibe/collection/map.vibe`
+  - 方針: `map` facade（別名モジュール）を用意し、`r#` 表記を公開面から隠す
+
+- [ ] endpoint 横断の同名シンボル衝突（`read`/`parse`/`run` など）に対する命名規約を定義する
+  - 対象: `vibe/io`, `vibe/socket`, `vibe/http`, `vibe/process`, `vibe/compiler`, `vibe/encoding`, `vibe/shell`, `vibe/fs`, `vibe/collection`, `vibe/builtin`
+  - 方針: `as` 依存を前提にせず、衝突しやすい名前には module prefix 付きの canonical 名を用意する
+
 ## Runtime
 
 ### Execution strategy: Interpreter vs WASM

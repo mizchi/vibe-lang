@@ -886,10 +886,13 @@ fn finalize_collect_export_names(ast : @vibe_core.Module) -> Array[String] {
         if exported {
           entries[name] = true
         }
-      @vibe_core.Stmt::Export(names~, ..)
-      | @vibe_core.Stmt::ReExport(names~, ..) =>
+      @vibe_core.Stmt::Export(names~, ..) =>
         for name in names {
           entries[name] = true
+        }
+      @vibe_core.Stmt::ReExport(spec~, ..) =>
+        for item in spec.items {
+          entries[@vibe_core.import_item_local_name(item)] = true
         }
       _ => ()
     }
@@ -937,16 +940,46 @@ fn finalize_render_module_ref(source : @vibe_core.ModuleRef) -> String {
 }
 
 ///|
+fn finalize_render_import_item(item : @vibe_core.ImportItem) -> String {
+  let out = StringBuilder::new()
+  match item.kind {
+    @vibe_core.ImportKind::Value => ()
+    @vibe_core.ImportKind::Type => out.write_string("type ")
+    @vibe_core.ImportKind::Trait => out.write_string("trait ")
+    @vibe_core.ImportKind::Module => out.write_string("module ")
+  }
+  out.write_string(item.name)
+  match item.rename {
+    Some(rename_name) =>
+      if rename_name != item.name {
+        out.write_string(" as ")
+        out.write_string(rename_name)
+      }
+    None => ()
+  }
+  out.to_string()
+}
+
+///|
+fn finalize_render_import_spec(spec : @vibe_core.ImportSpec) -> String {
+  let rendered_items : Array[String] = []
+  for item in spec.items {
+    rendered_items.push(finalize_render_import_item(item))
+  }
+  rendered_items.join(", ")
+}
+
+///|
 fn finalize_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
   match stmt {
     @vibe_core.Stmt::Export(names~, ..) =>
       Some("export { " + finalize_render_name_list(names) + " }")
-    @vibe_core.Stmt::ReExport(names~, source~, ..) =>
+    @vibe_core.Stmt::ReExport(spec~, source~, ..) =>
       Some(
         "export " +
         finalize_render_module_ref(source) +
         " { " +
-        finalize_render_name_list(names) +
+        finalize_render_import_spec(spec) +
         " }",
       )
     _ => None

@@ -619,6 +619,26 @@ test "vibe wasm-gc supports direct ref type member eq calls" {
 }
 
 ///|
+test "vibe wasm-gc compiles for-in expressions" {
+  let db = VibeDb::new()
+  let src =
+    #|let xs = [1, 2, 3]
+    #|for x in xs {
+    #|  x + 1
+    #|}
+  db.set_source("main", src)
+  let wasm = try
+    @runtime_compile.compile_module_wasm_gc_no_dce(db, "main")
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
 test "vibe wasm compiles std wasm opcode module" {
   let src = try
     @os_fs.read_file_to_string("vibe/builtin/wasm/opcodes.vibe")

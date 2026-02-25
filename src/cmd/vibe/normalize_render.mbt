@@ -48,10 +48,13 @@ fn normalize_collect_export_names(ast : @vibe_core.Module) -> Array[String] {
         if exported {
           entries[name] = true
         }
-      @vibe_core.Stmt::Export(names~, ..)
-      | @vibe_core.Stmt::ReExport(names~, ..) =>
+      @vibe_core.Stmt::Export(names~, ..) =>
         for name in names {
           entries[name] = true
+        }
+      @vibe_core.Stmt::ReExport(spec~, ..) =>
+        for item in spec.items {
+          entries[@vibe_core.import_item_local_name(item)] = true
         }
       _ => ()
     }
@@ -215,12 +218,12 @@ fn normalize_render_stmt_fallback(stmt : @vibe_core.Stmt) -> String? {
       )
     @vibe_core.Stmt::Export(names~, ..) =>
       Some("export { " + normalize_render_name_list(names) + " }")
-    @vibe_core.Stmt::ReExport(names~, source~, ..) =>
+    @vibe_core.Stmt::ReExport(spec~, source~, ..) =>
       Some(
         "export " +
         normalize_render_module_ref(source) +
         " { " +
-        normalize_render_name_list(names) +
+        normalize_render_import_spec(spec) +
         " }",
       )
     _ => None

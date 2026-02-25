@@ -1886,14 +1886,9 @@ fn AstParser::parse_export_stmt(
       )
     }
     let items = self.parse_import_items("re-export item")
-    let names = items.map(fn(item) {
-      match item.rename {
-        Some(name) => name
-        None => item.name
-      }
-    })
+    let spec = @core.ImportSpec::{ items, }
     let _ = self.eat(semicolon())
     let span = self.span_from(start)
-    @core.Stmt::ReExport(names~, source~, span~)
+    @core.Stmt::ReExport(spec~, source~, span~)
   }
 }

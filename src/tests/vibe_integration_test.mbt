@@ -131,6 +131,31 @@ test "vibe integration import alias forwards generic helper" {
 }
 
 ///|
+test "vibe integration re-export alias forwards value" {
+  let db = VibeDb::new()
+  db.set_source("./lib.vibe", "export let value = 7\nexport { value }\n")
+  db.set_source("./facade.vibe", "export ./lib.vibe { value as number }\n")
+  db.set_source("main", "import ./facade.vibe { number }\nnumber\n")
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let result = rt.eval_module(converted_ast)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 7)
+    _ => fail("expected Int(7)")
+  }
+}
+
+///|
 test "vibe integration type namespace import auto-forwards receiver-first function" {
   let db = VibeDb::new()
   let lib_source =

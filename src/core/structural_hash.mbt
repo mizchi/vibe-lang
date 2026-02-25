@@ -205,10 +205,15 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       }
       h
     }
-    Stmt::ReExport(names~, source~, ..) => {
+    Stmt::ReExport(spec~, source~, ..) => {
       let mut h = 0x52654578 // "ReEx"
-      for n in names {
-        h = combine_hash(h, n.hash())
+      for item in spec.items {
+        h = combine_hash(h, item.kind.structural_hash())
+        h = combine_hash(h, item.name.hash())
+        match item.rename {
+          Some(rename_name) => h = combine_hash(h, rename_name.hash())
+          None => ()
+        }
       }
       h = combine_hash(h, source.structural_hash())
       h

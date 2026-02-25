@@ -470,6 +470,10 @@ fn scan_component_wit_imports_expr(
       }
     }
     @core.Expr::Fn(body~, ..) => scan_component_wit_imports_block(body, acc)
+    @core.Expr::ForIn(iterable~, body~, ..) => {
+      scan_component_wit_imports_expr(iterable, acc)
+      scan_component_wit_imports_block(body, acc)
+    }
     @core.Expr::While(cond~, body~, ..) => {
       scan_component_wit_imports_expr(cond, acc)
       scan_component_wit_imports_block(body, acc)

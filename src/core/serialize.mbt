@@ -222,9 +222,9 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_strings_to(names, buf)
       buf.write_char('}')
     }
-    Stmt::ReExport(names~, source~, ..) => {
-      buf.write_string("{\"ReExport\":{\"names\":")
-      serialize_strings_to(names, buf)
+    Stmt::ReExport(spec~, source~, ..) => {
+      buf.write_string("{\"ReExport\":{\"spec\":")
+      serialize_import_spec_to(spec, buf)
       buf.write_string(",\"source\":")
       serialize_module_ref_to(source, buf)
       buf.write_string("}}")

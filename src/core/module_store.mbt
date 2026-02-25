@@ -251,13 +251,13 @@ pub fn convert_imports_to_hash(
           ModuleRef::Hash(_) | ModuleRef::Version(_) | ModuleRef::Symbol(_) =>
             new_stmts.push(stmt)
         }
-      Stmt::ReExport(names~, source~, span~) =>
+      Stmt::ReExport(spec~, source~, span~) =>
         match source {
           ModuleRef::Path(path~) =>
             match path_to_hash(path) {
               Some(hash) =>
                 new_stmts.push(
-                  Stmt::ReExport(names~, source=ModuleRef::Hash(hash~), span~),
+                  Stmt::ReExport(spec~, source=ModuleRef::Hash(hash~), span~),
                 )
               None => new_stmts.push(stmt)
             }
@@ -307,9 +307,9 @@ pub fn extract_exports(ast : Module) -> Map[String, Stmt] {
         defined.set(name, stmt)
         exports.set(name, stmt)
       }
-      Stmt::ReExport(names~, ..) =>
-        for name in names {
-          exports.set(name, stmt)
+      Stmt::ReExport(spec~, ..) =>
+        for item in spec.items {
+          exports.set(import_item_local_name(item), stmt)
         }
       _ => ()
     }
