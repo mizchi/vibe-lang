@@ -792,11 +792,11 @@ test "vibe wasm compiles recursive helper with captured function param" {
 }
 
 ///|
-test "vibe wasm compiles Int method-style to_double call" {
+test "vibe wasm compiles Int pipe-style to_double call" {
   let db = VibeDb::new()
   let src =
     #|let v = 7
-    #|let d = v.to_double()
+    #|let d = v |> to_double
     #|double_to_int(d)
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
