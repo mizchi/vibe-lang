@@ -78,6 +78,14 @@ extern "C" fn vibe_parallel_cleanup_register_child_pid(pid : Int) = "vibe_parall
 extern "C" fn vibe_parallel_cleanup_unregister_child_pid(pid : Int) = "vibe_parallel_cleanup_unregister_child_pid"
 
 ///|
+extern "C" fn vibe_worker_parent_watchdog_start(
+  parent_pid : Int,
+) = "vibe_worker_parent_watchdog_start"
+
+///|
+extern "C" fn vibe_worker_parent_watchdog_stop() = "vibe_worker_parent_watchdog_stop"
+
+///|
 fn print_usage() -> Unit {
   println("vibe <command> [args]")
   println("")
@@ -1281,6 +1289,11 @@ fn test_cmd_report_json(
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
   let worker_parent_pid = test_worker_parent_pid()
+  match worker_parent_pid {
+    Some(parent_pid) => vibe_worker_parent_watchdog_start(parent_pid)
+    None => ()
+  }
+  defer vibe_worker_parent_watchdog_stop()
   let mut any_failed = false
   for entry_path in entry_paths {
     if should_exit_report_json_worker(worker_parent_pid) {

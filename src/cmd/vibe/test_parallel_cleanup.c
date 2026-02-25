@@ -2,6 +2,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pthread.h>
 
 #define VIBE_MAX_PARALLEL_CHILDREN 256
 
@@ -9,6 +10,22 @@ static volatile sig_atomic_t g_signal_handlers_installed = 0;
 static volatile sig_atomic_t g_signal_handler_entered = 0;
 static volatile sig_atomic_t g_child_count = 0;
 static int g_child_pids[VIBE_MAX_PARALLEL_CHILDREN];
+static volatile sig_atomic_t g_worker_watchdog_running = 0;
+static volatile sig_atomic_t g_worker_watchdog_parent_pid = 0;
+static pthread_t g_worker_watchdog_thread;
+
+static int vibe_pid_exists(int pid) {
+  if (pid <= 0) {
+    return 0;
+  }
+  if (kill(pid, 0) == 0) {
+    return 1;
+  }
+  if (errno == EPERM) {
+    return 1;
+  }
+  return 0;
+}
 
 static void vibe_parallel_cleanup_kill_all(int sig) {
   sig_atomic_t count = g_child_count;
@@ -94,15 +111,47 @@ void vibe_parallel_cleanup_unregister_child_pid(int pid) {
   }
 }
 
+static void* vibe_worker_parent_watchdog_main(void* arg) {
+  (void)arg;
+  int worker_pid = getpid();
+  while (g_worker_watchdog_running) {
+    sig_atomic_t parent_pid = g_worker_watchdog_parent_pid;
+    if (!vibe_pid_exists(parent_pid)) {
+      kill(worker_pid, SIGTERM);
+      usleep(100 * 1000);
+      kill(worker_pid, SIGKILL);
+      break;
+    }
+    usleep(100 * 1000);
+  }
+  return NULL;
+}
+
+void vibe_worker_parent_watchdog_start(int parent_pid) {
+  if (parent_pid <= 1) {
+    return;
+  }
+  if (g_worker_watchdog_running) {
+    return;
+  }
+  g_worker_watchdog_parent_pid = parent_pid;
+  g_worker_watchdog_running = 1;
+  if (pthread_create(&g_worker_watchdog_thread, NULL, vibe_worker_parent_watchdog_main, NULL) != 0) {
+    g_worker_watchdog_parent_pid = 0;
+    g_worker_watchdog_running = 0;
+    return;
+  }
+}
+
+void vibe_worker_parent_watchdog_stop(void) {
+  if (!g_worker_watchdog_running) {
+    return;
+  }
+  g_worker_watchdog_running = 0;
+  pthread_join(g_worker_watchdog_thread, NULL);
+  g_worker_watchdog_parent_pid = 0;
+}
+
 int vibe_process_exists(int pid) {
-  if (pid <= 0) {
-    return 0;
-  }
-  if (kill(pid, 0) == 0) {
-    return 1;
-  }
-  if (errno == EPERM) {
-    return 1;
-  }
-  return 0;
+  return vibe_pid_exists(pid);
 }
