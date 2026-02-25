@@ -66,6 +66,18 @@ pub fn run(args : Array[String]) -> Unit {
 }
 
 ///|
+extern "C" fn vibe_parallel_cleanup_install_signal_handlers() = "vibe_parallel_cleanup_install_signal_handlers"
+
+///|
+extern "C" fn vibe_parallel_cleanup_clear() = "vibe_parallel_cleanup_clear"
+
+///|
+extern "C" fn vibe_parallel_cleanup_register_child_pid(pid : Int) = "vibe_parallel_cleanup_register_child_pid"
+
+///|
+extern "C" fn vibe_parallel_cleanup_unregister_child_pid(pid : Int) = "vibe_parallel_cleanup_unregister_child_pid"
+
+///|
 fn print_usage() -> Unit {
   println("vibe <command> [args]")
   println("")
@@ -1268,8 +1280,12 @@ fn test_cmd_report_json(
   entry_paths : Array[String],
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
+  let worker_parent_pid = test_worker_parent_pid()
   let mut any_failed = false
   for entry_path in entry_paths {
+    if should_exit_report_json_worker(worker_parent_pid) {
+      c_exit(130)
+    }
     match @loader.load_db_for_test(entry_path) {
       Err(err) => {
         println(make_error_report_json(entry_path, "load", err).stringify())
@@ -1351,6 +1367,25 @@ fn parse_report_json_int(json : Json, key : String) -> Int {
 }
 
 ///|
+fn test_worker_parent_pid() -> Int? {
+  match @sys.get_env_var("VIBE_INTERNAL_TEST_PARENT_PID") {
+    Some(raw) => {
+      let pid = @strconv.parse_int(raw) catch { _ => 0 }
+      if pid > 1 { Some(pid) } else { None }
+    }
+    None => None
+  }
+}
+
+///|
+fn should_exit_report_json_worker(parent_pid : Int?) -> Bool {
+  match parent_pid {
+    Some(pid) => vibe_process_exists(pid) == 0
+    None => false
+  }
+}
+
+///|
 fn parse_report_json_string(json : Json, key : String) -> String {
   match json {
     Json::Object(obj) =>
@@ -1407,10 +1442,16 @@ fn test_cmd_parallel(
   jobs : Int,
 ) -> Unit {
   let exe = @env.args()[0]
+  let parent_pid_env_value = vibe_getpid().to_string()
   let batches = split_test_entry_path_batches(entry_paths, jobs)
+  vibe_parallel_cleanup_install_signal_handlers()
+  vibe_parallel_cleanup_clear()
+  defer vibe_parallel_cleanup_clear()
   let tasks : Array[async () -> (Array[String], Int, String, String)] = []
   for batch in batches {
     let sub_args : Array[String] = ["test", "--report-json", "--jobs", "1"]
+    let extra_env : Map[String, String] = {}
+    extra_env["VIBE_INTERNAL_TEST_PARENT_PID"] = parent_pid_env_value
     for path in batch {
       sub_args.push(path)
     }
@@ -1422,14 +1463,35 @@ fn test_cmd_parallel(
     }
     let captured_batch = batch
     let captured_args = sub_args
+    let captured_extra_env = extra_env
     tasks.push(async fn() {
-      let (code, stdout_data, stderr_data) = @async_process.collect_output(
-        exe[:],
-        captured_args[:],
-      )
-      let out = stdout_data.text() catch { _ => "" }
-      let err = stderr_data.text() catch { _ => "" }
-      (captured_batch, code, out, err)
+      @async.with_task_group(group => {
+        let (r_out, w_out) = @async_process.read_from_process()
+        let (r_err, w_err) = @async_process.read_from_process()
+        let child = @async_process.spawn(
+          group,
+          exe[:],
+          captured_args[:],
+          extra_env=captured_extra_env,
+          stdout=w_out,
+          stderr=w_err,
+          cancel_handler=@async_process.hard_cancel(),
+        )
+        vibe_parallel_cleanup_register_child_pid(child.pid)
+        defer vibe_parallel_cleanup_unregister_child_pid(child.pid)
+        let stdout_task = group.spawn(() => {
+          defer r_out.close()
+          r_out.read_all()
+        })
+        let stderr_task = group.spawn(() => {
+          defer r_err.close()
+          r_err.read_all()
+        })
+        let code = child.wait()
+        let out = stdout_task.wait().text() catch { _ => "" }
+        let err = stderr_task.wait().text() catch { _ => "" }
+        (captured_batch, code, out, err)
+      })
     })
   }
   @async.run_async_main(async fn() {
@@ -2403,6 +2465,12 @@ fn apply_lock_annotations_for_format(path : String, source : String) -> String {
 
 ///|
 extern "c" fn c_exit(code : Int) -> Unit = "exit"
+
+///|
+extern "c" fn vibe_getpid() -> Int = "getpid"
+
+///|
+extern "C" fn vibe_process_exists(pid : Int) -> Int = "vibe_process_exists"
 
 ///|
 #borrow(cmd)

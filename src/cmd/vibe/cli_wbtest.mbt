@@ -1837,6 +1837,29 @@ test "normalize test jobs clamps extreme values" {
 }
 
 ///|
+test "test worker parent pid parses env value safely" {
+  let prev = @sys.get_env_var("VIBE_INTERNAL_TEST_PARENT_PID")
+  defer wbtest_restore_env_var("VIBE_INTERNAL_TEST_PARENT_PID", prev)
+
+  @sys.unset_env_var("VIBE_INTERNAL_TEST_PARENT_PID")
+  assert_eq(test_worker_parent_pid(), None)
+
+  @sys.set_env_var("VIBE_INTERNAL_TEST_PARENT_PID", "invalid")
+  assert_eq(test_worker_parent_pid(), None)
+
+  let pid = vibe_getpid()
+  @sys.set_env_var("VIBE_INTERNAL_TEST_PARENT_PID", pid.to_string())
+  assert_eq(test_worker_parent_pid(), Some(pid))
+}
+
+///|
+test "report json worker exits only when tracked parent is gone" {
+  let pid = vibe_getpid()
+  assert_eq(should_exit_report_json_worker(None), false)
+  assert_eq(should_exit_report_json_worker(Some(pid)), false)
+}
+
+///|
 fn wbtest_make_temp_dir(prefix : String) -> String {
   let base = "/tmp/cmd_vibe_wbtest_" + prefix + "_" + @env.now().to_string()
   for i in 0..<1000 {
