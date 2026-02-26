@@ -3083,25 +3083,15 @@ test "selfhost compiler source files roundtrip format" {
         continue
       }
     }
-    let fmt1 = @parser.format_script(source) catch {
-      e => {
-        fail("format1 failed for " + path + ": " + e.to_string())
-        continue
-      }
-    }
-    let fmt2 = @parser.format_script(fmt1) catch {
-      e => {
-        fail("format2 failed for " + path + ": " + e.to_string())
-        continue
-      }
-    }
+    let fmt1 = @parser.format_script(source)
+    let fmt2 = @parser.format_script(fmt1)
     if fmt1 != fmt2 {
       fail(
         file +
         " roundtrip unstable:\n--- fmt1 (first 200) ---\n" +
-        fmt1.substring(start=0, end=200) +
+        fmt1[:200].to_string() +
         "\n--- fmt2 (first 200) ---\n" +
-        fmt2.substring(start=0, end=200),
+        fmt2[:200].to_string(),
       )
     }
   }
