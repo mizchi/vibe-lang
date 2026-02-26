@@ -102,3 +102,28 @@ test "fixture_06_roundtrip" {
   let src = "let sum = (x~: Int, y~: Int) -> Int { x + y }\nexport let run = () -> Int { sum(x~=1, y?=2) }\nexport { run }"
   assert(roundtrip_ok(src))
 }
+
+test "fixture_selfhost_token" {
+  let src = "export enum Token {\nTInt(Int);\nTFloat(Double);\nTString(String);\nTIdent(String);\nTLet;\nTBreak;\nTThrow;\nTRaise;\nTEof\n}\nexport let token_to_string = (t: Token) -> String {\nmatch t {\nTInt(n) => \"TInt\",\nTFloat(n) => \"TFloat\",\nTString(s) => \"TString\",\nTIdent(s) => \"TIdent\",\nTLet => \"TLet\",\nTBreak => \"TBreak\",\nTThrow => \"TThrow\",\nTRaise => \"TRaise\",\nTEof => \"TEof\"\n}\n}"
+  assert(parse_ok(src))
+}
+
+test "fixture_selfhost_import_export" {
+  let src = "export ./ast.vibe { Expr, Pat, Stmt, TypeExpr }\nimport ./ast.vibe { Expr, Pat, Stmt, TypeExpr }\nimport ./token.vibe { Token }\nlet peek = (tokens: Array[Token], pos: Int) -> Token {\nif pos < 0 { TEof } else TEof\n}"
+  assert(parse_ok(src))
+}
+
+test "fixture_selfhost_throw_handle" {
+  let src = "let lex_string = (s: String, len: Int, i: Int) -> (Token, Int) with {Error} {\nlet rec scan = (idx: Int) -> (String, Int) with {Error} {\nif idx >= len { throw(\"unterminated string\") } else (\"ok\", idx)\n}\nlet (value, end) = scan(i + 1)\n(TString(value), end)\n}"
+  assert(parse_ok(src))
+}
+
+test "fixture_selfhost_while_mut" {
+  let src = "export let lex = (source: String) -> Array[Token] with {Error} {\nlet len = 10\nlet b = array_builder()\nlet mut pos = 0\nwhile pos < len {\nlet tok = TInt(1)\narray_builder_push(b, tok)\npos = pos + 1\n}\narray_builder_push(b, TEof)\narray_builder_freeze(b)\n}"
+  assert(parse_ok(src))
+}
+
+test "fixture_selfhost_nested_let_rec" {
+  let src = "export let rec parse_impl = (tokens: Array[Int], pos: Int, mode: Int) -> (Int, Int) with {Error} {\nlet rec parse_rest = (tokens: Array[Int], pos: Int, b: Array[Int]) -> (Array[Int], Int) with {Error} {\nif pos > 0 { (b, pos) } else parse_rest(tokens, pos + 1, b)\n}\nlet parse_primary = (tokens: Array[Int], pos: Int) -> (Int, Int) with {Error} {\nparse_impl(tokens, pos, mode + 1)\n}\nif mode >= 10 {\nparse_primary(tokens, pos)\n} else {\nlet (left, n1) = parse_impl(tokens, pos, mode + 1)\n(left, n1)\n}\n}"
+  assert(parse_ok(src))
+}
