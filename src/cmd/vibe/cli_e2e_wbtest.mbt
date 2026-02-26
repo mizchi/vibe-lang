@@ -3049,6 +3049,16 @@ test "selfhost compiler source files parse successfully" {
     "parser.vibe",
     "printer.vibe",
     "index.vibe",
+    "_test_minimal.vibe",
+    "_test_for_simple.vibe",
+    "_test_for_tuple.vibe",
+    "_test_for_tuple2.vibe",
+    "_test_manual_while.vibe",
+    "_test_while_no_destr.vibe",
+    "_test_all_arms.vibe",
+    "_test_two_fn.vibe",
+    "_test_multi_fn.vibe",
+    "_test_expr_with_pat_call.vibe",
   ]
   for file in files {
     let path = compiler_dir + "/" + file
