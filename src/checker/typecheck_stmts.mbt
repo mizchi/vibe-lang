@@ -744,7 +744,7 @@ fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
 ///|
 fn record_expr_type(env : TypeEnv, span : @core.Span, ty : @core.Type) -> Unit {
   let resolved = resolve_type(env, ty)
-  let normalized = normalize_type(env, resolved) catch { _ => resolved }
+  let normalized = normalize_type_preserve_enum(env, resolved) catch { _ => resolved }
   env.expr_types[span_key(span)] = normalized
 }
 

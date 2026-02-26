@@ -312,11 +312,11 @@ fn ctor_payload_type(
   if ctor.args.length() == 0 {
     @core.Type::Unit
   } else if ctor.args.length() == 1 {
-    normalize_type(env, ctor.args[0])
+    normalize_type_preserve_enum(env, ctor.args[0])
   } else {
     let items : Array[@core.Type] = []
     for arg in ctor.args {
-      items.push(normalize_type(env, arg))
+      items.push(normalize_type_preserve_enum(env, arg))
     }
     @core.Type::Tuple(items)
   }

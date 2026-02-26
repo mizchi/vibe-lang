@@ -177,11 +177,7 @@ fn normalize_render_canonicalize_import_path(path : String) -> String {
     }
   }
   let joined = parts.join("/")
-  let normalized = if is_abs {
-    "/" + joined
-  } else {
-    joined
-  }
+  let normalized = if is_abs { "/" + joined } else { joined }
   let without_index = if normalized.has_suffix("/index.vibe") {
     normalized.unsafe_substring(
       start=0,

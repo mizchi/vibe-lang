@@ -697,7 +697,9 @@ fn type_call_builtin_handler_collection_numeric(
               context=Some("index"),
             )
           }
-          if not(type_equal(env, resolved_container, @core.Type::Array(elem_ty))) {
+          if not(
+              type_equal(env, resolved_container, @core.Type::Array(elem_ty)),
+            ) {
             raise TypeError::Mismatch(
               expected=@core.Type::Array(elem_ty),
               actual=resolved_container,
@@ -789,7 +791,10 @@ fn type_call_builtin_handler_collection_numeric(
               }
             }
             None =>
-              raise TypeError::BadCall(message="__index: not indexable", span=call_span)
+              raise TypeError::BadCall(
+                message="__index: not indexable",
+                span=call_span,
+              )
           }
         _ => {
           let _ = index_ty

@@ -661,7 +661,10 @@ fn module_ref_relative_path(base : String, target : String) -> String? {
   let prefix = base_norm + "/"
   if target_norm.has_prefix(prefix) {
     return Some(
-      target_norm.unsafe_substring(start=prefix.length(), end=target_norm.length()),
+      target_norm.unsafe_substring(
+        start=prefix.length(),
+        end=target_norm.length(),
+      ),
     )
   }
   None
@@ -670,7 +673,11 @@ fn module_ref_relative_path(base : String, target : String) -> String? {
 ///|
 fn module_ref_root_version(version : String) -> String {
   let normalized = version.trim().to_string()
-  if normalized.length() == 0 { "0.0.0" } else { normalized }
+  if normalized.length() == 0 {
+    "0.0.0"
+  } else {
+    normalized
+  }
 }
 
 ///|
@@ -691,8 +698,7 @@ pub fn lock_module_ref_canonical_symbol_with_context(
     let ns_root_path = module_ref_symbol_path(ns_root)
     match module_ref_relative_path(ns_root_path, module_path) {
       Some(rel) =>
-        if
-          not(has_match) ||
+        if not(has_match) ||
           ns_root_path.length() > matched_root.length() ||
           (
             ns_root_path.length() == matched_root.length() &&
@@ -707,16 +713,15 @@ pub fn lock_module_ref_canonical_symbol_with_context(
     }
   }
   if has_match {
-    let module_rel = if matched_rel.length() == 0 { "index" } else { matched_rel }
+    let module_rel = if matched_rel.length() == 0 {
+      "index"
+    } else {
+      matched_rel
+    }
     "/" + matched_ns + "@" + normalized_version + "/" + module_rel + "/" + name
   } else {
     let local_rel = match module_ref_relative_path(root, module_path) {
-      Some(rel) =>
-        if rel.length() == 0 {
-          "index"
-        } else {
-          rel
-        }
+      Some(rel) => if rel.length() == 0 { "index" } else { rel }
       None => {
         let symbol_path = module_ref_symbol_path(path)
         if symbol_path.has_prefix("/") {
@@ -783,12 +788,7 @@ fn collect_module_export_refs(
     let normalized = @core.normalize_module(export_module)
     let export_hash = @core.hash_module(normalized)
     let key = lock_module_ref_key_with_context(
-      path,
-      name,
-      export_hash,
-      root,
-      registry_modules,
-      root_version,
+      path, name, export_hash, root, registry_modules, root_version,
     )
     module_refs[key] = export_hash
   }
@@ -1175,16 +1175,8 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved,
-                out,
-                module_refs,
-                annotations,
-                visited,
-                stack,
-                root,
-                registry_modules,
-                root_version,
-                fs,
+                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
+                root_version, fs,
               ) {
               Ok(_) => ()
               Err(err) => {
@@ -1213,16 +1205,8 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved,
-                out,
-                module_refs,
-                annotations,
-                visited,
-                stack,
-                root,
-                registry_modules,
-                root_version,
-                fs,
+                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
+                root_version, fs,
               ) {
               Ok(_) => ()
               Err(err) => {
@@ -1260,16 +1244,8 @@ fn collect_path_refs(
   let stack : Array[String] = []
   match
     collect_path_refs_impl(
-      entry,
-      out,
-      module_refs,
-      annotations,
-      visited,
-      stack,
-      root,
-      registry_modules,
-      root_version,
-      fs,
+      entry, out, module_refs, annotations, visited, stack, root, registry_modules,
+      root_version, fs,
     ) {
     Ok(_) => Ok((out, module_refs, annotations))
     Err(err) => Err(err)
@@ -1819,11 +1795,7 @@ fn build_refreshed_lock_data_with_fs(
   }
   let (path_refs, module_refs, annotations) = match
     collect_path_refs(
-      normalized_entry,
-      root,
-      registry_modules,
-      root_version,
-      fs,
+      normalized_entry, root, registry_modules, root_version, fs,
     ) {
     Ok(v) => v
     Err(err) => return Err(err)

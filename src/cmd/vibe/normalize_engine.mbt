@@ -695,12 +695,8 @@ fn normalize_canonicalize_import_spec(
       rename,
     })
   }
-  items.sort_by(fn(a, b) {
-    normalize_import_item_compare(a, b)
-  })
-  @vibe_core.ImportSpec::{
-    items: normalize_disambiguate_import_items(items),
-  }
+  items.sort_by(fn(a, b) { normalize_import_item_compare(a, b) })
+  @vibe_core.ImportSpec::{ items: normalize_disambiguate_import_items(items) }
 }
 
 ///|
@@ -823,11 +819,7 @@ fn normalize_canonicalize_import_path(path : String) -> String {
     }
   }
   let joined = parts.join("/")
-  let normalized = if is_abs {
-    "/" + joined
-  } else {
-    joined
-  }
+  let normalized = if is_abs { "/" + joined } else { joined }
   let without_index = if normalized.has_suffix("/index.vibe") {
     normalized.unsafe_substring(
       start=0,

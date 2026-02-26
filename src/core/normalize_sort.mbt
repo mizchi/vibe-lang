@@ -38,10 +38,16 @@ pub fn canonical_sort_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
     }
   }
   use_exports.sort_by(fn(a, b) {
-    canonical_string_compare(canonical_use_stmt_key(a), canonical_use_stmt_key(b))
+    canonical_string_compare(
+      canonical_use_stmt_key(a),
+      canonical_use_stmt_key(b),
+    )
   })
   use_imports.sort_by(fn(a, b) {
-    canonical_string_compare(canonical_use_stmt_key(a), canonical_use_stmt_key(b))
+    canonical_string_compare(
+      canonical_use_stmt_key(a),
+      canonical_use_stmt_key(b),
+    )
   })
   let fn_sorted = canonical_sort_fns_topo_alpha(fn_stmts)
   let out : Array[Stmt] = []
@@ -118,9 +124,15 @@ fn canonical_import_spec_key(spec : ImportSpec) -> String {
 fn canonical_use_stmt_key(stmt : Stmt) -> String {
   match stmt {
     Stmt::Import(spec~, source~, ..) =>
-      "import:" + canonical_module_ref_key(source) + ":" + canonical_import_spec_key(spec)
+      "import:" +
+      canonical_module_ref_key(source) +
+      ":" +
+      canonical_import_spec_key(spec)
     Stmt::ReExport(spec~, source~, ..) =>
-      "export:" + canonical_module_ref_key(source) + ":" + canonical_import_spec_key(spec)
+      "export:" +
+      canonical_module_ref_key(source) +
+      ":" +
+      canonical_import_spec_key(spec)
     _ => ""
   }
 }

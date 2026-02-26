@@ -40,26 +40,14 @@ fn write_file_wbtest_substring_index(haystack : String, needle : String) -> Int 
 ///|
 test "write_file ambiguous error sorts candidates deterministically" {
   let b = wbtest_make_candidate(
-    "index",
-    "foo",
-    "/b.vibe",
-    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "index", "foo", "/b.vibe", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   )
   let a = wbtest_make_candidate(
-    "index",
-    "foo",
-    "/a.vibe",
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "index", "foo", "/a.vibe", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   )
   let msg = write_file_ambiguous_error("ambiguous", [b, a])
-  let pos_a = write_file_wbtest_substring_index(
-    msg,
-    "/a.vibe#",
-  )
-  let pos_b = write_file_wbtest_substring_index(
-    msg,
-    "/b.vibe#",
-  )
+  let pos_a = write_file_wbtest_substring_index(msg, "/a.vibe#")
+  let pos_b = write_file_wbtest_substring_index(msg, "/b.vibe#")
   assert_true(pos_a >= 0)
   assert_true(pos_b >= 0)
   assert_true(pos_a < pos_b)

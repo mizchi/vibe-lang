@@ -55,8 +55,7 @@ test "vibe import value collision prefers local declaration" {
   let db = VibeDb::new()
   db.set_source("./lib.vibe", "export let abs = (x: Int) -> Int { sub(0, x) }")
   db.set_source(
-    "main",
-    "import ./lib.vibe { abs }\nlet abs = (x: String) -> String { x }\nlet x = abs(\"ok\")\nx",
+    "main", "import ./lib.vibe { abs }\nlet abs = (x: String) -> String { x }\nlet x = abs(\"ok\")\nx",
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")

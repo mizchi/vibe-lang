@@ -135,8 +135,7 @@ test "vibe integration local declaration wins over explicit import" {
   let db = VibeDb::new()
   db.set_source("./lib.vibe", "export let abs = (x: Int) -> Int { sub(0, x) }")
   db.set_source(
-    "main",
-    "let abs = (x: Int) -> Int { add(x, 100) }\nimport ./lib.vibe { abs }\nabs(1)",
+    "main", "let abs = (x: Int) -> Int { add(x, 100) }\nimport ./lib.vibe { abs }\nabs(1)",
   )
   let compiled = compile_module(db, "main")
   let rt = Runtime::new(@capability.CapabilitySet::new())

@@ -26,7 +26,8 @@ test "type_check: dot property access on record stays valid" {
   let result : Result[TypeEnv, TypeError] = try? type_check(ast)
   match result {
     Ok(_) => ()
-    Err(err) => fail("expected record property access to type-check: \{err.to_string()}")
+    Err(err) =>
+      fail("expected record property access to type-check: \{err.to_string()}")
   }
 }
 
@@ -42,6 +43,7 @@ test "type_check: dot property access on struct stays valid" {
   let result : Result[TypeEnv, TypeError] = try? type_check(ast)
   match result {
     Ok(_) => ()
-    Err(err) => fail("expected struct property access to type-check: \{err.to_string()}")
+    Err(err) =>
+      fail("expected struct property access to type-check: \{err.to_string()}")
   }
 }

@@ -12,8 +12,10 @@ fn std_layer_name(layer : StdModuleLayer) -> String {
 ///|
 fn std_layer_for_path(path : String) -> StdModuleLayer? {
   let normalized = @vibe_fs.normalize_path(path)
-  if (not(normalized.contains("/vibe/prelude/")) &&
-    not(normalized.contains("/vibe/path/"))) ||
+  if (
+      not(normalized.contains("/vibe/prelude/")) &&
+      not(normalized.contains("/vibe/path/"))
+    ) ||
     not(normalized.has_suffix(".vibe")) ||
     normalized.has_suffix("_test.vibe") ||
     normalized.has_suffix("_type_import_test.vibe") ||
@@ -163,7 +165,8 @@ fn railway_collect_stmt_boundaries(
   stats : Array[Int],
 ) -> Unit {
   match stmt {
-    @vibe_core.Stmt::Expr(expr~, ..) => railway_collect_expr_boundaries(expr, stats)
+    @vibe_core.Stmt::Expr(expr~, ..) =>
+      railway_collect_expr_boundaries(expr, stats)
     @vibe_core.Stmt::Let(expr~, ..)
     | @vibe_core.Stmt::ExportLet(expr~, ..)
     | @vibe_core.Stmt::InternalExportLet(expr~, ..)
@@ -215,7 +218,8 @@ fn railway_collect_expr_boundaries(
         railway_collect_expr_boundaries(arg.expr, stats)
       }
     }
-    @vibe_core.Expr::Fn(body~, ..) => railway_collect_module_boundaries(body, stats)
+    @vibe_core.Expr::Fn(body~, ..) =>
+      railway_collect_module_boundaries(body, stats)
     @vibe_core.Expr::If(cond~, then_body~, else_body~, ..) => {
       railway_collect_expr_boundaries(cond, stats)
       railway_collect_module_boundaries(then_body, stats)

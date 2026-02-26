@@ -1812,8 +1812,7 @@ fn AstParser::parse_call_or_primary(
       if self.peek_kind() == lparen() {
         let span = self.span_from(start)
         raise ParseError::UnexpectedToken(
-          expected=
-            "member access (`expr.field`), method-call sugar is removed; use `(expr.field)(...)`",
+          expected="member access (`expr.field`), method-call sugar is removed; use `(expr.field)(...)`",
           got=method_tok.text() + "(...)",
           span~,
         )
@@ -1829,7 +1828,7 @@ fn AstParser::parse_call_or_primary(
             @core.CallArg::{
               label: None,
               expr: @core.Expr::String(value=method_tok.text(), span~),
-              span: span,
+              span,
             },
           ],
           span~,

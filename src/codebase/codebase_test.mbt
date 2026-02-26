@@ -209,11 +209,7 @@ test "codebase update_lock_path_refs prunes stale path/module refs and keeps non
   let root_norm = @vibe_fs.normalize_path(root)
   let registry_modules : Map[String, String] = {}
   let entry_symbol = lock_module_ref_canonical_symbol_with_context(
-    entry_norm,
-    "main",
-    root_norm,
-    registry_modules,
-    "0.0.0",
+    entry_norm, "main", root_norm, registry_modules, "0.0.0",
   )
   let mut found_entry_ref = false
   for key, hash in updated.module_refs {
@@ -224,11 +220,7 @@ test "codebase update_lock_path_refs prunes stale path/module refs and keeps non
   }
   assert_true(found_entry_ref)
   let lib_symbol = lock_module_ref_canonical_symbol_with_context(
-    lib_norm,
-    "libv",
-    root_norm,
-    registry_modules,
-    "0.0.0",
+    lib_norm, "libv", root_norm, registry_modules, "0.0.0",
   )
   let mut found_lib_ref = false
   for key, hash in updated.module_refs {
@@ -261,20 +253,11 @@ test "codebase lock module ref canonical symbol with context uses local namespac
   let path = root + "/pkg/math.vibe"
   let modules : Map[String, String] = {}
   let canonical = lock_module_ref_canonical_symbol_with_context(
-    path,
-    "sum",
-    root,
-    modules,
-    "0.1.0",
+    path, "sum", root, modules, "0.1.0",
   )
   assert_eq(canonical, "/local@0.1.0/pkg/math/sum")
   let key = lock_module_ref_key_with_context(
-    path,
-    "sum",
-    "abc123",
-    root,
-    modules,
-    "0.1.0",
+    path, "sum", "abc123", root, modules, "0.1.0",
   )
   assert_eq(key, canonical + "#abc123")
 }
@@ -287,11 +270,7 @@ test "codebase lock module ref canonical symbol with context resolves namespace 
   modules["std"] = root + "/vibe/prelude"
   modules["prelude"] = root + "/vibe/prelude"
   let canonical = lock_module_ref_canonical_symbol_with_context(
-    path,
-    "Result::and_then",
-    root,
-    modules,
-    "0.1.0",
+    path, "Result::and_then", root, modules, "0.1.0",
   )
   assert_eq(canonical, "/std@0.1.0/result/Result::and_then")
 }

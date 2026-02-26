@@ -34,6 +34,7 @@ test "parse allows parenthesized infix around pipe" {
   let parsed : Result[@core.Module, ParseError] = try? parse_ast(input)
   match parsed {
     Ok(_) => ()
-    Err(err) => fail("[parse] expected parenthesized pipe to parse: \{err.to_string()}")
+    Err(err) =>
+      fail("[parse] expected parenthesized pipe to parse: \{err.to_string()}")
   }
 }

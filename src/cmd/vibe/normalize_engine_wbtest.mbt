@@ -449,9 +449,7 @@ test "normalize_engine: import local name collision gets deterministic alias" {
   match result {
     Ok(normalized) =>
       assert_true(
-        normalized.contains(
-          "import ./dep { other as value, value as value_2 }",
-        ),
+        normalized.contains("import ./dep { other as value, value as value_2 }"),
       )
     Err(msg) => fail("normalize failed: " + msg)
   }
