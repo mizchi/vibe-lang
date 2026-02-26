@@ -3038,3 +3038,34 @@ fn read_function_tracking_record(
   }
   FunctionTrackingRecord::{ version, renamed_from }
 }
+
+///|
+test "selfhost compiler source files parse successfully" {
+  let compiler_dir = "vibe/compiler"
+  let files = [
+    "token.vibe",
+    "ast.vibe",
+    "lexer.vibe",
+    "parser.vibe",
+    "printer.vibe",
+    "index.vibe",
+  ]
+  for file in files {
+    let path = compiler_dir + "/" + file
+    let source = @os_fs.read_file_to_string(path) catch {
+      e => {
+        fail("failed to read " + path + ": " + e.to_string())
+        continue
+      }
+    }
+    let ast = @parser.parse_ast(source) catch {
+      e => {
+        fail("parse failed for " + path + ": " + e.to_string())
+        continue
+      }
+    }
+    if ast.stmts.length() == 0 {
+      fail("expected non-empty stmts for " + file)
+    }
+  }
+}
