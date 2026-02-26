@@ -63,10 +63,7 @@ fn normalize_type_cache_store_to(
   }
   let entry = (source, normalized)
   match cache.get(key) {
-    Some(entries) =>
-      if entries.length() < 4 {
-        entries.push(entry)
-      }
+    Some(entries) => if entries.length() < 4 { entries.push(entry) }
     None => cache[key] = [entry]
   }
 }
@@ -99,7 +96,11 @@ fn normalize_type_cache_store(
     return
   }
   if expand_enum {
-    normalize_type_cache_store_to(env.normalize_type_cache_expand, source, normalized)
+    normalize_type_cache_store_to(
+      env.normalize_type_cache_expand,
+      source,
+      normalized,
+    )
   } else {
     normalize_type_cache_store_to(
       env.normalize_type_cache_preserve,
@@ -229,10 +230,7 @@ fn normalize_type_inner(
                   }
                   let substituted = substitute_type(base_payload, mapping)
                   ctor_map[ctor.name] = normalize_type_inner(
-                    env,
-                    substituted,
-                    visiting,
-                    expand_enum,
+                    env, substituted, visiting, expand_enum,
                   )
                 }
                 @core.Type::Variant(ctor_map)
@@ -387,6 +385,7 @@ fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
   }
 }
 
+///|
 fn scoped_ref_cache_key(env : TypeEnv, ty : @core.Type) -> Int {
   let version_key = env.scoped_ref_contains_cache_version << 12
   version_key ^ ty.structural_hash()
@@ -575,11 +574,7 @@ fn type_contains_scoped_ref(
   let local_cache : Map[Int, Array[ScopedRefContainsCacheEntry]] = {}
   let visiting_types : Map[Int, Array[@core.Type]] = {}
   let result = type_contains_scoped_ref_inner(
-    env,
-    resolved,
-    visiting,
-    local_cache,
-    visiting_types,
+    env, resolved, visiting, local_cache, visiting_types,
   )
   scoped_ref_cache_store(env, resolved, result)
   finish(result)
@@ -610,7 +605,7 @@ fn type_contains_scoped_ref_inner(
   }
   scoped_ref_visiting_push(visiting_types, resolved)
   let result = match resolved {
-    @core.Type::Named(name~, args~) => {
+    @core.Type::Named(name~, args~) =>
       if name == "Ref" {
         true
       } else {
@@ -660,11 +655,7 @@ fn type_contains_scoped_ref_inner(
                     for field in struct_def.fields {
                       let field_ty = substitute_type(field.ty, mapping)
                       if type_contains_scoped_ref_inner(
-                          env,
-                          field_ty,
-                          visiting,
-                          local_cache,
-                          visiting_types,
+                          env, field_ty, visiting, local_cache, visiting_types,
                         ) {
                         hit = true
                         break
@@ -687,11 +678,7 @@ fn type_contains_scoped_ref_inner(
                           for arg_ty in ctor.args {
                             let payload_ty = substitute_type(arg_ty, mapping)
                             if type_contains_scoped_ref_inner(
-                                env,
-                                payload_ty,
-                                visiting,
-                                local_cache,
-                                visiting_types,
+                                env, payload_ty, visiting, local_cache, visiting_types,
                               ) {
                               hit = true
                               break
@@ -711,16 +698,11 @@ fn type_contains_scoped_ref_inner(
           found
         }
       }
-    }
     @core.Type::Tuple(items) => {
       let mut hit = false
       for item in items {
         if type_contains_scoped_ref_inner(
-            env,
-            item,
-            visiting,
-            local_cache,
-            visiting_types,
+            env, item, visiting, local_cache, visiting_types,
           ) {
           hit = true
           break
@@ -732,11 +714,7 @@ fn type_contains_scoped_ref_inner(
       let mut hit = false
       for _, value in fields {
         if type_contains_scoped_ref_inner(
-            env,
-            value,
-            visiting,
-            local_cache,
-            visiting_types,
+            env, value, visiting, local_cache, visiting_types,
           ) {
           hit = true
           break
@@ -749,21 +727,13 @@ fn type_contains_scoped_ref_inner(
     | @core.Type::ArrayBuilder(inner)
     | @core.Type::MapBuilder(inner) =>
       type_contains_scoped_ref_inner(
-        env,
-        inner,
-        visiting,
-        local_cache,
-        visiting_types,
+        env, inner, visiting, local_cache, visiting_types,
       )
     @core.Type::Variant(ctors) => {
       let mut hit = false
       for _, payload_ty in ctors {
         if type_contains_scoped_ref_inner(
-            env,
-            payload_ty,
-            visiting,
-            local_cache,
-            visiting_types,
+            env, payload_ty, visiting, local_cache, visiting_types,
           ) {
           hit = true
           break
@@ -774,11 +744,7 @@ fn type_contains_scoped_ref_inner(
     @core.Type::Func(params~, ret~, ..) => {
       let mut hit = false
       if type_contains_scoped_ref_inner(
-          env,
-          ret,
-          visiting,
-          local_cache,
-          visiting_types,
+          env, ret, visiting, local_cache, visiting_types,
         ) {
         hit = true
       } else {

@@ -69,16 +69,10 @@ pub struct TypeEnv {
   expr_types : Map[Int64, @core.Type]
   num_vars : Map[Int, Bool]
   var_trait_bounds : Map[Int, Array[String]]
-  mut scoped_ref_contains_cache : Map[
-    Int,
-    Array[ScopedRefContainsCacheEntry],
-  ]
+  mut scoped_ref_contains_cache : Map[Int, Array[ScopedRefContainsCacheEntry]]
   mut scoped_ref_contains_cache_version : Int
   mut normalize_type_cache_expand : Map[Int, Array[(@core.Type, @core.Type)]]
-  mut normalize_type_cache_preserve : Map[
-    Int,
-    Array[(@core.Type, @core.Type)],
-  ]
+  mut normalize_type_cache_preserve : Map[Int, Array[(@core.Type, @core.Type)]]
   mut normalize_type_cache_subs_version : Int
   mut scoped_ref_checks_enabled : Bool
   mut has_scoped_ref_binding : Bool

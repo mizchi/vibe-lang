@@ -122,19 +122,21 @@ test "type_check: recorded expression type keeps recursive enum named" {
 ///|
 test "normalize_type cache: alias update invalidates cached normalization" {
   let env = TypeEnv::new()
-  env.set_type_alias(
-    "Box",
-    TypeAlias::{ name: "Box", params: [], target: @core.Type::Int },
-  )
+  env.set_type_alias("Box", TypeAlias::{
+    name: "Box",
+    params: [],
+    target: @core.Type::Int,
+  })
   let box_ty = @core.Type::Named(name="Box", args=[])
   let first = normalize_type(env, box_ty) catch {
     err => fail("normalize failed: \{err.to_string()}")
   }
   assert_eq(first, @core.Type::Int)
-  env.set_type_alias(
-    "Box",
-    TypeAlias::{ name: "Box", params: [], target: @core.Type::String },
-  )
+  env.set_type_alias("Box", TypeAlias::{
+    name: "Box",
+    params: [],
+    target: @core.Type::String,
+  })
   let second = normalize_type(env, box_ty) catch {
     err => fail("normalize failed after alias update: \{err.to_string()}")
   }
