@@ -3043,22 +3043,10 @@ fn read_function_tracking_record(
 test "selfhost compiler source files parse successfully" {
   let compiler_dir = "vibe/compiler"
   let files = [
-    "token.vibe",
-    "ast.vibe",
-    "lexer.vibe",
-    "parser.vibe",
-    "printer.vibe",
-    "index.vibe",
-    "_test_minimal.vibe",
-    "_test_for_simple.vibe",
-    "_test_for_tuple.vibe",
-    "_test_for_tuple2.vibe",
-    "_test_manual_while.vibe",
-    "_test_while_no_destr.vibe",
-    "_test_all_arms.vibe",
-    "_test_two_fn.vibe",
-    "_test_multi_fn.vibe",
-    "_test_expr_with_pat_call.vibe",
+    "token.vibe", "ast.vibe", "lexer.vibe", "parser.vibe", "printer.vibe", "index.vibe",
+    "_test_minimal.vibe", "_test_for_simple.vibe", "_test_for_tuple.vibe", "_test_for_tuple2.vibe",
+    "_test_manual_while.vibe", "_test_while_no_destr.vibe", "_test_all_arms.vibe",
+    "_test_two_fn.vibe", "_test_multi_fn.vibe", "_test_expr_with_pat_call.vibe",
   ]
   for file in files {
     let path = compiler_dir + "/" + file
@@ -3076,6 +3064,45 @@ test "selfhost compiler source files parse successfully" {
     }
     if ast.stmts.length() == 0 {
       fail("expected non-empty stmts for " + file)
+    }
+  }
+}
+
+///|
+test "selfhost compiler source files roundtrip format" {
+  let compiler_dir = "vibe/compiler"
+  let files = [
+    "token.vibe", "ast.vibe", "lexer.vibe", "parser.vibe", "printer.vibe",
+    "index.vibe",
+  ]
+  for file in files {
+    let path = compiler_dir + "/" + file
+    let source = @os_fs.read_file_to_string(path) catch {
+      e => {
+        fail("failed to read " + path + ": " + e.to_string())
+        continue
+      }
+    }
+    let fmt1 = @parser.format_script(source) catch {
+      e => {
+        fail("format1 failed for " + path + ": " + e.to_string())
+        continue
+      }
+    }
+    let fmt2 = @parser.format_script(fmt1) catch {
+      e => {
+        fail("format2 failed for " + path + ": " + e.to_string())
+        continue
+      }
+    }
+    if fmt1 != fmt2 {
+      fail(
+        file +
+        " roundtrip unstable:\n--- fmt1 (first 200) ---\n" +
+        fmt1.substring(start=0, end=200) +
+        "\n--- fmt2 (first 200) ---\n" +
+        fmt2.substring(start=0, end=200),
+      )
     }
   }
 }
