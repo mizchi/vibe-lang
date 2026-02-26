@@ -51,6 +51,7 @@ let tk_name = (tok: Token) -> String {
     TReturn => "return",
     TWith => "with",
     THandle => "handle",
+    TThrow => "throw",
     TRaise => "raise",
     TYield => "yield",
     TBench => "bench",
@@ -646,6 +647,44 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       THandle => parse_impl(tokens, pos + 1, 24),
       TWhile => parse_impl(tokens, pos + 1, 23),
       TFor => parse_impl(tokens, pos + 1, 25),
+      TThrow => {
+        let lp = expect_tk(tokens, pos + 1, "(")
+        let (e, en) = parse_impl(tokens, lp, 0)
+        let rp = expect_tk(tokens, en, ")")
+        (EThrow(e), rp)
+      },
+      TBreak => {
+        let next_tok = peek(tokens, pos + 1)
+        match next_tok {
+          TRBrace => (EBreak(None), pos + 1),
+          TSemicolon => (EBreak(None), pos + 1),
+          TEof => (EBreak(None), pos + 1),
+          _ => {
+            let (e, en) = parse_impl(tokens, pos + 1, 0)
+            (EBreak(Some(e)), en)
+          }
+        }
+      },
+      TContinue => {
+        match peek(tokens, pos + 1) {
+          TLParen => {
+            let b = array_builder()
+            match peek(tokens, pos + 2) {
+              TRParen => (EContinue(empty_exprs()), pos + 3),
+              _ => {
+                let (f, fn1) = parse_impl(tokens, pos + 2, 0)
+                array_builder_push(b, f)
+                let (args, end) = parse_comma_exprs_rest(tokens, fn1, b)
+                let en = expect_tk(tokens, end, ")")
+                (EContinue(args), en)
+              }
+            }
+          },
+          _ => (EContinue(empty_exprs()), pos + 1)
+        }
+      },
+      TRaise => throw("'raise' is deprecated, use 'throw(expr)' instead"),
+      TReturn => throw("'return' is not supported; use implicit returns"),
       _ => throw(string_concat("unexpected token: ", tk_name(peek(tokens, pos))))
     }
   }
