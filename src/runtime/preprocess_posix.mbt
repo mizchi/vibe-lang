@@ -16,6 +16,33 @@ fn preprocess_posix_source(script : String) -> String {
 }
 
 ///|
+fn preprocess_posix_source_with_compat_notes(
+  script : String,
+) -> (String, Array[String]) {
+  let buf = StringBuilder::new()
+  let notes : Array[String] = []
+  let mut first = true
+  let mut line_no = 1
+  for line_view in script.split("\n") {
+    if not(first) {
+      buf.write_char('\n')
+    }
+    first = false
+    let line = line_view.to_string()
+    let (preprocessed_line, compat_note) = preprocess_posix_line_with_compat_note(
+      line,
+    )
+    buf.write_string(preprocessed_line)
+    match compat_note {
+      Some(note) => notes.push("line " + line_no.to_string() + ": " + note)
+      None => ()
+    }
+    line_no += 1
+  }
+  (buf.to_string(), notes)
+}
+
+///|
 fn chars_slice(chars : Array[Char], start : Int, end : Int) -> String {
   let buf = StringBuilder::new()
   let mut i = start
@@ -45,6 +72,12 @@ fn is_posix_operator_char(c : Char) -> Bool {
 
 ///|
 fn preprocess_posix_line(line : String) -> String {
+  let (out, _) = preprocess_posix_line_with_compat_note(line)
+  out
+}
+
+///|
+fn preprocess_posix_line_with_compat_note(line : String) -> (String, String?) {
   let chars = line.to_array()
   let len = chars.length()
   // Skip leading whitespace
@@ -53,7 +86,7 @@ fn preprocess_posix_line(line : String) -> String {
     ws_end = ws_end + 1
   }
   if ws_end == len {
-    return line
+    return (line, None)
   }
   let first_char = chars[ws_end]
   if not(
@@ -61,7 +94,7 @@ fn preprocess_posix_line(line : String) -> String {
       (first_char >= 'A' && first_char <= 'Z') ||
       first_char == '_',
     ) {
-    return line
+    return (line, None)
   }
   // Extract first word
   let mut word_end = ws_end
@@ -70,7 +103,7 @@ fn preprocess_posix_line(line : String) -> String {
   }
   let first_word = chars_slice(chars, ws_end, word_end)
   if is_posix_keyword(first_word) {
-    return line
+    return (line, None)
   }
   // Skip whitespace after first word
   let mut rest_start = word_end
@@ -80,22 +113,26 @@ fn preprocess_posix_line(line : String) -> String {
   }
   // No arguments → leave for existing desugar
   if rest_start >= len {
-    return line
+    return (line, None)
   }
   let c = chars[rest_start]
   if c == '(' {
-    return line
+    return (line, None)
   }
   if c == '=' && (rest_start + 1 >= len || chars[rest_start + 1] != '=') {
-    return line
+    return (line, None)
   }
   if is_posix_operator_char(c) {
-    return line
+    return (line, None)
   }
   // Command with arguments → wrap in sh_lines(...)
   let leading = chars_slice(chars, 0, ws_end)
   let content = chars_slice(chars, ws_end, len)
-  leading + convert_posix_command(content)
+  let rewritten = convert_posix_command(content)
+  (
+    leading + rewritten,
+    Some("command-head rewrite `" + content + "` -> `" + rewritten + "`"),
+  )
 }
 
 ///|

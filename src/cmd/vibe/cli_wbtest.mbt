@@ -743,6 +743,36 @@ test "cli syntax mode parse explicit posix" {
 }
 
 ///|
+test "cli syntax mode parse explicit posix-ext" {
+  let parsed = parse_cli_syntax_args(
+    ["--syntax", "posix-ext", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok((mode, rest)) => {
+      assert_eq(mode, @runtime.ParserMode::PosixMode)
+      assert_eq(rest, ["main.vibe"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli syntax mode parse explicit posix-strict" {
+  let parsed = parse_cli_syntax_args(
+    ["--syntax", "posix-strict", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok((mode, rest)) => {
+      assert_eq(mode, @runtime.ParserMode::PosixStrictMode)
+      assert_eq(rest, ["main.vibe"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
 test "cli runtime flags parse default" {
   let parsed = parse_cli_runtime_args(["main.vibe"], "run")
   match parsed {
@@ -759,12 +789,14 @@ test "cli runtime flags parse default" {
 ///|
 test "cli runtime flags parse with unstable flags" {
   let parsed = parse_cli_runtime_args(
-    ["--unstable-async", "--syntax", "posix", "--unstable-threads", "main.vibe"],
+    [
+      "--unstable-async", "--syntax", "posix-strict", "--unstable-threads", "main.vibe",
+    ],
     "run",
   )
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.syntax_mode, @runtime.ParserMode::PosixMode)
+      assert_eq(opts.syntax_mode, @runtime.ParserMode::PosixStrictMode)
       assert_eq(opts.cmd_args, ["main.vibe"])
       assert_true(opts.unstable_async)
       assert_true(opts.unstable_threads)
@@ -1041,7 +1073,9 @@ test "cli syntax mode parse rejects unknown value" {
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
-      assert_eq(msg, "run: unsupported syntax `foo` (expected: vibe|posix)")
+      assert_eq(
+        msg, "run: unsupported syntax `foo` (expected: vibe|posix-ext|posix-strict)",
+      )
   }
 }
 
@@ -1051,7 +1085,9 @@ test "cli syntax mode parse rejects missing value" {
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) =>
-      assert_eq(msg, "run: missing value for --syntax (expected: vibe|posix)")
+      assert_eq(
+        msg, "run: missing value for --syntax (expected: vibe|posix-ext|posix-strict)",
+      )
   }
 }
 
@@ -1093,6 +1129,25 @@ test "cli syntax mode support matrix" {
     ) {
     Ok(_) => ()
     Err(msg) => fail("unexpected shell-wasi error: " + msg)
+  }
+  match
+    ensure_cli_parser_mode_supported(
+      @runtime.ParserMode::PosixStrictMode,
+      "shell",
+    ) {
+    Ok(_) => ()
+    Err(msg) => fail("unexpected strict shell error: " + msg)
+  }
+  match
+    ensure_cli_parser_mode_supported(
+      @runtime.ParserMode::PosixStrictMode,
+      "run",
+    ) {
+    Ok(_) => fail("expected strict run rejection")
+    Err(msg) => {
+      assert_true(msg.contains("run"))
+      assert_true(msg.contains("supported only"))
+    }
   }
   match
     ensure_cli_parser_mode_supported(@runtime.ParserMode::PosixMode, "bench") {
@@ -1690,8 +1745,7 @@ test "std layer classification covers primary modules" {
   }
   assert_eq(data_layer_result, "pure-data")
 
-  let ref_layer = match
-    std_layer_for_path("/tmp/repo/vibe/path/ref.vibe") {
+  let ref_layer = match std_layer_for_path("/tmp/repo/vibe/path/ref.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }

@@ -388,7 +388,7 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
   - 対象: `.github/workflows/playground.yml`
 - [ ] CodeMirror 等のエディタ統合（シンタックスハイライト、補完）
 - [ ] 複数スニペットのプリセット / URL 共有
-- [ ] `service.check()` によるリアルタイム diagnostics 表示
+- [x] `service.check()` によるリアルタイム diagnostics 表示
 
 ## Self-host Compiler (`vibe/compiler/`)
 
@@ -502,9 +502,9 @@ Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
 - [ ] Multi-language frontend adapters:
   tree-sitter-based extractor を baseline とし、optional semantic providers (compiler/LSP) で type-resolution gaps を補完。
   `vibe ide`/`vibe lsif` は shared backend API 上に維持。
-- [ ] Object pipeline operators on typed rows:
+- [x] Object pipeline operators on typed rows:
   record-like objects に対する first-class `where/select` contracts と `|>` chain の parser/desugar/typecheck 対応。
-- [ ] Syntax profile controls:
+- [x] Syntax profile controls:
   `--syntax posix-strict` vs `posix-ext` split と CI 向け strict compatibility diagnostics。
 - [ ] `sh_lines` preview backend を host-backed execution strategy に置換:
   native target は real process output capture、non-native targets は deterministic fallback + capability diagnostics。

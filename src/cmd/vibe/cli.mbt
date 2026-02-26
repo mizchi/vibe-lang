@@ -186,7 +186,7 @@ fn print_usage() -> Unit {
   )
   println("  lsp                         start LSP server (stdin/stdout)")
   println(
-    "  parser commands: --syntax vibe|posix (default: vibe; posix: shell/shell-stdin/shell-wasi only)",
+    "  parser commands: --syntax vibe|posix-ext|posix-strict (default: vibe; posix=posix-ext; posix profiles are shell/shell-stdin/shell-wasi only)",
   )
   println("  runtime flags: --unstable-async --unstable-threads")
   println(
@@ -770,7 +770,7 @@ fn run_cmd(
           print_eval_result(main_result)
         }
       }
-    @runtime.ParserMode::PosixMode => {
+    @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode => {
       let resolved = @loader.resolve_entry_path(entry_path)
       let source = @os_fs.read_file_to_string(resolved) catch {
         e => die("error: " + e.to_string())
@@ -2966,11 +2966,7 @@ fn symbols_lock_has_managed_ref(
   root_version : String,
 ) -> Bool {
   let canonical_symbol_with_context = @codebase.lock_module_ref_canonical_symbol_with_context(
-    path,
-    name,
-    index_root,
-    registry_modules,
-    root_version,
+    path, name, index_root, registry_modules, root_version,
   )
   if module_refs.contains(canonical_symbol_with_context) {
     return true

@@ -69,6 +69,7 @@ pub fn format_error_for_repl(
 pub(all) enum ParserMode {
   VibeMode
   PosixMode
+  PosixStrictMode
 } derive(Show, Eq)
 
 ///|
@@ -96,23 +97,35 @@ fn parse_script_with_mode(
   script : String,
   mode : ParserMode,
 ) -> (@core.Module, Array[String]) raise VibeError {
+  fn parse_posix_script(
+    strict : Bool,
+  ) -> (@core.Module, Array[String]) raise VibeError {
+    let (preprocessed, compat_notes) = if strict {
+      preprocess_posix_source_with_compat_notes(script)
+    } else {
+      (preprocess_posix_source(script), [])
+    }
+    let parsed = @parser.parse_ast(preprocessed) catch {
+      e => raise VibeError::Parse(e)
+    }
+    let (desugared, notes) = @pipeline.desugar_vibe_commands_with_notes(parsed)
+    let out_notes : Array[String] = []
+    if strict {
+      for note in compat_notes {
+        out_notes.push("posix-strict compatibility: " + note)
+      }
+    }
+    for note in notes {
+      out_notes.push("posix-mode command-head desugar: " + note)
+    }
+    (desugared, out_notes)
+  }
+
   match mode {
     ParserMode::VibeMode =>
       (@parser.parse_ast(script) catch { e => raise VibeError::Parse(e) }, [])
-    ParserMode::PosixMode => {
-      let preprocessed = preprocess_posix_source(script)
-      let parsed = @parser.parse_ast(preprocessed) catch {
-        e => raise VibeError::Parse(e)
-      }
-      let (desugared, notes) = @pipeline.desugar_vibe_commands_with_notes(
-        parsed,
-      )
-      let out_notes : Array[String] = []
-      for note in notes {
-        out_notes.push("posix-mode command-head desugar: " + note)
-      }
-      (desugared, out_notes)
-    }
+    ParserMode::PosixMode => parse_posix_script(false)
+    ParserMode::PosixStrictMode => parse_posix_script(true)
   }
 }
 

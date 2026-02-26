@@ -1937,6 +1937,50 @@ test "vibe where prelude filters integers" {
 }
 
 ///|
+test "vibe typed rows pipeline with where/select" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let rows = [record { name: \"alice\", age: 20, city: \"tokyo\" }, record { name: \"bob\", age: 30, city: \"osaka\" }]\n" +
+    "let selected = rows |> select(\"name\") |> where((_) -> Bool { true })\n" +
+    "let n = array_length(selected)",
+  )
+  match result {
+    Err(err) => fail("unexpected error: " + err.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("n") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("expected selected row count")
+  }
+  match rt.get("selected") {
+    Some(@core.Value::Array(items)) =>
+      match items[0] {
+        @core.Value::Record(fields) =>
+          match fields.get("name") {
+            Some(@core.Value::String(v)) => assert_eq(v, "alice")
+            _ => fail("expected projected name field")
+          }
+        _ => fail("expected record row")
+      }
+    _ => fail("expected selected rows")
+  }
+}
+
+///|
+test "vibe typed rows pipeline select rejects unknown field" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let rows = [record { name: \"alice\", age: 20 }]\n" +
+    "let _ = rows |> select(\"missing\")",
+  )
+  match result {
+    Ok(_) => fail("expected type error")
+    Err(err) =>
+      assert_true(err.to_string().contains("select: unknown field: missing"))
+  }
+}
+
+///|
 test "vibe select projects record fields" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
@@ -1992,6 +2036,38 @@ test "vibe select projects array of records" {
         _ => fail("expected record element")
       }
     _ => fail("expected array")
+  }
+}
+
+///|
+test "vibe posix strict mode emits compatibility notes" {
+  let rt = Runtime::new(@capability.CapabilitySet::developer())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script_with_mode(
+    "let run = () -> Array[String] with {Stdout} {\n" +
+    "  {\n" +
+    "    echo hello\n" +
+    "  }\n" +
+    "}\n" +
+    "let out = run()",
+    ParserMode::PosixStrictMode,
+  )
+  match result {
+    Err(err) => fail("unexpected strict mode error: " + err.to_string())
+    Ok(eval_result) => {
+      assert_true(eval_result.effects.length() >= 2)
+      match eval_result.effects[0] {
+        Effect::PosixDesugar(note) => {
+          assert_true(note.contains("posix-strict compatibility"))
+          assert_true(note.contains("line 3"))
+          assert_true(note.contains("echo hello"))
+        }
+        _ => fail("expected strict compatibility note")
+      }
+      match eval_result.effects[1] {
+        Effect::ShellExec(cmd) => assert_eq(cmd, "echo hello")
+        _ => fail("expected shell effect")
+      }
+    }
   }
 }
 

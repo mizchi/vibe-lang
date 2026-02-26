@@ -5,10 +5,14 @@ fn parse_cli_syntax_mode(
 ) -> Result[@runtime.ParserMode, String] {
   match value {
     "vibe" => Ok(@runtime.ParserMode::VibeMode)
-    "posix" => Ok(@runtime.ParserMode::PosixMode)
+    "posix" | "posix-ext" => Ok(@runtime.ParserMode::PosixMode)
+    "posix-strict" => Ok(@runtime.ParserMode::PosixStrictMode)
     _ =>
       Err(
-        cmd_name + ": unsupported syntax `" + value + "` (expected: vibe|posix)",
+        cmd_name +
+        ": unsupported syntax `" +
+        value +
+        "` (expected: vibe|posix-ext|posix-strict)",
       )
   }
 }
@@ -45,7 +49,8 @@ pub fn parse_cli_syntax_args(
     if arg == "--syntax" {
       if i + 1 >= args.length() {
         return Err(
-          cmd_name + ": missing value for --syntax (expected: vibe|posix)",
+          cmd_name +
+          ": missing value for --syntax (expected: vibe|posix-ext|posix-strict)",
         )
       }
       match parse_cli_syntax_mode(args[i + 1], cmd_name) {
@@ -157,13 +162,13 @@ pub fn ensure_cli_parser_mode_supported(
 ) -> Result[Unit, String] {
   match mode {
     @runtime.ParserMode::VibeMode => Ok(())
-    @runtime.ParserMode::PosixMode =>
+    @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode =>
       match cmd_name {
         "shell" | "shell-stdin" | "shell-wasi" => Ok(())
         _ =>
           Err(
             cmd_name +
-            ": --syntax posix is supported only for shell/shell-stdin/shell-wasi",
+            ": --syntax posix-ext/posix-strict is supported only for shell/shell-stdin/shell-wasi",
           )
       }
   }

@@ -3573,7 +3573,12 @@ fn repl_parser_mode_hint_for_error(
   syntax_mode : @runtime.ParserMode,
   cmd_name : String,
 ) -> String? {
-  if syntax_mode != @runtime.ParserMode::PosixMode {
+  let is_posix_mode = match syntax_mode {
+    @runtime.ParserMode::PosixMode => true
+    @runtime.ParserMode::PosixStrictMode => true
+    @runtime.ParserMode::VibeMode => false
+  }
+  if not(is_posix_mode) {
     return None
   }
   let trimmed = source.trim().to_string()
@@ -3589,7 +3594,7 @@ fn repl_parser_mode_hint_for_error(
   Some(
     "hint: `do { ... }` is vibe syntax; run " +
     cmd_name +
-    " with `--syntax vibe` (or omit `--syntax posix`)",
+    " with `--syntax vibe` (or omit `--syntax posix-ext/posix-strict`)",
   )
 }
 

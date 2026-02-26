@@ -1,13 +1,21 @@
-import { createVibeService, type VibeService, type EvalResult } from "../../js/vibe/index.js";
+import {
+  createVibeService,
+  type VibeService,
+  type EvalResult,
+  type CheckResult,
+} from "../../js/vibe/index.js";
 import wasmUrl from "../../_build/wasm-gc/release/build/lib/lib.wasm?url";
 
 const editor = document.getElementById("editor") as HTMLTextAreaElement;
 const output = document.getElementById("output") as HTMLDivElement;
+const diagnostics = document.getElementById("diagnostics") as HTMLDivElement;
 const btnRun = document.getElementById("btn-run") as HTMLButtonElement;
 const btnReset = document.getElementById("btn-reset") as HTMLButtonElement;
 const status = document.getElementById("status") as HTMLSpanElement;
 
 let service: VibeService | null = null;
+let checkTimer: number | null = null;
+let checkSeq = 0;
 
 function renderResult(result: EvalResult) {
   output.textContent = "";
@@ -49,6 +57,81 @@ function renderResult(result: EvalResult) {
   }
 }
 
+function renderDiagnostics(result: CheckResult | null, runtimeError?: string) {
+  diagnostics.textContent = "";
+
+  if (runtimeError) {
+    const line = document.createElement("div");
+    line.className = "diag-item error";
+    line.textContent = runtimeError;
+    diagnostics.appendChild(line);
+    return;
+  }
+
+  if (!result) {
+    const line = document.createElement("div");
+    line.className = "diag-empty";
+    line.textContent = "Edit code to see diagnostics.";
+    diagnostics.appendChild(line);
+    return;
+  }
+
+  const summary = document.createElement("div");
+  summary.className = "diag-summary";
+  summary.textContent = `errors: ${result.error_count}, warnings: ${result.warning_count}`;
+  diagnostics.appendChild(summary);
+
+  if (result.diagnostics.length === 0) {
+    const line = document.createElement("div");
+    line.className = "diag-empty";
+    line.textContent = "No diagnostics.";
+    diagnostics.appendChild(line);
+    return;
+  }
+
+  result.diagnostics.forEach((diag, index) => {
+    const isError = index < result.error_count;
+    const line = document.createElement("div");
+    line.className = isError ? "diag-item error" : "diag-item warning";
+    let text = `[${diag.stage}] ${diag.message}`;
+    if (diag.hint) text += `\n  hint: ${diag.hint}`;
+    if (diag.note) text += `\n  note: ${diag.note}`;
+    line.textContent = text;
+    diagnostics.appendChild(line);
+  });
+}
+
+async function runCheck(seq: number) {
+  if (!service) return;
+  const source = editor.value;
+  if (!source.trim()) {
+    if (seq === checkSeq) renderDiagnostics(null);
+    return;
+  }
+  try {
+    const result = await service.check(source);
+    if (seq === checkSeq) {
+      renderDiagnostics(result);
+    }
+  } catch (e) {
+    if (seq === checkSeq) {
+      renderDiagnostics(null, `Check error: ${e}`);
+    }
+  }
+}
+
+function scheduleCheck(delayMs = 180) {
+  if (!service) return;
+  checkSeq += 1;
+  const seq = checkSeq;
+  if (checkTimer !== null) {
+    window.clearTimeout(checkTimer);
+  }
+  checkTimer = window.setTimeout(() => {
+    void runCheck(seq);
+  }, delayMs);
+}
+
 async function runEval() {
   if (!service) return;
   const source = editor.value;
@@ -77,6 +160,7 @@ async function resetSession() {
   span.className = "result-type";
   span.textContent = "Session reset.";
   output.appendChild(span);
+  scheduleCheck(0);
 }
 
 async function loadWasmModule(url: string): Promise<WebAssembly.Module> {
@@ -94,6 +178,7 @@ async function init() {
     status.className = "ready";
     btnRun.disabled = false;
     btnReset.disabled = false;
+    scheduleCheck(0);
   } catch (e) {
     status.textContent = `Error: ${e}`;
     status.className = "error";
@@ -103,6 +188,7 @@ async function init() {
 
 btnRun.addEventListener("click", runEval);
 btnReset.addEventListener("click", resetSession);
+editor.addEventListener("input", () => scheduleCheck());
 
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
@@ -119,6 +205,7 @@ editor.addEventListener("keydown", (e) => {
     const end = editor.selectionEnd;
     editor.value = editor.value.substring(0, start) + "  " + editor.value.substring(end);
     editor.selectionStart = editor.selectionEnd = start + 2;
+    scheduleCheck();
   }
 });
 

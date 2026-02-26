@@ -112,3 +112,24 @@ test "preprocess_posix_source: escapes backslash and quotes" {
   let result = preprocess_posix_source(input)
   assert_eq(result, "sh_lines(\"echo hello\\\\world\")")
 }
+
+///|
+test "preprocess_posix_source_with_compat_notes: rewritten command emits note" {
+  let (result, notes) = preprocess_posix_source_with_compat_notes(
+    "echo hello world",
+  )
+  assert_eq(result, "sh_lines(\"echo hello world\")")
+  assert_eq(notes.length(), 1)
+  assert_true(notes[0].contains("line 1"))
+  assert_true(notes[0].contains("echo hello world"))
+  assert_true(notes[0].contains("sh_lines(\"echo hello world\")"))
+}
+
+///|
+test "preprocess_posix_source_with_compat_notes: unchanged script has no notes" {
+  let (result, notes) = preprocess_posix_source_with_compat_notes(
+    "let x = 1\narray_length([x])",
+  )
+  assert_eq(result, "let x = 1\narray_length([x])")
+  assert_eq(notes.length(), 0)
+}

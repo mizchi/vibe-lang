@@ -353,9 +353,9 @@ fn bench_cmd(
   } else {
     let backend = resolve_bench_backend(args, BenchBackend::Wasm)
     match syntax_mode {
-      @runtime.ParserMode::PosixMode =>
+      @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode =>
         abort(
-          "bench: --syntax posix is supported only with --expr/--case/--cases",
+          "bench: --syntax posix-ext/posix-strict is supported only with --expr/--case/--cases",
         )
       @runtime.ParserMode::VibeMode => ()
     }
