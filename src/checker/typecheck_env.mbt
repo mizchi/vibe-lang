@@ -70,10 +70,16 @@ pub struct TypeEnv {
   num_vars : Map[Int, Bool]
   var_trait_bounds : Map[Int, Array[String]]
   mut scoped_ref_contains_cache : Map[
-    String,
+    Int,
     Array[ScopedRefContainsCacheEntry],
   ]
   mut scoped_ref_contains_cache_version : Int
+  mut normalize_type_cache_expand : Map[Int, Array[(@core.Type, @core.Type)]]
+  mut normalize_type_cache_preserve : Map[
+    Int,
+    Array[(@core.Type, @core.Type)],
+  ]
+  mut normalize_type_cache_subs_version : Int
   mut scoped_ref_checks_enabled : Bool
   mut has_scoped_ref_binding : Bool
   mut scoped_ref_binding_scan_stale : Bool
@@ -100,6 +106,7 @@ pub struct TypeEnv {
   mut handle_arm_resume_expected : @core.Type?
   mut active_rec_fn : String?
   mut active_rec_fn_has_type_params : Bool
+  mut subs_version : Int
   subs : Map[Int, @core.Type]
   effect_subs : Map[String, Array[@core.EffectAtom]]
   session_state : SessionState
@@ -124,6 +131,9 @@ pub fn TypeEnv::new() -> TypeEnv {
     var_trait_bounds: {},
     scoped_ref_contains_cache: {},
     scoped_ref_contains_cache_version: 0,
+    normalize_type_cache_expand: {},
+    normalize_type_cache_preserve: {},
+    normalize_type_cache_subs_version: 0,
     scoped_ref_checks_enabled: true,
     has_scoped_ref_binding: false,
     scoped_ref_binding_scan_stale: false,
@@ -150,6 +160,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     handle_arm_resume_expected: None,
     active_rec_fn: None,
     active_rec_fn_has_type_params: false,
+    subs_version: 0,
     subs: {},
     effect_subs: {},
     session_state: SessionState::{ type_var_counter: 0, lenient_mode: false },
@@ -175,6 +186,9 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     var_trait_bounds: {},
     scoped_ref_contains_cache: {},
     scoped_ref_contains_cache_version: 0,
+    normalize_type_cache_expand: {},
+    normalize_type_cache_preserve: {},
+    normalize_type_cache_subs_version: 0,
     scoped_ref_checks_enabled: true,
     has_scoped_ref_binding: false,
     scoped_ref_binding_scan_stale: false,
@@ -201,6 +215,7 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     handle_arm_resume_expected: None,
     active_rec_fn: None,
     active_rec_fn_has_type_params: false,
+    subs_version: 0,
     subs: {},
     effect_subs: {},
     session_state: self.state,

@@ -56,3 +56,14 @@ test "scoped ref profile: repeated checks hit cache" {
   assert_true(profile.contains_cache_misses > 0)
   assert_true(profile.contains_cache_hits > 0)
 }
+
+///|
+test "scoped ref cache: cache growth is bounded" {
+  let env = TypeEnv::new()
+  env.set_scoped_ref_checks_enabled(true)
+  for i in 0..<10000 {
+    let ty = @core.Type::Named(name="NoRef\{i.to_string()}", args=[])
+    ignore(type_contains_scoped_ref(env, ty))
+  }
+  assert_true(env.scoped_ref_contains_cache.length() <= 4096)
+}

@@ -47,3 +47,122 @@ test "type_check: handle resume value must match continuation destination type" 
     Err(err) => fail("unexpected type error: " + err.to_string())
   }
 }
+
+///|
+test "type_check: recursive enum ctor payload keeps named references" {
+  let script = "enum Expr { Lit(Int); Pair(Expr, Expr) }\n" +
+    "let mk = (l: Expr, r: Expr) -> Expr { Pair(l, r) }"
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let env = type_check(ast) catch {
+    err => fail("unexpected type error: \{err.to_string()}")
+  }
+  match env.get_ctor("Pair") {
+    Some(info) =>
+      match info.payload {
+        @core.Type::Tuple(items) => {
+          if items.length() != 2 {
+            fail("expected Pair payload arity 2")
+          }
+          match items[0] {
+            @core.Type::Named(name~, args~) => {
+              assert_eq(name, "Expr")
+              assert_eq(args.length(), 0)
+            }
+            other =>
+              fail(
+                "expected first payload element to stay named Expr, got \{other.to_string()}",
+              )
+          }
+          match items[1] {
+            @core.Type::Named(name~, args~) => {
+              assert_eq(name, "Expr")
+              assert_eq(args.length(), 0)
+            }
+            other =>
+              fail(
+                "expected second payload element to stay named Expr, got \{other.to_string()}",
+              )
+          }
+        }
+        other => fail("expected tuple payload, got \{other.to_string()}")
+      }
+    None => fail("missing Pair ctor info")
+  }
+}
+
+///|
+test "type_check: recorded expression type keeps recursive enum named" {
+  let script = "enum Expr { Lit(Int); Pair(Expr, Expr) }\n" +
+    "Pair(Lit(1), Lit(2))"
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let target_span = match ast.stmts {
+    [@core.Stmt::EnumDef(..), @core.Stmt::Expr(expr~, ..)] => expr.span()
+    _ => fail("expected enum definition followed by expression statement")
+  }
+  let env = type_check(ast) catch {
+    err => fail("unexpected type error: \{err.to_string()}")
+  }
+  match env.get_expr_type(target_span) {
+    Some(@core.Type::Named(name~, args~)) => {
+      assert_eq(name, "Expr")
+      assert_eq(args.length(), 0)
+    }
+    Some(other) =>
+      fail(
+        "expected recorded expression type to remain named Expr, got \{other.to_string()}",
+      )
+    None => fail("missing recorded expression type")
+  }
+}
+
+///|
+test "normalize_type cache: alias update invalidates cached normalization" {
+  let env = TypeEnv::new()
+  env.set_type_alias(
+    "Box",
+    TypeAlias::{ name: "Box", params: [], target: @core.Type::Int },
+  )
+  let box_ty = @core.Type::Named(name="Box", args=[])
+  let first = normalize_type(env, box_ty) catch {
+    err => fail("normalize failed: \{err.to_string()}")
+  }
+  assert_eq(first, @core.Type::Int)
+  env.set_type_alias(
+    "Box",
+    TypeAlias::{ name: "Box", params: [], target: @core.Type::String },
+  )
+  let second = normalize_type(env, box_ty) catch {
+    err => fail("normalize failed after alias update: \{err.to_string()}")
+  }
+  assert_eq(second, @core.Type::String)
+}
+
+///|
+test "normalize_type cache: expand and preserve enum caches are isolated" {
+  let script = "enum Toggle { On; Off }"
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let env = type_check(ast) catch {
+    err => fail("type check error: \{err.to_string()}")
+  }
+  let enum_ty = @core.Type::Named(name="Toggle", args=[])
+  let preserved = normalize_type_preserve_enum(env, enum_ty) catch {
+    err => fail("preserve normalize failed: \{err.to_string()}")
+  }
+  assert_eq(preserved, enum_ty)
+  let expanded = normalize_type(env, enum_ty) catch {
+    err => fail("expand normalize failed: \{err.to_string()}")
+  }
+  match expanded {
+    @core.Type::Variant(ctors) => {
+      assert_true(ctors.contains("On"))
+      assert_true(ctors.contains("Off"))
+    }
+    other => fail("expected variant expansion, got \{other.to_string()}")
+  }
+}

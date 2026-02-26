@@ -49,49 +49,133 @@ fn resolve_type(env : TypeEnv, ty : @core.Type) -> @core.Type {
         }
       @core.Type::Tuple(items) => {
         let out : Array[@core.Type] = []
+        let mut changed = false
         for item in items {
-          out.push(resolve_type(env, item))
+          let resolved_item = resolve_type(env, item)
+          if resolved_item != item {
+            changed = true
+          }
+          out.push(resolved_item)
         }
-        @core.Type::Tuple(out)
+        if changed {
+          @core.Type::Tuple(out)
+        } else {
+          ty
+        }
       }
       @core.Type::Record(fields) => {
-        let out : Map[String, @core.Type] = {}
+        let entries : Array[(String, @core.Type)] = []
+        let mut changed = false
         for name, item in fields {
-          out[name] = resolve_type(env, item)
+          let resolved_item = resolve_type(env, item)
+          if resolved_item != item {
+            changed = true
+          }
+          entries.push((name, resolved_item))
         }
-        @core.Type::Record(out)
+        if changed {
+          let out : Map[String, @core.Type] = {}
+          for entry in entries {
+            let (name, value) = entry
+            out[name] = value
+          }
+          @core.Type::Record(out)
+        } else {
+          ty
+        }
       }
-      @core.Type::Array(inner) => @core.Type::Array(resolve_type(env, inner))
-      @core.Type::Map(inner) => @core.Type::Map(resolve_type(env, inner))
-      @core.Type::ArrayBuilder(inner) =>
-        @core.Type::ArrayBuilder(resolve_type(env, inner))
-      @core.Type::MapBuilder(inner) =>
-        @core.Type::MapBuilder(resolve_type(env, inner))
-      @core.Type::Variant(fields) => {
-        let out : Map[String, @core.Type] = {}
-        for name, item in fields {
-          out[name] = resolve_type(env, item)
+      @core.Type::Array(inner) => {
+        let resolved_inner = resolve_type(env, inner)
+        if resolved_inner == inner {
+          ty
+        } else {
+          @core.Type::Array(resolved_inner)
         }
-        @core.Type::Variant(out)
+      }
+      @core.Type::Map(inner) => {
+        let resolved_inner = resolve_type(env, inner)
+        if resolved_inner == inner {
+          ty
+        } else {
+          @core.Type::Map(resolved_inner)
+        }
+      }
+      @core.Type::ArrayBuilder(inner) => {
+        let resolved_inner = resolve_type(env, inner)
+        if resolved_inner == inner {
+          ty
+        } else {
+          @core.Type::ArrayBuilder(resolved_inner)
+        }
+      }
+      @core.Type::MapBuilder(inner) => {
+        let resolved_inner = resolve_type(env, inner)
+        if resolved_inner == inner {
+          ty
+        } else {
+          @core.Type::MapBuilder(resolved_inner)
+        }
+      }
+      @core.Type::Variant(fields) => {
+        let entries : Array[(String, @core.Type)] = []
+        let mut changed = false
+        for name, item in fields {
+          let resolved_item = resolve_type(env, item)
+          if resolved_item != item {
+            changed = true
+          }
+          entries.push((name, resolved_item))
+        }
+        if changed {
+          let out : Map[String, @core.Type] = {}
+          for entry in entries {
+            let (name, value) = entry
+            out[name] = value
+          }
+          @core.Type::Variant(out)
+        } else {
+          ty
+        }
       }
       @core.Type::Named(name~, args~) => {
         let out : Array[@core.Type] = []
+        let mut changed = false
         for arg in args {
-          out.push(resolve_type(env, arg))
+          let resolved_arg = resolve_type(env, arg)
+          if resolved_arg != arg {
+            changed = true
+          }
+          out.push(resolved_arg)
         }
-        @core.Type::Named(name~, args=out)
+        if changed {
+          @core.Type::Named(name~, args=out)
+        } else {
+          ty
+        }
       }
       @core.Type::Func(params~, ret~, effects~) => {
+        let resolved_ret = resolve_type(env, ret)
+        let mut changed = resolved_ret != ret
         let out : Array[@core.FuncParam] = []
         for param in params {
-          out.push(@core.FuncParam::{
-            name: param.name,
-            label: param.label,
-            ty: resolve_type(env, param.ty),
-            bounds: param.bounds,
-          })
+          let resolved_param_ty = resolve_type(env, param.ty)
+          if resolved_param_ty != param.ty {
+            changed = true
+            out.push(@core.FuncParam::{
+              name: param.name,
+              label: param.label,
+              ty: resolved_param_ty,
+              bounds: param.bounds,
+            })
+          } else {
+            out.push(param)
+          }
         }
-        @core.Type::Func(params=out, ret=resolve_type(env, ret), effects~)
+        if changed {
+          @core.Type::Func(params=out, ret=resolved_ret, effects~)
+        } else {
+          ty
+        }
       }
       _ => ty
     }

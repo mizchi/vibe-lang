@@ -1,5 +1,120 @@
 ///|
 fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError {
+  normalize_type_with_mode(env, ty, true)
+}
+
+///|
+fn normalize_type_preserve_enum(
+  env : TypeEnv,
+  ty : @core.Type,
+) -> @core.Type raise TypeError {
+  normalize_type_with_mode(env, ty, false)
+}
+
+///|
+fn normalize_type_cache_key(ty : @core.Type) -> Int {
+  ty.structural_hash()
+}
+
+///|
+fn normalize_type_cacheable(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Named(..) => true
+    _ => false
+  }
+}
+
+///|
+fn normalize_type_cache_refresh(env : TypeEnv) -> Unit {
+  if env.normalize_type_cache_subs_version != env.subs_version {
+    env.invalidate_normalize_type_cache()
+  }
+}
+
+///|
+fn normalize_type_cache_lookup_from(
+  cache : Map[Int, Array[(@core.Type, @core.Type)]],
+  ty : @core.Type,
+) -> @core.Type? {
+  let key = normalize_type_cache_key(ty)
+  match cache.get(key) {
+    Some(entries) => {
+      for entry in entries {
+        let (cached_source, cached_normalized) = entry
+        if cached_source == ty {
+          return Some(cached_normalized)
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+///|
+fn normalize_type_cache_store_to(
+  cache : Map[Int, Array[(@core.Type, @core.Type)]],
+  source : @core.Type,
+  normalized : @core.Type,
+) -> Unit {
+  let key = normalize_type_cache_key(source)
+  if cache.length() >= 8192 && not(cache.contains(key)) {
+    return
+  }
+  let entry = (source, normalized)
+  match cache.get(key) {
+    Some(entries) =>
+      if entries.length() < 4 {
+        entries.push(entry)
+      }
+    None => cache[key] = [entry]
+  }
+}
+
+///|
+fn normalize_type_cache_lookup(
+  env : TypeEnv,
+  ty : @core.Type,
+  expand_enum : Bool,
+) -> @core.Type? {
+  if not(normalize_type_cacheable(ty)) {
+    return None
+  }
+  if expand_enum {
+    normalize_type_cache_lookup_from(env.normalize_type_cache_expand, ty)
+  } else {
+    normalize_type_cache_lookup_from(env.normalize_type_cache_preserve, ty)
+  }
+}
+
+///|
+fn normalize_type_cache_store(
+  env : TypeEnv,
+  source : @core.Type,
+  normalized : @core.Type,
+  expand_enum : Bool,
+) -> Unit {
+  if not(normalize_type_cacheable(source)) ||
+    not(normalize_type_cacheable(normalized)) {
+    return
+  }
+  if expand_enum {
+    normalize_type_cache_store_to(env.normalize_type_cache_expand, source, normalized)
+  } else {
+    normalize_type_cache_store_to(
+      env.normalize_type_cache_preserve,
+      source,
+      normalized,
+    )
+  }
+}
+
+///|
+fn normalize_type_with_mode(
+  env : TypeEnv,
+  ty : @core.Type,
+  expand_enum : Bool,
+) -> @core.Type raise TypeError {
   let resolved = resolve_type(env, ty)
   // Fast path: ground types need no normalization
   match resolved {
@@ -18,8 +133,15 @@ fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError 
     | Param(_) => return resolved
     _ => ()
   }
+  normalize_type_cache_refresh(env)
+  match normalize_type_cache_lookup(env, resolved, expand_enum) {
+    Some(hit) => return hit
+    None => ()
+  }
   let visiting : Map[String, Bool] = {}
-  normalize_type_inner(env, resolved, visiting)
+  let normalized = normalize_type_inner(env, resolved, visiting, expand_enum)
+  normalize_type_cache_store(env, resolved, normalized, expand_enum)
+  normalized
 }
 
 ///|
@@ -27,12 +149,15 @@ fn normalize_type_inner(
   env : TypeEnv,
   ty : @core.Type,
   visiting : Map[String, Bool],
+  expand_enum : Bool,
 ) -> @core.Type raise TypeError {
   match ty {
     @core.Type::Named(name~, args~) => {
       let normalized_args : Array[@core.Type] = []
       for arg in args {
-        normalized_args.push(normalize_type_inner(env, arg, visiting))
+        normalized_args.push(
+          normalize_type_inner(env, arg, visiting, expand_enum),
+        )
       }
       if name == "Ref" {
         if normalized_args.length() != 1 {
@@ -75,7 +200,7 @@ fn normalize_type_inner(
               mapping[type_alias.params[i]] = normalized_args[i]
             }
             let substituted = substitute_type(type_alias.target, mapping)
-            normalize_type_inner(env, substituted, visiting)
+            normalize_type_inner(env, substituted, visiting, expand_enum)
           }
           None =>
             match env.get_enum_def(name) {
@@ -90,6 +215,9 @@ fn normalize_type_inner(
                 for i in 0..<def.params.length() {
                   mapping[def.params[i]] = normalized_args[i]
                 }
+                if not(expand_enum) {
+                  return @core.Type::Named(name~, args=normalized_args)
+                }
                 let ctor_map : Map[String, @core.Type] = {}
                 for ctor in def.ctors {
                   let base_payload = if ctor.args.length() == 0 {
@@ -101,7 +229,10 @@ fn normalize_type_inner(
                   }
                   let substituted = substitute_type(base_payload, mapping)
                   ctor_map[ctor.name] = normalize_type_inner(
-                    env, substituted, visiting,
+                    env,
+                    substituted,
+                    visiting,
+                    expand_enum,
                   )
                 }
                 @core.Type::Variant(ctor_map)
@@ -134,29 +265,33 @@ fn normalize_type_inner(
     @core.Type::Tuple(items) => {
       let out : Array[@core.Type] = []
       for item in items {
-        out.push(normalize_type_inner(env, item, visiting))
+        out.push(normalize_type_inner(env, item, visiting, expand_enum))
       }
       @core.Type::Tuple(out)
     }
     @core.Type::Record(fields) => {
       let out : Map[String, @core.Type] = {}
       for name, item in fields {
-        out[name] = normalize_type_inner(env, item, visiting)
+        out[name] = normalize_type_inner(env, item, visiting, expand_enum)
       }
       @core.Type::Record(out)
     }
     @core.Type::Array(inner) =>
-      @core.Type::Array(normalize_type_inner(env, inner, visiting))
+      @core.Type::Array(normalize_type_inner(env, inner, visiting, expand_enum))
     @core.Type::Map(inner) =>
-      @core.Type::Map(normalize_type_inner(env, inner, visiting))
+      @core.Type::Map(normalize_type_inner(env, inner, visiting, expand_enum))
     @core.Type::ArrayBuilder(inner) =>
-      @core.Type::ArrayBuilder(normalize_type_inner(env, inner, visiting))
+      @core.Type::ArrayBuilder(
+        normalize_type_inner(env, inner, visiting, expand_enum),
+      )
     @core.Type::MapBuilder(inner) =>
-      @core.Type::MapBuilder(normalize_type_inner(env, inner, visiting))
+      @core.Type::MapBuilder(
+        normalize_type_inner(env, inner, visiting, expand_enum),
+      )
     @core.Type::Variant(fields) => {
       let out : Map[String, @core.Type] = {}
       for name, item in fields {
-        out[name] = normalize_type_inner(env, item, visiting)
+        out[name] = normalize_type_inner(env, item, visiting, expand_enum)
       }
       @core.Type::Variant(out)
     }
@@ -168,13 +303,13 @@ fn normalize_type_inner(
         out.push(@core.FuncParam::{
           name: param.name,
           label: param.label,
-          ty: normalize_type_inner(env, param.ty, visiting),
+          ty: normalize_type_inner(env, param.ty, visiting, expand_enum),
           bounds: param.bounds,
         })
       }
       @core.Type::Func(
         params=out,
-        ret=normalize_type_inner(env, ret, visiting),
+        ret=normalize_type_inner(env, ret, visiting, expand_enum),
         effects~,
       )
     }
@@ -252,11 +387,9 @@ fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
   }
 }
 
-///|
-fn scoped_ref_cache_key(env : TypeEnv, ty : @core.Type) -> String {
-  env.scoped_ref_contains_cache_version.to_string() +
-  "#" +
-  ty.structural_hash().to_string()
+fn scoped_ref_cache_key(env : TypeEnv, ty : @core.Type) -> Int {
+  let version_key = env.scoped_ref_contains_cache_version << 12
+  version_key ^ ty.structural_hash()
 }
 
 ///|
@@ -279,9 +412,124 @@ fn scoped_ref_cache_lookup(env : TypeEnv, ty : @core.Type) -> Bool? {
 fn scoped_ref_cache_store(env : TypeEnv, ty : @core.Type, value : Bool) -> Unit {
   let key = scoped_ref_cache_key(env, ty)
   let next = ScopedRefContainsCacheEntry::{ ty, has_scoped_ref: value }
+  if env.scoped_ref_contains_cache.length() >= 4096 &&
+    not(env.scoped_ref_contains_cache.contains(key)) {
+    return
+  }
   match env.scoped_ref_contains_cache.get(key) {
-    Some(entries) => entries.push(next)
+    Some(entries) => {
+      for i in 0..<entries.length() {
+        if entries[i].ty == ty {
+          entries[i] = next
+          return
+        }
+      }
+      if entries.length() < 4 {
+        entries.push(next)
+      }
+    }
     None => env.scoped_ref_contains_cache[key] = [next]
+  }
+}
+
+///|
+fn scoped_ref_local_cache_key(ty : @core.Type) -> Int {
+  ty.structural_hash()
+}
+
+///|
+fn scoped_ref_local_lookup(
+  cache : Map[Int, Array[ScopedRefContainsCacheEntry]],
+  ty : @core.Type,
+) -> Bool? {
+  let key = scoped_ref_local_cache_key(ty)
+  match cache.get(key) {
+    Some(entries) => {
+      for entry in entries {
+        if entry.ty == ty {
+          return Some(entry.has_scoped_ref)
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+///|
+fn scoped_ref_local_store(
+  cache : Map[Int, Array[ScopedRefContainsCacheEntry]],
+  ty : @core.Type,
+  value : Bool,
+) -> Unit {
+  let key = scoped_ref_local_cache_key(ty)
+  let next = ScopedRefContainsCacheEntry::{ ty, has_scoped_ref: value }
+  match cache.get(key) {
+    Some(entries) => {
+      for i in 0..<entries.length() {
+        if entries[i].ty == ty {
+          entries[i] = next
+          return
+        }
+      }
+      if entries.length() < 8 {
+        entries.push(next)
+      }
+    }
+    None => cache[key] = [next]
+  }
+}
+
+///|
+fn scoped_ref_visiting_contains(
+  visiting_types : Map[Int, Array[@core.Type]],
+  ty : @core.Type,
+) -> Bool {
+  let key = scoped_ref_local_cache_key(ty)
+  match visiting_types.get(key) {
+    Some(entries) => {
+      for entry in entries {
+        if entry == ty {
+          return true
+        }
+      }
+      false
+    }
+    None => false
+  }
+}
+
+///|
+fn scoped_ref_visiting_push(
+  visiting_types : Map[Int, Array[@core.Type]],
+  ty : @core.Type,
+) -> Unit {
+  let key = scoped_ref_local_cache_key(ty)
+  match visiting_types.get(key) {
+    Some(entries) => entries.push(ty)
+    None => visiting_types[key] = [ty]
+  }
+}
+
+///|
+fn scoped_ref_visiting_pop(
+  visiting_types : Map[Int, Array[@core.Type]],
+  ty : @core.Type,
+) -> Unit {
+  let key = scoped_ref_local_cache_key(ty)
+  match visiting_types.get(key) {
+    Some(entries) => {
+      for i in 0..<entries.length() {
+        if entries[i] == ty {
+          entries.remove(i) |> ignore
+          break
+        }
+      }
+      if entries.length() == 0 {
+        visiting_types.remove(key)
+      }
+    }
+    None => ()
   }
 }
 
@@ -324,7 +572,15 @@ fn type_contains_scoped_ref(
       }
   }
   let visiting : Map[String, Bool] = {}
-  let result = type_contains_scoped_ref_inner(env, resolved, visiting)
+  let local_cache : Map[Int, Array[ScopedRefContainsCacheEntry]] = {}
+  let visiting_types : Map[Int, Array[@core.Type]] = {}
+  let result = type_contains_scoped_ref_inner(
+    env,
+    resolved,
+    visiting,
+    local_cache,
+    visiting_types,
+  )
   scoped_ref_cache_store(env, resolved, result)
   finish(result)
 }
@@ -334,129 +590,212 @@ fn type_contains_scoped_ref_inner(
   env : TypeEnv,
   ty : @core.Type,
   visiting : Map[String, Bool],
+  local_cache : Map[Int, Array[ScopedRefContainsCacheEntry]],
+  visiting_types : Map[Int, Array[@core.Type]],
 ) -> Bool raise TypeError {
-  match resolve_type(env, ty) {
+  let resolved = resolve_type(env, ty)
+  if not(type_may_contain_scoped_ref_hint(resolved)) {
+    return false
+  }
+  match scoped_ref_cache_lookup(env, resolved) {
+    Some(hit) => return hit
+    None => ()
+  }
+  match scoped_ref_local_lookup(local_cache, resolved) {
+    Some(hit) => return hit
+    None => ()
+  }
+  if scoped_ref_visiting_contains(visiting_types, resolved) {
+    return false
+  }
+  scoped_ref_visiting_push(visiting_types, resolved)
+  let result = match resolved {
     @core.Type::Named(name~, args~) => {
       if name == "Ref" {
-        return true
-      }
-      for arg in args {
-        if type_contains_scoped_ref_inner(env, arg, visiting) {
-          return true
-        }
-      }
-      if visiting.contains(name) {
-        return false
-      }
-      visiting[name] = true
-      let found = match env.get_type_alias(name) {
-        Some(type_alias) =>
-          if type_alias.params.length() != args.length() {
-            false
-          } else {
-            let mapping : Map[String, @core.Type] = {}
-            for i in 0..<type_alias.params.length() {
-              mapping[type_alias.params[i]] = args[i]
-            }
-            type_contains_scoped_ref_inner(
-              env,
-              substitute_type(type_alias.target, mapping),
-              visiting,
-            )
+        true
+      } else {
+        let mut hit_from_args = false
+        for arg in args {
+          if type_contains_scoped_ref_inner(
+              env, arg, visiting, local_cache, visiting_types,
+            ) {
+            hit_from_args = true
+            break
           }
-        None =>
-          match env.get_struct(name) {
-            Some(struct_def) =>
-              if struct_def.params.length() != args.length() {
+        }
+        if hit_from_args {
+          true
+        } else if visiting.contains(name) {
+          false
+        } else {
+          visiting[name] = true
+          let found = match env.get_type_alias(name) {
+            Some(type_alias) =>
+              if type_alias.params.length() != args.length() {
                 false
               } else {
                 let mapping : Map[String, @core.Type] = {}
-                for i in 0..<struct_def.params.length() {
-                  mapping[struct_def.params[i]] = args[i]
+                for i in 0..<type_alias.params.length() {
+                  mapping[type_alias.params[i]] = args[i]
                 }
-                let mut hit = false
-                for field in struct_def.fields {
-                  let field_ty = substitute_type(field.ty, mapping)
-                  if type_contains_scoped_ref_inner(env, field_ty, visiting) {
-                    hit = true
-                    break
-                  }
-                }
-                hit
+                type_contains_scoped_ref_inner(
+                  env,
+                  substitute_type(type_alias.target, mapping),
+                  visiting,
+                  local_cache,
+                  visiting_types,
+                )
               }
             None =>
-              match env.get_enum_def(name) {
-                Some(enum_def) =>
-                  if enum_def.params.length() != args.length() {
+              match env.get_struct(name) {
+                Some(struct_def) =>
+                  if struct_def.params.length() != args.length() {
                     false
                   } else {
                     let mapping : Map[String, @core.Type] = {}
-                    for i in 0..<enum_def.params.length() {
-                      mapping[enum_def.params[i]] = args[i]
+                    for i in 0..<struct_def.params.length() {
+                      mapping[struct_def.params[i]] = args[i]
                     }
                     let mut hit = false
-                    for ctor in enum_def.ctors {
-                      for arg_ty in ctor.args {
-                        let payload_ty = substitute_type(arg_ty, mapping)
-                        if type_contains_scoped_ref_inner(
-                            env, payload_ty, visiting,
-                          ) {
-                          hit = true
-                          break
-                        }
-                      }
-                      if hit {
+                    for field in struct_def.fields {
+                      let field_ty = substitute_type(field.ty, mapping)
+                      if type_contains_scoped_ref_inner(
+                          env,
+                          field_ty,
+                          visiting,
+                          local_cache,
+                          visiting_types,
+                        ) {
+                        hit = true
                         break
                       }
                     }
                     hit
                   }
-                None => false
+                None =>
+                  match env.get_enum_def(name) {
+                    Some(enum_def) =>
+                      if enum_def.params.length() != args.length() {
+                        false
+                      } else {
+                        let mapping : Map[String, @core.Type] = {}
+                        for i in 0..<enum_def.params.length() {
+                          mapping[enum_def.params[i]] = args[i]
+                        }
+                        let mut hit = false
+                        for ctor in enum_def.ctors {
+                          for arg_ty in ctor.args {
+                            let payload_ty = substitute_type(arg_ty, mapping)
+                            if type_contains_scoped_ref_inner(
+                                env,
+                                payload_ty,
+                                visiting,
+                                local_cache,
+                                visiting_types,
+                              ) {
+                              hit = true
+                              break
+                            }
+                          }
+                          if hit {
+                            break
+                          }
+                        }
+                        hit
+                      }
+                    None => false
+                  }
               }
           }
+          visiting.remove(name)
+          found
+        }
       }
-      visiting.remove(name)
-      found
     }
     @core.Type::Tuple(items) => {
+      let mut hit = false
       for item in items {
-        if type_contains_scoped_ref_inner(env, item, visiting) {
-          return true
+        if type_contains_scoped_ref_inner(
+            env,
+            item,
+            visiting,
+            local_cache,
+            visiting_types,
+          ) {
+          hit = true
+          break
         }
       }
-      false
+      hit
     }
     @core.Type::Record(fields) => {
+      let mut hit = false
       for _, value in fields {
-        if type_contains_scoped_ref_inner(env, value, visiting) {
-          return true
+        if type_contains_scoped_ref_inner(
+            env,
+            value,
+            visiting,
+            local_cache,
+            visiting_types,
+          ) {
+          hit = true
+          break
         }
       }
-      false
+      hit
     }
     @core.Type::Array(inner)
     | @core.Type::Map(inner)
     | @core.Type::ArrayBuilder(inner)
     | @core.Type::MapBuilder(inner) =>
-      type_contains_scoped_ref_inner(env, inner, visiting)
+      type_contains_scoped_ref_inner(
+        env,
+        inner,
+        visiting,
+        local_cache,
+        visiting_types,
+      )
     @core.Type::Variant(ctors) => {
+      let mut hit = false
       for _, payload_ty in ctors {
-        if type_contains_scoped_ref_inner(env, payload_ty, visiting) {
-          return true
+        if type_contains_scoped_ref_inner(
+            env,
+            payload_ty,
+            visiting,
+            local_cache,
+            visiting_types,
+          ) {
+          hit = true
+          break
         }
       }
-      false
+      hit
     }
     @core.Type::Func(params~, ret~, ..) => {
-      if type_contains_scoped_ref_inner(env, ret, visiting) {
-        return true
-      }
-      for param in params {
-        if type_contains_scoped_ref_inner(env, param.ty, visiting) {
-          return true
+      let mut hit = false
+      if type_contains_scoped_ref_inner(
+          env,
+          ret,
+          visiting,
+          local_cache,
+          visiting_types,
+        ) {
+        hit = true
+      } else {
+        for param in params {
+          if type_contains_scoped_ref_inner(
+              env,
+              param.ty,
+              visiting,
+              local_cache,
+              visiting_types,
+            ) {
+            hit = true
+            break
+          }
         }
       }
-      false
+      hit
     }
     @core.Type::Int
     | @core.Type::Float
@@ -472,6 +811,9 @@ fn type_contains_scoped_ref_inner(
     | @core.Type::Var(_)
     | @core.Type::Never => false
   }
+  scoped_ref_visiting_pop(visiting_types, resolved)
+  scoped_ref_local_store(local_cache, resolved, result)
+  result
 }
 
 ///|
@@ -762,14 +1104,73 @@ pub fn completion_param_matches(
 }
 
 ///|
+fn unify_pair_cache_key(left : @core.Type, right : @core.Type) -> (Int, Int) {
+  (left.structural_hash(), right.structural_hash())
+}
+
+///|
+fn unify_pair_cache_lookup(
+  cache : Map[(Int, Int), Bool],
+  left : @core.Type,
+  right : @core.Type,
+) -> Bool? {
+  cache.get(unify_pair_cache_key(left, right))
+}
+
+///|
+fn unify_pair_cache_store(
+  cache : Map[(Int, Int), Bool],
+  left : @core.Type,
+  right : @core.Type,
+  result : Bool,
+) -> Unit {
+  let key = unify_pair_cache_key(left, right)
+  if cache.length() >= 8192 && not(cache.contains(key)) {
+    return
+  }
+  cache[key] = result
+}
+
+///|
+fn unify_pair_cacheable(left : @core.Type, right : @core.Type) -> Bool {
+  match (left, right) {
+    (@core.Type::Named(..), _) | (_, @core.Type::Named(..)) => true
+    _ => false
+  }
+}
+
+///|
 fn unify_types(
   env : TypeEnv,
   a : @core.Type,
   b : @core.Type,
 ) -> Bool raise TypeError {
+  let cache : Map[(Int, Int), Bool] = {}
+  unify_types_inner(env, a, b, cache)
+}
+
+///|
+fn unify_types_inner(
+  env : TypeEnv,
+  a : @core.Type,
+  b : @core.Type,
+  cache : Map[(Int, Int), Bool],
+) -> Bool raise TypeError {
   let left = resolve_type(env, a)
   let right = resolve_type(env, b)
-  match (left, right) {
+  if left == right {
+    return true
+  }
+  let subs_size_before = env.subs.length()
+  let effect_subs_size_before = env.effect_subs.length()
+  let cacheable = unify_pair_cacheable(left, right)
+  if cacheable {
+    match unify_pair_cache_lookup(cache, left, right) {
+      Some(hit) => return hit
+      None => ()
+    }
+  }
+  let result = match (left, right) {
     (@core.Type::Never, _) => true
     (_, @core.Type::Never) => true
     (@core.Type::Named(name=an, args=aa), @core.Type::Named(name=bn, args=bb)) =>
@@ -779,7 +1180,7 @@ fn unify_types(
         } else {
           let mut ok = true
           for i in 0..<aa.length() {
-            if not(unify_types(env, aa[i], bb[i])) {
+            if not(unify_types_inner(env, aa[i], bb[i], cache)) {
               ok = false
               break
             }
@@ -789,7 +1190,7 @@ fn unify_types(
       } else {
         let nl = normalize_type(env, left)
         let nr = normalize_type(env, right)
-        unify_types(env, nl, nr)
+        unify_types_inner(env, nl, nr, cache)
       }
     (@core.Type::Var(id), t) => bind_var(env, id, t)
     (t, @core.Type::Var(id)) => bind_var(env, id, t)
@@ -798,11 +1199,11 @@ fn unify_types(
     (_, @core.Type::Param(_)) => false
     (@core.Type::Named(..), _) => {
       let nl = normalize_type(env, left)
-      unify_types(env, nl, right)
+      unify_types_inner(env, nl, right, cache)
     }
     (_, @core.Type::Named(..)) => {
       let nr = normalize_type(env, right)
-      unify_types(env, left, nr)
+      unify_types_inner(env, left, nr, cache)
     }
     (@core.Type::Int, @core.Type::Int) => true
     (@core.Type::Float, @core.Type::Float) => true
@@ -820,7 +1221,7 @@ fn unify_types(
       } else {
         let mut ok = true
         for i in 0..<xs.length() {
-          if not(unify_types(env, xs[i], ys[i])) {
+          if not(unify_types_inner(env, xs[i], ys[i], cache)) {
             ok = false
             break
           }
@@ -835,7 +1236,7 @@ fn unify_types(
         for name, ty in ax {
           match bx.get(name) {
             Some(other) =>
-              if not(unify_types(env, ty, other)) {
+              if not(unify_types_inner(env, ty, other, cache)) {
                 ok = false
                 break
               }
@@ -847,12 +1248,14 @@ fn unify_types(
         }
         ok
       }
-    (@core.Type::Array(ae), @core.Type::Array(be)) => unify_types(env, ae, be)
-    (@core.Type::Map(av), @core.Type::Map(bv)) => unify_types(env, av, bv)
+    (@core.Type::Array(ae), @core.Type::Array(be)) =>
+      unify_types_inner(env, ae, be, cache)
+    (@core.Type::Map(av), @core.Type::Map(bv)) =>
+      unify_types_inner(env, av, bv, cache)
     (@core.Type::ArrayBuilder(ae), @core.Type::ArrayBuilder(be)) =>
-      unify_types(env, ae, be)
+      unify_types_inner(env, ae, be, cache)
     (@core.Type::MapBuilder(av), @core.Type::MapBuilder(bv)) =>
-      unify_types(env, av, bv)
+      unify_types_inner(env, av, bv, cache)
     (@core.Type::StringBuilder, @core.Type::StringBuilder) => true
     (@core.Type::Variant(ax), @core.Type::Variant(bx)) =>
       if ax.length() != bx.length() {
@@ -862,7 +1265,7 @@ fn unify_types(
         for name, ty in ax {
           match bx.get(name) {
             Some(other) =>
-              if not(unify_types(env, ty, other)) {
+              if not(unify_types_inner(env, ty, other, cache)) {
                 ok = false
                 break
               }
@@ -882,12 +1285,12 @@ fn unify_types(
         false
       } else if not(unify_effects(env, ea, eb)) {
         false
-      } else if not(unify_types(env, ra, rb)) {
+      } else if not(unify_types_inner(env, ra, rb, cache)) {
         false
       } else {
         let mut ok = true
         for i in 0..<pa.length() {
-          if not(param_unify(env, pa[i], pb[i])) {
+          if not(param_unify(env, pa[i], pb[i], cache)) {
             ok = false
             break
           }
@@ -896,6 +1299,13 @@ fn unify_types(
       }
     _ => false
   }
+  if cacheable &&
+    result &&
+    env.subs.length() == subs_size_before &&
+    env.effect_subs.length() == effect_subs_size_before {
+    unify_pair_cache_store(cache, left, right, result)
+  }
+  result
 }
 
 ///|
@@ -903,6 +1313,7 @@ fn param_unify(
   env : TypeEnv,
   a : @core.FuncParam,
   b : @core.FuncParam,
+  cache : Map[(Int, Int), Bool],
 ) -> Bool raise TypeError {
   if a.label != b.label {
     return false
@@ -916,7 +1327,7 @@ fn param_unify(
     ) {
     return false
   }
-  unify_types(env, a.ty, b.ty)
+  unify_types_inner(env, a.ty, b.ty, cache)
 }
 
 ///|
@@ -937,6 +1348,7 @@ fn bind_var(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
           mark_num_var(env, other)
           add_var_trait_bounds(env, other, required_bounds)
           env.subs[id] = resolved
+          env.subs_version += 1
           true
         }
       @core.Type::Int | @core.Type::Float | @core.Type::Double => {
@@ -946,6 +1358,7 @@ fn bind_var(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
           }
         }
         env.subs[id] = resolved
+        env.subs_version += 1
         true
       }
       _ => false
@@ -960,6 +1373,7 @@ fn bind_var(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
         } else {
           add_var_trait_bounds(env, other, required_bounds)
           env.subs[id] = resolved
+          env.subs_version += 1
           true
         }
       _ =>
@@ -972,6 +1386,7 @@ fn bind_var(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
             }
           }
           env.subs[id] = resolved
+          env.subs_version += 1
           true
         }
     }

@@ -122,6 +122,13 @@ pub fn TypeEnv::invalidate_scoped_ref_contains_cache(self : TypeEnv) -> Unit {
 }
 
 ///|
+pub fn TypeEnv::invalidate_normalize_type_cache(self : TypeEnv) -> Unit {
+  self.normalize_type_cache_expand = {}
+  self.normalize_type_cache_preserve = {}
+  self.normalize_type_cache_subs_version = self.subs_version
+}
+
+///|
 pub fn TypeEnv::set(self : TypeEnv, name : String, ty : @core.Type) -> Unit {
   self.set_scheme(name, TypeScheme::{
     vars: [],

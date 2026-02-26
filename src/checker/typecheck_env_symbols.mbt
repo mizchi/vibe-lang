@@ -70,6 +70,7 @@ pub fn TypeEnv::set_enum_def(
 ) -> Unit {
   self.enum_defs[name] = def
   self.invalidate_scoped_ref_contains_cache()
+  self.invalidate_normalize_type_cache()
 }
 
 ///|
@@ -85,6 +86,7 @@ pub fn TypeEnv::set_struct(
 ) -> Unit {
   self.struct_defs[name] = def
   self.invalidate_scoped_ref_contains_cache()
+  self.invalidate_normalize_type_cache()
 }
 
 ///|
@@ -100,6 +102,7 @@ pub fn TypeEnv::set_type_alias(
 ) -> Unit {
   self.type_aliases[name] = type_alias
   self.invalidate_scoped_ref_contains_cache()
+  self.invalidate_normalize_type_cache()
 }
 
 ///|
