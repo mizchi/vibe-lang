@@ -125,6 +125,8 @@ pub fn TypeEnv::invalidate_scoped_ref_contains_cache(self : TypeEnv) -> Unit {
 pub fn TypeEnv::invalidate_normalize_type_cache(self : TypeEnv) -> Unit {
   self.normalize_type_cache_expand = {}
   self.normalize_type_cache_preserve = {}
+  self.normalize_type_cache_expand_ground = {}
+  self.normalize_type_cache_preserve_ground = {}
   self.normalize_type_cache_subs_version = self.subs_version
 }
 

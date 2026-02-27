@@ -12,8 +12,13 @@ fn normalize_type_preserve_enum(
 }
 
 ///|
-fn normalize_type_cache_key(ty : @core.Type) -> Int {
-  ty.structural_hash()
+/// Extract a cheap cache key for Named types.
+/// Returns the type name string instead of expensive structural_hash.
+fn normalize_type_cache_key(ty : @core.Type) -> String {
+  match ty {
+    @core.Type::Named(name~, ..) => name
+    _ => ""
+  }
 }
 
 ///|
@@ -33,7 +38,7 @@ fn normalize_type_cache_refresh(env : TypeEnv) -> Unit {
 
 ///|
 fn normalize_type_cache_lookup_from(
-  cache : Map[Int, Array[(@core.Type, @core.Type)]],
+  cache : Map[String, Array[(@core.Type, @core.Type)]],
   ty : @core.Type,
 ) -> @core.Type? {
   let key = normalize_type_cache_key(ty)
@@ -53,7 +58,7 @@ fn normalize_type_cache_lookup_from(
 
 ///|
 fn normalize_type_cache_store_to(
-  cache : Map[Int, Array[(@core.Type, @core.Type)]],
+  cache : Map[String, Array[(@core.Type, @core.Type)]],
   source : @core.Type,
   normalized : @core.Type,
 ) -> Unit {
@@ -77,6 +82,24 @@ fn normalize_type_cache_lookup(
   if not(normalize_type_cacheable(ty)) {
     return None
   }
+  // Fast path: ground cache for 0-arg Named types.
+  // These don't depend on type variable substitutions, so they survive
+  // subs_version changes (only invalidated on type definition changes).
+  match ty {
+    @core.Type::Named(name~, args~) =>
+      if args.is_empty() {
+        let ground = if expand_enum {
+          env.normalize_type_cache_expand_ground
+        } else {
+          env.normalize_type_cache_preserve_ground
+        }
+        match ground.get(name) {
+          Some(hit) => return Some(hit)
+          None => ()
+        }
+      }
+    _ => ()
+  }
   if expand_enum {
     normalize_type_cache_lookup_from(env.normalize_type_cache_expand, ty)
   } else {
@@ -94,6 +117,19 @@ fn normalize_type_cache_store(
   if not(normalize_type_cacheable(source)) ||
     not(normalize_type_cacheable(normalized)) {
     return
+  }
+  // Store in ground cache for 0-arg Named types (survives subs_version changes).
+  match source {
+    @core.Type::Named(name~, args~) =>
+      if args.is_empty() {
+        if expand_enum {
+          env.normalize_type_cache_expand_ground[name] = normalized
+        } else {
+          env.normalize_type_cache_preserve_ground[name] = normalized
+        }
+        return
+      }
+    _ => ()
   }
   if expand_enum {
     normalize_type_cache_store_to(
@@ -422,14 +458,19 @@ fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
 }
 
 ///|
-fn scoped_ref_cache_key(env : TypeEnv, ty : @core.Type) -> Int {
-  let version_key = env.scoped_ref_contains_cache_version << 12
-  version_key ^ ty.structural_hash()
+/// Extract a cheap cache key for scoped ref checking.
+/// Uses type name for Named types instead of expensive structural_hash.
+/// The cache is cleared on invalidation, so version is not needed in the key.
+fn scoped_ref_cache_key(_env : TypeEnv, ty : @core.Type) -> String {
+  match ty {
+    @core.Type::Named(name~, ..) => name
+    _ => ""
+  }
 }
 
 ///|
 fn scoped_ref_cache_lookup(env : TypeEnv, ty : @core.Type) -> Bool? {
-  let key = scoped_ref_cache_key(env, ty)
+  let key : String = scoped_ref_cache_key(env, ty)
   match env.scoped_ref_contains_cache.get(key) {
     Some(entries) => {
       for entry in entries {
@@ -445,7 +486,7 @@ fn scoped_ref_cache_lookup(env : TypeEnv, ty : @core.Type) -> Bool? {
 
 ///|
 fn scoped_ref_cache_store(env : TypeEnv, ty : @core.Type, value : Bool) -> Unit {
-  let key = scoped_ref_cache_key(env, ty)
+  let key : String = scoped_ref_cache_key(env, ty)
   let next = ScopedRefContainsCacheEntry::{ ty, has_scoped_ref: value }
   if env.scoped_ref_contains_cache.length() >= 4096 &&
     not(env.scoped_ref_contains_cache.contains(key)) {
