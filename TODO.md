@@ -415,7 +415,7 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-Total: ~303 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5, eval: 24, eval_stmt: 12, eval_builtins: 17, eval_e2e: 10, values: 8) + MoonBit E2E
+Total: ~311 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5, eval: 24, eval_stmt: 12, eval_builtins: 17, eval_e2e: 10, eval_import: 8, values: 8) + MoonBit E2E
 
 ### Phase 1: Lexer + AST + Expression Parser (completed)
 
@@ -492,7 +492,10 @@ Total: ~303 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, ty
   - Bytes: bytes_new, bytes_length, bytes_get, bytes_set, bytes_push, bytes_concat, bytes_slice, bytes_from_array, bytes_to_array
   - Misc: eq, not, __to_string, print, println, assert
 - [x] `eval_e2e_test.vibe` — parse → eval 統合テスト (10 tests)
-- [ ] Import file loading (`import ./foo.vibe { ... }` 実ファイル I/O + parse + eval)
+- [x] Import file loading (`import ./foo.vibe { ... }` 仮想FS + parse + eval, 8 tests)
+  - `eval_loader.vibe`: load_and_parse, collect_exports, resolve_path, dir_of, source/cache lookup
+  - `eval_stmt.vibe`: ModuleCtx パラメータ追加、cycle detection、transitive import
+  - `eval_import_test.vibe`: basic, alias, export block, non-exported, cycle, transitive, not-found, enum
 - [ ] Self-hosting: vibe/compiler が vibe/compiler 自身を parse + eval する
 
 ### Language pain points discovered during self-hosting
