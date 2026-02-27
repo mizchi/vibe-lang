@@ -257,6 +257,20 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] `vibe/compiler` テストの実行時間が重い原因を特定し、回帰しない形で改善する
   - 対象: `vibe/compiler/*_test.vibe`, `src/runtime/test_runner.mbt`, `src/cmd/vibe/cli_test*.mbt`
   - 完了条件: ボトルネック要因を特定して修正し、`vibe test vibe/compiler` の実行時間を実用水準まで短縮する
+  - **原因特定済み (2026-02-27):**
+    - printer.vibe を import する全テスト (printer_test, parser_test, stmt_test, fixture_test) が **~23分/CPU 1250s** でハング同然
+    - テスト自体は 0 件実行。全コストはモジュールのロード・型チェック段階
+    - printer.vibe (276行) → ast.vibe を import し、Expr (30 variant) / Stmt (16 variant) の巨大 match 式を含む
+    - `src/runtime/eval.mbt:287-292`: 各 `let rec` binding で `purity_for_let()` が AST 全体を再帰走査
+    - `src/checker/purity.mbt:176-460`: 再帰的 expression/block analysis — ネスト関数ごとに全サブ式を走査
+    - `src/runtime/store.mbt:464-466`: 関数生成ごとに `env_snapshot()` が環境マップをフルクローン
+    - purity 結果はモジュール間でキャッシュされない — 同じモジュールを複数テストから import しても毎回再計算
+    - parser.vibe (1425行) を直接 import しないテスト (lexer_test, types_test 等) は 0.8-1.2s で正常完了
+  - 改善方針候補:
+    - (A) purity analysis のモジュール単位キャッシュ (`eval_module` 結果の再利用)
+    - (B) テスト実行時の purity check スキップオプション
+    - (C) `env_snapshot` の遅延化 (COW 方式)
+    - (D) printer.vibe の match 式を分割して purity analysis のコストを削減
 
 ### Low (P3): 公開面のノイズ削減
 
