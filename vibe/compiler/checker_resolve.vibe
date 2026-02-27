@@ -1,0 +1,39 @@
+import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
+import ./types.vibe { Type, TypeDef, find_typedef, resolve_builtin }
+
+export let rec resolve_type_expr = (te: TypeExpr, defs: Array[TypeDef]) -> Type {
+  match te {
+    TyUnit => CtUnit,
+    TyName(name) => {
+      match resolve_builtin(name) {
+        Some(t) => t,
+        None => match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDEnum(n, _) => CtEnum(n),
+            TDStruct(n, _) => CtStruct(n),
+            TDAlias(_, t) => t
+          },
+          None => CtNamed(name, array_slice([CtUnknown], 0, 0))
+        }
+      }
+    },
+    TyApp(name, args) => {
+      let ra = for a in args { resolve_type_expr(a, defs) }
+      if string_equals(name, "Array") {
+        if eq(array_length(ra), 1) { CtArray(array_get(ra, 0)) }
+        else CtNamed(name, ra)
+      } else if string_equals(name, "Option") {
+        if eq(array_length(ra), 1) { CtOption(array_get(ra, 0)) }
+        else CtNamed(name, ra)
+      } else CtNamed(name, ra)
+    },
+    TyTuple(elems) => {
+      let r = for e in elems { resolve_type_expr(e, defs) }
+      CtTuple(r)
+    },
+    TyFn(params, ret) => {
+      let rp = for p in params { resolve_type_expr(p, defs) }
+      CtFn(rp, resolve_type_expr(ret, defs), false)
+    }
+  }
+}

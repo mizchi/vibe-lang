@@ -237,7 +237,7 @@ let empty_fields = () -> Array[(String, TypeExpr)] {
   ], 0, 0)
 }
 
-let empty_params = () -> Array[(String, Option[String])] {
+let empty_params = () -> Array[(String, Option[TypeExpr])] {
   array_slice([
     ("", None)
   ], 0, 0)
@@ -330,29 +330,6 @@ let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Erro
   }
 }
 
-let parse_one_param = (tokens: Array[Token], pos: Int) -> ((String, Option[String]), Int)with { Error } {
-  match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
-      TTilde => {
-        let labeled_name = string_concat(name, "~")
-        match peek(tokens, pos + 2) {
-          TColon => match peek(tokens, pos + 3) {
-            TIdent(ty) => ((labeled_name, Some(ty)), pos + 4),
-            _ => throw("expected type after ':'")
-          },
-          _ => ((labeled_name, None), pos + 2)
-        }
-      },
-      TColon => match peek(tokens, pos + 2) {
-        TIdent(ty) => ((name, Some(ty)), pos + 3),
-        _ => throw("expected type after ':'")
-      },
-      _ => ((name, None), pos + 1)
-    },
-    _ => throw("expected parameter name")
-  }
-}
-
 let empty_type_exprs = () -> Array[TypeExpr] {
   array_slice([
     TyUnit
@@ -431,7 +408,30 @@ export let parse_type = (tokens: Array[Token], pos: Int) -> (TypeExpr, Int)with 
   parse_type_impl(tokens, pos, 0)
 }
 
-let rec parse_param_cont = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[String])]) -> (Array[(String, Option[String])], Int)with { Error } {
+let parse_one_param = (tokens: Array[Token], pos: Int) -> ((String, Option[TypeExpr]), Int)with { Error } {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TTilde => {
+        let labeled_name = string_concat(name, "~")
+        match peek(tokens, pos + 2) {
+          TColon => {
+            let (ty, tp) = parse_type_impl(tokens, pos + 3, 0)
+            ((labeled_name, Some(ty)), tp)
+          },
+          _ => ((labeled_name, None), pos + 2)
+        }
+      },
+      TColon => {
+        let (ty, tp) = parse_type_impl(tokens, pos + 2, 0)
+        ((name, Some(ty)), tp)
+      },
+      _ => ((name, None), pos + 1)
+    },
+    _ => throw("expected parameter name")
+  }
+}
+
+let rec parse_param_cont = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[TypeExpr])]) -> (Array[(String, Option[TypeExpr])], Int)with { Error } {
   match peek(tokens, pos) {
     TComma => {
       let (p, pn) = parse_one_param(tokens, pos + 1)
@@ -443,7 +443,7 @@ let rec parse_param_cont = (tokens: Array[Token], pos: Int, b: ArrayBuilder[(Str
   }
 }
 
-let parse_param_list = (tokens: Array[Token], pos: Int) -> (Array[(String, Option[String])], Int)with { Error } {
+let parse_param_list = (tokens: Array[Token], pos: Int) -> (Array[(String, Option[TypeExpr])], Int)with { Error } {
   match peek(tokens, pos) {
     TRParen => (empty_params(), pos + 1),
     _ => {
@@ -580,36 +580,55 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
           TThinArrow => {
             let after_arrow = ap + 1
             match peek(tokens, after_arrow) {
-              TIdent(ret_name) => {
-                let after_ret = after_arrow + 1
-                match peek(tokens, after_ret) {
+              TIdent(_) => {
+                let (ty, tp) = parse_type_impl(tokens, after_arrow, 0)
+                match peek(tokens, tp) {
                   TLBrace => {
-                    let (body, end) = parse_impl(tokens, after_ret + 1, 20)
-                    (EFn(params, Some(ret_name), body), end)
+                    let (body, end) = parse_impl(tokens, tp + 1, 20)
+                    (EFn(params, Some(ty), None, body), end)
                   },
                   TWith => {
-                    let wb = expect_tk(tokens, after_ret + 1, "{")
-                    let (effects_str, eb) = collect_effect_names(tokens, wb, "")
-                    let ret_with = string_concat(ret_name, string_concat(" with {", string_concat(effects_str, "}")))
+                    let wb = expect_tk(tokens, tp + 1, "{")
+                    let (eff, eb) = collect_effect_names(tokens, wb, "")
                     let bb = expect_tk(tokens, eb, "{")
                     let (body, end) = parse_impl(tokens, bb, 20)
-                    (EFn(params, Some(ret_with), body), end)
+                    (EFn(params, Some(ty), Some(eff), body), end)
                   },
                   _ => {
                     let (body, end) = parse_impl(tokens, after_arrow, 0)
-                    (EFn(params, None, body), end)
+                    (EFn(params, None, None, body), end)
+                  }
+                }
+              },
+              TLParen => {
+                let (ty, tp) = parse_type_impl(tokens, after_arrow, 0)
+                match peek(tokens, tp) {
+                  TLBrace => {
+                    let (body, end) = parse_impl(tokens, tp + 1, 20)
+                    (EFn(params, Some(ty), None, body), end)
+                  },
+                  TWith => {
+                    let wb = expect_tk(tokens, tp + 1, "{")
+                    let (eff, eb) = collect_effect_names(tokens, wb, "")
+                    let bb = expect_tk(tokens, eb, "{")
+                    let (body, end) = parse_impl(tokens, bb, 20)
+                    (EFn(params, Some(ty), Some(eff), body), end)
+                  },
+                  _ => {
+                    let (body, end) = parse_impl(tokens, after_arrow, 0)
+                    (EFn(params, None, None, body), end)
                   }
                 }
               },
               _ => {
                 let (body, end) = parse_impl(tokens, after_arrow, 0)
-                (EFn(params, None, body), end)
+                (EFn(params, None, None, body), end)
               }
             }
           },
           TLBrace => {
             let (body, end) = parse_impl(tokens, ap + 1, 20)
-            (EFn(params, None, body), end)
+            (EFn(params, None, None, body), end)
           },
           _ => throw("expected '->' or '{' after fn params")
         }

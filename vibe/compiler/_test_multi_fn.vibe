@@ -85,16 +85,22 @@ export let rec print_expr = (e: Expr) -> String {
     ECall(callee, args) => string_concat(print_expr(callee), string_concat("(", string_concat(join(map_to_strings(args, print_expr), ", "), ")"))),
     EBinOp(op, left, right) => string_concat("(", string_concat(print_expr(left), string_concat(" ", string_concat(op, string_concat(" ", string_concat(print_expr(right), ")")))))),
     EUnaryOp(op, expr) => string_concat("(", string_concat(op, string_concat(print_expr(expr), ")"))),
-    EFn(params, ret_ann, body) => {
+    EFn(params, ret_ty, effect, body) => {
       let parts = for param in params {
         let (name, ty_opt) = param
         match ty_opt {
-          Some(ty) => string_concat(name, string_concat(": ", ty)),
+          Some(ty) => string_concat(name, string_concat(": ", print_type_expr(ty))),
           None => name
         }
       }
-      let ret_str = match ret_ann {
-        Some(rt) => string_concat(") -> ", string_concat(rt, string_concat(" { ", string_concat(print_expr(body), " }")))),
+      let ret_str = match ret_ty {
+        Some(rt) => {
+          let eff_str = match effect {
+            Some(e) => string_concat(" with {", string_concat(e, "}")),
+            None => ""
+          }
+          string_concat(") -> ", string_concat(print_type_expr(rt), string_concat(eff_str, string_concat(" { ", string_concat(print_expr(body), " }")))))
+        },
         None => string_concat(") -> ", print_expr(body))
       }
       string_concat("(", string_concat(join(parts, ", "), ret_str))
@@ -157,6 +163,7 @@ export let rec print_stmt = (s: Stmt) -> String {
     SBench(name, body) => string_concat("bench \"", string_concat(name, string_concat("\" { ", string_concat(print_expr(body), " }")))),
     SExpr(e) => print_expr(e),
     SExport(names) => "export",
+    SReExport(path, items) => "re-export",
     SModule(exported, name, stmts) => {
       let parts = for s in stmts { print_stmt(s) }
       let p = if exported { "export " } else ""

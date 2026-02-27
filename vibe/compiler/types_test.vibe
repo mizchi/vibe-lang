@@ -1,0 +1,98 @@
+import ./types.vibe {
+  Type, TypeDef, TypeEnv,
+  env_lookup, env_bind, env_bind_all,
+  types_compatible, types_equal, type_to_string
+}
+
+let empty_defs = () -> Array[TypeDef] {
+  array_slice([TDAlias("_dummy", CtUnit)], 0, 0)
+}
+
+test "env_lookup found" {
+  let env = env_bind(EnvEmpty, "x", CtInt)
+  let result = env_lookup(env, "x")
+  match result {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "env_lookup not found" {
+  let result = env_lookup(EnvEmpty, "x")
+  match result {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "env_lookup shadows outer" {
+  let env = env_bind(EnvEmpty, "x", CtInt)
+  let env2 = env_bind(env, "x", CtString)
+  let result = env_lookup(env2, "x")
+  match result {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+}
+
+test "env_bind_all" {
+  let env = env_bind_all(EnvEmpty, [("a", CtInt), ("b", CtString)])
+  match env_lookup(env, "a") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+  match env_lookup(env, "b") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+}
+
+test "types_compatible with CtUnknown" {
+  assert(types_compatible(CtUnknown, CtInt))
+  assert(types_compatible(CtInt, CtUnknown))
+  assert(types_compatible(CtUnknown, CtUnknown))
+}
+
+test "types_compatible same types" {
+  assert(types_compatible(CtInt, CtInt))
+  assert(types_compatible(CtString, CtString))
+}
+
+test "types_compatible different types" {
+  assert(not(types_compatible(CtInt, CtString)))
+  assert(not(types_compatible(CtBool, CtDouble)))
+}
+
+test "types_equal arrays" {
+  assert(types_equal(CtArray(CtInt), CtArray(CtInt)))
+  assert(not(types_equal(CtArray(CtInt), CtArray(CtString))))
+}
+
+test "types_equal fn types" {
+  assert(types_equal(CtFn([CtInt], CtString, false), CtFn([CtInt], CtString, false)))
+  assert(not(types_equal(CtFn([CtInt], CtString, false), CtFn([CtInt], CtString, true))))
+  assert(not(types_equal(CtFn([CtInt], CtString, false), CtFn([CtBool], CtString, false))))
+}
+
+test "types_equal tuples" {
+  assert(types_equal(CtTuple([CtInt, CtBool]), CtTuple([CtInt, CtBool])))
+  assert(not(types_equal(CtTuple([CtInt, CtBool]), CtTuple([CtInt, CtString]))))
+  assert(not(types_equal(CtTuple([CtInt]), CtTuple([CtInt, CtBool]))))
+}
+
+test "type_to_string primitives" {
+  assert(string_equals(type_to_string(CtInt), "Int"))
+  assert(string_equals(type_to_string(CtString), "String"))
+  assert(string_equals(type_to_string(CtBool), "Bool"))
+  assert(string_equals(type_to_string(CtUnit), "()"))
+  assert(string_equals(type_to_string(CtUnknown), "?"))
+}
+
+test "type_to_string composite" {
+  assert(string_equals(type_to_string(CtArray(CtInt)), "Array[Int]"))
+  assert(string_equals(type_to_string(CtOption(CtString)), "Option[String]"))
+  assert(string_equals(type_to_string(CtTuple([CtInt, CtBool])), "(Int, Bool)"))
+  assert(string_equals(type_to_string(CtFn([CtInt], CtString, false)), "(Int) -> String"))
+  assert(string_equals(type_to_string(CtFn([CtInt], CtString, true)), "(Int) -> String with {Error}"))
+}
+

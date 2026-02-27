@@ -1,0 +1,166 @@
+//# Type Definitions
+
+export enum Type {
+  CtInt;
+  CtDouble;
+  CtBool;
+  CtString;
+  CtChar;
+  CtUnit;
+  CtTuple(Array[Type]);
+  CtArray(Type);
+  CtOption(Type);
+  CtFn(Array[Type], Type, Bool);
+  CtEnum(String);
+  CtStruct(String);
+  CtNamed(String, Array[Type]);
+  CtUnknown
+}
+
+export enum TypeDef {
+  TDEnum(String, Array[(String, Array[Type])]);
+  TDStruct(String, Array[(String, Type)]);
+  TDAlias(String, Type)
+}
+
+export enum TypeEnv {
+  EnvEmpty;
+  EnvBind(String, Type, TypeEnv)
+}
+
+//# TypeEnv Functions
+
+export let rec env_lookup = (env: TypeEnv, name: String) -> Option[Type] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(n, ty, rest) => if string_equals(n, name) {
+      Some(ty)
+    } else env_lookup(rest, name)
+  }
+}
+
+export let env_bind = (env: TypeEnv, name: String, ty: Type) -> TypeEnv {
+  EnvBind(name, ty, env)
+}
+
+export let env_bind_all = (env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv {
+  let len = array_length(bindings)
+  let rec go = (i: Int, acc: TypeEnv) -> TypeEnv {
+    if i >= len {
+      acc
+    } else {
+      let (name, ty) = array_get(bindings, i)
+      go(i + 1, EnvBind(name, ty, acc))
+    }
+  }
+  go(0, env)
+}
+
+//# Helper: find_typedef
+
+export let find_typedef = (defs: Array[TypeDef], name: String) -> Option[TypeDef] {
+  let len = array_length(defs)
+  let rec go = (i: Int) -> Option[TypeDef] {
+    if i >= len {
+      None
+    } else {
+      let d = array_get(defs, i)
+      let dname = match d {
+        TDEnum(n, _) => n,
+        TDStruct(n, _) => n,
+        TDAlias(n, _) => n
+      }
+      if string_equals(dname, name) {
+        Some(d)
+      } else go(i + 1)
+    }
+  }
+  go(0)
+}
+
+//# Type Resolution helpers
+
+export let resolve_builtin = (name: String) -> Option[Type] {
+  if string_equals(name, "Int") { Some(CtInt) }
+  else if string_equals(name, "Double") { Some(CtDouble) }
+  else if string_equals(name, "Bool") { Some(CtBool) }
+  else if string_equals(name, "String") { Some(CtString) }
+  else if string_equals(name, "Char") { Some(CtChar) }
+  else if string_equals(name, "Unit") { Some(CtUnit) }
+  else None
+}
+
+//# Type Printing
+
+let join_types = (arr: Array[String], sep: String) -> String {
+  let len = array_length(arr)
+  let rec go = (i: Int, acc: String) -> String {
+    if i >= len {
+      acc
+    } else {
+      let s = if i > 0 {
+        string_concat(string_concat(acc, sep), array_get(arr, i))
+      } else array_get(arr, i)
+      go(i + 1, s)
+    }
+  }
+  go(0, "")
+}
+
+export let rec type_to_string = (ty: Type) -> String {
+  match ty {
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtString => "String",
+    CtChar => "Char",
+    CtUnit => "()",
+    CtUnknown => "?",
+    CtArray(elem) => string_concat("Array[", string_concat(type_to_string(elem), "]")),
+    CtOption(elem) => string_concat("Option[", string_concat(type_to_string(elem), "]")),
+    CtEnum(name) => name,
+    CtStruct(name) => name,
+    CtNamed(name, args) => {
+      if eq(array_length(args), 0) {
+        name
+      } else {
+        let parts = for arg in args {
+          type_to_string(arg)
+        }
+        string_concat(name, string_concat("[", string_concat(join_types(parts, ", "), "]")))
+      }
+    },
+    CtTuple(elems) => {
+      let parts = for e in elems {
+        type_to_string(e)
+      }
+      string_concat("(", string_concat(join_types(parts, ", "), ")"))
+    },
+    CtFn(params, ret, has_error) => {
+      let parts = for p in params {
+        type_to_string(p)
+      }
+      let base = string_concat("(", string_concat(join_types(parts, ", "), string_concat(") -> ", type_to_string(ret))))
+      if has_error {
+        string_concat(base, " with {Error}")
+      } else base
+    }
+  }
+}
+
+//# Type Equality & Compatibility
+
+export let types_equal = (a: Type, b: Type) -> Bool {
+  string_equals(type_to_string(a), type_to_string(b))
+}
+
+export let types_compatible = (expected: Type, actual: Type) -> Bool {
+  match expected {
+    CtUnknown => true,
+    _ => match actual {
+      CtUnknown => true,
+      _ => types_equal(expected, actual)
+    }
+  }
+}
+

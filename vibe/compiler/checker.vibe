@@ -1,0 +1,111 @@
+import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
+import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind }
+import ./builtins.vibe { lookup_builtin }
+
+export let rec check_expr = (
+  expr: Expr,
+  env: TypeEnv,
+  defs: Array[TypeDef]
+) -> Type {
+  match expr {
+    EInt(_) => CtInt,
+    EFloat(_) => CtDouble,
+    EString(_) => CtString,
+    EBool(_) => CtBool,
+    EUnit => CtUnit,
+    EIdent(name) => {
+      match env_lookup(env, name) {
+        Some(t) => t,
+        None => match lookup_builtin(name) {
+          Some(t) => t,
+          None => CtUnknown
+        }
+      }
+    },
+    ESeq(left, right) => {
+      let _ = check_expr(left, env, defs)
+      check_expr(right, env, defs)
+    },
+    ELet(name, val, body) => {
+      let vt = check_expr(val, env, defs)
+      check_expr(body, env_bind(env, name, vt), defs)
+    },
+    ELetRec(name, val, body) => {
+      let vt = check_expr(val, env_bind(env, name, CtUnknown), defs)
+      check_expr(body, env_bind(env, name, vt), defs)
+    },
+    ELetMut(name, val, body) => {
+      let vt = check_expr(val, env, defs)
+      check_expr(body, env_bind(env, name, vt), defs)
+    },
+    EIf(cond, then_e, else_e) => {
+      let _ = check_expr(cond, env, defs)
+      let tt = check_expr(then_e, env, defs)
+      let _ = check_expr(else_e, env, defs)
+      tt
+    },
+    ECall(callee, _) => {
+      let ct = check_expr(callee, env, defs)
+      match ct { CtFn(_, ret, _) => ret, _ => CtUnknown }
+    },
+    EBinOp(op, left, right) => {
+      let _ = check_expr(left, env, defs)
+      let _ = check_expr(right, env, defs)
+      if string_equals(op, "==") { CtBool }
+      else if string_equals(op, "!=") { CtBool }
+      else if string_equals(op, "<") { CtBool }
+      else if string_equals(op, ">") { CtBool }
+      else if string_equals(op, "<=") { CtBool }
+      else if string_equals(op, ">=") { CtBool }
+      else if string_equals(op, "&&") { CtBool }
+      else if string_equals(op, "||") { CtBool }
+      else CtInt
+    },
+    EUnaryOp(op, operand) => {
+      let _ = check_expr(operand, env, defs)
+      if string_equals(op, "!") { CtBool } else CtInt
+    },
+    EAssign(_, val, body) => {
+      let _ = check_expr(val, env, defs)
+      check_expr(body, env, defs)
+    },
+    EAssignOp(_, _, val, body) => {
+      let _ = check_expr(val, env, defs)
+      check_expr(body, env, defs)
+    },
+    EMatch(scrutinee, arms) => {
+      let _ = check_expr(scrutinee, env, defs)
+      if eq(array_length(arms), 0) { CtUnknown }
+      else {
+        let (_, fb) = array_get(arms, 0)
+        check_expr(fb, env, defs)
+      }
+    },
+    EHandle(body, _) => check_expr(body, env, defs),
+    EWhile(cond, body) => {
+      let _ = check_expr(cond, env, defs)
+      let _ = check_expr(body, env, defs)
+      CtUnit
+    },
+    EForIn(name, iterable, body) => {
+      let it = check_expr(iterable, env, defs)
+      let et = match it { CtArray(elem) => elem, _ => CtUnknown }
+      CtArray(check_expr(body, env_bind(env, name, et), defs))
+    },
+    EDot(obj, _) => {
+      let _ = check_expr(obj, env, defs)
+      CtUnknown
+    },
+    EPipe(left, right) => {
+      let _ = check_expr(left, env, defs)
+      let rt = check_expr(right, env, defs)
+      match rt { CtFn(_, ret, _) => ret, _ => CtUnknown }
+    },
+    EFn(_, _, effect, body) => {
+      let he = match effect { Some(_) => true, None => false }
+      let bt = check_expr(body, env, defs)
+      CtFn(array_slice([CtUnknown], 0, 0), bt, he)
+    },
+    _ => CtUnknown
+  }
+}

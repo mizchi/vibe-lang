@@ -1,0 +1,65 @@
+import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
+import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind }
+import ./checker.vibe { check_expr }
+
+export let rec check_stmts = (
+  stmts: Array[Stmt],
+  i: Int,
+  env: TypeEnv,
+  defs: Array[TypeDef]
+) -> TypeEnv {
+  if i >= array_length(stmts) {
+    env
+  } else {
+    let stmt = array_get(stmts, i)
+    let new_env = match stmt {
+      SLet(_, is_rec, name, _, val) => {
+        let vt = if is_rec {
+          check_expr(val, env_bind(env, name, CtUnknown), defs)
+        } else {
+          check_expr(val, env, defs)
+        }
+        env_bind(env, name, vt)
+      },
+      SLetMut(name, _, val) => {
+        let vt = check_expr(val, env, defs)
+        env_bind(env, name, vt)
+      },
+      SEnum(_, name, _) => {
+        env_bind(env, name, CtEnum(name))
+      },
+      SStruct(_, name, _) => {
+        env_bind(env, name, CtStruct(name))
+      },
+      STypeAlias(_, name, _) => {
+        env_bind(env, name, CtUnknown)
+      },
+      SExternLet(name, _) => {
+        env_bind(env, name, CtUnknown)
+      },
+      STest(_, body) => {
+        let _ = check_expr(body, env, defs)
+        env
+      },
+      SBench(_, body) => {
+        let _ = check_expr(body, env, defs)
+        env
+      },
+      SExpr(expr) => {
+        let _ = check_expr(expr, env, defs)
+        env
+      },
+      SModule(_, _, body) => {
+        let _ = check_stmts(body, 0, env, defs)
+        env
+      },
+      _ => env
+    }
+    check_stmts(stmts, i + 1, new_env, defs)
+  }
+}
+
+export let check_program = (stmts: Array[Stmt]) -> TypeEnv {
+  let empty_defs = array_slice([TDAlias("_dummy", CtUnit)], 0, 0)
+  check_stmts(stmts, 0, EnvEmpty, empty_defs)
+}
