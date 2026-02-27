@@ -392,7 +392,7 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-Total: 126 tests (lexer: 20, parser: 27, printer: 21, stmt: 46, fixture: 12)
+Total: ~153 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22) + MoonBit E2E
 
 ### Phase 1: Lexer + AST + Expression Parser (completed)
 
@@ -422,24 +422,21 @@ Total: 126 tests (lexer: 20, parser: 27, printer: 21, stmt: 46, fixture: 12)
 - [x] `suberror` declaration parsing
 - [x] `extern let %name: Type` parsing
 
-### Phase 4: Parse own source (not started)
-
-Cannot parse vibe/compiler/*.vibe itself yet. Missing AST nodes:
+### Phase 4: Parse own source (completed)
 
 - [x] `while` loop expression
-- [ ] `do { ... }` block expression（互換構文。self-host 目標には必須ではないため後回し）
 - [x] `handle { ... } { Error(msg) => ... }` effect handler
-- [ ] `throw(msg)` expression
 - [x] `for ... in` loop
-- [ ] `break` / `continue` / `return`
-
-### Self-host quality baseline (方針メモ)
-
-- Self-host compiler が生成するコードの品質がベースラインを満たすようにする
-  - normalize / format 後のコードが host compiler と同等の出力になること
-  - 既存テスト suite (631+) が回帰なしで通ること
-- 既存ライブラリを WIT (WASI Component Model) で compose して再利用する選択肢あり
-  - lexer/parser を component として切り出し、host runtime と組み合わせ可能にする
+- [x] `throw(msg)` expression
+- [x] `break` / `continue` (with values)
+- [x] `return` → parse error with hint
+- [x] `raise` → parse error with hint (deprecated)
+- [x] `import ./path { items }` parsing
+- [x] `export ./path { items }` re-export (`SReExport`)
+- [x] E2E test: all 16 vibe/compiler/*.vibe files parsed by @parser.parse_ast
+- [x] E2E roundtrip: format_script applied twice produces stable output
+- [x] Selfhost fixture roundtrip tests (5 patterns)
+- [ ] `do { ... }` block expression（互換構文。self-host 目標には必須ではないため後回し）
 
 ### Phase 5: Type Checker (not started)
 
