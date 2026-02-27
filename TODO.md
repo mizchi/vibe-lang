@@ -392,7 +392,7 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-Total: ~209 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22, types: 12, builtins: 5, checker: 19, checker_resolve: 8, checker_stmt: 12) + MoonBit E2E
+Total: ~226 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5) + MoonBit E2E
 
 ### Phase 1: Lexer + AST + Expression Parser (completed)
 
@@ -448,9 +448,14 @@ Total: ~209 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22, ty
 - [x] EFn AST changed to `Option[TypeExpr]` for params/return types (Phase 5.0)
 - [x] Gradual typing with `CtUnknown` (compatible with any type)
 - [x] E2E parse + roundtrip tests for all type checker source files
+- [x] `checker_ann.vibe` — resolve_simple_type: lightweight TyUnit/TyName resolver (5 tests)
+- [x] Annotation-driven type checking: SLet/SLetMut/SExternLet/STypeAlias use type annotations when present
+- [x] EFn parameter type binding from annotations (`(x: Int) -> x + 1` binds x as CtInt)
+- [x] SImport name registration (imported names bound as CtUnknown in env)
+- [x] Effect flag verification tests (EFn with/without effect annotation)
 - [ ] Type inference (Hindley-Milner with unification)
-- [ ] Effect checking (`with { Error }` propagation)
-- [ ] Import resolution (`import ./foo.vibe { ... }` file loading)
+- [ ] Effect scope threading (check_expr signature change needed)
+- [ ] Import file loading (`import ./foo.vibe { ... }` actual file I/O + parse)
 - [ ] Trait constraint resolution
 
 ### Phase 6: Interpreter / Codegen (not started)
