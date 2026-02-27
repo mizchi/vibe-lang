@@ -1,8 +1,8 @@
 ///|
-/// Desugar ForIn AST node into a Do block with array builder pattern.
+/// Desugar ForIn AST node into a Block with array builder pattern.
 ///
 /// for x in iterable { body } →
-/// do {
+/// {
 ///   let __for_arr = iterable
 ///   let __for_iter = iter_require(__for_arr)
 ///   let __for_len = iter_length(__for_iter)

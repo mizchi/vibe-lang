@@ -300,7 +300,6 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "if" => if_kw()
           "else" => else_kw()
           "match" => match_kw()
-          "do" => do_kw()
           "record" => record_kw()
           "map" =>
             if self.peek_next_significant_char() == Some('{') {

@@ -34,3 +34,36 @@ test "normalize_format: railway notes are empty for pure source" {
   let notes = railway_boundary_notes_for_source(source)
   assert_eq(notes.length(), 0)
 }
+
+///|
+test "strip_redundant_blocks: top-level let" {
+  let source = "let x = { 42 }"
+  let result = strip_redundant_blocks_source(source)
+  assert_false(result.contains("{"))
+  assert_true(result.contains("42"))
+}
+
+///|
+test "strip_redundant_blocks: inside fn body" {
+  let source =
+    #|let f = (a: Int) -> Int {
+    #|  { a + 1 }
+    #|}
+  let result = strip_redundant_blocks_source(source)
+  assert_false(result.contains("{ a"))
+  assert_true(result.contains("a + 1"))
+}
+
+///|
+test "normalize_format: strip block inside fn body" {
+  let source =
+    #|let f = (a: Int) -> Int {
+    #|  { a + 1 }
+    #|}
+  let result = match normalize_format_source_text(source) {
+    Ok(v) => v
+    Err(err) => fail("normalize failed: " + err)
+  }
+  assert_false(result.contains("{ a"))
+  assert_true(result.contains("a + 1"))
+}

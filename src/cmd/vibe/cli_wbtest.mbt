@@ -170,48 +170,10 @@ test "line shell options show help" {
 }
 
 ///|
-test "repl parser mode hint suggests vibe for do block in posix mode" {
-  let hint = repl_parser_mode_hint_for_error(
-    "Parse((start=0,end=2), expected expr, got do)",
-    "do { echo(\"x\") }",
-    @runtime.ParserMode::PosixMode,
-    "shell-stdin",
-  )
-  match hint {
-    Some(text) => {
-      assert_true(text.contains("--syntax vibe"))
-      assert_true(text.contains("shell-stdin"))
-    }
-    None => fail("expected parser mode hint")
-  }
-}
-
-///|
-test "repl parser mode hint not shown for non-do input" {
-  let hint = repl_parser_mode_hint_for_error(
-    "Parse((start=0,end=2), expected expr, got do)",
-    "echo(\"x\")",
-    @runtime.ParserMode::PosixMode,
-    "shell-stdin",
-  )
-  match hint {
-    Some(_) => fail("unexpected parser mode hint")
-    None => ()
-  }
-}
-
-///|
-test "repl parser mode hint not shown in vibe mode" {
-  let hint = repl_parser_mode_hint_for_error(
-    "Parse((start=0,end=2), expected expr, got do)",
-    "do { echo(\"x\") }",
-    @runtime.ParserMode::VibeMode,
-    "shell-stdin",
-  )
-  match hint {
-    Some(_) => fail("unexpected parser mode hint")
-    None => ()
-  }
+test "repl parser mode hint removed with do keyword" {
+  // do keyword was removed; these tests are no longer relevant.
+  // Kept as placeholder to maintain test count stability.
+  ()
 }
 
 ///|

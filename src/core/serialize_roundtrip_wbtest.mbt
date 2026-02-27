@@ -838,7 +838,7 @@ test "roundtrip: module ref variants" {
 }
 
 ///|
-test "roundtrip: do expression" {
+test "roundtrip: block expression" {
   let m = Module::{
     stmts: [
       Stmt::Expr(

@@ -467,7 +467,6 @@ fn should_escape_identifier_text(text : String) -> Bool {
   text == "if" ||
   text == "else" ||
   text == "match" ||
-  text == "do" ||
   text == "record" ||
   text == "map" ||
   text == "fn" ||
@@ -729,7 +728,6 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == while_kw() ||
   kind == loop_kw() ||
   kind == match_kw() ||
-  kind == do_kw() ||
   kind == break_kw() ||
   kind == continue_kw() ||
   kind == raise_kw() ||
@@ -814,7 +812,6 @@ fn is_match_brace(
       prev != match_kw() &&
       prev != record_kw() &&
       prev != map_kw() &&
-      prev != do_kw() &&
       prev != if_kw() &&
       prev != else_kw()
     None => false
@@ -1050,7 +1047,6 @@ fn is_keyword_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == if_kw() ||
   kind == else_kw() ||
   kind == match_kw() ||
-  kind == do_kw() ||
   kind == record_kw() ||
   kind == map_kw() ||
   kind == fn_kw() ||

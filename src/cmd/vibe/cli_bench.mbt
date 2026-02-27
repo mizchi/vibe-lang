@@ -660,7 +660,7 @@ fn build_bench_case_loop_script(
       out.write_char('\n')
     }
   }
-  out.write_string("do {\n")
+  out.write_string("{\n")
   out.write_string("let mut ")
   out.write_string(iter_name)
   out.write_string(" = 0\n")

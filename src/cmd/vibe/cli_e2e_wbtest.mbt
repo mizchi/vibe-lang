@@ -543,28 +543,8 @@ test "shell restore resets duplicate scratch source" {
 }
 
 ///|
-test "shell posix mode suggests vibe syntax for do block input" {
-  let root = wbtest_make_temp_dir("repl_posix_do_hint")
-  let scratch_db_path = root + "/scratch.db"
-  let lines : Array[String] = []
-  let rt = new_cli_runtime(
-    @runtime.RuntimeFeatureFlags::stable(),
-    enable_llm=false,
-  )
-  let _ = run_interactive_line(
-    rt,
-    @runtime.ParserMode::PosixMode,
-    scratch_db_path,
-    "",
-    "do { echo(\"x\") }",
-    print_line=fn(s) { lines.push(s) },
-  )
-  let text = wbtest_join_lines(lines)
-  assert_true(text.contains("hint: `do { ... }` is vibe syntax"))
-  assert_true(text.contains("--syntax vibe"))
-  wbtest_remove_if_exists(scratch_db_path)
-  wbtest_remove_if_exists(root)
-}
+// Test removed: `do` keyword was removed from the language.
+// The hint mechanism for `do { ... }` in posix mode is no longer needed.
 
 ///|
 test "append eval db source formats persisted script" {

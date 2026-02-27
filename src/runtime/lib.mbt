@@ -27,7 +27,7 @@ pub fn VibeError::format_for_repl(self : VibeError, source : String) -> String {
 
 ///|
 /// Format any Error for REPL display. Tries VibeError diagnostic, falls back to string.
-/// `unwrap_prefix` is the prefix added by wrapping (e.g. "do { "), used to adjust span offsets.
+/// `unwrap_prefix` is the prefix added by wrapping (e.g. "{ "), used to adjust span offsets.
 pub fn format_error_for_repl(
   e : Error,
   source : String,

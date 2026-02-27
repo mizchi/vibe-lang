@@ -260,7 +260,7 @@ test "type_call_builtin: threads_spawn succeeds with Threads effect scope" {
     span,
   )
   match result {
-    Ok(_) => () // do boundary is no longer required
+    Ok(_) => ()
     Err(err) => fail("unexpected error: \{err.to_string()}")
   }
 }

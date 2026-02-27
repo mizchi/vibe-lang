@@ -123,11 +123,6 @@ pub fn match_kw() -> @cst.SyntaxKind {
 }
 
 ///|
-pub fn do_kw() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(28)
-}
-
-///|
 pub fn record_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(29)
 }
@@ -482,11 +477,6 @@ pub fn block_expr() -> @cst.SyntaxKind {
 ///|
 pub fn match_expr() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(113)
-}
-
-///|
-pub fn do_expr() -> @cst.SyntaxKind {
-  @cst.SyntaxKind::new(114)
 }
 
 ///|

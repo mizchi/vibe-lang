@@ -1876,7 +1876,7 @@ fn repl_tui_cmd(
   let repl_meta_commands = repl_meta_command_names()
   let vibe_builtins = ["sh", "path", "addr", "exit"]
   let vibe_keywords = [
-    "let", "rec", "if", "match", "do", "record", "test", "import", "true", "false",
+    "let", "rec", "if", "match", "record", "test", "import", "true", "false",
   ]
   fn completion_visible() -> Bool {
     completion_session.is_visible() &&
@@ -2137,7 +2137,7 @@ fn repl_tui_cmd(
         // Fallback: if VibeMode fails with name resolution, retry with PosixMode desugar
         let err_str = e.to_string()
         if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-          let wrapped = "do {\n" + trimmed + "\n}"
+          let wrapped = "{\n" + trimmed + "\n}"
           let retry = rt.eval_script_with_mode(
             wrapped,
             @runtime.ParserMode::PosixMode,
@@ -2149,7 +2149,7 @@ fn repl_tui_cmd(
                   wrapped,
                   @runtime.ParserMode::PosixMode,
                   "shell",
-                  unwrap_prefix="do {\n",
+                  unwrap_prefix="{\n",
                 ),
               )
               return true
@@ -2665,7 +2665,7 @@ fn run_eval_line_repl_with_prompt(
           // Fallback: if VibeMode fails with name resolution, retry with PosixMode
           let err_str = e.to_string()
           if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-            let wrapped = "do {\n" + line_str + "\n}"
+            let wrapped = "{\n" + line_str + "\n}"
             let retry = rt.eval_script_with_mode(
               wrapped,
               @runtime.ParserMode::PosixMode,
@@ -2677,7 +2677,7 @@ fn run_eval_line_repl_with_prompt(
                     wrapped,
                     @runtime.ParserMode::PosixMode,
                     cmd_name,
-                    unwrap_prefix="do {\n",
+                    unwrap_prefix="{\n",
                   ),
                 )
                 if options.prompt_enabled {
@@ -3097,7 +3097,7 @@ fn run_interactive_line(
       if posix_fallback {
         let err_str = e.to_string()
         if err_str.contains("UnknownName") || err_str.contains("BadCall") {
-          let wrapped = "do {\n" + line_str + "\n}"
+          let wrapped = "{\n" + line_str + "\n}"
           let retry = rt.eval_script_with_mode(
             wrapped,
             @runtime.ParserMode::PosixMode,
@@ -3110,7 +3110,7 @@ fn run_interactive_line(
                   wrapped,
                   @runtime.ParserMode::PosixMode,
                   "shell",
-                  unwrap_prefix="do {\n",
+                  unwrap_prefix="{\n",
                 ),
               )
               return scratch_source
@@ -3567,38 +3567,6 @@ fn format_repl_error(
 }
 
 ///|
-fn repl_parser_mode_hint_for_error(
-  err_text : String,
-  source : String,
-  syntax_mode : @runtime.ParserMode,
-  cmd_name : String,
-) -> String? {
-  let is_posix_mode = match syntax_mode {
-    @runtime.ParserMode::PosixMode => true
-    @runtime.ParserMode::PosixStrictMode => true
-    @runtime.ParserMode::VibeMode => false
-  }
-  if not(is_posix_mode) {
-    return None
-  }
-  let trimmed = source.trim().to_string()
-  if not(trimmed.has_prefix("do")) {
-    return None
-  }
-  let parse_related = err_text.contains("Parse(") ||
-    err_text.contains("expected expr") ||
-    err_text.contains("got do")
-  if not(parse_related) {
-    return None
-  }
-  Some(
-    "hint: `do { ... }` is vibe syntax; run " +
-    cmd_name +
-    " with `--syntax vibe` (or omit `--syntax posix-ext/posix-strict`)",
-  )
-}
-
-///|
 fn format_repl_error_with_mode(
   e : Error,
   source : String,
@@ -3606,17 +3574,9 @@ fn format_repl_error_with_mode(
   cmd_name : String,
   unwrap_prefix? : String = "",
 ) -> String {
-  let base = format_repl_error(e, source, unwrap_prefix~)
-  match
-    repl_parser_mode_hint_for_error(
-      e.to_string(),
-      source,
-      syntax_mode,
-      cmd_name,
-    ) {
-    Some(hint) => base + "\n" + hint
-    None => base
-  }
+  let _ = syntax_mode
+  let _ = cmd_name
+  format_repl_error(e, source, unwrap_prefix~)
 }
 
 ///|

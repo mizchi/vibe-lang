@@ -494,10 +494,9 @@ struct RedundantBlockSpan {
 fn collect_rb_module(
   m : @vibe_core.Module,
   out : Array[RedundantBlockSpan],
-  skip_top_block : Bool,
 ) -> Unit {
   for stmt in m.stmts {
-    collect_rb_stmt(stmt, out, skip_top_block)
+    collect_rb_stmt(stmt, out)
   }
 }
 
@@ -505,21 +504,9 @@ fn collect_rb_module(
 fn collect_rb_stmt(
   stmt : @vibe_core.Stmt,
   out : Array[RedundantBlockSpan],
-  skip_top_block : Bool,
 ) -> Unit {
   match stmt {
-    @vibe_core.Stmt::Expr(expr~, ..) =>
-      if skip_top_block {
-        // The parser wraps if/else/fn/etc. body content in Expr::Block.
-        // Skip the syntactic top-level block but recurse into its contents.
-        match expr {
-          @vibe_core.Expr::Block(body~, ..) =>
-            collect_rb_module(body, out, false)
-          _ => collect_rb_expr(expr, out)
-        }
-      } else {
-        collect_rb_expr(expr, out)
-      }
+    @vibe_core.Stmt::Expr(expr~, ..) => collect_rb_expr(expr, out)
     @vibe_core.Stmt::Let(expr~, ..)
     | @vibe_core.Stmt::ExportLet(expr~, ..)
     | @vibe_core.Stmt::LetMut(expr~, ..)
@@ -527,7 +514,7 @@ fn collect_rb_stmt(
     | @vibe_core.Stmt::LetPat(expr~, ..) => collect_rb_expr(expr, out)
     @vibe_core.Stmt::LetPatElse(expr~, else_body~, ..) => {
       collect_rb_expr(expr, out)
-      collect_rb_module(else_body, out, true)
+      collect_rb_module(else_body, out)
     }
     @vibe_core.Stmt::IndexAssign(target~, index~, value~, ..) => {
       collect_rb_expr(target, out)
@@ -535,7 +522,7 @@ fn collect_rb_stmt(
       collect_rb_expr(value, out)
     }
     @vibe_core.Stmt::Test(body~, ..) | @vibe_core.Stmt::Bench(body~, ..) =>
-      collect_rb_module(body, out, true)
+      collect_rb_module(body, out)
     _ => ()
   }
 }
@@ -547,7 +534,7 @@ fn collect_rb_expr(
 ) -> Unit {
   match expr {
     @vibe_core.Expr::Block(body~, span~) => {
-      collect_rb_module(body, out, false)
+      collect_rb_module(body, out)
       match body.stmts {
         [@vibe_core.Stmt::Expr(span=stmt_span, ..)] =>
           out.push({
@@ -561,8 +548,8 @@ fn collect_rb_expr(
     }
     @vibe_core.Expr::If(cond~, then_body~, else_body~, ..) => {
       collect_rb_expr(cond, out)
-      collect_rb_module(then_body, out, true)
-      collect_rb_module(else_body, out, true)
+      collect_rb_module(then_body, out)
+      collect_rb_module(else_body, out)
     }
     @vibe_core.Expr::Match(scrutinee~, arms~, ..) => {
       collect_rb_expr(scrutinee, out)
@@ -575,7 +562,7 @@ fn collect_rb_expr(
       }
     }
     @vibe_core.Expr::Handle(body~, arms~, ..) => {
-      collect_rb_module(body, out, true)
+      collect_rb_module(body, out)
       for arm in arms {
         match arm.cond {
           Some(c) => collect_rb_expr(c, out)
@@ -588,20 +575,20 @@ fn collect_rb_expr(
       for arg in args {
         collect_rb_expr(arg.expr, out)
       }
-    @vibe_core.Expr::Fn(body~, ..) => collect_rb_module(body, out, true)
+    @vibe_core.Expr::Fn(body~, ..) => collect_rb_module(body, out)
     @vibe_core.Expr::ForIn(iterable~, body~, ..) => {
       collect_rb_expr(iterable, out)
-      collect_rb_module(body, out, true)
+      collect_rb_module(body, out)
     }
     @vibe_core.Expr::While(cond~, body~, ..) => {
       collect_rb_expr(cond, out)
-      collect_rb_module(body, out, true)
+      collect_rb_module(body, out)
     }
     @vibe_core.Expr::Loop(params~, body~, ..) => {
       for p in params {
         collect_rb_expr(p.init, out)
       }
-      collect_rb_module(body, out, true)
+      collect_rb_module(body, out)
     }
     @vibe_core.Expr::Tuple(items~, ..) | @vibe_core.Expr::Array(items~, ..) =>
       for item in items {
@@ -636,7 +623,7 @@ fn collect_rb_expr(
 fn strip_redundant_blocks_once(source : String) -> String {
   let ast = @parser.parse_ast(source) catch { _ => return source }
   let blocks : Array[RedundantBlockSpan] = []
-  collect_rb_module(ast, blocks, false)
+  collect_rb_module(ast, blocks)
   if blocks.is_empty() {
     return source
   }
