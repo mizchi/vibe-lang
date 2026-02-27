@@ -2,13 +2,22 @@
 /// AST parser state
 pub struct AstParser {
   tokens : Array[Token]
+  offsets : Array[Int]
   mut pos : Int
   mut pending_stmts : Array[@core.Stmt]
 }
 
 ///|
 pub fn AstParser::new(tokens : Array[Token]) -> AstParser {
-  AstParser::{ tokens, pos: 0, pending_stmts: [] }
+  let len = tokens.length()
+  let offsets = Array::make(len + 1, 0)
+  let mut acc = 0
+  for i in 0..<len {
+    offsets[i] = acc
+    acc += tokens[i].width()
+  }
+  offsets[len] = acc
+  AstParser::{ tokens, offsets, pos: 0, pending_stmts: [] }
 }
 
 ///|
@@ -62,18 +71,8 @@ fn AstParser::peek_non_trivia_ahead(
 
 ///|
 fn AstParser::offset_at(self : AstParser, pos : Int) -> Int {
-  let mut i = 0
-  let mut offset = 0
-  let limit = if pos > self.tokens.length() {
-    self.tokens.length()
-  } else {
-    pos
-  }
-  while i < limit {
-    offset += self.tokens[i].width()
-    i += 1
-  }
-  offset
+  let idx = if pos > self.tokens.length() { self.tokens.length() } else { pos }
+  self.offsets[idx]
 }
 
 ///|

@@ -173,8 +173,19 @@ fn collect_defs_by_ids(
 }
 
 ///|
-fn module_hash_for_path(db : @runtime.VibeDb, path : String) -> String {
-  @core.hash_module(db.ast(path))
+fn module_hash_for_path(
+  db : @runtime.VibeDb,
+  path : String,
+  cache : Map[String, String],
+) -> String {
+  match cache.get(path) {
+    Some(cached) => cached
+    None => {
+      let hash = @core.hash_module(db.ast(path))
+      cache[path] = hash
+      hash
+    }
+  }
 }
 
 ///|
@@ -210,8 +221,9 @@ pub fn advanced_graph_semantic_id(def : AdvancedGraphDef) -> String {
 fn graph_def_from_entry(
   db : @runtime.VibeDb,
   entry : @frontend.SymbolEntry,
+  hash_cache : Map[String, String],
 ) -> AdvancedGraphDef {
-  let module_hash = module_hash_for_path(db, entry.path)
+  let module_hash = module_hash_for_path(db, entry.path, hash_cache)
   let def_id = def_id_from_entry(entry)
   AdvancedGraphDef::{
     language_id: "vibe",
@@ -270,8 +282,9 @@ pub fn build_advanced_graph_index(
   let defs : Map[String, AdvancedGraphDef] = {}
   let symbols : Map[String, Array[String]] = {}
   let types : Map[String, Array[String]] = {}
+  let hash_cache : Map[String, String] = {}
   for entry in symbol_index.entries {
-    let node = graph_def_from_entry(db, entry)
+    let node = graph_def_from_entry(db, entry, hash_cache)
     defs[node.def_id] = node
     push_index_id(
       symbols,
@@ -385,8 +398,9 @@ pub fn update_advanced_graph_index_incremental(
     }
   }
   let next_entries = @runtime.build_symbol_index(db, changed_paths)
+  let hash_cache : Map[String, String] = {}
   for entry in next_entries.entries {
-    let node = graph_def_from_entry(db, entry)
+    let node = graph_def_from_entry(db, entry, hash_cache)
     defs[node.def_id] = node
     push_index_id(
       symbols,
