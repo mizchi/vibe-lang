@@ -1,0 +1,146 @@
+import ./values.vibe { Value, value_to_string }
+
+//# Builtin function evaluation for interpreter
+
+// Use anchor to prevent unused-import silent failure
+let _anchor_val = (v: Value) -> Value { v }
+
+let eval_array = (name: String, args: Array[Value]) -> Option[Value] {
+  if string_equals(name, "array_length") {
+    let arr = array_get(args, 0)
+    match arr {
+      VArray(elems) => Some(VInt(array_length(elems))),
+      _ => Some(VInt(0))
+    }
+  }
+  else if string_equals(name, "array_get") {
+    let arr = array_get(args, 0)
+    let idx = array_get(args, 1)
+    match arr {
+      VArray(elems) => match idx {
+        VInt(i) => Some(array_get(elems, i)),
+        _ => Some(VUnit)
+      },
+      _ => Some(VUnit)
+    }
+  }
+  else if string_equals(name, "array_slice") {
+    let arr = array_get(args, 0)
+    let start_v = array_get(args, 1)
+    let end_v = array_get(args, 2)
+    match arr {
+      VArray(elems) => match start_v {
+        VInt(s) => match end_v {
+          VInt(e) => Some(VArray(array_slice(elems, s, e))),
+          _ => Some(VArray(elems))
+        },
+        _ => Some(VArray(elems))
+      },
+      _ => Some(VUnit)
+    }
+  }
+  else if string_equals(name, "array_concat") {
+    let arr1 = array_get(args, 0)
+    let arr2 = array_get(args, 1)
+    match arr1 {
+      VArray(e1) => match arr2 {
+        VArray(e2) => Some(VArray(array_concat(e1, e2))),
+        _ => Some(VArray(e1))
+      },
+      _ => Some(VUnit)
+    }
+  }
+  else None
+}
+
+let eval_string = (name: String, args: Array[Value]) -> Option[Value] {
+  if string_equals(name, "string_concat") {
+    let a = array_get(args, 0)
+    let b = array_get(args, 1)
+    match a {
+      VString(sa) => match b {
+        VString(sb) => Some(VString(string_concat(sa, sb))),
+        _ => Some(VString(sa))
+      },
+      _ => Some(VString(""))
+    }
+  }
+  else if string_equals(name, "string_length") {
+    let s = array_get(args, 0)
+    match s {
+      VString(sv) => Some(VInt(string_length(sv))),
+      _ => Some(VInt(0))
+    }
+  }
+  else if string_equals(name, "string_equals") {
+    let a = array_get(args, 0)
+    let b = array_get(args, 1)
+    match a {
+      VString(sa) => match b {
+        VString(sb) => Some(VBool(string_equals(sa, sb))),
+        _ => Some(VBool(false))
+      },
+      _ => Some(VBool(false))
+    }
+  }
+  else if string_equals(name, "string_from_char_code") {
+    let code = array_get(args, 0)
+    match code {
+      VInt(c) => Some(VString(string_from_char_code(c))),
+      _ => Some(VString(""))
+    }
+  }
+  else None
+}
+
+let eval_misc = (name: String, args: Array[Value]) -> Option[Value] {
+  if string_equals(name, "eq") {
+    let a = array_get(args, 0)
+    let b = array_get(args, 1)
+    match a {
+      VInt(ai) => match b {
+        VInt(bi) => Some(VBool(eq(ai, bi))),
+        _ => Some(VBool(false))
+      },
+      _ => Some(VBool(false))
+    }
+  }
+  else if string_equals(name, "not") {
+    let a = array_get(args, 0)
+    match a {
+      VBool(bv) => Some(VBool(not(bv))),
+      _ => Some(VBool(false))
+    }
+  }
+  else if string_equals(name, "__to_string") {
+    let a = array_get(args, 0)
+    Some(VString(value_to_string(a)))
+  }
+  else if string_equals(name, "print") {
+    Some(VUnit)
+  }
+  else if string_equals(name, "println") {
+    Some(VUnit)
+  }
+  else if string_equals(name, "assert") {
+    let a = array_get(args, 0)
+    match a {
+      VBool(bv) => {
+        assert(bv)
+        Some(VUnit)
+      },
+      _ => Some(VUnit)
+    }
+  }
+  else None
+}
+
+export let eval_builtin_call = (name: String, args: Array[Value]) -> Option[Value] {
+  match eval_array(name, args) {
+    Some(v) => Some(v),
+    None => match eval_string(name, args) {
+      Some(v) => Some(v),
+      None => eval_misc(name, args)
+    }
+  }
+}

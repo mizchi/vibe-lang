@@ -1460,10 +1460,37 @@ fn eval_block(rt : Runtime, body : @core.Module) -> EvalOutput raise EvalError {
 ///|
 /// Evaluate block with shared mut_vars (for if/while branches).
 /// New let bindings are scoped, but mutations to existing mut vars propagate.
+/// Check if a block contains any binding statements (let, let mut, etc.)
+/// that would require env snapshot/restore.
+fn block_has_bindings(body : @core.Module) -> Bool {
+  for stmt in body.stmts {
+    match stmt {
+      @core.Stmt::Let(..)
+      | @core.Stmt::LetMut(..)
+      | @core.Stmt::ExportLet(..)
+      | @core.Stmt::InternalExportLet(..)
+      | @core.Stmt::ExternLet(..) => return true
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
 fn eval_block_shared_mut(
   rt : Runtime,
   body : @core.Module,
 ) -> EvalOutput raise EvalError {
+  // Fast path: if block has no bindings, no env snapshot needed.
+  // Mutations to existing mutable vars propagate via rt.store directly.
+  if not(block_has_bindings(body)) {
+    let res = rt.eval_module(body)
+    let value = match res.last {
+      Some(v) => v
+      None => @core.Value::Unit
+    }
+    return { value, effects: res.effects }
+  }
   // Snapshot existing env (key -> hash) and mut_vars before evaluating
   let pre_env : Map[String, String] = {}
   for k, v in rt.env {
@@ -1543,11 +1570,14 @@ fn eval_call(
   args : Array[@core.CallArg],
   call_span : @core.Span,
 ) -> EvalOutput raise EvalError {
+  // Full resolution path: type member resolution + alias checking
   let name = match resolve_type_member_call_name_rt(rt, name, args) {
     Some(candidate) => candidate
     None => name
   }
-  if has_alias_prefix_rt(rt, name) {
+  // Guard: has_alias_prefix_rt allocates Array[Char] and scans for dot.
+  // Skip when name has no dot (common case for builtins and user fns).
+  if name.contains(".") && has_alias_prefix_rt(rt, name) {
     { value: @core.Value::Unit, effects: [] }
   } else {
     match rt.get(name) {
@@ -1578,6 +1608,13 @@ fn eval_call(
           let out = eval_args(rt, args)
           let pos_args = extract_positional_values(out.args, name)
           let value = ctor_value_from_args(name, pos_args)
+          { value, effects: out.effects }
+        } else if is_cheap_pure_builtin(name) {
+          // Cheap pure builtins: execute directly without cache.
+          // Cache key computation (SHA hash) costs more than the operation itself.
+          let out = eval_args(rt, args)
+          let pos_args = extract_positional_values(out.args, name)
+          let value = eval_pure_builtin(name, pos_args)
           { value, effects: out.effects }
         } else if is_pure_builtin(name) {
           let out = eval_args(rt, args)

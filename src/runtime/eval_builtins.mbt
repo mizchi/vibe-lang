@@ -1,57 +1,85 @@
-///|
-fn is_pure_builtin(name : String) -> Bool {
-  name == "path" ||
-  name == "path_ref" ||
-  name == "path_to_string" ||
-  name == "path_is_absolute" ||
-  name == "addr" ||
-  name == "array_length" ||
-  name == "array_get" ||
-  name == "map_get" ||
+/// Cheap pure builtins: execute directly without cache.
+/// Cache key computation (pure_call_key → git_blob_hash_string) is
+/// more expensive than executing these operations.
+fn is_cheap_pure_builtin(name : String) -> Bool {
+  name == "string_concat" ||
+  name == "string_equals" ||
   name == "string_length" ||
   name == "string_char_code_at" ||
   name == "string_substring" ||
-  name == "string_concat" ||
-  name == "string_equals" ||
+  name == "array_length" ||
+  name == "array_get" ||
+  name == "array_slice" ||
   name == "__add" ||
   name == "__sub" ||
   name == "__mul" ||
   name == "__div" ||
   name == "__mod" ||
-  name == "__index" ||
-  name == "__set_index" ||
   name == "__eq" ||
   name == "__lt" ||
   name == "__neg" ||
+  name == "__index" ||
+  name == "__set_index" ||
   name == "__assert" ||
-  name == "record_set" ||
-  name == "map_keys" ||
-  name == "map_values" ||
-  name == "map_has_key" ||
-  name == "array_slice" ||
+  name == "__to_string" ||
+  name == "__lshift" ||
+  name == "__rshift" ||
+  name == "__bit_and" ||
+  name == "__bit_or" ||
+  name == "__bit_xor" ||
   name == "int_to_float" ||
   name == "int_to_double" ||
   name == "float_to_int" ||
   name == "float_to_double" ||
   name == "double_to_int" ||
   name == "double_to_float" ||
-  name == "__to_string" ||
-  name == "string_split" ||
-  name == "string_index_of" ||
-  name == "string_contains" ||
-  name == "string_trim" ||
-  name == "string_from_char_code" ||
   name == "char_to_int" ||
   name == "char_from_int" ||
+  name == "string_from_char_code" ||
+  name == "int_abs" ||
+  name == "int_max" ||
+  name == "int_min" ||
+  name == "int_clamp" ||
+  name == "int_signum" ||
+  name == "int_is_even" ||
+  name == "int_is_odd" ||
+  name == "double_abs" ||
+  name == "double_max" ||
+  name == "double_min" ||
+  name == "double_floor" ||
+  name == "double_ceil" ||
+  name == "map_get" ||
+  name == "map_has_key" ||
+  name == "record_set" ||
+  name == "string_contains" ||
+  name == "string_index_of" ||
+  name == "string_starts_with" ||
+  name == "string_ends_with" ||
+  name == "string_trim" ||
+  name == "string_trim_start" ||
+  name == "string_trim_end" ||
+  name == "string_to_upper" ||
+  name == "string_to_lower" ||
+  name == "string_count" ||
+  name == "string_last_index_of" ||
   name == "string_utf8_length" ||
   name == "string_utf16_length" ||
-  name == "string_unicode_length" ||
-  name == "__lshift" ||
-  name == "__rshift" ||
-  name == "__bit_and" ||
-  name == "__bit_or" ||
-  name == "__bit_xor" ||
+  name == "string_unicode_length"
+}
+
+///|
+/// Expensive pure builtins: use SHA-based cache for deduplication.
+fn is_pure_builtin(name : String) -> Bool {
+  is_cheap_pure_builtin(name) ||
+  name == "path" ||
+  name == "path_ref" ||
+  name == "path_to_string" ||
+  name == "path_is_absolute" ||
+  name == "addr" ||
+  name == "string_split" ||
   name == "string_join" ||
+  name == "string_replace" ||
+  name == "string_replace_all" ||
   name == "from_lines" ||
   name == "to_lines" ||
   name == "to_json" ||
@@ -67,31 +95,11 @@ fn is_pure_builtin(name : String) -> Bool {
   name == "json_is_null" ||
   name == "json_length" ||
   name == "json_keys" ||
-  name == "string_starts_with" ||
-  name == "string_ends_with" ||
-  name == "string_replace" ||
-  name == "string_replace_all" ||
-  name == "string_trim_start" ||
-  name == "string_trim_end" ||
-  name == "string_last_index_of" ||
-  name == "string_count" ||
-  name == "int_abs" ||
-  name == "int_max" ||
-  name == "int_min" ||
-  name == "int_clamp" ||
-  name == "int_signum" ||
-  name == "int_is_even" ||
-  name == "int_is_odd" ||
-  name == "double_abs" ||
-  name == "double_max" ||
-  name == "double_min" ||
-  name == "double_floor" ||
-  name == "double_ceil" ||
+  name == "map_keys" ||
+  name == "map_values" ||
   name == "prompt_text" ||
   name == "prompt_text_to_string" ||
-  name == "select" ||
-  name == "string_to_upper" ||
-  name == "string_to_lower"
+  name == "select"
 }
 
 ///|

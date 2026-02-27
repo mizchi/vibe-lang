@@ -1,0 +1,83 @@
+import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
+import ./values.vibe { Value, ValEnv, val_env_bind, val_env_lookup, value_to_string }
+import ./eval.vibe { eval_expr }
+
+// Anchor imports
+let _a1 = (e: Expr) -> Expr { e }
+let _a2 = (p: Pat) -> Pat { p }
+let _a3 = (t: TypeExpr) -> TypeExpr { t }
+let _a4 = (s: Stmt) -> Stmt { s }
+
+let empty_ctor_args = array_slice([VUnit], 0, 0)
+
+// Bind enum constructors into environment
+let rec bind_enum_ctors = (variants: Array[(String, Array[TypeExpr])], i: Int, env: ValEnv) -> ValEnv {
+  if i >= array_length(variants) { env }
+  else {
+    let (cname, _) = array_get(variants, i)
+    let env2 = val_env_bind(env, cname, VCtor(cname, empty_ctor_args))
+    bind_enum_ctors(variants, i + 1, env2)
+  }
+}
+
+export let rec eval_stmts = (stmts: Array[Stmt], i: Int, env: ValEnv) -> ValEnv {
+  if i >= array_length(stmts) { env }
+  else {
+    let stmt = array_get(stmts, i)
+    let new_env = match stmt {
+      SLet(_, is_rec, name, _, val_expr) => {
+        if is_rec {
+          let env_placeholder = val_env_bind(env, name, VUnit)
+          let (v, _) = eval_expr(val_expr, env_placeholder)
+          let final_v = match v {
+            VFn(captures, params, body_idx, _) => VFn(captures, params, body_idx, Some(name)),
+            _ => v
+          }
+          val_env_bind(env, name, final_v)
+        } else {
+          let (v, _) = eval_expr(val_expr, env)
+          val_env_bind(env, name, v)
+        }
+      },
+      SLetMut(name, _, val_expr) => {
+        let (v, _) = eval_expr(val_expr, env)
+        val_env_bind(env, name, v)
+      },
+      SEnum(_, _, variants) => bind_enum_ctors(variants, 0, env),
+      SSuberror(_, _, variants) => bind_enum_ctors(variants, 0, env),
+      STest(_, body) => {
+        let (_tv, _te) = eval_expr(body, env)
+        env
+      },
+      SExpr(body) => {
+        let (_ev, env2) = eval_expr(body, env)
+        env2
+      },
+      SImport(_, names) => {
+        let rec bind_imports = (ns: Array[(String, Option[String])], j: Int, acc: ValEnv) -> ValEnv {
+          if j >= array_length(ns) { acc }
+          else {
+            let (name, alias) = array_get(ns, j)
+            let bind_name = match alias { Some(a) => a, None => name }
+            bind_imports(ns, j + 1, val_env_bind(acc, bind_name, VUnit))
+          }
+        }
+        bind_imports(names, 0, env)
+      },
+      _ => env
+    }
+    eval_stmts(stmts, i + 1, new_env)
+  }
+}
+
+export let eval_program = (stmts: Array[Stmt]) -> ValEnv {
+  eval_stmts(stmts, 0, VEnvEmpty)
+}
+
+export let eval_and_lookup = (stmts: Array[Stmt], name: String) -> String {
+  let env = eval_program(stmts)
+  match val_env_lookup(env, name) {
+    Some(v) => value_to_string(v),
+    None => "<not found>"
+  }
+}

@@ -254,45 +254,32 @@ Completed items are archived in `docs/DONE.md`.
   - 方針: `Pat`/`Expr`/`Stmt` の定義元を 1 箇所に統一し、差分 (`ELabeledArg` など) を吸収する
   - メモ: `vibe/compiler/parser.vibe` から型定義を撤去し、`ast.vibe` を import/export する構成へ移行済み
 
-- [ ] `vibe/compiler` テストの実行時間が重い原因を特定し、回帰しない形で改善する
+- [x] `vibe/compiler` テストの実行時間が重い原因を特定し、回帰しない形で改善する
   - 対象: `vibe/compiler/*_test.vibe`, `src/runtime/test_runner.mbt`, `src/cmd/vibe/cli_test*.mbt`
   - 完了条件: ボトルネック要因を特定して修正し、`vibe test vibe/compiler` の実行時間を実用水準まで短縮する
-  - **原因特定済み (2026-02-27):**
-    - printer.vibe を import する全テスト (printer_test, parser_test, stmt_test, fixture_test) が **~23分/CPU 1250s** でハング同然
-    - テスト自体は 0 件実行。全コストはモジュールのロード・型チェック段階
-    - printer.vibe (276行) → ast.vibe を import し、Expr (30 variant) / Stmt (16 variant) の巨大 match 式を含む
-    - parser.vibe (1425行) を直接 import しないテスト (lexer_test, types_test 等) は 0.8-1.2s で正常完了
-  - **ボトルネック詳細分析:**
-    1. **[主因] clone_env() の大量呼び出し** (`src/checker/typecheck_expr.mbt:792`)
-       - match 式の各 arm で `clone_env(env)` → TypeEnv の全フィールドをコピー
-       - `fork_for_check()` (`src/checker/typecheck_env_lifecycle.mbt:57-109`): 11個の Map を `.copy()` + subs/effect_subs も `.copy()`
-       - printer.vibe: Expr match(30arm) + Stmt match(16arm) + Pat match(9arm) = **55回の full env copy**
-       - prelude + ast.vibe の型定義でマップが巨大化（Expr 30 ctor + Pat 9 ctor + TypeExpr 8 ctor + Stmt 16 ctor + prelude 多数）
-    2. **[副因] ForIn デシュガーによる型チェック増幅** (`src/checker/typecheck_expr.mbt:857-861`)
-       - `for x in xs { body }` → `desugar_for_in()` で 7文の Do ブロックに展開 (`src/core/for_in_desugar.mbt`)
-       - 展開: let + let + let + let + let_mut + while(5 stmts) + expr = **12+ の型チェック呼び出し**
-       - printer.vibe の ~15 個の for comprehension → 合計 **180+ の追加型チェック**
-    3. **[副因] type_equal() のキャッシュ不在** (`src/checker/typecheck_unify.mbt:856-862`)
-       - match arm 結果の一致確認で毎回 `unify_types()` → 新規 `cache: Map` を生成
-       - 30 arm → 29回の型等値チェック、各回でキャッシュなしの unification
-    4. **[副因] purity_for_let() の全 arm 走査** (`src/checker/typecheck_stmts.mbt:437`)
-       - 各 `let rec` で purity analysis → match の全 arm を走査
-       - ただし ForIn/Fn は leaf 扱い (O(1)) なので purity 自体は match arm 数に線形
-    5. **[副因] モジュールキャッシュ不在**
-       - 同じ printer.vibe を複数テストから import しても毎回フル型チェック
-  - **改善方針 (優先順):**
-    - **(A) printer.vibe の match 式分割** [低リスク・vibe コード変更のみ]
-      - 30-arm Expr match を 3-4 個のヘルパー関数に分割 → clone_env() 回数を 1/3 に削減
-      - 例: `print_expr_literal`, `print_expr_binary`, `print_expr_control_flow`, `print_expr_compound`
-    - **(B) clone_env() の軽量化** [中リスク・compiler 変更]
-      - match arm 用の軽量 fork: bindings のみ fork し、enum_defs/struct_defs/ctor_index 等は共有
-      - `fork_for_check()` → `fork_for_match_arm()` 追加（bindings.fork() + 他は参照共有）
-    - **(C) モジュール型チェック結果キャッシュ** [中リスク・compiler 変更]
-      - import 済みモジュールの型チェック結果をハッシュで保持、再 import 時はスキップ
-    - **(D) ForIn の型チェック最適化** [低リスク・compiler 変更]
-      - desugared form の型チェックを簡略化（builder パターンは型が既知）
-    - **(E) type_equal() キャッシュ共有** [低リスク・compiler 変更]
-      - match 式内で unification cache を arm 間で共有
+  - **ボトルネック推移:**
+    - 以前のセッションで型チェッカー最適化済み（lazy enum 展開、モジュールハッシュキャッシュ、パーサー prefix sum、Pratt parser）
+    - ボトルネックはランタイムインタプリタ（eval_module, eval_expr, eval_block_shared_mut）に完全移行
+    - プロファイル: eval_module(77k samples), eval_expr(80k), eval_block_shared_mut(57k)
+  - **実施した最適化 (2026-02-27):**
+    1. **block_has_bindings fast path** (`src/runtime/eval.mbt`)
+       - `eval_block_shared_mut` は if/else・for-in のたびに rt.env/rt.mut_vars の全マップをスナップショット
+       - let/let_mut バインディングがないブロック（大半の if/else）ではスナップショットをスキップ
+    2. **has_alias_prefix_rt ガード** (`src/runtime/eval.mbt`)
+       - 関数呼び出しのたびに `Array[Char]` を確保しドットを探索する処理をスキップ
+       - 名前に `.` を含まない場合（ビルトイン・ユーザー関数の大半）はガード条件で早期リターン
+    3. **cheap pure builtin キャッシュスキップ** (`src/runtime/eval.mbt`, `src/runtime/eval_builtins.mbt`)
+       - `is_cheap_pure_builtin`（算術・文字列・配列操作 ~60種）は SHA キャッシュキー計算をスキップし直接実行
+       - `is_pure_builtin`（path, addr, json 等の高コスト操作）のみキャッシュを使用
+    4. **printer.vibe 前方参照修正** (`vibe/compiler/printer.vibe`)
+       - `print_type_expr`（let rec）を `print_expr` より前に移動（前方参照プリスキャンは非再帰関数のみ対象）
+  - **結果:**
+    | テスト | Before | After | 改善 |
+    |--------|--------|-------|------|
+    | printer_test | 11.8s | 9.3s | -21% |
+    | parser_test | 9.7s | 6.9s | -29% |
+    | all vibe/compiler | 25.9s | 19.0s | -27% |
+  - **残課題:** インタプリタの tree-walking 評価が本質的ボトルネック。さらなる改善にはバイトコードコンパイルか WASM 実行が必要
 
 ### Low (P3): 公開面のノイズ削減
 
