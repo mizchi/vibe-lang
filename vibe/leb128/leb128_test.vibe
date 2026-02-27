@@ -1,0 +1,130 @@
+import ./leb128.vibe {
+  write_uleb128, encode_uleb128, read_uleb128,
+  write_sleb128, encode_sleb128, read_sleb128,
+  uleb128_size, sleb128_size
+}
+
+//# Unsigned LEB128 tests
+
+test "uleb128 encode 0" {
+  let b = encode_uleb128(0)
+  assert(eq(bytes_length(b), 1))
+  assert(eq(bytes_get(b, 0), 0x00))
+}
+
+test "uleb128 encode 1" {
+  let b = encode_uleb128(1)
+  assert(eq(bytes_length(b), 1))
+  assert(eq(bytes_get(b, 0), 0x01))
+}
+
+test "uleb128 encode 127" {
+  let b = encode_uleb128(127)
+  assert(eq(bytes_length(b), 1))
+  assert(eq(bytes_get(b, 0), 0x7F))
+}
+
+test "uleb128 encode 128" {
+  let b = encode_uleb128(128)
+  assert(eq(bytes_length(b), 2))
+  assert(eq(bytes_get(b, 0), 0x80))
+  assert(eq(bytes_get(b, 1), 0x01))
+}
+
+test "uleb128 encode 624485" {
+  let b = encode_uleb128(624485)
+  assert(eq(bytes_length(b), 3))
+  assert(eq(bytes_get(b, 0), 0xE5))
+  assert(eq(bytes_get(b, 1), 0x8E))
+  assert(eq(bytes_get(b, 2), 0x26))
+}
+
+test "uleb128 roundtrip" {
+  let values = [0, 1, 42, 127, 128, 255, 256, 16383, 16384, 624485, 1048576]
+  for v in values {
+    let b = encode_uleb128(v)
+    let (decoded, _) = read_uleb128(b, 0)
+    assert(eq(decoded, v))
+  }
+}
+
+test "uleb128 write to shared buffer" {
+  let buf = bytes_new()
+  write_uleb128(buf, 128)
+  write_uleb128(buf, 1)
+  assert(eq(bytes_length(buf), 3))
+  let (v1, off1) = read_uleb128(buf, 0)
+  assert(eq(v1, 128))
+  assert(eq(off1, 2))
+  let (v2, off2) = read_uleb128(buf, off1)
+  assert(eq(v2, 1))
+  assert(eq(off2, 3))
+}
+
+//# Signed LEB128 tests
+
+test "sleb128 encode 0" {
+  let b = encode_sleb128(0)
+  assert(eq(bytes_length(b), 1))
+  assert(eq(bytes_get(b, 0), 0x00))
+}
+
+test "sleb128 encode -1" {
+  let b = encode_sleb128(-1)
+  assert(eq(bytes_length(b), 1))
+  assert(eq(bytes_get(b, 0), 0x7F))
+}
+
+test "sleb128 encode 63" {
+  let b = encode_sleb128(63)
+  assert(eq(bytes_length(b), 1))
+  assert(eq(bytes_get(b, 0), 0x3F))
+}
+
+test "sleb128 encode -64" {
+  let b = encode_sleb128(-64)
+  assert(eq(bytes_length(b), 1))
+  assert(eq(bytes_get(b, 0), 0x40))
+}
+
+test "sleb128 encode 128" {
+  let b = encode_sleb128(128)
+  assert(eq(bytes_length(b), 2))
+  assert(eq(bytes_get(b, 0), 0x80))
+  assert(eq(bytes_get(b, 1), 0x01))
+}
+
+test "sleb128 encode -128" {
+  let b = encode_sleb128(-128)
+  assert(eq(bytes_length(b), 2))
+  assert(eq(bytes_get(b, 0), 0x80))
+  assert(eq(bytes_get(b, 1), 0x7F))
+}
+
+test "sleb128 roundtrip" {
+  let values = [0, 1, -1, 42, -42, 63, -64, 64, -65, 127, -128, 128, -129, 8191, -8192]
+  for v in values {
+    let b = encode_sleb128(v)
+    let (decoded, _) = read_sleb128(b, 0)
+    assert(eq(decoded, v))
+  }
+}
+
+//# Size helpers
+
+test "uleb128_size" {
+  assert(eq(uleb128_size(0), 1))
+  assert(eq(uleb128_size(127), 1))
+  assert(eq(uleb128_size(128), 2))
+  assert(eq(uleb128_size(16383), 2))
+  assert(eq(uleb128_size(16384), 3))
+}
+
+test "sleb128_size" {
+  assert(eq(sleb128_size(0), 1))
+  assert(eq(sleb128_size(-1), 1))
+  assert(eq(sleb128_size(63), 1))
+  assert(eq(sleb128_size(-64), 1))
+  assert(eq(sleb128_size(64), 2))
+  assert(eq(sleb128_size(-65), 2))
+}

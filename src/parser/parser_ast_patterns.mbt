@@ -188,6 +188,16 @@ fn AstParser::parse_type_with_params(
               span=name_span,
             )
           }
+        "Bytes" =>
+          if args.is_empty() {
+            @core.Type::Bytes
+          } else {
+            raise ParseError::UnexpectedToken(
+              expected="Bytes",
+              got=name,
+              span=name_span,
+            )
+          }
         _ =>
           if params.contains(name) {
             if not(args.is_empty()) {

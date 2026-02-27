@@ -88,6 +88,37 @@ test "type query keeps no-import dependency exports for alias call" {
 }
 
 ///|
+test "type query resolves Bytes parameter in imported function" {
+  let db = VibeDb::new()
+  db.set_source(
+    "./lib.vibe",
+    "export let my_bytes_len = (b: Bytes) -> Int {\n" +
+    "  bytes_length(b)\n" +
+    "}\n",
+  )
+  db.set_source(
+    "main",
+    "import ./lib.vibe { my_bytes_len }\n" +
+    "let b = bytes_new()\n" +
+    "let x = my_bytes_len(b)\n" +
+    "x\n",
+  )
+  let env = db.types("main")
+  let diags = db.diagnostics("main")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("x") {
+    Some(_) => ()
+    None => fail("expected scheme for x after importing Bytes function")
+  }
+}
+
+///|
 test "type query imports re-exported Process functions through index" {
   let db = VibeDb::new()
   db.set_source(

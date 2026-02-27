@@ -1,0 +1,111 @@
+//# LEB128 variable-length integer encoding
+//# Used in WebAssembly binary format
+
+//# Unsigned LEB128
+
+export let write_uleb128 = (buf: Bytes, n: Int) -> Unit {
+  let mut val = n
+  while true {
+    let byte = val & 0x7F
+    val = (val >> 7) & ((1 << 25) - 1)
+    if eq(val, 0) {
+      bytes_push(buf, byte)
+      break
+    } else {
+      bytes_push(buf, byte | 0x80)
+    }
+  }
+}
+
+export let encode_uleb128 = (n: Int) -> Bytes {
+  let buf = bytes_new()
+  write_uleb128(buf, n)
+  buf
+}
+
+export let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+  let len = bytes_length(buf)
+  let rec go = (i: Int, result: Int, shift: Int) -> (Int, Int) {
+    if i >= len {
+      (result, i)
+    } else {
+      let byte = bytes_get(buf, i)
+      let value = result | ((byte & 0x7F) << shift)
+      if eq(byte & 0x80, 0) {
+        (value, i + 1)
+      } else {
+        go(i + 1, value, shift + 7)
+      }
+    }
+  }
+  go(offset, 0, 0)
+}
+
+//# Signed LEB128
+
+export let write_sleb128 = (buf: Bytes, n: Int) -> Unit {
+  let mut val = n
+  let mut more = true
+  while more {
+    let byte = val & 0x7F
+    val = val >> 7
+    if (eq(val, 0) && eq(byte & 0x40, 0)) || (eq(val, -1) && (byte & 0x40) > 0) {
+      bytes_push(buf, byte)
+      more = false
+    } else {
+      bytes_push(buf, byte | 0x80)
+    }
+  }
+}
+
+export let encode_sleb128 = (n: Int) -> Bytes {
+  let buf = bytes_new()
+  write_sleb128(buf, n)
+  buf
+}
+
+export let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
+  let len = bytes_length(buf)
+  let rec go = (i: Int, result: Int, shift: Int) -> (Int, Int) {
+    if i >= len {
+      (result, i)
+    } else {
+      let byte = bytes_get(buf, i)
+      let value = result | ((byte & 0x7F) << shift)
+      let next_shift = shift + 7
+      if eq(byte & 0x80, 0) {
+        if (byte & 0x40) > 0 {
+          let sign_extend = value | ((-1) << next_shift)
+          (sign_extend, i + 1)
+        } else {
+          (value, i + 1)
+        }
+      } else {
+        go(i + 1, value, next_shift)
+      }
+    }
+  }
+  go(offset, 0, 0)
+}
+
+//# Byte size helpers
+
+export let uleb128_size = (n: Int) -> Int {
+  let rec go = (val: Int, count: Int) -> Int {
+    let next = (val >> 7) & ((1 << 25) - 1)
+    if eq(next, 0) { count }
+    else go(next, count + 1)
+  }
+  go(n, 1)
+}
+
+export let sleb128_size = (n: Int) -> Int {
+  let rec go = (val: Int, count: Int) -> Int {
+    let byte = val & 0x7F
+    let next = val >> 7
+    if (eq(next, 0) && eq(byte & 0x40, 0)) || (eq(next, -1) && (byte & 0x40) > 0) {
+      count
+    } else go(next, count + 1)
+  }
+  go(n, 1)
+}
