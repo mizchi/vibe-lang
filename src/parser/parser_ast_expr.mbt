@@ -48,7 +48,7 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
 ///|
 fn AstParser::parse_pipe_expr(self : AstParser) -> @core.Expr raise ParseError {
   let left_start = self.pos
-  let mut left = self.parse_bit_or_expr()
+  let mut left = self.parse_expr_bp(0)
   let mut left_has_top_level_infix = self.has_top_level_non_pipe_infix(
     left_start,
     self.pos,
@@ -67,7 +67,7 @@ fn AstParser::parse_pipe_expr(self : AstParser) -> @core.Expr raise ParseError {
       )
     }
     let right_start = self.pos
-    let right = self.parse_bit_or_expr()
+    let right = self.parse_expr_bp(0)
     if self.has_top_level_non_pipe_infix(right_start, self.pos) {
       raise ParseError::UnexpectedToken(
         expected="parenthesize infix expression when mixing with `|>`",
@@ -145,49 +145,82 @@ fn AstParser::has_top_level_non_pipe_infix(
 }
 
 ///|
-fn AstParser::parse_bit_or_expr(
-  self : AstParser,
-) -> @core.Expr raise ParseError {
-  let mut left = self.parse_bit_xor_expr()
-  while ({
-          self.skip_trivia()
-          self.peek_kind() == bit_or()
-        }) {
-    let _ = self.bump()
-    let right = self.parse_bit_xor_expr()
-    left = call2("__bit_or", left, right)
+fn binary_binding_power(kind : @cst.SyntaxKind) -> (Int, Int)? {
+  if kind == bit_or() {
+    Some((2, 3))
+  } else if kind == bit_xor() {
+    Some((4, 5))
+  } else if kind == bit_and() {
+    Some((6, 7))
+  } else if kind == eqeq() ||
+    kind == neq() ||
+    kind == lt() ||
+    kind == lte() ||
+    kind == gt() ||
+    kind == gte() {
+    Some((8, 9))
+  } else if kind == lshift() || kind == rshift() {
+    Some((10, 11))
+  } else if kind == plus() || kind == minus() {
+    Some((12, 13))
+  } else if kind == star() || kind == slash() || kind == percent() {
+    Some((14, 15))
+  } else {
+    None
   }
-  left
 }
 
 ///|
-fn AstParser::parse_bit_xor_expr(
-  self : AstParser,
-) -> @core.Expr raise ParseError {
-  let mut left = self.parse_bit_and_expr()
-  while ({
-          self.skip_trivia()
-          self.peek_kind() == bit_xor()
-        }) {
-    let _ = self.bump()
-    let right = self.parse_bit_and_expr()
-    left = call2("__bit_xor", left, right)
+fn make_binary_expr(
+  op : @cst.SyntaxKind,
+  left : @core.Expr,
+  right : @core.Expr,
+) -> @core.Expr {
+  if op == bit_or() {
+    call2("__bit_or", left, right)
+  } else if op == bit_xor() {
+    call2("__bit_xor", left, right)
+  } else if op == bit_and() {
+    call2("__bit_and", left, right)
+  } else if op == lshift() {
+    call2("__lshift", left, right)
+  } else if op == rshift() {
+    call2("__rshift", left, right)
+  } else if op == plus() {
+    call2("__add", left, right)
+  } else if op == minus() {
+    call2("__sub", left, right)
+  } else if op == star() {
+    call2("__mul", left, right)
+  } else if op == slash() {
+    call2("__div", left, right)
+  } else if op == percent() {
+    call2("__mod", left, right)
+  } else {
+    cmp_expr_from_op(op, left, right)
   }
-  left
 }
 
 ///|
-fn AstParser::parse_bit_and_expr(
+fn AstParser::parse_expr_bp(
   self : AstParser,
+  min_bp : Int,
 ) -> @core.Expr raise ParseError {
-  let mut left = self.parse_cmp_expr()
-  while ({
-          self.skip_trivia()
-          self.peek_kind() == bit_and()
-        }) {
-    let _ = self.bump()
-    let right = self.parse_cmp_expr()
-    left = call2("__bit_and", left, right)
+  let mut left = self.parse_unary_expr()
+  while true {
+    self.skip_trivia()
+    let kind = self.peek_kind()
+    match binary_binding_power(kind) {
+      Some((l_bp, r_bp)) =>
+        if l_bp < min_bp {
+          break
+        } else {
+          let _ = self.bump()
+          let right = self.parse_expr_bp(r_bp)
+          left = make_binary_expr(kind, left, right)
+        }
+      None => break
+    }
   }
   left
 }
@@ -236,42 +269,6 @@ fn AstParser::parse_and_expr(self : AstParser) -> @core.Expr raise ParseError {
       stmts: [@core.Stmt::Expr(expr=else_expr, span~)],
     }
     left = @core.Expr::If(cond=left, then_body~, else_body~, span~)
-  }
-  left
-}
-
-///|
-fn AstParser::parse_cmp_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let mut left = self.parse_shift_expr()
-  while ({
-          self.skip_trivia()
-          self.peek_kind() == eqeq() ||
-          self.peek_kind() == neq() ||
-          self.peek_kind() == lt() ||
-          self.peek_kind() == lte() ||
-          self.peek_kind() == gt() ||
-          self.peek_kind() == gte()
-        }) {
-    let op = self.peek_kind()
-    let _ = self.bump()
-    let right = self.parse_shift_expr()
-    left = cmp_expr_from_op(op, left, right)
-  }
-  left
-}
-
-///|
-fn AstParser::parse_shift_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let mut left = self.parse_add_expr()
-  while ({
-          self.skip_trivia()
-          self.peek_kind() == lshift() || self.peek_kind() == rshift()
-        }) {
-    let op = self.peek_kind()
-    let _ = self.bump()
-    let right = self.parse_add_expr()
-    let name = if op == lshift() { "__lshift" } else { "__rshift" }
-    left = call2(name, left, right)
   }
   left
 }
@@ -439,46 +436,6 @@ fn pipe_apply(
         span=right.span(),
       )
   }
-}
-
-///|
-fn AstParser::parse_add_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let mut left = self.parse_mul_expr()
-  while ({
-          self.skip_trivia()
-          self.peek_kind() == plus() || self.peek_kind() == minus()
-        }) {
-    let op = self.peek_kind()
-    let _ = self.bump()
-    let right = self.parse_mul_expr()
-    let name = if op == plus() { "__add" } else { "__sub" }
-    left = call2(name, left, right)
-  }
-  left
-}
-
-///|
-fn AstParser::parse_mul_expr(self : AstParser) -> @core.Expr raise ParseError {
-  let mut left = self.parse_unary_expr()
-  while ({
-          self.skip_trivia()
-          self.peek_kind() == star() ||
-          self.peek_kind() == slash() ||
-          self.peek_kind() == percent()
-        }) {
-    let op = self.peek_kind()
-    let _ = self.bump()
-    let right = self.parse_unary_expr()
-    let name = if op == star() {
-      "__mul"
-    } else if op == slash() {
-      "__div"
-    } else {
-      "__mod"
-    }
-    left = call2(name, left, right)
-  }
-  left
 }
 
 ///|
