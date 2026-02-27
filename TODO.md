@@ -415,7 +415,7 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-Total: ~311 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5, eval: 24, eval_stmt: 12, eval_builtins: 17, eval_e2e: 10, eval_import: 8, values: 8) + MoonBit E2E
+Total: ~335 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5, unify: 8, checker_infer: 4, eval: 24, eval_stmt: 12, eval_builtins: 17, eval_e2e: 10, eval_import: 8, eval_selfhost: 12, values: 8) + MoonBit E2E
 
 ### Phase 1: Lexer + AST + Expression Parser (completed)
 
@@ -476,8 +476,18 @@ Total: ~311 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, ty
 - [x] EFn parameter type binding from annotations (`(x: Int) -> x + 1` binds x as CtInt)
 - [x] SImport name registration (imported names bound as CtUnknown in env)
 - [x] Effect flag verification tests (EFn with/without effect annotation)
-- [ ] Type inference (Hindley-Milner with unification)
-- [ ] Effect scope threading (check_expr signature change needed)
+- [x] Type inference (Hindley-Milner with unification)
+  - CtVar(Int) type variable, Subst linked-list, subst_apply, occurs_in, unify, fresh_var in types.vibe
+  - check_expr signature: (Expr, TypeEnv, Array[TypeDef], Subst, Int) -> (Type, Subst, Int)
+  - EFn: fresh CtVar for unannotated params, resolved via subst_apply after body check
+  - ECall: unify callee param types with arg types
+  - ELetRec: fresh CtVar + unify for recursive binding
+  - Gradual typing preserved: CtUnknown always unifies successfully
+  - unify_test.vibe (8 tests), checker_infer_test.vibe (4 tests)
+- [x] Effect scope threading (check_expr signature change needed)
+  - (Subst, Int) threaded through check_expr and check_stmts
+  - check_program backward-compatible wrapper maintained
+- [ ] Generalize/instantiate (let-polymorphism)
 - [ ] Trait constraint resolution
 
 ### Phase 6: Interpreter (completed)
@@ -486,17 +496,21 @@ Total: ~311 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, ty
 - [x] `eval.vibe` — eval_expr: 全 Expr バリアントの tree-walking 評価器 + Expr↔Value encode/decode (24 tests)
   - リテラル、束縛、演算子、制御フロー (if/match/while/for-in)、クロージャ、パイプ、パターンマッチ
 - [x] `eval_stmt.vibe` — eval_stmts: let/let_rec/let_mut/enum/test/import の評価 (12 tests)
-- [x] `eval_builtins.vibe` — 23 builtin 関数 (17 tests)
-  - String: string_concat, string_length, string_equals, string_from_char_code
+- [x] `eval_builtins.vibe` — 32 builtin 関数 (17 tests)
+  - String: string_concat, string_length, string_equals, string_from_char_code, string_char_code_at, string_substring, string_index_of, string_last_index_of, string_starts_with, string_ends_with
   - Array: array_length, array_get, array_slice, array_concat
   - Bytes: bytes_new, bytes_length, bytes_get, bytes_set, bytes_push, bytes_concat, bytes_slice, bytes_from_array, bytes_to_array
-  - Misc: eq, not, __to_string, print, println, assert
+  - Misc: eq, not, __to_string, print, println, assert, int_to_double, array_builder (stub), array_builder_push (stub), array_builder_freeze (stub)
 - [x] `eval_e2e_test.vibe` — parse → eval 統合テスト (10 tests)
 - [x] Import file loading (`import ./foo.vibe { ... }` 仮想FS + parse + eval, 8 tests)
   - `eval_loader.vibe`: load_and_parse, collect_exports, resolve_path, dir_of, source/cache lookup
   - `eval_stmt.vibe`: ModuleCtx パラメータ追加、cycle detection、transitive import
   - `eval_import_test.vibe`: basic, alias, export block, non-exported, cycle, transitive, not-found, enum
-- [ ] Self-hosting: vibe/compiler が vibe/compiler 自身を parse + eval する
+- [x] Self-hosting pattern tests (12 tests: eval_selfhost_test + eval_selfhost2_test)
+  - enum定義+match, 再帰value_to_string, 連結リストenv, string_char_code_at, string_substring, string_ends_with
+  - while loop, 再帰配列走査, multi-file import, 3-level import chain, 3-file mini compiler, for-in map
+  - 制約: array_builder mutation未対応 (stub), tuple destructuring未対応, wasm memory上限で10テスト/ファイル
+- [ ] Self-hosting: vibe/compiler が vibe/compiler 自身を parse + eval する (要: throw/handle実装, array_builder mutation)
 
 ### Language pain points discovered during self-hosting
 

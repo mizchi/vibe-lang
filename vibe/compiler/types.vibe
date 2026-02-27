@@ -15,6 +15,7 @@ export enum Type {
   CtStruct(String);
   CtBytes;
   CtNamed(String, Array[Type]);
+  CtVar(Int);
   CtUnknown
 }
 
@@ -118,6 +119,7 @@ export let rec type_to_string = (ty: Type) -> String {
     CtChar => "Char",
     CtUnit => "()",
     CtBytes => "Bytes",
+    CtVar(id) => string_concat("?t", __to_string(id)),
     CtUnknown => "?",
     CtArray(elem) => string_concat("Array[", string_concat(type_to_string(elem), "]")),
     CtOption(elem) => string_concat("Option[", string_concat(type_to_string(elem), "]")),
@@ -165,5 +167,109 @@ export let types_compatible = (expected: Type, actual: Type) -> Bool {
       _ => types_equal(expected, actual)
     }
   }
+}
+
+//# Substitution (HM type inference)
+
+export enum Subst {
+  SubstEmpty;
+  SubstBind(Int, Type, Subst)
+}
+
+export let rec subst_lookup = (s: Subst, id: Int) -> Option[Type] {
+  match s {
+    SubstEmpty => None,
+    SubstBind(i, ty, rest) => if eq(i, id) { Some(ty) } else subst_lookup(rest, id)
+  }
+}
+
+export let rec subst_apply = (s: Subst, ty: Type) -> Type {
+  match ty {
+    CtVar(id) => match subst_lookup(s, id) {
+      Some(t) => subst_apply(s, t),
+      None => ty
+    },
+    CtFn(params, ret, he) => {
+      let rp = for p in params { subst_apply(s, p) }
+      CtFn(rp, subst_apply(s, ret), he)
+    },
+    CtArray(elem) => CtArray(subst_apply(s, elem)),
+    CtOption(elem) => CtOption(subst_apply(s, elem)),
+    CtTuple(elems) => CtTuple(for e in elems { subst_apply(s, e) }),
+    _ => ty
+  }
+}
+
+//# Occurs check
+
+export let rec occurs_in = (id: Int, ty: Type) -> Bool {
+  let rec check_list = (types: Array[Type], i: Int) -> Bool {
+    if i >= array_length(types) { false }
+    else if occurs_in(id, array_get(types, i)) { true }
+    else check_list(types, i + 1)
+  }
+  match ty {
+    CtVar(vid) => eq(id, vid),
+    CtFn(params, ret, _) => check_list(params, 0) || occurs_in(id, ret),
+    CtArray(elem) => occurs_in(id, elem),
+    CtOption(elem) => occurs_in(id, elem),
+    CtTuple(elems) => check_list(elems, 0),
+    _ => false
+  }
+}
+
+//# Unification
+
+export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
+  let rec unify_list = (pa: Array[Type], pb: Array[Type], i: Int, acc: Subst) -> Option[Subst] {
+    if i >= array_length(pa) { Some(acc) }
+    else match unify(array_get(pa, i), array_get(pb, i), acc) {
+      Some(s2) => unify_list(pa, pb, i + 1, s2),
+      None => None
+    }
+  }
+  let ta = subst_apply(s, a)
+  let tb = subst_apply(s, b)
+  if types_equal(ta, tb) { Some(s) }
+  else match ta {
+    CtVar(id) => if occurs_in(id, tb) { None } else Some(SubstBind(id, tb, s)),
+    _ => match tb {
+      CtVar(id) => if occurs_in(id, ta) { None } else Some(SubstBind(id, ta, s)),
+      _ => match ta {
+        CtUnknown => Some(s),
+        _ => match tb {
+          CtUnknown => Some(s),
+          _ => match ta {
+            CtArray(ea) => match tb { CtArray(eb) => unify(ea, eb, s), _ => None },
+            CtOption(ea) => match tb { CtOption(eb) => unify(ea, eb, s), _ => None },
+            CtFn(pa, ra, _) => match tb {
+              CtFn(pb, rb, _) => {
+                if not(eq(array_length(pa), array_length(pb))) { None }
+                else match unify_list(pa, pb, 0, s) {
+                  Some(s2) => unify(ra, rb, s2),
+                  None => None
+                }
+              },
+              _ => None
+            },
+            CtTuple(ea) => match tb {
+              CtTuple(eb) => {
+                if not(eq(array_length(ea), array_length(eb))) { None }
+                else unify_list(ea, eb, 0, s)
+              },
+              _ => None
+            },
+            _ => None
+          }
+        }
+      }
+    }
+  }
+}
+
+//# Fresh type variable
+
+export let fresh_var = (c: Int) -> (Type, Int) {
+  (CtVar(c), c + 1)
 }
 

@@ -1,14 +1,19 @@
 import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
-import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind, types_equal }
+import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind, types_equal, Subst }
 import ./checker_stmt.vibe { check_stmts, check_program }
 
 let empty_defs = () -> Array[TypeDef] {
   array_slice([TDAlias("_dummy", CtUnit)], 0, 0)
 }
 
+let check_stmts_compat = (stmts: Array[Stmt]) -> TypeEnv {
+  let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs(), SubstEmpty, 0)
+  env
+}
+
 test "SLet binds int" {
   let stmts = [SLet(false, false, "x", None, EInt(42))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   let ty = env_lookup(env, "x")
   match ty {
     Some(t) => assert(types_equal(t, CtInt)),
@@ -18,7 +23,7 @@ test "SLet binds int" {
 
 test "SLet binds string" {
   let stmts = [SLet(false, false, "name", None, EString("hi"))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "name") {
     Some(t) => assert(types_equal(t, CtString)),
     None => assert(false)
@@ -27,7 +32,7 @@ test "SLet binds string" {
 
 test "SLetMut binds" {
   let stmts = [SLetMut("count", None, EInt(0))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "count") {
     Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)
@@ -37,7 +42,7 @@ test "SLetMut binds" {
 test "SLet rec binds" {
   let body = EFn([("n", None)], None, None, EInt(1))
   let stmts = [SLet(false, true, "fact", None, body)]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "fact") {
     Some(_) => assert(true),
     None => assert(false)
@@ -46,7 +51,7 @@ test "SLet rec binds" {
 
 test "SEnum binds type name" {
   let stmts = [SEnum(false, "Color", [("Red", array_slice([TyUnit], 0, 0))])]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "Color") {
     Some(t) => assert(types_equal(t, CtEnum("Color"))),
     None => assert(false)
@@ -55,7 +60,7 @@ test "SEnum binds type name" {
 
 test "SStruct binds type name" {
   let stmts = [SStruct(false, "Point", [("x", TyName("Int"))])]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "Point") {
     Some(t) => assert(types_equal(t, CtStruct("Point"))),
     None => assert(false)
@@ -64,7 +69,7 @@ test "SStruct binds type name" {
 
 test "SExternLet binds" {
   let stmts = [SExternLet("print", TyFn([TyName("String")], TyUnit))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "print") {
     Some(_) => assert(true),
     None => assert(false)
@@ -77,7 +82,7 @@ test "multiple stmts thread env" {
     SLet(false, false, "y", None, EString("hi")),
     SLet(false, false, "z", None, EBool(true))
   ]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "x") {
     Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)
@@ -94,7 +99,7 @@ test "multiple stmts thread env" {
 
 test "SExpr does not change env" {
   let stmts = [SExpr(EInt(42))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env {
     EnvEmpty => assert(true),
     _ => assert(false)
@@ -103,7 +108,7 @@ test "SExpr does not change env" {
 
 test "STest does not change env" {
   let stmts = [STest("my test", EBool(true))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env {
     EnvEmpty => assert(true),
     _ => assert(false)
@@ -121,7 +126,7 @@ test "check_program returns env" {
 
 test "SLet with type annotation uses annotation" {
   let stmts = [SLet(false, false, "x", Some(TyName("Int")), EInt(42))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "x") {
     Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)
@@ -130,7 +135,7 @@ test "SLet with type annotation uses annotation" {
 
 test "SLetMut with type annotation uses annotation" {
   let stmts = [SLetMut("count", Some(TyName("Int")), EInt(0))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "count") {
     Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)
@@ -139,7 +144,7 @@ test "SLetMut with type annotation uses annotation" {
 
 test "SExternLet resolves simple type" {
   let stmts = [SExternLet("get_name", TyName("String"))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "get_name") {
     Some(t) => assert(types_equal(t, CtString)),
     None => assert(false)
@@ -148,7 +153,7 @@ test "SExternLet resolves simple type" {
 
 test "STypeAlias resolves builtin type" {
   let stmts = [STypeAlias(false, "MyInt", TyName("Int"))]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "MyInt") {
     Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)
@@ -157,7 +162,7 @@ test "STypeAlias resolves builtin type" {
 
 test "SImport binds imported names" {
   let stmts = [SImport("./foo.vibe", [("bar", None)])]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "bar") {
     Some(_) => assert(true),
     None => assert(false)
@@ -166,7 +171,7 @@ test "SImport binds imported names" {
 
 test "SImport binds aliased name" {
   let stmts = [SImport("./foo.vibe", [("bar", Some("baz"))])]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "baz") {
     Some(_) => assert(true),
     None => assert(false)
@@ -175,7 +180,7 @@ test "SImport binds aliased name" {
 
 test "SImport binds multiple names" {
   let stmts = [SImport("./mod.vibe", [("a", None), ("b", Some("c"))])]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "a") {
     Some(_) => {
       match env_lookup(env, "c") {
@@ -192,7 +197,7 @@ test "let uses previous binding" {
     SLet(false, false, "x", None, EInt(1)),
     SLet(false, false, "y", None, EIdent("x"))
   ]
-  let env = check_stmts(stmts, 0, EnvEmpty, empty_defs())
+  let env = check_stmts_compat(stmts)
   match env_lookup(env, "y") {
     Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)

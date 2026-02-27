@@ -1,0 +1,52 @@
+import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
+import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, types_equal, Subst, subst_apply }
+import ./checker_stmt.vibe { check_stmts, check_program }
+
+test "infer identity fn" {
+  let stmts = [SLet(false, false, "f", None, EFn([("x", None)], None, None, EIdent("x")))]
+  let env = check_program(stmts)
+  match env_lookup(env, "f") {
+    Some(t) => match t {
+      CtFn(_, _, _) => assert(true),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "infer from usage" {
+  let body = EBinOp("+", EIdent("x"), EInt(1))
+  let stmts = [SLet(false, false, "f", None, EFn([("x", None)], None, None, body))]
+  let env = check_program(stmts)
+  match env_lookup(env, "f") {
+    Some(t) => match t {
+      CtFn(_, ret, _) => assert(types_equal(ret, CtInt)),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "infer call site" {
+  let stmts = [
+    SLet(false, false, "f", None, EFn([("x", Some(TyName("Int")))], None, None, EIdent("x"))),
+    SLet(false, false, "result", None, ECall(EIdent("f"), [EInt(42)]))
+  ]
+  let env = check_program(stmts)
+  match env_lookup(env, "result") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "let type propagation" {
+  let stmts = [
+    SLet(false, false, "x", None, EInt(42)),
+    SLet(false, false, "y", None, EIdent("x"))
+  ]
+  let env = check_program(stmts)
+  match env_lookup(env, "y") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}

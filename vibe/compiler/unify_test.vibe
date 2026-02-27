@@ -1,0 +1,83 @@
+import ./types.vibe {
+  Type, Subst,
+  subst_lookup, subst_apply, occurs_in, unify, fresh_var,
+  types_equal
+}
+
+test "unify same types" {
+  let result = unify(CtInt, CtInt, SubstEmpty)
+  match result {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
+
+test "unify var with concrete" {
+  let result = unify(CtVar(0), CtInt, SubstEmpty)
+  match result {
+    Some(s) => {
+      match subst_lookup(s, 0) {
+        Some(t) => assert(types_equal(t, CtInt)),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "unify two vars" {
+  let result = unify(CtVar(0), CtVar(1), SubstEmpty)
+  match result {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
+
+test "unify mismatch" {
+  let result = unify(CtInt, CtString, SubstEmpty)
+  match result {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "occurs check" {
+  let result = unify(CtVar(0), CtArray(CtVar(0)), SubstEmpty)
+  match result {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "subst_apply transitive" {
+  let s1 = SubstBind(0, CtVar(1), SubstEmpty)
+  let s2 = SubstBind(1, CtInt, s1)
+  let result = subst_apply(s2, CtVar(0))
+  assert(types_equal(result, CtInt))
+}
+
+test "unify CtFn" {
+  let a = CtFn([CtVar(0)], CtVar(1), false)
+  let b = CtFn([CtInt], CtString, false)
+  let result = unify(a, b, SubstEmpty)
+  match result {
+    Some(s) => {
+      assert(types_equal(subst_apply(s, CtVar(0)), CtInt))
+      assert(types_equal(subst_apply(s, CtVar(1)), CtString))
+    },
+    None => assert(false)
+  }
+}
+
+test "unify with CtUnknown" {
+  let r1 = unify(CtInt, CtUnknown, SubstEmpty)
+  match r1 {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+  let r2 = unify(CtUnknown, CtString, SubstEmpty)
+  match r2 {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
