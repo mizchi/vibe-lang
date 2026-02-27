@@ -392,7 +392,7 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-Total: ~153 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22) + MoonBit E2E
+Total: ~209 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22, types: 12, builtins: 5, checker: 19, checker_resolve: 8, checker_stmt: 12) + MoonBit E2E
 
 ### Phase 1: Lexer + AST + Expression Parser (completed)
 
@@ -438,8 +438,16 @@ Total: ~153 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22) + 
 - [x] Selfhost fixture roundtrip tests (5 patterns)
 - [ ] `do { ... }` block expression（互換構文。self-host 目標には必須ではないため後回し）
 
-### Phase 5: Type Checker (not started)
+### Phase 5: Type Checker (completed)
 
+- [x] `types.vibe` — Type/TypeDef/TypeEnv enums, env functions, type_to_string, types_equal (12 tests)
+- [x] `builtins.vibe` — lookup_builtin: 35 builtin function type definitions (5 tests)
+- [x] `checker.vibe` — check_expr: expression-level type checking, all 30 Expr variants (19 tests)
+- [x] `checker_resolve.vibe` — resolve_type_expr: TypeExpr → Type conversion (8 tests)
+- [x] `checker_stmt.vibe` — check_stmts/check_program: statement-level type checking (12 tests)
+- [x] EFn AST changed to `Option[TypeExpr]` for params/return types (Phase 5.0)
+- [x] Gradual typing with `CtUnknown` (compatible with any type)
+- [x] E2E parse + roundtrip tests for all type checker source files
 - [ ] Type inference (Hindley-Milner with unification)
 - [ ] Effect checking (`with { Error }` propagation)
 - [ ] Import resolution (`import ./foo.vibe { ... }` file loading)
