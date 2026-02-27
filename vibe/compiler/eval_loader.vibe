@@ -1,0 +1,111 @@
+import ./lexer.vibe { lex }
+import ./parser.vibe { Stmt, Expr, Pat, TypeExpr, parse_program }
+
+// Anchor imports
+let _a1 = (e: Expr) -> Expr { e }
+let _a2 = (p: Pat) -> Pat { p }
+let _a3 = (t: TypeExpr) -> TypeExpr { t }
+let _a4 = (s: Stmt) -> Stmt { s }
+
+export let load_and_parse = (source: String) -> Array[Stmt] with { Error } {
+  let tokens = lex(source)
+  parse_program(tokens)
+}
+
+export let collect_exports = (stmts: Array[Stmt]) -> Array[String] {
+  let rec go = (i: Int, acc: Array[String]) -> Array[String] {
+    if i >= array_length(stmts) { acc }
+    else {
+      let stmt = array_get(stmts, i)
+      let new_acc = match stmt {
+        SLet(true, _, name, _, _) => array_concat(acc, [name]),
+        SEnum(true, _, variants) => {
+          let rec add_ctors = (j: Int, a: Array[String]) -> Array[String] {
+            if j >= array_length(variants) { a }
+            else {
+              let (cname, _) = array_get(variants, j)
+              add_ctors(j + 1, array_concat(a, [cname]))
+            }
+          }
+          add_ctors(0, acc)
+        },
+        SExport(names) => {
+          let rec add_names = (j: Int, a: Array[String]) -> Array[String] {
+            if j >= array_length(names) { a }
+            else { add_names(j + 1, array_concat(a, [array_get(names, j)])) }
+          }
+          add_names(0, acc)
+        },
+        _ => acc
+      }
+      go(i + 1, new_acc)
+    }
+  }
+  go(0, array_slice([""], 0, 0))
+}
+
+export let dir_of = (file_path: String) -> String {
+  let idx = string_last_index_of(file_path, "/")
+  if idx < 0 { "" }
+  else { string_substring(file_path, 0, idx) }
+}
+
+export let resolve_path = (base_dir: String, raw_path: String) -> String {
+  let len = string_length(raw_path)
+  if len >= 3 {
+    if string_equals(string_substring(raw_path, 0, 3), "../") {
+      let rest = string_substring(raw_path, 3, len)
+      let parent = dir_of(base_dir)
+      let resolved = if string_ends_with(rest, ".vibe") { rest }
+                     else { string_concat(rest, ".vibe") }
+      if string_equals(parent, "") { resolved }
+      else { string_concat(parent, string_concat("/", resolved)) }
+    }
+    else if string_equals(string_substring(raw_path, 0, 2), "./") {
+      let rest = string_substring(raw_path, 2, len)
+      let resolved = if string_ends_with(rest, ".vibe") { rest }
+                     else { string_concat(rest, ".vibe") }
+      if string_equals(base_dir, "") { resolved }
+      else { string_concat(base_dir, string_concat("/", resolved)) }
+    }
+    else { raw_path }
+  }
+  else if len >= 2 {
+    if string_equals(string_substring(raw_path, 0, 2), "./") {
+      let rest = string_substring(raw_path, 2, len)
+      let resolved = if string_ends_with(rest, ".vibe") { rest }
+                     else { string_concat(rest, ".vibe") }
+      if string_equals(base_dir, "") { resolved }
+      else { string_concat(base_dir, string_concat("/", resolved)) }
+    }
+    else { raw_path }
+  }
+  else { raw_path }
+}
+
+export let source_lookup = (sources: Array[(String, String)], path_key: String) -> Option[String] {
+  let rec go = (i: Int) -> Option[String] {
+    if i >= array_length(sources) { None }
+    else {
+      let (p, src) = array_get(sources, i)
+      if string_equals(p, path_key) { Some(src) }
+      else { go(i + 1) }
+    }
+  }
+  go(0)
+}
+
+export let contains_str = (arr: Array[String], target: String) -> Bool {
+  let rec go = (i: Int) -> Bool {
+    if i >= array_length(arr) { false }
+    else {
+      if string_equals(array_get(arr, i), target) { true }
+      else { go(i + 1) }
+    }
+  }
+  go(0)
+}
+
+export let exports_contains = (exports: Array[String], name: String) -> Bool {
+  contains_str(exports, name)
+}

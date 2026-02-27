@@ -415,15 +415,15 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-Total: ~226 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5) + MoonBit E2E
+Total: ~303 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5, eval: 24, eval_stmt: 12, eval_builtins: 17, eval_e2e: 10, values: 8) + MoonBit E2E
 
 ### Phase 1: Lexer + AST + Expression Parser (completed)
 
 - [x] `token.vibe` — Token enum (~50 variants) + `token_to_string`
 - [x] `ast.vibe` — Pat, Expr enum definitions
 - [x] `lexer.vibe` + `lexer_test.vibe` — String → Array[Token] (20 tests)
-- [x] `parser.vibe` + `parser_test.vibe` — Array[Token] → Expr (27 tests)
-- [x] `printer.vibe` + `printer_test.vibe` — Expr → String (21 tests, roundtrip)
+- [x] `parser.vibe` + `parser_test.vibe` — Array[Token] → Expr (37 tests)
+- [x] `printer.vibe` + `printer_test.vibe` — Expr → String (26 tests, roundtrip)
 - [x] `index.vibe` — Public API re-export
 
 ### Phase 2: Statement Parser + Type Annotations (completed)
@@ -432,7 +432,7 @@ Total: ~226 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22, ty
 - [x] `Stmt` enum + statement parsers — 13 variants (SLet, SLetMut, SEnum, SStruct, STypeAlias, STrait, SImpl, SImport, STest, SBench, SExpr, SExport, SModule)
 - [x] `parse_stmt` + `parse_program` — top-level statement dispatch
 - [x] `print_type_expr` + `print_stmt` + `print_program` — printer extensions
-- [x] `stmt_test.vibe` — 46 tests
+- [x] `stmt_test.vibe` — 54 tests
 
 ### Phase 3: Fixture Compatibility (completed)
 
@@ -459,7 +459,7 @@ Total: ~226 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22, ty
 - [x] E2E test: all 16 vibe/compiler/*.vibe files parsed by @parser.parse_ast
 - [x] E2E roundtrip: format_script applied twice produces stable output
 - [x] Selfhost fixture roundtrip tests (5 patterns)
-- [ ] `do { ... }` block expression（互換構文。self-host 目標には必須ではないため後回し）
+- [x] `do { ... }` → bare `{ ... }` block に移行済み（`do` キーワード廃止）
 
 ### Phase 5: Type Checker (completed)
 
@@ -478,14 +478,22 @@ Total: ~226 tests (lexer: 21, parser: 34, printer: 26, stmt: 50, fixture: 22, ty
 - [x] Effect flag verification tests (EFn with/without effect annotation)
 - [ ] Type inference (Hindley-Milner with unification)
 - [ ] Effect scope threading (check_expr signature change needed)
-- [ ] Import file loading (`import ./foo.vibe { ... }` actual file I/O + parse)
 - [ ] Trait constraint resolution
 
-### Phase 6: Interpreter / Codegen (not started)
+### Phase 6: Interpreter (completed)
 
-- [ ] Builtin functions (~30: string_concat, array_get, etc.)
-- [ ] AST evaluator (eval)
-- [ ] Self-hosting: vibe/compiler parses + evaluates vibe/compiler itself
+- [x] `values.vibe` — Value enum (VInt, VFloat, VString, VBool, VUnit, VTuple, VArray, VRecord, VCtor, VBytes, VFn) + VEnv 環境チェーン (8 tests)
+- [x] `eval.vibe` — eval_expr: 全 Expr バリアントの tree-walking 評価器 + Expr↔Value encode/decode (24 tests)
+  - リテラル、束縛、演算子、制御フロー (if/match/while/for-in)、クロージャ、パイプ、パターンマッチ
+- [x] `eval_stmt.vibe` — eval_stmts: let/let_rec/let_mut/enum/test/import の評価 (12 tests)
+- [x] `eval_builtins.vibe` — 23 builtin 関数 (17 tests)
+  - String: string_concat, string_length, string_equals, string_from_char_code
+  - Array: array_length, array_get, array_slice, array_concat
+  - Bytes: bytes_new, bytes_length, bytes_get, bytes_set, bytes_push, bytes_concat, bytes_slice, bytes_from_array, bytes_to_array
+  - Misc: eq, not, __to_string, print, println, assert
+- [x] `eval_e2e_test.vibe` — parse → eval 統合テスト (10 tests)
+- [ ] Import file loading (`import ./foo.vibe { ... }` 実ファイル I/O + parse + eval)
+- [ ] Self-hosting: vibe/compiler が vibe/compiler 自身を parse + eval する
 
 ### Language pain points discovered during self-hosting
 
