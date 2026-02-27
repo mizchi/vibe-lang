@@ -1,6 +1,19 @@
 import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
-import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind }
+import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind, resolve_builtin }
 import ./checker.vibe { check_expr }
+
+let resolve_te = (te: TypeExpr) -> Type {
+  match te {
+    TyUnit => CtUnit,
+    TyName(name) => {
+      match resolve_builtin(name) {
+        Some(t) => t,
+        None => CtNamed(name, array_slice([CtUnknown], 0, 0))
+      }
+    },
+    _ => CtUnknown
+  }
+}
 
 export let rec check_stmts = (
   stmts: Array[Stmt],
@@ -13,17 +26,25 @@ export let rec check_stmts = (
   } else {
     let stmt = array_get(stmts, i)
     let new_env = match stmt {
-      SLet(_, is_rec, name, _, val) => {
+      SLet(_, is_rec, name, ann, val) => {
         let vt = if is_rec {
           check_expr(val, env_bind(env, name, CtUnknown), defs)
         } else {
           check_expr(val, env, defs)
         }
-        env_bind(env, name, vt)
+        let t = match ann {
+          Some(te) => resolve_te(te),
+          None => vt
+        }
+        env_bind(env, name, t)
       },
-      SLetMut(name, _, val) => {
+      SLetMut(name, ann, val) => {
         let vt = check_expr(val, env, defs)
-        env_bind(env, name, vt)
+        let t = match ann {
+          Some(te) => resolve_te(te),
+          None => vt
+        }
+        env_bind(env, name, t)
       },
       SEnum(_, name, _) => {
         env_bind(env, name, CtEnum(name))
@@ -31,11 +52,13 @@ export let rec check_stmts = (
       SStruct(_, name, _) => {
         env_bind(env, name, CtStruct(name))
       },
-      STypeAlias(_, name, _) => {
-        env_bind(env, name, CtUnknown)
+      STypeAlias(_, name, te) => {
+        let t = resolve_te(te)
+        env_bind(env, name, t)
       },
-      SExternLet(name, _) => {
-        env_bind(env, name, CtUnknown)
+      SExternLet(name, te) => {
+        let t = resolve_te(te)
+        env_bind(env, name, t)
       },
       STest(_, body) => {
         let _ = check_expr(body, env, defs)
@@ -52,6 +75,18 @@ export let rec check_stmts = (
       SModule(_, _, body) => {
         let _ = check_stmts(body, 0, env, defs)
         env
+      },
+      SImport(_, names) => {
+        let nlen = array_length(names)
+        let rec bind_imports = (i: Int, acc: TypeEnv) -> TypeEnv {
+          if i >= nlen { acc }
+          else {
+            let (name, alias) = array_get(names, i)
+            let bound_name = match alias { Some(a) => a, None => name }
+            bind_imports(i + 1, env_bind(acc, bound_name, CtUnknown))
+          }
+        }
+        bind_imports(0, env)
       },
       _ => env
     }

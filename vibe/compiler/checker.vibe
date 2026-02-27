@@ -1,5 +1,5 @@
 import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
-import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind }
+import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind, resolve_builtin }
 import ./builtins.vibe { lookup_builtin }
 
 export let rec check_expr = (
@@ -101,9 +101,29 @@ export let rec check_expr = (
       let rt = check_expr(right, env, defs)
       match rt { CtFn(_, ret, _) => ret, _ => CtUnknown }
     },
-    EFn(_, _, effect, body) => {
+    EFn(params, _, effect, body) => {
       let he = match effect { Some(_) => true, None => false }
-      let bt = check_expr(body, env, defs)
+      let plen = array_length(params)
+      let rec bind_params = (i: Int, acc: TypeEnv) -> TypeEnv {
+        if i >= plen { acc }
+        else {
+          let (name, ann) = array_get(params, i)
+          let pt = match ann {
+            Some(te) => match te {
+              TyUnit => CtUnit,
+              TyName(tn) => match resolve_builtin(tn) {
+                Some(t) => t,
+                None => CtUnknown
+              },
+              _ => CtUnknown
+            },
+            None => CtUnknown
+          }
+          bind_params(i + 1, env_bind(acc, name, pt))
+        }
+      }
+      let fn_env = bind_params(0, env)
+      let bt = check_expr(body, fn_env, defs)
       CtFn(array_slice([CtUnknown], 0, 0), bt, he)
     },
     _ => CtUnknown
