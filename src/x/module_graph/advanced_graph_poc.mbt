@@ -264,8 +264,9 @@ pub fn build_advanced_graph_index(
   paths : Array[String],
   base_commit? : String = "",
   created_at? : String = "",
+  skip_types? : Bool = false,
 ) -> AdvancedGraphIndex {
-  let symbol_index = @runtime.build_symbol_index(db, paths)
+  let symbol_index = @runtime.build_symbol_index(db, paths, skip_types~)
   let defs : Map[String, AdvancedGraphDef] = {}
   let symbols : Map[String, Array[String]] = {}
   let types : Map[String, Array[String]] = {}

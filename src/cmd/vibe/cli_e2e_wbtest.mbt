@@ -3073,8 +3073,7 @@ test "selfhost compiler source files parse successfully" {
 test "selfhost compiler source files roundtrip format" {
   let compiler_dir = "vibe/compiler"
   let files = [
-    "token.vibe", "ast.vibe", "lexer.vibe", "parser.vibe", "printer.vibe",
-    "index.vibe",
+    "token.vibe", "ast.vibe", "lexer.vibe", "parser.vibe", "printer.vibe", "index.vibe",
     "types.vibe", "builtins.vibe", "checker.vibe", "checker_resolve.vibe", "checker_stmt.vibe",
   ]
   for file in files {

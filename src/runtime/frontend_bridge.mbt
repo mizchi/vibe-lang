@@ -2,9 +2,11 @@
 pub fn build_symbol_index(
   db : VibeDb,
   paths : Array[String],
+  skip_types? : Bool = false,
 ) -> @pipeline.SymbolIndex {
   let entries : Array[@pipeline.SymbolEntry] = []
   let seen_module_hashes : Map[String, Bool] = {}
+  let empty_types = @checker.TypeEnv::new()
   for path in paths {
     match db.get_source(path) {
       Some(source) => {
@@ -17,7 +19,7 @@ pub fn build_symbol_index(
       None => ()
     }
     let ast = db.ast(path)
-    let types = db.types(path)
+    let types = if skip_types { empty_types } else { db.types(path) }
     let per_module = @pipeline.build_symbol_index_for_module(path, ast, types)
     for entry in per_module.entries {
       entries.push(entry)

@@ -816,12 +816,14 @@ fn check_cmd(args : Array[String]) -> Unit {
   }
   let mut total_errors = 0
   for entry_path in args {
-    match resolve_entry_artifacts(entry_path) {
+    println("[check_debug] resolving: \{entry_path}")
+    match resolve_entry_artifacts(entry_path, skip_types=true) {
       Err(err) => {
         println("check: \{entry_path}: \{err}")
         total_errors += 1
       }
       Ok((db, entry, _lock, _index, graph_head)) => {
+        println("[check_debug] resolved: \{entry}")
         let source = match db.get_source(entry) {
           Some(v) => v
           None =>
@@ -833,7 +835,9 @@ fn check_cmd(args : Array[String]) -> Unit {
               }
             }
         }
-        let _ = db.types(entry)
+        println("[check_debug] starting db.types: \{entry}")
+        let _env = db.types(entry)
+        println("[check_debug] finished db.types: \{entry}")
         // Show dependency diagnostics first (root cause priority)
         let dep_imports = db.imports(entry)
         for imp in dep_imports {

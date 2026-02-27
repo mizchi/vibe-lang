@@ -357,12 +357,19 @@ pub fn Runtime::eval_module(
           None =>
             raise EvalError::ImportError("Module not found in cache: " + hash)
           Some(imported_module) => {
-            let imported_rt = self.fork_for_test()
-            let _imported_result = imported_rt.eval_module(imported_module) catch {
-              e =>
-                raise EvalError::ImportError(
-                  "Failed to evaluate imported module: " + e.to_string(),
-                )
+            let imported_rt = match self.import_eval_cache.get(hash) {
+              Some(cached_rt) => cached_rt
+              None => {
+                let rt = self.fork_for_test()
+                let _ = rt.eval_module(imported_module) catch {
+                  e =>
+                    raise EvalError::ImportError(
+                      "Failed to evaluate imported module: " + e.to_string(),
+                    )
+                }
+                self.import_eval_cache[hash] = rt
+                rt
+              }
             }
             let exports = @core.extract_exports(imported_module)
             for item in spec.items {
@@ -407,17 +414,25 @@ pub fn Runtime::eval_module(
           None =>
             raise EvalError::ImportError("Module not found in cache: " + hash)
           Some(imported_module) => {
-            // Evaluate imported module in an isolated fork so exported values can
-            // reference internal helpers defined in the same module.
-            let imported_rt = self.fork_for_test()
-            let imported_result = imported_rt.eval_module(imported_module) catch {
-              e =>
-                raise EvalError::ImportError(
-                  "Failed to evaluate imported module: " + e.to_string(),
-                )
-            }
-            if imported_result.effects.length() > 0 {
-              raise EvalError::ImportError("Cannot import effectful module")
+            // Check if this module has already been evaluated
+            let imported_rt = match self.import_eval_cache.get(hash) {
+              Some(cached_rt) => cached_rt
+              None => {
+                // Evaluate imported module in an isolated fork so exported values can
+                // reference internal helpers defined in the same module.
+                let rt = self.fork_for_test()
+                let result = rt.eval_module(imported_module) catch {
+                  e =>
+                    raise EvalError::ImportError(
+                      "Failed to evaluate imported module: " + e.to_string(),
+                    )
+                }
+                if result.effects.length() > 0 {
+                  raise EvalError::ImportError("Cannot import effectful module")
+                }
+                self.import_eval_cache[hash] = rt
+                rt
+              }
             }
             let exports = @core.extract_exports(imported_module)
             let bind_import = fn(

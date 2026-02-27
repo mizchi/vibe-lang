@@ -261,16 +261,38 @@ Completed items are archived in `docs/DONE.md`.
     - printer.vibe を import する全テスト (printer_test, parser_test, stmt_test, fixture_test) が **~23分/CPU 1250s** でハング同然
     - テスト自体は 0 件実行。全コストはモジュールのロード・型チェック段階
     - printer.vibe (276行) → ast.vibe を import し、Expr (30 variant) / Stmt (16 variant) の巨大 match 式を含む
-    - `src/runtime/eval.mbt:287-292`: 各 `let rec` binding で `purity_for_let()` が AST 全体を再帰走査
-    - `src/checker/purity.mbt:176-460`: 再帰的 expression/block analysis — ネスト関数ごとに全サブ式を走査
-    - `src/runtime/store.mbt:464-466`: 関数生成ごとに `env_snapshot()` が環境マップをフルクローン
-    - purity 結果はモジュール間でキャッシュされない — 同じモジュールを複数テストから import しても毎回再計算
     - parser.vibe (1425行) を直接 import しないテスト (lexer_test, types_test 等) は 0.8-1.2s で正常完了
-  - 改善方針候補:
-    - (A) purity analysis のモジュール単位キャッシュ (`eval_module` 結果の再利用)
-    - (B) テスト実行時の purity check スキップオプション
-    - (C) `env_snapshot` の遅延化 (COW 方式)
-    - (D) printer.vibe の match 式を分割して purity analysis のコストを削減
+  - **ボトルネック詳細分析:**
+    1. **[主因] clone_env() の大量呼び出し** (`src/checker/typecheck_expr.mbt:792`)
+       - match 式の各 arm で `clone_env(env)` → TypeEnv の全フィールドをコピー
+       - `fork_for_check()` (`src/checker/typecheck_env_lifecycle.mbt:57-109`): 11個の Map を `.copy()` + subs/effect_subs も `.copy()`
+       - printer.vibe: Expr match(30arm) + Stmt match(16arm) + Pat match(9arm) = **55回の full env copy**
+       - prelude + ast.vibe の型定義でマップが巨大化（Expr 30 ctor + Pat 9 ctor + TypeExpr 8 ctor + Stmt 16 ctor + prelude 多数）
+    2. **[副因] ForIn デシュガーによる型チェック増幅** (`src/checker/typecheck_expr.mbt:857-861`)
+       - `for x in xs { body }` → `desugar_for_in()` で 7文の Do ブロックに展開 (`src/core/for_in_desugar.mbt`)
+       - 展開: let + let + let + let + let_mut + while(5 stmts) + expr = **12+ の型チェック呼び出し**
+       - printer.vibe の ~15 個の for comprehension → 合計 **180+ の追加型チェック**
+    3. **[副因] type_equal() のキャッシュ不在** (`src/checker/typecheck_unify.mbt:856-862`)
+       - match arm 結果の一致確認で毎回 `unify_types()` → 新規 `cache: Map` を生成
+       - 30 arm → 29回の型等値チェック、各回でキャッシュなしの unification
+    4. **[副因] purity_for_let() の全 arm 走査** (`src/checker/typecheck_stmts.mbt:437`)
+       - 各 `let rec` で purity analysis → match の全 arm を走査
+       - ただし ForIn/Fn は leaf 扱い (O(1)) なので purity 自体は match arm 数に線形
+    5. **[副因] モジュールキャッシュ不在**
+       - 同じ printer.vibe を複数テストから import しても毎回フル型チェック
+  - **改善方針 (優先順):**
+    - **(A) printer.vibe の match 式分割** [低リスク・vibe コード変更のみ]
+      - 30-arm Expr match を 3-4 個のヘルパー関数に分割 → clone_env() 回数を 1/3 に削減
+      - 例: `print_expr_literal`, `print_expr_binary`, `print_expr_control_flow`, `print_expr_compound`
+    - **(B) clone_env() の軽量化** [中リスク・compiler 変更]
+      - match arm 用の軽量 fork: bindings のみ fork し、enum_defs/struct_defs/ctor_index 等は共有
+      - `fork_for_check()` → `fork_for_match_arm()` 追加（bindings.fork() + 他は参照共有）
+    - **(C) モジュール型チェック結果キャッシュ** [中リスク・compiler 変更]
+      - import 済みモジュールの型チェック結果をハッシュで保持、再 import 時はスキップ
+    - **(D) ForIn の型チェック最適化** [低リスク・compiler 変更]
+      - desugared form の型チェックを簡略化（builder パターンは型が既知）
+    - **(E) type_equal() キャッシュ共有** [低リスク・compiler 変更]
+      - match 式内で unification cache を arm 間で共有
 
 ### Low (P3): 公開面のノイズ削減
 

@@ -49,21 +49,7 @@ fn ensure_no_scoped_ref_capture_in_fn(
   if not(env.scoped_ref_checks_enabled) {
     return
   }
-  let profile_start = if env.scoped_ref_profile_enabled {
-    env.scoped_ref_capture_checks += 1
-    Some(@bench.monotonic_clock_start())
-  } else {
-    None
-  }
-  let finish = fn() {
-    match profile_start {
-      Some(ts) =>
-        env.scoped_ref_capture_time_us += @bench.monotonic_clock_end(ts)
-      None => ()
-    }
-  }
   if not(env.has_scoped_ref_binding_for_capture()) {
-    finish()
     return
   }
   let bound = @core.WalkerScope::new()
@@ -86,13 +72,11 @@ fn ensure_no_scoped_ref_capture_in_fn(
     match env.get_scheme(name) {
       Some(scheme) =>
         if type_contains_scoped_ref(env, scheme.ty) {
-          finish()
           raise TypeError::ScopedRefEscape(context="closure capture", span~)
         }
       None => ()
     }
   }
-  finish()
 }
 
 ///|
@@ -707,7 +691,7 @@ fn type_expr_eff(
       )
       let inferred_resume_types = body_env.handle_resume_types.copy()
       for arm in arms {
-        let arm_env = clone_env(env)
+        let arm_env = env.fork_for_match_arm()
         arm_env.handle_arm_depth += 1
         arm_env.handle_resume_types = inferred_resume_types.copy()
         arm_env.handle_resume_types_active = true
@@ -789,8 +773,12 @@ fn type_expr_eff(
           }
           _ => ()
         }
-        let arm_env = clone_env(env)
-        let bindings = collect_pattern_bindings(env, arm.pat, scrutinee_ty)
+        let arm_env = env.fork_for_match_arm()
+        let bindings = collect_pattern_bindings_prenormalized(
+          env,
+          arm.pat,
+          scrutinee_ty,
+        )
         for name, ty in bindings {
           arm_env.set(name, ty)
         }
@@ -1856,14 +1844,17 @@ fn type_let_expr(
       if is_non_expansive_expr(env, expr, aliases) {
         generalize(env, ty)
       } else {
+        // Skip normalize_type here — just resolve type variables.
+        // Normalization (expanding Named → Variant) is done lazily when needed
+        // (e.g., in match expressions). Eagerly normalizing is a hot path bottleneck
+        // due to cache invalidation from subs_version changes during unification.
         let resolved = resolve_type(env, ty)
-        let normalized = normalize_type(env, resolved)
         TypeScheme::{
           vars: [],
           num_vars: [],
           effect_vars: [],
           trait_bounds: {},
-          ty: normalized,
+          ty: resolved,
         }
       }
     } else {
@@ -2069,24 +2060,9 @@ fn ensure_no_scoped_ref_call_argument(
   if not(env.scoped_ref_checks_enabled) {
     return
   }
-  let profile_start = if env.scoped_ref_profile_enabled {
-    env.scoped_ref_call_arg_checks += 1
-    Some(@bench.monotonic_clock_start())
-  } else {
-    None
-  }
-  let finish = fn() {
-    match profile_start {
-      Some(ts) =>
-        env.scoped_ref_call_arg_time_us += @bench.monotonic_clock_end(ts)
-      None => ()
-    }
-  }
   if type_contains_scoped_ref(env, arg_ty) {
-    finish()
     raise TypeError::ScopedRefEscape(context="function argument", span~)
   }
-  finish()
 }
 
 ///|

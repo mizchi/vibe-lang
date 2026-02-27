@@ -744,7 +744,28 @@ fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
 ///|
 fn record_expr_type(env : TypeEnv, span : @core.Span, ty : @core.Type) -> Unit {
   let resolved = resolve_type(env, ty)
-  let normalized = normalize_type_preserve_enum(env, resolved) catch {
+  // Fast path: ground types need no normalization
+  match resolved {
+    Int
+    | Float
+    | Double
+    | Bool
+    | Char
+    | String
+    | Path
+    | PromptText
+    | Unit
+    | StringBuilder
+    | Never
+    | Var(_)
+    | Param(_) => {
+      env.expr_types[span_key(span)] = resolved
+      return
+    }
+    _ => ()
+  }
+  // Use pre-resolved path to avoid redundant resolve_type inside normalize
+  let normalized = normalize_type_with_mode_resolved(env, resolved, false) catch {
     _ => resolved
   }
   env.expr_types[span_key(span)] = normalized

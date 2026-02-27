@@ -20,6 +20,19 @@ fn collect_pattern_bindings(
 }
 
 ///|
+/// Like collect_pattern_bindings but skips normalize_type on the scrutinee,
+/// assuming the caller has already normalized it.
+fn collect_pattern_bindings_prenormalized(
+  env : TypeEnv,
+  pat : @core.Pat,
+  scrutinee_ty : @core.Type,
+) -> Map[String, @core.Type] raise TypeError {
+  let out : Map[String, @core.Type] = {}
+  collect_pattern_bindings_inner(env, out, pat, scrutinee_ty)
+  out
+}
+
+///|
 fn collect_pattern_bindings_inner(
   env : TypeEnv,
   out : Map[String, @core.Type],

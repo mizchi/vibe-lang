@@ -609,12 +609,14 @@ fn sync_graph_head_for_loaded_db(
   entry : String,
   paths : Array[String],
   base_commit : String,
+  skip_types? : Bool = false,
 ) -> Result[(@x_exp.AdvancedGraphIndex, String), String] {
   let index = @x_exp.build_advanced_graph_index(
     db,
     paths,
     base_commit~,
     created_at=@env.now().to_string(),
+    skip_types~,
   )
   let index_json = index.to_json().stringify()
   let graph_head = @vibe_core.git_blob_hash_string(index_json)
@@ -626,9 +628,12 @@ fn sync_graph_head_for_loaded_db(
   }
   let index_vbundle_path = index_root + "/index.vbundle"
   let vbundle_obj = load_index_vbundle_object(index_vbundle_path)
-  let function_tracking = compute_function_tracking_json(
-    db, paths, index, vbundle_obj,
-  )
+  let function_tracking = if skip_types {
+    let empty : Map[String, Json] = {}
+    Json::object(empty)
+  } else {
+    compute_function_tracking_json(db, paths, index, vbundle_obj)
+  }
   match
     write_index_vbundle_graph_head(index_root, graph_head, function_tracking) {
     Ok(_) => ()
@@ -640,6 +645,7 @@ fn sync_graph_head_for_loaded_db(
 ///|
 fn resolve_entry_artifacts(
   entry_path : String,
+  skip_types? : Bool = false,
 ) -> Result[
   (
     @runtime.VibeDb,
@@ -661,7 +667,7 @@ fn resolve_entry_artifacts(
     Err(err) => return Err(err)
   }
   let (index, graph_head) = match
-    sync_graph_head_for_loaded_db(db, entry, paths, "") {
+    sync_graph_head_for_loaded_db(db, entry, paths, "", skip_types~) {
     Ok(v) => v
     Err(err) => return Err(err)
   }

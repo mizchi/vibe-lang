@@ -207,6 +207,8 @@ pub struct Runtime {
   thread_runtime : ThreadRuntime
   // Module cache for import resolution: hash -> Module
   module_cache : Map[String, @core.Module]
+  // Evaluated module cache: hash -> evaluated Runtime (avoids redundant eval_module calls)
+  import_eval_cache : Map[String, Runtime]
   perform_resume_overrides : Map[String, @core.Value]
   mut active_handle_scope : String?
   mut prelude_loaded : Bool
@@ -238,6 +240,7 @@ pub fn Runtime::new_with_features(
     mut_vars: {},
     thread_runtime: ThreadRuntime::new(),
     module_cache: {},
+    import_eval_cache: {},
     perform_resume_overrides: {},
     active_handle_scope: None,
     prelude_loaded: false,
@@ -440,6 +443,7 @@ fn Runtime::fork_for_test(self : Runtime) -> Runtime {
     mut_vars: self.mut_vars.copy(),
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
+    import_eval_cache: self.import_eval_cache,
     perform_resume_overrides: self.perform_resume_overrides.copy(),
     active_handle_scope: self.active_handle_scope,
     prelude_loaded: self.prelude_loaded,
@@ -481,6 +485,7 @@ fn Runtime::fork_with_env(self : Runtime, env : Map[String, String]) -> Runtime 
     mut_vars: self.mut_vars.copy(),
     thread_runtime: self.thread_runtime,
     module_cache: self.module_cache,
+    import_eval_cache: self.import_eval_cache,
     perform_resume_overrides: self.perform_resume_overrides.copy(),
     active_handle_scope: self.active_handle_scope,
     prelude_loaded: self.prelude_loaded,
