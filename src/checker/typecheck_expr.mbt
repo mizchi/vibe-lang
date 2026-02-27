@@ -296,11 +296,11 @@ fn ctor_payload_type(
   if ctor.args.length() == 0 {
     @core.Type::Unit
   } else if ctor.args.length() == 1 {
-    normalize_type_preserve_enum(env, ctor.args[0])
+    normalize_type(env, ctor.args[0])
   } else {
     let items : Array[@core.Type] = []
     for arg in ctor.args {
-      items.push(normalize_type_preserve_enum(env, arg))
+      items.push(normalize_type(env, arg))
     }
     @core.Type::Tuple(items)
   }
@@ -725,7 +725,7 @@ fn type_expr_eff(
       if arms.is_empty() {
         raise TypeError::BadMatch(message="empty match", span~)
       }
-      let scrutinee_ty = normalize_type(
+      let scrutinee_ty = normalize_type_expand_enum(
         env,
         type_expr_eff(env, scrutinee, aliases, effects, allow_effect),
       )

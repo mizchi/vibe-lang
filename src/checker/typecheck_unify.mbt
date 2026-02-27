@@ -1,14 +1,14 @@
 ///|
 fn normalize_type(env : TypeEnv, ty : @core.Type) -> @core.Type raise TypeError {
-  normalize_type_with_mode(env, ty, true)
+  normalize_type_with_mode(env, ty, false)
 }
 
 ///|
-fn normalize_type_preserve_enum(
+fn normalize_type_expand_enum(
   env : TypeEnv,
   ty : @core.Type,
 ) -> @core.Type raise TypeError {
-  normalize_type_with_mode(env, ty, false)
+  normalize_type_with_mode(env, ty, true)
 }
 
 ///|
@@ -1149,8 +1149,8 @@ fn unify_types_inner(
           ok
         }
       } else {
-        let nl = normalize_type(env, left)
-        let nr = normalize_type(env, right)
+        let nl = normalize_type_expand_enum(env, left)
+        let nr = normalize_type_expand_enum(env, right)
         unify_types_inner(env, nl, nr, cache)
       }
     (@core.Type::Var(id), t) => bind_var(env, id, t)
@@ -1159,11 +1159,11 @@ fn unify_types_inner(
     (@core.Type::Param(_), _) => false
     (_, @core.Type::Param(_)) => false
     (@core.Type::Named(..), _) => {
-      let nl = normalize_type(env, left)
+      let nl = normalize_type_expand_enum(env, left)
       unify_types_inner(env, nl, right, cache)
     }
     (_, @core.Type::Named(..)) => {
-      let nr = normalize_type(env, right)
+      let nr = normalize_type_expand_enum(env, right)
       unify_types_inner(env, left, nr, cache)
     }
     (@core.Type::Int, @core.Type::Int) => true

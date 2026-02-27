@@ -69,10 +69,16 @@ pub struct TypeEnv {
   expr_types : Map[Int64, @core.Type]
   num_vars : Map[Int, Bool]
   var_trait_bounds : Map[Int, Array[String]]
-  mut scoped_ref_contains_cache : Map[String, Array[ScopedRefContainsCacheEntry]]
+  mut scoped_ref_contains_cache : Map[
+    String,
+    Array[ScopedRefContainsCacheEntry],
+  ]
   mut scoped_ref_contains_cache_version : Int
   mut normalize_type_cache_expand : Map[String, Array[(@core.Type, @core.Type)]]
-  mut normalize_type_cache_preserve : Map[String, Array[(@core.Type, @core.Type)]]
+  mut normalize_type_cache_preserve : Map[
+    String,
+    Array[(@core.Type, @core.Type)],
+  ]
   mut normalize_type_cache_subs_version : Int
   // Ground caches for 0-arg Named types.  These are NOT invalidated by
   // subs_version changes because the normalization of a 0-arg Named type

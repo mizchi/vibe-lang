@@ -14,7 +14,7 @@ fn collect_pattern_bindings(
   scrutinee_ty : @core.Type,
 ) -> Map[String, @core.Type] raise TypeError {
   let out : Map[String, @core.Type] = {}
-  let normalized = normalize_type(env, scrutinee_ty)
+  let normalized = normalize_type_expand_enum(env, scrutinee_ty)
   collect_pattern_bindings_inner(env, out, pat, normalized)
   out
 }

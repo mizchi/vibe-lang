@@ -153,11 +153,11 @@ test "normalize_type cache: expand and preserve enum caches are isolated" {
     err => fail("type check error: \{err.to_string()}")
   }
   let enum_ty = @core.Type::Named(name="Toggle", args=[])
-  let preserved = normalize_type_preserve_enum(env, enum_ty) catch {
+  let preserved = normalize_type(env, enum_ty) catch {
     err => fail("preserve normalize failed: \{err.to_string()}")
   }
   assert_eq(preserved, enum_ty)
-  let expanded = normalize_type(env, enum_ty) catch {
+  let expanded = normalize_type_expand_enum(env, enum_ty) catch {
     err => fail("expand normalize failed: \{err.to_string()}")
   }
   match expanded {
