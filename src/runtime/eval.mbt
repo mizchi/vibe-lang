@@ -3154,6 +3154,71 @@ fn eval_builtin_call(
           )
       }
     }
+    "bytes_new" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "bytes_new")
+      if pos_args.length() != 0 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="bytes_new", detail="bad call"),
+        )
+      }
+      { value: @core.Value::Bytes([]), effects: out.effects }
+    }
+    "bytes_push" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "bytes_push")
+      if pos_args.length() != 2 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="bytes_push", detail="bad call"),
+        )
+      }
+      match pos_args[0] {
+        @core.Value::Bytes(data) =>
+          match pos_args[1] {
+            @core.Value::Int(n) => {
+              data.push(n.to_int().to_byte())
+              { value: @core.Value::Unit, effects: out.effects }
+            }
+            _ =>
+              raise EvalError::BadCall(
+                BuiltinDetail(fn_name="bytes_push", detail="bad call"),
+              )
+          }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(fn_name="bytes_push", detail="bad call"),
+          )
+      }
+    }
+    "bytes_set" => {
+      let out = eval_args(rt, args)
+      let pos_args = extract_positional_values(out.args, "bytes_set")
+      if pos_args.length() != 3 {
+        raise EvalError::BadCall(
+          BuiltinDetail(fn_name="bytes_set", detail="bad call"),
+        )
+      }
+      match (pos_args[0], pos_args[1], pos_args[2]) {
+        (
+          @core.Value::Bytes(data),
+          @core.Value::Int(index),
+          @core.Value::Int(val),
+        ) => {
+          let i = index.to_int()
+          if i < 0 || i >= data.length() {
+            raise EvalError::BadCall(
+              BuiltinDetail(fn_name="bytes_set", detail="index out of bounds"),
+            )
+          }
+          data[i] = val.to_int().to_byte()
+          { value: @core.Value::Unit, effects: out.effects }
+        }
+        _ =>
+          raise EvalError::BadCall(
+            BuiltinDetail(fn_name="bytes_set", detail="bad call"),
+          )
+      }
+    }
     "array_builder" => {
       let out = eval_args(rt, args)
       let pos_args = extract_positional_values(out.args, "array_builder")
@@ -3532,6 +3597,7 @@ fn value_type_name(value : @core.Value) -> String {
     @core.Value::ArrayBuilder(_) => "ArrayBuilder"
     @core.Value::MapBuilder(_) => "MapBuilder"
     @core.Value::StringBuilder(_) => "StringBuilder"
+    @core.Value::Bytes(_) => "Bytes"
     @core.Value::PromptText(_) => "PromptText"
   }
 }

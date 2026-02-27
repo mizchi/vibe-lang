@@ -209,7 +209,7 @@ fn expr_to_addr_sexp(ctx : AddrCtx, expr : @core.Expr) -> String {
       let desugared = @core.desugar_for_in(
         value_name, index_name, iterable, body, span,
       )
-      "(do " + block_to_addr_sexp(ctx, desugared) + ")"
+      "(block " + block_to_addr_sexp(ctx, desugared) + ")"
     }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
@@ -713,6 +713,7 @@ fn addr_type_to_sexp(ty : @core.Type) -> String {
     @core.Type::MapBuilder(inner) =>
       "(MapBuilder " + addr_type_to_sexp(inner) + ")"
     @core.Type::StringBuilder => "StringBuilder"
+    @core.Type::Bytes => "Bytes"
     @core.Type::Variant(fields) => {
       let keys = addr_sort_record_type_keys(fields)
       let buf = StringBuilder::new()

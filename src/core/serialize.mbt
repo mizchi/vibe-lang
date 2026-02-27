@@ -747,6 +747,7 @@ fn serialize_type_to(ty : Type, buf : StringBuilder) -> Unit {
       buf.write_char('}')
     }
     Type::StringBuilder => buf.write_string("{\"StringBuilder\":{}}")
+    Type::Bytes => buf.write_string("{\"Bytes\":{}}")
     Type::Variant(ctors) => {
       buf.write_string("{\"Variant\":")
       serialize_type_map_to(ctors, buf)

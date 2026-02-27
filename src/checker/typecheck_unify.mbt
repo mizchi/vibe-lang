@@ -451,6 +451,7 @@ fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
     | @core.Type::PromptText
     | @core.Type::Unit
     | @core.Type::StringBuilder
+    | @core.Type::Bytes
     | @core.Type::Param(_)
     | @core.Type::Var(_)
     | @core.Type::Never => false
@@ -582,6 +583,7 @@ fn type_contains_scoped_ref_inner_fast(
     | @core.Type::PromptText
     | @core.Type::Unit
     | @core.Type::StringBuilder
+    | @core.Type::Bytes
     | @core.Type::Param(_)
     | @core.Type::Var(_)
     | @core.Type::Never => false
@@ -1107,7 +1109,8 @@ fn unify_types_inner(
     | (@core.Type::PromptText, @core.Type::PromptText)
     | (@core.Type::Unit, @core.Type::Unit)
     | (@core.Type::Never, @core.Type::Never)
-    | (@core.Type::StringBuilder, @core.Type::StringBuilder) => return true
+    | (@core.Type::StringBuilder, @core.Type::StringBuilder)
+    | (@core.Type::Bytes, @core.Type::Bytes) => return true
     (@core.Type::Named(name=an, args=aa), @core.Type::Named(name=bn, args=bb)) =>
       if an == bn && aa.is_empty() && bb.is_empty() {
         return true
@@ -1218,6 +1221,7 @@ fn unify_types_inner(
     (@core.Type::MapBuilder(av), @core.Type::MapBuilder(bv)) =>
       unify_types_inner(env, av, bv, cache)
     (@core.Type::StringBuilder, @core.Type::StringBuilder) => true
+    (@core.Type::Bytes, @core.Type::Bytes) => true
     (@core.Type::Variant(ax), @core.Type::Variant(bx)) =>
       if ax.length() != bx.length() {
         false

@@ -420,7 +420,7 @@ test "vibe fn effect requires declaration" {
 }
 
 ///|
-test "vibe declared effects allow direct builtin call without do" {
+test "vibe declared effects allow direct builtin call" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let run = () -> Unit with {Stdout} { sh(\"ls\") }",
@@ -432,7 +432,7 @@ test "vibe declared effects allow direct builtin call without do" {
 }
 
 ///|
-test "vibe do does not grant missing function effect declaration" {
+test "vibe block does not grant missing function effect declaration" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let f = (x: Int) -> Int with {Error} { x }\n" +
@@ -898,21 +898,21 @@ test "vibe none is polymorphic" {
 }
 
 ///|
-test "vibe do value restriction allows values" {
+test "vibe block value restriction allows values" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "{ let x = None\nlet f = (v: Option[Int]) { v }\nlet g = (v: Option[String]) { v }\nlet a = f(x)\nlet b = g(x) }",
   )
   match result {
-    Err(_) => fail("expected value generalization in do")
+    Err(_) => fail("expected value generalization in block")
     Ok(_) => ()
   }
 }
 
 ///|
 test "vibe block generalizes expansive expressions" {
-  // With do {} deprecated (parsed as Block), value restriction no longer
-  // applies. Expansive expressions like `if true { None } else { None }`
+  // Value restriction no longer applies for Block expressions.
+  // Expansive expressions like `if true { None } else { None }`
   // are fully generalized, allowing polymorphic use.
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
@@ -1529,7 +1529,7 @@ test "vibe effect requires with declaration in function" {
 }
 
 ///|
-test "vibe builder works without do" {
+test "vibe builder works in block" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let xs = { let b = array_builder()\narray_builder_push(b, 42)\narray_builder_freeze(b) }",
@@ -1541,15 +1541,14 @@ test "vibe builder works without do" {
 }
 
 ///|
-test "vibe builder type-checks without do boundary" {
+test "vibe builder type-checks in block" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  // Builder operations should type-check without requiring do wrapping in the checker.
-  // Note: do is still useful at runtime for shared-mut semantics (eval_block_shared_mut).
+  // Builder operations should type-check without requiring special wrapping in the checker.
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let build = () -> [Int] {\n  let b = array_builder()\n  array_builder_push(b, 1)\n  array_builder_freeze(b)\n}\nlet xs = build()",
   )
   match result {
-    Ok(_) => () // type-checking passes without do boundary
+    Ok(_) => () // type-checking passes in block
     Err(err) => fail("unexpected error: \{err.to_string()}")
   }
 }
@@ -1557,7 +1556,7 @@ test "vibe builder type-checks without do boundary" {
 ///|
 test "vibe io builtin with effect declaration only" {
   let rt = Runtime::new(@capability.CapabilitySet::new())
-  // stdout_write_stream should type-check without do when with {Stdout} is declared
+  // stdout_write_stream should type-check when with {Stdout} is declared
   let result : Result[EvalResult, VibeError] = try? rt.eval_script(
     "let greet = (name: String) -> Unit with {Stdout} {\n  stdout_write_stream(name)\n}",
   )
@@ -2163,5 +2162,160 @@ test "vibe posix mode function call unchanged in preprocessing" {
   match rt.get("x") {
     Some(@core.Value::String(v)) => assert_eq(v, "hello world")
     _ => fail("expected String")
+  }
+}
+
+///|
+test "bytes_new + bytes_push + bytes_length + bytes_get" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let b = bytes_new()\n" +
+    "bytes_push(b, 10)\n" +
+    "bytes_push(b, 20)\n" +
+    "bytes_push(b, 30)\n" +
+    "let len = bytes_length(b)\n" +
+    "let v0 = bytes_get(b, 0)\n" +
+    "let v1 = bytes_get(b, 1)\n" +
+    "let v2 = bytes_get(b, 2)\n" +
+    "len",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected len=3")
+  }
+  match rt.get("v0") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 10)
+    _ => fail("expected v0=10")
+  }
+  match rt.get("v1") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 20)
+    _ => fail("expected v1=20")
+  }
+  match rt.get("v2") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 30)
+    _ => fail("expected v2=30")
+  }
+}
+
+///|
+test "bytes_set mutation" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let b = bytes_new()\n" +
+    "bytes_push(b, 1)\n" +
+    "bytes_push(b, 2)\n" +
+    "bytes_set(b, 0, 99)\n" +
+    "let v = bytes_get(b, 0)\n" +
+    "v",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("v") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 99)
+    _ => fail("expected v=99")
+  }
+}
+
+///|
+test "bytes_slice + bytes_concat" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let b = bytes_new()\n" +
+    "bytes_push(b, 10)\n" +
+    "bytes_push(b, 20)\n" +
+    "bytes_push(b, 30)\n" +
+    "bytes_push(b, 40)\n" +
+    "let s = bytes_slice(b, 1, 3)\n" +
+    "let s_len = bytes_length(s)\n" +
+    "let s0 = bytes_get(s, 0)\n" +
+    "let s1 = bytes_get(s, 1)\n" +
+    "let c = bytes_concat(s, s)\n" +
+    "let c_len = bytes_length(c)\n" +
+    "c_len",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("s_len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 2)
+    _ => fail("expected s_len=2")
+  }
+  match rt.get("s0") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 20)
+    _ => fail("expected s0=20")
+  }
+  match rt.get("s1") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 30)
+    _ => fail("expected s1=30")
+  }
+  match rt.get("c_len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 4)
+    _ => fail("expected c_len=4")
+  }
+}
+
+///|
+test "bytes_from_array + bytes_to_array roundtrip" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let arr: Array[Int] = [65, 66, 67]\n" +
+    "let b = bytes_from_array(arr)\n" +
+    "let len = bytes_length(b)\n" +
+    "let arr2 = bytes_to_array(b)\n" +
+    "let a0 = array_get(arr2, 0)\n" +
+    "let a1 = array_get(arr2, 1)\n" +
+    "let a2 = array_get(arr2, 2)\n" +
+    "len",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 3)
+    _ => fail("expected len=3")
+  }
+  match rt.get("a0") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 65)
+    _ => fail("expected a0=65")
+  }
+  match rt.get("a1") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 66)
+    _ => fail("expected a1=66")
+  }
+  match rt.get("a2") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 67)
+    _ => fail("expected a2=67")
+  }
+}
+
+///|
+test "bytes_from_string + bytes_to_string roundtrip" {
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  let result : Result[EvalResult, VibeError] = try? rt.eval_script(
+    "let s = \"hello\"\n" +
+    "let b = bytes_from_string(s)\n" +
+    "let len = bytes_length(b)\n" +
+    "let s2 = bytes_to_string(b)\n" +
+    "s2",
+  )
+  match result {
+    Err(e) => fail(e.to_string())
+    Ok(_) => ()
+  }
+  match rt.get("len") {
+    Some(@core.Value::Int(v)) => assert_eq(v, 5)
+    _ => fail("expected len=5")
+  }
+  match rt.get("s2") {
+    Some(@core.Value::String(v)) => assert_eq(v, "hello")
+    _ => fail("expected s2=hello")
   }
 }

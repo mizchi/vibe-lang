@@ -130,6 +130,16 @@ fn encode_value(value : @core.Value) -> String {
       }
       s
     }
+    @core.Value::Bytes(data) => {
+      let mut s = "by:"
+      for i, b in data {
+        if i > 0 {
+          s = s + ","
+        }
+        s = s + b.to_int().to_string()
+      }
+      s
+    }
     @core.Value::Fn(_) => "f:"
   }
 }

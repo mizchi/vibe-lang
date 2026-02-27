@@ -568,6 +568,7 @@ fn value_hash(value : @core.Value) -> String {
     @core.Value::ArrayBuilder(_) => "ab:"
     @core.Value::MapBuilder(_) => "mb:"
     @core.Value::StringBuilder(_) => "sb:"
+    @core.Value::Bytes(_) => "by:"
     @core.Value::Fn(_) => "fn:"
   }
   hasher.update_string(type_tag)

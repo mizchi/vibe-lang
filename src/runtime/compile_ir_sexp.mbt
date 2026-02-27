@@ -379,7 +379,7 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
       let desugared = @core.desugar_for_in(
         value_name, index_name, iterable, body, span,
       )
-      "(do " + block_to_sexp(desugared, aliases) + ")"
+      "(block " + block_to_sexp(desugared, aliases) + ")"
     }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
@@ -640,6 +640,7 @@ fn type_to_sexp(ty : @core.Type) -> String {
       "(ArrayBuilder " + type_to_sexp(inner) + ")"
     @core.Type::MapBuilder(inner) => "(MapBuilder " + type_to_sexp(inner) + ")"
     @core.Type::StringBuilder => "StringBuilder"
+    @core.Type::Bytes => "Bytes"
     @core.Type::Variant(fields) => {
       let keys = sort_record_type_keys(fields)
       let buf = StringBuilder::new()

@@ -135,12 +135,126 @@ let eval_misc = (name: String, args: Array[Value]) -> Option[Value] {
   else None
 }
 
+let eval_bytes = (name: String, args: Array[Value]) -> Option[Value] {
+  if string_equals(name, "bytes_new") {
+    Some(VBytes(array_slice([0], 0, 0)))
+  }
+  else if string_equals(name, "bytes_length") {
+    let b = array_get(args, 0)
+    match b {
+      VBytes(data) => Some(VInt(array_length(data))),
+      _ => Some(VInt(0))
+    }
+  }
+  else if string_equals(name, "bytes_get") {
+    let b = array_get(args, 0)
+    let idx = array_get(args, 1)
+    match b {
+      VBytes(data) => match idx {
+        VInt(i) => Some(VInt(array_get(data, i))),
+        _ => Some(VInt(0))
+      },
+      _ => Some(VInt(0))
+    }
+  }
+  else if string_equals(name, "bytes_set") {
+    let b = array_get(args, 0)
+    let idx = array_get(args, 1)
+    let val = array_get(args, 2)
+    match b {
+      VBytes(data) => match idx {
+        VInt(i) => match val {
+          VInt(v) => {
+            array_set(data, i, v)
+            Some(VUnit)
+          },
+          _ => Some(VUnit)
+        },
+        _ => Some(VUnit)
+      },
+      _ => Some(VUnit)
+    }
+  }
+  else if string_equals(name, "bytes_push") {
+    let b = array_get(args, 0)
+    let val = array_get(args, 1)
+    match b {
+      VBytes(data) => match val {
+        VInt(v) => {
+          array_push(data, v)
+          Some(VUnit)
+        },
+        _ => Some(VUnit)
+      },
+      _ => Some(VUnit)
+    }
+  }
+  else if string_equals(name, "bytes_concat") {
+    let a = array_get(args, 0)
+    let b = array_get(args, 1)
+    match a {
+      VBytes(da) => match b {
+        VBytes(db) => Some(VBytes(array_concat(da, db))),
+        _ => Some(VBytes(da))
+      },
+      _ => Some(VBytes(array_slice([0], 0, 0)))
+    }
+  }
+  else if string_equals(name, "bytes_slice") {
+    let b = array_get(args, 0)
+    let start_v = array_get(args, 1)
+    let end_v = array_get(args, 2)
+    match b {
+      VBytes(data) => match start_v {
+        VInt(s) => match end_v {
+          VInt(e) => Some(VBytes(array_slice(data, s, e))),
+          _ => Some(VBytes(data))
+        },
+        _ => Some(VBytes(data))
+      },
+      _ => Some(VBytes(array_slice([0], 0, 0)))
+    }
+  }
+  else if string_equals(name, "bytes_from_array") {
+    let arr = array_get(args, 0)
+    match arr {
+      VArray(elems) => {
+        let len = array_length(elems)
+        let result = for elem in elems {
+          match elem {
+            VInt(n) => n,
+            _ => 0
+          }
+        }
+        Some(VBytes(result))
+      },
+      _ => Some(VBytes(array_slice([0], 0, 0)))
+    }
+  }
+  else if string_equals(name, "bytes_to_array") {
+    let b = array_get(args, 0)
+    match b {
+      VBytes(data) => {
+        let result = for d in data {
+          VInt(d)
+        }
+        Some(VArray(result))
+      },
+      _ => Some(VArray(array_slice([VUnit], 0, 0)))
+    }
+  }
+  else None
+}
+
 export let eval_builtin_call = (name: String, args: Array[Value]) -> Option[Value] {
   match eval_array(name, args) {
     Some(v) => Some(v),
     None => match eval_string(name, args) {
       Some(v) => Some(v),
-      None => eval_misc(name, args)
+      None => match eval_bytes(name, args) {
+        Some(v) => Some(v),
+        None => eval_misc(name, args)
+      }
     }
   }
 }

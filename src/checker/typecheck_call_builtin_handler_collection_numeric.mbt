@@ -88,6 +88,149 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         true,
       )
+    "bytes_new" =>
+      check_builtin_simple(
+        env,
+        "bytes_new",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [],
+        @core.Type::Bytes,
+        true,
+      )
+    "bytes_length" =>
+      check_builtin_simple(
+        env,
+        "bytes_length",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Bytes],
+        @core.Type::Int,
+        false,
+      )
+    "bytes_get" =>
+      check_builtin_simple(
+        env,
+        "bytes_get",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Bytes, @core.Type::Int],
+        @core.Type::Int,
+        false,
+      )
+    "bytes_set" =>
+      check_builtin_simple(
+        env,
+        "bytes_set",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Bytes, @core.Type::Int, @core.Type::Int],
+        @core.Type::Unit,
+        true,
+      )
+    "bytes_push" =>
+      check_builtin_simple(
+        env,
+        "bytes_push",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Bytes, @core.Type::Int],
+        @core.Type::Unit,
+        true,
+      )
+    "bytes_concat" =>
+      check_builtin_simple(
+        env,
+        "bytes_concat",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Bytes, @core.Type::Bytes],
+        @core.Type::Bytes,
+        false,
+      )
+    "bytes_slice" =>
+      check_builtin_simple(
+        env,
+        "bytes_slice",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Bytes, @core.Type::Int, @core.Type::Int],
+        @core.Type::Bytes,
+        false,
+      )
+    "bytes_from_array" =>
+      check_builtin_simple(
+        env,
+        "bytes_from_array",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Array(@core.Type::Int)],
+        @core.Type::Bytes,
+        false,
+      )
+    "bytes_to_array" =>
+      check_builtin_simple(
+        env,
+        "bytes_to_array",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Bytes],
+        @core.Type::Array(@core.Type::Int),
+        false,
+      )
+    "bytes_from_string" =>
+      check_builtin_simple(
+        env,
+        "bytes_from_string",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::String],
+        @core.Type::Bytes,
+        false,
+      )
+    "bytes_to_string" =>
+      check_builtin_simple(
+        env,
+        "bytes_to_string",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::Bytes],
+        @core.Type::String,
+        false,
+      )
     "array_builder" =>
       check_builtin_simple(
         env,

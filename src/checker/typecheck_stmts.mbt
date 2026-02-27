@@ -1314,6 +1314,11 @@ fn trait_impl_targets_may_overlap_concrete(
         @core.Type::StringBuilder => true
         _ => false
       }
+    @core.Type::Bytes =>
+      match right {
+        @core.Type::Bytes => true
+        _ => false
+      }
     @core.Type::Never =>
       match right {
         @core.Type::Never => true

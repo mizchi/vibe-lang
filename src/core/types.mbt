@@ -48,6 +48,7 @@ pub(all) enum Type {
   ArrayBuilder(Type)
   MapBuilder(Type)
   StringBuilder
+  Bytes
   Variant(Map[String, Type])
   Named(name~ : String, args~ : Array[Type])
   Param(String)
@@ -171,6 +172,7 @@ fn format_type_compact(ty : Type) -> String {
       "ArrayBuilder[" + format_type_compact(inner) + "]"
     Type::MapBuilder(inner) => "MapBuilder[" + format_type_compact(inner) + "]"
     Type::StringBuilder => "StringBuilder"
+    Type::Bytes => "Bytes"
     Type::Variant(_) => "Variant"
     Type::Named(name~, args~) =>
       if args.length() == 0 {
@@ -237,6 +239,7 @@ pub(all) enum Value {
   ArrayBuilder(Array[Value])
   MapBuilder(Map[String, Value])
   StringBuilder(Array[String])
+  Bytes(Array[Byte])
   Fn(FnValue)
 } derive(Eq)
 
@@ -354,6 +357,16 @@ pub impl Show for Value with output(self, logger) {
       }
       logger.write_string(")")
     }
+    Value::Bytes(data) => {
+      logger.write_string("Bytes([")
+      for i, b in data {
+        if i > 0 {
+          logger.write_string(", ")
+        }
+        logger.write_string(b.to_int().to_string())
+      }
+      logger.write_string("])")
+    }
     Value::Fn(fn_value) => fn_value.output(logger)
   }
 }
@@ -361,8 +374,10 @@ pub impl Show for Value with output(self, logger) {
 ///|
 pub fn Value::is_mutable_builder(self : Value) -> Bool {
   match self {
-    Value::ArrayBuilder(_) | Value::MapBuilder(_) | Value::StringBuilder(_) =>
-      true
+    Value::ArrayBuilder(_)
+    | Value::MapBuilder(_)
+    | Value::StringBuilder(_)
+    | Value::Bytes(_) => true
     _ => false
   }
 }

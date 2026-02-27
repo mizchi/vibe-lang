@@ -168,6 +168,7 @@ fn function_tracking_type_to_json(ty : @vibe_core.Type) -> Json {
     @vibe_core.Type::MapBuilder(inner) =>
       obj["MapBuilder"] = function_tracking_type_to_json(inner)
     @vibe_core.Type::StringBuilder => obj["StringBuilder"] = Json::null()
+    @vibe_core.Type::Bytes => obj["Bytes"] = Json::null()
     @vibe_core.Type::Tuple(items) => {
       let arr : Array[Json] = []
       for item in items {

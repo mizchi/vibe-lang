@@ -1,3 +1,4 @@
+///|
 /// Cheap pure builtins: execute directly without cache.
 /// Cache key computation (pure_call_key → git_blob_hash_string) is
 /// more expensive than executing these operations.
@@ -64,7 +65,15 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "string_last_index_of" ||
   name == "string_utf8_length" ||
   name == "string_utf16_length" ||
-  name == "string_unicode_length"
+  name == "string_unicode_length" ||
+  name == "bytes_length" ||
+  name == "bytes_get" ||
+  name == "bytes_slice" ||
+  name == "bytes_concat" ||
+  name == "bytes_from_array" ||
+  name == "bytes_to_array" ||
+  name == "bytes_from_string" ||
+  name == "bytes_to_string"
 }
 
 ///|
@@ -1648,6 +1657,145 @@ fn eval_pure_builtin(
           @core.Value::Array(result)
         }
         _ => raise EvalError::BadCall(E("select"))
+      }
+    }
+    "bytes_length" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("bytes_length: expected 1 argument"))
+      }
+      match args[0] {
+        @core.Value::Bytes(data) => @core.Value::Int(data.length().to_int64())
+        _ => raise EvalError::BadCall(E("bytes_length: expected Bytes"))
+      }
+    }
+    "bytes_get" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall(E("bytes_get: expected 2 arguments"))
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Bytes(data), @core.Value::Int(index)) => {
+          let i = index.to_int()
+          if i < 0 || i >= data.length() {
+            raise EvalError::BadCall(E("bytes_get: index out of bounds"))
+          }
+          @core.Value::Int(data[i].to_int().to_int64())
+        }
+        _ => raise EvalError::BadCall(E("bytes_get: expected (Bytes, Int)"))
+      }
+    }
+    "bytes_slice" => {
+      if args.length() != 3 {
+        raise EvalError::BadCall(E("bytes_slice: expected 3 arguments"))
+      }
+      match (args[0], args[1], args[2]) {
+        (
+          @core.Value::Bytes(data),
+          @core.Value::Int(start),
+          @core.Value::Int(end_),
+        ) => {
+          let s = start.to_int()
+          let e = end_.to_int()
+          let result : Array[Byte] = []
+          for i = s; i < e && i < data.length(); i = i + 1 {
+            result.push(data[i])
+          }
+          @core.Value::Bytes(result)
+        }
+        _ =>
+          raise EvalError::BadCall(E("bytes_slice: expected (Bytes, Int, Int)"))
+      }
+    }
+    "bytes_concat" => {
+      if args.length() != 2 {
+        raise EvalError::BadCall(E("bytes_concat: expected 2 arguments"))
+      }
+      match (args[0], args[1]) {
+        (@core.Value::Bytes(a), @core.Value::Bytes(b)) => {
+          let result : Array[Byte] = []
+          for byte in a {
+            result.push(byte)
+          }
+          for byte in b {
+            result.push(byte)
+          }
+          @core.Value::Bytes(result)
+        }
+        _ =>
+          raise EvalError::BadCall(E("bytes_concat: expected (Bytes, Bytes)"))
+      }
+    }
+    "bytes_from_array" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("bytes_from_array: expected 1 argument"))
+      }
+      match args[0] {
+        @core.Value::Array(items) => {
+          let result : Array[Byte] = []
+          for item in items {
+            match item {
+              @core.Value::Int(n) => result.push(n.to_int().to_byte())
+              _ =>
+                raise EvalError::BadCall(
+                  E("bytes_from_array: array elements must be Int"),
+                )
+            }
+          }
+          @core.Value::Bytes(result)
+        }
+        _ =>
+          raise EvalError::BadCall(E("bytes_from_array: expected Array[Int]"))
+      }
+    }
+    "bytes_to_array" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("bytes_to_array: expected 1 argument"))
+      }
+      match args[0] {
+        @core.Value::Bytes(data) => {
+          let result : Array[@core.Value] = []
+          for byte in data {
+            result.push(@core.Value::Int(byte.to_int().to_int64()))
+          }
+          @core.Value::Array(result)
+        }
+        _ => raise EvalError::BadCall(E("bytes_to_array: expected Bytes"))
+      }
+    }
+    "bytes_from_string" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("bytes_from_string: expected 1 argument"))
+      }
+      match args[0] {
+        @core.Value::String(s) => {
+          let result : Array[Byte] = []
+          let bytes = @utf8.encode(s)
+          for b in bytes {
+            result.push(b)
+          }
+          @core.Value::Bytes(result)
+        }
+        _ => raise EvalError::BadCall(E("bytes_from_string: expected String"))
+      }
+    }
+    "bytes_to_string" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("bytes_to_string: expected 1 argument"))
+      }
+      match args[0] {
+        @core.Value::Bytes(data) => {
+          let bytes = Bytes::from_array(data[:])
+          let decoded : Result[String, @utf8.Malformed] = try? @utf8.decode(
+            bytes[:],
+          )
+          match decoded {
+            Ok(s) => @core.Value::String(s)
+            Err(_) =>
+              raise EvalError::BadCall(
+                E("bytes_to_string: invalid UTF-8 sequence"),
+              )
+          }
+        }
+        _ => raise EvalError::BadCall(E("bytes_to_string: expected Bytes"))
       }
     }
     _ => raise EvalError::BadCall(UnknownFn(name~))
