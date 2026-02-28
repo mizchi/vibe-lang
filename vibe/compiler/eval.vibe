@@ -106,7 +106,6 @@ export let rec encode_expr = (expr: Expr) -> Value {
     EWhile(cond, body) => VArray([VString("wh"), encode_expr(cond), encode_expr(body)]),
     EForIn(name, iter, body) => VArray([VString("fi"), VString(name), encode_expr(iter), encode_expr(body)]),
     EDot(obj, field) => VArray([VString("dt"), encode_expr(obj), VString(field)]),
-    EPipe(left, right) => VArray([VString("pp"), encode_expr(left), encode_expr(right)]),
     EHandle(body, arms) => VArray([VString("ha"), encode_expr(body), go_arms(arms, 0)]),
     EThrow(val) => VArray([VString("th"), encode_expr(val)]),
     EBreak(_) => VArray([VString("br")]),
@@ -277,7 +276,6 @@ export let rec decode_expr = (v: Value) -> Expr {
           let field = match array_get(arr, 2) { VString(sv) => sv, _ => "" }
           EDot(decode_expr(array_get(arr, 1)), field)
         }
-        else if string_equals(tag, "pp") { EPipe(decode_expr(array_get(arr, 1)), decode_expr(array_get(arr, 2))) }
         else if string_equals(tag, "ha") { EHandle(decode_expr(array_get(arr, 1)), go_arms(array_get(arr, 2))) }
         else if string_equals(tag, "th") { EThrow(decode_expr(array_get(arr, 1))) }
         else if string_equals(tag, "br") { EBreak(None) }
@@ -756,12 +754,6 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
         _ => (VUnit, env2)
       }
     },
-    EPipe(left, right) => {
-      let (lv, env2) = eval_expr(left, env)
-      let (fv, env3) = eval_expr(right, env2)
-      apply_fn(fv, [lv], env3)
-    },
-
     EHandle(body, arms) => {
       handle {
         eval_expr(body, env)

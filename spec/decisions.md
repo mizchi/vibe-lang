@@ -68,6 +68,9 @@ Status: accepted and moved from `TODO.md`.
 - Module syntax documentation is aligned with implementation:
   named import + explicit export forms are canonical; legacy bare import forms
   are non-spec.
+- Import keyword policy is fixed:
+  `use` is removed from surface syntax; canonical import form is
+  `import <module-ref> { ... }` only.
 - Parser dispatch policy is fixed in spec and CLI behavior:
   parser-consuming commands use explicit `--syntax vibe|posix` switch
   (default `vibe`) with no automatic fallback.
@@ -133,6 +136,9 @@ Status: accepted and moved from `TODO.md`.
 - Pipe-first call desugaring policy is fixed (ADR-0020):
   `x |> f` is shorthand of `x |> f()`, and `x |> f(a, b)` desugars to
   `f(x, a, b)`.
+- Pipe lowering phase policy is fixed:
+  `|>` desugaring is performed in parser (AST construction) rather than in
+  evaluator/codegen fallback layers.
 - Pipeline ambiguity policy is fixed (ADR-0020):
   expressions that mix `|>` with other infix operators without explicit
   parentheses are parse errors

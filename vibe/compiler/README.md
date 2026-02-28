@@ -84,7 +84,7 @@ Any type error in a file makes ALL its exports invisible to importers, producing
 Test fixtures had to be written as single-line strings with `\n`:
 
 ```vibe
-let src = "let dead = () -> Int { 0 }\nuse ./dep.vibe { dep }\ntrait Eq\nimpl Eq for Int"
+let src = "let dead = () -> Int { 0 }\nimport ./dep.vibe { dep }\ntrait Eq\nimpl Eq for Int"
 ```
 
 Multiline strings or heredocs would make test data much more readable.

@@ -449,6 +449,8 @@ export { foo } from "./other.vibe"
 Rules:
 - No implicit "export all".
 - Non-exported top-level names are module-private.
+- Legacy `use <module-ref> { ... }` import syntax is removed.
+  `use` at import position is a parse error.
 - Bare namespace shorthand (`import foo.vibe`) and default-import forms are not
   part of the current spec.
 
@@ -681,6 +683,8 @@ Rules:
   - `x |> f` is shorthand of `x |> f()`
   - `x |> f(a, b)` desugars to `f(x, a, b)`
   - chained pipe is left-associative
+- `|>` desugaring is performed in parser AST construction.
+  evaluator/codegen layers assume already-desugared call form.
 - Expressions that mix `|>` with other infix operators without explicit
   parentheses are parse errors.
   - example error: `1 + 1 |> double`

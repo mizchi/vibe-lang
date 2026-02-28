@@ -40,7 +40,6 @@ let tk_name = (tok: Token) -> String {
     TTrait => "trait",
     TImpl => "impl",
     TExport => "export",
-    TUse => "use",
     TTest => "test",
     TWhile => "while",
     TFor => "for",
@@ -197,6 +196,80 @@ let try_binop = (tok: Token, level: Int) -> Option[String] {
     }
   }
   else None
+}
+
+let is_non_pipe_infix = (tok: Token) -> Bool {
+  match tok {
+    TOr => true,
+    TAnd => true,
+    TEqEq => true,
+    TNeq => true,
+    TLt => true,
+    TLte => true,
+    TGt => true,
+    TGte => true,
+    TBitOr => true,
+    TBitXor => true,
+    TBitAnd => true,
+    TLShift => true,
+    TRShift => true,
+    TPlus => true,
+    TMinus => true,
+    TStar => true,
+    TSlash => true,
+    TPercent => true,
+    _ => false
+  }
+}
+
+let is_expr_end_token = (tok: Token) -> Bool {
+  match tok {
+    TInt(_) => true,
+    TFloat(_) => true,
+    TString(_) => true,
+    TIdent(_) => true,
+    TRParen => true,
+    TRBracket => true,
+    TRBrace => true,
+    _ => false
+  }
+}
+
+let has_non_pipe_infix_top = (tokens: Array[Token], start: Int, end: Int) -> Bool {
+  let rec go = (i: Int, depth: Int, prev_top_end: Bool) -> Bool {
+    if i >= end {
+      false
+    } else {
+      let tok = peek(tokens, i)
+      if depth == 0 {
+        if is_non_pipe_infix(tok) {
+          if prev_top_end {
+            true
+          } else go(i + 1, 0, false)
+        } else match tok {
+          TLParen => go(i + 1, 1, false),
+          TLBracket => go(i + 1, 1, false),
+          TLBrace => go(i + 1, 1, false),
+          _ => go(i + 1, 0, is_expr_end_token(tok))
+        }
+      } else match tok {
+        TLParen => go(i + 1, depth + 1, prev_top_end),
+        TLBracket => go(i + 1, depth + 1, prev_top_end),
+        TLBrace => go(i + 1, depth + 1, prev_top_end),
+        TRParen => if depth == 1 {
+          go(i + 1, 0, true)
+        } else go(i + 1, depth - 1, prev_top_end),
+        TRBracket => if depth == 1 {
+          go(i + 1, 0, true)
+        } else go(i + 1, depth - 1, prev_top_end),
+        TRBrace => if depth == 1 {
+          go(i + 1, 0, true)
+        } else go(i + 1, depth - 1, prev_top_end),
+        _ => go(i + 1, depth, prev_top_end)
+      }
+    }
+  }
+  go(start, 0, false)
 }
 
 let empty_arms = () -> Array[(Pat, Expr)] {
@@ -825,17 +898,29 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       _ => (expr, pos)
     }
   }
-  let rec parse_binop_rest = (tokens: Array[Token], pos: Int, left: Expr, level: Int) -> (Expr, Int)with { Error } {
+  let rec parse_binop_rest = (tokens: Array[Token], pos: Int, left: Expr, level: Int, expr_start: Int) -> (Expr, Int)with { Error } {
+    let pipe_desugar = (lhs: Expr, rhs: Expr) -> Expr {
+      match rhs {
+        ECall(callee, args) => ECall(callee, array_concat([lhs], args)),
+        _ => ECall(rhs, [lhs])
+      }
+    }
     match try_binop(peek(tokens, pos), level) {
       Some(op) => if string_equals(op, "|>") {
+        if has_non_pipe_infix_top(tokens, expr_start, pos) {
+          throw("cannot mix '|>' with other infix operators without explicit parentheses")
+        }
         let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
-        parse_binop_rest(tokens, rn, EPipe(left, right), level)
+        if has_non_pipe_infix_top(tokens, pos + 1, rn) {
+          throw("cannot mix '|>' with other infix operators without explicit parentheses")
+        }
+        parse_binop_rest(tokens, rn, pipe_desugar(left, right), level, expr_start)
       } else if level == 3 {
         let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
         (EBinOp(op, left, right), rn)
       } else {
         let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
-        parse_binop_rest(tokens, rn, EBinOp(op, left, right), level)
+        parse_binop_rest(tokens, rn, EBinOp(op, left, right), level, expr_start)
       },
       None => (left, pos)
     }
@@ -1057,7 +1142,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
     }
   } else {
     let (left, next) = parse_impl(tokens, pos, mode + 1)
-    parse_binop_rest(tokens, next, left, mode)
+    parse_binop_rest(tokens, next, left, mode, pos)
   }
 }
 
@@ -1450,12 +1535,13 @@ export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with 
     TType => parse_type_alias_stmt(tokens, pos + 1, false),
     TTrait => parse_trait_stmt(tokens, pos + 1, false),
     TImpl => parse_impl_stmt(tokens, pos + 1),
-    TUse => parse_import_stmt(tokens, pos + 1),
     TTest => parse_test_stmt(tokens, pos + 1),
     TBench => parse_bench_stmt(tokens, pos + 1),
     TImport => parse_import_stmt(tokens, pos + 1),
     TIdent(name) => if string_equals(name, "extern") {
       parse_extern_let_stmt(tokens, pos + 1)
+    } else if string_equals(name, "use") {
+      throw("'use' syntax is removed; use 'import <module-ref> { ... }'")
     } else {
       let (e, next) = parse_impl(tokens, pos, 0)
       (SExpr(e), next)

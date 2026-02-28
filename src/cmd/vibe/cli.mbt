@@ -1170,7 +1170,7 @@ fn test_cmd(
     test_cmd_report_json(entry_paths, features)
     return
   }
-  if entry_paths.length() > 1 && normalized_jobs != 1 {
+  if entry_paths.length() > 1 {
     test_cmd_parallel(entry_paths, features, normalized_jobs)
     return
   }
@@ -1660,7 +1660,16 @@ fn test_cmd_parallel(
 ) -> Unit {
   let exe = @env.args()[0]
   let parent_pid_env_value = vibe_getpid().to_string()
-  let batches = split_test_entry_path_batches(entry_paths, jobs)
+  let batches = if jobs == 1 {
+    let singleton_batches : Array[Array[String]] = []
+    for path in entry_paths {
+      singleton_batches.push([path])
+    }
+    singleton_batches
+  } else {
+    split_test_entry_path_batches(entry_paths, jobs)
+  }
+  let max_concurrent = if jobs == 1 { 1 } else { batches.length() }
   vibe_parallel_cleanup_install_signal_handlers()
   vibe_parallel_cleanup_clear()
   defer vibe_parallel_cleanup_clear()
@@ -1712,7 +1721,7 @@ fn test_cmd_parallel(
     })
   }
   @async.run_async_main(async fn() {
-    let results = @async.all(tasks[:], max_concurrent=batches.length())
+    let results = @async.all(tasks[:], max_concurrent=max_concurrent)
     let mut total = 0
     let mut passed = 0
     let mut failed_count = 0
