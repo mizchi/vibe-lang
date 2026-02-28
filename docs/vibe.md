@@ -17,8 +17,8 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 ## Goals
 
 - POSIX sh superset with a clear syntactic split.
-- Pure by default; effects are explicit and checked in two layers:
-  effect-set compatibility and effect-boundary (`do`) rules.
+- Pure by default; effects are explicit and checked by function signatures
+  (`with { ... }`).
 - Content-addressed functions (Git blob compatible) with Unison-style aliases.
 - Incremental pipeline: CST -> AST -> monomorphized AST -> canonical S-expression -> hash.
 
@@ -40,27 +40,42 @@ Parser dispatch is explicit:
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
 `test`, `handle`, `throw`) exists as helper logic only and does not switch parser modes.
+- `map` is not a reserved keyword and can be used as a normal identifier.
+
+## Standard tutorial scope (v1 core)
+
+Included in standard tutorial:
+- core expressions/statements: `let`, `fn`, `if`, `match`, `while`
+- module API: `import` / `export`
+- data model: `enum` / `struct` / tuples / arrays / records
+- error flow: `Result` composition (`map`, `and_then`, `match`)
+- effects: explicit `with { ... }`
+
+Documented but excluded from standard tutorial:
+- placeholder lambda shorthand (`_` in call arguments)
+- raw identifiers (`r#name`)
+- boundary-style exceptions (`throw` / `handle`)
+- effect handlers (`perform` / `resume`)
+- scoped capability details (`Ref[T]`)
+- PosixMode command-head desugar and unstable runtime flags
 
 ## Effects
 
-Effects are explicit in function signatures and validated by two independent
-checks.
+Effects are explicit in function signatures and validated by a single
+compatibility check.
 
 ```
-let run = fn () -> Unit with {Stdout} {
-  do {
-    sh("ls")
-  }
+let run = () -> Unit with {Stdout} {
+  sh("ls")
 }
 ```
 
 Rules:
-- Effect-set requirement:
+- Effect signature requirement:
   a function's declared effects must be a superset of the effects used inside.
   (`with { ... }` is the capability contract.)
-- Effect-boundary requirement:
-  some operations require an "effect-allowed" context (`do` boundary).
 - `with {}` is optional; omission means pure.
+- `do` is not part of the current surface syntax.
 - Capability mapping is 1:1 with the runtime `CapabilitySet`.
 - Current builtin mapping:
   - `sh(...)` requires `{Stdout}`
@@ -77,56 +92,34 @@ Rules:
   - `threads_runtime_hints()` execution is disabled by default.
   - enable with `--unstable-threads`.
 
-### Effect-set vs do-boundary (current implementation)
-
-`effect-set` checks and `do` checks are independent.
-
-1. Effect-set check:
-   - Calls to functions with effects, `throw`, and `yield` are checked
-     against the current effect scope.
-   - `handle { ... } { ... }` localizes `Error` handling to the handled block.
-2. Do-boundary check:
-   - Direct effectful builtins (`sh`, stdio, `sleep`) and mutable builder APIs
-     (`array_builder*`, `map_builder*`) require an effect-allowed context.
-   - Effect-allowed context is enabled inside `do { ... }`, and also inside
-     function bodies that already declare non-empty effects.
-
 Examples:
 
 ```vibe
 // ok: declared effect allows direct builtin call
 let run = () -> Unit with {Stdout} { sh("ls") }
 
-// error: do alone does not add missing effect declaration
-let run = () -> Unit { do { sh("ls") } }
+// error: missing effect declaration for direct effectful builtin call
+let run = () -> Unit { sh("ls") }
 
-// error: do alone does not satisfy called function's effect-set requirement
+// error: caller must include callee effect
 let f = (x: Int) -> Int with {Error} { x }
-let g = (y: Int) -> Int { do { f(y) } }
+let g = (y: Int) -> Int { f(y) }
 
-// ok: effect-set is declared; do is not required for this call shape
-let f = (x: Int) -> Int with {Error} { x }
-let g = (y: Int) -> Int with {Error} { f(y) }
+// ok: effect requirement is explicitly propagated
+let g2 = (y: Int) -> Int with {Error} { f(y) }
 ```
 
-Error handling:
-- Calling a function with `{Error}` from a non-`{Error}` function requires
-  `handle { ... } { ... }`.
-- `handle` handles `Error` locally and does not require the caller to declare
-  `{Error}`.
-- `throw(...)` accepts values that satisfy the `Error` trait.
-- `perform(...)` emits an effect operation for `handle`:
-  - `perform(Foo(...))` requires effect `{Foo}` and can be handled by `Foo(...)` arm.
-  - non-constructor payload falls back to `{Error}` (and must satisfy `Error` trait).
-- `resume(...)` is only valid inside `handle` arms.
-  - current interpreter semantics are one-shot:
-    `resume(v)` replaces the matching `perform` site result with `v` and
-    re-evaluates the handled body.
-  - wasm backend currently does not provide continuation-style resume runtime;
-    `resume` codegen is a temporary fallback behavior until stack-switching-aware
-    lowering is implemented.
-- `String` is a built-in `Error`, and user code can define new error types with
-  `suberror`.
+### Error model (Result-first, current policy)
+
+- Standard error model is `Result[T, E]`.
+- Application/core pipelines should compose with `Result` (`map`,
+  `and_then`/`bind`, `map_err`).
+- `throw` / `handle` are advanced boundary mechanisms and should be isolated at
+  adapters (CLI/HTTP/FFI/tests).
+- `perform` / `resume` are advanced effect-handler features and are not part of
+  the standard tutorial path.
+- `String` is a built-in `Error`, and `suberror` can define project-specific
+  error types.
 
 `suberror` declarations:
 - `suberror MyError(String)` is shorthand for an enum-like error type with a
@@ -140,15 +133,15 @@ suberror AppError {
   Parse(Int);
 }
 
-let fail = () -> Unit with {Error} {
-  throw(Io("io"))
+let fail = () -> Result[Unit, AppError] {
+  Err(Io("io"))
 }
 ```
 
 Railway-oriented guideline (pipe-first error flow):
 - pipeline core should stay in `Result` composition (`Result::and_then`,
   `Result::map_ok`, `Result::map_err`).
-- terminal boundaries (`handle`, `throw`, project-local `unwrap`) should be
+- terminal boundaries (`match`, project-local `unwrap`, optional `handle`/`throw`) should be
   isolated at adapter edges (CLI/HTTP/FFI/tests).
 - avoid scattering multiple implicit boundaries across one flow; make the
   boundary location explicit in code.
@@ -179,7 +172,6 @@ Rules:
 - At call sites, type variables and effect variables are instantiated together.
 - If a callee's effect requirement escapes through a wrapper, the wrapper must
   declare a compatible effect set.
-- `handle { ... } { ... }` can localize `{Error}` even inside generic wrappers.
 - Trait bounds and effect checks are independent constraints; either can fail
   first depending on the call shape.
 
@@ -189,9 +181,9 @@ Examples:
 // error: wrapper body calls effect-polymorphic callback without declaring {e}
 let apply = [T](f: (x: T) -> T with {e}, x: T) -> T { f(x) }
 
-// ok: Error is localized by handle in generic wrapper
-let apply_safe = [T](f: (x: T) -> T with {Error}, x: T) -> T {
-  handle { f(x) } { _ => x }
+// ok: wrapper propagates effect requirement explicitly
+let apply_ok = [T](f: (x: T) -> T with {e}, x: T) -> T with {e} {
+  f(x)
 }
 ```
 
@@ -234,7 +226,7 @@ Lightweight effect tiers (policy direction):
 - `state_local`: local mutable state only (`let mut`/no-escape `Ref[T]`).
 - `impure`: external effects (I/O, shell, time, randomness, etc.).
 
-Current effect-set/do checks continue to gate `impure` operations.
+Current effect signature checks continue to gate `impure` operations.
 Top-level purity diagnostics preserve `state_local` tier through local call
 chains (`let mut`-using helper functions).
 
@@ -243,7 +235,7 @@ Discard binding (`let _ = ...`):
 - `let _ = ...` can be used multiple times in the same scope.
 - `let rec _ = ...` is rejected.
 
-Raw identifier:
+Raw identifier (advanced):
 - `r#<ident>` escapes reserved keywords and forces identifier interpretation.
 - Example: `let r#if = 1`, `let r#bench = 2`.
 - Internally the bound name is normalized to `<ident>` (`if`, `bench` in the
@@ -454,7 +446,7 @@ Rules:
 - Bare namespace shorthand (`import foo.vibe`) and default-import forms are not
   part of the current spec.
 
-### Type-member imports (proposal)
+### Type-member imports and namespace binding (current)
 
 Namespace-explicit style (ESM/Python-like) is adopted for type-attached
 functions.
@@ -469,6 +461,8 @@ import ./vibe/prelude/int.vibe { Int::to_string as int_to_string }
 ```
 
 Rules:
+- Plain symbols and namespace symbols follow one resolution model:
+  `local > lexical > explicit import > prelude`.
 - `import <module-ref> { Int }` activates namespace binding `Int:: ->
   <module-ref>` in the current module scope.
 - Activated `Int::` resolves `Int::*` only from the bound `<module-ref>`.
@@ -645,7 +639,7 @@ Rules:
   - one arg => that type
   - multiple args => tuple payload
 
-## Placeholder lambda shorthand (current)
+## Placeholder lambda shorthand (advanced)
 
 ```vibe
 map(xs, add(_, 1))        // => map(xs, (__p0) -> add(__p0, 1))
@@ -660,6 +654,7 @@ Rules:
 - Desugaring does not cross block/lambda boundaries.
 - A placeholder that survives desugaring is a type error
   (`placeholder _ can only be used in function arguments`).
+- This feature is intentionally excluded from the standard tutorial path.
 
 ## Member access, indexing, and pipe calls (current)
 
@@ -713,7 +708,7 @@ Rules:
 - Namespace functions are declared with `let Type::symbol = ...`
   (or equivalent declaration form).
 - `impl` is reserved for trait implementations (`impl Trait for Type`).
-- Name resolution priority is:
+- Name resolution is unified for plain symbols and namespace symbols:
   `local > lexical > explicit import > prelude`.
 - `Type::symbol` participates in normal named import/export.
 
@@ -744,9 +739,7 @@ Example:
 
 ```vibe
 let run = () -> Array[String] with {Stdout} {
-  do {
-    ls |> where((line: String) -> Bool { string_contains(line, "vibe") })
-  }
+  ls |> where((line: String) -> Bool { string_contains(line, "vibe") })
 }
 ```
 
@@ -882,7 +875,7 @@ Bench:
 
 - `compile_module_wasm(db, path)` emits a minimal wasm-gc compatible module (MVP bytecode).
 - `compile_module_wasm_js_string(db, path)` emits a module that uses wasm js-string builtins.
-- Supported: `let`, expression statements, block expressions `{ ... }`, `do { ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; only inside `do`), `+/-/==/<` on `Int` (`==` is syntax sugar lowering to `eq`), `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
+- Supported: `let`, expression statements, block expressions `{ ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; requires matching effect signature), `+/-/==/<` on `Int` (`==` is syntax sugar lowering to `eq`), `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
 - Not supported: `import`, qualified calls, or external symbols. Tuple/record patterns are supported, but nested tuple/record patterns are not.
 - Exports: `run` (i32) and `memory`. Import: `vibe.sh` when `sh(...)` is used.
 - `--wasm-js-string` imports:
@@ -975,7 +968,6 @@ Current hashing behavior for statements:
 (if <expr> (block (stmts ...)) (block (stmts ...)))
 (block (stmts ...))
 (match <expr> (arms (arm <pat> (guard <expr>)? <expr>) ...))
-(do (block (stmts ...)))
 (tuple <expr> ...)
 (tuple-index <expr> 0)
 (record (field "k" <expr>) ...)
