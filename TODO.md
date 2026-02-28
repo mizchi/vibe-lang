@@ -415,7 +415,7 @@ prelude はレガシー設計（Num 型、fn-first、-1 sentinel）のまま。
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-Total: ~335 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5, unify: 8, checker_infer: 4, eval: 24, eval_stmt: 12, eval_builtins: 17, eval_e2e: 10, eval_import: 8, eval_selfhost: 12, values: 8) + MoonBit E2E
+Total: ~350 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, types: 12, builtins: 5, checker: 24, checker_resolve: 8, checker_stmt: 19, checker_ann: 5, unify: 18, checker_infer: 9, eval: 24, eval_stmt: 12, eval_builtins: 17, eval_e2e: 10, eval_import: 8, eval_selfhost: 12, values: 8) + MoonBit E2E
 
 ### Phase 1: Lexer + AST + Expression Parser (completed)
 
@@ -483,12 +483,29 @@ Total: ~335 tests (lexer: 20, parser: 37, printer: 26, stmt: 54, fixture: 22, ty
   - ECall: unify callee param types with arg types
   - ELetRec: fresh CtVar + unify for recursive binding
   - Gradual typing preserved: CtUnknown always unifies successfully
-  - unify_test.vibe (8 tests), checker_infer_test.vibe (4 tests)
+  - unify_test.vibe (12 tests), checker_infer_test.vibe (5 tests)
 - [x] Effect scope threading (check_expr signature change needed)
   - (Subst, Int) threaded through check_expr and check_stmts
   - check_program backward-compatible wrapper maintained
-- [ ] Generalize/instantiate (let-polymorphism)
-- [ ] Trait constraint resolution
+- [x] Generalize/instantiate (let-polymorphism)
+  - CtForAll(Array[Int], Type) variant in types.vibe for universally quantified types
+  - collect_tvars: free type variable collection, generalize: subst apply + quantify free vars
+  - instantiate: replace bound vars with fresh vars for each usage site
+  - EIdent: instantiate on lookup, ELet/ELetRec/SLet: generalize on binding
+  - `let id = (x) -> x; id(42); id("hello")` correctly infers Int and String
+  - unify_test.vibe (+4 tests), checker_infer_test.vibe (+1 test)
+- [x] Trait constraint resolution
+  - CtForAll に var_bounds 追加: `CtForAll(Array[Int], Array[(Int, Array[String])], Type)`
+  - TypeEnv に EnvTraitDef/EnvTraitImpl/EnvTraitImplGen を追加
+  - Subst に SubstBound を追加（型変数の trait bounds 伝搬）
+  - types.vibe に trait 関数群: trait_defined, trait_supers, trait_is_subtrait, type_implements_trait, impls_overlap_for
+  - generalize: SubstBound から var_bounds を収集し CtForAll に含める
+  - instantiate: bounds を fresh var にリマップして返す (3-tuple)
+  - EFn: type params `[T: Trait]` の fresh var 割り当て + SubstBound 登録
+  - EIdent: instantiate 時に bounds を Subst に伝搬
+  - checker_stmt: STrait → EnvTraitDef, SImpl → EnvTraitImpl 登録
+  - parser: supertrait (`trait A: B + C`), impl type params (`impl [T: Bound] Trait for Type`) 構文
+  - unify_test.vibe (+6 tests), checker_infer_test.vibe (+4 tests)
 
 ### Phase 6: Interpreter (completed)
 
