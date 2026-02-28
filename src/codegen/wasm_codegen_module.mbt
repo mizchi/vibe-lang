@@ -1009,7 +1009,7 @@ fn strip_type_assert_stmts(ast : @core.Module) -> @core.Module {
       _ => stmts.push(stmt)
     }
   }
-  @core.Module::{ stmts }
+  @core.Module::{ stmts, }
 }
 
 ///|
