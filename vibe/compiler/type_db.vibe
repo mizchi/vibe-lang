@@ -1,0 +1,264 @@
+import ./lexer.vibe { lex }
+import ./parser.vibe { parse_program }
+import ./checker_stmt.vibe { check_program }
+import ./eval_loader.vibe { resolve_path, dir_of }
+
+export enum TypeDb {
+  TypeDb(Array[(String, String)], Array[(String, String)], Int)
+}
+
+let empty_sources = () -> Array[(String, String)] {
+  array_slice([("", "")], 0, 0)
+}
+
+let empty_fingerprint_cache = () -> Array[(String, String)] {
+  array_slice([("", "")], 0, 0)
+}
+
+let empty_dep_fps = () -> Array[(String, String)] {
+  array_slice([("", "")], 0, 0)
+}
+
+let empty_stack = () -> Array[String] {
+  array_slice([""], 0, 0)
+}
+
+let rec contains_str = (arr: Array[String], target: String, i: Int) -> Bool {
+  if i >= array_length(arr) { false }
+  else {
+    if string_equals(array_get(arr, i), target) { true }
+    else { contains_str(arr, target, i + 1) }
+  }
+}
+
+let rec lookup_source = (sources: Array[(String, String)], path: String, i: Int) -> Option[String] {
+  if i >= array_length(sources) { None }
+  else {
+    let (p, source) = array_get(sources, i)
+    if string_equals(p, path) { Some(source) }
+    else { lookup_source(sources, path, i + 1) }
+  }
+}
+
+let rec lookup_fingerprint = (cache: Array[(String, String)], path: String, i: Int) -> Option[String] {
+  if i >= array_length(cache) { None }
+  else {
+    let (p, fp) = array_get(cache, i)
+    if string_equals(p, path) { Some(fp) }
+    else { lookup_fingerprint(cache, path, i + 1) }
+  }
+}
+
+let upsert_source = (sources: Array[(String, String)], path: String, source: String) -> Array[(String, String)] {
+  let len = array_length(sources)
+  let b = array_builder()
+  let rec go = (i: Int, found: Bool) -> Array[(String, String)] {
+    if i >= len {
+      if found {
+        array_builder_freeze(b)
+      } else {
+        array_builder_push(b, (path, source))
+        array_builder_freeze(b)
+      }
+    } else {
+      let (p, s) = array_get(sources, i)
+      if string_equals(p, path) {
+        array_builder_push(b, (path, source))
+        go(i + 1, true)
+      } else {
+        array_builder_push(b, (p, s))
+        go(i + 1, found)
+      }
+    }
+  }
+  go(0, false)
+}
+
+let upsert_fingerprint = (cache: Array[(String, String)], path: String, fingerprint: String) -> Array[(String, String)] {
+  let len = array_length(cache)
+  let b = array_builder()
+  let rec go = (i: Int, found: Bool) -> Array[(String, String)] {
+    if i >= len {
+      if found {
+        array_builder_freeze(b)
+      } else {
+        array_builder_push(b, (path, fingerprint))
+        array_builder_freeze(b)
+      }
+    } else {
+      let (p, fp) = array_get(cache, i)
+      if string_equals(p, path) {
+        array_builder_push(b, (path, fingerprint))
+        go(i + 1, true)
+      } else {
+        array_builder_push(b, (p, fp))
+        go(i + 1, found)
+      }
+    }
+  }
+  go(0, false)
+}
+
+let rec find_newline = (s: String, i: Int, len: Int) -> Int {
+  if i >= len { len }
+  else {
+    if string_char_code_at(s, i) == 10 { i }
+    else { find_newline(s, i + 1, len) }
+  }
+}
+
+let collect_import_deps = (source: String, base_dir: String) -> Array[String] {
+  let len = string_length(source)
+  let rec go = (i: Int, acc: Array[String]) -> Array[String] {
+    if i >= len {
+      acc
+    } else {
+      let line_end = find_newline(source, i, len)
+      let line = string_substring(source, i, line_end)
+      let next_i = if line_end >= len { len } else { line_end + 1 }
+      if string_starts_with(line, "import ") {
+        let brace_pos = string_index_of(line, " {")
+        if brace_pos > 7 {
+          let raw_path = string_substring(line, 7, brace_pos)
+          let resolved = resolve_path(base_dir, raw_path)
+          if contains_str(acc, resolved, 0) {
+            go(next_i, acc)
+          } else {
+            go(next_i, array_concat(acc, [resolved]))
+          }
+        } else {
+          go(next_i, acc)
+        }
+      } else {
+        go(next_i, acc)
+      }
+    }
+  }
+  go(0, empty_stack())
+}
+
+let build_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> String {
+  let len = array_length(dep_fps)
+  let rec go = (i: Int, acc: String) -> String {
+    if i >= len { acc }
+    else {
+      let (dep_path, dep_fp) = array_get(dep_fps, i)
+      let next = string_concat(
+        acc,
+        string_concat("|", string_concat(dep_path, string_concat("=", dep_fp)))
+      )
+      go(i + 1, next)
+    }
+  }
+  go(0, source)
+}
+
+let rec ensure_fingerprint = (
+  sources: Array[(String, String)],
+  cache: Array[(String, String)],
+  check_count: Int,
+  path: String,
+  stack: Array[String]
+) -> (String, Array[(String, String)], Int) with { Error } {
+  if contains_str(stack, path, 0) {
+    throw(string_concat("type_db: import cycle detected at ", path))
+  } else {
+    match lookup_source(sources, path, 0) {
+      None => (string_concat("missing:", path), cache, check_count),
+      Some(source) => {
+        let deps = collect_import_deps(source, dir_of(path))
+        let dlen = array_length(deps)
+        let next_stack = array_concat(stack, [path])
+        let rec resolve_deps = (
+          i: Int,
+          dep_acc: Array[(String, String)],
+          dep_cache: Array[(String, String)],
+          dep_count: Int
+        ) -> (Array[(String, String)], Array[(String, String)], Int) with { Error } {
+          if i >= dlen {
+            (dep_acc, dep_cache, dep_count)
+          } else {
+            let dep_path = array_get(deps, i)
+            let (dep_fp, next_cache, next_count) = ensure_fingerprint(
+              sources,
+              dep_cache,
+              dep_count,
+              dep_path,
+              next_stack
+            )
+            resolve_deps(
+              i + 1,
+              array_concat(dep_acc, [(dep_path, dep_fp)]),
+              next_cache,
+              next_count
+            )
+          }
+        }
+        let (dep_fps, cache_after_deps, count_after_deps) = resolve_deps(
+          0,
+          empty_dep_fps(),
+          cache,
+          check_count
+        )
+        let fingerprint = build_fingerprint(source, dep_fps)
+        match lookup_fingerprint(cache_after_deps, path, 0) {
+          Some(cached_fp) => {
+            if string_equals(cached_fp, fingerprint) {
+              (fingerprint, cache_after_deps, count_after_deps)
+            } else {
+              let stmts = parse_program(lex(source))
+              let _ = check_program(stmts)
+              let next_cache = upsert_fingerprint(cache_after_deps, path, fingerprint)
+              (fingerprint, next_cache, count_after_deps + 1)
+            }
+          },
+          None => {
+            let stmts = parse_program(lex(source))
+            let _ = check_program(stmts)
+            let next_cache = upsert_fingerprint(cache_after_deps, path, fingerprint)
+            (fingerprint, next_cache, count_after_deps + 1)
+          }
+        }
+      }
+    }
+  }
+}
+
+export let db_new = () -> TypeDb {
+  TypeDb(empty_sources(), empty_fingerprint_cache(), 0)
+}
+
+export let db_set_source = (db: TypeDb, path: String, source: String) -> TypeDb {
+  match db {
+    TypeDb(sources, cache, check_count) => {
+      TypeDb(upsert_source(sources, path, source), cache, check_count)
+    }
+  }
+}
+
+export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
+  match db {
+    TypeDb(sources, cache, check_count) => {
+      let (_, next_cache, next_count) = ensure_fingerprint(
+        sources,
+        cache,
+        check_count,
+        path,
+        empty_stack()
+      )
+      match lookup_source(sources, path, 0) {
+        None => TypeDb(sources, next_cache, next_count),
+        Some(source) => {
+          let _ = check_program(parse_program(lex(source)))
+          TypeDb(sources, next_cache, next_count)
+        }
+      }
+    }
+  }
+}
+
+export let db_typecheck_count = (db: TypeDb) -> Int {
+  match db {
+    TypeDb(_, _, count) => count
+  }
+}
