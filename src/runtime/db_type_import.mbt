@@ -164,6 +164,150 @@ fn import_scheme_trait_dependencies(
 }
 
 ///|
+fn collect_named_type_dependencies(
+  ty : @core.Type,
+  out : Map[String, Bool],
+) -> Unit {
+  match ty {
+    @core.Type::Named(name~, args~) => {
+      out[name] = true
+      for arg in args {
+        collect_named_type_dependencies(arg, out)
+      }
+    }
+    @core.Type::Tuple(items) =>
+      for item in items {
+        collect_named_type_dependencies(item, out)
+      }
+    @core.Type::Record(fields) =>
+      for _, field_ty in fields {
+        collect_named_type_dependencies(field_ty, out)
+      }
+    @core.Type::Array(inner)
+    | @core.Type::Map(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::MapBuilder(inner) =>
+      collect_named_type_dependencies(inner, out)
+    @core.Type::Variant(fields) =>
+      for _, field_ty in fields {
+        collect_named_type_dependencies(field_ty, out)
+      }
+    @core.Type::Func(params~, ret~, ..) => {
+      for param in params {
+        collect_named_type_dependencies(param.ty, out)
+      }
+      collect_named_type_dependencies(ret, out)
+    }
+    _ => ()
+  }
+}
+
+///|
+fn import_type_dependency_for_scheme(
+  env : @checker.TypeEnv,
+  imported_env : @checker.TypeEnv,
+  source_type_name : String,
+  trait_aliases : Map[String, String],
+  visiting : Map[String, Bool],
+) -> Unit {
+  if visiting.contains(source_type_name) {
+    return
+  }
+  visiting[source_type_name] = true
+
+  match imported_env.get_type_alias(source_type_name) {
+    Some(type_alias) => {
+      if env.get_type_alias(source_type_name) is None {
+        env.set_type_alias(source_type_name, type_alias)
+      }
+      let nested : Map[String, Bool] = {}
+      collect_named_type_dependencies(type_alias.target, nested)
+      for nested_name, _ in nested {
+        import_type_dependency_for_scheme(
+          env, imported_env, nested_name, trait_aliases, visiting,
+        )
+      }
+    }
+    None => ()
+  }
+
+  match imported_env.get_struct(source_type_name) {
+    Some(struct_def) => {
+      if env.get_struct(source_type_name) is None {
+        env.set_struct(source_type_name, struct_def)
+      }
+      import_trait_impls_for_type(
+        env, imported_env, source_type_name, trait_aliases,
+      )
+      for field in struct_def.fields {
+        let nested : Map[String, Bool] = {}
+        collect_named_type_dependencies(field.ty, nested)
+        for nested_name, _ in nested {
+          import_type_dependency_for_scheme(
+            env, imported_env, nested_name, trait_aliases, visiting,
+          )
+        }
+      }
+    }
+    None => ()
+  }
+
+  match imported_env.get_enum_def(source_type_name) {
+    Some(enum_def) => {
+      if env.get_enum_def(source_type_name) is None {
+        env.set_enum_def(source_type_name, enum_def)
+      }
+      import_trait_impls_for_type(
+        env, imported_env, source_type_name, trait_aliases,
+      )
+      for ctor in enum_def.ctors {
+        let nested : Map[String, Bool] = {}
+        for arg_ty in ctor.args {
+          collect_named_type_dependencies(arg_ty, nested)
+        }
+        for nested_name, _ in nested {
+          import_type_dependency_for_scheme(
+            env, imported_env, nested_name, trait_aliases, visiting,
+          )
+        }
+      }
+    }
+    None => ()
+  }
+}
+
+///|
+fn import_scheme_type_dependencies(
+  env : @checker.TypeEnv,
+  imported_env : @checker.TypeEnv,
+  scheme : @checker.TypeScheme,
+  trait_aliases : Map[String, String],
+) -> Unit {
+  let required_types : Map[String, Bool] = {}
+  collect_named_type_dependencies(scheme.ty, required_types)
+  let visiting : Map[String, Bool] = {}
+  for type_name, _ in required_types {
+    import_type_dependency_for_scheme(
+      env, imported_env, type_name, trait_aliases, visiting,
+    )
+  }
+}
+
+///|
+fn import_scheme_dependencies(
+  env : @checker.TypeEnv,
+  imported_env : @checker.TypeEnv,
+  scheme : @checker.TypeScheme,
+  trait_aliases : Map[String, String],
+  exported_names : Map[String, Bool],
+) -> Unit {
+  import_scheme_trait_dependencies(
+    env, imported_env, scheme, trait_aliases, exported_names,
+  )
+  import_scheme_type_dependencies(env, imported_env, scheme, trait_aliases)
+}
+
+///|
 fn scheme_receiver_root_name(
   imported_env : @checker.TypeEnv,
   scheme : @checker.TypeScheme,

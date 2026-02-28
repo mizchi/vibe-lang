@@ -830,7 +830,7 @@ pub fn VibeDb::new() -> VibeDb {
                       if import_item_accepts_value(item, source_name) {
                         match imported_env.get_scheme(source_name) {
                           Some(scheme) => {
-                            import_scheme_trait_dependencies(
+                            import_scheme_dependencies(
                               env, imported_env, scheme, trait_aliases, visible_names,
                             )
                             if can_bind_import_value(target_name, span) {
@@ -938,7 +938,7 @@ pub fn VibeDb::new() -> VibeDb {
                     if item.kind == @core.ImportKind::Module {
                       match imported_env.get_scheme(source_name) {
                         Some(scheme) => {
-                          import_scheme_trait_dependencies(
+                          import_scheme_dependencies(
                             env, imported_env, scheme, trait_aliases, visible_names,
                           )
                           if can_bind_import_value(target_name, span) {
@@ -982,7 +982,7 @@ pub fn VibeDb::new() -> VibeDb {
                     if import_item_accepts_value(item, source_name) {
                       match imported_env.get_scheme(source_name) {
                         Some(scheme) => {
-                          import_scheme_trait_dependencies(
+                          import_scheme_dependencies(
                             env, imported_env, scheme, trait_aliases, visible_names,
                           )
                           if can_bind_import_value(target_name, span) {
@@ -1043,7 +1043,7 @@ pub fn VibeDb::new() -> VibeDb {
                             match imported_env.get_scheme(ctor.name) {
                               Some(scheme) =>
                                 if can_bind_import_value(ctor.name, span) {
-                                  import_scheme_trait_dependencies(
+                                  import_scheme_dependencies(
                                     env, imported_env, scheme, trait_aliases, visible_names,
                                   )
                                   env.set_scheme(ctor.name, scheme)
@@ -1143,7 +1143,7 @@ pub fn VibeDb::new() -> VibeDb {
                             scheme_receiver_root_name(imported_env, scheme) {
                             Some(recv_root) =>
                               if recv_root == source_root {
-                                import_scheme_trait_dependencies(
+                                import_scheme_dependencies(
                                   env, imported_env, scheme, trait_aliases, visible_names,
                                 )
                                 if can_bind_import_value(target_name, span) {

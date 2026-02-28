@@ -119,6 +119,40 @@ test "type query resolves Bytes parameter in imported function" {
 }
 
 ///|
+test "type query imports transitive type deps from imported value schemes" {
+  let db = VibeDb::new()
+  db.set_source("./dep_types.vibe", "export enum TypeEnv { EnvEmpty }\n")
+  db.set_source(
+    "./dep_api.vibe",
+    "import ./dep_types.vibe { TypeEnv }\n" +
+    "export enum Db { Db(Int) }\n" +
+    "export let f = (db: Db) -> (Option[TypeEnv], Db) with { Error } {\n" +
+    "  (None, db)\n" +
+    "}\n",
+  )
+  db.set_source(
+    "main",
+    "import ./dep_api.vibe { Db, f }\n" +
+    "let (_, db2) = f(Db(1))\n" +
+    "let x = match db2 { Db(n) => n }\n" +
+    "x\n",
+  )
+  let env = db.types("main")
+  let diags = db.diagnostics("main")
+  if not(diags.is_empty()) {
+    let lines : Array[String] = []
+    for diag in diags {
+      lines.push(diag.stage + ":" + diag.message)
+    }
+    fail("unexpected diagnostics: " + lines.join(","))
+  }
+  match env.get_scheme("x") {
+    Some(_) => ()
+    None => fail("expected scheme for x")
+  }
+}
+
+///|
 test "type query imports re-exported Process functions through index" {
   let db = VibeDb::new()
   db.set_source(
