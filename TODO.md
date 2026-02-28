@@ -29,6 +29,7 @@ Completed items are archived in `docs/DONE.md`.
   - 対応方針: export/import 時の型解決バグを直すか、公開APIを `TypeEnv` 非依存に再設計する
 - [ ] `type_db` の依存抽出を AST ベースに戻す（現状は lexer token 走査で暫定実装）
 - [ ] `vibe/compiler` から `vibe/x` を直接 import できないルート制約を解消し、`ripple` 実装を一本化する
+- [ ] `vibe/module/path`（`dir_of` / `resolve_path`）へ compiler 側 path 解決処理を寄せる（ルート制約解消後）
 
 ## Language Features
 
