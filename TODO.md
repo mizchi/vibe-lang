@@ -49,24 +49,14 @@ Completed items are archived in `docs/DONE.md`.
 
 目標: importer-level DCE で主要 std モジュールのサイズ最適化。
 
-**最新 KPI (2026-02-15):**
-
-| case | per_us | wasm_bytes | size_x_latency |
-|------|--------|------------|----------------|
-| pipeline_a | 0.528 | 1446 | 764 |
-| pipeline_b | 0.539 | 1450 | 782 |
-| pair_mix_ab | 0.579 | 1525 | 884 |
-| cross_mix | 0.565 | 1571 | 887 |
-| **avg** | **0.553** | **1498** | **829** |
-
-**Importers (wasm with DCE):**
+**Importers (wasm with DCE, 2026-03-01):**
 
 | file | bytes |
 |------|-------|
-| consumer_option_core | 1662 |
-| consumer_option_extra | 1792 |
-| consumer_double_core | 3251 |
-| consumer_double_rounding | 7521 |
+| consumer_option_core | 1028 |
+| consumer_option_extra | 1558 |
+| consumer_double_core | 2144 |
+| consumer_double_rounding | 5598 |
 
 ベンチ: `scripts/bench_bundle_size.sh`, `bench/bundle_size/cases.txt`
 
