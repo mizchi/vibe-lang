@@ -1906,37 +1906,53 @@ fn join_shell_args(parts : Array[String], start : Int) -> String {
 
 ///|
 fn execute_shell_lines(cmd : String) -> Array[String] raise EvalError {
-  // Try host-backed execution first (native target)
-  match @backend.exec_command_lines(cmd) {
-    Ok(lines) => return lines
-    Err(msg) =>
-      if not(msg.contains("not available")) {
-        raise EvalError::BadCall(Io(op="sh_lines", detail=msg))
-      }
+  if @backend.exec_available() {
+    match @backend.exec_command_lines(cmd) {
+      Ok(lines) => lines
+      Err(msg) => raise EvalError::BadCall(Io(op="sh_lines", detail=msg))
+    }
+  } else {
+    execute_shell_lines_fallback(cmd)
   }
-  // Deterministic fallback for non-native targets
+}
+
+///|
+fn execute_shell_lines_fallback(cmd : String) -> Array[String] raise EvalError {
   let parts = split_shell_args(cmd)
   if parts.length() == 0 {
-    raise EvalError::BadCall(E("sh_lines"))
+    raise EvalError::BadCall(Io(op="sh_lines", detail="empty command"))
   }
   match parts[0] {
     "ls" => {
       if parts.length() > 2 {
-        raise EvalError::BadCall(E("sh_lines"))
+        raise EvalError::BadCall(
+          Io(
+            op="sh_lines",
+            detail="ls: expected 0 or 1 arguments, got " +
+              (parts.length() - 1).to_string(),
+          ),
+        )
       }
       let dir = if parts.length() == 2 { parts[1] } else { "." }
       match @io.shell_ls_lines(dir) {
         Ok(lines) => lines
-        Err(_) => raise EvalError::BadCall(E("sh_lines"))
+        Err(e) => raise EvalError::BadCall(Io(op="sh_lines", detail="ls: " + e))
       }
     }
     "cat" => {
       if parts.length() != 2 {
-        raise EvalError::BadCall(E("sh_lines"))
+        raise EvalError::BadCall(
+          Io(
+            op="sh_lines",
+            detail="cat: expected exactly 1 file argument, got " +
+              (parts.length() - 1).to_string(),
+          ),
+        )
       }
       match @io.shell_cat_lines(parts[1]) {
         Ok(lines) => lines
-        Err(_) => raise EvalError::BadCall(E("sh_lines"))
+        Err(e) =>
+          raise EvalError::BadCall(Io(op="sh_lines", detail="cat: " + e))
       }
     }
     "echo" =>
@@ -1945,7 +1961,17 @@ fn execute_shell_lines(cmd : String) -> Array[String] raise EvalError {
       } else {
         [join_shell_args(parts, 1)]
       }
-    _ => raise EvalError::BadCall(E("sh_lines"))
+    _ => {
+      let command = parts[0]
+      raise EvalError::BadCall(
+        Io(
+          op="sh_lines",
+          detail="command '" +
+            command +
+            "' is not available on this target (only ls, cat, echo are supported in fallback mode)",
+        ),
+      )
+    }
   }
 }
 
