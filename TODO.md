@@ -10,26 +10,34 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-- [ ] Self-hosting: vibe/compiler が vibe/compiler 自身を parse + eval する (要: throw/handle実装, array_builder mutation)
-- [ ] `break` / `continue` を end-to-end で実装整合させる
-  - parser: 受理位置の制約整理（while 文脈）
-  - checker: while 外 `break` / `continue` を型エラー化
-  - eval: ループ制御として正しく停止/継続させる
-- [ ] `|>` を parser で desugar する
-  - 合意方針: `x |> f(a, b)` => `f(x, a, b)` を parser で AST 変換
-  - `|>` と他の二項演算混在時の曖昧性は parse error に統一
-- [ ] `use` 構文を削除し、`import` に一本化する
-  - lexer/parser/printer/fixture を `import` 正規形へ揃える
-- [ ] 型注釈の契約層を実装に一致させる (`TyApp` / `TyFn` / `TyTuple` を `CtUnknown` に落とさない)
-- [ ] postfix 構文と実行系のズレを解消する (`arr[i]`, `t.0`, member/index)
-- [ ] 未接続キーワード/トークンを整理する (`do`, `loop`, `yield`, `return`, `raise`, `declare` など)
-- [ ] builtins の型契約と evaluator 実装の差分を解消する（型のみ存在/実装のみ存在の不一致）
-- [ ] incremental 型検査DBを checker パスへ統合する（現状 `type_db.vibe` は独立実験）
+- [ ] Self-hosting: vibe/compiler が vibe/compiler 自身を parse + eval する（最終ゲート）
+- [x] Gate 0: selfhost smoke suite を安定通過
+  - `eval_selfhost_test.vibe`
+  - `eval_selfhost2_test.vibe`
+  - `eval_selfhost3_test.vibe`
+- [ ] Gate 1: 実行制御の整合（ループ制御を実運用可能にする）
+  - `break` / `continue` の parser/checker/eval を end-to-end で一致
+  - `return` の仕様を確定し、未対応なら明示的に構文拒否を固定
+  - DoD: ループ制御の fixture/e2e を追加して green
+- [ ] Gate 2: 構文と実行系のギャップを解消
+  - postfix 構文 (`arr[i]`, `t.0`, member/index) の parse/check/eval を一致
+  - 未接続キーワード/トークン (`do`, `loop`, `yield`, `raise`, `declare`) の方針確定（実装 or reject）
+  - DoD: `vibe/compiler` ソースで使う構文が parse/eval 双方で未接続なし
+- [ ] Gate 3: 型契約を自己適用レベルに引き上げる
+  - 型注釈の契約層を実装に一致させる (`TyApp` / `TyFn` / `TyTuple` を `CtUnknown` に落とさない)
+  - builtins の型契約と evaluator 実装の差分を解消する（型のみ存在/実装のみ存在の不一致）
+  - DoD: selfhost で使う主要 builtins の型/実装差分が 0
+- [ ] Gate 4: 依存計算と incremental checker を本線化
+  - incremental 型検査DBを checker パスへ統合する（現状 `type_db.vibe` は独立実験）
   - 現状制約: `db_typecheck` の公開シグネチャで `TypeEnv` を返すと `vibe test` 経由で `unknown type: TypeEnv` が発生
   - 対応方針: export/import 時の型解決バグを直すか、公開APIを `TypeEnv` 非依存に再設計する
-- [ ] `type_db` の依存抽出を AST ベースに戻す（現状は lexer token 走査で暫定実装）
-- [ ] `vibe/compiler` から `vibe/x` を直接 import できないルート制約を解消し、`ripple` 実装を一本化する
-- [ ] `vibe/module/path`（`dir_of` / `resolve_path`）へ compiler 側 path 解決処理を寄せる（ルート制約解消後）
+  - `type_db` の依存抽出を AST ベースに戻す（現状は lexer token 走査で暫定実装）
+  - `vibe/compiler` から `vibe/x` を直接 import できないルート制約を解消し、`ripple` 実装を一本化する
+  - `vibe/module/path`（`dir_of` / `resolve_path`）へ compiler 側 path 解決処理を寄せる（ルート制約解消後）
+  - DoD: 同一入力で cold/warm の型検査結果が一致し、差分更新のみ再計算される
+- [ ] Gate 5: full self-host
+  - `vibe/compiler` 一式を `parse + eval` して主要ワークフローを実行可能にする
+  - DoD: selfhost 用トップレベル e2e（実ソース入力）を CI で常時 green
 
 ## Language Features
 

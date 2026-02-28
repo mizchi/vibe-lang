@@ -1,94 +1,80 @@
 # vibe/compiler (experimental)
 
-An experimental self-hosted compiler for vibe-lang, written in vibe itself.
+An experimental self-hosted compiler/interpreter for vibe-lang, written in vibe itself.
 
-Currently implements **lexer + parser + printer** only. Passes all 6 normalize fixtures with roundtrip stability (126 tests).
+## Status (2026-02-28)
+
+- Core pipeline is implemented: `lex -> parse -> typecheck -> eval`.
+- Multi-file `import` / `export` resolution works in the interpreter.
+- Self-host smoke suites (`eval_selfhost*`) pass.
+- Full self-host goal is not reached yet: running `vibe/compiler` itself end-to-end (`parse + eval`) is still in progress.
 
 ## Implemented
 
-- **Lexer**: source string → token array
-- **Parser**: token array → AST (expressions, statements, types, patterns)
-- **Printer**: AST → source string (normalized output)
+### Frontend
 
-## Not Yet Implemented
+- Lexer: source string -> token array
+- Parser: token array -> AST (expr/stmt/type/pattern)
+- Printer: AST -> normalized source
+- `|>` is desugared in parser:
+  - `x |> f(a, b)` -> `f(x, a, b)`
+  - mixing `|>` with other infix operators at top-level parse scope is rejected
+- `use` syntax is removed; `import` is the only supported module syntax
 
-### Parsing (cannot parse its own source yet)
+### Type Checking
 
-| Syntax | Description |
-|--------|-------------|
-| `while` | While loop expression |
-| `do { ... }` | Do block (explicit side-effect boundary) |
-| `handle { ... } { Error(msg) => ... }` | Effect handler |
-| `throw(msg)` / `raise` | Effect invocation |
-| `for ... in` | For loop |
-| `break` / `continue` / `return` | Control flow |
+- Expression + statement checker (HM-like inference baseline)
+- Trait/type-def environment plumbing
+- Import surface checks in statement pass
 
-### Semantic Analysis
+### Evaluation
 
-- Type inference (Hindley-Milner)
-- Effect checking (`with { Error }` propagation tracking)
-- Import resolution (`use ./foo.vibe { ... }` file loading)
-- Export verification
-- Scope management (forward references, mutual recursion)
+- AST interpreter (functions, recursion, match, handle/throw, while, for-in)
+- Multi-file module loading with import cycle detection
+- `array_builder` runtime path used by self-host smoke scenarios
 
-### Evaluation / Code Generation
+### Incremental Typecheck Experiment
 
-- Builtin functions (`string_concat`, `array_get`, etc. ~30 functions)
-- AST interpreter or code generator
-- Runtime for closures, pattern matching, effect handling
+- `type_db` + `ripple` prototype exists and has dedicated tests
+- Caches fingerprints and import-dependency-based invalidation
 
-## Observations from Self-Hosting
+## Known Gaps Before Full Self-Hosting
 
-Writing a ~3000-line compiler in vibe revealed several language pain points:
+- Loop control semantics are incomplete end-to-end:
+  - `break` / `continue` are parsed, but runtime loop control is not fully wired
+- `return` is not supported (parser rejects it)
+- `raise` is deprecated (must use `throw(expr)`)
+- Postfix feature mismatch (`arr[i]`, tuple/index ergonomics, member/index consistency)
+- Type annotation contract mismatch (`TyApp` / `TyFn` / `TyTuple` paths still lose precision in parts)
+- Builtin type contracts and evaluator implementations are not fully aligned
+- `type_db` dependency extraction is token-scan based (temporary); AST-based extraction is pending
+- `type_db` is still experimental and not integrated into the main checker pipeline
+- Root import constraint prevents direct `vibe/compiler -> vibe/x` imports; duplicate ripple implementation remains
+- Some deeper recursive self-host scenarios can still hit WASM stack limits
 
-### No forward references or mutual recursion
+See [`TODO.md`](../../TODO.md) for the tracked source-of-truth checklist.
 
-Top-level functions cannot reference functions defined later in the file. This forced the entire parser into a single `let rec parse_impl(tokens, pos, mode)` function with ~6 nested helpers. The `mode` parameter (0-9 for binop precedence, 10 for unary/postfix, 20-22 for block/if/match) acts as a manual dispatch table — a workaround that would be unnecessary with forward references.
+## Quick Verification
 
-### Verbose string building
+Run full project checks:
 
-No string interpolation or `+` operator for strings. The printer is filled with deeply nested `string_concat` calls like:
-
-```vibe
-string_concat("(", string_concat(print_expr(left),
-  string_concat(" ", string_concat(op,
-    string_concat(" ", string_concat(print_expr(right), ")"))))))
+```bash
+just release-check
 ```
 
-A string interpolation or overloaded `+` would dramatically improve readability.
+Run focused compiler suites:
 
-### No iteration helpers
-
-No `map`, `filter`, `fold` for arrays. Every transformation requires a manual `while` loop with `array_builder`:
-
-```vibe
-do {
-  let b = array_builder()
-  let mut i = 0
-  while i < len {
-    array_builder_push(b, f(array_get(arr, i)))
-    i += 1
-  }
-  array_builder_freeze(b)
-}
+```bash
+_build/native/debug/build/cmd/vibe/vibe.exe test \
+  vibe/compiler/lexer_test.vibe \
+  vibe/compiler/parser_test.vibe \
+  vibe/compiler/printer_test.vibe \
+  vibe/compiler/checker_test.vibe \
+  vibe/compiler/checker_stmt_test.vibe \
+  vibe/compiler/eval_test.vibe \
+  vibe/compiler/eval_stmt_test.vibe \
+  vibe/compiler/eval_import_test.vibe \
+  vibe/compiler/eval_selfhost_test.vibe \
+  vibe/compiler/eval_selfhost2_test.vibe \
+  vibe/compiler/eval_selfhost3_test.vibe
 ```
-
-This 7-line pattern appears ~20 times in the codebase. A `map` function or for-in loop would eliminate most of it.
-
-### Cascading type errors
-
-Any type error in a file makes ALL its exports invisible to importers, producing misleading "unknown function" / "unknown type" errors. During development, a single typo in parser.vibe would cause printer.vibe to fail with "unknown type: Expr" — hiding the real error entirely.
-
-### No multiline string literals
-
-Test fixtures had to be written as single-line strings with `\n`:
-
-```vibe
-let src = "let dead = () -> Int { 0 }\nimport ./dep.vibe { dep }\ntrait Eq\nimpl Eq for Int"
-```
-
-Multiline strings or heredocs would make test data much more readable.
-
-### `do { }` required for imperative blocks
-
-Any code using `array_builder()` or mutable state must be wrapped in `do { ... }` to satisfy the purity boundary. This adds syntactic noise to what is already verbose imperative code.
