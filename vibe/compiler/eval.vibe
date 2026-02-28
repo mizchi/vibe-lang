@@ -399,9 +399,9 @@ export let rec match_pattern = (pat: Pat, v: Value) -> Option[Array[(String, Val
 
 // ===== Main expression evaluator =====
 
-export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
+export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { Error } {
 
-  let apply_fn = (fn_val: Value, evaled_args: Array[Value], caller_env: ValEnv) -> (Value, ValEnv) {
+  let apply_fn = (fn_val: Value, evaled_args: Array[Value], caller_env: ValEnv) -> (Value, ValEnv) with { Error } {
     match fn_val {
       VFn(captures, params, _, self_name) => {
         // First capture entry is ("__body", encoded_body)
@@ -429,15 +429,40 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
           }
         }
         let fn_env3 = bind_params(0, fn_env2)
-        let (result, _) = eval_expr(body, fn_env3)
-        (result, caller_env)
+        // Propagate __bstore into function scope
+        let fn_env4 = match val_env_lookup(caller_env, "__bstore") {
+          Some(bs) => val_env_bind(fn_env3, "__bstore", bs),
+          None => fn_env3
+        }
+        let (result, ret_env) = eval_expr(body, fn_env4)
+        // Propagate __bstore back to caller
+        let caller_env2 = match val_env_lookup(ret_env, "__bstore") {
+          Some(bs) => val_env_bind(caller_env, "__bstore", bs),
+          None => caller_env
+        }
+        (result, caller_env2)
       },
       VCtor(cname, _) => (VCtor(cname, evaled_args), caller_env),
       _ => (VUnit, caller_env)
     }
   }
 
-  let rec eval_match_arms = (arms: Array[(Pat, Expr)], scrutinee_val: Value, match_env: ValEnv, i: Int) -> (Value, ValEnv) {
+  let rec eval_handle_arms = (arms: Array[(Pat, Expr)], err_msg: String, h_env: ValEnv, i: Int) -> (Value, ValEnv) with { Error } {
+    if i >= array_length(arms) { throw(err_msg) }
+    else {
+      let (pat, arm_expr) = array_get(arms, i)
+      let err_val = VCtor("Error", [VString(err_msg)])
+      match match_pattern(pat, err_val) {
+        Some(binds) => {
+          let arm_env = val_env_bind_all(h_env, binds)
+          eval_expr(arm_expr, arm_env)
+        },
+        None => eval_handle_arms(arms, err_msg, h_env, i + 1)
+      }
+    }
+  }
+
+  let rec eval_match_arms = (arms: Array[(Pat, Expr)], scrutinee_val: Value, match_env: ValEnv, i: Int) -> (Value, ValEnv) with { Error } {
     if i >= array_length(arms) { (VUnit, match_env) }
     else {
       let (pat, arm_expr) = array_get(arms, i)
@@ -451,7 +476,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
     }
   }
 
-  let rec eval_while_loop = (cond_expr: Expr, body_expr: Expr, while_env: ValEnv) -> (Value, ValEnv) {
+  let rec eval_while_loop = (cond_expr: Expr, body_expr: Expr, while_env: ValEnv) -> (Value, ValEnv) with { Error } {
     let (cv, env2) = eval_expr(cond_expr, while_env)
     match cv {
       VBool(true) => {
@@ -462,7 +487,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
     }
   }
 
-  let rec eval_args = (arg_exprs: Array[Expr], arg_env: ValEnv, i: Int, acc: Array[Value]) -> (Array[Value], ValEnv) {
+  let rec eval_args = (arg_exprs: Array[Expr], arg_env: ValEnv, i: Int, acc: Array[Value]) -> (Array[Value], ValEnv) with { Error } {
     if i >= array_length(arg_exprs) { (acc, arg_env) }
     else {
       let (av, env2) = eval_expr(array_get(arg_exprs, i), arg_env)
@@ -470,7 +495,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
     }
   }
 
-  let rec eval_elems = (elems: Array[Expr], el_env: ValEnv, i: Int, acc: Array[Value]) -> (Array[Value], ValEnv) {
+  let rec eval_elems = (elems: Array[Expr], el_env: ValEnv, i: Int, acc: Array[Value]) -> (Array[Value], ValEnv) with { Error } {
     if i >= array_length(elems) { (acc, el_env) }
     else {
       let (ev, env2) = eval_expr(array_get(elems, i), el_env)
@@ -478,7 +503,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
     }
   }
 
-  let rec eval_fields = (fields: Array[(String, Expr)], f_env: ValEnv, i: Int, acc: Array[(String, Value)]) -> (Array[(String, Value)], ValEnv) {
+  let rec eval_fields = (fields: Array[(String, Expr)], f_env: ValEnv, i: Int, acc: Array[(String, Value)]) -> (Array[(String, Value)], ValEnv) with { Error } {
     if i >= array_length(fields) { (acc, f_env) }
     else {
       let (fname, fexpr) = array_get(fields, i)
@@ -494,7 +519,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
     }
   }
 
-  let rec eval_for_in = (vname: String, elems: Array[Value], body_expr: Expr, for_env: ValEnv, i: Int, acc: Array[Value]) -> (Value, ValEnv) {
+  let rec eval_for_in = (vname: String, elems: Array[Value], body_expr: Expr, for_env: ValEnv, i: Int, acc: Array[Value]) -> (Value, ValEnv) with { Error } {
     if i >= array_length(elems) { (VArray(acc), for_env) }
     else {
       let elem = array_get(elems, i)
@@ -610,9 +635,71 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
         _ => {
           if callee_is_ident {
             let name = match callee { EIdent(n) => n, _ => "" }
-            match eval_builtin_call(name, evaled_args) {
-              Some(v) => (v, env3),
-              None => (VUnit, env3)
+            // array_builder: managed via __bstore in env
+            if string_equals(name, "array_builder") {
+              let store = match val_env_lookup(env3, "__bstore") {
+                Some(VArray(s)) => s,
+                _ => empty_vals
+              }
+              let bid = array_length(store) + 1
+              let new_store = array_concat(store, [VArray(empty_vals)])
+              let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
+              (VInt(bid), env4)
+            }
+            else if string_equals(name, "array_builder_push") {
+              let builder = array_get(evaled_args, 0)
+              let val = array_get(evaled_args, 1)
+              match builder {
+                VInt(bid) => {
+                  let store = match val_env_lookup(env3, "__bstore") {
+                    Some(VArray(s)) => s,
+                    _ => empty_vals
+                  }
+                  let idx = bid - 1
+                  if idx >= 0 {
+                    if idx < array_length(store) {
+                      let old_items = match array_get(store, idx) {
+                        VArray(items) => items,
+                        _ => empty_vals
+                      }
+                      let new_items = array_concat(old_items, [val])
+                      let before = array_slice(store, 0, idx)
+                      let after = array_slice(store, idx + 1, array_length(store))
+                      let new_store = array_concat(array_concat(before, [VArray(new_items)]), after)
+                      let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
+                      (VUnit, env4)
+                    } else { (VUnit, env3) }
+                  } else { (VUnit, env3) }
+                },
+                _ => (VUnit, env3)
+              }
+            }
+            else if string_equals(name, "array_builder_freeze") {
+              let builder = array_get(evaled_args, 0)
+              match builder {
+                VInt(bid) => {
+                  let store = match val_env_lookup(env3, "__bstore") {
+                    Some(VArray(s)) => s,
+                    _ => empty_vals
+                  }
+                  let idx = bid - 1
+                  if idx >= 0 {
+                    if idx < array_length(store) {
+                      match array_get(store, idx) {
+                        VArray(items) => (VArray(items), env3),
+                        _ => (VArray(empty_vals), env3)
+                      }
+                    } else { (VArray(empty_vals), env3) }
+                  } else { (VArray(empty_vals), env3) }
+                },
+                _ => (VArray(empty_vals), env3)
+              }
+            }
+            else {
+              match eval_builtin_call(name, evaled_args) {
+                Some(v) => (v, env3),
+                None => (VUnit, env3)
+              }
             }
           } else { (VUnit, env3) }
         }
@@ -675,10 +762,17 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
       apply_fn(fv, [lv], env3)
     },
 
-    EHandle(body, _arms) => eval_expr(body, env),
+    EHandle(body, arms) => {
+      handle {
+        eval_expr(body, env)
+      } {
+        Error(msg) => eval_handle_arms(arms, msg, env, 0)
+      }
+    },
     EThrow(val_expr) => {
-      let (v, env2) = eval_expr(val_expr, env)
-      (v, env2)
+      let (v, _) = eval_expr(val_expr, env)
+      let msg = value_to_string(v)
+      throw(msg)
     },
 
     EBreak(_) => (VUnit, env),
