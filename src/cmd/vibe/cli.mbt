@@ -1721,7 +1721,7 @@ fn test_cmd_parallel(
     })
   }
   @async.run_async_main(async fn() {
-    let results = @async.all(tasks[:], max_concurrent=max_concurrent)
+    let results = @async.all(tasks[:], max_concurrent~)
     let mut total = 0
     let mut passed = 0
     let mut failed_count = 0

@@ -123,6 +123,10 @@ fn collect_dependency_defs(
         @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
         @core.Stmt::Test(..) | @core.Stmt::Bench(..) => ()
+        // Skip trait definitions (no-op in codegen)
+        @core.Stmt::TraitDef(..)
+        | @core.Stmt::TraitImpl(..)
+        | @core.Stmt::InternalTraitDef(..) => ()
         // Other statements are passed through
         _ => out.push(stmt)
       }

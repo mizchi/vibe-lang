@@ -991,11 +991,36 @@ fn restore_local_kinds(
 }
 
 ///|
+/// Strip type-assertion identity blocks from Let/ExportLet expressions.
+/// Rewrites `let x = { let __assert = fn(v){v}; __assert(inner) }` to `let x = inner`
+/// so that collect_func_defs never sees the dead identity functions.
+fn strip_type_assert_stmts(ast : @core.Module) -> @core.Module {
+  let stmts : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(rec~, name~, expr~, span~) => {
+        let unwrapped = unwrap_type_assert_block(expr)
+        stmts.push(@core.Stmt::Let(rec~, name~, expr=unwrapped, span~))
+      }
+      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+        let unwrapped = unwrap_type_assert_block(expr)
+        stmts.push(@core.Stmt::ExportLet(rec~, name~, expr=unwrapped, span~))
+      }
+      _ => stmts.push(stmt)
+    }
+  }
+  @core.Module::{ stmts }
+}
+
+///|
 /// Emit a WASM module for a typed vibe AST.
 fn emit_module_with_coverage(
   ctx : CodegenCtx,
   ast : @core.Module,
 ) -> WasmCoverageArtifact raise WasmGenError {
+  // Pre-process: strip type-assertion identity blocks so that
+  // collect_func_defs doesn't create dead identity stub functions.
+  let ast = strip_type_assert_stmts(ast)
   // Collect exported function names
   for stmt in ast.stmts {
     match stmt {

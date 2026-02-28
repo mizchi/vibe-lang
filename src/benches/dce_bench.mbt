@@ -148,7 +148,6 @@ test "bench: dce.dependency_chain" {
     result,
     content=(
       #|{name: "dependency_chain", stmts_before: 6, stmts_after: 5, wasm_no_dce: Some(762), wasm_with_dce: Some(730), reduction_percent: Some(4.199475065616798)}
-
     ),
   )
 }
@@ -172,7 +171,6 @@ test "bench: dce.all_used" {
     result,
     content=(
       #|{name: "all_used", stmts_before: 3, stmts_after: 3, wasm_no_dce: Some(139), wasm_with_dce: Some(139), reduction_percent: Some(0)}
-
     ),
   )
 }

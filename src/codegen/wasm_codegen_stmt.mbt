@@ -1,4 +1,58 @@
 ///|
+/// Unwrap a type-assertion identity block:
+///   { let __vibe_local_type_assert_N = fn(v) { v }; __assert(inner_expr) }
+/// Returns the inner_expr argument if the pattern matches, otherwise the original expr.
+fn unwrap_type_assert_block(expr : @core.Expr) -> @core.Expr {
+  match expr {
+    @core.Expr::Block(body~, ..) =>
+      if body.stmts.length() == 2 {
+        match (body.stmts[0], body.stmts[1]) {
+          (
+            @core.Stmt::Let(
+              name=assert_name,
+              expr=@core.Expr::Fn(params=fn_params, body=fn_body, ..),
+              ..
+            ),
+            @core.Stmt::Expr(
+              expr=@core.Expr::Call(name=call_name, args=call_args, ..),
+              ..
+            ),
+          ) => {
+            // Check: call target matches the local type-assert function
+            if assert_name != call_name ||
+              not(assert_name.has_prefix("__vibe_local_type_assert_")) {
+              return expr
+            }
+            // Check: the function is a single-param identity (body = param)
+            if fn_params.length() != 1 {
+              return expr
+            }
+            let param_name = fn_params[0].name
+            let is_identity = match fn_body.stmts {
+              [@core.Stmt::Expr(expr=@core.Expr::Ident(name=ret_name, ..), ..)] =>
+                ret_name == param_name
+              _ => false
+            }
+            if not(is_identity) {
+              return expr
+            }
+            // Check: exactly one argument
+            if call_args.length() != 1 {
+              return expr
+            }
+            // Return the inner expression (argument to the type-assert call)
+            call_args[0].expr
+          }
+          _ => expr
+        }
+      } else {
+        expr
+      }
+    _ => expr
+  }
+}
+
+///|
 fn compile_stmt(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -153,23 +207,24 @@ fn compile_stmt(
           }
         }
         _ => {
-          let kind = infer_expr_kind(ctx, expr)
-          let idx = ctx.local_count
-          ctx.local_count += 1
-          ctx.local_types.push(kind)
-          ctx.locals[name] = idx
-          ctx.local_kinds[name] = kind
-          // If the expression is a Call that returns a function, register in fn_local_sigs
-          match expr {
-            @core.Expr::Ident(name=source_name, span~) => {
-              let _ = span
-              match ctx.fn_local_sigs.get(source_name) {
-                Some(sig) => ctx.fn_local_sigs[name] = sig
-                None => ()
-              }
+          // Function alias optimization: skip local allocation for `let x = fn_name`
+          // when x is only used as a call target (not captured, not is_last).
+          // compile_expr_ident falls back to fn_indices when locals[name] is absent.
+          //
+          // Also handles type-annotation wrappers:
+          //   let x = { let __assert = fn(v) { v }; __assert(fn_name) }
+          // by unwrapping to extract the inner fn_name Ident.
+          let effective_expr = unwrap_type_assert_block(expr)
+          match effective_expr {
+            @core.Expr::Ident(name=source_name, span~) =>
               match ctx.fn_indices.get(source_name) {
                 Some(func_idx) => {
+                  let _ = span
                   ctx.fn_indices[name] = func_idx
+                  match ctx.fn_local_sigs.get(source_name) {
+                    Some(sig) => ctx.fn_local_sigs[name] = sig
+                    None => ()
+                  }
                   match ctx.fn_params.get(source_name) {
                     Some(kinds) => ctx.fn_params[name] = kinds
                     None => ()
@@ -186,9 +241,44 @@ fn compile_stmt(
                     Some(sig) => ctx.fn_return_sigs[name] = sig
                     None => ()
                   }
+                  // Skip only when: not is_last, not captured, and
+                  // the target function doesn't need a closure env
+                  // (env-needing functions require a local to pass the env pointer)
+                  let needs_env = fn_index_needs_env(ctx, func_idx)
+                  let mut is_captured = false
+                  for _key, captures in ctx.fn_closure_captures {
+                    if captures.contains(name) {
+                      is_captured = true
+                      break
+                    }
+                  }
+                  if not(is_last) && not(is_captured) && not(needs_env) {
+                    return
+                  }
                 }
                 None => ()
               }
+            _ => ()
+          }
+          // Use effective_expr (type-assert unwrapped) for kind inference,
+          // sig propagation, and code generation so that identity wrappers
+          // like { let __assert = fn(v){v}; __assert(inner) } compile as
+          // just `inner`, avoiding the identity stub call overhead.
+          let kind = infer_expr_kind(ctx, effective_expr)
+          let idx = ctx.local_count
+          ctx.local_count += 1
+          ctx.local_types.push(kind)
+          ctx.locals[name] = idx
+          ctx.local_kinds[name] = kind
+          // If the expression is a Call that returns a function, register in fn_local_sigs
+          match effective_expr {
+            @core.Expr::Ident(name=source_name, span~) => {
+              let _ = span
+              match ctx.fn_local_sigs.get(source_name) {
+                Some(sig) => ctx.fn_local_sigs[name] = sig
+                None => ()
+              }
+              // fn_indices metadata already copied in optimization check above
             }
             @core.Expr::Call(name=call_name, args~, span~, ..) => {
               let _ = args
@@ -200,11 +290,11 @@ fn compile_stmt(
             }
             _ => ()
           }
-          compile_expr(ctx, buf, expr)
-          // After compiling Block expressions (e.g. from annotation wrappers),
-          // propagate fn_return_sigs from inner Call to fn_local_sigs so the
-          // bound name is correctly typed when called.
-          match expr {
+          compile_expr(ctx, buf, effective_expr)
+          // After compiling Block expressions, propagate fn_return_sigs
+          // from inner Call to fn_local_sigs so the bound name is correctly
+          // typed when called. (Only needed when effective_expr is still a Block.)
+          match effective_expr {
             @core.Expr::Block(body=block_body, ..) => {
               let block_stmts = block_body.stmts
               if block_stmts.length() > 0 {
