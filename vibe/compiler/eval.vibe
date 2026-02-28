@@ -9,6 +9,8 @@ let _a3 = (t: TypeExpr) -> TypeExpr { t }
 let _a4 = (s: Stmt) -> Stmt { s }
 
 let empty_encoded = array_slice([VUnit], 0, 0)
+let _no_tp = array_slice([""], 0, 0)
+let _no_tb = array_slice([("", _no_tp)], 0, 0)
 
 // ===== Encode Pat -> Value =====
 let rec encode_pat = (p: Pat) -> Value {
@@ -99,7 +101,7 @@ export let rec encode_expr = (expr: Expr) -> Value {
     ETuple(elems) => VArray([VString("tu"), go_exprs(elems, 0)]),
     EArray(elems) => VArray([VString("ar"), go_exprs(elems, 0)]),
     ERecord(fields) => VArray([VString("rc"), go_fields(fields, 0)]),
-    EFn(params, _, _, body) => VArray([VString("fn"), go_params(params, 0), encode_expr(body)]),
+    EFn(_, _, params, _, _, body) => VArray([VString("fn"), go_params(params, 0), encode_expr(body)]),
     EMatch(scrutinee, arms) => VArray([VString("ma"), encode_expr(scrutinee), go_arms(arms, 0)]),
     EWhile(cond, body) => VArray([VString("wh"), encode_expr(cond), encode_expr(body)]),
     EForIn(name, iter, body) => VArray([VString("fi"), VString(name), encode_expr(iter), encode_expr(body)]),
@@ -263,7 +265,7 @@ export let rec decode_expr = (v: Value) -> Expr {
         else if string_equals(tag, "rc") { ERecord(go_fields(array_get(arr, 1))) }
         else if string_equals(tag, "fn") {
           let params = go_params(array_get(arr, 1))
-          EFn(params, None, None, decode_expr(array_get(arr, 2)))
+          EFn(_no_tp, _no_tb, params, None, None, decode_expr(array_get(arr, 2)))
         }
         else if string_equals(tag, "ma") { EMatch(decode_expr(array_get(arr, 1)), go_arms(array_get(arr, 2))) }
         else if string_equals(tag, "wh") { EWhile(decode_expr(array_get(arr, 1)), decode_expr(array_get(arr, 2))) }
@@ -584,7 +586,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) {
       }
     },
 
-    EFn(params, _, _, body) => {
+    EFn(_, _, params, _, _, body) => {
       let plen = array_length(params)
       let rec get_names = (i: Int, acc: Array[String]) -> Array[String] {
         if i >= plen { acc }

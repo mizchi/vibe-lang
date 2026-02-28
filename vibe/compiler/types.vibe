@@ -16,6 +16,7 @@ export enum Type {
   CtBytes;
   CtNamed(String, Array[Type]);
   CtVar(Int);
+  CtForAll(Array[Int], Array[(Int, Array[String])], Type);
   CtUnknown
 }
 
@@ -27,7 +28,10 @@ export enum TypeDef {
 
 export enum TypeEnv {
   EnvEmpty;
-  EnvBind(String, Type, TypeEnv)
+  EnvBind(String, Type, TypeEnv);
+  EnvTraitDef(String, Array[String], Bool, TypeEnv);
+  EnvTraitImpl(String, Type, TypeEnv);
+  EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv)
 }
 
 //# TypeEnv Functions
@@ -37,7 +41,10 @@ export let rec env_lookup = (env: TypeEnv, name: String) -> Option[Type] {
     EnvEmpty => None,
     EnvBind(n, ty, rest) => if string_equals(n, name) {
       Some(ty)
-    } else env_lookup(rest, name)
+    } else env_lookup(rest, name),
+    EnvTraitDef(_, _, _, rest) => env_lookup(rest, name),
+    EnvTraitImpl(_, _, rest) => env_lookup(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => env_lookup(rest, name)
   }
 }
 
@@ -120,6 +127,18 @@ export let rec type_to_string = (ty: Type) -> String {
     CtUnit => "()",
     CtBytes => "Bytes",
     CtVar(id) => string_concat("?t", __to_string(id)),
+    CtForAll(vars, _, body) => {
+      let vlen = array_length(vars)
+      let rec join_vars = (i: Int, acc: String) -> String {
+        if i >= vlen { acc }
+        else {
+          let v = string_concat("?t", __to_string(array_get(vars, i)))
+          let next = if i > 0 { string_concat(string_concat(acc, " "), v) } else v
+          join_vars(i + 1, next)
+        }
+      }
+      string_concat("forall ", string_concat(join_vars(0, ""), string_concat(". ", type_to_string(body))))
+    },
     CtUnknown => "?",
     CtArray(elem) => string_concat("Array[", string_concat(type_to_string(elem), "]")),
     CtOption(elem) => string_concat("Option[", string_concat(type_to_string(elem), "]")),
@@ -173,13 +192,15 @@ export let types_compatible = (expected: Type, actual: Type) -> Bool {
 
 export enum Subst {
   SubstEmpty;
-  SubstBind(Int, Type, Subst)
+  SubstBind(Int, Type, Subst);
+  SubstBound(Int, Array[String], Subst)
 }
 
 export let rec subst_lookup = (s: Subst, id: Int) -> Option[Type] {
   match s {
     SubstEmpty => None,
-    SubstBind(i, ty, rest) => if eq(i, id) { Some(ty) } else subst_lookup(rest, id)
+    SubstBind(i, ty, rest) => if eq(i, id) { Some(ty) } else subst_lookup(rest, id),
+    SubstBound(_, _, rest) => subst_lookup(rest, id)
   }
 }
 
@@ -196,6 +217,7 @@ export let rec subst_apply = (s: Subst, ty: Type) -> Type {
     CtArray(elem) => CtArray(subst_apply(s, elem)),
     CtOption(elem) => CtOption(subst_apply(s, elem)),
     CtTuple(elems) => CtTuple(for e in elems { subst_apply(s, e) }),
+    CtForAll(_, _, _) => ty,
     _ => ty
   }
 }
@@ -214,6 +236,7 @@ export let rec occurs_in = (id: Int, ty: Type) -> Bool {
     CtArray(elem) => occurs_in(id, elem),
     CtOption(elem) => occurs_in(id, elem),
     CtTuple(elems) => check_list(elems, 0),
+    CtForAll(_, _, body) => occurs_in(id, body),
     _ => false
   }
 }
@@ -271,5 +294,223 @@ export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
 
 export let fresh_var = (c: Int) -> (Type, Int) {
   (CtVar(c), c + 1)
+}
+
+//# Generalize / Instantiate (let-polymorphism)
+
+let rec array_has_int = (arr: Array[Int], val: Int, i: Int) -> Bool {
+  if i >= array_length(arr) { false }
+  else if eq(array_get(arr, i), val) { true }
+  else array_has_int(arr, val, i + 1)
+}
+
+export let collect_tvars = (ty: Type) -> Array[Int] {
+  let rec go = (t: Type, acc: Array[Int]) -> Array[Int] {
+    match t {
+      CtVar(id) => if array_has_int(acc, id, 0) { acc } else array_concat(acc, [id]),
+      CtFn(params, ret, _) => {
+        let plen = array_length(params)
+        let rec do_params = (i: Int, a: Array[Int]) -> Array[Int] {
+          if i >= plen { a }
+          else do_params(i + 1, go(array_get(params, i), a))
+        }
+        go(ret, do_params(0, acc))
+      },
+      CtArray(elem) => go(elem, acc),
+      CtOption(elem) => go(elem, acc),
+      CtTuple(elems) => {
+        let elen = array_length(elems)
+        let rec do_elems = (i: Int, a: Array[Int]) -> Array[Int] {
+          if i >= elen { a }
+          else do_elems(i + 1, go(array_get(elems, i), a))
+        }
+        do_elems(0, acc)
+      },
+      CtForAll(_, _, body) => go(body, acc),
+      _ => acc
+    }
+  }
+  let empty = array_slice([0], 0, 0)
+  go(ty, empty)
+}
+
+let rec subst_bounds = (s: Subst, id: Int) -> Array[String] {
+  match s {
+    SubstEmpty => array_slice([""], 0, 0),
+    SubstBind(_, _, rest) => subst_bounds(rest, id),
+    SubstBound(bid, bounds, rest) => if eq(bid, id) { bounds } else subst_bounds(rest, id)
+  }
+}
+
+export let subst_add_bound = (s: Subst, id: Int, bounds: Array[String]) -> Subst {
+  SubstBound(id, bounds, s)
+}
+
+export let generalize = (s: Subst, ty: Type) -> Type {
+  let resolved = subst_apply(s, ty)
+  let tvars = collect_tvars(resolved)
+  if eq(array_length(tvars), 0) { resolved }
+  else {
+    let empty_vb = array_slice([(0, array_slice([""], 0, 0))], 0, 0)
+    let vlen = array_length(tvars)
+    let rec collect_bounds = (i: Int, acc: Array[(Int, Array[String])]) -> Array[(Int, Array[String])] {
+      if i >= vlen { acc }
+      else {
+        let vid = array_get(tvars, i)
+        let bounds = subst_bounds(s, vid)
+        if eq(array_length(bounds), 0) {
+          collect_bounds(i + 1, acc)
+        } else {
+          collect_bounds(i + 1, array_concat(acc, [(vid, bounds)]))
+        }
+      }
+    }
+    let var_bounds = collect_bounds(0, empty_vb)
+    CtForAll(tvars, var_bounds, resolved)
+  }
+}
+
+let empty_var_bounds = array_slice([(0, array_slice([""], 0, 0))], 0, 0)
+
+export let instantiate = (ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
+  match ty {
+    CtForAll(bound_vars, var_bounds, body) => {
+      let blen = array_length(bound_vars)
+      let rec build_subst = (i: Int, acc: Subst, nc: Int) -> (Subst, Int) {
+        if i >= blen { (acc, nc) }
+        else {
+          let old_id = array_get(bound_vars, i)
+          build_subst(i + 1, SubstBind(old_id, CtVar(nc), acc), nc + 1)
+        }
+      }
+      let (inst_s, c1) = build_subst(0, SubstEmpty, c)
+      // Remap var_bounds: old_id -> new_id
+      let vblen = array_length(var_bounds)
+      let rec remap_bounds = (i: Int, acc: Array[(Int, Array[String])]) -> Array[(Int, Array[String])] {
+        if i >= vblen { acc }
+        else {
+          let (old_id, bounds) = array_get(var_bounds, i)
+          let new_id = match subst_lookup(inst_s, old_id) {
+            Some(t) => match t { CtVar(nid) => nid, _ => old_id },
+            None => old_id
+          }
+          remap_bounds(i + 1, array_concat(acc, [(new_id, bounds)]))
+        }
+      }
+      let new_bounds = remap_bounds(0, empty_var_bounds)
+      (subst_apply(inst_s, body), c1, new_bounds)
+    },
+    _ => (ty, c, empty_var_bounds)
+  }
+}
+
+//# Trait registry functions
+
+export let rec trait_defined = (env: TypeEnv, name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => trait_defined(rest, name),
+    EnvTraitDef(tname, _, _, rest) => if string_equals(tname, name) { true } else trait_defined(rest, name),
+    EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name)
+  }
+}
+
+export let rec trait_supers = (env: TypeEnv, name: String) -> Array[String] {
+  let empty = array_slice([""], 0, 0)
+  match env {
+    EnvEmpty => empty,
+    EnvBind(_, _, rest) => trait_supers(rest, name),
+    EnvTraitDef(tname, supers, _, rest) => if string_equals(tname, name) { supers } else trait_supers(rest, name),
+    EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name)
+  }
+}
+
+let rec has_string = (arr: Array[String], s: String, i: Int) -> Bool {
+  if i >= array_length(arr) { false }
+  else if string_equals(array_get(arr, i), s) { true }
+  else has_string(arr, s, i + 1)
+}
+
+export let rec trait_is_subtrait = (env: TypeEnv, sub: String, super_name: String) -> Bool {
+  // DFS: sub's supers include super_name, or any of sub's supers is a subtrait of super_name
+  if string_equals(sub, super_name) { true }
+  else {
+    let supers = trait_supers(env, sub)
+    let slen = array_length(supers)
+    let rec check = (i: Int) -> Bool {
+      if i >= slen { false }
+      else {
+        let s = array_get(supers, i)
+        if string_equals(s, super_name) { true }
+        else if trait_is_subtrait(env, s, super_name) { true }
+        else check(i + 1)
+      }
+    }
+    check(0)
+  }
+}
+
+//# Impl query functions
+
+export let rec type_implements_trait = (env: TypeEnv, s: Subst, ty: Type, trait_name: String) -> Bool {
+  let resolved = subst_apply(s, ty)
+  let rec check_env = (e: TypeEnv) -> Bool {
+    match e {
+      EnvEmpty => false,
+      EnvBind(_, _, rest) => check_env(rest),
+      EnvTraitDef(_, _, _, rest) => check_env(rest),
+      EnvTraitImpl(tname, target, rest) => {
+        if string_equals(tname, trait_name) {
+          if types_equal(target, resolved) { true }
+          else check_env(rest)
+        } else check_env(rest)
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => check_env(rest)
+    }
+  }
+  if check_env(env) { true }
+  else {
+    // Check supertrait: if trait_name has subtrait impls
+    let supers = trait_supers(env, trait_name)
+    let slen = array_length(supers)
+    if eq(slen, 0) { false }
+    else {
+      // Type implements trait_name if it implements all supers? No — reversed:
+      // If T implements sub-trait B where B: A, then T also implements A
+      // So check all traits that the type implements and see if any is a subtrait of trait_name
+      let rec check_super = (e2: TypeEnv) -> Bool {
+        match e2 {
+          EnvEmpty => false,
+          EnvBind(_, _, rest) => check_super(rest),
+          EnvTraitDef(_, _, _, rest) => check_super(rest),
+          EnvTraitImpl(tname, target, rest) => {
+            if types_equal(target, resolved) {
+              if trait_is_subtrait(env, tname, trait_name) { true }
+              else check_super(rest)
+            } else check_super(rest)
+          },
+          EnvTraitImplGen(_, _, _, _, rest) => check_super(rest)
+        }
+      }
+      check_super(env)
+    }
+  }
+}
+
+export let rec impls_overlap_for = (env: TypeEnv, trait_name: String, new_target: Type) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
+    EnvTraitDef(_, _, _, rest) => impls_overlap_for(rest, trait_name, new_target),
+    EnvTraitImpl(tname, target, rest) => {
+      if string_equals(tname, trait_name) {
+        if types_equal(target, new_target) { true }
+        else impls_overlap_for(rest, trait_name, new_target)
+      } else impls_overlap_for(rest, trait_name, new_target)
+    },
+    EnvTraitImplGen(_, _, _, _, rest) => impls_overlap_for(rest, trait_name, new_target)
+  }
 }
 

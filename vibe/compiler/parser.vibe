@@ -318,11 +318,53 @@ let rec parse_pattern = (tokens: Array[Token], pos: Int) -> (Pat, Int)with { Err
 }
 
 let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  let empty_strings = array_slice(["_"], 0, 0)
+  let empty_bounds = array_slice([("_", empty_strings)], 0, 0)
   match peek(tokens, pos) {
+    TLBracket => {
+      // Parse type params: impl [T: Trait1 + Trait2, U] TraitName for TypeName
+      let rec parse_tparam_bounds = (p: Int) -> (Array[String], Int) {
+        let rec go = (p2: Int, acc: Array[String]) -> (Array[String], Int) {
+          match peek(tokens, p2) {
+            TIdent(bn) => match peek(tokens, p2 + 1) {
+              TPlus => go(p2 + 2, array_concat(acc, [bn])),
+              _ => (array_concat(acc, [bn]), p2 + 1)
+            },
+            _ => (acc, p2)
+          }
+        }
+        go(p, empty_strings)
+      }
+      let rec parse_tparams = (p: Int, tps: Array[String], tbs: Array[(String, Array[String])]) -> (Array[String], Array[(String, Array[String])], Int)with { Error } {
+        match peek(tokens, p) {
+          TRBracket => (tps, tbs, p + 1),
+          TComma => parse_tparams(p + 1, tps, tbs),
+          TIdent(tname) => match peek(tokens, p + 1) {
+            TColon => {
+              let (bounds, bp) = parse_tparam_bounds(p + 2)
+              parse_tparams(bp, array_concat(tps, [tname]), array_concat(tbs, [(tname, bounds)]))
+            },
+            _ => parse_tparams(p + 1, array_concat(tps, [tname]), tbs)
+          },
+          _ => throw("expected type param or ']'")
+        }
+      }
+      let (tparams, tbounds, after_bracket) = parse_tparams(pos + 1, empty_strings, empty_bounds)
+      match peek(tokens, after_bracket) {
+        TIdent(trait_name) => {
+          let fp = expect_tk(tokens, after_bracket + 1, "for")
+          match peek(tokens, fp) {
+            TIdent(type_name) => (SImpl(tparams, tbounds, trait_name, type_name), fp + 1),
+            _ => throw("expected type name after 'for'")
+          }
+        },
+        _ => throw("expected trait name after type params")
+      }
+    },
     TIdent(trait_name) => {
       let fp = expect_tk(tokens, pos + 1, "for")
       match peek(tokens, fp) {
-        TIdent(type_name) => (SImpl(trait_name, type_name), fp + 1),
+        TIdent(type_name) => (SImpl(empty_strings, empty_bounds, trait_name, type_name), fp + 1),
         _ => throw("expected type name after 'for'")
       }
     },
@@ -456,8 +498,25 @@ let parse_param_list = (tokens: Array[Token], pos: Int) -> (Array[(String, Optio
 }
 
 let parse_trait_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, Int)with { Error } {
+  let empty_strings = array_slice(["_"], 0, 0)
   match peek(tokens, pos) {
-    TIdent(name) => (STrait(exported, name), pos + 1),
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TColon => {
+        // Parse supertrait list: trait Name: Trait1 + Trait2
+        let rec parse_supers = (p: Int, acc: Array[String]) -> (Array[String], Int) {
+          match peek(tokens, p) {
+            TIdent(sname) => match peek(tokens, p + 1) {
+              TPlus => parse_supers(p + 2, array_concat(acc, [sname])),
+              _ => (array_concat(acc, [sname]), p + 1)
+            },
+            _ => (acc, p)
+          }
+        }
+        let (supers, np) = parse_supers(pos + 2, empty_strings)
+        (STrait(exported, name, supers), np)
+      },
+      _ => (STrait(exported, name, empty_strings), pos + 1)
+    },
     _ => throw("expected trait name")
   }
 }
@@ -551,6 +610,9 @@ let is_lambda_start = (tokens: Array[Token], pos: Int) -> Bool {
 //
 // All helper functions that call parse_impl are nested inside to avoid
 // forward reference errors (vibe has no mutual recursion between top-level fns).
+let _no_tp = array_slice([""], 0, 0)
+let _no_tb = array_slice([("", _no_tp)], 0, 0)
+
 export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr, Int)with { Error } {
   let rec parse_comma_exprs_rest = (tokens: Array[Token], pos: Int, b: ArrayBuilder[Expr]) -> (Array[Expr], Int)with { Error } {
     match peek(tokens, pos) {
@@ -585,18 +647,18 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                 match peek(tokens, tp) {
                   TLBrace => {
                     let (body, end) = parse_impl(tokens, tp + 1, 20)
-                    (EFn(params, Some(ty), None, body), end)
+                    (EFn(_no_tp, _no_tb, params, Some(ty), None, body), end)
                   },
                   TWith => {
                     let wb = expect_tk(tokens, tp + 1, "{")
                     let (eff, eb) = collect_effect_names(tokens, wb, "")
                     let bb = expect_tk(tokens, eb, "{")
                     let (body, end) = parse_impl(tokens, bb, 20)
-                    (EFn(params, Some(ty), Some(eff), body), end)
+                    (EFn(_no_tp, _no_tb, params, Some(ty), Some(eff), body), end)
                   },
                   _ => {
                     let (body, end) = parse_impl(tokens, after_arrow, 0)
-                    (EFn(params, None, None, body), end)
+                    (EFn(_no_tp, _no_tb, params, None, None, body), end)
                   }
                 }
               },
@@ -605,30 +667,30 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                 match peek(tokens, tp) {
                   TLBrace => {
                     let (body, end) = parse_impl(tokens, tp + 1, 20)
-                    (EFn(params, Some(ty), None, body), end)
+                    (EFn(_no_tp, _no_tb, params, Some(ty), None, body), end)
                   },
                   TWith => {
                     let wb = expect_tk(tokens, tp + 1, "{")
                     let (eff, eb) = collect_effect_names(tokens, wb, "")
                     let bb = expect_tk(tokens, eb, "{")
                     let (body, end) = parse_impl(tokens, bb, 20)
-                    (EFn(params, Some(ty), Some(eff), body), end)
+                    (EFn(_no_tp, _no_tb, params, Some(ty), Some(eff), body), end)
                   },
                   _ => {
                     let (body, end) = parse_impl(tokens, after_arrow, 0)
-                    (EFn(params, None, None, body), end)
+                    (EFn(_no_tp, _no_tb, params, None, None, body), end)
                   }
                 }
               },
               _ => {
                 let (body, end) = parse_impl(tokens, after_arrow, 0)
-                (EFn(params, None, None, body), end)
+                (EFn(_no_tp, _no_tb, params, None, None, body), end)
               }
             }
           },
           TLBrace => {
             let (body, end) = parse_impl(tokens, ap + 1, 20)
-            (EFn(params, None, None, body), end)
+            (EFn(_no_tp, _no_tb, params, None, None, body), end)
           },
           _ => throw("expected '->' or '{' after fn params")
         }

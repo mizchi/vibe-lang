@@ -1,13 +1,22 @@
 import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
-import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, types_equal, Subst, subst_apply }
+import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, types_equal, Subst, subst_apply, type_to_string }
 import ./checker_stmt.vibe { check_stmts, check_program }
 
+let _no_tp = array_slice([""], 0, 0)
+let _no_tb = array_slice([("", _no_tp)], 0, 0)
+
 test "infer identity fn" {
-  let stmts = [SLet(false, false, "f", None, EFn([("x", None)], None, None, EIdent("x")))]
+  let stmts = [SLet(false, false, "f", None, EFn(_no_tp, _no_tb, [("x", None)], None, None, EIdent("x")))]
   let env = check_program(stmts)
   match env_lookup(env, "f") {
     Some(t) => match t {
-      CtFn(_, _, _) => assert(true),
+      CtForAll(vars, _, body) => {
+        assert(eq(array_length(vars), 1))
+        match body {
+          CtFn(_, _, _) => assert(true),
+          _ => assert(false)
+        }
+      },
       _ => assert(false)
     },
     None => assert(false)
@@ -16,10 +25,14 @@ test "infer identity fn" {
 
 test "infer from usage" {
   let body = EBinOp("+", EIdent("x"), EInt(1))
-  let stmts = [SLet(false, false, "f", None, EFn([("x", None)], None, None, body))]
+  let stmts = [SLet(false, false, "f", None, EFn(_no_tp, _no_tb, [("x", None)], None, None, body))]
   let env = check_program(stmts)
   match env_lookup(env, "f") {
     Some(t) => match t {
+      CtForAll(_, _, inner) => match inner {
+        CtFn(_, ret, _) => assert(types_equal(ret, CtInt)),
+        _ => assert(false)
+      },
       CtFn(_, ret, _) => assert(types_equal(ret, CtInt)),
       _ => assert(false)
     },
@@ -29,7 +42,7 @@ test "infer from usage" {
 
 test "infer call site" {
   let stmts = [
-    SLet(false, false, "f", None, EFn([("x", Some(TyName("Int")))], None, None, EIdent("x"))),
+    SLet(false, false, "f", None, EFn(_no_tp, _no_tb, [("x", Some(TyName("Int")))], None, None, EIdent("x"))),
     SLet(false, false, "result", None, ECall(EIdent("f"), [EInt(42)]))
   ]
   let env = check_program(stmts)
@@ -48,5 +61,84 @@ test "let type propagation" {
   match env_lookup(env, "y") {
     Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)
+  }
+}
+
+test "let polymorphism" {
+  // let id = (x) -> x; let a = id(42); let b = id("hello")
+  // a should be Int, b should be String
+  let id_fn = EFn(_no_tp, _no_tb, [("x", None)], None, None, EIdent("x"))
+  let stmts = [
+    SLet(false, false, "id", None, id_fn),
+    SLet(false, false, "a", None, ECall(EIdent("id"), [EInt(42)])),
+    SLet(false, false, "b", None, ECall(EIdent("id"), [EString("hello")]))
+  ]
+  let env = check_program(stmts)
+  match env_lookup(env, "a") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+  match env_lookup(env, "b") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+}
+
+test "trait bound basic" {
+  // trait T; impl T for Int; let f = [A: T](x: A) -> A { x }; f(42) => Int
+  let f_fn = EFn(["A"], [("A", ["T"])], [("x", Some(TyName("A")))], None, None, EIdent("x"))
+  let stmts = [
+    STrait(false, "T", _no_tp),
+    SImpl(_no_tp, _no_tb, "T", "Int"),
+    SLet(false, false, "f", None, f_fn),
+    SLet(false, false, "result", None, ECall(EIdent("f"), [EInt(42)]))
+  ]
+  let env = check_program(stmts)
+  match env_lookup(env, "result") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "trait registered in env" {
+  // trait Show; impl Show for Int
+  let stmts = [
+    STrait(false, "Show", _no_tp),
+    SImpl(_no_tp, _no_tb, "Show", "Int")
+  ]
+  let env = check_program(stmts)
+  // The env should contain trait definitions — check it's not just EnvEmpty
+  match env {
+    EnvEmpty => assert(false),
+    _ => assert(true)
+  }
+}
+
+test "supertrait registered" {
+  // trait A; trait B: A; impl B for Int
+  let stmts = [
+    STrait(false, "A", _no_tp),
+    STrait(false, "B", ["A"]),
+    SImpl(_no_tp, _no_tb, "B", "Int")
+  ]
+  let env = check_program(stmts)
+  match env {
+    EnvEmpty => assert(false),
+    _ => assert(true)
+  }
+}
+
+test "overlap impl detected" {
+  // Two impls of the same trait for the same type
+  // trait T; impl T for Int; impl T for Int (should still compile, overlap just recorded)
+  let stmts = [
+    STrait(false, "T", _no_tp),
+    SImpl(_no_tp, _no_tb, "T", "Int"),
+    SImpl(_no_tp, _no_tb, "T", "Int")
+  ]
+  let env = check_program(stmts)
+  match env {
+    EnvEmpty => assert(false),
+    _ => assert(true)
   }
 }

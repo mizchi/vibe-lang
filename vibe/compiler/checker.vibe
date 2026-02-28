@@ -1,5 +1,5 @@
 import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
-import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind, resolve_builtin, Subst, subst_apply, unify, fresh_var }
+import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind, resolve_builtin, Subst, subst_apply, unify, fresh_var, generalize, instantiate, subst_add_bound, type_implements_trait }
 import ./builtins.vibe { lookup_builtin }
 
 export let rec check_expr = (
@@ -17,7 +17,20 @@ export let rec check_expr = (
     EUnit => (CtUnit, s, c),
     EIdent(name) => {
       match env_lookup(env, name) {
-        Some(t) => (t, s, c),
+        Some(t) => {
+          let (ti, c1, new_bounds) = instantiate(t, c)
+          let nblen = array_length(new_bounds)
+          let rec add_bounds = (i: Int, acc: Subst) -> Subst {
+            if i >= nblen { acc }
+            else {
+              let (vid, bounds) = array_get(new_bounds, i)
+              if eq(array_length(bounds), 0) { add_bounds(i + 1, acc) }
+              else add_bounds(i + 1, subst_add_bound(acc, vid, bounds))
+            }
+          }
+          let s1 = add_bounds(0, s)
+          (ti, s1, c1)
+        },
         None => match lookup_builtin(name) {
           Some(t) => (t, s, c),
           None => (CtUnknown, s, c)
@@ -30,14 +43,15 @@ export let rec check_expr = (
     },
     ELet(name, val, body) => {
       let (vt, s1, c1) = check_expr(val, env, defs, s, c)
-      check_expr(body, env_bind(env, name, vt), defs, s1, c1)
+      let gen = generalize(s1, vt)
+      check_expr(body, env_bind(env, name, gen), defs, s1, c1)
     },
     ELetRec(name, val, body) => {
       let (tv, c1) = fresh_var(c)
       let (vt, s1, c2) = check_expr(val, env_bind(env, name, tv), defs, s, c1)
       let s2 = match unify(tv, vt, s1) { Some(su) => su, None => s1 }
-      let resolved = subst_apply(s2, tv)
-      check_expr(body, env_bind(env, name, resolved), defs, s2, c2)
+      let gen = generalize(s2, tv)
+      check_expr(body, env_bind(env, name, gen), defs, s2, c2)
     },
     ELetMut(name, val, body) => {
       let (vt, s1, c1) = check_expr(val, env, defs, s, c)
@@ -133,8 +147,33 @@ export let rec check_expr = (
       let (rt, s2, c2) = check_expr(right, env, defs, s1, c1)
       match rt { CtFn(_, ret, _) => (ret, s2, c2), _ => (CtUnknown, s2, c2) }
     },
-    EFn(params, _, effect, body) => {
+    EFn(tparams, tbounds, params, _, effect, body) => {
       let he = match effect { Some(_) => true, None => false }
+      // Allocate fresh vars for type params
+      let tplen = array_length(tparams)
+      let rec alloc_tparams = (i: Int, acc_env: TypeEnv, acc_s: Subst, acc_c: Int) -> (TypeEnv, Subst, Int) {
+        if i >= tplen { (acc_env, acc_s, acc_c) }
+        else {
+          let tpname = array_get(tparams, i)
+          let (tv, nc) = fresh_var(acc_c)
+          let vid = nc - 1
+          // Find bounds for this type param
+          let tblen = array_length(tbounds)
+          let rec find_bounds = (j: Int) -> Array[String] {
+            if j >= tblen { array_slice([""], 0, 0) }
+            else {
+              let (bname, blist) = array_get(tbounds, j)
+              if string_equals(bname, tpname) { blist }
+              else find_bounds(j + 1)
+            }
+          }
+          let bounds = find_bounds(0)
+          let ns = if eq(array_length(bounds), 0) { acc_s }
+            else subst_add_bound(acc_s, vid, bounds)
+          alloc_tparams(i + 1, env_bind(acc_env, tpname, tv), ns, nc)
+        }
+      }
+      let (tp_env, s0, c0) = alloc_tparams(0, env, s, c)
       let plen = array_length(params)
       let rec bind_params = (i: Int, acc: TypeEnv, acc_s: Subst, acc_c: Int, ptypes: Array[Type]) -> (TypeEnv, Subst, Int, Array[Type]) {
         if i >= plen { (acc, acc_s, acc_c, ptypes) }
@@ -143,9 +182,15 @@ export let rec check_expr = (
           let (pt, ns, nc) = match ann {
             Some(te) => match te {
               TyUnit => (CtUnit, acc_s, acc_c),
-              TyName(tn) => match resolve_builtin(tn) {
-                Some(t) => (t, acc_s, acc_c),
-                None => (CtUnknown, acc_s, acc_c)
+              TyName(tn) => {
+                // Check if type name matches a type param
+                match env_lookup(acc, tn) {
+                  Some(t) => (t, acc_s, acc_c),
+                  None => match resolve_builtin(tn) {
+                    Some(t) => (t, acc_s, acc_c),
+                    None => (CtUnknown, acc_s, acc_c)
+                  }
+                }
               },
               _ => (CtUnknown, acc_s, acc_c)
             },
@@ -158,7 +203,7 @@ export let rec check_expr = (
         }
       }
       let empty_types = array_slice([CtUnknown], 0, 0)
-      let (fn_env, s1, c1, param_types) = bind_params(0, env, s, c, empty_types)
+      let (fn_env, s1, c1, param_types) = bind_params(0, tp_env, s0, c0, empty_types)
       let (bt, s2, c2) = check_expr(body, fn_env, defs, s1, c1)
       let resolved_params = for p in param_types { subst_apply(s2, p) }
       let resolved_ret = subst_apply(s2, bt)

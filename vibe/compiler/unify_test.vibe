@@ -1,7 +1,9 @@
 import ./types.vibe {
-  Type, Subst,
+  Type, Subst, TypeEnv,
   subst_lookup, subst_apply, occurs_in, unify, fresh_var,
-  types_equal
+  types_equal, collect_tvars, generalize, instantiate,
+  trait_defined, trait_supers, trait_is_subtrait,
+  type_implements_trait, subst_add_bound
 }
 
 test "unify same types" {
@@ -79,5 +81,97 @@ test "unify with CtUnknown" {
   match r2 {
     Some(_) => assert(true),
     None => assert(false)
+  }
+}
+
+test "generalize with free vars" {
+  let ty = CtFn([CtVar(0)], CtVar(0), false)
+  let result = generalize(SubstEmpty, ty)
+  match result {
+    CtForAll(vars, _, _) => assert(eq(array_length(vars), 1)),
+    _ => assert(false)
+  }
+}
+
+test "generalize no free vars" {
+  let ty = CtFn([CtInt], CtInt, false)
+  let result = generalize(SubstEmpty, ty)
+  match result {
+    CtForAll(_, _, _) => assert(false),
+    CtFn(_, _, _) => assert(true),
+    _ => assert(false)
+  }
+}
+
+let _no_vb = array_slice([(0, array_slice([""], 0, 0))], 0, 0)
+
+test "instantiate forall" {
+  let ty = CtForAll([0], _no_vb, CtFn([CtVar(0)], CtVar(0), false))
+  let (result, c1, _) = instantiate(ty, 10)
+  match result {
+    CtFn(params, ret, _) => {
+      assert(types_equal(array_get(params, 0), ret))
+      assert(eq(c1, 11))
+    },
+    _ => assert(false)
+  }
+}
+
+test "instantiate non-forall" {
+  let (result, c1, _) = instantiate(CtInt, 5)
+  assert(types_equal(result, CtInt))
+  assert(eq(c1, 5))
+}
+
+let _no_supers = array_slice([""], 0, 0)
+
+test "trait_defined lookup" {
+  let env = EnvTraitDef("Show", _no_supers, false, EnvEmpty)
+  assert(trait_defined(env, "Show"))
+  assert(not(trait_defined(env, "Eq")))
+}
+
+test "trait_supers" {
+  let env = EnvTraitDef("Ord", ["Eq", "PartialOrd"], false, EnvEmpty)
+  let supers = trait_supers(env, "Ord")
+  assert(eq(array_length(supers), 2))
+  assert(string_equals(array_get(supers, 0), "Eq"))
+  assert(string_equals(array_get(supers, 1), "PartialOrd"))
+}
+
+test "type_implements_trait concrete" {
+  let env = EnvTraitImpl("Show", CtInt, EnvTraitDef("Show", _no_supers, false, EnvEmpty))
+  assert(type_implements_trait(env, SubstEmpty, CtInt, "Show"))
+}
+
+test "type_implements_trait miss" {
+  let env = EnvTraitDef("Show", _no_supers, false, EnvEmpty)
+  assert(not(type_implements_trait(env, SubstEmpty, CtInt, "Show")))
+}
+
+test "trait_is_subtrait" {
+  // C: B, B: A
+  let env = EnvTraitDef("C", ["B"], false,
+    EnvTraitDef("B", ["A"], false,
+      EnvTraitDef("A", _no_supers, false, EnvEmpty)))
+  assert(trait_is_subtrait(env, "C", "A"))
+  assert(trait_is_subtrait(env, "B", "A"))
+  assert(not(trait_is_subtrait(env, "A", "C")))
+}
+
+test "generalize with bounds" {
+  let ty = CtFn([CtVar(0)], CtVar(0), false)
+  let s = subst_add_bound(SubstEmpty, 0, ["Show"])
+  let result = generalize(s, ty)
+  match result {
+    CtForAll(vars, var_bounds, _) => {
+      assert(eq(array_length(vars), 1))
+      assert(eq(array_length(var_bounds), 1))
+      let (vid, bounds) = array_get(var_bounds, 0)
+      assert(eq(vid, 0))
+      assert(eq(array_length(bounds), 1))
+      assert(string_equals(array_get(bounds, 0), "Show"))
+    },
+    _ => assert(false)
   }
 }
