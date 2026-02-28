@@ -125,79 +125,6 @@ let skip_semi = (tokens: Array[Token], pos: Int) -> Int {
   }
 }
 
-let try_binop = (tok: Token, level: Int) -> Option[String] {
-  if level == 0 {
-    match tok {
-      TOr => Some("||"),
-      _ => None
-    }
-  }
-  else if level == 1 {
-    match tok {
-      TAnd => Some("&&"),
-      _ => None
-    }
-  }
-  else if level == 2 {
-    match tok {
-      TPipeGt => Some("|>"),
-      _ => None
-    }
-  }
-  else if level == 3 {
-    match tok {
-      TEqEq => Some("=="),
-      TNeq => Some("!="),
-      TLt => Some("<"),
-      TLte => Some("<="),
-      TGt => Some(">"),
-      TGte => Some(">="),
-      _ => None
-    }
-  }
-  else if level == 4 {
-    match tok {
-      TBitOr => Some("|"),
-      _ => None
-    }
-  }
-  else if level == 5 {
-    match tok {
-      TBitXor => Some("^"),
-      _ => None
-    }
-  }
-  else if level == 6 {
-    match tok {
-      TBitAnd => Some("&"),
-      _ => None
-    }
-  }
-  else if level == 7 {
-    match tok {
-      TLShift => Some("<<"),
-      TRShift => Some(">>"),
-      _ => None
-    }
-  }
-  else if level == 8 {
-    match tok {
-      TPlus => Some("+"),
-      TMinus => Some("-"),
-      _ => None
-    }
-  }
-  else if level == 9 {
-    match tok {
-      TStar => Some("*"),
-      TSlash => Some("/"),
-      TPercent => Some("%"),
-      _ => None
-    }
-  }
-  else None
-}
-
 let is_non_pipe_infix = (tok: Token) -> Bool {
   match tok {
     TOr => true,
@@ -711,6 +638,16 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       else (EIdent(name), pos + 1),
       TLParen => if is_lambda_start(tokens, pos + 1) {
         let (params, ap) = parse_param_list(tokens, pos + 1)
+        let parse_lambda_body = (
+          saved_params: Array[(String, Option[TypeExpr])],
+          saved_ret_ty: Option[TypeExpr],
+          saved_effect: Option[String],
+          body_pos: Int,
+          body_mode: Int
+        ) -> (Expr, Int)with { Error } {
+          let (body, end) = parse_impl(tokens, body_pos, body_mode)
+          (EFn(_no_tp, _no_tb, saved_params, saved_ret_ty, saved_effect, body), end)
+        }
         match peek(tokens, ap) {
           TThinArrow => {
             let after_arrow = ap + 1
@@ -718,53 +655,33 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               TIdent(_) => {
                 let (ty, tp) = parse_type_impl(tokens, after_arrow, 0)
                 match peek(tokens, tp) {
-                  TLBrace => {
-                    let (body, end) = parse_impl(tokens, tp + 1, 20)
-                    (EFn(_no_tp, _no_tb, params, Some(ty), None, body), end)
-                  },
+                  TLBrace => parse_lambda_body(params, Some(ty), None, tp + 1, 20),
                   TWith => {
                     let wb = expect_tk(tokens, tp + 1, "{")
                     let (eff, eb) = collect_effect_names(tokens, wb, "")
                     let bb = expect_tk(tokens, eb, "{")
-                    let (body, end) = parse_impl(tokens, bb, 20)
-                    (EFn(_no_tp, _no_tb, params, Some(ty), Some(eff), body), end)
+                    parse_lambda_body(params, Some(ty), Some(eff), bb, 20)
                   },
-                  _ => {
-                    let (body, end) = parse_impl(tokens, after_arrow, 0)
-                    (EFn(_no_tp, _no_tb, params, None, None, body), end)
-                  }
+                  _ => parse_lambda_body(params, None, None, after_arrow, 0)
                 }
               },
               TLParen => {
                 let (ty, tp) = parse_type_impl(tokens, after_arrow, 0)
                 match peek(tokens, tp) {
-                  TLBrace => {
-                    let (body, end) = parse_impl(tokens, tp + 1, 20)
-                    (EFn(_no_tp, _no_tb, params, Some(ty), None, body), end)
-                  },
+                  TLBrace => parse_lambda_body(params, Some(ty), None, tp + 1, 20),
                   TWith => {
                     let wb = expect_tk(tokens, tp + 1, "{")
                     let (eff, eb) = collect_effect_names(tokens, wb, "")
                     let bb = expect_tk(tokens, eb, "{")
-                    let (body, end) = parse_impl(tokens, bb, 20)
-                    (EFn(_no_tp, _no_tb, params, Some(ty), Some(eff), body), end)
+                    parse_lambda_body(params, Some(ty), Some(eff), bb, 20)
                   },
-                  _ => {
-                    let (body, end) = parse_impl(tokens, after_arrow, 0)
-                    (EFn(_no_tp, _no_tb, params, None, None, body), end)
-                  }
+                  _ => parse_lambda_body(params, None, None, after_arrow, 0)
                 }
               },
-              _ => {
-                let (body, end) = parse_impl(tokens, after_arrow, 0)
-                (EFn(_no_tp, _no_tb, params, None, None, body), end)
-              }
+              _ => parse_lambda_body(params, None, None, after_arrow, 0)
             }
           },
-          TLBrace => {
-            let (body, end) = parse_impl(tokens, ap + 1, 20)
-            (EFn(_no_tp, _no_tb, params, None, None, body), end)
-          },
+          TLBrace => parse_lambda_body(params, None, None, ap + 1, 20),
           _ => throw("expected '->' or '{' after fn params")
         }
       } else match peek(tokens, pos + 1) {
@@ -898,32 +815,119 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       _ => (expr, pos)
     }
   }
-  let rec parse_binop_rest = (tokens: Array[Token], pos: Int, left: Expr, level: Int, expr_start: Int) -> (Expr, Int)with { Error } {
-    let pipe_desugar = (lhs: Expr, rhs: Expr) -> Expr {
-      match rhs {
-        ECall(callee, args) => ECall(callee, array_concat([lhs], args)),
-        _ => ECall(rhs, [lhs])
+  let pipe_desugar = (lhs: Expr, rhs: Expr) -> Expr {
+    match rhs {
+      ECall(callee, args) => ECall(callee, array_concat([lhs], args)),
+      _ => ECall(rhs, [lhs])
+    }
+  }
+  let binop_prec = (tok: Token) -> Int {
+    match tok {
+      TOr => 0,
+      TAnd => 1,
+      TPipeGt => 2,
+      TEqEq => 3,
+      TNeq => 3,
+      TLt => 3,
+      TLte => 3,
+      TGt => 3,
+      TGte => 3,
+      TBitOr => 4,
+      TBitXor => 5,
+      TBitAnd => 6,
+      TLShift => 7,
+      TRShift => 7,
+      TPlus => 8,
+      TMinus => 8,
+      TStar => 9,
+      TSlash => 9,
+      TPercent => 9,
+      _ => -1
+    }
+  }
+  let binop_op = (tok: Token) -> String with { Error } {
+    match tok {
+      TOr => "||",
+      TAnd => "&&",
+      TPipeGt => "|>",
+      TEqEq => "==",
+      TNeq => "!=",
+      TLt => "<",
+      TLte => "<=",
+      TGt => ">",
+      TGte => ">=",
+      TBitOr => "|",
+      TBitXor => "^",
+      TBitAnd => "&",
+      TLShift => "<<",
+      TRShift => ">>",
+      TPlus => "+",
+      TMinus => "-",
+      TStar => "*",
+      TSlash => "/",
+      TPercent => "%",
+      _ => throw("internal parser error: not a binary operator")
+    }
+  }
+  let rec parse_prefix = (tokens: Array[Token], pos: Int) -> (Expr, Int)with { Error } {
+    match peek(tokens, pos) {
+      TMinus => {
+        let (e, next) = parse_prefix(tokens, pos + 1)
+        (EUnaryOp("-", e), next)
+      },
+      TNot => {
+        let (e, next) = parse_prefix(tokens, pos + 1)
+        (EUnaryOp("!", e), next)
+      },
+      _ => {
+        let (e, next) = parse_primary(tokens, pos)
+        parse_postfix(tokens, next, e)
       }
     }
-    match try_binop(peek(tokens, pos), level) {
-      Some(op) => if string_equals(op, "|>") {
-        if has_non_pipe_infix_top(tokens, expr_start, pos) {
+  }
+  let rec parse_infix_loop = (tokens: Array[Token], left: Expr, next: Int, min_prec: Int, expr_start: Int, cmp_locked: Bool) -> (Expr, Int)with { Error } {
+    let tok = peek(tokens, next)
+    let prec = binop_prec(tok)
+    if prec < min_prec || (cmp_locked && prec == 3) {
+      (left, next)
+    } else {
+      let op = binop_op(tok)
+      if string_equals(op, "|>") {
+        if has_non_pipe_infix_top(tokens, expr_start, next) {
           throw("cannot mix '|>' with other infix operators without explicit parentheses")
+        } else {
+          0
         }
-        let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
-        if has_non_pipe_infix_top(tokens, pos + 1, rn) {
-          throw("cannot mix '|>' with other infix operators without explicit parentheses")
-        }
-        parse_binop_rest(tokens, rn, pipe_desugar(left, right), level, expr_start)
-      } else if level == 3 {
-        let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
-        (EBinOp(op, left, right), rn)
       } else {
-        let (right, rn) = parse_impl(tokens, pos + 1, level + 1)
-        parse_binop_rest(tokens, rn, EBinOp(op, left, right), level, expr_start)
-      },
-      None => (left, pos)
+        0
+      }
+      let (right0, right_next0) = parse_prefix(tokens, next + 1)
+      let (right, rn) = parse_infix_loop(tokens, right0, right_next0, prec + 1, next + 1, false)
+      if string_equals(op, "|>") {
+        if has_non_pipe_infix_top(tokens, next + 1, rn) {
+          throw("cannot mix '|>' with other infix operators without explicit parentheses")
+        } else {
+          0
+        }
+      } else {
+        0
+      }
+      let combined = if string_equals(op, "|>") {
+        pipe_desugar(left, right)
+      } else {
+        EBinOp(op, left, right)
+      }
+      let next_cmp_locked = if prec == 3 {
+        true
+      } else {
+        cmp_locked
+      }
+      parse_infix_loop(tokens, combined, rn, min_prec, expr_start, next_cmp_locked)
     }
+  }
+  let rec parse_infix = (tokens: Array[Token], pos: Int, min_prec: Int, expr_start: Int) -> (Expr, Int)with { Error } {
+    let (left0, next0) = parse_prefix(tokens, pos)
+    parse_infix_loop(tokens, left0, next0, min_prec, expr_start, false)
   }
   let rec parse_match_rest = (tokens: Array[Token], pos: Int, scrutinee: Expr, b: ArrayBuilder[(Pat, Expr)]) -> (Expr, Int)with { Error } {
     match peek(tokens, pos) {
@@ -1096,7 +1100,9 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               let (val, vn) = parse_impl(tokens, eq, 0)
               let a = skip_semi(tokens, vn)
               let (body, end) = parse_impl(tokens, a, 20)
-              (ELetRec(name, val, body), end)
+              if end <= a {
+                throw("internal parser error: block let-rec parser did not advance")
+              } else (ELetRec(name, val, body), end)
             },
             _ => throw("expected identifier after 'let rec'")
           },
@@ -1106,7 +1112,9 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               let (val, vn) = parse_impl(tokens, eq, 0)
               let a = skip_semi(tokens, vn)
               let (body, end) = parse_impl(tokens, a, 20)
-              (ELetMut(name, val, body), end)
+              if end <= a {
+                throw("internal parser error: block let-mut parser did not advance")
+              } else (ELetMut(name, val, body), end)
             },
             _ => throw("expected identifier after 'let mut'")
           },
@@ -1115,34 +1123,24 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             let (val, vn) = parse_impl(tokens, eq, 0)
             let a = skip_semi(tokens, vn)
             let (body, end) = parse_impl(tokens, a, 20)
-            (ELet(name, val, body), end)
+            if end <= a {
+              throw("internal parser error: block let parser did not advance")
+            } else (ELet(name, val, body), end)
           },
           _ => throw("expected identifier after 'let'")
         }
       },
       _ => {
         let (e, next) = parse_impl(tokens, pos, 0)
-        parse_block_after_expr(tokens, next, e)
+        if next <= pos {
+          throw("internal parser error: block expr parser did not advance")
+        } else parse_block_after_expr(tokens, next, e)
       }
     }
-  } else if mode >= 10 {
-    match peek(tokens, pos) {
-      TMinus => {
-        let (e, next) = parse_impl(tokens, pos + 1, 10)
-        (EUnaryOp("-", e), next)
-      },
-      TNot => {
-        let (e, next) = parse_impl(tokens, pos + 1, 10)
-        (EUnaryOp("!", e), next)
-      },
-      _ => {
-        let (e, next) = parse_primary(tokens, pos)
-        parse_postfix(tokens, next, e)
-      }
-    }
+  } else if mode >= 0 && mode <= 10 {
+    parse_infix(tokens, pos, mode, pos)
   } else {
-    let (left, next) = parse_impl(tokens, pos, mode + 1)
-    parse_binop_rest(tokens, next, left, mode, pos)
+    throw("internal parser error: unknown parse mode")
   }
 }
 
