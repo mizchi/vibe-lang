@@ -28,6 +28,7 @@ Completed items are archived in `docs/DONE.md`.
   - 現状制約: `db_typecheck` の公開シグネチャで `TypeEnv` を返すと `vibe test` 経由で `unknown type: TypeEnv` が発生
   - 対応方針: export/import 時の型解決バグを直すか、公開APIを `TypeEnv` 非依存に再設計する
 - [ ] `type_db` の依存抽出を AST ベースに戻す（現状は lexer token 走査で暫定実装）
+- [ ] `vibe/compiler` から `vibe/x` を直接 import できないルート制約を解消し、`ripple` 実装を一本化する
 
 ## Language Features
 
