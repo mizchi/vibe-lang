@@ -1,6 +1,7 @@
 import ./lexer.vibe { lex }
 import ./parser.vibe { parse_program }
 import ./checker_stmt.vibe { check_program }
+import ./token.vibe { Token }
 import ./eval_loader.vibe { resolve_path, dir_of }
 
 export enum TypeDb {
@@ -99,38 +100,47 @@ let upsert_fingerprint = (cache: Array[(String, String)], path: String, fingerpr
   go(0, false)
 }
 
-let rec find_newline = (s: String, i: Int, len: Int) -> Int {
-  if i >= len { len }
-  else {
-    if string_char_code_at(s, i) == 10 { i }
-    else { find_newline(s, i + 1, len) }
+let rec collect_import_path_tokens = (
+  tokens: Array[Token],
+  pos: Int,
+  acc: String
+) -> (String, Int) {
+  if pos >= array_length(tokens) {
+    (acc, pos)
+  } else {
+    match array_get(tokens, pos) {
+      TLBrace => (acc, pos),
+      TDot => collect_import_path_tokens(tokens, pos + 1, string_concat(acc, ".")),
+      TSlash => collect_import_path_tokens(tokens, pos + 1, string_concat(acc, "/")),
+      TIdent(name) => collect_import_path_tokens(tokens, pos + 1, string_concat(acc, name)),
+      TMinus => collect_import_path_tokens(tokens, pos + 1, string_concat(acc, "-")),
+      _ => (acc, pos)
+    }
   }
 }
 
-let collect_import_deps = (source: String, base_dir: String) -> Array[String] {
-  let len = string_length(source)
+let collect_import_deps = (source: String, base_dir: String) -> Array[String] with { Error } {
+  let tokens = lex(source)
+  let len = array_length(tokens)
   let rec go = (i: Int, acc: Array[String]) -> Array[String] {
     if i >= len {
       acc
     } else {
-      let line_end = find_newline(source, i, len)
-      let line = string_substring(source, i, line_end)
-      let next_i = if line_end >= len { len } else { line_end + 1 }
-      if string_starts_with(line, "import ") {
-        let brace_pos = string_index_of(line, " {")
-        if brace_pos > 7 {
-          let raw_path = string_substring(line, 7, brace_pos)
-          let resolved = resolve_path(base_dir, raw_path)
-          if contains_str(acc, resolved, 0) {
-            go(next_i, acc)
+      match array_get(tokens, i) {
+        TImport => {
+          let (raw_path, next_i) = collect_import_path_tokens(tokens, i + 1, "")
+          if string_length(raw_path) == 0 {
+            go(i + 1, acc)
           } else {
-            go(next_i, array_concat(acc, [resolved]))
+            let resolved = resolve_path(base_dir, raw_path)
+            if contains_str(acc, resolved, 0) {
+              go(next_i, acc)
+            } else {
+              go(next_i, array_concat(acc, [resolved]))
+            }
           }
-        } else {
-          go(next_i, acc)
-        }
-      } else {
-        go(next_i, acc)
+        },
+        _ => go(i + 1, acc)
       }
     }
   }

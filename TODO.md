@@ -24,6 +24,10 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] postfix 構文と実行系のズレを解消する (`arr[i]`, `t.0`, member/index)
 - [ ] 未接続キーワード/トークンを整理する (`do`, `loop`, `yield`, `return`, `raise`, `declare` など)
 - [ ] builtins の型契約と evaluator 実装の差分を解消する（型のみ存在/実装のみ存在の不一致）
+- [ ] incremental 型検査DBを checker パスへ統合する（現状 `type_db.vibe` は独立実験）
+  - 現状制約: `db_typecheck` の公開シグネチャで `TypeEnv` を返すと `vibe test` 経由で `unknown type: TypeEnv` が発生
+  - 対応方針: export/import 時の型解決バグを直すか、公開APIを `TypeEnv` 非依存に再設計する
+- [ ] `type_db` の依存抽出を AST ベースに戻す（現状は lexer token 走査で暫定実装）
 
 ## Language Features
 
