@@ -147,7 +147,8 @@ test "bench: dce.dependency_chain" {
   inspect(
     result,
     content=(
-      #|{name: "dependency_chain", stmts_before: 7, stmts_after: 6, wasm_no_dce: Some(822), wasm_with_dce: Some(790), reduction_percent: Some(3.8929440389294405)}
+      #|{name: "dependency_chain", stmts_before: 6, stmts_after: 5, wasm_no_dce: Some(762), wasm_with_dce: Some(730), reduction_percent: Some(4.199475065616798)}
+
     ),
   )
 }
@@ -170,7 +171,8 @@ test "bench: dce.all_used" {
   inspect(
     result,
     content=(
-      #|{name: "all_used", stmts_before: 4, stmts_after: 4, wasm_no_dce: Some(169), wasm_with_dce: Some(169), reduction_percent: Some(0)}
+      #|{name: "all_used", stmts_before: 3, stmts_after: 3, wasm_no_dce: Some(139), wasm_with_dce: Some(139), reduction_percent: Some(0)}
+
     ),
   )
 }

@@ -91,6 +91,7 @@ fn collect_dependency_defs(
   if visited.contains(path) {
     return
   }
+  let is_entry = visited.length() == 0
   visited[path] = true
   let imports = db.imports(path)
   // First, recursively process dependencies
@@ -99,7 +100,7 @@ fn collect_dependency_defs(
   }
   // Then add definitions from this module (if it's an imported module)
   // Skip the entry module itself (it will be added separately)
-  if visited.length() > 1 {
+  if not(is_entry) {
     let dep_ast = db.ast_with_hash_imports(path)
     let base_dir = @path.Path(path).dirname().to_string()
     for stmt in dep_ast.stmts {
