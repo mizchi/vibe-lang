@@ -27,6 +27,7 @@ test "vibe detection" {
   assert_false(is_vibe_script("flake { }"))
   assert_false(is_vibe_script("alias foo = bar#abc"))
   assert_true(is_vibe_script("enum Option[T] { Some(T); None }"))
+  assert_false(is_vibe_script("map { a: 1 }"))
   assert_false(is_vibe_script("echo hello"))
 }
 

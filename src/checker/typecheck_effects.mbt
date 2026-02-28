@@ -79,7 +79,6 @@ fn require_effects(
       raise TypeError::EffectGuardNotSatisfied(
         operation~,
         missing_effect=Some(name),
-        missing_do_boundary=false,
         span~,
       )
     None => ()
@@ -115,7 +114,6 @@ fn require_effect_guard(
       raise TypeError::EffectGuardNotSatisfied(
         operation~,
         missing_effect~,
-        missing_do_boundary=false,
         span~,
       )
     None => ()

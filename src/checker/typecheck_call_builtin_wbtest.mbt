@@ -227,17 +227,9 @@ test "type_call_builtin: threads_spawn requires Threads effect" {
   )
   match result {
     Ok(_) => fail("expected effect guard error")
-    Err(
-      TypeError::EffectGuardNotSatisfied(
-        operation~,
-        missing_effect~,
-        missing_do_boundary~,
-        ..
-      )
-    ) => {
+    Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
       assert_eq(operation, "threads_spawn")
       assert_eq(missing_effect, Some("Threads"))
-      assert_false(missing_do_boundary)
     }
     Err(other) => fail("unexpected error: \{other.to_string()}")
   }

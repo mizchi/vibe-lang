@@ -34,7 +34,6 @@ suberror TypeError {
   EffectGuardNotSatisfied(
     operation~ : String,
     missing_effect~ : String?,
-    missing_do_boundary~ : Bool,
     span~ : @core.Span
   )
   ScopedRefEscape(context~ : String, span~ : @core.Span)
@@ -65,11 +64,7 @@ fn effect_not_allowed_hint(name : String) -> String? {
 }
 
 ///|
-fn effect_guard_hint(
-  _operation : String,
-  missing_effect : String?,
-  _missing_do_boundary : Bool,
-) -> String? {
+fn effect_guard_hint(_operation : String, missing_effect : String?) -> String? {
   match missing_effect {
     Some(effect_name) => effect_not_allowed_hint(effect_name)
     None => None
@@ -77,11 +72,7 @@ fn effect_guard_hint(
 }
 
 ///|
-fn effect_guard_note(
-  _operation : String,
-  missing_effect : String?,
-  _missing_do_boundary : Bool,
-) -> String? {
+fn effect_guard_note(_operation : String, missing_effect : String?) -> String? {
   match missing_effect {
     Some(effect_name) =>
       Some("missing effect declaration: `" + effect_name + "`")
@@ -259,18 +250,13 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         ),
         note: None,
       }
-    TypeError::EffectGuardNotSatisfied(
-      operation~,
-      missing_effect~,
-      missing_do_boundary~,
-      span~
-    ) =>
+    TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, span~) =>
       @core.Diagnostic::{
         stage: "type",
         message: "effect requirements not satisfied: `" + operation + "`",
         span: Some(span),
-        hint: effect_guard_hint(operation, missing_effect, missing_do_boundary),
-        note: effect_guard_note(operation, missing_effect, missing_do_boundary),
+        hint: effect_guard_hint(operation, missing_effect),
+        note: effect_guard_note(operation, missing_effect),
       }
     TypeError::ScopedRefEscape(context~, span~) =>
       @core.Diagnostic::{

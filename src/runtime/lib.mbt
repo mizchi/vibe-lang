@@ -86,7 +86,6 @@ pub fn is_vibe_script(script : String) -> Bool {
       kind == @parser.bench_kw() ||
       kind == @parser.type_kw() ||
       kind == @parser.enum_kw() ||
-      kind == @parser.map_kw() ||
       kind == @parser.lbracket()
   }
   false

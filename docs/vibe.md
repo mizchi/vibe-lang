@@ -17,8 +17,8 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 ## Goals
 
 - POSIX sh superset with a clear syntactic split.
-- Pure by default; effects are explicit and checked by function signatures
-  (`with { ... }`).
+- Pure by default; effects are explicit (`with { ... }`) and can be locally
+  handled with effect handlers (`handle eff { ... }` pattern arms).
 - Content-addressed functions (Git blob compatible) with Unison-style aliases.
 - Incremental pipeline: CST -> AST -> monomorphized AST -> canonical S-expression -> hash.
 
@@ -50,19 +50,19 @@ Included in standard tutorial:
 - data model: `enum` / `struct` / tuples / arrays / records
 - error flow: `Result` composition (`map`, `and_then`, `match`)
 - effects: explicit `with { ... }`
+- effect handling: `handle` arms for effect/local error pattern matching
 
 Documented but excluded from standard tutorial:
 - placeholder lambda shorthand (`_` in call arguments)
 - raw identifiers (`r#name`)
-- boundary-style exceptions (`throw` / `handle`)
-- effect handlers (`perform` / `resume`)
+- boundary-style exceptions (`throw`)
 - scoped capability details (`Ref[T]`)
 - PosixMode command-head desugar and unstable runtime flags
 
 ## Effects
 
-Effects are explicit in function signatures and validated by a single
-compatibility check.
+Effects are explicit in function signatures and validated by effect
+compatibility plus handler matching.
 
 ```
 let run = () -> Unit with {Stdout} {
@@ -74,6 +74,9 @@ Rules:
 - Effect signature requirement:
   a function's declared effects must be a superset of the effects used inside.
   (`with { ... }` is the capability contract.)
+- Handler requirement:
+  effects can be localized by `handle` arms that pattern-match the handled
+  operation/error payload.
 - `with {}` is optional; omission means pure.
 - `do` is not part of the current surface syntax.
 - Capability mapping is 1:1 with the runtime `CapabilitySet`.
@@ -107,6 +110,11 @@ let g = (y: Int) -> Int { f(y) }
 
 // ok: effect requirement is explicitly propagated
 let g2 = (y: Int) -> Int with {Error} { f(y) }
+
+// ok: effect is localized by handler pattern
+let g3 = (y: Int) -> Int {
+  handle { f(y) } { Error(_) => 0 }
+}
 ```
 
 ### Error model (Result-first, current policy)
@@ -114,10 +122,11 @@ let g2 = (y: Int) -> Int with {Error} { f(y) }
 - Standard error model is `Result[T, E]`.
 - Application/core pipelines should compose with `Result` (`map`,
   `and_then`/`bind`, `map_err`).
-- `throw` / `handle` are advanced boundary mechanisms and should be isolated at
-  adapters (CLI/HTTP/FFI/tests).
-- `perform` / `resume` are advanced effect-handler features and are not part of
-  the standard tutorial path.
+- `throw` is an advanced boundary mechanism and should be isolated at adapters
+  (CLI/HTTP/FFI/tests).
+- `handle` remains the core mechanism for local effect/error pattern handling.
+- `perform` / `resume` are effect-handler operations used with `handle` and are
+  checked together with effect declarations.
 - `String` is a built-in `Error`, and `suberror` can define project-specific
   error types.
 
