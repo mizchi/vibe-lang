@@ -1187,7 +1187,10 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
           let (else_e, end) = parse_impl(tokens, tn + 2, 20)
           (EIf(cond, then_e, else_e), end)
         },
-        _ => throw("expected '{' or 'if' after 'else'")
+        _ => {
+          let (else_e, end) = parse_impl(tokens, tn + 1, 0)
+          (EIf(cond, then_e, else_e), end)
+        }
       },
       _ => throw("expected 'else' after if block")
     }
@@ -1260,6 +1263,19 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             if end <= a {
               throw("internal parser error: block let parser did not advance")
             } else (ELet(name, val, body), end)
+          },
+          TLParen => {
+            let (pat, pn) = parse_pattern(tokens, next)
+            let eq = expect_tk(tokens, pn, "=")
+            let (val, vn) = parse_impl(tokens, eq, 0)
+            let a = skip_semi(tokens, vn)
+            let (body, end) = parse_impl(tokens, a, 20)
+            if end <= a {
+              throw("internal parser error: block let-pat parser did not advance")
+            } else {
+              let arms = [(pat, body)]
+              (EMatch(val, arms), end)
+            }
           },
           _ => throw("expected identifier after 'let'")
         }

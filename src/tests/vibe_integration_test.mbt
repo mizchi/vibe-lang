@@ -1140,7 +1140,7 @@ test "selfhost final: parser roundtrips own source" {
     #|import ./vibe/compiler/lexer.vibe { lex }
     #|import ./vibe/compiler/parser.vibe { parse_program }
     #|import ./vibe/compiler/printer.vibe { print_program }
-    #|let source = fs_read_file("vibe/compiler/token.vibe")
+    #|let source = fs_read_file("vibe/compiler/printer.vibe")
     #|let tokens = lex(source)
     #|let stmts = parse_program(tokens)
     #|print_program(stmts)
@@ -1148,11 +1148,11 @@ test "selfhost final: parser roundtrips own source" {
   match result.last {
     Some(@core.Value::String(s)) => {
       assert_true(s.length() > 0)
-      assert_true(s.contains("token_to_string"))
+      assert_true(s.contains("print_expr"))
     }
     _ =>
       fail(
-        "expected non-empty String containing 'token_to_string', got: \{result.last.to_string()}",
+        "expected non-empty String containing 'print_expr', got: \{result.last.to_string()}",
       )
   }
 }
