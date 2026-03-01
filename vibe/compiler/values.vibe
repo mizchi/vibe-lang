@@ -1,4 +1,4 @@
-//# Value type for interpreter
+//# Types
 
 export enum Value {
   VInt(Int);
@@ -19,69 +19,96 @@ export enum ValEnv {
   VEnvBind(String, Value, ValEnv)
 }
 
-export let rec val_env_lookup = (env: ValEnv, name: String) -> Option[Value] {
-  match env {
-    VEnvEmpty => None,
-    VEnvBind(n, v, rest) => {
-      if string_equals(n, name) { Some(v) }
-      else { val_env_lookup(rest, name) }
-    }
-  }
+export enum ModuleCtx {
+  ModuleCtx(Array[(String, String)], Array[String], String)
 }
+
+//# Functions
 
 export let val_env_bind = (env: ValEnv, name: String, v: Value) -> ValEnv {
   VEnvBind(name, v, env)
 }
 
-export let val_env_bind_all = (env: ValEnv, bindings: Array[(String, Value)]) -> ValEnv {
-  let len = array_length(bindings)
-  let rec go = (i: Int, acc: ValEnv) -> ValEnv {
-    if i >= len { acc }
+export let module_ctx_new = (sources: Array[(String, String)], base_dir: String) -> ModuleCtx {
+  ModuleCtx(sources, array_slice([
+    ""
+  ], 0, 0), base_dir)
+}
+
+export let rec val_env_lookup = (env: ValEnv, name: String) -> Option[Value] {
+  match env {
+    VEnvEmpty => None,
+    VEnvBind(n, v, rest) => if string_equals(n, name) {
+      Some(v)
+    }
     else {
-      let (name, v) = array_get(bindings, i)
-      go(i + 1, VEnvBind(name, v, acc))
+      val_env_lookup(rest, name)
     }
   }
-  go(0, env)
 }
 
 export let rec value_to_string = (v: Value) -> String {
   let rec arr_to_str = (arr: Array[Value], i: Int) -> String {
-    if i >= array_length(arr) { "" }
+    if i >= array_length(arr) {
+      ""
+    }
     else {
       let s = value_to_string(array_get(arr, i))
-      if eq(i, array_length(arr) - 1) { s }
-      else { string_concat(s, string_concat(", ", arr_to_str(arr, i + 1))) }
+      if eq(i, array_length(arr) - 1) {
+        s
+      }
+      else {
+        string_concat(s, string_concat(", ", arr_to_str(arr, i + 1)))
+      }
     }
   }
   let rec fields_to_str = (fields: Array[(String, Value)], i: Int) -> String {
-    if i >= array_length(fields) { "" }
+    if i >= array_length(fields) {
+      ""
+    }
     else {
       let (fname, fv) = array_get(fields, i)
       let entry = string_concat(fname, string_concat(": ", value_to_string(fv)))
-      if eq(i, array_length(fields) - 1) { entry }
-      else { string_concat(entry, string_concat(", ", fields_to_str(fields, i + 1))) }
+      if eq(i, array_length(fields) - 1) {
+        entry
+      }
+      else {
+        string_concat(entry, string_concat(", ", fields_to_str(fields, i + 1)))
+      }
     }
   }
   match v {
     VInt(n) => __to_string(n),
     VFloat(f) => __to_string(f),
     VString(s) => s,
-    VBool(b) => if b { "true" } else { "false" },
+    VBool(b) => if b {
+      "true"
+    } else {
+      "false"
+    },
     VUnit => "()",
     VTuple(elems) => string_concat("(", string_concat(arr_to_str(elems, 0), ")")),
     VArray(elems) => string_concat("[", string_concat(arr_to_str(elems, 0), "]")),
     VRecord(fields) => string_concat("{", string_concat(fields_to_str(fields, 0), "}")),
-    VCtor(name, args) => {
-      if eq(array_length(args), 0) { name }
-      else { string_concat(name, string_concat("(", string_concat(arr_to_str(args, 0), ")"))) }
-    },
+    VCtor(name, args) => if eq(array_length(args), 0) {
+      name
+    }
+    else {
+      string_concat(name, string_concat("(", string_concat(arr_to_str(args, 0), ")")))
+    }
+    ,
     VBytes(data) => {
       let len = array_length(data)
       let rec go = (i: Int, acc: String) -> String {
-        if i >= len { acc }
+        if i >= len {
+          acc
+        }
         else {
-          let sep = if i > 0 { ", " } else { "" }
+          let sep = if i > 0 {
+            ", "
+          } else {
+            ""
+          }
           go(i + 1, string_concat(acc, string_concat(sep, __to_string(array_get(data, i)))))
         }
       }
@@ -95,26 +122,24 @@ export let values_equal = (a: Value, b: Value) -> Bool {
   string_equals(value_to_string(a), value_to_string(b))
 }
 
-export enum ModuleCtx {
-  ModuleCtx(
-    Array[(String, String)],
-    Array[String],
-    String
-  )
-}
-
 export let empty_module_ctx = () -> ModuleCtx {
-  ModuleCtx(
-    array_slice([("", "")], 0, 0),
-    array_slice([""], 0, 0),
+  ModuleCtx(array_slice([
+    ("", "")
+  ], 0, 0), array_slice([
     ""
-  )
+  ], 0, 0), "")
 }
 
-export let module_ctx_new = (sources: Array[(String, String)], base_dir: String) -> ModuleCtx {
-  ModuleCtx(
-    sources,
-    array_slice([""], 0, 0),
-    base_dir
-  )
+export let val_env_bind_all = (env: ValEnv, bindings: Array[(String, Value)]) -> ValEnv {
+  let len = array_length(bindings)
+  let rec go = (i: Int, acc: ValEnv) -> ValEnv {
+    if i >= len {
+      acc
+    }
+    else {
+      let (name, v) = array_get(bindings, i)
+      go(i + 1, VEnvBind(name, v, acc))
+    }
+  }
+  go(0, env)
 }

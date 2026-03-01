@@ -1,36 +1,85 @@
-import ./lexer.vibe { lex }
-import ./parser.vibe { parse_program }
-import ./checker_stmt.vibe { check_program }
-import ./token.vibe { Token }
-import ./eval_loader.vibe { contains_str }
-import ./path.vibe { resolve_path, dir_of }
-import ./ripple/index.vibe {
-  RippleDb,
-  ripple_new,
-  ripple_set_source,
-  ripple_get_source,
-  ripple_get_fingerprint,
-  ripple_record_eval,
-  ripple_eval_count
+//# Imports
+
+import ./checker_stmt.vibe {
+  check_program
 }
+
+import ./eval_loader.vibe {
+  contains_str
+}
+
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse_program
+}
+
+import ./path.vibe {
+  dir_of, resolve_path
+}
+
+import ./ripple {
+  RippleDb, ripple_eval_count, ripple_get_fingerprint, ripple_get_source, ripple_new, ripple_record_eval, ripple_set_source
+}
+
+import ./token.vibe {
+  Token
+}
+
+//# Types
 
 export enum TypeDb {
   TypeDb(RippleDb)
 }
 
-let empty_dep_fps = () -> Array[(String, String)] {
-  array_slice([("", "")], 0, 0)
+//# Functions
+
+export let db_new = () -> TypeDb {
+  TypeDb(ripple_new())
 }
 
 let empty_stack = () -> Array[String] {
-  array_slice([""], 0, 0)
+  array_slice([
+    ""
+  ], 0, 0)
 }
 
-let rec collect_import_path_tokens = (
-  tokens: Array[Token],
-  pos: Int,
-  acc: String
-) -> (String, Int) {
+export let db_set_source = (db: TypeDb, path: String, source: String) -> TypeDb {
+  match db {
+    TypeDb(rdb) => TypeDb(ripple_set_source(rdb, path, source))
+  }
+}
+
+let empty_dep_fps = () -> Array[(String, String)] {
+  array_slice([
+    ("", "")
+  ], 0, 0)
+}
+
+let build_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> String {
+  let len = array_length(dep_fps)
+  let rec go = (i: Int, acc: String) -> String {
+    if i >= len {
+      acc
+    }
+    else {
+      let (dep_path, dep_fp) = array_get(dep_fps, i)
+      let next = string_concat(acc, string_concat("|", string_concat(dep_path, string_concat("=", dep_fp))))
+      go(i + 1, next)
+    }
+  }
+  go(0, source)
+}
+
+export let db_typecheck_count = (db: TypeDb) -> Int {
+  match db {
+    TypeDb(rdb) => ripple_eval_count(rdb)
+  }
+}
+
+let rec collect_import_path_tokens = (tokens: Array[Token], pos: Int, acc: String) -> (String, Int) {
   if pos >= array_length(tokens) {
     (acc, pos)
   } else {
@@ -62,7 +111,9 @@ let collect_import_deps = (source: String, base_dir: String) -> Array[String] wi
             if contains_str(acc, resolved) {
               go(next_i, acc)
             } else {
-              go(next_i, array_concat(acc, [resolved]))
+              go(next_i, array_concat(acc, [
+                resolved
+              ]))
             }
           }
         },
@@ -73,27 +124,7 @@ let collect_import_deps = (source: String, base_dir: String) -> Array[String] wi
   go(0, empty_stack())
 }
 
-let build_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> String {
-  let len = array_length(dep_fps)
-  let rec go = (i: Int, acc: String) -> String {
-    if i >= len { acc }
-    else {
-      let (dep_path, dep_fp) = array_get(dep_fps, i)
-      let next = string_concat(
-        acc,
-        string_concat("|", string_concat(dep_path, string_concat("=", dep_fp)))
-      )
-      go(i + 1, next)
-    }
-  }
-  go(0, source)
-}
-
-let rec ensure_fingerprint = (
-  db: RippleDb,
-  path: String,
-  stack: Array[String]
-) -> (String, RippleDb) with { Error } {
+let rec ensure_fingerprint = (db: RippleDb, path: String, stack: Array[String]) -> (String, RippleDb)with { Error } {
   if contains_str(stack, path) {
     throw(string_concat("type_db: import cycle detected at ", path))
   } else {
@@ -102,44 +133,31 @@ let rec ensure_fingerprint = (
       Some(source) => {
         let deps = collect_import_deps(source, dir_of(path))
         let dlen = array_length(deps)
-        let next_stack = array_concat(stack, [path])
-        let rec resolve_deps = (
-          i: Int,
-          dep_acc: Array[(String, String)],
-          dep_db: RippleDb
-        ) -> (Array[(String, String)], RippleDb) with { Error } {
+        let next_stack = array_concat(stack, [
+          path
+        ])
+        let rec resolve_deps = (i: Int, dep_acc: Array[(String, String)], dep_db: RippleDb) -> (Array[(String, String)], RippleDb)with { Error } {
           if i >= dlen {
             (dep_acc, dep_db)
           } else {
             let dep_path = array_get(deps, i)
-            let (dep_fp, next_db) = ensure_fingerprint(
-              dep_db,
-              dep_path,
-              next_stack
-            )
-            resolve_deps(
-              i + 1,
-              array_concat(dep_acc, [(dep_path, dep_fp)]),
-              next_db
-            )
+            let (dep_fp, next_db) = ensure_fingerprint(dep_db, dep_path, next_stack)
+            resolve_deps(i + 1, array_concat(dep_acc, [
+              (dep_path, dep_fp)
+            ]), next_db)
           }
         }
-        let (dep_fps, db_after_deps) = resolve_deps(
-          0,
-          empty_dep_fps(),
-          db
-        )
+        let (dep_fps, db_after_deps) = resolve_deps(0, empty_dep_fps(), db)
         let fingerprint = build_fingerprint(source, dep_fps)
         match ripple_get_fingerprint(db_after_deps, path) {
-          Some(cached_fp) => {
-            if string_equals(cached_fp, fingerprint) {
-              (fingerprint, db_after_deps)
-            } else {
-              let _ = check_program(parse_program(lex(source)))
-              let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
-              (fingerprint, next_db)
-            }
-          },
+          Some(cached_fp) => if string_equals(cached_fp, fingerprint) {
+            (fingerprint, db_after_deps)
+          } else {
+            let _ = check_program(parse_program(lex(source)))
+            let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
+            (fingerprint, next_db)
+          }
+          ,
           None => {
             let _ = check_program(parse_program(lex(source)))
             let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
@@ -151,24 +169,10 @@ let rec ensure_fingerprint = (
   }
 }
 
-export let db_new = () -> TypeDb {
-  TypeDb(ripple_new())
-}
-
-export let db_set_source = (db: TypeDb, path: String, source: String) -> TypeDb {
-  match db {
-    TypeDb(rdb) => TypeDb(ripple_set_source(rdb, path, source))
-  }
-}
-
 export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
   match db {
     TypeDb(rdb) => {
-      let (_, next_rdb) = ensure_fingerprint(
-        rdb,
-        path,
-        empty_stack()
-      )
+      let (_, next_rdb) = ensure_fingerprint(rdb, path, empty_stack())
       match ripple_get_source(next_rdb, path) {
         None => TypeDb(next_rdb),
         Some(source) => {
@@ -177,11 +181,5 @@ export let db_typecheck = (db: TypeDb, path: String) -> TypeDb with { Error } {
         }
       }
     }
-  }
-}
-
-export let db_typecheck_count = (db: TypeDb) -> Int {
-  match db {
-    TypeDb(rdb) => ripple_eval_count(rdb)
   }
 }

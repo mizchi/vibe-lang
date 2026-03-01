@@ -1,28 +1,34 @@
-import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
-import ./types.vibe { Type, TypeDef, TypeEnv, env_lookup, env_bind, resolve_builtin, Subst, subst_apply, generalize, trait_defined, impls_overlap_for }
-import ./checker.vibe { check_expr }
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./checker.vibe {
+  check_expr
+}
+
+import ./types.vibe {
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
+}
+
+//# Functions
 
 let resolve_te = (te: TypeExpr) -> Type {
   match te {
     TyUnit => CtUnit,
-    TyName(name) => {
-      match resolve_builtin(name) {
-        Some(t) => t,
-        None => CtNamed(name, array_slice([CtUnknown], 0, 0))
-      }
-    },
+    TyName(name) => match resolve_builtin(name) {
+      Some(t) => t,
+      None => CtNamed(name, array_slice([
+        CtUnknown
+      ], 0, 0))
+    }
+    ,
     _ => CtUnknown
   }
 }
 
-export let rec check_stmts = (
-  stmts: Array[Stmt],
-  i: Int,
-  env: TypeEnv,
-  defs: Array[TypeDef],
-  s: Subst,
-  c: Int
-) -> (TypeEnv, Subst, Int) {
+export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (TypeEnv, Subst, Int) {
   if i >= array_length(stmts) {
     (env, s, c)
   } else {
@@ -48,12 +54,10 @@ export let rec check_stmts = (
         }
         (env_bind(env, name, t), ns, nc)
       },
-      SEnum(_, name, _) => {
-        (env_bind(env, name, CtEnum(name)), s, c)
-      },
-      SStruct(_, name, _) => {
-        (env_bind(env, name, CtStruct(name)), s, c)
-      },
+      SEnum(_, name, _) => (env_bind(env, name, CtEnum(name)), s, c)
+      ,
+      SStruct(_, name, _) => (env_bind(env, name, CtStruct(name)), s, c)
+      ,
       STypeAlias(_, name, te) => {
         let t = resolve_te(te)
         (env_bind(env, name, t), s, c)
@@ -81,10 +85,15 @@ export let rec check_stmts = (
       SImport(_, names) => {
         let nlen = array_length(names)
         let rec bind_imports = (i: Int, acc: TypeEnv) -> TypeEnv {
-          if i >= nlen { acc }
+          if i >= nlen {
+            acc
+          }
           else {
             let (name, alias) = array_get(names, i)
-            let bound_name = match alias { Some(a) => a, None => name }
+            let bound_name = match alias {
+              Some(a) => a,
+              None => name
+            }
             bind_imports(i + 1, env_bind(acc, bound_name, CtUnknown))
           }
         }
@@ -99,7 +108,9 @@ export let rec check_stmts = (
         // Resolve target type
         let target = match resolve_builtin(type_name) {
           Some(t) => t,
-          None => CtNamed(type_name, array_slice([CtUnknown], 0, 0))
+          None => CtNamed(type_name, array_slice([
+            CtUnknown
+          ], 0, 0))
         }
         // Register impl in env
         (EnvTraitImpl(trait_name, target, env), s, c)
@@ -111,7 +122,9 @@ export let rec check_stmts = (
 }
 
 export let check_program = (stmts: Array[Stmt]) -> TypeEnv {
-  let empty_defs = array_slice([TDAlias("_dummy", CtUnit)], 0, 0)
+  let empty_defs = array_slice([
+    TDAlias("_dummy", CtUnit)
+  ], 0, 0)
   let (env, _, _) = check_stmts(stmts, 0, EnvEmpty, empty_defs, SubstEmpty, 0)
   env
 }

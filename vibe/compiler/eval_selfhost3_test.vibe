@@ -1,9 +1,10 @@
-import ./eval_e2e_helpers.vibe { run_and_lookup, run_with_imports }
+//# Imports
 
-// Self-hosting E2E: mini compiler lex→eval pipeline
-// Proves self-hosted eval can run a mini compiler (lex→parse→eval)
-// Uses flat dispatch (action codes via mode*2+is_digit) to stay within WASM stack limits
-// Ctor calls (TNum(n)) are pre-bound to avoid deep nesting in if bodies
+import ./eval_e2e_helpers.vibe {
+  run_and_lookup, run_with_imports
+}
+
+//# Misc
 
 test "selfhost3: char code classification" {
   let src = "let is_digit = (c: Int) -> Bool { c >= 48 && c <= 57 }\nlet is_space = (c: Int) -> Bool { c == 32 }\nlet is_plus = (c: Int) -> Bool { c == 43 }\nlet r1 = is_digit(51)\nlet r2 = is_space(32)\nlet r3 = is_plus(43)\nlet result = if r1 { if r2 { if r3 { \"ok\" } else { \"bad3\" } } else { \"bad2\" } } else { \"bad1\" }"
@@ -33,7 +34,10 @@ test "selfhost3: single file lex eval pipeline" {
 test "selfhost3: 2-file import lex eval" {
   let tok_src = "export enum Tok { TNum(Int); TPlus; TEof }"
   let main_src = "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nlet s = \"10+20+15\"\nlet len = string_length(s)\nlet b = array_builder()\nlet mut i = 0\nlet mut mode = 0\nlet mut num = 0\nwhile i < len { let c = string_char_code_at(s, i); let is_d = if c >= 48 && c <= 57 { 1 } else { 0 }; let act = mode * 2 + is_d; if act == 1 { mode = 1; num = c - 48; i = i + 1 } else { 0 }; if act == 3 { num = num * 10 + (c - 48); i = i + 1 } else { 0 }; if act == 2 { let tok = TNum(num); array_builder_push(b, tok); mode = 0; num = 0 } else { 0 }; if act == 0 && c == 43 { array_builder_push(b, TPlus); i = i + 1 } else { 0 }; if act == 0 && c != 43 { i = i + 1 } else { 0 } }\nlet flush = if mode == 1 { let tok = TNum(num); array_builder_push(b, tok) } else { 0 }\narray_builder_push(b, TEof)\nlet toks = array_builder_freeze(b)\nlet tlen = array_length(toks)\nlet mut j = 0\nlet mut acc = 0\nwhile j < tlen { let t = array_get(toks, j); let v = match t { TNum(n) => n, _ => 0 }; acc = acc + v; j = j + 1 }\nlet result = acc"
-  let sources = [("tok.vibe", tok_src), ("main.vibe", main_src)]
+  let sources = [
+    ("tok.vibe", tok_src),
+    ("main.vibe", main_src)
+  ]
   assert(string_equals(run_with_imports(sources, "main.vibe", "result"), "45"))
 }
 
@@ -41,7 +45,11 @@ test "selfhost3: 3-file import lex eval" {
   let tok_src = "export enum Tok { TNum(Int); TPlus; TEof }"
   let lex_src = "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nexport let is_digit = (c: Int) -> Int { if c >= 48 && c <= 57 { 1 } else { 0 } }"
   let main_src = "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nimport ./lex.vibe { is_digit }\nlet s = \"3+4\"\nlet len = string_length(s)\nlet b = array_builder()\nlet mut i = 0\nlet mut mode = 0\nlet mut num = 0\nwhile i < len { let c = string_char_code_at(s, i); let d = is_digit(c); let act = mode * 2 + d; if act == 1 { mode = 1; num = c - 48; i = i + 1 } else { 0 }; if act == 3 { num = num * 10 + (c - 48); i = i + 1 } else { 0 }; if act == 2 { let tok = TNum(num); array_builder_push(b, tok); mode = 0; num = 0 } else { 0 }; if act == 0 && c == 43 { array_builder_push(b, TPlus); i = i + 1 } else { 0 }; if act == 0 && c != 43 { i = i + 1 } else { 0 } }\nlet flush = if mode == 1 { let tok = TNum(num); array_builder_push(b, tok) } else { 0 }\narray_builder_push(b, TEof)\nlet toks = array_builder_freeze(b)\nlet tlen = array_length(toks)\nlet mut j = 0\nlet mut acc = 0\nwhile j < tlen { let t = array_get(toks, j); let v = match t { TNum(n) => n, _ => 0 }; acc = acc + v; j = j + 1 }\nlet result = acc"
-  let sources = [("tok.vibe", tok_src), ("lex.vibe", lex_src), ("main.vibe", main_src)]
+  let sources = [
+    ("tok.vibe", tok_src),
+    ("lex.vibe", lex_src),
+    ("main.vibe", main_src)
+  ]
   assert(string_equals(run_with_imports(sources, "main.vibe", "result"), "7"))
 }
 
@@ -49,6 +57,10 @@ test "selfhost3: crown jewel 3-file lex eval pipeline" {
   let tok_src = "export enum Tok { TNum(Int); TPlus; TEof }"
   let lex_src = "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nexport let is_digit = (c: Int) -> Int { if c >= 48 && c <= 57 { 1 } else { 0 } }"
   let main_src = "import ./tok.vibe { Tok, TNum, TPlus, TEof }\nimport ./lex.vibe { is_digit }\nlet s = \"7+8+5\"\nlet len = string_length(s)\nlet b = array_builder()\nlet mut i = 0\nlet mut mode = 0\nlet mut num = 0\nwhile i < len { let c = string_char_code_at(s, i); let d = is_digit(c); let act = mode * 2 + d; if act == 1 { mode = 1; num = c - 48; i = i + 1 } else { 0 }; if act == 3 { num = num * 10 + (c - 48); i = i + 1 } else { 0 }; if act == 2 { let tok = TNum(num); array_builder_push(b, tok); mode = 0; num = 0 } else { 0 }; if act == 0 && c == 43 { array_builder_push(b, TPlus); i = i + 1 } else { 0 }; if act == 0 && c != 43 { i = i + 1 } else { 0 } }\nlet flush = if mode == 1 { let tok = TNum(num); array_builder_push(b, tok) } else { 0 }\narray_builder_push(b, TEof)\nlet toks = array_builder_freeze(b)\nlet tlen = array_length(toks)\nlet mut j = 0\nlet mut acc = 0\nwhile j < tlen { let t = array_get(toks, j); let v = match t { TNum(n) => n, _ => 0 }; acc = acc + v; j = j + 1 }\nlet result = acc"
-  let sources = [("tok.vibe", tok_src), ("lex.vibe", lex_src), ("main.vibe", main_src)]
+  let sources = [
+    ("tok.vibe", tok_src),
+    ("lex.vibe", lex_src),
+    ("main.vibe", main_src)
+  ]
   assert(string_equals(run_with_imports(sources, "main.vibe", "result"), "20"))
 }

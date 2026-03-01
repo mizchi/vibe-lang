@@ -1,353 +1,772 @@
-import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
-import ./values.vibe { Value, ValEnv, val_env_lookup, val_env_bind, val_env_bind_all, value_to_string, values_equal }
-import ./eval_builtins.vibe { eval_builtin_call }
+//# Imports
 
-// Anchor imports
-let _a1 = (e: Expr) -> Expr { e }
-let _a2 = (p: Pat) -> Pat { p }
-let _a3 = (t: TypeExpr) -> TypeExpr { t }
-let _a4 = (s: Stmt) -> Stmt { s }
-
-let empty_encoded = array_slice([VUnit], 0, 0)
-let _no_tp = array_slice([""], 0, 0)
-let _no_tb = array_slice([("", _no_tp)], 0, 0)
-
-// ===== Encode Pat -> Value =====
-let rec encode_pat = (p: Pat) -> Value {
-  let rec go_arr = (pats: Array[Pat], i: Int) -> Value {
-    if i >= array_length(pats) { VArray(empty_encoded) }
-    else {
-      let rest = go_arr(pats, i + 1)
-      match rest {
-        VArray(rarr) => VArray(array_concat([encode_pat(array_get(pats, i))], rarr)),
-        _ => VArray([encode_pat(array_get(pats, i))])
-      }
-    }
-  }
-  match p {
-    PWild => VArray([VString("PW")]),
-    PBind(name) => VArray([VString("PB"), VString(name)]),
-    PInt(n) => VArray([VString("PI"), VInt(n)]),
-    PString(s) => VArray([VString("PS"), VString(s)]),
-    PBool(b) => VArray([VString("PL"), VBool(b)]),
-    PCtor(name, pats) => VArray([VString("PC"), VString(name), go_arr(pats, 0)]),
-    PTuple(pats) => VArray([VString("PT"), go_arr(pats, 0)]),
-    POr(p1, p2) => VArray([VString("PO"), encode_pat(p1), encode_pat(p2)])
-  }
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
 }
 
-// ===== Encode Expr -> Value =====
-export let rec encode_expr = (expr: Expr) -> Value {
-  let rec go_exprs = (exprs: Array[Expr], i: Int) -> Value {
-    if i >= array_length(exprs) { VArray(empty_encoded) }
-    else {
-      let rest = go_exprs(exprs, i + 1)
-      match rest {
-        VArray(rarr) => VArray(array_concat([encode_expr(array_get(exprs, i))], rarr)),
-        _ => VArray([encode_expr(array_get(exprs, i))])
-      }
-    }
-  }
-  let rec go_fields = (fields: Array[(String, Expr)], i: Int) -> Value {
-    if i >= array_length(fields) { VArray(empty_encoded) }
-    else {
-      let (name, fexpr) = array_get(fields, i)
-      let rest = go_fields(fields, i + 1)
-      match rest {
-        VArray(rarr) => VArray(array_concat([VArray([VString(name), encode_expr(fexpr)])], rarr)),
-        _ => VArray([VArray([VString(name), encode_expr(fexpr)])])
-      }
-    }
-  }
-  let rec go_params = (params: Array[(String, Option[TypeExpr])], i: Int) -> Value {
-    if i >= array_length(params) { VArray(empty_encoded) }
-    else {
-      let (name, _) = array_get(params, i)
-      let rest = go_params(params, i + 1)
-      match rest {
-        VArray(rarr) => VArray(array_concat([VString(name)], rarr)),
-        _ => VArray([VString(name)])
-      }
-    }
-  }
-  let rec go_arms = (arms: Array[(Pat, Expr)], i: Int) -> Value {
-    if i >= array_length(arms) { VArray(empty_encoded) }
-    else {
-      let (pat, aexpr) = array_get(arms, i)
-      let rest = go_arms(arms, i + 1)
-      match rest {
-        VArray(rarr) => VArray(array_concat([VArray([encode_pat(pat), encode_expr(aexpr)])], rarr)),
-        _ => VArray([VArray([encode_pat(pat), encode_expr(aexpr)])])
-      }
-    }
-  }
-  match expr {
-    EInt(n) => VArray([VString("i"), VInt(n)]),
-    EFloat(f) => VArray([VString("f"), VFloat(f)]),
-    EString(s) => VArray([VString("s"), VString(s)]),
-    EBool(b) => VArray([VString("b"), VBool(b)]),
-    EUnit => VArray([VString("u")]),
-    EIdent(name) => VArray([VString("d"), VString(name)]),
-    EBinOp(op, left, right) => VArray([VString("bo"), VString(op), encode_expr(left), encode_expr(right)]),
-    EUnaryOp(op, operand) => VArray([VString("uo"), VString(op), encode_expr(operand)]),
-    ELet(name, val, body) => VArray([VString("lt"), VString(name), encode_expr(val), encode_expr(body)]),
-    ELetRec(name, val, body) => VArray([VString("lr"), VString(name), encode_expr(val), encode_expr(body)]),
-    ELetMut(name, val, body) => VArray([VString("lm"), VString(name), encode_expr(val), encode_expr(body)]),
-    EAssign(name, val, body) => VArray([VString("as"), VString(name), encode_expr(val), encode_expr(body)]),
-    EAssignOp(name, op, val, body) => VArray([VString("ao"), VString(name), VString(op), encode_expr(val), encode_expr(body)]),
-    ESeq(left, right) => VArray([VString("sq"), encode_expr(left), encode_expr(right)]),
-    EIf(cond, then_e, else_e) => VArray([VString("if"), encode_expr(cond), encode_expr(then_e), encode_expr(else_e)]),
-    ECall(callee, args) => VArray([VString("ca"), encode_expr(callee), go_exprs(args, 0)]),
-    ETuple(elems) => VArray([VString("tu"), go_exprs(elems, 0)]),
-    EArray(elems) => VArray([VString("ar"), go_exprs(elems, 0)]),
-    ERecord(fields) => VArray([VString("rc"), go_fields(fields, 0)]),
-    EFn(_, _, params, _, _, body) => VArray([VString("fn"), go_params(params, 0), encode_expr(body)]),
-    EMatch(scrutinee, arms) => VArray([VString("ma"), encode_expr(scrutinee), go_arms(arms, 0)]),
-    EWhile(cond, body) => VArray([VString("wh"), encode_expr(cond), encode_expr(body)]),
-    EForIn(name, iter, body) => VArray([VString("fi"), VString(name), encode_expr(iter), encode_expr(body)]),
-    EDot(obj, field) => VArray([VString("dt"), encode_expr(obj), VString(field)]),
-    EHandle(body, arms) => VArray([VString("ha"), encode_expr(body), go_arms(arms, 0)]),
-    EThrow(val) => VArray([VString("th"), encode_expr(val)]),
-    EBreak(_) => VArray([VString("br")]),
-    EContinue(_) => VArray([VString("co")]),
-    ELabeledArg(_, _, inner) => encode_expr(inner),
-    _ => VArray([VString("u")])
-  }
+import ./eval_builtins.vibe {
+  eval_builtin_call
 }
 
-// ===== Decode Value -> Pat =====
+import ./values.vibe {
+  ValEnv, Value, val_env_bind, val_env_bind_all, val_env_lookup, value_to_string, values_equal
+}
+
+//# Functions
+
+let _no_tp = array_slice([
+  ""
+], 0, 0)
+
+let _no_tb = array_slice([
+  ("", _no_tp)
+], 0, 0)
+
 let rec decode_pat = (v: Value) -> Pat {
   let rec go_arr_inner = (arr: Array[Value], i: Int, len: Int) -> Array[Pat] {
-    if i >= len { array_slice([PWild], 0, 0) }
-    else { array_concat([decode_pat(array_get(arr, i))], go_arr_inner(arr, i + 1, len)) }
+    if i >= len {
+      array_slice([
+        PWild
+      ], 0, 0)
+    }
+    else {
+      array_concat([
+        decode_pat(array_get(arr, i))
+      ], go_arr_inner(arr, i + 1, len))
+    }
   }
   let go_arr = (v2: Value) -> Array[Pat] {
     match v2 {
       VArray(arr) => go_arr_inner(arr, 0, array_length(arr)),
-      _ => array_slice([PWild], 0, 0)
+      _ => array_slice([
+        PWild
+      ], 0, 0)
     }
   }
   match v {
-    VArray(arr) => {
-      if eq(array_length(arr), 0) { PWild }
-      else {
-        let tag = match array_get(arr, 0) { VString(t) => t, _ => "PW" }
-        if string_equals(tag, "PW") { PWild }
-        else if string_equals(tag, "PB") { PBind(match array_get(arr, 1) { VString(sv) => sv, _ => "" }) }
-        else if string_equals(tag, "PI") { PInt(match array_get(arr, 1) { VInt(n) => n, _ => 0 }) }
-        else if string_equals(tag, "PS") { PString(match array_get(arr, 1) { VString(sv) => sv, _ => "" }) }
-        else if string_equals(tag, "PL") { PBool(match array_get(arr, 1) { VBool(bv) => bv, _ => false }) }
-        else if string_equals(tag, "PC") {
-          let name = match array_get(arr, 1) { VString(sv) => sv, _ => "" }
-          PCtor(name, go_arr(array_get(arr, 2)))
-        }
-        else if string_equals(tag, "PT") { PTuple(go_arr(array_get(arr, 1))) }
-        else if string_equals(tag, "PO") { POr(decode_pat(array_get(arr, 1)), decode_pat(array_get(arr, 2))) }
-        else PWild
+    VArray(arr) => if eq(array_length(arr), 0) {
+      PWild
+    }
+    else {
+      let tag = match array_get(arr, 0) {
+        VString(t) => t,
+        _ => "PW"
       }
-    },
+      if string_equals(tag, "PW") {
+        PWild
+      }
+      else if string_equals(tag, "PB") {
+        PBind(match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        })
+      }
+      else if string_equals(tag, "PI") {
+        PInt(match array_get(arr, 1) {
+          VInt(n) => n,
+          _ => 0
+        })
+      }
+      else if string_equals(tag, "PS") {
+        PString(match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        })
+      }
+      else if string_equals(tag, "PL") {
+        PBool(match array_get(arr, 1) {
+          VBool(bv) => bv,
+          _ => false
+        })
+      }
+      else if string_equals(tag, "PC") {
+        let name = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        PCtor(name, go_arr(array_get(arr, 2)))
+      }
+      else if string_equals(tag, "PT") {
+        PTuple(go_arr(array_get(arr, 1)))
+      }
+      else if string_equals(tag, "PO") {
+        POr(decode_pat(array_get(arr, 1)), decode_pat(array_get(arr, 2)))
+      }
+      else PWild
+    }
+    ,
     _ => PWild
   }
 }
 
-// ===== Decode Value -> Expr =====
+let eval_binop = (op: String, lv: Value, rv: Value) -> Value {
+  if string_equals(op, "+") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VInt(a + b),
+        _ => VUnit
+      },
+      VFloat(a) => match rv {
+        VFloat(b) => VFloat(a + b),
+        _ => VUnit
+      },
+      VString(a) => match rv {
+        VString(b) => VString(string_concat(a, b)),
+        _ => VUnit
+      },
+      _ => VUnit
+    }
+  }
+  else if string_equals(op, "-") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VInt(a - b),
+        _ => VUnit
+      },
+      VFloat(a) => match rv {
+        VFloat(b) => VFloat(a - b),
+        _ => VUnit
+      },
+      _ => VUnit
+    }
+  }
+  else if string_equals(op, "*") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VInt(a * b),
+        _ => VUnit
+      },
+      VFloat(a) => match rv {
+        VFloat(b) => VFloat(a * b),
+        _ => VUnit
+      },
+      _ => VUnit
+    }
+  }
+  else if string_equals(op, "/") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VInt(a / b),
+        _ => VUnit
+      },
+      VFloat(a) => match rv {
+        VFloat(b) => VFloat(a / b),
+        _ => VUnit
+      },
+      _ => VUnit
+    }
+  }
+  else if string_equals(op, "%") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VInt(a % b),
+        _ => VUnit
+      },
+      _ => VUnit
+    }
+  }
+  else if string_equals(op, "==") {
+    VBool(values_equal(lv, rv))
+  }
+  else if string_equals(op, "!=") {
+    VBool(not(values_equal(lv, rv)))
+  }
+  else if string_equals(op, "<") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VBool(a < b),
+        _ => VBool(false)
+      },
+      _ => VBool(false)
+    }
+  }
+  else if string_equals(op, ">") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VBool(a > b),
+        _ => VBool(false)
+      },
+      _ => VBool(false)
+    }
+  }
+  else if string_equals(op, "<=") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VBool(a <= b),
+        _ => VBool(false)
+      },
+      _ => VBool(false)
+    }
+  }
+  else if string_equals(op, ">=") {
+    match lv {
+      VInt(a) => match rv {
+        VInt(b) => VBool(a >= b),
+        _ => VBool(false)
+      },
+      _ => VBool(false)
+    }
+  }
+  else VUnit
+}
+
 export let rec decode_expr = (v: Value) -> Expr {
   let rec go_exprs_inner = (arr: Array[Value], i: Int, len: Int) -> Array[Expr] {
-    if i >= len { array_slice([EUnit], 0, 0) }
-    else { array_concat([decode_expr(array_get(arr, i))], go_exprs_inner(arr, i + 1, len)) }
+    if i >= len {
+      array_slice([
+        EUnit
+      ], 0, 0)
+    }
+    else {
+      array_concat([
+        decode_expr(array_get(arr, i))
+      ], go_exprs_inner(arr, i + 1, len))
+    }
   }
   let go_exprs = (v2: Value) -> Array[Expr] {
     match v2 {
       VArray(arr) => {
         let len = array_length(arr)
-        if eq(len, 0) { array_slice([EUnit], 0, 0) }
-        else { go_exprs_inner(arr, 0, len) }
+        if eq(len, 0) {
+          array_slice([
+            EUnit
+          ], 0, 0)
+        }
+        else {
+          go_exprs_inner(arr, 0, len)
+        }
       },
-      _ => array_slice([EUnit], 0, 0)
+      _ => array_slice([
+        EUnit
+      ], 0, 0)
     }
   }
   let rec go_fields_inner = (arr: Array[Value], i: Int, len: Int) -> Array[(String, Expr)] {
-    if i >= len { array_slice([("_", EUnit)], 0, 0) }
+    if i >= len {
+      array_slice([
+        ("_", EUnit)
+      ], 0, 0)
+    }
     else {
       let entry = array_get(arr, i)
       let (name, fexpr) = match entry {
         VArray(ea) => {
-          let n = match array_get(ea, 0) { VString(sv) => sv, _ => "" }
+          let n = match array_get(ea, 0) {
+            VString(sv) => sv,
+            _ => ""
+          }
           (n, decode_expr(array_get(ea, 1)))
         },
         _ => ("", EUnit)
       }
-      array_concat([(name, fexpr)], go_fields_inner(arr, i + 1, len))
+      array_concat([
+        (name, fexpr)
+      ], go_fields_inner(arr, i + 1, len))
     }
   }
   let go_fields = (v2: Value) -> Array[(String, Expr)] {
     match v2 {
       VArray(arr) => go_fields_inner(arr, 0, array_length(arr)),
-      _ => array_slice([("_", EUnit)], 0, 0)
+      _ => array_slice([
+        ("_", EUnit)
+      ], 0, 0)
     }
   }
   let rec go_params_inner = (arr: Array[Value], i: Int, len: Int) -> Array[(String, Option[TypeExpr])] {
-    if i >= len { array_slice([("_", None)], 0, 0) }
+    if i >= len {
+      array_slice([
+        ("_", None)
+      ], 0, 0)
+    }
     else {
-      let name = match array_get(arr, i) { VString(sv) => sv, _ => "" }
-      array_concat([(name, None)], go_params_inner(arr, i + 1, len))
+      let name = match array_get(arr, i) {
+        VString(sv) => sv,
+        _ => ""
+      }
+      array_concat([
+        (name, None)
+      ], go_params_inner(arr, i + 1, len))
     }
   }
   let go_params = (v2: Value) -> Array[(String, Option[TypeExpr])] {
     match v2 {
       VArray(arr) => go_params_inner(arr, 0, array_length(arr)),
-      _ => array_slice([("_", None)], 0, 0)
+      _ => array_slice([
+        ("_", None)
+      ], 0, 0)
     }
   }
   let rec go_arms_inner = (arr: Array[Value], i: Int, len: Int) -> Array[(Pat, Expr)] {
-    if i >= len { array_slice([(PWild, EUnit)], 0, 0) }
+    if i >= len {
+      array_slice([
+        (PWild, EUnit)
+      ], 0, 0)
+    }
     else {
       let entry = array_get(arr, i)
       let arm = match entry {
         VArray(ea) => (decode_pat(array_get(ea, 0)), decode_expr(array_get(ea, 1))),
         _ => (PWild, EUnit)
       }
-      array_concat([arm], go_arms_inner(arr, i + 1, len))
+      array_concat([
+        arm
+      ], go_arms_inner(arr, i + 1, len))
     }
   }
   let go_arms = (v2: Value) -> Array[(Pat, Expr)] {
     match v2 {
       VArray(arr) => go_arms_inner(arr, 0, array_length(arr)),
-      _ => array_slice([(PWild, EUnit)], 0, 0)
+      _ => array_slice([
+        (PWild, EUnit)
+      ], 0, 0)
     }
   }
   match v {
-    VArray(arr) => {
-      if eq(array_length(arr), 0) { EUnit }
-      else {
-        let tag = match array_get(arr, 0) { VString(t) => t, _ => "u" }
-        if string_equals(tag, "i") { EInt(match array_get(arr, 1) { VInt(n) => n, _ => 0 }) }
-        else if string_equals(tag, "f") { EFloat(match array_get(arr, 1) { VFloat(fv) => fv, _ => 0.0 }) }
-        else if string_equals(tag, "s") { EString(match array_get(arr, 1) { VString(sv) => sv, _ => "" }) }
-        else if string_equals(tag, "b") { EBool(match array_get(arr, 1) { VBool(bv) => bv, _ => false }) }
-        else if string_equals(tag, "u") { EUnit }
-        else if string_equals(tag, "d") { EIdent(match array_get(arr, 1) { VString(sv) => sv, _ => "" }) }
-        else if string_equals(tag, "bo") {
-          let op = match array_get(arr, 1) { VString(sv) => sv, _ => "+" }
-          EBinOp(op, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
-        }
-        else if string_equals(tag, "uo") {
-          let op = match array_get(arr, 1) { VString(sv) => sv, _ => "-" }
-          EUnaryOp(op, decode_expr(array_get(arr, 2)))
-        }
-        else if string_equals(tag, "lt") {
-          let name = match array_get(arr, 1) { VString(sv) => sv, _ => "" }
-          ELet(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
-        }
-        else if string_equals(tag, "lr") {
-          let name = match array_get(arr, 1) { VString(sv) => sv, _ => "" }
-          ELetRec(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
-        }
-        else if string_equals(tag, "lm") {
-          let name = match array_get(arr, 1) { VString(sv) => sv, _ => "" }
-          ELetMut(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
-        }
-        else if string_equals(tag, "as") {
-          let name = match array_get(arr, 1) { VString(sv) => sv, _ => "" }
-          EAssign(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
-        }
-        else if string_equals(tag, "ao") {
-          let name = match array_get(arr, 1) { VString(sv) => sv, _ => "" }
-          let op = match array_get(arr, 2) { VString(sv) => sv, _ => "+" }
-          EAssignOp(name, op, decode_expr(array_get(arr, 3)), decode_expr(array_get(arr, 4)))
-        }
-        else if string_equals(tag, "sq") { ESeq(decode_expr(array_get(arr, 1)), decode_expr(array_get(arr, 2))) }
-        else if string_equals(tag, "if") { EIf(decode_expr(array_get(arr, 1)), decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3))) }
-        else if string_equals(tag, "ca") { ECall(decode_expr(array_get(arr, 1)), go_exprs(array_get(arr, 2))) }
-        else if string_equals(tag, "tu") { ETuple(go_exprs(array_get(arr, 1))) }
-        else if string_equals(tag, "ar") { EArray(go_exprs(array_get(arr, 1))) }
-        else if string_equals(tag, "rc") { ERecord(go_fields(array_get(arr, 1))) }
-        else if string_equals(tag, "fn") {
-          let params = go_params(array_get(arr, 1))
-          EFn(_no_tp, _no_tb, params, None, None, decode_expr(array_get(arr, 2)))
-        }
-        else if string_equals(tag, "ma") { EMatch(decode_expr(array_get(arr, 1)), go_arms(array_get(arr, 2))) }
-        else if string_equals(tag, "wh") { EWhile(decode_expr(array_get(arr, 1)), decode_expr(array_get(arr, 2))) }
-        else if string_equals(tag, "fi") {
-          let name = match array_get(arr, 1) { VString(sv) => sv, _ => "" }
-          EForIn(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
-        }
-        else if string_equals(tag, "dt") {
-          let field = match array_get(arr, 2) { VString(sv) => sv, _ => "" }
-          EDot(decode_expr(array_get(arr, 1)), field)
-        }
-        else if string_equals(tag, "ha") { EHandle(decode_expr(array_get(arr, 1)), go_arms(array_get(arr, 2))) }
-        else if string_equals(tag, "th") { EThrow(decode_expr(array_get(arr, 1))) }
-        else if string_equals(tag, "br") { EBreak(None) }
-        else if string_equals(tag, "co") { EContinue(array_slice([EUnit], 0, 0)) }
-        else EUnit
+    VArray(arr) => if eq(array_length(arr), 0) {
+      EUnit
+    }
+    else {
+      let tag = match array_get(arr, 0) {
+        VString(t) => t,
+        _ => "u"
       }
-    },
+      if string_equals(tag, "i") {
+        EInt(match array_get(arr, 1) {
+          VInt(n) => n,
+          _ => 0
+        })
+      }
+      else if string_equals(tag, "f") {
+        EFloat(match array_get(arr, 1) {
+          VFloat(fv) => fv,
+          _ => 0.0
+        })
+      }
+      else if string_equals(tag, "s") {
+        EString(match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        })
+      }
+      else if string_equals(tag, "b") {
+        EBool(match array_get(arr, 1) {
+          VBool(bv) => bv,
+          _ => false
+        })
+      }
+      else if string_equals(tag, "u") {
+        EUnit
+      }
+      else if string_equals(tag, "d") {
+        EIdent(match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        })
+      }
+      else if string_equals(tag, "bo") {
+        let op = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => "+"
+        }
+        EBinOp(op, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
+      }
+      else if string_equals(tag, "uo") {
+        let op = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => "-"
+        }
+        EUnaryOp(op, decode_expr(array_get(arr, 2)))
+      }
+      else if string_equals(tag, "lt") {
+        let name = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        ELet(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
+      }
+      else if string_equals(tag, "lr") {
+        let name = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        ELetRec(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
+      }
+      else if string_equals(tag, "lm") {
+        let name = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        ELetMut(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
+      }
+      else if string_equals(tag, "as") {
+        let name = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        EAssign(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
+      }
+      else if string_equals(tag, "ao") {
+        let name = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        let op = match array_get(arr, 2) {
+          VString(sv) => sv,
+          _ => "+"
+        }
+        EAssignOp(name, op, decode_expr(array_get(arr, 3)), decode_expr(array_get(arr, 4)))
+      }
+      else if string_equals(tag, "sq") {
+        ESeq(decode_expr(array_get(arr, 1)), decode_expr(array_get(arr, 2)))
+      }
+      else if string_equals(tag, "if") {
+        EIf(decode_expr(array_get(arr, 1)), decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
+      }
+      else if string_equals(tag, "ca") {
+        ECall(decode_expr(array_get(arr, 1)), go_exprs(array_get(arr, 2)))
+      }
+      else if string_equals(tag, "tu") {
+        ETuple(go_exprs(array_get(arr, 1)))
+      }
+      else if string_equals(tag, "ar") {
+        EArray(go_exprs(array_get(arr, 1)))
+      }
+      else if string_equals(tag, "rc") {
+        ERecord(go_fields(array_get(arr, 1)))
+      }
+      else if string_equals(tag, "fn") {
+        let params = go_params(array_get(arr, 1))
+        EFn(_no_tp, _no_tb, params, None, None, decode_expr(array_get(arr, 2)))
+      }
+      else if string_equals(tag, "ma") {
+        EMatch(decode_expr(array_get(arr, 1)), go_arms(array_get(arr, 2)))
+      }
+      else if string_equals(tag, "wh") {
+        EWhile(decode_expr(array_get(arr, 1)), decode_expr(array_get(arr, 2)))
+      }
+      else if string_equals(tag, "fi") {
+        let name = match array_get(arr, 1) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        EForIn(name, decode_expr(array_get(arr, 2)), decode_expr(array_get(arr, 3)))
+      }
+      else if string_equals(tag, "dt") {
+        let field = match array_get(arr, 2) {
+          VString(sv) => sv,
+          _ => ""
+        }
+        EDot(decode_expr(array_get(arr, 1)), field)
+      }
+      else if string_equals(tag, "ha") {
+        EHandle(decode_expr(array_get(arr, 1)), go_arms(array_get(arr, 2)))
+      }
+      else if string_equals(tag, "th") {
+        EThrow(decode_expr(array_get(arr, 1)))
+      }
+      else if string_equals(tag, "br") {
+        EBreak(None)
+      }
+      else if string_equals(tag, "co") {
+        EContinue(array_slice([
+          EUnit
+        ], 0, 0))
+      }
+      else EUnit
+    }
+    ,
     _ => EUnit
   }
 }
 
-// ===== Binary operator evaluation =====
+let empty_encoded = array_slice([
+  VUnit
+], 0, 0)
 
-let eval_binop = (op: String, lv: Value, rv: Value) -> Value {
-  if string_equals(op, "+") {
-    match lv {
-      VInt(a) => match rv { VInt(b) => VInt(a + b), _ => VUnit },
-      VFloat(a) => match rv { VFloat(b) => VFloat(a + b), _ => VUnit },
-      VString(a) => match rv { VString(b) => VString(string_concat(a, b)), _ => VUnit },
-      _ => VUnit
+let rec encode_pat = (p: Pat) -> Value {
+  let rec go_arr = (pats: Array[Pat], i: Int) -> Value {
+    if i >= array_length(pats) {
+      VArray(empty_encoded)
+    }
+    else {
+      let rest = go_arr(pats, i + 1)
+      match rest {
+        VArray(rarr) => VArray(array_concat([
+          encode_pat(array_get(pats, i))
+        ], rarr)),
+        _ => VArray([
+          encode_pat(array_get(pats, i))
+        ])
+      }
     }
   }
-  else if string_equals(op, "-") {
-    match lv {
-      VInt(a) => match rv { VInt(b) => VInt(a - b), _ => VUnit },
-      VFloat(a) => match rv { VFloat(b) => VFloat(a - b), _ => VUnit },
-      _ => VUnit
-    }
+  match p {
+    PWild => VArray([
+      VString("PW")
+    ]),
+    PBind(name) => VArray([
+      VString("PB"),
+      VString(name)
+    ]),
+    PInt(n) => VArray([
+      VString("PI"),
+      VInt(n)
+    ]),
+    PString(s) => VArray([
+      VString("PS"),
+      VString(s)
+    ]),
+    PBool(b) => VArray([
+      VString("PL"),
+      VBool(b)
+    ]),
+    PCtor(name, pats) => VArray([
+      VString("PC"),
+      VString(name),
+      go_arr(pats, 0)
+    ]),
+    PTuple(pats) => VArray([
+      VString("PT"),
+      go_arr(pats, 0)
+    ]),
+    POr(p1, p2) => VArray([
+      VString("PO"),
+      encode_pat(p1),
+      encode_pat(p2)
+    ])
   }
-  else if string_equals(op, "*") {
-    match lv {
-      VInt(a) => match rv { VInt(b) => VInt(a * b), _ => VUnit },
-      VFloat(a) => match rv { VFloat(b) => VFloat(a * b), _ => VUnit },
-      _ => VUnit
-    }
-  }
-  else if string_equals(op, "/") {
-    match lv {
-      VInt(a) => match rv { VInt(b) => VInt(a / b), _ => VUnit },
-      VFloat(a) => match rv { VFloat(b) => VFloat(a / b), _ => VUnit },
-      _ => VUnit
-    }
-  }
-  else if string_equals(op, "%") {
-    match lv {
-      VInt(a) => match rv { VInt(b) => VInt(a % b), _ => VUnit },
-      _ => VUnit
-    }
-  }
-  else if string_equals(op, "==") { VBool(values_equal(lv, rv)) }
-  else if string_equals(op, "!=") { VBool(not(values_equal(lv, rv))) }
-  else if string_equals(op, "<") {
-    match lv { VInt(a) => match rv { VInt(b) => VBool(a < b), _ => VBool(false) }, _ => VBool(false) }
-  }
-  else if string_equals(op, ">") {
-    match lv { VInt(a) => match rv { VInt(b) => VBool(a > b), _ => VBool(false) }, _ => VBool(false) }
-  }
-  else if string_equals(op, "<=") {
-    match lv { VInt(a) => match rv { VInt(b) => VBool(a <= b), _ => VBool(false) }, _ => VBool(false) }
-  }
-  else if string_equals(op, ">=") {
-    match lv { VInt(a) => match rv { VInt(b) => VBool(a >= b), _ => VBool(false) }, _ => VBool(false) }
-  }
-  else VUnit
 }
 
-// ===== Pattern matching =====
+export let rec encode_expr = (expr: Expr) -> Value {
+  let rec go_exprs = (exprs: Array[Expr], i: Int) -> Value {
+    if i >= array_length(exprs) {
+      VArray(empty_encoded)
+    }
+    else {
+      let rest = go_exprs(exprs, i + 1)
+      match rest {
+        VArray(rarr) => VArray(array_concat([
+          encode_expr(array_get(exprs, i))
+        ], rarr)),
+        _ => VArray([
+          encode_expr(array_get(exprs, i))
+        ])
+      }
+    }
+  }
+  let rec go_fields = (fields: Array[(String, Expr)], i: Int) -> Value {
+    if i >= array_length(fields) {
+      VArray(empty_encoded)
+    }
+    else {
+      let (name, fexpr) = array_get(fields, i)
+      let rest = go_fields(fields, i + 1)
+      match rest {
+        VArray(rarr) => VArray(array_concat([
+          VArray([
+            VString(name),
+            encode_expr(fexpr)
+          ])
+        ], rarr)),
+        _ => VArray([
+          VArray([
+            VString(name),
+            encode_expr(fexpr)
+          ])
+        ])
+      }
+    }
+  }
+  let rec go_params = (params: Array[(String, Option[TypeExpr])], i: Int) -> Value {
+    if i >= array_length(params) {
+      VArray(empty_encoded)
+    }
+    else {
+      let (name, _) = array_get(params, i)
+      let rest = go_params(params, i + 1)
+      match rest {
+        VArray(rarr) => VArray(array_concat([
+          VString(name)
+        ], rarr)),
+        _ => VArray([
+          VString(name)
+        ])
+      }
+    }
+  }
+  let rec go_arms = (arms: Array[(Pat, Expr)], i: Int) -> Value {
+    if i >= array_length(arms) {
+      VArray(empty_encoded)
+    }
+    else {
+      let (pat, aexpr) = array_get(arms, i)
+      let rest = go_arms(arms, i + 1)
+      match rest {
+        VArray(rarr) => VArray(array_concat([
+          VArray([
+            encode_pat(pat),
+            encode_expr(aexpr)
+          ])
+        ], rarr)),
+        _ => VArray([
+          VArray([
+            encode_pat(pat),
+            encode_expr(aexpr)
+          ])
+        ])
+      }
+    }
+  }
+  match expr {
+    EInt(n) => VArray([
+      VString("i"),
+      VInt(n)
+    ]),
+    EFloat(f) => VArray([
+      VString("f"),
+      VFloat(f)
+    ]),
+    EString(s) => VArray([
+      VString("s"),
+      VString(s)
+    ]),
+    EBool(b) => VArray([
+      VString("b"),
+      VBool(b)
+    ]),
+    EUnit => VArray([
+      VString("u")
+    ]),
+    EIdent(name) => VArray([
+      VString("d"),
+      VString(name)
+    ]),
+    EBinOp(op, left, right) => VArray([
+      VString("bo"),
+      VString(op),
+      encode_expr(left),
+      encode_expr(right)
+    ]),
+    EUnaryOp(op, operand) => VArray([
+      VString("uo"),
+      VString(op),
+      encode_expr(operand)
+    ]),
+    ELet(name, val, body) => VArray([
+      VString("lt"),
+      VString(name),
+      encode_expr(val),
+      encode_expr(body)
+    ]),
+    ELetRec(name, val, body) => VArray([
+      VString("lr"),
+      VString(name),
+      encode_expr(val),
+      encode_expr(body)
+    ]),
+    ELetMut(name, val, body) => VArray([
+      VString("lm"),
+      VString(name),
+      encode_expr(val),
+      encode_expr(body)
+    ]),
+    EAssign(name, val, body) => VArray([
+      VString("as"),
+      VString(name),
+      encode_expr(val),
+      encode_expr(body)
+    ]),
+    EAssignOp(name, op, val, body) => VArray([
+      VString("ao"),
+      VString(name),
+      VString(op),
+      encode_expr(val),
+      encode_expr(body)
+    ]),
+    ESeq(left, right) => VArray([
+      VString("sq"),
+      encode_expr(left),
+      encode_expr(right)
+    ]),
+    EIf(cond, then_e, else_e) => VArray([
+      VString("if"),
+      encode_expr(cond),
+      encode_expr(then_e),
+      encode_expr(else_e)
+    ]),
+    ECall(callee, args) => VArray([
+      VString("ca"),
+      encode_expr(callee),
+      go_exprs(args, 0)
+    ]),
+    ETuple(elems) => VArray([
+      VString("tu"),
+      go_exprs(elems, 0)
+    ]),
+    EArray(elems) => VArray([
+      VString("ar"),
+      go_exprs(elems, 0)
+    ]),
+    ERecord(fields) => VArray([
+      VString("rc"),
+      go_fields(fields, 0)
+    ]),
+    EFn(_, _, params, _, _, body) => VArray([
+      VString("fn"),
+      go_params(params, 0),
+      encode_expr(body)
+    ]),
+    EMatch(scrutinee, arms) => VArray([
+      VString("ma"),
+      encode_expr(scrutinee),
+      go_arms(arms, 0)
+    ]),
+    EWhile(cond, body) => VArray([
+      VString("wh"),
+      encode_expr(cond),
+      encode_expr(body)
+    ]),
+    EForIn(name, iter, body) => VArray([
+      VString("fi"),
+      VString(name),
+      encode_expr(iter),
+      encode_expr(body)
+    ]),
+    EDot(obj, field) => VArray([
+      VString("dt"),
+      encode_expr(obj),
+      VString(field)
+    ]),
+    EHandle(body, arms) => VArray([
+      VString("ha"),
+      encode_expr(body),
+      go_arms(arms, 0)
+    ]),
+    EThrow(val) => VArray([
+      VString("th"),
+      encode_expr(val)
+    ]),
+    EBreak(_) => VArray([
+      VString("br")
+    ]),
+    EContinue(_) => VArray([
+      VString("co")
+    ]),
+    ELabeledArg(_, _, inner) => encode_expr(inner),
+    _ => VArray([
+      VString("u")
+    ])
+  }
+}
 
 export let rec match_pattern = (pat: Pat, v: Value) -> Option[Array[(String, Value)]] {
-  let empty_binds = array_slice([("_", VUnit)], 0, 0)
+  let empty_binds = array_slice([
+    ("_", VUnit)
+  ], 0, 0)
   let rec pats_to_binds = (pats: Array[Pat], vals: Array[Value], i: Int, acc: Array[(String, Value)]) -> Option[Array[(String, Value)]] {
-    if i >= array_length(pats) { Some(acc) }
+    if i >= array_length(pats) {
+      Some(acc)
+    }
     else {
       let p = array_get(pats, i)
       let pv = array_get(vals, i)
@@ -359,29 +778,52 @@ export let rec match_pattern = (pat: Pat, v: Value) -> Option[Array[(String, Val
   }
   match pat {
     PWild => Some(empty_binds),
-    PBind(name) => Some([(name, v)]),
+    PBind(name) => Some([
+      (name, v)
+    ]),
     PInt(n) => match v {
-      VInt(vi) => if eq(vi, n) { Some(empty_binds) } else { None },
+      VInt(vi) => if eq(vi, n) {
+        Some(empty_binds)
+      } else {
+        None
+      },
       _ => None
     },
     PString(s) => match v {
-      VString(sv) => if string_equals(sv, s) { Some(empty_binds) } else { None },
+      VString(sv) => if string_equals(sv, s) {
+        Some(empty_binds)
+      } else {
+        None
+      },
       _ => None
     },
     PBool(b) => match v {
       VBool(bv) => {
-        let same = if b { bv } else { not(bv) }
-        if same { Some(empty_binds) } else { None }
+        let same = if b {
+          bv
+        } else {
+          not(bv)
+        }
+        if same {
+          Some(empty_binds)
+        } else {
+          None
+        }
       },
       _ => None
     },
     PCtor(cname, pats) => match v {
-      VCtor(vname, vargs) => {
-        if string_equals(cname, vname) {
-          if eq(array_length(pats), 0) { Some(empty_binds) }
-          else { pats_to_binds(pats, vargs, 0, empty_binds) }
-        } else { None }
-      },
+      VCtor(vname, vargs) => if string_equals(cname, vname) {
+        if eq(array_length(pats), 0) {
+          Some(empty_binds)
+        }
+        else {
+          pats_to_binds(pats, vargs, 0, empty_binds)
+        }
+      } else {
+        None
+      }
+      ,
       _ => None
     },
     PTuple(pats) => match v {
@@ -395,23 +837,30 @@ export let rec match_pattern = (pat: Pat, v: Value) -> Option[Array[(String, Val
   }
 }
 
-// ===== Main expression evaluator =====
-
-export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { Error } {
-
-  let apply_fn = (fn_val: Value, evaled_args: Array[Value], caller_env: ValEnv) -> (Value, ValEnv) with { Error } {
+export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Error } {
+  let apply_fn = (fn_val: Value, evaled_args: Array[Value], caller_env: ValEnv) -> (Value, ValEnv)with { Error } {
     match fn_val {
       VFn(captures, params, _, self_name) => {
         // First capture entry is ("__body", encoded_body)
         let encoded_body = if array_length(captures) > 0 {
           let (key, bval) = array_get(captures, 0)
-          if string_equals(key, "__body") { bval } else { VUnit }
-        } else { VUnit }
+          if string_equals(key, "__body") {
+            bval
+          } else {
+            VUnit
+          }
+        } else {
+          VUnit
+        }
         let body = decode_expr(encoded_body)
         // Build fn env from remaining captures (skip __body)
         let real_captures = if array_length(captures) > 1 {
           array_slice(captures, 1, array_length(captures))
-        } else { array_slice([("_", VUnit)], 0, 0) }
+        } else {
+          array_slice([
+            ("_", VUnit)
+          ], 0, 0)
+        }
         let fn_env = val_env_bind_all(VEnvEmpty, real_captures)
         let fn_env2 = match self_name {
           Some(sn) => val_env_bind(fn_env, sn, fn_val),
@@ -419,10 +868,16 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
         }
         let plen = array_length(params)
         let rec bind_params = (i: Int, acc: ValEnv) -> ValEnv {
-          if i >= plen { acc }
+          if i >= plen {
+            acc
+          }
           else {
             let pname = array_get(params, i)
-            let pval = if i < array_length(evaled_args) { array_get(evaled_args, i) } else { VUnit }
+            let pval = if i < array_length(evaled_args) {
+              array_get(evaled_args, i)
+            } else {
+              VUnit
+            }
             bind_params(i + 1, val_env_bind(acc, pname, pval))
           }
         }
@@ -444,12 +899,15 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
       _ => (VUnit, caller_env)
     }
   }
-
-  let rec eval_handle_arms = (arms: Array[(Pat, Expr)], err_msg: String, h_env: ValEnv, i: Int) -> (Value, ValEnv) with { Error } {
-    if i >= array_length(arms) { throw(err_msg) }
+  let rec eval_handle_arms = (arms: Array[(Pat, Expr)], err_msg: String, h_env: ValEnv, i: Int) -> (Value, ValEnv)with { Error } {
+    if i >= array_length(arms) {
+      throw(err_msg)
+    }
     else {
       let (pat, arm_expr) = array_get(arms, i)
-      let err_val = VCtor("Error", [VString(err_msg)])
+      let err_val = VCtor("Error", [
+        VString(err_msg)
+      ])
       match match_pattern(pat, err_val) {
         Some(binds) => {
           let arm_env = val_env_bind_all(h_env, binds)
@@ -459,9 +917,10 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
       }
     }
   }
-
-  let rec eval_match_arms = (arms: Array[(Pat, Expr)], scrutinee_val: Value, match_env: ValEnv, i: Int) -> (Value, ValEnv) with { Error } {
-    if i >= array_length(arms) { (VUnit, match_env) }
+  let rec eval_match_arms = (arms: Array[(Pat, Expr)], scrutinee_val: Value, match_env: ValEnv, i: Int) -> (Value, ValEnv)with { Error } {
+    if i >= array_length(arms) {
+      (VUnit, match_env)
+    }
     else {
       let (pat, arm_expr) = array_get(arms, i)
       match match_pattern(pat, scrutinee_val) {
@@ -473,8 +932,7 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
       }
     }
   }
-
-  let rec eval_while_loop = (cond_expr: Expr, body_expr: Expr, while_env: ValEnv) -> (Value, ValEnv) with { Error } {
+  let rec eval_while_loop = (cond_expr: Expr, body_expr: Expr, while_env: ValEnv) -> (Value, ValEnv)with { Error } {
     let (cv, env2) = eval_expr(cond_expr, while_env)
     match cv {
       VBool(true) => {
@@ -484,66 +942,78 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
       _ => (VUnit, env2)
     }
   }
-
-  let rec eval_args = (arg_exprs: Array[Expr], arg_env: ValEnv, i: Int, acc: Array[Value]) -> (Array[Value], ValEnv) with { Error } {
-    if i >= array_length(arg_exprs) { (acc, arg_env) }
+  let rec eval_args = (arg_exprs: Array[Expr], arg_env: ValEnv, i: Int, acc: Array[Value]) -> (Array[Value], ValEnv)with { Error } {
+    if i >= array_length(arg_exprs) {
+      (acc, arg_env)
+    }
     else {
       let (av, env2) = eval_expr(array_get(arg_exprs, i), arg_env)
-      eval_args(arg_exprs, env2, i + 1, array_concat(acc, [av]))
+      eval_args(arg_exprs, env2, i + 1, array_concat(acc, [
+        av
+      ]))
     }
   }
-
-  let rec eval_elems = (elems: Array[Expr], el_env: ValEnv, i: Int, acc: Array[Value]) -> (Array[Value], ValEnv) with { Error } {
-    if i >= array_length(elems) { (acc, el_env) }
+  let rec eval_elems = (elems: Array[Expr], el_env: ValEnv, i: Int, acc: Array[Value]) -> (Array[Value], ValEnv)with { Error } {
+    if i >= array_length(elems) {
+      (acc, el_env)
+    }
     else {
       let (ev, env2) = eval_expr(array_get(elems, i), el_env)
-      eval_elems(elems, env2, i + 1, array_concat(acc, [ev]))
+      eval_elems(elems, env2, i + 1, array_concat(acc, [
+        ev
+      ]))
     }
   }
-
-  let rec eval_fields = (fields: Array[(String, Expr)], f_env: ValEnv, i: Int, acc: Array[(String, Value)]) -> (Array[(String, Value)], ValEnv) with { Error } {
-    if i >= array_length(fields) { (acc, f_env) }
+  let rec eval_fields = (fields: Array[(String, Expr)], f_env: ValEnv, i: Int, acc: Array[(String, Value)]) -> (Array[(String, Value)], ValEnv)with { Error } {
+    if i >= array_length(fields) {
+      (acc, f_env)
+    }
     else {
       let (fname, fexpr) = array_get(fields, i)
       let (fv, env2) = eval_expr(fexpr, f_env)
-      eval_fields(fields, env2, i + 1, array_concat(acc, [(fname, fv)]))
+      eval_fields(fields, env2, i + 1, array_concat(acc, [
+        (fname, fv)
+      ]))
     }
   }
-
   let rec capture_env = (e: ValEnv, acc: Array[(String, Value)]) -> Array[(String, Value)] {
     match e {
       VEnvEmpty => acc,
-      VEnvBind(n, v, rest) => capture_env(rest, array_concat(acc, [(n, v)]))
+      VEnvBind(n, v, rest) => capture_env(rest, array_concat(acc, [
+        (n, v)
+      ]))
     }
   }
-
-  let rec eval_for_in = (vname: String, elems: Array[Value], body_expr: Expr, for_env: ValEnv, i: Int, acc: Array[Value]) -> (Value, ValEnv) with { Error } {
-    if i >= array_length(elems) { (VArray(acc), for_env) }
+  let rec eval_for_in = (vname: String, elems: Array[Value], body_expr: Expr, for_env: ValEnv, i: Int, acc: Array[Value]) -> (Value, ValEnv)with { Error } {
+    if i >= array_length(elems) {
+      (VArray(acc), for_env)
+    }
     else {
       let elem = array_get(elems, i)
       let iter_env = val_env_bind(for_env, vname, elem)
       let (rv, _) = eval_expr(body_expr, iter_env)
-      eval_for_in(vname, elems, body_expr, for_env, i + 1, array_concat(acc, [rv]))
+      eval_for_in(vname, elems, body_expr, for_env, i + 1, array_concat(acc, [
+        rv
+      ]))
     }
   }
-
-  let empty_vals = array_slice([VUnit], 0, 0)
-  let empty_pairs = array_slice([("_", VUnit)], 0, 0)
-
+  let empty_vals = array_slice([
+    VUnit
+  ], 0, 0)
+  let empty_pairs = array_slice([
+    ("_", VUnit)
+  ], 0, 0)
   match expr {
     EInt(n) => (VInt(n), env),
     EFloat(f) => (VFloat(f), env),
     EString(s) => (VString(s), env),
     EBool(b) => (VBool(b), env),
     EUnit => (VUnit, env),
-
-    EIdent(name) => {
-      match val_env_lookup(env, name) {
-        Some(v) => (v, env),
-        None => (VUnit, env)
-      }
-    },
-
+    EIdent(name) => match val_env_lookup(env, name) {
+      Some(v) => (v, env),
+      None => (VUnit, env)
+    }
+    ,
     ETuple(elems) => {
       let (vals, env2) = eval_elems(elems, env, 0, empty_vals)
       (VTuple(vals), env2)
@@ -556,7 +1026,6 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
       let (fvals, env2) = eval_fields(fields, env, 0, empty_pairs)
       (VRecord(fvals), env2)
     },
-
     ELet(name, val_expr, body) => {
       let (v, env2) = eval_expr(val_expr, env)
       eval_expr(body, val_env_bind(env2, name, v))
@@ -579,7 +1048,10 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
       eval_expr(body, val_env_bind(env2, name, v))
     },
     EAssignOp(name, op, val_expr, body) => {
-      let old_val = match val_env_lookup(env, name) { Some(ov) => ov, None => VInt(0) }
+      let old_val = match val_env_lookup(env, name) {
+        Some(ov) => ov,
+        None => VInt(0)
+      }
       let (rv, env2) = eval_expr(val_expr, env)
       let new_val = eval_binop(op, old_val, rv)
       eval_expr(body, val_env_bind(env2, name, new_val))
@@ -588,7 +1060,6 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
       let (_, env2) = eval_expr(left, env)
       eval_expr(right, env2)
     },
-
     EIf(cond, then_e, else_e) => {
       let (cv, env2) = eval_expr(cond, env)
       match cv {
@@ -608,109 +1079,141 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
         _ => (VUnit, env2)
       }
     },
-
     EFn(_, _, params, _, _, body) => {
       let plen = array_length(params)
       let rec get_names = (i: Int, acc: Array[String]) -> Array[String] {
-        if i >= plen { acc }
+        if i >= plen {
+          acc
+        }
         else {
           let (pname, _) = array_get(params, i)
-          get_names(i + 1, array_concat(acc, [pname]))
+          get_names(i + 1, array_concat(acc, [
+            pname
+          ]))
         }
       }
-      let param_names = get_names(0, array_slice(["_"], 0, 0))
+      let param_names = get_names(0, array_slice([
+        "_"
+      ], 0, 0))
       let env_captures = capture_env(env, empty_pairs)
-      let captures = array_concat([("__body", encode_expr(body))], env_captures)
+      let captures = array_concat([
+        ("__body", encode_expr(body))
+      ], env_captures)
       (VFn(captures, param_names, 0, None), env)
     },
     ECall(callee, arg_exprs) => {
-      let callee_is_ident = match callee { EIdent(_) => true, _ => false }
+      let callee_is_ident = match callee {
+        EIdent(_) => true,
+        _ => false
+      }
       let (callee_val, env2) = eval_expr(callee, env)
       let (evaled_args, env3) = eval_args(arg_exprs, env2, 0, empty_vals)
       match callee_val {
         VFn(_, _, _, _) => apply_fn(callee_val, evaled_args, env3),
         VCtor(_, _) => apply_fn(callee_val, evaled_args, env3),
-        _ => {
-          if callee_is_ident {
-            let name = match callee { EIdent(n) => n, _ => "" }
-            // array_builder: managed via __bstore in env
-            if string_equals(name, "array_builder") {
-              let store = match val_env_lookup(env3, "__bstore") {
-                Some(VArray(s)) => s,
-                _ => empty_vals
-              }
-              let bid = array_length(store) + 1
-              let new_store = array_concat(store, [VArray(empty_vals)])
-              let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
-              (VInt(bid), env4)
+        _ => if callee_is_ident {
+          let name = match callee {
+            EIdent(n) => n,
+            _ => ""
+          }
+          // array_builder: managed via __bstore in env
+          if string_equals(name, "array_builder") {
+            let store = match val_env_lookup(env3, "__bstore") {
+              Some(VArray(s)) => s,
+              _ => empty_vals
             }
-            else if string_equals(name, "array_builder_push") {
-              let builder = array_get(evaled_args, 0)
-              let val = array_get(evaled_args, 1)
-              match builder {
-                VInt(bid) => {
-                  let store = match val_env_lookup(env3, "__bstore") {
-                    Some(VArray(s)) => s,
-                    _ => empty_vals
+            let bid = array_length(store) + 1
+            let new_store = array_concat(store, [
+              VArray(empty_vals)
+            ])
+            let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
+            (VInt(bid), env4)
+          }
+          else if string_equals(name, "array_builder_push") {
+            let builder = array_get(evaled_args, 0)
+            let val = array_get(evaled_args, 1)
+            match builder {
+              VInt(bid) => {
+                let store = match val_env_lookup(env3, "__bstore") {
+                  Some(VArray(s)) => s,
+                  _ => empty_vals
+                }
+                let idx = bid - 1
+                if idx >= 0 {
+                  if idx < array_length(store) {
+                    let old_items = match array_get(store, idx) {
+                      VArray(items) => items,
+                      _ => empty_vals
+                    }
+                    let new_items = array_concat(old_items, [
+                      val
+                    ])
+                    let before = array_slice(store, 0, idx)
+                    let after = array_slice(store, idx + 1, array_length(store))
+                    let new_store = array_concat(array_concat(before, [
+                      VArray(new_items)
+                    ]), after)
+                    let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
+                    (VUnit, env4)
+                  } else {
+                    (VUnit, env3)
                   }
-                  let idx = bid - 1
-                  if idx >= 0 {
-                    if idx < array_length(store) {
-                      let old_items = match array_get(store, idx) {
-                        VArray(items) => items,
-                        _ => empty_vals
-                      }
-                      let new_items = array_concat(old_items, [val])
-                      let before = array_slice(store, 0, idx)
-                      let after = array_slice(store, idx + 1, array_length(store))
-                      let new_store = array_concat(array_concat(before, [VArray(new_items)]), after)
-                      let env4 = val_env_bind(env3, "__bstore", VArray(new_store))
-                      (VUnit, env4)
-                    } else { (VUnit, env3) }
-                  } else { (VUnit, env3) }
-                },
-                _ => (VUnit, env3)
-              }
+                } else {
+                  (VUnit, env3)
+                }
+              },
+              _ => (VUnit, env3)
             }
-            else if string_equals(name, "array_builder_freeze") {
-              let builder = array_get(evaled_args, 0)
-              match builder {
-                VInt(bid) => {
-                  let store = match val_env_lookup(env3, "__bstore") {
-                    Some(VArray(s)) => s,
-                    _ => empty_vals
+          }
+          else if string_equals(name, "array_builder_freeze") {
+            let builder = array_get(evaled_args, 0)
+            match builder {
+              VInt(bid) => {
+                let store = match val_env_lookup(env3, "__bstore") {
+                  Some(VArray(s)) => s,
+                  _ => empty_vals
+                }
+                let idx = bid - 1
+                if idx >= 0 {
+                  if idx < array_length(store) {
+                    match array_get(store, idx) {
+                      VArray(items) => (VArray(items), env3),
+                      _ => (VArray(empty_vals), env3)
+                    }
+                  } else {
+                    (VArray(empty_vals), env3)
                   }
-                  let idx = bid - 1
-                  if idx >= 0 {
-                    if idx < array_length(store) {
-                      match array_get(store, idx) {
-                        VArray(items) => (VArray(items), env3),
-                        _ => (VArray(empty_vals), env3)
-                      }
-                    } else { (VArray(empty_vals), env3) }
-                  } else { (VArray(empty_vals), env3) }
-                },
-                _ => (VArray(empty_vals), env3)
-              }
+                } else {
+                  (VArray(empty_vals), env3)
+                }
+              },
+              _ => (VArray(empty_vals), env3)
             }
-            else {
-              match eval_builtin_call(name, evaled_args) {
-                Some(v) => (v, env3),
-                None => (VUnit, env3)
-              }
+          }
+          else {
+            match eval_builtin_call(name, evaled_args) {
+              Some(v) => (v, env3),
+              None => (VUnit, env3)
             }
-          } else { (VUnit, env3) }
+          }
+        } else {
+          (VUnit, env3)
         }
       }
     },
-
     EBinOp(op, left, right) => {
       let (lv, env2) = eval_expr(left, env)
       if string_equals(op, "&&") {
-        match lv { VBool(false) => (VBool(false), env2), _ => eval_expr(right, env2) }
+        match lv {
+          VBool(false) => (VBool(false), env2),
+          _ => eval_expr(right, env2)
+        }
       }
       else if string_equals(op, "||") {
-        match lv { VBool(true) => (VBool(true), env2), _ => eval_expr(right, env2) }
+        match lv {
+          VBool(true) => (VBool(true), env2),
+          _ => eval_expr(right, env2)
+        }
       }
       else {
         let (rv, env3) = eval_expr(right, env2)
@@ -720,53 +1223,79 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv) with { E
     EUnaryOp(op, operand) => {
       let (v, env2) = eval_expr(operand, env)
       if string_equals(op, "-") {
-        match v { VInt(n) => (VInt(0 - n), env2), VFloat(fv) => (VFloat(0.0 - fv), env2), _ => (VUnit, env2) }
+        match v {
+          VInt(n) => (VInt(0 - n), env2),
+          VFloat(fv) => (VFloat(0.0 - fv), env2),
+          _ => (VUnit, env2)
+        }
       }
       else if string_equals(op, "!") {
-        match v { VBool(bv) => (VBool(not(bv)), env2), _ => (VUnit, env2) }
+        match v {
+          VBool(bv) => (VBool(not(bv)), env2),
+          _ => (VUnit, env2)
+        }
       }
-      else { (VUnit, env2) }
+      else {
+        (VUnit, env2)
+      }
     },
-
     EDot(obj_expr, field) => {
       let (ov, env2) = eval_expr(obj_expr, env)
       match ov {
         VRecord(fields) => {
           let rec find_field = (fs: Array[(String, Value)], i: Int) -> Value {
-            if i >= array_length(fs) { VUnit }
+            if i >= array_length(fs) {
+              VUnit
+            }
             else {
               let (fn_name, fv) = array_get(fs, i)
-              if string_equals(fn_name, field) { fv }
-              else { find_field(fs, i + 1) }
+              if string_equals(fn_name, field) {
+                fv
+              }
+              else {
+                find_field(fs, i + 1)
+              }
             }
           }
           (find_field(fields, 0), env2)
         },
         VTuple(elems) => {
-          let idx = if string_equals(field, "0") { 0 }
-            else if string_equals(field, "1") { 1 }
-            else if string_equals(field, "2") { 2 }
-            else if string_equals(field, "3") { 3 }
-            else { 0 }
-          if idx < array_length(elems) { (array_get(elems, idx), env2) }
-          else { (VUnit, env2) }
+          let idx = if string_equals(field, "0") {
+            0
+          }
+          else if string_equals(field, "1") {
+            1
+          }
+          else if string_equals(field, "2") {
+            2
+          }
+          else if string_equals(field, "3") {
+            3
+          }
+          else {
+            0
+          }
+          if idx < array_length(elems) {
+            (array_get(elems, idx), env2)
+          }
+          else {
+            (VUnit, env2)
+          }
         },
         _ => (VUnit, env2)
       }
     },
-    EHandle(body, arms) => {
-      handle {
-        eval_expr(body, env)
-      } {
-        Error(msg) => eval_handle_arms(arms, msg, env, 0)
-      }
-    },
+    EHandle(body, arms) => handle {
+      eval_expr(body, env)
+    } {
+      Error(msg) => eval_handle_arms(arms, msg, env, 0)
+    }
+    ,
     EThrow(val_expr) => {
       let (v, _) = eval_expr(val_expr, env)
       let msg = value_to_string(v)
       throw(msg)
     },
-
     EBreak(_) => (VUnit, env),
     EContinue(_) => (VUnit, env),
     ELabeledArg(_, _, inner) => eval_expr(inner, env),

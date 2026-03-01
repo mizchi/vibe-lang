@@ -1,20 +1,35 @@
-import ./ast.vibe { Expr, Pat, TypeExpr, Stmt }
-import ./values.vibe { Value, ValEnv, val_env_bind, val_env_lookup, value_to_string, ModuleCtx, empty_module_ctx, module_ctx_new }
-import ./eval.vibe { eval_expr }
-import ./eval_loader.vibe { load_and_parse, collect_exports, source_lookup, contains_str }
-import ./path.vibe { resolve_path, dir_of }
+//# Imports
 
-// Anchor imports
-let _a1 = (e: Expr) -> Expr { e }
-let _a2 = (p: Pat) -> Pat { p }
-let _a3 = (t: TypeExpr) -> TypeExpr { t }
-let _a4 = (s: Stmt) -> Stmt { s }
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
 
-let empty_ctor_args = array_slice([VUnit], 0, 0)
+import ./eval.vibe {
+  eval_expr
+}
 
-// Bind enum constructors into environment
+import ./eval_loader.vibe {
+  collect_exports, contains_str, load_and_parse, source_lookup
+}
+
+import ./path.vibe {
+  dir_of, resolve_path
+}
+
+import ./values.vibe {
+  ModuleCtx, ValEnv, Value, empty_module_ctx, module_ctx_new, val_env_bind, val_env_lookup, value_to_string
+}
+
+//# Functions
+
+let empty_ctor_args = array_slice([
+  VUnit
+], 0, 0)
+
 let rec bind_enum_ctors = (variants: Array[(String, Array[TypeExpr])], i: Int, env: ValEnv) -> ValEnv {
-  if i >= array_length(variants) { env }
+  if i >= array_length(variants) {
+    env
+  }
   else {
     let (cname, _) = array_get(variants, i)
     let env2 = val_env_bind(env, cname, VCtor(cname, empty_ctor_args))
@@ -22,41 +37,48 @@ let rec bind_enum_ctors = (variants: Array[(String, Array[TypeExpr])], i: Int, e
   }
 }
 
-// Bind imported names from module_env into env
 let rec bind_import_names = (names: Array[(String, Option[String])], j: Int, env: ValEnv, module_env: ValEnv, exports: Array[String]) -> ValEnv {
-  if j >= array_length(names) { env }
+  if j >= array_length(names) {
+    env
+  }
   else {
     let (name, alias) = array_get(names, j)
-    let bind_name = match alias { Some(a) => a, None => name }
+    let bind_name = match alias {
+      Some(a) => a,
+      None => name
+    }
     let v = if contains_str(exports, name) {
       match val_env_lookup(module_env, name) {
         Some(val) => val,
         None => VUnit
       }
-    } else { VUnit }
+    } else {
+      VUnit
+    }
     bind_import_names(names, j + 1, val_env_bind(env, bind_name, v), module_env, exports)
   }
 }
 
 export let rec eval_stmts = (stmts: Array[Stmt], i: Int, env: ValEnv, ctx: ModuleCtx) -> ValEnv with { Error } {
-  if i >= array_length(stmts) { env }
+  if i >= array_length(stmts) {
+    env
+  }
   else {
     let stmt = array_get(stmts, i)
     let new_env = match stmt {
-      SLet(_, is_rec, name, _, val_expr) => {
-        if is_rec {
-          let env_placeholder = val_env_bind(env, name, VUnit)
-          let (v, env2) = eval_expr(val_expr, env_placeholder)
-          let final_v = match v {
-            VFn(captures, params, body_idx, _) => VFn(captures, params, body_idx, Some(name)),
-            _ => v
-          }
-          val_env_bind(env2, name, final_v)
-        } else {
-          let (v, env2) = eval_expr(val_expr, env)
-          val_env_bind(env2, name, v)
+      SLet(_, is_rec, name, _, val_expr) => if is_rec {
+        let env_placeholder = val_env_bind(env, name, VUnit)
+        let (v, env2) = eval_expr(val_expr, env_placeholder)
+        let final_v = match v {
+          VFn(captures, params, body_idx, _) => VFn(captures, params, body_idx, Some(name)),
+          _ => v
         }
-      },
+        val_env_bind(env2, name, final_v)
+      } else {
+        let (v, env2) = eval_expr(val_expr, env)
+        val_env_bind(env2, name, v)
+      }
+      ,
       SLetMut(name, _, val_expr) => {
         let (v, env2) = eval_expr(val_expr, env)
         val_env_bind(env2, name, v)
@@ -71,28 +93,29 @@ export let rec eval_stmts = (stmts: Array[Stmt], i: Int, env: ValEnv, ctx: Modul
         let (_ev, env2) = eval_expr(body, env)
         env2
       },
-      SImport(raw_path, names) => {
-        match ctx {
-          ModuleCtx(sources, loading, base_dir) => {
-            let resolved = resolve_path(base_dir, raw_path)
-            if contains_str(loading, resolved) {
-              throw(string_concat("import cycle detected: ", resolved))
-            }
-            match source_lookup(sources, resolved) {
-              None => throw(string_concat("module not found: ", resolved)),
-              Some(source) => {
-                let module_stmts = load_and_parse(source)
-                let new_loading = array_concat(loading, [resolved])
-                let new_base = dir_of(resolved)
-                let child_ctx = ModuleCtx(sources, new_loading, new_base)
-                let module_env = eval_stmts(module_stmts, 0, VEnvEmpty, child_ctx)
-                let exports = collect_exports(module_stmts)
-                bind_import_names(names, 0, env, module_env, exports)
-              }
+      SImport(raw_path, names) => match ctx {
+        ModuleCtx(sources, loading, base_dir) => {
+          let resolved = resolve_path(base_dir, raw_path)
+          if contains_str(loading, resolved) {
+            throw(string_concat("import cycle detected: ", resolved))
+          }
+          match source_lookup(sources, resolved) {
+            None => throw(string_concat("module not found: ", resolved)),
+            Some(source) => {
+              let module_stmts = load_and_parse(source)
+              let new_loading = array_concat(loading, [
+                resolved
+              ])
+              let new_base = dir_of(resolved)
+              let child_ctx = ModuleCtx(sources, new_loading, new_base)
+              let module_env = eval_stmts(module_stmts, 0, VEnvEmpty, child_ctx)
+              let exports = collect_exports(module_stmts)
+              bind_import_names(names, 0, env, module_env, exports)
             }
           }
         }
-      },
+      }
+      ,
       _ => env
     }
     eval_stmts(stmts, i + 1, new_env, ctx)
@@ -115,6 +138,15 @@ export let eval_and_lookup = (stmts: Array[Stmt], name: String) -> String {
   }
 }
 
+export let run_source = (source: String, name: String) -> String {
+  handle {
+    let stmts = load_and_parse(source)
+    eval_and_lookup(stmts, name)
+  } {
+    Error(msg) => string_concat("ERROR: ", msg)
+  }
+}
+
 export let eval_with_imports = (stmts: Array[Stmt], sources: Array[(String, String)], base_dir: String) -> ValEnv with { Error } {
   let ctx = module_ctx_new(sources, base_dir)
   eval_stmts(stmts, 0, VEnvEmpty, ctx)
@@ -125,15 +157,6 @@ export let eval_with_imports_lookup = (stmts: Array[Stmt], sources: Array[(Strin
   match val_env_lookup(env, name) {
     Some(v) => value_to_string(v),
     None => "<not found>"
-  }
-}
-
-export let run_source = (source: String, name: String) -> String {
-  handle {
-    let stmts = load_and_parse(source)
-    eval_and_lookup(stmts, name)
-  } {
-    Error(msg) => string_concat("ERROR: ", msg)
   }
 }
 

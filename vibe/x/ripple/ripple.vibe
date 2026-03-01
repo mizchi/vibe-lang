@@ -1,76 +1,51 @@
+//# Types
+
 export enum RippleDb {
-  RippleDb(
-    Array[(String, String)],
-    Array[(String, String)],
-    Array[(String, Array[String])],
-    Int
-  )
+  RippleDb(Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Int)
 }
+
+//# Functions
 
 let empty_strings = () -> Array[String] {
-  array_slice([""], 0, 0)
-}
-
-let empty_string_pairs = () -> Array[(String, String)] {
-  array_slice([("", "")], 0, 0)
+  array_slice([
+    ""
+  ], 0, 0)
 }
 
 let empty_deps_pairs = () -> Array[(String, Array[String])] {
-  array_slice([("", empty_strings())], 0, 0)
-}
-
-let rec lookup_string_entry = (entries: Array[(String, String)], key: String, i: Int) -> Option[String] {
-  if i >= array_length(entries) { None }
-  else {
-    let (k, v) = array_get(entries, i)
-    if string_equals(k, key) { Some(v) }
-    else { lookup_string_entry(entries, key, i + 1) }
-  }
+  array_slice([
+    ("", empty_strings())
+  ], 0, 0)
 }
 
 let rec lookup_deps_entry = (entries: Array[(String, Array[String])], key: String, i: Int) -> Option[Array[String]] {
-  if i >= array_length(entries) { None }
+  if i >= array_length(entries) {
+    None
+  }
   else {
     let (k, deps) = array_get(entries, i)
-    if string_equals(k, key) { Some(deps) }
-    else { lookup_deps_entry(entries, key, i + 1) }
-  }
-}
-
-let upsert_string_entry = (
-  entries: Array[(String, String)],
-  key: String,
-  value: String
-) -> Array[(String, String)] {
-  let len = array_length(entries)
-  let b = array_builder()
-  let rec go = (i: Int, found: Bool) -> Array[(String, String)] {
-    if i >= len {
-      if found {
-        array_builder_freeze(b)
-      } else {
-        array_builder_push(b, (key, value))
-        array_builder_freeze(b)
-      }
-    } else {
-      let (k, v) = array_get(entries, i)
-      if string_equals(k, key) {
-        array_builder_push(b, (key, value))
-        go(i + 1, true)
-      } else {
-        array_builder_push(b, (k, v))
-        go(i + 1, found)
-      }
+    if string_equals(k, key) {
+      Some(deps)
+    }
+    else {
+      lookup_deps_entry(entries, key, i + 1)
     }
   }
-  go(0, false)
 }
 
-let upsert_deps_entry = (
-  entries: Array[(String, Array[String])],
-  key: String,
-  deps: Array[String]
-) -> Array[(String, Array[String])] {
+export let ripple_get_deps = (db: RippleDb, path: String) -> Option[Array[String]] {
+  match db {
+    RippleDb(_, _, deps_map, _) => lookup_deps_entry(deps_map, path, 0)
+  }
+}
+
+export let ripple_eval_count = (db: RippleDb) -> Int {
+  match db {
+    RippleDb(_, _, _, count) => count
+  }
+}
+
+let upsert_deps_entry = (entries: Array[(String, Array[String])], key: String, deps: Array[String]) -> Array[(String, Array[String])] {
   let len = array_length(entries)
   let b = array_builder()
   let rec go = (i: Int, found: Bool) -> Array[(String, Array[String])] {
@@ -95,19 +70,27 @@ let upsert_deps_entry = (
   go(0, false)
 }
 
+let empty_string_pairs = () -> Array[(String, String)] {
+  array_slice([
+    ("", "")
+  ], 0, 0)
+}
+
 export let ripple_new = () -> RippleDb {
   RippleDb(empty_string_pairs(), empty_string_pairs(), empty_deps_pairs(), 0)
 }
 
-export let ripple_set_source = (db: RippleDb, path: String, source: String) -> RippleDb {
-  match db {
-    RippleDb(sources, fingerprints, deps_map, eval_count) => {
-      RippleDb(
-        upsert_string_entry(sources, path, source),
-        fingerprints,
-        deps_map,
-        eval_count
-      )
+let rec lookup_string_entry = (entries: Array[(String, String)], key: String, i: Int) -> Option[String] {
+  if i >= array_length(entries) {
+    None
+  }
+  else {
+    let (k, v) = array_get(entries, i)
+    if string_equals(k, key) {
+      Some(v)
+    }
+    else {
+      lookup_string_entry(entries, key, i + 1)
     }
   }
 }
@@ -118,54 +101,53 @@ export let ripple_get_source = (db: RippleDb, path: String) -> Option[String] {
   }
 }
 
-export let ripple_get_fingerprint = (db: RippleDb, path: String) -> Option[String] {
-  match db {
-    RippleDb(_, fingerprints, _, _) => lookup_string_entry(fingerprints, path, 0)
-  }
-}
-
-export let ripple_get_deps = (db: RippleDb, path: String) -> Option[Array[String]] {
-  match db {
-    RippleDb(_, _, deps_map, _) => lookup_deps_entry(deps_map, path, 0)
-  }
-}
-
-export let ripple_record_eval = (
-  db: RippleDb,
-  path: String,
-  fingerprint: String,
-  deps: Array[String]
-) -> RippleDb {
-  match db {
-    RippleDb(sources, fingerprints, deps_map, eval_count) => {
-      match lookup_string_entry(fingerprints, path, 0) {
-        Some(prev_fp) => {
-          if string_equals(prev_fp, fingerprint) {
-            RippleDb(sources, fingerprints, deps_map, eval_count)
-          } else {
-            RippleDb(
-              sources,
-              upsert_string_entry(fingerprints, path, fingerprint),
-              upsert_deps_entry(deps_map, path, deps),
-              eval_count + 1
-            )
-          }
-        },
-        None => {
-          RippleDb(
-            sources,
-            upsert_string_entry(fingerprints, path, fingerprint),
-            upsert_deps_entry(deps_map, path, deps),
-            eval_count + 1
-          )
-        }
+let upsert_string_entry = (entries: Array[(String, String)], key: String, value: String) -> Array[(String, String)] {
+  let len = array_length(entries)
+  let b = array_builder()
+  let rec go = (i: Int, found: Bool) -> Array[(String, String)] {
+    if i >= len {
+      if found {
+        array_builder_freeze(b)
+      } else {
+        array_builder_push(b, (key, value))
+        array_builder_freeze(b)
       }
+    } else {
+      let (k, v) = array_get(entries, i)
+      if string_equals(k, key) {
+        array_builder_push(b, (key, value))
+        go(i + 1, true)
+      } else {
+        array_builder_push(b, (k, v))
+        go(i + 1, found)
+      }
+    }
+  }
+  go(0, false)
+}
+
+export let ripple_set_source = (db: RippleDb, path: String, source: String) -> RippleDb {
+  match db {
+    RippleDb(sources, fingerprints, deps_map, eval_count) => RippleDb(upsert_string_entry(sources, path, source), fingerprints, deps_map, eval_count)
+  }
+}
+
+export let ripple_record_eval = (db: RippleDb, path: String, fingerprint: String, deps: Array[String]) -> RippleDb {
+  match db {
+    RippleDb(sources, fingerprints, deps_map, eval_count) => match lookup_string_entry(fingerprints, path, 0) {
+      Some(prev_fp) => if string_equals(prev_fp, fingerprint) {
+        RippleDb(sources, fingerprints, deps_map, eval_count)
+      } else {
+        RippleDb(sources, upsert_string_entry(fingerprints, path, fingerprint), upsert_deps_entry(deps_map, path, deps), eval_count + 1)
+      }
+      ,
+      None => RippleDb(sources, upsert_string_entry(fingerprints, path, fingerprint), upsert_deps_entry(deps_map, path, deps), eval_count + 1)
     }
   }
 }
 
-export let ripple_eval_count = (db: RippleDb) -> Int {
+export let ripple_get_fingerprint = (db: RippleDb, path: String) -> Option[String] {
   match db {
-    RippleDb(_, _, _, count) => count
+    RippleDb(_, fingerprints, _, _) => lookup_string_entry(fingerprints, path, 0)
   }
 }
