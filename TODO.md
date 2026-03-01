@@ -10,7 +10,11 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Self-host Compiler (`vibe/compiler/`)
 
-- [ ] Self-hosting: vibe/compiler が vibe/compiler 自身を parse + eval する（最終ゲート）
+- [x] Self-hosting: vibe/compiler が vibe/compiler 自身を parse + eval する（最終ゲート）
+  - selfhost lexer が token.vibe をトークナイズ（自身のソースを `fs_read_file` で読み込み）
+  - selfhost parser + printer が token.vibe を roundtrip（lex → parse → print）
+  - selfhost evaluator が token.vibe を lex → parse → eval し、`token_to_string(TInt(42))` を呼び出して正しい結果を返す
+  - DoD 達成: meta-circular self-hosting 完了
 - [x] Gate 0: selfhost smoke suite を安定通過
   - `eval_selfhost_test.vibe`
   - `eval_selfhost2_test.vibe`

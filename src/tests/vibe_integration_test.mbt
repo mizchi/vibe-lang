@@ -1100,3 +1100,89 @@ test "selfhost gate5: eval pipeline meta-circular" {
     _ => fail("expected String(\"42\"), got: \{result.last.to_string()}")
   }
 }
+
+///|
+test "selfhost final: lexer tokenizes own source" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
+  let driver =
+    #|import ./vibe/compiler/lexer.vibe { lex }
+    #|let source = fs_read_file("vibe/compiler/token.vibe")
+    #|let tokens = lex(source)
+    #|array_length(tokens)
+  let result = eval_selfhost_module(db, driver)
+  match result.last {
+    Some(@core.Value::Int(n)) => {
+      assert_true(n > 0)
+      inspect(
+        n,
+        content=(
+          #|583
+        ),
+      )
+    }
+    _ => fail("expected Int(>0), got: \{result.last.to_string()}")
+  }
+}
+
+///|
+test "selfhost final: parser roundtrips own source" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
+  let driver =
+    #|import ./vibe/compiler/lexer.vibe { lex }
+    #|import ./vibe/compiler/parser.vibe { parse_program }
+    #|import ./vibe/compiler/printer.vibe { print_program }
+    #|let source = fs_read_file("vibe/compiler/token.vibe")
+    #|let tokens = lex(source)
+    #|let stmts = parse_program(tokens)
+    #|print_program(stmts)
+  let result = eval_selfhost_module(db, driver)
+  match result.last {
+    Some(@core.Value::String(s)) => {
+      assert_true(s.length() > 0)
+      assert_true(s.contains("token_to_string"))
+    }
+    _ =>
+      fail(
+        "expected non-empty String containing 'token_to_string', got: \{result.last.to_string()}",
+      )
+  }
+}
+
+///|
+test "selfhost final: eval pipeline processes own token module" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/values.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_loader.vibe", visited)
+  load_compiler_source(db, "vibe/module/path.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_e2e_helpers.vibe", visited)
+  let driver =
+    #|import ./vibe/compiler/eval_e2e_helpers.vibe { run_and_lookup }
+    #|let source = fs_read_file("vibe/compiler/token.vibe")
+    #|let test_src = string_concat(source, "\nlet __result = token_to_string(TInt(42))")
+    #|run_and_lookup(test_src, "__result")
+  let result = eval_selfhost_module(db, driver)
+  match result.last {
+    Some(@core.Value::String(v)) => assert_true(v.contains("TInt(42)"))
+    _ =>
+      fail(
+        "expected String containing 'TInt(42)', got: \{result.last.to_string()}",
+      )
+  }
+}
