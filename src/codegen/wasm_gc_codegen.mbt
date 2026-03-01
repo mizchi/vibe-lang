@@ -651,6 +651,11 @@ fn gc_val_kind_from_type(
     @core.Type::Named(name~, args~) =>
       if args.length() == 0 {
         match name {
+          "Int" | "i32" => GcValKind::I64
+          "Float" | "f32" => GcValKind::F32
+          "Double" | "f64" => GcValKind::F64
+          "Bool" | "Unit" => GcValKind::I32
+          "String" => GcValKind::Ref(ctx.string_type)
           "anyref" => GcValKind::AnyRef
           "eqref" => GcValKind::EqRef
           "i31ref" => GcValKind::I31Ref

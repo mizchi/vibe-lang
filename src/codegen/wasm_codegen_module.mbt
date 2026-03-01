@@ -991,23 +991,212 @@ fn restore_local_kinds(
 }
 
 ///|
-/// Strip type-assertion identity blocks from Let/ExportLet expressions.
-/// Rewrites `let x = { let __assert = fn(v){v}; __assert(inner) }` to `let x = inner`
-/// so that collect_func_defs never sees the dead identity functions.
-fn strip_type_assert_stmts(ast : @core.Module) -> @core.Module {
+/// Recursively strip type-assertion identity blocks from an expression.
+/// First tries unwrap_type_assert_block, then recurses into sub-expressions.
+fn strip_type_assert_expr(expr : @core.Expr) -> @core.Expr {
+  let expr = unwrap_type_assert_block(expr)
+  match expr {
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(body=strip_type_assert_module(body), span~)
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) =>
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params~,
+        ret~,
+        effects~,
+        body=strip_type_assert_module(body),
+        span~,
+      )
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=strip_type_assert_expr(cond),
+        then_body=strip_type_assert_module(then_body),
+        else_body=strip_type_assert_module(else_body),
+        span~,
+      )
+    @core.Expr::Match(scrutinee~, arms~, span~) => {
+      let new_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        new_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: arm.cond.map(strip_type_assert_expr),
+          expr: strip_type_assert_expr(arm.expr),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Match(
+        scrutinee=strip_type_assert_expr(scrutinee),
+        arms=new_arms,
+        span~,
+      )
+    }
+    @core.Expr::Handle(body~, arms~, span~) => {
+      let new_arms : Array[@core.MatchArm] = []
+      for arm in arms {
+        new_arms.push(@core.MatchArm::{
+          pat: arm.pat,
+          cond: arm.cond.map(strip_type_assert_expr),
+          expr: strip_type_assert_expr(arm.expr),
+          span: arm.span,
+        })
+      }
+      @core.Expr::Handle(
+        body=strip_type_assert_module(body),
+        arms=new_arms,
+        span~,
+      )
+    }
+    @core.Expr::While(cond~, body~, span~) =>
+      @core.Expr::While(
+        cond=strip_type_assert_expr(cond),
+        body=strip_type_assert_module(body),
+        span~,
+      )
+    @core.Expr::Loop(params~, body~, span~) => {
+      let new_params : Array[@core.LoopParam] = []
+      for param in params {
+        new_params.push(@core.LoopParam::{
+          name: param.name,
+          init: strip_type_assert_expr(param.init),
+          span: param.span,
+        })
+      }
+      @core.Expr::Loop(
+        params=new_params,
+        body=strip_type_assert_module(body),
+        span~,
+      )
+    }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) =>
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=strip_type_assert_expr(iterable),
+        body=strip_type_assert_module(body),
+        span~,
+      )
+    @core.Expr::Call(name~, type_args~, args~, span~) => {
+      let new_args : Array[@core.CallArg] = []
+      for arg in args {
+        new_args.push(@core.CallArg::{
+          label: arg.label,
+          expr: strip_type_assert_expr(arg.expr),
+          span: arg.span,
+        })
+      }
+      @core.Expr::Call(name~, type_args~, args=new_args, span~)
+    }
+    @core.Expr::Tuple(items~, span~) => {
+      let new_items = items.map(strip_type_assert_expr)
+      @core.Expr::Tuple(items=new_items, span~)
+    }
+    @core.Expr::Array(items~, span~) => {
+      let new_items = items.map(strip_type_assert_expr)
+      @core.Expr::Array(items=new_items, span~)
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let new_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: strip_type_assert_expr(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::Record(fields=new_fields, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let new_fields : Array[@core.MapFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.MapFieldExpr::{
+          key: field.key,
+          expr: strip_type_assert_expr(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::Map(fields=new_fields, span~)
+    }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let new_fields : Array[@core.RecordFieldExpr] = []
+      for field in fields {
+        new_fields.push(@core.RecordFieldExpr::{
+          name: field.name,
+          expr: strip_type_assert_expr(field.expr),
+          span: field.span,
+        })
+      }
+      @core.Expr::StructLit(name~, type_args~, fields=new_fields, span~)
+    }
+    @core.Expr::TupleIndex(expr=inner, index~, span~) =>
+      @core.Expr::TupleIndex(expr=strip_type_assert_expr(inner), index~, span~)
+    @core.Expr::Raise(value~, span~) =>
+      @core.Expr::Raise(value=strip_type_assert_expr(value), span~)
+    @core.Expr::Break(value~, span~) =>
+      @core.Expr::Break(value=value.map(strip_type_assert_expr), span~)
+    @core.Expr::Continue(args~, span~) => {
+      let new_args = args.map(strip_type_assert_expr)
+      @core.Expr::Continue(args=new_args, span~)
+    }
+    @core.Expr::Yield(expr=inner, span~) =>
+      @core.Expr::Yield(expr=strip_type_assert_expr(inner), span~)
+    _ => expr
+  }
+}
+
+///|
+/// Strip type-assertion identity blocks from a statement.
+fn strip_type_assert_stmt(stmt : @core.Stmt) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) =>
+      @core.Stmt::Let(rec~, name~, expr=strip_type_assert_expr(expr), span~)
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=strip_type_assert_expr(expr),
+        span~,
+      )
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      @core.Stmt::LetMut(name~, expr=strip_type_assert_expr(expr), span~)
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(name~, expr=strip_type_assert_expr(expr), span~)
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(expr=strip_type_assert_expr(expr), span~)
+    @core.Stmt::LetPat(pat~, expr~, span~) =>
+      @core.Stmt::LetPat(pat~, expr=strip_type_assert_expr(expr), span~)
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @core.Stmt::LetPatElse(
+        pat~,
+        expr=strip_type_assert_expr(expr),
+        else_body=strip_type_assert_module(else_body),
+        span~,
+      )
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=strip_type_assert_expr(target),
+        index=strip_type_assert_expr(index),
+        value=strip_type_assert_expr(value),
+        span~,
+      )
+    _ => stmt
+  }
+}
+
+///|
+/// Recursively strip type-assertion identity blocks from a module/block.
+fn strip_type_assert_module(ast : @core.Module) -> @core.Module {
   let stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
-    match stmt {
-      @core.Stmt::Let(rec~, name~, expr~, span~) => {
-        let unwrapped = unwrap_type_assert_block(expr)
-        stmts.push(@core.Stmt::Let(rec~, name~, expr=unwrapped, span~))
-      }
-      @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
-        let unwrapped = unwrap_type_assert_block(expr)
-        stmts.push(@core.Stmt::ExportLet(rec~, name~, expr=unwrapped, span~))
-      }
-      _ => stmts.push(stmt)
-    }
+    stmts.push(strip_type_assert_stmt(stmt))
   }
   @core.Module::{ stmts, }
 }
@@ -1020,7 +1209,7 @@ fn emit_module_with_coverage(
 ) -> WasmCoverageArtifact raise WasmGenError {
   // Pre-process: strip type-assertion identity blocks so that
   // collect_func_defs doesn't create dead identity stub functions.
-  let ast = strip_type_assert_stmts(ast)
+  let ast = strip_type_assert_module(ast)
   // Collect exported function names
   for stmt in ast.stmts {
     match stmt {

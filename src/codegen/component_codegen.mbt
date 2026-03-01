@@ -252,14 +252,29 @@ fn type_to_wit(ty : @core.Type) -> String {
       }
     }
     @core.Type::Named(name~, args~) =>
-      if args.is_empty() {
-        name
-      } else {
-        let arg_parts : Array[String] = []
-        for arg in args {
-          arg_parts.push(type_to_wit(arg))
-        }
-        name + "<" + arg_parts.join(", ") + ">"
+      match name {
+        "Int" | "i32" => "s32"
+        "Float" | "f32" => "f32"
+        "Double" | "f64" => "f64"
+        "Bool" => "bool"
+        "String" => "string"
+        "Unit" => ""
+        "Array" =>
+          if args.length() == 1 {
+            "list<" + type_to_wit(args[0]) + ">"
+          } else {
+            name
+          }
+        _ =>
+          if args.is_empty() {
+            name
+          } else {
+            let arg_parts : Array[String] = []
+            for arg in args {
+              arg_parts.push(type_to_wit(arg))
+            }
+            name + "<" + arg_parts.join(", ") + ">"
+          }
       }
     _ => "s32" // fallback for unsupported types
   }

@@ -1187,7 +1187,7 @@ fn register_trait_impl(
       None => ()
     }
   }
-  let normalized_target = resolve_type(env, target)
+  let normalized_target = normalize_type(env, target)
   let incoming = TraitImplDef::{
     type_params,
     type_bounds: normalized_type_bounds,

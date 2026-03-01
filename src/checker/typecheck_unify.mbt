@@ -218,6 +218,72 @@ fn normalize_type_with_mode_resolved(
 }
 
 ///|
+/// Resolve builtin type names that the parser now emits as Named(name, args).
+fn resolve_builtin_type_name(
+  name : String,
+  args : Array[@core.Type],
+) -> @core.Type? {
+  match name {
+    "Int" | "i32" => if args.is_empty() { Some(@core.Type::Int) } else { None }
+    "Float" | "f32" =>
+      if args.is_empty() {
+        Some(@core.Type::Float)
+      } else {
+        None
+      }
+    "Double" | "f64" =>
+      if args.is_empty() {
+        Some(@core.Type::Double)
+      } else {
+        None
+      }
+    "Bool" => if args.is_empty() { Some(@core.Type::Bool) } else { None }
+    "Char" => if args.is_empty() { Some(@core.Type::Char) } else { None }
+    "String" => if args.is_empty() { Some(@core.Type::String) } else { None }
+    "@core.Path" => if args.is_empty() { Some(@core.Type::Path) } else { None }
+    "PromptText" =>
+      if args.is_empty() {
+        Some(@core.Type::PromptText)
+      } else {
+        None
+      }
+    "Unit" => if args.is_empty() { Some(@core.Type::Unit) } else { None }
+    "Array" =>
+      if args.length() == 1 {
+        Some(@core.Type::Array(args[0]))
+      } else {
+        None
+      }
+    "Map" =>
+      if args.length() == 1 {
+        Some(@core.Type::Map(args[0]))
+      } else {
+        None
+      }
+    "ArrayBuilder" =>
+      if args.length() == 1 {
+        Some(@core.Type::ArrayBuilder(args[0]))
+      } else {
+        None
+      }
+    "MapBuilder" =>
+      if args.length() == 1 {
+        Some(@core.Type::MapBuilder(args[0]))
+      } else {
+        None
+      }
+    "StringBuilder" =>
+      if args.is_empty() {
+        Some(@core.Type::StringBuilder)
+      } else {
+        None
+      }
+    "Bytes" => if args.is_empty() { Some(@core.Type::Bytes) } else { None }
+    _ => None
+  }
+}
+
+///|
 fn normalize_type_inner(
   env : TypeEnv,
   ty : @core.Type,
@@ -320,11 +386,15 @@ fn normalize_type_inner(
                     @core.Type::Named(name~, args=normalized_args)
                   }
                   None =>
-                    raise TypeError::UnknownType(
-                      name~,
-                      span=unknown_span(),
-                      suggestion=find_type_suggestion(env, name),
-                    )
+                    match resolve_builtin_type_name(name, normalized_args) {
+                      Some(builtin) => builtin
+                      None =>
+                        raise TypeError::UnknownType(
+                          name~,
+                          span=unknown_span(),
+                          suggestion=find_type_suggestion(env, name),
+                        )
+                    }
                 }
             }
         }
@@ -393,6 +463,32 @@ fn type_may_contain_scoped_ref_hint(ty : @core.Type) -> Bool {
     @core.Type::Named(name~, args~) => {
       if name == "Ref" {
         return true
+      }
+      // Builtin type names cannot contain Ref.
+      match name {
+        "Int"
+        | "i32"
+        | "Float"
+        | "f32"
+        | "Double"
+        | "f64"
+        | "Bool"
+        | "Char"
+        | "String"
+        | "@core.Path"
+        | "PromptText"
+        | "Unit"
+        | "StringBuilder"
+        | "Bytes" => return false
+        "Array" | "Map" | "ArrayBuilder" | "MapBuilder" => {
+          for arg in args {
+            if type_may_contain_scoped_ref_hint(arg) {
+              return true
+            }
+          }
+          return false
+        }
+        _ => ()
       }
       for arg in args {
         if type_may_contain_scoped_ref_hint(arg) {
