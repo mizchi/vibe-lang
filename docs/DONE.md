@@ -2,6 +2,13 @@
 
 Completed items archived from `TODO.md`.
 
+## 2026-03-01
+
+- Gate 5: full self-host e2e テスト
+  - `vibe/compiler` の実ソースファイルを VibeDb → compile_module → eval_module パイプラインで実行
+  - 4 テスト: token enum import、lex→tokens、lex→parse→print roundtrip、meta-circular eval pipeline
+  - `index.vibe` re-export は型チェッカー制約により個別ファイル直接 import で回避
+
 ## 2026-02-18
 
 - Remove `try/catch` and `await` syntax from the compiler.
@@ -46,6 +53,17 @@ Completed items archived from `TODO.md`.
 - `eval` persistence mkdir for nested DB/export paths.
 - `vibe new` seeds `vibe/prelude` + `vibe/json` + `vibe/base64` + `vibe/sha1` from nearest ancestor.
 - Unknown namespace diagnostics in import resolution.
+
+## 2026-03-01
+
+- **Self-host Compiler Gate 4: 依存計算と incremental checker 本線化**
+  - `TypeDb`（`RippleDb` + `TypeEnv` キャッシュ）による fingerprint ベース incremental 型検査
+  - cross-module 型伝播: import 先の型を `CtInt` 等で正しく解決（`CtUnknown` fallback なし）
+  - cold/warm 結果一致テスト、差分更新テスト（変更モジュール＋依存元のみ再計算）
+  - ベンチマーク: warm 0.04µs / cold 8450µs（~210,000倍高速化）
+  - 依存抽出を AST ベースに移行（`collect_import_deps` が `SImport`/`SReExport` 直接抽出）
+  - `vibe/x/ripple/` 削除→ `vibe/compiler/ripple/` 一本化
+  - `vibe/compiler/path.vibe` 削除→ `vibe/module/path.vibe` 一本化
 
 ## 2026-02-28
 

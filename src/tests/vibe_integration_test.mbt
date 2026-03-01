@@ -975,3 +975,128 @@ test "vibe integration resume rejects prior effects before perform" {
       )
   }
 }
+
+///|
+/// Gate 5 helper: load a .vibe file from disk and register it (with transitive deps) in the db.
+fn load_compiler_source(
+  db : VibeDb,
+  path : String,
+  visited : Map[String, Bool],
+) -> Unit raise {
+  if visited.contains(path) {
+    return
+  }
+  let source = @os_fs.read_file_to_string(path) catch {
+    e => fail("[gate5] read failed (\{path}): \{e.to_string()}")
+  }
+  preload_module_sources(db, path, source, visited)
+}
+
+///|
+/// Gate 5 helper: compile a driver source and run it through the full eval pipeline.
+fn eval_selfhost_module(
+  db : VibeDb,
+  driver_source : String,
+) -> @runtime.EvalResult raise {
+  db.set_source("main", driver_source)
+  let compiled = compile_module(db, "main")
+  let rt = Runtime::new(@capability.CapabilitySet::new())
+  rt.set_type_env(compiled.type_env)
+  let visited : Map[String, Bool] = {}
+  let path_to_hash : Map[String, String] = {}
+  register_import_modules(rt, db, "main", visited, path_to_hash)
+  let converted_ast = @core.convert_imports_to_hash(compiled.ast, fn(path) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  rt.eval_module(converted_ast)
+}
+
+///|
+test "selfhost gate5: token.vibe enum import" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
+  let driver =
+    #|import ./vibe/compiler/token.vibe { Token }
+    #|let t = TInt(42)
+    #|match t {
+    #|  TInt(n) => n,
+    #|  _ => 0
+    #|}
+  let result = eval_selfhost_module(db, driver)
+  match result.last {
+    Some(@core.Value::Int(v)) => assert_eq(v, 42)
+    _ => fail("expected Int(42), got: \{result.last.to_string()}")
+  }
+}
+
+///|
+test "selfhost gate5: lex produces tokens" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
+  let driver =
+    #|import ./vibe/compiler/lexer.vibe { lex }
+    #|let tokens = lex("let x = 1")
+    #|array_length(tokens)
+  let result = eval_selfhost_module(db, driver)
+  match result.last {
+    Some(@core.Value::Int(n)) => assert_true(n > 0)
+    _ => fail("expected Int(>0), got: \{result.last.to_string()}")
+  }
+}
+
+///|
+test "selfhost gate5: lex-parse-print roundtrip" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
+  let driver =
+    #|import ./vibe/compiler/lexer.vibe { lex }
+    #|import ./vibe/compiler/parser.vibe { parse_program }
+    #|import ./vibe/compiler/printer.vibe { print_program }
+    #|let tokens = lex("let x = 1 + 2")
+    #|let stmts = parse_program(tokens)
+    #|print_program(stmts)
+  let result = eval_selfhost_module(db, driver)
+  match result.last {
+    Some(@core.Value::String(s)) => {
+      assert_true(s.length() > 0)
+      assert_true(s.contains("let x"))
+    }
+    _ => fail("expected non-empty String, got: \{result.last.to_string()}")
+  }
+}
+
+///|
+test "selfhost gate5: eval pipeline meta-circular" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/values.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_builtins.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_loader.vibe", visited)
+  load_compiler_source(db, "vibe/module/path.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_stmt.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/eval_e2e_helpers.vibe", visited)
+  let driver =
+    #|import ./vibe/compiler/eval_e2e_helpers.vibe { run_and_lookup }
+    #|run_and_lookup("let x = 42", "x")
+  let result = eval_selfhost_module(db, driver)
+  match result.last {
+    Some(@core.Value::String(v)) => assert_eq(v, "42")
+    _ => fail("expected String(\"42\"), got: \{result.last.to_string()}")
+  }
+}

@@ -27,16 +27,14 @@ Completed items are archived in `docs/DONE.md`.
   - 型注釈の契約層を実装に一致させる (`TyApp` / `TyFn` / `TyTuple` を `CtUnknown` に落とさない)
   - builtins の型契約と evaluator 実装の差分を解消する（型のみ存在/実装のみ存在の不一致）
   - DoD: selfhost で使う主要 builtins の型/実装差分が 0
-- [ ] Gate 4: 依存計算と incremental checker を本線化
-  - incremental 型検査DBを checker パスへ統合する（現状 `type_db.vibe` は独立実験）
-  - ~~`TypeEnv` 制約~~: 解決済み（API は `TypeEnv` 非依存、`TypeDb` のみ公開）
-  - ~~依存抽出~~: AST ベースに移行済み（`collect_import_deps` が `SImport`/`SReExport` を直接抽出）
-  - ~~ripple 重複~~: `vibe/x/ripple/` を削除し `vibe/compiler/ripple/` に一本化済み
-  - `vibe/module/path`（`dir_of` / `resolve_path`）へ compiler 側 path 解決処理を寄せる（ルート制約解消後）
-  - DoD: 同一入力で cold/warm の型検査結果が一致し、差分更新のみ再計算される
-- [ ] Gate 5: full self-host
+- [x] Gate 4: 依存計算と incremental checker を本線化
+  - incremental 型検査DBを checker パスへ統合（`type_db.vibe` + `RippleDb` + `TypeEnv` キャッシュ）
+  - AST ベース依存抽出（`collect_import_deps`）、ripple 一本化、path 解決統合
+  - DoD 達成: cold/warm 型検査結果一致、差分更新のみ再計算（テスト・ベンチマーク検証済み）
+- [x] Gate 5: full self-host e2e
   - `vibe/compiler` 一式を `parse + eval` して主要ワークフローを実行可能にする
-  - DoD: selfhost 用トップレベル e2e（実ソース入力）を CI で常時 green
+  - DoD 達成: selfhost 用トップレベル e2e（実ソース入力）を CI で常時 green
+  - テスト 4 件: token enum import、lex→tokens、lex→parse→print roundtrip、meta-circular eval pipeline
 
 ## Language Features
 
