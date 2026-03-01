@@ -15,13 +15,13 @@ Completed items are archived in `docs/DONE.md`.
   - `eval_selfhost_test.vibe`
   - `eval_selfhost2_test.vibe`
   - `eval_selfhost3_test.vibe`
-- [ ] Gate 1: 実行制御の整合（ループ制御を実運用可能にする）
+- [x] Gate 1: 実行制御の整合（ループ制御を実運用可能にする）
   - `break` / `continue` の parser/checker/eval を end-to-end で一致
   - `return` の仕様を確定し、未対応なら明示的に構文拒否を固定
   - DoD: ループ制御の fixture/e2e を追加して green
-- [ ] Gate 2: 構文と実行系のギャップを解消
-  - postfix 構文 (`arr[i]`, `t.0`, member/index) の parse/check/eval を一致
-  - 未接続キーワード/トークン (`do`, `loop`, `yield`, `raise`, `declare`) の方針確定（実装 or reject）
+- [x] Gate 2: 構文と実行系のギャップを解消
+  - postfix `arr[i]` は selfhost で未使用（`array_get` 使用）、`t.0`/`r.field` は EDot で動作済み → 対応不要
+  - `do`/`loop`/`yield`/`declare` に明示的拒否メッセージ追加（`raise`/`return` と同様）
   - DoD: `vibe/compiler` ソースで使う構文が parse/eval 双方で未接続なし
 - [ ] Gate 3: 型契約を自己適用レベルに引き上げる
   - 型注釈の契約層を実装に一致させる (`TyApp` / `TyFn` / `TyTuple` を `CtUnknown` に落とさない)
@@ -55,8 +55,8 @@ Completed items are archived in `docs/DONE.md`.
 |------|-------|
 | consumer_option_core | 1028 |
 | consumer_option_extra | 1558 |
-| consumer_double_core | 2144 |
-| consumer_double_rounding | 5598 |
+| consumer_double_core | 1764 |
+| consumer_double_rounding | 4877 |
 
 ベンチ: `scripts/bench_bundle_size.sh`, `bench/bundle_size/cases.txt`
 
