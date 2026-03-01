@@ -144,6 +144,63 @@ test "normalize_type cache: alias update invalidates cached normalization" {
 }
 
 ///|
+test "normalize_type: user alias overrides builtin Bytes" {
+  let env = TypeEnv::new()
+  // User defines Bytes as Array[Int], overriding the builtin Bytes type
+  env.set_type_alias("Bytes", TypeAlias::{
+    name: "Bytes",
+    params: [],
+    target: @core.Type::Array(@core.Type::Int),
+  })
+  let bytes_named = @core.Type::Named(name="Bytes", args=[])
+  let resolved = normalize_type(env, bytes_named) catch {
+    err => fail("normalize failed: \{err.to_string()}")
+  }
+  // User alias takes priority over builtin Bytes
+  assert_eq(resolved, @core.Type::Array(@core.Type::Int))
+}
+
+///|
+test "normalize_type: user alias overrides builtin Int" {
+  let env = TypeEnv::new()
+  env.set_type_alias("Int", TypeAlias::{
+    name: "Int",
+    params: [],
+    target: @core.Type::Double,
+  })
+  let int_named = @core.Type::Named(name="Int", args=[])
+  let resolved = normalize_type(env, int_named) catch {
+    err => fail("normalize failed: \{err.to_string()}")
+  }
+  // User alias takes priority over builtin Int
+  assert_eq(resolved, @core.Type::Double)
+}
+
+///|
+test "normalize_type: builtin fallback when no user alias" {
+  let env = TypeEnv::new()
+  // No user alias for Int — should resolve via builtin fallback
+  let int_named = @core.Type::Named(name="Int", args=[])
+  let resolved = normalize_type(env, int_named) catch {
+    err => fail("normalize failed: \{err.to_string()}")
+  }
+  assert_eq(resolved, @core.Type::Int)
+}
+
+///|
+test "normalize_type: builtin Array fallback resolves inner type" {
+  let env = TypeEnv::new()
+  let arr_named = @core.Type::Named(
+    name="Array",
+    args=[@core.Type::Named(name="Int", args=[])],
+  )
+  let resolved = normalize_type(env, arr_named) catch {
+    err => fail("normalize failed: \{err.to_string()}")
+  }
+  assert_eq(resolved, @core.Type::Array(@core.Type::Int))
+}
+
+///|
 test "normalize_type cache: expand and preserve enum caches are isolated" {
   let script = "enum Toggle { On; Off }"
   let ast = @parser.parse_ast(script) catch {
