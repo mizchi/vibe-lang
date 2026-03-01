@@ -99,7 +99,6 @@ test "bench: dce.many_unused" {
     result,
     content=(
       #|{name: "many_unused", stmts_before: 18, stmts_after: 3, wasm_no_dce: Some(481), wasm_with_dce: Some(326), reduction_percent: Some(32.224532224532226)}
-
     ),
   )
 }
@@ -122,7 +121,6 @@ test "bench: dce.single_module" {
     result,
     content=(
       #|{name: "single_module", stmts_before: 6, stmts_after: 3, wasm_no_dce: Some(325), wasm_with_dce: Some(325), reduction_percent: Some(0)}
-
     ),
   )
 }

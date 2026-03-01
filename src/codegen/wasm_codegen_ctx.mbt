@@ -90,8 +90,8 @@ priv struct CodegenCtx {
   fn_closure_capture_is_ref_cell : Map[String, Array[Bool]]
   // Cache: scrutinee local → untagged raw pointer local (within match chains)
   mut cached_untag_ptrs : Map[Int, Int]
-  // Constant integer values inlined at use sites (skip local allocation)
-  const_int_values : Map[String, Int64]
+  // Constant values inlined at use sites (pre-tagged i64, skip local allocation)
+  const_i64_values : Map[String, Int64]
 }
 
 ///|
@@ -198,8 +198,8 @@ fn CodegenCtx::new(
     fn_closure_capture_is_ref_cell: {},
     // Untag pointer cache
     cached_untag_ptrs: {},
-    // Constant integer values
-    const_int_values: {},
+    // Constant values (pre-tagged i64)
+    const_i64_values: {},
   }
 }
 

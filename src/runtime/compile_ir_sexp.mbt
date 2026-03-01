@@ -604,10 +604,8 @@ fn type_to_sexp(ty : @core.Type) -> String {
         "Unit" if args.is_empty() => "Unit"
         "StringBuilder" if args.is_empty() => "StringBuilder"
         "Bytes" if args.is_empty() => "Bytes"
-        "Array" if args.length() == 1 =>
-          "(Array " + type_to_sexp(args[0]) + ")"
-        "Map" if args.length() == 1 =>
-          "(Map " + type_to_sexp(args[0]) + ")"
+        "Array" if args.length() == 1 => "(Array " + type_to_sexp(args[0]) + ")"
+        "Map" if args.length() == 1 => "(Map " + type_to_sexp(args[0]) + ")"
         "ArrayBuilder" if args.length() == 1 =>
           "(ArrayBuilder " + type_to_sexp(args[0]) + ")"
         "MapBuilder" if args.length() == 1 =>

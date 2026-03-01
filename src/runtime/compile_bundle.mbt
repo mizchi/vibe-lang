@@ -69,7 +69,7 @@ fn bundle_for_wasm_impl(
     }
   }
   let bundled = @core.Module::{ stmts: bundled_stmts }
-  if apply_dce {
+  let after_dce = if apply_dce {
     if include_test_entries {
       @pipeline.dce_module_for_tests(bundled)
     } else {
@@ -78,6 +78,7 @@ fn bundle_for_wasm_impl(
   } else {
     bundled
   }
+  demote_unused_let_mut(after_dce)
 }
 
 ///|
@@ -254,5 +255,149 @@ fn collect_reexport_defs(
         }
       _ => ()
     }
+  }
+}
+
+///|
+/// Demote `let mut` bindings that are never assigned to into plain `let`.
+/// This prevents unnecessary ref cell allocation when captured by closures.
+fn demote_unused_let_mut(mod_ : @core.Module) -> @core.Module {
+  let assigned : Map[String, Bool] = {}
+  collect_all_assign_targets_block(mod_, assigned)
+  let mut changed = false
+  let new_stmts : Array[@core.Stmt] = []
+  for stmt in mod_.stmts {
+    match stmt {
+      @core.Stmt::LetMut(name~, expr~, span~) =>
+        if not(assigned.contains(name)) {
+          new_stmts.push(@core.Stmt::Let(rec=false, name~, expr~, span~))
+          changed = true
+        } else {
+          new_stmts.push(stmt)
+        }
+      _ => new_stmts.push(stmt)
+    }
+  }
+  if changed {
+    @core.Module::{ stmts: new_stmts }
+  } else {
+    mod_
+  }
+}
+
+///|
+fn collect_all_assign_targets_block(
+  body : @core.Module,
+  out : Map[String, Bool],
+) -> Unit {
+  for stmt in body.stmts {
+    collect_all_assign_targets_stmt(stmt, out)
+  }
+}
+
+///|
+fn collect_all_assign_targets_stmt(
+  stmt : @core.Stmt,
+  out : Map[String, Bool],
+) -> Unit {
+  match stmt {
+    @core.Stmt::Assign(name~, expr~, ..) => {
+      out[name] = true
+      collect_all_assign_targets_expr(expr, out)
+    }
+    @core.Stmt::Let(expr~, ..)
+    | @core.Stmt::ExportLet(expr~, ..)
+    | @core.Stmt::InternalExportLet(expr~, ..)
+    | @core.Stmt::LetMut(expr~, ..) =>
+      collect_all_assign_targets_expr(expr, out)
+    @core.Stmt::Expr(expr~, ..) => collect_all_assign_targets_expr(expr, out)
+    @core.Stmt::LetPat(expr~, ..) => collect_all_assign_targets_expr(expr, out)
+    @core.Stmt::LetPatElse(expr~, else_body~, ..) => {
+      collect_all_assign_targets_expr(expr, out)
+      collect_all_assign_targets_block(else_body, out)
+    }
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      collect_all_assign_targets_expr(target, out)
+      collect_all_assign_targets_expr(index, out)
+      collect_all_assign_targets_expr(value, out)
+    }
+    @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+      collect_all_assign_targets_block(body, out)
+    _ => ()
+  }
+}
+
+///|
+fn collect_all_assign_targets_expr(
+  expr : @core.Expr,
+  out : Map[String, Bool],
+) -> Unit {
+  match expr {
+    @core.Expr::Call(args~, ..) =>
+      for arg in args {
+        collect_all_assign_targets_expr(arg.expr, out)
+      }
+    @core.Expr::Tuple(items~, ..) =>
+      for item in items {
+        collect_all_assign_targets_expr(item, out)
+      }
+    @core.Expr::TupleIndex(expr~, ..) =>
+      collect_all_assign_targets_expr(expr, out)
+    @core.Expr::Record(fields~, ..) =>
+      for f in fields {
+        collect_all_assign_targets_expr(f.expr, out)
+      }
+    @core.Expr::StructLit(fields~, ..) =>
+      for f in fields {
+        collect_all_assign_targets_expr(f.expr, out)
+      }
+    @core.Expr::Array(items~, ..) =>
+      for item in items {
+        collect_all_assign_targets_expr(item, out)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for f in fields {
+        collect_all_assign_targets_expr(f.expr, out)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_all_assign_targets_expr(cond, out)
+      collect_all_assign_targets_block(then_body, out)
+      collect_all_assign_targets_block(else_body, out)
+    }
+    @core.Expr::Block(body~, ..) => collect_all_assign_targets_block(body, out)
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      collect_all_assign_targets_expr(scrutinee, out)
+      for arm in arms {
+        collect_all_assign_targets_expr(arm.expr, out)
+        match arm.cond {
+          Some(c) => collect_all_assign_targets_expr(c, out)
+          None => ()
+        }
+      }
+    }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      collect_all_assign_targets_block(body, out)
+      for arm in arms {
+        collect_all_assign_targets_expr(arm.expr, out)
+        match arm.cond {
+          Some(c) => collect_all_assign_targets_expr(c, out)
+          None => ()
+        }
+      }
+    }
+    @core.Expr::Fn(body~, ..) => collect_all_assign_targets_block(body, out)
+    @core.Expr::While(cond~, body~, ..) => {
+      collect_all_assign_targets_expr(cond, out)
+      collect_all_assign_targets_block(body, out)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      for p in params {
+        collect_all_assign_targets_expr(p.init, out)
+      }
+      collect_all_assign_targets_block(body, out)
+    }
+    @core.Expr::Raise(value~, ..) => collect_all_assign_targets_expr(value, out)
+    @core.Expr::Yield(expr~, ..) => collect_all_assign_targets_expr(expr, out)
+    _ => ()
   }
 }

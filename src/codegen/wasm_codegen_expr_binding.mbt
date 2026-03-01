@@ -21,14 +21,7 @@ fn compile_expr_ident(
       feature="qualified name: " + name,
     )
   }
-  // Check constant integer table first (inlined literals)
-  match ctx.const_int_values.get(name) {
-    Some(int_val) => {
-      emit_i64_const_tagged(buf, int_val)
-      return
-    }
-    None => ()
-  }
+  // Check locals first (parameters/bindings shadow constants)
   match ctx.locals.get(name) {
     Some(idx) =>
       if ctx.mut_captured_vars.contains(name) {
@@ -39,39 +32,44 @@ fn compile_expr_ident(
         emit_local_get(buf, idx)
       }
     None =>
-      match ctx.fn_indices.get(name) {
-        Some(idx) => {
-          if fn_index_needs_env(ctx, idx) {
-            raise WasmGenError::Unsupported(
-              "function value requires closure env in scope: " + name,
-            )
-          }
-          let slot = ensure_funcref_slot(ctx, idx)
-          emit_i64_const_raw(buf, tag_fn_value64(slot.to_int64()))
-        }
+      // Check constant table (pre-tagged i64 values)
+      match ctx.const_i64_values.get(name) {
+        Some(tagged_val) => emit_i64_const_raw(buf, tagged_val)
         None =>
-          if ctx.enum_ctor_tags.contains(name) {
-            // Nullary enum constructor
-            let tag = match ctx.enum_ctor_tags.get(name) {
-              Some(t) => t
-              None => 0
+          match ctx.fn_indices.get(name) {
+            Some(idx) => {
+              if fn_index_needs_env(ctx, idx) {
+                raise WasmGenError::Unsupported(
+                  "function value requires closure env in scope: " + name,
+                )
+              }
+              let slot = ensure_funcref_slot(ctx, idx)
+              emit_i64_const_raw(buf, tag_fn_value64(slot.to_int64()))
             }
-            require_heap(ctx)
-            let size = align4(8)
-            let obj_local = alloc_temp_local(ctx)
-            emit_heap_alloc(ctx, buf, size, obj_local)
-            emit_local_get(buf, obj_local)
-            emit_i32_const_raw(buf, obj_enum)
-            emit_i32_store(buf, 0)
-            emit_local_get(buf, obj_local)
-            emit_i32_const_raw(buf, tag)
-            emit_i32_store(buf, 4)
-            emit_local_get(buf, obj_local)
-            emit_i64_extend_i32_u(buf)
-            emit_i64_const_raw(buf, tag_obj.to_int64())
-            emit_i64_or(buf)
-          } else {
-            raise WasmGenError::UnknownName(name)
+            None =>
+              if ctx.enum_ctor_tags.contains(name) {
+                // Nullary enum constructor
+                let tag = match ctx.enum_ctor_tags.get(name) {
+                  Some(t) => t
+                  None => 0
+                }
+                require_heap(ctx)
+                let size = align4(8)
+                let obj_local = alloc_temp_local(ctx)
+                emit_heap_alloc(ctx, buf, size, obj_local)
+                emit_local_get(buf, obj_local)
+                emit_i32_const_raw(buf, obj_enum)
+                emit_i32_store(buf, 0)
+                emit_local_get(buf, obj_local)
+                emit_i32_const_raw(buf, tag)
+                emit_i32_store(buf, 4)
+                emit_local_get(buf, obj_local)
+                emit_i64_extend_i32_u(buf)
+                emit_i64_const_raw(buf, tag_obj.to_int64())
+                emit_i64_or(buf)
+              } else {
+                raise WasmGenError::UnknownName(name)
+              }
           }
       }
   }

@@ -1100,6 +1100,12 @@ fn compile_function(
   if with_env && captures.length() > 0 {
     for i in 0..<captures.length() {
       let name = captures[i]
+      // Skip env load for captures that are compile-time constants.
+      // The value is already in const_i64_values so compile_expr_ident
+      // will emit i64.const directly — no local needed.
+      if ctx.const_i64_values.contains(name) {
+        continue
+      }
       let is_ref = i < capture_is_ref_cell.length() && capture_is_ref_cell[i]
       let kind = if is_ref {
         ValueKind::I32

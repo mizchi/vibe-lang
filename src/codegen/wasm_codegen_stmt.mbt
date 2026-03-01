@@ -339,13 +339,23 @@ fn compile_stmt(
               }
             _ => ()
           }
-          // Constant integer inlining: for non-recursive `let x = <int-literal>`,
-          // register in const_int_values and skip local allocation.
-          // References to x will emit i64.const directly instead of local.get.
-          // Skip if the constant is captured by any closure (needs a local).
+          // Constant inlining: for non-recursive `let x = <int-literal>` or
+          // `let x = <bool-literal>`, register in const_i64_values (pre-tagged)
+          // and skip local allocation. References to x will emit i64.const
+          // directly instead of local.get.
+          // When captured by a closure, still register (for inline in closure body)
+          // but don't skip local allocation (closure construction needs the local).
           if not(rec) {
-            match effective_expr {
-              @core.Expr::Int(value=int_val, ..) => {
+            let const_tagged : Int64? = match effective_expr {
+              @core.Expr::Int(value=int_val, ..) =>
+                Some(tag_int_value64(int_val))
+              @core.Expr::Bool(value=bool_val, ..) =>
+                Some(tag_bool_value64(bool_val))
+              _ => None
+            }
+            match const_tagged {
+              Some(tagged) => {
+                ctx.const_i64_values[name] = tagged
                 let mut is_captured = false
                 for _key, captures in ctx.fn_closure_captures {
                   if captures.contains(name) {
@@ -354,14 +364,13 @@ fn compile_stmt(
                   }
                 }
                 if not(is_captured) {
-                  ctx.const_int_values[name] = int_val
                   if is_last {
-                    emit_i64_const_tagged(buf, int_val)
+                    emit_i64_const_raw(buf, tagged)
                   }
                   return
                 }
               }
-              _ => ()
+              None => ()
             }
           }
           // Use effective_expr (type-assert unwrapped) for kind inference,

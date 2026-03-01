@@ -190,10 +190,9 @@ test "normalize_type: builtin fallback when no user alias" {
 ///|
 test "normalize_type: builtin Array fallback resolves inner type" {
   let env = TypeEnv::new()
-  let arr_named = @core.Type::Named(
-    name="Array",
-    args=[@core.Type::Named(name="Int", args=[])],
-  )
+  let arr_named = @core.Type::Named(name="Array", args=[
+    @core.Type::Named(name="Int", args=[]),
+  ])
   let resolved = normalize_type(env, arr_named) catch {
     err => fail("normalize failed: \{err.to_string()}")
   }

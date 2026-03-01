@@ -33,6 +33,14 @@ fn compile_expr_fn(
     let capture_is_ref_cell : Array[Bool] = []
     for i in 0..<len {
       let name = captures[i]
+      // Skip env store for compile-time constants.
+      // The prelude in compile_function also skips loading this slot,
+      // and compile_expr_ident emits i64.const directly from const_i64_values.
+      if ctx.const_i64_values.contains(name) {
+        capture_kinds.push(ValueKind::I64)
+        capture_is_ref_cell.push(false)
+        continue
+      }
       let is_ref_cell = ctx.mut_captured_vars.contains(name)
       capture_is_ref_cell.push(is_ref_cell)
       let cap_kind = if is_ref_cell {
