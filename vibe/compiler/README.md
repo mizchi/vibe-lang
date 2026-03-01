@@ -45,11 +45,8 @@ An experimental self-hosted compiler/interpreter for vibe-lang, written in vibe 
 - `return` is not supported (parser rejects it)
 - `raise` is deprecated (must use `throw(expr)`)
 - Postfix feature mismatch (`arr[i]`, tuple/index ergonomics, member/index consistency)
-- Type annotation contract mismatch (`TyApp` / `TyFn` / `TyTuple` paths still lose precision in parts)
 - Builtin type contracts and evaluator implementations are not fully aligned
-- `type_db` dependency extraction is token-scan based (temporary); AST-based extraction is pending
 - `type_db` is still experimental and not integrated into the main checker pipeline
-- Root import constraint prevents direct `vibe/compiler -> vibe/x` imports; duplicate ripple implementation remains
 - Some deeper recursive self-host scenarios can still hit WASM stack limits
 
 See [`TODO.md`](../../TODO.md) for the tracked source-of-truth checklist.

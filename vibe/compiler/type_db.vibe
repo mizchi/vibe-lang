@@ -24,8 +24,8 @@ import ./ripple {
   RippleDb, ripple_eval_count, ripple_get_fingerprint, ripple_get_source, ripple_new, ripple_record_eval, ripple_set_source
 }
 
-import ./token.vibe {
-  Token
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
 }
 
 //# Types
@@ -79,46 +79,32 @@ export let db_typecheck_count = (db: TypeDb) -> Int {
   }
 }
 
-let rec collect_import_path_tokens = (tokens: Array[Token], pos: Int, acc: String) -> (String, Int) {
-  if pos >= array_length(tokens) {
-    (acc, pos)
+let add_dep = (acc: Array[String], raw_path: String, base_dir: String) -> Array[String] {
+  if string_length(raw_path) == 0 {
+    acc
   } else {
-    match array_get(tokens, pos) {
-      TLBrace => (acc, pos),
-      TDot => collect_import_path_tokens(tokens, pos + 1, string_concat(acc, ".")),
-      TSlash => collect_import_path_tokens(tokens, pos + 1, string_concat(acc, "/")),
-      TIdent(name) => collect_import_path_tokens(tokens, pos + 1, string_concat(acc, name)),
-      TMinus => collect_import_path_tokens(tokens, pos + 1, string_concat(acc, "-")),
-      _ => (acc, pos)
+    let resolved = resolve_path(base_dir, raw_path)
+    if contains_str(acc, resolved) {
+      acc
+    } else {
+      array_concat(acc, [resolved])
     }
   }
 }
 
 let collect_import_deps = (source: String, base_dir: String) -> Array[String] with { Error } {
-  let tokens = lex(source)
-  let len = array_length(tokens)
+  let stmts = parse_program(lex(source))
+  let len = array_length(stmts)
   let rec go = (i: Int, acc: Array[String]) -> Array[String] {
     if i >= len {
       acc
     } else {
-      match array_get(tokens, i) {
-        TImport => {
-          let (raw_path, next_i) = collect_import_path_tokens(tokens, i + 1, "")
-          if string_length(raw_path) == 0 {
-            go(i + 1, acc)
-          } else {
-            let resolved = resolve_path(base_dir, raw_path)
-            if contains_str(acc, resolved) {
-              go(next_i, acc)
-            } else {
-              go(next_i, array_concat(acc, [
-                resolved
-              ]))
-            }
-          }
-        },
-        _ => go(i + 1, acc)
+      let next = match array_get(stmts, i) {
+        SImport(raw_path, _) => add_dep(acc, raw_path, base_dir),
+        SReExport(raw_path, _) => add_dep(acc, raw_path, base_dir),
+        _ => acc
       }
+      go(i + 1, next)
     }
   }
   go(0, empty_stack())

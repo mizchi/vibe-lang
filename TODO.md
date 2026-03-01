@@ -29,10 +29,9 @@ Completed items are archived in `docs/DONE.md`.
   - DoD: selfhost で使う主要 builtins の型/実装差分が 0
 - [ ] Gate 4: 依存計算と incremental checker を本線化
   - incremental 型検査DBを checker パスへ統合する（現状 `type_db.vibe` は独立実験）
-  - 現状制約: `db_typecheck` の公開シグネチャで `TypeEnv` を返すと `vibe test` 経由で `unknown type: TypeEnv` が発生
-  - 対応方針: export/import 時の型解決バグを直すか、公開APIを `TypeEnv` 非依存に再設計する
-  - `type_db` の依存抽出を AST ベースに戻す（現状は lexer token 走査で暫定実装）
-  - `vibe/compiler` から `vibe/x` を直接 import できないルート制約を解消し、`ripple` 実装を一本化する
+  - ~~`TypeEnv` 制約~~: 解決済み（API は `TypeEnv` 非依存、`TypeDb` のみ公開）
+  - ~~依存抽出~~: AST ベースに移行済み（`collect_import_deps` が `SImport`/`SReExport` を直接抽出）
+  - ~~ripple 重複~~: `vibe/x/ripple/` を削除し `vibe/compiler/ripple/` に一本化済み
   - `vibe/module/path`（`dir_of` / `resolve_path`）へ compiler 側 path 解決処理を寄せる（ルート制約解消後）
   - DoD: 同一入力で cold/warm の型検査結果が一致し、差分更新のみ再計算される
 - [ ] Gate 5: full self-host
