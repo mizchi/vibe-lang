@@ -591,17 +591,39 @@ fn type_to_sexp(ty : @core.Type) -> String {
     @core.Type::Path => "@core.Path"
     @core.Type::PromptText => "PromptText"
     @core.Type::Unit => "Unit"
-    @core.Type::Named(name~, args~) => {
-      let buf = StringBuilder::new()
-      buf.write_string("(Named ")
-      buf.write_string(escape_atom(name))
-      for arg in args {
-        buf.write_char(' ')
-        buf.write_string(type_to_sexp(arg))
+    @core.Type::Named(name~, args~) =>
+      match name {
+        "Int" | "i32" if args.is_empty() => "Int"
+        "Float" | "f32" if args.is_empty() => "Float"
+        "Double" | "f64" if args.is_empty() => "Double"
+        "Bool" if args.is_empty() => "Bool"
+        "Char" if args.is_empty() => "Char"
+        "String" if args.is_empty() => "String"
+        "@core.Path" if args.is_empty() => "@core.Path"
+        "PromptText" if args.is_empty() => "PromptText"
+        "Unit" if args.is_empty() => "Unit"
+        "StringBuilder" if args.is_empty() => "StringBuilder"
+        "Bytes" if args.is_empty() => "Bytes"
+        "Array" if args.length() == 1 =>
+          "(Array " + type_to_sexp(args[0]) + ")"
+        "Map" if args.length() == 1 =>
+          "(Map " + type_to_sexp(args[0]) + ")"
+        "ArrayBuilder" if args.length() == 1 =>
+          "(ArrayBuilder " + type_to_sexp(args[0]) + ")"
+        "MapBuilder" if args.length() == 1 =>
+          "(MapBuilder " + type_to_sexp(args[0]) + ")"
+        _ => {
+          let buf = StringBuilder::new()
+          buf.write_string("(Named ")
+          buf.write_string(escape_atom(name))
+          for arg in args {
+            buf.write_char(' ')
+            buf.write_string(type_to_sexp(arg))
+          }
+          buf.write_char(')')
+          buf.to_string()
+        }
       }
-      buf.write_char(')')
-      buf.to_string()
-    }
     @core.Type::Param(name) => "(Param " + escape_atom(name) + ")"
     @core.Type::Var(id) => "(Var " + id.to_string() + ")"
     @core.Type::Tuple(items) => {
