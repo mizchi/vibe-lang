@@ -8,6 +8,10 @@ import ./builtins.vibe {
   lookup_builtin
 }
 
+import ./checker_resolve.vibe {
+  resolve_type_expr
+}
+
 import ./types.vibe {
   Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, fresh_var, generalize, instantiate, resolve_builtin, subst_add_bound, subst_apply, type_implements_trait, unify
 }
@@ -233,17 +237,16 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         else {
           let (name, ann) = array_get(params, i)
           let (pt, ns, nc) = match ann {
-            Some(te) => match te {
-              TyUnit => (CtUnit, acc_s, acc_c),
-              TyName(tn) => match env_lookup(acc, tn) {
-                Some(t) => (t, acc_s, acc_c),
-                None => match resolve_builtin(tn) {
-                  Some(t) => (t, acc_s, acc_c),
-                  None => (CtUnknown, acc_s, acc_c)
-                }
+            Some(te) => {
+              let resolved = resolve_type_expr(te, defs)
+              let pt2 = match resolved {
+                CtNamed(tn, _) => match env_lookup(acc, tn) {
+                  Some(t) => t,
+                  None => resolved
+                },
+                _ => resolved
               }
-              ,
-              _ => (CtUnknown, acc_s, acc_c)
+              (pt2, acc_s, acc_c)
             },
             None => {
               let (tv, nc) = fresh_var(acc_c)

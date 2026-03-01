@@ -8,25 +8,15 @@ import ./checker.vibe {
   check_expr
 }
 
+import ./checker_resolve.vibe {
+  resolve_type_expr
+}
+
 import ./types.vibe {
   Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
 }
 
 //# Functions
-
-let resolve_te = (te: TypeExpr) -> Type {
-  match te {
-    TyUnit => CtUnit,
-    TyName(name) => match resolve_builtin(name) {
-      Some(t) => t,
-      None => CtNamed(name, array_slice([
-        CtUnknown
-      ], 0, 0))
-    }
-    ,
-    _ => CtUnknown
-  }
-}
 
 export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int) -> (TypeEnv, Subst, Int) {
   if i >= array_length(stmts) {
@@ -41,7 +31,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
           check_expr(val, env, defs, s, c)
         }
         let t = match ann {
-          Some(te) => resolve_te(te),
+          Some(te) => resolve_type_expr(te, defs),
           None => generalize(ns, vt)
         }
         (env_bind(env, name, t), ns, nc)
@@ -49,7 +39,7 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
       SLetMut(name, ann, val) => {
         let (vt, ns, nc) = check_expr(val, env, defs, s, c)
         let t = match ann {
-          Some(te) => resolve_te(te),
+          Some(te) => resolve_type_expr(te, defs),
           None => vt
         }
         (env_bind(env, name, t), ns, nc)
@@ -59,11 +49,11 @@ export let rec check_stmts = (stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Ar
       SStruct(_, name, _) => (env_bind(env, name, CtStruct(name)), s, c)
       ,
       STypeAlias(_, name, te) => {
-        let t = resolve_te(te)
+        let t = resolve_type_expr(te, defs)
         (env_bind(env, name, t), s, c)
       },
       SExternLet(name, te) => {
-        let t = resolve_te(te)
+        let t = resolve_type_expr(te, defs)
         (env_bind(env, name, t), s, c)
       },
       STest(_, body) => {

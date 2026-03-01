@@ -23,7 +23,7 @@ Completed items are archived in `docs/DONE.md`.
   - postfix `arr[i]` は selfhost で未使用（`array_get` 使用）、`t.0`/`r.field` は EDot で動作済み → 対応不要
   - `do`/`loop`/`yield`/`declare` に明示的拒否メッセージ追加（`raise`/`return` と同様）
   - DoD: `vibe/compiler` ソースで使う構文が parse/eval 双方で未接続なし
-- [ ] Gate 3: 型契約を自己適用レベルに引き上げる
+- [x] Gate 3: 型契約を自己適用レベルに引き上げる
   - 型注釈の契約層を実装に一致させる (`TyApp` / `TyFn` / `TyTuple` を `CtUnknown` に落とさない)
   - builtins の型契約と evaluator 実装の差分を解消する（型のみ存在/実装のみ存在の不一致）
   - DoD: selfhost で使う主要 builtins の型/実装差分が 0
