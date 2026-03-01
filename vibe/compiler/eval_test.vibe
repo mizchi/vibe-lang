@@ -329,3 +329,89 @@ test "eval BinOp multiply" {
     Error(_) => assert(false)
   }
 }
+
+test "eval break in while" {
+  handle {
+    // let mut i = 0; while true { i = i + 1; if i == 3 { break } }; i
+    let body = ESeq(EAssign("i", EBinOp("+", EIdent("i"), EInt(1)), EIf(EBinOp("==", EIdent("i"), EInt(3)), EBreak(None), EUnit)), EUnit)
+    let expr = ELetMut("i", EInt(0), ESeq(EWhile(EBool(true), body), EIdent("i")))
+    let (v, _) = eval_expr(expr, VEnvEmpty)
+    assert(values_equal(v, VInt(3)))
+  } {
+    Error(_) => assert(false)
+  }
+}
+
+test "eval break with value in while" {
+  handle {
+    // let result = while true { break 42 }; result
+    let expr = ELet("result", EWhile(EBool(true), EBreak(Some(EInt(42)))), EIdent("result"))
+    let (v, _) = eval_expr(expr, VEnvEmpty)
+    assert(values_equal(v, VInt(42)))
+  } {
+    Error(_) => assert(false)
+  }
+}
+
+test "eval continue in while" {
+  handle {
+    // let mut sum = 0; let mut i = 0; while i < 5 { i = i + 1; if i == 3 { continue }; sum = sum + i }; sum
+    let body = EAssign("i", EBinOp("+", EIdent("i"), EInt(1)), EIf(EBinOp("==", EIdent("i"), EInt(3)), EContinue(array_slice([
+      EUnit
+    ], 0, 0)), EAssign("sum", EBinOp("+", EIdent("sum"), EIdent("i")), EUnit)))
+    let expr = ELetMut("sum", EInt(0), ELetMut("i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("i"), EInt(5)), body), EIdent("sum"))))
+    let (v, _) = eval_expr(expr, VEnvEmpty)
+    // sum = 1+2+4+5 = 12 (skip 3)
+    assert(values_equal(v, VInt(12)))
+  } {
+    Error(_) => assert(false)
+  }
+}
+
+test "eval break in for-in" {
+  handle {
+    // for x in [10, 20, 30] { if x == 20 { break 99 } else { x } }
+    let body = EIf(EBinOp("==", EIdent("x"), EInt(20)), EBreak(Some(EInt(99))), EIdent("x"))
+    let expr = EForIn("x", EArray([
+      EInt(10),
+      EInt(20),
+      EInt(30)
+    ]), body)
+    let (v, _) = eval_expr(expr, VEnvEmpty)
+    assert(values_equal(v, VInt(99)))
+  } {
+    Error(_) => assert(false)
+  }
+}
+
+test "eval continue in for-in" {
+  handle {
+    // for x in [1, 2, 3, 4] { if x == 2 { continue } else { x } }
+    let body = EIf(EBinOp("==", EIdent("x"), EInt(2)), EContinue(array_slice([
+      EUnit
+    ], 0, 0)), EIdent("x"))
+    let expr = EForIn("x", EArray([
+      EInt(1),
+      EInt(2),
+      EInt(3),
+      EInt(4)
+    ]), body)
+    let (v, _) = eval_expr(expr, VEnvEmpty)
+    // result = [1, 3, 4] (skip 2)
+    assert(string_equals(value_to_string(v), "[1, 3, 4]"))
+  } {
+    Error(_) => assert(false)
+  }
+}
+
+test "eval break propagation through let-seq" {
+  handle {
+    // while true { let x = 1; break x }
+    let body = ELet("x", EInt(1), EBreak(Some(EIdent("x"))))
+    let expr = EWhile(EBool(true), body)
+    let (v, _) = eval_expr(expr, VEnvEmpty)
+    assert(values_equal(v, VInt(1)))
+  } {
+    Error(_) => assert(false)
+  }
+}

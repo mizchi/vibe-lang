@@ -936,8 +936,12 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
     let (cv, env2) = eval_expr(cond_expr, while_env)
     match cv {
       VBool(true) => {
-        let (_, env3) = eval_expr(body_expr, env2)
-        eval_while_loop(cond_expr, body_expr, env3)
+        let (bv, env3) = eval_expr(body_expr, env2)
+        match bv {
+          VBreak(val) => (val, env3),
+          VContinue(_) => eval_while_loop(cond_expr, body_expr, env3),
+          _ => eval_while_loop(cond_expr, body_expr, env3)
+        }
       },
       _ => (VUnit, env2)
     }
@@ -992,9 +996,13 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       let elem = array_get(elems, i)
       let iter_env = val_env_bind(for_env, vname, elem)
       let (rv, _) = eval_expr(body_expr, iter_env)
-      eval_for_in(vname, elems, body_expr, for_env, i + 1, array_concat(acc, [
-        rv
-      ]))
+      match rv {
+        VBreak(val) => (val, for_env),
+        VContinue(_) => eval_for_in(vname, elems, body_expr, for_env, i + 1, acc),
+        _ => eval_for_in(vname, elems, body_expr, for_env, i + 1, array_concat(acc, [
+          rv
+        ]))
+      }
     }
   }
   let empty_vals = array_slice([
@@ -1028,24 +1036,42 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
     },
     ELet(name, val_expr, body) => {
       let (v, env2) = eval_expr(val_expr, env)
-      eval_expr(body, val_env_bind(env2, name, v))
+      match v {
+        VBreak(_) => (v, env2),
+        VContinue(_) => (v, env2),
+        _ => eval_expr(body, val_env_bind(env2, name, v))
+      }
     },
     ELetRec(name, val_expr, body) => {
       let env_placeholder = val_env_bind(env, name, VUnit)
       let (v, env2) = eval_expr(val_expr, env_placeholder)
-      let final_v = match v {
-        VFn(captures, params, body_idx, _) => VFn(captures, params, body_idx, Some(name)),
-        _ => v
+      match v {
+        VBreak(_) => (v, env2),
+        VContinue(_) => (v, env2),
+        _ => {
+          let final_v = match v {
+            VFn(captures, params, body_idx, _) => VFn(captures, params, body_idx, Some(name)),
+            _ => v
+          }
+          eval_expr(body, val_env_bind(env2, name, final_v))
+        }
       }
-      eval_expr(body, val_env_bind(env2, name, final_v))
     },
     ELetMut(name, val_expr, body) => {
       let (v, env2) = eval_expr(val_expr, env)
-      eval_expr(body, val_env_bind(env2, name, v))
+      match v {
+        VBreak(_) => (v, env2),
+        VContinue(_) => (v, env2),
+        _ => eval_expr(body, val_env_bind(env2, name, v))
+      }
     },
     EAssign(name, val_expr, body) => {
       let (v, env2) = eval_expr(val_expr, env)
-      eval_expr(body, val_env_bind(env2, name, v))
+      match v {
+        VBreak(_) => (v, env2),
+        VContinue(_) => (v, env2),
+        _ => eval_expr(body, val_env_bind(env2, name, v))
+      }
     },
     EAssignOp(name, op, val_expr, body) => {
       let old_val = match val_env_lookup(env, name) {
@@ -1053,16 +1079,28 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
         None => VInt(0)
       }
       let (rv, env2) = eval_expr(val_expr, env)
-      let new_val = eval_binop(op, old_val, rv)
-      eval_expr(body, val_env_bind(env2, name, new_val))
+      match rv {
+        VBreak(_) => (rv, env2),
+        VContinue(_) => (rv, env2),
+        _ => {
+          let new_val = eval_binop(op, old_val, rv)
+          eval_expr(body, val_env_bind(env2, name, new_val))
+        }
+      }
     },
     ESeq(left, right) => {
-      let (_, env2) = eval_expr(left, env)
-      eval_expr(right, env2)
+      let (lv, env2) = eval_expr(left, env)
+      match lv {
+        VBreak(_) => (lv, env2),
+        VContinue(_) => (lv, env2),
+        _ => eval_expr(right, env2)
+      }
     },
     EIf(cond, then_e, else_e) => {
       let (cv, env2) = eval_expr(cond, env)
       match cv {
+        VBreak(_) => (cv, env2),
+        VContinue(_) => (cv, env2),
         VBool(true) => eval_expr(then_e, env2),
         _ => eval_expr(else_e, env2)
       }
@@ -1296,8 +1334,20 @@ export let rec eval_expr = (expr: Expr, env: ValEnv) -> (Value, ValEnv)with { Er
       let msg = value_to_string(v)
       throw(msg)
     },
-    EBreak(_) => (VUnit, env),
-    EContinue(_) => (VUnit, env),
+    EBreak(opt) => {
+      let bval = match opt {
+        Some(e) => {
+          let (v, _) = eval_expr(e, env)
+          v
+        },
+        None => VUnit
+      }
+      (VBreak(bval), env)
+    },
+    EContinue(args) => {
+      let (vals, env2) = eval_args(args, env, 0, empty_vals)
+      (VContinue(vals), env2)
+    },
     ELabeledArg(_, _, inner) => eval_expr(inner, env),
     _ => (VUnit, env)
   }
