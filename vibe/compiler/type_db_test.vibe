@@ -1,7 +1,11 @@
 //# Imports
 
 import ./type_db.vibe {
-  TypeDb, db_new, db_set_source, db_typecheck, db_typecheck_count
+  TypeDb, db_check_env, db_new, db_set_source, db_typecheck, db_typecheck_count
+}
+
+import ./types.vibe {
+  Type, TypeEnv, env_lookup
 }
 
 //# Misc
@@ -47,4 +51,54 @@ test "type_db import extraction handles indented/no-space forms" {
   let db4 = db_set_source(db3, "b.vibe", "export let y = 2")
   let db5 = db_typecheck(db4, "a.vibe")
   assert(eq(db_typecheck_count(db5), 4))
+}
+
+test "cross-module type propagation" {
+  let db0 = db_new()
+  let db1 = db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nlet x = y"), "b.vibe", "export let y = 42")
+  let db2 = db_typecheck(db1, "a.vibe")
+  let b_y_is_int = match db_check_env(db2, "b.vibe") {
+    Some(e) => match env_lookup(e, "y") {
+      Some(CtInt) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(b_y_is_int)
+  let a_y_is_int = match db_check_env(db2, "a.vibe") {
+    Some(e) => match env_lookup(e, "y") {
+      Some(CtInt) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(a_y_is_int)
+  let a_x_is_int = match db_check_env(db2, "a.vibe") {
+    Some(e) => match env_lookup(e, "x") {
+      Some(CtInt) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(a_x_is_int)
+}
+
+test "cross-module cold/warm consistency" {
+  let db0 = db_new()
+  let db1 = db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nlet x = y"), "b.vibe", "export let y = 42")
+  let db2 = db_typecheck(db1, "a.vibe")
+  let count1 = db_typecheck_count(db2)
+  let db3 = db_typecheck(db2, "a.vibe")
+  let count2 = db_typecheck_count(db3)
+  assert(eq(count1, count2))
+}
+
+test "cross-module delta recomputation" {
+  let db0 = db_new()
+  let db1 = db_set_source(db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nlet x = y"), "b.vibe", "export let y = 1"), "c.vibe", "let z = 99")
+  let db2 = db_typecheck(db_typecheck(db1, "a.vibe"), "c.vibe")
+  assert(eq(db_typecheck_count(db2), 3))
+  let db3 = db_set_source(db2, "b.vibe", "export let y = 2")
+  let db4 = db_typecheck(db3, "a.vibe")
+  assert(eq(db_typecheck_count(db4), 5))
 }
