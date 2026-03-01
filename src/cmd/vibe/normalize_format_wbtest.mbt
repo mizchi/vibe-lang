@@ -67,3 +67,16 @@ test "normalize_format: strip block inside fn body" {
   assert_false(result.contains("{ a"))
   assert_true(result.contains("a + 1"))
 }
+
+///|
+test "normalize_format: self-import (import .{ ... }) round-trips" {
+  let source =
+    #|import .{ encode, decode }
+    #|
+    #|test "t" { assert(true) }
+  let result = match normalize_format_source_text(source) {
+    Ok(v) => v
+    Err(err) => fail("normalize failed: " + err)
+  }
+  assert_true(result.contains("import ."))
+}

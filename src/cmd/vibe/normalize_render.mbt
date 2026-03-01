@@ -158,6 +158,10 @@ fn normalize_append_entry_export_stmt(
 
 ///|
 fn normalize_render_canonicalize_import_path(path : String) -> String {
+  // Bare "." means self-import (import .{ ... }); preserve it as-is.
+  if path == "." {
+    return "."
+  }
   let is_abs = path.has_prefix("/")
   let had_dot_prefix = path.has_prefix("./")
   let parts : Array[String] = []
