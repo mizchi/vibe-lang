@@ -1098,6 +1098,7 @@ fn compile_function(
     ctx.fn_closure_captures,
   )
   if with_env && captures.length() > 0 {
+    let mut effective_idx = 0
     for i in 0..<captures.length() {
       let name = captures[i]
       // Skip env load for captures that are compile-time constants.
@@ -1106,11 +1107,12 @@ fn compile_function(
       if ctx.const_i64_values.contains(name) {
         continue
       }
-      let is_ref = i < capture_is_ref_cell.length() && capture_is_ref_cell[i]
+      let is_ref = effective_idx < capture_is_ref_cell.length() &&
+        capture_is_ref_cell[effective_idx]
       let kind = if is_ref {
         ValueKind::I32
-      } else if i < capture_kinds.length() {
-        capture_kinds[i]
+      } else if effective_idx < capture_kinds.length() {
+        capture_kinds[effective_idx]
       } else {
         ValueKind::I64
       }
@@ -1140,7 +1142,7 @@ fn compile_function(
         ctx.locals[name] = idx
         ctx.local_kinds[name] = ValueKind::I32
         emit_local_get(prelude, env_idx)
-        emit_i64_load(prelude, 8 + i * 8) // load pointer as i64
+        emit_i64_load(prelude, 8 + effective_idx * 8) // load pointer as i64
         emit_i32_wrap_i64(prelude) // → i32
         emit_local_set(prelude, idx)
         // Propagate ref cell status so nested closures work
@@ -1151,7 +1153,7 @@ fn compile_function(
         ctx.locals[name] = idx
         ctx.local_kinds[name] = ValueKind::ExternRef
         emit_local_get(prelude, env_idx)
-        emit_i64_load(prelude, 8 + i * 8) // load slot index as i64
+        emit_i64_load(prelude, 8 + effective_idx * 8) // load slot index as i64
         emit_i32_wrap_i64(prelude) // wrap to i32 for table.get
         emit_table_get(prelude, ctx.extern_table_index)
         emit_local_set(prelude, idx)
@@ -1160,9 +1162,10 @@ fn compile_function(
         ctx.locals[name] = idx
         ctx.local_kinds[name] = kind
         emit_local_get(prelude, env_idx)
-        emit_i64_load(prelude, 8 + i * 8)
+        emit_i64_load(prelude, 8 + effective_idx * 8)
         emit_local_set(prelude, idx)
       }
+      effective_idx += 1
     }
   }
   let mv_kinds : Array[ValueKind]? = match self_name {

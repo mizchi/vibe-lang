@@ -19,7 +19,14 @@ fn compile_expr_fn(
   } else {
     require_heap(ctx)
     let len = captures.length()
-    let size = align4(8 + len * 8)
+    // Count non-constant captures for env sizing
+    let mut effective_len = 0
+    for i in 0..<len {
+      if not(ctx.const_i64_values.contains(captures[i])) {
+        effective_len += 1
+      }
+    }
+    let size = align4(8 + effective_len * 8)
     let obj_local = alloc_temp_local(ctx)
     emit_heap_alloc(ctx, buf, size, obj_local)
     emit_local_get(buf, obj_local)
@@ -31,14 +38,13 @@ fn compile_expr_fn(
     emit_i32_store(buf, 4)
     let capture_kinds : Array[ValueKind] = []
     let capture_is_ref_cell : Array[Bool] = []
+    let mut effective_idx = 0
     for i in 0..<len {
       let name = captures[i]
       // Skip env store for compile-time constants.
       // The prelude in compile_function also skips loading this slot,
       // and compile_expr_ident emits i64.const directly from const_i64_values.
       if ctx.const_i64_values.contains(name) {
-        capture_kinds.push(ValueKind::I64)
-        capture_is_ref_cell.push(false)
         continue
       }
       let is_ref_cell = ctx.mut_captured_vars.contains(name)
@@ -62,7 +68,7 @@ fn compile_expr_fn(
           }
           None => raise WasmGenError::UnknownName(name)
         }
-        emit_i64_store(buf, 8 + i * 8)
+        emit_i64_store(buf, 8 + effective_idx * 8)
       } else if ctx.use_js_strings && cap_kind == ValueKind::ExternRef {
         // Store externref in extern table, put slot index in closure env
         ctx.need_extern_table = true
@@ -79,7 +85,7 @@ fn compile_expr_fn(
         emit_local_get(buf, obj_local)
         emit_i32_const_raw(buf, slot)
         emit_i64_extend_i32_u(buf)
-        emit_i64_store(buf, 8 + i * 8)
+        emit_i64_store(buf, 8 + effective_idx * 8)
       } else {
         emit_local_get(buf, obj_local)
         match ctx.locals.get(name) {
@@ -100,8 +106,9 @@ fn compile_expr_fn(
             }
         }
         // Store capture as i64 (all tagged values are i64)
-        emit_i64_store(buf, 8 + i * 8)
+        emit_i64_store(buf, 8 + effective_idx * 8)
       }
+      effective_idx += 1
     }
     ctx.fn_closure_capture_kinds[key] = capture_kinds
     ctx.fn_closure_capture_is_ref_cell[key] = capture_is_ref_cell

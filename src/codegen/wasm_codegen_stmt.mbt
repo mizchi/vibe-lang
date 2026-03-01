@@ -170,10 +170,14 @@ fn compile_stmt(
               Some(list) => list
               None => []
             }
+            let mut bp_effective_idx = 0
             for i in 0..<captures.length() {
               let cap_name = captures[i]
+              if ctx.const_i64_values.contains(cap_name) {
+                continue // const captures have no env slot
+              }
               if cap_name == name {
-                // Self-reference capture at slot i
+                // Self-reference capture at effective slot
                 let env_local = alloc_temp_local(ctx)
                 emit_local_get(buf, idx)
                 emit_i64_const_raw(buf, (-4).to_int64())
@@ -183,7 +187,7 @@ fn compile_stmt(
                 emit_local_get(buf, env_local)
                 emit_local_get(buf, idx) // closure value (i64)
                 emit_i32_wrap_i64(buf) // truncate to i32 for memory store
-                emit_i32_store(buf, 8 + i * 4) // write to capture slot
+                emit_i32_store(buf, 8 + bp_effective_idx * 4) // write to capture slot
               } else if is_forward_fn && ctx.forward_fn_keys.contains(cap_name) {
                 // Mutual reference: capture of another forward function
                 match ctx.locals.get(cap_name) {
@@ -198,11 +202,12 @@ fn compile_stmt(
                     emit_local_get(buf, env_local)
                     emit_local_get(buf, cap_local)
                     emit_i32_wrap_i64(buf)
-                    emit_i32_store(buf, 8 + i * 4)
+                    emit_i32_store(buf, 8 + bp_effective_idx * 4)
                   }
                   None => () // Not yet compiled — will be patched by reverse pass below
                 }
               }
+              bp_effective_idx += 1
             }
             // Reverse back-patch: patch previously compiled forward functions
             // that capture THIS function
@@ -218,7 +223,11 @@ fn compile_stmt(
                       Some(list) => list
                       None => []
                     }
+                    let mut rbp_effective_idx = 0
                     for j in 0..<other_captures.length() {
+                      if ctx.const_i64_values.contains(other_captures[j]) {
+                        continue // const captures have no env slot
+                      }
                       if other_captures[j] == name {
                         let env_local = alloc_temp_local(ctx)
                         emit_local_get(buf, other_local)
@@ -229,8 +238,9 @@ fn compile_stmt(
                         emit_local_get(buf, env_local)
                         emit_local_get(buf, idx)
                         emit_i32_wrap_i64(buf)
-                        emit_i32_store(buf, 8 + j * 4)
+                        emit_i32_store(buf, 8 + rbp_effective_idx * 4)
                       }
+                      rbp_effective_idx += 1
                     }
                   }
                   None => ()
