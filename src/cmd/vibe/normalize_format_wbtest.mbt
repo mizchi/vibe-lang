@@ -69,6 +69,54 @@ test "normalize_format: strip block inside fn body" {
 }
 
 ///|
+test "strip_redundant_blocks: else branch single expr keeps braces" {
+  let source =
+    #|let exp = 10
+    #|let signed = if true {
+    #|  0 - exp
+    #|} else {
+    #|  exp
+    #|}
+    #|(signed, 1)
+  let result = strip_redundant_blocks_source(source)
+  // The else { exp } braces must be preserved to avoid
+  // exp(...) call ambiguity with the following tuple expression.
+  assert_true(result.contains("} else {"))
+}
+
+///|
+test "normalize_format: else branch single expr preserves braces" {
+  let source =
+    #|let exp = 10
+    #|let signed = if true {
+    #|  0 - exp
+    #|} else {
+    #|  exp
+    #|}
+  let result = strip_redundant_blocks_source(source)
+  assert_true(result.contains("} else {"))
+}
+
+///|
+test "normalize_format: else branch single expr keeps braces (full pipeline)" {
+  let source =
+    #|let exp = 10
+    #|let signed = if true {
+    #|  0 - exp
+    #|} else {
+    #|  exp
+    #|}
+    #|(signed, 1)
+  let result = match normalize_format_source_text(source) {
+    Ok(v) => v
+    Err(err) => fail("normalize failed: " + err)
+  }
+  // The else { exp } braces must be preserved to avoid
+  // exp(...) call ambiguity with the following tuple expression.
+  assert_true(result.contains("} else {"))
+}
+
+///|
 test "normalize_format: self-import (import .{ ... }) round-trips" {
   let source =
     #|import .{ encode, decode }

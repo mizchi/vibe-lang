@@ -477,6 +477,7 @@ fn AstParser::parse_if_expr(self : AstParser) -> @core.Expr raise ParseError {
   self.skip_trivia()
   let else_body = if self.peek_kind() == else_kw() {
     let _ = self.bump()
+    self.skip_trivia()
     if self.peek_kind() == lbrace() {
       self.parse_block()
     } else {
