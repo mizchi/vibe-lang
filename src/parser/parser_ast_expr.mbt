@@ -1334,8 +1334,14 @@ fn AstParser::is_type_arg_context(self : AstParser) -> Bool {
 }
 
 ///|
-fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
+fn AstParser::try_parse_arrow_fn(
+  self : AstParser,
+) -> @core.Expr? raise ParseError {
   let saved = self.pos
+  // confirmed_arrow is set only when -> is found (not just {)
+  // because (a, b) { ... } is ambiguous (could be tuple + block in match contexts)
+  let mut confirmed_arrow = false
+  let mut deferred_error : ParseError? = None
   let result : @core.Expr? = try {
     // Try to parse type parameters: [T, U] / [T: Trait]
     let parsed = self.parse_fn_type_params()
@@ -1353,6 +1359,8 @@ fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
     let mut ret : @core.Type? = None
     let mut effects : Array[@core.EffectAtom] = []
     if self.peek_kind() == thin_arrow() {
+      // -> found: this is definitively an arrow function
+      confirmed_arrow = true
       let _ = self.bump()
       self.skip_trivia()
       // Check if this is expression body: (x) -> expr (no block)
@@ -1403,7 +1411,16 @@ fn AstParser::try_parse_arrow_fn(self : AstParser) -> @core.Expr? {
       ),
     )
   } catch {
-    _ => None
+    e => {
+      if confirmed_arrow {
+        deferred_error = Some(e)
+      }
+      None
+    }
+  }
+  match deferred_error {
+    Some(e) => raise e
+    None => ()
   }
   match result {
     Some(_) => result
