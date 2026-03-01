@@ -21,6 +21,14 @@ fn compile_expr_ident(
       feature="qualified name: " + name,
     )
   }
+  // Check constant integer table first (inlined literals)
+  match ctx.const_int_values.get(name) {
+    Some(int_val) => {
+      emit_i64_const_tagged(buf, int_val)
+      return
+    }
+    None => ()
+  }
   match ctx.locals.get(name) {
     Some(idx) =>
       if ctx.mut_captured_vars.contains(name) {

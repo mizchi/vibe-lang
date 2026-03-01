@@ -1,4 +1,39 @@
 ///|
+/// Check if a Fn expression is a simple forwarding call:
+///   (x, y) => { g(x, y) }
+/// Returns Some(target_name) if the body is a single Call expression
+/// that passes all parameters in the same order.
+fn is_forwarding_call(
+  params : Array[@core.FuncParam],
+  body : @core.Module,
+) -> String? {
+  // Body must be exactly one statement: Expr(Call(...))
+  if body.stmts.length() != 1 {
+    return None
+  }
+  match body.stmts[0] {
+    @core.Stmt::Expr(expr=@core.Expr::Call(name=target_name, args~, ..), ..) => {
+      // Argument count must match parameter count
+      if args.length() != params.length() {
+        return None
+      }
+      // Each argument must be Ident matching the corresponding parameter
+      for i in 0..<args.length() {
+        match args[i].expr {
+          @core.Expr::Ident(name=arg_name, ..) =>
+            if arg_name != params[i].name {
+              return None
+            }
+          _ => return None
+        }
+      }
+      Some(target_name)
+    }
+    _ => None
+  }
+}
+
+///|
 /// Unwrap a type-assertion identity block:
 ///   { let __vibe_local_type_assert_N = fn(v) { v }; __assert(inner_expr) }
 /// Returns the inner_expr argument if the pattern matches, otherwise the original expr.
@@ -258,7 +293,76 @@ fn compile_stmt(
                 }
                 None => ()
               }
+            // Forwarding function alias: let f = (x) { g(x) }
+            // → treat as alias of g (skip generating a separate function)
+            @core.Expr::Fn(params=fn_params, body=fn_body, ..) =>
+              match is_forwarding_call(fn_params, fn_body) {
+                Some(target_name) =>
+                  match ctx.fn_indices.get(target_name) {
+                    Some(func_idx) => {
+                      ctx.fn_indices[name] = func_idx
+                      match ctx.fn_local_sigs.get(target_name) {
+                        Some(sig) => ctx.fn_local_sigs[name] = sig
+                        None => ()
+                      }
+                      match ctx.fn_params.get(target_name) {
+                        Some(kinds) => ctx.fn_params[name] = kinds
+                        None => ()
+                      }
+                      match ctx.fn_param_names.get(target_name) {
+                        Some(names) => ctx.fn_param_names[name] = names
+                        None => ()
+                      }
+                      match ctx.fn_returns.get(target_name) {
+                        Some(ret_kind) => ctx.fn_returns[name] = ret_kind
+                        None => ()
+                      }
+                      match ctx.fn_return_sigs.get(target_name) {
+                        Some(sig) => ctx.fn_return_sigs[name] = sig
+                        None => ()
+                      }
+                      let needs_env = fn_index_needs_env(ctx, func_idx)
+                      let mut is_captured = false
+                      for _key, captures in ctx.fn_closure_captures {
+                        if captures.contains(name) {
+                          is_captured = true
+                          break
+                        }
+                      }
+                      if not(is_last) && not(is_captured) && not(needs_env) {
+                        return
+                      }
+                    }
+                    None => ()
+                  }
+                None => ()
+              }
             _ => ()
+          }
+          // Constant integer inlining: for non-recursive `let x = <int-literal>`,
+          // register in const_int_values and skip local allocation.
+          // References to x will emit i64.const directly instead of local.get.
+          // Skip if the constant is captured by any closure (needs a local).
+          if not(rec) {
+            match effective_expr {
+              @core.Expr::Int(value=int_val, ..) => {
+                let mut is_captured = false
+                for _key, captures in ctx.fn_closure_captures {
+                  if captures.contains(name) {
+                    is_captured = true
+                    break
+                  }
+                }
+                if not(is_captured) {
+                  ctx.const_int_values[name] = int_val
+                  if is_last {
+                    emit_i64_const_tagged(buf, int_val)
+                  }
+                  return
+                }
+              }
+              _ => ()
+            }
           }
           // Use effective_expr (type-assert unwrapped) for kind inference,
           // sig propagation, and code generation so that identity wrappers

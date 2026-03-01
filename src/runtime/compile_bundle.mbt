@@ -127,6 +127,8 @@ fn collect_dependency_defs(
         @core.Stmt::TraitDef(..)
         | @core.Stmt::TraitImpl(..)
         | @core.Stmt::InternalTraitDef(..) => ()
+        // Include mutable variable definitions
+        @core.Stmt::LetMut(..) => out.push(stmt)
         // Other statements are passed through
         _ => out.push(stmt)
       }
