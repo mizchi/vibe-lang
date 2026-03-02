@@ -44,6 +44,54 @@ fn handle_error_kind(ctx : CodegenCtx) -> ValueKind {
 }
 
 ///|
+fn emit_handle_try_header_with_valtype(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  result_kind : ValueKind,
+  error_kind : ValueKind,
+) -> Unit {
+  adjust_loop_offsets(ctx, 3)
+  buf.push((2).to_byte())
+  buf.push(valtype_byte(result_kind))
+  buf.push((2).to_byte())
+  buf.push(valtype_byte(error_kind))
+  buf.push((31).to_byte())
+  buf.push(valtype_byte(result_kind))
+  write_u32_leb(buf, 1)
+  buf.push((0).to_byte())
+  write_u32_leb(buf, ctx.error_tag_index)
+  write_u32_leb(buf, 0)
+}
+
+///|
+fn emit_handle_try_header_with_type_idx(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  type_idx : Int,
+  error_kind : ValueKind,
+) -> Unit {
+  adjust_loop_offsets(ctx, 3)
+  buf.push((2).to_byte())
+  write_i32_leb(buf, type_idx)
+  buf.push((2).to_byte())
+  buf.push(valtype_byte(error_kind))
+  buf.push((31).to_byte())
+  write_i32_leb(buf, type_idx)
+  write_u32_leb(buf, 1)
+  buf.push((0).to_byte())
+  write_u32_leb(buf, ctx.error_tag_index)
+  write_u32_leb(buf, 0)
+}
+
+///|
+fn emit_handle_try_success_to_catch(buf : ByteBuf) -> Unit {
+  buf.push((11).to_byte())
+  buf.push((12).to_byte())
+  write_u32_leb(buf, 1)
+  buf.push((11).to_byte())
+}
+
+///|
 fn compile_handle_catch_body_expr(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -92,22 +140,9 @@ fn compile_expr_handle(
   } else {
     ValueKind::I64
   }
-  adjust_loop_offsets(ctx, 3)
-  buf.push((2).to_byte())
-  buf.push(valtype_byte(try_kind))
-  buf.push((2).to_byte())
-  buf.push(valtype_byte(error_kind))
-  buf.push((31).to_byte())
-  buf.push(valtype_byte(try_kind))
-  write_u32_leb(buf, 1)
-  buf.push((0).to_byte())
-  write_u32_leb(buf, ctx.error_tag_index)
-  write_u32_leb(buf, 0)
+  emit_handle_try_header_with_valtype(ctx, buf, try_kind, error_kind)
   compile_block_expr(ctx, buf, body)
-  buf.push((11).to_byte())
-  buf.push((12).to_byte())
-  write_u32_leb(buf, 1)
-  buf.push((11).to_byte())
+  emit_handle_try_success_to_catch(buf)
   adjust_loop_offsets(ctx, -1)
   let error_local = alloc_temp_local_with_kind(ctx, error_kind)
   emit_local_set(buf, error_local)
