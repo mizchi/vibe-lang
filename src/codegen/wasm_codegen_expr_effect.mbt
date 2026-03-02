@@ -24,6 +24,58 @@ fn handle_arm_bind_name(pat : @core.Pat) -> String? {
 }
 
 ///|
+fn handle_catch_body_module(
+  expr : @core.Expr,
+  span : @core.Span,
+) -> @core.Module {
+  match expr {
+    @core.Expr::Block(body=blk_body, ..) => blk_body
+    other => @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
+  }
+}
+
+///|
+fn handle_error_kind(ctx : CodegenCtx) -> ValueKind {
+  if ctx.use_js_strings {
+    ValueKind::ExternRef
+  } else {
+    ValueKind::I64
+  }
+}
+
+///|
+fn compile_handle_catch_body_expr(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  catch_arm : @core.MatchArm,
+  catch_body_mod : @core.Module,
+  error_kind : ValueKind,
+  error_local : Int,
+) -> Unit raise WasmGenError {
+  match handle_arm_bind_name(catch_arm.pat) {
+    Some(bind_name) => {
+      let prev_local = ctx.locals.get(bind_name)
+      let prev_kind = ctx.local_kinds.get(bind_name)
+      let bind_local = alloc_temp_local_with_kind(ctx, error_kind)
+      emit_local_get(buf, error_local)
+      emit_local_set(buf, bind_local)
+      ctx.locals[bind_name] = bind_local
+      ctx.local_kinds[bind_name] = error_kind
+      compile_block_expr(ctx, buf, catch_body_mod)
+      match prev_local {
+        Some(idx) => ctx.locals[bind_name] = idx
+        None => ctx.locals.remove(bind_name)
+      }
+      match prev_kind {
+        Some(kind) => ctx.local_kinds[bind_name] = kind
+        None => ctx.local_kinds.remove(bind_name)
+      }
+    }
+    None => compile_block_expr(ctx, buf, catch_body_mod)
+  }
+}
+
+///|
 fn compile_expr_handle(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -33,15 +85,8 @@ fn compile_expr_handle(
 ) -> Unit raise WasmGenError {
   // Phase 1: compile Handle like Try, using first arm's expr as catch_body
   let catch_arm = arms[0]
-  let catch_body_mod : @core.Module = match catch_arm.expr {
-    @core.Expr::Block(body=blk_body, ..) => blk_body
-    other => @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
-  }
-  let error_kind = if ctx.use_js_strings {
-    ValueKind::ExternRef
-  } else {
-    ValueKind::I64
-  }
+  let catch_body_mod = handle_catch_body_module(catch_arm.expr, span)
+  let error_kind = handle_error_kind(ctx)
   let try_kind = if ctx.use_js_strings {
     infer_block_kind(ctx, body, ctx.local_kinds)
   } else {
@@ -66,27 +111,9 @@ fn compile_expr_handle(
   adjust_loop_offsets(ctx, -1)
   let error_local = alloc_temp_local_with_kind(ctx, error_kind)
   emit_local_set(buf, error_local)
-  match handle_arm_bind_name(catch_arm.pat) {
-    Some(bind_name) => {
-      let prev_local = ctx.locals.get(bind_name)
-      let prev_kind = ctx.local_kinds.get(bind_name)
-      let bind_local = alloc_temp_local_with_kind(ctx, error_kind)
-      emit_local_get(buf, error_local)
-      emit_local_set(buf, bind_local)
-      ctx.locals[bind_name] = bind_local
-      ctx.local_kinds[bind_name] = error_kind
-      compile_block_expr(ctx, buf, catch_body_mod)
-      match prev_local {
-        Some(idx) => ctx.locals[bind_name] = idx
-        None => ctx.locals.remove(bind_name)
-      }
-      match prev_kind {
-        Some(kind) => ctx.local_kinds[bind_name] = kind
-        None => ctx.local_kinds.remove(bind_name)
-      }
-    }
-    None => compile_block_expr(ctx, buf, catch_body_mod)
-  }
+  compile_handle_catch_body_expr(
+    ctx, buf, catch_arm, catch_body_mod, error_kind, error_local,
+  )
   buf.push((11).to_byte())
   adjust_loop_offsets(ctx, -2)
 }

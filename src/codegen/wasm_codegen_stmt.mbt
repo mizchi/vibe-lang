@@ -989,6 +989,39 @@ fn compile_block_multivalue(
 }
 
 ///|
+fn compile_handle_catch_body_multivalue(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  catch_arm : @core.MatchArm,
+  catch_body_mod : @core.Module,
+  error_kind : ValueKind,
+  error_local : Int,
+  kinds : Array[ValueKind],
+) -> Unit raise WasmGenError {
+  match handle_arm_bind_name(catch_arm.pat) {
+    Some(bind_name) => {
+      let prev_local = ctx.locals.get(bind_name)
+      let prev_kind = ctx.local_kinds.get(bind_name)
+      let bind_local = alloc_temp_local_with_kind(ctx, error_kind)
+      emit_local_get(buf, error_local)
+      emit_local_set(buf, bind_local)
+      ctx.locals[bind_name] = bind_local
+      ctx.local_kinds[bind_name] = error_kind
+      compile_block_multivalue(ctx, buf, catch_body_mod, kinds)
+      match prev_local {
+        Some(idx) => ctx.locals[bind_name] = idx
+        None => ctx.locals.remove(bind_name)
+      }
+      match prev_kind {
+        Some(kind) => ctx.local_kinds[bind_name] = kind
+        None => ctx.local_kinds.remove(bind_name)
+      }
+    }
+    None => compile_block_multivalue(ctx, buf, catch_body_mod, kinds)
+  }
+}
+
+///|
 fn compile_expr_multivalue(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -1025,21 +1058,21 @@ fn compile_expr_multivalue(
     }
     @core.Expr::Handle(body~, arms~, span~) => {
       // Phase 1: compile Handle like Try multivalue, using first arm's expr as catch_body
-      let catch_body_mod : @core.Module = match arms[0].expr {
-        @core.Expr::Block(body=blk_body, ..) => blk_body
-        other => @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
-      }
+      let catch_arm = arms[0]
+      let catch_body_mod = handle_catch_body_module(catch_arm.expr, span)
       let sig = FuncSig::{ params: [], results: kinds }
       let type_idx = ensure_sig_index(ctx, sig)
+      let error_kind = handle_error_kind(ctx)
       adjust_loop_offsets(ctx, 3)
       buf.push((2).to_byte())
       write_i32_leb(buf, type_idx)
       buf.push((2).to_byte())
-      buf.push((64).to_byte())
+      buf.push(valtype_byte(error_kind))
       buf.push((31).to_byte())
       write_i32_leb(buf, type_idx)
       write_u32_leb(buf, 1)
-      buf.push((2).to_byte())
+      buf.push((0).to_byte())
+      write_u32_leb(buf, ctx.error_tag_index)
       write_u32_leb(buf, 0)
       compile_block_multivalue(ctx, buf, body, kinds)
       buf.push((11).to_byte())
@@ -1047,7 +1080,11 @@ fn compile_expr_multivalue(
       write_u32_leb(buf, 1)
       buf.push((11).to_byte())
       adjust_loop_offsets(ctx, -1)
-      compile_block_multivalue(ctx, buf, catch_body_mod, kinds)
+      let error_local = alloc_temp_local_with_kind(ctx, error_kind)
+      emit_local_set(buf, error_local)
+      compile_handle_catch_body_multivalue(
+        ctx, buf, catch_arm, catch_body_mod, error_kind, error_local, kinds,
+      )
       buf.push((11).to_byte())
       adjust_loop_offsets(ctx, -2)
     }
