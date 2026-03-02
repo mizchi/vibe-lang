@@ -1,4 +1,29 @@
 ///|
+fn handle_arm_bind_name(pat : @core.Pat) -> String? {
+  match pat {
+    @core.Pat::Bind(name~, span~) => {
+      let _ = span
+      Some(name)
+    }
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let _ = span
+      if name == "Error" && args.length() == 1 {
+        match args[0] {
+          @core.Pat::Bind(name=bind_name, span~) => {
+            let _ = span
+            Some(bind_name)
+          }
+          _ => None
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
 fn compile_expr_handle(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -7,9 +32,15 @@ fn compile_expr_handle(
   span : @core.Span,
 ) -> Unit raise WasmGenError {
   // Phase 1: compile Handle like Try, using first arm's expr as catch_body
-  let catch_body_mod : @core.Module = match arms[0].expr {
+  let catch_arm = arms[0]
+  let catch_body_mod : @core.Module = match catch_arm.expr {
     @core.Expr::Block(body=blk_body, ..) => blk_body
     other => @core.Module::{ stmts: [@core.Stmt::Expr(expr=other, span~)] }
+  }
+  let error_kind = if ctx.use_js_strings {
+    ValueKind::ExternRef
+  } else {
+    ValueKind::I64
   }
   let try_kind = if ctx.use_js_strings {
     infer_block_kind(ctx, body, ctx.local_kinds)
@@ -20,11 +51,12 @@ fn compile_expr_handle(
   buf.push((2).to_byte())
   buf.push(valtype_byte(try_kind))
   buf.push((2).to_byte())
-  buf.push((64).to_byte())
+  buf.push(valtype_byte(error_kind))
   buf.push((31).to_byte())
   buf.push(valtype_byte(try_kind))
   write_u32_leb(buf, 1)
-  buf.push((2).to_byte())
+  buf.push((0).to_byte())
+  write_u32_leb(buf, ctx.error_tag_index)
   write_u32_leb(buf, 0)
   compile_block_expr(ctx, buf, body)
   buf.push((11).to_byte())
@@ -32,7 +64,29 @@ fn compile_expr_handle(
   write_u32_leb(buf, 1)
   buf.push((11).to_byte())
   adjust_loop_offsets(ctx, -1)
-  compile_block_expr(ctx, buf, catch_body_mod)
+  let error_local = alloc_temp_local_with_kind(ctx, error_kind)
+  emit_local_set(buf, error_local)
+  match handle_arm_bind_name(catch_arm.pat) {
+    Some(bind_name) => {
+      let prev_local = ctx.locals.get(bind_name)
+      let prev_kind = ctx.local_kinds.get(bind_name)
+      let bind_local = alloc_temp_local_with_kind(ctx, error_kind)
+      emit_local_get(buf, error_local)
+      emit_local_set(buf, bind_local)
+      ctx.locals[bind_name] = bind_local
+      ctx.local_kinds[bind_name] = error_kind
+      compile_block_expr(ctx, buf, catch_body_mod)
+      match prev_local {
+        Some(idx) => ctx.locals[bind_name] = idx
+        None => ctx.locals.remove(bind_name)
+      }
+      match prev_kind {
+        Some(kind) => ctx.local_kinds[bind_name] = kind
+        None => ctx.local_kinds.remove(bind_name)
+      }
+    }
+    None => compile_block_expr(ctx, buf, catch_body_mod)
+  }
   buf.push((11).to_byte())
   adjust_loop_offsets(ctx, -2)
 }

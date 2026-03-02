@@ -44,12 +44,12 @@ Completed items are archived in `docs/DONE.md`.
 
 目標: selfhost compiler (vibe/compiler/) の lex → parse → print roundtrip が全 compiler ソースで MoonBit ホスト実装と一致すること。
 
-**現状 (18 ファイル中 16 OK / 2 除外):**
+**現状 (18 ファイル中 18 OK):**
 
 | 状態 | ファイル |
 |------|---------|
 | OK | eval_e2e_helpers, index, checker_resolve, ast, eval_loader, checker_stmt, values, token, eval_stmt, type_db, checker, printer, builtins, eval_builtins, lexer, types |
-| 除外 | parser.vibe (1608行), eval.vibe (1354行) — インタプリタでの eval が大きすぎ OOM |
+| OK | parser.vibe, eval.vibe — native roundtrip テスト（host の format_script + parse_ast）で検証済み |
 
 **修正済みエラーパターン:**
 
@@ -62,7 +62,7 @@ Completed items are archived in `docs/DONE.md`.
 
 **残タスク:**
 
-- [ ] parser.vibe / eval.vibe の roundtrip 対応（インタプリタ性能 or ネイティブテストが必要）
+- [x] parser.vibe / eval.vibe の roundtrip 対応（native roundtrip テストで検証済み）
 
 ## Language Features
 
@@ -84,6 +84,20 @@ Completed items are archived in `docs/DONE.md`.
 | consumer_double_rounding | 4877 |
 
 ベンチ: `scripts/bench_bundle_size.sh`, `bench/bundle_size/cases.txt`
+
+## WASM Codegen Integrity (In Progress)
+
+目標: selfhost 系ワークロードで生成される wasm が常に validate 可能で、PR/Push CI で回帰を検知できること。
+
+- [x] type section の builtin signature 数を import 実体と一致させる（`need_fs`/`need_socket` を `builtin_type_count` に反映）
+- [x] mut-captured local の kind 推論を boxed value 扱いに補正する（`infer_expr_kind`）
+- [x] tagged value を保持する一時ローカルを i64 化する（`__to_string` / `__set_index`）
+- [x] `handle` codegen の catch を `catch_all` 依存から error-tag catch へ修正し、catch payload の型を一致させる
+- [x] 回帰 wbtest を追加して固定化（type index / handle catch encoding）
+- [x] `selfhost_probe_types_run.vibe` を正式 fixture 化し、ad-hoc ファイル依存をなくす
+- [x] Push/PR CI に wasm validate gate を追加（`vibe.exe compile --wasm` + `wasm-tools validate --features all`）
+- [x] 上記 gate は定期実行なし（schedule なし）で運用する
+- [x] `handle`/例外経路の interpreter vs wasm 実行結果一致テストを追加する
 
 ## Blocked / External
 

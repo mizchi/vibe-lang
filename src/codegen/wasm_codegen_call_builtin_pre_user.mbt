@@ -510,7 +510,7 @@ fn compile_call_builtin_pre_user_inner(
         let true_str = tag_ptr64(ctx.strings.intern("true"), tag_obj)
         let false_str = tag_ptr64(ctx.strings.intern("false"), tag_obj)
         let fallback_str = tag_ptr64(ctx.strings.intern("<value>"), tag_obj)
-        let value_local = alloc_temp_local(ctx)
+        let value_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
         let tag_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_local_set(buf, value_local)
@@ -1928,6 +1928,45 @@ fn compile_call_builtin_pre_user_inner(
       emit_i64_const_raw(buf, tag_int.to_int64())
       emit_i64_or(buf)
     }
+    "iter_require" if not(is_user_fn) => {
+      // iter_require(xs) -> identity (prelude fallback for Array iteration)
+      let pos_args = extract_positional_exprs_with_arity(args, "iter_require", 1)
+      compile_expr(ctx, buf, pos_args[0])
+    }
+    "iter_length" if not(is_user_fn) => {
+      // iter_length(xs) -> fallback to array_length(xs)
+      let pos_args = extract_positional_exprs_with_arity(args, "iter_length", 1)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 4)
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+      emit_i64_const_raw(buf, tag_int.to_int64())
+      emit_i64_or(buf)
+    }
+    "iter_get" if not(is_user_fn) => {
+      // iter_get(xs, idx) -> fallback to array_get(xs, idx)
+      let pos_args = extract_positional_exprs_with_arity(args, "iter_get", 2)
+      let ptr_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, (-4).to_int64())
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8)
+      emit_i64_extend_i32_s(buf)
+    }
     "array_get" | "__index" => {
       // array_get(arr, idx) -> load arr[idx]
       let pos_args = extract_positional_exprs_with_arity(args, "array_get", 2)
@@ -1955,7 +1994,7 @@ fn compile_call_builtin_pre_user_inner(
       let pos_args = extract_positional_exprs_with_arity(args, "__set_index", 3)
       let ptr_local = alloc_temp_local(ctx)
       let idx_local = alloc_temp_local(ctx)
-      let value_local = alloc_temp_local(ctx)
+      let value_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)

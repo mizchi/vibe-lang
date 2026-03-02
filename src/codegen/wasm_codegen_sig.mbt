@@ -223,6 +223,17 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
   if ctx.need_stdin_read_char {
     count += 1
   }
+  if ctx.need_fs {
+    // Keep in sync with wasm_codegen_module.mbt type section:
+    // get-directories/resource-drop, open-at, read, write, stat-at
+    count += 5
+  }
+  if ctx.need_socket {
+    // Keep in sync with wasm_codegen_module.mbt type section:
+    // instance-network, create-tcp, start-connect, finish-connect,
+    // subscribe, poll, shutdown, resource-drop, stream-read, stream-write
+    count += 10
+  }
   count
 }
 
@@ -347,7 +358,14 @@ fn infer_expr_kind_with(
     @core.Expr::Ident(name~, span~) => {
       let _ = span
       match locals.get(name) {
-        Some(kind) => kind
+        Some(kind) =>
+          if kind == ValueKind::I32 && ctx.mut_captured_vars.contains(name) {
+            // `let mut` captured vars are stored as i32 ref-cell pointers,
+            // but reading the identifier yields the boxed value (i64).
+            ValueKind::I64
+          } else {
+            kind
+          }
         None => ValueKind::I64
       }
     }
