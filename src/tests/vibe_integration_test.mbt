@@ -1186,3 +1186,78 @@ test "selfhost final: eval pipeline processes own token module" {
       )
   }
 }
+
+///|
+test "probe: selfhost roundtrip all compiler sources" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  load_compiler_source(db, "vibe/compiler/token.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/ast.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/lexer.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
+  load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
+  // Exclude parser.vibe (1608 lines) and eval.vibe (1354 lines) — too large for interpreter
+  let files : Array[String] = [
+    "vibe/compiler/eval_e2e_helpers.vibe",
+    "vibe/compiler/index.vibe",
+    "vibe/compiler/checker_resolve.vibe",
+    "vibe/compiler/ast.vibe",
+    "vibe/compiler/eval_loader.vibe",
+    "vibe/compiler/checker_stmt.vibe",
+    "vibe/compiler/values.vibe",
+    "vibe/compiler/token.vibe",
+    "vibe/compiler/eval_stmt.vibe",
+    "vibe/compiler/type_db.vibe",
+    "vibe/compiler/checker.vibe",
+    "vibe/compiler/printer.vibe",
+    "vibe/compiler/builtins.vibe",
+    "vibe/compiler/eval_builtins.vibe",
+    "vibe/compiler/lexer.vibe",
+    "vibe/compiler/types.vibe",
+  ]
+  let ok_count = @ref.new(0)
+  let failures : Array[String] = []
+  for file in files {
+    let header =
+      #|import ./vibe/compiler/lexer.vibe { lex }
+      #|import ./vibe/compiler/parser.vibe { parse_program }
+      #|import ./vibe/compiler/printer.vibe { print_program }
+    let footer =
+      #|let tokens = lex(source)
+      #|let stmts = parse_program(tokens)
+      #|let printed = print_program(stmts)
+      #|let result = handle {
+      #|  let tokens2 = lex(printed)
+      #|  let stmts2 = parse_program(tokens2)
+      #|  let printed2 = print_program(stmts2)
+      #|  if string_equals(printed, printed2) { "OK" }
+      #|  else { "MISMATCH" }
+      #|} { Error(msg) => msg }
+      #|result
+    let driver = header + "\nlet source = fs_read_file(\"\{file}\")\n" + footer
+    let result = try {
+      eval_selfhost_module(db, driver)
+    } catch {
+      e => {
+        failures.push("\{file}: \{e}")
+        continue
+      }
+    }
+    match result.last {
+      Some(@core.Value::String(s)) => if s == "OK" {
+        ok_count.update(fn(n) { n + 1 })
+      } else {
+        failures.push("\{file}: \{s}")
+      }
+      other => failures.push("\{file}: got \{other}")
+    }
+  }
+  if failures.length() > 0 {
+    fail(
+      "roundtrip OK \{ok_count.val}/\{files.length()}, failures \{failures.length()}:\n" + failures.iter().fold(
+        init="",
+        fn(acc, f) { acc + "  " + f + "\n" },
+      ),
+    )
+  }
+}

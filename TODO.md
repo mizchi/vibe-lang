@@ -40,6 +40,30 @@ Completed items are archived in `docs/DONE.md`.
   - DoD 達成: selfhost 用トップレベル e2e（実ソース入力）を CI で常時 green
   - テスト 4 件: token enum import、lex→tokens、lex→parse→print roundtrip、meta-circular eval pipeline
 
+## Self-host Parity: MoonBit 実装と結果一致
+
+目標: selfhost compiler (vibe/compiler/) の lex → parse → print roundtrip が全 compiler ソースで MoonBit ホスト実装と一致すること。
+
+**現状 (18 ファイル中 16 OK / 2 除外):**
+
+| 状態 | ファイル |
+|------|---------|
+| OK | eval_e2e_helpers, index, checker_resolve, ast, eval_loader, checker_stmt, values, token, eval_stmt, type_db, checker, printer, builtins, eval_builtins, lexer, types |
+| 除外 | parser.vibe (1608行), eval.vibe (1354行) — インタプリタでの eval が大きすぎ OOM |
+
+**修正済みエラーパターン:**
+
+- [x] P1: printer の文字列エスケープ — `escape_string` ヘルパー追加（`\"` `\\` `\n` `\t` `\r` `\0`）
+- [x] P2: lexer のシングルクォート対応 — `lex_char` 関数追加（`'a'` → `TInt(97)`）
+- [x] P3: printer の ELet/ESeq ブレース囲み — `ELet`, `ELetRec`, `ELetMut`, `EAssign`, `EAssignOp`, `ESeq` を `{ }` で出力
+- [x] P4: parser のブロック内暗黙シーケンス — `parse_block_after_expr` の `_` ケースで mode 20 継続
+- [x] P5: import パス内キーワードトークン — `TModule`, `TType`, `TMatch`, `TTest` を `collect_import_path` に追加
+- [x] P6: if-without-else 対応 — parser: `EIf(cond, then, EUnit)` 返却、printer: else 省略
+
+**残タスク:**
+
+- [ ] parser.vibe / eval.vibe の roundtrip 対応（インタプリタ性能 or ネイティブテストが必要）
+
 ## Language Features
 
 - [ ] Multi-language frontend adapters:
