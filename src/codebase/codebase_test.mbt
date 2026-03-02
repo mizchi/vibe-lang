@@ -468,6 +468,55 @@ test "codebase vibe_dir_path keeps local root for non-repo vibe dir" {
 }
 
 ///|
+test "codebase resolve_index_root uses shared vibe root for repo subtree" {
+  let root = make_temp_dir("index_root_repo_vibe")
+  let vibe_root = root + "/vibe"
+  let compiler_dir = vibe_root + "/compiler"
+  let prelude_dir = vibe_root + "/prelude"
+  let json_dir = vibe_root + "/json"
+  let base64_dir = vibe_root + "/base64"
+  let sha1_dir = vibe_root + "/sha1"
+  @os_fs.create_dir(vibe_root) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(compiler_dir) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(prelude_dir) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(json_dir) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(base64_dir) catch {
+    e => fail(e.to_string())
+  }
+  @os_fs.create_dir(sha1_dir) catch {
+    e => fail(e.to_string())
+  }
+  write_file(
+    prelude_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(
+    json_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(
+    base64_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(
+    sha1_dir + "/index.lock",
+    "{\"path\":{},\"version\":{},\"symbol\":{}}",
+  )
+  write_file(compiler_dir + "/index.vibe", "export let version = \"0.1.0\"\n")
+  let entry = compiler_dir + "/main.vibe"
+  assert_eq(resolve_index_root(entry), vibe_root)
+  remove_if_exists(root)
+}
+
+///|
 test "codebase load_lock_data falls back to legacy vibe.lock" {
   let root = make_temp_dir("legacy_lock")
   let entry = root + "/main.vibe"

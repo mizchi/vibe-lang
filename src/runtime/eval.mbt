@@ -1564,6 +1564,184 @@ fn resolve_type_member_call_name_rt(
 }
 
 ///|
+fn try_eval_hot_builtin_call(
+  rt : Runtime,
+  name : String,
+  args : Array[@core.CallArg],
+) -> EvalOutput? raise EvalError {
+  let is_hot =
+    name == "string_length" ||
+    name == "string_char_code_at" ||
+    name == "string_substring" ||
+    name == "string_concat" ||
+    name == "array_length" ||
+    name == "array_get"
+  if not(is_hot) {
+    return None
+  }
+  let values : Array[@core.Value] = []
+  let effects : Array[Effect] = []
+  for arg in args {
+    match arg.label {
+      Some(_) => return None
+      None => ()
+    }
+    let out : EvalOutput = eval_expr(rt, arg.expr) catch {
+      e =>
+        match e {
+          EvalError::Performed(performed_value, site_key, has_prior_effect) =>
+            raise EvalError::Performed(
+              performed_value,
+              site_key,
+              has_prior_effect || effects.length() > 0,
+            )
+          _ => raise e
+        }
+    }
+    values.push(out.value)
+    extend_effects(effects, out.effects)
+  }
+  let value = match name {
+    "string_length" => {
+      if values.length() != 1 {
+        raise EvalError::BadCall(E("string_length"))
+      }
+      match values[0] {
+        @core.Value::String(s) => @core.Value::Int(String::length(s).to_int64())
+        _ => raise EvalError::BadCall(E("string_length"))
+      }
+    }
+    "string_char_code_at" => {
+      if values.length() != 2 {
+        raise EvalError::BadCall(E("string_char_code_at"))
+      }
+      match (values[0], values[1]) {
+        (@core.Value::String(s), @core.Value::Int(index)) => {
+          if index < 0L || index >= String::length(s).to_int64() {
+            raise EvalError::BadCall(E("string_char_code_at"))
+          }
+          let code = String::code_unit_at(s, index.to_int())
+          @core.Value::Int(UInt16::to_int(code).to_int64())
+        }
+        _ => raise EvalError::BadCall(E("string_char_code_at"))
+      }
+    }
+    "string_substring" => {
+      if values.length() != 3 {
+        raise EvalError::BadCall(E("string_substring"))
+      }
+      match (values[0], values[1], values[2]) {
+        (@core.Value::String(s), @core.Value::Int(start), @core.Value::Int(end)) => {
+          let len = String::length(s).to_int64()
+          let mut a = start
+          let mut b = end
+          if a < 0L {
+            a = 0L
+          }
+          if b < 0L {
+            b = 0L
+          }
+          if a > len {
+            a = len
+          }
+          if b > len {
+            b = len
+          }
+          let (from, to) = if a <= b { (a, b) } else { (b, a) }
+          @core.Value::String(
+            String::unsafe_substring(s, start=from.to_int(), end=to.to_int()),
+          )
+        }
+        _ => raise EvalError::BadCall(E("string_substring"))
+      }
+    }
+    "string_concat" => {
+      if values.length() != 2 {
+        raise EvalError::BadCall(
+          E(
+            "string_concat: expected 2 arguments, got " +
+            values.length().to_string(),
+          ),
+        )
+      }
+      match (values[0], values[1]) {
+        (@core.Value::String(a), @core.Value::String(b)) =>
+          @core.Value::String(String::add(a, b))
+        _ =>
+          raise EvalError::BadCall(
+            E(
+              "string_concat: expected (String, String), got (" +
+              value_type_name(values[0]) +
+              ", " +
+              value_type_name(values[1]) +
+              ")",
+            ),
+          )
+      }
+    }
+    "array_length" => {
+      if values.length() != 1 {
+        raise EvalError::BadCall(
+          E(
+            "array_length: expected 1 argument, got " +
+            values.length().to_string(),
+          ),
+        )
+      }
+      match values[0] {
+        @core.Value::Array(items) => @core.Value::Int(items.length().to_int64())
+        _ =>
+          raise EvalError::BadCall(
+            E(
+              "expected Array, got " +
+              value_type_name(values[0]) +
+              " (for-in requires an iterable)",
+            ),
+          )
+      }
+    }
+    "array_get" => {
+      if values.length() != 2 {
+        raise EvalError::BadCall(
+          E(
+            "array_get: expected 2 arguments, got " +
+            values.length().to_string(),
+          ),
+        )
+      }
+      match (values[0], values[1]) {
+        (@core.Value::Array(items), @core.Value::Int(index)) => {
+          if index < 0L || index >= items.length().to_int64() {
+            raise EvalError::BadCall(
+              E(
+                "array_get: index " +
+                index.to_string() +
+                " out of bounds (length " +
+                items.length().to_string() +
+                ")",
+              ),
+            )
+          }
+          items[index.to_int()]
+        }
+        _ =>
+          raise EvalError::BadCall(
+            E(
+              "array_get: expected (Array, Int), got (" +
+              value_type_name(values[0]) +
+              ", " +
+              value_type_name(values[1]) +
+              ")",
+            ),
+          )
+      }
+    }
+    _ => return None
+  }
+  Some({ value, effects })
+}
+
+///|
 fn eval_call(
   rt : Runtime,
   name : String,
@@ -1604,32 +1782,36 @@ fn eval_call(
         }
       }
       None =>
-        if @core.is_ctor_name(name) {
-          let out = eval_args(rt, args)
-          let pos_args = extract_positional_values(out.args, name)
-          let value = ctor_value_from_args(name, pos_args)
-          { value, effects: out.effects }
-        } else if is_cheap_pure_builtin(name) {
-          // Cheap pure builtins: execute directly without cache.
-          // Cache key computation (SHA hash) costs more than the operation itself.
-          let out = eval_args(rt, args)
-          let pos_args = extract_positional_values(out.args, name)
-          let value = eval_pure_builtin(name, pos_args)
-          { value, effects: out.effects }
-        } else if is_pure_builtin(name) {
-          let out = eval_args(rt, args)
-          let pos_args = extract_positional_values(out.args, name)
-          let key = pure_call_key(name, pos_args)
-          match rt.pure_cache_get(key) {
-            Some(v) => { value: v, effects: out.effects }
-            None => {
-              let value = eval_pure_builtin(name, pos_args)
-              rt.pure_cache_set(key, value)
+        match try_eval_hot_builtin_call(rt, name, args) {
+          Some(out) => out
+          None =>
+            if @core.is_ctor_name(name) {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, name)
+              let value = ctor_value_from_args(name, pos_args)
               { value, effects: out.effects }
+            } else if is_cheap_pure_builtin(name) {
+              // Cheap pure builtins: execute directly without cache.
+              // Cache key computation (SHA hash) costs more than the operation itself.
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, name)
+              let value = eval_pure_builtin(name, pos_args)
+              { value, effects: out.effects }
+            } else if is_pure_builtin(name) {
+              let out = eval_args(rt, args)
+              let pos_args = extract_positional_values(out.args, name)
+              let key = pure_call_key(name, pos_args)
+              match rt.pure_cache_get(key) {
+                Some(v) => { value: v, effects: out.effects }
+                None => {
+                  let value = eval_pure_builtin(name, pos_args)
+                  rt.pure_cache_set(key, value)
+                  { value, effects: out.effects }
+                }
+              }
+            } else {
+              eval_builtin_call(rt, name, args, call_span)
             }
-          }
-        } else {
-          eval_builtin_call(rt, name, args, call_span)
         }
     }
   }

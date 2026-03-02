@@ -6,19 +6,72 @@ import ./ast.vibe {
 
 //# Functions
 
-let join = (arr: Array[String], sep: String) -> String {
-  let len = array_length(arr)
-  let rec go = (i: Int, acc: String) -> String {
-    if i >= len {
-      acc
-    } else {
-      let s = if i > 0 {
-        string_concat(string_concat(acc, sep), array_get(arr, i))
-      } else array_get(arr, i)
-      go(i + 1, s)
+let escape_string = (s: String) -> String {
+  let len = string_length(s)
+  let b = array_builder()
+  let push_chunk = (start: Int, end: Int) -> Unit {
+    if end > start {
+      array_builder_push(b, string_substring(s, start, end))
     }
   }
-  go(0, "")
+  let mut i = 0
+  let mut start = 0
+  while i < len {
+    let c = string_char_code_at(s, i)
+    if c == '"' {
+      push_chunk(start, i)
+      array_builder_push(b, "\\\"")
+      i = i + 1
+      start = i
+    } else if c == '\\' {
+      push_chunk(start, i)
+      array_builder_push(b, "\\\\")
+      i = i + 1
+      start = i
+    } else if c == '\n' {
+      push_chunk(start, i)
+      array_builder_push(b, "\\n")
+      i = i + 1
+      start = i
+    } else if c == '\t' {
+      push_chunk(start, i)
+      array_builder_push(b, "\\t")
+      i = i + 1
+      start = i
+    } else if c == 13 {
+      push_chunk(start, i)
+      array_builder_push(b, "\\r")
+      i = i + 1
+      start = i
+    } else if c == 0 {
+      push_chunk(start, i)
+      array_builder_push(b, "\\0")
+      i = i + 1
+      start = i
+    } else {
+      i = i + 1
+    }
+  }
+  push_chunk(start, len)
+  string_join(array_builder_freeze(b), "")
+}
+
+let join = (arr: Array[String], sep: String) -> String {
+  let len = array_length(arr)
+  if len == 0 {
+    ""
+  } else {
+    let b = array_builder()
+    let mut i = 0
+    while i < len {
+      if i > 0 {
+        array_builder_push(b, sep)
+      }
+      array_builder_push(b, array_get(arr, i))
+      i = i + 1
+    }
+    string_join(array_builder_freeze(b), "")
+  }
 }
 
 export let rec print_pat = (p: Pat) -> String {
@@ -26,7 +79,7 @@ export let rec print_pat = (p: Pat) -> String {
     PWild => "_",
     PBind(name) => name,
     PInt(n) => __to_string(n),
-    PString(s) => string_concat("\"", string_concat(s, "\"")),
+    PString(s) => string_concat("\"", string_concat(escape_string(s), "\"")),
     PBool(b) => if b {
       "true"
     } else "false",
@@ -96,7 +149,7 @@ export let rec print_expr = (e: Expr) -> String {
   match e {
     EInt(n) => __to_string(n),
     EFloat(n) => __to_string(n),
-    EString(s) => string_concat("\"", string_concat(s, "\"")),
+    EString(s) => string_concat("\"", string_concat(escape_string(s), "\"")),
     EBool(b) => if b {
       "true"
     } else "false",
@@ -111,13 +164,16 @@ export let rec print_expr = (e: Expr) -> String {
       }
       string_concat("{ ", string_concat(join(parts, ", "), " }"))
     },
-    EIf(cond, then_e, else_e) => string_concat("if ", string_concat(print_expr(cond), string_concat(" { ", string_concat(print_expr(then_e), string_concat(" } else { ", string_concat(print_expr(else_e), " }")))))),
-    ELet(name, val, body) => string_concat("let ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", print_expr(body)))))),
-    ELetRec(name, val, body) => string_concat("let rec ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", print_expr(body)))))),
-    ELetMut(name, val, body) => string_concat("let mut ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", print_expr(body)))))),
-    EAssign(name, val, body) => string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", print_expr(body))))),
-    EAssignOp(name, op, val, body) => string_concat(name, string_concat(" ", string_concat(op, string_concat("= ", string_concat(print_expr(val), string_concat("; ", print_expr(body))))))),
-    ESeq(a, b) => string_concat(print_expr(a), string_concat("; ", print_expr(b))),
+    EIf(cond, then_e, else_e) => match else_e {
+      EUnit => string_concat("if ", string_concat(print_expr(cond), string_concat(" { ", string_concat(print_expr(then_e), " }")))),
+      _ => string_concat("if ", string_concat(print_expr(cond), string_concat(" { ", string_concat(print_expr(then_e), string_concat(" } else { ", string_concat(print_expr(else_e), " }"))))))
+    },
+    ELet(name, val, body) => string_concat("{ let ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", string_concat(print_expr(body), " }")))))),
+    ELetRec(name, val, body) => string_concat("{ let rec ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", string_concat(print_expr(body), " }")))))),
+    ELetMut(name, val, body) => string_concat("{ let mut ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", string_concat(print_expr(body), " }")))))),
+    EAssign(name, val, body) => string_concat("{ ", string_concat(name, string_concat(" = ", string_concat(print_expr(val), string_concat("; ", string_concat(print_expr(body), " }")))))),
+    EAssignOp(name, op, val, body) => string_concat("{ ", string_concat(name, string_concat(" ", string_concat(op, string_concat("= ", string_concat(print_expr(val), string_concat("; ", string_concat(print_expr(body), " }")))))))),
+    ESeq(a, b) => string_concat("{ ", string_concat(print_expr(a), string_concat("; ", string_concat(print_expr(b), " }")))),
     EMatch(scrutinee, arms) => {
       let parts = for arm in arms {
         let (pat, expr) = arm

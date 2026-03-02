@@ -549,6 +549,10 @@ let rec collect_import_path = (tokens: Array[Token], pos: Int, acc: String) -> (
     TSlash => collect_import_path(tokens, pos + 1, string_concat(acc, "/")),
     TIdent(name) => collect_import_path(tokens, pos + 1, string_concat(acc, name)),
     TMinus => collect_import_path(tokens, pos + 1, string_concat(acc, "-")),
+    TModule => collect_import_path(tokens, pos + 1, string_concat(acc, "module")),
+    TType => collect_import_path(tokens, pos + 1, string_concat(acc, "type")),
+    TMatch => collect_import_path(tokens, pos + 1, string_concat(acc, "match")),
+    TTest => collect_import_path(tokens, pos + 1, string_concat(acc, "test")),
     _ => throw(string_concat("unexpected token in import path: ", tk_name(peek(tokens, pos))))
   }
 }
@@ -1095,7 +1099,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       _ => throw("expected ',' or '}' in handle")
     }
   }
-  let parse_block_after_expr = (tokens: Array[Token], pos: Int, e: Expr) -> (Expr, Int)with { Error } {
+  let rec parse_block_after_expr = (tokens: Array[Token], pos: Int, e: Expr) -> (Expr, Int)with { Error } {
     match peek(tokens, pos) {
       TRBrace => (e, pos + 1),
       TSemicolon => {
@@ -1156,7 +1160,13 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         },
         _ => throw("invalid assignment target")
       },
-      _ => throw(string_concat("expected '}' or ';' but got ", tk_name(peek(tokens, pos))))
+      _ => {
+        // Implicit sequence: continue parsing rest of block (handles let, expressions, etc.)
+        let (rest, end) = parse_impl(tokens, pos, 20)
+        if end <= pos {
+          throw("internal parser error: block continuation did not advance")
+        } else (ESeq(e, rest), end)
+      }
     }
   }
   if mode == 22 {
@@ -1187,9 +1197,12 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
           let (else_e, end) = parse_impl(tokens, tn + 2, 20)
           (EIf(cond, then_e, else_e), end)
         },
-        _ => throw("expected '{' or 'if' after 'else'")
+        _ => {
+          let (else_e, end) = parse_impl(tokens, tn + 1, 0)
+          (EIf(cond, then_e, else_e), end)
+        }
       },
-      _ => throw("expected 'else' after if block")
+      _ => (EIf(cond, then_e, EUnit), tn)
     }
   } else if mode == 23 {
     let (cond, cn) = parse_impl(tokens, pos, 0)
@@ -1260,6 +1273,19 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             if end <= a {
               throw("internal parser error: block let parser did not advance")
             } else (ELet(name, val, body), end)
+          },
+          TLParen => {
+            let (pat, pn) = parse_pattern(tokens, next)
+            let eq = expect_tk(tokens, pn, "=")
+            let (val, vn) = parse_impl(tokens, eq, 0)
+            let a = skip_semi(tokens, vn)
+            let (body, end) = parse_impl(tokens, a, 20)
+            if end <= a {
+              throw("internal parser error: block let-pat parser did not advance")
+            } else {
+              let arms = [(pat, body)]
+              (EMatch(val, arms), end)
+            }
           },
           _ => throw("expected identifier after 'let'")
         }

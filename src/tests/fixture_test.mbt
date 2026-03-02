@@ -188,12 +188,21 @@ fn resolve_import_fs_path(from_path : String, raw_path : String) -> String? {
   if is_file(resolved) {
     return Some(resolved)
   }
+  // directory import: resolve ./dir to ./dir/index.vibe
+  let resolved_index = resolved + "/index.vibe"
+  if is_file(resolved_index) {
+    return Some(resolved_index)
+  }
   let root_resolved = @path.Path(".")
     .join(@path.Path(raw_path))
     .normalize()
     .to_string()
   if is_file(root_resolved) {
     return Some(root_resolved)
+  }
+  let root_resolved_index = root_resolved + "/index.vibe"
+  if is_file(root_resolved_index) {
+    return Some(root_resolved_index)
   }
   None
 }
