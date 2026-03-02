@@ -30,6 +30,7 @@ pub struct VibeDbQueries {
   cst_query : @ripple.Query[String, @cst.SyntaxNode]
   ast_query : @ripple.Query[String, HashedModule] // Uses structural hash for Eq
   type_query : @ripple.Query[String, @checker.TypeEnv]
+  simple_type_query : @ripple.Query[String, @checker.TypeEnv]
   import_query : @ripple.Query[String, Array[ImportSpec]]
 }
 
@@ -300,6 +301,10 @@ pub fn VibeDb::diagnostics(
     self.queries.type_query,
     path,
   )
+  let simple_type_diags = self.diagnostics.diags.get_for_query(
+    self.queries.simple_type_query,
+    path,
+  )
   let import_diags = self.diagnostics.diags.get_for_query(
     self.queries.import_query,
     path,
@@ -309,6 +314,9 @@ pub fn VibeDb::diagnostics(
     out.push(d)
   }
   for d in type_diags {
+    out.push(d)
+  }
+  for d in simple_type_diags {
     out.push(d)
   }
   for d in import_diags {

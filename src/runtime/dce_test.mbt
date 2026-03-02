@@ -553,3 +553,65 @@ test "dce: keeps user-defined and/or names" {
   }
   inspect(has_and, content="true")
 }
+
+///|
+test "dce: keeps enum definitions referenced only by match patterns" {
+  let span = @core.Span::empty(0)
+  let stmts : Array[@core.Stmt] = [
+    @core.Stmt::EnumDef(
+      name="Pat",
+      params=[],
+      ctors=[@core.TypeCtor::{ name: "PWild", args: [], span }],
+      span~,
+    ),
+    @core.Stmt::ExportLet(
+      rec=false,
+      name="is_wild",
+      expr=@core.Expr::Fn(
+        type_params=[],
+        type_bounds={},
+        params=[
+          @core.FuncParam::{
+            name: "p",
+            label: @core.ParamLabel::Positional,
+            ty: @core.Type::Named(name="Pat", args=[]),
+            bounds: [],
+          },
+        ],
+        ret=Some(@core.Type::Bool),
+        effects=[],
+        body=@core.Module::{
+          stmts: [
+            @core.Stmt::Expr(
+              expr=@core.Expr::Match(
+                scrutinee=@core.Expr::Ident(name="p", span~),
+                arms=[
+                  @core.MatchArm::{
+                    pat: @core.Pat::Ctor(name="PWild", args=[], span~),
+                    cond: None,
+                    expr: @core.Expr::Bool(value=true, span~),
+                    span: span,
+                  },
+                ],
+                span~,
+              ),
+              span~,
+            ),
+          ],
+        },
+        span~,
+      ),
+      span~,
+    ),
+  ]
+  let input = @core.Module::{ stmts, }
+  let result = @pipeline.dce_module(input)
+  let mut has_pat_enum = false
+  for stmt in result.stmts {
+    match stmt {
+      @core.Stmt::EnumDef(name~, ..) => if name == "Pat" { has_pat_enum = true }
+      _ => ()
+    }
+  }
+  inspect(has_pat_enum, content="true")
+}

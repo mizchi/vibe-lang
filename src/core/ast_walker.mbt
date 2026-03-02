@@ -100,6 +100,57 @@ pub fn bind_pattern_names_scope(scope : WalkerScope, pat : Pat) -> Unit {
 }
 
 ///|
+fn walk_pattern_refs(
+  pat : Pat,
+  bound : WalkerScope,
+  refs : Map[String, Bool],
+  on_name : (String, WalkerScope, Map[String, Bool]) -> Unit,
+) -> Unit {
+  match pat {
+    Pat::Ctor(name~, args~, span~) => {
+      let _ = span
+      on_name(name, bound, refs)
+      for arg in args {
+        walk_pattern_refs(arg, bound, refs, on_name)
+      }
+    }
+    Pat::Tuple(items~, span~) => {
+      let _ = span
+      for item in items {
+        walk_pattern_refs(item, bound, refs, on_name)
+      }
+    }
+    Pat::Record(fields~, span~) => {
+      let _ = span
+      for field in fields {
+        walk_pattern_refs(field.pat, bound, refs, on_name)
+      }
+    }
+    Pat::Struct(name~, fields~, span~) => {
+      let _ = span
+      on_name(name, bound, refs)
+      for field in fields {
+        walk_pattern_refs(field.pat, bound, refs, on_name)
+      }
+    }
+    Pat::Or(pats~, span~) => {
+      let _ = span
+      for p in pats {
+        walk_pattern_refs(p, bound, refs, on_name)
+      }
+    }
+    Pat::Wildcard(..)
+    | Pat::Bind(..)
+    | Pat::Int(..)
+    | Pat::Float(..)
+    | Pat::Double(..)
+    | Pat::Bool(..)
+    | Pat::Char(..)
+    | Pat::String(..) => ()
+  }
+}
+
+///|
 /// Walk an expression, collecting free variable references via `on_name`.
 pub fn walk_expr_refs(
   expr : Expr,
@@ -185,6 +236,7 @@ pub fn walk_expr_refs(
       walk_block_refs(body, bound, refs, on_name)
       for arm in arms {
         let arm_bound = bound.child()
+        walk_pattern_refs(arm.pat, arm_bound, refs, on_name)
         bind_pattern_names_scope(arm_bound, arm.pat)
         match arm.cond {
           Some(cond) => walk_expr_refs(cond, arm_bound, refs, on_name)
@@ -198,6 +250,7 @@ pub fn walk_expr_refs(
       walk_expr_refs(scrutinee, bound, refs, on_name)
       for arm in arms {
         let arm_bound = bound.child()
+        walk_pattern_refs(arm.pat, arm_bound, refs, on_name)
         bind_pattern_names_scope(arm_bound, arm.pat)
         match arm.cond {
           Some(cond) => walk_expr_refs(cond, arm_bound, refs, on_name)
@@ -362,12 +415,14 @@ pub fn walk_stmt_refs(
     Stmt::LetPat(pat~, expr~, span~) => {
       let _ = span
       walk_expr_refs(expr, scope, refs, on_name)
+      walk_pattern_refs(pat, scope, refs, on_name)
       bind_pattern_names_scope(scope, pat)
     }
     Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
       let _ = span
       walk_expr_refs(expr, scope, refs, on_name)
       walk_block_refs(else_body, scope, refs, on_name)
+      walk_pattern_refs(pat, scope, refs, on_name)
       bind_pattern_names_scope(scope, pat)
     }
     Stmt::Expr(expr~, span~) => {

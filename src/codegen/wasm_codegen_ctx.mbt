@@ -768,6 +768,15 @@ fn collect_nested_funcs_expr(
 ///|
 fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
   let funcs : Array[FuncDef] = []
+  let top_level_fn_names : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr=@core.Expr::Fn(..), ..)
+      | @core.Stmt::ExportLet(name~, expr=@core.Expr::Fn(..), ..) =>
+        top_level_fn_names[name] = true
+      _ => ()
+    }
+  }
   // Build outer_bound: all top-level non-function bindings that precede each function
   let outer_bound : Map[String, Bool] = {}
   // Pre-populate: forward-declarable functions (Fn with explicit return type)
@@ -871,7 +880,71 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
   }
   let bound : Map[String, Bool] = {}
   collect_nested_funcs_block(ast, bound, funcs, true)
-  funcs
+  // Top-level function captures are filtered by a fixed-point:
+  // keep captured top-level functions only if they are env-required
+  // (directly via non-function captures, or transitively through such calls).
+  let top_level_needs_env : Map[String, Bool] = {}
+  for f in funcs {
+    match f.name {
+      Some(name) if top_level_fn_names.contains(name) => {
+        for cap in f.captures {
+          if not(top_level_fn_names.contains(cap)) {
+            top_level_needs_env[name] = true
+            break
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  let mut changed = true
+  while changed {
+    changed = false
+    for f in funcs {
+      match f.name {
+        Some(name) if top_level_fn_names.contains(name) =>
+          if not(top_level_needs_env.contains(name)) {
+            let mut needs = false
+            for cap in f.captures {
+              if top_level_fn_names.contains(cap) &&
+                top_level_needs_env.contains(cap) {
+                needs = true
+                break
+              }
+            }
+            if needs {
+              top_level_needs_env[name] = true
+              changed = true
+            }
+          }
+        _ => ()
+      }
+    }
+  }
+  let normalized_funcs : Array[FuncDef] = []
+  for f in funcs {
+    match f.name {
+      Some(name) if top_level_fn_names.contains(name) => {
+        let filtered_captures : Array[String] = []
+        for cap in f.captures {
+          if not(top_level_fn_names.contains(cap)) ||
+            top_level_needs_env.contains(cap) {
+            filtered_captures.push(cap)
+          }
+        }
+        normalized_funcs.push(FuncDef::{
+          name: f.name,
+          params: f.params,
+          ret: f.ret,
+          body: f.body,
+          span_key: f.span_key,
+          captures: filtered_captures,
+        })
+      }
+      _ => normalized_funcs.push(f)
+    }
+  }
+  normalized_funcs
 }
 
 ///|

@@ -470,6 +470,28 @@ test "vibe wasm keeps throw string literal when debug errors enabled" {
 }
 
 ///|
+test "vibe wasm compiles handle arm bind patterns" {
+  let db = VibeDb::new()
+  let src =
+    #|let fail = () -> Int with {Error} {
+    #|  throw("boom")
+    #|}
+    #|handle {
+    #|  fail()
+    #|} {
+    #|  Error(msg) => string_length(msg)
+    #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
 test "vibe wasm import sleep" {
   let db = VibeDb::new()
   db.set_source("main", "{ sleep(100) }")
@@ -630,6 +652,24 @@ test "vibe wasm-gc compiles for-in expressions" {
   let wasm = try
     @runtime_compile.compile_module_wasm_gc_no_dce(db, "main")
   catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "run"))
+}
+
+///|
+test "vibe wasm compiles for-in expressions" {
+  let db = VibeDb::new()
+  let src =
+    #|let xs = [1, 2, 3]
+    #|for x in xs {
+    #|  x + 1
+    #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
     e => fail("compile error: " + e.to_string())
   } noraise {
     b => b

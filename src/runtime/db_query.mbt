@@ -593,7 +593,7 @@ pub fn VibeDb::new() -> VibeDb {
       file_basename != "index.xm" &&
       sources.get(rt, index_path) is Some(_)
     let imports = import_query.fetch(rt, file_path)
-    if imports.length() == 0 && not(has_dir_index) {
+    if imports.length() == 0 {
       return simple_type_query.fetch(rt, file_path)
     }
     let ast = ast_query.fetch(rt, file_path).unwrap()
@@ -607,10 +607,11 @@ pub fn VibeDb::new() -> VibeDb {
       let index_dir = @path.Path(index_path).dirname().to_string()
       for imp in index_imports {
         // Only share imports from different directories
-        let imp_dir = match imp.path_obj {
-          Some(obj) => @path.Path(obj.normalized).dirname().to_string()
-          None => continue
-        }
+        // Use imp.path (the final resolved path) instead of path_obj.normalized,
+        // because path_obj.normalized can have double-prefixed directories
+        // (e.g. "vibe/compiler/vibe/compiler/ast.vibe") when base_dir is already
+        // included in the join result.
+        let imp_dir = @path.Path(imp.path).dirname().to_string()
         if imp_dir == index_dir {
           continue
         }
@@ -1000,7 +1001,20 @@ pub fn VibeDb::new() -> VibeDb {
                           }
                           imported_any = true
                         }
-                        None => ()
+                        None =>
+                          // Fallback: enum constructor without scheme registration.
+                          // The checker registers enum ctors via set_ctor but not
+                          // set_scheme, so import the ctor directly when the scheme
+                          // lookup fails.
+                          match imported_env.get_ctor(source_name) {
+                            Some(ctor_info) => {
+                              if can_bind_import_value(target_name, span) {
+                                env.set_ctor(target_name, ctor_info)
+                              }
+                              imported_any = true
+                            }
+                            None => ()
+                          }
                       }
                     }
                     if import_item_accepts_type(item) {
@@ -1364,7 +1378,7 @@ pub fn VibeDb::new() -> VibeDb {
     db,
     rt,
     inputs: { sources, binary_sources },
-    queries: { cst_query, ast_query, type_query, import_query },
+    queries: { cst_query, ast_query, type_query, simple_type_query, import_query },
     diagnostics: { diags, },
   }
 }

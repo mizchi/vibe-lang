@@ -325,7 +325,16 @@ pub fn resolve_index_root_with_fs(
     @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
   }
   let start_dir = @vibe_fs.parent_path(normalized_entry)
-  find_index_root_with_fs(start_dir, fs)
+  let index_root = find_index_root_with_fs(start_dir, fs)
+  match find_named_ancestor_dir(index_root, "vibe") {
+    Some(vibe_root) =>
+      if is_repo_vibe_root_with_fs(vibe_root, fs) {
+        vibe_root
+      } else {
+        index_root
+      }
+    None => index_root
+  }
 }
 
 ///|

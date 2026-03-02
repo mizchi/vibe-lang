@@ -138,3 +138,397 @@ import 解決時に `exported_names` (AST レベル) と `imported_env` (型レ�
 ### 備考
 
 `index.lock` は git status で untracked/modified として表示されるが、テスト実行に影響する。CI では `index.lock` が存在しないため問題にならない。
+
+---
+
+## K-006: Ripple type_query と has_dir_index のハング問題
+
+- 場所: `src/runtime/db_query.mbt` (type_query, simple_type_query)
+- 発見: 2026-03
+
+### 背景
+
+`type_query` は ripple 増分計算システムで管理される。ファイルが `vibe/compiler/` のような `index.vibe` を持つディレクトリにある場合、`has_dir_index = true` となり、index.vibe の cross-directory imports をシブリングファイルの型環境にマージする処理が走る。
+
+### 問題
+
+import を持たないファイル（`types.vibe`, `token.vibe` 等）が `has_dir_index = true` の場合に、type_query のフルパスを通すと **ハング（無限再評価ループ）** が発生する。
+
+具体的なハングパターン:
+1. `type_query(types.vibe)` → has_dir_index ブロック → `import_query.fetch(rt, index.vibe)` → index の imports を処理
+2. index.vibe の imports 先（ast.vibe, lexer.vibe 等）の `type_query` が連鎖的に起動
+3. ripple の依存追跡で再評価ループが発生し、テストが無限にハング
+
+`eval_selfhost_module` 内の `compile_module` 呼び出しが、共有された VibeDb 上で ripple query を蓄積するため、特にセルフホストテスト（probe test 等）でハングが顕在化する。
+
+### 回避策
+
+`imports.length() == 0` のファイルは **常に** `simple_type_query` にルーティングする（`has_dir_index` の有無に関わらず）。
+
+```moonbit
+if imports.length() == 0 {
+  return simple_type_query.fetch(rt, file_path)
+}
+```
+
+### 副作用と対処
+
+`simple_type_query` にルーティングすると、その diagnostics が `db.diagnostics(path)` で収集されない問題が発生した（`db.diagnostics()` が `type_query` の diagnostics のみ収集していたため）。
+
+**修正**: `VibeDbQueries` に `simple_type_query` フィールドを追加し、`db.diagnostics()` で `simple_type_query` の diagnostics も収集するようにした。
+
+### 教訓
+
+- ripple の type_query 内で `import_query.fetch` を呼ぶと依存グラフが複雑化し、ハングの原因になりうる。import のないファイルは軽量パスを通すべき。
+- diagnostics の収集元 query を追加する際は、`db.diagnostics()` の `get_for_query` リストも更新すること。
+
+---
+
+## K-007: enum コンストラクタの import 失敗（set_ctor vs set_scheme）
+
+- 場所: `src/checker/typecheck_stmts.mbt` (register_enum_def), `src/runtime/db_query.mbt` (import_symbol)
+- 発見: 2026-03
+
+### 背景
+
+vibe の型チェッカーは enum 定義を登録する際に `set_ctor` でコンストラクタ情報を登録するが、`set_scheme` でコンストラクタの型スキームを登録しない。
+
+### 問題
+
+モジュール間 import では `get_scheme(name)` で値を解決する。enum コンストラクタ（例: `EnvEmpty`）は `set_ctor` でのみ登録されているため、`get_scheme("EnvEmpty")` が `None` を返し、import が失敗する。
+
+```vibe
+// types.vibe
+export enum TypeEnv { EnvEmpty; EnvBind(String, Type, TypeEnv) }
+
+// type_db.vibe
+import ./types.vibe { EnvEmpty }  // ← 失敗: "dependency export unavailable"
+```
+
+### 修正
+
+`import_symbol` 関数に ctor fallback を追加: `get_scheme` が `None` の場合、`get_ctor` を試行し、見つかれば `set_ctor` で import 先の env に登録する。
+
+```moonbit
+None =>
+  match imported_env.get_ctor(source_name) {
+    Some(ctor_info) => {
+      if can_bind_import_value(target_name, span) {
+        env.set_ctor(target_name, ctor_info)
+      }
+      imported_any = true
+    }
+    None => ()
+  }
+```
+
+### 教訓
+
+- **型スキーム（scheme）とコンストラクタ情報（ctor）は独立した名前空間**。enum コンストラクタは両方に登録すべきだが、現状は ctor のみ。import 側で fallback が必要。
+- セルフホストコンパイラのソースを `compile_module` でコンパイルすることで、この種の型システムの不整合を検出できる。
+
+---
+
+## K-008: import_query の path_obj.normalized による二重プレフィックス
+
+- 場所: `src/runtime/db_query.mbt` (type_query の has_dir_index ブロック)
+- 発見: 2026-03
+
+### 問題
+
+index.vibe の cross-directory import を処理する際、`imp.path_obj.normalized` を使って import のディレクトリを判定していた。しかし `path_obj.normalized` はパス正規化時に `base_dir` を二重に含めることがあり、例えば `vibe/compiler/vibe/compiler/ast.vibe` のような不正なパスが生成される。
+
+### 修正
+
+`path_obj.normalized` の代わりに `imp.path`（最終解決済みパス）を使用する。
+
+```moonbit
+// Before (buggy):
+let imp_dir = match imp.path_obj {
+  Some(obj) => @path.Path(obj.normalized).dirname().to_string()
+  None => continue
+}
+
+// After (fixed):
+let imp_dir = @path.Path(imp.path).dirname().to_string()
+```
+
+### 教訓
+
+- `PathObj` の `normalized` フィールドは `base_dir + raw_path` の正規化結果だが、`base_dir` 自体が既にパスに含まれている場合に二重プレフィックスが起きる。
+- import 解決後の最終パス（`imp.path`）が最も信頼できる。
+
+---
+
+## K-009: セルフホストコンパイラの native compile テスト
+
+- 場所: `src/tests/vibe_integration_test.mbt`
+- 発見: 2026-03
+- 状態: **完了**
+
+### 目的
+
+18個のセルフホストコンパイラソース（`vibe/compiler/*.vibe`）全てが host MoonBit の `compile_module` パイプライン（parse → type-check → desugar → monoify）を通過することを検証する。
+
+### 構成
+
+```
+vibe/compiler/
+├── token.vibe          # トークン定義
+├── ast.vibe            # AST 定義
+├── lexer.vibe          # 字句解析
+├── parser.vibe         # 構文解析 (1614行)
+├── printer.vibe        # AST → ソース
+├── values.vibe         # ランタイム値
+├── builtins.vibe       # 組み込み関数
+├── types.vibe          # 型定義（import なし）
+├── checker_resolve.vibe # 名前解決
+├── checker.vibe        # 型チェッカー
+├── checker_stmt.vibe   # 文の型チェック
+├── eval_builtins.vibe  # 評価器組み込み
+├── eval.vibe           # 評価器本体 (1354行)
+├── eval_loader.vibe    # モジュールローダー
+├── eval_stmt.vibe      # 文の評価
+├── eval_e2e_helpers.vibe # E2E ヘルパー
+├── type_db.vibe        # 増分型チェック DB
+└── index.vibe          # パッケージ re-export
+```
+
+### 既知の課題
+
+- `index.vibe` は同ディレクトリの re-export のみ含む。cross-dir import がないため K-006 のハング問題には該当しない。
+- `type_db.vibe` は `./ripple` ディレクトリを import する。`fixture_test.mbt` にディレクトリ import 解決（`./dir` → `./dir/index.vibe`）を追加して対応済み。
+- `types.vibe` は import なし。K-007 の ctor fallback がないと、types.vibe から enum コンストラクタを import する type_db.vibe 等が失敗する。
+
+### 進捗
+
+- 18/18 ファイルが `compile_module` を通過（K-007, K-008 の修正後）
+- `native compile: all compiler sources pass compile_module` テストを再有効化し、`type_db.vibe` / `index.vibe` を含む 18 ファイルを検証対象に復帰
+
+---
+
+## K-010: simple_type_query diagnostics の可視化と副作用
+
+- 場所: `src/runtime/db.mbt` (diagnostics), `src/runtime_compile/compile.mbt` (compile_module)
+- 発見: 2026-03
+
+### 背景
+
+`compile_module` は `db.types(path)` で型環境を取得した後、`db.diagnostics(path)` で diagnostics を収集し、type/import ステージの diagnostic があれば `CompileError::TypeDiag` を raise する。
+
+### 問題
+
+K-006 の修正で `simple_type_query` の diagnostics を `db.diagnostics()` に追加した。これにより、以前は不可視だった型エラーが `compile_module` に到達するようになった。
+
+影響を受けたテスト（3件）:
+1. **resume multi-layer perform** — nested handle での `resume(perform(Ask(32)))` で誤検知
+2. **resume rejects mismatched resumed value type** — 型不一致を runtime error として期待していたが compile-time error に
+3. **resume rejects prior effects before perform** — effect 付き関数での resume 誤検知
+
+### 分析
+
+```
+compile_module(db, path)
+  → db.types(path)           // type_query → simple_type_query (no imports)
+  → db.diagnostics(path)     // 以前: type_query のみ収集 → 0件
+                              // 今回: + simple_type_query も収集 → resume 誤検知が浮上
+  → diag.stage == "type" → raise CompileError::TypeDiag  // ← 以前は到達しなかった
+```
+
+### 根本原因の分類
+
+| テスト | 型チェッカーの挙動 | 正誤 |
+|--------|-------------------|------|
+| multi-layer perform | nested handle の resume で "no matching perform" | **誤検知**（false positive） |
+| mismatched type | resume の型不一致を検出 | **正検知**（テスト期待値の方が古い） |
+| prior effects | effect 付き関数の resume で "no matching perform" | **誤検知**（false positive） |
+
+### 修正 (2026-03-02)
+
+- `typecheck_expr.mbt` の `Handle` 型検査で、arm 内で新規に発生した resume type 情報を外側スコープに伝播するようにした（nested handle の false positive 対策）。
+- `type_resume_expr` の `"resume has no matching perform"` を必須エラーにせず、期待型が推論済みの場合のみ型一致を強制するようにした（inter-procedural な false positive 対策）。
+- テスト 921（`resume rejects mismatched resumed value type`）は compile-time `TypeDiag` を期待するように更新した。
+
+### 教訓
+
+- **diagnostics の可視範囲を広げると、以前は不可視だった型チェッカーのバグが顕在化する**。ripple query ごとに独立した accumulator があるため、どの query の diagnostic を collect するかで compile_module の挙動が変わる。
+- 型チェッカーの `resume` / `perform` 処理は nested handle や effect 付き関数で不完全。これらのテストが通っていたのは、型エラーが simple_type_query に閉じ込められて不可視だったため。
+- テスト 921（型不一致）は compile-time 検出が正しい挙動。テスト期待値を更新すべき。
+
+---
+
+## K-011: selfhost probe テストの長時間化ボトルネック
+
+- 場所: `src/tests/vibe_integration_test.mbt` (`probe: selfhost roundtrip all compiler sources`)
+- 発見: 2026-03
+
+### 問題
+
+`probe` テストが JS バックエンドで長時間化し、`--index 44` 単体でも数分スケールで完了しないケースがあった。  
+主因は次の 2 点:
+
+1. **重い selfhost roundtrip（lex → parse → print → lex → parse → print）を多数ファイルに対して実行**
+2. **フル検証を常時実行していた**
+
+### 追加で判明した落とし穴
+
+driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser 側で `UnexpectedToken(expected="]", got=",")` を起こすケースがあった（`[` の曖昧性による解釈経路の問題）。  
+回避として driver 返り値を tuple に変更した。
+
+### 修正
+
+- `probe` を **デフォルト smoke モード**に変更（`token.vibe`, `ast.vibe`, `values.vibe` の 3 ファイル）
+- 環境変数 `VIBE_SELFHOST_PROBE_FULL=1` のときのみ full モード（16 ファイル）を実行
+- 環境変数 `VIBE_SELFHOST_PROBE_STRICT=1` のときのみ strict roundtrip（2-pass）を有効化（デフォルトは 1-pass）
+- 環境変数 `VIBE_SELFHOST_PROBE_FILES` で対象ファイルをオーバーライド可能にし、1ファイル単位の実測を可能化
+- driver の集約結果は array ではなく tuple で返す
+- 追加の高速化（2026-03-02）:
+  - `vibe/compiler/printer.vibe`: `join` / `escape_string` を builder ベースに変更
+  - `src/runtime/eval.mbt`: `string_length` / `string_char_code_at` / `string_substring` / `string_concat` / `array_length` / `array_get` にホットパス追加
+  - `vibe/compiler/lexer.vibe`: `keyword_lookup` を length + 先頭文字ディスパッチに変更
+
+### 効果
+
+- `moon test src/tests/vibe_integration_test.mbt --target js --serial --index 44`
+  - smoke: **7.48s → 6.52s**（約 12.8% 改善）
+  - full (`VIBE_SELFHOST_PROBE_FULL=1`): **199.1s → 201.6s**（誤差レベルで改善なし）
+
+### 追加計測: full のファイル別所要時間（1ファイルずつ）
+
+`VIBE_SELFHOST_PROBE_FILES=<file>` で計測した結果（秒）:
+
+- 52.28: `vibe/compiler/types.vibe`
+- 43.34: `vibe/compiler/lexer.vibe`
+- 35.13: `vibe/compiler/printer.vibe`
+- 19.95: `vibe/compiler/checker.vibe`
+- 16.61: `vibe/compiler/eval_builtins.vibe`
+- 11.24: `vibe/compiler/builtins.vibe`
+- 11.12: `vibe/compiler/type_db.vibe`
+- 5.88: `vibe/compiler/eval_stmt.vibe`
+- 4.66: `vibe/compiler/checker_stmt.vibe`
+- 4.29: `vibe/compiler/values.vibe`
+- 2.15: `vibe/compiler/token.vibe`
+- 2.11: `vibe/compiler/eval_loader.vibe`
+- 1.28: `vibe/compiler/ast.vibe`
+- 1.26: `vibe/compiler/checker_resolve.vibe`
+- 0.73: `vibe/compiler/index.vibe`
+- 0.48: `vibe/compiler/eval_e2e_helpers.vibe`
+
+上位3ファイル（types/lexer/printer）だけで **61.5%**、上位5ファイルで **78.7%** を占める。
+
+### 教訓
+
+- interpreter 上の selfhost 系 probe は、CI の常時実行では **smoke/full を分離**すべき。
+- parser の曖昧構文（特に `[` 起点）に触れる生成コードは、最小ケースでも parse check を先に行うと切り分けが速い。
+- full 高速化は「MoonBit 側 typechecker の equality 畳み込み」より、**vibe selfhost 側の lexer/printer/types の実行コスト削減**が支配的。
+
+---
+
+## K-012: wasm backend の `for-in` は `iter_*` fallback が必要
+
+- 場所: `src/codegen/wasm_codegen_call_builtin_pre_user.mbt`, `src/tests/vibe_wasm_test.mbt`
+- 発見: 2026-03
+
+### 問題
+
+`for-in` は core desugar で `iter_require` / `iter_length` / `iter_get` 呼び出しになる。  
+wasm backend に同名 call ハンドラがないと `BackendLimit(call: iter_require)` で落ちる。
+
+### 修正
+
+- `iter_require` を identity として実装
+- `iter_length` / `iter_get` を `array_length` / `array_get` 相当の fallback として実装
+- 回帰テスト: `vibe wasm compiles for-in expressions`
+
+### 教訓
+
+- prelude 経由の関数でも、wasm codegen 側で未解決 call になり得る。desugar 後の call 名を backend で必ず確認すること。
+
+---
+
+## K-013: DCE は pattern ctor 参照を依存として拾う必要がある
+
+- 場所: `src/core/ast_walker.mbt`, `src/runtime/dce_test.mbt`
+- 発見: 2026-03
+
+### 問題
+
+`match p { PWild => ... }` のように **式側では ctor を生成せず pattern だけで ctor を使う**ケースで、DCE が ctor 参照を拾えず enum 定義が落ちる。  
+結果として wasm codegen で `unknown ctor: PWild` が発生する。
+
+### 修正
+
+- AST walker に `walk_pattern_refs` を追加
+- `Match` / `Handle` / `LetPat` / `LetPatElse` で pattern ctor 名を参照収集
+- 回帰テスト: `dce: keeps enum definitions referenced only by match patterns`
+
+### 教訓
+
+- 依存解析は式参照だけでは不十分。**pattern の名前解決（Ctor/Struct）も参照グラフに含める**こと。
+
+---
+
+## K-014: wasm `handle` で arm bind をローカル束縛しないと `UnknownName`
+
+- 場所: `src/codegen/wasm_codegen_expr_effect.mbt`, `src/tests/vibe_wasm_test.mbt`
+- 発見: 2026-03
+
+### 問題
+
+`handle { ... } { Error(msg) => ... }` の catch payload を arm 側に束縛していなかったため、arm body で `msg` 参照時に `UnknownName("msg")` が発生した。
+
+### 修正
+
+- `compile_expr_handle` で catch payload をローカルに受ける
+- `Error(msg)` / `Bind(msg)` を検出して arm body の前に束縛ローカルを注入
+- 回帰テスト: `vibe wasm compiles handle arm bind patterns`
+
+### 教訓
+
+- effect handler の codegen では、`catch` 本体生成だけでなく **pattern bind のスコープ注入**が必須。
+
+---
+
+## K-015: top-level 関数 capture は「env が必要な関数」だけ残す
+
+- 場所: `src/codegen/wasm_codegen_ctx.mbt`
+- 発見: 2026-03
+
+### 問題
+
+top-level 関数が他の top-level 関数を機械的に capture すると、不要に env-backed になり、`missing closure env for direct call` が発生する（例: `print_type_expr`）。
+
+一方で、`_no_tp` のような top-level 非関数値を capture する関数（例: `parse_impl`）は env が必要で、これに依存する top-level 関数の capture は残す必要がある。
+
+### 修正
+
+- `collect_func_defs` 後に top-level 関数 capture を fixed-point で正規化
+- 非関数 capture を持つ top-level 関数を seed として env 必須集合を計算
+- top-level 関数 capture は「env 必須集合に入る関数」だけ保持
+
+### 教訓
+
+- capture 削減は一律削除では壊れる。**非関数 capture を起点にした伝播計算**で最小化するのが安全。
+
+---
+
+## K-016: `vibe/*` モノレポでは import root を `vibe` ルートへ引き上げる
+
+- 場所: `src/codebase/lib.mbt` (`resolve_index_root_with_fs`)
+- 発見: 2026-03
+
+### 問題
+
+`vibe/compiler/*.vibe` の root が `vibe/compiler` だと、`../module/path.vibe` が `outside root` で失敗する。
+
+### 修正
+
+- `resolve_index_root_with_fs` で、祖先に `vibe` ディレクトリがあり
+  `prelude/json/base64/sha1` の `index.lock` を持つ場合は、その `vibe` ルートを root として採用
+- これにより `vibe/compiler` から `vibe/module` への import が許可される
+- 追加テスト: `codebase resolve_index_root uses shared vibe root for repo subtree`
+
+### 教訓
+
+- package 単位 root と monorepo 共通 root は目的が異なる。  
+  selfhost のような横断 import では **repo-aware root 解決**が必要。

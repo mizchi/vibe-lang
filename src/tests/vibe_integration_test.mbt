@@ -934,13 +934,10 @@ test "vibe integration resume rejects mismatched resumed value type" {
     #|}
     #|run()
   db.set_source("main", main_source)
-  let compiled = compile_module(db, "main")
-  let rt = Runtime::new(@capability.CapabilitySet::new())
-  let result = try? rt.eval_module(compiled.ast)
+  let result = try? compile_module(db, "main")
   match result {
-    Ok(_) => fail("expected runtime error for resume value")
-    Err(err) =>
-      assert_true(err.to_string().contains("resume value type mismatch"))
+    Ok(_) => fail("expected compile-time error for resume value")
+    Err(err) => assert_true(err.to_string().contains("type mismatch (resume value)"))
   }
 }
 
@@ -1231,7 +1228,7 @@ test "probe: selfhost roundtrip all compiler sources" {
   load_compiler_source(db, "vibe/compiler/parser.vibe", visited)
   load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
   // Exclude parser.vibe (1608 lines) and eval.vibe (1354 lines) — too large for interpreter
-  let files : Array[String] = [
+  let full_files : Array[String] = [
     "vibe/compiler/eval_e2e_helpers.vibe",
     "vibe/compiler/index.vibe",
     "vibe/compiler/checker_resolve.vibe",
@@ -1249,46 +1246,106 @@ test "probe: selfhost roundtrip all compiler sources" {
     "vibe/compiler/lexer.vibe",
     "vibe/compiler/types.vibe",
   ]
-  let ok_count = @ref.new(0)
+  let smoke_files : Array[String] = [
+    "vibe/compiler/token.vibe",
+    "vibe/compiler/ast.vibe",
+    "vibe/compiler/values.vibe",
+  ]
+  // Full probe is expensive on JS interpreter backend; keep smoke fast by default.
+  // - VIBE_SELFHOST_PROBE_FULL=1: run all full_files
+  // - VIBE_SELFHOST_PROBE_STRICT=1: enable 2-pass roundtrip check (much slower)
+  let full_probe = match @sys.get_env_var("VIBE_SELFHOST_PROBE_FULL") {
+    Some(v) => v == "1" || v == "true"
+    None => false
+  }
+  let strict_probe = match @sys.get_env_var("VIBE_SELFHOST_PROBE_STRICT") {
+    Some(v) => v == "1" || v == "true"
+    None => false
+  }
+  let override_files : Array[String] = match @sys.get_env_var(
+    "VIBE_SELFHOST_PROBE_FILES",
+  ) {
+    Some(raw) => {
+      let out : Array[String] = []
+      for part in raw.split(",") {
+        let file = part.trim().to_string()
+        if file != "" {
+          out.push(file)
+        }
+      }
+      out
+    }
+    None => []
+  }
+  let files = if override_files.length() > 0 {
+    override_files
+  } else if full_probe {
+    full_files
+  } else {
+    smoke_files
+  }
+  let strict_literal = if strict_probe { "true" } else { "false" }
+  let header =
+    #|import ./vibe/compiler/lexer.vibe { lex }
+    #|import ./vibe/compiler/parser.vibe { parse_program }
+    #|import ./vibe/compiler/printer.vibe { print_program }
+    #|let check_file = (path: String, strict: Bool) -> String with { Fs } {
+    #|  handle {
+    #|    let source = fs_read_file(path)
+    #|    let tokens = lex(source)
+    #|    let stmts = parse_program(tokens)
+    #|    let printed = print_program(stmts)
+    #|    if strict {
+    #|      let tokens2 = lex(printed)
+    #|      let stmts2 = parse_program(tokens2)
+    #|      let printed2 = print_program(stmts2)
+    #|      if string_equals(printed, printed2) { "OK" }
+    #|      else { "MISMATCH" }
+    #|    } else {
+    #|      "OK"
+    #|    }
+    #|  } { Error(msg) => msg }
+    #|}
+  let mut bindings = ""
+  let mut tuple_items = ""
+  for i in 0..<files.length() {
+    bindings = bindings + "let r\{i} = check_file(\"\{files[i]}\", \{strict_literal})\n"
+    if i > 0 {
+      tuple_items = tuple_items + ", "
+    }
+    tuple_items = tuple_items + "r\{i}"
+  }
+  let driver = header + "\n" + bindings + "(" + tuple_items + ")"
   let failures : Array[String] = []
-  for file in files {
-    let header =
-      #|import ./vibe/compiler/lexer.vibe { lex }
-      #|import ./vibe/compiler/parser.vibe { parse_program }
-      #|import ./vibe/compiler/printer.vibe { print_program }
-    let footer =
-      #|let tokens = lex(source)
-      #|let stmts = parse_program(tokens)
-      #|let printed = print_program(stmts)
-      #|let result = handle {
-      #|  let tokens2 = lex(printed)
-      #|  let stmts2 = parse_program(tokens2)
-      #|  let printed2 = print_program(stmts2)
-      #|  if string_equals(printed, printed2) { "OK" }
-      #|  else { "MISMATCH" }
-      #|} { Error(msg) => msg }
-      #|result
-    let driver = header + "\nlet source = fs_read_file(\"\{file}\")\n" + footer
-    let result = try {
-      eval_selfhost_module(db, driver)
-    } catch {
-      e => {
-        failures.push("\{file}: \{e}")
-        continue
+  let result = try {
+    eval_selfhost_module(db, driver)
+  } catch {
+    e => fail("probe eval failed: \{e}")
+  }
+  match result.last {
+    Some(@core.Value::Tuple(items)) => {
+      if items.length() != files.length() {
+        fail(
+          "unexpected result length: got \{items.length()}, expected \{files.length()}",
+        )
+      }
+      for i in 0..<files.length() {
+        let file = files[i]
+        match items[i] {
+          @core.Value::String(s) =>
+            if s != "OK" {
+              failures.push("\{file}: \{s}")
+            }
+          other => failures.push("\{file}: got \{other}")
+        }
       }
     }
-    match result.last {
-      Some(@core.Value::String(s)) => if s == "OK" {
-        ok_count.update(fn(n) { n + 1 })
-      } else {
-        failures.push("\{file}: \{s}")
-      }
-      other => failures.push("\{file}: got \{other}")
-    }
+    other => fail("expected Tuple[String] result, got \{other}")
   }
   if failures.length() > 0 {
+    let ok_count = files.length() - failures.length()
     fail(
-      "roundtrip OK \{ok_count.val}/\{files.length()}, failures \{failures.length()}:\n" + failures.iter().fold(
+      "roundtrip OK \{ok_count}/\{files.length()}, failures \{failures.length()}:\n" + failures.iter().fold(
         init="",
         fn(acc, f) { acc + "  " + f + "\n" },
       ),
@@ -1300,10 +1357,6 @@ test "probe: selfhost roundtrip all compiler sources" {
 test "native compile: all compiler sources pass compile_module" {
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
-  // type_db.vibe excluded: imports ./ripple (directory module) which panics
-  //   in the reactive query system during db.types() computation.
-  // index.vibe excluded: re-export syntax (export ./foo.vibe { ... }) triggers
-  //   the same query panic in compile_module.
   let files : Array[String] = [
     "vibe/compiler/token.vibe",
     "vibe/compiler/ast.vibe",
@@ -1321,6 +1374,8 @@ test "native compile: all compiler sources pass compile_module" {
     "vibe/compiler/eval_loader.vibe",
     "vibe/compiler/eval_stmt.vibe",
     "vibe/compiler/eval_e2e_helpers.vibe",
+    "vibe/compiler/type_db.vibe",
+    "vibe/compiler/index.vibe",
   ]
   // Phase 1: load all sources into VibeDb (resolves transitive imports)
   for file in files {

@@ -427,11 +427,7 @@ fn type_resume_expr(
           context=Some("resume value"),
         )
       }
-    None =>
-      raise TypeError::BadCall(
-        message="resume has no matching perform for effect: " + effect_name,
-        span~,
-      )
+    None => ()
   }
   fresh_type_var(env)
 }
@@ -671,12 +667,17 @@ fn type_expr_eff(
     }
     @core.Expr::Handle(body~, arms~, span~) => {
       let handle_effects : Array[@core.EffectAtom] = []
+      let handled_effect_names : Map[String, Bool] = {}
       for arm in arms {
         match arm.pat {
-          @core.Pat::Ctor(name~, ..) =>
+          @core.Pat::Ctor(name~, ..) => {
             handle_effects.push(@core.EffectAtom::Const(name))
-          @core.Pat::Wildcard(..) | @core.Pat::Bind(..) =>
+            handled_effect_names[name] = true
+          }
+          @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => {
             handle_effects.push(@core.EffectAtom::Const("Error"))
+            handled_effect_names["Error"] = true
+          }
           _ => ()
         }
       }
@@ -689,7 +690,15 @@ fn type_expr_eff(
       let body_ty = type_block(
         body_env, body, aliases, body_scope, allow_effect,
       )
-      let inferred_resume_types = body_env.handle_resume_types.copy()
+      let body_resume_types : Map[String, @core.Type] = body_env.handle_resume_types
+        .copy()
+      let inferred_resume_types = body_resume_types.copy()
+      let escaping_resume_types : Map[String, @core.Type] = {}
+      for effect_name, resume_ty in body_resume_types {
+        if not(handled_effect_names.contains(effect_name)) {
+          escaping_resume_types[effect_name] = resume_ty
+        }
+      }
       for arm in arms {
         let arm_env = env.fork_for_match_arm()
         arm_env.handle_arm_depth += 1
@@ -710,6 +719,23 @@ fn type_expr_eff(
           Ok(ty) => ty
           Err(err) => raise err
         }
+        for effect_name, resume_ty in arm_env.handle_resume_types {
+          if body_resume_types.contains(effect_name) {
+            continue
+          }
+          match escaping_resume_types.get(effect_name) {
+            Some(existing) =>
+              if not(type_equal(arm_env, existing, resume_ty)) {
+                raise TypeError::Mismatch(
+                  expected=existing,
+                  actual=resume_ty,
+                  span~,
+                  context=Some("perform resume type"),
+                )
+              }
+            None => escaping_resume_types[effect_name] = resume_ty
+          }
+        }
         if not(type_equal(arm_env, body_ty, arm_ty)) {
           raise TypeError::Mismatch(
             expected=body_ty,
@@ -717,6 +743,22 @@ fn type_expr_eff(
             span~,
             context=Some("handle branches"),
           )
+        }
+      }
+      if env.handle_resume_types_active {
+        for effect_name, resume_ty in escaping_resume_types {
+          match env.handle_resume_types.get(effect_name) {
+            Some(existing) =>
+              if not(type_equal(env, existing, resume_ty)) {
+                raise TypeError::Mismatch(
+                  expected=existing,
+                  actual=resume_ty,
+                  span~,
+                  context=Some("perform resume type"),
+                )
+              }
+            None => env.handle_resume_types[effect_name] = resume_ty
+          }
         }
       }
       body_ty
