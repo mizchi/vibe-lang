@@ -1188,6 +1188,40 @@ test "selfhost final: eval pipeline processes own token module" {
 }
 
 ///|
+test "native roundtrip: parser.vibe format idempotency" {
+  let source = @os_fs.read_file_to_string("vibe/compiler/parser.vibe") catch {
+    e => fail("[read] parser.vibe: \{e.to_string()}")
+  }
+  let formatted = @parser.format_script(source)
+  let before = @parser.parse_ast(source) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}")
+  }
+  let after = @parser.parse_ast(formatted) catch {
+    e => fail("[after-format] parse failed: \{e.to_string()}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+  let formatted2 = @parser.format_script(formatted)
+  assert_eq(formatted, formatted2)
+}
+
+///|
+test "native roundtrip: eval.vibe format idempotency" {
+  let source = @os_fs.read_file_to_string("vibe/compiler/eval.vibe") catch {
+    e => fail("[read] eval.vibe: \{e.to_string()}")
+  }
+  let formatted = @parser.format_script(source)
+  let before = @parser.parse_ast(source) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}")
+  }
+  let after = @parser.parse_ast(formatted) catch {
+    e => fail("[after-format] parse failed: \{e.to_string()}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+  let formatted2 = @parser.format_script(formatted)
+  assert_eq(formatted, formatted2)
+}
+
+///|
 test "probe: selfhost roundtrip all compiler sources" {
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
@@ -1255,6 +1289,64 @@ test "probe: selfhost roundtrip all compiler sources" {
   if failures.length() > 0 {
     fail(
       "roundtrip OK \{ok_count.val}/\{files.length()}, failures \{failures.length()}:\n" + failures.iter().fold(
+        init="",
+        fn(acc, f) { acc + "  " + f + "\n" },
+      ),
+    )
+  }
+}
+
+///|
+test "native compile: all compiler sources pass compile_module" {
+  let db = VibeDb::new()
+  let visited : Map[String, Bool] = {}
+  // type_db.vibe excluded: imports ./ripple (directory module) which panics
+  //   in the reactive query system during db.types() computation.
+  // index.vibe excluded: re-export syntax (export ./foo.vibe { ... }) triggers
+  //   the same query panic in compile_module.
+  let files : Array[String] = [
+    "vibe/compiler/token.vibe",
+    "vibe/compiler/ast.vibe",
+    "vibe/compiler/lexer.vibe",
+    "vibe/compiler/parser.vibe",
+    "vibe/compiler/printer.vibe",
+    "vibe/compiler/values.vibe",
+    "vibe/compiler/builtins.vibe",
+    "vibe/compiler/types.vibe",
+    "vibe/compiler/checker_resolve.vibe",
+    "vibe/compiler/checker.vibe",
+    "vibe/compiler/checker_stmt.vibe",
+    "vibe/compiler/eval_builtins.vibe",
+    "vibe/compiler/eval.vibe",
+    "vibe/compiler/eval_loader.vibe",
+    "vibe/compiler/eval_stmt.vibe",
+    "vibe/compiler/eval_e2e_helpers.vibe",
+  ]
+  // Phase 1: load all sources into VibeDb (resolves transitive imports)
+  for file in files {
+    load_compiler_source(db, file, visited)
+  }
+  // Phase 2: compile each file through the full pipeline (parse, type-check, desugar, monoify)
+  let ok_count = @ref.new(0)
+  let failures : Array[String] = []
+  for file in files {
+    let compiled = try {
+      compile_module(db, file)
+    } catch {
+      e => {
+        failures.push("\{file}: \{e}")
+        continue
+      }
+    }
+    if compiled.ast.stmts.length() > 0 {
+      ok_count.update(fn(n) { n + 1 })
+    } else {
+      failures.push("\{file}: empty AST")
+    }
+  }
+  if failures.length() > 0 {
+    fail(
+      "compile OK \{ok_count.val}/\{files.length()}, failures \{failures.length()}:\n" + failures.iter().fold(
         init="",
         fn(acc, f) { acc + "  " + f + "\n" },
       ),
