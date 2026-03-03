@@ -970,6 +970,185 @@ fn decode_tagged_wasm_run_value(tagged : Int64) -> WasmRunValue? {
 }
 
 ///|
+fn is_http_builtin_name(name : String) -> Bool {
+  match name {
+    "http_request"
+    | "http_response_status"
+    | "http_response_header"
+    | "http_response_body"
+    | "http_close"
+    | "http_listen"
+    | "http_accept"
+    | "http_request_method"
+    | "http_request_url"
+    | "http_request_header"
+    | "http_request_body"
+    | "http_respond" => true
+    _ => false
+  }
+}
+
+///|
+fn expr_uses_http_builtins(expr : @vibe_core.Expr) -> Bool {
+  match expr {
+    @vibe_core.Expr::Call(name~, args~, ..) => {
+      if is_http_builtin_name(name) {
+        return true
+      }
+      for arg in args {
+        if expr_uses_http_builtins(arg.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::Tuple(items~, ..) => {
+      for item in items {
+        if expr_uses_http_builtins(item) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::TupleIndex(expr~, ..) => expr_uses_http_builtins(expr)
+    @vibe_core.Expr::Record(fields~, ..)
+    | @vibe_core.Expr::StructLit(fields~, ..) => {
+      for field in fields {
+        if expr_uses_http_builtins(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::Array(items~, ..) => {
+      for item in items {
+        if expr_uses_http_builtins(item) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::Map(fields~, ..) => {
+      for field in fields {
+        if expr_uses_http_builtins(field.expr) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::If(cond~, then_body~, else_body~, ..) =>
+      expr_uses_http_builtins(cond) ||
+      module_uses_http_builtins(then_body) ||
+      module_uses_http_builtins(else_body)
+    @vibe_core.Expr::Block(body~, ..) => module_uses_http_builtins(body)
+    @vibe_core.Expr::Match(scrutinee~, arms~, ..) => {
+      if expr_uses_http_builtins(scrutinee) {
+        return true
+      }
+      for arm in arms {
+        if expr_uses_http_builtins(arm.expr) {
+          return true
+        }
+        match arm.cond {
+          Some(cond) => if expr_uses_http_builtins(cond) { return true }
+          None => ()
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::ForIn(iterable~, body~, ..) =>
+      expr_uses_http_builtins(iterable) || module_uses_http_builtins(body)
+    @vibe_core.Expr::Fn(body~, ..) => module_uses_http_builtins(body)
+    @vibe_core.Expr::While(cond~, body~, ..) =>
+      expr_uses_http_builtins(cond) || module_uses_http_builtins(body)
+    @vibe_core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        if expr_uses_http_builtins(param.init) {
+          return true
+        }
+      }
+      module_uses_http_builtins(body)
+    }
+    @vibe_core.Expr::Break(value~, ..) =>
+      match value {
+        Some(v) => expr_uses_http_builtins(v)
+        None => false
+      }
+    @vibe_core.Expr::Continue(args~, ..) => {
+      for arg in args {
+        if expr_uses_http_builtins(arg) {
+          return true
+        }
+      }
+      false
+    }
+    @vibe_core.Expr::Raise(value~, ..) => expr_uses_http_builtins(value)
+    @vibe_core.Expr::Yield(expr~, ..) => expr_uses_http_builtins(expr)
+    @vibe_core.Expr::Handle(body~, arms~, ..) => {
+      if module_uses_http_builtins(body) {
+        return true
+      }
+      for arm in arms {
+        if expr_uses_http_builtins(arm.expr) {
+          return true
+        }
+        match arm.cond {
+          Some(cond) => if expr_uses_http_builtins(cond) { return true }
+          None => ()
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
+fn stmt_uses_http_builtins(stmt : @vibe_core.Stmt) -> Bool {
+  match stmt {
+    @vibe_core.Stmt::Let(expr~, ..)
+    | @vibe_core.Stmt::LetMut(expr~, ..)
+    | @vibe_core.Stmt::Assign(expr~, ..)
+    | @vibe_core.Stmt::LetPat(expr~, ..)
+    | @vibe_core.Stmt::Expr(expr~, ..)
+    | @vibe_core.Stmt::ExportLet(expr~, ..)
+    | @vibe_core.Stmt::InternalExportLet(expr~, ..) =>
+      expr_uses_http_builtins(expr)
+    @vibe_core.Stmt::IndexAssign(target~, index~, value~, ..) =>
+      expr_uses_http_builtins(target) ||
+      expr_uses_http_builtins(index) ||
+      expr_uses_http_builtins(value)
+    @vibe_core.Stmt::LetPatElse(expr~, else_body~, ..) =>
+      expr_uses_http_builtins(expr) || module_uses_http_builtins(else_body)
+    @vibe_core.Stmt::Test(body~, ..) | @vibe_core.Stmt::Bench(body~, ..) =>
+      module_uses_http_builtins(body)
+    _ => false
+  }
+}
+
+///|
+fn module_uses_http_builtins(ast : @vibe_core.Module) -> Bool {
+  for stmt in ast.stmts {
+    if stmt_uses_http_builtins(stmt) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn ensure_compiled_exec_module_supported(
+  ast : @vibe_core.Module,
+) -> Result[Unit, String] {
+  if module_uses_http_builtins(ast) {
+    return Err(
+      "http builtins require interpreter backend (compiled wasmtime path has no vibe:http host runtime)",
+    )
+  }
+  Ok(())
+}
+
+///|
 fn compile_module_wasm_for_exec(
   db : @runtime.VibeDb,
   entry : String,
@@ -990,6 +1169,10 @@ fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
   let (db, entry) = match @loader.load_db(entry_path) {
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
+  }
+  match ensure_compiled_exec_module_supported(db.ast(entry)) {
+    Ok(_) => ()
+    Err(err) => return Err("compiled backend unsupported: " + err)
   }
   let runner = match resolve_bench_wasm_runner(entry) {
     Ok(v) => v
@@ -1665,6 +1848,10 @@ fn run_test_file_compiled(
     Ok(v) => v
   }
   let ast = db.ast(entry)
+  match ensure_compiled_exec_module_supported(ast) {
+    Ok(_) => ()
+    Err(err) => return CompiledTestAttempt::Unsupported(err)
+  }
   for stmt in ast.stmts {
     match stmt {
       @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()

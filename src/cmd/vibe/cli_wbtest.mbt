@@ -2527,6 +2527,43 @@ test "resolve backend pref forces compiled for compiler entry in auto mode" {
 }
 
 ///|
+test "compiled exec guard rejects modules that use http builtins" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Net} {
+    #|  let req = http_request("GET", "https://example.com", "", "")
+    #|  let status = http_response_status(req)
+    #|  http_close(req)
+    #|  status
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let ast = db.ast("main")
+  assert_true(module_uses_http_builtins(ast))
+  match ensure_compiled_exec_module_supported(ast) {
+    Ok(_) => fail("expected http builtins to be rejected for compiled exec")
+    Err(msg) => assert_true(String::contains(msg, "http builtins"))
+  }
+}
+
+///|
+test "compiled exec guard allows modules without http builtins" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let run = () -> Int {
+      #|  42
+      #|}
+      #|run(),
+    ),
+  )
+  let ast = db.ast("main")
+  assert_false(module_uses_http_builtins(ast))
+  assert_eq(ensure_compiled_exec_module_supported(ast), Ok(()))
+}
+
+///|
 test "compiled exec wasm embeds throw literal for handler parity" {
   let db = @runtime.VibeDb::new()
   let needle = "WB_EXEC_THROW_LITERAL_PARITY_3f64"
