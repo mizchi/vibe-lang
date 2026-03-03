@@ -571,3 +571,5 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
     - 空文字は deny-all
     - 例: `8080,3000,*`
   - `can_connect_any` / `can_listen_any` は interpreter 契約に合わせて「該当 capability が1件でもあれば true」。
+- `moon run --target native src/cmd/vibe -- ...` 経路では、`die()` が内部で使う `exit(1)` の終了コードが script から安定して観測できないケースがある。
+  - policy gate（`scripts/test_compiled_backend_http_policy.sh`）は `vibe.exe` 直実行に切り替えて終了コード判定を安定化。
