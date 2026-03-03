@@ -1897,16 +1897,32 @@ test "cli eval finalize normalize apply workflow with relative paths" {
   let cwd = @io.current_dir_or_root()
   let rel_root = "tmp_probe/e2e_eval_finalize_apply_" + @env.now().to_string()
   let abs_root = @vibe_fs.normalize_path(cwd + "/" + rel_root)
+  let local_lock_path = abs_root + "/index.lock"
+  let local_index_vbundle_path = abs_root + "/index.vbundle"
+  let local_vibe_dir = abs_root + "/.vibe"
   let include_abs = abs_root + "/include/index.vbundle"
   let include_rel = "./" + rel_root + "/include/index.vbundle"
   let db_rel = rel_root + "/scratch/workflow.db"
   let out_rel = rel_root + "/dist/main.vibe"
   let out_abs = @vibe_fs.normalize_path(cwd + "/" + out_rel)
+  let lock_seed = "{\"path\":{},\"version\":{},\"symbol\":{},\"module\":{},\"annotation\":{}}\n"
   let features = @runtime.RuntimeFeatureFlags::stable()
   wbtest_remove_if_exists(abs_root)
   match ensure_parent_dir_for_file(include_abs, "test setup") {
     Ok(_) => ()
     Err(err) => fail("create include parent failed: " + err)
+  }
+  @os_fs.create_dir(local_vibe_dir) catch {
+    e => fail("create local .vibe dir failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(local_lock_path, lock_seed) catch {
+    e => fail("write local lock seed failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    local_index_vbundle_path,
+    "{\"lock\":" + lock_seed.trim().to_string() + "}\n",
+  ) catch {
+    e => fail("write local index.vbundle seed failed: " + e.to_string())
   }
   @os_fs.write_string_to_file(
     include_abs,

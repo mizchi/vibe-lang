@@ -2182,6 +2182,46 @@ test "report json worker exits only when tracked parent is gone" {
 }
 
 ///|
+test "compiled test case db load does not persist temporary lock refs" {
+  let root = wbtest_make_temp_dir("compiled_test_case_db_lock")
+  let lock_seed = "{\"path\":{},\"version\":{},\"symbol\":{},\"module\":{},\"annotation\":{}}\n"
+  @os_fs.write_string_to_file(root + "/index.lock", lock_seed) catch {
+    e => fail("write seed lock failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root + "/index.vbundle",
+    "{\"lock\":" + lock_seed.trim().to_string() + "}\n",
+  ) catch {
+    e => fail("write seed vbundle failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    root + "/index.vibe",
+    "export let version = \"0.1.0\"\n",
+  ) catch {
+    e => fail("write index.vibe failed: " + e.to_string())
+  }
+  let source_path = root + "/.vibe_test_wasm_case.vibe"
+  @os_fs.write_string_to_file(source_path, "0\n") catch {
+    e => fail("write temp source failed: " + e.to_string())
+  }
+  match load_compiled_test_case_db(source_path) {
+    Ok(_) => ()
+    Err(err) => fail("load compiled test db failed: " + err)
+  }
+  let lock_path = root + "/index.lock"
+  if @os_fs.path_exists(lock_path) {
+    let lock_source = @os_fs.read_file_to_string(lock_path) catch {
+      e => fail("read lock failed: " + e.to_string())
+    }
+    assert_false(lock_source.contains(".vibe_test_wasm_"))
+  }
+  wbtest_remove_if_exists(root + "/index.vbundle")
+  wbtest_remove_if_exists(lock_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 fn wbtest_make_temp_dir(prefix : String) -> String {
   let base = "/tmp/cmd_vibe_wbtest_" + prefix + "_" + @env.now().to_string()
   for i in 0..<1000 {

@@ -150,11 +150,8 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] WASM HTTP builtins の本実装（現状は wasm で catchable fallback error）。WASI P3 HTTP (`wasi:http@0.3.0-draft`) 安定待ち
   - Client: `wasi:http/handler.handle` で outgoing-request 送信
   - Server: `wasi:http/handler` export で incoming-request 受信 (wasmtime serve)
-- [ ] WASM server (http_listen/accept/respond): Phase 2。インタプリタのみ動作
 - [ ] HTTPS/TLS 非対応: HTTP のみ (port 80 デフォルト)
 - [ ] IPv4 のみ: DNS 解決・IPv6 未対応
-- [ ] `moon info` mbti 自動再生成: `--deny-warn` が `unused_constructor` を error にするため循環依存
-  - 回避: mbti を先に手動更新 → check
 
 ## Deferred
 

@@ -1615,7 +1615,7 @@ fn run_compiled_test_case(
         "write source failed: " + e.to_string(),
       )
   }
-  let (db, entry) = match @loader.load_db(source_path) {
+  let (db, entry) = match load_compiled_test_case_db(source_path) {
     Err(err) => return CompiledTestCaseExec::Error("load error: " + err)
     Ok(v) => v
   }
@@ -1640,6 +1640,13 @@ fn run_compiled_test_case(
       wasmtime_failure_detail(run_out.stdout, run_out.stderr),
     )
   }
+}
+
+///|
+fn load_compiled_test_case_db(
+  source_path : String,
+) -> Result[(@runtime.VibeDb, String), String] {
+  @loader.load_db_for_test(source_path)
 }
 
 ///|
