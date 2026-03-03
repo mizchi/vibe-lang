@@ -267,6 +267,10 @@ test-http-wasm:
     scripts/test_http_wasm_fallback.sh
     scripts/test_http_wasm_host_imports.sh
 
+# Verify compiled backend HTTP policy (auto fallback + forced compiled reject)
+test-http-compiled-policy:
+    scripts/test_compiled_backend_http_policy.sh
+
 # Run selfhost bootstrap gate (compiled suite + probe smoke + deterministic wasm)
 test-selfhost-bootstrap:
     scripts/test_selfhost_bootstrap_gate.sh
