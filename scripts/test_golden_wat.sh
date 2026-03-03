@@ -2,17 +2,33 @@
 # Golden test for WAT output
 # Usage: ./scripts/test_golden_wat.sh [--update]
 
-set -e
+set -euo pipefail
 
 GOLDEN_DIR="examples/golden_wat"
 TEMP_DIR="/tmp/golden_wat_test"
 UPDATE_MODE=false
+VIBE_BIN="${VIBE_BIN:-_build/native/debug/build/cmd/vibe/vibe.exe}"
+USE_WITE="${VIBE_GOLDEN_USE_WITE:-1}"
+OPT_LEVEL="${VIBE_GOLDEN_OPT_LEVEL:-}"
 
-if [ "$1" == "--update" ]; then
+if [ "${1:-}" == "--update" ]; then
   UPDATE_MODE=true
+elif [ "${1:-}" != "" ]; then
+  echo "unknown arg: $1" >&2
+  echo "usage: ./scripts/test_golden_wat.sh [--update]" >&2
+  exit 1
+fi
+
+if [ ! -x "$VIBE_BIN" ]; then
+  moon build --target native src/cmd/vibe --warn-list '-29'
+fi
+if [ ! -x "$VIBE_BIN" ]; then
+  echo "vibe cli binary not found: $VIBE_BIN" >&2
+  exit 1
 fi
 
 mkdir -p "$TEMP_DIR"
+mkdir -p "$TEMP_DIR/src"
 
 failed=0
 passed=0
@@ -20,11 +36,24 @@ passed=0
 for vibe_file in "$GOLDEN_DIR"/*.vibe; do
   name=$(basename "$vibe_file" .vibe)
   expected_wat="$GOLDEN_DIR/${name}.wat"
+  temp_vibe="$TEMP_DIR/src/${name}.vibe"
   actual_wasm="$TEMP_DIR/${name}.wasm"
   actual_wat="$TEMP_DIR/${name}.wat"
 
+  cp "$vibe_file" "$temp_vibe"
+
+  compile_args=(compile --wasm)
+  if [ "$USE_WITE" = "1" ]; then
+    if [ -n "$OPT_LEVEL" ]; then
+      compile_args+=("$OPT_LEVEL")
+    else
+      compile_args+=(--wite)
+    fi
+  fi
+  compile_args+=("$temp_vibe" -o "$actual_wasm")
+
   # Compile to WASM
-  if ! moon run src/cmd/vibe/main.mbt --target native -- compile --wasm "$vibe_file" -o "$actual_wasm" 2>/dev/null; then
+  if ! "$VIBE_BIN" "${compile_args[@]}" 2>/dev/null; then
     echo "FAIL: $name (compilation error)"
     failed=$((failed + 1))
     continue

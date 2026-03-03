@@ -1,15 +1,35 @@
 (module
-  (type (;0;) (func (result i32)))
-  (memory (;0;) 1)
+  (type (;0;) (func (result i64)))
+  (memory (;0;) 64)
   (export "run" (func 0))
   (export "memory" (memory 0))
-  (func (;0;) (type 0) (result i32)
-    (local i32 i32 i32 i32)
+  (func (;0;) (type 0) (result i64)
+    (local i32 i64 i32 i32 i32 i32)
     i32.const 0
-    local.set 0
+    local.tee 0
+    i32.const 12
+    i32.add
+    local.set 3
+    memory.size
+    local.set 4
+    local.get 3
+    i32.const 65535
+    i32.add
+    i32.const 16
+    i32.shr_u
+    local.set 5
+    local.get 4
+    local.get 5
+    i32.lt_s
+    if ;; label = @1
+      local.get 5
+      local.get 4
+      i32.sub
+      memory.grow
+      drop
+    end
     local.get 0
-    local.set 2
-    local.get 0
+    local.tee 2
     i32.const 12
     i32.add
     local.set 0
@@ -20,65 +40,9 @@
     f64.const 0x1.8p+0 (;=1.5;)
     f64.store offset=4
     local.get 2
-    i32.const 1
-    i32.or
-    local.set 1
-    local.get 1
-    local.set 3
-    local.get 3
-    i32.const 3
-    i32.and
-    i32.const 1
-    i32.eq
-    local.get 3
-    local.get 3
-    i32.const 3
-    i32.and
-    i32.sub
-    i32.load
-    i32.const 9
-    i32.eq
-    i32.and
-    local.get 3
-    local.get 3
-    i32.const 3
-    i32.and
-    i32.sub
-    f64.load offset=4
-    f64.const 0x1.8p+0 (;=1.5;)
-    f64.eq
-    i32.and
-    if (result i32) ;; label = @1
-      i32.const 4
-    else
-      local.get 3
-      i32.const 3
-      i32.and
-      i32.const 1
-      i32.eq
-      local.get 3
-      local.get 3
-      i32.const 3
-      i32.and
-      i32.sub
-      i32.load
-      i32.const 9
-      i32.eq
-      i32.and
-      local.get 3
-      local.get 3
-      i32.const 3
-      i32.and
-      i32.sub
-      f64.load offset=4
-      f64.const 0x1.4p+1 (;=2.5;)
-      f64.eq
-      i32.and
-      if (result i32) ;; label = @2
-        i32.const 8
-      else
-        i32.const 0
-      end
-    end
+    i64.extend_i32_u
+    i64.const 1
+    i64.or
+    local.tee 1
   )
 )
