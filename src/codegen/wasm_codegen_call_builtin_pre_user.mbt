@@ -25,6 +25,403 @@ fn compile_call_builtin_pre_user(
 }
 
 ///|
+fn emit_load_obj_number_as_f64(
+  buf : ByteBuf,
+  obj_ptr_local : Int,
+  obj_ty_local : Int,
+) -> Unit {
+  emit_local_get(buf, obj_ty_local)
+  emit_i32_const_raw(buf, obj_float)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((124).to_byte()) // result f64
+  emit_local_get(buf, obj_ptr_local)
+  emit_f32_load(buf, 4)
+  emit_f64_promote_f32(buf)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, obj_ptr_local)
+  emit_f64_load(buf, 4)
+  buf.push((11).to_byte()) // end if
+}
+
+///|
+fn emit_number_obj_to_string(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  obj_ptr_local : Int,
+  obj_ty_local : Int,
+  fallback_str : Int64,
+) -> Unit raise WasmGenError {
+  let is_neg_local = alloc_temp_local(ctx)
+  let int_part_local = alloc_temp_local(ctx)
+  let scaled_local = alloc_temp_local(ctx)
+  let frac_tmp_local = alloc_temp_local(ctx)
+  let int_len_local = alloc_temp_local(ctx)
+  let frac_len_local = alloc_temp_local(ctx)
+  let digit_local = alloc_temp_local(ctx)
+  let copy_i_local = alloc_temp_local(ctx)
+  let src_idx_local = alloc_temp_local(ctx)
+  let total_len_local = alloc_temp_local(ctx)
+  let alloc_size_local = alloc_temp_local(ctx)
+  let obj_local = alloc_temp_local(ctx)
+  let scratch_local = alloc_temp_local(ctx)
+  let invalid_local = alloc_temp_local(ctx)
+
+  emit_heap_alloc(ctx, buf, 96, scratch_local)
+
+  // scratch[0..8): original value as f64
+  emit_local_get(buf, scratch_local)
+  emit_load_obj_number_as_f64(buf, obj_ptr_local, obj_ty_local)
+  emit_f64_store(buf, 0)
+
+  // is_neg = value < 0.0
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 0)
+  emit_f64_const(buf, 0.0)
+  emit_f64_lt(buf)
+  emit_local_set(buf, is_neg_local)
+
+  // scratch[8..16): abs(value)
+  emit_local_get(buf, scratch_local)
+  emit_local_get(buf, is_neg_local)
+  buf.push((4).to_byte()) // if
+  buf.push((124).to_byte()) // result f64
+  emit_f64_const(buf, 0.0)
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 0)
+  emit_f64_sub(buf)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 0)
+  buf.push((11).to_byte()) // end if
+  emit_f64_store(buf, 8)
+
+  // invalid = isnan(abs)
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 8)
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 8)
+  emit_f64_eq(buf)
+  emit_i32_eqz(buf)
+  emit_local_set(buf, invalid_local)
+
+  // invalid |= abs > 2147483647.0
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 8)
+  emit_f64_const(buf, 2147483647.0)
+  emit_f64_gt(buf)
+  emit_local_get(buf, invalid_local)
+  emit_i32_or(buf)
+  emit_local_set(buf, invalid_local)
+
+  emit_local_get(buf, invalid_local)
+  buf.push((4).to_byte()) // if
+  buf.push((126).to_byte()) // result i64
+  emit_i64_const_raw(buf, fallback_str)
+  buf.push((5).to_byte()) // else
+
+  // int_part = trunc(abs)
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 8)
+  emit_i64_trunc_f64_s(buf)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, int_part_local)
+
+  // scratch[16..24): frac = abs - int_to_double(int_part)
+  emit_local_get(buf, scratch_local)
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 8)
+  emit_local_get(buf, int_part_local)
+  emit_i64_extend_i32_s(buf)
+  emit_f64_convert_i64_s(buf)
+  emit_f64_sub(buf)
+  emit_f64_store(buf, 16)
+
+  // scaled = trunc(frac * 1_000_000 + 0.5)
+  emit_local_get(buf, scratch_local)
+  emit_f64_load(buf, 16)
+  emit_f64_const(buf, 1000000.0)
+  emit_f64_mul(buf)
+  emit_f64_const(buf, 0.5)
+  emit_f64_add(buf)
+  emit_i64_trunc_f64_s(buf)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, scaled_local)
+
+  // Carry from fractional rounding.
+  emit_local_get(buf, scaled_local)
+  emit_i32_const_raw(buf, 1000000)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  emit_local_get(buf, int_part_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, int_part_local)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, scaled_local)
+  buf.push((11).to_byte()) // end if
+
+  // Encode int digits in reverse into scratch+32.
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, int_len_local)
+  emit_local_get(buf, int_part_local)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  emit_local_get(buf, scratch_local)
+  emit_i32_const_raw(buf, 48)
+  emit_i32_store8(buf, 32)
+  emit_i32_const_raw(buf, 1)
+  emit_local_set(buf, int_len_local)
+  buf.push((5).to_byte()) // else
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, int_part_local)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, int_part_local)
+  emit_i32_const_raw(buf, 10)
+  emit_i32_rem_s(buf)
+  emit_local_set(buf, digit_local)
+  emit_local_get(buf, int_part_local)
+  emit_i32_const_raw(buf, 10)
+  emit_i32_div_s(buf)
+  emit_local_set(buf, int_part_local)
+  emit_local_get(buf, scratch_local)
+  emit_local_get(buf, int_len_local)
+  emit_i32_add(buf)
+  emit_local_get(buf, digit_local)
+  emit_i32_const_raw(buf, 48)
+  emit_i32_add(buf)
+  emit_i32_store8(buf, 32)
+  emit_local_get(buf, int_len_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, int_len_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  buf.push((11).to_byte()) // end if
+
+  // Encode fraction (zero-padded 6 digits) into scratch+48, then trim tail zeros.
+  emit_local_get(buf, scaled_local)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, frac_len_local)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, scaled_local)
+  emit_local_set(buf, frac_tmp_local)
+  emit_i32_const_raw(buf, 6)
+  emit_local_set(buf, copy_i_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_sub(buf)
+  emit_local_set(buf, copy_i_local)
+  emit_local_get(buf, frac_tmp_local)
+  emit_i32_const_raw(buf, 10)
+  emit_i32_rem_s(buf)
+  emit_local_set(buf, digit_local)
+  emit_local_get(buf, frac_tmp_local)
+  emit_i32_const_raw(buf, 10)
+  emit_i32_div_s(buf)
+  emit_local_set(buf, frac_tmp_local)
+  emit_local_get(buf, scratch_local)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_add(buf)
+  emit_local_get(buf, digit_local)
+  emit_i32_const_raw(buf, 48)
+  emit_i32_add(buf)
+  emit_i32_store8(buf, 48)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_i32_const_raw(buf, 6)
+  emit_local_set(buf, frac_len_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, frac_len_local)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, frac_len_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_sub(buf)
+  emit_local_set(buf, src_idx_local)
+  emit_local_get(buf, scratch_local)
+  emit_local_get(buf, src_idx_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 48)
+  emit_i32_const_raw(buf, 48)
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, frac_len_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_sub(buf)
+  emit_local_set(buf, frac_len_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  buf.push((11).to_byte()) // end if
+
+  // total_len = int_len + sign + (frac_len>0 ? 1 + frac_len : 0)
+  emit_local_get(buf, int_len_local)
+  emit_local_set(buf, total_len_local)
+  emit_local_get(buf, is_neg_local)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, total_len_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, total_len_local)
+  buf.push((11).to_byte()) // end if
+  emit_local_get(buf, frac_len_local)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, total_len_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_get(buf, frac_len_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, total_len_local)
+  buf.push((11).to_byte()) // end if
+
+  // Allocate output string object.
+  emit_local_get(buf, total_len_local)
+  emit_i32_const_raw(buf, 11)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, alloc_size_local)
+  emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, obj_string)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, total_len_local)
+  emit_i32_store(buf, 4)
+
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, copy_i_local)
+
+  // Optional leading '-'.
+  emit_local_get(buf, is_neg_local)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, 45)
+  emit_i32_store8(buf, 8)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_i_local)
+  buf.push((11).to_byte()) // end if
+
+  // Copy integer digits in reverse order from scratch+32.
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, src_idx_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, src_idx_local)
+  emit_local_get(buf, int_len_local)
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, int_len_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_sub(buf)
+  emit_local_get(buf, src_idx_local)
+  emit_i32_sub(buf)
+  emit_local_set(buf, digit_local)
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_add(buf)
+  emit_local_get(buf, scratch_local)
+  emit_local_get(buf, digit_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 32)
+  emit_i32_store8(buf, 8)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_i_local)
+  emit_local_get(buf, src_idx_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, src_idx_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+
+  // Fractional part.
+  emit_local_get(buf, frac_len_local)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, 46)
+  emit_i32_store8(buf, 8)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_i_local)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, src_idx_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, src_idx_local)
+  emit_local_get(buf, frac_len_local)
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_add(buf)
+  emit_local_get(buf, scratch_local)
+  emit_local_get(buf, src_idx_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 48)
+  emit_i32_store8(buf, 8)
+  emit_local_get(buf, copy_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_i_local)
+  emit_local_get(buf, src_idx_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, src_idx_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  buf.push((11).to_byte()) // end if
+
+  emit_local_get(buf, obj_local)
+  emit_i64_extend_i32_u(buf)
+  emit_i64_const_raw(buf, tag_obj.to_int64())
+  emit_i64_or(buf)
+
+  buf.push((11).to_byte()) // end if invalid
+}
+
+///|
 fn compile_call_builtin_pre_user_inner(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -525,7 +922,39 @@ fn compile_call_builtin_pre_user_inner(
         emit_i32_eq(buf)
         buf.push((4).to_byte()) // if
         buf.push((126).to_byte()) // result i64
+        let obj_ptr_local = alloc_temp_local(ctx)
+        let obj_ty_local = alloc_temp_local(ctx)
         emit_local_get(buf, value_local)
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, obj_ptr_local)
+        emit_local_get(buf, obj_ptr_local)
+        emit_i32_load(buf, 0)
+        emit_local_set(buf, obj_ty_local)
+        emit_local_get(buf, obj_ty_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_eq(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((126).to_byte()) // result i64
+        emit_local_get(buf, value_local)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, obj_ty_local)
+        emit_i32_const_raw(buf, obj_float)
+        emit_i32_eq(buf)
+        emit_local_get(buf, obj_ty_local)
+        emit_i32_const_raw(buf, obj_double)
+        emit_i32_eq(buf)
+        emit_i32_or(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((126).to_byte()) // result i64
+        emit_number_obj_to_string(
+          ctx, buf, obj_ptr_local, obj_ty_local, fallback_str,
+        )
+        buf.push((5).to_byte()) // else
+        emit_i64_const_raw(buf, fallback_str)
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end if
         buf.push((5).to_byte()) // else
         emit_local_get(buf, tag_local)
         emit_i32_const_raw(buf, tag_bool)
@@ -1086,6 +1515,216 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
+    "string_join" => {
+      let pos_args = extract_positional_exprs_with_arity(args, "string_join", 2)
+      if ctx.use_js_strings {
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="string_join",
+        )
+      } else {
+        require_heap(ctx)
+        let arr_ptr_local = alloc_temp_local(ctx)
+        let arr_len_local = alloc_temp_local(ctx)
+        let sep_ptr_local = alloc_temp_local(ctx)
+        let sep_len_local = alloc_temp_local(ctx)
+        let loop_i_local = alloc_temp_local(ctx)
+        let total_len_local = alloc_temp_local(ctx)
+        let alloc_size_local = alloc_temp_local(ctx)
+        let obj_local = alloc_temp_local(ctx)
+        let out_pos_local = alloc_temp_local(ctx)
+        let copy_j_local = alloc_temp_local(ctx)
+        let elem_slot_local = alloc_temp_local(ctx)
+        let elem_ptr_local = alloc_temp_local(ctx)
+        let elem_len_local = alloc_temp_local(ctx)
+        // arr pointer / length
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, arr_ptr_local)
+        emit_local_get(buf, arr_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, arr_len_local)
+        // sep pointer / length
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, sep_ptr_local)
+        emit_local_get(buf, sep_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, sep_len_local)
+        // total_len = sum(elem lengths) + sep * (len - 1)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, total_len_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, loop_i_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, loop_i_local)
+        emit_local_get(buf, arr_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_gt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, total_len_local)
+        emit_local_get(buf, sep_len_local)
+        emit_i32_add(buf)
+        emit_local_set(buf, total_len_local)
+        buf.push((11).to_byte()) // end if
+        // elem = arr[i]
+        emit_local_get(buf, arr_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 4)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8)
+        emit_local_set(buf, elem_slot_local)
+        // elem_ptr = untag(elem)
+        emit_local_get(buf, elem_slot_local)
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_local_set(buf, elem_ptr_local)
+        emit_local_get(buf, elem_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, elem_len_local)
+        emit_local_get(buf, total_len_local)
+        emit_local_get(buf, elem_len_local)
+        emit_i32_add(buf)
+        emit_local_set(buf, total_len_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        // alloc_size = align4(8 + total_len)
+        emit_local_get(buf, total_len_local)
+        emit_i32_const_raw(buf, 11)
+        emit_i32_add(buf)
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_local_set(buf, alloc_size_local)
+        emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
+        emit_local_get(buf, obj_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_store(buf, 0)
+        emit_local_get(buf, obj_local)
+        emit_local_get(buf, total_len_local)
+        emit_i32_store(buf, 4)
+        // Copy pass
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, out_pos_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, loop_i_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, loop_i_local)
+        emit_local_get(buf, arr_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        // Add separator for i > 0
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_gt_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, copy_j_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, copy_j_local)
+        emit_local_get(buf, sep_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, obj_local)
+        emit_local_get(buf, out_pos_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, copy_j_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, sep_ptr_local)
+        emit_local_get(buf, copy_j_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_store8(buf, 8)
+        emit_local_get(buf, copy_j_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, copy_j_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, out_pos_local)
+        emit_local_get(buf, sep_len_local)
+        emit_i32_add(buf)
+        emit_local_set(buf, out_pos_local)
+        buf.push((11).to_byte()) // end if
+        // elem = arr[i]
+        emit_local_get(buf, arr_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 4)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i32_load(buf, 8)
+        emit_local_set(buf, elem_slot_local)
+        emit_local_get(buf, elem_slot_local)
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
+        emit_local_set(buf, elem_ptr_local)
+        emit_local_get(buf, elem_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, elem_len_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, copy_j_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, copy_j_local)
+        emit_local_get(buf, elem_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, obj_local)
+        emit_local_get(buf, out_pos_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, copy_j_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, elem_ptr_local)
+        emit_local_get(buf, copy_j_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_store8(buf, 8)
+        emit_local_get(buf, copy_j_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, copy_j_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, out_pos_local)
+        emit_local_get(buf, elem_len_local)
+        emit_i32_add(buf)
+        emit_local_set(buf, out_pos_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, obj_local)
+        emit_i64_extend_i32_u(buf)
+        emit_i64_const_raw(buf, tag_obj.to_int64())
+        emit_i64_or(buf)
+      }
+    }
     "string_equals" => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "string_equals", 2,
@@ -1306,9 +1945,304 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
+    "string_starts_with" if not(is_user_fn) => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "string_starts_with", 2,
+      )
+      if ctx.use_js_strings {
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="string_starts_with",
+        )
+      } else {
+        let str_ptr_local = alloc_temp_local(ctx)
+        let str_len_local = alloc_temp_local(ctx)
+        let prefix_ptr_local = alloc_temp_local(ctx)
+        let prefix_len_local = alloc_temp_local(ctx)
+        let loop_i_local = alloc_temp_local(ctx)
+        let result_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, str_ptr_local)
+        emit_local_get(buf, str_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, str_len_local)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, prefix_ptr_local)
+        emit_local_get(buf, prefix_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, prefix_len_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, result_local)
+        emit_local_get(buf, prefix_len_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_le_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, result_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, loop_i_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, loop_i_local)
+        emit_local_get(buf, prefix_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_get(buf, prefix_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_eq(buf)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, result_local)
+        emit_local_get(buf, prefix_len_local)
+        emit_local_set(buf, loop_i_local)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i_local)
+        buf.push((11).to_byte()) // end if
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, result_local)
+        emit_i64_extend_i32_s(buf)
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shl(buf)
+        emit_i64_const_raw(buf, tag_bool.to_int64())
+        emit_i64_or(buf)
+      }
+    }
+    "string_ends_with" if not(is_user_fn) => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "string_ends_with", 2,
+      )
+      if ctx.use_js_strings {
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="string_ends_with",
+        )
+      } else {
+        let str_ptr_local = alloc_temp_local(ctx)
+        let str_len_local = alloc_temp_local(ctx)
+        let suffix_ptr_local = alloc_temp_local(ctx)
+        let suffix_len_local = alloc_temp_local(ctx)
+        let start_local = alloc_temp_local(ctx)
+        let loop_i_local = alloc_temp_local(ctx)
+        let result_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, str_ptr_local)
+        emit_local_get(buf, str_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, str_len_local)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, suffix_ptr_local)
+        emit_local_get(buf, suffix_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, suffix_len_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, result_local)
+        emit_local_get(buf, suffix_len_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_le_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, str_len_local)
+        emit_local_get(buf, suffix_len_local)
+        emit_i32_sub(buf)
+        emit_local_set(buf, start_local)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, result_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, loop_i_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, loop_i_local)
+        emit_local_get(buf, suffix_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, start_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_get(buf, suffix_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_eq(buf)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, result_local)
+        emit_local_get(buf, suffix_len_local)
+        emit_local_set(buf, loop_i_local)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i_local)
+        buf.push((11).to_byte()) // end if
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, result_local)
+        emit_i64_extend_i32_s(buf)
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shl(buf)
+        emit_i64_const_raw(buf, tag_bool.to_int64())
+        emit_i64_or(buf)
+      }
+    }
+    "string_last_index_of" if not(is_user_fn) => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "string_last_index_of", 2,
+      )
+      if ctx.use_js_strings {
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="string_last_index_of",
+        )
+      } else {
+        let str_ptr_local = alloc_temp_local(ctx)
+        let str_len_local = alloc_temp_local(ctx)
+        let sub_ptr_local = alloc_temp_local(ctx)
+        let sub_len_local = alloc_temp_local(ctx)
+        let loop_i_local = alloc_temp_local(ctx)
+        let inner_j_local = alloc_temp_local(ctx)
+        let matched_local = alloc_temp_local(ctx)
+        let result_local = alloc_temp_local(ctx)
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, str_ptr_local)
+        emit_local_get(buf, str_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, str_len_local)
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, sub_ptr_local)
+        emit_local_get(buf, sub_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, sub_len_local)
+        emit_i32_const_raw(buf, -1)
+        emit_local_set(buf, result_local)
+        emit_local_get(buf, sub_len_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_le_s(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, sub_len_local)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, str_len_local)
+        emit_local_set(buf, result_local)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, str_len_local)
+        emit_local_get(buf, sub_len_local)
+        emit_i32_sub(buf)
+        emit_local_set(buf, loop_i_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 0)
+        emit_i32_lt_s(buf)
+        emit_br_if(buf, 1)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, matched_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, inner_j_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, inner_j_local)
+        emit_local_get(buf, sub_len_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_local_get(buf, inner_j_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_get(buf, sub_ptr_local)
+        emit_local_get(buf, inner_j_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_eq(buf)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, matched_local)
+        emit_local_get(buf, sub_len_local)
+        emit_local_set(buf, inner_j_local)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, inner_j_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, inner_j_local)
+        buf.push((11).to_byte()) // end if
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, matched_local)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, loop_i_local)
+        emit_local_set(buf, result_local)
+        emit_br(buf, 2)
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_sub(buf)
+        emit_local_set(buf, loop_i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end if
+        emit_local_get(buf, result_local)
+        emit_i64_extend_i32_s(buf)
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shl(buf)
+        emit_i64_const_raw(buf, tag_int.to_int64())
+        emit_i64_or(buf)
+      }
+    }
     "string_builder" => {
       // string_builder() -> allocate empty array obj with len=0 (same layout as array_builder)
-      let max_cap = 256
+      let max_cap = 4096
       require_heap(ctx)
       let size = align4(8 + max_cap * 4)
       let obj_local = alloc_temp_local(ctx)
@@ -1508,7 +2442,7 @@ fn compile_call_builtin_pre_user_inner(
     "array_builder" => {
       // array_builder() -> allocate empty array obj with len=0
       // Reserve max_capacity * 4 bytes after header for future pushes
-      let max_cap = 256
+      let max_cap = 4096
       require_heap(ctx)
       let size = align4(8 + max_cap * 4)
       let obj_local = alloc_temp_local(ctx)
@@ -3368,7 +4302,7 @@ fn compile_call_builtin_pre_user_inner(
       } else if ctx.use_js_strings {
         emit_string_const(ctx, buf, msg)
       } else {
-        emit_string_const(ctx, buf, msg)
+        emit_i64_const_raw(buf, tag_ptr64(ctx.strings.intern(msg), tag_obj))
       }
       buf.push((8).to_byte()) // throw
       write_u32_leb(buf, ctx.error_tag_index)
