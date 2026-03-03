@@ -104,16 +104,14 @@ priv struct ComponentFuncSig {
 
 ///|
 priv struct CoreImportBinding {
-  module_name : String
-  func_name : String
   import_name : String
-  type_idx : Int
+  func_name : String
+  sig : ComponentFuncSig
   func_idx : Int
 }
 
 ///|
 priv struct CoreImportPlan {
-  type_sigs : Array[ComponentFuncSig]
   bindings : Array[CoreImportBinding]
   module_names : Array[String]
   module_bindings : Array[Array[CoreImportBinding]]
@@ -454,27 +452,13 @@ fn component_sig_from_core(sig : CoreFuncSig) -> ComponentFuncSig? {
 }
 
 ///|
-fn component_sig_key(sig : ComponentFuncSig) -> String {
-  let buf = StringBuilder::new()
-  for v in sig.params {
-    buf.write_string(v.to_int().to_string())
-    buf.write_char(',')
-  }
-  buf.write_char('|')
-  for v in sig.results {
-    buf.write_string(v.to_int().to_string())
-    buf.write_char(',')
-  }
-  buf.to_string()
-}
-
-///|
 fn build_core_import_plan(core_wasm : Bytes) -> CoreImportPlan {
   let parsed_imports = parse_core_import_funcs(core_wasm)
-  let type_sigs : Array[ComponentFuncSig] = []
   let bindings : Array[CoreImportBinding] = []
+  let module_names : Array[String] = []
+  let module_bindings : Array[Array[CoreImportBinding]] = []
+  let module_idx_by_name : Map[String, Int] = {}
   let seen_import_names : Map[String, Bool] = {}
-  let type_idx_by_sig : Map[String, Int] = {}
   for import_func in parsed_imports {
     let import_key = import_func.module_name + "||" + import_func.func_name
     if seen_import_names.contains(import_key) {
@@ -484,41 +468,28 @@ fn build_core_import_plan(core_wasm : Bytes) -> CoreImportPlan {
       Some(v) => v
       None => continue
     }
-    let sig_key = component_sig_key(sig)
-    let type_idx = match type_idx_by_sig.get(sig_key) {
+    let module_idx = match module_idx_by_name.get(import_func.module_name) {
       Some(idx) => idx
       None => {
-        let idx = type_sigs.length()
-        type_sigs.push(sig)
-        type_idx_by_sig[sig_key] = idx
+        let idx = module_names.length()
+        module_names.push(import_func.module_name)
+        module_bindings.push([])
+        module_idx_by_name[import_func.module_name] = idx
         idx
       }
     }
     let func_idx = bindings.length()
-    bindings.push(CoreImportBinding::{
-      module_name: import_func.module_name,
+    let binding = CoreImportBinding::{
+      import_name: "import-" + func_idx.to_string(),
       func_name: import_func.func_name,
-      import_name: "core-import-" + func_idx.to_string(),
-      type_idx,
+      sig,
       func_idx,
-    })
+    }
+    bindings.push(binding)
+    module_bindings[module_idx].push(binding)
     seen_import_names[import_key] = true
   }
-  let module_names : Array[String] = []
-  let module_bindings : Array[Array[CoreImportBinding]] = []
-  let module_idx_by_name : Map[String, Int] = {}
-  for binding in bindings {
-    match module_idx_by_name.get(binding.module_name) {
-      Some(idx) => module_bindings[idx].push(binding)
-      None => {
-        let idx = module_names.length()
-        module_idx_by_name[binding.module_name] = idx
-        module_names.push(binding.module_name)
-        module_bindings.push([binding])
-      }
-    }
-  }
-  CoreImportPlan::{ type_sigs, bindings, module_names, module_bindings }
+  CoreImportPlan::{ bindings, module_names, module_bindings }
 }
 
 ///|
@@ -569,6 +540,17 @@ fn emit_component_type_section_for_sigs(
 }
 
 ///|
+fn collect_component_import_sigs(
+  bindings : Array[CoreImportBinding],
+) -> Array[ComponentFuncSig] {
+  let sigs : Array[ComponentFuncSig] = []
+  for binding in bindings {
+    sigs.push(binding.sig)
+  }
+  sigs
+}
+
+///|
 fn emit_component_import_section_for_funcs(
   buf : Array[Byte],
   bindings : Array[CoreImportBinding],
@@ -579,11 +561,11 @@ fn emit_component_import_section_for_funcs(
   buf.push(component_section_import)
   let content : Array[Byte] = []
   component_write_uleb128(content, bindings.length())
-  for binding in bindings {
+  for type_idx, binding in bindings {
     content.push(b'\x00') // plain name
     component_write_name(content, binding.import_name)
     content.push(component_extern_func)
-    component_write_uleb128(content, binding.type_idx)
+    component_write_uleb128(content, type_idx)
   }
   component_write_uleb128(buf, content.length())
   for b in content {
@@ -1126,7 +1108,7 @@ pub fn emit_component_wasm_with_lift(
   let import_func_count = import_plan.bindings.length()
   let main_instance_idx = import_plan.module_names.length()
   let run_core_func_idx = import_func_count
-  let run_type_idx = import_plan.type_sigs.length()
+  let run_type_idx = import_func_count
   let run_func_idx = import_func_count
   let buf : Array[Byte] = []
   // Component header
@@ -1135,9 +1117,12 @@ pub fn emit_component_wasm_with_lift(
   }
   // Section 1: Core module (embed the core wasm)
   emit_core_module_section(buf, core_wasm)
-  // When core module has imports, wire them through component imports and
-  // materialize synthetic core instances per import module.
-  emit_component_type_section_for_sigs(buf, import_plan.type_sigs)
+  // Import core dependencies as namespaced component funcs, lower them, then
+  // materialize per-module core instances from lowered exports.
+  emit_component_type_section_for_sigs(
+    buf,
+    collect_component_import_sigs(import_plan.bindings),
+  )
   emit_component_import_section_for_funcs(buf, import_plan.bindings)
   emit_canon_lower_section(buf, import_func_count)
   emit_core_instance_from_exports_section(buf, import_plan.module_bindings)

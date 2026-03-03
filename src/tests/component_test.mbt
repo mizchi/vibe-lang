@@ -202,6 +202,52 @@ test "component wasm instantiation carries import args when core has imports" {
 }
 
 ///|
+test "component wasm uses stable func imports for stdio" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Stdout} {
+    #|  stdout_write_char(65)
+    #|  1
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wasm = try compile_module_component(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(component_bytes_contains_ascii(wasm, "import-0"))
+  assert_true(component_bytes_contains_ascii(wasm, "import-1"))
+  assert_true(component_bytes_contains_ascii(wasm, "wasi:cli/stdout@0.2.0"))
+  assert_true(component_bytes_contains_ascii(wasm, "wasi:io/streams@0.2.0"))
+  assert_false(component_bytes_contains_ascii(wasm, "core-import-"))
+}
+
+///|
+test "component wasm uses stable func imports for http host imports" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Net} {
+    #|  let req = http_request("GET", "https://example.com", "", "")
+    #|  let status = http_response_status(req)
+    #|  http_close(req)
+    #|  status
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wasm = try
+    compile_module_component(db, "main", http_host_imports=true)
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(component_bytes_contains_ascii(wasm, "import-0"))
+  assert_true(component_bytes_contains_ascii(wasm, "vibe:http"))
+  assert_false(component_bytes_contains_ascii(wasm, "core-import-"))
+}
+
+///|
 fn component_has_instantiate_with_non_zero_args(bytes : Bytes) -> Bool {
   let arr = bytes.to_array()
   if arr.length() < 8 {
@@ -293,4 +339,30 @@ fn read_name(arr : Array[Byte], start : Int) -> (String, Int) {
     return ("", arr.length())
   }
   ("", end)
+}
+
+///|
+fn component_bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
+  let hay = bytes.to_array()
+  let pat = @utf8.encode(needle).to_array()
+  if pat.length() == 0 {
+    return true
+  }
+  let limit = hay.length() - pat.length()
+  if limit < 0 {
+    return false
+  }
+  for i in 0..<=limit {
+    let mut ok = true
+    for j in 0..<pat.length() {
+      if hay[i + j] != pat[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+  }
+  false
 }

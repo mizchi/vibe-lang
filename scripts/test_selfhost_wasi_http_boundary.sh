@@ -42,7 +42,7 @@ run()
 EOF
 
 run_stage "stage0 (wasm compiler cli) -> component compile" \
-  moon run --target wasm src/cmd/vibe_compile_wasi -- --component "$SRC_PATH" -o "$OUT_COMPONENT"
+  moon run --target wasm src/cmd/vibe_compile_wasi -- --component --http-host-imports "$SRC_PATH" -o "$OUT_COMPONENT"
 
 run_stage "stage0 (wasm compiler cli) -> component wit compile" \
   moon run --target wasm src/cmd/vibe_compile_wasi -- --wit-component "$SRC_PATH" -o "$OUT_WIT"
@@ -66,6 +66,18 @@ if command -v wasm-tools >/dev/null 2>&1; then
   COMPONENT_TEXT="$(wasm-tools print "$OUT_COMPONENT" 2>/dev/null || true)"
   if ! printf '%s' "$COMPONENT_TEXT" | rg -n "^\(component" >/dev/null; then
     echo "http boundary gate failed: output is not printable as a component module" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$COMPONENT_TEXT" | rg -n '^\s*\(import "import-0" \(func' >/dev/null; then
+    echo "http boundary gate failed: missing lowered function import placeholders in component" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$COMPONENT_TEXT" | rg -n '^\s*\(with "vibe:http" \(instance' >/dev/null; then
+    echo "http boundary gate failed: missing instantiate binding for vibe:http instance" >&2
+    exit 1
+  fi
+  if printf '%s' "$COMPONENT_TEXT" | rg -n 'core-import-' >/dev/null; then
+    echo "http boundary gate failed: legacy core-import-* names must not appear" >&2
     exit 1
   fi
 else
