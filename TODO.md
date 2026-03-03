@@ -108,8 +108,8 @@ Completed items are archived in `docs/DONE.md`.
     - `string_starts_with` / `string_ends_with` / `string_last_index_of` の codegen fallback 欠落を解消
     - `array_builder` / `string_builder` の固定容量不足（`256 -> 4096`）で発生していた token 破壊を解消
     - `types_equal` を構造比較へ変更し、`subst_apply(CtVar)` の循環解決を loop + cycle guard 化
-    - `Double` の文字列化ヘルパー（`double_to_string_compiler`）を導入し、`vibe/compiler` 側の `__to_string(Double)` 依存を除去
     - wasm `__to_string` の `tag_obj` 分岐で `obj_float` / `obj_double` を実数文字列化し、`obj_string` 以外を `<value>` fallback に統一
+    - `vibe/compiler` 側の数値文字列化を `double_to_string_compiler` から `__to_string(Double/Float)` に戻し、compiled backend と parity を固定
 - [x] selfhost bootstrap gate を Push/PR CI に追加
   - `scripts/test_selfhost_bootstrap_gate.sh`
   - 構成:
