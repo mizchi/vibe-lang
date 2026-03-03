@@ -886,14 +886,13 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
   let top_level_needs_env : Map[String, Bool] = {}
   for f in funcs {
     match f.name {
-      Some(name) if top_level_fn_names.contains(name) => {
+      Some(name) if top_level_fn_names.contains(name) =>
         for cap in f.captures {
           if not(top_level_fn_names.contains(cap)) {
             top_level_needs_env[name] = true
             break
           }
         }
-      }
       _ => ()
     }
   }

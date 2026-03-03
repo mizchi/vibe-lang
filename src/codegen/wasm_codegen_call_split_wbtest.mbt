@@ -27,6 +27,11 @@ fn call_split_test_call(
 }
 
 ///|
+fn call_split_test_array(items : Array[@core.Expr]) -> @core.Expr {
+  @core.Expr::Array(items~, span=call_split_test_span())
+}
+
+///|
 test "extract_positional_exprs_with_arity returns positional args" {
   let args = [
     call_split_test_arg(call_split_test_int(1L)),
@@ -88,6 +93,29 @@ test "compile_call_builtin_pre_user emits wasm fallback throw for from_json" {
   let args = [call_split_test_arg(call_split_test_string("{}"))]
   let handled = compile_call_builtin_pre_user(
     ctx, buf, "from_json", args, false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(handled)
+  assert_true(buf.len() > 0)
+}
+
+///|
+test "compile_call_builtin_pre_user handles string_join" {
+  let ctx = CodegenCtx::new(false)
+  ctx.heap_local = alloc_temp_local(ctx)
+  let buf = ByteBuf::new()
+  let args = [
+    call_split_test_arg(
+      call_split_test_array([
+        call_split_test_string("a"),
+        call_split_test_string("b"),
+      ]),
+    ),
+    call_split_test_arg(call_split_test_string(",")),
+  ]
+  let handled = compile_call_builtin_pre_user(
+    ctx, buf, "string_join", args, false,
   ) catch {
     err => fail(err.to_string())
   }

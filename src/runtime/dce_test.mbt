@@ -590,7 +590,7 @@ test "dce: keeps enum definitions referenced only by match patterns" {
                     pat: @core.Pat::Ctor(name="PWild", args=[], span~),
                     cond: None,
                     expr: @core.Expr::Bool(value=true, span~),
-                    span: span,
+                    span,
                   },
                 ],
                 span~,

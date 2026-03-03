@@ -1569,8 +1569,7 @@ fn try_eval_hot_builtin_call(
   name : String,
   args : Array[@core.CallArg],
 ) -> EvalOutput? raise EvalError {
-  let is_hot =
-    name == "string_length" ||
+  let is_hot = name == "string_length" ||
     name == "string_char_code_at" ||
     name == "string_substring" ||
     name == "string_concat" ||

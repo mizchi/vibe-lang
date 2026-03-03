@@ -259,56 +259,7 @@ let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Erro
     ("_", empty_strings)
   ], 0, 0)
   match peek(tokens, pos) {
-    TLBracket => {
-      // Parse type params: impl [T: Trait1 + Trait2, U] TraitName for TypeName
-      let rec parse_tparam_bounds = (p: Int) -> (Array[String], Int) {
-        let rec go = (p2: Int, acc: Array[String]) -> (Array[String], Int) {
-          match peek(tokens, p2) {
-            TIdent(bn) => match peek(tokens, p2 + 1) {
-              TPlus => go(p2 + 2, array_concat(acc, [
-                bn
-              ])),
-              _ => (array_concat(acc, [
-                bn
-              ]), p2 + 1)
-            },
-            _ => (acc, p2)
-          }
-        }
-        go(p, empty_strings)
-      }
-      let rec parse_tparams = (p: Int, tps: Array[String], tbs: Array[(String, Array[String])]) -> (Array[String], Array[(String, Array[String])], Int)with { Error } {
-        match peek(tokens, p) {
-          TRBracket => (tps, tbs, p + 1),
-          TComma => parse_tparams(p + 1, tps, tbs),
-          TIdent(tname) => match peek(tokens, p + 1) {
-            TColon => {
-              let (bounds, bp) = parse_tparam_bounds(p + 2)
-              parse_tparams(bp, array_concat(tps, [
-                tname
-              ]), array_concat(tbs, [
-                (tname, bounds)
-              ]))
-            },
-            _ => parse_tparams(p + 1, array_concat(tps, [
-              tname
-            ]), tbs)
-          },
-          _ => throw("expected type param or ']'")
-        }
-      }
-      let (tparams, tbounds, after_bracket) = parse_tparams(pos + 1, empty_strings, empty_bounds)
-      match peek(tokens, after_bracket) {
-        TIdent(trait_name) => {
-          let fp = expect_tk(tokens, after_bracket + 1, "for")
-          match peek(tokens, fp) {
-            TIdent(type_name) => (SImpl(tparams, tbounds, trait_name, type_name), fp + 1),
-            _ => throw("expected type name after 'for'")
-          }
-        },
-        _ => throw("expected trait name after type params")
-      }
-    },
+    TLBracket => throw("impl type parameters are not supported yet"),
     TIdent(trait_name) => {
       let fp = expect_tk(tokens, pos + 1, "for")
       match peek(tokens, fp) {
@@ -318,6 +269,10 @@ let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Erro
     },
     _ => throw("expected trait name after 'impl'")
   }
+}
+
+let parse_impl_stmt_dispatch = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
+  parse_impl_stmt(tokens, pos)
 }
 
 let empty_type_exprs = () -> Array[TypeExpr] {
@@ -1545,7 +1500,8 @@ export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with 
       }
     }
   }
-  match peek(tokens, pos) {
+  let head = peek(tokens, pos)
+  match head {
     TLet => parse_let_stmt(tokens, pos + 1, false),
     TExport => match peek(tokens, pos + 1) {
       TModule => match peek(tokens, pos + 2) {
@@ -1575,7 +1531,6 @@ export let rec parse_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with 
     TStruct => parse_struct_stmt(tokens, pos + 1, false),
     TType => parse_type_alias_stmt(tokens, pos + 1, false),
     TTrait => parse_trait_stmt(tokens, pos + 1, false),
-    TImpl => parse_impl_stmt(tokens, pos + 1),
     TTest => parse_test_stmt(tokens, pos + 1),
     TBench => parse_bench_stmt(tokens, pos + 1),
     TImport => parse_import_stmt(tokens, pos + 1),
@@ -1599,7 +1554,11 @@ export let parse_program = (tokens: Array[Token]) -> Array[Stmt] with { Error } 
     if is_tk(peek(tokens, pos), "eof") {
       array_builder_freeze(b)
     } else {
-      let (stmt, next) = parse_stmt(tokens, pos)
+      let (stmt, next) = if is_tk(peek(tokens, pos), "impl") {
+        parse_impl_stmt_dispatch(tokens, pos + 1)
+      } else {
+        parse_stmt(tokens, pos)
+      }
       array_builder_push(b, stmt)
       go(next, b)
     }

@@ -2864,7 +2864,9 @@ fn compile_call_builtin_pre_user_inner(
     }
     "iter_require" if not(is_user_fn) => {
       // iter_require(xs) -> identity (prelude fallback for Array iteration)
-      let pos_args = extract_positional_exprs_with_arity(args, "iter_require", 1)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "iter_require", 1,
+      )
       compile_expr(ctx, buf, pos_args[0])
     }
     "iter_length" if not(is_user_fn) => {

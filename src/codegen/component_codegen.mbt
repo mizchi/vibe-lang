@@ -564,7 +564,8 @@ pub fn generate_component_wit(
     wit = wit + "  import wasi:http/types@0.3.0-draft;\n"
     wit = wit + "  import wasi:http/handler@0.3.0-draft;\n"
   }
-  wit = wit + "  export run: func() -> s32;\n"
+  // Core `run` export returns tagged Int as i64 in MVP wasm backend.
+  wit = wit + "  export run: func() -> s64;\n"
   wit = wit + "}\n"
   wit
 }
@@ -582,8 +583,8 @@ let component_section_export : Byte = b'\x0b' // component export section
 
 ///|
 /// Component value types (signed LEB128 encoded negative integers)
-/// See Component Model spec: bool=-1, s8=-2, u8=-3, s16=-4, u16=-5, s32=-6, u32=-7, ...
-let component_valtype_s32 : Byte = b'\x7a' // s32 = -6 in signed LEB128
+/// See Component Model spec: bool=-1, s8=-2, u8=-3, s16=-4, u16=-5, s32=-6, u32=-7, s64=-8, ...
+let component_valtype_s64 : Byte = b'\x78' // s64 = -8 in signed LEB128
 
 ///|
 /// Canon lift with options
@@ -595,22 +596,22 @@ fn emit_canon_lift_func(
   buf.push(b'\x00') // canon lift
   buf.push(b'\x00') // func
   component_write_uleb128(buf, core_func_idx) // core func index
-  component_write_uleb128(buf, 0) // 0 options (no memory/realloc for simple i32)
+  component_write_uleb128(buf, 0) // 0 options (no memory/realloc for primitive scalar)
   component_write_uleb128(buf, type_idx) // type index
 }
 
 ///|
-/// Emit component type section with a single func type: () -> s32
+/// Emit component type section with a single func type: () -> s64
 fn emit_component_type_section_simple(buf : Array[Byte]) -> Unit {
   buf.push(component_section_type)
   let content : Array[Byte] = []
   component_write_uleb128(content, 1) // 1 type definition
-  // Define a component function type: () -> s32
+  // Define a component function type: () -> s64
   content.push(b'\x40') // component func type
   component_write_uleb128(content, 0) // 0 params
   // Result: 0x00 followed by valtype for 1 unnamed result
   content.push(b'\x00') // 1 unnamed result discriminator
-  content.push(component_valtype_s32) // s32 type
+  content.push(component_valtype_s64) // s64 type
   component_write_uleb128(buf, content.length())
   for b in content {
     buf.push(b)

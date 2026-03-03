@@ -279,6 +279,48 @@ fn resolve_builtin_type_name(
         None
       }
     "Bytes" => if args.is_empty() { Some(@core.Type::Bytes) } else { None }
+    "anyref" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="anyref", args=[]))
+      } else {
+        None
+      }
+    "eqref" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="eqref", args=[]))
+      } else {
+        None
+      }
+    "i31ref" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="i31ref", args=[]))
+      } else {
+        None
+      }
+    "structref" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="structref", args=[]))
+      } else {
+        None
+      }
+    "arrayref" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="arrayref", args=[]))
+      } else {
+        None
+      }
+    "funcref" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="funcref", args=[]))
+      } else {
+        None
+      }
+    "externref" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="externref", args=[]))
+      } else {
+        None
+      }
     _ => None
   }
 }

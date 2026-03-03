@@ -937,7 +937,8 @@ test "vibe integration resume rejects mismatched resumed value type" {
   let result = try? compile_module(db, "main")
   match result {
     Ok(_) => fail("expected compile-time error for resume value")
-    Err(err) => assert_true(err.to_string().contains("type mismatch (resume value)"))
+    Err(err) =>
+      assert_true(err.to_string().contains("type mismatch (resume value)"))
   }
 }
 
@@ -1229,27 +1230,15 @@ test "probe: selfhost roundtrip all compiler sources" {
   load_compiler_source(db, "vibe/compiler/printer.vibe", visited)
   // Exclude parser.vibe (1608 lines) and eval.vibe (1354 lines) — too large for interpreter
   let full_files : Array[String] = [
-    "vibe/compiler/eval_e2e_helpers.vibe",
-    "vibe/compiler/index.vibe",
-    "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/ast.vibe",
-    "vibe/compiler/eval_loader.vibe",
-    "vibe/compiler/checker_stmt.vibe",
-    "vibe/compiler/values.vibe",
-    "vibe/compiler/token.vibe",
-    "vibe/compiler/eval_stmt.vibe",
-    "vibe/compiler/type_db.vibe",
-    "vibe/compiler/checker.vibe",
-    "vibe/compiler/printer.vibe",
-    "vibe/compiler/builtins.vibe",
-    "vibe/compiler/eval_builtins.vibe",
-    "vibe/compiler/lexer.vibe",
+    "vibe/compiler/eval_e2e_helpers.vibe", "vibe/compiler/index.vibe", "vibe/compiler/checker_resolve.vibe",
+    "vibe/compiler/ast.vibe", "vibe/compiler/eval_loader.vibe", "vibe/compiler/checker_stmt.vibe",
+    "vibe/compiler/values.vibe", "vibe/compiler/token.vibe", "vibe/compiler/eval_stmt.vibe",
+    "vibe/compiler/type_db.vibe", "vibe/compiler/checker.vibe", "vibe/compiler/printer.vibe",
+    "vibe/compiler/builtins.vibe", "vibe/compiler/eval_builtins.vibe", "vibe/compiler/lexer.vibe",
     "vibe/compiler/types.vibe",
   ]
   let smoke_files : Array[String] = [
-    "vibe/compiler/token.vibe",
-    "vibe/compiler/ast.vibe",
-    "vibe/compiler/values.vibe",
+    "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/values.vibe",
   ]
   // Full probe is expensive on JS interpreter backend; keep smoke fast by default.
   // - VIBE_SELFHOST_PROBE_FULL=1: run all full_files
@@ -1262,9 +1251,8 @@ test "probe: selfhost roundtrip all compiler sources" {
     Some(v) => v == "1" || v == "true"
     None => false
   }
-  let override_files : Array[String] = match @sys.get_env_var(
-    "VIBE_SELFHOST_PROBE_FILES",
-  ) {
+  let override_files : Array[String] = match
+    @sys.get_env_var("VIBE_SELFHOST_PROBE_FILES") {
     Some(raw) => {
       let out : Array[String] = []
       for part in raw.split(",") {
@@ -1309,7 +1297,8 @@ test "probe: selfhost roundtrip all compiler sources" {
   let mut bindings = ""
   let mut tuple_items = ""
   for i in 0..<files.length() {
-    bindings = bindings + "let r\{i} = check_file(\"\{files[i]}\", \{strict_literal})\n"
+    bindings = bindings +
+      "let r\{i} = check_file(\"\{files[i]}\", \{strict_literal})\n"
     if i > 0 {
       tuple_items = tuple_items + ", "
     }
@@ -1317,9 +1306,7 @@ test "probe: selfhost roundtrip all compiler sources" {
   }
   let driver = header + "\n" + bindings + "(" + tuple_items + ")"
   let failures : Array[String] = []
-  let result = try {
-    eval_selfhost_module(db, driver)
-  } catch {
+  let result = eval_selfhost_module(db, driver) catch {
     e => fail("probe eval failed: \{e}")
   }
   match result.last {
@@ -1345,10 +1332,8 @@ test "probe: selfhost roundtrip all compiler sources" {
   if failures.length() > 0 {
     let ok_count = files.length() - failures.length()
     fail(
-      "roundtrip OK \{ok_count}/\{files.length()}, failures \{failures.length()}:\n" + failures.iter().fold(
-        init="",
-        fn(acc, f) { acc + "  " + f + "\n" },
-      ),
+      "roundtrip OK \{ok_count}/\{files.length()}, failures \{failures.length()}:\n" +
+      failures.iter().fold(init="", fn(acc, f) { acc + "  " + f + "\n" }),
     )
   }
 }
@@ -1358,24 +1343,12 @@ test "native compile: all compiler sources pass compile_module" {
   let db = VibeDb::new()
   let visited : Map[String, Bool] = {}
   let files : Array[String] = [
-    "vibe/compiler/token.vibe",
-    "vibe/compiler/ast.vibe",
-    "vibe/compiler/lexer.vibe",
-    "vibe/compiler/parser.vibe",
-    "vibe/compiler/printer.vibe",
-    "vibe/compiler/values.vibe",
-    "vibe/compiler/builtins.vibe",
-    "vibe/compiler/types.vibe",
-    "vibe/compiler/checker_resolve.vibe",
-    "vibe/compiler/checker.vibe",
-    "vibe/compiler/checker_stmt.vibe",
-    "vibe/compiler/eval_builtins.vibe",
-    "vibe/compiler/eval.vibe",
-    "vibe/compiler/eval_loader.vibe",
-    "vibe/compiler/eval_stmt.vibe",
-    "vibe/compiler/eval_e2e_helpers.vibe",
-    "vibe/compiler/type_db.vibe",
-    "vibe/compiler/index.vibe",
+    "vibe/compiler/token.vibe", "vibe/compiler/ast.vibe", "vibe/compiler/lexer.vibe",
+    "vibe/compiler/parser.vibe", "vibe/compiler/printer.vibe", "vibe/compiler/values.vibe",
+    "vibe/compiler/builtins.vibe", "vibe/compiler/types.vibe", "vibe/compiler/checker_resolve.vibe",
+    "vibe/compiler/checker.vibe", "vibe/compiler/checker_stmt.vibe", "vibe/compiler/eval_builtins.vibe",
+    "vibe/compiler/eval.vibe", "vibe/compiler/eval_loader.vibe", "vibe/compiler/eval_stmt.vibe",
+    "vibe/compiler/eval_e2e_helpers.vibe", "vibe/compiler/type_db.vibe", "vibe/compiler/index.vibe",
   ]
   // Phase 1: load all sources into VibeDb (resolves transitive imports)
   for file in files {
@@ -1385,9 +1358,7 @@ test "native compile: all compiler sources pass compile_module" {
   let ok_count = @ref.new(0)
   let failures : Array[String] = []
   for file in files {
-    let compiled = try {
-      compile_module(db, file)
-    } catch {
+    let compiled = compile_module(db, file) catch {
       e => {
         failures.push("\{file}: \{e}")
         continue
@@ -1401,10 +1372,8 @@ test "native compile: all compiler sources pass compile_module" {
   }
   if failures.length() > 0 {
     fail(
-      "compile OK \{ok_count.val}/\{files.length()}, failures \{failures.length()}:\n" + failures.iter().fold(
-        init="",
-        fn(acc, f) { acc + "  " + f + "\n" },
-      ),
+      "compile OK \{ok_count.val}/\{files.length()}, failures \{failures.length()}:\n" +
+      failures.iter().fold(init="", fn(acc, f) { acc + "  " + f + "\n" }),
     )
   }
 }

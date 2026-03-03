@@ -10,7 +10,8 @@ fn compile_expr_while(
   let saved_continue = ctx.loop_continue_offset
   let saved_param_locals = ctx.loop_param_locals
 
-  emit_block(buf) // block $exit (label 1)
+  // while は break 値を返せるため block result を i64 にする。
+  emit_block_i64(buf) // block $exit (label 1)
   emit_loop(buf) // loop $continue (label 0)
 
   // Set offsets: from inside loop body, break=1 (outer block), continue=0 (inner loop)
@@ -26,9 +27,14 @@ fn compile_expr_while(
   emit_i32_wrap_i64(buf)
   emit_i32_const_raw(buf, 1)
   emit_i32_and(buf)
-  // If condition is 0, exit loop
+  // If condition is 0, exit loop with unit value.
   emit_i32_eqz(buf)
-  emit_br_if(buf, 1) // br_if $exit (label 1 = outer block)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // void
+  emit_i64_const_tagged(buf, 0L)
+  // Inside `if`, depth 0 is the if itself, depth 1 is loop, depth 2 is exit block.
+  emit_br(buf, 2) // br $exit
+  buf.push((11).to_byte()) // end if
 
   // Execute body
   for i in 0..<body.stmts.length() {
@@ -38,15 +44,14 @@ fn compile_expr_while(
   // Loop back to continue
   emit_br(buf, 0) // br $continue (label 0 = inner loop)
   emit_end(buf) // end loop
+  // Fallback for validator: if loop body falls through, return unit.
+  emit_i64_const_tagged(buf, 0L)
   emit_end(buf) // end block
 
   // Restore loop offsets
   ctx.loop_break_offset = saved_break
   ctx.loop_continue_offset = saved_continue
   ctx.loop_param_locals = saved_param_locals
-
-  // While expression returns unit
-  emit_i64_const_tagged(buf, 0L)
 }
 
 ///|
@@ -157,6 +162,8 @@ fn compile_expr_loop(
   }
 
   emit_end(buf) // end loop
+  // Fallback for validator: if loop body falls through, return unit.
+  emit_i64_const_tagged(buf, 0L)
   emit_end(buf) // end block
 
   // Restore

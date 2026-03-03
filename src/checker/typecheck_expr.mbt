@@ -690,8 +690,7 @@ fn type_expr_eff(
       let body_ty = type_block(
         body_env, body, aliases, body_scope, allow_effect,
       )
-      let body_resume_types : Map[String, @core.Type] = body_env.handle_resume_types
-        .copy()
+      let body_resume_types : Map[String, @core.Type] = body_env.handle_resume_types.copy()
       let inferred_resume_types = body_resume_types.copy()
       let escaping_resume_types : Map[String, @core.Type] = {}
       for effect_name, resume_ty in body_resume_types {

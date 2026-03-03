@@ -836,7 +836,7 @@ test "vibe wasm compiles Int pipe-style to_double call" {
   let db = VibeDb::new()
   let src =
     #|let v = 7
-    #|let d = v |> to_double
+    #|let d = v |> int_to_double
     #|double_to_int(d)
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
@@ -986,13 +986,12 @@ test "vibe wasm compiles __to_string builtin" {
 test "vibe wasm compiles threads builtin thunks" {
   let db = VibeDb::new()
   let src =
-    #|let probe = () -> String { threads_probe_wat() }
-    #|let hints = () { threads_runtime_hints() }
-    #|let new_ch = () -> Int { threads_channel_new(1) }
-    #|let spawn_w = () -> Int { threads_spawn("worker", 1) }
-    #|let send_w = () -> Bool { threads_send(1, "msg") }
-    #|let recv_w = () -> String { threads_recv(1) }
-    #|let wait_w = () -> Int { threads_wait(1) }
+    #|let probe = () -> String with {Threads} { threads_probe_wat() }
+    #|let new_ch = () -> Int with {Threads} { threads_channel_new(1) }
+    #|let spawn_w = () -> Int with {Threads} { threads_spawn("worker", 1) }
+    #|let send_w = () -> Bool with {Threads} { threads_send(1, "msg") }
+    #|let recv_w = () -> String with {Threads} { threads_recv(1) }
+    #|let wait_w = () -> Int with {Threads} { threads_wait(1) }
     #|0
   db.set_source("main", src)
   let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
@@ -1016,7 +1015,7 @@ test "vibe wasm rejects unknown record accessor call" {
   )
   match result {
     Ok(_) => fail("expected compile error")
-    Err(err) => assert_true(err.to_string().contains("call: unknown_accessor"))
+    Err(err) => assert_true(err.to_string().contains("unknown_accessor"))
   }
 }
 

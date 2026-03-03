@@ -103,7 +103,7 @@ test "component wit includes wasi stdio imports when used" {
   assert_true(String::contains(wit, "import wasi:io/streams@0.2.0;"))
   assert_false(String::contains(wit, "stdout-write-char"))
   assert_false(String::contains(wit, "stdin-read-char"))
-  assert_true(String::contains(wit, "export run: func() -> s32;"))
+  assert_true(String::contains(wit, "export run: func() -> s64;"))
 }
 
 ///|
@@ -130,14 +130,14 @@ test "component wit includes wasi stdio imports for stream builtins" {
   assert_true(String::contains(wit, "import wasi:cli/stdout@0.2.0;"))
   assert_true(String::contains(wit, "import wasi:cli/stdin@0.2.0;"))
   assert_true(String::contains(wit, "import wasi:io/streams@0.2.0;"))
-  assert_true(String::contains(wit, "export run: func() -> s32;"))
+  assert_true(String::contains(wit, "export run: func() -> s64;"))
 }
 
 ///|
 test "component wit scans for-in bodies for host imports" {
   let db = VibeDb::new()
   let src =
-    #|let run = () -> Int with {Sleep} {
+    #|let run = () -> Int with {Sleep, Async} {
     #|  let _ = for x in [1, 2] {
     #|    sleep(x)
     #|    x
@@ -155,5 +155,30 @@ test "component wit scans for-in bodies for host imports" {
   }
   assert_true(String::contains(wit, "world main"))
   assert_true(String::contains(wit, "sleep: func(ms: s32);"))
-  assert_true(String::contains(wit, "export run: func() -> s32;"))
+  assert_true(String::contains(wit, "export run: func() -> s64;"))
+}
+
+///|
+test "component wit includes wasi http imports when used" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Net} {
+    #|  let req = http_request("GET", "https://example.com", "", "")
+    #|  let status = http_response_status(req)
+    #|  http_close(req)
+    #|  status
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wit = try
+    generate_module_component_wit(db, "main", "local:main", "main")
+  catch {
+    e => fail("wit error: " + e.to_string())
+  } noraise {
+    w => w
+  }
+  assert_true(String::contains(wit, "world main"))
+  assert_true(String::contains(wit, "import wasi:http/types@0.3.0-draft;"))
+  assert_true(String::contains(wit, "import wasi:http/handler@0.3.0-draft;"))
+  assert_true(String::contains(wit, "export run: func() -> s64;"))
 }

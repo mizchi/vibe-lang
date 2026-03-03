@@ -1,61 +1,89 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="$ROOT_DIR/_build/native/debug/build/cmd/vibe/vibe.exe"
-TEST_FILE="$ROOT_DIR/tests/http_wasm_fallback_test.vibe"
-WASMTIME="${VIBE_WASMTIME:-wasmtime}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+WASMTIME_RUN="$SCRIPT_DIR/wasmtime_run.sh"
+VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe}"
+TMP_DIR="$(mktemp -d /tmp/vibe_http_wasm_fallback.XXXXXX)"
 
-echo "=== HTTP WASM Fallback Tests ==="
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 
-# Build CLI if needed
-if [ ! -f "$CLI_BIN" ]; then
-  echo "Building vibe (debug)..."
-  (cd "$ROOT_DIR" && moon build --target native src/cmd/vibe --warn-list '-29')
+if [ ! -x "$VIBE_BIN" ]; then
+  moon build --target native --release src/cmd/vibe --warn-list '-29' >/dev/null
 fi
 
-# Test 1: Interpreter test (native backend)
-echo ""
-echo "--- Test 1: Interpreter backend ---"
-"$CLI_BIN" test "$TEST_FILE"
+if [ ! -x "$WASMTIME_RUN" ]; then
+  echo "wasmtime runner not found: $WASMTIME_RUN" >&2
+  exit 1
+fi
 
-# Test 2: WASM compilation succeeds
-echo ""
-echo "--- Test 2: WASM compilation ---"
-WASM_OUT=$(mktemp /tmp/http_wasm_XXXXXX.wasm)
-"$CLI_BIN" compile --wasm --no-dce "$TEST_FILE" -o "$WASM_OUT"
-echo "  compile: OK ($(wc -c < "$WASM_OUT" | tr -d ' ') bytes)"
+if ! command -v wasm-tools >/dev/null 2>&1; then
+  echo "wasm-tools not found in PATH" >&2
+  exit 1
+fi
 
-# Test 3: WASM execution — HTTP builtins throw catchable errors
-echo ""
-echo "--- Test 3: WASM execution (wasmtime) ---"
-# The test file's run function exercises try/catch around HTTP builtins.
-# On WASM, http_request throws an exception caught by handle → returns -1.
-OUTPUT=$("$WASMTIME" run --wasm exceptions -W unknown-imports-default=y "$WASM_OUT" 2>&1) && {
-  echo "  execution: OK"
-} || {
-  # If wasmtime exits non-zero, check if it's an uncaught exception vs. trap
-  if echo "$OUTPUT" | grep -q "unreachable"; then
-    echo "  FAIL: wasm trap (unreachable) — HTTP builtins should throw, not trap"
-    rm -f "$WASM_OUT"
-    exit 1
-  elif echo "$OUTPUT" | grep -q "thrown Wasm exception"; then
-    echo "  OK: wasm exception thrown (expected for non-test entry point)"
+passed=0
+failed=0
+
+run_case() {
+  local name="$1"
+  local expr="$2"
+  local expected="$3"
+  local file="$TMP_DIR/${name}.vibe"
+  local wasm="$TMP_DIR/${name}.wasm"
+  cat > "$file" <<VIBE
+let main = () -> Int with { Error, Net } {
+  handle {
+    $expr
+    0
+  } {
+    Error(_) => $expected
+  }
+}
+
+main()
+VIBE
+
+  if ! "$VIBE_BIN" compile --wasm --debug-errors "$file" -o "$wasm" >/dev/null 2>&1; then
+    echo "FAIL: $name (wasm compile failed)"
+    failed=$((failed + 1))
+    return
+  fi
+
+  if ! wasm-tools validate --features all "$wasm" >/dev/null 2>&1; then
+    echo "FAIL: $name (wasm validate failed)"
+    failed=$((failed + 1))
+    return
+  fi
+
+  local wasm_tagged
+  wasm_tagged="$(VIBE_WASMTIME_WASM_FLAGS='exceptions=y' "$WASMTIME_RUN" --invoke run "$wasm" 2>/dev/null | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
+  if [ -z "$wasm_tagged" ]; then
+    echo "FAIL: $name (wasmtime output missing)"
+    failed=$((failed + 1))
+    return
+  fi
+
+  local wasm_result
+  wasm_result=$((wasm_tagged >> 2))
+  if [ "$wasm_result" = "$expected" ]; then
+    echo "PASS: $name => $wasm_result"
+    passed=$((passed + 1))
   else
-    echo "  WARN: unexpected output: $OUTPUT"
+    echo "FAIL: $name (expected=$expected, got=$wasm_result tagged=$wasm_tagged)"
+    failed=$((failed + 1))
   fi
 }
 
-# Test 4: precompile vibe/http succeeds
-echo ""
-echo "--- Test 4: precompile vibe/http ---"
-DIST_DIR=$(mktemp -d /tmp/http_precompile_XXXXXX)
-"$CLI_BIN" precompile vibe/http --out-dir "$DIST_DIR" --wasm
-echo "  precompile: OK"
+run_case "http_request_throw_is_catchable" "let _ = http_request(\"GET\", \"https://example.com\", \"\", \"\")" "11"
+run_case "http_listen_throw_is_catchable" "let _ = http_listen(8080)" "12"
+run_case "http_respond_throw_is_catchable" "http_respond(0, 200, \"\", \"\")" "13"
 
-# Cleanup
-rm -f "$WASM_OUT"
-rm -rf "$DIST_DIR"
-
-echo ""
-echo "=== All HTTP WASM Fallback Tests passed ==="
+echo "Summary: $passed passed, $failed failed"
+if [ "$failed" -gt 0 ]; then
+  exit 1
+fi

@@ -186,8 +186,7 @@ fn compile_stmt(
                 emit_local_set(buf, env_local)
                 emit_local_get(buf, env_local)
                 emit_local_get(buf, idx) // closure value (i64)
-                emit_i32_wrap_i64(buf) // truncate to i32 for memory store
-                emit_i32_store(buf, 8 + bp_effective_idx * 4) // write to capture slot
+                emit_i64_store(buf, 8 + bp_effective_idx * 8) // write to capture slot
               } else if is_forward_fn && ctx.forward_fn_keys.contains(cap_name) {
                 // Mutual reference: capture of another forward function
                 match ctx.locals.get(cap_name) {
@@ -201,8 +200,7 @@ fn compile_stmt(
                     emit_local_set(buf, env_local)
                     emit_local_get(buf, env_local)
                     emit_local_get(buf, cap_local)
-                    emit_i32_wrap_i64(buf)
-                    emit_i32_store(buf, 8 + bp_effective_idx * 4)
+                    emit_i64_store(buf, 8 + bp_effective_idx * 8)
                   }
                   None => () // Not yet compiled — will be patched by reverse pass below
                 }
@@ -237,8 +235,7 @@ fn compile_stmt(
                         emit_local_set(buf, env_local)
                         emit_local_get(buf, env_local)
                         emit_local_get(buf, idx)
-                        emit_i32_wrap_i64(buf)
-                        emit_i32_store(buf, 8 + rbp_effective_idx * 4)
+                        emit_i64_store(buf, 8 + rbp_effective_idx * 8)
                       }
                       rbp_effective_idx += 1
                     }
@@ -1031,8 +1028,20 @@ fn compile_expr_multivalue(
   match expr {
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
-      for i in 0..<items.length() {
+      let emit_len = if items.length() < kinds.length() {
+        items.length()
+      } else {
+        kinds.length()
+      }
+      for i in 0..<emit_len {
         compile_expr(ctx, buf, items[i])
+      }
+      // Pad missing tuple fields when the expected multivalue arity is larger.
+      for i in emit_len..<kinds.length() {
+        match kinds[i] {
+          ValueKind::I32 => emit_i32_const_raw(buf, 0)
+          _ => emit_i64_const_raw(buf, 0L)
+        }
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {

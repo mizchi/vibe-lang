@@ -8,7 +8,6 @@ fn is_wasm_runtime_fallback_builtin(name : String) -> Bool {
     | "to_jsonl"
     | "from_lines"
     | "to_lines"
-    | "string_join"
     | "json_type"
     | "json_string"
     | "json_get"
