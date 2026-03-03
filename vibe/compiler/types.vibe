@@ -155,9 +155,51 @@ export let rec subst_lookup = (s: Subst, id: Int) -> Option[Type] {
 
 export let rec subst_apply = (s: Subst, ty: Type) -> Type {
   match ty {
-    CtVar(id) => match subst_lookup(s, id) {
-      Some(t) => subst_apply(s, t),
-      None => ty
+    CtVar(_) => {
+      let mut cur = ty
+      let mut out = ty
+      let mut done = false
+      let mut seen = array_slice([
+        0
+      ], 0, 0)
+      let rec seen_has = (arr: Array[Int], v: Int, i: Int) -> Bool {
+        if i >= array_length(arr) {
+          false
+        } else if eq(array_get(arr, i), v) {
+          true
+        } else {
+          seen_has(arr, v, i + 1)
+        }
+      }
+      while not(done) {
+        match cur {
+          CtVar(vid) => {
+            if seen_has(seen, vid, 0) {
+              out = cur
+              done = true
+            } else {
+              seen = array_concat(seen, [
+                vid
+              ])
+              match subst_lookup(s, vid) {
+                Some(next) => {
+                  cur = next
+                  out = next
+                },
+                None => {
+                  out = cur
+                  done = true
+                }
+              }
+            }
+          },
+          _ => {
+            out = subst_apply(s, cur)
+            done = true
+          }
+        }
+      }
+      out
     },
     CtFn(params, ret, he) => {
       let rp = for p in params {
@@ -344,8 +386,169 @@ export let rec type_to_string = (ty: Type) -> String {
   }
 }
 
-export let types_equal = (a: Type, b: Type) -> Bool {
-  string_equals(type_to_string(a), type_to_string(b))
+export let rec types_equal = (a: Type, b: Type) -> Bool {
+  let rec string_array_equal = (left: Array[String], right: Array[String], i: Int) -> Bool {
+    if i >= array_length(left) {
+      true
+    } else if not(string_equals(array_get(left, i), array_get(right, i))) {
+      false
+    } else {
+      string_array_equal(left, right, i + 1)
+    }
+  }
+
+  let rec type_array_equal = (left: Array[Type], right: Array[Type], i: Int) -> Bool {
+    if i >= array_length(left) {
+      true
+    } else if not(types_equal(array_get(left, i), array_get(right, i))) {
+      false
+    } else {
+      type_array_equal(left, right, i + 1)
+    }
+  }
+
+  let rec forall_bounds_equal = (
+    left: Array[(Int, Array[String])],
+    right: Array[(Int, Array[String])],
+    i: Int,
+  ) -> Bool {
+    if i >= array_length(left) {
+      true
+    } else {
+      let (lvar, lbounds) = array_get(left, i)
+      let (rvar, rbounds) = array_get(right, i)
+      if not(eq(lvar, rvar)) {
+        false
+      } else if not(eq(array_length(lbounds), array_length(rbounds))) {
+        false
+      } else if not(string_array_equal(lbounds, rbounds, 0)) {
+        false
+      } else {
+        forall_bounds_equal(left, right, i + 1)
+      }
+    }
+  }
+
+  match a {
+    CtInt => match b {
+      CtInt => true,
+      _ => false
+    },
+    CtDouble => match b {
+      CtDouble => true,
+      _ => false
+    },
+    CtBool => match b {
+      CtBool => true,
+      _ => false
+    },
+    CtString => match b {
+      CtString => true,
+      _ => false
+    },
+    CtChar => match b {
+      CtChar => true,
+      _ => false
+    },
+    CtUnit => match b {
+      CtUnit => true,
+      _ => false
+    },
+    CtBytes => match b {
+      CtBytes => true,
+      _ => false
+    },
+    CtUnknown => match b {
+      CtUnknown => true,
+      _ => false
+    },
+    CtVar(aid) => match b {
+      CtVar(bid) => eq(aid, bid),
+      _ => false
+    },
+    CtArray(aelem) => match b {
+      CtArray(belem) => types_equal(aelem, belem),
+      _ => false
+    },
+    CtOption(aelem) => match b {
+      CtOption(belem) => types_equal(aelem, belem),
+      _ => false
+    },
+    CtEnum(aname) => match b {
+      CtEnum(bname) => string_equals(aname, bname),
+      _ => false
+    },
+    CtStruct(aname) => match b {
+      CtStruct(bname) => string_equals(aname, bname),
+      _ => false
+    },
+    CtNamed(aname, aargs) => match b {
+      CtNamed(bname, bargs) =>
+        if not(string_equals(aname, bname)) {
+          false
+        } else if not(eq(array_length(aargs), array_length(bargs))) {
+          false
+        } else {
+          type_array_equal(aargs, bargs, 0)
+        },
+      _ => false
+    },
+    CtTuple(aelems) => match b {
+      CtTuple(belems) =>
+        if not(eq(array_length(aelems), array_length(belems))) {
+          false
+        } else {
+          type_array_equal(aelems, belems, 0)
+        },
+      _ => false
+    },
+    CtFn(aparams, aret, ahas_error) => match b {
+      CtFn(bparams, bret, bhas_error) =>
+        if not(eq(array_length(aparams), array_length(bparams))) {
+          false
+        } else if ahas_error {
+          if not(bhas_error) {
+            false
+          } else if not(type_array_equal(aparams, bparams, 0)) {
+            false
+          } else {
+            types_equal(aret, bret)
+          }
+        } else if bhas_error {
+          false
+        } else if not(type_array_equal(aparams, bparams, 0)) {
+          false
+        } else {
+          types_equal(aret, bret)
+        },
+      _ => false
+    },
+    CtForAll(avars, abounds, abody) => match b {
+      CtForAll(bvars, bbounds, bbody) => {
+        let rec var_list_equal = (i: Int) -> Bool {
+          if i >= array_length(avars) {
+            true
+          } else if not(eq(array_get(avars, i), array_get(bvars, i))) {
+            false
+          } else {
+            var_list_equal(i + 1)
+          }
+        }
+        if not(eq(array_length(avars), array_length(bvars))) {
+          false
+        } else if not(eq(array_length(abounds), array_length(bbounds))) {
+          false
+        } else if not(var_list_equal(0)) {
+          false
+        } else if not(forall_bounds_equal(abounds, bbounds, 0)) {
+          false
+        } else {
+          types_equal(abody, bbody)
+        }
+      },
+      _ => false
+    }
+  }
 }
 
 export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {

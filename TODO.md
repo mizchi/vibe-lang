@@ -98,10 +98,21 @@ Completed items are archived in `docs/DONE.md`.
 - [x] Push/PR CI に wasm validate gate を追加（`vibe.exe compile --wasm` + `wasm-tools validate --features all`）
 - [x] 上記 gate は定期実行なし（schedule なし）で運用する
 - [x] `handle`/例外経路の interpreter vs wasm 実行結果一致テストを追加する
+- [x] HTTP builtins の wasm fallback を catchable throw へ固定化し、`--debug-errors` でも validate + 実行可能な回帰テストを CI に追加する（`scripts/test_http_wasm_fallback.sh`）
+- [x] `while`/`loop` の codegen で block result(i64) のスタック整合を修正（`break` 値経路と fallthrough 経路の validate 失敗を解消）
+- [x] multi-value codegen で tuple 要素数と期待 arity の不一致を吸収し、`values remaining on stack` を解消
+- [x] `vibe test` / `vibe run` の auto backend で `vibe/compiler/` 配下は compiled を優先（env 未指定時）
+- [x] compiled backend の selfhost parity 回復
+  - 2026-03-03: file-by-file 実測（`VIBE_TEST_BACKEND=compiled just run test vibe/compiler/*_test.vibe`）は **392/392 pass, 0 fail**
+  - 主要修正:
+    - `string_starts_with` / `string_ends_with` / `string_last_index_of` の codegen fallback 欠落を解消
+    - `array_builder` / `string_builder` の固定容量不足（`256 -> 4096`）で発生していた token 破壊を解消
+    - `types_equal` を構造比較へ変更し、`subst_apply(CtVar)` の循環解決を loop + cycle guard 化
+    - `Double` の文字列化ヘルパー（`double_to_string_compiler`）を導入し、`vibe/compiler` 側の `__to_string(Double)` 依存を除去
 
 ## Blocked / External
 
-- [ ] WASM HTTP builtins: 現在 `unreachable` trap。WASI P3 HTTP (`wasi:http@0.3.0-draft`) 安定待ち
+- [ ] WASM HTTP builtins の本実装（現状は wasm で catchable fallback error）。WASI P3 HTTP (`wasi:http@0.3.0-draft`) 安定待ち
   - Client: `wasi:http/handler.handle` で outgoing-request 送信
   - Server: `wasi:http/handler` export で incoming-request 受信 (wasmtime serve)
 - [ ] WASM server (http_listen/accept/respond): Phase 2。インタプリタのみ動作
