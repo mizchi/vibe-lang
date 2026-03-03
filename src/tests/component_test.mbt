@@ -182,3 +182,115 @@ test "component wit includes wasi http imports when used" {
   assert_true(String::contains(wit, "import wasi:http/handler@0.3.0-draft;"))
   assert_true(String::contains(wit, "export run: func() -> s64;"))
 }
+
+///|
+test "component wasm instantiation carries import args when core has imports" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Stdout} {
+    #|  stdout_write_char(65)
+    #|  1
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wasm = try compile_module_component(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(component_has_instantiate_with_non_zero_args(wasm))
+}
+
+///|
+fn component_has_instantiate_with_non_zero_args(bytes : Bytes) -> Bool {
+  let arr = bytes.to_array()
+  if arr.length() < 8 {
+    return false
+  }
+  let mut i = 8
+  while i < arr.length() {
+    let section_id = arr[i].to_int()
+    i += 1
+    let (section_size, after_size) = read_uleb_u32(arr, i)
+    i = after_size
+    let section_end = i + section_size
+    if section_end > arr.length() {
+      return false
+    }
+    if section_id == 0x02 {
+      let mut j = i
+      let (count, after_count) = read_uleb_u32(arr, j)
+      j = after_count
+      for _ in 0..<count {
+        if j >= section_end {
+          break
+        }
+        let kind = arr[j].to_int()
+        j += 1
+        match kind {
+          0x00 => {
+            let (_, after_module_idx) = read_uleb_u32(arr, j)
+            j = after_module_idx
+            let (arg_count, after_args_count) = read_uleb_u32(arr, j)
+            j = after_args_count
+            if arg_count > 0 {
+              return true
+            }
+            for _ in 0..<arg_count {
+              let (_, after_name) = read_name(arr, j)
+              j = after_name
+              if j < section_end {
+                j += 1
+              }
+              let (_, after_idx) = read_uleb_u32(arr, j)
+              j = after_idx
+            }
+          }
+          0x01 => {
+            let (export_count, after_export_count) = read_uleb_u32(arr, j)
+            j = after_export_count
+            for _ in 0..<export_count {
+              let (_, after_name) = read_name(arr, j)
+              j = after_name
+              if j < section_end {
+                j += 1
+              }
+              let (_, after_idx) = read_uleb_u32(arr, j)
+              j = after_idx
+            }
+          }
+          _ => break
+        }
+      }
+    }
+    i = section_end
+  }
+  false
+}
+
+///|
+fn read_uleb_u32(arr : Array[Byte], start : Int) -> (Int, Int) {
+  let mut value = 0
+  let mut shift = 0
+  let mut i = start
+  while i < arr.length() {
+    let b = arr[i].to_int()
+    value = value | ((b & 0x7f) << shift)
+    i += 1
+    if (b & 0x80) == 0 {
+      return (value, i)
+    }
+    shift += 7
+  }
+  (value, i)
+}
+
+///|
+fn read_name(arr : Array[Byte], start : Int) -> (String, Int) {
+  let (len, after_len) = read_uleb_u32(arr, start)
+  let end = after_len + len
+  if end > arr.length() {
+    return ("", arr.length())
+  }
+  ("", end)
+}

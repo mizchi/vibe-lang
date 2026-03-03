@@ -61,6 +61,50 @@ test "vibe_compile_wasi parse compile args accepts -O4" {
 }
 
 ///|
+test "vibe_compile_wasi parse compile args http host imports on wasm-mvp" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm-mvp", "--http-host-imports", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wasm)
+      assert_true(opts.http_host_imports)
+      assert_eq(opts.entry_path, "main.vibe")
+    }
+    Err(err) => fail(err)
+  }
+}
+
+///|
+test "vibe_compile_wasi parse compile args http host imports on component" {
+  let parsed = parse_compile_cmd_args([
+    "--component", "--http-host-imports", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Component)
+      assert_true(opts.http_host_imports)
+      assert_eq(opts.entry_path, "main.vibe")
+    }
+    Err(err) => fail(err)
+  }
+}
+
+///|
+test "vibe_compile_wasi parse compile args reject http host imports on --wasm" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--http-host-imports", "main.vibe",
+  ])
+  match parsed {
+    Ok(_) => fail("expected parse error")
+    Err(msg) =>
+      assert_eq(
+        msg, "compile: --http-host-imports is only supported with --wasm-mvp or --component",
+      )
+  }
+}
+
+///|
 test "vibe_compile_wasi parse compile args supports wac mode" {
   let parsed = parse_compile_cmd_args(["--wac", "--wite", "main.wac"])
   match parsed {

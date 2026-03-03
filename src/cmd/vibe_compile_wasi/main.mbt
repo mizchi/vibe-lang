@@ -14,6 +14,7 @@ pub enum CompileMode {
 pub struct CompileCmdOptions {
   mode : CompileMode
   no_dce : Bool
+  http_host_imports : Bool
   out_path : String?
   entry_path : String
   opt_level : String?
@@ -49,6 +50,14 @@ fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
 }
 
 ///|
+fn compile_mode_supports_http_host_imports(mode : CompileMode) -> Bool {
+  match mode {
+    CompileMode::Wasm | CompileMode::Component => true
+    _ => false
+  }
+}
+
+///|
 fn is_opt_level_flag(arg : String) -> Bool {
   match arg {
     "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-O4" | "-Os" | "-Oz" => true
@@ -62,6 +71,7 @@ fn parse_compile_cmd_args(
 ) -> Result[CompileCmdOptions, String] {
   let mut mode = CompileMode::Ir
   let mut no_dce = false
+  let mut http_host_imports = false
   let mut out_path : String? = None
   let mut entry_path : String? = None
   let mut opt_level : String? = None
@@ -106,6 +116,10 @@ fn parse_compile_cmd_args(
         no_dce = true
         i += 1
       }
+      "--http-host-imports" => {
+        http_host_imports = true
+        i += 1
+      }
       "--wite" => {
         if opt_level is None {
           opt_level = Some("-Oz")
@@ -147,7 +161,19 @@ fn parse_compile_cmd_args(
           "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, --component, or --wac",
         )
       }
-      Ok({ mode, no_dce, out_path, entry_path: path, opt_level })
+      if http_host_imports && not(compile_mode_supports_http_host_imports(mode)) {
+        return Err(
+          "compile: --http-host-imports is only supported with --wasm-mvp or --component",
+        )
+      }
+      Ok({
+        mode,
+        no_dce,
+        http_host_imports,
+        out_path,
+        entry_path: path,
+        opt_level,
+      })
     }
   }
 }
@@ -155,7 +181,7 @@ fn parse_compile_cmd_args(
 ///|
 fn print_usage() -> Unit {
   println(
-    "vibe_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wac|--wit|--wit-component] [--no-dce] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
+    "vibe_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wac|--wit|--wit-component] [--no-dce] [--http-host-imports] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
 }
 
@@ -302,6 +328,7 @@ fn compile_cmd(
         entry,
         no_dce=opts.no_dce,
         opt_level=opts.opt_level,
+        http_host_imports=opts.http_host_imports,
       ) catch {
         e => return Err("compile: " + e.to_string())
       }
@@ -343,6 +370,7 @@ fn compile_cmd(
         db,
         entry,
         opt_level=opts.opt_level,
+        http_host_imports=opts.http_host_imports,
       ) catch {
         e => return Err("compile: " + e.to_string())
       }

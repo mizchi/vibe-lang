@@ -17,6 +17,7 @@ pub struct CompileCmdOptions {
   coverage : Bool
   coverage_run_tests : Bool
   debug_errors : Bool
+  http_host_imports : Bool
   out_path : String?
   entry_path : String
   opt_level : String?
@@ -59,6 +60,14 @@ fn compile_mode_supports_debug_errors(mode : CompileMode) -> Bool {
 }
 
 ///|
+fn compile_mode_supports_http_host_imports(mode : CompileMode) -> Bool {
+  match mode {
+    CompileMode::Wasm | CompileMode::Component => true
+    _ => false
+  }
+}
+
+///|
 fn is_opt_level_flag(arg : String) -> Bool {
   match arg {
     "-O0" | "-O1" | "-O" | "-O2" | "-O3" | "-O4" | "-Os" | "-Oz" => true
@@ -75,6 +84,7 @@ pub fn parse_compile_cmd_args(
   let mut coverage = false
   let mut coverage_run_tests = false
   let mut debug_errors = false
+  let mut http_host_imports = false
   let mut out_path : String? = None
   let mut entry_path : String? = None
   let mut opt_level : String? = None
@@ -124,6 +134,10 @@ pub fn parse_compile_cmd_args(
       }
       "--debug-errors" => {
         debug_errors = true
+        i += 1
+      }
+      "--http-host-imports" => {
+        http_host_imports = true
         i += 1
       }
       "--wite" => {
@@ -179,12 +193,18 @@ pub fn parse_compile_cmd_args(
           "compile: --debug-errors is only supported with --wasm or --wasm-js-string",
         )
       }
+      if http_host_imports && not(compile_mode_supports_http_host_imports(mode)) {
+        return Err(
+          "compile: --http-host-imports is only supported with --wasm or --component",
+        )
+      }
       Ok({
         mode,
         no_dce,
         coverage,
         coverage_run_tests,
         debug_errors,
+        http_host_imports,
         out_path,
         entry_path: path,
         opt_level,

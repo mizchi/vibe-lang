@@ -1168,6 +1168,50 @@ test "compile args parse explicit O level for component" {
 }
 
 ///|
+test "compile args parse http host imports for wasm" {
+  let parsed = parse_compile_cmd_args([
+    "--wasm", "--http-host-imports", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wasm)
+      assert_true(opts.http_host_imports)
+      assert_eq(opts.entry_path, "main.vibe")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "compile args parse http host imports for component" {
+  let parsed = parse_compile_cmd_args([
+    "--component", "--http-host-imports", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Component)
+      assert_true(opts.http_host_imports)
+      assert_eq(opts.entry_path, "main.vibe")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "compile args reject http host imports on wit" {
+  let parsed = parse_compile_cmd_args([
+    "--wit", "--http-host-imports", "main.vibe",
+  ])
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) =>
+      assert_eq(
+        msg, "compile: --http-host-imports is only supported with --wasm or --component",
+      )
+  }
+}
+
+///|
 test "compile args parse explicit O4 level for component" {
   let parsed = parse_compile_cmd_args(["--component", "-O4", "main.vibe"])
   match parsed {

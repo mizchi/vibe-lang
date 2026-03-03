@@ -63,9 +63,17 @@ Completed items are archived in `docs/DONE.md`.
   - `wasm-gc` 入力は gc 互換フォールバック（type-form 未対応パスを無効化）で fail-open する
   - selfhost 側は `process.run` / `sh` で sidecar を呼び出す
 - [x] WASM server Phase 2（`http_listen/accept/respond`）の実装計画を確定する
-  - [ ] Phase 2-1: API 契約を固定（`http_listen/accept/respond` の戻り値・エラー契約を明文化）
+  - [x] Phase 2-1: API 契約を固定（`http_listen/accept/respond` の戻り値・エラー契約を明文化）
+    - `docs/http_server_contract.md` を追加
+    - checker/runtime wbtest で型契約 + エラー契約を固定
   - [ ] Phase 2-2: runtime/capability ルーティング（`Net` effect から WASI HTTP 境界への接続）を実装
+    - 進捗: interpreter runtime で `NetListen` capability を `http_listen/accept/respond` に適用（`PermissionDenied: net_listen/net_accept/net_respond`）
+    - 進捗: interpreter runtime で `NetConnect` capability を `http_request` / `socket_tcp_connect` に適用（URL host/port 抽出 + `PermissionDenied: net_connect:<host>:<port>`）
+    - 進捗: interpreter runtime で HTTP handle 系 builtin に capability check を適用（client: `net_response_*` / `net_close`, server: `net_request_*`）
   - [ ] Phase 2-3: codegen 側ホスト呼び出しの導線を追加（interpreter と wasm の挙動差分を吸収）
+    - 進捗: wasm codegen に `http_host_imports` オプションを追加し、HTTP builtin を `vibe:http/*` import へルーティング可能にした（デフォルトは既存 fallback throw を維持）
+    - 進捗: `vibe compile` / `vibe_compile_wasi` に `--http-host-imports` を追加し、runtime_compile まで伝播（`--wasm` / `--component` 系）
+    - 進捗: import を持つ core wasm を component 側で instantiate できるように、core import を component import + canon lower で受ける導線を追加（`wasm-tools validate` 通過）
   - [ ] Phase 2-4: component WIT/export 仕様を固定し、`wasm-tools validate --features all` を gate 化
   - [ ] Phase 2-5: e2e（request -> handler -> respond）を fixture 化し CI 常時 green にする
 - [x] `moon info` mbti 自動再生成の循環依存問題を解消する（回帰ゲート化）

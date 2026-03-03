@@ -125,7 +125,7 @@ fn print_usage() -> Unit {
     "  normalize [--write|--check] <file...>  normalize declaration order + DCE (+fmt)",
   )
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wac | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--debug-errors] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wac | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--debug-errors] [--http-host-imports] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
@@ -138,6 +138,9 @@ fn print_usage() -> Unit {
   )
   println(
     "                                     --debug-errors keeps throw string literals in wasm (debug builds)",
+  )
+  println(
+    "                                     --http-host-imports wires HTTP builtins to `vibe:http/*` imports (--wasm/--component)",
   )
   println(
     "  precompile [--out-dir dir] [--wasm|--wasm-js-string] [-O<level>] <dir...>",
@@ -623,6 +626,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               opt_level=opts.opt_level,
               run_tests=opts.coverage_run_tests,
               debug_errors=opts.debug_errors,
+              http_host_imports=opts.http_host_imports,
             ) catch {
               e => abort("compile: " + e.user_message())
             }
@@ -649,6 +653,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               no_dce=opts.no_dce,
               opt_level=opts.opt_level,
               debug_errors=opts.debug_errors,
+              http_host_imports=opts.http_host_imports,
             ) catch {
               e => abort("compile: " + e.user_message())
             }
@@ -722,6 +727,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
             db,
             entry,
             opt_level=opts.opt_level,
+            http_host_imports=opts.http_host_imports,
           ) catch {
             e => abort("compile: " + e.user_message())
           }

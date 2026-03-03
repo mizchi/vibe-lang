@@ -240,8 +240,14 @@ fn compile_module_wasm_with(
 }
 
 ///|
-fn wasm_emit_options(debug_errors : Bool) -> @codegen.WasmEmitOptions {
-  @codegen.wasm_emit_options(embed_error_strings=debug_errors)
+fn wasm_emit_options(
+  debug_errors : Bool,
+  http_host_imports? : Bool = false,
+) -> @codegen.WasmEmitOptions {
+  @codegen.wasm_emit_options(
+    embed_error_strings=debug_errors,
+    http_host_imports~,
+  )
 }
 
 ///|
@@ -328,9 +334,24 @@ pub fn compile_module_wasm(
   db : @runtime.VibeDb,
   path : String,
   debug_errors? : Bool = false,
+  http_host_imports? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
-    @codegen.emit_module_wasm_with_options(ast, wasm_emit_options(debug_errors))
+    @codegen.emit_module_wasm_with_options(
+      ast,
+      wasm_emit_options(debug_errors, http_host_imports~),
+    )
+  })
+}
+
+///|
+pub fn compile_module_wasm_with_codegen_options(
+  db : @runtime.VibeDb,
+  path : String,
+  options : @codegen.WasmEmitOptions,
+) -> Bytes raise WasmCompileError {
+  compile_module_wasm_with(db, path, @runtime.bundle_for_wasm, ast => {
+    @codegen.emit_module_wasm_with_options(ast, options)
   })
 }
 
@@ -341,11 +362,12 @@ pub fn compile_module_wasm_with_opt_level(
   no_dce? : Bool = false,
   opt_level? : String? = None,
   debug_errors? : Bool = false,
+  http_host_imports? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   let wasm = if no_dce {
-    compile_module_wasm_no_dce(db, path, debug_errors~)
+    compile_module_wasm_no_dce(db, path, debug_errors~, http_host_imports~)
   } else {
-    compile_module_wasm(db, path, debug_errors~)
+    compile_module_wasm(db, path, debug_errors~, http_host_imports~)
   }
   optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
@@ -358,6 +380,7 @@ pub fn compile_module_wasm_with_coverage(
   opt_level? : String? = None,
   run_tests? : Bool = false,
   debug_errors? : Bool = false,
+  http_host_imports? : Bool = false,
 ) -> WasmCoverageArtifact raise WasmCompileError {
   let coverage = if no_dce {
     compile_module_wasm_no_dce_with_coverage(
@@ -365,6 +388,7 @@ pub fn compile_module_wasm_with_coverage(
       path,
       run_tests~,
       debug_errors~,
+      http_host_imports~,
     )
   } else if run_tests {
     compile_module_wasm_coverage_with(
@@ -374,7 +398,7 @@ pub fn compile_module_wasm_with_coverage(
       ast => {
         @codegen.emit_module_wasm_with_coverage_options(
           ast,
-          wasm_emit_options(debug_errors),
+          wasm_emit_options(debug_errors, http_host_imports~),
         )
       },
       run_tests=true,
@@ -383,7 +407,7 @@ pub fn compile_module_wasm_with_coverage(
     compile_module_wasm_coverage_with(db, path, @runtime.bundle_for_wasm, ast => {
       @codegen.emit_module_wasm_with_coverage_options(
         ast,
-        wasm_emit_options(debug_errors),
+        wasm_emit_options(debug_errors, http_host_imports~),
       )
     })
   }
@@ -396,6 +420,7 @@ fn compile_module_wasm_no_dce_with_coverage(
   path : String,
   run_tests? : Bool = false,
   debug_errors? : Bool = false,
+  http_host_imports? : Bool = false,
 ) -> WasmCoverageArtifact raise WasmCompileError {
   compile_module_wasm_coverage_with(
     db,
@@ -404,7 +429,7 @@ fn compile_module_wasm_no_dce_with_coverage(
     ast => {
       @codegen.emit_module_wasm_with_coverage_options(
         ast,
-        wasm_emit_options(debug_errors),
+        wasm_emit_options(debug_errors, http_host_imports~),
       )
     },
     run_tests~,
@@ -561,9 +586,13 @@ pub fn compile_module_wasm_no_dce(
   db : @runtime.VibeDb,
   path : String,
   debug_errors? : Bool = false,
+  http_host_imports? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, @runtime.bundle_for_wasm_no_dce, ast => {
-    @codegen.emit_module_wasm_with_options(ast, wasm_emit_options(debug_errors))
+    @codegen.emit_module_wasm_with_options(
+      ast,
+      wasm_emit_options(debug_errors, http_host_imports~),
+    )
   })
 }
 
@@ -573,12 +602,16 @@ pub fn compile_module_wasm_no_dce(
 pub fn compile_module_component(
   db : @runtime.VibeDb,
   path : String,
+  http_host_imports? : Bool = false,
 ) -> Bytes raise WasmCompileError {
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
   let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
-  let core_wasm = @codegen.emit_module_wasm(bundled) catch {
+  let core_wasm = @codegen.emit_module_wasm_with_options(
+    bundled,
+    wasm_emit_options(false, http_host_imports~),
+  ) catch {
     e => raise WasmCompileError::Gen(e)
   }
   @codegen.emit_component_wasm_with_lift(core_wasm, "run")
@@ -589,8 +622,9 @@ pub fn compile_module_component_with_opt_level(
   db : @runtime.VibeDb,
   path : String,
   opt_level? : String? = None,
+  http_host_imports? : Bool = false,
 ) -> Bytes raise WasmCompileError {
-  let component = compile_module_component(db, path)
+  let component = compile_module_component(db, path, http_host_imports~)
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
 
