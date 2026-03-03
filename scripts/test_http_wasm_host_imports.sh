@@ -117,6 +117,12 @@ const canConnect = (rules, host, port) =>
 const canListen = (allowedListenPorts, port) =>
   allowedListenPorts.some((entry) => entry === '*' || Number(entry) === port);
 
+const hasConnectAny = (rules) =>
+  rules.some((rule) => rule.host === '*' && rule.port == null);
+
+const hasListenAny = (allowedListenPorts) =>
+  allowedListenPorts.some((entry) => entry === '*');
+
 const createHost = (options) => {
   const connectRules = options.connectRules ?? [];
   const allowedListenPorts = options.allowedListenPorts ?? [];
@@ -147,6 +153,18 @@ const createHost = (options) => {
     }
   };
 
+  const ensureConnectAnyAllowed = (op) => {
+    if (!hasConnectAny(connectRules)) {
+      throw new Error(`PermissionDenied: ${op}`);
+    }
+  };
+
+  const ensureListenAnyAllowed = (op) => {
+    if (!hasListenAny(allowedListenPorts)) {
+      throw new Error(`PermissionDenied: ${op}`);
+    }
+  };
+
   const host = {
     http_request: (_method, url, _headers, _body) => {
       const decodedUrl = decodeTaggedString(instanceRef, url);
@@ -159,6 +177,7 @@ const createHost = (options) => {
       if (handleKind.get(handle) !== 'response') {
         throw new Error(`unexpected response handle: ${handle}`);
       }
+      ensureConnectAnyAllowed('net_response_status');
       calls.push('status');
       return tagInt(200);
     },
@@ -166,15 +185,18 @@ const createHost = (options) => {
       if (handleKind.get(handle) !== 'response') {
         throw new Error(`unexpected response-header handle: ${handle}`);
       }
+      ensureConnectAnyAllowed('net_response_header');
       return 0n;
     },
     http_response_body: (handle) => {
       if (handleKind.get(handle) !== 'response') {
         throw new Error(`unexpected response-body handle: ${handle}`);
       }
+      ensureConnectAnyAllowed('net_response_body');
       return 0n;
     },
     http_close: (handle) => {
+      ensureConnectAnyAllowed('net_close');
       calls.push(`close:${handle.toString()}`);
       handleKind.delete(handle);
       return 0n;
@@ -187,6 +209,7 @@ const createHost = (options) => {
       return listenerHandle;
     },
     http_accept: (handle) => {
+      ensureListenAnyAllowed('net_accept');
       if (handleKind.get(handle) !== 'listener') {
         throw new Error(`unexpected listener handle: ${handle}`);
       }
@@ -195,30 +218,35 @@ const createHost = (options) => {
       return incomingHandle;
     },
     http_request_method: (handle) => {
+      ensureListenAnyAllowed('net_request_method');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-method handle: ${handle}`);
       }
       return 0n;
     },
     http_request_url: (handle) => {
+      ensureListenAnyAllowed('net_request_url');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-url handle: ${handle}`);
       }
       return 0n;
     },
     http_request_header: (handle, _name) => {
+      ensureListenAnyAllowed('net_request_header');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-header handle: ${handle}`);
       }
       return 0n;
     },
     http_request_body: (handle) => {
+      ensureListenAnyAllowed('net_request_body');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-body handle: ${handle}`);
       }
       return 0n;
     },
     http_respond: (handle, status, _headers, _body) => {
+      ensureListenAnyAllowed('net_respond');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected incoming handle: ${handle}`);
       }
@@ -262,8 +290,18 @@ const expectRunError = (instance, fragment) => {
   denyConnect.bindInstance(denyConnectInst.instance);
   expectRunError(denyConnectInst.instance, 'PermissionDenied: net_connect:example.com:443');
 
-  const denyListen = createHost({
+  const denyResponse = createHost({
     connectRules: [{ host: 'example.com', port: 443 }],
+    allowedListenPorts: [],
+  });
+  const denyResponseInst = await WebAssembly.instantiate(wasm, {
+    'vibe:http': denyResponse.host,
+  });
+  denyResponse.bindInstance(denyResponseInst.instance);
+  expectRunError(denyResponseInst.instance, 'PermissionDenied: net_response_status');
+
+  const denyListen = createHost({
+    connectRules: [{ host: '*', port: null }],
     allowedListenPorts: [],
   });
   const denyListenInst = await WebAssembly.instantiate(wasm, {
@@ -272,9 +310,19 @@ const expectRunError = (instance, fragment) => {
   denyListen.bindInstance(denyListenInst.instance);
   expectRunError(denyListenInst.instance, 'PermissionDenied: net_listen:8080');
 
-  const allowAll = createHost({
-    connectRules: [{ host: 'example.com', port: 443 }],
+  const denyAccept = createHost({
+    connectRules: [{ host: '*', port: null }],
     allowedListenPorts: [8080],
+  });
+  const denyAcceptInst = await WebAssembly.instantiate(wasm, {
+    'vibe:http': denyAccept.host,
+  });
+  denyAccept.bindInstance(denyAcceptInst.instance);
+  expectRunError(denyAcceptInst.instance, 'PermissionDenied: net_accept');
+
+  const allowAll = createHost({
+    connectRules: [{ host: '*', port: null }],
+    allowedListenPorts: ['*'],
   });
   const allowAllInst = await WebAssembly.instantiate(wasm, {
     'vibe:http': allowAll.host,

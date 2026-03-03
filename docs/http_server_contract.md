@@ -63,3 +63,10 @@ interpreter runtime では `NetListen` capability をサーバー API に適用�
   - `src/checker/typecheck_call_builtin_wbtest.mbt`
 - runtime 契約:
   - `src/runtime/eval_builtins_wbtest.mbt`
+- wasm host-import 契約（capability parity + request/response/listen/accept/respond e2e）:
+  - `scripts/test_http_wasm_host_imports.sh`
+  - deny ケース:
+    - `PermissionDenied: net_connect:<host>:<port>`
+    - `PermissionDenied: net_response_status`
+    - `PermissionDenied: net_listen:<port>`
+    - `PermissionDenied: net_accept`

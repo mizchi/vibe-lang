@@ -70,7 +70,7 @@ Completed items are archived in `docs/DONE.md`.
     - 進捗: interpreter runtime で `NetListen` capability を `http_listen/accept/respond` に適用（`PermissionDenied: net_listen/net_accept/net_respond`）
     - 進捗: interpreter runtime で `NetConnect` capability を `http_request` / `socket_tcp_connect` に適用（URL host/port 抽出 + `PermissionDenied: net_connect:<host>:<port>`）
     - 進捗: interpreter runtime で HTTP handle 系 builtin に capability check を適用（client: `net_response_*` / `net_close`, server: `net_request_*`）
-    - 進捗: wasm host-import e2e で `PermissionDenied: net_connect:<host>:<port>` / `PermissionDenied: net_listen:<port>` を再現し、allowlist 時のみ通過することを gate 化（`scripts/test_http_wasm_host_imports.sh`）
+    - 進捗: wasm host-import e2e で `PermissionDenied: net_connect:<host>:<port>` / `net_response_status` / `net_listen:<port>` / `net_accept` を再現し、allowlist（`connect_any` + `listen_any`）時のみ通過することを gate 化（`scripts/test_http_wasm_host_imports.sh`）
   - [x] Phase 2-3: codegen 側ホスト呼び出しの導線を追加（interpreter と wasm の挙動差分を吸収）
     - wasm codegen に `http_host_imports` オプションを追加し、HTTP builtin を `vibe:http/*` import へルーティング可能にした（デフォルトは既存 fallback throw を維持）
     - `vibe compile` / `vibe_compile_wasi` に `--http-host-imports` を追加し、runtime_compile まで伝播（`--wasm` / `--component` 系）
