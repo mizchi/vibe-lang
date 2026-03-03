@@ -262,9 +262,10 @@ bench-char-conversion:
 test-http-e2e:
     scripts/test_http_e2e.sh
 
-# Run HTTP WASM fallback tests (compilation + graceful error on wasm)
+# Run HTTP WASM tests (fallback + host-import capability/e2e)
 test-http-wasm:
     scripts/test_http_wasm_fallback.sh
+    scripts/test_http_wasm_host_imports.sh
 
 # Run selfhost bootstrap gate (compiled suite + probe smoke + deterministic wasm)
 test-selfhost-bootstrap:
