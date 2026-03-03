@@ -41,11 +41,36 @@ test "CapabilitySet::can_connect checks host and port" {
     @capability.Capability::net_connect("api.github.com", Some(443)),
     @capability.Capability::net_connect("*.example.com", None),
   ])
+  assert_true(caps.can_connect_any())
   assert_true(caps.can_connect("api.github.com", 443))
   assert_false(caps.can_connect("api.github.com", 80))
   assert_true(caps.can_connect("api.example.com", 8080))
   assert_true(caps.can_connect("sub.example.com", 443))
   assert_false(caps.can_connect("evil.com", 443))
+
+  let empty = @capability.CapabilitySet::new()
+  assert_false(empty.can_connect_any())
+}
+
+///|
+test "CapabilitySet::can_listen checks exact and wildcard ports" {
+  let exact = @capability.CapabilitySet::from_array([
+    @capability.Capability::net_listen(8080),
+  ])
+  assert_true(exact.can_listen(8080))
+  assert_false(exact.can_listen(8081))
+  assert_true(exact.can_listen_any())
+
+  let wildcard = @capability.CapabilitySet::from_array([
+    @capability.Capability::net_listen(0),
+  ])
+  assert_true(wildcard.can_listen(80))
+  assert_true(wildcard.can_listen(3000))
+  assert_true(wildcard.can_listen_any())
+
+  let empty = @capability.CapabilitySet::new()
+  assert_false(empty.can_listen(8080))
+  assert_false(empty.can_listen_any())
 }
 
 ///|

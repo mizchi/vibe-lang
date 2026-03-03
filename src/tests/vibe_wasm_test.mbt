@@ -901,6 +901,51 @@ test "vibe wasm imports stdio stream builtins" {
 }
 
 ///|
+test "vibe wasm http builtins default to fallback throw (no host import)" {
+  let db = VibeDb::new()
+  let src =
+    #|{
+    #|  let req = http_request("GET", "https://example.com", "", "")
+    #|  http_response_status(req)
+    #|}
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_false(bytes_contains_ascii(wasm, "vibe:http"))
+}
+
+///|
+test "vibe wasm can route http builtins to host imports via emit option" {
+  let db = VibeDb::new()
+  let src =
+    #|{
+    #|  let req = http_request("GET", "https://example.com", "", "")
+    #|  let status = http_response_status(req)
+    #|  http_close(req)
+    #|  status
+    #|}
+  db.set_source("main", src)
+  let wasm = try
+    @runtime_compile.compile_module_wasm_with_codegen_options(
+      db,
+      "main",
+      @codegen.wasm_emit_options(http_host_imports=true),
+    )
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(bytes_contains_ascii(wasm, "vibe:http"))
+  assert_true(bytes_contains_ascii(wasm, "http_request"))
+  assert_true(bytes_contains_ascii(wasm, "http_response_status"))
+  assert_true(bytes_contains_ascii(wasm, "http_close"))
+}
+
+///|
 test "vibe wasm compiles while with stdio char builtins" {
   let db = VibeDb::new()
   let src =

@@ -95,7 +95,16 @@ DIRS=()
 for root in "${SOURCE_ROOTS[@]}"; do
   while IFS= read -r d; do
     DIRS+=("$d")
-  done < <(find "$root" -name '*.vibe' -type f -exec dirname {} \; | sort -u | filter_excluded_dirs)
+  done < <(
+    find "$root" \
+      -name '*.vibe' \
+      -type f \
+      -not -name '.tmp_*' \
+      -not -name '.vibe_test_wasm_*' \
+      -exec dirname {} \; |
+      sort -u |
+      filter_excluded_dirs
+  )
 done
 
 TOTAL=0
@@ -104,7 +113,15 @@ for dir in "${DIRS[@]}"; do
   FILES=()
   while IFS= read -r f; do
     FILES+=("$f")
-  done < <(find "$dir" -maxdepth 1 -name '*.vibe' -not -name 'index.vibe' -type f | sort)
+  done < <(
+    find "$dir" -maxdepth 1 \
+      -name '*.vibe' \
+      -not -name 'index.vibe' \
+      -not -name '.tmp_*' \
+      -not -name '.vibe_test_wasm_*' \
+      -type f |
+      sort
+  )
   [ ${#FILES[@]} -eq 0 ] && continue
 
   if [ "$USE_CACHE" = "1" ]; then
@@ -142,7 +159,15 @@ if [ "$USE_CACHE" = "1" ]; then
     while IFS= read -r f; do
       hash=$(shasum "$f" | cut -d' ' -f1)
       printf '%s\t%s\n' "$hash" "$f" >> "$CACHE_FILE"
-    done < <(find "$root" -name '*.vibe' -type f | filter_excluded_files | sort)
+    done < <(
+      find "$root" \
+        -name '*.vibe' \
+        -type f \
+        -not -name '.tmp_*' \
+        -not -name '.vibe_test_wasm_*' |
+        filter_excluded_files |
+        sort
+    )
   done
 fi
 

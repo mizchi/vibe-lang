@@ -134,6 +134,126 @@ fn normalize_performed_value(value : @core.Value) -> @core.Value {
 }
 
 ///|
+fn parse_connect_port(port_text : String) -> Int? {
+  if port_text.length() == 0 {
+    return None
+  }
+  let mut value = 0
+  for ch in port_text.to_array() {
+    if ch < '0' || ch > '9' {
+      return None
+    }
+    value = value * 10 + (ch.to_int() - '0'.to_int())
+    if value > 65535 {
+      return None
+    }
+  }
+  if value <= 0 {
+    return None
+  }
+  Some(value)
+}
+
+///|
+fn parse_http_connect_target(url : String) -> (String, Int)? {
+  let (rest, default_port) = if url.has_prefix("https://") {
+    (url.unsafe_substring(start=8, end=url.length()), 443)
+  } else if url.has_prefix("http://") {
+    (url.unsafe_substring(start=7, end=url.length()), 80)
+  } else {
+    return None
+  }
+  if rest.length() == 0 {
+    return None
+  }
+  let rest_chars = rest.to_array()
+  let mut authority_end = rest_chars.length()
+  for i in 0..<rest_chars.length() {
+    let ch = rest_chars[i]
+    if ch == '/' || ch == '?' || ch == '#' {
+      authority_end = i
+      break
+    }
+  }
+  if authority_end == 0 {
+    return None
+  }
+  let authority = rest.unsafe_substring(start=0, end=authority_end)
+  let authority_chars = authority.to_array()
+  let mut last_at : Int? = None
+  for i in 0..<authority_chars.length() {
+    if authority_chars[i] == '@' {
+      last_at = Some(i)
+    }
+  }
+  let host_port = match last_at {
+    Some(i) => authority.unsafe_substring(start=i + 1, end=authority.length())
+    None => authority
+  }
+  if host_port.length() == 0 {
+    return None
+  }
+  if host_port.has_prefix("[") {
+    let chars = host_port.to_array()
+    let mut close_idx : Int? = None
+    for i in 1..<chars.length() {
+      if chars[i] == ']' {
+        close_idx = Some(i)
+        break
+      }
+    }
+    match close_idx {
+      None => None
+      Some(i) => {
+        if i <= 1 {
+          return None
+        }
+        let host = host_port.unsafe_substring(start=1, end=i)
+        if i + 1 >= chars.length() {
+          return Some((host, default_port))
+        }
+        if chars[i + 1] != ':' {
+          return None
+        }
+        let port_text = host_port.unsafe_substring(
+          start=i + 2,
+          end=host_port.length(),
+        )
+        match parse_connect_port(port_text) {
+          Some(port) => Some((host, port))
+          None => None
+        }
+      }
+    }
+  } else {
+    let chars = host_port.to_array()
+    let mut colon_count = 0
+    let mut last_colon = -1
+    for i in 0..<chars.length() {
+      if chars[i] == ':' {
+        colon_count = colon_count + 1
+        last_colon = i
+      }
+    }
+    if colon_count == 0 {
+      return Some((host_port, default_port))
+    }
+    if colon_count > 1 || last_colon <= 0 || last_colon + 1 >= chars.length() {
+      return None
+    }
+    let host = host_port.unsafe_substring(start=0, end=last_colon)
+    let port_text = host_port.unsafe_substring(
+      start=last_colon + 1,
+      end=host_port.length(),
+    )
+    match parse_connect_port(port_text) {
+      Some(port) => Some((host, port))
+      None => None
+    }
+  }
+}
+
+///|
 /// Generate a site identification key for perform/resume matching.
 /// The key must be deterministic for the same source location because
 /// resume re-evaluates the body and needs to find the stored value.
@@ -2705,7 +2825,12 @@ fn eval_builtin_call(
         )
       }
       match (pos_args[0], pos_args[1]) {
-        (@core.Value::String(host), @core.Value::Int(port)) =>
+        (@core.Value::String(host), @core.Value::Int(port)) => {
+          if not(rt.caps().can_connect(host, port.to_int())) {
+            raise EvalError::PermissionDenied(
+              "net_connect:" + host + ":" + port.to_string(),
+            )
+          }
           match @backend.tcp_connect(host, port.to_int()) {
             Ok(fd) => {
               let effects = out.effects
@@ -2716,6 +2841,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="socket_tcp_connect", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="socket_tcp_connect", detail="bad call"),
@@ -2834,6 +2960,21 @@ fn eval_builtin_call(
             BuiltinDetail(fn_name="http_request", detail="bad call"),
           )
       }
+      let (connect_host, connect_port) = match parse_http_connect_target(url) {
+        Some(v) => v
+        None =>
+          raise EvalError::BadCall(
+            Io(
+              op="http_request",
+              detail="invalid URL for network capability check: " + url,
+            ),
+          )
+      }
+      if not(rt.caps().can_connect(connect_host, connect_port)) {
+        raise EvalError::PermissionDenied(
+          "net_connect:" + connect_host + ":" + connect_port.to_string(),
+        )
+      }
       match @backend.http_request(meth, url, headers, body) {
         Ok(handle) => {
           let effects = out.effects
@@ -2853,7 +2994,10 @@ fn eval_builtin_call(
         )
       }
       match pos_args[0] {
-        @core.Value::Int(handle) =>
+        @core.Value::Int(handle) => {
+          if not(rt.caps().can_connect_any()) {
+            raise EvalError::PermissionDenied("net_response_status")
+          }
           match @backend.http_response_status(handle.to_int()) {
             Ok(status) => {
               let effects = out.effects
@@ -2865,6 +3009,7 @@ fn eval_builtin_call(
                 Io(op="http_response_status", detail=err),
               )
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_response_status", detail="bad call"),
@@ -2880,7 +3025,10 @@ fn eval_builtin_call(
         )
       }
       match (pos_args[0], pos_args[1]) {
-        (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
+        (@core.Value::Int(handle), @core.Value::String(hdr_name)) => {
+          if not(rt.caps().can_connect_any()) {
+            raise EvalError::PermissionDenied("net_response_header")
+          }
           match @backend.http_response_header(handle.to_int(), hdr_name) {
             Ok(hdr_val) => {
               let effects = out.effects
@@ -2894,6 +3042,7 @@ fn eval_builtin_call(
                 Io(op="http_response_header", detail=err),
               )
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_response_header", detail="bad call"),
@@ -2909,7 +3058,10 @@ fn eval_builtin_call(
         )
       }
       match pos_args[0] {
-        @core.Value::Int(handle) =>
+        @core.Value::Int(handle) => {
+          if not(rt.caps().can_connect_any()) {
+            raise EvalError::PermissionDenied("net_response_body")
+          }
           match @backend.http_response_body(handle.to_int()) {
             Ok(body) => {
               let effects = out.effects
@@ -2919,6 +3071,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="http_response_body", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_response_body", detail="bad call"),
@@ -2934,7 +3087,10 @@ fn eval_builtin_call(
         )
       }
       match pos_args[0] {
-        @core.Value::Int(handle) =>
+        @core.Value::Int(handle) => {
+          if not(rt.caps().can_connect_any()) {
+            raise EvalError::PermissionDenied("net_close")
+          }
           match @backend.http_close(handle.to_int()) {
             Ok(_) => {
               let effects = out.effects
@@ -2944,6 +3100,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="http_close", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_close", detail="bad call"),
@@ -2960,7 +3117,10 @@ fn eval_builtin_call(
         )
       }
       match pos_args[0] {
-        @core.Value::Int(port) =>
+        @core.Value::Int(port) => {
+          if not(rt.caps().can_listen(port.to_int())) {
+            raise EvalError::PermissionDenied("net_listen:" + port.to_string())
+          }
           match @backend.http_listen(port.to_int()) {
             Ok(handle) => {
               let effects = out.effects
@@ -2971,6 +3131,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="http_listen", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_listen", detail="bad call"),
@@ -2986,7 +3147,10 @@ fn eval_builtin_call(
         )
       }
       match pos_args[0] {
-        @core.Value::Int(server_handle) =>
+        @core.Value::Int(server_handle) => {
+          if not(rt.caps().can_listen_any()) {
+            raise EvalError::PermissionDenied("net_accept")
+          }
           match @backend.http_accept(server_handle.to_int()) {
             Ok(req_handle) => {
               let effects = out.effects
@@ -2997,6 +3161,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="http_accept", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_accept", detail="bad call"),
@@ -3012,7 +3177,10 @@ fn eval_builtin_call(
         )
       }
       match pos_args[0] {
-        @core.Value::Int(handle) =>
+        @core.Value::Int(handle) => {
+          if not(rt.caps().can_listen_any()) {
+            raise EvalError::PermissionDenied("net_request_method")
+          }
           match @backend.http_request_method(handle.to_int()) {
             Ok(meth) => {
               let effects = out.effects
@@ -3022,6 +3190,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="http_request_method", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_request_method", detail="bad call"),
@@ -3037,7 +3206,10 @@ fn eval_builtin_call(
         )
       }
       match pos_args[0] {
-        @core.Value::Int(handle) =>
+        @core.Value::Int(handle) => {
+          if not(rt.caps().can_listen_any()) {
+            raise EvalError::PermissionDenied("net_request_url")
+          }
           match @backend.http_request_url(handle.to_int()) {
             Ok(url) => {
               let effects = out.effects
@@ -3047,6 +3219,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="http_request_url", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_request_url", detail="bad call"),
@@ -3062,7 +3235,10 @@ fn eval_builtin_call(
         )
       }
       match (pos_args[0], pos_args[1]) {
-        (@core.Value::Int(handle), @core.Value::String(hdr_name)) =>
+        (@core.Value::Int(handle), @core.Value::String(hdr_name)) => {
+          if not(rt.caps().can_listen_any()) {
+            raise EvalError::PermissionDenied("net_request_header")
+          }
           match @backend.http_request_header(handle.to_int(), hdr_name) {
             Ok(hdr_val) => {
               let effects = out.effects
@@ -3072,6 +3248,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="http_request_header", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_request_header", detail="bad call"),
@@ -3087,7 +3264,10 @@ fn eval_builtin_call(
         )
       }
       match pos_args[0] {
-        @core.Value::Int(handle) =>
+        @core.Value::Int(handle) => {
+          if not(rt.caps().can_listen_any()) {
+            raise EvalError::PermissionDenied("net_request_body")
+          }
           match @backend.http_request_body(handle.to_int()) {
             Ok(body) => {
               let effects = out.effects
@@ -3097,6 +3277,7 @@ fn eval_builtin_call(
             Err(err) =>
               raise EvalError::BadCall(Io(op="http_request_body", detail=err))
           }
+        }
         _ =>
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_request_body", detail="bad call"),
@@ -3138,6 +3319,9 @@ fn eval_builtin_call(
           raise EvalError::BadCall(
             BuiltinDetail(fn_name="http_respond", detail="bad call"),
           )
+      }
+      if not(rt.caps().can_listen_any()) {
+        raise EvalError::PermissionDenied("net_respond")
       }
       match
         @backend.http_respond(handle.to_int(), status.to_int(), headers, body) {

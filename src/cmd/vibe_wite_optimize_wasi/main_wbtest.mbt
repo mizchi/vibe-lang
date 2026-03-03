@@ -1,3 +1,4 @@
+///|
 test "wite optimize wasi parse minimal args" {
   let parsed = parse_cmd_args(["-o", "out.wasm", "in.wasm"])
   match parsed {
@@ -11,8 +12,11 @@ test "wite optimize wasi parse minimal args" {
   }
 }
 
+///|
 test "wite optimize wasi parse supports wac mode and --wite" {
-  let parsed = parse_cmd_args(["--wac", "--wite", "-o", "out.component.wasm", "main.wac"])
+  let parsed = parse_cmd_args([
+    "--wac", "--wite", "-o", "out.component.wasm", "main.wac",
+  ])
   match parsed {
     Ok(opts) => {
       assert_eq(opts.mode, InputMode::Wac)
@@ -24,6 +28,7 @@ test "wite optimize wasi parse supports wac mode and --wite" {
   }
 }
 
+///|
 test "wite optimize wasi parse rejects missing output" {
   let parsed = parse_cmd_args(["in.wasm"])
   match parsed {
@@ -32,6 +37,7 @@ test "wite optimize wasi parse rejects missing output" {
   }
 }
 
+///|
 test "wite optimize wasi parse rejects unknown option" {
   let parsed = parse_cmd_args(["--unknown", "-o", "out.wasm", "in.wasm"])
   match parsed {
@@ -40,18 +46,19 @@ test "wite optimize wasi parse rejects unknown option" {
   }
 }
 
+///|
 test "wite optimize wasi normalize rejects unknown opt level" {
   let normalized = normalize_opt_level("-Ox")
   match normalized {
     Ok(_) => fail("expected opt-level error")
     Err(msg) =>
       assert_eq(
-        msg,
-        "wite-opt: unsupported wite optimize level -Ox (expected: -O0|-O1|-O2|-O3|-O4|-Os|-Oz)",
+        msg, "wite-opt: unsupported wite optimize level -Ox (expected: -O0|-O1|-O2|-O3|-O4|-Os|-Oz)",
       )
   }
 }
 
+///|
 test "wite optimize wasi detects gc unsupported optimize errors" {
   assert_true(
     is_gc_unsupported_optimize_error(

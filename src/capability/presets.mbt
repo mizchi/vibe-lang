@@ -33,6 +33,8 @@ pub fn CapabilitySet::developer() -> CapabilitySet {
     ClockRead,
     ClockMonotonic,
     RandomRead,
+    NetConnect({ pattern: "*", port: None }),
+    NetListen(0),
     ProcessSpawn(["sh"]),
     GitSnapshot,
     GitRollback,

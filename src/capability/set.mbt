@@ -110,6 +110,40 @@ pub fn CapabilitySet::can_connect(
 }
 
 ///|
+/// Check if any network connect capability is granted
+pub fn CapabilitySet::can_connect_any(self : CapabilitySet) -> Bool {
+  self.has(fn(cap) {
+    match cap {
+      NetConnect(_) => true
+      _ => false
+    }
+  })
+}
+
+///|
+/// Check if network listen is allowed on a port
+pub fn CapabilitySet::can_listen(self : CapabilitySet, port : Int) -> Bool {
+  self.has(fn(cap) {
+    match cap {
+      NetListen(0) => true
+      NetListen(allowed_port) => allowed_port == port
+      _ => false
+    }
+  })
+}
+
+///|
+/// Check if any network listen capability is granted
+pub fn CapabilitySet::can_listen_any(self : CapabilitySet) -> Bool {
+  self.has(fn(cap) {
+    match cap {
+      NetListen(_) => true
+      _ => false
+    }
+  })
+}
+
+///|
 /// Check if MCP tool call is allowed
 pub fn CapabilitySet::can_call_mcp(self : CapabilitySet, tool : String) -> Bool {
   self.has(fn(cap) {

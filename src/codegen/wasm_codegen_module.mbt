@@ -57,6 +57,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let mut socket_resource_drop_type = -1
   let mut socket_stream_read_type = -1
   let mut socket_stream_write_type = -1
+  let mut http_host_arity1_type = -1
+  let mut http_host_arity2_type = -1
+  let mut http_host_arity4_type = -1
   if ctx.need_js_length {
     js_length_type = type_count
     type_count += 1
@@ -144,6 +147,17 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_count += 1
     // socket_stream_write_type: (i32, i32, i32, i32) -> () — same as stdout write
     socket_stream_write_type = type_count
+    type_count += 1
+  }
+  if ctx.need_http && ctx.http_host_imports {
+    // (i64) -> i64
+    http_host_arity1_type = type_count
+    type_count += 1
+    // (i64, i64) -> i64
+    http_host_arity2_type = type_count
+    type_count += 1
+    // (i64, i64, i64, i64) -> i64
+    http_host_arity4_type = type_count
     type_count += 1
   }
   let builtin_count = type_count
@@ -354,6 +368,30 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     type_sec.push((127).to_byte()) // i32 retptr
     write_u32_leb(type_sec, 0)
   }
+  if ctx.need_http && ctx.http_host_imports {
+    // http_host_arity1_type: (func (param i64) (result i64))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64
+    // http_host_arity2_type: (func (param i64 i64) (result i64))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 2)
+    type_sec.push((126).to_byte()) // i64
+    type_sec.push((126).to_byte()) // i64
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64
+    // http_host_arity4_type: (func (param i64 i64 i64 i64) (result i64))
+    type_sec.push((96).to_byte())
+    write_u32_leb(type_sec, 4)
+    type_sec.push((126).to_byte()) // i64
+    type_sec.push((126).to_byte()) // i64
+    type_sec.push((126).to_byte()) // i64
+    type_sec.push((126).to_byte()) // i64
+    write_u32_leb(type_sec, 1)
+    type_sec.push((126).to_byte()) // i64
+  }
   for sig in ctx.fn_sig_order {
     write_func_type(type_sec, sig.params, sig.results)
   }
@@ -433,6 +471,9 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   }
   if ctx.need_socket {
     func_import_count += 13
+  }
+  if ctx.need_http && ctx.http_host_imports {
+    func_import_count += 12
   }
   let global_import_count = if ctx.use_js_strings {
     ctx.js_strings.names.length()
@@ -615,6 +656,59 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
       write_name(import_sec, "[resource-drop]pollable")
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, socket_resource_drop_type)
+    }
+    if ctx.need_http && ctx.http_host_imports {
+      // http_request(method, url, headers, body) -> handle
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_request")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity4_type)
+      // response handle APIs
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_response_status")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity1_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_response_header")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity2_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_response_body")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity1_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_close")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity1_type)
+      // server APIs
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_listen")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity1_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_accept")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity1_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_request_method")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity1_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_request_url")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity1_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_request_header")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity2_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_request_body")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity1_type)
+      write_name(import_sec, "vibe:http")
+      write_name(import_sec, "http_respond")
+      import_sec.push((0).to_byte())
+      write_u32_leb(import_sec, http_host_arity4_type)
     }
     if ctx.use_js_strings {
       for name in ctx.js_strings.names {
@@ -1576,6 +1670,7 @@ pub fn emit_module_wasm_with_options(
     false,
     coverage_enabled=false,
     embed_error_strings=options.embed_error_strings,
+    http_host_imports=options.http_host_imports,
   )
   emit_module(ctx, ast)
 }
@@ -1615,6 +1710,7 @@ pub fn emit_module_wasm_with_coverage_options(
     false,
     coverage_enabled=true,
     embed_error_strings=options.embed_error_strings,
+    http_host_imports=options.http_host_imports,
   )
   emit_module_with_coverage(ctx, ast)
 }

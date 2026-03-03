@@ -234,6 +234,11 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
     // subscribe, poll, shutdown, resource-drop, stream-read, stream-write
     count += 10
   }
+  if ctx.need_http && ctx.http_host_imports {
+    // Keep in sync with wasm_codegen_module.mbt type section:
+    // host http import arity signatures: (1), (2), (4) -> i64
+    count += 3
+  }
   count
 }
 
@@ -292,6 +297,11 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
   }
   if ctx.need_socket {
     count += 13
+  }
+  if ctx.need_http && ctx.http_host_imports {
+    // http_request + response/status/header/body/close +
+    // listen/accept/request_* + respond
+    count += 12
   }
   count
 }
@@ -1519,6 +1529,82 @@ fn import_index_socket_drop_pollable(
   ctx : CodegenCtx,
 ) -> Int raise WasmGenError {
   import_index_socket_instance_network(ctx) + 12
+}
+
+///|
+fn import_index_after_socket(ctx : CodegenCtx) -> Int {
+  let mut idx = import_index_after_fs(ctx)
+  if ctx.need_socket {
+    idx += 13
+  }
+  idx
+}
+
+///|
+fn import_index_http_request(ctx : CodegenCtx) -> Int raise WasmGenError {
+  if not(ctx.need_http && ctx.http_host_imports) {
+    raise WasmGenError::BackendLimit(backend="wasm", feature="http host import")
+  }
+  import_index_after_socket(ctx)
+}
+
+///|
+fn import_index_http_response_status(
+  ctx : CodegenCtx,
+) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 1
+}
+
+///|
+fn import_index_http_response_header(
+  ctx : CodegenCtx,
+) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 2
+}
+
+///|
+fn import_index_http_response_body(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 3
+}
+
+///|
+fn import_index_http_close(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 4
+}
+
+///|
+fn import_index_http_listen(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 5
+}
+
+///|
+fn import_index_http_accept(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 6
+}
+
+///|
+fn import_index_http_request_method(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 7
+}
+
+///|
+fn import_index_http_request_url(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 8
+}
+
+///|
+fn import_index_http_request_header(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 9
+}
+
+///|
+fn import_index_http_request_body(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 10
+}
+
+///|
+fn import_index_http_respond(ctx : CodegenCtx) -> Int raise WasmGenError {
+  import_index_http_request(ctx) + 11
 }
 
 ///|

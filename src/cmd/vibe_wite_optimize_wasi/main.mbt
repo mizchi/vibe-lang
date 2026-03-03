@@ -165,13 +165,11 @@ fn optimize_bytes_with_opt_level(
       }
       match @wite_optimize.optimize_binary_for_size(bytes, config~) {
         Ok(result) => Ok(result.bytes)
-        Err(msg) => {
+        Err(msg) =>
           if is_gc_unsupported_optimize_error(msg) {
             let fallback = gc_compat_optimize_config(level)
-            match @wite_optimize.optimize_binary_for_size(
-              bytes,
-              config=fallback,
-            ) {
+            match
+              @wite_optimize.optimize_binary_for_size(bytes, config=fallback) {
               Ok(result) => Ok(result.bytes)
               Err(fallback_err) =>
                 Err(
@@ -185,7 +183,6 @@ fn optimize_bytes_with_opt_level(
           } else {
             Err("wite-opt: optimize failed: " + msg)
           }
-        }
       }
     }
   }
@@ -211,7 +208,10 @@ fn load_input_bytes(
 }
 
 ///|
-fn run_cmd(opts : CmdOptions, fs : &@io.FileSystemAdapter) -> Result[Unit, String] {
+fn run_cmd(
+  opts : CmdOptions,
+  fs : &@io.FileSystemAdapter,
+) -> Result[Unit, String] {
   let input = match load_input_bytes(opts, fs) {
     Ok(bytes) => bytes
     Err(msg) => return Err(msg)

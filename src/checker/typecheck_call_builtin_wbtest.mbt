@@ -16,6 +16,16 @@ fn builtin_test_ident_arg(name : String) -> @core.CallArg {
 }
 
 ///|
+fn builtin_test_int_arg(value : Int) -> @core.CallArg {
+  let span = builtin_test_span()
+  @core.CallArg::{
+    label: None,
+    expr: @core.Expr::Int(value=value.to_int64(), span~),
+    span,
+  }
+}
+
+///|
 test "type_call_builtin: path returns Path" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
@@ -159,6 +169,96 @@ test "type_call_builtin: json_get returns Json" {
     err => fail(err.to_string())
   }
   assert_eq(actual, json_ty)
+}
+
+///|
+test "type_call_builtin: http_listen returns Int" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let args = [builtin_test_int_arg(8080)]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "http_listen",
+    args,
+    aliases,
+    effect_scope_from_list([@core.EffectAtom::Const("Net")]),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::Int)
+}
+
+///|
+test "type_call_builtin: http_accept returns Int" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let args = [builtin_test_int_arg(1)]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "http_accept",
+    args,
+    aliases,
+    effect_scope_from_list([@core.EffectAtom::Const("Net")]),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::Int)
+}
+
+///|
+test "type_call_builtin: http_respond returns Unit" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let args = [
+    builtin_test_int_arg(2),
+    builtin_test_int_arg(200),
+    builtin_test_string_arg("content-type: text/plain"),
+    builtin_test_string_arg("ok"),
+  ]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "http_respond",
+    args,
+    aliases,
+    effect_scope_from_list([@core.EffectAtom::Const("Net")]),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::Unit)
+}
+
+///|
+test "type_call_builtin: http_listen requires Net effect" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let args = [builtin_test_int_arg(8080)]
+  let aliases : Map[String, @core.Ref] = {}
+  let result : Result[@core.Type, TypeError] = try? type_call_builtin(
+    env,
+    "http_listen",
+    args,
+    aliases,
+    effect_scope_from_list([]),
+    true,
+    span,
+  )
+  match result {
+    Ok(_) => fail("expected effect guard error")
+    Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
+      assert_eq(operation, "http_listen")
+      assert_eq(missing_effect, Some("Net"))
+    }
+    Err(other) => fail("unexpected error: \{other.to_string()}")
+  }
 }
 
 ///|

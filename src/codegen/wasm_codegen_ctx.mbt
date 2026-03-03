@@ -68,6 +68,7 @@ priv struct CodegenCtx {
   mut need_socket : Bool
   // HTTP WASI imports (P3 draft — stub for now)
   mut need_http : Bool
+  http_host_imports : Bool
   // Source-level coverage instrumentation
   coverage_enabled : Bool
   coverage_points : Array[WasmCoveragePoint]
@@ -99,6 +100,7 @@ fn CodegenCtx::new(
   use_js_strings : Bool,
   coverage_enabled? : Bool = false,
   embed_error_strings? : Bool = false,
+  http_host_imports? : Bool = false,
 ) -> CodegenCtx {
   // Register builtin enum constructors
   let enum_ctor_tags : Map[String, Int] = {}
@@ -179,6 +181,7 @@ fn CodegenCtx::new(
     need_socket: false,
     // HTTP WASI imports
     need_http: false,
+    http_host_imports,
     // Source-level coverage instrumentation
     coverage_enabled,
     coverage_points: [],

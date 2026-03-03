@@ -4295,20 +4295,126 @@ fn compile_call_builtin_pre_user_inner(
     | "http_request_url"
     | "http_request_header"
     | "http_request_body"
-    | "http_respond" => {
-      // WASI P3 HTTP is draft; emit raise with error message instead of
-      // unreachable trap so the error is catchable by try/catch.
-      let msg = name + " is not available on wasm target"
-      if not(ctx.use_js_strings) && not(ctx.embed_error_strings) {
-        emit_i64_const_tagged(buf, intern_error_code(ctx, msg).to_int64())
-      } else if ctx.use_js_strings {
-        emit_string_const(ctx, buf, msg)
+    | "http_respond" =>
+      if ctx.need_http && ctx.http_host_imports {
+        if ctx.use_js_strings {
+          raise WasmGenError::Unsupported(
+            "http host imports require --wasm backend",
+          )
+        }
+        match name {
+          "http_request" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_request", 4,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            compile_expr(ctx, buf, pos_args[1])
+            compile_expr(ctx, buf, pos_args[2])
+            compile_expr(ctx, buf, pos_args[3])
+            emit_call(buf, import_index_http_request(ctx))
+          }
+          "http_response_status" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_response_status", 1,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            emit_call(buf, import_index_http_response_status(ctx))
+          }
+          "http_response_header" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_response_header", 2,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            compile_expr(ctx, buf, pos_args[1])
+            emit_call(buf, import_index_http_response_header(ctx))
+          }
+          "http_response_body" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_response_body", 1,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            emit_call(buf, import_index_http_response_body(ctx))
+          }
+          "http_close" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_close", 1,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            emit_call(buf, import_index_http_close(ctx))
+            buf.push((26).to_byte()) // drop host return
+            emit_i64_const_raw(buf, tag_int_value64(0L))
+          }
+          "http_listen" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_listen", 1,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            emit_call(buf, import_index_http_listen(ctx))
+          }
+          "http_accept" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_accept", 1,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            emit_call(buf, import_index_http_accept(ctx))
+          }
+          "http_request_method" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_request_method", 1,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            emit_call(buf, import_index_http_request_method(ctx))
+          }
+          "http_request_url" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_request_url", 1,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            emit_call(buf, import_index_http_request_url(ctx))
+          }
+          "http_request_header" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_request_header", 2,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            compile_expr(ctx, buf, pos_args[1])
+            emit_call(buf, import_index_http_request_header(ctx))
+          }
+          "http_request_body" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_request_body", 1,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            emit_call(buf, import_index_http_request_body(ctx))
+          }
+          "http_respond" => {
+            let pos_args = extract_positional_exprs_with_arity(
+              args, "http_respond", 4,
+            )
+            compile_expr(ctx, buf, pos_args[0])
+            compile_expr(ctx, buf, pos_args[1])
+            compile_expr(ctx, buf, pos_args[2])
+            compile_expr(ctx, buf, pos_args[3])
+            emit_call(buf, import_index_http_respond(ctx))
+            buf.push((26).to_byte()) // drop host return
+            emit_i64_const_raw(buf, tag_int_value64(0L))
+          }
+          _ => raise WasmGenError::Unsupported("unknown http builtin: " + name)
+        }
       } else {
-        emit_i64_const_raw(buf, tag_ptr64(ctx.strings.intern(msg), tag_obj))
+        // WASI P3 HTTP is draft; emit raise with error message instead of
+        // unreachable trap so the error is catchable by try/catch.
+        let msg = name + " is not available on wasm target"
+        if not(ctx.use_js_strings) && not(ctx.embed_error_strings) {
+          emit_i64_const_tagged(buf, intern_error_code(ctx, msg).to_int64())
+        } else if ctx.use_js_strings {
+          emit_string_const(ctx, buf, msg)
+        } else {
+          emit_i64_const_raw(buf, tag_ptr64(ctx.strings.intern(msg), tag_obj))
+        }
+        buf.push((8).to_byte()) // throw
+        write_u32_leb(buf, ctx.error_tag_index)
       }
-      buf.push((8).to_byte()) // throw
-      write_u32_leb(buf, ctx.error_tag_index)
-    }
     "char_to_int" => {
       let pos_args = extract_positional_exprs_with_arity(args, "char_to_int", 1)
       compile_expr(ctx, buf, pos_args[0])

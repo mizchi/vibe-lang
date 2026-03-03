@@ -74,6 +74,12 @@ pub fn Capability::net_connect(host : String, port : Int?) -> Capability {
 }
 
 ///|
+/// Create a network listen capability
+pub fn Capability::net_listen(port : Int) -> Capability {
+  NetListen(port)
+}
+
+///|
 /// Create an MCP call capability
 pub fn Capability::mcp_call(tools : Array[String]) -> Capability {
   McpCall(tools)
