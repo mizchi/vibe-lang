@@ -137,6 +137,10 @@ build-compiler-wasi-wasm:
 build-checker-wasi-wasm:
     moon build --target wasm src/cmd/vibe_check_wasi
 
+# Build wasm wite optimize/wac sidecar CLI package
+build-wite-optimize-wasi-wasm:
+    moon build --target wasm src/cmd/vibe_wite_optimize_wasi
+
 # Run wasm compiler CLI through moon wasm runner
 run-compiler-wasi-wasm *args:
     moon run --target wasm src/cmd/vibe_compile_wasi -- {{args}}
@@ -144,6 +148,10 @@ run-compiler-wasi-wasm *args:
 # Run wasm checker CLI through moon wasm runner
 run-checker-wasi-wasm *args:
     moon run --target wasm src/cmd/vibe_check_wasi -- {{args}}
+
+# Run wasm wite optimize/wac sidecar CLI through moon wasm runner
+run-wite-optimize-wasi-wasm *args:
+    moon run --target wasm src/cmd/vibe_wite_optimize_wasi -- {{args}}
 
 # Run wasm compiler CLI (wasm-gc preferred backend)
 run-compiler-wasi-wasm-gc *args:
@@ -257,6 +265,18 @@ test-http-e2e:
 # Run HTTP WASM fallback tests (compilation + graceful error on wasm)
 test-http-wasm:
     scripts/test_http_wasm_fallback.sh
+
+# Run selfhost bootstrap gate (compiled suite + probe smoke + deterministic wasm)
+test-selfhost-bootstrap:
+    scripts/test_selfhost_bootstrap_gate.sh
+
+# Run wasm selfbuild gate (stage0 wasm compiler -> stage1 selfhost wasm)
+test-selfhost-wasi-selfbuild:
+    scripts/test_selfhost_wasi_selfbuild.sh
+
+# Run wasi:http boundary gate (stage0 wasm compiler -> component wit imports)
+test-selfhost-wasi-http-boundary:
+    scripts/test_selfhost_wasi_http_boundary.sh
 
 bench-http:
     scripts/bench_http.sh

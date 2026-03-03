@@ -44,6 +44,27 @@ Completed items are archived in `docs/DONE.md`.
 
 目標: selfhost compiler (vibe/compiler/) の lex → parse → print roundtrip が全 compiler ソースで MoonBit ホスト実装と一致すること。
 
+## Self-host Next Checklist (Execution)
+
+- [x] 作業ツリー整理ポリシーを固定する（`tmp_probe` / `.tmp_*` の扱い、コミット対象の境界を明文化）
+  - `.gitignore` に `tmp_probe/`, `vibe/compiler/.tmp_*`, `vibe/compiler/.vibe_test_wasm_*` を追加して、生成物の混入を防止
+- [x] selfhost bootstrap gate の再現性を固定する（stale `vibe.exe` を使わない）
+  - `scripts/test_selfhost_bootstrap_gate.sh` で `src/**/*.mbt` / `moon.pkg` / `moon.mod.json` の更新を見て `vibe.exe` を再ビルド
+- [x] `wasm-codegen-integrity` CI で selfhost gate の所要時間と失敗ログの可観測性を整える
+  - `scripts/test_selfhost_bootstrap_gate.sh` にステージ別経過秒ログを追加し、`GITHUB_STEP_SUMMARY` へ実行時間を出力
+- [x] stage0 wasm compiler (`vibe_compile_wasi`) で selfhost compiler (`vibe/compiler/index.vibe`) を stage1 wasm へセルフビルドし、実行できることを gate 化する
+  - `scripts/test_selfhost_wasi_selfbuild.sh`（2回ビルド hash 一致 + wasm validate + wasmtime `--invoke run` 成功）
+- [x] I/O 境界を `wasi:http` 接続で動作させる（HTTP builtins 固有実装は一旦後回し）
+  - `scripts/test_selfhost_wasi_http_boundary.sh` で stage0 wasm compiler 経由の `--component` / `--wit-component` を検証
+  - component WIT の `wasi:http/types@0.3.0-draft` / `wasi:http/handler@0.3.0-draft` import を gate 化
+  - HTTP サンプルの component validate を fatal gate 化（`wasm-tools validate --features all` + 構造チェック）
+- [x] `wite optimize` / `wac compose+optimize` の wasm sidecar CLI を用意し、selfhost 側から外部呼び出し可能にする
+  - `src/cmd/vibe_wite_optimize_wasi` を追加（`--wac` と `-O*` をサポート）
+  - `wasm-gc` 入力は gc 互換フォールバック（type-form 未対応パスを無効化）で fail-open する
+  - selfhost 側は `process.run` / `sh` で sidecar を呼び出す
+- [ ] WASM server Phase 2（`http_listen/accept/respond`）の実装計画を切り、順次実装する
+- [ ] `moon info` mbti 自動再生成の循環依存問題を解消する
+
 **現状 (18 ファイル中 18 OK):**
 
 | 状態 | ファイル |
