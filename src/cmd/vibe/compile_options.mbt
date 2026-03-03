@@ -5,6 +5,7 @@ pub enum CompileMode {
   WasmJsString
   WasmGc
   Component
+  Wac
   Wit
   WitComponent
 } derive(Eq, Show)
@@ -35,7 +36,8 @@ fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
     CompileMode::Wasm
     | CompileMode::WasmJsString
     | CompileMode::WasmGc
-    | CompileMode::Component => true
+    | CompileMode::Component
+    | CompileMode::Wac => true
     _ => false
   }
 }
@@ -94,6 +96,10 @@ pub fn parse_compile_cmd_args(
       }
       "--component" => {
         mode = CompileMode::Component
+        i += 1
+      }
+      "--wac" => {
+        mode = CompileMode::Wac
         i += 1
       }
       "--wit" => {
@@ -157,7 +163,7 @@ pub fn parse_compile_cmd_args(
       }
       if opt_level is Some(_) && not(compile_mode_supports_wite_opt(mode)) {
         return Err(
-          "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, or --component",
+          "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, --component, or --wac",
         )
       }
       if coverage && not(compile_mode_supports_coverage(mode)) {

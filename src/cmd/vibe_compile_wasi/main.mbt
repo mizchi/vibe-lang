@@ -5,6 +5,7 @@ pub enum CompileMode {
   WasmJsString
   WasmGc
   Component
+  Wac
   Wit
   WitComponent
 } derive(Eq, Show)
@@ -41,7 +42,8 @@ fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
     CompileMode::Wasm
     | CompileMode::WasmJsString
     | CompileMode::WasmGc
-    | CompileMode::Component => true
+    | CompileMode::Component
+    | CompileMode::Wac => true
     _ => false
   }
 }
@@ -86,6 +88,10 @@ fn parse_compile_cmd_args(
       }
       "--component" => {
         mode = CompileMode::Component
+        i += 1
+      }
+      "--wac" => {
+        mode = CompileMode::Wac
         i += 1
       }
       "--wit" => {
@@ -138,7 +144,7 @@ fn parse_compile_cmd_args(
       }
       if opt_level is Some(_) && not(compile_mode_supports_wite_opt(mode)) {
         return Err(
-          "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, or --component",
+          "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, --component, or --wac",
         )
       }
       Ok({ mode, no_dce, out_path, entry_path: path, opt_level })
@@ -149,7 +155,7 @@ fn parse_compile_cmd_args(
 ///|
 fn print_usage() -> Unit {
   println(
-    "vibe_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [--no-dce] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
+    "vibe_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wac|--wit|--wit-component] [--no-dce] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
 }
 
@@ -200,6 +206,7 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
     CompileMode::WasmJsString => "dist/" + basename + ".wasm"
     CompileMode::WasmGc => "dist/" + basename + ".wasm"
     CompileMode::Component => "dist/" + basename + ".component.wasm"
+    CompileMode::Wac => "dist/" + basename + ".component.wasm"
     CompileMode::Wit => "dist/" + basename + ".wit"
     CompileMode::WitComponent => "dist/" + basename + ".component.wit"
   }
@@ -214,6 +221,31 @@ fn ensure_dist_dir(fs : &@io.FileSystemAdapter) -> Result[Unit, String] {
 }
 
 ///|
+fn optimize_wasm_bytes_with_opt_level(
+  bytes : Bytes,
+  opt_level : String?,
+) -> Result[Bytes, String] {
+  match opt_level {
+    None => Ok(bytes)
+    Some(level) => {
+      let config = match @wite.optimize_config_from_opt_level(level) {
+        Some(v) => v
+        None =>
+          return Err(
+            "compile: unsupported wite optimize level " +
+            level +
+            " (expected: -O0|-O1|-O2|-O3|-O4|-Os|-Oz)",
+          )
+      }
+      match @wite.optimize_binary_for_size(bytes, config~) {
+        Ok(result) => Ok(result.bytes)
+        Err(msg) => Err("compile: wite optimize failed: " + msg)
+      }
+    }
+  }
+}
+
+///|
 fn compile_cmd(
   args : Array[String],
   fs : &@io.FileSystemAdapter,
@@ -222,11 +254,6 @@ fn compile_cmd(
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  let loaded = match @loader.load_db_with_fs(opts.entry_path, fs) {
-    Ok(v) => v
-    Err(err) => return Err("compile: " + err)
-  }
-  let (db, entry) = loaded
   let resolved_out = match opts.out_path {
     Some(path) => path
     None => {
@@ -237,6 +264,28 @@ fn compile_cmd(
       default_output_path(opts.entry_path, opts.mode)
     }
   }
+  if opts.mode == CompileMode::Wac {
+    let component = match
+      @wite_bundle.compose_wac_file(opts.entry_path, dce=true) {
+      Ok(bytes) => bytes
+      Err(msg) => return Err("compile: wac compose failed: " + msg)
+    }
+    let optimized = match
+      optimize_wasm_bytes_with_opt_level(component, opts.opt_level) {
+      Ok(bytes) => bytes
+      Err(err) => return Err(err)
+    }
+    match @io.write_bytes_with(fs, resolved_out, optimized) {
+      Ok(_) => ()
+      Err(err) => return Err("compile: " + err)
+    }
+    return Ok(resolved_out)
+  }
+  let loaded = match @loader.load_db_with_fs(opts.entry_path, fs) {
+    Ok(v) => v
+    Err(err) => return Err("compile: " + err)
+  }
+  let (db, entry) = loaded
   match opts.mode {
     CompileMode::Ir => {
       let compiled = @runtime_compile.compile_module(db, entry) catch {
@@ -302,6 +351,10 @@ fn compile_cmd(
         Err(err) => return Err("compile: " + err)
       }
     }
+    CompileMode::Wac =>
+      return Err(
+        "compile: internal error: --wac should bypass vibe source compilation",
+      )
     CompileMode::Wit => {
       let basename = get_basename(entry)
       let package_name = "local:" + basename

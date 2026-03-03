@@ -125,7 +125,7 @@ fn print_usage() -> Unit {
     "  normalize [--write|--check] <file...>  normalize declaration order + DCE (+fmt)",
   )
   println(
-    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--debug-errors] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
+    "  compile [--wasm | --wasm-js-string | --wasm-gc | --component | --wac | --wit | --wit-component] [--no-dce] [--coverage] [--coverage-run-tests] [--debug-errors] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
   println(
     "                                     emit to dist/ (or -o path). Formats: IR, Core WASM, Component WASM",
@@ -407,6 +407,7 @@ fn default_output_path(input_path : String, mode : CompileMode) -> String {
     CompileMode::WasmJsString => "dist/" + basename + ".wasm"
     CompileMode::WasmGc => "dist/" + basename + ".wasm"
     CompileMode::Component => "dist/" + basename + ".component.wasm"
+    CompileMode::Wac => "dist/" + basename + ".component.wasm"
     CompileMode::Wit => "dist/" + basename + ".wit"
     CompileMode::WitComponent => "dist/" + basename + ".component.wit"
   }
@@ -500,6 +501,50 @@ fn ensure_compile_coverage_allowed(
 }
 
 ///|
+fn optimize_wasm_bytes_with_opt_level_for_cli(
+  bytes : Bytes,
+  opt_level : String?,
+) -> Result[Bytes, String] {
+  match opt_level {
+    None => Ok(bytes)
+    Some(level) => {
+      let config = match @wite.optimize_config_from_opt_level(level) {
+        Some(v) => v
+        None =>
+          return Err(
+            "compile: unsupported wite optimize level " +
+            level +
+            " (expected: -O0|-O1|-O2|-O3|-O4|-Os|-Oz)",
+          )
+      }
+      match @wite.optimize_binary_for_size(bytes, config~) {
+        Ok(result) => Ok(result.bytes)
+        Err(msg) => Err("compile: wite optimize failed: " + msg)
+      }
+    }
+  }
+}
+
+///|
+fn default_wac_config_path(wac_path : String) -> String {
+  @vibe_fs.parent_path(wac_path) + "/wite.config.jsonc"
+}
+
+///|
+fn sync_wac_dependencies_if_configured(
+  wac_path : String,
+  fs : &@io.FileSystemAdapter,
+) -> Result[UInt, String] {
+  let config_path = default_wac_config_path(wac_path)
+  if not(@io.path_exists_with(fs, config_path)) {
+    return Ok(0U)
+  }
+  @wite_deps.materialize_wac_dependencies_from_config(
+    config_path, wac_path, false,
+  )
+}
+
+///|
 fn compile_cmd(args : Array[String]) -> Unit {
   let opts = match parse_compile_cmd_args(args) {
     Ok(v) => v
@@ -514,6 +559,39 @@ fn compile_cmd(args : Array[String]) -> Unit {
     Err(msg) => abort(msg)
   }
   let fs = @io.default_fs_adapter()
+  if opts.mode == CompileMode::Wac {
+    let resolved_out = match opts.out_path {
+      Some(path) => path
+      None => {
+        ensure_dist_dir_with(fs)
+        default_output_path(opts.entry_path, opts.mode)
+      }
+    }
+    let synced_count = match
+      sync_wac_dependencies_if_configured(opts.entry_path, fs) {
+      Ok(v) => v
+      Err(msg) => abort("compile: wac deps sync failed: " + msg)
+    }
+    if synced_count > 0U {
+      println("materialized wac deps: " + synced_count.to_string())
+    }
+    let component = match
+      @wite_bundle.compose_wac_file(opts.entry_path, dce=true) {
+      Ok(bytes) => bytes
+      Err(msg) => abort("compile: wac compose failed: " + msg)
+    }
+    let optimized = match
+      optimize_wasm_bytes_with_opt_level_for_cli(component, opts.opt_level) {
+      Ok(bytes) => bytes
+      Err(msg) => abort(msg)
+    }
+    match @io.write_bytes_with(fs, resolved_out, optimized) {
+      Ok(_) => ()
+      Err(err) => abort("compile: " + err)
+    }
+    println("wrote " + resolved_out)
+    return
+  }
   match @loader.load_db_with_fs(opts.entry_path, fs) {
     Err(err) => abort("compile: " + err)
     Ok((db, entry)) => {
@@ -653,6 +731,10 @@ fn compile_cmd(args : Array[String]) -> Unit {
           }
           println("wrote " + resolved_out)
         }
+        CompileMode::Wac =>
+          abort(
+            "compile: internal error: --wac should bypass vibe source compilation",
+          )
         CompileMode::Wit => {
           // Generate WIT with default package/world names derived from filename
           let basename = get_basename(entry)
@@ -698,6 +780,265 @@ fn[T] die(msg : String) -> T {
 }
 
 ///|
+enum CliExecBackendPref {
+  Auto
+  Interpreter
+  Compiled
+} derive(Eq, Show)
+
+///|
+fn parse_cli_exec_backend_pref(raw : String) -> CliExecBackendPref {
+  let value = raw.trim().to_string().to_lower()
+  match value {
+    "interp" | "interpreter" => CliExecBackendPref::Interpreter
+    "compiled" | "compile" | "wasm" => CliExecBackendPref::Compiled
+    _ => CliExecBackendPref::Auto
+  }
+}
+
+///|
+fn resolve_cli_exec_backend_pref(env_name : String) -> CliExecBackendPref {
+  match @sys.get_env_var(env_name) {
+    Some(raw) => parse_cli_exec_backend_pref(raw)
+    None => CliExecBackendPref::Auto
+  }
+}
+
+///|
+fn normalize_cli_entry_path(path : String) -> String {
+  path.replace(old="\\", new="/")
+}
+
+///|
+fn entry_prefers_compiled_backend(entry_path : String) -> Bool {
+  let normalized = normalize_cli_entry_path(entry_path)
+  let matched_normalized = normalized == "vibe/compiler" ||
+    normalized.has_prefix("vibe/compiler/") ||
+    normalized.has_suffix("/vibe/compiler") ||
+    normalized.contains("/vibe/compiler/")
+  if matched_normalized {
+    return true
+  }
+  entry_path == "vibe\\compiler" ||
+  entry_path.has_prefix("vibe\\compiler\\") ||
+  entry_path.has_suffix("\\vibe\\compiler") ||
+  entry_path.contains("\\vibe\\compiler\\")
+}
+
+///|
+fn entry_prefers_interpreter_backend(entry_path : String) -> Bool {
+  let normalized = normalize_cli_entry_path(entry_path)
+  let matched_normalized = normalized == "vibe/x/args" ||
+    normalized.has_prefix("vibe/x/args/") ||
+    normalized.has_suffix("/vibe/x/args") ||
+    normalized.contains("/vibe/x/args/")
+  if matched_normalized {
+    return true
+  }
+  entry_path == "vibe\\x\\args" ||
+  entry_path.has_prefix("vibe\\x\\args\\") ||
+  entry_path.has_suffix("\\vibe\\x\\args") ||
+  entry_path.contains("\\vibe\\x\\args\\")
+}
+
+///|
+fn resolve_cli_exec_backend_pref_for_entry(
+  env_name : String,
+  entry_path : String,
+) -> CliExecBackendPref {
+  let pref = resolve_cli_exec_backend_pref(env_name)
+  if pref == CliExecBackendPref::Auto {
+    if entry_prefers_interpreter_backend(entry_path) {
+      return CliExecBackendPref::Interpreter
+    }
+    if entry_prefers_compiled_backend(entry_path) {
+      return CliExecBackendPref::Compiled
+    }
+  }
+  pref
+}
+
+///|
+fn first_non_empty_line(text : String) -> String {
+  for line_view in text.split("\n") {
+    let line = line_view.trim().to_string()
+    if line.length() > 0 {
+      return line
+    }
+  }
+  ""
+}
+
+///|
+fn last_non_empty_line(text : String) -> String {
+  let mut out = ""
+  for line_view in text.split("\n") {
+    let line = line_view.trim().to_string()
+    if line.length() > 0 {
+      out = line
+    }
+  }
+  out
+}
+
+///|
+fn parse_numeric_line_int64(line : String) -> Int64? {
+  let trimmed = line.trim().to_string()
+  if trimmed.length() == 0 {
+    return None
+  }
+  let mut has_digit = false
+  for i, c in trimmed {
+    if i == 0 && c == '-' {
+      continue
+    }
+    if c < '0' || c > '9' {
+      return None
+    }
+    has_digit = true
+  }
+  if not(has_digit) {
+    return None
+  }
+  let value = @strconv.parse_int(trimmed) catch { _ => return None }
+  Some(value.to_int64())
+}
+
+///|
+fn parse_last_numeric_line_int64(text : String) -> Int64? {
+  let mut out : Int64? = None
+  for line_view in text.split("\n") {
+    let line = line_view.to_string()
+    match parse_numeric_line_int64(line) {
+      Some(value) => out = Some(value)
+      None => ()
+    }
+  }
+  out
+}
+
+///|
+struct WasmtimeInvokeOutput {
+  status : Int
+  stdout : String
+  stderr : String
+} derive(Show, Eq)
+
+///|
+enum WasmRunValue {
+  Int(Int64)
+  Bool(Bool)
+} derive(Show, Eq)
+
+///|
+fn run_wasmtime_invoke_run_capture(
+  runner : BenchWasmRunner,
+  wasm_path : String,
+  tmp_prefix : String,
+) -> WasmtimeInvokeOutput {
+  let out_path = tmp_prefix + ".out"
+  let err_path = tmp_prefix + ".err"
+  let cmd = build_wasmtime_bench_command(runner, wasm_path) +
+    " >" +
+    shell_quote_command_arg(out_path) +
+    " 2>" +
+    shell_quote_command_arg(err_path)
+  let status = c_system(system_command_bytes(cmd))
+  let stdout = @os_fs.read_file_to_string(out_path) catch { _ => "" }
+  let stderr = @os_fs.read_file_to_string(err_path) catch { _ => "" }
+  remove_file_if_exists(out_path)
+  remove_file_if_exists(err_path)
+  { status, stdout, stderr }
+}
+
+///|
+fn decode_tagged_wasm_run_value(tagged : Int64) -> WasmRunValue? {
+  let tag = tagged & 3L
+  if tag == 0L {
+    return Some(WasmRunValue::Int(tagged >> 2))
+  }
+  if tag == 3L {
+    return Some(WasmRunValue::Bool(tagged >> 2 != 0L))
+  }
+  None
+}
+
+///|
+fn compile_module_wasm_for_exec(
+  db : @runtime.VibeDb,
+  entry : String,
+) -> Bytes raise @runtime_compile.WasmCompileError {
+  @runtime_compile.compile_module_wasm_with_opt_level(
+    db,
+    entry,
+    no_dce=false,
+    opt_level=None,
+    // Preserve thrown string payloads for `handle { ... } { Error(msg) => ... }`
+    // parity with interpreter on compiled execution paths.
+    debug_errors=true,
+  )
+}
+
+///|
+fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
+  let (db, entry) = match @loader.load_db(entry_path) {
+    Err(err) => return Err("load error: " + err)
+    Ok(v) => v
+  }
+  let runner = match resolve_bench_wasm_runner(entry) {
+    Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  let wasm_bytes = compile_module_wasm_for_exec(db, entry) catch {
+    e => return Err("compile wasm error: " + e.user_message())
+  }
+  let parent = @vibe_fs.parent_path(entry)
+  let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
+  let wasm_path = parent + "/.vibe_run_wasm_" + stamp + ".wasm"
+  @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
+    e => return Err("write wasm failed: " + e.to_string())
+  }
+  defer remove_file_if_exists(wasm_path)
+  let exec_out = run_wasmtime_invoke_run_capture(
+    runner,
+    wasm_path,
+    parent + "/.vibe_run_wasmtime_" + stamp,
+  )
+  if exec_out.status != 0 {
+    let detail = first_non_empty_line(exec_out.stderr)
+    if detail.length() > 0 {
+      return Err(
+        "wasmtime command failed: status=" +
+        exec_out.status.to_string() +
+        " detail=" +
+        detail,
+      )
+    }
+    return Err("wasmtime command failed: status=" + exec_out.status.to_string())
+  }
+  let tagged = match parse_last_numeric_line_int64(exec_out.stdout) {
+    Some(v) => v
+    None =>
+      return Err(
+        "wasmtime output missing numeric result: " +
+        first_non_empty_line(exec_out.stdout),
+      )
+  }
+  match decode_tagged_wasm_run_value(tagged) {
+    Some(result) => Ok(result)
+    None => Err("unsupported wasm return tag: " + tagged.to_string())
+  }
+}
+
+///|
+fn print_wasm_run_value(value : WasmRunValue) -> Unit {
+  match value {
+    WasmRunValue::Int(n) => println("last: " + n.to_string())
+    WasmRunValue::Bool(b) => println("last: " + b.to_string())
+  }
+}
+
+///|
 fn run_cmd(
   args : Array[String],
   syntax_mode : @runtime.ParserMode,
@@ -709,7 +1050,22 @@ fn run_cmd(
   }
   let entry_path = args[0]
   match syntax_mode {
-    @runtime.ParserMode::VibeMode =>
+    @runtime.ParserMode::VibeMode => {
+      let backend_pref = resolve_cli_exec_backend_pref_for_entry(
+        "VIBE_RUN_BACKEND", entry_path,
+      )
+      if backend_pref != CliExecBackendPref::Interpreter {
+        match run_cmd_wasm_backend(entry_path) {
+          Ok(result) => {
+            print_wasm_run_value(result)
+            return
+          }
+          Err(err) =>
+            if backend_pref == CliExecBackendPref::Compiled {
+              die("error: run wasm backend: " + err)
+            }
+        }
+      }
       match @loader.load_db(entry_path) {
         Err(err) => die("error: " + err)
         Ok((db, entry)) => {
@@ -770,6 +1126,7 @@ fn run_cmd(
           print_eval_result(main_result)
         }
       }
+    }
     @runtime.ParserMode::PosixMode | @runtime.ParserMode::PosixStrictMode => {
       let resolved = @loader.resolve_entry_path(entry_path)
       let source = @os_fs.read_file_to_string(resolved) catch {
@@ -1135,6 +1492,325 @@ fn finalize_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
+struct CompiledTestCase {
+  name : String?
+  body : @vibe_core.Module
+} derive(Show, Eq)
+
+///|
+struct CliTestFailure {
+  name : String?
+  error : String
+} derive(Show, Eq)
+
+///|
+struct CliTestReport {
+  total : Int
+  passed : Int
+  failed : Int
+  failures : Array[CliTestFailure]
+} derive(Show, Eq)
+
+///|
+enum CompiledTestAttempt {
+  Success(CliTestReport)
+  Unsupported(String)
+  Error(String)
+}
+
+///|
+enum CompiledTestCaseExec {
+  Passed
+  Failed(String)
+  Unsupported(String)
+  Error(String)
+}
+
+///|
+fn collect_compiled_test_cases(
+  ast : @vibe_core.Module,
+) -> Array[CompiledTestCase] {
+  let out : Array[CompiledTestCase] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Test(name~, body~, ..) =>
+        out.push(CompiledTestCase::{ name, body })
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+fn render_stmt_snippets(
+  source : String,
+  stmts : Array[@vibe_core.Stmt],
+) -> String {
+  let out = StringBuilder::new()
+  for stmt in stmts {
+    let span = stmt.span()
+    let snippet = source_slice_by_span(source, span.start, span.end)
+    if snippet.trim().to_string().length() == 0 {
+      continue
+    }
+    out.write_string(snippet)
+    if not(snippet.has_suffix("\n")) {
+      out.write_char('\n')
+    }
+  }
+  out.to_string()
+}
+
+///|
+fn build_compiled_test_case_source(
+  prelude_source : String,
+  body_source : String,
+) -> String {
+  let out = StringBuilder::new()
+  if prelude_source.trim().to_string().length() > 0 {
+    out.write_string(prelude_source)
+    if not(prelude_source.has_suffix("\n")) {
+      out.write_char('\n')
+    }
+  }
+  out.write_string("{\n")
+  if body_source.trim().to_string().length() > 0 {
+    out.write_string(body_source)
+    if not(body_source.has_suffix("\n")) {
+      out.write_char('\n')
+    }
+  }
+  out.write_string("}\n")
+  out.write_string("0\n")
+  out.to_string()
+}
+
+///|
+fn wasmtime_failure_detail(stdout : String, stderr : String) -> String {
+  let err_line = first_non_empty_line(stderr)
+  if err_line.length() > 0 {
+    let tail = last_non_empty_line(stderr)
+    if tail.length() > 0 && tail != err_line {
+      return err_line + " / " + tail
+    }
+    return err_line
+  }
+  let out_line = first_non_empty_line(stdout)
+  if out_line.length() > 0 {
+    return out_line
+  }
+  "wasmtime invoke failed"
+}
+
+///|
+fn run_compiled_test_case(
+  runner : BenchWasmRunner,
+  source_path : String,
+  wasm_path : String,
+  source : String,
+) -> CompiledTestCaseExec {
+  @os_fs.write_string_to_file(source_path, source) catch {
+    e =>
+      return CompiledTestCaseExec::Error(
+        "write source failed: " + e.to_string(),
+      )
+  }
+  let (db, entry) = match @loader.load_db(source_path) {
+    Err(err) => return CompiledTestCaseExec::Error("load error: " + err)
+    Ok(v) => v
+  }
+  let wasm_bytes = compile_module_wasm_for_exec(db, entry) catch {
+    e => {
+      let msg = e.user_message()
+      if is_wasm_unsupported_compile_error(msg) {
+        return CompiledTestCaseExec::Unsupported(msg)
+      }
+      return CompiledTestCaseExec::Error("compile wasm error: " + msg)
+    }
+  }
+  @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
+    e =>
+      return CompiledTestCaseExec::Error("write wasm failed: " + e.to_string())
+  }
+  let run_out = run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path)
+  if run_out.status == 0 {
+    CompiledTestCaseExec::Passed
+  } else {
+    CompiledTestCaseExec::Failed(
+      wasmtime_failure_detail(run_out.stdout, run_out.stderr),
+    )
+  }
+}
+
+///|
+fn run_test_file_compiled(
+  entry_path : String,
+  stop_on_first_failure : Bool,
+) -> CompiledTestAttempt {
+  let (db, entry) = match @loader.load_db_for_test(entry_path) {
+    Err(err) => return CompiledTestAttempt::Error("load error: " + err)
+    Ok(v) => v
+  }
+  let ast = db.ast(entry)
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
+      _ =>
+        if finalize_stmt_is_library_side_effect(stmt) {
+          return CompiledTestAttempt::Unsupported(
+            "top-level side effects in test module",
+          )
+        }
+    }
+  }
+  let cases = collect_compiled_test_cases(ast)
+  if cases.length() == 0 {
+    return CompiledTestAttempt::Success({
+      total: 0,
+      passed: 0,
+      failed: 0,
+      failures: [],
+    })
+  }
+  let runner = match resolve_bench_wasm_runner(entry) {
+    Ok(v) => v
+    Err(err) => return CompiledTestAttempt::Unsupported(err)
+  }
+  let source = match db.get_source(entry) {
+    Some(v) => v
+    None =>
+      @os_fs.read_file_to_string(entry) catch {
+        e => return CompiledTestAttempt::Error("read error: " + e.to_string())
+      }
+  }
+  let prelude_stmts : Array[@vibe_core.Stmt] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
+      _ => prelude_stmts.push(stmt)
+    }
+  }
+  let prelude_source = render_stmt_snippets(source, prelude_stmts)
+  let parent = @vibe_fs.parent_path(entry)
+  let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
+  let failures : Array[CliTestFailure] = []
+  let mut passed = 0
+  for i, case in cases {
+    let case_body_source = render_stmt_snippets(source, case.body.stmts)
+    let case_source = build_compiled_test_case_source(
+      prelude_source, case_body_source,
+    )
+    let base = parent + "/.vibe_test_wasm_" + stamp + "_" + i.to_string()
+    let source_path = base + ".vibe"
+    let wasm_path = base + ".wasm"
+    let outcome = run_compiled_test_case(
+      runner, source_path, wasm_path, case_source,
+    )
+    remove_file_if_exists(source_path)
+    remove_file_if_exists(wasm_path)
+    match outcome {
+      CompiledTestCaseExec::Passed => passed += 1
+      CompiledTestCaseExec::Failed(err) =>
+        if stop_on_first_failure {
+          return CompiledTestAttempt::Unsupported("runtime failure: " + err)
+        } else {
+          failures.push(CliTestFailure::{ name: case.name, error: err })
+        }
+      CompiledTestCaseExec::Unsupported(err) =>
+        return CompiledTestAttempt::Unsupported(err)
+      CompiledTestCaseExec::Error(err) => return CompiledTestAttempt::Error(err)
+    }
+  }
+  CompiledTestAttempt::Success({
+    total: cases.length(),
+    passed,
+    failed: failures.length(),
+    failures,
+  })
+}
+
+///|
+fn run_test_file_interpreter(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[CliTestReport, String] {
+  let (db, entry) = match @loader.load_db_for_test(entry_path) {
+    Err(err) => return Err("load error: " + err)
+    Ok(v) => v
+  }
+  let compiled = @runtime_compile.compile_module(db, entry) catch {
+    e => return Err("compile error: " + e.to_string())
+  }
+  let rt = new_runtime_with_features(features)
+  rt.set_type_env(compiled.type_env)
+  let path_to_hash : Map[String, String] = {}
+  load_imports_into_runtime(rt, db, entry, path_to_hash)
+  let base_dir = @vibe_fs.parent_path(entry)
+  for stmt in compiled.ast.stmts {
+    match stmt {
+      @vibe_core.Stmt::Import(source~, ..)
+      | @vibe_core.Stmt::ReExport(source~, ..) =>
+        match source {
+          @vibe_core.ModuleRef::Path(path=raw_path) => {
+            let resolved = @loader.resolve_import_path(base_dir, raw_path)
+            match path_to_hash.get(resolved) {
+              Some(hash) => path_to_hash[raw_path] = hash
+              None => ()
+            }
+          }
+          @vibe_core.ModuleRef::Hash(_)
+          | @vibe_core.ModuleRef::Version(_)
+          | @vibe_core.ModuleRef::Symbol(_) => ()
+        }
+      _ => ()
+    }
+  }
+  let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
+    path,
+  ) {
+    path_to_hash.get(path)
+  })
+  for name, target in compiled.aliases {
+    rt.set_alias(name, target)
+  }
+  let report = rt.run_tests(converted_ast) catch {
+    e => return Err("eval error: " + e.to_string())
+  }
+  let failures : Array[CliTestFailure] = []
+  for failure in report.failures {
+    failures.push(CliTestFailure::{ name: failure.name, error: failure.error })
+  }
+  Ok({
+    total: report.total,
+    passed: report.passed,
+    failed: report.failed,
+    failures,
+  })
+}
+
+///|
+fn run_test_file_with_backend(
+  entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[CliTestReport, String] {
+  let backend_pref = resolve_cli_exec_backend_pref_for_entry(
+    "VIBE_TEST_BACKEND", entry_path,
+  )
+  if backend_pref != CliExecBackendPref::Interpreter {
+    let stop_on_first_failure = backend_pref == CliExecBackendPref::Auto
+    match run_test_file_compiled(entry_path, stop_on_first_failure) {
+      CompiledTestAttempt::Success(report) => return Ok(report)
+      CompiledTestAttempt::Unsupported(err) =>
+        if backend_pref == CliExecBackendPref::Compiled {
+          return Err("compiled backend unsupported: " + err)
+        }
+      CompiledTestAttempt::Error(err) => return Err(err)
+    }
+  }
+  run_test_file_interpreter(entry_path, features)
+}
+
+///|
 fn test_cmd(
   args : Array[String],
   features : @runtime.RuntimeFeatureFlags,
@@ -1217,60 +1893,18 @@ fn test_cmd_sequential(
   let mut failed_count = 0
   let file_count = entry_paths.length()
   for entry_path in entry_paths {
-    match @loader.load_db_for_test(entry_path) {
-      Err(err) => {
-        println("[\{entry_path}] load error: \{err}")
-        failed = true
-      }
-      Ok((db, entry)) => {
-        let compiled = @runtime_compile.compile_module(db, entry) catch {
-          e => {
-            println("[\{entry_path}] compile error: \{e.to_string()}")
-            failed = true
-            continue
-          }
-        }
-        let rt = new_runtime_with_features(features)
-        rt.set_type_env(compiled.type_env)
-        let path_to_hash : Map[String, String] = {}
-        load_imports_into_runtime(rt, db, entry, path_to_hash)
-        let base_dir = @vibe_fs.parent_path(entry)
-        for stmt in compiled.ast.stmts {
-          match stmt {
-            @vibe_core.Stmt::Import(source~, ..)
-            | @vibe_core.Stmt::ReExport(source~, ..) =>
-              match source {
-                @vibe_core.ModuleRef::Path(path=raw_path) => {
-                  let resolved = @loader.resolve_import_path(base_dir, raw_path)
-                  match path_to_hash.get(resolved) {
-                    Some(hash) => path_to_hash[raw_path] = hash
-                    None => ()
-                  }
-                }
-                @vibe_core.ModuleRef::Hash(_)
-                | @vibe_core.ModuleRef::Version(_)
-                | @vibe_core.ModuleRef::Symbol(_) => ()
-              }
-            _ => ()
-          }
-        }
-        let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
-          path,
-        ) {
-          path_to_hash.get(path)
-        })
-        for name, target in compiled.aliases {
-          rt.set_alias(name, target)
-        }
-        let report = rt.run_tests(converted_ast) catch {
-          e => abort("[\{entry_path}] eval error: \{e.to_string()}")
-        }
-        if !print_test_report(entry_path, report) {
+    match run_test_file_with_backend(entry_path, features) {
+      Ok(report) => {
+        if !print_cli_test_report(entry_path, report) {
           failed = true
         }
         total += report.total
         passed += report.passed
         failed_count += report.failed
+      }
+      Err(err) => {
+        println("[\{entry_path}] \{err}")
+        failed = true
       }
     }
   }
@@ -1283,10 +1917,7 @@ fn test_cmd_sequential(
 }
 
 ///|
-fn make_test_report_json(
-  entry_path : String,
-  report : @runtime.TestReport,
-) -> Json {
+fn make_cli_test_report_json(path : String, report : CliTestReport) -> Json {
   let failures_arr : Array[Json] = []
   for failure in report.failures {
     let f : Map[String, Json] = {}
@@ -1300,7 +1931,7 @@ fn make_test_report_json(
     failures_arr.push(Json::object(f))
   }
   let obj : Map[String, Json] = {}
-  obj["file"] = Json::string(entry_path)
+  obj["file"] = Json::string(path)
   obj["total"] = Json::number(report.total.to_double())
   obj["passed"] = Json::number(report.passed.to_double())
   obj["failed"] = Json::number(report.failed.to_double())
@@ -1342,66 +1973,16 @@ fn test_cmd_report_json(
     if should_exit_report_json_worker(worker_parent_pid) {
       c_exit(130)
     }
-    match @loader.load_db_for_test(entry_path) {
-      Err(err) => {
-        println(make_error_report_json(entry_path, "load", err).stringify())
-        any_failed = true
-      }
-      Ok((db, entry)) => {
-        let compiled = @runtime_compile.compile_module(db, entry) catch {
-          e => {
-            println(
-              make_error_report_json(entry_path, "compile", e.to_string()).stringify(),
-            )
-            any_failed = true
-            continue
-          }
-        }
-        let rt = new_runtime_with_features(features)
-        rt.set_type_env(compiled.type_env)
-        let path_to_hash : Map[String, String] = {}
-        load_imports_into_runtime(rt, db, entry, path_to_hash)
-        let base_dir = @vibe_fs.parent_path(entry)
-        for stmt in compiled.ast.stmts {
-          match stmt {
-            @vibe_core.Stmt::Import(source~, ..)
-            | @vibe_core.Stmt::ReExport(source~, ..) =>
-              match source {
-                @vibe_core.ModuleRef::Path(path=raw_path) => {
-                  let resolved = @loader.resolve_import_path(base_dir, raw_path)
-                  match path_to_hash.get(resolved) {
-                    Some(hash) => path_to_hash[raw_path] = hash
-                    None => ()
-                  }
-                }
-                @vibe_core.ModuleRef::Hash(_)
-                | @vibe_core.ModuleRef::Version(_)
-                | @vibe_core.ModuleRef::Symbol(_) => ()
-              }
-            _ => ()
-          }
-        }
-        let converted_ast = @vibe_core.convert_imports_to_hash(compiled.ast, fn(
-          path,
-        ) {
-          path_to_hash.get(path)
-        })
-        for name, target in compiled.aliases {
-          rt.set_alias(name, target)
-        }
-        let report = rt.run_tests(converted_ast) catch {
-          e => {
-            println(
-              make_error_report_json(entry_path, "eval", e.to_string()).stringify(),
-            )
-            any_failed = true
-            continue
-          }
-        }
-        println(make_test_report_json(entry_path, report).stringify())
+    match run_test_file_with_backend(entry_path, features) {
+      Ok(report) => {
+        println(make_cli_test_report_json(entry_path, report).stringify())
         if report.failed > 0 {
           any_failed = true
         }
+      }
+      Err(err) => {
+        println(make_error_report_json(entry_path, "test", err).stringify())
+        any_failed = true
       }
     }
   }
@@ -2719,6 +3300,23 @@ fn system_command_bytes(cmd : String) -> Bytes {
 
 ///|
 fn print_test_report(path : String, report : @runtime.TestReport) -> Bool {
+  let status = if report.failed == 0 { "ok" } else { "fail" }
+  println("\{path}: \{status} (\{report.passed}/\{report.total})")
+  if report.failed > 0 {
+    println("  failures:")
+    for failure in report.failures {
+      let name = match failure.name {
+        Some(n) => n
+        None => "<unnamed>"
+      }
+      println("  - " + name + ": " + failure.error)
+    }
+  }
+  report.failed == 0
+}
+
+///|
+fn print_cli_test_report(path : String, report : CliTestReport) -> Bool {
   let status = if report.failed == 0 { "ok" } else { "fail" }
   println("\{path}: \{status} (\{report.passed}/\{report.total})")
   if report.failed > 0 {

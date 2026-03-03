@@ -61,7 +61,9 @@ struct WasmBenchReport {
 
 ///|
 fn is_wasm_unsupported_compile_error(message : String) -> Bool {
-  message.contains("backend '") && message.contains("' does not support:")
+  let lower = message.to_lower()
+  (lower.contains("backend '") && lower.contains("' does not support:")) ||
+  lower.contains("unsupported:")
 }
 
 ///|

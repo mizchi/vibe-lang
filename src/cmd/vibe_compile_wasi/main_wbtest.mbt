@@ -59,3 +59,19 @@ test "vibe_compile_wasi parse compile args accepts -O4" {
     Err(err) => fail(err)
   }
 }
+
+///|
+test "vibe_compile_wasi parse compile args supports wac mode" {
+  let parsed = parse_compile_cmd_args(["--wac", "--wite", "main.wac"])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wac)
+      assert_eq(opts.entry_path, "main.wac")
+      match opts.opt_level {
+        Some(level) => assert_eq(level, "-Oz")
+        None => fail("expected opt_level")
+      }
+    }
+    Err(err) => fail(err)
+  }
+}
