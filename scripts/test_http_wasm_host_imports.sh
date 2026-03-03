@@ -26,10 +26,19 @@ let run = () -> Int with {Net} {
   http_close(req)
   let listener = http_listen(8080)
   let incoming = http_accept(listener)
+  let method = http_request_method(incoming)
+  let url = http_request_url(incoming)
+  let header = http_request_header(incoming, "x-test")
+  let body = http_request_body(incoming)
+  let meta_len =
+    string_length(method) +
+    string_length(url) +
+    string_length(header) +
+    string_length(body)
   http_respond(incoming, 204, "", "")
   http_close(incoming)
   http_close(listener)
-  status
+  status + meta_len
 }
 run()
 EOF
@@ -54,8 +63,10 @@ const reqHandle = tagInt(11);
 const listenerHandle = tagInt(21);
 const incomingHandle = tagInt(31);
 const expectedRespondStatus = tagInt(204);
+const expectedRunResult = 215;
 
 const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
 
 const readU32LE = (mem, pos) => {
   if (pos < 0 || pos + 4 > mem.length) {
@@ -92,6 +103,29 @@ const decodeTaggedString = (instanceRef, tagged) => {
     throw new Error(`string range out of bounds: ${start}..${end}`);
   }
   return textDecoder.decode(mem.subarray(start, end));
+};
+
+const encodeTaggedString = (instanceRef, text) => {
+  if (!instanceRef || typeof instanceRef.exports.vibe_http_host_string_new !== 'function') {
+    throw new Error('missing exported helper: vibe_http_host_string_new');
+  }
+  const encoded = textEncoder.encode(text);
+  const tagged = instanceRef.exports.vibe_http_host_string_new(encoded.length);
+  if (typeof tagged !== 'bigint') {
+    throw new Error(`expected tagged string bigint from helper, got ${typeof tagged}`);
+  }
+  if ((tagged & tagMask) !== tagObj) {
+    throw new Error(`helper returned non-string tagged value: tag=${tagged & tagMask}`);
+  }
+  const ptr = Number(tagged & ~tagMask);
+  const start = ptr + 8;
+  const mem = new Uint8Array(instanceRef.exports.memory.buffer);
+  const end = start + encoded.length;
+  if (end > mem.length) {
+    throw new Error(`helper allocated out-of-bounds string buffer: ${start}..${end}`);
+  }
+  mem.set(encoded, start);
+  return tagged;
 };
 
 const hostMatchesRule = (host, pattern) => {
@@ -222,28 +256,36 @@ const createHost = (options) => {
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-method handle: ${handle}`);
       }
-      return 0n;
+      calls.push('request_method');
+      return encodeTaggedString(instanceRef, 'GET');
     },
     http_request_url: (handle) => {
       ensureListenAnyAllowed('net_request_url');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-url handle: ${handle}`);
       }
-      return 0n;
+      calls.push('request_url');
+      return encodeTaggedString(instanceRef, '/probe');
     },
-    http_request_header: (handle, _name) => {
+    http_request_header: (handle, name) => {
       ensureListenAnyAllowed('net_request_header');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-header handle: ${handle}`);
       }
-      return 0n;
+      const decodedName = decodeTaggedString(instanceRef, name);
+      if (decodedName !== 'x-test') {
+        throw new Error(`unexpected request-header name: ${decodedName}`);
+      }
+      calls.push('request_header');
+      return encodeTaggedString(instanceRef, 'ok');
     },
     http_request_body: (handle) => {
       ensureListenAnyAllowed('net_request_body');
       if (handleKind.get(handle) !== 'incoming') {
         throw new Error(`unexpected request-body handle: ${handle}`);
       }
-      return 0n;
+      calls.push('request_body');
+      return encodeTaggedString(instanceRef, 'body');
     },
     http_respond: (handle, status, _headers, _body) => {
       ensureListenAnyAllowed('net_respond');
@@ -333,7 +375,7 @@ const expectRunError = (instance, fragment) => {
     throw new Error(`expected bigint result, got ${typeof raw}`);
   }
   const value = untagInt(raw);
-  if (value !== 200) {
+  if (value !== expectedRunResult) {
     throw new Error(`unexpected run result: ${value}`);
   }
   const expected = [
@@ -342,6 +384,10 @@ const expectRunError = (instance, fragment) => {
     `close:${reqHandle.toString()}`,
     'listen',
     'accept',
+    'request_method',
+    'request_url',
+    'request_header',
+    'request_body',
     'respond',
     `close:${incomingHandle.toString()}`,
     `close:${listenerHandle.toString()}`,

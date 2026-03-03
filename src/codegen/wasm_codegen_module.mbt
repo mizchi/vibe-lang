@@ -853,13 +853,14 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
 
   // export section
   let user_export_count = ctx.exported_fns.length()
+  let need_cabi_realloc_export = ctx.need_stdin_read_char ||
+    ctx.need_socket ||
+    ctx.need_http
+  let need_http_host_string_new_export = ctx.need_http && ctx.http_host_imports
   let export_count = 2 +
     user_export_count +
-    (if ctx.need_stdin_read_char || ctx.need_socket || ctx.need_http {
-      1
-    } else {
-      0
-    }) +
+    (if need_cabi_realloc_export { 1 } else { 0 }) +
+    (if need_http_host_string_new_export { 1 } else { 0 }) +
     (if ctx.need_exceptions { 1 } else { 0 }) +
     (if ctx.need_stack_switching { 3 } else { 0 }) + // await_tag + sleep_tag + global
     (if ctx.coverage_enabled { 2 } else { 0 })
@@ -869,10 +870,20 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   export_sec.push((0).to_byte()) // func export
   let run_index = func_import_count + funcs.length() - 1
   write_u32_leb(export_sec, run_index)
-  if ctx.need_stdin_read_char || ctx.need_socket || ctx.need_http {
+  let helper_count_before_run = (if need_cabi_realloc_export { 1 } else { 0 }) +
+    (if need_http_host_string_new_export { 1 } else { 0 })
+  let helper_base_func_index = run_index - helper_count_before_run
+  if need_cabi_realloc_export {
     write_name(export_sec, "cabi_realloc")
     export_sec.push((0).to_byte()) // func export
-    write_u32_leb(export_sec, run_index - 1)
+    write_u32_leb(export_sec, helper_base_func_index)
+  }
+  if need_http_host_string_new_export {
+    write_name(export_sec, "vibe_http_host_string_new")
+    export_sec.push((0).to_byte()) // func export
+    let string_new_index = helper_base_func_index +
+      (if need_cabi_realloc_export { 1 } else { 0 })
+    write_u32_leb(export_sec, string_new_index)
   }
   write_name(export_sec, "memory")
   export_sec.push((2).to_byte()) // memory export
@@ -1621,6 +1632,14 @@ fn emit_module_with_coverage(
     }
     let _ = ensure_sig_index(ctx, cabi_realloc_sig)
     compiled_funcs.push(compile_cabi_realloc_function(ctx))
+  }
+  if ctx.need_http && ctx.http_host_imports {
+    let host_string_new_sig = FuncSig::{
+      params: [ValueKind::I32],
+      results: [ValueKind::I64],
+    }
+    let _ = ensure_sig_index(ctx, host_string_new_sig)
+    compiled_funcs.push(compile_http_host_string_new_function(ctx))
   }
   // Set mut_captured_vars for the top-level run function
   ctx.mut_captured_vars = top_mut_captured

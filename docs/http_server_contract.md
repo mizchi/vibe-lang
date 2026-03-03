@@ -70,3 +70,9 @@ interpreter runtime では `NetListen` capability をサーバー API に適用�
     - `PermissionDenied: net_response_status`
     - `PermissionDenied: net_listen:<port>`
     - `PermissionDenied: net_accept`
+  - allow ケース:
+    - call order に `http_request_method` / `http_request_url` / `http_request_header` / `http_request_body` を含み、`request handle` API が host-import 経路で往復すること
+    - host 側が `vibe_http_host_string_new` export を使って文字列オブジェクトを guest ヒープに確保し、`http_request_*` の戻り値として返せること
+- compiled 実行系 host runner 契約:
+  - `scripts/test_compiled_backend_http_policy.sh`
+  - `VIBE_HTTP_ALLOW_CONNECT` / `VIBE_HTTP_ALLOW_LISTEN` で deny/allow を切り替え、`PermissionDenied: net_*` を検証

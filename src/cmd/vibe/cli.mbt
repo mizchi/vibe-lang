@@ -931,6 +931,12 @@ struct WasmtimeInvokeOutput {
 } derive(Show, Eq)
 
 ///|
+struct HttpHostRunner {
+  node_bin : String
+  runner_script : String
+} derive(Show, Eq)
+
+///|
 enum WasmRunValue {
   Int(Int64)
   Bool(Bool)
@@ -945,6 +951,97 @@ fn run_wasmtime_invoke_run_capture(
   let out_path = tmp_prefix + ".out"
   let err_path = tmp_prefix + ".err"
   let cmd = build_wasmtime_bench_command(runner, wasm_path) +
+    " >" +
+    shell_quote_command_arg(out_path) +
+    " 2>" +
+    shell_quote_command_arg(err_path)
+  let status = c_system(system_command_bytes(cmd))
+  let stdout = @os_fs.read_file_to_string(out_path) catch { _ => "" }
+  let stderr = @os_fs.read_file_to_string(err_path) catch { _ => "" }
+  remove_file_if_exists(out_path)
+  remove_file_if_exists(err_path)
+  { status, stdout, stderr }
+}
+
+///|
+fn resolve_http_host_runner(
+  entry_path : String,
+) -> Result[HttpHostRunner, String] {
+  let node_bin = match @sys.get_env_var("NODE_BIN") {
+    Some(raw) => {
+      let value = raw.trim().to_string()
+      if value.length() > 0 {
+        value
+      } else {
+        match find_command_in_path("node") {
+          Some(path) => path
+          None =>
+            return Err(
+              "node not found in PATH (required for HTTP compiled backend)",
+            )
+        }
+      }
+    }
+    None =>
+      match find_command_in_path("node") {
+        Some(path) => path
+        None =>
+          return Err(
+            "node not found in PATH (required for HTTP compiled backend)",
+          )
+      }
+  }
+  let root_candidates : Array[String] = []
+  let add_root = fn(root : String) -> Unit {
+    if root.length() == 0 {
+      return
+    }
+    for existing in root_candidates {
+      if existing == root {
+        return
+      }
+    }
+    root_candidates.push(root)
+  }
+  add_root(project_root_for_path(entry_path))
+  let argv = @env.args()
+  if argv.length() > 0 {
+    add_root(project_root_for_path(argv[0]))
+  }
+  add_root(project_root_for_path(@io.current_dir_or_root()))
+  for project_root in root_candidates {
+    let runner_script = project_root + "/scripts/wasm_http_host_runner.js"
+    if is_existing_file(runner_script) {
+      return Ok({ node_bin, runner_script })
+    }
+  }
+  Err(
+    "http host runner script not found under project roots: " +
+    root_candidates.join(", "),
+  )
+}
+
+///|
+fn build_http_host_run_command(
+  runner : HttpHostRunner,
+  wasm_path : String,
+) -> String {
+  shell_quote_command_arg(runner.node_bin) +
+  " " +
+  shell_quote_command_arg(runner.runner_script) +
+  " --invoke run " +
+  shell_quote_command_arg(wasm_path)
+}
+
+///|
+fn run_http_host_invoke_run_capture(
+  runner : HttpHostRunner,
+  wasm_path : String,
+  tmp_prefix : String,
+) -> WasmtimeInvokeOutput {
+  let out_path = tmp_prefix + ".out"
+  let err_path = tmp_prefix + ".err"
+  let cmd = build_http_host_run_command(runner, wasm_path) +
     " >" +
     shell_quote_command_arg(out_path) +
     " 2>" +
@@ -1137,21 +1234,10 @@ fn module_uses_http_builtins(ast : @vibe_core.Module) -> Bool {
 }
 
 ///|
-fn ensure_compiled_exec_module_supported(
-  ast : @vibe_core.Module,
-) -> Result[Unit, String] {
-  if module_uses_http_builtins(ast) {
-    return Err(
-      "http builtins require interpreter backend (compiled wasmtime path has no vibe:http host runtime)",
-    )
-  }
-  Ok(())
-}
-
-///|
 fn compile_module_wasm_for_exec(
   db : @runtime.VibeDb,
   entry : String,
+  http_host_imports? : Bool = false,
 ) -> Bytes raise @runtime_compile.WasmCompileError {
   @runtime_compile.compile_module_wasm_with_opt_level(
     db,
@@ -1161,6 +1247,7 @@ fn compile_module_wasm_for_exec(
     // Preserve thrown string payloads for `handle { ... } { Error(msg) => ... }`
     // parity with interpreter on compiled execution paths.
     debug_errors=true,
+    http_host_imports~,
   )
 }
 
@@ -1170,15 +1257,24 @@ fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
   }
-  match ensure_compiled_exec_module_supported(db.ast(entry)) {
-    Ok(_) => ()
-    Err(err) => return Err("compiled backend unsupported: " + err)
+  let use_http_host_runner = module_uses_http_builtins(db.ast(entry))
+  let http_runner = match use_http_host_runner {
+    true =>
+      match resolve_http_host_runner(entry) {
+        Ok(v) => Some(v)
+        Err(err) => return Err(err)
+      }
+    false => None
   }
   let runner = match resolve_bench_wasm_runner(entry) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  let wasm_bytes = compile_module_wasm_for_exec(db, entry) catch {
+  let wasm_bytes = compile_module_wasm_for_exec(
+    db,
+    entry,
+    http_host_imports=use_http_host_runner,
+  ) catch {
     e => return Err("compile wasm error: " + e.user_message())
   }
   let parent = @vibe_fs.parent_path(entry)
@@ -1188,28 +1284,46 @@ fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
     e => return Err("write wasm failed: " + e.to_string())
   }
   defer remove_file_if_exists(wasm_path)
-  let exec_out = run_wasmtime_invoke_run_capture(
-    runner,
-    wasm_path,
-    parent + "/.vibe_run_wasmtime_" + stamp,
-  )
+  let exec_out = match http_runner {
+    Some(host_runner) =>
+      run_http_host_invoke_run_capture(
+        host_runner,
+        wasm_path,
+        parent + "/.vibe_run_http_host_" + stamp,
+      )
+    None =>
+      run_wasmtime_invoke_run_capture(
+        runner,
+        wasm_path,
+        parent + "/.vibe_run_wasmtime_" + stamp,
+      )
+  }
   if exec_out.status != 0 {
     let detail = first_non_empty_line(exec_out.stderr)
+    let runner_name = if use_http_host_runner {
+      "http host runner"
+    } else {
+      "wasmtime"
+    }
     if detail.length() > 0 {
       return Err(
-        "wasmtime command failed: status=" +
+        runner_name +
+        " command failed: status=" +
         exec_out.status.to_string() +
         " detail=" +
         detail,
       )
     }
-    return Err("wasmtime command failed: status=" + exec_out.status.to_string())
+    return Err(
+      runner_name + " command failed: status=" + exec_out.status.to_string(),
+    )
   }
   let tagged = match parse_last_numeric_line_int64(exec_out.stdout) {
     Some(v) => v
     None =>
       return Err(
-        "wasmtime output missing numeric result: " +
+        (if use_http_host_runner { "http host runner" } else { "wasmtime" }) +
+        " output missing numeric result: " +
         first_non_empty_line(exec_out.stdout),
       )
   }
@@ -1794,6 +1908,8 @@ fn wasmtime_failure_detail(stdout : String, stderr : String) -> String {
 ///|
 fn run_compiled_test_case(
   runner : BenchWasmRunner,
+  http_runner : HttpHostRunner?,
+  use_http_host_runner : Bool,
   source_path : String,
   wasm_path : String,
   source : String,
@@ -1808,7 +1924,11 @@ fn run_compiled_test_case(
     Err(err) => return CompiledTestCaseExec::Error("load error: " + err)
     Ok(v) => v
   }
-  let wasm_bytes = compile_module_wasm_for_exec(db, entry) catch {
+  let wasm_bytes = compile_module_wasm_for_exec(
+    db,
+    entry,
+    http_host_imports=use_http_host_runner,
+  ) catch {
     e => {
       let msg = e.user_message()
       if is_wasm_unsupported_compile_error(msg) {
@@ -1821,7 +1941,11 @@ fn run_compiled_test_case(
     e =>
       return CompiledTestCaseExec::Error("write wasm failed: " + e.to_string())
   }
-  let run_out = run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path)
+  let run_out = match http_runner {
+    Some(v) =>
+      run_http_host_invoke_run_capture(v, wasm_path, wasm_path + ".http_host")
+    None => run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path)
+  }
   if run_out.status == 0 {
     CompiledTestCaseExec::Passed
   } else {
@@ -1848,10 +1972,7 @@ fn run_test_file_compiled(
     Ok(v) => v
   }
   let ast = db.ast(entry)
-  match ensure_compiled_exec_module_supported(ast) {
-    Ok(_) => ()
-    Err(err) => return CompiledTestAttempt::Unsupported(err)
-  }
+  let use_http_host_runner = module_uses_http_builtins(ast)
   for stmt in ast.stmts {
     match stmt {
       @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
@@ -1875,6 +1996,14 @@ fn run_test_file_compiled(
   let runner = match resolve_bench_wasm_runner(entry) {
     Ok(v) => v
     Err(err) => return CompiledTestAttempt::Unsupported(err)
+  }
+  let http_runner = match use_http_host_runner {
+    true =>
+      match resolve_http_host_runner(entry) {
+        Ok(v) => Some(v)
+        Err(err) => return CompiledTestAttempt::Unsupported(err)
+      }
+    false => None
   }
   let source = match db.get_source(entry) {
     Some(v) => v
@@ -1904,7 +2033,7 @@ fn run_test_file_compiled(
     let source_path = base + ".vibe"
     let wasm_path = base + ".wasm"
     let outcome = run_compiled_test_case(
-      runner, source_path, wasm_path, case_source,
+      runner, http_runner, use_http_host_runner, source_path, wasm_path, case_source,
     )
     remove_file_if_exists(source_path)
     remove_file_if_exists(wasm_path)

@@ -532,3 +532,42 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 
 - package 単位 root と monorepo 共通 root は目的が異なる。  
   selfhost のような横断 import では **repo-aware root 解決**が必要。
+
+---
+
+## K-017: MoonBit wasm import の FFI 制約（HTTP builtin 実装時のブロッカー）
+
+- 場所: `src/backend/http_wasm.mbt` 周辺、MoonBit wasm backend
+- 発見: 2026-03
+
+### 事実
+
+- wasm import 自体は `fn f(...) = "module" "name"` で定義できる（`extern "C"` は wasm backend で不可）。
+- ただし import stub の型制約が強く、`String`/`Bytes` を直接引数・戻り値にできない（`Invalid stub type`）。
+- 現行 `vibe:http/*` host import（vibe の wasm codegen 側）は tagged value (`i64`) ABI を前提にしている。
+
+### 影響
+
+- `http_wasm.mbt` を単純に host import へ差し替えるだけでは、文字列を伴う API（`http_request`, `http_response_body`, `http_request_url` など）を安全に往復できない。
+- そのまま差し替えると、wasm instantiation 時に必須 import が増え、既存の non-HTTP 実行パスを壊すリスクがある。
+
+### 必要な前提
+
+- host から guest へ文字列を返すための ABI を定義する（guest allocator/export 契約を含む）。
+- compiled 実行系（`vibe run/test`）で `vibe:http` host runtime を提供し、interpreter と同等の capability ルールを適用する。
+
+### 進捗 (2026-03-03)
+
+- wasm codegen に `vibe_http_host_string_new(i32)->i64` export を追加（`--http-host-imports` かつ HTTP builtin 使用時）。
+- host import e2e で、helper で確保した文字列に `memory` 経由で UTF-8 を書き込み、`http_request_method/url/header/body` の戻り値として消費できることを固定化。
+- compiled 実行系（`vibe run/test`）で HTTP builtin を検出した場合、`--http-host-imports` 付き wasm を生成し、`scripts/wasm_http_host_runner.js` を自動起動して `vibe:http` import を解決する経路を追加（`scripts/test_compiled_backend_http_policy.sh` で auto/forced compiled を検証）。
+- compiled host runner に capability allowlist を統合（`VIBE_HTTP_ALLOW_CONNECT`, `VIBE_HTTP_ALLOW_LISTEN`）。
+  - `VIBE_HTTP_ALLOW_CONNECT`:
+    - 省略時は `*`（developer preset 相当）
+    - 空文字は deny-all
+    - 例: `example.com:443,*.example.org,*`
+  - `VIBE_HTTP_ALLOW_LISTEN`:
+    - 省略時は `*`（developer preset 相当）
+    - 空文字は deny-all
+    - 例: `8080,3000,*`
+  - `can_connect_any` / `can_listen_any` は interpreter 契約に合わせて「該当 capability が1件でもあれば true」。

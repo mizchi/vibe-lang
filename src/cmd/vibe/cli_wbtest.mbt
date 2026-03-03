@@ -2527,7 +2527,7 @@ test "resolve backend pref forces compiled for compiler entry in auto mode" {
 }
 
 ///|
-test "compiled exec guard rejects modules that use http builtins" {
+test "compiled exec detects modules that use http builtins and emits host imports" {
   let db = @runtime.VibeDb::new()
   let src =
     #|let run = () -> Int with {Net} {
@@ -2540,14 +2540,19 @@ test "compiled exec guard rejects modules that use http builtins" {
   db.set_source("main", src)
   let ast = db.ast("main")
   assert_true(module_uses_http_builtins(ast))
-  match ensure_compiled_exec_module_supported(ast) {
-    Ok(_) => fail("expected http builtins to be rejected for compiled exec")
-    Err(msg) => assert_true(String::contains(msg, "http builtins"))
+  let wasm = try
+    compile_module_wasm_for_exec(db, "main", http_host_imports=true)
+  catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
   }
+  assert_true(wbtest_bytes_contains_ascii(wasm, "vibe:http"))
+  assert_true(wbtest_bytes_contains_ascii(wasm, "vibe_http_host_string_new"))
 }
 
 ///|
-test "compiled exec guard allows modules without http builtins" {
+test "compiled exec detects modules without http builtins" {
   let db = @runtime.VibeDb::new()
   db.set_source(
     "main",
@@ -2560,7 +2565,6 @@ test "compiled exec guard allows modules without http builtins" {
   )
   let ast = db.ast("main")
   assert_false(module_uses_http_builtins(ast))
-  assert_eq(ensure_compiled_exec_module_supported(ast), Ok(()))
 }
 
 ///|

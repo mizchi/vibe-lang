@@ -1275,3 +1275,60 @@ fn compile_cabi_realloc_function(
     body: body.data,
   }
 }
+
+///|
+fn compile_http_host_string_new_function(
+  ctx : CodegenCtx,
+) -> WasmFunc raise WasmGenError {
+  if ctx.heap_global < 0 {
+    raise WasmGenError::Unsupported(
+      "vibe_http_host_string_new requires heap global",
+    )
+  }
+  let body = ByteBuf::new()
+  let len_local = 1
+  let obj_local = 2
+  // len = max(len, 0)
+  emit_local_get(body, 0)
+  emit_local_set(body, len_local)
+  emit_local_get(body, len_local)
+  emit_i32_const_raw(body, 0)
+  emit_i32_lt_s(body)
+  body.push((4).to_byte()) // if
+  body.push((64).to_byte()) // empty block
+  emit_i32_const_raw(body, 0)
+  emit_local_set(body, len_local)
+  body.push((11).to_byte()) // end if
+  // obj = heap
+  emit_global_get(body, ctx.heap_global)
+  emit_local_set(body, obj_local)
+  // obj.ty = obj_string
+  emit_local_get(body, obj_local)
+  emit_i32_const_raw(body, obj_string)
+  emit_i32_store(body, 0)
+  // obj.len = len
+  emit_local_get(body, obj_local)
+  emit_local_get(body, len_local)
+  emit_i32_store(body, 4)
+  // heap = obj + align4(8 + len)
+  emit_local_get(body, obj_local)
+  emit_local_get(body, len_local)
+  emit_i32_const_raw(body, 11)
+  emit_i32_add(body)
+  emit_i32_const_raw(body, -4)
+  emit_i32_and(body)
+  emit_i32_add(body)
+  emit_global_set(body, ctx.heap_global)
+  // return tagged string object pointer
+  emit_local_get(body, obj_local)
+  emit_i64_extend_i32_u(body)
+  emit_i64_const_raw(body, tag_obj.to_int64())
+  emit_i64_or(body)
+  body.push((11).to_byte()) // end func
+  WasmFunc::{
+    params: [ValueKind::I32],
+    locals: [ValueKind::I32, ValueKind::I32],
+    results: [ValueKind::I64],
+    body: body.data,
+  }
+}

@@ -66,13 +66,14 @@ Completed items are archived in `docs/DONE.md`.
   - [x] Phase 2-1: API 契約を固定（`http_listen/accept/respond` の戻り値・エラー契約を明文化）
     - `docs/http_server_contract.md` を追加
     - checker/runtime wbtest で型契約 + エラー契約を固定
-  - [ ] Phase 2-2: runtime/capability ルーティング（`Net` effect から WASI HTTP 境界への接続）を実装
+  - [x] Phase 2-2: runtime/capability ルーティング（`Net` effect から WASI HTTP 境界への接続）を実装
     - 進捗: interpreter runtime で `NetListen` capability を `http_listen/accept/respond` に適用（`PermissionDenied: net_listen/net_accept/net_respond`）
     - 進捗: interpreter runtime で `NetConnect` capability を `http_request` / `socket_tcp_connect` に適用（URL host/port 抽出 + `PermissionDenied: net_connect:<host>:<port>`）
     - 進捗: interpreter runtime で HTTP handle 系 builtin に capability check を適用（client: `net_response_*` / `net_close`, server: `net_request_*`）
     - 進捗: wasm host-import e2e で `PermissionDenied: net_connect:<host>:<port>` / `net_response_status` / `net_listen:<port>` / `net_accept` を再現し、allowlist（`connect_any` + `listen_any`）時のみ通過することを gate 化（`scripts/test_http_wasm_host_imports.sh`）
-    - 進捗: `vibe run/test` の compiled backend は HTTP builtin 検出時に unsupported 扱いで interpreter へフォールバック（forced compiled のみ明示エラー）し、host runtime 未接続時の誤動作を回避
-    - 進捗: 上記方針を CI gate 化（`scripts/test_compiled_backend_http_policy.sh`）
+    - 進捗: wasm host-import e2e の allow ケースに `http_request_method` / `http_request_url` / `http_request_header` / `http_request_body` を追加し、request handle API の host-import ルーティングを固定
+    - 進捗: `vibe run/test` の compiled backend で HTTP builtin 検出時は `--http-host-imports` 付き wasm を生成し、`scripts/wasm_http_host_runner.js` 経由で `vibe:http` host runtime を自動接続（interpreter fallback 依存を解消）
+    - 進捗: auto/forced compiled の双方で上記経路が動作することを CI gate 化（`scripts/test_compiled_backend_http_policy.sh`）
   - [x] Phase 2-3: codegen 側ホスト呼び出しの導線を追加（interpreter と wasm の挙動差分を吸収）
     - wasm codegen に `http_host_imports` オプションを追加し、HTTP builtin を `vibe:http/*` import へルーティング可能にした（デフォルトは既存 fallback throw を維持）
     - `vibe compile` / `vibe_compile_wasi` に `--http-host-imports` を追加し、runtime_compile まで伝播（`--wasm` / `--component` 系）
@@ -163,6 +164,14 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] WASM HTTP builtins の本実装（現状は wasm で catchable fallback error）。WASI P3 HTTP (`wasi:http@0.3.0-draft`) 安定待ち
   - Client: `wasi:http/handler.handle` で outgoing-request 送信
   - Server: `wasi:http/handler` export で incoming-request 受信 (wasmtime serve)
+  - 実装前提（vibe 側）:
+    - [x] host import で String を返すための guest allocator/export 契約を定義
+      - wasm codegen が `vibe_http_host_string_new(i32)->i64` を export（`--http-host-imports` + HTTP builtin 使用時）
+      - host は `memory` に UTF-8 bytes を書き込み、tagged string (`i64`) を返せることを e2e で検証
+    - [x] compiled 実行系（`vibe run/test`）で `vibe:http` host runtime を提供（`scripts/wasm_http_host_runner.js` を使用）
+    - [x] capability allowlist を compiled host runner 側へ統合（`VIBE_HTTP_ALLOW_CONNECT`, `VIBE_HTTP_ALLOW_LISTEN`）
+      - `can_connect_any` / `can_listen_any` 判定は interpreter 契約に一致（該当 capability が1つでもあれば許可）
+      - deny/allow の回帰を `scripts/test_compiled_backend_http_policy.sh` に追加
 - [ ] HTTPS/TLS 非対応: HTTP のみ (port 80 デフォルト)
 - [ ] IPv4 のみ: DNS 解決・IPv6 未対応
 

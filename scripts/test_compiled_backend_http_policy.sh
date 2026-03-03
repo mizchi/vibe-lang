@@ -12,6 +12,8 @@ trap cleanup EXIT
 cd "$PROJECT_ROOT"
 
 SRC_PATH="$TMP_DIR/http_policy_probe.vibe"
+REQUEST_SRC_PATH="$TMP_DIR/http_policy_request_probe.vibe"
+LISTEN_SRC_PATH="$TMP_DIR/http_policy_listen_probe.vibe"
 
 cat >"$SRC_PATH" <<'EOF'
 let main = () -> Int with {Net} {
@@ -22,13 +24,32 @@ let main = () -> Int with {Net} {
     1
   }
 }
+main()
+EOF
+
+cat >"$REQUEST_SRC_PATH" <<'EOF'
+let main = () -> Int with {Net} {
+  let req = http_request("GET", "https://example.com", "", "")
+  let status = http_response_status(req)
+  http_close(req)
+  status
+}
+main()
+EOF
+
+cat >"$LISTEN_SRC_PATH" <<'EOF'
+let main = () -> Int with {Net} {
+  let _listener = http_listen(8080)
+  1
+}
+main()
 EOF
 
 AUTO_OUT="$TMP_DIR/auto.out"
 AUTO_ERR="$TMP_DIR/auto.err"
 
 if ! moon run --target native src/cmd/vibe -- run "$SRC_PATH" >"$AUTO_OUT" 2>"$AUTO_ERR"; then
-  echo "compiled backend http policy failed: auto backend run should fall back to interpreter" >&2
+  echo "compiled backend http policy failed: auto backend run should succeed" >&2
   cat "$AUTO_ERR" >&2 || true
   exit 1
 fi
@@ -41,15 +62,78 @@ fi
 
 FORCED_OUT="$TMP_DIR/forced.out"
 FORCED_ERR="$TMP_DIR/forced.err"
-set +e
-VIBE_RUN_BACKEND=compiled moon run --target native src/cmd/vibe -- run "$SRC_PATH" >"$FORCED_OUT" 2>"$FORCED_ERR"
-FORCED_STATUS=$?
-set -e
-if ! rg -n 'compiled backend unsupported: http builtins require interpreter backend' "$FORCED_OUT" "$FORCED_ERR" >/dev/null; then
-  echo "compiled backend http policy failed: forced compiled backend error message mismatch" >&2
-  echo "status=$FORCED_STATUS" >&2
+if ! VIBE_RUN_BACKEND=compiled moon run --target native src/cmd/vibe -- run "$SRC_PATH" >"$FORCED_OUT" 2>"$FORCED_ERR"; then
+  echo "compiled backend http policy failed: forced compiled backend should succeed" >&2
   cat "$FORCED_OUT" >&2 || true
   cat "$FORCED_ERR" >&2 || true
+  exit 1
+fi
+if ! rg -n '^last: 1$' "$FORCED_OUT" >/dev/null; then
+  echo "compiled backend http policy failed: forced compiled backend output missing 'last: 1'" >&2
+  cat "$FORCED_OUT" >&2 || true
+  cat "$FORCED_ERR" >&2 || true
+  exit 1
+fi
+
+DENY_CONNECT_OUT="$TMP_DIR/deny_connect.out"
+DENY_CONNECT_ERR="$TMP_DIR/deny_connect.err"
+VIBE_RUN_BACKEND=compiled VIBE_HTTP_ALLOW_CONNECT= VIBE_HTTP_ALLOW_LISTEN='*' moon run --target native src/cmd/vibe -- run "$REQUEST_SRC_PATH" >"$DENY_CONNECT_OUT" 2>"$DENY_CONNECT_ERR" || true
+if ! rg -n 'PermissionDenied: net_connect:example.com:443' "$DENY_CONNECT_OUT" "$DENY_CONNECT_ERR" >/dev/null; then
+  echo "compiled backend http policy failed: deny-connect message mismatch" >&2
+  cat "$DENY_CONNECT_OUT" >&2 || true
+  cat "$DENY_CONNECT_ERR" >&2 || true
+  exit 1
+fi
+if rg -n '^last:' "$DENY_CONNECT_OUT" >/dev/null; then
+  echo "compiled backend http policy failed: deny-connect should not produce last result" >&2
+  cat "$DENY_CONNECT_OUT" >&2 || true
+  cat "$DENY_CONNECT_ERR" >&2 || true
+  exit 1
+fi
+
+ALLOW_CONNECT_OUT="$TMP_DIR/allow_connect.out"
+ALLOW_CONNECT_ERR="$TMP_DIR/allow_connect.err"
+if ! VIBE_RUN_BACKEND=compiled VIBE_HTTP_ALLOW_CONNECT='example.com:443' VIBE_HTTP_ALLOW_LISTEN= moon run --target native src/cmd/vibe -- run "$REQUEST_SRC_PATH" >"$ALLOW_CONNECT_OUT" 2>"$ALLOW_CONNECT_ERR"; then
+  echo "compiled backend http policy failed: allow-connect run should succeed" >&2
+  cat "$ALLOW_CONNECT_OUT" >&2 || true
+  cat "$ALLOW_CONNECT_ERR" >&2 || true
+  exit 1
+fi
+if ! rg -n '^last: 200$' "$ALLOW_CONNECT_OUT" >/dev/null; then
+  echo "compiled backend http policy failed: allow-connect output missing 'last: 200'" >&2
+  cat "$ALLOW_CONNECT_OUT" >&2 || true
+  cat "$ALLOW_CONNECT_ERR" >&2 || true
+  exit 1
+fi
+
+DENY_LISTEN_OUT="$TMP_DIR/deny_listen.out"
+DENY_LISTEN_ERR="$TMP_DIR/deny_listen.err"
+VIBE_RUN_BACKEND=compiled VIBE_HTTP_ALLOW_CONNECT='*' VIBE_HTTP_ALLOW_LISTEN= moon run --target native src/cmd/vibe -- run "$LISTEN_SRC_PATH" >"$DENY_LISTEN_OUT" 2>"$DENY_LISTEN_ERR" || true
+if ! rg -n 'PermissionDenied: net_listen:8080' "$DENY_LISTEN_OUT" "$DENY_LISTEN_ERR" >/dev/null; then
+  echo "compiled backend http policy failed: deny-listen message mismatch" >&2
+  cat "$DENY_LISTEN_OUT" >&2 || true
+  cat "$DENY_LISTEN_ERR" >&2 || true
+  exit 1
+fi
+if rg -n '^last:' "$DENY_LISTEN_OUT" >/dev/null; then
+  echo "compiled backend http policy failed: deny-listen should not produce last result" >&2
+  cat "$DENY_LISTEN_OUT" >&2 || true
+  cat "$DENY_LISTEN_ERR" >&2 || true
+  exit 1
+fi
+
+ALLOW_LISTEN_OUT="$TMP_DIR/allow_listen.out"
+ALLOW_LISTEN_ERR="$TMP_DIR/allow_listen.err"
+if ! VIBE_RUN_BACKEND=compiled VIBE_HTTP_ALLOW_CONNECT= VIBE_HTTP_ALLOW_LISTEN='8080' moon run --target native src/cmd/vibe -- run "$LISTEN_SRC_PATH" >"$ALLOW_LISTEN_OUT" 2>"$ALLOW_LISTEN_ERR"; then
+  echo "compiled backend http policy failed: allow-listen run should succeed" >&2
+  cat "$ALLOW_LISTEN_OUT" >&2 || true
+  cat "$ALLOW_LISTEN_ERR" >&2 || true
+  exit 1
+fi
+if ! rg -n '^last: 1$' "$ALLOW_LISTEN_OUT" >/dev/null; then
+  echo "compiled backend http policy failed: allow-listen output missing 'last: 1'" >&2
+  cat "$ALLOW_LISTEN_OUT" >&2 || true
+  cat "$ALLOW_LISTEN_ERR" >&2 || true
   exit 1
 fi
 

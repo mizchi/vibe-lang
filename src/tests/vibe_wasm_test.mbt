@@ -943,6 +943,7 @@ test "vibe wasm can route http builtins to host imports via emit option" {
   assert_true(bytes_contains_ascii(wasm, "http_request"))
   assert_true(bytes_contains_ascii(wasm, "http_response_status"))
   assert_true(bytes_contains_ascii(wasm, "http_close"))
+  assert_true(bytes_contains_ascii(wasm, "vibe_http_host_string_new"))
 }
 
 ///|
