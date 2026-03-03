@@ -51,6 +51,9 @@ fn collect_test_entry_paths_from_dir(
     if name == "." || name == ".." {
       continue
     }
+    if should_skip_hidden_entry_name(name) {
+      continue
+    }
     let path = if name.has_prefix(dir + "/") { name } else { dir + "/" + name }
     let is_file = @os_fs.is_file(path) catch { _ => false }
     if is_file {
@@ -74,6 +77,9 @@ fn collect_bench_entry_paths_from_dir(
     if name == "." || name == ".." {
       continue
     }
+    if should_skip_hidden_entry_name(name) {
+      continue
+    }
     let path = if name.has_prefix(dir + "/") { name } else { dir + "/" + name }
     let is_file = @os_fs.is_file(path) catch { _ => false }
     if is_file {
@@ -82,6 +88,24 @@ fn collect_bench_entry_paths_from_dir(
       }
     }
   }
+}
+
+///|
+fn should_skip_hidden_entry_name(entry_name : String) -> Bool {
+  extract_entry_basename(entry_name).has_prefix(".")
+}
+
+///|
+fn extract_entry_basename(entry_name : String) -> String {
+  let normalized = entry_name.replace(old="\\", new="/")
+  let mut last = normalized
+  for segment in normalized.split("/") {
+    let part = segment.to_string()
+    if part.length() > 0 {
+      last = part
+    }
+  }
+  last
 }
 
 ///|

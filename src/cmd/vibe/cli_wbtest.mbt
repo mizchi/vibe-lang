@@ -1183,6 +1183,38 @@ test "compile args parse explicit O4 level for component" {
 }
 
 ///|
+test "compile args parse wac mode with wite default level" {
+  let parsed = parse_compile_cmd_args(["--wac", "--wite", "main.wac"])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.mode, CompileMode::Wac)
+      assert_eq(opts.entry_path, "main.wac")
+      match opts.opt_level {
+        Some(level) => assert_eq(level, "-Oz")
+        None => fail("expected opt level")
+      }
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "sync wac deps skips when wite config is missing" {
+  let root = wbtest_make_temp_dir("wac_deps_skip_missing_config")
+  let wac_path = root + "/main.wac"
+  @os_fs.write_string_to_file(wac_path, "package app:composition;\n") catch {
+    e => fail("write wac failed: " + e.to_string())
+  }
+  let fs = @io.default_fs_adapter()
+  let synced = match sync_wac_dependencies_if_configured(wac_path, fs) {
+    Ok(v) => v
+    Err(msg) => fail("unexpected sync error: " + msg)
+  }
+  assert_eq(synced, 0U)
+  assert_eq(default_wac_config_path(wac_path), root + "/wite.config.jsonc")
+}
+
+///|
 test "compile args parse coverage for wasm" {
   let parsed = parse_compile_cmd_args([
     "--wasm", "--coverage", "-o", "/tmp/out.wasm", "main.vibe",
@@ -1286,7 +1318,7 @@ test "compile args reject optimize flags on non-binary mode" {
     Ok(_) => fail("expected error")
     Err(msg) =>
       assert_eq(
-        msg, "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, or --component",
+        msg, "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, --component, or --wac",
       )
   }
 }
@@ -1407,6 +1439,32 @@ test "resolve test entry paths includes top-level vibe files" {
   wbtest_remove_if_exists(top)
   wbtest_remove_if_exists(deep)
   wbtest_remove_if_exists(sub)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "resolve test entry paths ignores generated hidden wasm probe files" {
+  let root = wbtest_make_temp_dir("resolve_tests_hidden")
+  let top = root + "/top.vibe"
+  let generated_vibe = root + "/.vibe_test_wasm_123456.vibe"
+  let hidden_vibe = root + "/.hidden.vibe"
+  @os_fs.write_string_to_file(top, "") catch {
+    e => fail("write top failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(generated_vibe, "") catch {
+    e => fail("write generated vibe failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(hidden_vibe, "") catch {
+    e => fail("write hidden vibe failed: " + e.to_string())
+  }
+  let files = resolve_test_entry_paths([root])
+  assert_eq(files.length(), 1)
+  assert_true(wbtest_contains(files, top))
+  assert_false(wbtest_contains(files, generated_vibe))
+  assert_false(wbtest_contains(files, hidden_vibe))
+  wbtest_remove_if_exists(hidden_vibe)
+  wbtest_remove_if_exists(generated_vibe)
+  wbtest_remove_if_exists(top)
   wbtest_remove_if_exists(root)
 }
 
@@ -2307,9 +2365,108 @@ fn wbtest_remove_if_exists(path : String) -> Unit {
 }
 
 ///|
+fn wbtest_bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
+  let hay = bytes.to_array()
+  let pat = @utf8.encode(needle).to_array()
+  if pat.length() == 0 {
+    return true
+  }
+  if hay.length() < pat.length() {
+    return false
+  }
+  let limit = hay.length() - pat.length()
+  for i in 0..<=limit {
+    let mut ok = true
+    for j in 0..<pat.length() {
+      if hay[i + j] != pat[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+  }
+  false
+}
+
+///|
 fn wbtest_restore_env_var(name : String, prev : String?) -> Unit {
   match prev {
     Some(value) => @sys.set_env_var(name, value)
     None => @sys.unset_env_var(name)
   }
+}
+
+///|
+test "exec backend pref parsing" {
+  assert_eq(
+    parse_cli_exec_backend_pref("interpreter"),
+    CliExecBackendPref::Interpreter,
+  )
+  assert_eq(
+    parse_cli_exec_backend_pref("compiled"),
+    CliExecBackendPref::Compiled,
+  )
+  assert_eq(parse_cli_exec_backend_pref("unknown"), CliExecBackendPref::Auto)
+}
+
+///|
+test "entry_prefers_compiled_backend detects vibe compiler paths" {
+  assert_true(entry_prefers_compiled_backend("vibe/compiler/eval_test.vibe"))
+  assert_true(
+    entry_prefers_compiled_backend(
+      "/Users/mz/ghq/github.com/mizchi/vibe-lang/vibe/compiler/eval_test.vibe",
+    ),
+  )
+  assert_true(entry_prefers_compiled_backend("vibe\\compiler\\eval_test.vibe"))
+  assert_false(entry_prefers_compiled_backend("examples/hello.vibe"))
+}
+
+///|
+test "resolve backend pref forces compiled for compiler entry in auto mode" {
+  let prev_test_backend = @sys.get_env_var("VIBE_TEST_BACKEND")
+  @sys.unset_env_var("VIBE_TEST_BACKEND")
+  defer wbtest_restore_env_var("VIBE_TEST_BACKEND", prev_test_backend)
+  assert_eq(
+    resolve_cli_exec_backend_pref_for_entry(
+      "VIBE_TEST_BACKEND", "vibe/compiler/eval_test.vibe",
+    ),
+    CliExecBackendPref::Compiled,
+  )
+  assert_eq(
+    resolve_cli_exec_backend_pref_for_entry(
+      "VIBE_TEST_BACKEND", "examples/hello.vibe",
+    ),
+    CliExecBackendPref::Auto,
+  )
+}
+
+///|
+test "compiled exec wasm embeds throw literal for handler parity" {
+  let db = @runtime.VibeDb::new()
+  let needle = "WB_EXEC_THROW_LITERAL_PARITY_3f64"
+  let src =
+    #|let fail = () -> Int with { Error } {
+    #|  throw("@MSG@")
+    #|}
+    #|handle {
+    #|  fail()
+    #|} {
+    #|  Error(msg) => if string_equals(msg, "@MSG@") { 1 } else { 2 }
+    #|}
+  db.set_source("main", src.replace(old="@MSG@", new=needle))
+  let wasm = try compile_module_wasm_for_exec(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  assert_true(wbtest_bytes_contains_ascii(wasm, needle))
+}
+
+///|
+test "decode tagged wasm run value" {
+  assert_eq(decode_tagged_wasm_run_value(168L), Some(WasmRunValue::Int(42L)))
+  assert_eq(decode_tagged_wasm_run_value(7L), Some(WasmRunValue::Bool(true)))
+  assert_eq(decode_tagged_wasm_run_value(3L), Some(WasmRunValue::Bool(false)))
 }
