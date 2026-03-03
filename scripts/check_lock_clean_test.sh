@@ -47,6 +47,25 @@ if ! rg -q "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
 fi
 
 cat > "$TMP_ROOT/vibe/pkg/index.lock" <<'EOF'
+{"path":{"./.vibe_test_wasm_12345_1_0.vibe":"#cccccccccccccccccccccccccccccccccccccccc"}}
+EOF
+
+cat > "$TMP_ROOT/vibe/pkg/index.vbundle" <<'EOF'
+{"lock":{"path":{"./.vibe_test_wasm_12345_1_0.vibe":"#cccccccccccccccccccccccccccccccccccccccc"}}}
+EOF
+
+if VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$FAIL_LOG" 2>&1; then
+  echo "lock-check self-test: expected failure for .vibe_test_wasm contamination" >&2
+  exit 1
+fi
+
+if ! rg -q "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
+  echo "lock-check self-test: missing expected .vibe_test_wasm failure message" >&2
+  cat "$FAIL_LOG" >&2
+  exit 1
+fi
+
+cat > "$TMP_ROOT/vibe/pkg/index.lock" <<'EOF'
 {"path":{"./main.vibe":"#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 EOF
 

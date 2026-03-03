@@ -25,6 +25,8 @@ fi
 # Keep this allowlist strict: probes/tmp entries must never ship in lock files.
 matches=$(
   rg -n --no-heading --only-matching \
+    -e '"[^"]*\.vibe_test_wasm_[^"]*"' \
+    -e '"\./_build/[^"]*"' \
     -e '"\./(_probe|_tmp|review_)[^"]*"' \
     -e '"\./tmp_probe/[^"]*"' \
     "${LOCK_FILES[@]}" || true
@@ -32,7 +34,7 @@ matches=$(
 if [ -n "$matches" ]; then
   echo "$matches" >&2
   echo "lock-check: found temporary entries in index.lock" >&2
-  echo "lock-check: remove _probe/_tmp/review_ keys before commit" >&2
+  echo "lock-check: remove .vibe_test_wasm/_build/_probe/_tmp/review_ keys before commit" >&2
   exit 1
 fi
 

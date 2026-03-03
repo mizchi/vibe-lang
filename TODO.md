@@ -62,8 +62,15 @@ Completed items are archived in `docs/DONE.md`.
   - `src/cmd/vibe_wite_optimize_wasi` を追加（`--wac` と `-O*` をサポート）
   - `wasm-gc` 入力は gc 互換フォールバック（type-form 未対応パスを無効化）で fail-open する
   - selfhost 側は `process.run` / `sh` で sidecar を呼び出す
-- [ ] WASM server Phase 2（`http_listen/accept/respond`）の実装計画を切り、順次実装する
-- [ ] `moon info` mbti 自動再生成の循環依存問題を解消する
+- [x] WASM server Phase 2（`http_listen/accept/respond`）の実装計画を確定する
+  - [ ] Phase 2-1: API 契約を固定（`http_listen/accept/respond` の戻り値・エラー契約を明文化）
+  - [ ] Phase 2-2: runtime/capability ルーティング（`Net` effect から WASI HTTP 境界への接続）を実装
+  - [ ] Phase 2-3: codegen 側ホスト呼び出しの導線を追加（interpreter と wasm の挙動差分を吸収）
+  - [ ] Phase 2-4: component WIT/export 仕様を固定し、`wasm-tools validate --features all` を gate 化
+  - [ ] Phase 2-5: e2e（request -> handler -> respond）を fixture 化し CI 常時 green にする
+- [x] `moon info` mbti 自動再生成の循環依存問題を解消する（回帰ゲート化）
+  - `scripts/test_moon_info_regen.sh` を追加（`moon info` 2回実行の idempotency + `moon check --deny-warn`）
+  - `wasm-codegen-integrity` CI に再生成ゲートを追加
 
 **現状 (18 ファイル中 18 OK):**
 

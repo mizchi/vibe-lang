@@ -382,6 +382,10 @@ gen-builtin-contract-table:
 info:
     moon info
 
+# Validate moon info regeneration idempotency and deny-warn check compatibility
+test-moon-info-regen:
+    bash scripts/test_moon_info_regen.sh
+
 # Clean build artifacts
 clean:
     moon clean
