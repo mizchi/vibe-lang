@@ -2430,6 +2430,44 @@ fn test_batch_weight_cache_path() -> String? {
 }
 
 ///|
+fn strip_leading_slashes(path : String) -> String {
+  let mut start = 0
+  for _, c in path {
+    if c == '/' {
+      start += 1
+    } else {
+      break
+    }
+  }
+  if start > 0 {
+    target_substring(path, start, path.length())
+  } else {
+    path
+  }
+}
+
+///|
+fn test_batch_weight_cache_key(path : String) -> String {
+  if not(path.has_prefix("/")) {
+    return strip_leading_slashes(@vibe_fs.normalize_path(path))
+  }
+  let normalized = @vibe_fs.normalize_path(path)
+  if not(normalized.has_prefix("/")) {
+    return normalized
+  }
+  let cwd = @vibe_fs.normalize_path(@io.current_dir_or_root())
+  if cwd == "/" {
+    return strip_leading_slashes(normalized)
+  }
+  let cwd_prefix = cwd + "/"
+  if normalized.has_prefix(cwd_prefix) {
+    target_substring(normalized, cwd_prefix.length(), normalized.length())
+  } else {
+    normalized
+  }
+}
+
+///|
 fn load_test_batch_weight_cache(cache_path : String) -> Map[String, Int] {
   if not(@os_fs.path_exists(cache_path)) {
     return {}
@@ -2448,7 +2486,7 @@ fn load_test_batch_weight_cache(cache_path : String) -> Map[String, Int] {
           Json::Number(n, ..) => {
             let weight = n.to_int()
             if weight > 0 {
-              out[key] = weight
+              out[test_batch_weight_cache_key(key)] = weight
             }
           }
           _ => ()
@@ -2486,7 +2524,7 @@ fn save_test_batch_weight_cache(
   let obj : Map[String, Json] = {}
   for path, weight in weights {
     if weight > 0 {
-      obj[path] = Json::number(weight.to_double())
+      obj[test_batch_weight_cache_key(path)] = Json::number(weight.to_double())
     }
   }
   @os_fs.write_string_to_file(cache_path, Json::object(obj).stringify()) catch {
@@ -2621,7 +2659,8 @@ fn test_entry_batch_path_weight(
   path : String,
   weights : Map[String, Int],
 ) -> Int {
-  match weights.get(path) {
+  let key = test_batch_weight_cache_key(path)
+  match weights.get(key) {
     Some(weight) => if weight > 0 { weight } else { 1 }
     None => 1
   }
@@ -2809,7 +2848,7 @@ fn test_cmd_parallel(
     let merged_batch_weights : Map[String, Int] = {}
     for path, weight in cached_batch_weights {
       if weight > 0 {
-        merged_batch_weights[path] = weight
+        merged_batch_weights[test_batch_weight_cache_key(path)] = weight
       }
     }
     let mut total = 0
@@ -2860,7 +2899,7 @@ fn test_cmd_parallel(
             passed += file_passed
             failed_count += file_failed
             if file_elapsed_ms > 0 {
-              merged_batch_weights[path] = file_elapsed_ms
+              merged_batch_weights[test_batch_weight_cache_key(path)] = file_elapsed_ms
             }
             let status = if file_failed == 0 { "ok" } else { "fail" }
             println("\{path}: \{status} (\{file_passed}/\{file_total})")

@@ -2177,6 +2177,24 @@ test "split test entry path batches with weights isolates heavy module first" {
 }
 
 ///|
+test "test batch weight cache key relativizes cwd absolute path" {
+  let cwd = @io.current_dir_or_root()
+  let abs = @vibe_fs.normalize_path(cwd + "/vibe/compiler/eval_test.vibe")
+  if @vibe_fs.normalize_path(cwd).has_prefix("/") {
+    assert_eq(
+      test_batch_weight_cache_key(abs),
+      "vibe/compiler/eval_test.vibe",
+    )
+  } else {
+    assert_eq(test_batch_weight_cache_key(abs), abs)
+  }
+  assert_eq(
+    test_batch_weight_cache_key("vibe/compiler/eval_test.vibe"),
+    "vibe/compiler/eval_test.vibe",
+  )
+}
+
+///|
 test "find json lines extracts all object-looking lines" {
   let output =
     #|log: start

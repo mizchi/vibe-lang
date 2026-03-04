@@ -12,6 +12,7 @@ PIPELINE_OPT_LEVEL="${VIBE_SELFHOST_PIPELINE_OPT_LEVEL:-}"
 SELFHOST_TEST_JOBS="${VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS:-}"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC:-900}"
 BATCH_WEIGHT_CACHE_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_CACHE:-$OUT_DIR/selfhost_test_batch_weights.json}"
+BATCH_WEIGHT_SEED_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_SEED:-$PROJECT_ROOT/scripts/selfhost_test_batch_weights.seed.json}"
 
 run_with_timeout() {
   local timeout_sec="$1"
@@ -207,6 +208,11 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %s\n" "selfhost test jobs" "$SELFHOST_TEST_JOBS" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "batch weight cache" "$BATCH_WEIGHT_CACHE_PATH" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "batch weight seed" "$BATCH_WEIGHT_SEED_PATH" >> "$GITHUB_STEP_SUMMARY" || true
+fi
+
+if [ ! -f "$BATCH_WEIGHT_CACHE_PATH" ] && [ -f "$BATCH_WEIGHT_SEED_PATH" ]; then
+  cp "$BATCH_WEIGHT_SEED_PATH" "$BATCH_WEIGHT_CACHE_PATH"
 fi
 
 run_stage "compiled selfhost test suite" \
