@@ -10,6 +10,7 @@ STAGE1_WASM="$OUT_DIR/index_stage1.wasm"
 STAGE2_WASM="$OUT_DIR/index_stage2.wasm"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC:-600}"
 STRICT_RECURSIVE="${VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE:-0}"
+REQUIRE_TRUE_RECURSIVE="${VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE:-0}"
 
 run_with_timeout() {
   local timeout_sec="$1"
@@ -120,9 +121,14 @@ if [ "$STRICT_RECURSIVE" != "0" ] && [ "$STRICT_RECURSIVE" != "1" ]; then
   echo "selfbuild gate failed: VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE must be 0 or 1" >&2
   exit 1
 fi
+if [ "$REQUIRE_TRUE_RECURSIVE" != "0" ] && [ "$REQUIRE_TRUE_RECURSIVE" != "1" ]; then
+  echo "selfbuild gate failed: VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE must be 0 or 1" >&2
+  exit 1
+fi
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "strict recursive" "$STRICT_RECURSIVE" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "require true recursive" "$REQUIRE_TRUE_RECURSIVE" >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
 if ! command -v moonrun >/dev/null 2>&1; then
@@ -171,6 +177,10 @@ else
   if [ -s "$RECURSIVE_STAGE2_LOG" ]; then
     echo "[selfbuild] recursive compile log (tail):" >&2
     tail -n 20 "$RECURSIVE_STAGE2_LOG" >&2 || true
+  fi
+  if [ "$REQUIRE_TRUE_RECURSIVE" = "1" ]; then
+    echo "selfbuild gate failed: generated stage1 artifact could not compile stage2 and fallback is disabled (set VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=0 to allow fallback)" >&2
+    exit 1
   fi
   run_stage "fallback seed compiler -> stage2 wasm compile" \
     moonrun "$STAGE1_COMPILER_WASM" --wasm-mvp "$ENTRY_PATH" -o "$STAGE2_WASM"
@@ -226,4 +236,4 @@ recursive_mode="strict-recursive"
 if [ "$recursive_stage2_ok" -eq 0 ]; then
   recursive_mode="seed-fallback"
 fi
-echo "selfbuild gate passed: hash=$HASH_STAGE1 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 mode=$recursive_mode"
+echo "selfbuild gate passed: hash=$HASH_STAGE1 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 mode=$recursive_mode recursive=$recursive_stage2_ok"

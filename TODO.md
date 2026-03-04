@@ -167,6 +167,7 @@ Completed items are archived in `docs/DONE.md`.
   - stage1 は `moon run --target wasm` で生成された `vibe_compile_wasi.wasm` を `moonrun` で実行して stage2 wasm を生成
   - `scripts/test_selfhost_wasi_selfbuild.sh` で stage1/stage2 wasm の hash 一致を検証
   - strict 再帰チェックは `VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1` で有効化（stage1 生成物→stage2 生成を優先試行し、未達時は seed compiler fallback をログ化）
+  - true recursive を必須化する場合は `VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1`（fallback 無効化・未達時 fail）
   - stage1/stage2 の双方を `wasmtime --invoke run` で実行し、戻り値を検証
 - [x] selfhost bootstrap gate に compile/run 段階計測と KPI 判定を追加
   - parse/type check, codegen(no-dce), validate, run(stage1/stage2) を段階ログ化
