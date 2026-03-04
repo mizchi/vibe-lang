@@ -932,6 +932,151 @@ sum' \
 echo ""
 
 # ============================================
+# String Operations
+# ============================================
+log_info "Testing string operations..."
+
+expect_wasmtime_result "string_length" \
+'string_length("hello")' \
+"5"
+
+expect_wasmtime_result "string_char_code_at" \
+'string_char_code_at("A", 0)' \
+"65"
+
+expect_wasmtime_result "string_concat length" \
+'string_length(string_concat("hello", " world"))' \
+"11"
+
+expect_wasmtime_result "string_substring length" \
+'string_length(string_substring("hello world", 0, 5))' \
+"5"
+
+expect_wasmtime_result "string_index_of found" \
+'string_index_of("hello world", "world")' \
+"6"
+
+expect_wasmtime_result "string_index_of not found" \
+'string_index_of("hello", "xyz")' \
+"-1"
+
+expect_wasmtime_result "string_last_index_of" \
+'string_last_index_of("abcabc", "abc")' \
+"3"
+
+expect_wasmtime_result "string_count" \
+'string_count("abcabc", "abc")' \
+"2"
+
+expect_wasmtime_result "string_equals true" \
+'if string_equals("abc", "abc") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_equals false" \
+'if string_equals("abc", "xyz") { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "string_contains true" \
+'if string_contains("hello world", "world") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_contains false" \
+'if string_contains("hello", "xyz") { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "string_starts_with true" \
+'if string_starts_with("hello", "hel") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_ends_with true" \
+'if string_ends_with("hello", "llo") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_trim" \
+'string_length(string_trim("  hi  "))' \
+"2"
+
+expect_wasmtime_result "string_to_upper" \
+'if string_equals(string_to_upper("hello"), "HELLO") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_to_lower" \
+'if string_equals(string_to_lower("HELLO"), "hello") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_to_upper preserves non-alpha" \
+'string_char_code_at(string_to_upper("a1b"), 1)' \
+"49"
+
+expect_wasmtime_result "string_replace first occurrence" \
+'if string_equals(string_replace("hello world", "world", "vibe"), "hello vibe") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_replace no match" \
+'string_length(string_replace("hello", "xyz", "abc"))' \
+"5"
+
+expect_wasmtime_result "string_replace_all" \
+'if string_equals(string_replace_all("abcabc", "abc", "x"), "xx") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_replace_all remove" \
+'string_length(string_replace_all("hello", "l", ""))' \
+"3"
+
+expect_wasmtime_result "string_from_char_code" \
+'string_char_code_at(string_from_char_code(65), 0)' \
+"65"
+
+expect_wasmtime_result "string_builder" \
+'let b = string_builder()
+string_builder_push(b, "hello")
+string_builder_push(b, " world")
+string_length(string_builder_freeze(b))' \
+"11"
+
+echo ""
+
+# ============================================
+# Array Operations
+# ============================================
+log_info "Testing array operations..."
+
+expect_wasmtime_result "array_length" \
+'array_length([1, 2, 3])' \
+"3"
+
+expect_wasmtime_result "array_get" \
+'array_get([10, 20, 30], 1)' \
+"20"
+
+expect_wasmtime_result "array_concat length" \
+'array_length(array_concat([1, 2], [3, 4]))' \
+"4"
+
+expect_wasmtime_result "array_slice length" \
+'array_length(array_slice([1, 2, 3, 4, 5], 1, 3))' \
+"2"
+
+expect_wasmtime_result "array_builder" \
+'let b = array_builder()
+array_builder_push(b, 1)
+array_builder_push(b, 2)
+array_builder_push(b, 3)
+array_length(array_builder_freeze(b))' \
+"3"
+
+expect_wasmtime_result "array_get from builder" \
+'let b = array_builder()
+array_builder_push(b, 10)
+array_builder_push(b, 20)
+array_builder_push(b, 30)
+array_get(array_builder_freeze(b), 2)' \
+"30"
+
+echo ""
+
+# ============================================
 # For-In Loops
 # ============================================
 log_info "Testing for-in loops..."
@@ -1066,6 +1211,62 @@ expect_wasmtime_result "string_to_lower" \
 expect_wasmtime_result "string_to_lower: non-alpha preserved" \
 'string_char_code_at(string_to_lower("1A"), 0)' \
 "49"
+
+expect_wasmtime_result "string_trim" \
+'string_length(string_trim("  hello  "))' \
+"5"
+
+expect_wasmtime_result "string_trim_start" \
+'string_length(string_trim_start("  hello  "))' \
+"7"
+
+expect_wasmtime_result "string_trim_end" \
+'string_length(string_trim_end("  hello  "))' \
+"7"
+
+expect_wasmtime_result "string_count" \
+'string_count("abcabcabc", "abc")' \
+"3"
+
+expect_wasmtime_result "string_count: no match" \
+'string_count("hello", "xyz")' \
+"0"
+
+expect_wasmtime_result "string_replace: first occurrence" \
+'string_length(string_replace("hello world", "world", "vibe"))' \
+"10"
+
+expect_wasmtime_result "string_replace: no match returns original" \
+'string_length(string_replace("hello", "xyz", "!"))' \
+"5"
+
+expect_wasmtime_result "string_replace: first only" \
+'string_length(string_replace("aaa", "a", "bb"))' \
+"4"
+
+expect_wasmtime_result "string_replace_all: all occurrences" \
+'string_length(string_replace_all("abcabc", "abc", "x"))' \
+"2"
+
+expect_wasmtime_result "string_replace_all: multiple" \
+'string_length(string_replace_all("aaa", "a", "bb"))' \
+"6"
+
+expect_wasmtime_result "string_replace_all: no match" \
+'string_length(string_replace_all("hello", "xyz", "!"))' \
+"5"
+
+expect_wasmtime_result "string_replace_all: real-world" \
+'string_length(string_replace_all("hello world hello", "hello", "hi"))' \
+"11"
+
+expect_wasmtime_result "string_builder + freeze" \
+'let b = string_builder()
+string_builder_push(b, "hello")
+string_builder_push(b, " ")
+string_builder_push(b, "world")
+string_length(string_builder_freeze(b))' \
+"11"
 
 echo ""
 

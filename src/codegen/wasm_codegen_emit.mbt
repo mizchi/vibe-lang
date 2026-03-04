@@ -191,6 +191,19 @@ fn emit_block(buf : ByteBuf) -> Unit {
 }
 
 ///|
+/// Emit if instruction (consumes i32 condition from stack)
+fn emit_if(buf : ByteBuf) -> Unit {
+  buf.push((4).to_byte()) // if = 0x04
+  buf.push((64).to_byte()) // void blocktype = 0x40
+}
+
+///|
+/// Emit else instruction
+fn emit_else(buf : ByteBuf) -> Unit {
+  buf.push((5).to_byte()) // else = 0x05
+}
+
+///|
 /// Emit block instruction with i64 result type
 fn emit_block_i64(buf : ByteBuf) -> Unit {
   buf.push((2).to_byte()) // block = 0x02

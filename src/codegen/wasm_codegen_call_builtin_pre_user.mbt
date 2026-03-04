@@ -5397,9 +5397,8 @@ fn compile_call_builtin_pre_user_inner(
 
 ///|
 /// Emit WASM for string_replace / string_replace_all.
-/// Uses string_builder-like buffer approach:
-/// 1. Find match(es) of pattern in source
-/// 2. Build result by copying segments + replacement
+/// Two-pass: 1) count matches, 2) build result with replacements.
+/// Uses `if/end` for conditionals (same pattern as string_contains).
 fn emit_string_replace_impl(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -5415,13 +5414,14 @@ fn emit_string_replace_impl(
   let rep_len = alloc_temp_local(ctx)
   let match_count = alloc_temp_local(ctx)
   let scan_i = alloc_temp_local(ctx)
-  let scan_j = alloc_temp_local(ctx)
-  let scan_match = alloc_temp_local(ctx)
+  let inner_j = alloc_temp_local(ctx)
   let new_len = alloc_temp_local(ctx)
   let new_ptr = alloc_temp_local(ctx)
   let src_i = alloc_temp_local(ctx)
   let dst_i = alloc_temp_local(ctx)
   let copy_j = alloc_temp_local(ctx)
+  let matched = alloc_temp_local(ctx)
+  let limit_local = alloc_temp_local(ctx)
   // Untag source string
   compile_expr_i32(ctx, buf, pos_args[0])
   emit_i64_const_raw(buf, (-4).to_int64())
@@ -5449,90 +5449,87 @@ fn emit_string_replace_impl(
   emit_local_get(buf, rep_ptr)
   emit_i32_load(buf, 4)
   emit_local_set(buf, rep_len)
-  // Pass 1: Count matches
+  // --- Pass 1: Count matches (same structure as string_contains) ---
   emit_i32_const_raw(buf, 0)
   emit_local_set(buf, match_count)
-  emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, scan_i)
-  // Handle empty pattern: match_count = 0 (no replacement)
+  // Only search if pat_len > 0
   emit_local_get(buf, pat_len)
   emit_i32_const_raw(buf, 0)
   emit_i32_gt_s(buf)
-  emit_block(buf) // block $skip_count
-  emit_br_if(buf, 0) // if pat_len > 0, skip the br that skips counting
-  // pat_len == 0: skip counting, match_count stays 0
-  emit_br(buf, 0)
-  emit_end(buf) // end $skip_count — fall through means pat_len > 0
-  // Count loop: scan for all occurrences
-  emit_block(buf) // block $count_break
-  emit_loop(buf) // loop $count_loop
-  // if scan_i > str_len - pat_len, break
-  emit_local_get(buf, scan_i)
+  emit_if(buf) // if pat_len > 0
+  // limit = str_len - pat_len + 1
   emit_local_get(buf, str_len)
   emit_local_get(buf, pat_len)
   emit_i32_sub(buf)
-  emit_i32_gt_s(buf)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, limit_local)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, scan_i)
+  emit_block(buf) // block $count_break
+  emit_loop(buf) // loop $count_loop
+  // if scan_i >= limit, break
+  emit_local_get(buf, scan_i)
+  emit_local_get(buf, limit_local)
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
   emit_br_if(buf, 1) // break $count_break
   // Check if pattern matches at scan_i
   emit_i32_const_raw(buf, 1)
-  emit_local_set(buf, scan_match)
+  emit_local_set(buf, matched)
   emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, scan_j)
-  emit_block(buf) // block $match_break
-  emit_loop(buf) // loop $match_loop
-  emit_local_get(buf, scan_j)
+  emit_local_set(buf, inner_j)
+  emit_block(buf) // block $cmp_done
+  emit_loop(buf) // loop $cmp_loop
+  emit_local_get(buf, inner_j)
   emit_local_get(buf, pat_len)
-  emit_i32_ge_s(buf)
-  emit_br_if(buf, 1) // break if j >= pat_len (all bytes matched)
-  // Compare bytes
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1) // break if j >= pat_len (all matched)
+  // Compare str[scan_i + inner_j + 8] vs pat[inner_j + 8]
   emit_local_get(buf, str_ptr)
   emit_local_get(buf, scan_i)
   emit_i32_add(buf)
-  emit_local_get(buf, scan_j)
+  emit_local_get(buf, inner_j)
   emit_i32_add(buf)
   emit_i32_load8_u(buf, 8)
   emit_local_get(buf, pat_ptr)
-  emit_local_get(buf, scan_j)
+  emit_local_get(buf, inner_j)
   emit_i32_add(buf)
   emit_i32_load8_u(buf, 8)
-  emit_i32_ne(buf)
-  emit_block(buf) // block for mismatch
-  emit_br_if(buf, 0) // if not equal, jump to mismatch handler
-  // Equal: j++, continue
-  emit_local_get(buf, scan_j)
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf) // not equal?
+  emit_if(buf) // if not equal
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, matched)
+  emit_br(buf, 2) // break $cmp_done
+  emit_end(buf) // end if
+  emit_local_get(buf, inner_j)
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
-  emit_local_set(buf, scan_j)
-  emit_br(buf, 1) // continue $match_loop
-  emit_end(buf) // end mismatch block — fall through means mismatch
-  emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, scan_match)
-  emit_br(buf, 1) // break $match_break
-  emit_end(buf) // end $match_loop
-  emit_end(buf) // end $match_break
-  // If scan_match: count++, advance by pat_len
-  emit_local_get(buf, scan_match)
-  emit_block(buf) // block $no_match
-  emit_i32_eqz(buf)
-  emit_br_if(buf, 0) // if not matched, skip
-  // Matched
+  emit_local_set(buf, inner_j)
+  emit_br(buf, 0) // continue $cmp_loop
+  emit_end(buf) // end $cmp_loop
+  emit_end(buf) // end $cmp_done
+  // If matched, count++ and maybe break
+  emit_local_get(buf, matched)
+  emit_if(buf) // if matched
   emit_local_get(buf, match_count)
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
   emit_local_set(buf, match_count)
   if not(replace_all) {
-    // For replace (not replace_all), break after first match
     emit_br(buf, 2) // break $count_break
   } else {
-    // Advance by pat_len to avoid overlapping matches
+    // Advance by pat_len to avoid overlapping
     emit_local_get(buf, scan_i)
     emit_local_get(buf, pat_len)
     emit_i32_add(buf)
     emit_local_set(buf, scan_i)
     emit_br(buf, 1) // continue $count_loop
   }
-  emit_end(buf) // end $no_match
-  // Not matched, advance by 1
+  emit_end(buf) // end if matched
+  // Not matched: scan_i++
   emit_local_get(buf, scan_i)
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
@@ -5540,7 +5537,8 @@ fn emit_string_replace_impl(
   emit_br(buf, 0) // continue $count_loop
   emit_end(buf) // end $count_loop
   emit_end(buf) // end $count_break
-  // Compute new_len = str_len + match_count * (rep_len - pat_len)
+  emit_end(buf) // end if pat_len > 0
+  // --- Compute result length ---
   emit_local_get(buf, str_len)
   emit_local_get(buf, match_count)
   emit_local_get(buf, rep_len)
@@ -5549,7 +5547,7 @@ fn emit_string_replace_impl(
   emit_i32_mul(buf)
   emit_i32_add(buf)
   emit_local_set(buf, new_len)
-  // Allocate new string
+  // --- Allocate new string ---
   let obj_size_local = alloc_temp_local(ctx)
   emit_local_get(buf, new_len)
   emit_i32_const_raw(buf, 8)
@@ -5562,93 +5560,88 @@ fn emit_string_replace_impl(
   emit_i32_and(buf)
   emit_local_set(buf, obj_size_local)
   emit_heap_alloc_local(ctx, buf, obj_size_local, new_ptr)
-  // Set header
   emit_local_get(buf, new_ptr)
   emit_i32_const_raw(buf, obj_string)
   emit_i32_store(buf, 0)
   emit_local_get(buf, new_ptr)
   emit_local_get(buf, new_len)
   emit_i32_store(buf, 4)
-  // Pass 2: Build result — copy source with replacements
+  // --- Pass 2: Build result ---
   emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, src_i) // source read position
+  emit_local_set(buf, src_i)
   emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, dst_i) // dest write position
-  emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, match_count) // reuse as remaining matches
-  // Build loop
-  emit_block(buf) // block $build_break
+  emit_local_set(buf, dst_i)
+  emit_block(buf) // block $build_done
   emit_loop(buf) // loop $build_loop
-  // if src_i >= str_len, break
   emit_local_get(buf, src_i)
   emit_local_get(buf, str_len)
   emit_i32_ge_s(buf)
-  emit_br_if(buf, 1) // break $build_break
-  // Check for pattern match at src_i (only if pat_len > 0 and src_i + pat_len <= str_len)
+  emit_br_if(buf, 1) // break if src_i >= str_len
+  // Try to match pattern at src_i
   emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, scan_match) // default: no match
+  emit_local_set(buf, matched)
+  // Guard: pat_len > 0
   emit_local_get(buf, pat_len)
   emit_i32_const_raw(buf, 0)
   emit_i32_gt_s(buf)
+  emit_if(buf) // if pat_len > 0
+  // Guard: src_i + pat_len <= str_len
   emit_local_get(buf, src_i)
   emit_local_get(buf, pat_len)
   emit_i32_add(buf)
   emit_local_get(buf, str_len)
   emit_i32_le_s(buf)
-  emit_i32_and(buf)
-  emit_block(buf) // block $skip_match_check
-  emit_i32_eqz(buf)
-  emit_br_if(buf, 0) // skip if can't match
-  // Check pattern
+  emit_if(buf) // if src_i + pat_len <= str_len
+  // Compare pattern (same inner loop as pass 1)
   emit_i32_const_raw(buf, 1)
-  emit_local_set(buf, scan_match)
+  emit_local_set(buf, matched)
   emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, scan_j)
-  emit_block(buf) // block $mc_break
-  emit_loop(buf) // loop $mc_loop
-  emit_local_get(buf, scan_j)
+  emit_local_set(buf, inner_j)
+  emit_block(buf) // block $cmp2_done
+  emit_loop(buf) // loop $cmp2_loop
+  emit_local_get(buf, inner_j)
   emit_local_get(buf, pat_len)
-  emit_i32_ge_s(buf)
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
   emit_br_if(buf, 1) // break if j >= pat_len
   emit_local_get(buf, str_ptr)
   emit_local_get(buf, src_i)
   emit_i32_add(buf)
-  emit_local_get(buf, scan_j)
+  emit_local_get(buf, inner_j)
   emit_i32_add(buf)
   emit_i32_load8_u(buf, 8)
   emit_local_get(buf, pat_ptr)
-  emit_local_get(buf, scan_j)
+  emit_local_get(buf, inner_j)
   emit_i32_add(buf)
   emit_i32_load8_u(buf, 8)
-  emit_i32_ne(buf)
-  emit_block(buf)
-  emit_br_if(buf, 0) // mismatch
-  emit_local_get(buf, scan_j)
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf)
+  emit_if(buf) // if not equal
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, matched)
+  emit_br(buf, 2) // break $cmp2_done
+  emit_end(buf) // end if
+  emit_local_get(buf, inner_j)
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
-  emit_local_set(buf, scan_j)
-  emit_br(buf, 1) // continue $mc_loop
-  emit_end(buf) // end mismatch block
-  emit_i32_const_raw(buf, 0)
-  emit_local_set(buf, scan_match)
-  emit_br(buf, 1) // break $mc_break
-  emit_end(buf) // end $mc_loop
-  emit_end(buf) // end $mc_break
-  emit_end(buf) // end $skip_match_check
-  // If matched: copy replacement, advance src by pat_len
-  emit_local_get(buf, scan_match)
-  emit_block(buf) // block $no_replace
-  emit_i32_eqz(buf)
-  emit_br_if(buf, 0) // skip if no match
+  emit_local_set(buf, inner_j)
+  emit_br(buf, 0) // continue $cmp2_loop
+  emit_end(buf) // end $cmp2_loop
+  emit_end(buf) // end $cmp2_done
+  emit_end(buf) // end if src_i + pat_len <= str_len
+  emit_end(buf) // end if pat_len > 0
+  // Handle match or copy byte
+  emit_local_get(buf, matched)
+  emit_if(buf) // if matched
   // Copy replacement bytes
   emit_i32_const_raw(buf, 0)
   emit_local_set(buf, copy_j)
-  emit_block(buf)
-  emit_loop(buf)
+  emit_block(buf) // block $rep_done
+  emit_loop(buf) // loop $rep_loop
   emit_local_get(buf, copy_j)
   emit_local_get(buf, rep_len)
   emit_i32_ge_s(buf)
-  emit_br_if(buf, 1)
+  emit_br_if(buf, 1) // done
   emit_local_get(buf, new_ptr)
   emit_local_get(buf, dst_i)
   emit_i32_add(buf)
@@ -5665,28 +5658,22 @@ fn emit_string_replace_impl(
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
   emit_local_set(buf, copy_j)
-  emit_br(buf, 0)
-  emit_end(buf)
-  emit_end(buf)
+  emit_br(buf, 0) // continue $rep_loop
+  emit_end(buf) // end $rep_loop
+  emit_end(buf) // end $rep_done
   // Advance src by pat_len
   emit_local_get(buf, src_i)
   emit_local_get(buf, pat_len)
   emit_i32_add(buf)
   emit_local_set(buf, src_i)
-  // Track replacements done
-  emit_local_get(buf, match_count)
-  emit_i32_const_raw(buf, 1)
-  emit_i32_add(buf)
-  emit_local_set(buf, match_count)
   if not(replace_all) {
-    // After first replacement, copy remaining bytes directly
-    // Copy remaining: str[src_i..str_len] to dst
-    emit_block(buf) // block $copy_rest_break
-    emit_loop(buf) // loop $copy_rest_loop
+    // Copy remaining bytes directly, then break
+    emit_block(buf) // block $rest_done
+    emit_loop(buf) // loop $rest_loop
     emit_local_get(buf, src_i)
     emit_local_get(buf, str_len)
     emit_i32_ge_s(buf)
-    emit_br_if(buf, 1) // break
+    emit_br_if(buf, 1)
     emit_local_get(buf, new_ptr)
     emit_local_get(buf, dst_i)
     emit_i32_add(buf)
@@ -5703,14 +5690,14 @@ fn emit_string_replace_impl(
     emit_i32_const_raw(buf, 1)
     emit_i32_add(buf)
     emit_local_set(buf, dst_i)
-    emit_br(buf, 0) // continue
-    emit_end(buf) // end $copy_rest_loop
-    emit_end(buf) // end $copy_rest_break
-    emit_br(buf, 2) // break $build_break (done)
+    emit_br(buf, 0)
+    emit_end(buf) // end $rest_loop
+    emit_end(buf) // end $rest_done
+    emit_br(buf, 2) // break $build_done
   }
   emit_br(buf, 1) // continue $build_loop
-  emit_end(buf) // end $no_replace
-  // No match: copy single byte
+  emit_else(buf) // else (not matched)
+  // Copy single byte
   emit_local_get(buf, new_ptr)
   emit_local_get(buf, dst_i)
   emit_i32_add(buf)
@@ -5727,10 +5714,11 @@ fn emit_string_replace_impl(
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
   emit_local_set(buf, dst_i)
+  emit_end(buf) // end if/else matched
   emit_br(buf, 0) // continue $build_loop
   emit_end(buf) // end $build_loop
-  emit_end(buf) // end $build_break
-  // Tag result as obj pointer
+  emit_end(buf) // end $build_done
+  // Tag result
   emit_local_get(buf, new_ptr)
   emit_i64_extend_i32_u(buf)
   emit_i64_const_raw(buf, tag_obj.to_int64())

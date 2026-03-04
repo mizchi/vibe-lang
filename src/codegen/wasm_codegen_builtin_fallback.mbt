@@ -21,11 +21,9 @@ fn is_wasm_runtime_fallback_builtin(name : String) -> Bool {
     // Note: string_contains, string_starts_with, string_ends_with,
     // string_last_index_of, string_index_of, string_count,
     // string_trim, string_trim_start, string_trim_end,
-    // string_to_upper, string_to_lower
+    // string_to_upper, string_to_lower, string_replace, string_replace_all
     // have native WASM implementations in wasm_codegen_call_builtin_pre_user.mbt.
     | "string_split"
-    | "string_replace"
-    | "string_replace_all"
     // Filesystem/env helpers not mapped to wasm imports yet.
     | "fs_chdir"
     | "fs_copy"
