@@ -466,8 +466,9 @@ fn compile_call_builtin_pre_user_inner(
       compile_binary_cmp_op(
         ctx, buf, "lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
       )
-    "assert" if not(is_user_fn) => {
-      let pos_args = extract_positional_exprs_with_arity(args, "assert", 1)
+    "assert" | "__assert" if not(is_user_fn) => {
+      let builtin_name = name
+      let pos_args = extract_positional_exprs_with_arity(args, builtin_name, 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, tag_bool_value64(true))
       emit_i64_eq(buf)

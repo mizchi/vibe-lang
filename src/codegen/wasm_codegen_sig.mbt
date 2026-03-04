@@ -951,6 +951,7 @@ fn needs_heap_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Bool {
 ///|
 fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
   match expr {
+    @core.Expr::String(..) => true
     @core.Expr::Float(..) => true
     @core.Expr::Double(..) => true
     @core.Expr::Tuple(..) => true
@@ -1009,6 +1010,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "map_builder_set" ||
         name == "map_builder_freeze" ||
         name == "string_builder" ||
+        name == "string_join" ||
         name == "string_builder_push" ||
         name == "string_builder_freeze" ||
         name == "map_keys" ||
@@ -1041,6 +1043,11 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "http_request_body" ||
         name == "http_respond" ||
         name == "parse_double" {
+        return true
+      }
+      // User function calls that are lowered to multi-value must be
+      // re-boxed into tuple objects, which allocates on heap.
+      if ctx.fn_multivalue_results.contains(name) {
         return true
       }
       // Enum constructor call needs heap

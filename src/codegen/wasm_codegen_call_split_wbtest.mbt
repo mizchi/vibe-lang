@@ -14,6 +14,11 @@ fn call_split_test_string(value : String) -> @core.Expr {
 }
 
 ///|
+fn call_split_test_bool(value : Bool) -> @core.Expr {
+  @core.Expr::Bool(value~, span=call_split_test_span())
+}
+
+///|
 fn call_split_test_arg(expr : @core.Expr) -> @core.CallArg {
   @core.CallArg::{ label: None, expr, span: call_split_test_span() }
 }
@@ -66,6 +71,18 @@ test "compile_call_builtin_pre_user handles __add" {
     call_split_test_arg(call_split_test_int(2L)),
   ]
   let handled = compile_call_builtin_pre_user(ctx, buf, "__add", args, false) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(handled)
+  assert_true(buf.len() > 0)
+}
+
+///|
+test "compile_call_builtin_pre_user handles __assert" {
+  let ctx = CodegenCtx::new(false)
+  let buf = ByteBuf::new()
+  let args = [call_split_test_arg(call_split_test_bool(true))]
+  let handled = compile_call_builtin_pre_user(ctx, buf, "__assert", args, false) catch {
     err => fail(err.to_string())
   }
   assert_true(handled)
@@ -178,9 +195,44 @@ test "scan_needs_expr enables exceptions for wasm fallback builtins" {
 }
 
 ///|
+test "scan_needs_expr marks heap need for string_join" {
+  let ctx = CodegenCtx::new(false)
+  let expr = call_split_test_call("string_join", [
+    call_split_test_arg(call_split_test_int(0L)),
+    call_split_test_arg(call_split_test_string(",")),
+  ])
+  scan_needs_expr(ctx, expr)
+  assert_true(ctx.need_heap)
+}
+
+///|
 test "needs_heap_expr returns true for map_builder call" {
   let ctx = CodegenCtx::new(false)
   let expr = call_split_test_call("map_builder", [])
+  assert_true(needs_heap_expr(ctx, expr))
+}
+
+///|
+test "needs_heap_expr returns true for string_join call" {
+  let ctx = CodegenCtx::new(false)
+  let expr = call_split_test_call("string_join", [
+    call_split_test_arg(call_split_test_int(0L)),
+    call_split_test_arg(call_split_test_string(",")),
+  ])
+  assert_true(needs_heap_expr(ctx, expr))
+}
+
+///|
+test "needs_heap_expr returns true for string literal" {
+  let ctx = CodegenCtx::new(false)
+  assert_true(needs_heap_expr(ctx, call_split_test_string("x")))
+}
+
+///|
+test "needs_heap_expr returns true for multivalue user call" {
+  let ctx = CodegenCtx::new(false)
+  ctx.fn_multivalue_results["mv_fn"] = [ValueKind::I64, ValueKind::I64]
+  let expr = call_split_test_call("mv_fn", [])
   assert_true(needs_heap_expr(ctx, expr))
 }
 

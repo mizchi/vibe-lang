@@ -147,6 +147,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         "array_builder"
         | "map_builder"
         | "string_builder"
+        | "string_join"
         | "map_keys"
         | "map_values"
         | "string_trim"
