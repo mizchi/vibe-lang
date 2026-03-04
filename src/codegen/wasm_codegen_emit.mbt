@@ -661,6 +661,37 @@ fn emit_i64_lt_s(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i64_gt_s(buf : ByteBuf) -> Unit {
+  buf.push((0x55).to_byte())
+}
+
+///|
+fn emit_i64_le_s(buf : ByteBuf) -> Unit {
+  buf.push((0x57).to_byte())
+}
+
+///|
+fn emit_i64_ge_s(buf : ByteBuf) -> Unit {
+  buf.push((0x59).to_byte())
+}
+
+///|
+fn emit_i64_ne(buf : ByteBuf) -> Unit {
+  buf.push((0x52).to_byte())
+}
+
+///|
+fn emit_i64_eqz(buf : ByteBuf) -> Unit {
+  buf.push((0x50).to_byte())
+}
+
+///|
+/// select: pops (val1, val2, cond:i32), pushes val1 if cond != 0, else val2
+fn emit_select(buf : ByteBuf) -> Unit {
+  buf.push((0x1B).to_byte())
+}
+
+///|
 fn emit_i64_shl(buf : ByteBuf) -> Unit {
   buf.push((0x86).to_byte())
 }

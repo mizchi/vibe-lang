@@ -124,6 +124,83 @@ expect_wasmtime_result "negative numbers" \
 '0 - 5 + 8' \
 "3"
 
+# ============================================
+# Integer Math Builtins
+# ============================================
+log_info "Testing integer math builtins..."
+
+expect_wasmtime_result "int_abs: negative" \
+'int_abs(-5)' \
+"5"
+
+expect_wasmtime_result "int_abs: positive" \
+'int_abs(5)' \
+"5"
+
+expect_wasmtime_result "int_abs: zero" \
+'int_abs(0)' \
+"0"
+
+expect_wasmtime_result "int_max" \
+'int_max(3, 7)' \
+"7"
+
+expect_wasmtime_result "int_max: equal" \
+'int_max(5, 5)' \
+"5"
+
+expect_wasmtime_result "int_max: negative" \
+'int_max(-3, -7)' \
+"-3"
+
+expect_wasmtime_result "int_min" \
+'int_min(3, 7)' \
+"3"
+
+expect_wasmtime_result "int_min: negative" \
+'int_min(-3, -7)' \
+"-7"
+
+expect_wasmtime_result "int_clamp: above" \
+'int_clamp(10, 0, 5)' \
+"5"
+
+expect_wasmtime_result "int_clamp: below" \
+'int_clamp(-3, 0, 5)' \
+"0"
+
+expect_wasmtime_result "int_clamp: in range" \
+'int_clamp(3, 0, 5)' \
+"3"
+
+expect_wasmtime_result "int_signum: negative" \
+'int_signum(-10)' \
+"-1"
+
+expect_wasmtime_result "int_signum: positive" \
+'int_signum(10)' \
+"1"
+
+expect_wasmtime_result "int_signum: zero" \
+'int_signum(0)' \
+"0"
+
+expect_wasmtime_result "int_is_even: true" \
+'if int_is_even(4) { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "int_is_even: false" \
+'if int_is_even(3) { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "int_is_odd: true" \
+'if int_is_odd(3) { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "int_is_odd: false" \
+'if int_is_odd(4) { 1 } else { 0 }' \
+"0"
+
 echo ""
 
 # ============================================

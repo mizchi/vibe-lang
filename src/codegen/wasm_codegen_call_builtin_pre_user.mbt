@@ -741,6 +741,144 @@ fn compile_call_builtin_pre_user_inner(
         emit_f32_demote_f64(buf)
       })
     }
+    // ========== Integer math builtins ==========
+    "int_abs" if not(is_user_fn) => {
+      // int_abs(x): if x < 0 then -x else x (operates on tagged i64 directly)
+      let pos_args = extract_positional_exprs_with_arity(args, "int_abs", 1)
+      let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_local_tee(buf, tmp) // stack: x, tmp = x
+      emit_i64_const_raw(buf, 0L)
+      emit_i64_lt_s(buf) // cond = x < 0 (i32)
+      emit_if(buf) // if x < 0
+      emit_i64_const_raw(buf, 0L)
+      emit_local_get(buf, tmp)
+      emit_i64_sub(buf) // -x (negate tagged value, tag 0 preserved)
+      emit_local_set(buf, tmp)
+      emit_end(buf) // end if
+      emit_local_get(buf, tmp)
+    }
+    "int_max" if not(is_user_fn) => {
+      // int_max(a, b): works directly on tagged i64 values
+      let pos_args = extract_positional_exprs_with_arity(args, "int_max", 2)
+      let a_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      let b_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_local_set(buf, a_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_local_set(buf, b_local)
+      // Push a, b, then (a > b) as i32 condition for select
+      emit_local_get(buf, a_local)
+      emit_local_get(buf, b_local)
+      emit_local_get(buf, a_local)
+      emit_local_get(buf, b_local)
+      emit_i64_gt_s(buf) // a > b → 1:i32
+      emit_select(buf) // select(a, b, a>b) → a if a>b else b
+    }
+    "int_min" if not(is_user_fn) => {
+      // int_min(a, b): works directly on tagged i64 values
+      let pos_args = extract_positional_exprs_with_arity(args, "int_min", 2)
+      let a_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      let b_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_local_set(buf, a_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_local_set(buf, b_local)
+      emit_local_get(buf, a_local)
+      emit_local_get(buf, b_local)
+      emit_local_get(buf, a_local)
+      emit_local_get(buf, b_local)
+      emit_i64_lt_s(buf) // a < b → 1:i32
+      emit_select(buf) // select(a, b, a<b) → a if a<b else b
+    }
+    "int_clamp" if not(is_user_fn) => {
+      // int_clamp(x, lo, hi): max(lo, min(x, hi))
+      let pos_args = extract_positional_exprs_with_arity(args, "int_clamp", 3)
+      let x_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      let lo_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      let hi_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_local_set(buf, x_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_local_set(buf, lo_local)
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_local_set(buf, hi_local)
+      // min(x, hi): select(x, hi, x<hi)
+      emit_local_get(buf, x_local)
+      emit_local_get(buf, hi_local)
+      emit_local_get(buf, x_local)
+      emit_local_get(buf, hi_local)
+      emit_i64_lt_s(buf)
+      emit_select(buf) // min_val = min(x, hi)
+      emit_local_set(buf, x_local)
+      // max(lo, min_val): select(lo, min_val, lo>min_val)
+      emit_local_get(buf, lo_local)
+      emit_local_get(buf, x_local)
+      emit_local_get(buf, lo_local)
+      emit_local_get(buf, x_local)
+      emit_i64_gt_s(buf)
+      emit_select(buf) // max(lo, min(x, hi))
+    }
+    "int_signum" if not(is_user_fn) => {
+      // int_signum(x): -1 if x<0, 0 if x==0, 1 if x>0
+      let pos_args = extract_positional_exprs_with_arity(args, "int_signum", 1)
+      let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_local_set(buf, tmp)
+      // Untag: x >> 2
+      emit_local_get(buf, tmp)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_local_set(buf, tmp) // tmp = untagged x
+      // if x < 0: result = -1, elif x > 0: result = 1, else result = 0
+      emit_local_get(buf, tmp)
+      emit_i64_const_raw(buf, 0L)
+      emit_i64_lt_s(buf)
+      emit_if(buf) // if x < 0
+      emit_i64_const_raw(buf, tag_int_value64(-1L))
+      emit_local_set(buf, tmp)
+      emit_else(buf) // else
+      emit_local_get(buf, tmp)
+      emit_i64_const_raw(buf, 0L)
+      emit_i64_gt_s(buf)
+      emit_if(buf) // if x > 0
+      emit_i64_const_raw(buf, tag_int_value64(1L))
+      emit_local_set(buf, tmp)
+      emit_else(buf) // else (x == 0)
+      emit_i64_const_raw(buf, tag_int_value64(0L))
+      emit_local_set(buf, tmp)
+      emit_end(buf) // end inner if
+      emit_end(buf) // end outer if
+      emit_local_get(buf, tmp)
+    }
+    "int_is_even" if not(is_user_fn) => {
+      // int_is_even(x): ((x >> 2) & 1) == 0 → tagged bool
+      let pos_args = extract_positional_exprs_with_arity(args, "int_is_even", 1)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf) // untag
+      emit_i64_const_raw(buf, 1L)
+      emit_i64_and(buf) // bit 0
+      emit_i64_eqz(buf) // 1 if even, 0 if odd (i32 result)
+      emit_i64_extend_i32_u(buf) // to i64
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf) // tag shift
+      emit_i64_const_raw(buf, tag_bool.to_int64())
+      emit_i64_or(buf) // tag as bool
+    }
+    "int_is_odd" if not(is_user_fn) => {
+      // int_is_odd(x): ((x >> 2) & 1) == 1 → tagged bool
+      let pos_args = extract_positional_exprs_with_arity(args, "int_is_odd", 1)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf) // untag
+      emit_i64_const_raw(buf, 1L)
+      emit_i64_and(buf) // bit 0: 1 if odd, 0 if even (i64)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf) // tag shift
+      emit_i64_const_raw(buf, tag_bool.to_int64())
+      emit_i64_or(buf) // tag as bool
+    }
     "i32_load" => {
       let pos_args = extract_positional_exprs_with_arity(args, "i32_load", 2)
       compile_expr_i32(ctx, buf, pos_args[0])
