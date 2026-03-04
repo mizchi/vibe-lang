@@ -398,6 +398,12 @@ fn collect_all_assign_targets_expr(
     }
     @core.Expr::Raise(value~, ..) => collect_all_assign_targets_expr(value, out)
     @core.Expr::Yield(expr~, ..) => collect_all_assign_targets_expr(expr, out)
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let desugared = @core.desugar_for_in(
+        value_name, index_name, iterable, body, span,
+      )
+      collect_all_assign_targets_block(desugared, out)
+    }
     _ => ()
   }
 }

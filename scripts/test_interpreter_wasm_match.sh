@@ -12,6 +12,13 @@ WASMTIME_RUN="$PROJECT_DIR/scripts/wasmtime_run.sh"
 
 mkdir -p "$TEMP_DIR"
 
+# Use pre-built VIBE_BIN if set, otherwise fall back to moon run
+if [ -n "${VIBE_BIN:-}" ] && [ -x "$VIBE_BIN" ]; then
+  VIBE="$VIBE_BIN"
+else
+  VIBE="moon run $PROJECT_DIR/src/cmd/vibe/main.mbt --target native --"
+fi
+
 failed=0
 passed=0
 
@@ -58,6 +65,10 @@ test_cases=(
   # Wildcard in patterns
   'let (a, _, c) = (1, 2, 3); a + c'
   'let record { x: a, y: _ } = record { x: 10, y: 20 }; a'
+
+  # For-in with mutable accumulation
+  'let mut total = 0; for x in [1, 2, 3, 4, 5] { total = total + x }; total'
+  'let mut sum = 0; for x in [10, 20, 30] { sum = sum + x; x }; sum'
 )
 
 echo "Testing interpreter vs WASM output..."
@@ -68,11 +79,11 @@ for expr in "${test_cases[@]}"; do
   echo "$expr" > "$TEMP_DIR/test.vibe"
 
   # Run interpreter via eval and extract numeric value
-  interp_output=$(moon run "$PROJECT_DIR/src/cmd/vibe/main.mbt" --target native -- eval "$expr" 2>/dev/null | grep "^last: " | sed 's/last: //')
+  interp_output=$($VIBE eval "$expr" 2>/dev/null | grep "^last: " | sed 's/last: //')
   interp_result="$interp_output"
 
   # Compile and run WASM
-  if moon run "$PROJECT_DIR/src/cmd/vibe/main.mbt" --target native -- compile --wasm "$TEMP_DIR/test.vibe" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
+  if $VIBE compile --wasm "$TEMP_DIR/test.vibe" -o "$TEMP_DIR/test.wasm" 2>/dev/null; then
     # Run with --invoke to get return value, untag integer (divide by 4)
     wasm_tagged=$(WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke run "$TEMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning")
     if [ -n "$wasm_tagged" ]; then

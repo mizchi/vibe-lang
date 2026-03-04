@@ -893,6 +893,37 @@ sum' \
 echo ""
 
 # ============================================
+# For-In Loops
+# ============================================
+log_info "Testing for-in loops..."
+
+expect_wasmtime_result "for-in: accumulate with outer mutable" \
+'let mut total = 0
+for x in [1, 2, 3, 4, 5] { total = total + x }
+total' \
+"15"
+
+expect_wasmtime_result "for-in: nested for-in accumulation" \
+'let mut sum = 0
+for x in [1, 2, 3] {
+  for y in [10, 20] {
+    sum = sum + x * y
+  }
+}
+sum' \
+"180"
+
+expect_wasmtime_result "for-in: with index variable" \
+'let mut last_idx = 0
+for i, x in [10, 20, 30] {
+  last_idx = i
+}
+last_idx' \
+"2"
+
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo "========================================"

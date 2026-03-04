@@ -292,6 +292,12 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         scan_needs_expr(ctx, field.expr)
       }
     }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let desugared = @core.desugar_for_in(
+        value_name, index_name, iterable, body, span,
+      )
+      scan_needs_block(ctx, desugared)
+    }
     _ => ()
   }
 }
@@ -585,6 +591,12 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         scan_strings_expr(ctx, param.init)
       }
       scan_strings(ctx, body)
+    }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let desugared = @core.desugar_for_in(
+        value_name, index_name, iterable, body, span,
+      )
+      scan_strings(ctx, desugared)
     }
     _ => ()
   }
