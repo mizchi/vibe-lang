@@ -14,6 +14,7 @@ pub enum CompileMode {
 pub struct CompileCmdOptions {
   mode : CompileMode
   no_dce : Bool
+  debug_errors : Bool
   http_host_imports : Bool
   out_path : String?
   entry_path : String
@@ -50,6 +51,14 @@ fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
 }
 
 ///|
+fn compile_mode_supports_debug_errors(mode : CompileMode) -> Bool {
+  match mode {
+    CompileMode::Wasm | CompileMode::WasmJsString => true
+    _ => false
+  }
+}
+
+///|
 fn compile_mode_supports_http_host_imports(mode : CompileMode) -> Bool {
   match mode {
     CompileMode::Wasm | CompileMode::Component => true
@@ -71,6 +80,7 @@ fn parse_compile_cmd_args(
 ) -> Result[CompileCmdOptions, String] {
   let mut mode = CompileMode::Ir
   let mut no_dce = false
+  let mut debug_errors = false
   let mut http_host_imports = false
   let mut out_path : String? = None
   let mut entry_path : String? = None
@@ -80,8 +90,7 @@ fn parse_compile_cmd_args(
     let arg = args[i]
     match arg {
       "--wasm" => {
-        // wasm target defaults to wasm-gc for this command.
-        mode = CompileMode::WasmGc
+        mode = CompileMode::Wasm
         i += 1
       }
       "--wasm-mvp" => {
@@ -114,6 +123,10 @@ fn parse_compile_cmd_args(
       }
       "--no-dce" => {
         no_dce = true
+        i += 1
+      }
+      "--debug-errors" => {
+        debug_errors = true
         i += 1
       }
       "--http-host-imports" => {
@@ -161,14 +174,20 @@ fn parse_compile_cmd_args(
           "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, --component, or --wac",
         )
       }
+      if debug_errors && not(compile_mode_supports_debug_errors(mode)) {
+        return Err(
+          "compile: --debug-errors is only supported with --wasm or --wasm-js-string",
+        )
+      }
       if http_host_imports && not(compile_mode_supports_http_host_imports(mode)) {
         return Err(
-          "compile: --http-host-imports is only supported with --wasm-mvp or --component",
+          "compile: --http-host-imports is only supported with --wasm or --component",
         )
       }
       Ok({
         mode,
         no_dce,
+        debug_errors,
         http_host_imports,
         out_path,
         entry_path: path,
@@ -181,7 +200,7 @@ fn parse_compile_cmd_args(
 ///|
 fn print_usage() -> Unit {
   println(
-    "vibe_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wac|--wit|--wit-component] [--no-dce] [--http-host-imports] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
+    "vibe_compile_wasi [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wac|--wit|--wit-component] [--no-dce] [--debug-errors] [--http-host-imports] [--wite|-O{0,1,2,3,4,s,z}] [-o out] <file>",
   )
 }
 
@@ -328,6 +347,7 @@ fn compile_cmd(
         entry,
         no_dce=opts.no_dce,
         opt_level=opts.opt_level,
+        debug_errors=opts.debug_errors,
         http_host_imports=opts.http_host_imports,
       ) catch {
         e => return Err("compile: " + e.to_string())
@@ -343,6 +363,7 @@ fn compile_cmd(
         entry,
         no_dce=opts.no_dce,
         opt_level=opts.opt_level,
+        debug_errors=opts.debug_errors,
       ) catch {
         e => return Err("compile: " + e.to_string())
       }
@@ -432,6 +453,9 @@ fn main {
   match compile_cmd(compile_args, fs) {
     Ok(path) => println("wrote " + path)
     Err("help") => print_usage()
-    Err(err) => println(err)
+    Err(err) => {
+      println(err)
+      abort("compile failed")
+    }
   }
 }

@@ -182,9 +182,9 @@ run-checker-wasi-wasm *args:
 run-wite-optimize-wasi-wasm *args:
     moon run --target wasm src/cmd/vibe_wite_optimize_wasi -- {{args}}
 
-# Run wasm compiler CLI (wasm-gc preferred backend)
+# Run wasm compiler CLI (wasm-gc backend)
 run-compiler-wasi-wasm-gc *args:
-    moon run --target wasm src/cmd/vibe_compile_wasi -- --wasm {{args}}
+    moon run --target wasm src/cmd/vibe_compile_wasi -- --wasm-gc {{args}}
 
 # Run wasm compiler CLI (core wasm MVP backend)
 run-compiler-wasi-wasm-mvp *args:
@@ -311,6 +311,10 @@ test-selfhost-wasi-selfbuild:
 # Run wasi:http boundary gate (stage0 wasm compiler -> component wit imports)
 test-selfhost-wasi-http-boundary:
     scripts/test_selfhost_wasi_http_boundary.sh
+
+# Run selfhost cutover gate (CLI contract + artifact parity)
+test-selfhost-cutover:
+    scripts/test_selfhost_cutover_gate.sh
 
 bench-http:
     scripts/bench_http.sh
@@ -451,6 +455,10 @@ test-golden-wat-update:
 # Test interpreter vs WASM output consistency
 test-interpreter-wasm:
     VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/test_interpreter_wasm_match.sh
+
+# Test `vibe run` and `vibe_wasm run/compare` consistency
+test-vibe-wasm-compare:
+    VIBE_WASMTIME_WASM_FLAGS="{{vibe_wasmtime_wasm_flags}}" VIBE_WASMTIME_WASI_FLAGS="{{vibe_wasmtime_wasi_flags}}" VIBE_USE_WASMTIME_SUBMODULE={{vibe_use_wasmtime_submodule}} scripts/test_vibe_wasm_compare.sh
 
 # E2E: compile .vibe → .wasm and run with wasmtime (general language features)
 test-wasm-compile-wasmtime:

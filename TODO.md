@@ -140,6 +140,8 @@ Completed items are archived in `docs/DONE.md`.
 - [x] Push/PR CI に wasm validate gate を追加（`vibe.exe compile --wasm` + `wasm-tools validate --features all`）
 - [x] 上記 gate は定期実行なし（schedule なし）で運用する
 - [x] `handle`/例外経路の interpreter vs wasm 実行結果一致テストを追加する
+- [x] `vibe run` と `vibe_wasm (core/component)` の実行結果一致を gate 化する
+  - `scripts/test_vibe_wasm_compare.sh`（`main_wbtest` 実行 + `vibe_wasm compare` の 3 モード status=0 を検証）
 - [x] HTTP builtins の wasm fallback を catchable throw へ固定化し、`--debug-errors` でも validate + 実行可能な回帰テストを CI に追加する（`scripts/test_http_wasm_fallback.sh`）
 - [x] `while`/`loop` の codegen で block result(i64) のスタック整合を修正（`break` 値経路と fallthrough 経路の validate 失敗を解消）
 - [x] multi-value codegen で tuple 要素数と期待 arity の不一致を吸収し、`values remaining on stack` を解消
@@ -174,6 +176,38 @@ Completed items are archived in `docs/DONE.md`.
   - `VIBE_TEST_BATCH_WEIGHT_CACHE` で過去実行時間を再利用し、バッチ分割を重み付きへ最適化（cold start は `scripts/selfhost_test_batch_weights.seed.json` を seed）
   - `VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC` / `VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC` で stage timeout を適用
   - optimize 段階は `VIBE_SELFHOST_PIPELINE_OPT_LEVEL` 指定時のみ実行（長時間化の回避）
+
+## Selfhost Cutover Roadmap (MoonBit -> vibe selfhost, non-HTTP-P3)
+
+スコープ: HTTP P3 本実装（`wasi:http@0.3` の client/server 実 lower, serve e2e）は除外。  
+目標: `vibe` のコンパイラ本線を MoonBit 実行経路から selfhost 実行経路へ段階切替し、CI で回帰を検知できる状態にする。
+
+- [x] Phase 0: 切替判定基準を固定する（測定軸 + 対象セット）
+  - DoD: canary セット（最低 `examples/basics.vibe`, `vibe/compiler/index.vibe`）で以下を比較可能
+    - compile 成否、exit code、stdout/stderr 形式
+    - wasm bytes/hash（host vs selfhost）
+    - 2 回連続 compile の deterministic hash
+  - `scripts/test_selfhost_cutover_compare.sh` で canary ベースの host/selfhost 比較を実装
+- [x] Phase 1: selfhost compiler CLI 契約を host と揃える
+  - [x] `vibe_compile_wasi` の `--wasm` を MVP に統一（host と同じ `CompileMode::Wasm`）
+  - [x] compile 失敗時は必ず非0 exit を返す（`abort("compile failed")` で trap 化）
+  - [x] host CLI と同じオプション契約に揃える（`--debug-errors` 追加、`--wasm --http-host-imports` 許可）
+- [x] Phase 2: 出力同値性（artifact parity）を gate 化する
+  - [x] host (`vibe compile`) と selfhost (`moonrun vibe_compile_wasi.wasm`) で wasm 出力 hash 一致テストを追加
+  - [x] mismatch 時に最小 diff（bytes/hash/size）を出す比較スクリプトを追加
+  - [x] canary から compiler_size ケースへ比較対象を拡張（`VIBE_CUTOVER_INCLUDE_COMPILER_SIZE=1`）
+- [x] Phase 3: Push/PR CI に cutover gate を追加する（定期実行なし）
+  - [x] `scripts/test_selfhost_cutover_gate.sh` を追加（Phase 1/2 の検証を束ねる）
+  - [x] `wasm-codegen-integrity` ジョブへ組み込み（`VIBE_CUTOVER_REQUIRE_PARITY=0` で monitor-only 開始）
+  - [x] `GITHUB_STEP_SUMMARY` に mode ごとの結果（pass/fail, bytes/hash）を出力
+- [ ] Phase 4: 実行デフォルトを selfhost 側へ切替する
+  - [ ] `vibe/compiler/**` を対象に selfhost compiler 実行を既定化（shell は interpreter 維持）
+  - [ ] rollback 用 env スイッチを残す（例: `VIBE_SELFHOST_CUTOVER=0` で host 経路へ戻せる）
+  - [ ] `just` / CI の主要コンパイル導線を selfhost 既定へ更新
+- [ ] Phase 5: MoonBit 依存を bootstrap 専用へ縮退する
+  - [ ] 通常開発で使う compile/test/run 経路から `moon run src/cmd/vibe_compile_wasi` 依存を外す
+  - [ ] MoonBit 側は bootstrap / emergency recovery 手順としてドキュメント化して保持
+  - [ ] 切替完了条件: 連続 green（cutover gate + selfhost gate）を満たした時点で default 固定
 
 ## Blocked / External
 
