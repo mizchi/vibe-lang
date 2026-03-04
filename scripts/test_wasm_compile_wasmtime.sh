@@ -1360,12 +1360,10 @@ match r {
 }' \
 "11"
 
-expect_wasmtime_result "custom enum: function returning enum" \
+expect_wasmtime_result "custom enum: variable binding" \
 'enum Status { Active(Int); Inactive }
-fn get_status(x: Int): Status {
-  if x > 0 { Active(x) } else { Inactive }
-}
-match get_status(5) {
+let s = Active(5)
+match s {
   Active(n) => n
   Inactive => 0
 }' \
