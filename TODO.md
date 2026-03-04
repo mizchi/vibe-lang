@@ -158,6 +158,16 @@ Completed items are archived in `docs/DONE.md`.
     - `VIBE_TEST_BACKEND=compiled` で `vibe/compiler/*_test.vibe` を実行
     - `vibe_integration_test` index 44（selfhost probe smoke）を実行
     - `vibe/compiler/index.vibe` の `--wasm` 連続2回出力の hash 一致を検証（deterministic compile）
+- [x] `vibe run/test` の実行ポリシーを compiled 本線へ寄せる（shell 系のみ interpreter 運用）
+  - `run/test` の auto backend は compiled を先行し、既定では interpreter fallback しない
+  - fallback が必要な場合のみ `VIBE_ALLOW_INTERPRETER_FALLBACK=1` で明示的に許可
+- [x] selfhost WASI selfbuild gate を stage0 -> stage1 -> stage2 へ拡張
+  - `scripts/test_selfhost_wasi_selfbuild.sh` で stage1/stage2 wasm の hash 一致を検証
+  - stage1/stage2 の双方を `wasmtime --invoke run` で実行し、戻り値を検証
+- [x] selfhost bootstrap gate に compile/run 段階計測と KPI 判定を追加
+  - parse/type check, codegen(no-dce), validate, run(stage1/stage2) を段階ログ化
+  - `VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC` と `VIBE_SELFHOST_BOOTSTRAP_REDUCTION_PCT`（default 30）で目標時間を gate 化
+  - optimize 段階は `VIBE_SELFHOST_PIPELINE_OPT_LEVEL` 指定時のみ実行（長時間化の回避）
 
 ## Blocked / External
 

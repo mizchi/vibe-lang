@@ -193,6 +193,12 @@ fn print_usage() -> Unit {
   )
   println("  runtime flags: --unstable-async --unstable-threads")
   println(
+    "  exec backend env: VIBE_RUN_BACKEND/VIBE_TEST_BACKEND=compiled|interpreter|auto (default auto=compiled path)",
+  )
+  println(
+    "                    VIBE_ALLOW_INTERPRETER_FALLBACK=1 enables fallback only when backend=auto",
+  )
+  println(
     "  llm flags: --llm  enable LLM/RLM capabilities (requires VIBE_LLM_PROVIDER)",
   )
 }
@@ -832,36 +838,30 @@ fn entry_prefers_compiled_backend(entry_path : String) -> Bool {
 }
 
 ///|
-fn entry_prefers_interpreter_backend(entry_path : String) -> Bool {
-  let normalized = normalize_cli_entry_path(entry_path)
-  let matched_normalized = normalized == "vibe/x/args" ||
-    normalized.has_prefix("vibe/x/args/") ||
-    normalized.has_suffix("/vibe/x/args") ||
-    normalized.contains("/vibe/x/args/")
-  if matched_normalized {
-    return true
-  }
-  entry_path == "vibe\\x\\args" ||
-  entry_path.has_prefix("vibe\\x\\args\\") ||
-  entry_path.has_suffix("\\vibe\\x\\args") ||
-  entry_path.contains("\\vibe\\x\\args\\")
-}
-
-///|
 fn resolve_cli_exec_backend_pref_for_entry(
   env_name : String,
   entry_path : String,
 ) -> CliExecBackendPref {
   let pref = resolve_cli_exec_backend_pref(env_name)
   if pref == CliExecBackendPref::Auto {
-    if entry_prefers_interpreter_backend(entry_path) {
-      return CliExecBackendPref::Interpreter
-    }
     if entry_prefers_compiled_backend(entry_path) {
       return CliExecBackendPref::Compiled
     }
   }
   pref
+}
+
+///|
+fn cli_allow_interpreter_fallback() -> Bool {
+  match @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK") {
+    Some(raw) => parse_bool_flag(raw)
+    None => false
+  }
+}
+
+///|
+fn cli_can_fallback_to_interpreter(backend_pref : CliExecBackendPref) -> Bool {
+  backend_pref == CliExecBackendPref::Auto && cli_allow_interpreter_fallback()
 }
 
 ///|
@@ -1357,16 +1357,25 @@ fn run_cmd(
       let backend_pref = resolve_cli_exec_backend_pref_for_entry(
         "VIBE_RUN_BACKEND", entry_path,
       )
+      let allow_interpreter_fallback = cli_can_fallback_to_interpreter(
+        backend_pref,
+      )
       if backend_pref != CliExecBackendPref::Interpreter {
         match run_cmd_wasm_backend(entry_path) {
           Ok(result) => {
             print_wasm_run_value(result)
             return
           }
-          Err(err) =>
-            if backend_pref == CliExecBackendPref::Compiled {
+          Err(err) => {
+            if backend_pref == CliExecBackendPref::Compiled ||
+              not(allow_interpreter_fallback) {
               die("error: run wasm backend: " + err)
             }
+            println(
+              "warning: run wasm backend failed; falling back to interpreter (VIBE_ALLOW_INTERPRETER_FALLBACK=1): " +
+              err,
+            )
+          }
         }
       }
       match @loader.load_db(entry_path) {
@@ -2125,12 +2134,14 @@ fn run_test_file_with_backend(
   let backend_pref = resolve_cli_exec_backend_pref_for_entry(
     "VIBE_TEST_BACKEND", entry_path,
   )
+  let allow_interpreter_fallback = cli_can_fallback_to_interpreter(backend_pref)
   if backend_pref != CliExecBackendPref::Interpreter {
-    let stop_on_first_failure = backend_pref == CliExecBackendPref::Auto
+    let stop_on_first_failure = allow_interpreter_fallback
     match run_test_file_compiled(entry_path, stop_on_first_failure) {
       CompiledTestAttempt::Success(report) => return Ok(report)
       CompiledTestAttempt::Unsupported(err) =>
-        if backend_pref == CliExecBackendPref::Compiled {
+        if backend_pref == CliExecBackendPref::Compiled ||
+          not(allow_interpreter_fallback) {
           return Err("compiled backend unsupported: " + err)
         }
       CompiledTestAttempt::Error(err) => return Err(err)

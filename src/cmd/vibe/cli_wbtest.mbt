@@ -2527,6 +2527,26 @@ test "resolve backend pref forces compiled for compiler entry in auto mode" {
 }
 
 ///|
+test "interpreter fallback is disabled by default" {
+  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  @sys.unset_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
+  assert_false(cli_allow_interpreter_fallback())
+  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
+}
+
+///|
+test "interpreter fallback env only enables auto backend fallback" {
+  let prev_fallback = @sys.get_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK")
+  @sys.set_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", "1")
+  defer wbtest_restore_env_var("VIBE_ALLOW_INTERPRETER_FALLBACK", prev_fallback)
+  assert_true(cli_allow_interpreter_fallback())
+  assert_true(cli_can_fallback_to_interpreter(CliExecBackendPref::Auto))
+  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Compiled))
+  assert_false(cli_can_fallback_to_interpreter(CliExecBackendPref::Interpreter))
+}
+
+///|
 test "compiled exec detects modules that use http builtins and emits host imports" {
   let db = @runtime.VibeDb::new()
   let src =
