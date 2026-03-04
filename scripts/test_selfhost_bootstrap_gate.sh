@@ -9,6 +9,7 @@ ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/index.vibe}"
 KPI_BASELINE_SEC="${VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC:-}"
 KPI_REDUCTION_PCT="${VIBE_SELFHOST_BOOTSTRAP_REDUCTION_PCT:-30}"
 PIPELINE_OPT_LEVEL="${VIBE_SELFHOST_PIPELINE_OPT_LEVEL:-}"
+SELFHOST_TEST_JOBS="${VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS:-}"
 
 run_stage() {
   local name="$1"
@@ -46,6 +47,30 @@ is_non_negative_int() {
     ''|*[!0-9]*) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+is_positive_int() {
+  if ! is_non_negative_int "$1"; then
+    return 1
+  fi
+  [ "$1" -gt 0 ]
+}
+
+detect_default_test_jobs() {
+  local cpus
+  cpus=""
+  if command -v nproc >/dev/null 2>&1; then
+    cpus="$(nproc || true)"
+  elif command -v sysctl >/dev/null 2>&1; then
+    cpus="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+  fi
+  if ! is_positive_int "${cpus:-}"; then
+    cpus=4
+  fi
+  if [ "$cpus" -gt 8 ]; then
+    cpus=8
+  fi
+  echo "$cpus"
 }
 
 run_wasm_and_expect_zero() {
@@ -98,8 +123,20 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   } >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
+if [ -z "$SELFHOST_TEST_JOBS" ]; then
+  SELFHOST_TEST_JOBS="$(detect_default_test_jobs)"
+fi
+if ! is_positive_int "$SELFHOST_TEST_JOBS"; then
+  echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS must be positive integer" >&2
+  exit 1
+fi
+if [ "$SELFHOST_TEST_JOBS" -gt 16 ]; then
+  SELFHOST_TEST_JOBS=16
+fi
+
 run_stage "compiled selfhost test suite" \
-  env VIBE_TEST_BACKEND=compiled "$VIBE_BIN" test "$PROJECT_ROOT"/vibe/compiler/*_test.vibe
+  env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
+  "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$PROJECT_ROOT"/vibe/compiler/*_test.vibe
 
 echo "[bootstrap] selfhost __to_string source path check"
 if rg -n "double_to_string_compiler" \
