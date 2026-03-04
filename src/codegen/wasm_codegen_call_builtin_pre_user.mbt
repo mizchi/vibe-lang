@@ -1926,7 +1926,7 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((64).to_byte()) // void
         emit_local_get(buf, outer_i)
         emit_local_set(buf, result_local)
-        emit_br(buf, 1) // break outer block
+        emit_br(buf, 2) // break outer block (depth: 0=if, 1=loop, 2=block)
         buf.push((11).to_byte()) // end if
         // outer_i++
         emit_local_get(buf, outer_i)
@@ -1942,6 +1942,130 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_const_raw(buf, 2L)
         emit_i64_shl(buf)
         emit_i64_const_raw(buf, tag_int.to_int64())
+        emit_i64_or(buf)
+      }
+    }
+    "string_contains" if not(is_user_fn) => {
+      // string_contains(str, sub) -> Bool
+      // Reuses the same substring search as string_index_of but returns bool.
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "string_contains", 2,
+      )
+      if ctx.use_js_strings {
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="string_contains",
+        )
+      } else {
+        let str_ptr = alloc_temp_local(ctx)
+        let str_len = alloc_temp_local(ctx)
+        let sub_ptr = alloc_temp_local(ctx)
+        let sub_len = alloc_temp_local(ctx)
+        let outer_i = alloc_temp_local(ctx)
+        let inner_j = alloc_temp_local(ctx)
+        let result_local = alloc_temp_local(ctx)
+        let matched = alloc_temp_local(ctx)
+        let limit_local = alloc_temp_local(ctx)
+        // get str pointer and length
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, str_ptr)
+        emit_local_get(buf, str_ptr)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, str_len)
+        // get sub pointer and length
+        compile_expr_i32(ctx, buf, pos_args[1])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, sub_ptr)
+        emit_local_get(buf, sub_ptr)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, sub_len)
+        // result = 0 (not found / false)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, result_local)
+        // limit = str_len - sub_len + 1
+        emit_local_get(buf, str_len)
+        emit_local_get(buf, sub_len)
+        emit_i32_sub(buf)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, limit_local)
+        // if sub_len > str_len, skip search (limit <= 0)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, outer_i)
+        emit_block(buf) // block (for breaking when found)
+        emit_loop(buf) // outer loop
+        // if outer_i >= limit, break
+        emit_local_get(buf, outer_i)
+        emit_local_get(buf, limit_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1) // break to block
+        // check if all sub bytes match at position outer_i
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, matched)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, inner_j)
+        emit_block(buf) // inner block (for breaking when mismatch)
+        emit_loop(buf) // inner loop
+        emit_local_get(buf, inner_j)
+        emit_local_get(buf, sub_len)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1) // break inner block (all matched)
+        // compare str[outer_i + inner_j] == sub[inner_j]
+        emit_local_get(buf, str_ptr)
+        emit_local_get(buf, outer_i)
+        emit_i32_add(buf)
+        emit_local_get(buf, inner_j)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8) // str byte
+        emit_local_get(buf, sub_ptr)
+        emit_local_get(buf, inner_j)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8) // sub byte
+        emit_i32_eq(buf)
+        emit_i32_eqz(buf)
+        buf.push((4).to_byte()) // if (not equal)
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, matched)
+        emit_br(buf, 2) // break inner block
+        buf.push((11).to_byte()) // end if
+        // inner_j++
+        emit_local_get(buf, inner_j)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, inner_j)
+        emit_br(buf, 0) // continue inner loop
+        emit_end(buf) // end inner loop
+        emit_end(buf) // end inner block
+        // if matched, set result=1 and break outer
+        emit_local_get(buf, matched)
+        buf.push((4).to_byte()) // if
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, result_local)
+        emit_br(buf, 2) // break outer block (depth: 0=if, 1=loop, 2=block)
+        buf.push((11).to_byte()) // end if
+        // outer_i++
+        emit_local_get(buf, outer_i)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, outer_i)
+        emit_br(buf, 0) // continue outer loop
+        emit_end(buf) // end outer loop
+        emit_end(buf) // end outer block
+        // tag result as bool
+        emit_local_get(buf, result_local)
+        emit_i64_extend_i32_s(buf)
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shl(buf)
+        emit_i64_const_raw(buf, tag_bool.to_int64())
         emit_i64_or(buf)
       }
     }
@@ -2903,7 +3027,7 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_load(buf, 8)
       emit_i64_extend_i32_s(buf)
     }
-    "array_get" | "__index" => {
+    "array_get" => {
       // array_get(arr, idx) -> load arr[idx]
       let pos_args = extract_positional_exprs_with_arity(args, "array_get", 2)
       let ptr_local = alloc_temp_local(ctx)
@@ -2923,6 +3047,94 @@ fn compile_call_builtin_pre_user_inner(
       emit_i32_add(buf)
       emit_i32_load(buf, 8)
       emit_i64_extend_i32_s(buf)
+    }
+    "__index" => {
+      // __index(obj, key) -> record/map field access when key is string,
+      //                      array_get when key is integer
+      let pos_args = extract_positional_exprs_with_arity(args, "__index", 2)
+      match pos_args[1] {
+        @core.Expr::String(value=field_name, ..) => {
+          // Record/Map field access by string key: linear search through
+          // (name_ptr, value) pairs with stride 8.
+          let obj_ptr = alloc_temp_local(ctx)
+          let obj_len = alloc_temp_local(ctx)
+          let loop_i = alloc_temp_local(ctx)
+          let result_local = alloc_temp_local(ctx)
+          let field_ptr = ctx.strings.intern(field_name)
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i64_const_raw(buf, (-4).to_int64())
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, obj_ptr)
+          emit_local_get(buf, obj_ptr)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, obj_len)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, loop_i)
+          emit_i64_const_tagged(buf, 0L)
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, result_local)
+          // loop: compare name pointers, load value on match
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, loop_i)
+          emit_local_get(buf, obj_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if
+          buf.push((64).to_byte()) // void
+          // load name_ptr at obj_ptr + loop_i * 8 + 8
+          emit_local_get(buf, obj_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // name_ptr
+          emit_i32_const_raw(buf, field_ptr)
+          emit_i32_eq(buf)
+          buf.push((4).to_byte()) // if (name matches)
+          buf.push((64).to_byte()) // void
+          // load value at obj_ptr + loop_i * 8 + 12
+          emit_local_get(buf, obj_ptr)
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 8)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 12) // value
+          emit_local_set(buf, result_local)
+          buf.push((11).to_byte()) // end if (name matches)
+          // loop_i++
+          emit_local_get(buf, loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if (i < len)
+          buf.push((11).to_byte()) // end loop
+          emit_local_get(buf, result_local)
+          emit_i64_extend_i32_s(buf)
+        }
+        _ => {
+          // Integer index: array-style direct access
+          let ptr_local = alloc_temp_local(ctx)
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_i64_const_raw(buf, (-4).to_int64())
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_local_set(buf, ptr_local)
+          // offset = 8 + (idx >> 2) * 4
+          emit_local_get(buf, ptr_local)
+          compile_expr_i32(ctx, buf, pos_args[1])
+          emit_i64_const_raw(buf, 2L)
+          emit_i64_shr_s(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const_raw(buf, 4)
+          emit_i32_mul(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8)
+          emit_i64_extend_i32_s(buf)
+        }
+      }
     }
     "__set_index" => {
       // __set_index(arr, idx, value) -> arr[idx] = value; return value

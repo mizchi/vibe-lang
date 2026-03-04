@@ -522,6 +522,45 @@ a' \
 echo ""
 
 # ============================================
+# Record Field Access (dot notation)
+# ============================================
+log_info "Testing record field access..."
+
+expect_wasmtime_result "record dot: first field" \
+'let r = record { x: 10, y: 20 }
+r.x' \
+"10"
+
+expect_wasmtime_result "record dot: second field" \
+'let r = record { x: 10, y: 20 }
+r.y' \
+"20"
+
+expect_wasmtime_result "record dot: sum of fields" \
+'let r = record { x: 10, y: 20 }
+r.x + r.y' \
+"30"
+
+expect_wasmtime_result "record dot: 3 fields" \
+'let r = record { a: 1, b: 2, c: 3 }
+r.a + r.b + r.c' \
+"6"
+
+expect_wasmtime_result "record dot: single field" \
+'let r = record { x: 42 }
+r.x' \
+"42"
+
+expect_wasmtime_result "record dot: let bind from fields" \
+'let r = record { x: 10, y: 20 }
+let a = r.x
+let b = r.y
+a + b' \
+"30"
+
+echo ""
+
+# ============================================
 # Nested / Complex Patterns
 # ============================================
 log_info "Testing nested and complex patterns..."
