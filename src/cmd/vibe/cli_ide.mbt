@@ -29,6 +29,72 @@ fn symbol_line_text(source : String, span : @vibe_core.Span) -> String {
 }
 
 ///|
+fn graph_ir_line_col(source : String, row : @x_exp.GraphIrRow) -> (Int, Int) {
+  let (pos, _, _) = @vibe_core.line_info(source, row.start)
+  (pos.line, pos.column)
+}
+
+///|
+fn graph_ir_line_text(source : String, row : @x_exp.GraphIrRow) -> String {
+  let (_, line_start, line_end) = @vibe_core.line_info(source, row.start)
+  try source[line_start:line_end] catch {
+    _ => ""
+  } noraise {
+    s => s.to_string()
+  }
+}
+
+///|
+fn graph_ir_find_exact_rows(
+  rows : Array[@x_exp.GraphIrRow],
+  name : String,
+) -> Array[@x_exp.GraphIrRow] {
+  let out : Array[@x_exp.GraphIrRow] = []
+  for row in rows {
+    if row.name == name {
+      out.push(row)
+    }
+  }
+  out
+}
+
+///|
+fn graph_ir_search_rows(
+  rows : Array[@x_exp.GraphIrRow],
+  query : String,
+) -> Array[@x_exp.GraphIrRow] {
+  let out : Array[@x_exp.GraphIrRow] = []
+  for row in rows {
+    if query.length() == 0 ||
+      row.name.contains(query) ||
+      row.signature.contains(query) {
+      out.push(row)
+    }
+  }
+  out
+}
+
+///|
+fn graph_ir_rows_to_symbol_index(
+  rows : Array[@x_exp.GraphIrRow],
+) -> @frontend.SymbolIndex {
+  let entries : Array[@frontend.SymbolEntry] = []
+  for row in rows {
+    entries.push(
+      @frontend.symbol_entry_from_kind_name(
+        row.name,
+        row.kind,
+        row.signature,
+        row.path,
+        row.start,
+        row.end,
+      ),
+    )
+  }
+  @frontend.build_symbol_index_from_entries(entries)
+}
+
+///|
 fn print_ide_outline_entry(
   entry : @frontend.SymbolEntry,
   source : String,
@@ -121,12 +187,86 @@ fn print_ide_search_entry(
 }
 
 ///|
+fn print_graph_ir_peek_def_entry(
+  row : @x_exp.GraphIrRow,
+  source : String,
+) -> Unit {
+  let (line, column) = graph_ir_line_col(source, row)
+  println("")
+  println(
+    row.kind +
+    " " +
+    row.name +
+    " at " +
+    row.path +
+    ":" +
+    line.to_string() +
+    ":" +
+    column.to_string(),
+  )
+  let snippet = graph_ir_line_text(source, row)
+  if snippet.length() > 0 {
+    println(snippet)
+  }
+}
+
+///|
+fn print_graph_ir_search_entry(
+  row : @x_exp.GraphIrRow,
+  source : String,
+) -> Unit {
+  let (line, column) = graph_ir_line_col(source, row)
+  println(
+    row.path +
+    ":" +
+    line.to_string() +
+    ":" +
+    column.to_string() +
+    "  " +
+    row.kind +
+    " " +
+    row.name +
+    " : " +
+    row.signature,
+  )
+}
+
+///|
 fn ide_peek_def_cmd(args : Array[String]) -> Unit {
   if args.length() != 2 {
     abort("ide peek-def: expected <symbol> <entry-file>")
   }
   let symbol = args[0]
   let entry_file = args[1]
+  match @x_exp.detect_language_id(entry_file) {
+    Some("vibe") | None => ()
+    Some(_) => {
+      let source = @os_fs.read_file_to_string(entry_file) catch {
+        e => abort("ide peek-def: " + e.to_string())
+      }
+      match @x_exp.extract_graph_ir_rows_by_ext(entry_file, source) {
+        Ok(rows) => {
+          let matches = graph_ir_find_exact_rows(rows, symbol)
+          if matches.length() == 0 {
+            println("No symbols found matching `" + symbol + "`")
+            return
+          }
+          println(
+            "Found " +
+            matches.length().to_string() +
+            " symbols matching `" +
+            symbol +
+            "`:",
+          )
+          for row in matches {
+            print_graph_ir_peek_def_entry(row, source)
+          }
+        }
+        Err(err) => abort("ide peek-def: " + err)
+      }
+      return
+    }
+  }
   match @loader.load_db_with_paths(entry_file) {
     Ok((db, _, paths)) => {
       let index = @runtime.build_symbol_index(db, paths)
@@ -178,6 +318,35 @@ fn ide_search_cmd(args : Array[String]) -> Unit {
   }
   let query = args[0]
   let entry_file = args[1]
+  match @x_exp.detect_language_id(entry_file) {
+    Some("vibe") | None => ()
+    Some(_) => {
+      let source = @os_fs.read_file_to_string(entry_file) catch {
+        e => abort("ide search: " + e.to_string())
+      }
+      match @x_exp.extract_graph_ir_rows_by_ext(entry_file, source) {
+        Ok(rows) => {
+          let matches = graph_ir_search_rows(rows, query)
+          if matches.length() == 0 {
+            println("No symbols found for query `" + query + "`")
+            return
+          }
+          println(
+            "Found " +
+            matches.length().to_string() +
+            " symbols for query `" +
+            query +
+            "`:",
+          )
+          for row in matches {
+            print_graph_ir_search_entry(row, source)
+          }
+        }
+        Err(err) => abort("ide search: " + err)
+      }
+      return
+    }
+  }
   match @loader.load_db_with_paths(entry_file) {
     Ok((db, _, paths)) => {
       let index = @runtime.build_symbol_index(db, paths)
@@ -252,6 +421,43 @@ fn lsif_cmd(args : Array[String]) -> Unit {
   }
   if entries.length() != 1 {
     abort("lsif: expected <entry-file>")
+  }
+  match @x_exp.detect_language_id(entries[0]) {
+    Some("vibe") | None => ()
+    Some(_) => {
+      let source = @os_fs.read_file_to_string(entries[0]) catch {
+        e => abort("lsif: " + e.to_string())
+      }
+      match @x_exp.extract_graph_ir_rows_by_ext(entries[0], source) {
+        Ok(rows) => {
+          let index = graph_ir_rows_to_symbol_index(rows)
+          let lines = @frontend.symbol_index_to_lsif_lines(index, fn(path) {
+            if path == entries[0] {
+              Some(source)
+            } else {
+              None
+            }
+          })
+          match out_path {
+            Some(path) => {
+              let text = lsif_lines_to_text(lines)
+              @os_fs.write_string_to_file(path, text) catch {
+                e => abort("lsif: " + e.to_string())
+              }
+              println(
+                "wrote " + path + " (" + lines.length().to_string() + " lines)",
+              )
+            }
+            None =>
+              for line in lines {
+                println(line)
+              }
+          }
+        }
+        Err(err) => abort("lsif: " + err)
+      }
+      return
+    }
   }
   match @loader.load_db_with_paths(entries[0]) {
     Ok((db, _, paths)) => {

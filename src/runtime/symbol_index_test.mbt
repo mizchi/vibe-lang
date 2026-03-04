@@ -120,6 +120,77 @@ test "symbol index lsif output includes metadata and documents" {
 }
 
 ///|
+test "symbol index lsif infers languageId from path extension" {
+  let path = "/workspace/main.ts"
+  let source = "function add(a: number, b: number): number { return a + b }"
+  let entries : Array[@pipeline.SymbolEntry] = [
+    @pipeline.symbol_entry_from_kind_name(
+      "add",
+      "function",
+      "function add(a: number, b: number): number",
+      path,
+      0,
+      source.length(),
+    ),
+  ]
+  let index = @pipeline.build_symbol_index_from_entries(entries)
+  let lines = @pipeline.symbol_index_to_lsif_lines(index, fn(p) {
+    if p == path {
+      Some(source)
+    } else {
+      None
+    }
+  })
+  let mut found_language_id : String? = None
+  let mut found_hover_language : String? = None
+  for line in lines {
+    let json = @json.parse(line) catch {
+      e => fail("lsif json parse failed: " + e.to_string())
+    }
+    match json {
+      Json::Object(obj) =>
+        match obj.get("label") {
+          Some(Json::String("document")) =>
+            match obj.get("languageId") {
+              Some(Json::String(value)) => found_language_id = Some(value)
+              _ => ()
+            }
+          Some(Json::String("hoverResult")) =>
+            match obj.get("result") {
+              Some(Json::Object(result_obj)) =>
+                match result_obj.get("contents") {
+                  Some(Json::Array(contents)) =>
+                    if contents.length() > 0 {
+                      match contents[0] {
+                        Json::Object(first) =>
+                          match first.get("language") {
+                            Some(Json::String(value)) =>
+                              found_hover_language = Some(value)
+                            _ => ()
+                          }
+                        _ => ()
+                      }
+                    }
+                  _ => ()
+                }
+              _ => ()
+            }
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  match found_language_id {
+    Some(value) => assert_eq(value, "typescript")
+    None => fail("document languageId not found")
+  }
+  match found_hover_language {
+    Some(value) => assert_eq(value, "typescript")
+    None => fail("hover language not found")
+  }
+}
+
+///|
 test "symbol index deduplicates identical module hash across paths" {
   let db = VibeDb::new()
   let source =

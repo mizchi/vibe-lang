@@ -43,6 +43,47 @@ pub fn symbol_kind_name(kind : SymbolKind) -> String {
 }
 
 ///|
+pub fn symbol_kind_from_name(kind_name : String) -> SymbolKind {
+  match kind_name {
+    "function" => SymbolKind::FnSym
+    "type" => SymbolKind::TypeAliasSym
+    "enum" => SymbolKind::EnumSym
+    "struct" => SymbolKind::StructSym
+    "class" => SymbolKind::StructSym
+    "interface" => SymbolKind::StructSym
+    "trait" => SymbolKind::TraitSym
+    "constructor" => SymbolKind::CtorSym
+    "ctor" => SymbolKind::CtorSym
+    "impl" => SymbolKind::ImplSym
+    "value" => SymbolKind::ValueSym
+    "const" => SymbolKind::ValueSym
+    "let" => SymbolKind::ValueSym
+    "var" => SymbolKind::ValueSym
+    "variable" => SymbolKind::ValueSym
+    _ => SymbolKind::ValueSym
+  }
+}
+
+///|
+pub fn symbol_entry_from_kind_name(
+  name : String,
+  kind_name : String,
+  signature : String,
+  path : String,
+  span_start : Int,
+  span_end : Int,
+) -> SymbolEntry {
+  let safe_end = if span_end < span_start { span_start } else { span_end }
+  SymbolEntry::{
+    name,
+    kind: symbol_kind_from_name(kind_name),
+    signature,
+    path,
+    span: @core.Span::{ start: span_start, end: safe_end },
+  }
+}
+
+///|
 fn join_with(parts : Array[String], sep : String) -> String {
   if parts.length() == 0 {
     return ""

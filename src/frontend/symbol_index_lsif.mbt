@@ -86,6 +86,22 @@ fn path_to_uri(path : String) -> String {
 }
 
 ///|
+fn lsif_language_id_for_path(path : String) -> String {
+  let lower = path.to_lower()
+  if lower.has_suffix(".vibe") {
+    "vibe"
+  } else if lower.has_suffix(".ts") || lower.has_suffix(".tsx") {
+    "typescript"
+  } else if lower.has_suffix(".js") || lower.has_suffix(".jsx") {
+    "javascript"
+  } else if lower.has_suffix(".py") {
+    "python"
+  } else {
+    "vibe"
+  }
+}
+
+///|
 fn clamp_offset(offset : Int, source_len : Int) -> Int {
   if offset < 0 {
     0
@@ -170,6 +186,7 @@ fn symbol_hover_signature(entry : SymbolEntry) -> String {
 priv struct SourceDoc {
   document_id : Int
   source : String
+  language_id : String
   line_starts : Array[Int]
 }
 
@@ -198,14 +215,16 @@ pub fn symbol_index_to_lsif_lines(
   for path in sorted_index_paths(index) {
     match source_of(path) {
       Some(source) => {
+        let language_id = lsif_language_id_for_path(path)
         let document_payload : Map[String, Json] = {}
         document_payload["uri"] = Json::string(path_to_uri(path))
-        document_payload["languageId"] = Json::string("vibe")
+        document_payload["languageId"] = Json::string(language_id)
         let document_id = next_id(counter)
         push_lsif_vertex(lines, document_id, "document", document_payload)
         docs[path] = SourceDoc::{
           document_id,
           source,
+          language_id,
           line_starts: build_line_starts(source),
         }
         doc_ids.push(document_id)
@@ -281,7 +300,7 @@ pub fn symbol_index_to_lsif_lines(
           document=doc.document_id,
         )
         let hover_item : Map[String, Json] = {}
-        hover_item["language"] = Json::string("vibe")
+        hover_item["language"] = Json::string(doc.language_id)
         hover_item["value"] = Json::string(symbol_hover_signature(entry))
         let hover_result_obj : Map[String, Json] = {}
         hover_result_obj["contents"] = Json::array([Json::object(hover_item)])

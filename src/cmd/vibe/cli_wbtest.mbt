@@ -2653,3 +2653,104 @@ test "decode tagged wasm run value" {
   assert_eq(decode_tagged_wasm_run_value(7L), Some(WasmRunValue::Bool(true)))
   assert_eq(decode_tagged_wasm_run_value(3L), Some(WasmRunValue::Bool(false)))
 }
+
+///|
+test "graph ir query helpers support exact and partial search" {
+  let rows : Array[@x_exp.GraphIrRow] = [
+    @x_exp.new_graph_ir_row(
+      "typescript",
+      "app.ts",
+      "add",
+      "function",
+      "function add(a: number, b: number): number",
+      0,
+      40,
+      "h1",
+      [],
+      [],
+      [],
+      [],
+    ),
+    @x_exp.new_graph_ir_row(
+      "typescript",
+      "app.ts",
+      "Point",
+      "interface",
+      "interface Point { x: number }",
+      41,
+      80,
+      "h1",
+      [],
+      [],
+      [],
+      [],
+    ),
+  ]
+  assert_eq(graph_ir_find_exact_rows(rows, "add").length(), 1)
+  assert_eq(graph_ir_find_exact_rows(rows, "ad").length(), 0)
+  assert_eq(graph_ir_search_rows(rows, "Point").length(), 1)
+  assert_eq(graph_ir_search_rows(rows, "number").length(), 2)
+  assert_eq(graph_ir_search_rows(rows, "").length(), 2)
+}
+
+///|
+test "graph ir line helpers resolve line and snippet from start offset" {
+  let source = "x\nfoo()"
+  let row = @x_exp.new_graph_ir_row(
+    "python",
+    "main.py",
+    "foo",
+    "function",
+    "def foo()",
+    2,
+    7,
+    "h2",
+    [],
+    [],
+    [],
+    [],
+  )
+  assert_eq(graph_ir_line_col(source, row), (2, 1))
+  assert_eq(graph_ir_line_text(source, row), "foo()")
+}
+
+///|
+test "graph ir rows convert to symbol index for lsif emission" {
+  let rows : Array[@x_exp.GraphIrRow] = [
+    @x_exp.new_graph_ir_row(
+      "typescript",
+      "/workspace/main.ts",
+      "add",
+      "function",
+      "function add(a: number, b: number): number",
+      0,
+      40,
+      "h3",
+      [],
+      [],
+      [],
+      [],
+    ),
+    @x_exp.new_graph_ir_row(
+      "typescript",
+      "/workspace/main.ts",
+      "Point",
+      "interface",
+      "interface Point { x: number }",
+      41,
+      80,
+      "h3",
+      [],
+      [],
+      [],
+      [],
+    ),
+  ]
+  let index = graph_ir_rows_to_symbol_index(rows)
+  let add_hits = index.find_exact("add")
+  assert_eq(add_hits.length(), 1)
+  assert_eq(@frontend.symbol_kind_name(add_hits[0].kind), "function")
+  let point_hits = index.find_exact("Point")
+  assert_eq(point_hits.length(), 1)
+  assert_eq(@frontend.symbol_kind_name(point_hits[0].kind), "struct")
+}

@@ -28,7 +28,11 @@ pub using @frontend {type SymbolEntry}
 pub using @frontend {type SymbolIndex}
 
 ///|
-pub using @frontend {symbol_kind_name}
+pub using @frontend {
+  symbol_kind_name,
+  symbol_kind_from_name,
+  symbol_entry_from_kind_name,
+}
 
 ///|
 pub using @frontend {
