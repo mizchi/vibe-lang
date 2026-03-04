@@ -141,6 +141,27 @@ build-checker-wasi-wasm:
 build-wite-optimize-wasi-wasm:
     moon build --target wasm src/cmd/vibe_wite_optimize_wasi
 
+# Build experimental wasi:http@0.3 adapter component (Rust + wit-bindgen)
+build-wasi-http-p3-adapter out="":
+    if [ -n "{{out}}" ]; then \
+      scripts/build_wasi_http_p3_adapter.sh {{out}}; \
+    else \
+      scripts/build_wasi_http_p3_adapter.sh; \
+    fi
+
+# Probe async P3 adapter compose/serve path (wac plug + wasmtime serve smoke)
+probe-wasi-http-p3-compose wac="wac":
+    WAC_BIN={{wac}} scripts/probe_wasi_http_p3_compose.sh
+
+# Probe async P3 service-only component (no compose) against wasmtime serve
+probe-wasi-http-p3-service-only:
+    scripts/probe_wasi_http_p3_service_only.sh
+
+# Run WASI HTTP P3 gate in blocked/strict mode
+# env: VIBE_WASI_HTTP_P3_REQUIRE_READY=0|1, VIBE_WASI_HTTP_P3_RUN_COMPOSE=0|1, WAC_BIN=<path>
+test-wasi-http-p3-gate:
+    scripts/test_wasi_http_p3_blocked_gate.sh
+
 # Run wasm compiler CLI through moon wasm runner
 run-compiler-wasi-wasm *args:
     moon run --target wasm src/cmd/vibe_compile_wasi -- {{args}}

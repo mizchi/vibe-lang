@@ -573,3 +573,45 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
   - `can_connect_any` / `can_listen_any` は interpreter 契約に合わせて「該当 capability が1件でもあれば true」。
 - `moon run --target native src/cmd/vibe -- ...` 経路では、`die()` が内部で使う `exit(1)` の終了コードが script から安定して観測できないケースがある。
   - policy gate（`scripts/test_compiled_backend_http_policy.sh`）は `vibe.exe` 直実行に切り替えて終了コード判定を安定化。
+
+---
+
+## K-018: WASI HTTP P3 async component の compose ツールチェーン不整合
+
+- 場所: `scripts/build_wasi_http_p3_adapter.sh`, 外部 toolchain (`cargo-component`, `wac`, `mwac`, `wasm-tools compose`)
+- 発見: 2026-03
+
+### 問題
+
+`wasi:http@0.3` の `handler.handle` は async であり、component 側に async-lift/lower の型情報が入る。  
+この形式に対して、現行 compose ツールが揃って同時に対応していない。
+
+### 事実
+
+- `cargo-component 0.21.1`（内部 `wit-bindgen 0.41`）は async export 名として `#[async]handle` を使い、`wasm-tools validate` / `wasmtime` で reject される。
+- `wit-bindgen 0.51` + `wasm-tools component new` では validate 可能な P3 async component は生成できる。
+- ただし compose 側で以下が発生する:
+  - `wac-cli 0.8.1`: `invalid leading byte (0x43) for component defined type`
+  - `wac-cli 0.9.0`: `plug + validate` は通るが、`wasmtime serve` で `wasi:http/types` の resource 実装不一致により起動失敗（`resource implementation is missing`）
+  - `mwac/wite compose`: `unknown type ... type index out of bounds`（invalid component 出力）
+  - `wasm-tools compose`: function import 経路で panic（`should not have an instance import ref to a non-instance import`）
+- さらに、compose を介さない service-only component（`include wasi:http/service` のみ）でも `wasmtime serve` で同じ `resource implementation is missing` が出る。
+  - つまり `wac compose` 固有ではなく、現状の `wit-bindgen 0.51` 生成物と `wasmtime serve` の resource 型照合にもギャップがある。
+- 外部 issue を作成して追跡中:
+  - wasmtime: https://github.com/bytecodealliance/wasmtime/issues/12714
+  - wit-bindgen: https://github.com/bytecodealliance/wit-bindgen/issues/1554
+
+### 実務上の扱い
+
+- 「P3 adapter の build」までは再現可能にし、`scripts/build_wasi_http_p3_adapter.sh` に固定。
+- `wac` 経路の再現は `scripts/probe_wasi_http_p3_compose.sh` に固定（`plug` / `validate` / `serve smoke`）。
+- compose 非依存の再現は `scripts/probe_wasi_http_p3_service_only.sh` に固定（service-only build + `serve smoke`）。
+- CI は `scripts/test_wasi_http_p3_blocked_gate.sh` を monitor-only で実行し、既知ブロッカーは fail させない。
+  - `VIBE_WASI_HTTP_P3_REQUIRE_READY=0`（default）: known blocker を許容
+  - `VIBE_WASI_HTTP_P3_REQUIRE_READY=1`: ready でない場合は fail（昇格用）
+- 「adapter + vibe run の compose/serve」は toolchain 側の async resource 対応待ち（または compose 実装更新）を blocker として管理。
+
+### 教訓
+
+- P3 async を扱う場合、**guest 生成（bindgen）と compose 実装の対応レベルを必ずセットで検証**すること。  
+  どちらか一方だけ更新しても end-to-end は成立しない。

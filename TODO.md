@@ -164,8 +164,24 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] WASM HTTP builtins の本実装（現状は wasm で catchable fallback error）。WASI P3 HTTP (`wasi:http@0.3.0-draft`) 安定待ち
   - Client: `wasi:http/client.send` で outgoing request 送信
   - Server: `wasi:http/handler` export で incoming-request 受信 (wasmtime serve)
+  - [ ] Adapter compose ツールチェーンを P3 async 対応へ更新する（現状ブロッカー）
+    - `wit-bindgen 0.51` + `wasm-tools component new` で作った service-only component（compose なし）でも `wasmtime serve` が `resource implementation is missing` で失敗する
+    - `wac-cli 0.9.0` では `plug + validate` は通るが、`wasmtime serve` で `wasi:http/types` resource 実装不一致（`resource implementation is missing`）により起動できない
+    - `mwac/wite compose` は同入力で `unknown type ... type index out of bounds` となり invalid component を出力する
+    - `wasm-tools compose` は function import (`run`) 経路で panic するため、現行では直列 compose の代替にならない
+    - 外部 issue:
+      - wasmtime: https://github.com/bytecodealliance/wasmtime/issues/12714
+      - wit-bindgen: https://github.com/bytecodealliance/wit-bindgen/issues/1554
+    - 再現スクリプト:
+      - `scripts/build_wasi_http_p3_adapter.sh`（P3 adapter build）
+      - `scripts/probe_wasi_http_p3_compose.sh`（app component build + `wac plug` + `wasmtime serve` smoke）
+      - `scripts/probe_wasi_http_p3_service_only.sh`（service-only build + `wasmtime serve` smoke）
+      - `scripts/test_wasi_http_p3_blocked_gate.sh`（blocked/strict gate。`VIBE_WASI_HTTP_P3_REQUIRE_READY=0` なら既知ブロッカーを許容）
   - 実装タスク（vibe 側）:
     - [ ] codegen: HTTP client builtins (`http_request` / `http_response_*` / `http_close`) を `wasi:http/client.send` + `wasi:http/types` resource 操作へ lower
+      - [x] component compile 経路（`--component --http-host-imports`）の client import 名を `wasi:http/client@0.3.0-draft` / `wasi:http/types@0.3.0-draft` shim へ切り替え（`send` / `response-*` / `[drop]response`）
+      - [ ] server builtin 分は現状 `vibe:http/*` のまま（`wasi:http/handler` export 実装まで据え置き）
+      - [ ] resource 本体（`types.request` / `types.response`）を使う実 lower は未実装（現状は i64 handle shim ABI）
     - [ ] codegen: HTTP server builtins (`http_listen` / `http_accept` / `http_request_*` / `http_respond`) を `wasi:http/handler` export モデルへ再設計（listen/accept API との対応を確定）
       - [x] component WIT 生成で server builtin 使用時は `wasi:http/handler` を import ではなく export として出力
     - [ ] component emit: HTTP server builtin 使用時に `wasi:http/handler` export を持つ component を生成（現状は WIT 契約のみ）
