@@ -133,6 +133,10 @@ fi
 if [ "$SELFHOST_TEST_JOBS" -gt 16 ]; then
   SELFHOST_TEST_JOBS=16
 fi
+echo "[bootstrap] selfhost test jobs: $SELFHOST_TEST_JOBS"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  printf -- "- %s: %s\n" "selfhost test jobs" "$SELFHOST_TEST_JOBS" >> "$GITHUB_STEP_SUMMARY" || true
+fi
 
 run_stage "compiled selfhost test suite" \
   env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
