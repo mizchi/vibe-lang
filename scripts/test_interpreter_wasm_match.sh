@@ -87,6 +87,8 @@ test_cases=(
   'string_length(string_trim_end("  hi  "))'
   'string_length(string_concat("hello", " world"))'
   'string_length(string_substring("hello world", 0, 5))'
+  'string_char_code_at(string_to_upper("abc"), 0)'
+  'string_char_code_at(string_to_lower("ABC"), 0)'
 )
 
 echo "Testing interpreter vs WASM output..."

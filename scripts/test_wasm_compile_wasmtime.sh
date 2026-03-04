@@ -1051,6 +1051,22 @@ expect_wasmtime_result "string_from_char_code" \
 'string_char_code_at(string_from_char_code(65), 0)' \
 "65"
 
+expect_wasmtime_result "string_to_upper" \
+'string_char_code_at(string_to_upper("abc"), 0)' \
+"65"
+
+expect_wasmtime_result "string_to_upper: non-alpha preserved" \
+'string_char_code_at(string_to_upper("1a"), 0)' \
+"49"
+
+expect_wasmtime_result "string_to_lower" \
+'string_char_code_at(string_to_lower("ABC"), 0)' \
+"97"
+
+expect_wasmtime_result "string_to_lower: non-alpha preserved" \
+'string_char_code_at(string_to_lower("1A"), 0)' \
+"49"
+
 echo ""
 
 # ============================================

@@ -151,7 +151,12 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "map_values"
         | "string_trim"
         | "string_trim_start"
-        | "string_trim_end" => ctx.need_heap = true
+        | "string_trim_end"
+        | "string_to_upper"
+        | "string_to_lower"
+        | "string_replace"
+        | "string_replace_all"
+        | "string_split" => ctx.need_heap = true
         "sleep" => ctx.need_sleep = true
         "stdout_write_char" | "stdout_write_stream" =>
           ctx.need_stdout_write_char = true
