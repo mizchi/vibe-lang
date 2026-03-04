@@ -9,6 +9,7 @@ STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/debug/bu
 STAGE1_WASM="$OUT_DIR/index_stage1.wasm"
 STAGE2_WASM="$OUT_DIR/index_stage2.wasm"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC:-600}"
+STRICT_RECURSIVE="${VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE:-0}"
 
 run_with_timeout() {
   local timeout_sec="$1"
@@ -103,6 +104,7 @@ is_non_negative_int() {
 }
 
 mkdir -p "$OUT_DIR"
+rm -f "$STAGE1_WASM" "$STAGE2_WASM"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "### Selfhost WASI Selfbuild Timings"
@@ -114,8 +116,13 @@ if ! is_non_negative_int "$STAGE_TIMEOUT_SEC"; then
   echo "selfbuild gate failed: VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC must be integer seconds" >&2
   exit 1
 fi
+if [ "$STRICT_RECURSIVE" != "0" ] && [ "$STRICT_RECURSIVE" != "1" ]; then
+  echo "selfbuild gate failed: VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE must be 0 or 1" >&2
+  exit 1
+fi
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "strict recursive" "$STRICT_RECURSIVE" >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
 if ! command -v moonrun >/dev/null 2>&1; then
@@ -136,8 +143,38 @@ fi
 run_stage "stage0 (wasm compiler via moonrun) -> stage1 wasm compile" \
   moonrun "$STAGE1_COMPILER_WASM" --wasm-mvp "$ENTRY_PATH" -o "$STAGE1_WASM"
 
-run_stage "stage1 (wasm compiler via moonrun) -> stage2 wasm compile" \
-  moonrun "$STAGE1_COMPILER_WASM" --wasm-mvp "$ENTRY_PATH" -o "$STAGE2_WASM"
+recursive_stage2_ok=0
+RECURSIVE_STAGE2_LOG="$OUT_DIR/stage2_recursive_compile.log"
+recursive_start="$(date +%s)"
+echo "[selfbuild] stage1 artifact (generated wasm) -> stage2 wasm compile"
+set +e
+run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_WASM" --wasm-mvp "$ENTRY_PATH" -o "$STAGE2_WASM" >"$RECURSIVE_STAGE2_LOG" 2>&1
+recursive_status=$?
+set -e
+if [ "$recursive_status" -eq 124 ]; then
+  echo "[selfbuild] timeout: stage1 artifact (generated wasm) -> stage2 wasm compile (${STAGE_TIMEOUT_SEC}s)" >&2
+fi
+if [ "$recursive_status" -eq 0 ] && [ -s "$STAGE2_WASM" ]; then
+  recursive_end="$(date +%s)"
+  recursive_elapsed="$((recursive_end - recursive_start))"
+  echo "[selfbuild] done: stage1 artifact (generated wasm) -> stage2 wasm compile (${recursive_elapsed}s)"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf -- "- %s: %ss\n" "stage1 artifact (generated wasm) -> stage2 wasm compile" "$recursive_elapsed" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+  recursive_stage2_ok=1
+else
+  if [ "$STRICT_RECURSIVE" = "1" ]; then
+    echo "[selfbuild] strict recursive mode: generated artifact could not compile stage2; using seed compiler fallback" >&2
+  else
+    echo "[selfbuild] warning: stage1 artifact is not usable as compiler; fallback to seed compiler" >&2
+  fi
+  if [ -s "$RECURSIVE_STAGE2_LOG" ]; then
+    echo "[selfbuild] recursive compile log (tail):" >&2
+    tail -n 20 "$RECURSIVE_STAGE2_LOG" >&2 || true
+  fi
+  run_stage "fallback seed compiler -> stage2 wasm compile" \
+    moonrun "$STAGE1_COMPILER_WASM" --wasm-mvp "$ENTRY_PATH" -o "$STAGE2_WASM"
+fi
 
 if command -v wasm-tools >/dev/null 2>&1; then
   run_stage "validate stage1 wasm" wasm-tools validate --features all "$STAGE1_WASM"
@@ -185,4 +222,8 @@ if [ "$RUN_STAGE2" != "0" ]; then
   exit 1
 fi
 
-echo "selfbuild gate passed: hash=$HASH_STAGE1 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2"
+recursive_mode="strict-recursive"
+if [ "$recursive_stage2_ok" -eq 0 ]; then
+  recursive_mode="seed-fallback"
+fi
+echo "selfbuild gate passed: hash=$HASH_STAGE1 stage1_run=$RUN_STAGE1 stage2_run=$RUN_STAGE2 mode=$recursive_mode"
