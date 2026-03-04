@@ -805,7 +805,8 @@ pub(all) struct ComponentWitImports {
   mut need_stdin_read_char : Bool
   mut need_fs : Bool
   mut need_socket : Bool
-  mut need_http : Bool
+  mut need_http_client : Bool
+  mut need_http_handler : Bool
 }
 
 ///|
@@ -819,7 +820,8 @@ fn collect_component_wit_imports(ast : @core.Module) -> ComponentWitImports {
     need_stdin_read_char: false,
     need_fs: false,
     need_socket: false,
-    need_http: false,
+    need_http_client: false,
+    need_http_handler: false,
   }
   scan_component_wit_imports_block(ast, acc)
   acc
@@ -888,14 +890,14 @@ fn scan_component_wit_imports_expr(
         | "http_response_status"
         | "http_response_header"
         | "http_response_body"
-        | "http_close"
-        | "http_listen"
+        | "http_close" => acc.need_http_client = true
+        "http_listen"
         | "http_accept"
         | "http_request_method"
         | "http_request_url"
         | "http_request_header"
         | "http_request_body"
-        | "http_respond" => acc.need_http = true
+        | "http_respond" => acc.need_http_handler = true
         _ => ()
       }
       for arg in args {
@@ -1025,10 +1027,15 @@ pub fn generate_component_wit(
       wit = wit + "  import wasi:io/streams@0.2.0;\n"
     }
   }
-  if imports.need_http {
-    // WASI P3 HTTP draft — WIT imports for future use
+  if imports.need_http_client || imports.need_http_handler {
+    // WASI P3 HTTP draft — shared resource/type definitions.
     wit = wit + "  import wasi:http/types@0.3.0-draft;\n"
-    wit = wit + "  import wasi:http/handler@0.3.0-draft;\n"
+  }
+  if imports.need_http_client {
+    wit = wit + "  import wasi:http/client@0.3.0-draft;\n"
+  }
+  if imports.need_http_handler {
+    wit = wit + "  export wasi:http/handler@0.3.0-draft;\n"
   }
   // Core `run` export returns tagged Int as i64 in MVP wasm backend.
   wit = wit + "  export run: func() -> s64;\n"

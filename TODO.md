@@ -56,7 +56,7 @@ Completed items are archived in `docs/DONE.md`.
   - `scripts/test_selfhost_wasi_selfbuild.sh`（2回ビルド hash 一致 + wasm validate + wasmtime `--invoke run` 成功）
 - [x] I/O 境界を `wasi:http` 接続で動作させる（HTTP builtins 固有実装は一旦後回し）
   - `scripts/test_selfhost_wasi_http_boundary.sh` で stage0 wasm compiler 経由の `--component` / `--wit-component` を検証
-  - component WIT の `wasi:http/types@0.3.0-draft` / `wasi:http/handler@0.3.0-draft` import を gate 化
+  - component WIT の `wasi:http/types@0.3.0-draft` / `wasi:http/client@0.3.0-draft` import を gate 化（client builtin 利用時）
   - HTTP サンプルの component validate を fatal gate 化（`wasm-tools validate --features all` + 構造チェック）
 - [x] `wite optimize` / `wac compose+optimize` の wasm sidecar CLI を用意し、selfhost 側から外部呼び出し可能にする
   - `src/cmd/vibe_wite_optimize_wasi` を追加（`--wac` と `-O*` をサポート）
@@ -162,8 +162,15 @@ Completed items are archived in `docs/DONE.md`.
 ## Blocked / External
 
 - [ ] WASM HTTP builtins の本実装（現状は wasm で catchable fallback error）。WASI P3 HTTP (`wasi:http@0.3.0-draft`) 安定待ち
-  - Client: `wasi:http/handler.handle` で outgoing-request 送信
+  - Client: `wasi:http/client.send` で outgoing request 送信
   - Server: `wasi:http/handler` export で incoming-request 受信 (wasmtime serve)
+  - 実装タスク（vibe 側）:
+    - [ ] codegen: HTTP client builtins (`http_request` / `http_response_*` / `http_close`) を `wasi:http/client.send` + `wasi:http/types` resource 操作へ lower
+    - [ ] codegen: HTTP server builtins (`http_listen` / `http_accept` / `http_request_*` / `http_respond`) を `wasi:http/handler` export モデルへ再設計（listen/accept API との対応を確定）
+      - [x] component WIT 生成で server builtin 使用時は `wasi:http/handler` を import ではなく export として出力
+    - [ ] component emit: HTTP server builtin 使用時に `wasi:http/handler` export を持つ component を生成（現状は WIT 契約のみ）
+    - [ ] runtime contract: interpreter/compiled でエラー契約（`Io(op=...)`, `PermissionDenied: net_*`）を P3 経路でも一致させる
+    - [ ] e2e gate: `wasmtime serve` で request -> handler -> response の往復を CI で検証
   - 実装前提（vibe 側）:
     - [x] host import で String を返すための guest allocator/export 契約を定義
       - wasm codegen が `vibe_http_host_string_new(i32)->i64` を export（`--http-host-imports` + HTTP builtin 使用時）

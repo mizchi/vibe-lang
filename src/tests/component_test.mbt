@@ -159,7 +159,7 @@ test "component wit scans for-in bodies for host imports" {
 }
 
 ///|
-test "component wit includes wasi http imports when used" {
+test "component wit includes wasi http client imports when used" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Net} {
@@ -179,7 +179,39 @@ test "component wit includes wasi http imports when used" {
   }
   assert_true(String::contains(wit, "world main"))
   assert_true(String::contains(wit, "import wasi:http/types@0.3.0-draft;"))
-  assert_true(String::contains(wit, "import wasi:http/handler@0.3.0-draft;"))
+  assert_true(String::contains(wit, "import wasi:http/client@0.3.0-draft;"))
+  assert_false(String::contains(wit, "import wasi:http/handler@0.3.0-draft;"))
+  assert_true(String::contains(wit, "export run: func() -> s64;"))
+}
+
+///|
+test "component wit includes wasi http handler imports when server builtins are used" {
+  let db = VibeDb::new()
+  let src =
+    #|let run = () -> Int with {Net} {
+    #|  let listener = http_listen(8080)
+    #|  let req = http_accept(listener)
+    #|  let method = http_request_method(req)
+    #|  let _ = http_request_url(req)
+    #|  let _ = http_request_header(req, "x-test")
+    #|  let _ = http_request_body(req)
+    #|  http_respond(req, 200, "", "")
+    #|  string_length(method)
+    #|}
+    #|run()
+  db.set_source("main", src)
+  let wit = try
+    generate_module_component_wit(db, "main", "local:main", "main")
+  catch {
+    e => fail("wit error: " + e.to_string())
+  } noraise {
+    w => w
+  }
+  assert_true(String::contains(wit, "world main"))
+  assert_true(String::contains(wit, "import wasi:http/types@0.3.0-draft;"))
+  assert_true(String::contains(wit, "export wasi:http/handler@0.3.0-draft;"))
+  assert_false(String::contains(wit, "import wasi:http/client@0.3.0-draft;"))
+  assert_false(String::contains(wit, "import wasi:http/handler@0.3.0-draft;"))
   assert_true(String::contains(wit, "export run: func() -> s64;"))
 }
 

@@ -7,6 +7,8 @@ OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_wasi_http_boundary}"
 SRC_PATH="$OUT_DIR/http_boundary_probe.vibe"
 OUT_COMPONENT="$OUT_DIR/http_boundary_probe.component.wasm"
 OUT_WIT="$OUT_DIR/http_boundary_probe.component.wit"
+SERVER_SRC_PATH="$OUT_DIR/http_boundary_server_probe.vibe"
+OUT_SERVER_WIT="$OUT_DIR/http_boundary_server_probe.component.wit"
 
 run_stage() {
   local name="$1"
@@ -41,22 +43,52 @@ let run = () -> Int with {Net} {
 run()
 EOF
 
+cat >"$SERVER_SRC_PATH" <<'EOF'
+let run = () -> Int with {Net} {
+  let listener = http_listen(8080)
+  let req = http_accept(listener)
+  let method = http_request_method(req)
+  let _ = http_request_url(req)
+  let _ = http_request_header(req, "x-test")
+  let _ = http_request_body(req)
+  http_respond(req, 200, "", "")
+  string_length(method)
+}
+run()
+EOF
+
 run_stage "stage0 (wasm compiler cli) -> component compile" \
   moon run --target wasm src/cmd/vibe_compile_wasi -- --component --http-host-imports "$SRC_PATH" -o "$OUT_COMPONENT"
 
 run_stage "stage0 (wasm compiler cli) -> component wit compile" \
   moon run --target wasm src/cmd/vibe_compile_wasi -- --wit-component "$SRC_PATH" -o "$OUT_WIT"
 
+run_stage "stage0 (wasm compiler cli) -> component wit compile (server probe)" \
+  moon run --target wasm src/cmd/vibe_compile_wasi -- --wit-component "$SERVER_SRC_PATH" -o "$OUT_SERVER_WIT"
+
 if ! rg -n "import wasi:http/types@0\\.3\\.0-draft;" "$OUT_WIT" >/dev/null; then
   echo "http boundary gate failed: missing wasi:http/types import in component WIT" >&2
   exit 1
 fi
-if ! rg -n "import wasi:http/handler@0\\.3\\.0-draft;" "$OUT_WIT" >/dev/null; then
-  echo "http boundary gate failed: missing wasi:http/handler import in component WIT" >&2
+if ! rg -n "import wasi:http/client@0\\.3\\.0-draft;" "$OUT_WIT" >/dev/null; then
+  echo "http boundary gate failed: missing wasi:http/client import in component WIT" >&2
   exit 1
 fi
 if ! rg -n "export run: func\\(\\) -> s64;" "$OUT_WIT" >/dev/null; then
   echo "http boundary gate failed: missing run export in component WIT" >&2
+  exit 1
+fi
+
+if ! rg -n "import wasi:http/types@0\\.3\\.0-draft;" "$OUT_SERVER_WIT" >/dev/null; then
+  echo "http boundary gate failed: missing wasi:http/types import in server component WIT" >&2
+  exit 1
+fi
+if ! rg -n "export wasi:http/handler@0\\.3\\.0-draft;" "$OUT_SERVER_WIT" >/dev/null; then
+  echo "http boundary gate failed: missing wasi:http/handler export in server component WIT" >&2
+  exit 1
+fi
+if printf '%s' "$(cat "$OUT_SERVER_WIT")" | rg -n "import wasi:http/handler@0\\.3\\.0-draft;" >/dev/null; then
+  echo "http boundary gate failed: server component WIT must not import wasi:http/handler" >&2
   exit 1
 fi
 
@@ -84,4 +116,4 @@ else
   echo "warning: wasm-tools not found, skipping component validation/print checks" >&2
 fi
 
-echo "http boundary gate passed: component=$OUT_COMPONENT wit=$OUT_WIT"
+echo "http boundary gate passed: component=$OUT_COMPONENT wit=$OUT_WIT server_wit=$OUT_SERVER_WIT"
