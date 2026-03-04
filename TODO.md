@@ -168,6 +168,7 @@ Completed items are archived in `docs/DONE.md`.
   - `scripts/test_selfhost_wasi_selfbuild.sh` で stage1/stage2 wasm の hash 一致を検証
   - strict 再帰チェックは `VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1` で有効化（デフォルト entry/out では stage1 生成物の `selfbuild_compile_stage2` を `scripts/wasm_vibe_host_runner.js` 経由で実行し、未達時は seed compiler fallback をログ化）
   - true recursive を必須化する場合は `VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1`（fallback 無効化・未達時 fail）
+  - CI (`wasm-codegen-integrity`) では上記を `STRICT_RECURSIVE=1` + `REQUIRE_TRUE_RECURSIVE=1` で常時検証
   - stage1/stage2 の双方を `wasmtime --invoke run` で実行し、戻り値を検証
 - [x] selfhost bootstrap gate に compile/run 段階計測と KPI 判定を追加
   - parse/type check, codegen(no-dce), validate, run(stage1/stage2) を段階ログ化
