@@ -163,6 +163,12 @@ test_cases=(
   # Nested closures with chained calls
   'let outer = (x: Int) -> (Int) -> Int { let y = x + 1; (z: Int) -> Int { y + z } }; outer(10)(5)'
   'let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int { (x: Int) -> Int { f(g(x)) } }; let add1 = (x: Int) -> Int { x + 1 }; let mul2 = (x: Int) -> Int { x * 2 }; compose(add1, mul2)(5)'
+
+  # parse_int builtin
+  'parse_int("42")'
+  'parse_int("0")'
+  'parse_int("999") + 1'
+  'parse_int(__to_string(77))'
 )
 
 echo "Testing interpreter vs WASM output..."

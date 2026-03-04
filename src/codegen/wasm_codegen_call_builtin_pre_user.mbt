@@ -1432,6 +1432,160 @@ fn compile_call_builtin_pre_user_inner(
         buf.push((11).to_byte()) // end if
       }
     }
+    "parse_int" => {
+      // parse_int(s: String) -> Int
+      // Iterate string bytes, accumulate digits, handle optional sign.
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "parse_int", 1,
+      )
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported("parse_int with js strings")
+      } else {
+        // Native string mode: byte-iterate and accumulate
+        let str_ptr_local = alloc_temp_local(ctx) // base pointer
+        let str_len_local = alloc_temp_local(ctx) // string length
+        let idx_local = alloc_temp_local(ctx) // current index
+        let result_local = alloc_temp_local(ctx) // accumulator
+        let neg_local = alloc_temp_local(ctx) // sign flag (0=pos, 1=neg)
+        let byte_local = alloc_temp_local(ctx) // current byte
+
+        // Untag pointer, get base address
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, str_ptr_local)
+
+        // Load string length
+        emit_local_get(buf, str_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, str_len_local)
+
+        // Initialize: result=0, idx=0, neg=0
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, result_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, idx_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, neg_local)
+
+        // Skip leading spaces (byte == 32)
+        emit_block(buf) // block $skip_done
+        emit_loop(buf) // loop $skip_loop
+        // if idx >= len: break
+        emit_local_get(buf, idx_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 1) // br $skip_done
+        // load byte
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_const_raw(buf, 32) // space
+        emit_i32_ne(buf)
+        emit_br_if(buf, 1) // not space => break
+        // idx++
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_br(buf, 0) // continue loop
+        emit_end(buf) // end loop
+        emit_end(buf) // end block
+
+        // Check sign: '-' (45) or '+' (43)
+        emit_block(buf) // block $sign_done
+        emit_local_get(buf, idx_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 0) // no chars left => skip sign check
+        // load byte at idx
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_set(buf, byte_local)
+        // if byte == 45 ('-')
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 45)
+        emit_i32_eq(buf)
+        emit_if(buf) // if
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, neg_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_br(buf, 1) // br $sign_done
+        emit_end(buf) // end if
+        // if byte == 43 ('+')
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 43)
+        emit_i32_eq(buf)
+        emit_if(buf)
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_end(buf) // end if
+        emit_end(buf) // end block $sign_done
+
+        // Main digit loop: result = result * 10 + (byte - 48)
+        emit_block(buf) // block $digit_done
+        emit_loop(buf) // loop $digit_loop
+        // if idx >= len: break
+        emit_local_get(buf, idx_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 1) // br $digit_done
+        // load byte
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_set(buf, byte_local)
+        // Skip trailing spaces: if byte == 32, break
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 32)
+        emit_i32_eq(buf)
+        emit_br_if(buf, 1) // br $digit_done
+        // result = result * 10 + (byte - 48)
+        emit_local_get(buf, result_local)
+        emit_i32_const_raw(buf, 10)
+        emit_i32_mul(buf)
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 48) // '0'
+        emit_i32_sub(buf)
+        emit_i32_add(buf)
+        emit_local_set(buf, result_local)
+        // idx++
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_br(buf, 0) // continue loop
+        emit_end(buf) // end loop
+        emit_end(buf) // end block
+
+        // Apply negation if neg_local == 1
+        emit_local_get(buf, neg_local)
+        emit_if(buf)
+        emit_i32_const_raw(buf, 0)
+        emit_local_get(buf, result_local)
+        emit_i32_sub(buf)
+        emit_local_set(buf, result_local)
+        emit_end(buf) // end if
+
+        // Tag result as i64 Int: (result << 2) | tag_int
+        emit_local_get(buf, result_local)
+        emit_i64_extend_i32_s(buf)
+        emit_i64_const_raw(buf, 2L)
+        emit_i64_shl(buf)
+        emit_i64_const_raw(buf, tag_int.to_int64())
+        emit_i64_or(buf)
+      }
+    }
     "string_substring" => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "string_substring", 3,

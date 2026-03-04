@@ -2009,3 +2009,42 @@ expect_wasmtime_result "chained call: intermediate binding equivalent" \
 
 echo ""
 
+# -------------------------------------------------------
+# parse_int builtin
+# -------------------------------------------------------
+log_info "Testing parse_int builtin..."
+
+expect_wasmtime_result "parse_int: basic positive" \
+'parse_int("42")' \
+"42"
+
+expect_wasmtime_result "parse_int: zero" \
+'parse_int("0")' \
+"0"
+
+expect_wasmtime_result "parse_int: negative" \
+'parse_int("-123")' \
+"-123"
+
+expect_wasmtime_result "parse_int: with spaces" \
+'parse_int("  99  ")' \
+"99"
+
+expect_wasmtime_result "parse_int: arithmetic" \
+'parse_int("100") + parse_int("23")' \
+"123"
+
+expect_wasmtime_result "parse_int: large number" \
+'parse_int("999999")' \
+"999999"
+
+expect_wasmtime_result "parse_int: positive sign" \
+'parse_int("+7")' \
+"7"
+
+expect_wasmtime_result "parse_int: roundtrip with to_string" \
+'parse_int(__to_string(42))' \
+"42"
+
+echo ""
+

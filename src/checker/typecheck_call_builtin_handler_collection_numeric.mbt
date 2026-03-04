@@ -421,6 +421,32 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Int,
         false,
       )
+    "parse_int" =>
+      check_builtin_simple(
+        env,
+        "parse_int",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::String],
+        @core.Type::Int,
+        false,
+      )
+    "parse_double" =>
+      check_builtin_simple(
+        env,
+        "parse_double",
+        args,
+        aliases,
+        effects,
+        allow_effect,
+        call_span,
+        [@core.Type::String],
+        @core.Type::Double,
+        false,
+      )
     "string_char_code_at" =>
       check_builtin_simple(
         env,

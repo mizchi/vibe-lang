@@ -73,7 +73,9 @@ fn is_cheap_pure_builtin(name : String) -> Bool {
   name == "bytes_from_array" ||
   name == "bytes_to_array" ||
   name == "bytes_from_string" ||
-  name == "bytes_to_string"
+  name == "bytes_to_string" ||
+  name == "parse_int" ||
+  name == "parse_double"
 }
 
 ///|
@@ -268,6 +270,61 @@ fn eval_pure_builtin(
         @core.Value::String(s) =>
           @core.Value::Int(string_unicode_length(s).to_int64())
         _ => raise EvalError::BadCall(E("string_unicode_length"))
+      }
+    }
+    "parse_int" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("parse_int"))
+      }
+      match args[0] {
+        @core.Value::String(s) => {
+          let trimmed = s.trim()
+          let len = trimmed.length()
+          if len == 0 {
+            raise EvalError::BadCall(E("parse_int: empty string"))
+          }
+          let mut start = 0
+          let mut negative = false
+          let first_char = trimmed[start]
+          if first_char == '-' {
+            negative = true
+            start = start + 1
+          } else if first_char == '+' {
+            start = start + 1
+          }
+          if start >= len {
+            raise EvalError::BadCall(E("parse_int: no digits"))
+          }
+          let mut result : Int64 = 0L
+          for i = start; i < len; i = i + 1 {
+            let c = trimmed[i]
+            if c >= '0' && c <= '9' {
+              result = result * 10L + (c.to_int() - 48).to_int64()
+            } else {
+              raise EvalError::BadCall(E("parse_int: invalid digit"))
+            }
+          }
+          if negative {
+            result = -result
+          }
+          @core.Value::Int(result)
+        }
+        _ => raise EvalError::BadCall(E("parse_int"))
+      }
+    }
+    "parse_double" => {
+      if args.length() != 1 {
+        raise EvalError::BadCall(E("parse_double"))
+      }
+      match args[0] {
+        @core.Value::String(s) => {
+          let trimmed = s.trim()
+          let value = @strconv.parse_double(trimmed) catch {
+            _ => raise EvalError::BadCall(E("parse_double: invalid"))
+          }
+          @core.Value::Double(value)
+        }
+        _ => raise EvalError::BadCall(E("parse_double"))
       }
     }
     "string_char_code_at" => {
