@@ -995,6 +995,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "string_to_lower" ||
         name == "string_replace" ||
         name == "string_replace_all" ||
+        name == "string_split" ||
         name == "fs_read_file" ||
         name == "fs_write_file" ||
         name == "fs_exists" ||

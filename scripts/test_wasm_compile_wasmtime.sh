@@ -1268,6 +1268,109 @@ string_builder_push(b, "world")
 string_length(string_builder_freeze(b))' \
 "11"
 
+# ============================================
+# String Split
+# ============================================
+log_info "Testing string_split..."
+
+expect_wasmtime_result "string_split: basic" \
+'array_length(string_split("a,b,c", ","))' \
+"3"
+
+expect_wasmtime_result "string_split: no match" \
+'array_length(string_split("hello", ","))' \
+"1"
+
+expect_wasmtime_result "string_split: delimiter only" \
+'array_length(string_split(",", ","))' \
+"2"
+
+expect_wasmtime_result "string_split: empty delimiter (char split)" \
+'array_length(string_split("abc", ""))' \
+"3"
+
+expect_wasmtime_result "string_split: multi-char delimiter" \
+'array_length(string_split("a::b::c", "::"))' \
+"3"
+
+expect_wasmtime_result "string_split: access element" \
+'let parts = string_split("hello world", " ")
+string_length(array_get(parts, 0))' \
+"5"
+
+expect_wasmtime_result "string_split: access last element" \
+'let parts = string_split("a,b,c", ",")
+string_length(array_get(parts, 2))' \
+"1"
+
+expect_wasmtime_result "string_split: adjacent delimiters" \
+'array_length(string_split("a,,b", ","))' \
+"3"
+
+expect_wasmtime_result "string_split: content equals first" \
+'let parts = string_split("hello,world", ",")
+if string_equals(array_get(parts, 0), "hello") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_split: content equals second" \
+'let parts = string_split("hello,world", ",")
+if string_equals(array_get(parts, 1), "world") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_split: empty segment at edge" \
+'let parts = string_split(",x,", ",")
+string_length(array_get(parts, 0))' \
+"0"
+
+expect_wasmtime_result "string_split: char split content check" \
+'let parts = string_split("abc", "")
+if string_equals(array_get(parts, 1), "b") { 1 } else { 0 }' \
+"1"
+
+echo ""
+
+# ============================================
+# Custom Enums
+# ============================================
+log_info "Testing custom enum patterns..."
+
+expect_wasmtime_result "custom enum: basic match" \
+'enum Color { Red; Green; Blue }
+match Red {
+  Red => 1
+  Green => 2
+  Blue => 3
+}' \
+"1"
+
+expect_wasmtime_result "custom enum: match with payload" \
+'enum MaybeInt { Hit(Int); Miss }
+match Hit(42) {
+  Hit(n) => n
+  Miss => 0
+}' \
+"42"
+
+expect_wasmtime_result "custom enum: nested match" \
+'enum Result { Ok(Int); Err(Int) }
+let r = Ok(10)
+match r {
+  Ok(v) => v + 1
+  Err(_) => -1
+}' \
+"11"
+
+expect_wasmtime_result "custom enum: function returning enum" \
+'enum Status { Active(Int); Inactive }
+fn get_status(x: Int): Status {
+  if x > 0 { Active(x) } else { Inactive }
+}
+match get_status(5) {
+  Active(n) => n
+  Inactive => 0
+}' \
+"5"
+
 echo ""
 
 # ============================================

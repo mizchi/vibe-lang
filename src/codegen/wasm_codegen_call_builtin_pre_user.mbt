@@ -3067,6 +3067,20 @@ fn compile_call_builtin_pre_user_inner(
         emit_string_replace_impl(ctx, buf, pos_args, replace_all=true)
       }
     }
+    "string_split" if not(is_user_fn) => {
+      // string_split(str, delimiter) -> Array[String]
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "string_split", 2,
+      )
+      if ctx.use_js_strings {
+        raise WasmGenError::BackendLimit(
+          backend="wasm-js-string",
+          feature="string_split",
+        )
+      } else {
+        emit_string_split_impl(ctx, buf, pos_args)
+      }
+    }
     "string_builder" => {
       // string_builder() -> allocate empty array obj with len=0 (same layout as array_builder)
       let max_cap = 4096
@@ -5720,6 +5734,265 @@ fn emit_string_replace_impl(
   emit_end(buf) // end $build_done
   // Tag result
   emit_local_get(buf, new_ptr)
+  emit_i64_extend_i32_u(buf)
+  emit_i64_const_raw(buf, tag_obj.to_int64())
+  emit_i64_or(buf)
+}
+
+///|
+/// Helper: allocate a substring of `sub_len` bytes starting at `seg_start`
+/// from `str_ptr`, and push the tagged pointer into the array at `arr_ptr`.
+/// Increments `arr_len`.
+fn emit_alloc_substr_push(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  str_ptr : Int,
+  seg_start : Int,
+  sub_len : Int,
+  arr_ptr : Int,
+  arr_len : Int,
+  sub_ptr : Int,
+  copy_j : Int,
+  obj_size_local : Int,
+) -> Unit raise WasmGenError {
+  // Compute aligned size: align4(8 + sub_len)
+  emit_local_get(buf, sub_len)
+  emit_i32_const_raw(buf, 8)
+  emit_i32_add(buf)
+  emit_local_set(buf, obj_size_local)
+  emit_local_get(buf, obj_size_local)
+  emit_i32_const_raw(buf, 3)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, obj_size_local)
+  emit_heap_alloc_local(ctx, buf, obj_size_local, sub_ptr)
+  // Set string header
+  emit_local_get(buf, sub_ptr)
+  emit_i32_const_raw(buf, obj_string)
+  emit_i32_store(buf, 0)
+  emit_local_get(buf, sub_ptr)
+  emit_local_get(buf, sub_len)
+  emit_i32_store(buf, 4)
+  // Copy bytes: sub_ptr[8+j] = str_ptr[8+seg_start+j] for j in [0, sub_len)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, copy_j)
+  emit_block(buf) // block $copy_done
+  emit_loop(buf) // loop $copy_loop
+  emit_local_get(buf, copy_j)
+  emit_local_get(buf, sub_len)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1) // break $copy_done
+  emit_local_get(buf, sub_ptr)
+  emit_local_get(buf, copy_j)
+  emit_i32_add(buf)
+  emit_local_get(buf, str_ptr)
+  emit_local_get(buf, seg_start)
+  emit_i32_add(buf)
+  emit_local_get(buf, copy_j)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_i32_store8(buf, 8)
+  emit_local_get(buf, copy_j)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, copy_j)
+  emit_br(buf, 0) // continue $copy_loop
+  emit_end(buf) // end $copy_loop
+  emit_end(buf) // end $copy_done
+  // Push tagged sub_ptr into array: arr_ptr[8 + arr_len*4] = sub_ptr | tag_obj
+  emit_local_get(buf, arr_ptr)
+  emit_local_get(buf, arr_len)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf, sub_ptr)
+  emit_i32_const_raw(buf, tag_obj)
+  emit_i32_or(buf)
+  emit_i32_store(buf, 8)
+  // arr_len++
+  emit_local_get(buf, arr_len)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, arr_len)
+}
+
+///|
+/// string_split(source, delimiter) -> Array[String]
+/// If delimiter is empty, splits into individual characters.
+/// Otherwise, scans for delimiter matches and builds an array of substrings.
+fn emit_string_split_impl(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  require_heap(ctx)
+  let str_ptr = alloc_temp_local(ctx)
+  let str_len = alloc_temp_local(ctx)
+  let del_ptr = alloc_temp_local(ctx)
+  let del_len = alloc_temp_local(ctx)
+  let arr_ptr = alloc_temp_local(ctx)
+  let arr_len = alloc_temp_local(ctx)
+  let seg_start = alloc_temp_local(ctx)
+  let scan_i = alloc_temp_local(ctx)
+  let inner_j = alloc_temp_local(ctx)
+  let matched = alloc_temp_local(ctx)
+  let sub_ptr = alloc_temp_local(ctx)
+  let sub_len = alloc_temp_local(ctx)
+  let copy_j = alloc_temp_local(ctx)
+  let obj_size_local = alloc_temp_local(ctx)
+  // Untag source string
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_i64_const_raw(buf, (-4).to_int64())
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, str_ptr)
+  emit_local_get(buf, str_ptr)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, str_len)
+  // Untag delimiter string
+  compile_expr_i32(ctx, buf, pos_args[1])
+  emit_i64_const_raw(buf, (-4).to_int64())
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_local_set(buf, del_ptr)
+  emit_local_get(buf, del_ptr)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, del_len)
+  // Allocate result array (max 4096 elements)
+  let max_cap = 4096
+  let arr_size = align4(8 + max_cap * 4)
+  emit_heap_alloc(ctx, buf, arr_size, arr_ptr)
+  emit_local_get(buf, arr_ptr)
+  emit_i32_const_raw(buf, obj_array)
+  emit_i32_store(buf, 0)
+  // Initialize arr_len = 0, scan_i = 0, seg_start = 0
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, arr_len)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, scan_i)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, seg_start)
+  // Branch on delimiter length
+  emit_local_get(buf, del_len)
+  emit_i32_eqz(buf)
+  emit_if(buf) // if del_len == 0: character-by-character split
+  emit_block(buf) // block $char_done
+  emit_loop(buf) // loop $char_loop
+  emit_local_get(buf, scan_i)
+  emit_local_get(buf, str_len)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1) // break $char_done
+  // sub_len = 1, seg_start = scan_i
+  emit_i32_const_raw(buf, 1)
+  emit_local_set(buf, sub_len)
+  emit_local_get(buf, scan_i)
+  emit_local_set(buf, seg_start)
+  emit_alloc_substr_push(
+    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j,
+    obj_size_local,
+  )
+  // scan_i++
+  emit_local_get(buf, scan_i)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, scan_i)
+  emit_br(buf, 0) // continue $char_loop
+  emit_end(buf) // end $char_loop
+  emit_end(buf) // end $char_done
+  emit_else(buf) // else: del_len > 0, normal split
+  // Main split loop
+  emit_block(buf) // block $split_done
+  emit_loop(buf) // loop $split_loop
+  // if scan_i + del_len > str_len: break to final segment
+  emit_local_get(buf, scan_i)
+  emit_local_get(buf, del_len)
+  emit_i32_add(buf)
+  emit_local_get(buf, str_len)
+  emit_i32_gt_s(buf)
+  emit_br_if(buf, 1) // break $split_done
+  // Try to match delimiter at scan_i
+  emit_i32_const_raw(buf, 1)
+  emit_local_set(buf, matched)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, inner_j)
+  emit_block(buf) // block $cmp_done
+  emit_loop(buf) // loop $cmp_loop
+  emit_local_get(buf, inner_j)
+  emit_local_get(buf, del_len)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1) // break $cmp_done (all bytes matched)
+  // Compare str[scan_i + inner_j + 8] vs del[inner_j + 8]
+  emit_local_get(buf, str_ptr)
+  emit_local_get(buf, scan_i)
+  emit_i32_add(buf)
+  emit_local_get(buf, inner_j)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_local_get(buf, del_ptr)
+  emit_local_get(buf, inner_j)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf) // not equal?
+  emit_if(buf) // if not equal
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, matched)
+  emit_br(buf, 2) // break $cmp_done
+  emit_end(buf) // end if
+  emit_local_get(buf, inner_j)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, inner_j)
+  emit_br(buf, 0) // continue $cmp_loop
+  emit_end(buf) // end $cmp_loop
+  emit_end(buf) // end $cmp_done
+  // If matched: extract segment, push to array, advance
+  emit_local_get(buf, matched)
+  emit_if(buf) // if matched
+  // sub_len = scan_i - seg_start
+  emit_local_get(buf, scan_i)
+  emit_local_get(buf, seg_start)
+  emit_i32_sub(buf)
+  emit_local_set(buf, sub_len)
+  emit_alloc_substr_push(
+    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j,
+    obj_size_local,
+  )
+  // scan_i += del_len
+  emit_local_get(buf, scan_i)
+  emit_local_get(buf, del_len)
+  emit_i32_add(buf)
+  emit_local_set(buf, scan_i)
+  // seg_start = scan_i
+  emit_local_get(buf, scan_i)
+  emit_local_set(buf, seg_start)
+  emit_br(buf, 1) // continue $split_loop (br to loop re-enters it)
+  emit_end(buf) // end if matched
+  // Not matched: scan_i++
+  emit_local_get(buf, scan_i)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, scan_i)
+  emit_br(buf, 0) // continue $split_loop
+  emit_end(buf) // end $split_loop
+  emit_end(buf) // end $split_done
+  // Final segment: [seg_start, str_len)
+  emit_local_get(buf, str_len)
+  emit_local_get(buf, seg_start)
+  emit_i32_sub(buf)
+  emit_local_set(buf, sub_len)
+  emit_alloc_substr_push(
+    ctx, buf, str_ptr, seg_start, sub_len, arr_ptr, arr_len, sub_ptr, copy_j,
+    obj_size_local,
+  )
+  emit_end(buf) // end if/else (del_len check)
+  // Write final array length
+  emit_local_get(buf, arr_ptr)
+  emit_local_get(buf, arr_len)
+  emit_i32_store(buf, 4)
+  // Return tagged array pointer
+  emit_local_get(buf, arr_ptr)
   emit_i64_extend_i32_u(buf)
   emit_i64_const_raw(buf, tag_obj.to_int64())
   emit_i64_or(buf)
