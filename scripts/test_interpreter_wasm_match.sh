@@ -89,6 +89,70 @@ test_cases=(
   'string_length(string_substring("hello world", 0, 5))'
   'string_char_code_at(string_to_upper("abc"), 0)'
   'string_char_code_at(string_to_lower("ABC"), 0)'
+
+  # String split
+  'array_length(string_split("a,b,c", ","))'
+  'array_length(string_split("hello", ","))'
+  'array_length(string_split("a::b::c", "::"))'
+  'array_length(string_split("abc", ""))'
+
+  # String replace
+  'string_length(string_replace("hello world", "world", "vibe"))'
+  'string_length(string_replace("aaa", "a", "bb"))'
+  'string_length(string_replace_all("aaa", "a", "bb"))'
+  'if string_equals(string_replace("foo bar foo", "foo", "baz"), "baz bar foo") { 1 } else { 0 }'
+  'if string_equals(string_replace_all("foo bar foo", "foo", "baz"), "baz bar baz") { 1 } else { 0 }'
+
+  # Break and continue
+  'let mut sum = 0; let mut i = 0; while i < 10 { i = i + 1; if i == 5 { break }; sum = sum + i }; sum'
+  'let mut sum = 0; let mut i = 0; while i < 10 { i = i + 1; if i % 2 == 0 { continue }; sum = sum + i }; sum'
+  'let mut sum = 0; let mut i = 0; while i < 100 { i = i + 1; if i % 3 == 0 { continue }; if i > 10 { break }; sum = sum + i }; sum'
+
+  # Closures and higher-order functions
+  'let f = (x: Int) -> Int { x * 2 }; f(5)'
+  'let apply = (f: (Int) -> Int, x: Int) -> Int { f(x) }; apply((x: Int) -> Int { x + 1 }, 5)'
+  'let make_adder = (n: Int) -> (Int) -> Int { (x: Int) -> Int { x + n } }; let add5 = make_adder(5); add5(10)'
+  # Note: mutable capture through closures has interpreter limitation (returns 0 instead of 3)
+
+  # Recursive functions
+  'let rec fact = (n: Int) -> Int { if n <= 1 { 1 } else { n * fact(n - 1) } }; fact(5)'
+  'let rec fib = (n: Int) -> Int { if n <= 1 { n } else { fib(n - 1) + fib(n - 2) } }; fib(10)'
+
+  # Array operations
+  'array_length([1, 2, 3, 4, 5])'
+  'let arr = [10, 20, 30]; arr[1]'
+  'array_length(array_concat([1, 2], [3, 4]))'
+  'array_length(array_slice([1, 2, 3, 4, 5], 1, 3))'
+
+  # Pipe operator
+  'let double = (x: Int) -> Int { x * 2 }; 5 |> double'
+  'let inc = (x: Int) -> Int { x + 1 }; let double = (x: Int) -> Int { x * 2 }; 3 |> inc |> double'
+
+  # Block expressions
+  'let x = { let a = 10; let b = 20; a + b }; x'
+  'let y = { let mut sum = 0; for i in [1, 2, 3] { sum = sum + i }; sum }; y'
+
+  # Complex combinations
+  'let arr = [1, 2, 3, 4, 5]; let mut sum = 0; for x in arr { if x % 2 == 1 { sum = sum + x * x } }; sum'
+  'match (Some(10), Some(20)) { (Some(a), Some(b)) => a + b, _ => 0 }'
+  'let rec sum_to = (n: Int) -> Int { if n <= 0 { 0 } else { n + sum_to(n - 1) } }; sum_to(10)'
+
+  # Bitwise operations
+  '7 & 3'
+  '5 | 3'
+  '6 ^ 3'
+  '1 << 4'
+  '32 >> 3'
+
+  # Boolean operations
+  'if true && true { 1 } else { 0 }'
+  'if true && false { 1 } else { 0 }'
+  'if false || true { 1 } else { 0 }'
+  'if false || false { 1 } else { 0 }'
+
+  # Nested closures
+  'let outer = (x: Int) -> (Int) -> Int { let y = x + 1; (z: Int) -> Int { y + z } }; outer(10)(5)'
+  'let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int { (x: Int) -> Int { f(g(x)) } }; let add1 = (x: Int) -> Int { x + 1 }; let mul2 = (x: Int) -> Int { x * 2 }; compose(add1, mul2)(5)'
 )
 
 echo "Testing interpreter vs WASM output..."
