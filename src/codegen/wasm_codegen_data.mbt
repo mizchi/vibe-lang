@@ -1023,6 +1023,7 @@ fn compile_function(
   let saved_fn_locals = ctx.fn_local_sigs
   let saved_mut_captured = ctx.mut_captured_vars
   let saved_cached_untag_ptrs = ctx.cached_untag_ptrs
+  let saved_const_i64 = ctx.const_i64_values
   ctx.locals = {}
   ctx.cached_untag_ptrs = {}
   ctx.local_kinds = {}
@@ -1031,6 +1032,7 @@ fn compile_function(
   ctx.need_heap = false
   ctx.heap_local = -1
   ctx.fn_local_sigs = {}
+  ctx.const_i64_values = {}
   let param_len = if params.length() < param_kinds.length() {
     params.length()
   } else {
@@ -1101,12 +1103,6 @@ fn compile_function(
     let mut effective_idx = 0
     for i in 0..<captures.length() {
       let name = captures[i]
-      // Skip env load for captures that are compile-time constants.
-      // The value is already in const_i64_values so compile_expr_ident
-      // will emit i64.const directly — no local needed.
-      if ctx.const_i64_values.contains(name) {
-        continue
-      }
       let is_ref = effective_idx < capture_is_ref_cell.length() &&
         capture_is_ref_cell[effective_idx]
       let kind = if is_ref {
@@ -1216,6 +1212,7 @@ fn compile_function(
   ctx.fn_local_sigs = saved_fn_locals
   ctx.mut_captured_vars = saved_mut_captured
   ctx.cached_untag_ptrs = saved_cached_untag_ptrs
+  ctx.const_i64_values = saved_const_i64
   func
 }
 

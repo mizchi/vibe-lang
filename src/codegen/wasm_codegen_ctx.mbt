@@ -93,7 +93,7 @@ priv struct CodegenCtx {
   // Cache: scrutinee local → untagged raw pointer local (within match chains)
   mut cached_untag_ptrs : Map[Int, Int]
   // Constant values inlined at use sites (pre-tagged i64, skip local allocation)
-  const_i64_values : Map[String, Int64]
+  mut const_i64_values : Map[String, Int64]
 }
 
 ///|

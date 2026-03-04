@@ -102,6 +102,46 @@ test "capture propagation: nested closure pulls outer value into parent captures
 }
 
 ///|
+test "closure captures const int: env slot allocated unconditionally" {
+  // Regression: `let n = 5; let f = () -> Int { n }` must store n in env.
+  // Previously, const_i64_values skipped env allocation in compile_expr_fn,
+  // but compile_function (inner) ran earlier without const knowledge, causing
+  // env index mismatch and reading uninitialized memory.
+  let inner = wb_fn([], [wb_expr(wb_ident("n"))])
+  let ast = @core.Module::{
+    stmts: [wb_let("n", wb_int(5)), wb_let("f", inner)],
+  }
+  let funcs = collect_func_defs(ast)
+  // f captures n even though n is an int literal (const)
+  let f_idx = find_func_idx(funcs, "f")
+  assert_true(f_idx >= 0)
+  assert_true(contains_name(funcs[f_idx].captures, "n"))
+}
+
+///|
+test "closure captures multiple consts: all env slots present" {
+  // `let a = 2; let b = 3; let f = (x: Int) -> Int { x * a + b }`
+  let body = wb_call(
+    "__add",
+    [wb_call("__mul", [wb_ident("x"), wb_ident("a")]), wb_ident("b")],
+  )
+  let inner = wb_fn([wb_param("x")], [wb_expr(body)])
+  let ast = @core.Module::{
+    stmts: [
+      wb_let("a", wb_int(2)),
+      wb_let("b", wb_int(3)),
+      wb_let("f", inner),
+      wb_expr(wb_call("f", [wb_int(5)])),
+    ],
+  }
+  let funcs = collect_func_defs(ast)
+  let f_idx = find_func_idx(funcs, "f")
+  assert_true(f_idx >= 0)
+  assert_true(contains_name(funcs[f_idx].captures, "a"))
+  assert_true(contains_name(funcs[f_idx].captures, "b"))
+}
+
+///|
 test "env requirement: function-only capture still needs closure env" {
   let helper_fn = wb_fn([wb_param("n")], [
     wb_expr(wb_call("__add", [wb_ident("n"), wb_int(1)])),

@@ -173,9 +173,6 @@ fn compile_stmt(
             let mut bp_effective_idx = 0
             for i in 0..<captures.length() {
               let cap_name = captures[i]
-              if ctx.const_i64_values.contains(cap_name) {
-                continue // const captures have no env slot
-              }
               if cap_name == name {
                 // Self-reference capture at effective slot
                 let env_local = alloc_temp_local(ctx)
@@ -223,9 +220,6 @@ fn compile_stmt(
                     }
                     let mut rbp_effective_idx = 0
                     for j in 0..<other_captures.length() {
-                      if ctx.const_i64_values.contains(other_captures[j]) {
-                        continue // const captures have no env slot
-                      }
                       if other_captures[j] == name {
                         let env_local = alloc_temp_local(ctx)
                         emit_local_get(buf, other_local)

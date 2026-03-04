@@ -19,14 +19,13 @@ fn compile_expr_fn(
   } else {
     require_heap(ctx)
     let len = captures.length()
-    // Count non-constant captures for env sizing
-    let mut effective_len = 0
-    for i in 0..<len {
-      if not(ctx.const_i64_values.contains(captures[i])) {
-        effective_len += 1
-      }
-    }
-    let size = align4(8 + effective_len * 8)
+    // All captures get env slots unconditionally.
+    // Inner function bodies are compiled before the top-level run function,
+    // so const_i64_values may not yet contain outer-scope constants when
+    // the function prologue is generated. Skipping env stores here while
+    // the prologue still emits env loads causes an index mismatch and
+    // reads uninitialized memory. Always allocate and store to be safe.
+    let size = align4(8 + len * 8)
     let obj_local = alloc_temp_local(ctx)
     emit_heap_alloc(ctx, buf, size, obj_local)
     emit_local_get(buf, obj_local)
@@ -41,12 +40,6 @@ fn compile_expr_fn(
     let mut effective_idx = 0
     for i in 0..<len {
       let name = captures[i]
-      // Skip env store for compile-time constants.
-      // The prelude in compile_function also skips loading this slot,
-      // and compile_expr_ident emits i64.const directly from const_i64_values.
-      if ctx.const_i64_values.contains(name) {
-        continue
-      }
       let is_ref_cell = ctx.mut_captured_vars.contains(name)
       capture_is_ref_cell.push(is_ref_cell)
       let cap_kind = if is_ref_cell {

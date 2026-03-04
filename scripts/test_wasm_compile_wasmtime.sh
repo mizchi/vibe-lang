@@ -38,15 +38,19 @@ log_info() {
   echo -e "${YELLOW}INFO${NC}: $1"
 }
 
-# Build the CLI first
-log_info "Building vibe CLI..."
+# Build the CLI if VIBE_BIN is not set
 cd "$PROJECT_ROOT"
-moon build src/cmd/vibe/main.mbt --target native -q 2>/dev/null || {
-  log_fail "Failed to build vibe CLI"
-  exit 1
-}
-
-VIBE="moon run src/cmd/vibe/main.mbt --target native --"
+if [ -n "${VIBE_BIN:-}" ] && [ -x "$VIBE_BIN" ]; then
+  VIBE="$VIBE_BIN"
+  log_info "Using VIBE_BIN=$VIBE_BIN"
+else
+  log_info "Building vibe CLI..."
+  moon build src/cmd/vibe/main.mbt --target native -q 2>/dev/null || {
+    log_fail "Failed to build vibe CLI"
+    exit 1
+  }
+  VIBE="moon run src/cmd/vibe/main.mbt --target native --"
+fi
 
 # Helper: compile .vibe to .wasm, run with wasmtime, compare untagged result
 expect_wasmtime_result() {
