@@ -236,6 +236,18 @@ expect_wasmtime_result "less or equal" \
 'if 3 <= 5 { 1 } else { 0 }' \
 "1"
 
+expect_wasmtime_result "string equal (true)" \
+'if "hello" == "hello" { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string equal (false)" \
+'if "hello" == "world" { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "string equal (empty)" \
+'if "" == "" { 1 } else { 0 }' \
+"1"
+
 echo ""
 
 # ============================================

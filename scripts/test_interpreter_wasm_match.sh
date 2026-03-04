@@ -90,6 +90,11 @@ test_cases=(
   'string_char_code_at(string_to_upper("abc"), 0)'
   'string_char_code_at(string_to_lower("ABC"), 0)'
 
+  # String equality operator (==)
+  'if "hello" == "hello" { 1 } else { 0 }'
+  'if "hello" == "world" { 1 } else { 0 }'
+  'if "" == "" { 1 } else { 0 }'
+
   # String split
   'array_length(string_split("a,b,c", ","))'
   'array_length(string_split("hello", ","))'
