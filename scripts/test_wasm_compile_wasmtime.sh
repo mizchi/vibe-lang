@@ -1328,6 +1328,213 @@ let double = (x: Int) -> Int { x * 2 }
 echo ""
 
 # ============================================
+# User-defined Enums
+# ============================================
+log_info "Testing user-defined enums..."
+
+expect_wasmtime_result "enum: simple match" \
+'enum Color { Red; Green; Blue }
+match Green { Red => 1, Green => 2, Blue => 3 }' \
+"2"
+
+expect_wasmtime_result "enum: match with payload" \
+'enum Shape { Circle(Int); Rect(Int, Int) }
+match Rect(5, 4) { Circle(r) => r * r, Rect(w, h) => w * h }' \
+"20"
+
+expect_wasmtime_result "enum: nested match" \
+'enum Tree { Leaf(Int); Node(Tree, Tree) }
+let t = Node(Leaf(10), Leaf(20))
+match t { Leaf(v) => v, Node(l, r) => {
+  let lv = match l { Leaf(v) => v, _ => 0 }
+  let rv = match r { Leaf(v) => v, _ => 0 }
+  lv + rv
+}}' \
+"30"
+
+expect_wasmtime_result "enum: match wildcard" \
+'enum Dir { Up; Down; Left; Right }
+match Left { Up => 1, Down => 2, _ => 99 }' \
+"99"
+
+expect_wasmtime_result "enum: single-variant with payload" \
+'enum Wrapper { Val(Int) }
+let w = Val(42)
+match w { Val(x) => x }' \
+"42"
+
+expect_wasmtime_result "enum: recursive list length" \
+'enum List { Nil; Cons(Int, List) }
+let rec len = (xs: List) -> Int {
+  match xs { Nil => 0, Cons(_, rest) => 1 + len(rest) }
+}
+len(Cons(1, Cons(2, Cons(3, Nil))))' \
+"3"
+
+expect_wasmtime_result "enum: recursive list sum" \
+'enum List { Nil; Cons(Int, List) }
+let rec sum_list = (xs: List) -> Int {
+  match xs { Nil => 0, Cons(v, rest) => v + sum_list(rest) }
+}
+sum_list(Cons(10, Cons(20, Cons(30, Nil))))' \
+"60"
+
+echo ""
+
+# ============================================
+# User-defined Structs
+# ============================================
+log_info "Testing user-defined structs..."
+
+expect_wasmtime_result "struct: basic field access" \
+'struct Point { x: Int; y: Int }
+let p = Point::{ x: 10, y: 20 }
+p.x + p.y' \
+"30"
+
+expect_wasmtime_result "struct: pass to function" \
+'struct Pair { a: Int; b: Int }
+let sum_pair = (p: Pair) -> Int { p.a + p.b }
+sum_pair(Pair::{ a: 3, b: 7 })' \
+"10"
+
+expect_wasmtime_result "struct: nested struct" \
+'struct Inner { val: Int }
+struct Outer { inner: Inner; extra: Int }
+let o = Outer::{ inner: Inner::{ val: 5 }, extra: 10 }
+o.inner.val + o.extra' \
+"15"
+
+expect_wasmtime_result "struct: enum with struct payload" \
+'struct Coord { x: Int; y: Int }
+enum Geom { Pt(Coord); Dist(Int) }
+let g = Pt(Coord::{ x: 3, y: 4 })
+match g { Pt(c) => c.x + c.y, Dist(d) => d }' \
+"7"
+
+echo ""
+
+# ============================================
+# Break and Continue
+# ============================================
+log_info "Testing break and continue..."
+
+expect_wasmtime_result "break: basic" \
+'let mut sum = 0
+let mut i = 0
+while i < 10 {
+  i = i + 1
+  if i == 5 { break }
+  sum = sum + i
+}
+sum' \
+"10"
+
+expect_wasmtime_result "continue: skip even" \
+'let mut sum = 0
+let mut i = 0
+while i < 10 {
+  i = i + 1
+  if i % 2 == 0 { continue }
+  sum = sum + i
+}
+sum' \
+"25"
+
+expect_wasmtime_result "break: nested while" \
+'let mut total = 0
+let mut i = 0
+while i < 5 {
+  let mut j = 0
+  while j < 5 {
+    j = j + 1
+    if j == 3 { break }
+    total = total + 1
+  }
+  i = i + 1
+}
+total' \
+"10"
+
+expect_wasmtime_result "break+continue: combined" \
+'let mut sum = 0
+let mut i = 0
+while i < 100 {
+  i = i + 1
+  if i % 3 == 0 { continue }
+  if i > 10 { break }
+  sum = sum + i
+}
+sum' \
+"37"
+
+echo ""
+
+# ============================================
+# Throw and Handle (requires exceptions proposal)
+# ============================================
+log_info "Testing throw/handle (exceptions proposal)..."
+
+# Helper for tests that need the WASM exceptions proposal
+expect_wasmtime_result_exceptions() {
+  local test_name="$1"
+  local vibe_code="$2"
+  local expected_value="$3"
+
+  echo "$vibe_code" > "$TMP_DIR/test.vibe"
+
+  if ! $VIBE compile --wasm "$TMP_DIR/test.vibe" -o "$TMP_DIR/test.wasm" 2>/dev/null; then
+    log_fail "$test_name - compilation failed"
+    return
+  fi
+
+  local wasm_tagged
+  wasm_tagged=$(VIBE_WASMTIME_WASM_FLAGS="exceptions=y" "$WASMTIME_RUN" --invoke run "$TMP_DIR/test.wasm" 2>/dev/null | grep -v "^warning") || true
+
+  if [ -z "$wasm_tagged" ]; then
+    log_fail "$test_name - wasmtime returned no output"
+    return
+  fi
+
+  local result=$((wasm_tagged >> 2))
+
+  if [ "$result" = "$expected_value" ]; then
+    log_pass "$test_name (result: $expected_value)"
+  else
+    log_fail "$test_name - expected $expected_value but got $result (tagged: $wasm_tagged)"
+  fi
+}
+
+expect_wasmtime_result_exceptions "throw/handle: catch division by zero" \
+'let safe_div = (a: Int, b: Int) -> Int with { Error } {
+  if b == 0 { throw("division by zero") }
+  a / b
+}
+handle { safe_div(10, 0) } { Error(_) => 99 }' \
+"99"
+
+expect_wasmtime_result_exceptions "throw/handle: no error path" \
+'let safe_div = (a: Int, b: Int) -> Int with { Error } {
+  if b == 0 { throw("division by zero") }
+  a / b
+}
+handle { safe_div(10, 2) } { Error(_) => 99 }' \
+"5"
+
+expect_wasmtime_result_exceptions "throw/handle: nested handle" \
+'let fail = (msg: String) -> Int with { Error } {
+  throw(msg)
+}
+let outer = handle {
+  let inner = handle { fail("inner") } { Error(_) => 42 }
+  inner + 1
+} { Error(_) => 0 }
+outer' \
+"43"
+
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo "========================================"
