@@ -169,6 +169,13 @@ test_cases=(
   'parse_int("0")'
   'parse_int("999") + 1'
   'parse_int(__to_string(77))'
+
+  # parse_double builtin
+  'double_to_int(parse_double("3.14") * 100.0)'
+  'double_to_int(parse_double("0.0"))'
+  'double_to_int(parse_double("-2.5") * 10.0)'
+  'double_to_int(parse_double("1.5") + parse_double("2.5"))'
+  'double_to_int(parse_double("42"))'
 )
 
 echo "Testing interpreter vs WASM output..."

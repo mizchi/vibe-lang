@@ -1586,6 +1586,234 @@ fn compile_call_builtin_pre_user_inner(
         emit_i64_or(buf)
       }
     }
+    "parse_double" => {
+      // parse_double(s: String) -> Double
+      // Parse integer + fractional parts, box result as f64 object.
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "parse_double", 1,
+      )
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported("parse_double with js strings")
+      } else {
+        // Native string mode: byte-iterate and accumulate
+        let str_ptr_local = alloc_temp_local(ctx)
+        let str_len_local = alloc_temp_local(ctx)
+        let idx_local = alloc_temp_local(ctx)
+        let int_part_local = alloc_temp_local(ctx) // integer part (i32)
+        let frac_part_local = alloc_temp_local(ctx) // fractional part (i32)
+        let frac_div_local = alloc_temp_local(ctx) // fractional divisor (i32)
+        let neg_local = alloc_temp_local(ctx) // sign flag
+        let byte_local = alloc_temp_local(ctx)
+
+        // Untag pointer
+        compile_expr_i32(ctx, buf, pos_args[0])
+        emit_i64_const_raw(buf, (-4).to_int64())
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_set(buf, str_ptr_local)
+
+        // Load string length
+        emit_local_get(buf, str_ptr_local)
+        emit_i32_load(buf, 4)
+        emit_local_set(buf, str_len_local)
+
+        // Initialize
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, int_part_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, frac_part_local)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, frac_div_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, idx_local)
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, neg_local)
+
+        // Skip leading spaces
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, idx_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_const_raw(buf, 32)
+        emit_i32_ne(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+
+        // Check sign
+        emit_block(buf)
+        emit_local_get(buf, idx_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 0)
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_set(buf, byte_local)
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 45) // '-'
+        emit_i32_eq(buf)
+        emit_if(buf)
+        emit_i32_const_raw(buf, 1)
+        emit_local_set(buf, neg_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_br(buf, 1)
+        emit_end(buf)
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 43) // '+'
+        emit_i32_eq(buf)
+        emit_if(buf)
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_end(buf)
+        emit_end(buf)
+
+        // Parse integer part (digits before '.')
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, idx_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_set(buf, byte_local)
+        // if byte == '.' (46), break to fraction part
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 46)
+        emit_i32_eq(buf)
+        emit_br_if(buf, 1)
+        // if byte == ' ' (32), break (trailing space)
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 32)
+        emit_i32_eq(buf)
+        emit_br_if(buf, 1)
+        // int_part = int_part * 10 + (byte - 48)
+        emit_local_get(buf, int_part_local)
+        emit_i32_const_raw(buf, 10)
+        emit_i32_mul(buf)
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 48)
+        emit_i32_sub(buf)
+        emit_i32_add(buf)
+        emit_local_set(buf, int_part_local)
+        // idx++
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+
+        // Skip '.' if present, then parse fractional digits
+        emit_block(buf)
+        emit_local_get(buf, idx_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 0) // no more chars
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_i32_const_raw(buf, 46) // '.'
+        emit_i32_ne(buf)
+        emit_br_if(buf, 0) // not a dot, skip fraction
+        // skip the '.'
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        // Parse fractional digits
+        emit_block(buf) // block $frac_done
+        emit_loop(buf) // loop $frac_loop
+        emit_local_get(buf, idx_local)
+        emit_local_get(buf, str_len_local)
+        emit_i32_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, str_ptr_local)
+        emit_local_get(buf, idx_local)
+        emit_i32_add(buf)
+        emit_i32_load8_u(buf, 8)
+        emit_local_set(buf, byte_local)
+        // if byte == ' ' (space), break
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 32)
+        emit_i32_eq(buf)
+        emit_br_if(buf, 1)
+        // frac_part = frac_part * 10 + (byte - 48)
+        emit_local_get(buf, frac_part_local)
+        emit_i32_const_raw(buf, 10)
+        emit_i32_mul(buf)
+        emit_local_get(buf, byte_local)
+        emit_i32_const_raw(buf, 48)
+        emit_i32_sub(buf)
+        emit_i32_add(buf)
+        emit_local_set(buf, frac_part_local)
+        // frac_div = frac_div * 10
+        emit_local_get(buf, frac_div_local)
+        emit_i32_const_raw(buf, 10)
+        emit_i32_mul(buf)
+        emit_local_set(buf, frac_div_local)
+        // idx++
+        emit_local_get(buf, idx_local)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_add(buf)
+        emit_local_set(buf, idx_local)
+        emit_br(buf, 0)
+        emit_end(buf) // end loop
+        emit_end(buf) // end block $frac_done
+        emit_end(buf) // end block (dot check)
+
+        // Build f64 result: (int_part + frac_part / frac_div) * sign
+        // Use emit_boxed_f64_raise to box the result
+        emit_boxed_f64_raise(ctx, buf, fn() {
+          // f64(int_part)
+          emit_local_get(buf, int_part_local)
+          emit_i64_extend_i32_s(buf)
+          emit_f64_convert_i64_s(buf)
+          // f64(frac_part) / f64(frac_div)
+          emit_local_get(buf, frac_part_local)
+          emit_i64_extend_i32_s(buf)
+          emit_f64_convert_i64_s(buf)
+          emit_local_get(buf, frac_div_local)
+          emit_i64_extend_i32_s(buf)
+          emit_f64_convert_i64_s(buf)
+          emit_f64_div(buf)
+          // add int + frac
+          emit_f64_add(buf)
+          // apply sign: multiply by (1.0 - 2.0 * neg_local)
+          // branchless: neg=0 → *1.0, neg=1 → *-1.0
+          emit_f64_const(buf, 1.0)
+          emit_local_get(buf, neg_local)
+          emit_i64_extend_i32_s(buf)
+          emit_f64_convert_i64_s(buf)
+          emit_f64_const(buf, 2.0)
+          emit_f64_mul(buf)
+          emit_f64_sub(buf)
+          emit_f64_mul(buf)
+        })
+      }
+    }
     "string_substring" => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "string_substring", 3,

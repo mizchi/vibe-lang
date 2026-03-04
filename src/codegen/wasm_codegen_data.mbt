@@ -189,7 +189,8 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           ctx.need_heap = true
           ctx.need_exceptions = true
         }
-        "string_from_char_code" | "to_double" => ctx.need_heap = true
+        "string_from_char_code" | "to_double" | "parse_double" =>
+          ctx.need_heap = true
         "char_to_int" | "char_from_int" => ()
         "__to_string" => if not(ctx.use_js_strings) { ctx.need_heap = true }
         _ =>

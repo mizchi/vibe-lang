@@ -2046,5 +2046,45 @@ expect_wasmtime_result "parse_int: roundtrip with to_string" \
 'parse_int(__to_string(42))' \
 "42"
 
-echo ""
+# -------------------------------------------------------
+# parse_double builtin
+# -------------------------------------------------------
+log_info "Testing parse_double builtin..."
 
+expect_wasmtime_result "parse_double: basic positive" \
+'double_to_int(parse_double("3.14") * 100.0)' \
+"314"
+
+expect_wasmtime_result "parse_double: zero" \
+'double_to_int(parse_double("0.0"))' \
+"0"
+
+expect_wasmtime_result "parse_double: negative" \
+'double_to_int(parse_double("-2.5") * 10.0)' \
+"-25"
+
+expect_wasmtime_result "parse_double: with spaces" \
+'double_to_int(parse_double("  7.25  ") * 4.0)' \
+"29"
+
+expect_wasmtime_result "parse_double: integer string" \
+'double_to_int(parse_double("42"))' \
+"42"
+
+expect_wasmtime_result "parse_double: positive sign" \
+'double_to_int(parse_double("+5.5") * 2.0)' \
+"11"
+
+expect_wasmtime_result "parse_double: arithmetic" \
+'double_to_int(parse_double("1.5") + parse_double("2.5"))' \
+"4"
+
+expect_wasmtime_result "parse_double: large value" \
+'double_to_int(parse_double("12345.0"))' \
+"12345"
+
+expect_wasmtime_result "parse_double: small fraction" \
+'double_to_int(parse_double("0.001") * 1000.0)' \
+"1"
+
+echo ""

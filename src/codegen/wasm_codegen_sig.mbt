@@ -453,6 +453,7 @@ fn infer_expr_kind_with(
         | "to_double"
         | "float_to_double"
         | "f64_promote_f32"
+        | "parse_double"
         | "f64_neg"
         | "f64_abs"
         | "f64_ceil"
@@ -1038,7 +1039,8 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "http_request_url" ||
         name == "http_request_header" ||
         name == "http_request_body" ||
-        name == "http_respond" {
+        name == "http_respond" ||
+        name == "parse_double" {
         return true
       }
       // Enum constructor call needs heap
