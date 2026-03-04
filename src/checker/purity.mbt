@@ -671,6 +671,34 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "float_to_double" ||
   name == "double_to_int" ||
   name == "double_to_float" ||
+  name == "f32_neg" ||
+  name == "f32_abs" ||
+  name == "f32_ceil" ||
+  name == "f32_floor" ||
+  name == "f32_trunc" ||
+  name == "f32_nearest" ||
+  name == "f32_sqrt" ||
+  name == "f64_neg" ||
+  name == "f64_abs" ||
+  name == "f64_ceil" ||
+  name == "f64_floor" ||
+  name == "f64_trunc" ||
+  name == "f64_nearest" ||
+  name == "f64_sqrt" ||
+  name == "f32_neg" ||
+  name == "f32_abs" ||
+  name == "f32_ceil" ||
+  name == "f32_floor" ||
+  name == "f32_trunc" ||
+  name == "f32_nearest" ||
+  name == "f32_sqrt" ||
+  name == "f64_neg" ||
+  name == "f64_abs" ||
+  name == "f64_ceil" ||
+  name == "f64_floor" ||
+  name == "f64_trunc" ||
+  name == "f64_nearest" ||
+  name == "f64_sqrt" ||
   name == "__to_string" ||
   name == "string_split" ||
   name == "string_index_of" ||

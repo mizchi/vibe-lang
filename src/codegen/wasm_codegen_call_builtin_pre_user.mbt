@@ -675,18 +675,38 @@ fn compile_call_builtin_pre_user_inner(
         _ => raise WasmGenError::Unsupported("numeric kind")
       }
     }
-    "f32_neg" => {
-      let pos_args = extract_positional_exprs_with_arity(args, "f32_neg", 1)
+    "f32_neg" | "f32_abs" | "f32_ceil" | "f32_floor" | "f32_trunc"
+    | "f32_nearest" | "f32_sqrt" => {
+      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
+      let emit_op : (ByteBuf) -> Unit = match name {
+        "f32_neg" => emit_f32_neg
+        "f32_abs" => emit_f32_abs
+        "f32_ceil" => emit_f32_ceil
+        "f32_floor" => emit_f32_floor
+        "f32_trunc" => emit_f32_trunc
+        "f32_nearest" => emit_f32_nearest
+        _ => emit_f32_sqrt
+      }
       emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
         emit_unbox_f32_expr(ctx, buf, pos_args[0])
-        emit_f32_neg(buf)
+        emit_op(buf)
       })
     }
-    "f64_neg" => {
-      let pos_args = extract_positional_exprs_with_arity(args, "f64_neg", 1)
+    "f64_neg" | "f64_abs" | "f64_ceil" | "f64_floor" | "f64_trunc"
+    | "f64_nearest" | "f64_sqrt" => {
+      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
+      let emit_op : (ByteBuf) -> Unit = match name {
+        "f64_neg" => emit_f64_neg
+        "f64_abs" => emit_f64_abs
+        "f64_ceil" => emit_f64_ceil
+        "f64_floor" => emit_f64_floor
+        "f64_trunc" => emit_f64_trunc
+        "f64_nearest" => emit_f64_nearest
+        _ => emit_f64_sqrt
+      }
       emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
         emit_unbox_f64_expr(ctx, buf, pos_args[0])
-        emit_f64_neg(buf)
+        emit_op(buf)
       })
     }
     "int_to_float" | "f32_convert_i32_s" => {

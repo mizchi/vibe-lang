@@ -295,7 +295,8 @@ fn type_call_builtin_handler_runtime_memory(
       }
       @core.Type::Int
     }
-    "f32_neg" =>
+    "f32_neg" | "f32_abs" | "f32_ceil" | "f32_floor" | "f32_trunc"
+    | "f32_nearest" | "f32_sqrt" =>
       type_check_unary_convert(
         env,
         args,
@@ -303,11 +304,12 @@ fn type_call_builtin_handler_runtime_memory(
         aliases,
         effects,
         allow_effect,
-        "f32_neg",
+        name,
         @core.Type::Float,
         @core.Type::Float,
       )
-    "f64_neg" =>
+    "f64_neg" | "f64_abs" | "f64_ceil" | "f64_floor" | "f64_trunc"
+    | "f64_nearest" | "f64_sqrt" =>
       type_check_unary_convert(
         env,
         args,
@@ -315,7 +317,7 @@ fn type_call_builtin_handler_runtime_memory(
         aliases,
         effects,
         allow_effect,
-        "f64_neg",
+        name,
         @core.Type::Double,
         @core.Type::Double,
       )

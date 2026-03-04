@@ -469,6 +469,36 @@ fn emit_f32_neg(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_f32_abs(buf : ByteBuf) -> Unit {
+  buf.push((139).to_byte())
+}
+
+///|
+fn emit_f32_ceil(buf : ByteBuf) -> Unit {
+  buf.push((141).to_byte())
+}
+
+///|
+fn emit_f32_floor(buf : ByteBuf) -> Unit {
+  buf.push((142).to_byte())
+}
+
+///|
+fn emit_f32_trunc(buf : ByteBuf) -> Unit {
+  buf.push((143).to_byte())
+}
+
+///|
+fn emit_f32_nearest(buf : ByteBuf) -> Unit {
+  buf.push((144).to_byte())
+}
+
+///|
+fn emit_f32_sqrt(buf : ByteBuf) -> Unit {
+  buf.push((145).to_byte())
+}
+
+///|
 fn emit_f64_add(buf : ByteBuf) -> Unit {
   buf.push((160).to_byte())
 }
@@ -521,6 +551,36 @@ fn emit_f64_ge(buf : ByteBuf) -> Unit {
 ///|
 fn emit_f64_neg(buf : ByteBuf) -> Unit {
   buf.push((154).to_byte())
+}
+
+///|
+fn emit_f64_abs(buf : ByteBuf) -> Unit {
+  buf.push((153).to_byte())
+}
+
+///|
+fn emit_f64_ceil(buf : ByteBuf) -> Unit {
+  buf.push((155).to_byte())
+}
+
+///|
+fn emit_f64_floor(buf : ByteBuf) -> Unit {
+  buf.push((156).to_byte())
+}
+
+///|
+fn emit_f64_trunc(buf : ByteBuf) -> Unit {
+  buf.push((157).to_byte())
+}
+
+///|
+fn emit_f64_nearest(buf : ByteBuf) -> Unit {
+  buf.push((158).to_byte())
+}
+
+///|
+fn emit_f64_sqrt(buf : ByteBuf) -> Unit {
+  buf.push((159).to_byte())
 }
 
 ///|

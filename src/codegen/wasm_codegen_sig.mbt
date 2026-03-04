@@ -441,6 +441,12 @@ fn infer_expr_kind_with(
         | "double_to_float"
         | "f32_demote_f64"
         | "f32_neg"
+        | "f32_abs"
+        | "f32_ceil"
+        | "f32_floor"
+        | "f32_trunc"
+        | "f32_nearest"
+        | "f32_sqrt"
         | "f32_load" => ValueKind::BoxedF32
         "int_to_double"
         | "f64_convert_i32_s"
@@ -448,6 +454,12 @@ fn infer_expr_kind_with(
         | "float_to_double"
         | "f64_promote_f32"
         | "f64_neg"
+        | "f64_abs"
+        | "f64_ceil"
+        | "f64_floor"
+        | "f64_trunc"
+        | "f64_nearest"
+        | "f64_sqrt"
         | "f64_load" => ValueKind::BoxedF64
         "float_to_int"
         | "i32_trunc_f32_s"
@@ -964,7 +976,19 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "double_to_float" ||
         name == "f32_demote_f64" ||
         name == "f32_neg" ||
+        name == "f32_abs" ||
+        name == "f32_ceil" ||
+        name == "f32_floor" ||
+        name == "f32_trunc" ||
+        name == "f32_nearest" ||
+        name == "f32_sqrt" ||
         name == "f64_neg" ||
+        name == "f64_abs" ||
+        name == "f64_ceil" ||
+        name == "f64_floor" ||
+        name == "f64_trunc" ||
+        name == "f64_nearest" ||
+        name == "f64_sqrt" ||
         name == "f32_load" ||
         name == "f64_load" ||
         name == "stdout_write_char" ||
