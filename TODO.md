@@ -162,6 +162,8 @@ Completed items are archived in `docs/DONE.md`.
   - `run/test` の auto backend は compiled を先行し、既定では interpreter fallback しない
   - fallback が必要な場合のみ `VIBE_ALLOW_INTERPRETER_FALLBACK=1` で明示的に許可
 - [x] selfhost WASI selfbuild gate を stage0 -> stage1 -> stage2 へ拡張
+  - stage0 は `moon run --target wasm src/cmd/vibe_compile_wasi` で stage1 wasm を生成
+  - stage1 は AOT 済み `vibe_compile_wasi.wasm` を `moonrun` で実行して stage2 wasm を生成
   - `scripts/test_selfhost_wasi_selfbuild.sh` で stage1/stage2 wasm の hash 一致を検証
   - stage1/stage2 の双方を `wasmtime --invoke run` で実行し、戻り値を検証
 - [x] selfhost bootstrap gate に compile/run 段階計測と KPI 判定を追加

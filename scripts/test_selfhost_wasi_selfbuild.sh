@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_wasi_selfbuild}"
 ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/index.vibe}"
+STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/release/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm}"
 STAGE1_WASM="$OUT_DIR/index_stage1.wasm"
 STAGE2_WASM="$OUT_DIR/index_stage2.wasm"
 
@@ -34,8 +35,20 @@ fi
 run_stage "stage0 (wasm compiler cli) -> stage1 wasm compile" \
   moon run --target wasm src/cmd/vibe_compile_wasi -- --wasm-mvp "$ENTRY_PATH" -o "$STAGE1_WASM"
 
-run_stage "stage0 (wasm compiler cli) -> stage2 wasm compile" \
-  moon run --target wasm src/cmd/vibe_compile_wasi -- --wasm-mvp "$ENTRY_PATH" -o "$STAGE2_WASM"
+run_stage "build stage1 compiler wasm (AOT)" \
+  moon build --target wasm --release src/cmd/vibe_compile_wasi --warn-list '-29'
+
+if ! command -v moonrun >/dev/null 2>&1; then
+  echo "selfbuild gate failed: moonrun not found" >&2
+  exit 1
+fi
+if [ ! -f "$STAGE1_COMPILER_WASM" ]; then
+  echo "selfbuild gate failed: stage1 compiler wasm not found: $STAGE1_COMPILER_WASM" >&2
+  exit 1
+fi
+
+run_stage "stage1 (AOT wasm compiler via moonrun) -> stage2 wasm compile" \
+  moonrun "$STAGE1_COMPILER_WASM" --wasm-mvp "$ENTRY_PATH" -o "$STAGE2_WASM"
 
 if command -v wasm-tools >/dev/null 2>&1; then
   run_stage "validate stage1 wasm" wasm-tools validate --features all "$STAGE1_WASM"
