@@ -204,6 +204,88 @@ expect_wasmtime_result "int_is_odd: false" \
 echo ""
 
 # ============================================
+# f64 Math Builtins (native WASM instructions)
+# ============================================
+log_info "Testing f64 math builtins..."
+
+expect_wasmtime_result "f64_abs positive" \
+'double_to_int(f64_abs(3.0))' \
+"3"
+
+expect_wasmtime_result "f64_abs negative" \
+'double_to_int(f64_abs(-5.0))' \
+"5"
+
+expect_wasmtime_result "f64_ceil" \
+'double_to_int(f64_ceil(2.3))' \
+"3"
+
+expect_wasmtime_result "f64_floor" \
+'double_to_int(f64_floor(2.7))' \
+"2"
+
+expect_wasmtime_result "f64_trunc positive" \
+'double_to_int(f64_trunc(2.9))' \
+"2"
+
+expect_wasmtime_result "f64_trunc negative" \
+'double_to_int(f64_trunc(-2.9))' \
+"-2"
+
+expect_wasmtime_result "f64_nearest even" \
+'double_to_int(f64_nearest(2.5))' \
+"2"
+
+expect_wasmtime_result "f64_nearest odd" \
+'double_to_int(f64_nearest(3.5))' \
+"4"
+
+expect_wasmtime_result "f64_sqrt" \
+'double_to_int(f64_sqrt(16.0))' \
+"4"
+
+expect_wasmtime_result "f64_sqrt 2 (truncated)" \
+'double_to_int(f64_floor(f64_sqrt(2.0) * 1000.0))' \
+"1414"
+
+echo ""
+
+# ============================================
+# f32 Math Builtins (native WASM instructions)
+# ============================================
+log_info "Testing f32 math builtins..."
+
+expect_wasmtime_result "f32_abs positive" \
+'float_to_int(f32_abs(int_to_float(3)))' \
+"3"
+
+expect_wasmtime_result "f32_abs negative" \
+'float_to_int(f32_abs(int_to_float(-3)))' \
+"3"
+
+expect_wasmtime_result "f32_ceil" \
+'float_to_int(f32_ceil(double_to_float(2.3)))' \
+"3"
+
+expect_wasmtime_result "f32_floor" \
+'float_to_int(f32_floor(double_to_float(2.7)))' \
+"2"
+
+expect_wasmtime_result "f32_trunc" \
+'float_to_int(f32_trunc(double_to_float(2.9)))' \
+"2"
+
+expect_wasmtime_result "f32_nearest" \
+'float_to_int(f32_nearest(double_to_float(3.5)))' \
+"4"
+
+expect_wasmtime_result "f32_sqrt" \
+'float_to_int(f32_sqrt(int_to_float(16)))' \
+"4"
+
+echo ""
+
+# ============================================
 # Comparison Operators
 # ============================================
 log_info "Testing comparison operators..."
@@ -1924,6 +2006,113 @@ compose(add1, mul2)(5)' \
 expect_wasmtime_result "chained call: intermediate binding equivalent" \
 'let f = (x: Int) -> (Int) -> Int { (z: Int) -> Int { x + z } }; let g = f(10); g(5)' \
 "15"
+
+echo ""
+
+# ============================================
+# Bytes builtins
+# ============================================
+echo ""
+echo "--- bytes builtins ---"
+
+expect_wasmtime_result "bytes_new+bytes_length: empty" \
+'let b = bytes_new()
+bytes_length(b)' \
+"0"
+
+expect_wasmtime_result "bytes_push+bytes_length: push 3 bytes" \
+'let b = bytes_new()
+bytes_push(b, 10)
+bytes_push(b, 20)
+bytes_push(b, 30)
+bytes_length(b)' \
+"3"
+
+expect_wasmtime_result "bytes_push+bytes_get: read back" \
+'let b = bytes_new()
+bytes_push(b, 42)
+bytes_push(b, 99)
+bytes_get(b, 0) + bytes_get(b, 1)' \
+"141"
+
+expect_wasmtime_result "bytes_set: overwrite byte" \
+'let b = bytes_new()
+bytes_push(b, 10)
+bytes_push(b, 20)
+bytes_set(b, 0, 55)
+bytes_get(b, 0)' \
+"55"
+
+expect_wasmtime_result "bytes_slice: basic slice" \
+'let b = bytes_new()
+bytes_push(b, 1)
+bytes_push(b, 2)
+bytes_push(b, 3)
+bytes_push(b, 4)
+let s = bytes_slice(b, 1, 3)
+bytes_get(s, 0) * 10 + bytes_get(s, 1)' \
+"23"
+
+expect_wasmtime_result "bytes_slice: length check" \
+'let b = bytes_new()
+bytes_push(b, 10)
+bytes_push(b, 20)
+bytes_push(b, 30)
+bytes_length(bytes_slice(b, 1, 3))' \
+"2"
+
+expect_wasmtime_result "bytes_concat: join two buffers" \
+'let a = bytes_new()
+bytes_push(a, 1)
+bytes_push(a, 2)
+let b = bytes_new()
+bytes_push(b, 3)
+bytes_push(b, 4)
+let c = bytes_concat(a, b)
+bytes_length(c) * 100 + bytes_get(c, 2) * 10 + bytes_get(c, 3)' \
+"434"
+
+expect_wasmtime_result "bytes_from_array: convert array to bytes" \
+'let arr = [65, 66, 67]
+let b = bytes_from_array(arr)
+bytes_length(b) * 100 + bytes_get(b, 0)' \
+"365"
+
+expect_wasmtime_result "bytes_to_array: convert bytes to array" \
+'let b = bytes_new()
+bytes_push(b, 10)
+bytes_push(b, 20)
+let arr = bytes_to_array(b)
+array_length(arr) * 100 + array_get(arr, 1)' \
+"220"
+
+expect_wasmtime_result "bytes_from_string: string to bytes" \
+'let b = bytes_from_string("AB")
+bytes_length(b) * 100 + bytes_get(b, 0)' \
+"265"
+
+expect_wasmtime_result "bytes_to_string: bytes to string roundtrip" \
+'let b = bytes_from_string("hi")
+let s = bytes_to_string(b)
+string_length(s)' \
+"2"
+
+expect_wasmtime_result "bytes roundtrip: from_string+to_string" \
+'let orig = "test"
+let b = bytes_from_string(orig)
+let s = bytes_to_string(b)
+string_length(s) * 10 + bytes_length(b)' \
+"44"
+
+expect_wasmtime_result "bytes: leb128-style push loop" \
+'let b = bytes_new()
+let mut val = 300
+while val > 0 {
+  bytes_push(b, val % 128 + 128 * (if val > 127 { 1 } else { 0 }))
+  val = val / 128
+}
+bytes_length(b)' \
+"2"
 
 echo ""
 
