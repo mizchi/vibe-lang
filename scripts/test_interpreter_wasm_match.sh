@@ -77,7 +77,16 @@ test_cases=(
   'if string_starts_with("hello", "hel") { 1 } else { 0 }'
   'if string_ends_with("hello", "llo") { 1 } else { 0 }'
   'string_index_of("hello world", "world")'
+  'string_index_of("hello", "xyz")'
+  'string_last_index_of("abcabc", "abc")'
   'string_char_code_at("A", 0)'
+  'string_count("abcabc", "abc")'
+  'string_count("aaaa", "aa")'
+  'string_length(string_trim("  hi  "))'
+  'string_length(string_trim_start("  hi  "))'
+  'string_length(string_trim_end("  hi  "))'
+  'string_length(string_concat("hello", " world"))'
+  'string_length(string_substring("hello world", 0, 5))'
 )
 
 echo "Testing interpreter vs WASM output..."

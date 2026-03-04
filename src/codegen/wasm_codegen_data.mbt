@@ -126,11 +126,20 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
           if ctx.use_js_strings {
             ctx.need_js_char_code_at = true
           }
-        "string_substring" =>
+        "string_substring" => {
           if ctx.use_js_strings {
             ctx.need_js_substring = true
+          } else {
+            ctx.need_heap = true
           }
-        "string_concat" => if ctx.use_js_strings { ctx.need_js_concat = true }
+        }
+        "string_concat" => {
+          if ctx.use_js_strings {
+            ctx.need_js_concat = true
+          } else {
+            ctx.need_heap = true
+          }
+        }
         "string_equals" | "map_get" =>
           if ctx.use_js_strings {
             ctx.need_js_equals = true
@@ -139,7 +148,10 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "map_builder"
         | "string_builder"
         | "map_keys"
-        | "map_values" => ctx.need_heap = true
+        | "map_values"
+        | "string_trim"
+        | "string_trim_start"
+        | "string_trim_end" => ctx.need_heap = true
         "sleep" => ctx.need_sleep = true
         "stdout_write_char" | "stdout_write_stream" =>
           ctx.need_stdout_write_char = true

@@ -988,6 +988,9 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "string_builder_freeze" ||
         name == "map_keys" ||
         name == "map_values" ||
+        name == "string_trim" ||
+        name == "string_trim_start" ||
+        name == "string_trim_end" ||
         name == "fs_read_file" ||
         name == "fs_write_file" ||
         name == "fs_exists" ||
