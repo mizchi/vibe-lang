@@ -98,6 +98,164 @@ let join_types = (arr: Array[String], sep: String) -> String {
   go(0, "")
 }
 
+export let rec types_equal = (a: Type, b: Type) -> Bool {
+  let rec string_array_equal = (left: Array[String], right: Array[String], i: Int) -> Bool {
+    if i >= array_length(left) {
+      true
+    } else if not(string_equals(array_get(left, i), array_get(right, i))) {
+      false
+    } else {
+      string_array_equal(left, right, i + 1)
+    }
+  }
+  let rec type_array_equal = (left: Array[Type], right: Array[Type], i: Int) -> Bool {
+    if i >= array_length(left) {
+      true
+    } else if not(types_equal(array_get(left, i), array_get(right, i))) {
+      false
+    } else {
+      type_array_equal(left, right, i + 1)
+    }
+  }
+  let rec forall_bounds_equal = (left: Array[(Int, Array[String])], right: Array[(Int, Array[String])], i: Int,) -> Bool {
+    if i >= array_length(left) {
+      true
+    } else {
+      let (lvar, lbounds) = array_get(left, i)
+      let (rvar, rbounds) = array_get(right, i)
+      if not(eq(lvar, rvar)) {
+        false
+      } else if not(eq(array_length(lbounds), array_length(rbounds))) {
+        false
+      } else if not(string_array_equal(lbounds, rbounds, 0)) {
+        false
+      } else {
+        forall_bounds_equal(left, right, i + 1)
+      }
+    }
+  }
+  match a {
+    CtInt => match b {
+      CtInt => true,
+      _ => false
+    },
+    CtDouble => match b {
+      CtDouble => true,
+      _ => false
+    },
+    CtBool => match b {
+      CtBool => true,
+      _ => false
+    },
+    CtString => match b {
+      CtString => true,
+      _ => false
+    },
+    CtChar => match b {
+      CtChar => true,
+      _ => false
+    },
+    CtUnit => match b {
+      CtUnit => true,
+      _ => false
+    },
+    CtBytes => match b {
+      CtBytes => true,
+      _ => false
+    },
+    CtUnknown => match b {
+      CtUnknown => true,
+      _ => false
+    },
+    CtVar(aid) => match b {
+      CtVar(bid) => eq(aid, bid),
+      _ => false
+    },
+    CtArray(aelem) => match b {
+      CtArray(belem) => types_equal(aelem, belem),
+      _ => false
+    },
+    CtOption(aelem) => match b {
+      CtOption(belem) => types_equal(aelem, belem),
+      _ => false
+    },
+    CtEnum(aname) => match b {
+      CtEnum(bname) => string_equals(aname, bname),
+      _ => false
+    },
+    CtStruct(aname) => match b {
+      CtStruct(bname) => string_equals(aname, bname),
+      _ => false
+    },
+    CtNamed(aname, aargs) => match b {
+      CtNamed(bname, bargs) =>
+      if not(string_equals(aname, bname)) {
+        false
+      } else if not(eq(array_length(aargs), array_length(bargs))) {
+        false
+      } else {
+        type_array_equal(aargs, bargs, 0)
+      },
+      _ => false
+    },
+    CtTuple(aelems) => match b {
+      CtTuple(belems) =>
+      if not(eq(array_length(aelems), array_length(belems))) {
+        false
+      } else {
+        type_array_equal(aelems, belems, 0)
+      },
+      _ => false
+    },
+    CtFn(aparams, aret, ahas_error) => match b {
+      CtFn(bparams, bret, bhas_error) =>
+      if not(eq(array_length(aparams), array_length(bparams))) {
+        false
+      } else if ahas_error {
+        if not(bhas_error) {
+          false
+        } else if not(type_array_equal(aparams, bparams, 0)) {
+          false
+        } else {
+          types_equal(aret, bret)
+        }
+      } else if bhas_error {
+        false
+      } else if not(type_array_equal(aparams, bparams, 0)) {
+        false
+      } else {
+        types_equal(aret, bret)
+      },
+      _ => false
+    },
+    CtForAll(avars, abounds, abody) => match b {
+      CtForAll(bvars, bbounds, bbody) => {
+        let rec var_list_equal = (i: Int) -> Bool {
+          if i >= array_length(avars) {
+            true
+          } else if not(eq(array_get(avars, i), array_get(bvars, i))) {
+            false
+          } else {
+            var_list_equal(i + 1)
+          }
+        }
+        if not(eq(array_length(avars), array_length(bvars))) {
+          false
+        } else if not(eq(array_length(abounds), array_length(bbounds))) {
+          false
+        } else if not(var_list_equal(0)) {
+          false
+        } else if not(forall_bounds_equal(abounds, bbounds, 0)) {
+          false
+        } else {
+          types_equal(abody, bbody)
+        }
+      },
+      _ => false
+    }
+  }
+}
+
 export let env_bind_all = (env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv {
   let len = array_length(bindings)
   let rec go = (i: Int, acc: TypeEnv) -> TypeEnv {
@@ -173,26 +331,25 @@ export let rec subst_apply = (s: Subst, ty: Type) -> Type {
       }
       while not(done) {
         match cur {
-          CtVar(vid) => {
-            if seen_has(seen, vid, 0) {
-              out = cur
-              done = true
-            } else {
-              seen = array_concat(seen, [
-                vid
-              ])
-              match subst_lookup(s, vid) {
-                Some(next) => {
-                  cur = next
-                  out = next
-                },
-                None => {
-                  out = cur
-                  done = true
-                }
+          CtVar(vid) => if seen_has(seen, vid, 0) {
+            out = cur
+            done = true
+          } else {
+            seen = array_concat(seen, [
+              vid
+            ])
+            match subst_lookup(s, vid) {
+              Some(next) => {
+                cur = next
+                out = next
+              },
+              None => {
+                out = cur
+                done = true
               }
             }
-          },
+          }
+          ,
           _ => {
             out = subst_apply(s, cur)
             done = true
@@ -214,6 +371,69 @@ export let rec subst_apply = (s: Subst, ty: Type) -> Type {
     }),
     CtForAll(_, _, _) => ty,
     _ => ty
+  }
+}
+
+export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
+  let rec unify_list = (pa: Array[Type], pb: Array[Type], i: Int, acc: Subst) -> Option[Subst] {
+    if i >= array_length(pa) {
+      Some(acc)
+    }
+    else match unify(array_get(pa, i), array_get(pb, i), acc) {
+      Some(s2) => unify_list(pa, pb, i + 1, s2),
+      None => None
+    }
+  }
+  let ta = subst_apply(s, a)
+  let tb = subst_apply(s, b)
+  if types_equal(ta, tb) {
+    Some(s)
+  }
+  else match ta {
+    CtVar(id) => if occurs_in(id, tb) {
+      None
+    } else Some(SubstBind(id, tb, s)),
+    _ => match tb {
+      CtVar(id) => if occurs_in(id, ta) {
+        None
+      } else Some(SubstBind(id, ta, s)),
+      _ => match ta {
+        CtUnknown => Some(s),
+        _ => match tb {
+          CtUnknown => Some(s),
+          _ => match ta {
+            CtArray(ea) => match tb {
+              CtArray(eb) => unify(ea, eb, s),
+              _ => None
+            },
+            CtOption(ea) => match tb {
+              CtOption(eb) => unify(ea, eb, s),
+              _ => None
+            },
+            CtFn(pa, ra, _) => match tb {
+              CtFn(pb, rb, _) => if not(eq(array_length(pa), array_length(pb))) {
+                None
+              }
+              else match unify_list(pa, pb, 0, s) {
+                Some(s2) => unify(ra, rb, s2),
+                None => None
+              }
+              ,
+              _ => None
+            },
+            CtTuple(ea) => match tb {
+              CtTuple(eb) => if not(eq(array_length(ea), array_length(eb))) {
+                None
+              }
+              else unify_list(ea, eb, 0, s)
+              ,
+              _ => None
+            },
+            _ => None
+          }
+        }
+      }
+    }
   }
 }
 
@@ -382,234 +602,6 @@ export let rec type_to_string = (ty: Type) -> String {
       if has_error {
         string_concat(base, " with {Error}")
       } else base
-    }
-  }
-}
-
-export let rec types_equal = (a: Type, b: Type) -> Bool {
-  let rec string_array_equal = (left: Array[String], right: Array[String], i: Int) -> Bool {
-    if i >= array_length(left) {
-      true
-    } else if not(string_equals(array_get(left, i), array_get(right, i))) {
-      false
-    } else {
-      string_array_equal(left, right, i + 1)
-    }
-  }
-
-  let rec type_array_equal = (left: Array[Type], right: Array[Type], i: Int) -> Bool {
-    if i >= array_length(left) {
-      true
-    } else if not(types_equal(array_get(left, i), array_get(right, i))) {
-      false
-    } else {
-      type_array_equal(left, right, i + 1)
-    }
-  }
-
-  let rec forall_bounds_equal = (
-    left: Array[(Int, Array[String])],
-    right: Array[(Int, Array[String])],
-    i: Int,
-  ) -> Bool {
-    if i >= array_length(left) {
-      true
-    } else {
-      let (lvar, lbounds) = array_get(left, i)
-      let (rvar, rbounds) = array_get(right, i)
-      if not(eq(lvar, rvar)) {
-        false
-      } else if not(eq(array_length(lbounds), array_length(rbounds))) {
-        false
-      } else if not(string_array_equal(lbounds, rbounds, 0)) {
-        false
-      } else {
-        forall_bounds_equal(left, right, i + 1)
-      }
-    }
-  }
-
-  match a {
-    CtInt => match b {
-      CtInt => true,
-      _ => false
-    },
-    CtDouble => match b {
-      CtDouble => true,
-      _ => false
-    },
-    CtBool => match b {
-      CtBool => true,
-      _ => false
-    },
-    CtString => match b {
-      CtString => true,
-      _ => false
-    },
-    CtChar => match b {
-      CtChar => true,
-      _ => false
-    },
-    CtUnit => match b {
-      CtUnit => true,
-      _ => false
-    },
-    CtBytes => match b {
-      CtBytes => true,
-      _ => false
-    },
-    CtUnknown => match b {
-      CtUnknown => true,
-      _ => false
-    },
-    CtVar(aid) => match b {
-      CtVar(bid) => eq(aid, bid),
-      _ => false
-    },
-    CtArray(aelem) => match b {
-      CtArray(belem) => types_equal(aelem, belem),
-      _ => false
-    },
-    CtOption(aelem) => match b {
-      CtOption(belem) => types_equal(aelem, belem),
-      _ => false
-    },
-    CtEnum(aname) => match b {
-      CtEnum(bname) => string_equals(aname, bname),
-      _ => false
-    },
-    CtStruct(aname) => match b {
-      CtStruct(bname) => string_equals(aname, bname),
-      _ => false
-    },
-    CtNamed(aname, aargs) => match b {
-      CtNamed(bname, bargs) =>
-        if not(string_equals(aname, bname)) {
-          false
-        } else if not(eq(array_length(aargs), array_length(bargs))) {
-          false
-        } else {
-          type_array_equal(aargs, bargs, 0)
-        },
-      _ => false
-    },
-    CtTuple(aelems) => match b {
-      CtTuple(belems) =>
-        if not(eq(array_length(aelems), array_length(belems))) {
-          false
-        } else {
-          type_array_equal(aelems, belems, 0)
-        },
-      _ => false
-    },
-    CtFn(aparams, aret, ahas_error) => match b {
-      CtFn(bparams, bret, bhas_error) =>
-        if not(eq(array_length(aparams), array_length(bparams))) {
-          false
-        } else if ahas_error {
-          if not(bhas_error) {
-            false
-          } else if not(type_array_equal(aparams, bparams, 0)) {
-            false
-          } else {
-            types_equal(aret, bret)
-          }
-        } else if bhas_error {
-          false
-        } else if not(type_array_equal(aparams, bparams, 0)) {
-          false
-        } else {
-          types_equal(aret, bret)
-        },
-      _ => false
-    },
-    CtForAll(avars, abounds, abody) => match b {
-      CtForAll(bvars, bbounds, bbody) => {
-        let rec var_list_equal = (i: Int) -> Bool {
-          if i >= array_length(avars) {
-            true
-          } else if not(eq(array_get(avars, i), array_get(bvars, i))) {
-            false
-          } else {
-            var_list_equal(i + 1)
-          }
-        }
-        if not(eq(array_length(avars), array_length(bvars))) {
-          false
-        } else if not(eq(array_length(abounds), array_length(bbounds))) {
-          false
-        } else if not(var_list_equal(0)) {
-          false
-        } else if not(forall_bounds_equal(abounds, bbounds, 0)) {
-          false
-        } else {
-          types_equal(abody, bbody)
-        }
-      },
-      _ => false
-    }
-  }
-}
-
-export let rec unify = (a: Type, b: Type, s: Subst) -> Option[Subst] {
-  let rec unify_list = (pa: Array[Type], pb: Array[Type], i: Int, acc: Subst) -> Option[Subst] {
-    if i >= array_length(pa) {
-      Some(acc)
-    }
-    else match unify(array_get(pa, i), array_get(pb, i), acc) {
-      Some(s2) => unify_list(pa, pb, i + 1, s2),
-      None => None
-    }
-  }
-  let ta = subst_apply(s, a)
-  let tb = subst_apply(s, b)
-  if types_equal(ta, tb) {
-    Some(s)
-  }
-  else match ta {
-    CtVar(id) => if occurs_in(id, tb) {
-      None
-    } else Some(SubstBind(id, tb, s)),
-    _ => match tb {
-      CtVar(id) => if occurs_in(id, ta) {
-        None
-      } else Some(SubstBind(id, ta, s)),
-      _ => match ta {
-        CtUnknown => Some(s),
-        _ => match tb {
-          CtUnknown => Some(s),
-          _ => match ta {
-            CtArray(ea) => match tb {
-              CtArray(eb) => unify(ea, eb, s),
-              _ => None
-            },
-            CtOption(ea) => match tb {
-              CtOption(eb) => unify(ea, eb, s),
-              _ => None
-            },
-            CtFn(pa, ra, _) => match tb {
-              CtFn(pb, rb, _) => if not(eq(array_length(pa), array_length(pb))) {
-                None
-              }
-              else match unify_list(pa, pb, 0, s) {
-                Some(s2) => unify(ra, rb, s2),
-                None => None
-              }
-              ,
-              _ => None
-            },
-            CtTuple(ea) => match tb {
-              CtTuple(eb) => if not(eq(array_length(ea), array_length(eb))) {
-                None
-              }
-              else unify_list(ea, eb, 0, s)
-              ,
-              _ => None
-            },
-            _ => None
-          }
-        }
-      }
     }
   }
 }

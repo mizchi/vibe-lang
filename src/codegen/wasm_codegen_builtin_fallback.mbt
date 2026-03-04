@@ -17,18 +17,14 @@ fn is_wasm_runtime_fallback_builtin(name : String) -> Bool {
     | "json_is_null"
     | "json_length"
     | "json_keys"
-    // String convenience helpers currently go through interpreter builtins.
+    // String convenience helpers that still go through interpreter builtins.
+    // Note: string_contains, string_starts_with, string_ends_with,
+    // string_last_index_of, string_index_of, string_count,
+    // string_trim, string_trim_start, string_trim_end
+    // have native WASM implementations in wasm_codegen_call_builtin_pre_user.mbt.
     | "string_split"
-    | "string_contains"
-    | "string_starts_with"
-    | "string_ends_with"
-    | "string_trim"
-    | "string_trim_start"
-    | "string_trim_end"
     | "string_replace"
     | "string_replace_all"
-    | "string_last_index_of"
-    | "string_count"
     | "string_to_lower"
     | "string_to_upper"
     // Filesystem/env helpers not mapped to wasm imports yet.

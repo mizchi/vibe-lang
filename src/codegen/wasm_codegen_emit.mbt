@@ -281,6 +281,11 @@ fn emit_i32_gt_s(buf : ByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i32_gt_u(buf : ByteBuf) -> Unit {
+  buf.push((75).to_byte())
+}
+
+///|
 fn emit_i32_le_s(buf : ByteBuf) -> Unit {
   buf.push((76).to_byte())
 }

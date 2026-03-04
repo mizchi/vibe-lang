@@ -963,6 +963,154 @@ last_idx' \
 echo ""
 
 # ============================================
+# String Builtins
+# ============================================
+log_info "Testing string builtins..."
+
+expect_wasmtime_result "string_length" \
+'string_length("hello")' \
+"5"
+
+expect_wasmtime_result "string_length: empty string" \
+'string_length("")' \
+"0"
+
+expect_wasmtime_result "string_concat" \
+'string_length(string_concat("hello", " world"))' \
+"11"
+
+expect_wasmtime_result "string_contains: found" \
+'if string_contains("hello world", "world") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_contains: not found" \
+'if string_contains("hello world", "xyz") { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "string_contains: empty substring" \
+'if string_contains("hello", "") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_contains: equal strings" \
+'if string_contains("abc", "abc") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_contains: longer needle" \
+'if string_contains("hi", "hello") { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "string_starts_with: true" \
+'if string_starts_with("hello world", "hello") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_starts_with: false" \
+'if string_starts_with("hello world", "world") { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "string_ends_with: true" \
+'if string_ends_with("hello world", "world") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_ends_with: false" \
+'if string_ends_with("hello world", "hello") { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "string_index_of: found" \
+'string_index_of("hello world", "world")' \
+"6"
+
+expect_wasmtime_result "string_index_of: not found" \
+'string_index_of("hello", "xyz")' \
+"-1"
+
+expect_wasmtime_result "string_last_index_of: found" \
+'string_last_index_of("abcabc", "abc")' \
+"3"
+
+expect_wasmtime_result "string_last_index_of: not found" \
+'string_last_index_of("hello", "xyz")' \
+"-1"
+
+expect_wasmtime_result "string_substring" \
+'string_length(string_substring("hello world", 6, 11))' \
+"5"
+
+expect_wasmtime_result "string_char_code_at" \
+'string_char_code_at("ABC", 0)' \
+"65"
+
+expect_wasmtime_result "string_equals: true" \
+'if string_equals("hello", "hello") { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "string_equals: false" \
+'if string_equals("hello", "world") { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "string_from_char_code" \
+'string_char_code_at(string_from_char_code(65), 0)' \
+"65"
+
+echo ""
+
+# ============================================
+# Array Operations
+# ============================================
+log_info "Testing array operations..."
+
+expect_wasmtime_result "array indexing" \
+'let arr = [10, 20, 30]
+arr[1]' \
+"20"
+
+expect_wasmtime_result "array_length" \
+'array_length([1, 2, 3, 4, 5])' \
+"5"
+
+expect_wasmtime_result "array set and read" \
+'let arr = [10, 20, 30]
+arr[1] = 99
+arr[1]' \
+"99"
+
+echo ""
+
+# ============================================
+# Record Field Access
+# ============================================
+log_info "Testing record field access..."
+
+expect_wasmtime_result "record field access" \
+'let r = record { x: 10, y: 20 }
+r.x + r.y' \
+"30"
+
+expect_wasmtime_result "record field access: nested" \
+'let r = record { a: record { b: 42 } }
+r.a.b' \
+"42"
+
+echo ""
+
+# ============================================
+# Pipe Operator
+# ============================================
+log_info "Testing pipe operator..."
+
+expect_wasmtime_result "pipe: basic" \
+'let double = (x: Int) -> Int { x * 2 }
+5 |> double' \
+"10"
+
+expect_wasmtime_result "pipe: chain" \
+'let inc = (x: Int) -> Int { x + 1 }
+let double = (x: Int) -> Int { x * 2 }
+3 |> inc |> double' \
+"8"
+
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo "========================================"

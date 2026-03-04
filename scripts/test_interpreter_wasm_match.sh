@@ -69,6 +69,15 @@ test_cases=(
   # For-in with mutable accumulation
   'let mut total = 0; for x in [1, 2, 3, 4, 5] { total = total + x }; total'
   'let mut sum = 0; for x in [10, 20, 30] { sum = sum + x; x }; sum'
+
+  # String builtins
+  'string_length("hello")'
+  'if string_contains("hello world", "world") { 1 } else { 0 }'
+  'if string_contains("hello", "xyz") { 1 } else { 0 }'
+  'if string_starts_with("hello", "hel") { 1 } else { 0 }'
+  'if string_ends_with("hello", "llo") { 1 } else { 0 }'
+  'string_index_of("hello world", "world")'
+  'string_char_code_at("A", 0)'
 )
 
 echo "Testing interpreter vs WASM output..."
