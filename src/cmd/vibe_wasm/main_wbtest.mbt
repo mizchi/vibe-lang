@@ -56,6 +56,16 @@ fn wbtest_extract_vibe_last_value(stdout : String) -> Int? {
 }
 
 ///|
+fn wbtest_contains_text(values : Array[String], target : String) -> Bool {
+  for value in values {
+    if value == target {
+      return true
+    }
+  }
+  false
+}
+
+///|
 test "parse cmd args defaults to run core wasm" {
   let parsed = parse_cmd_args(["examples/hello.vibe"])
   match parsed {
@@ -120,6 +130,15 @@ test "component invoke default uses run signature" {
   )
   assert_true(cmd.contains("--invoke"))
   assert_true(cmd.contains("\"run()\""))
+}
+
+///|
+test "component mode filters unknown-imports-default wasm flag" {
+  let filtered = filter_component_wasm_flags([
+    "unknown-imports-default=y", "exceptions=y",
+  ])
+  assert_false(wbtest_contains_text(filtered, "unknown-imports-default=y"))
+  assert_true(wbtest_contains_text(filtered, "exceptions=y"))
 }
 
 ///|

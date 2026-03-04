@@ -149,6 +149,25 @@ fn with_default_core_wasm_flags(flags : Array[String]) -> Array[String] {
 }
 
 ///|
+fn is_component_incompatible_wasm_flag(flag : String) -> Bool {
+  let token = flag.trim().to_string().to_lower()
+  token == "unknown-imports-default" ||
+  token.has_prefix("unknown-imports-default=")
+}
+
+///|
+fn filter_component_wasm_flags(flags : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for flag in flags {
+    if is_component_incompatible_wasm_flag(flag) {
+      continue
+    }
+    out.push(flag)
+  }
+  out
+}
+
+///|
 fn find_command_in_path(name : String) -> String? {
   match @sys.get_env_var("PATH") {
     None => None
@@ -254,7 +273,7 @@ fn resolve_wasmtime_runner(
   }
   let wasm_flags = match mode {
     RunMode::CoreWasm => with_default_core_wasm_flags(wasm_flags)
-    RunMode::Component => wasm_flags
+    RunMode::Component => filter_component_wasm_flags(wasm_flags)
   }
   let wasi_flags = match @sys.get_env_var("VIBE_WASMTIME_WASI_FLAGS") {
     Some(raw) => split_env_flags(raw)
