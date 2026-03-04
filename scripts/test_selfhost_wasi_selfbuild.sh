@@ -8,14 +8,60 @@ ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/index.vibe}"
 STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm}"
 STAGE1_WASM="$OUT_DIR/index_stage1.wasm"
 STAGE2_WASM="$OUT_DIR/index_stage2.wasm"
+STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC:-600}"
+
+run_with_timeout() {
+  local timeout_sec="$1"
+  shift
+  if [ "$timeout_sec" -le 0 ]; then
+    "$@"
+    return $?
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_sec" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$timeout_sec" "$@"
+    return $?
+  fi
+  "$@" &
+  local cmd_pid=$!
+  (
+    sleep "$timeout_sec"
+    if kill -0 "$cmd_pid" 2>/dev/null; then
+      kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep 2
+      kill -KILL "$cmd_pid" 2>/dev/null || true
+    fi
+  ) &
+  local watchdog_pid=$!
+  wait "$cmd_pid"
+  local status=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  if [ "$status" -eq 143 ] || [ "$status" -eq 137 ]; then
+    return 124
+  fi
+  return "$status"
+}
 
 run_stage() {
   local name="$1"
   shift
-  local start end elapsed
+  local start end elapsed status
   start="$(date +%s)"
   echo "[selfbuild] $name"
-  "$@"
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" "$@"
+  status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[selfbuild] timeout: $name (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
   end="$(date +%s)"
   elapsed="$((end - start))"
   echo "[selfbuild] done: $name (${elapsed}s)"
@@ -24,12 +70,52 @@ run_stage() {
   fi
 }
 
+run_stage_capture_stdout() {
+  local name="$1"
+  local out_path="$2"
+  shift 2
+  local start end elapsed status
+  start="$(date +%s)"
+  echo "[selfbuild] $name"
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" "$@" >"$out_path"
+  status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[selfbuild] timeout: $name (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
+  end="$(date +%s)"
+  elapsed="$((end - start))"
+  echo "[selfbuild] done: $name (${elapsed}s)"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf -- "- %s: %ss\n" "$name" "$elapsed" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+}
+
+is_non_negative_int() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 mkdir -p "$OUT_DIR"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "### Selfhost WASI Selfbuild Timings"
     echo
   } >> "$GITHUB_STEP_SUMMARY" || true
+fi
+
+if ! is_non_negative_int "$STAGE_TIMEOUT_SEC"; then
+  echo "selfbuild gate failed: VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC must be integer seconds" >&2
+  exit 1
+fi
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
 run_stage "stage0 (wasm compiler cli) -> stage1 wasm compile" \
@@ -63,27 +149,15 @@ if [ "$HASH_STAGE1" != "$HASH_STAGE2" ]; then
   exit 1
 fi
 
-stage1_run_start="$(date +%s)"
-echo "[selfbuild] run stage1 wasm via wasmtime (--invoke run)"
-env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
-  "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke run "$STAGE1_WASM" >"$OUT_DIR/stage1_run.out"
-stage1_run_end="$(date +%s)"
-stage1_run_elapsed="$((stage1_run_end - stage1_run_start))"
-echo "[selfbuild] done: run stage1 wasm via wasmtime (--invoke run) (${stage1_run_elapsed}s)"
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  printf -- "- %s: %ss\n" "run stage1 wasm via wasmtime (--invoke run)" "$stage1_run_elapsed" >> "$GITHUB_STEP_SUMMARY" || true
-fi
+run_stage_capture_stdout "run stage1 wasm via wasmtime (--invoke run)" \
+  "$OUT_DIR/stage1_run.out" \
+  env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
+  "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke run "$STAGE1_WASM"
 
-stage2_run_start="$(date +%s)"
-echo "[selfbuild] run stage2 wasm via wasmtime (--invoke run)"
-env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
-  "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke run "$STAGE2_WASM" >"$OUT_DIR/stage2_run.out"
-stage2_run_end="$(date +%s)"
-stage2_run_elapsed="$((stage2_run_end - stage2_run_start))"
-echo "[selfbuild] done: run stage2 wasm via wasmtime (--invoke run) (${stage2_run_elapsed}s)"
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  printf -- "- %s: %ss\n" "run stage2 wasm via wasmtime (--invoke run)" "$stage2_run_elapsed" >> "$GITHUB_STEP_SUMMARY" || true
-fi
+run_stage_capture_stdout "run stage2 wasm via wasmtime (--invoke run)" \
+  "$OUT_DIR/stage2_run.out" \
+  env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
+  "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke run "$STAGE2_WASM"
 
 RUN_STAGE1="$(rg -v '^warning' "$OUT_DIR/stage1_run.out" | tail -n 1)"
 RUN_STAGE2="$(rg -v '^warning' "$OUT_DIR/stage2_run.out" | tail -n 1)"

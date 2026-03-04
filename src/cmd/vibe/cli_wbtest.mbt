@@ -2157,6 +2157,26 @@ test "split test entry path batches keeps sibling files in same worker chunk" {
 }
 
 ///|
+test "split test entry path batches with weights isolates heavy module first" {
+  let weights : Map[String, Int] = {}
+  weights["vibe/heavy/a_test.vibe"] = 100
+  weights["vibe/light/b_test.vibe"] = 1
+  weights["vibe/light/c_test.vibe"] = 1
+  let grouped = split_test_entry_path_batches_with_weights(
+    [
+      "vibe/heavy/a_test.vibe", "vibe/light/b_test.vibe",
+      "vibe/light/c_test.vibe",
+    ],
+    2,
+    weights,
+  )
+  assert_eq(grouped.length(), 2)
+  let heavy_isolated = grouped[0] == ["vibe/heavy/a_test.vibe"] ||
+    grouped[1] == ["vibe/heavy/a_test.vibe"]
+  assert_true(heavy_isolated)
+}
+
+///|
 test "find json lines extracts all object-looking lines" {
   let output =
     #|log: start

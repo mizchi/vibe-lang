@@ -169,7 +169,10 @@ Completed items are archived in `docs/DONE.md`.
 - [x] selfhost bootstrap gate に compile/run 段階計測と KPI 判定を追加
   - parse/type check, codegen(no-dce), validate, run(stage1/stage2) を段階ログ化
   - `VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC` と `VIBE_SELFHOST_BOOTSTRAP_REDUCTION_PCT`（default 30）で目標時間を gate 化
+  - Push/PR CI は baseline=180s, reduction=30%（target<=126s）で回帰を fail-fast
   - `compiled selfhost test suite` は `--jobs` 並列を既定化（`VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS` で上書き可、default=`min(cpu,8)`, max 16）
+  - `VIBE_TEST_BATCH_WEIGHT_CACHE` で過去実行時間を再利用し、バッチ分割を重み付きへ最適化
+  - `VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC` / `VIBE_SELFHOST_SELFBUILD_STAGE_TIMEOUT_SEC` で stage timeout を適用
   - optimize 段階は `VIBE_SELFHOST_PIPELINE_OPT_LEVEL` 指定時のみ実行（長時間化の回避）
 
 ## Blocked / External

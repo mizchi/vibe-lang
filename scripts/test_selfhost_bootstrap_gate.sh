@@ -10,14 +10,61 @@ KPI_BASELINE_SEC="${VIBE_SELFHOST_BOOTSTRAP_BASELINE_SEC:-}"
 KPI_REDUCTION_PCT="${VIBE_SELFHOST_BOOTSTRAP_REDUCTION_PCT:-30}"
 PIPELINE_OPT_LEVEL="${VIBE_SELFHOST_PIPELINE_OPT_LEVEL:-}"
 SELFHOST_TEST_JOBS="${VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS:-}"
+STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC:-900}"
+BATCH_WEIGHT_CACHE_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_CACHE:-$OUT_DIR/selfhost_test_batch_weights.json}"
+
+run_with_timeout() {
+  local timeout_sec="$1"
+  shift
+  if [ "$timeout_sec" -le 0 ]; then
+    "$@"
+    return $?
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_sec" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$timeout_sec" "$@"
+    return $?
+  fi
+  "$@" &
+  local cmd_pid=$!
+  (
+    sleep "$timeout_sec"
+    if kill -0 "$cmd_pid" 2>/dev/null; then
+      kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep 2
+      kill -KILL "$cmd_pid" 2>/dev/null || true
+    fi
+  ) &
+  local watchdog_pid=$!
+  wait "$cmd_pid"
+  local status=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  if [ "$status" -eq 143 ] || [ "$status" -eq 137 ]; then
+    return 124
+  fi
+  return "$status"
+}
 
 run_stage() {
   local name="$1"
   shift
-  local start end elapsed
+  local start end elapsed status
   start="$(date +%s)"
   echo "[bootstrap] $name"
-  "$@"
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" "$@"
+  status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[bootstrap] timeout: $name (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
   end="$(date +%s)"
   elapsed="$((end - start))"
   echo "[bootstrap] done: $name (${elapsed}s)"
@@ -30,10 +77,19 @@ run_stage_capture_stdout() {
   local name="$1"
   local out_path="$2"
   shift 2
-  local start end elapsed
+  local start end elapsed status
   start="$(date +%s)"
   echo "[bootstrap] $name"
-  "$@" >"$out_path"
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" "$@" >"$out_path"
+  status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[bootstrap] timeout: $name (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
   end="$(date +%s)"
   elapsed="$((end - start))"
   echo "[bootstrap] done: $name (${elapsed}s)"
@@ -77,11 +133,20 @@ run_wasm_and_expect_zero() {
   local label="$1"
   local wasm_path="$2"
   local out_path="$3"
-  local start end elapsed run_value
+  local start end elapsed run_value status
   start="$(date +%s)"
   echo "[bootstrap] $label"
-  env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" env VIBE_WASMTIME_WASM_FLAGS="unknown-imports-default=y exceptions=y" \
     "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke run "$wasm_path" >"$out_path"
+  status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[bootstrap] timeout: $label (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
   end="$(date +%s)"
   elapsed="$((end - start))"
   echo "[bootstrap] done: $label (${elapsed}s)"
@@ -130,16 +195,23 @@ if ! is_positive_int "$SELFHOST_TEST_JOBS"; then
   echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS must be positive integer" >&2
   exit 1
 fi
+if ! is_non_negative_int "$STAGE_TIMEOUT_SEC"; then
+  echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC must be integer seconds" >&2
+  exit 1
+fi
 if [ "$SELFHOST_TEST_JOBS" -gt 16 ]; then
   SELFHOST_TEST_JOBS=16
 fi
 echo "[bootstrap] selfhost test jobs: $SELFHOST_TEST_JOBS"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %s\n" "selfhost test jobs" "$SELFHOST_TEST_JOBS" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "batch weight cache" "$BATCH_WEIGHT_CACHE_PATH" >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
 run_stage "compiled selfhost test suite" \
   env VIBE_TEST_BACKEND=compiled VIBE_TEST_JOBS="$SELFHOST_TEST_JOBS" \
+  VIBE_TEST_BATCH_WEIGHT_CACHE="$BATCH_WEIGHT_CACHE_PATH" \
   "$VIBE_BIN" test --jobs "$SELFHOST_TEST_JOBS" "$PROJECT_ROOT"/vibe/compiler/*_test.vibe
 
 echo "[bootstrap] selfhost __to_string source path check"

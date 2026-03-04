@@ -2257,7 +2257,11 @@ fn test_cmd_sequential(
 }
 
 ///|
-fn make_cli_test_report_json(path : String, report : CliTestReport) -> Json {
+fn make_cli_test_report_json(
+  path : String,
+  report : CliTestReport,
+  elapsed_ms : Int,
+) -> Json {
   let failures_arr : Array[Json] = []
   for failure in report.failures {
     let f : Map[String, Json] = {}
@@ -2275,6 +2279,7 @@ fn make_cli_test_report_json(path : String, report : CliTestReport) -> Json {
   obj["total"] = Json::number(report.total.to_double())
   obj["passed"] = Json::number(report.passed.to_double())
   obj["failed"] = Json::number(report.failed.to_double())
+  obj["elapsed_ms"] = Json::number(elapsed_ms.to_double())
   obj["failures"] = Json::array(failures_arr)
   Json::object(obj)
 }
@@ -2284,6 +2289,7 @@ fn make_error_report_json(
   entry_path : String,
   phase : String,
   error : String,
+  elapsed_ms : Int,
 ) -> Json {
   let f : Map[String, Json] = {}
   f["name"] = Json::string(phase)
@@ -2293,8 +2299,19 @@ fn make_error_report_json(
   obj["total"] = Json::number(0.0)
   obj["passed"] = Json::number(0.0)
   obj["failed"] = Json::number(1.0)
+  obj["elapsed_ms"] = Json::number(elapsed_ms.to_double())
   obj["failures"] = Json::array([Json::object(f)])
   Json::object(obj)
+}
+
+///|
+fn elapsed_us_to_ms_int(elapsed_us : Double) -> Int {
+  let elapsed_ms = (elapsed_us / 1000.0).to_int()
+  if elapsed_ms <= 0 {
+    1
+  } else {
+    elapsed_ms
+  }
 }
 
 ///|
@@ -2313,15 +2330,21 @@ fn test_cmd_report_json(
     if should_exit_report_json_worker(worker_parent_pid) {
       c_exit(130)
     }
+    let start = @bench.monotonic_clock_start()
+    let mut elapsed_ms = 1
     match run_test_file_with_backend(entry_path, features) {
       Ok(report) => {
-        println(make_cli_test_report_json(entry_path, report).stringify())
+        let elapsed_us = @bench.monotonic_clock_end(start)
+        elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
+        println(make_cli_test_report_json(entry_path, report, elapsed_ms).stringify())
         if report.failed > 0 {
           any_failed = true
         }
       }
       Err(err) => {
-        println(make_error_report_json(entry_path, "test", err).stringify())
+        let elapsed_us = @bench.monotonic_clock_end(start)
+        elapsed_ms = elapsed_us_to_ms_int(elapsed_us)
+        println(make_error_report_json(entry_path, "test", err, elapsed_ms).stringify())
         any_failed = true
       }
     }
@@ -2392,6 +2415,86 @@ fn find_json_lines(text : String) -> Array[String] {
 }
 
 ///|
+fn test_batch_weight_cache_path() -> String? {
+  match @sys.get_env_var("VIBE_TEST_BATCH_WEIGHT_CACHE") {
+    Some(raw) => {
+      let trimmed = raw.trim().to_string()
+      if trimmed.length() == 0 {
+        None
+      } else {
+        Some(trimmed)
+      }
+    }
+    None => None
+  }
+}
+
+///|
+fn load_test_batch_weight_cache(cache_path : String) -> Map[String, Int] {
+  if not(@os_fs.path_exists(cache_path)) {
+    return {}
+  }
+  let text = @os_fs.read_file_to_string(cache_path) catch {
+    _ => return {}
+  }
+  let json : Json = @json.parse(text) catch {
+    _ => return {}
+  }
+  let out : Map[String, Int] = {}
+  match json {
+    Json::Object(obj) =>
+      for key, value in obj {
+        match value {
+          Json::Number(n, ..) => {
+            let weight = n.to_int()
+            if weight > 0 {
+              out[key] = weight
+            }
+          }
+          _ => ()
+        }
+      }
+    _ => ()
+  }
+  out
+}
+
+///|
+fn ensure_dir_recursive_best_effort(path : String) -> Unit {
+  if path.length() == 0 || path == "." {
+    return
+  }
+  if @os_fs.path_exists(path) {
+    return
+  }
+  let parent = @vibe_fs.parent_path(path)
+  if parent != path && parent.length() > 0 {
+    ensure_dir_recursive_best_effort(parent)
+  }
+  @os_fs.create_dir(path) catch { _ => () }
+}
+
+///|
+fn save_test_batch_weight_cache(
+  cache_path : String,
+  weights : Map[String, Int],
+) -> Unit {
+  let parent = @vibe_fs.parent_path(cache_path)
+  if parent != cache_path && parent.length() > 0 {
+    ensure_dir_recursive_best_effort(parent)
+  }
+  let obj : Map[String, Json] = {}
+  for path, weight in weights {
+    if weight > 0 {
+      obj[path] = Json::number(weight.to_double())
+    }
+  }
+  @os_fs.write_string_to_file(cache_path, Json::object(obj).stringify()) catch {
+    _ => ()
+  }
+}
+
+///|
 fn test_entry_batch_parent(path : String) -> String {
   @vibe_fs.parent_path(path)
 }
@@ -2400,6 +2503,7 @@ fn test_entry_batch_parent(path : String) -> String {
 struct TestEntryBatchUnit {
   parent : String
   paths : Array[String]
+  weight : Int
 }
 
 ///|
@@ -2461,6 +2565,12 @@ fn compare_test_entry_batch_unit(
   a : TestEntryBatchUnit,
   b : TestEntryBatchUnit,
 ) -> Int {
+  if a.weight > b.weight {
+    return -1
+  }
+  if a.weight < b.weight {
+    return 1
+  }
   let a_len = a.paths.length()
   let b_len = b.paths.length()
   if a_len > b_len {
@@ -2507,9 +2617,33 @@ fn test_entry_batch_min_load_index(loads : Array[Int]) -> Int {
 }
 
 ///|
-fn split_test_entry_path_batches(
+fn test_entry_batch_path_weight(
+  path : String,
+  weights : Map[String, Int],
+) -> Int {
+  match weights.get(path) {
+    Some(weight) => if weight > 0 { weight } else { 1 }
+    None => 1
+  }
+}
+
+///|
+fn test_entry_batch_paths_weight(
+  paths : Array[String],
+  weights : Map[String, Int],
+) -> Int {
+  let mut total = 0
+  for path in paths {
+    total += test_entry_batch_path_weight(path, weights)
+  }
+  total
+}
+
+///|
+fn split_test_entry_path_batches_with_weights(
   entry_paths : Array[String],
   jobs : Int,
+  weights : Map[String, Int],
 ) -> Array[Array[String]] {
   let mut worker_count = jobs
   if worker_count <= 0 {
@@ -2554,7 +2688,11 @@ fn split_test_entry_path_batches(
         offset += 1
         chunk_count += 1
       }
-      units.push(TestEntryBatchUnit::{ parent, paths: chunk })
+      units.push(TestEntryBatchUnit::{
+        parent,
+        weight: test_entry_batch_paths_weight(chunk, weights),
+        paths: chunk,
+      })
     }
   }
   sort_test_entry_batch_units(units)
@@ -2567,10 +2705,18 @@ fn split_test_entry_path_batches(
     let batch_index = test_entry_batch_min_load_index(loads)
     for path in unit.paths {
       batches[batch_index].push(path)
-      loads[batch_index] += 1
     }
+    loads[batch_index] += unit.weight
   }
   batches
+}
+
+///|
+fn split_test_entry_path_batches(
+  entry_paths : Array[String],
+  jobs : Int,
+) -> Array[Array[String]] {
+  split_test_entry_path_batches_with_weights(entry_paths, jobs, {})
 }
 
 ///|
@@ -2581,6 +2727,15 @@ fn test_cmd_parallel(
 ) -> Unit {
   let exe = @env.args()[0]
   let parent_pid_env_value = vibe_getpid().to_string()
+  let batch_weight_cache_path = test_batch_weight_cache_path()
+  let use_batch_weight_cache = match batch_weight_cache_path {
+    Some(_) => true
+    None => false
+  }
+  let cached_batch_weights = match batch_weight_cache_path {
+    Some(cache_path) => load_test_batch_weight_cache(cache_path)
+    None => {}
+  }
   let batches = if jobs == 1 {
     let singleton_batches : Array[Array[String]] = []
     for path in entry_paths {
@@ -2588,7 +2743,15 @@ fn test_cmd_parallel(
     }
     singleton_batches
   } else {
-    split_test_entry_path_batches(entry_paths, jobs)
+    if use_batch_weight_cache {
+      split_test_entry_path_batches_with_weights(
+        entry_paths,
+        jobs,
+        cached_batch_weights,
+      )
+    } else {
+      split_test_entry_path_batches(entry_paths, jobs)
+    }
   }
   let max_concurrent = if jobs == 1 { 1 } else { batches.length() }
   vibe_parallel_cleanup_install_signal_handlers()
@@ -2643,6 +2806,12 @@ fn test_cmd_parallel(
   }
   @async.run_async_main(async fn() {
     let results = @async.all(tasks[:], max_concurrent~)
+    let merged_batch_weights : Map[String, Int] = {}
+    for path, weight in cached_batch_weights {
+      if weight > 0 {
+        merged_batch_weights[path] = weight
+      }
+    }
     let mut total = 0
     let mut passed = 0
     let mut failed_count = 0
@@ -2686,9 +2855,13 @@ fn test_cmd_parallel(
             let file_total = parse_report_json_int(json, "total")
             let file_passed = parse_report_json_int(json, "passed")
             let file_failed = parse_report_json_int(json, "failed")
+            let file_elapsed_ms = parse_report_json_int(json, "elapsed_ms")
             total += file_total
             passed += file_passed
             failed_count += file_failed
+            if file_elapsed_ms > 0 {
+              merged_batch_weights[path] = file_elapsed_ms
+            }
             let status = if file_failed == 0 { "ok" } else { "fail" }
             println("\{path}: \{status} (\{file_passed}/\{file_total})")
             if file_failed > 0 {
@@ -2747,6 +2920,11 @@ fn test_cmd_parallel(
           total += batch_paths.length()
         }
       }
+    }
+    match batch_weight_cache_path {
+      Some(cache_path) =>
+        save_test_batch_weight_cache(cache_path, merged_batch_weights)
+      None => ()
     }
     println(
       "summary: files=\{file_count} total=\{total} passed=\{passed} failed=\{failed_count}",
