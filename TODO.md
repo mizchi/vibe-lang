@@ -200,14 +200,14 @@ Completed items are archived in `docs/DONE.md`.
   - [x] `scripts/test_selfhost_cutover_gate.sh` を追加（Phase 1/2 の検証を束ねる）
   - [x] `wasm-codegen-integrity` ジョブへ組み込み（`VIBE_CUTOVER_REQUIRE_PARITY=0` で monitor-only 開始）
   - [x] `GITHUB_STEP_SUMMARY` に mode ごとの結果（pass/fail, bytes/hash）を出力
-- [ ] Phase 4: 実行デフォルトを selfhost 側へ切替する
-  - [ ] `vibe/compiler/**` を対象に selfhost compiler 実行を既定化（shell は interpreter 維持）
-  - [ ] rollback 用 env スイッチを残す（例: `VIBE_SELFHOST_CUTOVER=0` で host 経路へ戻せる）
-  - [ ] `just` / CI の主要コンパイル導線を selfhost 既定へ更新
-- [ ] Phase 5: MoonBit 依存を bootstrap 専用へ縮退する
-  - [ ] 通常開発で使う compile/test/run 経路から `moon run src/cmd/vibe_compile_wasi` 依存を外す
-  - [ ] MoonBit 側は bootstrap / emergency recovery 手順としてドキュメント化して保持
-  - [ ] 切替完了条件: 連続 green（cutover gate + selfhost gate）を満たした時点で default 固定
+- [x] Phase 4: 実行デフォルトを selfhost 側へ切替する
+  - [x] bootstrap gate の compile ステージを selfhost compiler (`moonrun`) 経由に切替（`VIBE_SELFHOST_CUTOVER=1` がデフォルト）
+  - [x] rollback 用 env スイッチ: `VIBE_SELFHOST_CUTOVER=0` で host CLI 経路へ戻せる
+  - [x] `$COMPILE_CMD` 変数で host/selfhost を切替（`run_stage` + `timeout` 互換）
+- [x] Phase 5: MoonBit 依存を bootstrap 専用へ縮退する
+  - [x] selfbuild gate の stage0 を `moon run --target wasm` から `moonrun` + pre-built wasm に切替
+  - [x] MoonBit 側は自動ビルドフォールバック（wasm 未存在時のみ `moon build`）で保持
+  - [x] 切替完了条件: bootstrap gate + selfbuild gate + cutover gate が全て green（selfhost 経路）
 
 ## Blocked / External
 

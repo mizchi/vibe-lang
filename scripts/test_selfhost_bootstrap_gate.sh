@@ -13,6 +13,10 @@ SELFHOST_TEST_JOBS="${VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS:-}"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC:-900}"
 BATCH_WEIGHT_CACHE_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_CACHE:-$OUT_DIR/selfhost_test_batch_weights.json}"
 BATCH_WEIGHT_SEED_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_SEED:-$PROJECT_ROOT/scripts/selfhost_test_batch_weights.seed.json}"
+# Cutover: use selfhost compiler (moonrun) instead of host CLI for wasm compilation.
+# Set VIBE_SELFHOST_CUTOVER=0 to fall back to host CLI (emergency rollback).
+SELFHOST_CUTOVER="${VIBE_SELFHOST_CUTOVER:-1}"
+SELFHOST_COMPILER_WASM="${SELFHOST_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm}"
 
 run_with_timeout() {
   local timeout_sec="$1"
@@ -181,6 +185,31 @@ if [ "$needs_cli_rebuild" -eq 1 ]; then
     moon build --target native --release src/cmd/vibe --warn-list '-29'
 fi
 
+# Build selfhost compiler wasm if cutover is enabled and binary is missing/stale
+if [ "$SELFHOST_CUTOVER" = "1" ]; then
+  needs_selfhost_rebuild=0
+  if [ ! -f "$SELFHOST_COMPILER_WASM" ]; then
+    needs_selfhost_rebuild=1
+  elif [ "$PROJECT_ROOT/moon.mod.json" -nt "$SELFHOST_COMPILER_WASM" ]; then
+    needs_selfhost_rebuild=1
+  elif find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$SELFHOST_COMPILER_WASM" -print -quit 2>/dev/null | grep -q .; then
+    needs_selfhost_rebuild=1
+  fi
+  if [ "$needs_selfhost_rebuild" -eq 1 ]; then
+    run_stage "building selfhost compiler (wasm)" \
+      moon build --target wasm src/cmd/vibe_compile_wasi
+  fi
+  if ! command -v moonrun >/dev/null 2>&1; then
+    echo "bootstrap gate failed: moonrun not found (required for VIBE_SELFHOST_CUTOVER=1)" >&2
+    exit 1
+  fi
+  echo "[bootstrap] cutover: using selfhost compiler (moonrun)"
+  COMPILE_CMD="moonrun $SELFHOST_COMPILER_WASM"
+else
+  echo "[bootstrap] cutover: using host CLI"
+  COMPILE_CMD="$VIBE_BIN compile"
+fi
+
 mkdir -p "$OUT_DIR"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
@@ -207,6 +236,7 @@ echo "[bootstrap] selfhost test jobs: $SELFHOST_TEST_JOBS"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %s\n" "selfhost test jobs" "$SELFHOST_TEST_JOBS" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "cutover" "$( [ "$SELFHOST_CUTOVER" = "1" ] && echo "selfhost (moonrun)" || echo "host CLI" )" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "batch weight cache" "$BATCH_WEIGHT_CACHE_PATH" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "batch weight seed" "$BATCH_WEIGHT_SEED_PATH" >> "$GITHUB_STEP_SUMMARY" || true
 fi
@@ -245,10 +275,12 @@ run_stage "selfhost probe smoke (vibe integration test index 44)" \
 
 STAGE1_WASM="$OUT_DIR/index_stage1.wasm"
 STAGE2_WASM="$OUT_DIR/index_stage2.wasm"
+# shellcheck disable=SC2086
 run_stage "stage1 compile (--wasm) for $ENTRY_PATH" \
-  "$VIBE_BIN" compile --wasm "$ENTRY_PATH" -o "$STAGE1_WASM"
+  $COMPILE_CMD --wasm "$ENTRY_PATH" -o "$STAGE1_WASM"
+# shellcheck disable=SC2086
 run_stage "stage2 compile (--wasm) for $ENTRY_PATH" \
-  "$VIBE_BIN" compile --wasm "$ENTRY_PATH" -o "$STAGE2_WASM"
+  $COMPILE_CMD --wasm "$ENTRY_PATH" -o "$STAGE2_WASM"
 
 PIPELINE_CHECK="$OUT_DIR/index_pipeline_check.log"
 PIPELINE_RAW_WASM="$OUT_DIR/index_pipeline_raw.wasm"
@@ -256,11 +288,13 @@ PIPELINE_OPT_WASM="$OUT_DIR/index_pipeline_opt.wasm"
 run_stage_capture_stdout "pipeline parse+type check for $ENTRY_PATH" \
   "$PIPELINE_CHECK" \
   "$VIBE_BIN" check "$ENTRY_PATH"
+# shellcheck disable=SC2086
 run_stage "pipeline codegen (--wasm --no-dce) for $ENTRY_PATH" \
-  "$VIBE_BIN" compile --wasm --no-dce "$ENTRY_PATH" -o "$PIPELINE_RAW_WASM"
+  $COMPILE_CMD --wasm --no-dce "$ENTRY_PATH" -o "$PIPELINE_RAW_WASM"
 if [ -n "$PIPELINE_OPT_LEVEL" ]; then
+  # shellcheck disable=SC2086
   run_stage "pipeline optimize/codegen (-O$PIPELINE_OPT_LEVEL) for $ENTRY_PATH" \
-    "$VIBE_BIN" compile --wasm "-O$PIPELINE_OPT_LEVEL" "$ENTRY_PATH" -o "$PIPELINE_OPT_WASM"
+    $COMPILE_CMD --wasm "-O$PIPELINE_OPT_LEVEL" "$ENTRY_PATH" -o "$PIPELINE_OPT_WASM"
 else
   echo "[bootstrap] pipeline optimize/codegen: skipped (set VIBE_SELFHOST_PIPELINE_OPT_LEVEL)"
 fi
