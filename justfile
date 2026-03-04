@@ -125,6 +125,14 @@ test-update:
 run *args:
     moon run --target native src/cmd/vibe -- {{args}}
 
+# Build native wasm-only runner CLI (`src/cmd/vibe_wasm`)
+build-vibe-wasm:
+    moon build --target native src/cmd/vibe_wasm
+
+# Run native wasm-only runner CLI (`compile|run|compare`)
+run-vibe-wasm *args:
+    moon run --target native src/cmd/vibe_wasm -- {{args}}
+
 # Build wasm line shell package (wasi preview2 imports)
 build-shell-wasi-wasm:
     moon build --target wasm src/cmd/vibe_wasi
