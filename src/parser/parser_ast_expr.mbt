@@ -1765,9 +1765,18 @@ fn AstParser::parse_call_or_primary(
   } else {
     self.parse_primary()
   }
-  // Postfix chain: .method(args), .prop, [index]
+  // Postfix chain: .method(args), .prop, [index], (chained call)
   while true {
-    self.skip_trivia()
+    // Track whether trivia before next token contains a newline.
+    // Chained call f(a)(b) is only valid on the same line to avoid
+    // ambiguity with tuple/parenthesized expressions on the next line.
+    let mut saw_newline = false
+    while is_trivia(self.peek_kind()) {
+      if self.peek_kind() == newline() {
+        saw_newline = true
+      }
+      self.pos += 1
+    }
     if self.peek_kind() == dot() {
       let _ = self.bump()
       self.skip_trivia()
@@ -1814,6 +1823,33 @@ fn AstParser::parse_call_or_primary(
       let index = self.parse_expr()
       let _ = self.expect(rbracket(), "]")
       expr = call2("__index", expr, index)
+    } else if self.peek_kind() == lparen() && not(saw_newline) {
+      // Chained call: expr(args) where expr is not a simple name.
+      // Only on the same line — a newline before ( starts a new statement.
+      // Desugar f(a)(b) into { let __chain$N = f(a); __chain$N(b) }
+      let chain_pos = self.pos
+      let _ = self.bump() // consume (
+      let args = self.parse_args()
+      let _ = self.expect(rparen(), ")")
+      let span = self.span_from(start)
+      let chain_name = "__chain$" + chain_pos.to_string()
+      expr = @core.Expr::Block(
+        body=@core.Module::{
+          stmts: [
+            @core.Stmt::Let(rec=false, name=chain_name, expr~, span~),
+            @core.Stmt::Expr(
+              expr=@core.Expr::Call(
+                name=chain_name,
+                type_args=[],
+                args~,
+                span~,
+              ),
+              span~,
+            ),
+          ],
+        },
+        span~,
+      )
     } else {
       break
     }

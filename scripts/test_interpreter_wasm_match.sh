@@ -155,7 +155,12 @@ test_cases=(
   'if false || true { 1 } else { 0 }'
   'if false || false { 1 } else { 0 }'
 
-  # Nested closures
+  # Chained function calls (currying)
+  'let add = (x: Int) -> (Int) -> Int { (y: Int) -> Int { x + y } }; add(10)(5)'
+  'let f = (a: Int) -> (Int) -> (Int) -> Int { (b: Int) -> (Int) -> Int { (c: Int) -> Int { a + b + c } } }; f(1)(2)(3)'
+  'let add = (x: Int) -> (Int) -> Int { (y: Int) -> Int { x + y } }; add(10)(20) + add(3)(4)'
+
+  # Nested closures with chained calls
   'let outer = (x: Int) -> (Int) -> Int { let y = x + 1; (z: Int) -> Int { y + z } }; outer(10)(5)'
   'let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int { (x: Int) -> Int { f(g(x)) } }; let add1 = (x: Int) -> Int { x + 1 }; let mul2 = (x: Int) -> Int { x * 2 }; compose(add1, mul2)(5)'
 )

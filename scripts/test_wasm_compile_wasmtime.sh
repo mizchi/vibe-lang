@@ -832,6 +832,54 @@ f()' \
 echo ""
 
 # ============================================
+# Chained Function Calls (curried/returning closures)
+# ============================================
+log_info "Testing chained function calls..."
+
+expect_wasmtime_result "chained call: basic currying" \
+'let add = (x: Int) -> (Int) -> Int { (y: Int) -> Int { x + y } }
+add(10)(5)' \
+"15"
+
+expect_wasmtime_result "chained call: param capture" \
+'let f = (x: Int) -> (Int) -> Int { (z: Int) -> Int { x + z } }
+f(10)(5)' \
+"15"
+
+expect_wasmtime_result "chained call: let binding capture" \
+'let outer = (x: Int) -> (Int) -> Int {
+  let y = x + 1
+  (z: Int) -> Int { y + z }
+}
+outer(10)(5)' \
+"16"
+
+expect_wasmtime_result "chained call: triple chain" \
+'let f = (a: Int) -> (Int) -> (Int) -> Int {
+  (b: Int) -> (Int) -> Int {
+    (c: Int) -> Int { a + b + c }
+  }
+}
+f(1)(2)(3)' \
+"6"
+
+expect_wasmtime_result "chained call: in expression" \
+'let add = (x: Int) -> (Int) -> Int { (y: Int) -> Int { x + y } }
+add(10)(20) + add(3)(4)' \
+"37"
+
+expect_wasmtime_result "chained call: function composition" \
+'let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int {
+  (x: Int) -> Int { f(g(x)) }
+}
+let add1 = (x: Int) -> Int { x + 1 }
+let mul2 = (x: Int) -> Int { x * 2 }
+compose(add1, mul2)(5)' \
+"11"
+
+echo ""
+
+# ============================================
 # Nested Loops & Complex Control Flow
 # ============================================
 log_info "Testing nested loops and complex control flow..."
@@ -1842,6 +1890,40 @@ array_fold(doubled, 0, (acc: Int, x: Int) -> Int { acc + x })' \
 expect_wasmtime_result "where: alias for filter" \
 'array_length(where([1, 2, 3, 4, 5], (x: Int) -> Bool { x > 3 }))' \
 "2"
+
+echo ""
+
+# ============================================
+# Chained function calls (currying)
+# ============================================
+log_info "Testing chained function calls..."
+
+expect_wasmtime_result "chained call: basic currying" \
+'let add = (x: Int) -> (Int) -> Int { (y: Int) -> Int { x + y } }; add(10)(5)' \
+"15"
+
+expect_wasmtime_result "chained call: triple chain" \
+'let f = (a: Int) -> (Int) -> (Int) -> Int { (b: Int) -> (Int) -> Int { (c: Int) -> Int { a + b + c } } }; f(1)(2)(3)' \
+"6"
+
+expect_wasmtime_result "chained call: in expression context" \
+'let add = (x: Int) -> (Int) -> Int { (y: Int) -> Int { x + y } }; add(10)(20) + add(3)(4)' \
+"37"
+
+expect_wasmtime_result "chained call: with let binding in closure" \
+'let outer = (x: Int) -> (Int) -> Int { let y = x + 1; (z: Int) -> Int { y + z } }; outer(10)(5)' \
+"16"
+
+expect_wasmtime_result "chained call: compose pattern" \
+'let compose = (f: (Int) -> Int, g: (Int) -> Int) -> (Int) -> Int { (x: Int) -> Int { f(g(x)) } }
+let add1 = (x: Int) -> Int { x + 1 }
+let mul2 = (x: Int) -> Int { x * 2 }
+compose(add1, mul2)(5)' \
+"11"
+
+expect_wasmtime_result "chained call: intermediate binding equivalent" \
+'let f = (x: Int) -> (Int) -> Int { (z: Int) -> Int { x + z } }; let g = f(10); g(5)' \
+"15"
 
 echo ""
 
