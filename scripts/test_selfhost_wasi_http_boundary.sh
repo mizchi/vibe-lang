@@ -104,8 +104,12 @@ if command -v wasm-tools >/dev/null 2>&1; then
     echo "http boundary gate failed: missing lowered function import placeholders in component" >&2
     exit 1
   fi
-  if ! printf '%s' "$COMPONENT_TEXT" | rg -n '^\s*\(with "vibe:http" \(instance' >/dev/null; then
-    echo "http boundary gate failed: missing instantiate binding for vibe:http instance" >&2
+  if ! printf '%s' "$COMPONENT_TEXT" | rg -n '^\s*\(with "wasi:http/client@0\.3\.0-draft" \(instance' >/dev/null; then
+    echo "http boundary gate failed: missing instantiate binding for wasi:http/client instance" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$COMPONENT_TEXT" | rg -n '^\s*\(with "wasi:http/types@0\.3\.0-draft" \(instance' >/dev/null; then
+    echo "http boundary gate failed: missing instantiate binding for wasi:http/types instance" >&2
     exit 1
   fi
   if printf '%s' "$COMPONENT_TEXT" | rg -n 'core-import-' >/dev/null; then

@@ -16,6 +16,40 @@ fn write_func_type(
 }
 
 ///|
+fn http_host_import_binding(
+  ctx : CodegenCtx,
+  builtin_name : String,
+) -> (String, String) {
+  if not(ctx.http_component_wasi_shim) {
+    return ("vibe:http", builtin_name)
+  }
+  match builtin_name {
+    "http_request" => ("wasi:http/client@0.3.0-draft", "send")
+    "http_response_status" =>
+      ("wasi:http/types@0.3.0-draft", "response-status")
+    "http_response_header" =>
+      ("wasi:http/types@0.3.0-draft", "response-header")
+    "http_response_body" => ("wasi:http/types@0.3.0-draft", "response-body")
+    "http_close" => ("wasi:http/types@0.3.0-draft", "[drop]response")
+    _ => ("vibe:http", builtin_name)
+  }
+}
+
+///|
+fn write_http_host_import(
+  import_sec : ByteBuf,
+  ctx : CodegenCtx,
+  builtin_name : String,
+  type_idx : Int,
+) -> Unit {
+  let (module_name, func_name) = http_host_import_binding(ctx, builtin_name)
+  write_name(import_sec, module_name)
+  write_name(import_sec, func_name)
+  import_sec.push((0).to_byte())
+  write_u32_leb(import_sec, type_idx)
+}
+
+///|
 fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
   let buf = ByteBuf::new()
   // magic + version
@@ -659,56 +693,60 @@ fn build_module(ctx : CodegenCtx, funcs : Array[WasmFunc]) -> Bytes {
     }
     if ctx.need_http && ctx.http_host_imports {
       // http_request(method, url, headers, body) -> handle
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_request")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity4_type)
+      write_http_host_import(
+        import_sec,
+        ctx,
+        "http_request",
+        http_host_arity4_type,
+      )
       // response handle APIs
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_response_status")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity1_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_response_header")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity2_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_response_body")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity1_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_close")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity1_type)
+      write_http_host_import(
+        import_sec,
+        ctx,
+        "http_response_status",
+        http_host_arity1_type,
+      )
+      write_http_host_import(
+        import_sec,
+        ctx,
+        "http_response_header",
+        http_host_arity2_type,
+      )
+      write_http_host_import(
+        import_sec,
+        ctx,
+        "http_response_body",
+        http_host_arity1_type,
+      )
+      write_http_host_import(import_sec, ctx, "http_close", http_host_arity1_type)
       // server APIs
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_listen")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity1_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_accept")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity1_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_request_method")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity1_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_request_url")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity1_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_request_header")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity2_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_request_body")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity1_type)
-      write_name(import_sec, "vibe:http")
-      write_name(import_sec, "http_respond")
-      import_sec.push((0).to_byte())
-      write_u32_leb(import_sec, http_host_arity4_type)
+      write_http_host_import(import_sec, ctx, "http_listen", http_host_arity1_type)
+      write_http_host_import(import_sec, ctx, "http_accept", http_host_arity1_type)
+      write_http_host_import(
+        import_sec,
+        ctx,
+        "http_request_method",
+        http_host_arity1_type,
+      )
+      write_http_host_import(
+        import_sec,
+        ctx,
+        "http_request_url",
+        http_host_arity1_type,
+      )
+      write_http_host_import(
+        import_sec,
+        ctx,
+        "http_request_header",
+        http_host_arity2_type,
+      )
+      write_http_host_import(
+        import_sec,
+        ctx,
+        "http_request_body",
+        http_host_arity1_type,
+      )
+      write_http_host_import(import_sec, ctx, "http_respond", http_host_arity4_type)
     }
     if ctx.use_js_strings {
       for name in ctx.js_strings.names {
@@ -1690,6 +1728,7 @@ pub fn emit_module_wasm_with_options(
     coverage_enabled=false,
     embed_error_strings=options.embed_error_strings,
     http_host_imports=options.http_host_imports,
+    http_component_wasi_shim=options.http_component_wasi_shim,
   )
   emit_module(ctx, ast)
 }
@@ -1730,6 +1769,7 @@ pub fn emit_module_wasm_with_coverage_options(
     coverage_enabled=true,
     embed_error_strings=options.embed_error_strings,
     http_host_imports=options.http_host_imports,
+    http_component_wasi_shim=options.http_component_wasi_shim,
   )
   emit_module_with_coverage(ctx, ast)
 }

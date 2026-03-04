@@ -243,10 +243,12 @@ fn compile_module_wasm_with(
 fn wasm_emit_options(
   debug_errors : Bool,
   http_host_imports? : Bool = false,
+  http_component_wasi_shim? : Bool = false,
 ) -> @codegen.WasmEmitOptions {
   @codegen.wasm_emit_options(
     embed_error_strings=debug_errors,
     http_host_imports~,
+    http_component_wasi_shim~,
   )
 }
 
@@ -610,7 +612,11 @@ pub fn compile_module_component(
   let bundled = @runtime.bundle_for_wasm(db, path, compiled.ast)
   let core_wasm = @codegen.emit_module_wasm_with_options(
     bundled,
-    wasm_emit_options(false, http_host_imports~),
+    wasm_emit_options(
+      false,
+      http_host_imports~,
+      http_component_wasi_shim=http_host_imports,
+    ),
   ) catch {
     e => raise WasmCompileError::Gen(e)
   }

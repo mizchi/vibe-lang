@@ -256,7 +256,7 @@ test "component wasm uses stable func imports for stdio" {
 }
 
 ///|
-test "component wasm uses stable func imports for http host imports" {
+test "component wasm uses wasi http shim imports for http host imports" {
   let db = VibeDb::new()
   let src =
     #|let run = () -> Int with {Net} {
@@ -275,7 +275,11 @@ test "component wasm uses stable func imports for http host imports" {
     b => b
   }
   assert_true(component_bytes_contains_ascii(wasm, "import-0"))
-  assert_true(component_bytes_contains_ascii(wasm, "vibe:http"))
+  assert_true(component_bytes_contains_ascii(wasm, "wasi:http/client@0.3.0-draft"))
+  assert_true(component_bytes_contains_ascii(wasm, "wasi:http/types@0.3.0-draft"))
+  assert_true(component_bytes_contains_ascii(wasm, "send"))
+  assert_true(component_bytes_contains_ascii(wasm, "response-status"))
+  assert_true(component_bytes_contains_ascii(wasm, "[drop]response"))
   assert_false(component_bytes_contains_ascii(wasm, "core-import-"))
 }
 

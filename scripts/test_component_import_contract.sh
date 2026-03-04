@@ -64,7 +64,8 @@ wasm-tools validate --features all "$HTTP_COMPONENT"
 wasm-tools print "$HTTP_COMPONENT" >"$HTTP_PRINT"
 
 rg -n '^\s*\(import "import-0" \(func' "$HTTP_PRINT" >/dev/null
-rg -n '^\s*\(with "vibe:http" \(instance' "$HTTP_PRINT" >/dev/null
+rg -n '^\s*\(with "wasi:http/client@0\.3\.0-draft" \(instance' "$HTTP_PRINT" >/dev/null
+rg -n '^\s*\(with "wasi:http/types@0\.3\.0-draft" \(instance' "$HTTP_PRINT" >/dev/null
 if rg -n 'core-import-' "$HTTP_PRINT" >/dev/null; then
   echo "component import contract failed: legacy core-import-* names remain (http)" >&2
   exit 1

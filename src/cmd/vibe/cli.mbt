@@ -140,7 +140,7 @@ fn print_usage() -> Unit {
     "                                     --debug-errors keeps throw string literals in wasm (debug builds)",
   )
   println(
-    "                                     --http-host-imports wires HTTP builtins to `vibe:http/*` imports (--wasm/--component)",
+    "                                     --http-host-imports wires HTTP builtins to host imports (--wasm: vibe:http/*, --component: wasi:http/* shim)",
   )
   println(
     "  precompile [--out-dir dir] [--wasm|--wasm-js-string] [-O<level>] <dir...>",
