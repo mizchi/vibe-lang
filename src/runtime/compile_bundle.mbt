@@ -55,6 +55,20 @@ fn bundle_for_wasm_impl(
   let visited : Map[String, Bool] = {}
   // Collect all dependency definitions in topological order
   collect_dependency_defs(db, path, bundled_stmts, visited)
+  // Include prelude function definitions so that higher-order functions
+  // like array_map, array_filter, array_fold etc. are available in WASM.
+  // These are defined as user-level .vibe code using primitive builtins
+  // (array_builder, array_builder_push, etc.) that the WASM backend handles.
+  // DCE will remove any prelude definitions that aren't actually used.
+  let prelude = @checker.prelude_ast()
+  for stmt in prelude.stmts {
+    match stmt {
+      // Include function definitions from prelude
+      @core.Stmt::Let(..) => bundled_stmts.push(stmt)
+      // Skip trait definitions and impls (not needed for codegen)
+      _ => ()
+    }
+  }
   // Add main module statements (excluding imports and expanding re-exports)
   let base_dir = @path.Path(path).dirname().to_string()
   for stmt in ast.stmts {

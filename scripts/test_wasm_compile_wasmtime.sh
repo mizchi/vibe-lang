@@ -1725,6 +1725,127 @@ outer' \
 echo ""
 
 # ============================================
+# Higher-Order Array Functions (prelude)
+# ============================================
+log_info "Testing higher-order array functions..."
+
+expect_wasmtime_result "array_map: double values" \
+'let xs = [1, 2, 3]
+let ys = array_map(xs, (x: Int) -> Int { x * 2 })
+ys[0]' \
+"2"
+
+expect_wasmtime_result "array_map: result length" \
+'array_length(array_map([10, 20, 30], (x: Int) -> Int { x + 1 }))' \
+"3"
+
+expect_wasmtime_result "array_map: last element" \
+'let ys = array_map([1, 2, 3], (x: Int) -> Int { x * 10 })
+ys[2]' \
+"30"
+
+expect_wasmtime_result "array_filter: even numbers" \
+'array_length(array_filter([1, 2, 3, 4, 5], (x: Int) -> Bool { x % 2 == 0 }))' \
+"2"
+
+expect_wasmtime_result "array_filter: content check" \
+'let evens = array_filter([1, 2, 3, 4], (x: Int) -> Bool { x % 2 == 0 })
+evens[0]' \
+"2"
+
+expect_wasmtime_result "array_filter: all match" \
+'array_length(array_filter([2, 4, 6], (x: Int) -> Bool { x % 2 == 0 }))' \
+"3"
+
+expect_wasmtime_result "array_filter: none match" \
+'array_length(array_filter([1, 3, 5], (x: Int) -> Bool { x % 2 == 0 }))' \
+"0"
+
+expect_wasmtime_result "array_fold: sum" \
+'array_fold([1, 2, 3, 4, 5], 0, (acc: Int, x: Int) -> Int { acc + x })' \
+"15"
+
+expect_wasmtime_result "array_fold: product" \
+'array_fold([1, 2, 3, 4], 1, (acc: Int, x: Int) -> Int { acc * x })' \
+"24"
+
+expect_wasmtime_result "array_fold: count" \
+'array_fold([10, 20, 30], 0, (acc: Int, x: Int) -> Int { acc + 1 })' \
+"3"
+
+expect_wasmtime_result "array_any: found" \
+'if array_any([1, 2, 3], (x: Int) -> Bool { x > 2 }) { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "array_any: not found" \
+'if array_any([1, 2, 3], (x: Int) -> Bool { x > 5 }) { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "array_all: all match" \
+'if array_all([2, 4, 6], (x: Int) -> Bool { x % 2 == 0 }) { 1 } else { 0 }' \
+"1"
+
+expect_wasmtime_result "array_all: not all match" \
+'if array_all([2, 3, 6], (x: Int) -> Bool { x % 2 == 0 }) { 1 } else { 0 }' \
+"0"
+
+expect_wasmtime_result "array_find: found" \
+'match array_find([1, 2, 3], (x: Int) -> Bool { x > 1 }) { Some(v) => v; None => 0 }' \
+"2"
+
+expect_wasmtime_result "array_find: not found" \
+'match array_find([1, 2, 3], (x: Int) -> Bool { x > 5 }) { Some(v) => v; None => 99 }' \
+"99"
+
+expect_wasmtime_result "array_reverse: first element" \
+'let rev = array_reverse([10, 20, 30])
+rev[0]' \
+"30"
+
+expect_wasmtime_result "array_reverse: last element" \
+'let rev = array_reverse([10, 20, 30])
+rev[2]' \
+"10"
+
+expect_wasmtime_result "array_reverse: length preserved" \
+'array_length(array_reverse([1, 2, 3, 4]))' \
+"4"
+
+expect_wasmtime_result "array_sort: sorted first" \
+'let sorted = array_sort([3, 1, 2])
+sorted[0]' \
+"1"
+
+expect_wasmtime_result "array_sort: sorted last" \
+'let sorted = array_sort([3, 1, 2])
+sorted[2]' \
+"3"
+
+expect_wasmtime_result "array_sort: already sorted" \
+'let sorted = array_sort([1, 2, 3])
+sorted[1]' \
+"2"
+
+expect_wasmtime_result "array_map+filter: chain" \
+'let xs = [1, 2, 3, 4, 5]
+let doubled = array_map(xs, (x: Int) -> Int { x * 2 })
+let big = array_filter(doubled, (x: Int) -> Bool { x > 5 })
+array_length(big)' \
+"3"
+
+expect_wasmtime_result "array_fold+map: compose" \
+'let xs = [1, 2, 3]
+let doubled = array_map(xs, (x: Int) -> Int { x * 2 })
+array_fold(doubled, 0, (acc: Int, x: Int) -> Int { acc + x })' \
+"12"
+
+expect_wasmtime_result "where: alias for filter" \
+'array_length(where([1, 2, 3, 4, 5], (x: Int) -> Bool { x > 3 }))' \
+"2"
+
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo "========================================"
