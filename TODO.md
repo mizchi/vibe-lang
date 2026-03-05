@@ -112,6 +112,7 @@ Completed items are archived in `docs/DONE.md`.
   `vibe ide`/`vibe lsif` は shared backend API 上に維持。
   - [x] 拡張子判定を拡張（`.mts`/`.cts`/`.mjs`/`.cjs`/`.pyi`）
   - [x] baseline extractor に optional semantic provider フックを追加（row merge API + `vibe ide/lsif` 接続）
+  - [x] `vibe ide` / `vibe lsif` に `--semantic-rows <json>` を追加（外部 semantic row を merge）
 
 ## Bundle Size (In Progress)
 

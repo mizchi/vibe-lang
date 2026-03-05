@@ -2694,6 +2694,65 @@ test "graph ir query helpers support exact and partial search" {
 }
 
 ///|
+test "graph ir semantic option parser keeps positional args" {
+  let parsed = match graph_ir_parse_semantic_rows_flag(
+    ["query", "entry.ts", "--semantic-rows", "rows.json"],
+    "ide search",
+  ) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  assert_eq(parsed.0.length(), 2)
+  assert_eq(parsed.0[0], "query")
+  assert_eq(parsed.0[1], "entry.ts")
+  assert_eq(parsed.1, Some("rows.json"))
+}
+
+///|
+test "graph ir semantic option parser rejects malformed flags" {
+  let missing = graph_ir_parse_semantic_rows_flag(
+    ["entry.ts", "--semantic-rows"],
+    "ide outline",
+  )
+  match missing {
+    Ok(_) => fail("expected error")
+    Err(err) => assert_true(err.contains("missing path"))
+  }
+  let duplicate = graph_ir_parse_semantic_rows_flag(
+    ["entry.ts", "--semantic-rows", "a.json", "--semantic-rows", "b.json"],
+    "ide outline",
+  )
+  match duplicate {
+    Ok(_) => fail("expected error")
+    Err(err) => assert_true(err.contains("duplicate"))
+  }
+}
+
+///|
+test "graph ir semantic rows json parser applies defaults" {
+  let row_obj : Map[String, Json] = {}
+  row_obj["name"] = Json::string("greet")
+  row_obj["kind"] = Json::string("function")
+  row_obj["signature"] = Json::string("function greet(name: string): string")
+  row_obj["start"] = Json::number(0.0)
+  row_obj["end"] = Json::number(32.0)
+  let parsed = match graph_ir_parse_semantic_rows_json(
+    Json::array([Json::object(row_obj)]),
+    "typescript",
+    "app.ts",
+    "hash-default",
+  ) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  assert_eq(parsed.length(), 1)
+  assert_eq(parsed[0].language_id, "typescript")
+  assert_eq(parsed[0].path, "app.ts")
+  assert_eq(parsed[0].module_hash, "hash-default")
+  assert_eq(parsed[0].name, "greet")
+}
+
+///|
 test "graph ir line helpers resolve line and snippet from start offset" {
   let source = "x\nfoo()"
   let row = @x_exp.new_graph_ir_row(

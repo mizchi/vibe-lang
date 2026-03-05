@@ -176,8 +176,12 @@ fn print_usage() -> Unit {
   println(
     "  explain-import <file>       visualize import ref normalization and lock lookup",
   )
-  println("  ide <outline|peek-def|search> ...  symbol/type index queries")
-  println("  lsif [-o out.lsif] <file>   emit LSIF via shared symbol index")
+  println(
+    "  ide <outline|peek-def|search> ... [--semantic-rows rows.json]  symbol/type index queries",
+  )
+  println(
+    "  lsif [-o out.lsif] [--semantic-rows rows.json] <file>   emit LSIF via shared symbol index",
+  )
   println(
     "  index <build|query|verify|wal|ref> ...  advanced graph index (POC)",
   )

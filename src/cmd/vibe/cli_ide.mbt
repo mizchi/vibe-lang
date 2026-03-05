@@ -95,6 +95,289 @@ fn graph_ir_rows_to_symbol_index(
 }
 
 ///|
+fn graph_ir_parse_semantic_rows_flag(
+  args : Array[String],
+  context : String,
+) -> Result[(Array[String], String?), String] {
+  let positional : Array[String] = []
+  let mut semantic_rows_path : String? = None
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
+    if arg == "--semantic-rows" {
+      i += 1
+      if i >= args.length() {
+        return Err(context + ": missing path after --semantic-rows")
+      }
+      match semantic_rows_path {
+        Some(_) => return Err(context + ": duplicate --semantic-rows")
+        None => semantic_rows_path = Some(args[i])
+      }
+      i += 1
+      continue
+    }
+    positional.push(arg)
+    i += 1
+  }
+  Ok((positional, semantic_rows_path))
+}
+
+///|
+fn graph_ir_parse_json_string_array(
+  value : Json,
+  context : String,
+) -> Result[Array[String], String] {
+  match value {
+    Json::Array(items) => {
+      let out : Array[String] = []
+      for item in items {
+        match item {
+          Json::String(s) => out.push(s)
+          _ => return Err(context + ": expected string array")
+        }
+      }
+      Ok(out)
+    }
+    _ => Err(context + ": expected array")
+  }
+}
+
+///|
+fn graph_ir_parse_json_optional_string_array(
+  obj : Map[String, Json],
+  key : String,
+  context : String,
+) -> Result[Array[String], String] {
+  match obj.get(key) {
+    Some(value) => graph_ir_parse_json_string_array(value, context + "." + key)
+    None => Ok([])
+  }
+}
+
+///|
+fn graph_ir_parse_json_required_string(
+  obj : Map[String, Json],
+  key : String,
+  context : String,
+) -> Result[String, String] {
+  match obj.get(key) {
+    Some(Json::String(s)) => Ok(s)
+    Some(_) => Err(context + "." + key + ": expected string")
+    None => Err(context + ": missing `" + key + "`")
+  }
+}
+
+///|
+fn graph_ir_parse_json_optional_string(
+  obj : Map[String, Json],
+  key : String,
+  default_value : String,
+  context : String,
+) -> Result[String, String] {
+  match obj.get(key) {
+    Some(Json::String(s)) => Ok(s)
+    Some(_) => Err(context + "." + key + ": expected string")
+    None => Ok(default_value)
+  }
+}
+
+///|
+fn graph_ir_parse_json_required_int(
+  obj : Map[String, Json],
+  key : String,
+  context : String,
+) -> Result[Int, String] {
+  match obj.get(key) {
+    Some(Json::Number(n, ..)) => Ok(n.to_int())
+    Some(_) => Err(context + "." + key + ": expected number")
+    None => Err(context + ": missing `" + key + "`")
+  }
+}
+
+///|
+fn graph_ir_parse_semantic_row_json(
+  item : Json,
+  index : Int,
+  default_language : String,
+  default_path : String,
+  default_module_hash : String,
+) -> Result[@x_exp.GraphIrRow, String] {
+  let context = "semantic_rows[" + index.to_string() + "]"
+  match item {
+    Json::Object(obj) => {
+      let language_id = match graph_ir_parse_json_optional_string(
+        obj,
+        "language_id",
+        default_language,
+        context,
+      ) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let path = match
+        graph_ir_parse_json_optional_string(
+          obj,
+          "path",
+          default_path,
+          context,
+        ) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let name = match graph_ir_parse_json_required_string(obj, "name", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let kind = match graph_ir_parse_json_required_string(obj, "kind", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let signature = match
+        graph_ir_parse_json_required_string(obj, "signature", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let start = match graph_ir_parse_json_required_int(obj, "start", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let end = match graph_ir_parse_json_required_int(obj, "end", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let module_hash = match
+        graph_ir_parse_json_optional_string(
+          obj,
+          "module_hash",
+          default_module_hash,
+          context,
+        ) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let type_terms = match
+        graph_ir_parse_json_optional_string_array(obj, "type_terms", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let refs = match
+        graph_ir_parse_json_optional_string_array(obj, "refs", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let calls = match
+        graph_ir_parse_json_optional_string_array(obj, "calls", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      let imports = match
+        graph_ir_parse_json_optional_string_array(obj, "imports", context) {
+        Ok(v) => v
+        Err(err) => return Err(err)
+      }
+      Ok(
+        @x_exp.new_graph_ir_row(
+          language_id,
+          path,
+          name,
+          kind,
+          signature,
+          start,
+          end,
+          module_hash,
+          type_terms,
+          refs,
+          calls,
+          imports,
+        ),
+      )
+    }
+    _ => Err(context + ": expected object")
+  }
+}
+
+///|
+fn graph_ir_parse_semantic_rows_json(
+  json : Json,
+  default_language : String,
+  default_path : String,
+  default_module_hash : String,
+) -> Result[Array[@x_exp.GraphIrRow], String] {
+  let items = match json {
+    Json::Array(rows) => rows
+    Json::Object(obj) =>
+      match obj.get("rows") {
+        Some(Json::Array(rows)) => rows
+        Some(_) => return Err("semantic rows: `rows` must be array")
+        None =>
+          return Err(
+            "semantic rows: expected top-level array or object with `rows`",
+          )
+      }
+    _ =>
+      return Err("semantic rows: expected top-level array or object with `rows`")
+  }
+  let out : Array[@x_exp.GraphIrRow] = []
+  for i in 0..<items.length() {
+    let row = match
+      graph_ir_parse_semantic_row_json(
+        items[i],
+        i,
+        default_language,
+        default_path,
+        default_module_hash,
+      ) {
+      Ok(v) => v
+      Err(err) => return Err(err)
+    }
+    out.push(row)
+  }
+  Ok(out)
+}
+
+///|
+fn graph_ir_load_semantic_rows_file(
+  semantic_rows_path : String,
+  path : String,
+  source : String,
+) -> Result[Array[@x_exp.GraphIrRow], String] {
+  let content = @os_fs.read_file_to_string(semantic_rows_path) catch {
+    e => return Err("read semantic rows: " + e.to_string())
+  }
+  let parsed : Json = @json.parse(content) catch {
+    e => return Err("parse semantic rows JSON: " + e.to_string())
+  }
+  let default_language = match @x_exp.detect_language_id(path) {
+    Some(id) => id
+    None => "unknown"
+  }
+  let default_module_hash = @vibe_core.content_address_hash_string(source)
+  graph_ir_parse_semantic_rows_json(
+    parsed,
+    default_language,
+    path,
+    default_module_hash,
+  )
+}
+
+///|
+fn graph_ir_semantic_rows_provider(
+  semantic_rows_path : String?,
+) -> ((String, String, Array[@x_exp.GraphIrRow]) -> Result[
+  Array[@x_exp.GraphIrRow],
+  String,
+])? {
+  match semantic_rows_path {
+    Some(path) =>
+      Some(fn(entry_path, source, baseline_rows) {
+        let _ = baseline_rows
+        graph_ir_load_semantic_rows_file(path, entry_path, source)
+      })
+    None => None
+  }
+}
+
+///|
 fn print_ide_outline_entry(
   entry : @frontend.SymbolEntry,
   source : String,
@@ -119,18 +402,31 @@ fn print_graph_ir_outline_entry(row : @x_exp.GraphIrRow) -> Unit {
 
 ///|
 fn ide_outline_cmd(args : Array[String]) -> Unit {
-  if args.length() != 1 {
+  let (positionals, semantic_rows_path) = match
+    graph_ir_parse_semantic_rows_flag(args, "ide outline") {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  if positionals.length() != 1 {
     abort("ide outline: expected <file>")
   }
-  let path = args[0]
+  let path = positionals[0]
   // For non-.vibe files, use multi-language extractor
   match @x_exp.detect_language_id(path) {
-    Some("vibe") | None => ()
+    Some("vibe") | None =>
+      if semantic_rows_path is Some(_) {
+        abort("ide outline: --semantic-rows is only supported for non-vibe files")
+      }
     Some(_) => {
       let source = @os_fs.read_file_to_string(path) catch {
         e => abort("ide outline: " + e.to_string())
       }
-      match @x_exp.extract_graph_ir_rows_with_semantic_provider(path, source) {
+      let provider = graph_ir_semantic_rows_provider(semantic_rows_path)
+      match @x_exp.extract_graph_ir_rows_with_semantic_provider(
+        path,
+        source,
+        provider=provider,
+      ) {
         Ok(rows) => {
           if rows.length() == 0 {
             println("No symbols found in " + path)
@@ -233,20 +529,32 @@ fn print_graph_ir_search_entry(
 
 ///|
 fn ide_peek_def_cmd(args : Array[String]) -> Unit {
-  if args.length() != 2 {
+  let (positionals, semantic_rows_path) = match
+    graph_ir_parse_semantic_rows_flag(args, "ide peek-def") {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  if positionals.length() != 2 {
     abort("ide peek-def: expected <symbol> <entry-file>")
   }
-  let symbol = args[0]
-  let entry_file = args[1]
+  let symbol = positionals[0]
+  let entry_file = positionals[1]
   match @x_exp.detect_language_id(entry_file) {
-    Some("vibe") | None => ()
+    Some("vibe") | None =>
+      if semantic_rows_path is Some(_) {
+        abort(
+          "ide peek-def: --semantic-rows is only supported for non-vibe files",
+        )
+      }
     Some(_) => {
       let source = @os_fs.read_file_to_string(entry_file) catch {
         e => abort("ide peek-def: " + e.to_string())
       }
+      let provider = graph_ir_semantic_rows_provider(semantic_rows_path)
       match @x_exp.extract_graph_ir_rows_with_semantic_provider(
         entry_file,
         source,
+        provider=provider,
       ) {
         Ok(rows) => {
           let matches = graph_ir_find_exact_rows(rows, symbol)
@@ -316,20 +624,30 @@ fn ide_peek_def_cmd(args : Array[String]) -> Unit {
 
 ///|
 fn ide_search_cmd(args : Array[String]) -> Unit {
-  if args.length() != 2 {
+  let (positionals, semantic_rows_path) = match
+    graph_ir_parse_semantic_rows_flag(args, "ide search") {
+    Ok(v) => v
+    Err(err) => abort(err)
+  }
+  if positionals.length() != 2 {
     abort("ide search: expected <query> <entry-file>")
   }
-  let query = args[0]
-  let entry_file = args[1]
+  let query = positionals[0]
+  let entry_file = positionals[1]
   match @x_exp.detect_language_id(entry_file) {
-    Some("vibe") | None => ()
+    Some("vibe") | None =>
+      if semantic_rows_path is Some(_) {
+        abort("ide search: --semantic-rows is only supported for non-vibe files")
+      }
     Some(_) => {
       let source = @os_fs.read_file_to_string(entry_file) catch {
         e => abort("ide search: " + e.to_string())
       }
+      let provider = graph_ir_semantic_rows_provider(semantic_rows_path)
       match @x_exp.extract_graph_ir_rows_with_semantic_provider(
         entry_file,
         source,
+        provider=provider,
       ) {
         Ok(rows) => {
           let matches = graph_ir_search_rows(rows, query)
@@ -410,9 +728,22 @@ fn lsif_lines_to_text(lines : Array[String]) -> String {
 fn lsif_cmd(args : Array[String]) -> Unit {
   let entries : Array[String] = []
   let mut out_path : String? = None
+  let mut semantic_rows_path : String? = None
   let mut i = 0
   while i < args.length() {
     let arg = args[i]
+    if arg == "--semantic-rows" {
+      i += 1
+      if i >= args.length() {
+        abort("lsif: missing path after --semantic-rows")
+      }
+      if semantic_rows_path is Some(_) {
+        abort("lsif: duplicate --semantic-rows")
+      }
+      semantic_rows_path = Some(args[i])
+      i += 1
+      continue
+    }
     if arg == "-o" || arg == "--out" {
       i += 1
       if i >= args.length() {
@@ -429,14 +760,19 @@ fn lsif_cmd(args : Array[String]) -> Unit {
     abort("lsif: expected <entry-file>")
   }
   match @x_exp.detect_language_id(entries[0]) {
-    Some("vibe") | None => ()
+    Some("vibe") | None =>
+      if semantic_rows_path is Some(_) {
+        abort("lsif: --semantic-rows is only supported for non-vibe files")
+      }
     Some(_) => {
       let source = @os_fs.read_file_to_string(entries[0]) catch {
         e => abort("lsif: " + e.to_string())
       }
+      let provider = graph_ir_semantic_rows_provider(semantic_rows_path)
       match @x_exp.extract_graph_ir_rows_with_semantic_provider(
         entries[0],
         source,
+        provider=provider,
       ) {
         Ok(rows) => {
           let index = graph_ir_rows_to_symbol_index(rows)
