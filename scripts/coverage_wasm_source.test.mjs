@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   applySourceNoiseExclusion,
+  evaluateKpi,
   isCoverageNoiseLine,
   parseArgs,
 } from "./coverage_wasm_source.mjs";
@@ -71,6 +72,44 @@ test("parseArgs: --invoke can be provided multiple times", () => {
     "run_extra",
   ]);
   assert.deepEqual(args.invokeNames, ["setup", "run_extra"]);
+});
+
+test("parseArgs: kpi threshold options are parsed", () => {
+  const args = parseArgs([
+    "a.wasm",
+    "a.wasm.cov.json",
+    "--min-point-rate",
+    "12.5",
+    "--min-line-rate",
+    "95",
+    "--min-branch-rate",
+    "8",
+  ]);
+  assert.equal(args.minPointRate, 12.5);
+  assert.equal(args.minLineRate, 95);
+  assert.equal(args.minBranchRate, 8);
+});
+
+test("evaluateKpi: pass and fail by thresholds", () => {
+  const report = {
+    stats: {
+      point_total: 100,
+      point_hit: 20,
+      line_total: 50,
+      line_hit: 50,
+      branch_total: 80,
+      branch_hit: 12,
+    },
+  };
+  const pass = evaluateKpi(report, 20, 100, 15);
+  assert.equal(pass.ok, true);
+  assert.deepEqual(pass.failures, []);
+
+  const fail = evaluateKpi(report, 25, 100, 20);
+  assert.equal(fail.ok, false);
+  assert.equal(fail.failures.length, 2);
+  assert.match(fail.failures.join(" "), /point_coverage/);
+  assert.match(fail.failures.join(" "), /branch_coverage/);
 });
 
 test("applySourceNoiseExclusion: excluded lines are removed from line KPI", () => {

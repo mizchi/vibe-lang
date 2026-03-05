@@ -5,8 +5,16 @@ import { pathToFileURL } from "node:url";
 
 function usage() {
   console.error(
-    "usage: coverage_wasm_source.mjs <wasm-file> <map-json> [--json <report.json>] [--summary <summary.txt>] [--allow-trap] [--invoke <export-name> ...]",
+    "usage: coverage_wasm_source.mjs <wasm-file> <map-json> [--json <report.json>] [--summary <summary.txt>] [--allow-trap] [--invoke <export-name> ...] [--min-point-rate <0-100>] [--min-line-rate <0-100>] [--min-branch-rate <0-100>]",
   );
+}
+
+function parseRateOption(rawValue, flagName) {
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value < 0 || value > 100) {
+    throw new Error(`invalid value for ${flagName}: ${rawValue} (expected 0-100)`);
+  }
+  return value;
 }
 
 export function parseArgs(argv) {
@@ -20,6 +28,9 @@ export function parseArgs(argv) {
   let summaryPath = "";
   let allowTrap = false;
   const invokeNames = [];
+  let minPointRate = null;
+  let minLineRate = null;
+  let minBranchRate = null;
   let i = 2;
   while (i < argv.length) {
     const arg = argv[i];
@@ -52,6 +63,30 @@ export function parseArgs(argv) {
       i += 2;
       continue;
     }
+    if (arg === "--min-point-rate") {
+      if (i + 1 >= argv.length) {
+        throw new Error("missing value after --min-point-rate");
+      }
+      minPointRate = parseRateOption(argv[i + 1], "--min-point-rate");
+      i += 2;
+      continue;
+    }
+    if (arg === "--min-line-rate") {
+      if (i + 1 >= argv.length) {
+        throw new Error("missing value after --min-line-rate");
+      }
+      minLineRate = parseRateOption(argv[i + 1], "--min-line-rate");
+      i += 2;
+      continue;
+    }
+    if (arg === "--min-branch-rate") {
+      if (i + 1 >= argv.length) {
+        throw new Error("missing value after --min-branch-rate");
+      }
+      minBranchRate = parseRateOption(argv[i + 1], "--min-branch-rate");
+      i += 2;
+      continue;
+    }
     throw new Error(`unknown option: ${arg}`);
   }
   return {
@@ -61,14 +96,21 @@ export function parseArgs(argv) {
     summaryPath,
     allowTrap,
     invokeNames,
+    minPointRate,
+    minLineRate,
+    minBranchRate,
   };
 }
 
-function percent(hit, total) {
+function ratePercent(hit, total) {
   if (total <= 0) {
-    return "0.00";
+    return 0;
   }
-  return ((hit * 100.0) / total).toFixed(2);
+  return (hit * 100.0) / total;
+}
+
+function percent(hit, total) {
+  return ratePercent(hit, total).toFixed(2);
 }
 
 function ensureExportNumber(globalExport, name) {
@@ -99,6 +141,12 @@ function buildSummaryText(report) {
   lines.push(
     `branches: ${report.stats.branch_hit}/${report.stats.branch_total} (${percent(report.stats.branch_hit, report.stats.branch_total)}%)`,
   );
+  if (report.kpi && report.kpi.has_thresholds) {
+    lines.push(`kpi: ${report.kpi.ok ? "ok" : "fail"}`);
+    if (!report.kpi.ok && Array.isArray(report.kpi.failures) && report.kpi.failures.length > 0) {
+      lines.push(`kpi_failures: ${report.kpi.failures.join(" | ")}`);
+    }
+  }
   const missedLineList = report.lines
     .filter((line) => !line.hit && line.excluded !== true)
     .map((line) => line.line)
@@ -237,6 +285,63 @@ export function applySourceNoiseExclusion(lines, sourceLines) {
     line_total: measuredLines.length,
     line_hit: lineHit,
     line_excluded_total: annotated.length - measuredLines.length,
+  };
+}
+
+export function evaluateKpi(
+  report,
+  minPointRate,
+  minLineRate,
+  minBranchRate,
+) {
+  const pointRate = ratePercent(
+    Number(report?.stats?.point_hit ?? 0),
+    Number(report?.stats?.point_total ?? 0),
+  );
+  const lineRate = ratePercent(
+    Number(report?.stats?.line_hit ?? 0),
+    Number(report?.stats?.line_total ?? 0),
+  );
+  const branchRate = ratePercent(
+    Number(report?.stats?.branch_hit ?? 0),
+    Number(report?.stats?.branch_total ?? 0),
+  );
+
+  const pointOk = minPointRate === null || pointRate >= Number(minPointRate);
+  const lineOk = minLineRate === null || lineRate >= Number(minLineRate);
+  const branchOk = minBranchRate === null || branchRate >= Number(minBranchRate);
+  const ok = pointOk && lineOk && branchOk;
+
+  const failures = [];
+  if (!pointOk) {
+    failures.push(
+      `point_coverage ${pointRate.toFixed(2)}% < ${Number(minPointRate).toFixed(2)}%`,
+    );
+  }
+  if (!lineOk) {
+    failures.push(
+      `line_coverage ${lineRate.toFixed(2)}% < ${Number(minLineRate).toFixed(2)}%`,
+    );
+  }
+  if (!branchOk) {
+    failures.push(
+      `branch_coverage ${branchRate.toFixed(2)}% < ${Number(minBranchRate).toFixed(2)}%`,
+    );
+  }
+
+  return {
+    ok,
+    point_rate: pointRate,
+    line_rate: lineRate,
+    branch_rate: branchRate,
+    thresholds: {
+      min_point_rate: minPointRate,
+      min_line_rate: minLineRate,
+      min_branch_rate: minBranchRate,
+    },
+    has_thresholds:
+      minPointRate !== null || minLineRate !== null || minBranchRate !== null,
+    failures,
   };
 }
 
@@ -403,6 +508,12 @@ async function main() {
       branch_hit: branchHit,
     },
   };
+  report.kpi = evaluateKpi(
+    report,
+    args.minPointRate,
+    args.minLineRate,
+    args.minBranchRate,
+  );
 
   const summary = buildSummaryText(report);
   if (args.reportJsonPath.length > 0) {
@@ -415,6 +526,9 @@ async function main() {
 
   if (runError !== null && !args.allowTrap) {
     throw new Error(`run trapped: ${runError}`);
+  }
+  if (!report.kpi.ok) {
+    throw new Error(`coverage KPI failed: ${report.kpi.failures.join("; ")}`);
   }
 }
 

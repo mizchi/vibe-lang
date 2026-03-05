@@ -76,7 +76,7 @@ coverage-deno:
     scripts/coverage_deno.sh
 
 # Run source-level WASM coverage (vibe span map + runtime counters)
-# env: VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_INVOKE, VIBE_WASM_SOURCE_COVERAGE_DIR
+# env: VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_INVOKE, VIBE_WASM_SOURCE_COVERAGE_MIN_POINT_RATE, VIBE_WASM_SOURCE_COVERAGE_MIN_LINE_RATE, VIBE_WASM_SOURCE_COVERAGE_MIN_BRANCH_RATE, VIBE_WASM_SOURCE_COVERAGE_DIR
 coverage-wasm-source entry="examples/pattern_coverage.vibe":
     scripts/coverage_wasm_source.sh {{entry}}
 
@@ -87,6 +87,10 @@ coverage-selfhost-index entry="vibe/compiler/index.vibe":
 # Run selfhost workload coverage (lex/parse/print/eval/import smoke)
 coverage-selfhost entry="vibe/compiler/selfhost_coverage_run.vibe":
     scripts/coverage_wasm_source.sh {{entry}}
+
+# Run selfhost workload coverage with KPI gate
+coverage-selfhost-gate point="15" line="100" branch="12":
+    VIBE_WASM_SOURCE_COVERAGE_MIN_POINT_RATE={{point}} VIBE_WASM_SOURCE_COVERAGE_MIN_LINE_RATE={{line}} VIBE_WASM_SOURCE_COVERAGE_MIN_BRANCH_RATE={{branch}} scripts/coverage_wasm_source.sh vibe/compiler/selfhost_coverage_run.vibe
 
 # Run source-level WASM coverage for eval sidecar tests (`<db>.tests/<target>_test.vibe`)
 # env: VIBE_EVAL_COVERAGE_DIR, VIBE_WASM_SOURCE_COVERAGE_MODE, VIBE_WASM_SOURCE_COVERAGE_NO_DCE, VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP, VIBE_WASM_SOURCE_COVERAGE_DIR
