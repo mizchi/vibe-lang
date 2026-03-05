@@ -107,7 +107,7 @@ Completed items are archived in `docs/DONE.md`.
 
 ## Language Features
 
-- [ ] Multi-language frontend adapters:
+- [x] Multi-language frontend adapters:
   tree-sitter-based extractor を baseline とし、optional semantic providers (compiler/LSP) で type-resolution gaps を補完。
   `vibe ide`/`vibe lsif` は shared backend API 上に維持。
   - [x] 拡張子判定を拡張（`.mts`/`.cts`/`.mjs`/`.cjs`/`.pyi`）
