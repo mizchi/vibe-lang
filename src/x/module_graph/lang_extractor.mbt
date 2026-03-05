@@ -4,11 +4,17 @@ pub fn detect_language_id(path : String) -> String? {
   let lower = path.to_lower()
   if lower.has_suffix(".vibe") {
     Some("vibe")
-  } else if lower.has_suffix(".ts") || lower.has_suffix(".tsx") {
+  } else if lower.has_suffix(".ts") ||
+    lower.has_suffix(".tsx") ||
+    lower.has_suffix(".mts") ||
+    lower.has_suffix(".cts") {
     Some("typescript")
-  } else if lower.has_suffix(".js") || lower.has_suffix(".jsx") {
+  } else if lower.has_suffix(".js") ||
+    lower.has_suffix(".jsx") ||
+    lower.has_suffix(".mjs") ||
+    lower.has_suffix(".cjs") {
     Some("javascript")
-  } else if lower.has_suffix(".py") {
+  } else if lower.has_suffix(".py") || lower.has_suffix(".pyi") {
     Some("python")
   } else {
     None

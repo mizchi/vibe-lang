@@ -3,8 +3,13 @@ test "detect_language_id" {
   assert_eq(detect_language_id("foo.vibe"), Some("vibe"))
   assert_eq(detect_language_id("bar.ts"), Some("typescript"))
   assert_eq(detect_language_id("baz.tsx"), Some("typescript"))
+  assert_eq(detect_language_id("mod.mts"), Some("typescript"))
+  assert_eq(detect_language_id("mod.cts"), Some("typescript"))
   assert_eq(detect_language_id("app.js"), Some("javascript"))
+  assert_eq(detect_language_id("app.mjs"), Some("javascript"))
+  assert_eq(detect_language_id("app.cjs"), Some("javascript"))
   assert_eq(detect_language_id("main.py"), Some("python"))
+  assert_eq(detect_language_id("stub.pyi"), Some("python"))
   assert_eq(detect_language_id("test.rs"), None)
 }
 
