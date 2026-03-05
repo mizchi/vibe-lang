@@ -201,9 +201,10 @@ Completed items are archived in `docs/DONE.md`.
   - [x] host (`vibe compile`) と selfhost (`moonrun vibe_compile_wasi.wasm`) で wasm 出力 hash 一致テストを追加
   - [x] mismatch 時に最小 diff（bytes/hash/size）を出す比較スクリプトを追加
   - [x] canary から compiler_size ケースへ比較対象を拡張（`VIBE_CUTOVER_INCLUDE_COMPILER_SIZE=1`）
+  - [x] parity fail をデフォルト fatal 化（`VIBE_CUTOVER_REQUIRE_PARITY=1`）し、compiler_size canary もデフォルト有効化
 - [x] Phase 3: Push/PR CI に cutover gate を追加する（定期実行なし）
   - [x] `scripts/test_selfhost_cutover_gate.sh` を追加（Phase 1/2 の検証を束ねる）
-  - [x] `wasm-codegen-integrity` ジョブへ組み込み（`VIBE_CUTOVER_REQUIRE_PARITY=0` で monitor-only 開始）
+  - [x] `wasm-codegen-integrity` ジョブへ組み込み（parity 必須で fail-fast）
   - [x] `GITHUB_STEP_SUMMARY` に mode ごとの結果（pass/fail, bytes/hash）を出力
 - [x] Phase 4: 実行デフォルトを selfhost 側へ切替する
   - [x] bootstrap gate の compile ステージを selfhost compiler (`moonrun`) 経由に切替（`VIBE_SELFHOST_CUTOVER=1` がデフォルト）

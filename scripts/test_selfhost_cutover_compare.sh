@@ -8,8 +8,8 @@ set -euo pipefail
 # Env:
 #   VIBE_BIN                           — host CLI binary (default: auto-detect)
 #   STAGE1_COMPILER_WASM               — selfhost WASI compiler wasm
-#   VIBE_CUTOVER_REQUIRE_PARITY        — 0: monitor-only, 1: fail on mismatch (default: 0)
-#   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: add bench/compiler_size/cases.txt canaries
+#   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on mismatch (default: 1), 0: monitor-only
+#   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: add bench/compiler_size/cases.txt canaries (default: 1)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,8 +17,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe}"
 STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm}"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cutover}"
-REQUIRE_PARITY="${VIBE_CUTOVER_REQUIRE_PARITY:-0}"
-INCLUDE_COMPILER_SIZE="${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-0}"
+REQUIRE_PARITY="${VIBE_CUTOVER_REQUIRE_PARITY:-1}"
+INCLUDE_COMPILER_SIZE="${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-1}"
 STAGE_TIMEOUT_SEC="${VIBE_CUTOVER_STAGE_TIMEOUT_SEC:-300}"
 
 run_with_timeout() {

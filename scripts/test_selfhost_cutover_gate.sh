@@ -8,8 +8,8 @@ set -euo pipefail
 # Env:
 #   VIBE_BIN                           — host CLI binary
 #   STAGE1_COMPILER_WASM               — selfhost WASI compiler wasm
-#   VIBE_CUTOVER_REQUIRE_PARITY        — 0: monitor-only, 1: fail on mismatch (default: 0)
-#   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: expand canary set
+#   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on mismatch (default: 1), 0: monitor-only
+#   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: expand canary set (default: 1)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
