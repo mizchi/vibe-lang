@@ -322,15 +322,16 @@ done
 FAIL_CANARY_CASES=()
 if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
   FAIL_CANARY_CASES+=(
-    "fixtures/typecheck/import_malformed_separator.vibe|parse|UnexpectedToken"
-    "fixtures/typecheck/type_mismatch_argument.vibe|type|type mismatch (argument)"
+    "fixtures/typecheck/import_malformed_separator.vibe|parse|UnexpectedToken|0"
+    "fixtures/typecheck/type_mismatch_argument.vibe|type|type mismatch (argument)|0"
+    "__cutover_missing_input__.vibe|io|No such file or directory|1"
   )
 fi
 
 for fail_case in "${FAIL_CANARY_CASES[@]}"; do
-  IFS='|' read -r fail_rel_path expected_class expected_fragment <<< "$fail_case"
+  IFS='|' read -r fail_rel_path expected_class expected_fragment allow_missing_source <<< "$fail_case"
   fail_file="$PROJECT_ROOT/$fail_rel_path"
-  if [ ! -f "$fail_file" ]; then
+  if [ ! -f "$fail_file" ] && [ "${allow_missing_source:-0}" != "1" ]; then
     echo "[cutover] warning: fail canary not found, skipping: $fail_file" >&2
     continue
   fi
