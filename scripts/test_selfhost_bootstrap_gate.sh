@@ -169,7 +169,54 @@ run_wasm_and_expect_zero() {
   fi
 }
 
+hash_wasm_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+verify_stage_pair_hash() {
+  local output_prefix="$1"
+  local source_path="$2"
+  local mode_label="$3"
+  shift 3
+
+  local pair_stage1="$OUT_DIR/${output_prefix}_stage1.wasm"
+  local pair_stage2="$OUT_DIR/${output_prefix}_stage2.wasm"
+  local pair_hash1 pair_hash2
+
+  run_stage "stage1 compile (${mode_label}) for $source_path" \
+    "${COMPILE_CMD_ARGS[@]}" "$@" "$source_path" -o "$pair_stage1"
+  run_stage "stage2 compile (${mode_label}) for $source_path" \
+    "${COMPILE_CMD_ARGS[@]}" "$@" "$source_path" -o "$pair_stage2"
+
+  if command -v wasm-tools >/dev/null 2>&1; then
+    run_stage "validate ${output_prefix} stage1 wasm" wasm-tools validate --features all "$pair_stage1"
+    run_stage "validate ${output_prefix} stage2 wasm" wasm-tools validate --features all "$pair_stage2"
+  fi
+
+  pair_hash1="$(hash_wasm_file "$pair_stage1")"
+  pair_hash2="$(hash_wasm_file "$pair_stage2")"
+  if [ "$pair_hash1" != "$pair_hash2" ]; then
+    echo "bootstrap gate failed: deterministic hash mismatch (${mode_label})" >&2
+    echo "  source: $source_path" >&2
+    echo "  stage1: $pair_hash1" >&2
+    echo "  stage2: $pair_hash2" >&2
+    exit 1
+  fi
+
+  echo "[bootstrap] deterministic hash ok: mode=${mode_label} source=${source_path#$PROJECT_ROOT/} hash=$pair_hash1"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf -- "- deterministic hash: mode=%s source=%s hash=%s\n" \
+      "$mode_label" "${source_path#$PROJECT_ROOT/}" "$pair_hash1" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+
+  STAGE_PAIR_LAST_STAGE1="$pair_stage1"
+  STAGE_PAIR_LAST_STAGE2="$pair_stage2"
+  STAGE_PAIR_LAST_HASH="$pair_hash1"
+  DETERMINISTIC_CASES_CHECKED=$((DETERMINISTIC_CASES_CHECKED + 1))
+}
+
 bootstrap_total_start="$(date +%s)"
+DETERMINISTIC_CASES_CHECKED=0
 
 needs_cli_rebuild=0
 if [ ! -x "$VIBE_BIN" ]; then
@@ -204,10 +251,10 @@ if [ "$SELFHOST_CUTOVER" = "1" ]; then
     exit 1
   fi
   echo "[bootstrap] cutover: using selfhost compiler (moonrun)"
-  COMPILE_CMD="moonrun $SELFHOST_COMPILER_WASM"
+  COMPILE_CMD_ARGS=(moonrun "$SELFHOST_COMPILER_WASM")
 else
   echo "[bootstrap] cutover: using host CLI"
-  COMPILE_CMD="$VIBE_BIN compile"
+  COMPILE_CMD_ARGS=("$VIBE_BIN" compile)
 fi
 
 mkdir -p "$OUT_DIR"
@@ -273,14 +320,26 @@ run_stage "compiled __to_string(Double/Float) probe" \
 run_stage "selfhost probe smoke (vibe integration test index 44)" \
   moon test -p tests -f vibe_integration_test.mbt --target js --warn-list '-29' --index 44
 
-STAGE1_WASM="$OUT_DIR/index_stage1.wasm"
-STAGE2_WASM="$OUT_DIR/index_stage2.wasm"
-# shellcheck disable=SC2086
-run_stage "stage1 compile (--wasm) for $ENTRY_PATH" \
-  $COMPILE_CMD --wasm "$ENTRY_PATH" -o "$STAGE1_WASM"
-# shellcheck disable=SC2086
-run_stage "stage2 compile (--wasm) for $ENTRY_PATH" \
-  $COMPILE_CMD --wasm "$ENTRY_PATH" -o "$STAGE2_WASM"
+BASICS_FIXTURE="$PROJECT_ROOT/examples/basics.vibe"
+BASE64_FIXTURE="$PROJECT_ROOT/bench/compiler_size/cases/base64.vibe"
+if [ ! -f "$BASICS_FIXTURE" ]; then
+  echo "bootstrap gate failed: fixture not found: $BASICS_FIXTURE" >&2
+  exit 1
+fi
+if [ ! -f "$BASE64_FIXTURE" ]; then
+  echo "bootstrap gate failed: fixture not found: $BASE64_FIXTURE" >&2
+  exit 1
+fi
+
+verify_stage_pair_hash "index_mvp" "$ENTRY_PATH" "--wasm" --wasm
+STAGE1_WASM="$STAGE_PAIR_LAST_STAGE1"
+STAGE2_WASM="$STAGE_PAIR_LAST_STAGE2"
+HASH_STAGE1="$STAGE_PAIR_LAST_HASH"
+
+verify_stage_pair_hash "index_no_dce" "$ENTRY_PATH" "--wasm --no-dce" --wasm --no-dce
+verify_stage_pair_hash "index_debug_errors" "$ENTRY_PATH" "--wasm --debug-errors" --wasm --debug-errors
+verify_stage_pair_hash "basics_mvp" "$BASICS_FIXTURE" "--wasm" --wasm
+verify_stage_pair_hash "base64_mvp" "$BASE64_FIXTURE" "--wasm" --wasm
 
 PIPELINE_CHECK="$OUT_DIR/index_pipeline_check.log"
 PIPELINE_RAW_WASM="$OUT_DIR/index_pipeline_raw.wasm"
@@ -288,35 +347,22 @@ PIPELINE_OPT_WASM="$OUT_DIR/index_pipeline_opt.wasm"
 run_stage_capture_stdout "pipeline parse+type check for $ENTRY_PATH" \
   "$PIPELINE_CHECK" \
   "$VIBE_BIN" check "$ENTRY_PATH"
-# shellcheck disable=SC2086
 run_stage "pipeline codegen (--wasm --no-dce) for $ENTRY_PATH" \
-  $COMPILE_CMD --wasm --no-dce "$ENTRY_PATH" -o "$PIPELINE_RAW_WASM"
+  "${COMPILE_CMD_ARGS[@]}" --wasm --no-dce "$ENTRY_PATH" -o "$PIPELINE_RAW_WASM"
 if [ -n "$PIPELINE_OPT_LEVEL" ]; then
-  # shellcheck disable=SC2086
   run_stage "pipeline optimize/codegen (-O$PIPELINE_OPT_LEVEL) for $ENTRY_PATH" \
-    $COMPILE_CMD --wasm "-O$PIPELINE_OPT_LEVEL" "$ENTRY_PATH" -o "$PIPELINE_OPT_WASM"
+    "${COMPILE_CMD_ARGS[@]}" --wasm "-O$PIPELINE_OPT_LEVEL" "$ENTRY_PATH" -o "$PIPELINE_OPT_WASM"
 else
   echo "[bootstrap] pipeline optimize/codegen: skipped (set VIBE_SELFHOST_PIPELINE_OPT_LEVEL)"
 fi
 
 if command -v wasm-tools >/dev/null 2>&1; then
-  run_stage "validate stage1 wasm" wasm-tools validate --features all "$STAGE1_WASM"
-  run_stage "validate stage2 wasm" wasm-tools validate --features all "$STAGE2_WASM"
   run_stage "validate pipeline raw wasm" wasm-tools validate --features all "$PIPELINE_RAW_WASM"
   if [ -n "$PIPELINE_OPT_LEVEL" ]; then
     run_stage "validate pipeline opt wasm" wasm-tools validate --features all "$PIPELINE_OPT_WASM"
   fi
 else
   echo "warning: wasm-tools not found, skipping validate" >&2
-fi
-
-HASH_STAGE1="$(shasum -a 256 "$STAGE1_WASM" | awk '{print $1}')"
-HASH_STAGE2="$(shasum -a 256 "$STAGE2_WASM" | awk '{print $1}')"
-if [ "$HASH_STAGE1" != "$HASH_STAGE2" ]; then
-  echo "bootstrap gate failed: stage1/stage2 wasm hash mismatch" >&2
-  echo "  stage1: $HASH_STAGE1" >&2
-  echo "  stage2: $HASH_STAGE2" >&2
-  exit 1
 fi
 
 run_wasm_and_expect_zero \
@@ -334,6 +380,7 @@ echo "[bootstrap] total elapsed: ${bootstrap_total_elapsed}s"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo
+    echo "- deterministic cases checked: ${DETERMINISTIC_CASES_CHECKED}"
     echo "- total: ${bootstrap_total_elapsed}s"
   } >> "$GITHUB_STEP_SUMMARY" || true
 fi
@@ -365,4 +412,4 @@ if [ -n "$KPI_BASELINE_SEC" ]; then
   fi
 fi
 
-echo "bootstrap gate passed: hash=$HASH_STAGE1 total=${bootstrap_total_elapsed}s"
+echo "bootstrap gate passed: hash=$HASH_STAGE1 deterministic_cases=${DETERMINISTIC_CASES_CHECKED} total=${bootstrap_total_elapsed}s"
