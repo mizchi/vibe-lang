@@ -99,7 +99,7 @@ coverage-selfhost-suite:
 
 # Run selfhost suite coverage with KPI gate
 # env: VIBE_SELFHOST_SUITE_MIN_POINT_RATE, VIBE_SELFHOST_SUITE_MIN_LINE_RATE, VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE
-coverage-selfhost-suite-gate point="22" line="97" branch="18":
+coverage-selfhost-suite-gate point="29" line="97" branch="23":
     VIBE_SELFHOST_SUITE_MIN_POINT_RATE={{point}} VIBE_SELFHOST_SUITE_MIN_LINE_RATE={{line}} VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE={{branch}} scripts/coverage_selfhost_suite.sh
 
 # Run source-level WASM coverage for eval sidecar tests (`<db>.tests/<target>_test.vibe`)
