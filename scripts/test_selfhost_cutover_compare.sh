@@ -10,6 +10,7 @@ set -euo pipefail
 #   STAGE1_COMPILER_WASM               — selfhost WASI compiler wasm
 #   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on mismatch (default: 1), 0: monitor-only
 #   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: add bench/compiler_size/cases.txt canaries (default: 1)
+#   VIBE_CUTOVER_MODES                 — comma-separated compile modes (default: mvp,no-dce,debug-errors)
 #   VIBE_CUTOVER_STAGE_TIMEOUT_SEC     — per-stage timeout (default: 300)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -19,6 +20,7 @@ STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/debug/bu
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cutover}"
 REQUIRE_PARITY="${VIBE_CUTOVER_REQUIRE_PARITY:-1}"
 INCLUDE_COMPILER_SIZE="${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-1}"
+CUTOVER_MODES_RAW="${VIBE_CUTOVER_MODES:-mvp,no-dce,debug-errors}"
 STAGE_TIMEOUT_SEC="${VIBE_CUTOVER_STAGE_TIMEOUT_SEC:-300}"
 
 run_with_timeout() {
@@ -62,8 +64,8 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "### Selfhost Cutover Comparison"
     echo
-    echo "| File | Host | Selfhost | Hash Match | Deterministic |"
-    echo "|------|------|----------|------------|---------------|"
+    echo "| File | Mode | Host | Selfhost | Hash Match | Deterministic |"
+    echo "|------|------|------|----------|------------|---------------|"
   } >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
@@ -108,7 +110,57 @@ if ! command -v moonrun >/dev/null 2>&1; then
   exit 1
 fi
 
+compile_mode() {
+  local runtime="$1"
+  local mode="$2"
+  local source_file="$3"
+  local output_file="$4"
+  local -a mode_flags=()
+  case "$mode" in
+    mvp) mode_flags=(--wasm) ;;
+    no-dce) mode_flags=(--wasm --no-dce) ;;
+    debug-errors) mode_flags=(--wasm --debug-errors) ;;
+    *)
+      echo "cutover gate failed: unknown mode '$mode' (supported: mvp,no-dce,debug-errors)" >&2
+      return 2
+      ;;
+  esac
+
+  if [ "$runtime" = "host" ]; then
+    run_with_timeout "$STAGE_TIMEOUT_SEC" "$VIBE_BIN" compile "${mode_flags[@]}" "$source_file" -o "$output_file"
+    return $?
+  fi
+  if [ "$runtime" = "selfhost" ]; then
+    run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" "${mode_flags[@]}" "$source_file" -o "$output_file"
+    return $?
+  fi
+
+  echo "cutover gate failed: unknown runtime '$runtime'" >&2
+  return 2
+}
+
+declare -a CUTOVER_MODES=()
+IFS=',' read -r -a raw_modes <<< "$CUTOVER_MODES_RAW"
+for raw_mode in "${raw_modes[@]}"; do
+  mode="${raw_mode#"${raw_mode%%[![:space:]]*}"}"
+  mode="${mode%"${mode##*[![:space:]]}"}"
+  [ -z "$mode" ] && continue
+  case "$mode" in
+    mvp|no-dce|debug-errors) CUTOVER_MODES+=("$mode") ;;
+    *)
+      echo "cutover gate failed: unknown VIBE_CUTOVER_MODES item '$mode'" >&2
+      exit 1
+      ;;
+  esac
+done
+if [ "${#CUTOVER_MODES[@]}" -eq 0 ]; then
+  echo "cutover gate failed: VIBE_CUTOVER_MODES must contain at least one mode" >&2
+  exit 1
+fi
+mode_count="${#CUTOVER_MODES[@]}"
+
 total_files=0
+total_cases=0
 parity_ok=0
 parity_fail=0
 deterministic_ok=0
@@ -121,96 +173,100 @@ for file in "${CANARY_FILES[@]}"; do
   fi
   total_files=$((total_files + 1))
   basename="$(basename "$file" .vibe)"
-  host_out="$OUT_DIR/${basename}_host.wasm"
-  selfhost_out="$OUT_DIR/${basename}_selfhost.wasm"
-  selfhost_out2="$OUT_DIR/${basename}_selfhost2.wasm"
-
-  # Host compile
-  set +e
-  run_with_timeout "$STAGE_TIMEOUT_SEC" "$VIBE_BIN" compile --wasm "$file" -o "$host_out" >/dev/null 2>&1
-  host_status=$?
-  set -e
-
-  # Selfhost compile
-  set +e
-  run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" --wasm "$file" -o "$selfhost_out" >/dev/null 2>&1
-  selfhost_status=$?
-  set -e
-
-  # Compare exit codes
-  host_label="exit=$host_status"
-  selfhost_label="exit=$selfhost_status"
-
-  if [ "$host_status" -ne 0 ] && [ "$selfhost_status" -ne 0 ]; then
-    # Both failed — that's parity (both reject)
-    hash_match="n/a (both fail)"
-    parity_ok=$((parity_ok + 1))
-    det_label="n/a"
-  elif [ "$host_status" -ne "$selfhost_status" ]; then
-    # One succeeded, one failed — mismatch
-    hash_match="EXIT MISMATCH"
-    parity_fail=$((parity_fail + 1))
-    det_label="n/a"
-    echo "[cutover] MISMATCH exit code: $file (host=$host_status selfhost=$selfhost_status)" >&2
-  else
-    # Both succeeded — compare hashes
-    host_hash="$(shasum -a 256 "$host_out" | awk '{print $1}')"
-    selfhost_hash="$(shasum -a 256 "$selfhost_out" | awk '{print $1}')"
-    host_size="$(wc -c < "$host_out" | tr -d ' ')"
-    selfhost_size="$(wc -c < "$selfhost_out" | tr -d ' ')"
-    host_label="exit=0 ${host_size}B"
-    selfhost_label="exit=0 ${selfhost_size}B"
-
-    if [ "$host_hash" = "$selfhost_hash" ]; then
-      hash_match="YES"
-      parity_ok=$((parity_ok + 1))
-    else
-      hash_match="NO (host=${host_hash:0:12}... selfhost=${selfhost_hash:0:12}...)"
-      parity_fail=$((parity_fail + 1))
-      echo "[cutover] MISMATCH hash: $file" >&2
-      echo "  host:     $host_hash (${host_size}B)" >&2
-      echo "  selfhost: $selfhost_hash (${selfhost_size}B)" >&2
-    fi
-
-    # Deterministic check: selfhost compile 2nd time
-    set +e
-    run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" --wasm "$file" -o "$selfhost_out2" >/dev/null 2>&1
-    selfhost_status2=$?
-    set -e
-    if [ "$selfhost_status2" -eq 0 ]; then
-      selfhost_hash2="$(shasum -a 256 "$selfhost_out2" | awk '{print $1}')"
-      if [ "$selfhost_hash" = "$selfhost_hash2" ]; then
-        det_label="YES"
-        deterministic_ok=$((deterministic_ok + 1))
-      else
-        det_label="NO"
-        deterministic_fail=$((deterministic_fail + 1))
-        echo "[cutover] NON-DETERMINISTIC: $file" >&2
-        echo "  run1: $selfhost_hash" >&2
-        echo "  run2: $selfhost_hash2" >&2
-      fi
-    else
-      det_label="2nd compile failed"
-      deterministic_fail=$((deterministic_fail + 1))
-    fi
-  fi
-
   short_file="${file#$PROJECT_ROOT/}"
-  echo "[cutover] $short_file: host=$host_label selfhost=$selfhost_label hash=$hash_match det=$det_label"
-  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    printf -- "| %s | %s | %s | %s | %s |\n" \
-      "$short_file" "$host_label" "$selfhost_label" "$hash_match" "$det_label" \
-      >> "$GITHUB_STEP_SUMMARY" || true
-  fi
+  for mode in "${CUTOVER_MODES[@]}"; do
+    total_cases=$((total_cases + 1))
+    mode_suffix="${mode//[^a-zA-Z0-9_-]/_}"
+    host_out="$OUT_DIR/${basename}_${mode_suffix}_host.wasm"
+    selfhost_out="$OUT_DIR/${basename}_${mode_suffix}_selfhost.wasm"
+    selfhost_out2="$OUT_DIR/${basename}_${mode_suffix}_selfhost2.wasm"
+
+    # Host compile
+    set +e
+    compile_mode host "$mode" "$file" "$host_out" >/dev/null 2>&1
+    host_status=$?
+    set -e
+
+    # Selfhost compile
+    set +e
+    compile_mode selfhost "$mode" "$file" "$selfhost_out" >/dev/null 2>&1
+    selfhost_status=$?
+    set -e
+
+    # Compare exit codes
+    host_label="exit=$host_status"
+    selfhost_label="exit=$selfhost_status"
+
+    if [ "$host_status" -ne 0 ] && [ "$selfhost_status" -ne 0 ]; then
+      # Both failed — that's parity (both reject)
+      hash_match="n/a (both fail)"
+      parity_ok=$((parity_ok + 1))
+      det_label="n/a"
+    elif [ "$host_status" -ne "$selfhost_status" ]; then
+      # One succeeded, one failed — mismatch
+      hash_match="EXIT MISMATCH"
+      parity_fail=$((parity_fail + 1))
+      det_label="n/a"
+      echo "[cutover] MISMATCH exit code: $file (mode=$mode host=$host_status selfhost=$selfhost_status)" >&2
+    else
+      # Both succeeded — compare hashes
+      host_hash="$(shasum -a 256 "$host_out" | awk '{print $1}')"
+      selfhost_hash="$(shasum -a 256 "$selfhost_out" | awk '{print $1}')"
+      host_size="$(wc -c < "$host_out" | tr -d ' ')"
+      selfhost_size="$(wc -c < "$selfhost_out" | tr -d ' ')"
+      host_label="exit=0 ${host_size}B"
+      selfhost_label="exit=0 ${selfhost_size}B"
+
+      if [ "$host_hash" = "$selfhost_hash" ]; then
+        hash_match="YES"
+        parity_ok=$((parity_ok + 1))
+      else
+        hash_match="NO (host=${host_hash:0:12}... selfhost=${selfhost_hash:0:12}...)"
+        parity_fail=$((parity_fail + 1))
+        echo "[cutover] MISMATCH hash: $file (mode=$mode)" >&2
+        echo "  host:     $host_hash (${host_size}B)" >&2
+        echo "  selfhost: $selfhost_hash (${selfhost_size}B)" >&2
+      fi
+
+      # Deterministic check: selfhost compile 2nd time
+      set +e
+      compile_mode selfhost "$mode" "$file" "$selfhost_out2" >/dev/null 2>&1
+      selfhost_status2=$?
+      set -e
+      if [ "$selfhost_status2" -eq 0 ]; then
+        selfhost_hash2="$(shasum -a 256 "$selfhost_out2" | awk '{print $1}')"
+        if [ "$selfhost_hash" = "$selfhost_hash2" ]; then
+          det_label="YES"
+          deterministic_ok=$((deterministic_ok + 1))
+        else
+          det_label="NO"
+          deterministic_fail=$((deterministic_fail + 1))
+          echo "[cutover] NON-DETERMINISTIC: $file (mode=$mode)" >&2
+          echo "  run1: $selfhost_hash" >&2
+          echo "  run2: $selfhost_hash2" >&2
+        fi
+      else
+        det_label="2nd compile failed"
+        deterministic_fail=$((deterministic_fail + 1))
+      fi
+    fi
+
+    echo "[cutover] $short_file [mode=$mode]: host=$host_label selfhost=$selfhost_label hash=$hash_match det=$det_label"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      printf -- "| %s | %s | %s | %s | %s | %s |\n" \
+        "$short_file" "$mode" "$host_label" "$selfhost_label" "$hash_match" "$det_label" \
+        >> "$GITHUB_STEP_SUMMARY" || true
+    fi
+  done
 done
 
 echo ""
-echo "[cutover] summary: ${total_files} files, ${parity_ok} parity-ok, ${parity_fail} parity-fail, ${deterministic_ok} deterministic-ok, ${deterministic_fail} deterministic-fail"
+echo "[cutover] summary: ${total_files} files x ${mode_count} modes = ${total_cases} cases, ${parity_ok} parity-ok, ${parity_fail} parity-fail, ${deterministic_ok} deterministic-ok, ${deterministic_fail} deterministic-fail"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo ""
-    echo "**Summary**: ${total_files} files, ${parity_ok} parity-ok, ${parity_fail} parity-fail, ${deterministic_ok} det-ok, ${deterministic_fail} det-fail"
+    echo "**Summary**: ${total_files} files x ${mode_count} modes = ${total_cases} cases, ${parity_ok} parity-ok, ${parity_fail} parity-fail, ${deterministic_ok} det-ok, ${deterministic_fail} det-fail"
   } >> "$GITHUB_STEP_SUMMARY" || true
 fi
 

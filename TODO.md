@@ -202,6 +202,7 @@ Completed items are archived in `docs/DONE.md`.
   - [x] mismatch 時に最小 diff（bytes/hash/size）を出す比較スクリプトを追加
   - [x] canary から compiler_size ケースへ比較対象を拡張（`VIBE_CUTOVER_INCLUDE_COMPILER_SIZE=1`）
   - [x] parity fail をデフォルト fatal 化（`VIBE_CUTOVER_REQUIRE_PARITY=1`）し、compiler_size canary もデフォルト有効化
+  - [x] multi-mode parity（`--wasm`, `--wasm --no-dce`, `--wasm --debug-errors`）を常時比較
 - [x] Phase 3: Push/PR CI に cutover gate を追加する（定期実行なし）
   - [x] `scripts/test_selfhost_cutover_gate.sh` を追加（Phase 1/2 の検証を束ねる）
   - [x] `wasm-codegen-integrity` ジョブへ組み込み（parity 必須で fail-fast）
