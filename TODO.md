@@ -129,6 +129,10 @@ Completed items are archived in `docs/DONE.md`.
 
 ベンチ: `scripts/bench_bundle_size.sh`, `bench/bundle_size/cases.txt`
 
+- [x] Push/PR CI の product bundle-size を blocking gate 化（`scripts/bench_bundle_size.sh`）
+- [x] 現行 baseline へ `bench/golden/bundle_size_budget.tsv` を更新し、gate を green 化
+- [x] compiler bundle-size 予算 (`bench/golden/compiler_bundle_size_budget.tsv`) も現行 baseline に同期
+
 ## WASM Codegen Integrity (In Progress)
 
 目標: selfhost 系ワークロードで生成される wasm が常に validate 可能で、PR/Push CI で回帰を検知できること。
