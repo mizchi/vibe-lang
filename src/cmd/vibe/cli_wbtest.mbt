@@ -2753,6 +2753,53 @@ test "graph ir semantic rows json parser applies defaults" {
 }
 
 ///|
+test "graph ir semantic rows json parser accepts object with rows field" {
+  let row_obj : Map[String, Json] = {}
+  row_obj["name"] = Json::string("from_object")
+  row_obj["kind"] = Json::string("function")
+  row_obj["signature"] = Json::string("function from_object(): void")
+  row_obj["start"] = Json::number(10.0)
+  row_obj["end"] = Json::number(30.0)
+  let root : Map[String, Json] = {}
+  root["rows"] = Json::array([Json::object(row_obj)])
+  let parsed = match graph_ir_parse_semantic_rows_json(
+    Json::object(root),
+    "typescript",
+    "obj.ts",
+    "hash-obj",
+  ) {
+    Ok(v) => v
+    Err(err) => fail(err)
+  }
+  assert_eq(parsed.length(), 1)
+  assert_eq(parsed[0].name, "from_object")
+  assert_eq(parsed[0].path, "obj.ts")
+}
+
+///|
+test "graph ir semantic rows json parser rejects invalid row shape" {
+  let bad_row : Map[String, Json] = {}
+  bad_row["name"] = Json::string("bad")
+  bad_row["kind"] = Json::string("function")
+  bad_row["signature"] = Json::string("function bad(): void")
+  bad_row["start"] = Json::string("zero")
+  bad_row["end"] = Json::number(10.0)
+  let parsed = graph_ir_parse_semantic_rows_json(
+    Json::array([Json::object(bad_row)]),
+    "typescript",
+    "bad.ts",
+    "hash-bad",
+  )
+  match parsed {
+    Ok(_) => fail("expected parse error")
+    Err(err) => {
+      assert_true(err.contains("semantic_rows[0].start"))
+      assert_true(err.contains("expected number"))
+    }
+  }
+}
+
+///|
 test "graph ir line helpers resolve line and snippet from start offset" {
   let source = "x\nfoo()"
   let row = @x_exp.new_graph_ir_row(
